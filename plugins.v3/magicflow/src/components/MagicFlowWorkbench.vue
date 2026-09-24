@@ -781,8 +781,8 @@ onUnmounted(() => {
                   <span>站点上报时魔 · 站点实时值</span>
                 </VSheet>
                 <VSheet class="magicflow-stat app-surface-static">
-                  <strong>{{ Number(summary.current_bonus || 0).toFixed(2) }}</strong>
-                  <span>站点当前魔力 · 全部启用任务合计</span>
+                  <strong>{{ Number(selectedTask.site_current_bonus || 0).toFixed(2) }}</strong>
+                  <span>站点当前魔力 · 该站点实时存量</span>
                 </VSheet>
                 <VSheet class="magicflow-stat app-surface-static">
                   <strong>{{ detailStats.last_added || 0 }} / {{ detailStats.last_reused || 0 }} / {{ detailStats.last_deleted || 0 }}</strong>
