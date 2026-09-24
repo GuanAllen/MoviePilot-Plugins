@@ -1181,13 +1181,21 @@ onUnmounted(() => {
                 </div>
 
                 <div class="magicflow-calc__chain">
-                  <span>Σ A = <b>{{ Number(formulaInfo.sum_a || 0).toFixed(1) }}</b></span>
+                  <span>Σ A = <b>{{ Number(formulaInfo.sum_a || 0).toFixed(1) }}</b>
+                    <template v-if="Number(formulaInfo.site_reported_a) > 0"> · 站点 {{ Number(formulaInfo.site_reported_a).toFixed(1) }}</template>
+                  </span>
                   <span class="magicflow-calc__arrow">→</span>
                   <span>一次 arctan</span>
                   <span class="magicflow-calc__arrow">→</span>
+                  <span>基础 <b>{{ Number(formulaInfo.b_base || 0).toFixed(2) }}</b></span>
+                  <template v-if="Number(formulaInfo.b_flat) > 0">
+                    <span class="magicflow-calc__arrow">+</span>
+                    <span>做种 {{ formulaInfo.seeding_count || 0 }}×{{ Number((formulaInfo.params || {}).per_torrent_flat || 0.3) }} = <b>{{ Number(formulaInfo.b_flat || 0).toFixed(2) }}</b></span>
+                  </template>
+                  <span class="magicflow-calc__arrow">→</span>
                   <span><b>{{ Number(formulaInfo.total ?? bonusData.total_bonus ?? 0).toFixed(2) }}</b>/h</span>
                   <span v-if="formulaInfo.deviation_pct != null" class="magicflow-calc__dev">
-                    偏差 {{ formulaInfo.deviation_pct > 0 ? '+' : '' }}{{ formulaInfo.deviation_pct }}%
+                    较站点 {{ formulaInfo.deviation_pct > 0 ? '+' : '' }}{{ formulaInfo.deviation_pct }}%
                   </span>
                 </div>
 

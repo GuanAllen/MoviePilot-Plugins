@@ -62,7 +62,7 @@ from .persistence import MagicFlowStore, OperationItem
 from .sites import BonusCalculator, get_calculator, get_formula_params
 from .sites.formula_fetch import fetch_site_formula, refresh_site_preset
 
-__version__ = "1.0.47"
+__version__ = "1.0.48"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -1308,11 +1308,14 @@ class MagicFlow(_PluginBase):
         """将下载器种子转换为魔力信息列表（可按站点公式参数计算）。"""
         result = []
         for t in torrents:
+            # 我们在做种 → 站内做种人数 Ni 至少为 1（qB 的 num_complete 常为 0，不可信）。
+            # 不钳制会把「人数因子」算成 1.0（应为 2.414），导致模型 A 严重偏低。
+            ni = max(int(t.seeder or 0), 1)
             bonus_info = calc_torrent_bonus(
                 hash=t.hash,
                 title=t.title,
                 size_gb=t.size_gb,
-                seeders=t.seeder,
+                seeders=ni,
                 leechers=t.leecher,
                 age_weeks=t.age_weeks,
                 volume_factor=t.volume_factor,
@@ -1385,7 +1388,7 @@ class MagicFlow(_PluginBase):
             cache[domain] = {"ts": now - SITE_FORMULA_TTL + SITE_FORMULA_RETRY, "cap": cap}
         return cap
 
-    def _bonus_formula_block(self, task: MagicFlowTaskConfig, torrent_list) -> Dict[str, Any]:
+    def _bonus_formula_block(self, task: MagicFlowTaskConfig, torrent_list, seeding_count: Optional[int] = None) -> Dict[str, Any]:
         """组装「魔力计算」页所需的公式信息 + 本轮汇总推导链。"""
         params = self._build_formula_params(task)
         cap = self._acquire_site_formula(task)
@@ -1395,8 +1398,11 @@ class MagicFlow(_PluginBase):
         domain = (getattr(task, "site_domain", "") or "").strip().lower()
         if cache and domain in cache:
             age = max(0, int(time.time() - float(cache[domain].get("ts", 0))))
-        bd = aggregate_breakdown(torrent_list, params)
+        if seeding_count is None:
+            seeding_count = len(torrent_list or [])
+        bd = aggregate_breakdown(torrent_list, params, seeding_count=seeding_count)
         site_reported = extra.get("current_bonus_per_hour")
+        site_reported_a = extra.get("current_a")
         deviation = None
         if site_reported:
             try:
@@ -1416,14 +1422,18 @@ class MagicFlow(_PluginBase):
                 "t0": params.t0, "n0": params.n0, "b0": params.b0, "l": params.l,
                 "zero_weight": params.zero_weight, "normal_weight": params.normal_weight,
                 "official_coef": params.official_coef, "harem_coef": params.harem_coef,
+                "per_torrent_flat": params.per_torrent_flat, "seeding_count_cap": params.seeding_count_cap,
             },
             "extra": extra,
+            "seeding_count": int(seeding_count or 0),
             "sum_a": round(bd["a_total"], 4),
             "a_official": round(bd["a_official"], 4),
             "b_base": round(bd["b_base"], 4),
+            "b_flat": round(bd["b_flat"], 4),
             "b_official": round(bd["b_official"], 4),
             "b_harem": round(bd["b_harem"], 4),
             "total": round(bd["total"], 4),
+            "site_reported_a": site_reported_a,
             "site_reported_bonus": site_reported,
             "deviation_pct": deviation,
         }
@@ -1791,7 +1801,13 @@ class MagicFlow(_PluginBase):
                     if str(getattr(t, "state", "") or "").lower() in QB_DOWNLOADING_STATES
                 )
                 stats["bonus_per_hour"] = round(
-                    calc_aggregate_bonus_per_hour(bonus_list, self._build_formula_params(task)), 4
+                    calc_aggregate_bonus_per_hour(
+                        bonus_list,
+                        self._build_formula_params(task),
+                        seeding_count=sum(
+                            1 for t in managed if float(getattr(t, "progress", 0) or 0) >= 0.999
+                        ),
+                    ), 4
                 )
                 if seeding:
                     stats["state"] = "seeding"
@@ -2147,11 +2163,14 @@ class MagicFlow(_PluginBase):
             if not task_torrents:
                 return Response(success=True, data={"torrents": [], "total_bonus": 0, "torrent_count": 0, "protected_count": 0, "formula": self._bonus_formula_block(task, [])})
             torrent_bonus_list = self._convert_to_bonus_list(task_torrents, self._build_formula_params(task))
+            seeding_count = sum(
+                1 for t in task_torrents if float(getattr(t, "progress", 0) or 0) >= 0.999
+            )
             protected_hashes = self._store.get_protected_torrents(task_id) if self._store else set()
             policy = self._build_magic_policy(task, torrent_bonus_list)
             ranked = rank_candidates(torrent_bonus_list, policy)
             total_bonus = calc_aggregate_bonus_per_hour(
-                torrent_bonus_list, self._build_formula_params(task)
+                torrent_bonus_list, self._build_formula_params(task), seeding_count=seeding_count
             )
             state_by_hash = {
                 (t.hash or "").lower(): str(getattr(t, "state", "") or "")
@@ -2199,7 +2218,7 @@ class MagicFlow(_PluginBase):
                 "total_bonus": round(total_bonus, 4),
                 "torrent_count": len(torrents_data),
                 "protected_count": len(protected_hashes),
-                "formula": self._bonus_formula_block(task, torrent_bonus_list),
+                "formula": self._bonus_formula_block(task, torrent_bonus_list, seeding_count),
             })
 
         except Exception as e:
