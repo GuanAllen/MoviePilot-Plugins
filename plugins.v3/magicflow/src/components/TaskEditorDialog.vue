@@ -246,7 +246,7 @@ async function saveTask() {
                       type="number"
                       min="1"
                       label="每轮参评候选数"
-                      placeholder="默认 100"
+                      placeholder="默认 30"
                       suffix="个"
                       clearable
                     />

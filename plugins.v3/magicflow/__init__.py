@@ -9,6 +9,7 @@ import re
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
@@ -61,13 +62,15 @@ from .persistence import MagicFlowStore, OperationItem
 from .sites import BonusCalculator, get_calculator, get_formula_params
 from .sites.formula_fetch import fetch_site_formula, refresh_site_preset
 
-__version__ = "1.0.46"
+__version__ = "1.0.47"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
 BROWSE_PAGES = 3
 # 游标深翻：翻页游标上限；超过则回到首页重扫（避免越翻越深拿到无效/超老页面）。
 MAX_PAGE_CURSOR = 60
+# 分类阶段并发预取 .torrent 的线程数（原为逐个串行，TopN=100 会耗时数分钟）。
+TORRENT_FETCH_WORKERS = 6
 # 站点魔力公式抓取缓存 TTL（秒）；抓取失败时只缓存 SHORT 秒后重试。
 SITE_FORMULA_TTL = 6 * 3600
 SITE_FORMULA_RETRY = 30 * 60
@@ -105,7 +108,7 @@ class MagicFlowTaskConfig:
     refill_when_empty: bool = True               # 清理后主动补种
     max_add_per_run: int = 10                    # 单轮最多新增种子数（无总量上限时的每轮名额）
     max_download_concurrent: int = 10            # 本任务同时「下载中」上限（queued 不计）
-    top_n: int = 100                             # 每轮参与排序处理的候选上限
+    top_n: int = 30                              # 每轮参与排序处理的候选上限（≈ 每轮新增名额的 3 倍）
     browse_pages: int = 3                        # 每轮站点列表翻页数（游标深翻）
 
     # 存量复用（辅种）
@@ -911,17 +914,34 @@ class MagicFlow(_PluginBase):
 
             group_a: List[Tuple[TorrentBonusInfo, SiteCandidateTorrent, str, TorrentInfo]] = []
             group_b: List[Tuple[TorrentBonusInfo, SiteCandidateTorrent]] = []
-            for bonus, cand in topn:
-                raw = None
-                if cand.enclosure:
-                    raw = downloader.fetch_torrent_bytes(
-                        cand.enclosure, cookie=cand.site_cookie, user_agent=cand.site_ua
-                    )
-                cand.raw = raw
+
+            # 并发预取 TopN 的 .torrent（原为逐个串行，100 个耗时数分钟）。
+            # 每个请求各自新建 RequestUtils 会话，无共享状态，可安全并发。
+            def _prefetch(pair: Any) -> None:
+                _b, _c = pair
+                _raw = None
+                if _c.enclosure:
+                    try:
+                        _raw = downloader.fetch_torrent_bytes(
+                            _c.enclosure, cookie=_c.site_cookie, user_agent=_c.site_ua
+                        )
+                    except Exception:
+                        _raw = None
+                _c.raw = _raw
                 try:
-                    cand.real_hash = (info_hash(raw) or "").lower() if raw else ""
+                    _c.real_hash = (info_hash(_raw) or "").lower() if _raw else ""
                 except Exception:
-                    cand.real_hash = ""
+                    _c.real_hash = ""
+
+            if len(topn) > 1:
+                with ThreadPoolExecutor(max_workers=min(TORRENT_FETCH_WORKERS, len(topn))) as _ex:
+                    list(_ex.map(_prefetch, topn))
+            else:
+                for _p in topn:
+                    _prefetch(_p)
+
+            for bonus, cand in topn:
+                raw = getattr(cand, "raw", None)
                 if not raw:
                     group_b.append((bonus, cand))
                     continue
@@ -1961,7 +1981,7 @@ class MagicFlow(_PluginBase):
             refill_when_empty=payload.refill_when_empty,
             max_add_per_run=getattr(payload, "max_add_per_run", 10) or 10,
             max_download_concurrent=getattr(payload, "max_download_concurrent", 10) or 10,
-            top_n=getattr(payload, "top_n", 100) or 100,
+            top_n=getattr(payload, "top_n", 30) or 30,
             browse_pages=getattr(payload, "browse_pages", 3) or 3,
             reuse_existing=payload.reuse_existing,
             reuse_verify=payload.reuse_verify,
@@ -2033,7 +2053,7 @@ class MagicFlow(_PluginBase):
         task.refill_when_empty = payload.refill_when_empty
         task.max_add_per_run = getattr(payload, "max_add_per_run", 10) or 10
         task.max_download_concurrent = getattr(payload, "max_download_concurrent", 10) or 10
-        task.top_n = getattr(payload, "top_n", 100) or 100
+        task.top_n = getattr(payload, "top_n", 30) or 30
         task.browse_pages = getattr(payload, "browse_pages", 3) or 3
         task.reuse_existing = payload.reuse_existing
         task.reuse_verify = payload.reuse_verify
