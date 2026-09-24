@@ -3,7 +3,7 @@
     "name": "魔力管家",
     "description": "按站点魔力公式自动养护做种，最大化魔力产出。",
     "labels": "站点,做种,魔力",
-    "version": "1.0.85",
+    "version": "1.0.86",
     "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
     "author": "IronOx",
     "level": 1,
@@ -94,7 +94,8 @@
       "v1.0.82": "插件图标改为磁铁（mdi-magnet），与工作台 logo 统一（工作台/侧栏/市场一致）。",
       "v1.0.83": "插件图标改为磁铁图标图（icons/magicflow.png，紫底白磁铁）；plugin_icon/市场 icon 改用真实图片 URL，修复市场卡片显示为默认拼图占位。",
       "v1.0.84": "插件描述更新：去掉「与 BrushFlow 目标互斥」，改为面向公开市場的功能描述（评分选种/清理低效/存量辅种/多站点多任务）。",
-      "v1.0.85": "插件描述精简为「按站点魔力公式自动养护做种，最大化魔力产出。」（22 字，避免市场卡片超长）。"
+      "v1.0.85": "插件描述精简为「按站点魔力公式自动养护做种，最大化魔力产出。」（22 字，避免市场卡片超长）。",
+      "v1.0.86": "修复馒头（M-Team）时魔取不到：M-Team 是 SPA 站点，mybonus.php 无 HTML 可解析，改走官方 API（x-api-key + UA，POST /api/tracker/mybonus）解析公式与时魔（finalBs）；公式参数按站点口径对齐（T0=4 / N0=7 / B0=50 / L=300）。"
     }
   }
 }
