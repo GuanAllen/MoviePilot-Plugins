@@ -34,6 +34,10 @@ from .bonus import (
     aggregate_breakdown,
     site_ceiling,
     seeds_for_coverage,
+    marginal_bonus_per_hour,
+    score_candidate,
+    CandidateScore,
+    select_optimal,
     calc_torrent_bonus,
     decide_deletions,
     preview_deletions,
@@ -75,7 +79,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "1.0.63"
+__version__ = "1.0.65"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -773,6 +777,19 @@ class MagicFlow(_PluginBase):
             self._log(f"下载器不可用: {task.downloader}", "error")
             return {"status": "failed", "reason": "下载器不可用"}
 
+        # ---------- ⓪ 先清理（放在**入口检查之前**）----------
+        # 池满时不再直接 noop，而是先清掉零魔 / 做种人数过多 / 低于门槛 / 无进度的种子
+        # 腾出空间与名额，再进入入口检查决定是否抓取。Master 口径：清理任务前置。
+        try:
+            _cl = self._cleanup_round(task, downloader)
+            if _cl.get("deleted"):
+                self._log(
+                    f"魔力管家 [{task.name}] 入口前清理：删 {_cl['deleted']} 个"
+                    f"（无进度 {_cl.get('no_progress', 0)} / 低效 {_cl.get('low_eff', 0)}）"
+                )
+        except Exception as _cle:
+            self._log(f"魔力管家 [{task.name}] 入口前清理异常: {_cle}", "warning")
+
         try:
             # ---------- 本任务托管（tag）快照 ----------
             try:
@@ -880,10 +897,24 @@ class MagicFlow(_PluginBase):
             filter_policy = self._build_filter_policy(task)
             filtered, reason_counts = filter_candidates(candidates, filter_policy)
             wash_reasons: Dict[str, int] = dict(reason_counts)
+            # ★ 最优解算法（做种人数 Ni × 体积 Si）：真实边际时魔。
+            # a_current = 现有池子合计 A；边际增益 B(A+a)−B(A) 才能反映「再加一颗」的真实收益。
+            a_current = 0.0
+            for _b in managed_bonus:
+                try:
+                    a_current += float(getattr(_b, "bonus_score", 0.0) or 0.0)
+                except Exception:
+                    pass
+            _cap_n = int(getattr(formula_params, "seeding_count_cap", 0) or 0)
+            _flat = float(getattr(formula_params, "per_torrent_flat", 0.0) or 0.0)
+            flat_gain = _flat if (not _cap_n or base_cnt < _cap_n) else 0.0
+            _min_seeders = max(int(getattr(filter_policy, "min_seeders", 0) or 0), 1)
+
             scored: List[Tuple[TorrentBonusInfo, SiteCandidateTorrent]] = []
             skipped_seen = 0
             skipped_dead = 0
             skipped_low = 0
+            skipped_nosrc = 0
             for c in filtered:
                 ckey = self._candidate_key(c)
                 if ckey and self._store and self._store.seen.is_seen(task.id, f"cand:{ckey}", seen_cooldown):
@@ -892,6 +923,7 @@ class MagicFlow(_PluginBase):
                 if ckey and self._store and self._store.dead.is_dead(task.id, f"cand:{ckey}", self._dead_cooldown):
                     skipped_dead += 1
                     continue
+                _is_off = bool(official_titles) and (normalize_title(c.title) in official_titles)
                 bonus = calc_torrent_bonus(
                     hash=c.hash or uuid.uuid4().hex[:12],
                     title=c.title,
@@ -904,10 +936,28 @@ class MagicFlow(_PluginBase):
                     is_free=c.is_free,
                     is_double_free=c.is_double_free,
                     hit_and_run=c.hit_and_run,
-                    is_official=bool(official_titles) and (normalize_title(c.title) in official_titles),
+                    is_official=_is_off,
                     params=formula_params,
                 )
                 bonus.age_weeks = c.age_weeks
+                # ★ 做种人数 Ni × 体积 Si → 最优解评分（边际时魔 + 每 GB 效率 + 可下性）
+                sc = score_candidate(
+                    size_gb=c.size_gb,
+                    seeders=c.seeders,
+                    age_weeks=c.age_weeks,
+                    a_current=a_current,
+                    is_zero_bonus=c.is_zero_bonus,
+                    is_official=_is_off,
+                    params=formula_params,
+                    min_seeders=_min_seeders,
+                    flat_gain=flat_gain,
+                )
+                if not sc.viable:
+                    skipped_nosrc += 1
+                    continue
+                setattr(c, "_score", sc)
+                setattr(c, "_value", sc.value)
+                setattr(c, "_eff", sc.efficiency)
                 if min_bonus and bonus.bonus_per_hour < min_bonus:
                     skipped_low += 1
                     continue
@@ -915,6 +965,7 @@ class MagicFlow(_PluginBase):
 
             wash_reasons["近期已处理"] = skipped_seen
             wash_reasons["死种缓存"] = skipped_dead
+            wash_reasons["无做种源"] = skipped_nosrc
             wash_reasons["低于魔力门槛"] = skipped_low
             if self._store:
                 self._store.record_filter_stats(
@@ -931,7 +982,14 @@ class MagicFlow(_PluginBase):
                 self._set_phase(task.id, "done")
                 return {"status": "noop", "reason": "洗池后无可用候选", "candidates": len(candidates), "filtered": 0}
 
-            scored.sort(key=lambda pair: pair[0].bonus_per_hour, reverse=True)
+            # ★ 最优解排序：名额受限（保种数上限）→ 按边际 value 降序；
+            # 仅磁盘受限 → 按每 GB 效率 efficiency 降序（把每 GB 收益最大的先装）。
+            _disk_left = (float(disk_gb) - base_size) if disk_gb else None
+            _count_left = (int(max_keep) - base_cnt) if max_keep else None
+            if _disk_left is not None and _count_left is None:
+                scored.sort(key=lambda pair: (getattr(pair[1], "_eff", 0.0), getattr(pair[1], "_value", 0.0)), reverse=True)
+            else:
+                scored.sort(key=lambda pair: (getattr(pair[1], "_value", 0.0), getattr(pair[1], "_eff", 0.0)), reverse=True)
             top_n = max(int(task.top_n or 0), 1)
             topn = scored[:top_n]
 
@@ -1312,59 +1370,97 @@ class MagicFlow(_PluginBase):
                 self._store.record_run_error(task.id, "下载器不可用")
                 return
 
-            # 拉一次标签内全部种子（任意状态）：用于「自动恢复暂停」+「清理无进度」
-            try:
-                all_tagged, _tag_err = downloader.get_torrents(tags=[task.brush_tag])
-            except Exception as _tag_exc:
-                all_tagged, _tag_err = [], str(_tag_exc)
-
-            # 自动恢复被暂停的已完成种子（暂停 → tracker 不计做种 → 0 产出）
-            if getattr(task, "auto_resume_paused", True) and all_tagged:
-                try:
-                    self._resume_paused_managed(task, downloader, list(all_tagged))
-                except Exception as _resume_err:
-                    self._log(f"魔力管家 [{task.name}] 自动恢复暂停种子异常: {_resume_err}", "warning")
-
-            # 每次运行检测一次：再清掉「没进度」的种子（进度为 0 且停滞/出错，挂了够久）
-            if all_tagged:
-                try:
-                    self._cleanup_no_progress(
-                        task,
-                        downloader,
-                        list(all_tagged),
-                        self._store.get_protected_torrents(task.id) if self._store else set(),
-                    )
-                except Exception as _cleanup_err:
-                    self._log(f"魔力管家 [{task.name}] 清理无进度种子异常: {_cleanup_err}", "warning")
-
-            seeding_torrents, error = downloader.get_seeding_torrents(tag=task.brush_tag)
-            if error or not seeding_torrents:
-                self._log(f"做种列表为空或获取失败: {error}", "warning")
-                return
-
-            task_torrents = [t for t in seeding_torrents if task.brush_tag in t.tags]
-            if not task_torrents:
-                self._log(f"任务 [{task.name}] 没有管理的种子", "info")
-                return
-
-            torrent_bonus_list = self._convert_to_bonus_list(task_torrents, self._build_formula_params(task), self._task_pub_dates(task), getattr(task, "ti_source", "publish"), self._site_ni_map(task.site_id, task_torrents), self._site_official_titles(task.site_id))
-            protected_hashes = self._store.get_protected_torrents(task.id)
-            policy = self._build_magic_policy(task, torrent_bonus_list)
-
-            result = decide_deletions(
-                seeding_torrents=torrent_bonus_list,
-                policy=policy,
-                protected_hashes=protected_hashes,
+            r = self._cleanup_round(task, downloader)
+            self._store.record_run_success(
+                task.id,
+                added=0,
+                deleted=int(r.get("deleted", 0) or 0),
+                kept=int(r.get("kept", 0) or 0),
             )
+            self._invalidate_summary()
 
-            deleted_count = 0
-            if result.to_delete:
-                delete_hashes = [d.torrent.hash for d in result.to_delete]
-                success_count, error = downloader.delete_torrents(
-                    hashes=delete_hashes,
-                    delete_file=task.delete_files,
+        except Exception as e:
+            self._log(f"魔力管家 [{task.name}] 执行失败: {e}", "error")
+            self._store.record_run_error(task.id, str(e))
+
+    def _cleanup_round(self, task: MagicFlowTaskConfig, downloader: DownloaderAdapter) -> Dict[str, Any]:
+        """清理一轮：自动恢复暂停做种 + 清理无进度种子 + 删除低效种子。
+
+        抽出供两处复用：
+          - ``_brush_impl``：放在**入口检查之前**（池满时先清理腾空间，再决定抓取）；
+          - ``_run_check_impl``：独立的 check 任务。
+
+        返回计数 {resumed, no_progress, low_eff, deleted, kept, total_before, total_after}。
+        """
+        out: Dict[str, Any] = {
+            "resumed": 0, "no_progress": 0, "low_eff": 0, "deleted": 0,
+            "kept": 0, "total_before": 0.0, "total_after": 0.0,
+        }
+        if not downloader or not downloader.is_available:
+            return out
+        protected = self._store.get_protected_torrents(task.id) if self._store else set()
+
+        # 拉一次标签内全部种子（任意状态）：用于「自动恢复暂停」+「清理无进度」
+        try:
+            all_tagged, _tag_err = downloader.get_torrents(tags=[task.brush_tag])
+        except Exception as _tag_exc:
+            all_tagged, _tag_err = [], str(_tag_exc)
+
+        # ① 自动恢复被暂停的已完成种子（暂停 → tracker 不计做种 → 0 产出）
+        if getattr(task, "auto_resume_paused", True) and all_tagged:
+            try:
+                out["resumed"] = self._resume_paused_managed(task, downloader, list(all_tagged))
+            except Exception as _resume_err:
+                self._log(f"魔力管家 [{task.name}] 自动恢复暂停种子异常: {_resume_err}", "warning")
+
+        # ② 清理「没进度」的种子（进度为 0 且停滞/出错/暂停，挂了够久）
+        if all_tagged:
+            try:
+                np_deleted, _np_removed = self._cleanup_no_progress(
+                    task, downloader, list(all_tagged), protected
                 )
-                deleted_count = success_count
+                out["no_progress"] = np_deleted
+            except Exception as _cleanup_err:
+                self._log(f"魔力管家 [{task.name}] 清理无进度种子异常: {_cleanup_err}", "warning")
+
+        # ③ 删低效种子（零魔 / 做种人数过多 / 低于门槛 / 超保种上限）
+        try:
+            seeding_torrents, error = downloader.get_seeding_torrents(tag=task.brush_tag)
+        except Exception as _seed_exc:
+            seeding_torrents, error = [], str(_seed_exc)
+        if error or not seeding_torrents:
+            self._log(f"做种列表为空或获取失败: {error}", "warning")
+            return out
+
+        task_torrents = [t for t in seeding_torrents if task.brush_tag in t.tags]
+        if not task_torrents:
+            self._log(f"任务 [{task.name}] 没有管理的种子", "info")
+            return out
+
+        torrent_bonus_list = self._convert_to_bonus_list(
+            task_torrents,
+            self._build_formula_params(task),
+            self._task_pub_dates(task),
+            getattr(task, "ti_source", "publish"),
+            self._site_ni_map(task.site_id, task_torrents),
+            self._site_official_titles(task.site_id),
+        )
+        policy = self._build_magic_policy(task, torrent_bonus_list)
+        result = decide_deletions(
+            seeding_torrents=torrent_bonus_list,
+            policy=policy,
+            protected_hashes=protected,
+        )
+
+        deleted_count = 0
+        if result.to_delete:
+            delete_hashes = [d.torrent.hash for d in result.to_delete]
+            success_count, error = downloader.delete_torrents(
+                hashes=delete_hashes,
+                delete_file=task.delete_files,
+            )
+            deleted_count = success_count
+            if self._store:
                 operation_items = [
                     OperationItem(
                         hash=d.torrent.hash,
@@ -1380,24 +1476,18 @@ class MagicFlow(_PluginBase):
                     items=operation_items,
                 )
 
-            kept_count = len(result.to_keep)
-            self._store.record_run_success(
-                task.id,
-                added=0,
-                deleted=deleted_count,
-                kept=kept_count,
-            )
-            self._invalidate_summary()
-
-            self._log(
-                f"魔力管家 [{task.name}] 完成："
-                f"删除 {deleted_count} 个，保留 {kept_count} 个，"
-                f"魔力产出 {result.total_bonus_before:.2f} -> {result.total_bonus_after:.2f}/h"
-            )
-
-        except Exception as e:
-            self._log(f"魔力管家 [{task.name}] 执行失败: {e}", "error")
-            self._store.record_run_error(task.id, str(e))
+        out["low_eff"] = deleted_count
+        out["deleted"] = int(out["no_progress"]) + deleted_count
+        out["kept"] = len(result.to_keep)
+        out["total_before"] = result.total_bonus_before
+        out["total_after"] = result.total_bonus_after
+        self._log(
+            f"魔力管家 [{task.name}] 完成："
+            f"恢复 {out['resumed']} / 无进度 {out['no_progress']} / 低效 {deleted_count}；"
+            f"保留 {out['kept']} 个，"
+            f"魔力产出 {result.total_bonus_before:.2f} -> {result.total_bonus_after:.2f}/h"
+        )
+        return out
 
     def _pubdate_ts(self, pubdate: Any) -> float:
         """把候选的发布时间转为 unix 秒（与候选排序同一套口径）。"""
@@ -1856,19 +1946,24 @@ class MagicFlow(_PluginBase):
             if avg_size > 0:
                 max_keep = max(int(task.disk_size_gb / avg_size), 1)
 
-        # 站点上限感知（很多站点有上限）：
-        #   - 站点对「做种数」有计入上限（超过后固定奖励不再增长）；
-        #   - 总时魔有天花板（B0）。
-        # 用户未显式设 max_keep 时，把「站点做种数上限」作为附加约束（与体积上限取小），
-        # 避免在已接近站点上限时继续盲目堆种、白占硬盘。
+        # 站点上限感知（很多站点有上限）：站点对「做种数」有计入上限（超过后固定奖励
+        # 不再增长，纯白占硬盘）。把它作为**硬天花板**：无论用户是否显式设置保种上限，
+        # 保种数都不得超过站点做种数计入上限（留空时直接取该上限）。对 Master 口径：
+        # 「不展示，但必须要有这个限制」。
         params = None
         try:
             params = self._build_formula_params(task)
         except Exception:
             params = None
         cap_n = int(getattr(params, "seeding_count_cap", 0) or 0)
-        if task.max_keep_torrents is None and cap_n > 0:
-            max_keep = min(max_keep, cap_n) if max_keep else cap_n
+        if cap_n > 0:
+            if max_keep is None or max_keep > cap_n:
+                if max_keep not in (None, cap_n):
+                    self._log(
+                        f"任务 [{task.name}] 保种上限受站点限制：{max_keep} → {cap_n}"
+                        f"（{getattr(task, 'site_domain', '') or task.site_id} 做种数计入上限）"
+                    )
+                max_keep = cap_n
 
         return MagicPolicy(
             min_bonus_per_hour=threshold,
@@ -1893,9 +1988,12 @@ class MagicFlow(_PluginBase):
         """
         判断种子是否「没进度」：
           - 下载进度为 0（未下载出任何数据）
-          - 处于停滞/出错状态（stalledDL / metaDL / error / missingFiles）
+          - 处于停滞/出错/暂停状态（stalledDL / metaDL / error / missingFiles / pausedDL / pausedUP）
           - 已加入下载器超过 no_progress_minutes 分钟
         三者同时满足才判定为可清理，避免误删刚添加/正在下载的种子。
+
+        ⚠️ 只删「进度=0」的：**在涨的慢种绝不删**（慢 ≠ 差，魔力是长期费率，
+        下完就一直产），只有下不动的（0% 且无进度）才占着硬盘白吃饭。
         """
         try:
             state = str(getattr(torrent, "state", "") or "").strip().lower()
@@ -1906,7 +2004,7 @@ class MagicFlow(_PluginBase):
             return False
         if progress > 0.0001 or downloaded > 0:
             return False
-        if state not in QB_DEAD_STATES:
+        if state not in (QB_DEAD_STATES | QB_PAUSED_STATES):
             return False
         min_age = max(int(task.no_progress_minutes or 0), 1) * 60
         if added_on <= 0 or (now - added_on) < min_age:
