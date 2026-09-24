@@ -105,6 +105,9 @@ class TaskState:
     # 「同站纳管」纳入的种子 hash（本机早已存在的同站种子，非本插件下载）。
     # 这些视为用户自有资源（可能是自己下载的影视资源，而非刷流用），默认保护、不参与删种。
     adopted_hashes: Set[str] = field(default_factory=set)
+    # 用户手动「暂停做种」的种子 hash（小写）。这些种子不再被自动恢复（auto_resume_paused）
+    # 重新拉起，直到用户在界面上点「恢复做种」或在下载器里手动启动。
+    manual_paused: Set[str] = field(default_factory=set)
     enabled: bool = True
     revision: int = 0  # 配置版本号，用于 optimistic locking
     # 运行阶段（供前端「运行诊断」流程链转圈用）
@@ -137,6 +140,7 @@ class TaskState:
             "pub_dates": dict(self.pub_dates),
             "pub_tz": self.pub_tz,
             "adopted_hashes": list(self.adopted_hashes),
+            "manual_paused": list(self.manual_paused),
             "enabled": self.enabled,
             "revision": self.revision,
             "last_phase": self.last_phase,
@@ -170,6 +174,7 @@ class TaskState:
             pub_dates={str(k).lower(): float(v) for k, v in (d.get("pub_dates") or {}).items() if v},
             pub_tz=float(d.get("pub_tz", 0.0) or 0.0),
             adopted_hashes=set(d.get("adopted_hashes", []) or []),
+            manual_paused=set(d.get("manual_paused", []) or []),
             enabled=d.get("enabled", True),
             revision=d.get("revision", 0),
             last_phase=d.get("last_phase", ""),
@@ -729,6 +734,97 @@ class MagicFlowStore:
         self.task_states.save(state)
         return True
 
+    def forget_torrents(self, task_id: str, hashes: Any) -> int:
+        """种子已从下载器删除后，清理其「保护 / 同站纳管」记录。
+
+        否则陈旧 hash 会一直留在集合里，导致：
+          * 概览「受保护」计数虚高（与实际托管数对不上）；
+          * 同一资源重新挂上时不再被纳管/保护（已删记录占位）。
+
+        Args:
+            task_id: 任务 ID
+            hashes: hash 集合 / 列表
+
+        Returns:
+            实际清理的条目数（保护 + 纳管去重后）。
+        """
+        state = self.task_states.get(task_id)
+        if not state:
+            return 0
+        keys = {
+            (h or "").strip().lower()
+            for h in (hashes or [])
+            if (h or "").strip()
+        }
+        if not keys:
+            return 0
+        before = len(state.protected_torrents) + len(getattr(state, "adopted_hashes", set()) or set())
+        state.protected_torrents = {
+            h for h in state.protected_torrents
+            if (h or "").strip().lower() not in keys
+        }
+        adopted = getattr(state, "adopted_hashes", None)
+        if adopted:
+            state.adopted_hashes = {
+                h for h in adopted
+                if (h or "").strip().lower() not in keys
+            }
+        mp = getattr(state, "manual_paused", None)
+        if mp:
+            state.manual_paused = {
+                h for h in mp
+                if (h or "").strip().lower() not in keys
+            }
+        after = len(state.protected_torrents) + len(getattr(state, "adopted_hashes", set()) or set())
+        if before != after:
+            self.task_states.save(state)
+        return before - after
+
+    def reconcile_protected(self, task_id: str, live_hashes: Any) -> int:
+        """把「保护 / 同站纳管」集合与下载器中真实存在的种子对齐。
+
+        下载器里已经没有的种子（被手动删除 / 早期版本误删 / 换客户端）会留下陈旧 hash，
+        后果：概览「受保护」计数虚高，且同一资源重新挂上时不会再次被纳管保护。
+
+        Args:
+            task_id: 任务 ID
+            live_hashes: 下载器当前所有种子的 hash 集合
+
+        Returns:
+            清理掉的陈旧条目数。
+        """
+        state = self.task_states.get(task_id)
+        if not state:
+            return 0
+        live = {
+            (h or "").strip().lower()
+            for h in (live_hashes or [])
+            if (h or "").strip()
+        }
+        if not live:
+            return 0
+        before = len(state.protected_torrents) + len(getattr(state, "adopted_hashes", set()) or set())
+        state.protected_torrents = {
+            h for h in state.protected_torrents
+            if (h or "").strip().lower() in live
+        }
+        adopted = getattr(state, "adopted_hashes", None)
+        if adopted:
+            state.adopted_hashes = {
+                h for h in adopted
+                if (h or "").strip().lower() in live
+            }
+        mp = getattr(state, "manual_paused", None)
+        if mp:
+            state.manual_paused = {
+                h for h in mp
+                if (h or "").strip().lower() in live
+            }
+        after = len(state.protected_torrents) + len(getattr(state, "adopted_hashes", set()) or set())
+        if before != after:
+            self.task_states.save(state)
+        return before - after
+
     def get_protected_torrents(self, task_id: str) -> Set[str]:
         """
         获取受保护种子集合。
@@ -743,6 +839,43 @@ class MagicFlowStore:
         if not state:
             return set()
         return state.protected_torrents.copy()
+
+    # -------------------- 手动暂停 / 恢复 --------------------
+
+    def get_manual_paused(self, task_id: str) -> Set[str]:
+        """获取用户手动暂停的种子 hash 集合（小写）。"""
+        state = self.task_states.get(task_id)
+        if not state:
+            return set()
+        return set(getattr(state, "manual_paused", set()) or set())
+
+    def mark_manual_paused(self, task_id: str, hashes: Any) -> int:
+        """记录用户手动暂停的种子（不再自动恢复）。"""
+        state = self.task_states.get(task_id)
+        if not state:
+            state = self.task_states.create(task_id)
+        keys = {(h or "").strip().lower() for h in (hashes or []) if (h or "").strip()}
+        if not keys:
+            return 0
+        before = len(state.manual_paused)
+        state.manual_paused |= keys
+        if len(state.manual_paused) != before:
+            self.task_states.save(state)
+        return len(state.manual_paused) - before
+
+    def clear_manual_paused(self, task_id: str, hashes: Any) -> int:
+        """取消「手动暂停」标记（用户点恢复，或种子已不在下载器里）。"""
+        state = self.task_states.get(task_id)
+        if not state:
+            return 0
+        keys = {(h or "").strip().lower() for h in (hashes or []) if (h or "").strip()}
+        if not keys:
+            return 0
+        before = len(state.manual_paused)
+        state.manual_paused = {h for h in state.manual_paused if (h or "").strip().lower() not in keys}
+        if len(state.manual_paused) != before:
+            self.task_states.save(state)
+        return before - len(state.manual_paused)
 
     # -------------------- 同站纳管 --------------------
 
