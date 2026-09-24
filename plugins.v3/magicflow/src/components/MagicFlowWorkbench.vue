@@ -54,6 +54,15 @@ const candidateLoadedFor = ref('')
 const editorOpen = ref(false)
 const editorTask = ref({})
 const deleteDialog = ref(false)
+const torrentDeleteDialog = ref(false)
+const pendingTorrentDelete = ref(null)
+// 批量操作：选中行（VDataTable show-select 与手机卡片共用）
+const selectedRows = ref([])
+const batchBusy = ref(false)
+const batchDeleteDialog = ref(false)
+const selectedHashes = computed(() =>
+  (selectedRows.value || []).map(row => row?.hash).filter(Boolean),
+)
 const settingsMenu = ref(false)
 const settingsDraft = ref({ enabled: false, show_sidebar_nav: true })
 let refreshTimer
@@ -156,6 +165,7 @@ const flowPhaseText = computed(() => {
 })
 
 const torrentHeaders = [
+  { title: '', key: 'select', sortable: false, width: 44 },
   { title: '种子', key: 'title', sortable: false },
   { title: '状态', key: 'status', sortable: false, width: 120 },
   { title: '大小', key: 'size_gb', sortable: false, width: 96 },
@@ -163,6 +173,11 @@ const torrentHeaders = [
   { title: '分享率', key: 'ratio', sortable: false, width: 84 },
   { title: '操作', key: 'actions', sortable: false, width: 120 },
 ]
+
+// 全选（当前筛选结果）
+const allFilteredSelected = computed(
+  () => sortedTorrents.value.length > 0 && selectedHashes.value.length === sortedTorrents.value.length,
+)
 
 function notify(message, color = 'success') {
   const method = ['error', 'info', 'warning', 'success'].includes(color) ? color : 'success'
@@ -173,7 +188,7 @@ function notify(message, color = 'success') {
   }
 }
 
-const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reuse: '存量复用' }
+const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reuse: '存量复用', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验' }
 const STATE_TEXT = { submitting: '提交中', accepted: '已受理', completed: '已完成', failed: '失败' }
 const KIND_ICON = {
   run: 'mdi-play-circle-outline',
@@ -182,6 +197,9 @@ const KIND_ICON = {
   reuse: 'mdi-content-duplicate',
   protection: 'mdi-shield-check-outline',
   unprotection: 'mdi-shield-off-outline',
+  pause: 'mdi-pause-circle-outline',
+  resume: 'mdi-play-circle-outline',
+  recheck: 'mdi-sync',
 }
 
 function operationKindText(kind) {
@@ -238,12 +256,41 @@ function stateColor(state) {
   return 'grey'
 }
 
-// 托管种子状态文本：做种 / 下载 X% / 停滞（参考 BrushFlow）
+// 托管种子状态文本：做种 / 下载 X% / 暂停 / 整理中（参考 BrushFlow）
+// 注意：progress=100 不等于「做种中」——已暂停/停止、整理中、校验中的种子要显示真实状态，
+// 否则会出现「状态列写作种中、筛选却归到已暂停」的口径不一致。
+const TORRENT_TRANSIENT_STATES = {
+  moving: '整理中',
+  allocating: '分配空间',
+  checkingup: '校验中',
+  checkingdl: '校验中',
+  checkingresumedata: '校验中',
+  forcedmetadl: '获取元数据',
+}
+const TORRENT_PAUSED_STATES = ['pausedup', 'pauseddl', 'stoppedup', 'stoppeddl']
+
 function torrentStateText(item) {
+  const key = String(item?.state || '').toLowerCase()
+  if (TORRENT_TRANSIENT_STATES[key]) return TORRENT_TRANSIENT_STATES[key]
+  if (TORRENT_PAUSED_STATES.includes(key)) return stateLabel(item?.state) || '已暂停'
   const pct = torrentProgressPct(item)
   if (pct >= 100) return '做种中'
   if (pct <= 0) return stateLabel(item?.state) || '等待中'
   return `下载 ${pct}%`
+}
+
+// 暂停 / 恢复按钮的口径：下载中的种子是「暂停下载 / 继续下载」，
+// 已完成的才是「暂停做种 / 恢复做种」（避免下载中的种子出现「恢复做种」这种别扭文案）。
+function torrentIsPaused(item) {
+  return TORRENT_PAUSED_STATES.includes(String(item?.state || '').toLowerCase())
+}
+
+function torrentPauseLabel(item) {
+  return torrentProgressPct(item) >= 100 ? '暂停做种' : '暂停下载'
+}
+
+function torrentResumeLabel(item) {
+  return torrentProgressPct(item) >= 100 ? '恢复做种' : '继续下载'
 }
 
 // 下载进度百分比（0~100），供进度条使用
@@ -254,12 +301,14 @@ function torrentProgressPct(item) {
 }
 
 // 托管种子状态分组（用于状态筛选）
+// 覆盖 qBittorrent 全部常见状态，含 moving/allocating/checking*，避免出现
+// 「分组里没这一档 → 只选中某个状态就再也看不到这些种子、各档数量之和 ≠ 总数」。
 function torrentStatusGroup(item) {
   const key = String(item?.state || '').toLowerCase()
-  if (['uploading', 'forcedup', 'stalledup', 'queuedup'].includes(key)) return 'seeding'
-  if (['downloading', 'forceddl', 'queueddl', 'metadl', 'checkingdl'].includes(key)) return 'downloading'
+  if (['uploading', 'forcedup', 'stalledup', 'queuedup', 'checkingup'].includes(key)) return 'seeding'
+  if (['downloading', 'forceddl', 'queueddl', 'metadl', 'forcedmetadl', 'checkingdl', 'allocating'].includes(key)) return 'downloading'
   if (key === 'stalleddl') return 'stalled'
-  if (['pausedup', 'pauseddl', 'stoppedup', 'stoppeddl'].includes(key)) return 'paused'
+  if (TORRENT_PAUSED_STATES.includes(key)) return 'paused'
   if (['error', 'missingfiles'].includes(key)) return 'error'
   return 'other'
 }
@@ -268,7 +317,7 @@ function torrentStatusGroup(item) {
 const torrentStatusOptions = computed(() => {
   const items = bonusData.value.torrents || []
   const count = group => items.filter(item => torrentStatusGroup(item) === group).length
-  return [
+  const opts = [
     { title: `全部状态（${items.length}）`, value: 'all' },
     { title: `做种中（${count('seeding')}）`, value: 'seeding' },
     { title: `下载中（${count('downloading')}）`, value: 'downloading' },
@@ -276,6 +325,9 @@ const torrentStatusOptions = computed(() => {
     { title: `已暂停 / 停止（${count('paused')}）`, value: 'paused' },
     { title: `出错（${count('error')}）`, value: 'error' },
   ]
+  const other = count('other')
+  if (other > 0) opts.push({ title: `其它（${other}）`, value: 'other' })
+  return opts
 })
 
 // 加载插件总览与任务列表。
@@ -474,15 +526,34 @@ async function confirmDeleteTask() {
   }
 }
 
-// 对托管种子执行保留 / 取消保留 / 删除。
+// 对托管种子执行 保留 / 取消保留 / 暂停 / 恢复 / 强制校验 / 删除。
+const TORRENT_ACTION_LABEL = {
+  protect: '已保留种子',
+  unprotect: '已取消保留',
+  pause: '已暂停种子（不会被自动恢复）',
+  resume: '已恢复做种',
+  recheck: '已开始重新校验',
+  delete: '已删除种子',
+}
+
+// 提示文案随种子状态变化：下载中的是「暂停 / 继续下载」，已完成的才是「暂停 / 恢复做种」，
+// 避免下载中的种子弹出「已恢复做种」这种说不通的提示。
+function torrentActionMessage(torrent, action) {
+  if (action === 'pause' || action === 'resume') {
+    const seeding = torrentProgressPct(torrent) >= 100
+    if (action === 'pause') return seeding ? '已暂停做种（不会被自动恢复）' : '已暂停下载（不会被自动恢复）'
+    return seeding ? '已恢复做种' : '已继续下载'
+  }
+  return TORRENT_ACTION_LABEL[action] || '操作已完成'
+}
+
 async function torrentAction(torrent, action) {
   saving.value = true
   try {
-    const verb = action === 'delete' ? 'delete' : action
     unwrapResponse(
-      await props.api.post(`${pluginBase.value}/tasks/${selectedTask.value.id}/torrents/${torrent.hash}/${verb}`, {}),
+      await props.api.post(`${pluginBase.value}/tasks/${selectedTask.value.id}/torrents/${torrent.hash}/${action}`, {}),
     )
-    notify(action === 'protect' ? '已保留种子' : action === 'unprotect' ? '已取消保留' : '已删除种子')
+    notify(torrentActionMessage(torrent, action))
     await Promise.all([loadBonus(selectedTask.value.id), loadDetail(selectedTask.value.id)])
     emit('action')
   } catch (err) {
@@ -490,6 +561,95 @@ async function torrentAction(torrent, action) {
   } finally {
     saving.value = false
   }
+}
+
+// 删除种子需二次确认（避免手滑，删种不可逆）
+function requestTorrentDelete(torrent) {
+  if (!torrent) return
+  pendingTorrentDelete.value = torrent
+  torrentDeleteDialog.value = true
+}
+
+async function confirmTorrentDelete() {
+  const target = pendingTorrentDelete.value
+  if (!target) return
+  await torrentAction(target, 'delete')
+  torrentDeleteDialog.value = false
+  // 若刚删的是详情弹窗里那颗，一并关掉
+  if ((activeTorrent.value?.hash || '') && (activeTorrent.value?.hash || '').toLowerCase() === (target.hash || '').toLowerCase()) {
+    torrentDialog.value = false
+  }
+  pendingTorrentDelete.value = null
+}
+
+// ---------------- 批量操作 ----------------
+const BATCH_LABEL = {
+  protect: '批量保留',
+  unprotect: '批量取消保留',
+  pause: '批量暂停',
+  resume: '批量恢复',
+  recheck: '批量校验',
+  delete: '批量删除',
+}
+
+async function batchAction(action) {
+  const hashes = selectedHashes.value
+  if (!hashes.length || !selectedTask.value) return
+  batchBusy.value = true
+  try {
+    const res = unwrapResponse(
+      await props.api.post(`${pluginBase.value}/tasks/${selectedTask.value.id}/torrents/batch`, { action, hashes }),
+    )
+    const done = Number(res?.success_count ?? hashes.length)
+    notify(`${BATCH_LABEL[action] || '批量操作'}完成：${done} 个`)
+    selectedRows.value = []
+    batchDeleteDialog.value = false
+    await Promise.all([loadBonus(selectedTask.value.id), loadDetail(selectedTask.value.id)])
+    emit('action')
+  } catch (err) {
+    error.value = err?.message || String(err)
+  } finally {
+    batchBusy.value = false
+  }
+}
+
+function selectAllFiltered() {
+  selectedRows.value = [...sortedTorrents.value]
+}
+
+function clearSelection() {
+  selectedRows.value = []
+}
+
+// 复制 infohash
+async function copyTorrentHash(hash) {
+  const text = String(hash || '')
+  if (!text) return
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const el = document.createElement('textarea')
+      el.value = text
+      document.body.appendChild(el)
+      el.select()
+      document.execCommand('copy')
+      document.body.removeChild(el)
+    }
+    notify('infohash 已复制')
+  } catch (err) {
+    error.value = `复制失败：${err?.message || err}`
+  }
+}
+
+// 手机卡片上的勾选（对象引用与表格行一致）
+function toggleTorrentSelection(item) {
+  if (!item) return
+  const key = (item.hash || '').toLowerCase()
+  const exists = (selectedRows.value || []).some(row => (row?.hash || '').toLowerCase() === key)
+  selectedRows.value = exists
+    ? selectedRows.value.filter(row => (row?.hash || '').toLowerCase() !== key)
+    : [...selectedRows.value, item]
 }
 
 // 打开发种详情弹窗
@@ -502,7 +662,7 @@ function openTorrentDetail(item) {
 // 行点击：点到了操作按钮则不弹详情
 function onTorrentRowClick(event, { item }) {
   const target = event?.target
-  if (target && typeof target.closest === 'function' && target.closest('.v-btn, button, a')) return
+  if (target && typeof target.closest === 'function' && target.closest('.v-btn, button, a, input, label, .v-selection-control')) return
   openTorrentDetail(item)
 }
 
@@ -1065,6 +1225,20 @@ onUnmounted(() => {
                     </VBtnToggle>
                   </div>
                 </header>
+
+                <div v-if="selectedHashes.length" class="magicflow-bulk-bar">
+                  <span class="magicflow-bulk-bar__count">已选 {{ selectedHashes.length }} 个</span>
+                  <VBtn size="small" variant="tonal" :disabled="batchBusy" @click="batchAction('protect')">保留</VBtn>
+                  <VBtn size="small" variant="tonal" :disabled="batchBusy" @click="batchAction('unprotect')">取消保留</VBtn>
+                  <VBtn size="small" variant="tonal" :disabled="batchBusy" @click="batchAction('pause')">暂停</VBtn>
+                  <VBtn size="small" variant="tonal" :disabled="batchBusy" @click="batchAction('resume')">恢复</VBtn>
+                  <VBtn size="small" variant="tonal" :disabled="batchBusy" @click="batchAction('recheck')">校验</VBtn>
+                  <VBtn size="small" variant="tonal" color="error" :disabled="batchBusy" @click="batchDeleteDialog = true">删除</VBtn>
+                  <VSpacer />
+                  <VBtn size="small" variant="text" :disabled="batchBusy" @click="selectAllFiltered">全选筛选（{{ sortedTorrents.length }}）</VBtn>
+                  <VBtn size="small" variant="text" :disabled="batchBusy" @click="clearSelection">取消选择</VBtn>
+                </div>
+
                 <VDataTable
                   class="magicflow-torrent-table torrent-table-clickable"
                   :headers="torrentHeaders"
@@ -1074,6 +1248,26 @@ onUnmounted(() => {
                   density="comfortable"
                   @click:row="onTorrentRowClick"
                 >
+                  <template #header.select>
+                    <VCheckbox
+                      :model-value="allFilteredSelected"
+                      :indeterminate="selectedHashes.length > 0 && !allFilteredSelected"
+                      density="compact"
+                      hide-details
+                      aria-label="全选"
+                      @update:model-value="value => (value ? selectAllFiltered() : clearSelection())"
+                    />
+                  </template>
+                  <template #item.select="{ item }">
+                    <VCheckbox
+                      :model-value="selectedHashes.includes(item.hash)"
+                      density="compact"
+                      hide-details
+                      :aria-label="`选择 ${item.title || ''}`"
+                      @click.stop
+                      @update:model-value="toggleTorrentSelection(item)"
+                    />
+                  </template>
                   <template #item.title="{ item }">
                     <div class="torrent-title-cell">
                       <strong>{{ item.title || '未知种子' }}</strong>
@@ -1100,8 +1294,31 @@ onUnmounted(() => {
                       color="error"
                       icon="mdi-delete-outline"
                       aria-label="删除"
-                      @click="torrentAction(item, 'delete')"
+                      @click="requestTorrentDelete(item)"
                     />
+                    <VMenu location="bottom end">
+                      <template #activator="{ props: menuProps }">
+                        <VBtn v-bind="menuProps" size="small" variant="text" icon="mdi-dots-vertical" aria-label="更多操作" />
+                      </template>
+                      <VList density="compact" min-width="168">
+                        <VListItem
+                          v-if="torrentIsPaused(item)"
+                          prepend-icon="mdi-play-circle-outline"
+                          :title="torrentResumeLabel(item)"
+                          @click="torrentAction(item, 'resume')"
+                        />
+                        <VListItem
+                          v-else
+                          prepend-icon="mdi-pause-circle-outline"
+                          :title="torrentPauseLabel(item)"
+                          subtitle="不会被自动恢复"
+                          @click="torrentAction(item, 'pause')"
+                        />
+                        <VListItem prepend-icon="mdi-sync" title="强制校验" @click="torrentAction(item, 'recheck')" />
+                        <VDivider class="my-1" />
+                        <VListItem prepend-icon="mdi-delete-outline" title="删除种子" base-color="error" @click="requestTorrentDelete(item)" />
+                      </VList>
+                    </VMenu>
                   </template>
                   <template #no-data>
                     <div class="magicflow-table-empty">当前筛选下没有托管种子</div>
@@ -1115,6 +1332,14 @@ onUnmounted(() => {
                     @click="openTorrentDetail(item)"
                   >
                     <div class="magicflow-mobile-torrent__head">
+                      <VCheckbox
+                        :model-value="selectedHashes.includes(item.hash)"
+                        density="compact"
+                        hide-details
+                        class="magicflow-mobile-torrent__check"
+                        @click.stop
+                        @update:model-value="toggleTorrentSelection(item)"
+                      />
                       <div class="magicflow-mobile-torrent__title">
                         <strong>{{ item.title || '未知种子' }}</strong>
                         <span>{{ selectedTask.site_name }}</span>
@@ -1139,7 +1364,16 @@ onUnmounted(() => {
                       <VBtn size="small" variant="tonal" :color="item.is_protected ? 'grey' : 'primary'" :prepend-icon="item.is_protected ? 'mdi-shield-off-outline' : 'mdi-shield-check-outline'" @click.stop="torrentAction(item, item.is_protected ? 'unprotect' : 'protect')">
                         {{ item.is_protected ? '取消保留' : '保留' }}
                       </VBtn>
-                      <VBtn size="small" variant="tonal" color="error" prepend-icon="mdi-delete-outline" @click.stop="torrentAction(item, 'delete')">删除</VBtn>
+                      <VBtn size="small" variant="tonal" color="error" prepend-icon="mdi-delete-outline" @click.stop="requestTorrentDelete(item)">删除</VBtn>
+                      <VBtn
+                        v-if="torrentIsPaused(item)"
+                        size="small"
+                        variant="tonal"
+                        prepend-icon="mdi-play-circle-outline"
+                        @click.stop="torrentAction(item, 'resume')"
+                      >{{ torrentProgressPct(item) >= 100 ? '恢复' : '继续' }}</VBtn>
+                      <VBtn v-else size="small" variant="tonal" prepend-icon="mdi-pause-circle-outline" @click.stop="torrentAction(item, 'pause')">暂停</VBtn>
+                      <VBtn size="small" variant="tonal" prepend-icon="mdi-sync" @click.stop="torrentAction(item, 'recheck')">校验</VBtn>
                     </div>
                   </article>
                   <div v-if="!sortedTorrents.length" class="magicflow-table-empty">当前筛选下没有托管种子</div>
@@ -1236,31 +1470,99 @@ onUnmounted(() => {
       @save="saveTask"
     />
 
-    <VDialog v-model="torrentDialog" max-width="40rem">
-      <VCard v-if="activeTorrent" class="magicflow-dialog">
-        <VCardTitle class="text-wrap">{{ activeTorrent.title || '种子详情' }}</VCardTitle>
-        <VCardText>
-          <dl class="magicflow-facts magicflow-torrent-detail">
-            <div><dt>状态</dt><dd><VChip size="small" :color="stateColor(activeTorrent.state)" variant="tonal">{{ stateLabel(activeTorrent.state) }}</VChip></dd></div>
-            <div><dt>下载进度</dt><dd>{{ (Number(activeTorrent.progress || 0) * 100).toFixed(1) }}%</dd></div>
-            <div><dt>大小</dt><dd>{{ Number(activeTorrent.size_gb || 0).toFixed(2) }} GB</dd></div>
-            <div><dt>上传量</dt><dd>{{ formatBytes(activeTorrent.uploaded) }}</dd></div>
-            <div><dt>分享率</dt><dd>{{ Number(activeTorrent.ratio || 0).toFixed(2) }}</dd></div>
-            <div><dt>手动保留</dt><dd>{{ activeTorrent.is_protected ? '已保护' : '未保护' }}</dd></div>
-          </dl>
-          <div class="text-caption text-medium-emphasis magicflow-hash-line">infohash：{{ activeTorrent.hash }}</div>
-        </VCardText>
-        <VCardActions>
+    <VDialog v-model="torrentDialog" max-width="34rem">
+      <VCard v-if="activeTorrent" class="magicflow-dialog magicflow-torrent-dialog">
+        <header class="magicflow-torrent-dialog__head">
+          <div class="magicflow-torrent-dialog__tags">
+            <VChip size="small" :color="stateColor(activeTorrent.state)" variant="tonal">{{ stateLabel(activeTorrent.state) }}</VChip>
+            <VChip v-if="activeTorrent.is_protected" size="small" color="primary" variant="tonal" prepend-icon="mdi-shield-check-outline">已保留</VChip>
+            <VChip size="small" variant="tonal">{{ selectedTask.site_name }}</VChip>
+          </div>
+          <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="torrentDialog = false" />
+        </header>
+
+        <div class="magicflow-torrent-dialog__title">{{ activeTorrent.title || '种子详情' }}</div>
+
+        <div class="magicflow-torrent-dialog__progress">
+          <VProgressLinear
+            :model-value="torrentProgressPct(activeTorrent)"
+            :color="stateColor(activeTorrent.state)"
+            height="8"
+            rounded
+          />
+          <span class="magicflow-torrent-dialog__pct">{{ torrentProgressPct(activeTorrent) }}%</span>
+        </div>
+
+        <dl class="magicflow-torrent-dialog__grid">
+          <div><dt>大小</dt><dd>{{ Number(activeTorrent.size_gb || 0).toFixed(2) }} GB</dd></div>
+          <div><dt>上传量</dt><dd>{{ formatBytes(activeTorrent.uploaded) }}</dd></div>
+          <div><dt>分享率</dt><dd>{{ Number(activeTorrent.ratio || 0).toFixed(2) }}</dd></div>
+          <div><dt>当前状态</dt><dd>{{ stateLabel(activeTorrent.state) }}</dd></div>
+        </dl>
+
+        <div class="magicflow-torrent-dialog__hash">
+          <span class="magicflow-torrent-dialog__hash-label">infohash</span>
+          <code>{{ activeTorrent.hash }}</code>
+          <VBtn size="x-small" variant="text" icon="mdi-content-copy" aria-label="复制 infohash" @click="copyTorrentHash(activeTorrent.hash)" />
+        </div>
+
+        <VCardActions class="magicflow-torrent-dialog__actions">
           <VBtn
+            size="small"
             variant="tonal"
             :color="activeTorrent.is_protected ? 'grey' : 'primary'"
             :prepend-icon="activeTorrent.is_protected ? 'mdi-shield-off-outline' : 'mdi-shield-check-outline'"
             :loading="saving"
             @click="detailTorrentAction(activeTorrent.is_protected ? 'unprotect' : 'protect')"
           >{{ activeTorrent.is_protected ? '取消保留' : '保留' }}</VBtn>
-          <VBtn color="error" variant="tonal" prepend-icon="mdi-delete-outline" :loading="saving" @click="detailTorrentAction('delete')">删除种子</VBtn>
+          <VBtn
+            v-if="torrentIsPaused(activeTorrent)"
+            size="small"
+            variant="tonal"
+            prepend-icon="mdi-play-circle-outline"
+            :loading="saving"
+            @click="detailTorrentAction('resume')"
+          >{{ torrentResumeLabel(activeTorrent) }}</VBtn>
+          <VBtn v-else size="small" variant="tonal" prepend-icon="mdi-pause-circle-outline" :loading="saving" @click="detailTorrentAction('pause')">{{ torrentPauseLabel(activeTorrent) }}</VBtn>
+          <VBtn size="small" variant="tonal" prepend-icon="mdi-sync" :loading="saving" @click="detailTorrentAction('recheck')">校验</VBtn>
           <VSpacer />
-          <VBtn variant="text" @click="torrentDialog = false">关闭</VBtn>
+          <VBtn size="small" color="error" variant="tonal" prepend-icon="mdi-delete-outline" :loading="saving" @click="requestTorrentDelete(activeTorrent)">删除</VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
+
+    <VDialog v-model="batchDeleteDialog" max-width="28rem">
+      <VCard class="magicflow-dialog">
+        <VCardTitle>批量删除托管种子</VCardTitle>
+        <VCardText class="text-body-2">
+          确认删除选中的 <b>{{ selectedHashes.length }}</b> 个种子？
+          <br />
+          <span class="text-medium-emphasis">
+            将按任务设置{{ selectedTask.delete_files ? '连同文件' : '保留文件' }}从下载器删除，不可撤销。
+          </span>
+        </VCardText>
+        <VCardActions>
+          <VSpacer />
+          <VBtn variant="text" @click="batchDeleteDialog = false">取消</VBtn>
+          <VBtn color="error" variant="flat" :loading="batchBusy" @click="batchAction('delete')">删除</VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
+
+    <VDialog v-model="torrentDeleteDialog" max-width="28rem">
+      <VCard class="magicflow-dialog">
+        <VCardTitle class="text-wrap">删除托管种子</VCardTitle>
+        <VCardText class="text-body-2">
+          确认删除「{{ pendingTorrentDelete?.title || '该种子' }}」？
+          <br />
+          <span class="text-medium-emphasis">
+            将按任务设置{{ selectedTask.delete_files ? '连同文件' : '保留文件' }}从下载器删除，不可撤销。
+          </span>
+        </VCardText>
+        <VCardActions>
+          <VSpacer />
+          <VBtn variant="text" @click="torrentDeleteDialog = false">取消</VBtn>
+          <VBtn color="error" variant="flat" :loading="saving" @click="confirmTorrentDelete">删除</VBtn>
         </VCardActions>
       </VCard>
     </VDialog>
@@ -1667,6 +1969,141 @@ onUnmounted(() => {
   max-inline-size: 100%;
 }
 
+.magicflow-bulk-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-block: 10px 4px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(139, 123, 240, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(139, 123, 240, 0.28);
+}
+
+.magicflow-bulk-bar__count {
+  font-size: 12px;
+  font-weight: 600;
+  color: #cfc7ff;
+  margin-inline-end: 4px;
+}
+
+.magicflow-mobile-torrent__check {
+  flex: 0 0 auto;
+  margin-inline-end: 2px;
+}
+
+.magicflow-torrent-table th:first-child,
+.magicflow-torrent-table td:first-child {
+  padding-inline: 6px;
+}
+
+/* ---------- 种子详情弹窗 ---------- */
+.magicflow-torrent-dialog {
+  padding: 18px 20px 8px;
+}
+
+.magicflow-torrent-dialog__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.magicflow-torrent-dialog__tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-inline-size: 0;
+}
+
+.magicflow-torrent-dialog__title {
+  margin-block: 10px 0;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.magicflow-torrent-dialog__progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-block: 12px 4px;
+}
+
+.magicflow-torrent-dialog__progress .v-progress-linear {
+  flex: 1 1 auto;
+}
+
+.magicflow-torrent-dialog__pct {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(226, 232, 240, 0.85);
+  min-inline-size: 3.2em;
+  text-align: end;
+}
+
+.magicflow-torrent-dialog__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin-block: 14px 4px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(139, 123, 240, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(139, 123, 240, 0.16);
+}
+
+.magicflow-torrent-dialog__grid > div {
+  min-inline-size: 0;
+}
+
+.magicflow-torrent-dialog__grid dt {
+  font-size: 11px;
+  color: rgba(200, 208, 232, 0.65);
+  margin-block-end: 2px;
+}
+
+.magicflow-torrent-dialog__grid dd {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.magicflow-torrent-dialog__hash {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-block: 12px 0;
+  min-inline-size: 0;
+}
+
+.magicflow-torrent-dialog__hash-label {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: rgba(200, 208, 232, 0.6);
+}
+
+.magicflow-torrent-dialog__hash code {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  color: rgba(210, 216, 240, 0.8);
+}
+
+.magicflow-torrent-dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 14px 0 8px;
+}
+
 .magicflow-torrent-table {
   margin-block-start: 8px;
   background: transparent;
@@ -2028,6 +2465,20 @@ onUnmounted(() => {
   /* 窄屏隐藏顶部「新建任务」，交给移动工具栏的「新建」按钮 */
   .magicflow-page .magicflow-header-create {
     display: none;
+  }
+
+  /* 种子详情弹窗：窄屏收紧留白与网格间距 */
+  .magicflow-torrent-dialog {
+    padding: 16px 14px 4px;
+  }
+
+  .magicflow-torrent-dialog__grid {
+    gap: 8px 10px;
+    padding: 10px 12px;
+  }
+
+  .magicflow-torrent-dialog__actions {
+    gap: 4px;
   }
 
   .magicflow-task-head {
