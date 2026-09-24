@@ -589,16 +589,24 @@ onUnmounted(() => {
   <div class="magicflow-page" :class="{ 'magicflow-page--compact': compact }">
     <header class="magicflow-page__header">
       <div class="magicflow-page__identity">
-        <span class="magicflow-logo"><VIcon icon="mdi-star-four-points-outline" size="20" /></span>
+        <span class="magicflow-logo"><VIcon icon="mdi-magnet" size="20" /></span>
         <div>
-          <h1>
-            魔力管家
-            <span v-if="status.version" class="magicflow-page__version">v{{ status.version }}</span>
-          </h1>
+          <h1>魔力管家</h1>
           <p>PT 做种 · 魔力养护后台</p>
         </div>
       </div>
       <div class="magicflow-page__actions">
+        <template v-if="selectedTask">
+          <span class="magicflow-head-divider" aria-hidden="true" />
+          <div class="magicflow-head-meta">
+            <span class="magicflow-head-meta__k">当前任务</span>
+            <span class="magicflow-head-meta__v">{{ selectedTask.site_name || '—' }} · {{ selectedTask.name }}</span>
+          </div>
+          <div class="magicflow-head-meta">
+            <span class="magicflow-head-meta__k">托管</span>
+            <span class="magicflow-head-meta__v">{{ selectedTask.seeding_count || 0 }}</span>
+          </div>
+        </template>
         <VChip v-if="summary.total_tasks" size="small" variant="tonal">
           {{ summary.enabled_tasks || 0 }} / {{ summary.total_tasks }} 启用
         </VChip>
@@ -2411,6 +2419,40 @@ onUnmounted(() => {
   text-transform: none;
   letter-spacing: 0;
   font-weight: 600;
+}
+
+/* 顶部品牌头：细分隔线 + 当前任务/托管 上下文信息（方案 A） */
+.magicflow-page .magicflow-head-divider {
+  inline-size: 1px;
+  block-size: 26px;
+  flex: 0 0 auto;
+  background: rgba(140, 150, 220, 0.18);
+}
+
+.magicflow-page .magicflow-head-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-inline-size: 0;
+  line-height: 1.2;
+}
+
+.magicflow-page .magicflow-head-meta__k {
+  font-size: 10.5px;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.magicflow-page .magicflow-head-meta__v {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 959px) {
+  .magicflow-page .magicflow-head-divider,
+  .magicflow-page .magicflow-head-meta {
+    display: none;
+  }
 }
 
 /* 任务头「删除」按钮：与其余图标按钮拉开一点距离，降低误触 */
