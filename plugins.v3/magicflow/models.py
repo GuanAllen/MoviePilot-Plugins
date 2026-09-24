@@ -58,6 +58,9 @@ class MagicFlowTaskPayload(BaseModel):
     # 自动恢复：被暂停的已完成种子自动重新做种（暂停 = tracker 不计做种 = 0 魔力）
     auto_resume_paused: bool = Field(True, description="自动恢复被暂停的已完成种子（重新开始做种），保证魔力产出")
 
+    # Ti 口径：publish（默认，自发布时间）| seed_time（qB 做种时长）
+    ti_source: str = Field("publish", description="Ti 口径：publish（发布时长，默认）或 seed_time（做种时长）")
+
     # 已处理去重：站点列表页每次都返回同一批最新种子，记录已处理候选避免重复拉取
     seen_cooldown_hours: float = Field(24.0, ge=0, le=8760, description="同一候选在多少小时内不重复拉取（0=不跳过）")
 

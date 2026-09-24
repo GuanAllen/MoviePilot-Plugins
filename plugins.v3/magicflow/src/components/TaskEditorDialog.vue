@@ -321,6 +321,20 @@ async function saveTask() {
                     inset
                   />
                 </div>
+                <VRow>
+                  <VCol cols="12" md="6">
+                    <VSelect
+                      v-model="localTask.ti_source"
+                      :items="[
+                        { title: '发布时长（站点公式口径，推荐）', value: 'publish' },
+                        { title: '做种时长（qB 统计）', value: 'seed_time' },
+                      ]"
+                      label="Ti 口径（做种时间因子）"
+                      hint="候选排序与做种汇总使用同一口径；取不到发布时间时自动回落做种时长"
+                      persistent-hint
+                    />
+                  </VCol>
+                </VRow>
                 <VRow v-if="localTask.cleanup_no_progress">
                   <VCol cols="12" md="6">
                     <VTextField
