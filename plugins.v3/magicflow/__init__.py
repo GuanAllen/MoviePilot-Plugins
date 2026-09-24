@@ -5,6 +5,7 @@ MagicFlow 魔力管家插件
 与 BrushFlow（优化分享率/容量）目标互斥，必须独立运行。
 """
 
+import bisect
 import re
 import threading
 import time
@@ -79,7 +80,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "1.0.70"
+__version__ = "1.0.72"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -105,6 +106,54 @@ OFFICIAL_PAGES = 2
 # 下载限速：已下沉到 downloader_ops 的「自适应限速闸门」（_dl_gate / _dl_note_flow_control）。
 # 命中流控时间隔指数加大、成功则回落；所有 .torrent 下载（含 SDK 与回落路径）统一走它。
 # 旧的 _torrent_dl_throttle 已废弃（保留常量供参考）。
+
+
+# ============================================================
+# 复用：按「体积接近」预筛本机种子
+# ============================================================
+
+class _SizeIndex:
+    """本机种子按体积索引，支持「邻近体积」查询。
+
+    站点列表页给出的体积是**显示文本**（如 "67.93 GB"），经 `parse_size` 转成
+    「四舍五入到 0.01GB」的近似字节，而下载器里的是**精确字节** → 原来用「精确相等」
+    预筛几乎永远命中不了，导致跨站存量辅种恒为 0。这里改成按容差取邻近体积，
+    真正是否同一资源仍由**文件列表特征码**精确判定（放宽预筛不会误辅种）。
+    """
+
+    __slots__ = ("_items", "_sizes", "_tol")
+
+    def __init__(self, torrents: List[Any], tol: float = 0.05):
+        self._tol = max(float(tol or 0.0), 0.0)
+        items = []
+        for t in torrents or []:
+            try:
+                s = int(getattr(t, "size", 0) or 0)
+            except (TypeError, ValueError):
+                s = 0
+            if s > 0:
+                items.append((s, t))
+        items.sort(key=lambda x: x[0])
+        self._items = items
+        self._sizes = [s for s, _ in items]
+
+    def near(self, size: int) -> List[Any]:
+        """返回本机「体积与 size 相差在容差内」的种子列表（可能为空）。"""
+        try:
+            size = int(size or 0)
+        except (TypeError, ValueError):
+            return []
+        if size <= 0 or not self._sizes:
+            return []
+        tol = self._tol
+        lo = int(size * (1.0 - tol))
+        hi = int(size * (1.0 + tol)) + 1
+        a = bisect.bisect_left(self._sizes, lo)
+        b = bisect.bisect_right(self._sizes, hi)
+        return [t for _, t in self._items[a:b]]
+
+    def __len__(self) -> int:
+        return len(self._items)
 
 
 # ============================================================
@@ -1004,7 +1053,7 @@ class MagicFlow(_PluginBase):
             # ---------- ④ 批量 fetch TopN → 分类（A 复用 / B 下载）----------
             self._set_phase(task.id, "classify")
             local_index: Dict[str, TorrentInfo] = {}
-            local_by_size: Dict[int, List[TorrentInfo]] = {}
+            local_by_size: "_SizeIndex" = _SizeIndex([])
             fp_cache: Dict[str, Optional[str]] = {}
             if task.reuse_existing:
                 try:
@@ -1081,6 +1130,8 @@ class MagicFlow(_PluginBase):
                     "warning",
                 )
 
+            _cross_near = 0
+            _cross_hit = 0
             for bonus, cand in topn:
                 raw = getattr(cand, "raw", None)
                 if not raw:
@@ -1095,13 +1146,22 @@ class MagicFlow(_PluginBase):
                 if task.reuse_existing and local is not None:
                     mode, linfo = "hash", local
                 elif task.reuse_existing:
+                    if local_by_size.near(int(getattr(cand, "size", 0) or 0)):
+                        _cross_near += 1
                     mode, linfo = self._detect_crosssite_reuse(
                         downloader, cand, local_by_size, fp_cache, raw=getattr(cand, "raw", None)
                     )
+                    if mode == "cross":
+                        _cross_hit += 1
                 if mode and linfo is not None:
                     group_a.append((bonus, cand, mode, linfo))
                 else:
                     group_b.append((bonus, cand))
+            if task.reuse_existing and (_cross_near or _cross_hit):
+                self._log(
+                    f"魔力管家 [{task.name}] 存量复用扫描：体积邻近 {_cross_near} 个"
+                    f" / 特征码命中 {_cross_hit} 个"
+                )
 
             # ★ 与洗池同一套排序键：名额受限→边际 value 降序；仅磁盘受限→每 GB 效率 efficiency 降序。
             # （修 bug：原此处用旧的「单种魔力」bonus_per_hour 重排，把洗池的边际排序又覆盖回去了）
@@ -2255,21 +2315,16 @@ class MagicFlow(_PluginBase):
 
     def _local_reuse_index(
         self, downloader: DownloaderAdapter
-    ) -> Tuple[Dict[str, TorrentInfo], Dict[int, List[TorrentInfo]]]:
-        """本机（下载器）全部种子索引：hash(小写) -> info；字节大小 -> [info]。"""
+    ) -> Tuple[Dict[str, TorrentInfo], "_SizeIndex"]:
+        """本机（下载器）全部种子索引：hash(小写) -> info；体积邻近索引（含容差）。"""
         index = downloader.get_all_torrents_index()
-        by_size: Dict[int, List[TorrentInfo]] = {}
-        for info in index.values():
-            size = int(info.size or 0)
-            if size > 0:
-                by_size.setdefault(size, []).append(info)
-        return index, by_size
+        return index, _SizeIndex(list(index.values()), tol=0.05)
 
     def _try_reuse_candidate(
         self,
         downloader: DownloaderAdapter,
         cand: Any,
-        local_by_size: Dict[int, List[TorrentInfo]],
+        local_by_size: "_SizeIndex",
         fp_cache: Dict[str, Optional[str]],
         task: MagicFlowTaskConfig,
         raw: Optional[bytes] = None,
@@ -2283,7 +2338,7 @@ class MagicFlow(_PluginBase):
         size = int(cand.size or 0)
         if size <= 0:
             return False, "skip"
-        same_size = local_by_size.get(size) or []
+        same_size = local_by_size.near(size)
         if not same_size:
             return False, "skip"
 
@@ -2325,7 +2380,7 @@ class MagicFlow(_PluginBase):
         self,
         downloader: DownloaderAdapter,
         cand: Any,
-        local_by_size: Dict[int, List[TorrentInfo]],
+        local_by_size: "_SizeIndex",
         fp_cache: Dict[str, Optional[str]],
         raw: Optional[bytes] = None,
     ) -> Tuple[str, Optional[TorrentInfo]]:
@@ -2339,7 +2394,7 @@ class MagicFlow(_PluginBase):
         raw = getattr(cand, "raw", None)
         if size <= 0 or not raw:
             return "", None
-        same = local_by_size.get(size) or []
+        same = local_by_size.near(size)
         if not same:
             return "", None
         cand_fp = fingerprint(raw)
