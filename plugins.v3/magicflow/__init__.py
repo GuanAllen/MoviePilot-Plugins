@@ -61,7 +61,7 @@ from .persistence import MagicFlowStore, OperationItem
 from .sites import BonusCalculator, get_calculator, get_formula_params
 from .sites.formula_fetch import fetch_site_formula, refresh_site_preset
 
-__version__ = "1.0.42"
+__version__ = "1.0.43"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -1141,18 +1141,30 @@ class MagicFlow(_PluginBase):
                 self._store.record_run_error(task.id, "下载器不可用")
                 return
 
-            # 每次运行检测一次：先清掉「没进度」的种子（进度为 0 且停滞/出错，挂了够久）
+            # 拉一次标签内全部种子（任意状态）：用于「自动恢复暂停」+「清理无进度」
             try:
                 all_tagged, _tag_err = downloader.get_torrents(tags=[task.brush_tag])
-                if all_tagged:
+            except Exception as _tag_exc:
+                all_tagged, _tag_err = [], str(_tag_exc)
+
+            # 自动恢复被暂停的已完成种子（暂停 → tracker 不计做种 → 0 产出）
+            if getattr(task, "auto_resume_paused", True) and all_tagged:
+                try:
+                    self._resume_paused_managed(task, downloader, list(all_tagged))
+                except Exception as _resume_err:
+                    self._log(f"魔力管家 [{task.name}] 自动恢复暂停种子异常: {_resume_err}", "warning")
+
+            # 每次运行检测一次：再清掉「没进度」的种子（进度为 0 且停滞/出错，挂了够久）
+            if all_tagged:
+                try:
                     self._cleanup_no_progress(
                         task,
                         downloader,
                         list(all_tagged),
                         self._store.get_protected_torrents(task.id) if self._store else set(),
                     )
-            except Exception as _cleanup_err:
-                self._log(f"魔力管家 [{task.name}] 清理无进度种子异常: {_cleanup_err}", "warning")
+                except Exception as _cleanup_err:
+                    self._log(f"魔力管家 [{task.name}] 清理无进度种子异常: {_cleanup_err}", "warning")
 
             seeding_torrents, error = downloader.get_seeding_torrents(tag=task.brush_tag)
             if error or not seeding_torrents:
@@ -1432,6 +1444,42 @@ class MagicFlow(_PluginBase):
             return False
         return True
 
+    def _resume_paused_managed(
+        self,
+        task: MagicFlowTaskConfig,
+        downloader: DownloaderAdapter,
+        managed: List[TorrentInfo],
+    ) -> int:
+        """
+        自动恢复「带标签但被暂停」的**已完成**种子。
+
+        被暂停 = tracker 不再计入做种 = 0 魔力产出，与魔力养护目标直接冲突；
+        只恢复进度已完成（>=99.9%）的，半成品暂停（人工断点/待下载）不动。
+        """
+        resumed = 0
+        skipped = 0
+        for t in managed or []:
+            state = str(getattr(t, "state", "") or "").lower()
+            if state not in QB_PAUSED_STATES:
+                continue
+            if float(getattr(t, "progress", 0) or 0) < 0.999:
+                skipped += 1
+                continue
+            h = getattr(t, "hash", "") or ""
+            if not h:
+                continue
+            try:
+                if downloader.resume_torrent(h):
+                    resumed += 1
+                    self._log(f"恢复做种：{str(getattr(t, 'title', '') or '')[:40]}")
+            except Exception as err:
+                self._log(f"恢复做种失败 {h[:8]}: {err}", "warning")
+        if resumed or skipped:
+            self._log(
+                f"魔力管家 [{task.name}] 自动恢复暂停种子：恢复 {resumed} 个（跳过未完成 {skipped} 个）"
+            )
+        return resumed
+
     def _cleanup_no_progress(
         self,
         task: MagicFlowTaskConfig,
@@ -1639,6 +1687,8 @@ class MagicFlow(_PluginBase):
         stats = {
             "seeding_count": 0,
             "active_seeding_count": 0,
+            "paused_count": 0,
+            "downloading_count": 0,
             "bonus_per_hour": 0.0,
             "state": "idle",
             "protected_count": 0,
@@ -1660,6 +1710,14 @@ class MagicFlow(_PluginBase):
                 bonus_list = self._convert_to_bonus_list(managed, self._build_formula_params(task))
                 stats["seeding_count"] = len(managed)
                 stats["active_seeding_count"] = len(seeding)
+                stats["paused_count"] = sum(
+                    1 for t in managed
+                    if str(getattr(t, "state", "") or "").lower() in QB_PAUSED_STATES
+                )
+                stats["downloading_count"] = sum(
+                    1 for t in managed
+                    if str(getattr(t, "state", "") or "").lower() in QB_DOWNLOADING_STATES
+                )
                 stats["bonus_per_hour"] = round(
                     calc_aggregate_bonus_per_hour(bonus_list, self._build_formula_params(task)), 4
                 )
