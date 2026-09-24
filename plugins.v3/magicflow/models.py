@@ -1,5 +1,5 @@
 import re
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -185,3 +185,10 @@ class MagicFlowSettingsPayload(BaseModel):
 
     enabled: bool = True
     show_sidebar_nav: bool = True
+
+
+class MagicFlowTorrentBatchPayload(BaseModel):
+    """托管种子批量操作请求模型"""
+
+    action: Literal["protect", "unprotect", "pause", "resume", "recheck", "delete"]
+    hashes: List[str] = Field(default_factory=list, description="待操作的种子 infohash 列表")
