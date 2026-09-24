@@ -467,6 +467,7 @@ class CandidateScore:
     people_factor: float = 0.0
     weight: float = 1.0
     viable: bool = True         # 是否可下（Ni ≥ 下限）
+    seeders_eff: int = 0       # 计分用的做种人数（= Ni + 我们加入后的 1）
     reason: str = ""
 
 
@@ -481,11 +482,15 @@ def score_candidate(
     min_seeders: int = 1,
     flat_gain: float = 0.0,
     ref_weeks: float = DEFAULT_CANDIDATE_REF_WEEKS,
+    join_delta: int = 1,
 ) -> CandidateScore:
     """综合「做种人数 Ni × 体积 Si」给出单颗候选的最优解评分。
 
     这是选种的核心算法（黑盒口径不变：UI 仍只显示站点上报值）：
       - ``value`` 用**真实边际**而不是单种 atan，避免大体积/多颗同挂被高估；
+      - **人数口径 = 加入后**（Ni + ``join_delta``，默认 +1）：我们一旦加入就多一个做种人，
+        站点的人数因子应按「加入后」算 → **Ni=1 从 2.41 被压到 2.0**，Ni 越大影响越小。
+        这正是 Master 口径：分数有上限（B0 饱和），1 种别再给那么高；
       - ``efficiency`` = value / Si：**磁盘受限**时优先「每 GB 收益最高」的种；
       - ``viable`` = Ni ≥ min_seeders：无源种子永远下不完 → 边际收益恒 0，直接排除；
       - ``download_cost`` ≈ Si / Ni 仅作提示/兜底（Master 口径「慢 ≠ 差」，不据此排除）。
@@ -496,8 +501,9 @@ def score_candidate(
     eff_age = max(float(age_weeks or 0.0), float(ref_weeks or 0.0))
     size_gb = max(float(size_gb or 0.0), 0.0)
     ni = int(seeders or 0)
+    ni_eff = ni + max(int(join_delta or 0), 0)
     f_t = calc_time_factor(eff_age, p)
-    f_n = calc_people_factor(ni, p)
+    f_n = calc_people_factor(max(ni_eff, 1), p)
     w = calc_weight(is_zero_bonus, p)
     a = f_t * size_gb * f_n * w
     if is_official and p.official_coef:
@@ -513,6 +519,7 @@ def score_candidate(
         people_factor=f_n,
         weight=w,
         viable=viable,
+        seeders_eff=ni_eff,
         reason="" if viable else f"站内做种人数 {ni} < {min_seeders}（无源，下不动）",
     )
 
