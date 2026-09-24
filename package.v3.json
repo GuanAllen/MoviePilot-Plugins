@@ -3,8 +3,8 @@
     "name": "魔力管家",
     "description": "按站点魔力公式自动养护做种，最大化魔力产出（与 BrushFlow 目标互斥）。",
     "labels": "站点,做种,魔力",
-    "version": "1.0.82",
-    "icon": "mdi-magnet",
+    "version": "1.0.83",
+    "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
     "author": "IronOx",
     "level": 1,
     "release": true,
@@ -91,7 +91,8 @@
       "v1.0.79": "顶部「当前任务」改为下拉切换胶囊（站点图标+任务名+状态点+⌄，点开即切任务），新建独立按钮；去掉版本徽标与分隔线上下文。",
       "v1.0.80": "移动端工具栏改版（方案B）：把「当前任务切换胶囊」下移到移动端工具栏（站点图标 + 任务名·站点 + 状态点 + ⌄，点开切换任务，与桌面统一）；≤959px 品牌头仍隐藏该胶囊避免重复。",
       "v1.0.81": "PT时间等站点时魔抓取修复：mybonus「当前每小时能获取X个魔力值 (A = Y，…」正则放宽（能获取/获得、半/全角括号、A 值后允许说明文字），并新增顶部「魔力值(X魔力/小时)」兜底，修复时魔缺失。",
-      "v1.0.82": "插件图标改为磁铁（mdi-magnet），与工作台 logo 统一（工作台/侧栏/市场一致）。"
+      "v1.0.82": "插件图标改为磁铁（mdi-magnet），与工作台 logo 统一（工作台/侧栏/市场一致）。",
+      "v1.0.83": "插件图标改为磁铁图标图（icons/magicflow.png，紫底白磁铁）；plugin_icon/市场 icon 改用真实图片 URL，修复市场卡片显示为默认拼图占位。"
     }
   }
 }
