@@ -267,6 +267,128 @@ def parse_nexusphp_formula(html_text: str) -> FormulaCapture:
     return cap
 
 
+# ============================================================
+# M-Team（馒头）：SPA 站点，无 mybonus.php HTML，改走 x-api-key 接口
+# ============================================================
+
+_MTEAM_HOSTS = ("m-team.cc", "m-team.io")
+_MTEAM_API_BASES = (
+    "https://api.m-team.cc/api",
+    "https://api2.m-team.cc/api",
+    "https://api.m-team.io/api",
+)
+
+
+def is_mteam_domain(domain: Optional[str]) -> bool:
+    """是否为 M-Team（馒头）站点。"""
+    d = (domain or "").strip().lower()
+    return any(h in d for h in _MTEAM_HOSTS)
+
+
+def parse_mteam_bonus(payload: Optional[dict]) -> FormulaCapture:
+    """解析 M-Team ``/api/tracker/mybonus`` 响应（纯函数）。
+
+    关键字段（``data.formulaParams``）：
+      * ``tzeroBonus/nzeroBonus/bzeroBonus/lbonus`` → T0/N0/B0/L
+      * ``finalBs``（= ``allBonus``）→ **时魔（每小时魔力值）**
+      * ``a`` → 当前 A 值
+      * ``torrentMsSum`` → 做种数上限；``perseedingBonus`` → 每做种基础
+    """
+    cap = FormulaCapture(source="mteam-api")
+    data = ((payload or {}).get("data") or {}) if isinstance(payload, dict) else {}
+    fp = data.get("formulaParams") or {}
+    if not fp:
+        cap.note = "M-Team 返回缺少 formulaParams"
+        return cap
+
+    def _f(key: str) -> Optional[float]:
+        return _to_float(fp.get(key))
+
+    for fld, key in (("t0", "tzeroBonus"), ("n0", "nzeroBonus"), ("b0", "bzeroBonus"), ("l", "lbonus")):
+        val = _f(key)
+        if val is not None:
+            cap.params[fld] = val
+
+    extra: Dict[str, Any] = {}
+    hourly = _f("finalBs")
+    if hourly is None:
+        hourly = _f("allBonus")
+    if hourly is not None:
+        extra["current_bonus_per_hour"] = hourly
+    a_val = _f("a")
+    if a_val is not None:
+        extra["current_a"] = a_val
+    cap_n = _f("torrentMsSum")
+    if cap_n is not None:
+        extra["seeding_count_cap"] = int(cap_n)
+    flat = _f("perseedingBonus")
+    if flat is not None:
+        extra["per_torrent_flat"] = flat
+    # 明细（等级/捐赠/2FA/两步加成/每做种上限），供诊断与后续校准
+    for key in ("userClassBs", "donorBs", "tfaBs", "h24UpBs", "callBonus", "twoStepBonus", "maxseedingBonus"):
+        val = _f(key)
+        if val is not None:
+            extra[f"mteam_{key}"] = val
+    cap.extra = {k: v for k, v in extra.items() if v is not None}
+    # M-Team 与 NexusPHP 同形公式，补齐表达式以便前端展示
+    cap.expr_a = (
+        "A = sigma( ( 1 - 10 ^ ( - Ti / T0 ) ) * Si * "
+        "( 1 + sqrt( 2 ) * 10 ^ ( - ( Ni - 1 ) / ( N0 - 1 ) ) ) * Wi"
+    )
+    cap.expr_b = "B = B0 * 2 / pi * arctan( A / L )"
+    cap.ok = bool(cap.params or extra)
+    if cap.ok:
+        cap.note = "M-Team tracker/mybonus API"
+    return cap
+
+
+def fetch_mteam_bonus(site: Any, timeout: int = 30) -> FormulaCapture:
+    """用站点 API Key（``x-api-key``）抓 M-Team 的魔力公式与时魔。"""
+    apikey = (getattr(site, "apikey", None) or "").strip()
+    ua = getattr(site, "ua", None) or _DEFAULT_UA
+    if not apikey:
+        return FormulaCapture(source="mteam-api", note="站点未配置 API Key")
+    try:
+        from app.sdk.network import RequestUtils  # noqa: WPS433 (惰性导入)
+    except Exception as err:  # MoviePilot SDK 不可用（如离线单测）
+        return FormulaCapture(source="mteam-api", note=f"SDK 不可用: {err}")
+
+    headers = {
+        "User-Agent": ua,
+        "x-api-key": apikey,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Referer": "https://kp.m-team.cc/",
+    }
+    note = ""
+    for base in _MTEAM_API_BASES:
+        url = f"{base}/tracker/mybonus"
+        try:
+            req = RequestUtils(headers=headers, timeout=timeout)
+            resp = req.post_res(url, json={})
+        except Exception as err:
+            note = f"{url} 请求异常: {err}"
+            continue
+        if resp is None or not getattr(resp, "ok", False):
+            note = f"{url} HTTP {getattr(resp, 'status_code', '?')}"
+            continue
+        try:
+            payload = resp.json()
+        except Exception as err:
+            note = f"{url} 非 JSON: {err}"
+            continue
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+        cap = parse_mteam_bonus(payload)
+        if cap.ok:
+            return cap
+        note = cap.note
+    return FormulaCapture(source="mteam-api", note=note or "M-Team API 全部失败")
+
+
 def fetch_site_formula(site: Any, timeout: int = 30) -> FormulaCapture:
     """
     用 MoviePilot SDK 抓取站点 ``mybonus.php`` 并解析公式。
@@ -287,6 +409,10 @@ def fetch_site_formula(site: Any, timeout: int = 30) -> FormulaCapture:
 
     if not base:
         return FormulaCapture(source="mybonus.php", note="站点缺少 url/domain")
+
+    # M-Team（馒头）是 SPA，mybonus.php 无 HTML 可解析 → 走官方 API。
+    if is_mteam_domain(domain):
+        return fetch_mteam_bonus(site, timeout=timeout)
 
     url = f"{base}/mybonus.php"
     try:
