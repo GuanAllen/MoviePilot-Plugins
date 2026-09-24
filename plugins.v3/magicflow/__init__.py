@@ -61,7 +61,7 @@ from .persistence import MagicFlowStore, OperationItem
 from .sites import BonusCalculator, get_calculator, get_formula_params
 from .sites.formula_fetch import fetch_site_formula, refresh_site_preset
 
-__version__ = "1.0.45"
+__version__ = "1.0.46"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -771,18 +771,14 @@ class MagicFlow(_PluginBase):
 
             # ---------- ① 入口前置检查（不抓取、游标不推进）----------
             self._set_phase(task.id, "entry")
-            if dl_concurrent >= dl_limit:
-                reason = (
-                    f"下载并发已达上限（{dl_concurrent}/{dl_limit}），本轮不抓取不推进游标，"
-                    "等待现有下载完成（清理归 check）"
+            # 下载并发满：仍然抓取候选——存量复用(A 类)不占下载名额，理应放行；
+            # 但本轮若一个都没复用成功 → 判定为空转，不推进游标，等现有下载完成后再重试同一批。
+            concurrency_full = dl_concurrent >= dl_limit
+            if concurrency_full:
+                self._log(
+                    f"魔力管家 [{task.name}] 下载并发已达上限（{dl_concurrent}/{dl_limit}），"
+                    "本轮仍抓取候选以尝试存量复用（复用通常不占下载名额；本地未完成/未校验辅种会补下载，按名额计）"
                 )
-                self._log(f"魔力管家 [{task.name}] {reason}")
-                if self._store:
-                    self._store.record_run_summary(task.id, "noop", reason)
-                    self._store.record_run_success(task.id, added=0, deleted=0, kept=base_cnt)
-                self._invalidate_summary()
-                self._set_phase(task.id, "done")
-                return {"status": "noop", "reason": reason, "added": 0, "reused": 0, "deleted": 0, "kept": base_cnt}
             if (max_keep and base_cnt >= max_keep) or (disk_gb and base_size >= disk_gb):
                 reason = "保种池容量/数量已满，本轮停止抓取，等待 check 任务清理低效种子释放空间"
                 self._log(f"魔力管家 [{task.name}] {reason}")
@@ -833,11 +829,13 @@ class MagicFlow(_PluginBase):
             next_cursor = cursor + pages
             if next_cursor > MAX_PAGE_CURSOR:
                 next_cursor = 0
-            if self._store:
+            # 非并发满：沿用原行为，抓取成功即推进游标；
+            # 并发满：先不推进，待处理完按「本轮是否复用成功」再决定（零复用=空转不推进）。
+            if self._store and not concurrency_full:
                 self._store.set_page_cursor(task.id, next_cursor)
             self._log(
                 f"魔力管家 [{task.name}] 抓取返回 {len(candidates)} 个候选"
-                f"（游标 {cursor}→{next_cursor}，共 {pages} 页）"
+                f"（游标 {cursor}，本次翻 {pages} 页）"
             )
 
             # ---------- ③ 洗池（尚无 infohash，仅用列表字段）----------
@@ -956,6 +954,7 @@ class MagicFlow(_PluginBase):
             add_failed = 0
             skipped_dup = 0
             skipped_quota = 0
+            skipped_reuse_limit = 0
             for item in ordered:
                 is_reuse = len(item) == 4
                 if is_reuse:
@@ -988,10 +987,26 @@ class MagicFlow(_PluginBase):
                 )
 
                 if is_reuse:
+                    # 辅种/复用并不总是「零下载」：本地同 hash 但未完成、或跨站辅种未开校验时，
+                    # 都会触发补下载 → 这类按下载名额（并发/单轮名额）计，避免并发被绕过。
+                    if mode == "hash":
+                        local_progress = float(getattr(linfo, "progress", 0) or 0)
+                        reuse_downloads = local_progress < 0.999
+                    else:
+                        reuse_downloads = not task.reuse_verify
                     if over_quota:
                         skipped_quota += 1
                         self._log(f"复用跳过·配额已满：{cand.title}")
                         continue
+                    if reuse_downloads:
+                        if dl_concurrent >= dl_limit:
+                            skipped_reuse_limit += 1
+                            self._log(
+                                f"复用跳过·下载并发已满（{dl_concurrent}/{dl_limit}）：{cand.title}"
+                            )
+                            continue
+                        if dl_budget <= 0:
+                            break
                     ok = False
                     if mode == "hash":
                         ok = downloader.set_torrent_tags(h, [task.brush_tag])
@@ -1015,6 +1030,9 @@ class MagicFlow(_PluginBase):
                     reused += 1
                     add_cnt += 1
                     add_size += size_gb
+                    if reuse_downloads:
+                        dl_budget -= 1
+                        dl_concurrent += 1
                     if h:
                         managed_hashes.add(h)
                     if self._store:
@@ -1023,7 +1041,7 @@ class MagicFlow(_PluginBase):
                             keys.append(f"cand:{ckey}")
                         if keys:
                             self._store.seen.mark(task.id, keys)
-                    self._log(f"复用入库：{cand.title}")
+                    self._log(f"复用入库{'（补下载）' if reuse_downloads else ''}：{cand.title}")
                     continue
 
                 # B：需下载
@@ -1070,6 +1088,24 @@ class MagicFlow(_PluginBase):
                     items=[OperationItem(hash="", title=f"存量复用 {reused} 个", reason="辅种")],
                 )
 
+            # 游标推进判定：并发满时，只有本轮复用成功才推进；零复用视为空转不推进。
+            if concurrency_full:
+                if reused > 0:
+                    if self._store:
+                        self._store.set_page_cursor(task.id, next_cursor)
+                    self._log(
+                        f"魔力管家 [{task.name}] 并发满但本轮复用 {reused} 个，游标 {cursor}→{next_cursor}"
+                    )
+                else:
+                    self._log(
+                        f"魔力管家 [{task.name}] 并发满且本轮无复用产出，判定空转，游标保持 {cursor} 不推进"
+                    )
+            cursor_note = (
+                f"{cursor}→{next_cursor}"
+                if (not concurrency_full or reused > 0)
+                else f"{cursor}（空转未推进）"
+            )
+
             if self._store:
                 self._store.record_run_success(
                     task.id, added=added, deleted=0, kept=len(managed_hashes), reused=reused
@@ -1078,11 +1114,11 @@ class MagicFlow(_PluginBase):
             self._set_phase(task.id, "done")
             detail = (
                 f"（复用 {reused} / 新增 {added} / 去重 {skipped_dup}"
-                f" / 配额满 {skipped_quota} / 失败 {add_failed}）"
+                f" / 配额满 {skipped_quota} / 复用限并发 {skipped_reuse_limit} / 失败 {add_failed}）"
             )
             self._log(
                 f"魔力管家 [{task.name}] 候选 {len(candidates)}→洗池 {len(scored)}→Top{len(topn)} | "
-                f"新增 {added} / 复用 {reused}（当前托管 {len(managed_hashes)}，游标 {next_cursor}）{detail}"
+                f"新增 {added} / 复用 {reused}（当前托管 {len(managed_hashes)}，游标 {cursor_note}）{detail}"
             )
             return {
                 "status": "done",
