@@ -29,6 +29,7 @@ from .bonus import (
     TorrentBonusInfo,
     DEFAULT_CANDIDATE_REF_WEEKS,
     calc_candidate_bonus_per_hour,
+    calc_aggregate_bonus_per_hour,
     calc_torrent_bonus,
     decide_deletions,
     preview_deletions,
@@ -59,13 +60,16 @@ from .persistence import MagicFlowStore, OperationItem
 from .sites import BonusCalculator, get_calculator, get_formula_params
 from .sites.formula_fetch import fetch_site_formula, refresh_site_preset
 
-__version__ = "1.0.39"
+__version__ = "1.0.40"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
 BROWSE_PAGES = 3
 # 游标深翻：翻页游标上限；超过则回到首页重扫（避免越翻越深拿到无效/超老页面）。
 MAX_PAGE_CURSOR = 60
+# 站点魔力公式抓取缓存 TTL（秒）；抓取失败时只缓存 SHORT 秒后重试。
+SITE_FORMULA_TTL = 6 * 3600
+SITE_FORMULA_RETRY = 30 * 60
 
 
 # ============================================================
@@ -1240,9 +1244,13 @@ class MagicFlow(_PluginBase):
         """
         解析任务对应的魔力公式参数。
 
-        顺序：站点预设（按域名） → 任务级覆盖 → NexusPHP 标准默认。
+        顺序：**站点自动抓取（mybonus.php，TTL 缓存）** → 站点预设（按域名）
+              → 任务级覆盖 → NexusPHP 标准默认。
         """
+        cap = self._acquire_site_formula(task)
         base = get_formula_params(task.site_domain, None)
+        if cap and cap.ok:
+            base = cap.to_params(base)
         return base.merged(
             t0=task.bonus_t0,
             n0=task.bonus_n0,
@@ -1250,6 +1258,47 @@ class MagicFlow(_PluginBase):
             l=task.bonus_l,
             zero_weight=task.bonus_zero_weight,
         )
+
+    def _acquire_site_formula(self, task: MagicFlowTaskConfig):
+        """
+        自动抓取站点魔力公式（带 TTL 缓存）。
+
+        命中缓存直接返回；否则用 MoviePilot SDK 抓 ``mybonus.php`` 解析。
+        失败也短暂缓存（``SITE_FORMULA_RETRY``）以避免频繁打网络。
+        返回 ``FormulaCapture`` 或 None。
+        """
+        domain = (getattr(task, "site_domain", "") or "").strip().lower()
+        if not domain:
+            return None
+        now = time.time()
+        cache = getattr(self, "_site_formula_cache", None)
+        if cache is None:
+            cache = self._site_formula_cache = {}
+        cached = cache.get(domain)
+        if cached and (now - float(cached.get("ts", 0))) < SITE_FORMULA_TTL:
+            return cached.get("cap")
+
+        site = self._get_site(task.site_id) if getattr(task, "site_id", 0) else None
+        cap = None
+        if site is not None:
+            try:
+                cap = fetch_site_formula(site, timeout=15)
+            except Exception as err:
+                self._log(f"站点公式抓取失败 [{domain}]: {err}", "warning")
+                cap = None
+        if cap and cap.ok:
+            try:
+                refresh_site_preset(site)
+                self._log(
+                    f"站点公式已获取 [{domain}] {cap.note} params={cap.params} extra={cap.extra}"
+                )
+            except Exception:
+                pass
+            cache[domain] = {"ts": now, "cap": cap}
+        else:
+            # 失败：短缓存，稍后自动重试
+            cache[domain] = {"ts": now - SITE_FORMULA_TTL + SITE_FORMULA_RETRY, "cap": cap}
+        return cap
 
     def _site_current_bonus(self, site_id: int) -> float:
         """读取指定站点当前魔力值（用于自动保护阈值）。"""
@@ -1567,7 +1616,9 @@ class MagicFlow(_PluginBase):
                 bonus_list = self._convert_to_bonus_list(managed, self._build_formula_params(task))
                 stats["seeding_count"] = len(managed)
                 stats["active_seeding_count"] = len(seeding)
-                stats["bonus_per_hour"] = round(sum(b.bonus_per_hour for b in bonus_list), 4)
+                stats["bonus_per_hour"] = round(
+                    calc_aggregate_bonus_per_hour(bonus_list, self._build_formula_params(task)), 4
+                )
                 if seeding:
                     stats["state"] = "seeding"
                 elif managed:
@@ -1923,7 +1974,9 @@ class MagicFlow(_PluginBase):
             protected_hashes = self._store.get_protected_torrents(task_id) if self._store else set()
             policy = self._build_magic_policy(task, torrent_bonus_list)
             ranked = rank_candidates(torrent_bonus_list, policy)
-            total_bonus = sum(t.bonus_per_hour for t in torrent_bonus_list)
+            total_bonus = calc_aggregate_bonus_per_hour(
+                torrent_bonus_list, self._build_formula_params(task)
+            )
             state_by_hash = {
                 (t.hash or "").lower(): str(getattr(t, "state", "") or "")
                 for t in task_torrents
