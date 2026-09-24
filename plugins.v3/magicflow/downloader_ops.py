@@ -986,6 +986,56 @@ class DownloaderAdapter:
             logger.warning(f"恢复种子失败 {hash_string}: {e}")
             return False
 
+    def _control_torrents(
+        self,
+        hashes: List[str],
+        action: str,
+    ) -> Tuple[int, Optional[str]]:
+        """批量控制种子（pause / resume / recheck）。
+
+        Args:
+            hashes: 种子 hash 列表
+            action: pause（暂停）/ resume（恢复做种）/ recheck（强制校验）
+
+        Returns:
+            (成功数量, 错误信息)
+        """
+        if not self._downloader:
+            return 0, "下载器不可用"
+        hashes = [h for h in (hashes or []) if h]
+        if not hashes:
+            return 0, None
+        method = {
+            "pause": "stop_torrents",
+            "resume": "start_torrents",
+            "recheck": "recheck_torrents",
+        }.get(action)
+        func = getattr(self._downloader, method or "", None)
+        if not func:
+            return 0, f"下载器不支持该操作（{method}）"
+        success = 0
+        for hash_string in hashes:
+            try:
+                if func(hash_string) is not False:
+                    success += 1
+            except Exception as e:
+                logger.warning(f"种子操作 {action} 失败 {hash_string}: {e}")
+        if success < len(hashes):
+            return success, f"部分种子操作失败 ({success}/{len(hashes)})"
+        return success, None
+
+    def pause_torrents(self, hashes: List[str]) -> Tuple[int, Optional[str]]:
+        """暂停种子（停止做种/下载）。"""
+        return self._control_torrents(hashes, "pause")
+
+    def resume_torrents(self, hashes: List[str]) -> Tuple[int, Optional[str]]:
+        """恢复做种（暂停 -> 开始）。"""
+        return self._control_torrents(hashes, "resume")
+
+    def recheck_torrents(self, hashes: List[str]) -> Tuple[int, Optional[str]]:
+        """强制重新校验。"""
+        return self._control_torrents(hashes, "recheck")
+
     def get_downloader_info(self) -> Dict[str, Any]:
         """获取下载器信息。"""
         if not self._service:
