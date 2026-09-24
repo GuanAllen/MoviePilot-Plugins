@@ -680,25 +680,41 @@ onUnmounted(() => {
 
     <template v-else>
       <div class="magicflow-mobile-toolbar">
-        <VSelect
-          v-if="tasks.length > 1"
-          class="magicflow-mobile-select"
-          :model-value="selectedTaskId"
-          :items="tasks"
-          item-title="name"
-          item-value="id"
-          label="当前任务"
-          hide-details
-          @update:model-value="selectTask"
-        >
-          <template #item="{ props: itemProps, item }">
-            <VListItem v-bind="itemProps" :subtitle="item.raw.site_name">
+        <VMenu v-if="tasks.length > 1" :close-on-content-click="true" location="bottom start">
+          <template #activator="{ props: menuProps }">
+            <button
+              v-bind="menuProps"
+              type="button"
+              class="magicflow-task-switch"
+              :aria-label="`当前任务：${selectedTask?.name || ''}`"
+            >
+              <span class="magicflow-task-switch__icon">
+                <img v-if="taskSiteIcon" :src="taskSiteIcon" alt="" />
+                <VIcon v-else icon="mdi-web" size="15" />
+              </span>
+              <span class="magicflow-task-switch__body">
+                <span class="magicflow-task-switch__k">当前任务</span>
+                <span class="magicflow-task-switch__v">{{ selectedTask?.name || '—' }} · {{ selectedTask?.site_name || '' }}</span>
+              </span>
+              <span class="magicflow-status-dot" :class="`magicflow-status-dot--${selectedState.color}`" />
+              <VIcon icon="mdi-chevron-down" size="18" class="magicflow-task-switch__chev" />
+            </button>
+          </template>
+          <VList density="comfortable" class="magicflow-task-switch__menu">
+            <VListItem
+              v-for="task in tasks"
+              :key="task.id"
+              :title="task.name"
+              :subtitle="task.site_name"
+              :active="task.id === selectedTaskId"
+              @click="selectTask(task.id)"
+            >
               <template #prepend>
-                <VIcon :icon="taskStateMeta(item.raw.state, item.raw.enabled).icon" :color="taskStateMeta(item.raw.state, item.raw.enabled).color" />
+                <VIcon :icon="taskStateMeta(task.state, task.enabled).icon" :color="taskStateMeta(task.state, task.enabled).color" size="18" />
               </template>
             </VListItem>
-          </template>
-        </VSelect>
+          </VList>
+        </VMenu>
         <div v-else class="magicflow-mobile-current">
           <span>当前任务</span>
           <strong>{{ selectedTask?.name || '—' }}</strong>
@@ -2521,8 +2537,25 @@ onUnmounted(() => {
 }
 
 @media (max-width: 959px) {
-  .magicflow-page .magicflow-task-switch {
+  /* 桌面品牌头里的切换胶囊隐藏；移动端由工具栏承担 */
+  .magicflow-page__actions .magicflow-task-switch {
     display: none;
+  }
+
+  /* 移动工具栏沿用「方案 B」胶囊：站点图标 + 任务名·站点 + 状态点 + ⌄ */
+  .magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch {
+    display: inline-flex;
+    flex: 1 1 auto;
+    min-inline-size: 0;
+    max-inline-size: none;
+  }
+
+  .magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch__k {
+    display: none;
+  }
+
+  .magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch__v {
+    font-size: 14px;
   }
 }
 
