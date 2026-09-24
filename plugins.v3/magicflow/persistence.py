@@ -98,6 +98,10 @@ class TaskState:
     # 每种子发布时间（unix 秒，key=infohash 小写）。用于把 Ti 统一为「发布时长」口径
     # （与候选排序一致），而非 qB 的「做种时长」。取不到时回落做种时长。
     pub_dates: Dict[str, float] = field(default_factory=dict)
+    # 发布时间表所用「站点时区偏移（小时）」。与当前口径不一致时旧 pub_dates 作废（需重采）。
+    # ⚠️ 必须持久化：否则每次重载后 pub_tz 丢失 → get_pub_dates 误判不匹配 → 返回空 →
+    # Ti 回落「做种时长」（远小于发布时长）→ 合计 A / 站点时魔严重偏低。
+    pub_tz: float = 0.0
     enabled: bool = True
     revision: int = 0  # 配置版本号，用于 optimistic locking
     # 运行阶段（供前端「运行诊断」流程链转圈用）
@@ -128,6 +132,7 @@ class TaskState:
             "last_candidate_passed": self.last_candidate_passed,
             "protected_torrents": list(self.protected_torrents),
             "pub_dates": dict(self.pub_dates),
+            "pub_tz": self.pub_tz,
             "enabled": self.enabled,
             "revision": self.revision,
             "last_phase": self.last_phase,
@@ -159,6 +164,7 @@ class TaskState:
             last_candidate_passed=d.get("last_candidate_passed", 0),
             protected_torrents=set(d.get("protected_torrents", [])),
             pub_dates={str(k).lower(): float(v) for k, v in (d.get("pub_dates") or {}).items() if v},
+            pub_tz=float(d.get("pub_tz", 0.0) or 0.0),
             enabled=d.get("enabled", True),
             revision=d.get("revision", 0),
             last_phase=d.get("last_phase", ""),

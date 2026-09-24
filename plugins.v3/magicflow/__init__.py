@@ -79,7 +79,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "1.0.67"
+__version__ = "1.0.69"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -1507,13 +1507,33 @@ class MagicFlow(_PluginBase):
         out["low_eff"] = deleted_count
         out["deleted"] = int(out["no_progress"]) + int(out["slow"]) + deleted_count
         out["kept"] = len(result.to_keep)
-        out["total_before"] = result.total_bonus_before
-        out["total_after"] = result.total_bonus_after
+        # ★ 站点口径合计时魔（对合计 A 只取一次 arctan + 做种固定奖励），使数值与站点上报对齐。
+        # 原来把每颗种子各自的时魔简单相加 → 漏掉「做种数 × 每种子」固定奖励，只有站点值的 ~1/3。
+        try:
+            _agg_params = self._build_formula_params(task)
+            try:
+                _harem_hourly = float((self._site_reported(task) or {}).get("harem_hourly") or 0.0)
+            except Exception:
+                _harem_hourly = 0.0
+            _deleted_hashes = {d.torrent.hash for d in result.to_delete}
+            _kept_list = [t for t in torrent_bonus_list if t.hash not in _deleted_hashes]
+            out["total_before"] = aggregate_breakdown(
+                torrent_bonus_list, _agg_params,
+                seeding_count=len(torrent_bonus_list), harem_hourly=_harem_hourly,
+            )["total"]
+            out["total_after"] = aggregate_breakdown(
+                _kept_list, _agg_params,
+                seeding_count=len(_kept_list), harem_hourly=_harem_hourly,
+            )["total"]
+        except Exception as _agg_err:
+            self._log(f"魔力管家 [{task.name}] 站点口径时魔汇总失败，回落逐种相加：{_agg_err}", "warning")
+            out["total_before"] = result.total_bonus_before
+            out["total_after"] = result.total_bonus_after
         self._log(
             f"魔力管家 [{task.name}] 完成："
             f"恢复 {out['resumed']} / 无进度 {out['no_progress']} / 过慢 {out['slow']} / 低效 {deleted_count}；"
             f"保留 {out['kept']} 个，"
-            f"魔力产出 {result.total_bonus_before:.2f} -> {result.total_bonus_after:.2f}/h"
+            f"站点口径时魔 {out['total_before']:.2f} -> {out['total_after']:.2f}/h"
         )
         return out
 
