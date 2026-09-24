@@ -376,6 +376,37 @@ def aggregate_breakdown(
 DEFAULT_CANDIDATE_REF_WEEKS = 4.0
 
 
+def site_ceiling(params: Optional[BonusParams] = None) -> float:
+    """站点每小时魔力的**理论上限**（供「上限感知」决策/展示）。
+
+    - arctan 项随合计 A 增大渐近于 B0（不会超过 B0）；
+    - 做种固定奖励封顶 ``per_torrent_flat × seeding_count_cap``。
+    故总上限 ≈ ``B0 + per_torrent_flat × seeding_count_cap``（不含官种/后宫等用户级加成）。
+    很多站点都有这个上限，决策时不能忽略：越接近上限，再加种子/加体积的边际收益越小。
+    """
+    p = BonusParams.normalized(params)
+    return p.b0 + p.per_torrent_flat * max(int(p.seeding_count_cap or 0), 0)
+
+
+def seeds_for_coverage(
+    params: Optional[BonusParams] = None,
+    a_avg: float = 0.0,
+    coverage: float = 0.95,
+) -> int:
+    """达到 B0 的 ``coverage``（0~1）所需的「种子数」估算。
+
+    B = B0·2/π·arctan(A/L) → 目标 A* = L·tan(coverage·π/2)；
+    按平均单种 A 贡献 a_avg 折算 N* = A*/a_avg。用于判断「保到多少个就已经够用」。
+    """
+    p = BonusParams.normalized(params)
+    if a_avg <= 0 or coverage <= 0 or coverage >= 1:
+        return 0
+    a_target = p.l * math.tan(coverage * math.pi / 2.0)
+    if a_target <= 0:
+        return 0
+    return max(int(math.ceil(a_target / a_avg)), 1)
+
+
 def calc_candidate_bonus_per_hour(
     size_gb: float,
     seeders: int,
