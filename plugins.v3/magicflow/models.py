@@ -55,6 +55,11 @@ class MagicFlowTaskPayload(BaseModel):
     cleanup_no_progress: bool = Field(True, description="每次运行清理「没进度」的种子（下载进度为 0 且停滞/出错）")
     no_progress_minutes: int = Field(30, ge=1, le=1440, description="加入下载器超过该分钟数仍无进度才判定为可清理")
 
+    # 慢速清理：用「下载速度 ÷ 体积」估算 ETA，长期下不完的种子会霸占下载名额 → 清掉腾位
+    cleanup_slow_progress: bool = Field(True, description="清理「下载过慢」的种子（速度÷体积估算下不完），腾出下载名额")
+    slow_progress_grace_minutes: int = Field(60, ge=1, le=1440, description="种子加入后多少分钟内不判「慢」（给新种起步时间）")
+    slow_progress_max_hours: float = Field(48.0, gt=0, le=8760, description="按当前速度预计还要超过该小时数才下完 → 判「过慢」")
+
     # 自动恢复：被暂停的已完成种子自动重新做种（暂停 = tracker 不计做种 = 0 魔力）
     auto_resume_paused: bool = Field(True, description="自动恢复被暂停的已完成种子（重新开始做种），保证魔力产出")
 
