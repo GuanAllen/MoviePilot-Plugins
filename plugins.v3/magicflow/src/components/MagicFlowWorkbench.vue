@@ -97,35 +97,6 @@ const sortedTorrents = computed(() => {
   return items
 })
 
-// 「魔力计算」：本站公式 + 本轮汇总推导链
-const formulaInfo = computed(() => bonusData.value.formula || {})
-const formulaExprs = computed(() => [formulaInfo.value.expr_a, formulaInfo.value.expr_b].filter(Boolean))
-const formulaChips = computed(() => {
-  const p = formulaInfo.value.params || {}
-  return [
-    { k: 'T0', v: p.t0 },
-    { k: 'N0', v: p.n0 },
-    { k: 'B0', v: p.b0 },
-    { k: 'L', v: p.l },
-    { k: '普通 Wi', v: p.normal_weight },
-    { k: '零魔 Wi', v: p.zero_weight },
-    { k: '官种 ×', v: p.official_coef, hi: true },
-    { k: '后宫 ×', v: p.harem_coef, hi: true },
-  ]
-    .filter(item => item.v !== null && item.v !== undefined && item.v !== '')
-    .map(item => ({ ...item, v: Number(item.v) }))
-})
-const calcTotalSizeGb = computed(() =>
-  (bonusData.value.torrents || []).reduce((sum, item) => sum + (Number(item.size_gb) || 0), 0),
-)
-const topContributors = computed(() =>
-  [...(bonusData.value.torrents || [])]
-    .sort((a, b) => (Number(b.bonus_per_hour) || 0) - (Number(a.bonus_per_hour) || 0))
-    .slice(0, 6),
-)
-const topContributorMax = computed(() =>
-  Math.max(1, ...topContributors.value.map(item => Number(item.bonus_per_hour) || 0)),
-)
 const reasonEntries = computed(() => {
   const counts = candidateData.value.reason_counts || {}
   return Object.entries(counts)
@@ -154,7 +125,6 @@ const MF_TABS = [
   { value: 'overview', label: '任务概览' },
   { value: 'diagnostics', label: '运行诊断' },
   { value: 'pool', label: '种子池' },
-  { value: 'calc', label: '魔力计算' },
   { value: 'config', label: '任务配置' },
 ]
 const flowNodes = computed(() => {
@@ -191,7 +161,6 @@ const torrentHeaders = [
   { title: '大小', key: 'size_gb', sortable: false, width: 96 },
   { title: '上传量', key: 'uploaded', sortable: false, width: 96 },
   { title: '分享率', key: 'ratio', sortable: false, width: 84 },
-  { title: '魔力/时', key: 'bonus_per_hour', sortable: false, width: 100 },
   { title: '操作', key: 'actions', sortable: false, width: 120 },
 ]
 
@@ -568,22 +537,21 @@ async function saveSettings() {
 }
 
 watch(activeTab, tab => {
-  // 进入「种子池」重新抓取候选，保证「过滤原因 / 候选排行」最新
-  if (tab === 'pool' && selectedTaskId.value && poolView.value === 'candidates') {
-    loadCandidates(selectedTaskId.value)
+  // 进入「种子池」重新拉候选 / 托管，保证最新
+  if (tab === 'pool' && selectedTaskId.value) {
+    if (poolView.value === 'candidates') loadCandidates(selectedTaskId.value)
+    else loadBonus(selectedTaskId.value)
   }
   if (tab === 'diagnostics' && selectedTaskId.value) {
     loadOperations(selectedTaskId.value)
     loadDetail(selectedTaskId.value)
   }
-  // 进入「魔力计算」刷新托管明细（带公式块）
-  if (tab === 'calc' && selectedTaskId.value) {
-    loadBonus(selectedTaskId.value)
-  }
 })
 
 watch(poolView, view => {
-  if (view === 'candidates' && selectedTaskId.value) loadCandidates(selectedTaskId.value)
+  if (!selectedTaskId.value) return
+  if (view === 'candidates') loadCandidates(selectedTaskId.value)
+  else loadBonus(selectedTaskId.value)
 })
 
 watch(
@@ -722,7 +690,7 @@ onUnmounted(() => {
               <span>{{ task.site_name }} · {{ task.downloader }}</span>
               <span class="magicflow-task-item__meta">
                 <span>{{ task.seeding_count || 0 }} 个种子</span>
-                <span>{{ formatBonus(task.bonus_per_hour) }}</span>
+                <span>{{ task.site_bonus_ok ? formatBonus(task.site_bonus_per_hour) : '—' }}</span>
               </span>
             </button>
           </div>
@@ -800,8 +768,8 @@ onUnmounted(() => {
                   <span>托管种子 · {{ selectedTask.active_seeding_count || 0 }} 做种中 / {{ selectedTask.downloading_count || 0 }} 下载中 / {{ selectedTask.paused_count || 0 }} 已暂停</span>
                 </VSheet>
                 <VSheet class="magicflow-stat app-surface-static">
-                  <strong>{{ formatBonus(selectedTask.bonus_per_hour) }}</strong>
-                  <span>每小时魔力 · 实时估算</span>
+                  <strong>{{ selectedTask.site_bonus_ok ? formatBonus(selectedTask.site_bonus_per_hour) : '—' }}</strong>
+                  <span>站点上报时魔 · 站点实时值</span>
                 </VSheet>
                 <VSheet class="magicflow-stat app-surface-static">
                   <strong>{{ Number(summary.current_bonus || 0).toFixed(2) }}</strong>
@@ -970,7 +938,7 @@ onUnmounted(() => {
                       待办队列：按站点魔力公式评分排序，共 {{ candidateData.total || 0 }} 个通过过滤
                     </template>
                     <template v-else>
-                      已托管：共 {{ bonusData.torrent_count || 0 }} 个 · 合计 {{ formatBonus(bonusData.total_bonus) }}
+                      已托管：共 {{ bonusData.torrent_count || 0 }} 个（黑盒：仅展示状态与进度）
                     </template>
                   </div>
                 </div>
@@ -1015,7 +983,7 @@ onUnmounted(() => {
                       <VChip size="x-small" variant="tonal">{{ bonusData.torrent_count || 0 }}</VChip>
                     </div>
                     <div class="text-body-2 text-medium-emphasis">
-                      共 {{ bonusData.torrent_count || 0 }} 个 · 合计 {{ formatBonus(bonusData.total_bonus) }} · 点击任意行查看详情 / 手动保留 / 删除
+                      共 {{ bonusData.torrent_count || 0 }} 个 · 点击任意行查看详情 / 手动保留 / 删除
                     </div>
                   </div>
                   <div class="magicflow-torrent-filters">
@@ -1047,7 +1015,7 @@ onUnmounted(() => {
                   <template #item.title="{ item }">
                     <div class="torrent-title-cell">
                       <strong>{{ item.title || '未知种子' }}</strong>
-                      <span>{{ selectedTask.site_name }} · 排名 {{ item.rank }}</span>
+                      <span>{{ selectedTask.site_name }}</span>
                     </div>
                   </template>
                   <template #item.status="{ item }">
@@ -1056,9 +1024,6 @@ onUnmounted(() => {
                   <template #item.size_gb="{ item }">{{ Number(item.size_gb || 0).toFixed(2) }} GB</template>
                   <template #item.uploaded="{ item }">{{ formatBytes(item.uploaded) }}</template>
                   <template #item.ratio="{ item }">{{ Number(item.ratio || 0).toFixed(2) }}</template>
-                  <template #item.bonus_per_hour="{ item }">
-                    <strong>{{ Number(item.bonus_per_hour || 0).toFixed(2) }}</strong>
-                  </template>
                   <template #item.actions="{ item }">
                     <VBtn
                       size="small"
@@ -1090,7 +1055,7 @@ onUnmounted(() => {
                     <div class="magicflow-mobile-torrent__head">
                       <div class="magicflow-mobile-torrent__title">
                         <strong>{{ item.title || '未知种子' }}</strong>
-                        <span>{{ selectedTask.site_name }} · 排名 {{ item.rank }}</span>
+                        <span>{{ selectedTask.site_name }}</span>
                       </div>
                       <VChip size="small" :color="stateColor(item.state)" variant="tonal" class="magicflow-mobile-torrent__state">
                         {{ torrentStateText(item) }}
@@ -1107,7 +1072,6 @@ onUnmounted(() => {
                       <span><em>大小</em><b>{{ Number(item.size_gb || 0).toFixed(2) }} GB</b></span>
                       <span><em>上传量</em><b>{{ formatBytes(item.uploaded) }}</b></span>
                       <span><em>分享率</em><b>{{ Number(item.ratio || 0).toFixed(2) }}</b></span>
-                      <span><em>魔力/时</em><b>{{ Number(item.bonus_per_hour || 0).toFixed(2) }}</b></span>
                     </div>
                     <div class="magicflow-mobile-torrent__actions">
                       <VBtn size="small" variant="tonal" :color="item.is_protected ? 'grey' : 'primary'" :prepend-icon="item.is_protected ? 'mdi-shield-off-outline' : 'mdi-shield-check-outline'" @click.stop="torrentAction(item, item.is_protected ? 'unprotect' : 'protect')">
@@ -1122,97 +1086,6 @@ onUnmounted(() => {
               </template>
             </VWindowItem>
 
-
-            <VWindowItem value="calc">
-              <VSheet tag="section" class="magicflow-panel magicflow-calc app-surface-static">
-                <header class="magicflow-panel__head">
-                  <div>
-                    <div class="text-subtitle-1 font-weight-medium">本站公式</div>
-                    <div class="text-body-2 text-medium-emphasis">
-                      {{ formulaInfo.site_name || selectedTask.site_name || '当前任务' }}
-                      <template v-if="formulaInfo.site_domain"> · {{ formulaInfo.site_domain }}</template>
-                    </div>
-                  </div>
-                  <div class="magicflow-calc__meta">
-                    <span :class="{ 'is-fallback': !formulaInfo.ok }">
-                      {{ formulaInfo.ok ? '自动获取' : '回落标准式' }}
-                      <template v-if="formulaInfo.source"> · {{ formulaInfo.source }}</template>
-                    </span>
-                    <VBtn size="small" variant="text" prepend-icon="mdi-refresh" :loading="taskLoading" @click="loadBonus(selectedTaskId)">重新抓取</VBtn>
-                  </div>
-                </header>
-
-                <div v-if="formulaExprs.length" class="magicflow-calc__expr">
-                  <div v-for="(expr, i) in formulaExprs" :key="i" class="magicflow-calc__expr-line">{{ expr }}</div>
-                </div>
-                <div v-else class="magicflow-table-empty">
-                  暂未获取到本站公式（未运行或站点未暴露 mybonus 公式），当前使用 NexusPHP 标准式。
-                </div>
-
-                <div class="magicflow-calc__chips">
-                  <span v-for="chip in formulaChips" :key="chip.k" class="magicflow-calc__chip" :class="{ 'is-hi': chip.hi }">
-                    {{ chip.k }} <b>{{ chip.v }}</b>
-                  </span>
-                </div>
-              </VSheet>
-
-              <VSheet tag="section" class="magicflow-panel magicflow-calc app-surface-static">
-                <header class="magicflow-panel__head">
-                  <div>
-                    <div class="text-subtitle-1 font-weight-medium">任务汇总</div>
-                    <div class="text-body-2 text-medium-emphasis">本轮托管种子的合计产出与站点实测对照</div>
-                  </div>
-                </header>
-
-                <div class="magicflow-calc__stats">
-                  <div class="magicflow-calc__stat">
-                    <b>{{ bonusData.torrent_count || 0 }}</b><span>托管种子</span>
-                  </div>
-                  <div class="magicflow-calc__stat">
-                    <b>{{ calcTotalSizeGb.toFixed(1) }}</b><span>做种 GB</span>
-                  </div>
-                  <div class="magicflow-calc__stat is-accent">
-                    <b>{{ Number(formulaInfo.total ?? bonusData.total_bonus ?? 0).toFixed(2) }}</b><span>模型时魔 /h</span>
-                  </div>
-                  <div class="magicflow-calc__stat" :class="{ 'is-ok': Number(formulaInfo.site_reported_bonus) > 0 }">
-                    <b>{{ Number(formulaInfo.site_reported_bonus) > 0 ? Number(formulaInfo.site_reported_bonus).toFixed(2) : '—' }}</b>
-                    <span>站点时魔 /h</span>
-                  </div>
-                </div>
-
-                <div class="magicflow-calc__chain">
-                  <span>Σ A = <b>{{ Number(formulaInfo.sum_a || 0).toFixed(1) }}</b>
-                    <template v-if="Number(formulaInfo.site_reported_a) > 0"> · 站点 {{ Number(formulaInfo.site_reported_a).toFixed(1) }}</template>
-                  </span>
-                  <span class="magicflow-calc__arrow">→</span>
-                  <span>一次 arctan</span>
-                  <span class="magicflow-calc__arrow">→</span>
-                  <span>基础 <b>{{ Number(formulaInfo.b_base || 0).toFixed(2) }}</b></span>
-                  <template v-if="Number(formulaInfo.b_flat) > 0">
-                    <span class="magicflow-calc__arrow">+</span>
-                    <span>做种 {{ formulaInfo.seeding_count || 0 }}×{{ Number((formulaInfo.params || {}).per_torrent_flat || 0.3) }} = <b>{{ Number(formulaInfo.b_flat || 0).toFixed(2) }}</b></span>
-                  </template>
-                  <span class="magicflow-calc__arrow">→</span>
-                  <span><b>{{ Number(formulaInfo.total ?? bonusData.total_bonus ?? 0).toFixed(2) }}</b>/h</span>
-                  <span v-if="formulaInfo.deviation_pct != null" class="magicflow-calc__dev">
-                    较站点 {{ formulaInfo.deviation_pct > 0 ? '+' : '' }}{{ formulaInfo.deviation_pct }}%
-                  </span>
-                </div>
-
-                <div v-if="topContributors.length" class="magicflow-calc__top">
-                  <div class="magicflow-calc__top-title">产出排行</div>
-                  <div v-for="(item, i) in topContributors" :key="item.hash || i" class="magicflow-calc__top-row">
-                    <span class="magicflow-calc__rk">{{ i + 1 }}</span>
-                    <span class="magicflow-calc__tt" :title="item.title">
-                      {{ item.title }} <i>· Ni={{ item.seeders }}</i>
-                    </span>
-                    <span class="magicflow-calc__bar"><i :style="{ width: `${Math.max(4, Math.round(((Number(item.bonus_per_hour) || 0) / topContributorMax) * 100))}%` }" /></span>
-                    <span class="magicflow-calc__bv">{{ Number(item.bonus_per_hour || 0).toFixed(2) }}</span>
-                  </div>
-                </div>
-                <div v-else class="magicflow-table-empty">当前没有托管种子，先执行一次任务吧。</div>
-              </VSheet>
-            </VWindowItem>
 
             <VWindowItem value="config">
               <div class="magicflow-config-grid">

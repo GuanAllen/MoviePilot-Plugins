@@ -65,7 +65,7 @@ from .persistence import MagicFlowStore, OperationItem
 from .sites import BonusCalculator, get_calculator, get_formula_params
 from .sites.formula_fetch import fetch_site_formula, refresh_site_preset, fetch_seeding_pubdates, fetch_seeding_list
 
-__version__ = "1.0.55"
+__version__ = "1.0.57"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -1657,6 +1657,33 @@ class MagicFlow(_PluginBase):
                 out[h] = int(best)
         return out
 
+    def _site_reported(self, task: MagicFlowTaskConfig) -> Dict[str, Any]:
+        """站点上报的魔力数据（黑盒：不展示自算值）。
+
+        来源：抓取的 ``mybonus.php``——每小时魔力、当前 A、当前魔力值。
+        """
+        out: Dict[str, Any] = {
+            "ok": False,
+            "bonus_per_hour": 0.0,
+            "a": 0.0,
+            "current_bonus": 0.0,
+            "source": "",
+            "site_domain": getattr(task, "site_domain", "") or "",
+            "site_name": getattr(task, "site_name", "") or "",
+        }
+        try:
+            cap = self._acquire_site_formula(task)
+            if cap and getattr(cap, "ok", False):
+                extra = getattr(cap, "extra", {}) or {}
+                out["ok"] = True
+                out["bonus_per_hour"] = float(extra.get("current_bonus_per_hour") or 0)
+                out["a"] = float(extra.get("current_a") or 0)
+                out["source"] = getattr(cap, "source", "") or ""
+        except Exception as err:
+            self._log(f"读取站点上报魔力失败: {err}", "warning")
+        out["current_bonus"] = self._site_current_bonus(task.site_id)
+        return out
+
     def _site_current_bonus(self, site_id: int) -> float:
         """读取指定站点当前魔力值（用于自动保护阈值）。"""
         row = self._userdata_row(site_id)
@@ -1991,9 +2018,21 @@ class MagicFlow(_PluginBase):
             "paused_count": 0,
             "downloading_count": 0,
             "bonus_per_hour": 0.0,
+            "site_bonus_per_hour": 0.0,
+            "site_bonus_a": 0.0,
+            "site_bonus_ok": False,
             "state": "idle",
             "protected_count": 0,
         }
+        # 站点上报（黑盒：不再自算模型值）
+        try:
+            rep = self._site_reported(task)
+            stats["bonus_per_hour"] = round(rep["bonus_per_hour"], 4)
+            stats["site_bonus_per_hour"] = round(rep["bonus_per_hour"], 4)
+            stats["site_bonus_a"] = round(rep["a"], 2)
+            stats["site_bonus_ok"] = bool(rep["ok"])
+        except Exception as err:
+            self._log(f"统计任务 [{task.name}] 站点魔力失败: {err}", "warning")
         try:
             downloader = self._get_downloader(task.downloader)
             if downloader and downloader.is_available:
@@ -2008,7 +2047,6 @@ class MagicFlow(_PluginBase):
                     t for t in managed
                     if str(getattr(t, "state", "") or "").lower() in QB_SEEDING_STATES
                 ]
-                bonus_list = self._convert_to_bonus_list(managed, self._build_formula_params(task), self._task_pub_dates(task), getattr(task, "ti_source", "publish"), self._site_ni_map(task.site_id, managed))
                 stats["seeding_count"] = len(managed)
                 stats["active_seeding_count"] = len(seeding)
                 stats["paused_count"] = sum(
@@ -2018,15 +2056,6 @@ class MagicFlow(_PluginBase):
                 stats["downloading_count"] = sum(
                     1 for t in managed
                     if str(getattr(t, "state", "") or "").lower() in QB_DOWNLOADING_STATES
-                )
-                stats["bonus_per_hour"] = round(
-                    calc_aggregate_bonus_per_hour(
-                        bonus_list,
-                        self._build_formula_params(task),
-                        seeding_count=sum(
-                            1 for t in managed if float(getattr(t, "progress", 0) or 0) >= 0.999
-                        ),
-                    ), 4
                 )
                 if seeding:
                     stats["state"] = "seeding"
@@ -2083,25 +2112,20 @@ class MagicFlow(_PluginBase):
         enabled_tasks = sum(1 for t in self._task_configs.values() if t.enabled)
         seeding_count = 0
         bonus_per_hour = 0.0
+        current_bonus = 0.0
 
+        # 站点上报魔力按「站点」去重（同一站点多任务不重复计）
+        site_tasks: Dict[int, MagicFlowTaskConfig] = {}
         for task in self._task_configs.values():
             if not task.enabled:
                 continue
             stats = self._task_runtime_stats(task)
             seeding_count += stats["seeding_count"]
-            bonus_per_hour += stats["bonus_per_hour"]
-
-        current_bonus = 0.0
-        try:
-            from app.db.oper.site import SiteOper
-            site_ids = {t.site_id for t in self._task_configs.values() if t.enabled}
-            for row in SiteOper().get_userdata_latest() or []:
-                if not isinstance(row, dict):
-                    continue
-                if row.get("id") in site_ids:
-                    current_bonus += float(row.get("bonus") or 0)
-        except Exception as err:
-            self._log(f"读取站点魔力值失败: {err}", "warning")
+            site_tasks.setdefault(int(task.site_id or 0), task)
+        for task in site_tasks.values():
+            rep = self._site_reported(task)
+            bonus_per_hour += rep["bonus_per_hour"]
+            current_bonus += rep["current_bonus"]
 
         summary = {
             "total_tasks": total_tasks,
@@ -2378,19 +2402,11 @@ class MagicFlow(_PluginBase):
                 f"seeding={len(seeding_torrents or [])} err={error} tagged={len(task_torrents)}"
             )
             if error:
-                return Response(success=True, data={"torrents": [], "total_bonus": 0, "torrent_count": 0, "protected_count": 0, "formula": self._bonus_formula_block(task, [])})
+                return Response(success=True, data={"torrents": [], "total_bonus": 0, "torrent_count": 0, "protected_count": 0, "site": self._site_reported(task)})
             if not task_torrents:
-                return Response(success=True, data={"torrents": [], "total_bonus": 0, "torrent_count": 0, "protected_count": 0, "formula": self._bonus_formula_block(task, [])})
-            torrent_bonus_list = self._convert_to_bonus_list(task_torrents, self._build_formula_params(task), self._task_pub_dates(task), getattr(task, "ti_source", "publish"), self._site_ni_map(task.site_id, task_torrents))
-            seeding_count = sum(
-                1 for t in task_torrents if float(getattr(t, "progress", 0) or 0) >= 0.999
-            )
+                return Response(success=True, data={"torrents": [], "total_bonus": 0, "torrent_count": 0, "protected_count": 0, "site": self._site_reported(task)})
+            rep = self._site_reported(task)
             protected_hashes = self._store.get_protected_torrents(task_id) if self._store else set()
-            policy = self._build_magic_policy(task, torrent_bonus_list)
-            ranked = rank_candidates(torrent_bonus_list, policy)
-            total_bonus = calc_aggregate_bonus_per_hour(
-                torrent_bonus_list, self._build_formula_params(task), seeding_count=seeding_count
-            )
             state_by_hash = {
                 (t.hash or "").lower(): str(getattr(t, "state", "") or "")
                 for t in task_torrents
@@ -2408,36 +2424,27 @@ class MagicFlow(_PluginBase):
                 for t in task_torrents
             }
 
+            # 黑盒：不展示自算魔力/评分/排名，只展示托管状态与进度。
             torrents_data = []
-            for rc in ranked:
-                t = rc.torrent
+            for t in task_torrents:
                 hkey = (t.hash or "").lower()
                 torrents_data.append({
                     "hash": t.hash,
                     "title": t.title,
                     "size_gb": round(t.size_gb, 2),
-                    "seeders": t.seeders,
-                    "leechers": t.leechers,
-                    "age_weeks": round(t.age_weeks, 2),
-                    "bonus_per_hour": round(t.bonus_per_hour, 4),
-                    "time_factor": round(t.time_factor, 4),
-                    "people_factor": round(t.people_factor, 4),
-                    "is_zero_bonus": t.is_zero_bonus,
                     "is_protected": t.hash in protected_hashes,
                     "state": state_by_hash.get(hkey, ""),
                     "progress": progress_by_hash.get(hkey, 0.0),
                     "uploaded": uploaded_by_hash.get(hkey, 0),
                     "ratio": ratio_by_hash.get(hkey, 0.0),
-                    "rank": rc.rank,
-                    "recommendation": rc.recommendation,
                 })
 
             return Response(success=True, data={
                 "torrents": torrents_data,
-                "total_bonus": round(total_bonus, 4),
+                "total_bonus": round(rep["bonus_per_hour"], 4),
                 "torrent_count": len(torrents_data),
                 "protected_count": len(protected_hashes),
-                "formula": self._bonus_formula_block(task, torrent_bonus_list, seeding_count),
+                "site": rep,
             })
 
         except Exception as e:
