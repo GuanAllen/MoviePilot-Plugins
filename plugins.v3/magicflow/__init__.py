@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from urllib.parse import urlparse
 
 from apscheduler.triggers.cron import CronTrigger
 
@@ -48,6 +49,7 @@ from .downloader_ops import (
     DownloaderAdapter,
     TorrentInfo,
     TorrentFetchFlowControl,
+    _kv,
     QB_SEEDING_STATES,
     QB_DEAD_STATES,
     QB_DOWNLOADING_STATES,
@@ -80,7 +82,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "1.0.74"
+__version__ = "1.0.75"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -817,6 +819,73 @@ class MagicFlow(_PluginBase):
             return f"失败：{summary.get('reason', '')}"
         return "本轮结束"
 
+    def _same_site_keys(self, task: MagicFlowTaskConfig) -> Set[str]:
+        """本站的 tracker 域名匹配键（用于「同站纳管」）。"""
+        dom = (getattr(task, "site_domain", "") or "").strip().lower()
+        if not dom:
+            try:
+                site = self._get_site(task.site_id)
+                if site:
+                    dom = (getattr(site, "domain", "") or "").strip().lower()
+                    if dom and not task.site_domain:
+                        task.site_domain = dom
+            except Exception:
+                dom = dom or ""
+        if not dom:
+            return set()
+        keys = {dom}
+        # 去掉常见前缀后也能匹配（www. / tracker. / pt.）
+        for prefix in ("www.", "tracker.", "pt.", "t."):
+            if dom.startswith(prefix) and len(dom) > len(prefix):
+                keys.add(dom[len(prefix):])
+        return {k for k in keys if k}
+
+    def _adopt_same_site(self, task: MagicFlowTaskConfig, downloader: DownloaderAdapter) -> Dict[str, int]:
+        """同站纳管：把下载器中「属于本站」的已有种子补打本任务 tag。
+
+        MagicFlow 只在站点**候选列表**里找新种，会漏掉本机早已在做的同站种子
+        （IYUU / 其它插件 / 手动添加）。这些种子同样为该站产出魔力，理应纳入托管
+        （计入容量与保护），否则既不计魔力、又可能被重复下载。
+
+        识别方式：种子的 tracker（announce）域名与本站 domain 匹配。
+        只**追加**标签（不覆盖其它标签），不下载、不校验、不改动其它站点。
+        """
+        keys = self._same_site_keys(task)
+        if not keys:
+            return {"matched": 0, "adopted": 0, "already": 0}
+        matched = adopted = already = 0
+        to_tag: List[str] = []
+        for t in downloader.get_raw_torrents():
+            tr = str(_kv(t, "tracker", "") or "").strip()
+            if not tr:
+                continue
+            try:
+                host = (urlparse(tr).hostname or "").lower()
+            except Exception:
+                host = ""
+            if not host or not any(k in host for k in keys):
+                continue
+            h = str(_kv(t, "hash", "") or "").lower()
+            if not h:
+                continue
+            matched += 1
+            tags = _kv(t, "tags", "") or []
+            if isinstance(tags, str):
+                tags = [x.strip() for x in tags.split(",") if x.strip()]
+            if task.brush_tag in list(tags):
+                already += 1
+                continue
+            to_tag.append(h)
+        for h in to_tag:
+            if downloader.set_torrent_tags(h, [task.brush_tag]):
+                adopted += 1
+        if adopted:
+            self._log(
+                f"魔力管家 [{task.name}] 同站纳管：本站 tracker 种子 {matched} 个，"
+                f"新纳管 {adopted} 个（已在管 {already}）"
+            )
+        return {"matched": matched, "adopted": adopted, "already": already}
+
     def _brush_impl(self, task_id: str) -> None:
         """抓取站点候选并补充优质魔力种子（刷流，v5 流程）。"""
         task = self._get_task_config(task_id)
@@ -846,6 +915,13 @@ class MagicFlow(_PluginBase):
                 )
         except Exception as _cle:
             self._log(f"魔力管家 [{task.name}] 入口前清理异常: {_cle}", "warning")
+
+        # ---------- ⓪b 同站纳管：把本机上「属于本站」的已有种子补打 tag ----------
+        # （IYUU / 其它插件 / 手动添加的同站种子，此前不会被计托管、也不受保护）
+        try:
+            self._adopt_same_site(task, downloader)
+        except Exception as _ade:
+            self._log(f"魔力管家 [{task.name}] 同站纳管异常: {_ade}", "warning")
 
         try:
             # ---------- 本任务托管（tag）快照 ----------
