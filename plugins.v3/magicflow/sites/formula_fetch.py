@@ -219,13 +219,23 @@ def parse_nexusphp_formula(html_text: str) -> FormulaCapture:
     m = re.search(r"([\d.]+)\s*个魔力值\s*\*\s*你的做种数", text)
     if m:
         extra["per_torrent_flat"] = _to_float(m.group(1))
+    # 时魔：「你当前每小时能获取15个魔力值 (A = 59.7，每小时魔力详情)」
+    # 各站措辞/标点不一（能获取/获得、半/全角括号、A 值后可能跟说明文字），故放宽：
+    #   - 动词：当前每小时[能可]?(获取|获得)
+    #   - 括号：半角 ( ) 或全角 （ ）
+    #   - A 值之后允许任意非括号字符（如「，每小时魔力详情」）再到右括号
     m = re.search(
-        r"当前每小时能获取\s*([\d,.]+)\s*个魔力值\s*\(\s*A\s*=\s*([\d,.]+)\s*\)",
+        r"当前每小时[能可]?\s*(?:获取|获得)\s*([\d,.]+)\s*个魔力值\s*[（(]\s*A\s*=\s*([\d,.]+)[^)）]*[)）]",
         text,
     )
     if m:
         extra["current_bonus_per_hour"] = _to_float(m.group(1))
         extra["current_a"] = _to_float(m.group(2))
+    else:
+        # 兜底：顶部状态栏「魔力值(15魔力/小时)」
+        m2 = re.search(r"魔力值\s*[（(]\s*([\d,.]+)\s*魔力\s*/\s*小时\s*[)）]", text)
+        if m2:
+            extra["current_bonus_per_hour"] = _to_float(m2.group(1))
 
     # 5) 「每小时获得的合计魔力值」表（数量/体积/A值/基础魔力/系数/获得/合计）
     bt = parse_bonus_table(html_text)
