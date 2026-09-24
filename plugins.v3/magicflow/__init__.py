@@ -80,7 +80,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "1.0.72"
+__version__ = "1.0.74"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -967,7 +967,19 @@ class MagicFlow(_PluginBase):
             flat_gain = _flat if (not _cap_n or base_cnt < _cap_n) else 0.0
             _min_seeders = max(int(getattr(filter_policy, "min_seeders", 0) or 0), 1)
 
+            # ★ 存量复用索引提前建立：辅种(复用)要在「全量候选」里找，不受 TopN 魔力排名限制。
+            local_index: Dict[str, TorrentInfo] = {}
+            local_by_size: "_SizeIndex" = _SizeIndex([])
+            fp_cache: Dict[str, Optional[str]] = {}
+            if task.reuse_existing:
+                try:
+                    local_index, local_by_size = self._local_reuse_index(downloader)
+                    self._log(f"魔力管家 [{task.name}] 本机已有种子 {len(local_index)} 个，启用存量复用")
+                except Exception as e:
+                    self._log(f"建立本机资源索引失败：{e}", "warning")
+
             scored: List[Tuple[TorrentBonusInfo, SiteCandidateTorrent]] = []
+            reuse_pool: List[Tuple[TorrentBonusInfo, SiteCandidateTorrent]] = []
             skipped_seen = 0
             skipped_dead = 0
             skipped_low = 0
@@ -1011,12 +1023,18 @@ class MagicFlow(_PluginBase):
                 )
                 if not sc.viable:
                     skipped_nosrc += 1
+                    # 无做种源 ≠ 不能辅种：本机已有同一资源就能直接辅（免下载）。
+                    if task.reuse_existing and local_by_size.near(int(getattr(c, "size", 0) or 0)):
+                        reuse_pool.append((bonus, c))
                     continue
                 setattr(c, "_score", sc)
                 setattr(c, "_value", sc.value)
                 setattr(c, "_eff", sc.efficiency)
                 if min_bonus and bonus.bonus_per_hour < min_bonus:
                     skipped_low += 1
+                    # 魔力偏低 ≠ 不能辅种；免下载的依然是白得的魔力。
+                    if task.reuse_existing and local_by_size.near(int(getattr(c, "size", 0) or 0)):
+                        reuse_pool.append((bonus, c))
                     continue
                 scored.append((bonus, c))
 
@@ -1031,7 +1049,7 @@ class MagicFlow(_PluginBase):
                     len(candidates),
                     len(scored),
                 )
-            if not scored:
+            if not scored and not (task.reuse_existing and reuse_pool):
                 self._log(f"魔力任务 [{task.name}] 洗池后无可用候选（过滤通过 {len(filtered)}）")
                 if self._store:
                     self._store.record_run_success(task.id, added=0, deleted=0, kept=base_cnt)
@@ -1050,22 +1068,60 @@ class MagicFlow(_PluginBase):
             top_n = max(int(task.top_n or 0), 1)
             topn = scored[:top_n]
 
-            # ---------- ④ 批量 fetch TopN → 分类（A 复用 / B 下载）----------
-            self._set_phase(task.id, "classify")
-            local_index: Dict[str, TorrentInfo] = {}
-            local_by_size: "_SizeIndex" = _SizeIndex([])
-            fp_cache: Dict[str, Optional[str]] = {}
-            if task.reuse_existing:
-                try:
-                    local_index, local_by_size = self._local_reuse_index(downloader)
-                    self._log(f"魔力管家 [{task.name}] 本机已有种子 {len(local_index)} 个，启用存量复用")
-                except Exception as e:
-                    self._log(f"建立本机资源索引失败：{e}", "warning")
+            # ★ 辅种不参与魔力排名：非 TopN（魔力排不进前 N）但「体积邻近本机种子」的候选
+            #   也一并纳入复用扫描——TopN 只决定「要下载哪些」，可复用的候选无需参与竞争。
+            if task.reuse_existing and local_by_size:
+                _have = {self._candidate_key(p[1]) for p in reuse_pool}
+                for _pair in scored[top_n:]:
+                    _c = _pair[1]
+                    _k = self._candidate_key(_c)
+                    if _k in _have:
+                        continue
+                    if local_by_size.near(int(getattr(_c, "size", 0) or 0)):
+                        reuse_pool.append(_pair)
+                        _have.add(_k)
 
+            # ---------- ④ 分类：辅种(复用) 全量扫描 + 下载候选 TopN ----------
+            self._set_phase(task.id, "classify")
             group_a: List[Tuple[TorrentBonusInfo, SiteCandidateTorrent, str, TorrentInfo]] = []
             group_b: List[Tuple[TorrentBonusInfo, SiteCandidateTorrent]] = []
 
-            # 并发预取 TopN 的 .torrent（原为逐个串行，100 个耗时数分钟）。
+            # ★ 辅种不参与魔力排名：只要「体积邻近本机种子」就纳入扫描（免下载 = 白得的魔力）。
+            #   TopN 只决定「要下载哪些」；可复用的额外候选即便魔力排不进 TopN 也一起取回判定。
+            REUSE_SCAN_MAX = 60
+
+            def _ckey_of(pair: Any) -> str:
+                c = pair[1]
+                return self._candidate_key(c) or getattr(c, "hash", "") or getattr(c, "title", "")
+
+            _fetch_map: Dict[str, Tuple[TorrentBonusInfo, SiteCandidateTorrent]] = {}
+            _topn_keys: Set[str] = set()
+            for pair in topn:
+                k = _ckey_of(pair)
+                _topn_keys.add(k)
+                _fetch_map[k] = pair
+            _reuse_extra = 0
+            if task.reuse_existing and reuse_pool:
+                _pool = []
+                for pair in reuse_pool:
+                    sz = int(getattr(pair[1], "size", 0) or 0)
+                    near = local_by_size.near(sz)
+                    if not near:
+                        continue
+                    diff = min(abs(sz - int(getattr(t, "size", 0) or 0)) for t in near)
+                    _pool.append((diff, pair))
+                _pool.sort(key=lambda x: x[0])
+                for _diff, pair in _pool:
+                    if len(_fetch_map) >= top_n + REUSE_SCAN_MAX:
+                        break
+                    k = _ckey_of(pair)
+                    if k in _fetch_map:
+                        continue
+                    _fetch_map[k] = pair
+                    _reuse_extra += 1
+            fetch_list = list(_fetch_map.values())
+
+            # 并发预取 .torrent（TopN + 可复用候选）。
             # 每个请求各自新建 RequestUtils 会话，无共享状态，可安全并发。
             # 站点流控早停标志：一旦命中，本轮剩余候选不再请求（避免继续加剧限流）。
             _fc_hit = [False]
@@ -1112,19 +1168,19 @@ class MagicFlow(_PluginBase):
                 except Exception:
                     _c.real_hash = ""
 
-            if len(topn) > 1:
-                with ThreadPoolExecutor(max_workers=min(TORRENT_FETCH_WORKERS, len(topn))) as _ex:
-                    list(_ex.map(_prefetch, topn))
+            if len(fetch_list) > 1:
+                with ThreadPoolExecutor(max_workers=min(TORRENT_FETCH_WORKERS, len(fetch_list))) as _ex:
+                    list(_ex.map(_prefetch, fetch_list))
             else:
-                for _p in topn:
+                for _p in fetch_list:
                     _prefetch(_p)
 
-            # 分类诊断：TopN 里有多少真的拿到了 .torrent；没拿到时打样本原因
-            _raw_ok = sum(1 for _p in topn if getattr(_p[1], "raw", None))
-            if _raw_ok < len(topn):
-                _sample = topn[0][1]
+            # 分类诊断：本轮取回多少 .torrent；没拿到时打样本原因
+            _raw_ok = sum(1 for _p in fetch_list if getattr(_p[1], "raw", None))
+            if _raw_ok < len(fetch_list):
+                _sample = fetch_list[0][1]
                 self._log(
-                    f"魔力管家 [{task.name}] 种子文件获取 {_raw_ok}/{len(topn)}；"
+                    f"魔力管家 [{task.name}] 种子文件获取 {_raw_ok}/{len(fetch_list)}；"
                     f"示例 enclosure={getattr(_sample, 'enclosure', '')[:90]!r} "
                     f"err={getattr(_sample, 'fetch_error', '')!r}",
                     "warning",
@@ -1132,10 +1188,13 @@ class MagicFlow(_PluginBase):
 
             _cross_near = 0
             _cross_hit = 0
-            for bonus, cand in topn:
+            for bonus, cand in fetch_list:
+                ckey = _ckey_of((bonus, cand))
+                _in_topn = ckey in _topn_keys
                 raw = getattr(cand, "raw", None)
                 if not raw:
-                    group_b.append((bonus, cand))
+                    if _in_topn:
+                        group_b.append((bonus, cand))
                     continue
                 h = cand.real_hash
                 local = local_index.get(h) if (h and h in local_index) else None
@@ -1155,12 +1214,13 @@ class MagicFlow(_PluginBase):
                         _cross_hit += 1
                 if mode and linfo is not None:
                     group_a.append((bonus, cand, mode, linfo))
-                else:
+                elif _in_topn:
+                    # 仅 TopN 候选参与「下载」排队；为复用而额外取回的候选不可复用则丢弃。
                     group_b.append((bonus, cand))
-            if task.reuse_existing and (_cross_near or _cross_hit):
+            if task.reuse_existing:
                 self._log(
-                    f"魔力管家 [{task.name}] 存量复用扫描：体积邻近 {_cross_near} 个"
-                    f" / 特征码命中 {_cross_hit} 个"
+                    f"魔力管家 [{task.name}] 存量复用扫描：复用命中 {len(group_a)} 个"
+                    f"（体积邻近比对 {_cross_near} / 特征码命中 {_cross_hit}，另扫非 TopN {_reuse_extra} 个）"
                 )
 
             # ★ 与洗池同一套排序键：名额受限→边际 value 降序；仅磁盘受限→每 GB 效率 efficiency 降序。
@@ -1173,7 +1233,7 @@ class MagicFlow(_PluginBase):
                     return (getattr(_c, "_eff", 0.0), getattr(_c, "_value", 0.0))
                 return (getattr(_c, "_value", 0.0), getattr(_c, "_eff", 0.0))
 
-            group_a.sort(key=_rank_key, reverse=True)
+            # ★ 辅种不参与魔力排名：group_a 保持发现顺序直接加（免下载）
             group_b.sort(key=_rank_key, reverse=True)
             ordered: List[Any] = list(group_a) + list(group_b)
             self._log(
@@ -1238,10 +1298,12 @@ class MagicFlow(_PluginBase):
                         reuse_downloads = local_progress < 0.999
                     else:
                         reuse_downloads = not task.reuse_verify
+                    # ★ 辅种（免下载）不参与配额/排名限制：直接加（白得的魔力）。
+                    #   （仅当确需补下载时才受下载名额/预算约束，见下）
                     if over_quota:
-                        skipped_quota += 1
-                        self._log(f"复用跳过·配额已满：{cand.title}")
-                        continue
+                        self._log(
+                            f"辅种超出配额仍直接复用（免下载）：{cand.title}"
+                        )
                     if reuse_downloads:
                         if dl_concurrent >= dl_limit:
                             skipped_reuse_limit += 1
