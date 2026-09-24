@@ -70,6 +70,7 @@ from .models import (
     MagicFlowSettingsPayload,
     MagicFlowTaskPayload,
     MagicFlowTaskStatePayload,
+    MagicFlowTorrentBatchPayload,
 )
 from .persistence import MagicFlowStore, OperationItem
 from .sites import BonusCalculator, get_calculator, get_formula_params
@@ -82,7 +83,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "1.0.86"
+__version__ = "1.0.92"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -516,6 +517,34 @@ class MagicFlow(_PluginBase):
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "手动删除种子",
+            },
+            {
+                "path": "/tasks/{task_id}/torrents/{hash}/pause",
+                "endpoint": self.pause_torrent,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "暂停种子",
+            },
+            {
+                "path": "/tasks/{task_id}/torrents/{hash}/resume",
+                "endpoint": self.resume_torrent,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "恢复做种",
+            },
+            {
+                "path": "/tasks/{task_id}/torrents/{hash}/recheck",
+                "endpoint": self.recheck_torrent,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "强制校验种子",
+            },
+            {
+                "path": "/tasks/{task_id}/torrents/batch",
+                "endpoint": self.batch_torrents,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "批量操作托管种子",
             },
             {
                 "path": "/sites/{site_id}/bonus-formula",
@@ -1640,6 +1669,21 @@ class MagicFlow(_PluginBase):
             return out
         protected = self._store.get_protected_torrents(task.id) if self._store else set()
 
+        # 把「保护 / 同站纳管」记录与下载器真实种子对齐：已从下载器消失的种子会留下陈旧
+        # hash（历史误删 / 手动删除），导致「受保护」计数虚高、同一资源不再被重新纳管。
+        if self._store:
+            try:
+                live_all, _live_err = downloader.get_torrents()
+                if live_all:
+                    cleaned = self._store.reconcile_protected(
+                        task.id, [(t.hash or "") for t in live_all if t.hash]
+                    )
+                    if cleaned:
+                        self._log(f"魔力管家 [{task.name}] 清理陈旧保护/纳管记录 {cleaned} 条")
+                        protected = self._store.get_protected_torrents(task.id)
+            except Exception as _rec_err:
+                self._log(f"魔力管家 [{task.name}] 保护记录校准失败: {_rec_err}", "warning")
+
         # 拉一次标签内全部种子（任意状态）：用于「自动恢复暂停」+「清理无进度」
         try:
             all_tagged, _tag_err = downloader.get_torrents(tags=[task.brush_tag])
@@ -1725,6 +1769,8 @@ class MagicFlow(_PluginBase):
                     kind="deletion",
                     items=operation_items,
                 )
+                # 已删种子从「保护 / 同站纳管」集合中清理，避免陈旧 hash 虚高计数
+                self._store.forget_torrents(task.id, delete_hashes[: max(0, int(success_count or 0))])
 
         out["low_eff"] = deleted_count
         out["deleted"] = int(out["no_progress"]) + int(out["slow"]) + deleted_count
@@ -2295,14 +2341,19 @@ class MagicFlow(_PluginBase):
         """
         resumed = 0
         skipped = 0
+        manual_paused = self._store.get_manual_paused(task.id) if self._store else set()
         for t in managed or []:
             state = str(getattr(t, "state", "") or "").lower()
             if state not in QB_PAUSED_STATES:
                 continue
+            h = getattr(t, "hash", "") or ""
+            # 用户手动暂停的种子不自动恢复（尊重人工干预，需界面上点「恢复做种」）
+            if h and (h or "").lower() in manual_paused:
+                skipped += 1
+                continue
             if float(getattr(t, "progress", 0) or 0) < 0.999:
                 skipped += 1
                 continue
-            h = getattr(t, "hash", "") or ""
             if not h:
                 continue
             try:
@@ -2313,7 +2364,8 @@ class MagicFlow(_PluginBase):
                 self._log(f"恢复做种失败 {h[:8]}: {err}", "warning")
         if resumed or skipped:
             self._log(
-                f"魔力管家 [{task.name}] 自动恢复暂停种子：恢复 {resumed} 个（跳过未完成 {skipped} 个）"
+                f"魔力管家 [{task.name}] 自动恢复暂停种子：恢复 {resumed} 个"
+                f"（跳过未完成 {skipped} 个）"
             )
         return resumed
 
@@ -2358,6 +2410,7 @@ class MagicFlow(_PluginBase):
                     for t in removed
                 ],
             )
+            self._store.forget_torrents(task.id, [t.hash for t in removed])
         self._log(
             f"魔力管家 [{task.name}] 清理无进度种子 {deleted} 个"
             f"（进度为 0 且 {task.no_progress_minutes} 分钟未动）"
@@ -2445,6 +2498,7 @@ class MagicFlow(_PluginBase):
                     for t in removed
                 ],
             )
+            self._store.forget_torrents(task.id, [t.hash for t in removed])
         self._log(
             f"魔力管家 [{task.name}] 清理下载过慢种子 {deleted} 个"
             f"（速度÷体积估算 > {float(getattr(task, 'slow_progress_max_hours', 48.0) or 48.0):g}h 才下完）"
@@ -3067,7 +3121,7 @@ class MagicFlow(_PluginBase):
                 "torrents": torrents_data,
                 "total_bonus": round(rep["bonus_per_hour"], 4),
                 "torrent_count": len(torrents_data),
-                "protected_count": len(protected_hashes),
+                "protected_count": sum(1 for t in torrents_data if t["is_protected"]),
                 "site": rep,
             })
 
@@ -3243,4 +3297,148 @@ class MagicFlow(_PluginBase):
 
         except Exception as e:
             self._log(f"手动删除种子失败: {e}", "error")
+            return Response(success=False, message=str(e))
+
+    _TORRENT_CONTROL_ACTIONS = {
+        "pause": ("暂停种子", "stop"),
+        "resume": ("恢复运行", "start"),
+        "recheck": ("强制校验", "recheck"),
+    }
+
+    def _control_torrent(self, task_id: str, hash: str, action: str) -> Response:
+        """托管种子控制：暂停 / 恢复做种 / 强制校验。"""
+        task = self._get_task_config(task_id)
+        if not task:
+            return Response(success=False, message="任务不存在")
+        label = self._TORRENT_CONTROL_ACTIONS.get(action, (action, action))[0]
+        try:
+            downloader = self._get_downloader(task.downloader)
+            if not downloader or not downloader.is_available:
+                return Response(success=False, message="下载器不可用")
+
+            func = {
+                "pause": downloader.pause_torrents,
+                "resume": downloader.resume_torrents,
+                "recheck": downloader.recheck_torrents,
+            }.get(action)
+            if not func:
+                return Response(success=False, message=f"不支持的操作：{action}")
+
+            success_count, error = func([hash])
+            if success_count <= 0:
+                return Response(success=False, message=error or f"{label}失败")
+
+            if self._store:
+                # 手动暂停/恢复要落盘，避免「自动恢复暂停做种」把人工作废
+                if action == "pause":
+                    self._store.mark_manual_paused(task_id, [hash])
+                elif action == "resume":
+                    self._store.clear_manual_paused(task_id, [hash])
+                self._store.journal.record(
+                    task_id=task_id,
+                    kind=action,
+                    items=[OperationItem(hash=hash, title="", reason=f"手动{label}")],
+                )
+            self._invalidate_summary()
+            return Response(success=True, message=f"已{label}")
+
+        except Exception as e:
+            self._log(f"种子操作({action})失败: {e}", "error")
+            return Response(success=False, message=str(e))
+
+    def pause_torrent(self, task_id: str, hash: str) -> Response:
+        """暂停一个托管种子（并标记，防止被自动恢复）。"""
+        return self._control_torrent(task_id, hash, "pause")
+
+    def resume_torrent(self, task_id: str, hash: str) -> Response:
+        """恢复做种。"""
+        return self._control_torrent(task_id, hash, "resume")
+
+    def recheck_torrent(self, task_id: str, hash: str) -> Response:
+        """强制重新校验。"""
+        return self._control_torrent(task_id, hash, "recheck")
+
+    def batch_torrents(self, task_id: str, payload: MagicFlowTorrentBatchPayload) -> Response:
+        """批量操作托管种子（保留 / 取消保留 / 暂停 / 恢复 / 强制校验 / 删除）。"""
+        task = self._get_task_config(task_id)
+        if not task:
+            return Response(success=False, message="任务不存在")
+
+        action = (payload.action or "").strip().lower()
+        hashes = [h for h in (payload.hashes or []) if h]
+        if not hashes:
+            return Response(success=False, message="未选择种子")
+        label = {
+            "protect": "手动保留", "unprotect": "取消保留", "pause": "暂停种子",
+            "resume": "恢复运行", "recheck": "强制校验", "delete": "批量删除",
+        }.get(action, action)
+
+        try:
+            # ① 保护类：仅落盘，不碰下载器
+            if action in ("protect", "unprotect"):
+                if not self._store:
+                    return Response(success=False, message="存储不可用")
+                for h in hashes:
+                    if action == "protect":
+                        self._store.protect_torrent(task_id, h)
+                    else:
+                        self._store.unprotect_torrent(task_id, h)
+                self._store.journal.record(
+                    task_id=task_id,
+                    kind="protection" if action == "protect" else "unprotection",
+                    items=[OperationItem(hash=h, title="", reason=f"批量{label}") for h in hashes],
+                )
+                self._invalidate_summary()
+                return Response(
+                    success=True,
+                    message=f"已批量{label} {len(hashes)} 个",
+                    data={"success_count": len(hashes), "failed": 0, "total": len(hashes)},
+                )
+
+            # ② 下载器类
+            downloader = self._get_downloader(task.downloader)
+            if not downloader or not downloader.is_available:
+                return Response(success=False, message="下载器不可用")
+
+            if action == "delete":
+                ok, error = downloader.delete_torrents(hashes=hashes, delete_file=task.delete_files)
+                done = hashes[:max(0, int(ok or 0))]
+            else:
+                func = {
+                    "pause": downloader.pause_torrents,
+                    "resume": downloader.resume_torrents,
+                    "recheck": downloader.recheck_torrents,
+                }.get(action)
+                if not func:
+                    return Response(success=False, message=f"不支持的操作：{action}")
+                ok, error = func(hashes)
+                done = hashes[:max(0, int(ok or 0))]
+
+            if self._store and done:
+                if action == "pause":
+                    self._store.mark_manual_paused(task_id, done)
+                elif action == "resume":
+                    self._store.clear_manual_paused(task_id, done)
+                if action == "delete":
+                    self._store.forget_torrents(task_id, done)
+                self._store.journal.record(
+                    task_id=task_id,
+                    kind=action,
+                    items=[OperationItem(hash=h, title="", reason=f"批量{label}") for h in done],
+                )
+            self._invalidate_summary()
+
+            if not done:
+                return Response(success=False, message=error or f"{label}失败")
+            msg = f"已批量{label} {len(done)} 个"
+            if len(done) < len(hashes):
+                msg += f"（{len(hashes) - len(done)} 个失败）"
+            return Response(
+                success=True,
+                message=msg,
+                data={"success_count": len(done), "failed": len(hashes) - len(done), "total": len(hashes)},
+            )
+
+        except Exception as e:
+            self._log(f"批量种子操作({action})失败: {e}", "error")
             return Response(success=False, message=str(e))
