@@ -79,7 +79,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "1.0.69"
+__version__ = "1.0.70"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -2399,6 +2399,7 @@ class MagicFlow(_PluginBase):
             "site_bonus_per_hour": 0.0,
             "site_bonus_a": 0.0,
             "site_bonus_ok": False,
+            "site_current_bonus": 0.0,
             "site_ceiling": 0.0,
             "site_seed_cap": 0,
             "ceiling_pct": 0.0,
@@ -2412,6 +2413,8 @@ class MagicFlow(_PluginBase):
             stats["site_bonus_per_hour"] = round(rep["bonus_per_hour"], 4)
             stats["site_bonus_a"] = round(rep["a"], 2)
             stats["site_bonus_ok"] = bool(rep["ok"])
+            # 该站点自己的「当前魔力存量」（不能跨站相加：各站魔力不可通约）
+            stats["site_current_bonus"] = round(float(rep.get("current_bonus") or 0.0), 2)
         except Exception as err:
             self._log(f"统计任务 [{task.name}] 站点魔力失败: {err}", "warning")
         # 站点上限感知：时魔天花板（B0 + 固定奖励封顶）+ 距上限占用

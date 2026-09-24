@@ -2313,8 +2313,8 @@ return (_ctx, _cache) => {
                               }),
                               _createVNode(_component_VSheet, { class: "magicflow-stat app-surface-static" }, {
                                 default: _withCtx(() => [
-                                  _createElementVNode("strong", null, _toDisplayString(Number(summary.value.current_bonus || 0).toFixed(2)), 1),
-                                  _cache[32] || (_cache[32] = _createElementVNode("span", null, "站点当前魔力 · 全部启用任务合计", -1))
+                                  _createElementVNode("strong", null, _toDisplayString(Number(selectedTask.value.site_current_bonus || 0).toFixed(2)), 1),
+                                  _cache[32] || (_cache[32] = _createElementVNode("span", null, "站点当前魔力 · 该站点实时存量", -1))
                                 ]),
                                 _: 1
                               }),
@@ -3377,6 +3377,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-f15ec603"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-19d9e92b"]]);
 
 export { MagicFlowWorkbench as M };
