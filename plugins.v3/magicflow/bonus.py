@@ -812,11 +812,23 @@ def decide_deletions(
         else:
             to_keep.append(torrent)
 
-    # 数量上限：仅当显式设置了 max_keep_torrents 时才按数量淘汰
+    # 数量上限：仅淘汰「未被保护」的种子。
+    # ★ 同站纳管 / 手动保护 / H&R / 保护期内的种子即使超额也绝不删除：
+    #   它们本来就排在 to_keep 里（受保护），若在这里按数量无差别淘汰会误删
+    #   用户自己的资源（历史 bug：站点做种数上限 100 导致 33 个已保护种子被删）。
     if policy.max_keep_torrents is not None and len(to_keep) > policy.max_keep_torrents:
-        to_keep.sort(key=lambda t: t.bonus_per_hour)
+        def _pinned(t: TorrentBonusInfo) -> bool:
+            if t.hash in protected_hashes or t.hit_and_run:
+                return True
+            if policy.min_seed_time_hours > 0 and t.age_weeks * 168 < policy.min_seed_time_hours:
+                return True
+            return False
+
+        evictable = [t for t in to_keep if not _pinned(t)]
         overflow = len(to_keep) - policy.max_keep_torrents
-        for torrent in to_keep[:overflow]:
+        victims = sorted(evictable, key=lambda t: t.bonus_per_hour)[:overflow]
+        victim_hashes = {t.hash for t in victims}
+        for torrent in victims:
             to_delete.append(
                 DeletionCandidate(
                     torrent=torrent,
@@ -824,7 +836,8 @@ def decide_deletions(
                     priority=20,
                 )
             )
-        to_keep = to_keep[overflow:]
+        if victim_hashes:
+            to_keep = [t for t in to_keep if t.hash not in victim_hashes]
 
     # 按删除优先级降序排序（优先级高的先删）
     to_delete.sort(key=lambda c: c.priority, reverse=True)
