@@ -63,9 +63,16 @@ from .models import (
 )
 from .persistence import MagicFlowStore, OperationItem
 from .sites import BonusCalculator, get_calculator, get_formula_params
-from .sites.formula_fetch import fetch_site_formula, refresh_site_preset, fetch_seeding_pubdates, fetch_seeding_list
+from .sites.formula_fetch import (
+    fetch_site_formula,
+    refresh_site_preset,
+    fetch_seeding_pubdates,
+    fetch_seeding_list,
+    fetch_official_titles,
+    _norm_title as normalize_title,
+)
 
-__version__ = "1.0.59"
+__version__ = "1.0.60"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -77,6 +84,11 @@ TORRENT_FETCH_WORKERS = 6
 # 站点魔力公式抓取缓存 TTL（秒）；抓取失败时只缓存 SHORT 秒后重试。
 SITE_FORMULA_TTL = 6 * 3600
 SITE_FORMULA_RETRY = 30 * 60
+# 官种（official）列表抓取：缓存 TTL 与翻页数。
+# 官种加成是「单种自身」的加成，会影响选种/删种排序，值得缓存抓取；
+# 后宫加成依赖他人种子（用户级），与「选哪一颗」无关，不参与决策，故不抓取。
+SITE_OFFICIAL_TTL = 12 * 3600
+OFFICIAL_PAGES = 2
 
 
 # ============================================================
@@ -773,9 +785,10 @@ class MagicFlow(_PluginBase):
             )
 
             formula_params = self._build_formula_params(task)
+            official_titles = self._site_official_titles(task.site_id)
             protected_hashes = self._store.get_protected_torrents(task.id) if self._store else set()
             self._backfill_pub_dates(task, managed)
-            managed_bonus = self._convert_to_bonus_list(managed, formula_params, self._task_pub_dates(task), getattr(task, "ti_source", "publish"), self._site_ni_map(task.site_id, managed))
+            managed_bonus = self._convert_to_bonus_list(managed, formula_params, self._task_pub_dates(task), getattr(task, "ti_source", "publish"), self._site_ni_map(task.site_id, managed), official_titles)
             policy = self._build_magic_policy(task, managed_bonus)
             max_keep = policy.max_keep_torrents
             disk_gb = task.disk_size_gb
@@ -879,6 +892,7 @@ class MagicFlow(_PluginBase):
                     is_free=c.is_free,
                     is_double_free=c.is_double_free,
                     hit_and_run=c.hit_and_run,
+                    is_official=bool(official_titles) and (normalize_title(c.title) in official_titles),
                     params=formula_params,
                 )
                 bonus.age_weeks = c.age_weeks
@@ -1269,7 +1283,7 @@ class MagicFlow(_PluginBase):
                 self._log(f"任务 [{task.name}] 没有管理的种子", "info")
                 return
 
-            torrent_bonus_list = self._convert_to_bonus_list(task_torrents, self._build_formula_params(task), self._task_pub_dates(task), getattr(task, "ti_source", "publish"), self._site_ni_map(task.site_id, task_torrents))
+            torrent_bonus_list = self._convert_to_bonus_list(task_torrents, self._build_formula_params(task), self._task_pub_dates(task), getattr(task, "ti_source", "publish"), self._site_ni_map(task.site_id, task_torrents), self._site_official_titles(task.site_id))
             protected_hashes = self._store.get_protected_torrents(task.id)
             policy = self._build_magic_policy(task, torrent_bonus_list)
 
@@ -1337,6 +1351,33 @@ class MagicFlow(_PluginBase):
             pass
         return {}
 
+    def _site_official_titles(self, site_id: int) -> set:
+        """站点官种标题集合（规范化），带 TTL 缓存。
+
+        官种加成是「单种自身」的加成（站点对官种单独再算一遍基础公式 × 官种系数），
+        会影响单颗种子的产出 → 影响选种/删种排序，因此纳入内部打分；
+        后宫加成是用户级（依赖他人的种子），不影响「选哪一颗」，故不参与。
+        """
+        site = self._get_site(site_id)
+        domain = (getattr(site, "domain", "") or "").strip().lower() if site else ""
+        if not domain:
+            return set()
+        cache = getattr(self, "_site_official_cache", None)
+        if cache is None:
+            cache = self._site_official_cache = {}
+        now = time.time()
+        hit = cache.get(domain)
+        if hit and (now - hit[0]) < SITE_OFFICIAL_TTL:
+            return hit[1]
+        try:
+            titles = set(fetch_official_titles(site, pages=OFFICIAL_PAGES))
+        except Exception as err:
+            self._log(f"抓取官种列表失败 [{domain}]: {err}", "warning")
+            return hit[1] if hit else set()
+        cache[domain] = (now, titles)
+        self._log(f"官种列表 [{domain}]：{len(titles)} 个官种")
+        return titles
+
     def _convert_to_bonus_list(
         self,
         torrents: List[TorrentInfo],
@@ -1344,16 +1385,19 @@ class MagicFlow(_PluginBase):
         pub_dates: Optional[Dict[str, float]] = None,
         ti_source: str = "publish",
         ni_map: Optional[Dict[str, int]] = None,
+        official_titles: Optional[set] = None,
     ) -> List[TorrentBonusInfo]:
         """将下载器种子转换为魔力信息列表（可按站点公式参数计算）。
 
         ti_source：Ti 口径。``publish``（默认，= 自发布时间，站点文档口径）或
         ``seed_time``（= qB 做种时长，无发布时间时回落）。
         ni_map：hash→站点真实做种人数 Ni（可选，优先于 qB）。
+        official_titles：官种标题集合（规范化），命中则标记 ``is_official``。
         """
         use_pub = str(ti_source or "publish").lower() == "publish"
         pub_dates = pub_dates or {}
         ni_map = ni_map or {}
+        official_titles = official_titles or set()
         result = []
         for t in torrents:
             # Ni 优先用站点真实值；否则用 qB（做种中 → 至少 1，
@@ -1365,6 +1409,7 @@ class MagicFlow(_PluginBase):
                 ts = pub_dates.get(h)
                 if ts and ts > 0:
                     age_weeks = ts_to_age_weeks(ts)
+            is_official = bool(official_titles) and (normalize_title(t.title) in official_titles)
             bonus_info = calc_torrent_bonus(
                 hash=t.hash,
                 title=t.title,
@@ -1377,6 +1422,7 @@ class MagicFlow(_PluginBase):
                 is_free=t.is_free,
                 is_double_free=t.is_double_free,
                 hit_and_run=t.hit_and_run,
+                is_official=is_official,
                 params=params,
             )
             result.append(bonus_info)
@@ -2490,6 +2536,7 @@ class MagicFlow(_PluginBase):
             filter_policy = self._build_filter_policy(task)
             filtered, reason_counts = filter_candidates(candidates, filter_policy)
 
+            official_titles = self._site_official_titles(task.site_id)
             bonus_list = []
             for c in filtered:
                 bonus_info = calc_torrent_bonus(
@@ -2503,6 +2550,7 @@ class MagicFlow(_PluginBase):
                     is_zero_bonus=c.is_zero_bonus,
                     is_free=c.is_free,
                     is_double_free=c.is_double_free,
+                    is_official=bool(official_titles) and (normalize_title(c.title) in official_titles),
                     params=self._build_formula_params(task),
                 )
                 bonus_info.age_weeks = c.age_weeks
@@ -2522,6 +2570,7 @@ class MagicFlow(_PluginBase):
                     "leechers": t.leechers,
                     "age_weeks": round(t.age_weeks, 2),
                     "is_zero_bonus": t.is_zero_bonus,
+                    "is_official": bool(t.is_official),
                     "rank": rc.rank,
                 })
 
@@ -2551,7 +2600,7 @@ class MagicFlow(_PluginBase):
                 return Response(success=True, data={"preview": {}, "message": "没有做种种子"})
 
             task_torrents = [t for t in seeding_torrents if task.brush_tag in t.tags]
-            torrent_bonus_list = self._convert_to_bonus_list(task_torrents, self._build_formula_params(task), self._task_pub_dates(task), getattr(task, "ti_source", "publish"), self._site_ni_map(task.site_id, task_torrents))
+            torrent_bonus_list = self._convert_to_bonus_list(task_torrents, self._build_formula_params(task), self._task_pub_dates(task), getattr(task, "ti_source", "publish"), self._site_ni_map(task.site_id, task_torrents), self._site_official_titles(task.site_id))
             protected_hashes = self._store.get_protected_torrents(task_id) if self._store else set()
             policy = self._build_magic_policy(task, torrent_bonus_list)
 
