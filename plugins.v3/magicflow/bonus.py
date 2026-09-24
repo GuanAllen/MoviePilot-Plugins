@@ -40,6 +40,8 @@ class BonusParams:
     l: float = 300.0           # 曲线参数
     zero_weight: float = 0.2   # 零魔种子权重 Wi
     normal_weight: float = 1.0 # 普通种子权重 Wi
+    official_coef: float = 0.0 # 官种加成系数（官种单独算 A 后乘以此系数）
+    harem_coef: float = 0.0    # 后宫加成系数（后宫时魔之和 × 此系数）
 
     @staticmethod
     def normalized(params: Optional["BonusParams"] = None) -> "BonusParams":
@@ -55,6 +57,8 @@ class BonusParams:
             "l": self.l,
             "zero_weight": self.zero_weight,
             "normal_weight": self.normal_weight,
+            "official_coef": self.official_coef,
+            "harem_coef": self.harem_coef,
         }
         for key, value in overrides.items():
             if value is not None and key in data:
@@ -86,6 +90,7 @@ class TorrentBonusInfo:
     is_free: bool               # 是否免费
     is_double_free: bool        # 是否双倍
     hit_and_run: bool           # 是否 H&R
+    is_official: bool = False   # 是否官种（有额外加成）
 
     # 计算结果
     time_factor: float = 0.0    # 时间因子 (1 - 10^(-Ti/5))
@@ -270,6 +275,46 @@ def calc_bonus_per_hour(
     # 魔力值曲线
     bonus = p.b0 * 2 / math.pi * math.atan(a / p.l)
     return bonus
+
+
+def calc_aggregate_bonus_per_hour(
+    torrents: List["TorrentBonusInfo"],
+    params: Optional[BonusParams] = None,
+    official_coef: Optional[float] = None,
+    harem_hourly: float = 0.0,
+    harem_coef: Optional[float] = None,
+) -> float:
+    """站点口径的「每小时合计魔力」。
+
+    站点公式对**合计 A** 只取一次 arctan，而不是对每个种子分别 arctan 再相加：
+        B = B0 * 2/π * arctan(A_total / L)
+    官方/后宫加成按站点规则分别计算：
+        合计 = 基础 + 官种(仅官种 A 算一次, ×official_coef) + 后宫(harem_hourly × harem_coef)
+
+    Args:
+        torrents: 做种列表（TorrentBonusInfo）
+        params: 公式参数
+        official_coef / harem_coef: 覆盖系数（None 用 params 里的值）
+        harem_hourly: 后宫成员时魔之和（外部提供，无则 0）
+
+    Returns:
+        每小时合计魔力
+    """
+    p = BonusParams.normalized(params)
+    oc = p.official_coef if official_coef is None else official_coef
+    hc = p.harem_coef if harem_coef is None else harem_coef
+    a_total = 0.0
+    a_official = 0.0
+    for t in torrents or []:
+        wi = t.weight if t.weight else calc_weight(t.is_zero_bonus, p)
+        a_i = calc_time_factor(t.age_weeks, p) * t.size_gb * calc_people_factor(t.seeders, p) * wi
+        a_total += a_i
+        if getattr(t, "is_official", False):
+            a_official += a_i
+    b_base = p.b0 * 2 / math.pi * math.atan(a_total / p.l)
+    b_official = (p.b0 * 2 / math.pi * math.atan(a_official / p.l)) * oc if oc else 0.0
+    b_harem = (harem_hourly or 0.0) * hc if hc else 0.0
+    return b_base + b_official + b_harem
 
 
 DEFAULT_CANDIDATE_REF_WEEKS = 4.0

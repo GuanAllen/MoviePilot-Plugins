@@ -59,6 +59,9 @@ class FormulaCapture:
             for key in ("t0", "n0", "b0", "l", "zero_weight", "normal_weight")
             if key in self.params
         }
+        for extra_key, param_key in (("official_coef", "official_coef"), ("harem_coef", "harem_coef")):
+            if extra_key in self.extra and self.extra[extra_key] is not None:
+                overrides[param_key] = self.extra[extra_key]
         return base.merged(**overrides)
 
     def as_dict(self) -> Dict[str, Any]:
@@ -78,6 +81,8 @@ class FormulaCapture:
                 "l": self.to_params().l,
                 "zero_weight": self.to_params().zero_weight,
                 "normal_weight": self.to_params().normal_weight,
+                "official_coef": self.to_params().official_coef,
+                "harem_coef": self.to_params().harem_coef,
             },
         }
 
