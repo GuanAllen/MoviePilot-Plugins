@@ -102,6 +102,9 @@ class TaskState:
     # ⚠️ 必须持久化：否则每次重载后 pub_tz 丢失 → get_pub_dates 误判不匹配 → 返回空 →
     # Ti 回落「做种时长」（远小于发布时长）→ 合计 A / 站点时魔严重偏低。
     pub_tz: float = 0.0
+    # 「同站纳管」纳入的种子 hash（本机早已存在的同站种子，非本插件下载）。
+    # 这些视为用户自有资源（可能是自己下载的影视资源，而非刷流用），默认保护、不参与删种。
+    adopted_hashes: Set[str] = field(default_factory=set)
     enabled: bool = True
     revision: int = 0  # 配置版本号，用于 optimistic locking
     # 运行阶段（供前端「运行诊断」流程链转圈用）
@@ -133,6 +136,7 @@ class TaskState:
             "protected_torrents": list(self.protected_torrents),
             "pub_dates": dict(self.pub_dates),
             "pub_tz": self.pub_tz,
+            "adopted_hashes": list(self.adopted_hashes),
             "enabled": self.enabled,
             "revision": self.revision,
             "last_phase": self.last_phase,
@@ -165,6 +169,7 @@ class TaskState:
             protected_torrents=set(d.get("protected_torrents", [])),
             pub_dates={str(k).lower(): float(v) for k, v in (d.get("pub_dates") or {}).items() if v},
             pub_tz=float(d.get("pub_tz", 0.0) or 0.0),
+            adopted_hashes=set(d.get("adopted_hashes", []) or []),
             enabled=d.get("enabled", True),
             revision=d.get("revision", 0),
             last_phase=d.get("last_phase", ""),
@@ -738,6 +743,39 @@ class MagicFlowStore:
         if not state:
             return set()
         return state.protected_torrents.copy()
+
+    # -------------------- 同站纳管 --------------------
+
+    def get_adopted(self, task_id: str) -> Set[str]:
+        """获取「同站纳管」纳入的种子 hash 集合（用户自有资源）。"""
+        state = self.task_states.get(task_id)
+        if not state:
+            return set()
+        return set(getattr(state, "adopted_hashes", set()) or set())
+
+    def note_adopted(self, task_id: str, hashes: List[str]) -> int:
+        """记录新纳入的「同站纳管」种子 hash（持久化）。返回本次新增数量。"""
+        state = self.task_states.get(task_id)
+        if not state:
+            state = self.task_states.create(task_id)
+        before = len(state.adopted_hashes)
+        for h in hashes:
+            hs = (h or "").lower()
+            if hs:
+                state.adopted_hashes.add(hs)
+        if len(state.adopted_hashes) != before:
+            self.task_states.save(state)
+        return len(state.adopted_hashes) - before
+
+    def is_self_added(self, task_id: str, hash_string: str) -> bool:
+        """该 hash 是否为本插件自己下载/复用的种子（seen 记录，兼容新旧 key 前缀）。"""
+        h = (hash_string or "").lower()
+        if not h or not task_id:
+            return False
+        return bool(
+            self.seen.is_seen(task_id, f"hash:{h}", 0.0)
+            or self.seen.is_seen(task_id, f"h:{h}", 0.0)
+        )
 
     # -------------------- 任务运行记录 --------------------
 

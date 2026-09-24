@@ -82,7 +82,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "1.0.75"
+__version__ = "1.0.76"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -849,12 +849,19 @@ class MagicFlow(_PluginBase):
 
         识别方式：种子的 tracker（announce）域名与本站 domain 匹配。
         只**追加**标签（不覆盖其它标签），不下载、不校验、不改动其它站点。
+
+        ★ 保护策略：本插件自己下载/复用的（刷流用）照常按效率清理；
+          本机**早已存在**的同站种子（IYUU / 其它插件 / 手动添加 / 自己下载的影视资源）
+          一律纳入「自有资源」集合并 **永久保护**（不参与任何删种）。
         """
         keys = self._same_site_keys(task)
         if not keys:
-            return {"matched": 0, "adopted": 0, "already": 0}
+            return {"matched": 0, "adopted": 0, "already": 0, "protected": 0}
+        store = self._store
+        adopted_set = store.get_adopted(task.id) if store else set()
         matched = adopted = already = 0
         to_tag: List[str] = []
+        to_adopt: List[str] = []
         for t in downloader.get_raw_torrents():
             tr = str(_kv(t, "tracker", "") or "").strip()
             if not tr:
@@ -872,19 +879,35 @@ class MagicFlow(_PluginBase):
             tags = _kv(t, "tags", "") or []
             if isinstance(tags, str):
                 tags = [x.strip() for x in tags.split(",") if x.strip()]
-            if task.brush_tag in list(tags):
+            if task.brush_tag not in list(tags):
+                to_tag.append(h)
+
+            if h in adopted_set:
+                # 已纳管的自有资源：不重复保护（尊重用户在 UI 上的手动「取消保护」）
                 already += 1
                 continue
-            to_tag.append(h)
+            # 本插件自己下载/复用的种子（刷流）→ 不保护，正常按效率清理
+            if store and store.is_self_added(task.id, h):
+                continue
+            # 本机早已存在的同站种子 → 纳管并永久保护（用户自有资源）
+            to_adopt.append(h)
+            adopted += 1
+
         for h in to_tag:
-            if downloader.set_torrent_tags(h, [task.brush_tag]):
-                adopted += 1
+            downloader.set_torrent_tags(h, [task.brush_tag])
+        protected = 0
+        if store and to_adopt:
+            store.note_adopted(task.id, to_adopt)
+            for h in to_adopt:
+                if store.protect_torrent(task.id, h):
+                    protected += 1
+
         if adopted:
             self._log(
                 f"魔力管家 [{task.name}] 同站纳管：本站 tracker 种子 {matched} 个，"
-                f"新纳管 {adopted} 个（已在管 {already}）"
+                f"新纳管并保护 {adopted} 个（已在管 {already}）"
             )
-        return {"matched": matched, "adopted": adopted, "already": already}
+        return {"matched": matched, "adopted": adopted, "already": already, "protected": protected}
 
     def _brush_impl(self, task_id: str) -> None:
         """抓取站点候选并补充优质魔力种子（刷流，v5 流程）。"""
@@ -917,7 +940,8 @@ class MagicFlow(_PluginBase):
             self._log(f"魔力管家 [{task.name}] 入口前清理异常: {_cle}", "warning")
 
         # ---------- ⓪b 同站纳管：把本机上「属于本站」的已有种子补打 tag ----------
-        # （IYUU / 其它插件 / 手动添加的同站种子，此前不会被计托管、也不受保护）
+        # 本插件自己刷流加的照常按效率清理；本机早已存在的同站种子（IYUU/其它插件/
+        # 手动添加/自己下载的影视资源）纳管并**永久保护**，绝不被删种。
         try:
             self._adopt_same_site(task, downloader)
         except Exception as _ade:
