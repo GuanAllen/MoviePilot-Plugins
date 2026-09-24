@@ -427,6 +427,135 @@ def calc_candidate_bonus_per_hour(
     return calc_bonus_per_hour(size_gb, seeders, eff, is_zero_bonus, params, is_official=is_official)
 
 
+# ============================================================
+# 「做种人数 × 体积」最优解评分（选种用）
+# ============================================================
+
+def marginal_bonus_per_hour(
+    a_current: float,
+    a_add: float,
+    params: Optional[BonusParams] = None,
+    flat_gain: float = 0.0,
+) -> float:
+    """把一颗新种子加进现有池子后，站点时魔的**真实边际增益**。
+
+    站点口径是「对**合计 A** 只取一次 arctan」：
+        B(A) = B0·2/π·arctan(A/L)
+    所以单看某颗种子自己的 ``atan(a/L)``（= ``calc_bonus_per_hour``）会**高估**，
+    尤其在大体积 / 多颗同挂时。真实边际增益 = ``B(A+a) − B(A)``：
+      - A 很小时近似线性（≈ 常数·a）；
+      - A 逼近 L 时明显递减——这正是「越接近上限、再加种/加体积越不划算」的数学。
+
+    另加 ``flat_gain``：站点「做种数固定奖励」在未达做种数上限时，每多挂 1 个种子
+    多 ``per_torrent_flat``；达上限后为 0。由调用方按剩余名额判断后传入。
+    """
+    p = BonusParams.normalized(params)
+    a0 = max(float(a_current or 0.0), 0.0)
+    add = max(float(a_add or 0.0), 0.0)
+    gain = p.b0 * 2.0 / math.pi * (math.atan((a0 + add) / p.l) - math.atan(a0 / p.l))
+    return gain + max(float(flat_gain or 0.0), 0.0)
+
+
+@dataclass
+class CandidateScore:
+    """候选种子的「最优解」评分（仅供**选种排序**，不用于 UI 展示）。"""
+    a_contrib: float = 0.0      # 该种贡献的 A = f_t·Si·f_n·w·(1+官种系数)
+    value: float = 0.0          # 边际时魔增益（真实非线性 + 固定奖励项）
+    efficiency: float = 0.0     # 每 GB 边际收益 = value / Si（磁盘受限时用）
+    download_cost: float = 0.0  # 下载代价 ≈ Si / Ni（越大越慢；仅提示/兜底，不排除）
+    time_factor: float = 0.0
+    people_factor: float = 0.0
+    weight: float = 1.0
+    viable: bool = True         # 是否可下（Ni ≥ 下限）
+    reason: str = ""
+
+
+def score_candidate(
+    size_gb: float,
+    seeders: int,
+    age_weeks: float,
+    a_current: float = 0.0,
+    is_zero_bonus: bool = False,
+    is_official: bool = False,
+    params: Optional[BonusParams] = None,
+    min_seeders: int = 1,
+    flat_gain: float = 0.0,
+    ref_weeks: float = DEFAULT_CANDIDATE_REF_WEEKS,
+) -> CandidateScore:
+    """综合「做种人数 Ni × 体积 Si」给出单颗候选的最优解评分。
+
+    这是选种的核心算法（黑盒口径不变：UI 仍只显示站点上报值）：
+      - ``value`` 用**真实边际**而不是单种 atan，避免大体积/多颗同挂被高估；
+      - ``efficiency`` = value / Si：**磁盘受限**时优先「每 GB 收益最高」的种；
+      - ``viable`` = Ni ≥ min_seeders：无源种子永远下不完 → 边际收益恒 0，直接排除；
+      - ``download_cost`` ≈ Si / Ni 仅作提示/兜底（Master 口径「慢 ≠ 差」，不据此排除）。
+
+    排序建议：名额受限（保种数上限）→ 按 ``value`` 降序；磁盘受限 → 按 ``efficiency`` 降序。
+    """
+    p = BonusParams.normalized(params)
+    eff_age = max(float(age_weeks or 0.0), float(ref_weeks or 0.0))
+    size_gb = max(float(size_gb or 0.0), 0.0)
+    ni = int(seeders or 0)
+    f_t = calc_time_factor(eff_age, p)
+    f_n = calc_people_factor(ni, p)
+    w = calc_weight(is_zero_bonus, p)
+    a = f_t * size_gb * f_n * w
+    if is_official and p.official_coef:
+        a *= (1.0 + p.official_coef)
+    viable = ni >= max(int(min_seeders or 0), 0)
+    value = marginal_bonus_per_hour(a_current, a, p, flat_gain=flat_gain) if viable else 0.0
+    return CandidateScore(
+        a_contrib=a,
+        value=value,
+        efficiency=(value / size_gb) if size_gb > 0 else 0.0,
+        download_cost=(size_gb / max(ni, 1)) if size_gb > 0 else 0.0,
+        time_factor=f_t,
+        people_factor=f_n,
+        weight=w,
+        viable=viable,
+        reason="" if viable else f"站内做种人数 {ni} < {min_seeders}（无源，下不动）",
+    )
+
+
+def select_optimal(
+    items: List[Tuple[Any, "CandidateScore"]],
+    disk_left_gb: Optional[float] = None,
+    count_left: Optional[int] = None,
+) -> List[Tuple[Any, "CandidateScore"]]:
+    """在「磁盘 / 名额」双预算下挑出最优子集（贪心，返回按优先级排好的列表）。
+
+    - 名额受限（count_left 有值）→ 按 ``value`` 降序（每个名额收益最大）；
+    - 磁盘受限（disk_left_gb 有值且 count_left 为 None）→ 按 ``efficiency`` 降序；
+    - 两者都有限 → 按 ``value`` 降序为主、``efficiency`` 为次（先装满名额）。
+    装入时同时遵守两个预算（装不下的跳过，继续试更小的）。
+    """
+    def _size(obj: Any) -> float:
+        try:
+            return float(getattr(obj, "size_gb", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    ranked = [kv for kv in (items or []) if kv[1].viable]
+    if disk_left_gb is not None and count_left is None:
+        ranked.sort(key=lambda kv: (kv[1].efficiency, kv[1].value), reverse=True)
+    else:
+        ranked.sort(key=lambda kv: (kv[1].value, kv[1].efficiency), reverse=True)
+
+    picked: List[Tuple[Any, "CandidateScore"]] = []
+    used_size = 0.0
+    used_cnt = 0
+    for obj, sc in ranked:
+        if count_left is not None and used_cnt >= count_left:
+            break
+        sz = _size(obj)
+        if disk_left_gb is not None and (used_size + sz) > disk_left_gb:
+            continue
+        picked.append((obj, sc))
+        used_size += sz
+        used_cnt += 1
+    return picked
+
+
 def calc_torrent_bonus(
     hash: str,
     title: str,
