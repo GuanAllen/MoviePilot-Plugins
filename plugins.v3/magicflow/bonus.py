@@ -300,6 +300,28 @@ def calc_aggregate_bonus_per_hour(
     Returns:
         每小时合计魔力
     """
+    return aggregate_breakdown(
+        torrents, params,
+        official_coef=official_coef,
+        harem_hourly=harem_hourly,
+        harem_coef=harem_coef,
+    )["total"]
+
+
+def aggregate_breakdown(
+    torrents: List["TorrentBonusInfo"],
+    params: Optional[BonusParams] = None,
+    official_coef: Optional[float] = None,
+    harem_hourly: float = 0.0,
+    harem_coef: Optional[float] = None,
+) -> Dict[str, float]:
+    """站点口径合计魔力，并返回中间量（供「魔力计算」页展示推导链）。
+
+    返回 dict：
+        a_total / a_official   合计 A、官种 A（该项只算一次 arctan）
+        b_base / b_official / b_harem  三段拆分
+        total                  每小时合计魔力
+    """
     p = BonusParams.normalized(params)
     oc = p.official_coef if official_coef is None else official_coef
     hc = p.harem_coef if harem_coef is None else harem_coef
@@ -314,7 +336,14 @@ def calc_aggregate_bonus_per_hour(
     b_base = p.b0 * 2 / math.pi * math.atan(a_total / p.l)
     b_official = (p.b0 * 2 / math.pi * math.atan(a_official / p.l)) * oc if oc else 0.0
     b_harem = (harem_hourly or 0.0) * hc if hc else 0.0
-    return b_base + b_official + b_harem
+    return {
+        "a_total": a_total,
+        "a_official": a_official,
+        "b_base": b_base,
+        "b_official": b_official,
+        "b_harem": b_harem,
+        "total": b_base + b_official + b_harem,
+    }
 
 
 DEFAULT_CANDIDATE_REF_WEEKS = 4.0

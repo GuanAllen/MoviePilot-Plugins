@@ -96,6 +96,36 @@ const sortedTorrents = computed(() => {
   if (torrentStatusFilter.value !== 'all') items = items.filter(item => torrentStatusGroup(item) === torrentStatusFilter.value)
   return items
 })
+
+// 「魔力计算」：本站公式 + 本轮汇总推导链
+const formulaInfo = computed(() => bonusData.value.formula || {})
+const formulaExprs = computed(() => [formulaInfo.value.expr_a, formulaInfo.value.expr_b].filter(Boolean))
+const formulaChips = computed(() => {
+  const p = formulaInfo.value.params || {}
+  return [
+    { k: 'T0', v: p.t0 },
+    { k: 'N0', v: p.n0 },
+    { k: 'B0', v: p.b0 },
+    { k: 'L', v: p.l },
+    { k: '普通 Wi', v: p.normal_weight },
+    { k: '零魔 Wi', v: p.zero_weight },
+    { k: '官种 ×', v: p.official_coef, hi: true },
+    { k: '后宫 ×', v: p.harem_coef, hi: true },
+  ]
+    .filter(item => item.v !== null && item.v !== undefined && item.v !== '')
+    .map(item => ({ ...item, v: Number(item.v) }))
+})
+const calcTotalSizeGb = computed(() =>
+  (bonusData.value.torrents || []).reduce((sum, item) => sum + (Number(item.size_gb) || 0), 0),
+)
+const topContributors = computed(() =>
+  [...(bonusData.value.torrents || [])]
+    .sort((a, b) => (Number(b.bonus_per_hour) || 0) - (Number(a.bonus_per_hour) || 0))
+    .slice(0, 6),
+)
+const topContributorMax = computed(() =>
+  Math.max(1, ...topContributors.value.map(item => Number(item.bonus_per_hour) || 0)),
+)
 const reasonEntries = computed(() => {
   const counts = candidateData.value.reason_counts || {}
   return Object.entries(counts)
@@ -124,6 +154,7 @@ const MF_TABS = [
   { value: 'overview', label: '任务概览' },
   { value: 'diagnostics', label: '运行诊断' },
   { value: 'pool', label: '种子池' },
+  { value: 'calc', label: '魔力计算' },
   { value: 'config', label: '任务配置' },
 ]
 const flowNodes = computed(() => {
@@ -544,6 +575,10 @@ watch(activeTab, tab => {
   if (tab === 'diagnostics' && selectedTaskId.value) {
     loadOperations(selectedTaskId.value)
     loadDetail(selectedTaskId.value)
+  }
+  // 进入「魔力计算」刷新托管明细（带公式块）
+  if (tab === 'calc' && selectedTaskId.value) {
+    loadBonus(selectedTaskId.value)
   }
 })
 
@@ -1086,6 +1121,89 @@ onUnmounted(() => {
               </template>
             </VWindowItem>
 
+
+            <VWindowItem value="calc">
+              <VSheet tag="section" class="magicflow-panel magicflow-calc app-surface-static">
+                <header class="magicflow-panel__head">
+                  <div>
+                    <div class="text-subtitle-1 font-weight-medium">本站公式</div>
+                    <div class="text-body-2 text-medium-emphasis">
+                      {{ formulaInfo.site_name || selectedTask.site_name || '当前任务' }}
+                      <template v-if="formulaInfo.site_domain"> · {{ formulaInfo.site_domain }}</template>
+                    </div>
+                  </div>
+                  <div class="magicflow-calc__meta">
+                    <span :class="{ 'is-fallback': !formulaInfo.ok }">
+                      {{ formulaInfo.ok ? '自动获取' : '回落标准式' }}
+                      <template v-if="formulaInfo.source"> · {{ formulaInfo.source }}</template>
+                    </span>
+                    <VBtn size="small" variant="text" prepend-icon="mdi-refresh" :loading="taskLoading" @click="loadBonus(selectedTaskId)">重新抓取</VBtn>
+                  </div>
+                </header>
+
+                <div v-if="formulaExprs.length" class="magicflow-calc__expr">
+                  <div v-for="(expr, i) in formulaExprs" :key="i" class="magicflow-calc__expr-line">{{ expr }}</div>
+                </div>
+                <div v-else class="magicflow-table-empty">
+                  暂未获取到本站公式（未运行或站点未暴露 mybonus 公式），当前使用 NexusPHP 标准式。
+                </div>
+
+                <div class="magicflow-calc__chips">
+                  <span v-for="chip in formulaChips" :key="chip.k" class="magicflow-calc__chip" :class="{ 'is-hi': chip.hi }">
+                    {{ chip.k }} <b>{{ chip.v }}</b>
+                  </span>
+                </div>
+              </VSheet>
+
+              <VSheet tag="section" class="magicflow-panel magicflow-calc app-surface-static">
+                <header class="magicflow-panel__head">
+                  <div>
+                    <div class="text-subtitle-1 font-weight-medium">任务汇总</div>
+                    <div class="text-body-2 text-medium-emphasis">本轮托管种子的合计产出与站点实测对照</div>
+                  </div>
+                </header>
+
+                <div class="magicflow-calc__stats">
+                  <div class="magicflow-calc__stat">
+                    <b>{{ bonusData.torrent_count || 0 }}</b><span>托管种子</span>
+                  </div>
+                  <div class="magicflow-calc__stat">
+                    <b>{{ calcTotalSizeGb.toFixed(1) }}</b><span>做种 GB</span>
+                  </div>
+                  <div class="magicflow-calc__stat is-accent">
+                    <b>{{ Number(formulaInfo.total ?? bonusData.total_bonus ?? 0).toFixed(2) }}</b><span>模型时魔 /h</span>
+                  </div>
+                  <div class="magicflow-calc__stat" :class="{ 'is-ok': Number(formulaInfo.site_reported_bonus) > 0 }">
+                    <b>{{ Number(formulaInfo.site_reported_bonus) > 0 ? Number(formulaInfo.site_reported_bonus).toFixed(2) : '—' }}</b>
+                    <span>站点时魔 /h</span>
+                  </div>
+                </div>
+
+                <div class="magicflow-calc__chain">
+                  <span>Σ A = <b>{{ Number(formulaInfo.sum_a || 0).toFixed(1) }}</b></span>
+                  <span class="magicflow-calc__arrow">→</span>
+                  <span>一次 arctan</span>
+                  <span class="magicflow-calc__arrow">→</span>
+                  <span><b>{{ Number(formulaInfo.total ?? bonusData.total_bonus ?? 0).toFixed(2) }}</b>/h</span>
+                  <span v-if="formulaInfo.deviation_pct != null" class="magicflow-calc__dev">
+                    偏差 {{ formulaInfo.deviation_pct > 0 ? '+' : '' }}{{ formulaInfo.deviation_pct }}%
+                  </span>
+                </div>
+
+                <div v-if="topContributors.length" class="magicflow-calc__top">
+                  <div class="magicflow-calc__top-title">产出排行</div>
+                  <div v-for="(item, i) in topContributors" :key="item.hash || i" class="magicflow-calc__top-row">
+                    <span class="magicflow-calc__rk">{{ i + 1 }}</span>
+                    <span class="magicflow-calc__tt" :title="item.title">
+                      {{ item.title }} <i>· Ni={{ item.seeders }}</i>
+                    </span>
+                    <span class="magicflow-calc__bar"><i :style="{ width: `${Math.max(4, Math.round(((Number(item.bonus_per_hour) || 0) / topContributorMax) * 100))}%` }" /></span>
+                    <span class="magicflow-calc__bv">{{ Number(item.bonus_per_hour || 0).toFixed(2) }}</span>
+                  </div>
+                </div>
+                <div v-else class="magicflow-table-empty">当前没有托管种子，先执行一次任务吧。</div>
+              </VSheet>
+            </VWindowItem>
 
             <VWindowItem value="config">
               <div class="magicflow-config-grid">
@@ -2523,6 +2641,200 @@ onUnmounted(() => {
 @media (max-width: 699px) {
   .magicflow-page {
     padding-block-end: 76px;
+  }
+}
+/* ---------- 魔力计算 tab ---------- */
+.magicflow-calc__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.magicflow-calc__meta .is-fallback {
+  color: rgb(var(--v-theme-warning));
+}
+
+.magicflow-calc__expr {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.95;
+  padding: 12px 14px;
+  border-radius: 12px;
+  margin-block: 2px 12px;
+  background: rgba(8, 12, 26, 0.5);
+  border: 1px solid var(--magicflow-panel-brd);
+  white-space: nowrap;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.magicflow-calc__expr-line + .magicflow-calc__expr-line {
+  margin-block-start: 4px;
+}
+
+.magicflow-calc__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.magicflow-calc__chip {
+  font-size: 11px;
+  padding: 4px 9px;
+  border-radius: 8px;
+  color: rgba(var(--v-theme-on-surface), 0.82);
+  background: rgba(139, 123, 240, 0.1);
+  border: 1px solid rgba(139, 123, 240, 0.24);
+}
+
+.magicflow-calc__chip b {
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.magicflow-calc__chip.is-hi {
+  color: #bfeef5;
+  background: rgba(94, 200, 216, 0.12);
+  border-color: rgba(94, 200, 216, 0.32);
+}
+
+.magicflow-calc__chip.is-hi b {
+  color: #e5fbff;
+}
+
+.magicflow-calc__stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-block: 2px 12px;
+}
+
+.magicflow-calc__stat {
+  padding: 11px;
+  border-radius: 12px;
+  text-align: center;
+  background: rgba(139, 123, 240, 0.07);
+  border: 1px solid rgba(139, 123, 240, 0.14);
+}
+
+.magicflow-calc__stat b {
+  display: block;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.magicflow-calc__stat span {
+  font-size: 10.5px;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.magicflow-calc__stat.is-accent b {
+  color: #c0b6ff;
+}
+
+.magicflow-calc__stat.is-ok b {
+  color: #8fe3ef;
+}
+
+.magicflow-calc__chain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  color: rgba(var(--v-theme-on-surface), 0.78);
+  background: rgba(8, 12, 26, 0.45);
+  border: 1px solid var(--magicflow-panel-brd);
+  border-radius: 11px;
+  padding: 10px 12px;
+  margin-block-end: 14px;
+}
+
+.magicflow-calc__chain b {
+  color: #d6d2ff;
+}
+
+.magicflow-calc__arrow {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.magicflow-calc__dev {
+  font-size: 10.5px;
+  color: #8fe3ef;
+  background: rgba(94, 200, 216, 0.12);
+  border: 1px solid rgba(94, 200, 216, 0.3);
+  padding: 3px 8px;
+  border-radius: 7px;
+}
+
+.magicflow-calc__top {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.magicflow-calc__top-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.82);
+  margin-block-end: 2px;
+}
+
+.magicflow-calc__top-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+}
+
+.magicflow-calc__rk {
+  flex: 0 0 16px;
+  text-align: center;
+  font-size: 10.5px;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.magicflow-calc__tt {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.magicflow-calc__tt i {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  font-style: normal;
+  font-size: 10.5px;
+}
+
+.magicflow-calc__bar {
+  flex: 0 0 52px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.magicflow-calc__bar i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #6a5cd8, #9c8cff);
+}
+
+.magicflow-calc__bv {
+  flex: 0 0 52px;
+  text-align: right;
+  font-weight: 600;
+  color: #d6d2ff;
+}
+
+@media (max-width: 699px) {
+  .magicflow-calc__stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 </style>
