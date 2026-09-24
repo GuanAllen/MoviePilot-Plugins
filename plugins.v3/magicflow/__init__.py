@@ -32,6 +32,8 @@ from .bonus import (
     calc_candidate_bonus_per_hour,
     calc_aggregate_bonus_per_hour,
     aggregate_breakdown,
+    site_ceiling,
+    seeds_for_coverage,
     calc_torrent_bonus,
     decide_deletions,
     preview_deletions,
@@ -73,7 +75,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "1.0.62"
+__version__ = "1.0.63"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -1854,6 +1856,20 @@ class MagicFlow(_PluginBase):
             if avg_size > 0:
                 max_keep = max(int(task.disk_size_gb / avg_size), 1)
 
+        # 站点上限感知（很多站点有上限）：
+        #   - 站点对「做种数」有计入上限（超过后固定奖励不再增长）；
+        #   - 总时魔有天花板（B0）。
+        # 用户未显式设 max_keep 时，把「站点做种数上限」作为附加约束（与体积上限取小），
+        # 避免在已接近站点上限时继续盲目堆种、白占硬盘。
+        params = None
+        try:
+            params = self._build_formula_params(task)
+        except Exception:
+            params = None
+        cap_n = int(getattr(params, "seeding_count_cap", 0) or 0)
+        if task.max_keep_torrents is None and cap_n > 0:
+            max_keep = min(max_keep, cap_n) if max_keep else cap_n
+
         return MagicPolicy(
             min_bonus_per_hour=threshold,
             bonus_protect_threshold=protect,
@@ -2150,6 +2166,9 @@ class MagicFlow(_PluginBase):
             "site_bonus_per_hour": 0.0,
             "site_bonus_a": 0.0,
             "site_bonus_ok": False,
+            "site_ceiling": 0.0,
+            "site_seed_cap": 0,
+            "ceiling_pct": 0.0,
             "state": "idle",
             "protected_count": 0,
         }
@@ -2162,6 +2181,16 @@ class MagicFlow(_PluginBase):
             stats["site_bonus_ok"] = bool(rep["ok"])
         except Exception as err:
             self._log(f"统计任务 [{task.name}] 站点魔力失败: {err}", "warning")
+        # 站点上限感知：时魔天花板（B0 + 固定奖励封顶）+ 距上限占用
+        try:
+            params = self._build_formula_params(task)
+            ceiling = float(site_ceiling(params))
+            stats["site_ceiling"] = round(ceiling, 2)
+            stats["site_seed_cap"] = int(getattr(params, "seeding_count_cap", 0) or 0)
+            if ceiling > 0:
+                stats["ceiling_pct"] = round(min(stats["site_bonus_per_hour"] / ceiling * 100.0, 999.0), 1)
+        except Exception:
+            pass
         try:
             downloader = self._get_downloader(task.downloader)
             if downloader and downloader.is_available:
@@ -2242,6 +2271,7 @@ class MagicFlow(_PluginBase):
         seeding_count = 0
         bonus_per_hour = 0.0
         current_bonus = 0.0
+        ceiling = 0.0
 
         # 站点上报魔力按「站点」去重（同一站点多任务不重复计）
         site_tasks: Dict[int, MagicFlowTaskConfig] = {}
@@ -2255,6 +2285,10 @@ class MagicFlow(_PluginBase):
             rep = self._site_reported(task)
             bonus_per_hour += rep["bonus_per_hour"]
             current_bonus += rep["current_bonus"]
+            try:
+                ceiling += float(site_ceiling(self._build_formula_params(task)))
+            except Exception:
+                pass
 
         summary = {
             "total_tasks": total_tasks,
@@ -2262,6 +2296,8 @@ class MagicFlow(_PluginBase):
             "seeding_count": seeding_count,
             "bonus_per_hour": round(bonus_per_hour, 4),
             "current_bonus": round(current_bonus, 2),
+            "ceiling": round(ceiling, 2),
+            "ceiling_pct": round(min(bonus_per_hour / ceiling * 100.0, 999.0), 1) if ceiling > 0 else 0.0,
         }
         self._summary_cache = summary
         self._summary_cache_at = now
