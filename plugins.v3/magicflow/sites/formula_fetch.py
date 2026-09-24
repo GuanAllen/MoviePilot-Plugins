@@ -109,6 +109,66 @@ def _to_float(raw: Optional[str]) -> Optional[float]:
         return None
 
 
+def _cell_text(raw: str) -> str:
+    """单元格文本：去标签 + 实体解码 + 折叠空白。"""
+    return re.sub(r"[ \t\r\n\u00a0]+", " ", _html.unescape(re.sub(r"<[^>]+>", " ", raw))).strip()
+
+
+def parse_bonus_table(html_text: str) -> Dict[str, Any]:
+    """解析 mybonus「每小时获得的合计魔力值」表（纯函数）。
+
+    表头：奖励类型 | 数量 | 体积 | A 值 | 基础魔力 | 系数 | 获得魔力 | 合计(rowspan)
+    行例：``基本奖励 | 36 | 397.52 GB | 24.462 | 15.980 | 1 | 15.980``。
+
+    返回 ``{'rows': [...], 'total': float|None, 'base': row|None,
+    'official': row|None, 'harem': row|None}``。
+    """
+    out: Dict[str, Any] = {"rows": [], "total": None, "base": None, "official": None, "harem": None}
+    if not html_text:
+        return out
+    anchor = html_text.find("合计魔力值")
+    if anchor < 0:
+        anchor = 0
+    seg = html_text[anchor:anchor + 4000]
+    m = re.search(r"<table[^>]*>(.*?)</table>", seg, re.S | re.I)
+    if not m:
+        return out
+    table = m.group(1)
+    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", table, re.S | re.I)
+    for row in rows:
+        cells = [_cell_text(c) for c in re.findall(r"<td[^>]*>(.*?)</td>", row, re.S | re.I)]
+        if not cells:
+            continue
+        if "奖励类型" in cells[0] or cells[0].startswith("奖励"):
+            continue
+        item = {
+            "label": cells[0],
+            "count": cells[1] if len(cells) > 1 else "",
+            "size_text": cells[2] if len(cells) > 2 else "",
+            "a_value": _to_float(cells[3]) if len(cells) > 3 else None,
+            "base_bonus": _to_float(cells[4]) if len(cells) > 4 else None,
+            "coef": _to_float(cells[5]) if len(cells) > 5 else None,
+            "earned": _to_float(cells[6]) if len(cells) > 6 else None,
+        }
+        if len(cells) > 7:
+            tot = _to_float(cells[7])
+            if tot is not None:
+                out["total"] = tot
+        out["rows"].append(item)
+        label = item["label"]
+        if "基本" in label and out["base"] is None:
+            out["base"] = item
+        elif "官种" in label and out["official"] is None:
+            out["official"] = item
+        elif "后宫" in label and out["harem"] is None:
+            out["harem"] = item
+    if out["total"] is None and out["rows"]:
+        earned = [r["earned"] for r in out["rows"] if r.get("earned") is not None]
+        if earned:
+            out["total"] = round(sum(earned), 6)
+    return out
+
+
 def parse_nexusphp_formula(html_text: str) -> FormulaCapture:
     """从 NexusPHP ``mybonus.php`` 页面文本解析公式与参数（纯函数）。"""
     cap = FormulaCapture(source="mybonus.php")
@@ -166,6 +226,29 @@ def parse_nexusphp_formula(html_text: str) -> FormulaCapture:
     if m:
         extra["current_bonus_per_hour"] = _to_float(m.group(1))
         extra["current_a"] = _to_float(m.group(2))
+
+    # 5) 「每小时获得的合计魔力值」表（数量/体积/A值/基础魔力/系数/获得/合计）
+    bt = parse_bonus_table(html_text)
+    if bt["rows"]:
+        extra["bonus_table"] = bt["rows"]
+        if bt["total"] is not None:
+            extra["total_bonus_per_hour"] = bt["total"]
+        base = bt.get("base") or {}
+        if base:
+            extra["base_count"] = base.get("count")
+            extra["base_size_text"] = base.get("size_text")
+            extra["base_a"] = base.get("a_value")
+            extra["base_bonus"] = base.get("earned")
+        off = bt.get("official") or {}
+        if off:
+            extra["official_bonus"] = off.get("earned")
+        harem = bt.get("harem") or {}
+        if harem:
+            extra["harem_bonus"] = harem.get("earned")
+            hc = _to_float(str(harem.get("coef"))) if harem.get("coef") is not None else None
+            he = harem.get("earned")
+            if hc and hc > 0 and he is not None:
+                extra["harem_hourly"] = round(he / hc, 6)
     cap.extra = {k: v for k, v in extra.items() if v is not None}
 
     cap.ok = bool(cap.expr_a or cap.expr_b or cap.params)

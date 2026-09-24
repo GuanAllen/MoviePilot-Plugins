@@ -65,7 +65,7 @@ from .persistence import MagicFlowStore, OperationItem
 from .sites import BonusCalculator, get_calculator, get_formula_params
 from .sites.formula_fetch import fetch_site_formula, refresh_site_preset, fetch_seeding_pubdates, fetch_seeding_list
 
-__version__ = "1.0.58"
+__version__ = "1.0.59"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -1457,7 +1457,7 @@ class MagicFlow(_PluginBase):
             age = max(0, int(time.time() - float(cache[domain].get("ts", 0))))
         if seeding_count is None:
             seeding_count = len(torrent_list or [])
-        bd = aggregate_breakdown(torrent_list, params, seeding_count=seeding_count)
+        bd = aggregate_breakdown(torrent_list, params, seeding_count=seeding_count, harem_hourly=float(extra.get("harem_hourly") or 0))
         site_reported = extra.get("current_bonus_per_hour")
         site_reported_a = extra.get("current_a")
         deviation = None
@@ -1667,6 +1667,13 @@ class MagicFlow(_PluginBase):
             "bonus_per_hour": 0.0,
             "a": 0.0,
             "current_bonus": 0.0,
+            "base_bonus": 0.0,
+            "base_count": None,
+            "base_size_text": "",
+            "official_bonus": 0.0,
+            "harem_bonus": 0.0,
+            "harem_hourly": 0.0,
+            "table": [],
             "source": "",
             "site_domain": getattr(task, "site_domain", "") or "",
             "site_name": getattr(task, "site_name", "") or "",
@@ -1675,9 +1682,19 @@ class MagicFlow(_PluginBase):
             cap = self._acquire_site_formula(task)
             if cap and getattr(cap, "ok", False):
                 extra = getattr(cap, "extra", {}) or {}
+                total = extra.get("total_bonus_per_hour")
+                if total is None:
+                    total = extra.get("current_bonus_per_hour")
                 out["ok"] = True
-                out["bonus_per_hour"] = float(extra.get("current_bonus_per_hour") or 0)
-                out["a"] = float(extra.get("current_a") or 0)
+                out["bonus_per_hour"] = float(total or 0)
+                out["a"] = float(extra.get("current_a") or extra.get("base_a") or 0)
+                out["base_bonus"] = float(extra.get("base_bonus") or 0)
+                out["base_count"] = extra.get("base_count")
+                out["base_size_text"] = extra.get("base_size_text") or ""
+                out["official_bonus"] = float(extra.get("official_bonus") or 0)
+                out["harem_bonus"] = float(extra.get("harem_bonus") or 0)
+                out["harem_hourly"] = float(extra.get("harem_hourly") or 0)
+                out["table"] = extra.get("bonus_table") or []
                 out["source"] = getattr(cap, "source", "") or ""
         except Exception as err:
             self._log(f"读取站点上报魔力失败: {err}", "warning")
