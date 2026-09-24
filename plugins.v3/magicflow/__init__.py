@@ -61,7 +61,7 @@ from .persistence import MagicFlowStore, OperationItem
 from .sites import BonusCalculator, get_calculator, get_formula_params
 from .sites.formula_fetch import fetch_site_formula, refresh_site_preset
 
-__version__ = "1.0.43"
+__version__ = "1.0.44"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -115,6 +115,9 @@ class MagicFlowTaskConfig:
     # 无进度清理
     cleanup_no_progress: bool = True             # 每次运行清理「没进度」的种子
     no_progress_minutes: int = 30                # 加入下载器超过该分钟数仍无进度才清理
+
+    # 自动恢复被暂停的已完成种子（暂停 = 0 产出）
+    auto_resume_paused: bool = True
 
     # 已处理去重
     seen_cooldown_hours: float = 24.0            # 同一候选在多少小时内不重复拉取（0=不跳过）
@@ -177,6 +180,7 @@ class MagicFlowTaskConfig:
             "reuse_verify": self.reuse_verify,
             "cleanup_no_progress": self.cleanup_no_progress,
             "no_progress_minutes": self.no_progress_minutes,
+            "auto_resume_paused": self.auto_resume_paused,
             "seen_cooldown_hours": self.seen_cooldown_hours,
             "bonus_t0": self.bonus_t0,
             "bonus_n0": self.bonus_n0,
@@ -1915,6 +1919,7 @@ class MagicFlow(_PluginBase):
             reuse_verify=payload.reuse_verify,
             cleanup_no_progress=payload.cleanup_no_progress,
             no_progress_minutes=payload.no_progress_minutes,
+            auto_resume_paused=getattr(payload, "auto_resume_paused", True) is not False,
             seen_cooldown_hours=payload.seen_cooldown_hours,
             bonus_t0=payload.bonus_t0,
             bonus_n0=payload.bonus_n0,
@@ -1986,6 +1991,7 @@ class MagicFlow(_PluginBase):
         task.reuse_verify = payload.reuse_verify
         task.cleanup_no_progress = payload.cleanup_no_progress
         task.no_progress_minutes = payload.no_progress_minutes
+        task.auto_resume_paused = getattr(payload, "auto_resume_paused", True) is not False
         task.seen_cooldown_hours = payload.seen_cooldown_hours
         task.bonus_t0 = payload.bonus_t0
         task.bonus_n0 = payload.bonus_n0
