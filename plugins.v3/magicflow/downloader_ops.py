@@ -9,6 +9,7 @@ MagicFlow 下载器操作模块
 
 import math
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -18,6 +19,70 @@ from .fingerprint import Entry, entries_fingerprint, info_hash, load_torrent_ent
 # 运行时导入（在 MoviePilot 环境才导入）
 logger = logging.getLogger("magicflow")
 DownloaderHelper = None
+
+
+class TorrentFetchFlowControl(RuntimeError):
+    """站点对 .torrent 下载接口触发流控（429 / 限速）。
+
+    属**可重试的临时错误**：调用方应本轮跳过、下轮再试，且**不要**把它记入
+    dead（否则会因临时限流把候选冷却数小时）。
+    """
+
+
+# ---------------------------------------------------------------------------
+# 自适应下载限速闸门
+#   - 所有 .torrent 下载（含 SDK 路径与回落路径）都先过 _dl_gate()，保证全局
+#     两次下载至少间隔 _DL_GATE_INTERVAL 秒；
+#   - 命中流控 → 间隔指数加大（上限 _DL_GATE_MAX），成功则缓慢回落到基准；
+#   - 这样对 hdfans 这类宽松站点几乎无感，对 PT时间 这类强流控站点自动降速。
+# ---------------------------------------------------------------------------
+_DL_GATE_LOCK = threading.Lock()
+_DL_GATE_AT = [0.0]
+_DL_GATE_INTERVAL = [1.0]
+_DL_GATE_BASE = 1.0
+_DL_GATE_MAX = 15.0
+_FLOW_MARKERS = (
+    "流控", "429", "too many requests", "rate limit", "ratelimit",
+    "稍后重试", "请求过于频繁", "too frequent",
+)
+
+
+def _is_flow_control(text: Any) -> bool:
+    t = str(text or "").lower()
+    return any(m in t for m in _FLOW_MARKERS)
+
+
+def _dl_gate() -> None:
+    """全局串行限速：两次 .torrent 下载至少间隔当前动态间隔。"""
+    with _DL_GATE_LOCK:
+        wait = _DL_GATE_INTERVAL[0] - (time.time() - _DL_GATE_AT[0])
+        if wait > 0:
+            time.sleep(wait)
+        _DL_GATE_AT[0] = time.time()
+
+
+def _dl_note_flow_control() -> None:
+    """命中流控：指数加大全局限速间隔（上限 _DL_GATE_MAX）。"""
+    with _DL_GATE_LOCK:
+        _DL_GATE_INTERVAL[0] = min(_DL_GATE_MAX, max(_DL_GATE_INTERVAL[0] * 2, 2.0))
+        logger.warning(f"MagicFlow：.torrent 下载命中站点流控，限速间隔调整为 {_DL_GATE_INTERVAL[0]:.1f}s")
+
+
+def _dl_note_success() -> None:
+    """成功一次：限速间隔缓慢回落（避免长期停留在高位）。"""
+    with _DL_GATE_LOCK:
+        if _DL_GATE_INTERVAL[0] > _DL_GATE_BASE:
+            _DL_GATE_INTERVAL[0] = max(_DL_GATE_BASE, round(_DL_GATE_INTERVAL[0] * 0.7, 2))
+
+
+def _retry_after(response: Any) -> Optional[float]:
+    """读取 429/503 响应的 Retry-After 头（秒）。"""
+    try:
+        headers = getattr(response, "headers", None)
+        raw = headers.get("Retry-After") if headers is not None else None
+        return float(raw) if raw else None
+    except Exception:
+        return None
 
 
 def _kv(obj: Any, key: str, default: Any = None) -> Any:
@@ -308,24 +373,92 @@ class DownloaderAdapter:
         cookie: Optional[str] = None,
         user_agent: Optional[str] = None,
         proxies: Optional[str] = None,
+        referer: Optional[str] = None,
     ) -> Optional[bytes]:
-        """下载 .torrent 原始字节（用于计算特征码 / 辅种）。"""
+        """下载 .torrent 原始字节（用于计算特征码 / 辅种）。
+
+        优先走宿主 SDK 自带的 ``TorrentHelper.download_torrent``：它像 MoviePilot
+        本体一样**手动跟 301/302 链（重发请求带上 cookie/UA/referer）**，并处理
+        NexusPHP「首次下载提示页」；裸 RequestUtils 对这类站点（如 PT时间）会拿到
+        301/中间页 → 非 200 → 拿不到种子。失败再回落到裸 RequestUtils。
+        """
         if not url:
             return None
         _ensure_sdk()
+
+        # 0) 全局自适应限速闸门（流控时自动降速）
+        _dl_gate()
+
+        # 1) 宿主 SDK 的种子下载（与本体一致，处理 301 链 + 首次下载页）
+        try:
+            from app.application.torrent.download import TorrentHelper  # noqa: WPS433
+        except Exception:
+            TorrentHelper = None  # type: ignore
+        if TorrentHelper is not None:
+            try:
+                _path, content, _folder, _files, err = TorrentHelper().download_torrent(
+                    url=url,
+                    cookie=cookie,
+                    ua=user_agent,
+                    referer=referer,
+                    proxy=False,
+                    cache_invalid=False,
+                )
+                if content:
+                    _dl_note_success()
+                    return content if isinstance(content, bytes) else str(content).encode("utf-8")
+                if err:
+                    logger.warning(f"TorrentHelper 下载种子未成功 {url}: {err}")
+                    if _is_flow_control(err):
+                        # 站点流控：回落路径打的是同一站点，重试只会加剧限流，
+                        # 记一笔流控（抬高全局间隔）后直接抛出，交由调用方本轮跳过。
+                        _dl_note_flow_control()
+                        raise TorrentFetchFlowControl(str(err))
+            except TorrentFetchFlowControl:
+                raise
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"TorrentHelper 下载种子异常 {url}: {e}")
+
+        # 2) 回落：裸 RequestUtils（带 http→https 与 429 退避重试）
         try:
             from app.sdk.network import RequestUtils
 
-            response = RequestUtils(
-                cookies=cookie,
-                proxies=proxies,
-                ua=user_agent,
-            ).get_res(url=url, raise_exception=True)
-            if not response or not response.ok:
+            _req = RequestUtils(cookies=cookie, proxies=proxies, ua=user_agent, referer=referer)
+
+            def _get(u: str):
+                try:
+                    _dl_gate()
+                    return _req.get_res(url=u)
+                except Exception:
+                    return None
+
+            response = _get(url)
+            ok = bool(response and response.ok)
+            if not ok and str(url).lower().startswith("http://"):
+                response = _get("https://" + url.split("://", 1)[1])
+                ok = bool(response and response.ok)
+            for _wait in (2.0, 4.0, 8.0):
+                if ok:
+                    break
+                if getattr(response, "status_code", None) not in (429, 503):
+                    break
+                _dl_note_flow_control()
+                time.sleep(_retry_after(response) or _wait)
+                response = _get(url)
+                ok = bool(response and response.ok)
+            if not ok:
+                _status = getattr(response, "status_code", None)
+                logger.warning(f"下载种子文件非成功 {_status or '?'} {url}")
+                if _status in (429, 503):
+                    _dl_note_flow_control()
+                    raise TorrentFetchFlowControl(f"HTTP {_status}")
                 return None
+            _dl_note_success()
             return response.content
         except ImportError:
             return None
+        except TorrentFetchFlowControl:
+            raise
         except Exception as e:
             logger.warning(f"下载种子文件失败 {url}: {e}")
             return None

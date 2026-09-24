@@ -40,6 +40,7 @@ from .bonus import (
 from .downloader_ops import (
     DownloaderAdapter,
     TorrentInfo,
+    TorrentFetchFlowControl,
     QB_SEEDING_STATES,
     QB_DEAD_STATES,
     QB_DOWNLOADING_STATES,
@@ -72,7 +73,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "1.0.60"
+__version__ = "1.0.62"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -80,7 +81,12 @@ BROWSE_PAGES = 3
 # 游标深翻：翻页游标上限；超过则回到首页重扫（避免越翻越深拿到无效/超老页面）。
 MAX_PAGE_CURSOR = 60
 # 分类阶段并发预取 .torrent 的线程数（原为逐个串行，TopN=100 会耗时数分钟）。
-TORRENT_FETCH_WORKERS = 6
+# 注意：部分站点（如 PT时间）对下载接口有流控（429），并发过高会大面积失败，
+# 故并发与最小间隔共同限速（见 TORRENT_DL_MIN_INTERVAL）。
+TORRENT_FETCH_WORKERS = 3
+# 下载 .torrent 的最小间隔（秒，全局串行限速）与单种子重试次数。
+TORRENT_DL_MIN_INTERVAL = 1.0
+TORRENT_DL_RETRIES = 3
 # 站点魔力公式抓取缓存 TTL（秒）；抓取失败时只缓存 SHORT 秒后重试。
 SITE_FORMULA_TTL = 6 * 3600
 SITE_FORMULA_RETRY = 30 * 60
@@ -89,6 +95,10 @@ SITE_FORMULA_RETRY = 30 * 60
 # 后宫加成依赖他人种子（用户级），与「选哪一颗」无关，不参与决策，故不抓取。
 SITE_OFFICIAL_TTL = 12 * 3600
 OFFICIAL_PAGES = 2
+
+# 下载限速：已下沉到 downloader_ops 的「自适应限速闸门」（_dl_gate / _dl_note_flow_control）。
+# 命中流控时间隔指数加大、成功则回落；所有 .torrent 下载（含 SDK 与回落路径）统一走它。
+# 旧的 _torrent_dl_throttle 已废弃（保留常量供参考）。
 
 
 # ============================================================
@@ -940,17 +950,46 @@ class MagicFlow(_PluginBase):
 
             # 并发预取 TopN 的 .torrent（原为逐个串行，100 个耗时数分钟）。
             # 每个请求各自新建 RequestUtils 会话，无共享状态，可安全并发。
+            # 站点流控早停标志：一旦命中，本轮剩余候选不再请求（避免继续加剧限流）。
+            _fc_hit = [False]
+
             def _prefetch(pair: Any) -> None:
                 _b, _c = pair
                 _raw = None
+                _err = ""
+                if _fc_hit[0]:
+                    _c.raw = None
+                    _c.fetch_error = "站点流控（本轮跳过）"
+                    _c.real_hash = ""
+                    return
                 if _c.enclosure:
-                    try:
-                        _raw = downloader.fetch_torrent_bytes(
-                            _c.enclosure, cookie=_c.site_cookie, user_agent=_c.site_ua
-                        )
-                    except Exception:
-                        _raw = None
+                    for _attempt in range(max(int(TORRENT_DL_RETRIES), 1)):
+                        try:
+                            _raw = downloader.fetch_torrent_bytes(
+                                _c.enclosure,
+                                cookie=_c.site_cookie,
+                                user_agent=_c.site_ua,
+                                referer=getattr(_c, "page_url", "") or None,
+                            )
+                        except TorrentFetchFlowControl as _e:
+                            # 站点流控：本轮直接放弃（重试只会加剧），且不记 dead。
+                            _raw = None
+                            _err = f"站点流控：{_e}"[:200]
+                            _fc_hit[0] = True
+                            break
+                        except Exception as _e:  # noqa: BLE001
+                            _raw = None
+                            _err = f"{type(_e).__name__}: {_e}"[:200]
+                        if _raw:
+                            break
+                        _err = _err or "返回空"
+                        # 疑似流控/限速：退避后再试，避免连续打。
+                        if _attempt < max(int(TORRENT_DL_RETRIES), 1) - 1:
+                            time.sleep(1.5 * (_attempt + 1))
+                else:
+                    _err = "enclosure 为空"
                 _c.raw = _raw
+                _c.fetch_error = _err
                 try:
                     _c.real_hash = (info_hash(_raw) or "").lower() if _raw else ""
                 except Exception:
@@ -962,6 +1001,17 @@ class MagicFlow(_PluginBase):
             else:
                 for _p in topn:
                     _prefetch(_p)
+
+            # 分类诊断：TopN 里有多少真的拿到了 .torrent；没拿到时打样本原因
+            _raw_ok = sum(1 for _p in topn if getattr(_p[1], "raw", None))
+            if _raw_ok < len(topn):
+                _sample = topn[0][1]
+                self._log(
+                    f"魔力管家 [{task.name}] 种子文件获取 {_raw_ok}/{len(topn)}；"
+                    f"示例 enclosure={getattr(_sample, 'enclosure', '')[:90]!r} "
+                    f"err={getattr(_sample, 'fetch_error', '')!r}",
+                    "warning",
+                )
 
             for bonus, cand in topn:
                 raw = getattr(cand, "raw", None)
@@ -977,7 +1027,9 @@ class MagicFlow(_PluginBase):
                 if task.reuse_existing and local is not None:
                     mode, linfo = "hash", local
                 elif task.reuse_existing:
-                    mode, linfo = self._detect_crosssite_reuse(downloader, cand, local_by_size, fp_cache)
+                    mode, linfo = self._detect_crosssite_reuse(
+                        downloader, cand, local_by_size, fp_cache, raw=getattr(cand, "raw", None)
+                    )
                 if mode and linfo is not None:
                     group_a.append((bonus, cand, mode, linfo))
                 else:
@@ -999,6 +1051,7 @@ class MagicFlow(_PluginBase):
             skipped_dup = 0
             skipped_quota = 0
             skipped_reuse_limit = 0
+            skipped_rate = 0
             for item in ordered:
                 is_reuse = len(item) == 4
                 if is_reuse:
@@ -1018,10 +1071,19 @@ class MagicFlow(_PluginBase):
                     skipped_dead += 1
                     continue
                 if not getattr(cand, "raw", None):
+                    _err = str(getattr(cand, "fetch_error", "") or "")
+                    if "流控" in _err:
+                        # 临时限流：不记 dead（下轮重试），单独计数。
+                        skipped_rate += 1
+                        self._log(
+                            f"跳过·站点流控，本轮不处理，下轮重试：{cand.title}",
+                            "warning",
+                        )
+                        continue
                     add_failed += 1
                     if self._store and ckey:
                         self._store.dead.mark(task.id, [f"cand:{ckey}"])
-                    self._log(f"跳过·无法获取种子：{cand.title}", "warning")
+                    self._log(f"跳过·无法获取种子：{cand.title}（{_err or '未知原因'}）", "warning")
                     continue
 
                 size_gb = float(cand.size_gb or 0)
@@ -1169,7 +1231,7 @@ class MagicFlow(_PluginBase):
             self._set_phase(task.id, "done")
             detail = (
                 f"（复用 {reused} / 新增 {added} / 去重 {skipped_dup}"
-                f" / 配额满 {skipped_quota} / 复用限并发 {skipped_reuse_limit} / 失败 {add_failed}）"
+                f" / 配额满 {skipped_quota} / 复用限并发 {skipped_reuse_limit} / 流控 {skipped_rate} / 失败 {add_failed}）"
             )
             self._log(
                 f"魔力管家 [{task.name}] 候选 {len(candidates)}→洗池 {len(scored)}→Top{len(topn)} | "
@@ -1977,9 +2039,12 @@ class MagicFlow(_PluginBase):
             return False, "skip"
 
         if raw is None:
-            raw = downloader.fetch_torrent_bytes(
-                cand.enclosure, cookie=cand.site_cookie, user_agent=cand.site_ua
-            )
+            try:
+                raw = downloader.fetch_torrent_bytes(
+                    cand.enclosure, cookie=cand.site_cookie, user_agent=cand.site_ua
+                )
+            except TorrentFetchFlowControl:
+                return "", None
         if not raw:
             return False, "skip"
         cand_fp = fingerprint(raw)
@@ -2013,6 +2078,7 @@ class MagicFlow(_PluginBase):
         cand: Any,
         local_by_size: Dict[int, List[TorrentInfo]],
         fp_cache: Dict[str, Optional[str]],
+        raw: Optional[bytes] = None,
     ) -> Tuple[str, Optional[TorrentInfo]]:
         """
         跨站辅种**匹配判定**（只判定，不添加）。
