@@ -95,6 +95,9 @@ class TaskState:
     last_candidate_total: int = 0
     last_candidate_passed: int = 0
     protected_torrents: Set[str] = field(default_factory=set)
+    # 每种子发布时间（unix 秒，key=infohash 小写）。用于把 Ti 统一为「发布时长」口径
+    # （与候选排序一致），而非 qB 的「做种时长」。取不到时回落做种时长。
+    pub_dates: Dict[str, float] = field(default_factory=dict)
     enabled: bool = True
     revision: int = 0  # 配置版本号，用于 optimistic locking
     # 运行阶段（供前端「运行诊断」流程链转圈用）
@@ -124,6 +127,7 @@ class TaskState:
             "last_candidate_total": self.last_candidate_total,
             "last_candidate_passed": self.last_candidate_passed,
             "protected_torrents": list(self.protected_torrents),
+            "pub_dates": dict(self.pub_dates),
             "enabled": self.enabled,
             "revision": self.revision,
             "last_phase": self.last_phase,
@@ -154,6 +158,7 @@ class TaskState:
             last_candidate_total=d.get("last_candidate_total", 0),
             last_candidate_passed=d.get("last_candidate_passed", 0),
             protected_torrents=set(d.get("protected_torrents", [])),
+            pub_dates={str(k).lower(): float(v) for k, v in (d.get("pub_dates") or {}).items() if v},
             enabled=d.get("enabled", True),
             revision=d.get("revision", 0),
             last_phase=d.get("last_phase", ""),
@@ -631,6 +636,47 @@ class MagicFlowStore:
             state = self.task_states.create(task_id)
         state.page_cursor = max(int(cursor or 0), 0)
         self.task_states.save(state)
+
+    # -------------------- 发布时间（Ti 口径校准） --------------------
+
+    def get_pub_dates(self, task_id: str, tz: Optional[float] = None) -> Dict[str, float]:
+        """读取本任务记录的「种子发布时间」表（hash→unix 秒）。
+
+        tz：当前使用的站点时区偏移（小时）。与存储时不一致则视为作废（需重采），
+        避免时区修正后旧数据继续污染 Ti。
+        """
+        state = self.task_states.get(task_id)
+        if not state:
+            return {}
+        if tz is not None and abs(float(getattr(state, "pub_tz", 0.0) or 0.0) - float(tz)) > 1e-6:
+            return {}
+        return dict(getattr(state, "pub_dates", {}) or {})
+
+    def note_pub_dates(self, task_id: str, mapping: Dict[str, float], tz: Optional[float] = None) -> None:
+        """记录一批种子的发布时间（仅在有值时写入，不会覆盖为 0）。"""
+        if not task_id or not mapping:
+            return
+        state = self.task_states.get(task_id)
+        if not state:
+            state = self.task_states.create(task_id)
+        pd = state.pub_dates or {}
+        if tz is not None and abs(float(getattr(state, "pub_tz", 0.0) or 0.0) - float(tz)) > 1e-6:
+            # 时区口径变了 → 丢弃旧值重采
+            pd = {}
+            state.pub_tz = float(tz)
+        changed = False
+        for h, ts in mapping.items():
+            h = str(h or "").lower()
+            try:
+                ts = float(ts or 0)
+            except (TypeError, ValueError):
+                continue
+            if h and ts > 0 and pd.get(h) != ts:
+                pd[h] = ts
+                changed = True
+        if changed:
+            state.pub_dates = pd
+            self.task_states.save(state)
 
     # -------------------- 受保护种子管理 --------------------
 

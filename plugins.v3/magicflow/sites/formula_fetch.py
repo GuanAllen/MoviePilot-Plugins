@@ -234,6 +234,105 @@ def acquire_site_params(site: Any, base: Optional[BonusParams] = None) -> BonusP
     return cap.to_params(base) if cap.ok else (base or BonusParams())
 
 
+# ============================================================
+# 用户做种列表 → 每种子「发布时间」（用于 Ti 发布时长口径 / 存量回填）
+# ============================================================
+
+_TITLE_ATTR_RE = re.compile(r'details\.php\?id=\d+[^>]*title="([^"]+)"', re.I)
+_TITLE_TEXT_RE = re.compile(r'<a[^>]+details\.php\?id=\d+[^>]*>(.*?)</a>', re.I | re.S)
+_DT_RE = re.compile(r'(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})')
+_SIZE_RE = re.compile(r'(\d+(?:\.\d+)?)\s*(KB|MB|GB|TB|PB)\b', re.I)
+_SIZE_UNIT = {'KB': 1024, 'MB': 1024 ** 2, 'GB': 1024 ** 3, 'TB': 1024 ** 4, 'PB': 1024 ** 5}
+
+
+def _norm_title(title: str) -> str:
+    """标题规范化（供做种页标题与下载器标题匹配）。"""
+    t = (title or '').lower()
+    t = re.sub(r'^\[[^\]]*\]', '', t)
+    t = re.sub(r'[^a-z0-9]+', ' ', t)
+    return re.sub(r'\s+', ' ', t).strip()
+
+
+def parse_seeding_list(html_text: str) -> list:
+    """解析 ``getusertorrentlistajax.php?type=seeding`` 页面。
+
+    返回 ``[{'title':..., 'title_norm':..., 'size_bytes':int, 'pubdate':'YYYY-MM-DD HH:MM:SS'}, ...]``。
+    """
+    out = []
+    if not html_text:
+        return out
+    for row in re.findall(r'<tr[^>]*>(.*?)</tr>', html_text, re.S):
+        if 'details.php' not in row:
+            continue
+        m = _TITLE_ATTR_RE.search(row) or _TITLE_TEXT_RE.search(row)
+        if not m:
+            continue
+        title = _html.unescape(re.sub(r'<[^>]+>', '', m.group(1))).strip()
+        text = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', row))
+        md = _DT_RE.search(text)
+        ms = _SIZE_RE.search(text)
+        if not (title and md):
+            continue
+        size_bytes = 0
+        if ms:
+            size_bytes = int(float(ms.group(1)) * _SIZE_UNIT.get(ms.group(2).upper(), 0))
+        out.append({
+            'title': title,
+            'title_norm': _norm_title(title),
+            'size_bytes': size_bytes,
+            'pubdate': f"{md.group(1)} {md.group(2)}",
+        })
+    return out
+
+
+def parse_seeding_list_pubdates(html_text: str) -> Dict[str, str]:
+    """兼容旧接口：返回 {规范化标题: 'YYYY-MM-DD HH:MM:SS'}。"""
+    return {r['title_norm']: r['pubdate'] for r in parse_seeding_list(html_text)}
+
+
+def fetch_seeding_list(site: Any, userid: Any, timeout: int = 25) -> list:
+    """抓取用户做种列表页，返回 ``parse_seeding_list`` 的结果。cookie/UA 取自站点配置。"""
+    domain = (getattr(site, "domain", "") or "").strip()
+    base = (getattr(site, "url", "") or (f"https://{domain}" if domain else "")).rstrip("/")
+    cookie = getattr(site, "cookie", None)
+    ua = getattr(site, "ua", None) or _DEFAULT_UA
+    if not base or not userid:
+        return []
+    url = f"{base}/getusertorrentlistajax.php?userid={int(userid)}&type=seeding"
+    try:
+        from app.sdk.network import RequestUtils  # noqa: WPS433
+    except Exception:
+        return []
+    try:
+        req = RequestUtils(cookies=cookie, ua=ua, timeout=timeout, referer=f"{base}/")
+        resp = req.get_res(url)
+    except Exception:
+        return []
+    if resp is None or not getattr(resp, "ok", False):
+        try:
+            resp and resp.close()
+        except Exception:
+            pass
+        return []
+    try:
+        raw = resp.content
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("gbk", "ignore")
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+    return parse_seeding_list(text)
+
+
+def fetch_seeding_pubdates(site: Any, userid: Any, timeout: int = 25) -> Dict[str, str]:
+    """兼容旧接口：抓取并返回 {规范化标题: 发布时间字符串}。"""
+    return {r['title_norm']: r['pubdate'] for r in fetch_seeding_list(site, userid, timeout)}
+
+
 def refresh_site_preset(site: Any) -> FormulaCapture:
     """
     抓取站点公式并写入 ``sites`` 参数预设缓存（供 ``get_formula_params`` 命中）。

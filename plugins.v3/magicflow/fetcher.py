@@ -11,8 +11,14 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
+
+# 站点页面上的「发布时间」是站点本地时间（国内 PT 站均为 UTC+8）。
+# MoviePilot 容器时区同为 Asia/Shanghai，解析出的 naive 时间即本地时间，
+# 因此换算 unix 秒时按 +8 处理（否则 Ti 会凭空年轻 8 小时，站点 A 严重偏低）。
+SITE_TZ_OFFSET_HOURS = 8.0
+SITE_TZ = timezone(timedelta(hours=SITE_TZ_OFFSET_HOURS))
 
 # 运行时导入（在 MoviePilot 环境才导入）
 logger = logging.getLogger("magicflow")
@@ -350,41 +356,53 @@ class SiteFetcher:
 
     def _calc_age_weeks(self, pubdate: Any) -> float:
         """计算发布时间到现在的周数。"""
-        if not pubdate:
-            return 0.0
+        return ts_to_age_weeks(pubdate_to_ts(pubdate))
 
+
+# ============================================================
+# 时间工具
+# ============================================================
+
+def pubdate_to_ts(pubdate: Any) -> float:
+    """把发布时间（ISO 字符串 / 本地字符串 / datetime / 时间戳）转为 unix 秒；无效返回 0.0。
+
+    口径：naive 时间按站点本地时区（UTC+8，``SITE_TZ``）处理，
+    与候选 ``age_weeks`` 一致，保证「做种明细」与「候选排序」同一套 Ti。
+    """
+    if not pubdate:
+        return 0.0
+    try:
+        if isinstance(pubdate, datetime):
+            dt = pubdate if pubdate.tzinfo else pubdate.replace(tzinfo=SITE_TZ)
+            return dt.timestamp()
+        if isinstance(pubdate, (int, float)):
+            v = float(pubdate)
+            return v / 1000.0 if v > 1e12 else v
+        text = str(pubdate).strip().replace('Z', '+00:00')
         try:
-            # 尝试解析 ISO 格式
-            if isinstance(pubdate, datetime):
-                dt = pubdate
-            elif isinstance(pubdate, str):
-                text = pubdate.strip().replace('Z', '+00:00')
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            dt = None
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
                 try:
-                    dt = datetime.fromisoformat(text)
+                    dt = datetime.strptime(text, fmt)
+                    break
                 except ValueError:
-                    dt = None
-                    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
-                        try:
-                            dt = datetime.strptime(text, fmt)
-                            break
-                        except ValueError:
-                            continue
-                    if dt is None:
-                        return 0.0
-            elif isinstance(pubdate, (int, float)):
-                # 可能是时间戳
-                dt = datetime.fromtimestamp(pubdate, tz=timezone.utc)
-            else:
+                    continue
+            if dt is None:
                 return 0.0
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=SITE_TZ)
+        return dt.timestamp()
+    except Exception:
+        return 0.0
 
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            now = datetime.now(timezone.utc)
-            age_hours = (now - dt).total_seconds() / 3600
-            return max(0.0, age_hours / (7 * 24))
 
-        except Exception:
-            return 0.0
+def ts_to_age_weeks(ts: float) -> float:
+    """unix 秒 → 距现在的周数（负数归 0）。"""
+    if not ts:
+        return 0.0
+    return max(0.0, (datetime.now(timezone.utc).timestamp() - float(ts)) / (7 * 86400))
 
 
 # ============================================================

@@ -11,7 +11,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from apscheduler.triggers.cron import CronTrigger
@@ -47,11 +47,14 @@ from .downloader_ops import (
 )
 from .fingerprint import fingerprint, info_hash
 from .fetcher import (
+    SITE_TZ_OFFSET_HOURS,
     FilterPolicy,
     SiteCandidateTorrent,
     SiteFetcher,
     filter_candidates,
     get_default_filter_policy,
+    pubdate_to_ts,
+    ts_to_age_weeks,
 )
 from .models import (
     MagicFlowSettingsPayload,
@@ -60,9 +63,9 @@ from .models import (
 )
 from .persistence import MagicFlowStore, OperationItem
 from .sites import BonusCalculator, get_calculator, get_formula_params
-from .sites.formula_fetch import fetch_site_formula, refresh_site_preset
+from .sites.formula_fetch import fetch_site_formula, refresh_site_preset, fetch_seeding_pubdates, fetch_seeding_list
 
-__version__ = "1.0.48"
+__version__ = "1.0.55"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -121,6 +124,10 @@ class MagicFlowTaskConfig:
 
     # 自动恢复被暂停的已完成种子（暂停 = 0 产出）
     auto_resume_paused: bool = True
+
+    # Ti 口径：publish（默认，= 自发布时间，站点文档口径；配合站点真实 Ni 与站点 A 吻合）
+    #          seed_time（= qB 做种时长；无发布时间时的回落值）
+    ti_source: str = "publish"
 
     # 已处理去重
     seen_cooldown_hours: float = 24.0            # 同一候选在多少小时内不重复拉取（0=不跳过）
@@ -184,6 +191,7 @@ class MagicFlowTaskConfig:
             "cleanup_no_progress": self.cleanup_no_progress,
             "no_progress_minutes": self.no_progress_minutes,
             "auto_resume_paused": self.auto_resume_paused,
+            "ti_source": self.ti_source,
             "seen_cooldown_hours": self.seen_cooldown_hours,
             "bonus_t0": self.bonus_t0,
             "bonus_n0": self.bonus_n0,
@@ -766,7 +774,8 @@ class MagicFlow(_PluginBase):
 
             formula_params = self._build_formula_params(task)
             protected_hashes = self._store.get_protected_torrents(task.id) if self._store else set()
-            managed_bonus = self._convert_to_bonus_list(managed, formula_params)
+            self._backfill_pub_dates(task, managed)
+            managed_bonus = self._convert_to_bonus_list(managed, formula_params, self._task_pub_dates(task), getattr(task, "ti_source", "publish"), self._site_ni_map(task.site_id, managed))
             policy = self._build_magic_policy(task, managed_bonus)
             max_keep = policy.max_keep_torrents
             disk_gb = task.disk_size_gb
@@ -971,6 +980,7 @@ class MagicFlow(_PluginBase):
             self._set_phase(task.id, "process")
             added = 0
             reused = 0
+            new_pub: Dict[str, float] = {}
             add_failed = 0
             skipped_dup = 0
             skipped_quota = 0
@@ -1041,6 +1051,8 @@ class MagicFlow(_PluginBase):
                             verify=task.reuse_verify,
                         )
                         ok = bool(hs)
+                        if ok and hs:
+                            h = hs.lower()
                         if not ok and err:
                             self._log(f"辅种失败：{cand.title}（{err}）", "warning")
                     if not ok:
@@ -1050,6 +1062,9 @@ class MagicFlow(_PluginBase):
                     reused += 1
                     add_cnt += 1
                     add_size += size_gb
+                    pub_ts = self._pubdate_ts(getattr(cand, "pubdate", None))
+                    if pub_ts and h:
+                        new_pub[h] = pub_ts
                     if reuse_downloads:
                         dl_budget -= 1
                         dl_concurrent += 1
@@ -1089,6 +1104,9 @@ class MagicFlow(_PluginBase):
                     dl_concurrent += 1
                     nh = (hash_string or h).lower()
                     managed_hashes.add(nh)
+                    pub_ts = self._pubdate_ts(getattr(cand, "pubdate", None))
+                    if pub_ts and nh:
+                        new_pub[nh] = pub_ts
                     if self._store:
                         keys = [f"hash:{nh}"]
                         if ckey:
@@ -1100,6 +1118,9 @@ class MagicFlow(_PluginBase):
                     if self._store and ckey:
                         self._store.dead.mark(task.id, [f"cand:{ckey}"])
                     self._log(f"添加失败：{cand.title}（{error}）", "warning")
+
+            if self._store and new_pub:
+                self._store.note_pub_dates(task.id, new_pub, tz=SITE_TZ_OFFSET_HOURS)
 
             if reused and self._store:
                 self._store.journal.record(
@@ -1248,7 +1269,7 @@ class MagicFlow(_PluginBase):
                 self._log(f"任务 [{task.name}] 没有管理的种子", "info")
                 return
 
-            torrent_bonus_list = self._convert_to_bonus_list(task_torrents, self._build_formula_params(task))
+            torrent_bonus_list = self._convert_to_bonus_list(task_torrents, self._build_formula_params(task), self._task_pub_dates(task), getattr(task, "ti_source", "publish"), self._site_ni_map(task.site_id, task_torrents))
             protected_hashes = self._store.get_protected_torrents(task.id)
             policy = self._build_magic_policy(task, torrent_bonus_list)
 
@@ -1300,24 +1321,57 @@ class MagicFlow(_PluginBase):
             self._log(f"魔力管家 [{task.name}] 执行失败: {e}", "error")
             self._store.record_run_error(task.id, str(e))
 
+    def _pubdate_ts(self, pubdate: Any) -> float:
+        """把候选的发布时间转为 unix 秒（与候选排序同一套口径）。"""
+        return pubdate_to_ts(pubdate)
+
+    def _task_pub_dates(self, task) -> Dict[str, float]:
+        """取本任务已记录的「种子发布时间」表（hash→unix 秒）。
+
+        按当前站点时区口径校验：时区变了 → 旧值作废，回退到「做种时长」。
+        """
+        try:
+            if self._store and task and getattr(task, "id", None):
+                return self._store.get_pub_dates(task.id, tz=SITE_TZ_OFFSET_HOURS)
+        except Exception:
+            pass
+        return {}
+
     def _convert_to_bonus_list(
         self,
         torrents: List[TorrentInfo],
         params: Optional[BonusParams] = None,
+        pub_dates: Optional[Dict[str, float]] = None,
+        ti_source: str = "publish",
+        ni_map: Optional[Dict[str, int]] = None,
     ) -> List[TorrentBonusInfo]:
-        """将下载器种子转换为魔力信息列表（可按站点公式参数计算）。"""
+        """将下载器种子转换为魔力信息列表（可按站点公式参数计算）。
+
+        ti_source：Ti 口径。``publish``（默认，= 自发布时间，站点文档口径）或
+        ``seed_time``（= qB 做种时长，无发布时间时回落）。
+        ni_map：hash→站点真实做种人数 Ni（可选，优先于 qB）。
+        """
+        use_pub = str(ti_source or "publish").lower() == "publish"
+        pub_dates = pub_dates or {}
+        ni_map = ni_map or {}
         result = []
         for t in torrents:
-            # 我们在做种 → 站内做种人数 Ni 至少为 1（qB 的 num_complete 常为 0，不可信）。
-            # 不钳制会把「人数因子」算成 1.0（应为 2.414），导致模型 A 严重偏低。
-            ni = max(int(t.seeder or 0), 1)
+            # Ni 优先用站点真实值；否则用 qB（做种中 → 至少 1，
+            # qB 的 num_complete 对私种常为 0，不可信）。
+            h = (t.hash or "").lower()
+            ni = int(ni_map.get(h) or 0) or max(int(t.seeder or 0), 1)
+            age_weeks = t.age_weeks
+            if use_pub:
+                ts = pub_dates.get(h)
+                if ts and ts > 0:
+                    age_weeks = ts_to_age_weeks(ts)
             bonus_info = calc_torrent_bonus(
                 hash=t.hash,
                 title=t.title,
                 size_gb=t.size_gb,
                 seeders=ni,
                 leechers=t.leecher,
-                age_weeks=t.age_weeks,
+                age_weeks=age_weeks,
                 volume_factor=t.volume_factor,
                 is_zero_bonus=t.is_zero_bonus,
                 is_free=t.is_free,
@@ -1368,12 +1422,15 @@ class MagicFlow(_PluginBase):
 
         site = self._get_site(task.site_id) if getattr(task, "site_id", 0) else None
         cap = None
-        if site is not None:
-            try:
-                cap = fetch_site_formula(site, timeout=15)
-            except Exception as err:
-                self._log(f"站点公式抓取失败 [{domain}]: {err}", "warning")
-                cap = None
+        if site is None:
+            # 站点未就绪时不缓存失败（否则会 30 分钟不再重试）
+            self._log(f"站点公式：未找到站点 {getattr(task, 'site_id', 0)}，本轮跳过", "warning")
+            return None
+        try:
+            cap = fetch_site_formula(site, timeout=15)
+        except Exception as err:
+            self._log(f"站点公式抓取失败 [{domain}]: {err}", "warning")
+            cap = None
         if cap and cap.ok:
             try:
                 refresh_site_preset(site)
@@ -1438,18 +1495,180 @@ class MagicFlow(_PluginBase):
             "deviation_pct": deviation,
         }
 
-    def _site_current_bonus(self, site_id: int) -> float:
-        """读取指定站点当前魔力值（用于自动保护阈值）。"""
+    def _site_user_id(self, site) -> Optional[str]:
+        """读取站点用户 UID（做种列表页需要）。优先从 cookie 的 c_secure_uid（NexusPHP = base64(uid)）解析。"""
+        cookie = getattr(site, "cookie", "") or ""
+        try:
+            m = re.search(r"c_secure_uid=([^;]+)", cookie)
+            if m:
+                import base64
+                import urllib.parse
+                v = urllib.parse.unquote(m.group(1)).strip()
+                v += "=" * (-len(v) % 4)
+                uid = base64.b64decode(v).decode("utf-8", "ignore").strip()
+                if uid.isdigit():
+                    return uid
+        except Exception:
+            pass
         try:
             from app.db.oper.site import SiteOper
+            dom = (getattr(site, "domain", "") or "").strip().lower()
+            sid = getattr(site, "id", None)
             for row in SiteOper().get_userdata_latest() or []:
                 if not isinstance(row, dict):
                     continue
-                if row.get("id") == site_id:
-                    return float(row.get("bonus") or 0)
+                if (row.get("domain", "") or "").lower() == dom or (sid is not None and row.get("id") == sid):
+                    uid = row.get("userid")
+                    return str(uid) if uid else None
+        except Exception:
+            pass
+        return None
+
+    def _backfill_pub_dates(self, task, managed=None, ttl: int = 3600) -> int:
+        """用站点做种列表页回填每个种子的「发布时间」（Ti 发布时长口径）。TTL 内不重复抓取。"""
+        if not self._store or not task:
+            return 0
+        now = time.time()
+        cache = getattr(self, "_pub_backfill_at", None)
+        if cache is None:
+            cache = {}
+            self._pub_backfill_at = cache
+        if now - float(cache.get(task.id, 0)) < ttl:
+            return 0
+        cache[task.id] = now
+        site = self._get_site(task.site_id)
+        if not site:
+            self._log("回填发布时间：站点不存在，跳过", "warning")
+            return 0
+        uid = self._site_user_id(site)
+        if not uid:
+            self._log("回填发布时间：未取到站点 UID，跳过", "warning")
+            return 0
+        try:
+            rows = fetch_seeding_list(site, uid, timeout=25)
         except Exception as err:
-            self._log(f"读取站点魔力值失败: {err}", "warning")
-        return 0.0
+            self._log(f"回填发布时间失败：{err}", "warning")
+            return 0
+        if not rows:
+            self._log(f"回填发布时间：做种页为空（uid={uid}），跳过", "warning")
+            return 0
+
+        def _norm(s: str) -> str:
+            t = (s or "").lower()
+            t = re.sub(r"^\[[^\]]*\]", "", t)
+            t = re.sub(r"[^a-z0-9]+", " ", t)
+            return re.sub(r"\s+", " ", t).strip()
+
+        by_title = {r["title_norm"]: r["pubdate"] for r in rows if r.get("title_norm")}
+        by_size = [(r["size_bytes"], r["pubdate"]) for r in rows if r.get("size_bytes")]
+
+        old = self._store.get_pub_dates(task.id, tz=SITE_TZ_OFFSET_HOURS)
+        mapping: Dict[str, float] = {}
+        for t in (managed or []):
+            h = (getattr(t, "hash", "") or "").lower()
+            if not h or h in old:
+                continue
+            dtstr = by_title.get(_norm(getattr(t, "title", "")))
+            if not dtstr and by_size:
+                sz = float(getattr(t, "size_gb", 0) or 0) * (1024 ** 3)
+                if sz > 0:
+                    best_dt = None
+                    best_d = 1e18
+                    for s, dt in by_size:
+                        dd = abs(s - sz)
+                        if dd < best_d:
+                            best_d, best_dt = dd, dt
+                    if best_dt and best_d <= 0.01 * sz:
+                        dtstr = best_dt
+            if not dtstr:
+                continue
+            ts = pubdate_to_ts(dtstr)
+            if ts > 0:
+                mapping[h] = ts
+        if mapping:
+            self._store.note_pub_dates(task.id, mapping, tz=SITE_TZ_OFFSET_HOURS)
+            self._log(f"回填发布时间：{len(mapping)} 个种子改用「发布时长」计算 Ti")
+        else:
+            self._log(f"回填发布时间：未匹配（做种页 {len(rows)} 条）", "warning")
+        return len(mapping)
+
+    @staticmethod
+    def _ud_get(row, key, default=None):
+        """兼容 dict / ORM 对象两种形态读取用户数据字段。"""
+        if row is None:
+            return default
+        if isinstance(row, dict):
+            v = row.get(key, default)
+        else:
+            v = getattr(row, key, default)
+        return default if v is None else v
+
+    def _userdata_row(self, site_id: int):
+        """找到指定站点最新的用户数据行（dict 或 ORM 对象均可）。"""
+        try:
+            from app.db.oper.site import SiteOper
+            rows = SiteOper().get_userdata_latest() or []
+        except Exception:
+            return None
+        site = self._get_site(site_id)
+        want_domain = (getattr(site, "domain", "") or "").strip() if site else ""
+        for row in rows:
+            if want_domain and str(self._ud_get(row, "domain", "") or "").strip() == want_domain:
+                return row
+            if self._ud_get(row, "id") == site_id:
+                return row
+        return None
+
+    def _site_ni_map(self, site_id: int, managed) -> Dict[str, int]:
+        """从站点用户数据取每颗种子的真实做种人数 Ni（按体积 1% 容差匹配）。
+
+        站点公式的 Ni 是「当前做种者数」，qB 的 num_complete 对私种常为 0，
+        不可用；seeding_info 为 [[seeders, size_bytes], ...]。
+        """
+        out: Dict[str, int] = {}
+        if not managed:
+            return out
+        row = self._userdata_row(site_id)
+        si = self._ud_get(row, "seeding_info") if row is not None else None
+        if not si:
+            return out
+        entries = []
+        for it in si:
+            try:
+                n, s = int(it[0]), float(it[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if s > 0:
+                entries.append((s, n))
+        if not entries:
+            return out
+        for t in managed or []:
+            h = (getattr(t, "hash", "") or "").lower()
+            sz = float(getattr(t, "size_gb", 0) or 0) * (1024 ** 3)
+            if not h or sz <= 0:
+                continue
+            best = None
+            bd = 1e18
+            for s, n in entries:
+                dd = abs(s - sz)
+                if dd < bd:
+                    bd, best = dd, n
+            if best is not None and bd <= 0.01 * sz:
+                out[h] = int(best)
+        return out
+
+    def _site_current_bonus(self, site_id: int) -> float:
+        """读取指定站点当前魔力值（用于自动保护阈值）。"""
+        row = self._userdata_row(site_id)
+        if row is None:
+            return 0.0
+        try:
+            return float(self._ud_get(row, "bonus", 0) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _site_current_bonus_old(self, site_id: int) -> float:
+        """（已弃用）旧实现：依赖 row 为 dict，实际 ORM 对象会全部跳过。"""
 
     def _build_magic_policy(
         self,
@@ -1789,7 +2008,7 @@ class MagicFlow(_PluginBase):
                     t for t in managed
                     if str(getattr(t, "state", "") or "").lower() in QB_SEEDING_STATES
                 ]
-                bonus_list = self._convert_to_bonus_list(managed, self._build_formula_params(task))
+                bonus_list = self._convert_to_bonus_list(managed, self._build_formula_params(task), self._task_pub_dates(task), getattr(task, "ti_source", "publish"), self._site_ni_map(task.site_id, managed))
                 stats["seeding_count"] = len(managed)
                 stats["active_seeding_count"] = len(seeding)
                 stats["paused_count"] = sum(
@@ -2162,7 +2381,7 @@ class MagicFlow(_PluginBase):
                 return Response(success=True, data={"torrents": [], "total_bonus": 0, "torrent_count": 0, "protected_count": 0, "formula": self._bonus_formula_block(task, [])})
             if not task_torrents:
                 return Response(success=True, data={"torrents": [], "total_bonus": 0, "torrent_count": 0, "protected_count": 0, "formula": self._bonus_formula_block(task, [])})
-            torrent_bonus_list = self._convert_to_bonus_list(task_torrents, self._build_formula_params(task))
+            torrent_bonus_list = self._convert_to_bonus_list(task_torrents, self._build_formula_params(task), self._task_pub_dates(task), getattr(task, "ti_source", "publish"), self._site_ni_map(task.site_id, task_torrents))
             seeding_count = sum(
                 1 for t in task_torrents if float(getattr(t, "progress", 0) or 0) >= 0.999
             )
@@ -2310,7 +2529,7 @@ class MagicFlow(_PluginBase):
                 return Response(success=True, data={"preview": {}, "message": "没有做种种子"})
 
             task_torrents = [t for t in seeding_torrents if task.brush_tag in t.tags]
-            torrent_bonus_list = self._convert_to_bonus_list(task_torrents, self._build_formula_params(task))
+            torrent_bonus_list = self._convert_to_bonus_list(task_torrents, self._build_formula_params(task), self._task_pub_dates(task), getattr(task, "ti_source", "publish"), self._site_ni_map(task.site_id, task_torrents))
             protected_hashes = self._store.get_protected_torrents(task_id) if self._store else set()
             policy = self._build_magic_policy(task, torrent_bonus_list)
 

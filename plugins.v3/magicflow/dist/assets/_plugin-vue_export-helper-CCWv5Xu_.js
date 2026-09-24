@@ -27,6 +27,7 @@ const taskDefaults = {
   cleanup_no_progress: true,
   no_progress_minutes: 30,
   auto_resume_paused: true,
+  ti_source: 'publish',
   seen_cooldown_hours: 24,
   bonus_t0: null,
   bonus_n0: null,
@@ -124,6 +125,7 @@ function normalizeTask(task) {
   result.cleanup_no_progress = Boolean(result.cleanup_no_progress ?? true);
   result.no_progress_minutes = Number(result.no_progress_minutes || 30);
   result.auto_resume_paused = Boolean(result.auto_resume_paused ?? true);
+  result.ti_source = ['publish', 'seed_time'].includes(result.ti_source) ? result.ti_source : 'publish';
   result.seen_cooldown_hours = Number(result.seen_cooldown_hours ?? 24);
   result.freeleech = result.freeleech || '';
   result.delete_files = Boolean(result.delete_files);
