@@ -42,6 +42,8 @@ class BonusParams:
     normal_weight: float = 1.0 # 普通种子权重 Wi
     official_coef: float = 0.0 # 官种加成系数（官种单独算 A 后乘以此系数）
     harem_coef: float = 0.0    # 后宫加成系数（后宫时魔之和 × 此系数）
+    per_torrent_flat: float = 0.0  # 每个做种种子的固定时魔（NexusPHP「做种数 × 每种子」低保）
+    seeding_count_cap: int = 200   # 上述固定项计入的做种数上限
 
     @staticmethod
     def normalized(params: Optional["BonusParams"] = None) -> "BonusParams":
@@ -59,6 +61,8 @@ class BonusParams:
             "normal_weight": self.normal_weight,
             "official_coef": self.official_coef,
             "harem_coef": self.harem_coef,
+            "per_torrent_flat": self.per_torrent_flat,
+            "seeding_count_cap": self.seeding_count_cap,
         }
         for key, value in overrides.items():
             if value is not None and key in data:
@@ -283,6 +287,7 @@ def calc_aggregate_bonus_per_hour(
     official_coef: Optional[float] = None,
     harem_hourly: float = 0.0,
     harem_coef: Optional[float] = None,
+    seeding_count: int = 0,
 ) -> float:
     """站点口径的「每小时合计魔力」。
 
@@ -305,6 +310,7 @@ def calc_aggregate_bonus_per_hour(
         official_coef=official_coef,
         harem_hourly=harem_hourly,
         harem_coef=harem_coef,
+        seeding_count=seeding_count,
     )["total"]
 
 
@@ -314,12 +320,13 @@ def aggregate_breakdown(
     official_coef: Optional[float] = None,
     harem_hourly: float = 0.0,
     harem_coef: Optional[float] = None,
+    seeding_count: int = 0,
 ) -> Dict[str, float]:
     """站点口径合计魔力，并返回中间量（供「魔力计算」页展示推导链）。
 
     返回 dict：
         a_total / a_official   合计 A、官种 A（该项只算一次 arctan）
-        b_base / b_official / b_harem  三段拆分
+        b_base / b_flat / b_official / b_harem  三段拆分
         total                  每小时合计魔力
     """
     p = BonusParams.normalized(params)
@@ -336,13 +343,17 @@ def aggregate_breakdown(
     b_base = p.b0 * 2 / math.pi * math.atan(a_total / p.l)
     b_official = (p.b0 * 2 / math.pi * math.atan(a_official / p.l)) * oc if oc else 0.0
     b_harem = (harem_hourly or 0.0) * hc if hc else 0.0
+    # NexusPHP「做种固定奖励」：每种子 × per_torrent_flat（做种数封顶）；与公式 B 相加构成总时魔。
+    n_flat = min(int(seeding_count or 0), int(p.seeding_count_cap or 0)) if p.seeding_count_cap else int(seeding_count or 0)
+    b_flat = p.per_torrent_flat * max(n_flat, 0)
     return {
         "a_total": a_total,
         "a_official": a_official,
         "b_base": b_base,
+        "b_flat": b_flat,
         "b_official": b_official,
         "b_harem": b_harem,
-        "total": b_base + b_official + b_harem,
+        "total": b_base + b_flat + b_official + b_harem,
     }
 
 

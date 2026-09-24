@@ -59,7 +59,12 @@ class FormulaCapture:
             for key in ("t0", "n0", "b0", "l", "zero_weight", "normal_weight")
             if key in self.params
         }
-        for extra_key, param_key in (("official_coef", "official_coef"), ("harem_coef", "harem_coef")):
+        for extra_key, param_key in (
+            ("official_coef", "official_coef"),
+            ("harem_coef", "harem_coef"),
+            ("per_torrent_flat", "per_torrent_flat"),
+            ("seeding_count_cap", "seeding_count_cap"),
+        ):
             if extra_key in self.extra and self.extra[extra_key] is not None:
                 overrides[param_key] = self.extra[extra_key]
         return base.merged(**overrides)
