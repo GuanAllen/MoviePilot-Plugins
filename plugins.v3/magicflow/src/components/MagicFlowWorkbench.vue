@@ -596,17 +596,41 @@ onUnmounted(() => {
         </div>
       </div>
       <div class="magicflow-page__actions">
-        <template v-if="selectedTask">
-          <span class="magicflow-head-divider" aria-hidden="true" />
-          <div class="magicflow-head-meta">
-            <span class="magicflow-head-meta__k">当前任务</span>
-            <span class="magicflow-head-meta__v">{{ selectedTask.site_name || '—' }} · {{ selectedTask.name }}</span>
-          </div>
-          <div class="magicflow-head-meta">
-            <span class="magicflow-head-meta__k">托管</span>
-            <span class="magicflow-head-meta__v">{{ selectedTask.seeding_count || 0 }}</span>
-          </div>
-        </template>
+        <VMenu v-if="tasks.length" :close-on-content-click="true" location="bottom end">
+          <template #activator="{ props: menuProps }">
+            <button
+              v-bind="menuProps"
+              type="button"
+              class="magicflow-task-switch"
+              :aria-label="`当前任务：${selectedTask?.name || ''}`"
+            >
+              <span class="magicflow-task-switch__icon">
+                <img v-if="taskSiteIcon" :src="taskSiteIcon" alt="" />
+                <VIcon v-else icon="mdi-web" size="15" />
+              </span>
+              <span class="magicflow-task-switch__body">
+                <span class="magicflow-task-switch__k">当前任务</span>
+                <span class="magicflow-task-switch__v">{{ selectedTask?.name || '—' }} · {{ selectedTask?.site_name || '' }}</span>
+              </span>
+              <span class="magicflow-status-dot" :class="`magicflow-status-dot--${selectedState.color}`" />
+              <VIcon icon="mdi-chevron-down" size="18" class="magicflow-task-switch__chev" />
+            </button>
+          </template>
+          <VList density="comfortable" class="magicflow-task-switch__menu">
+            <VListItem
+              v-for="task in tasks"
+              :key="task.id"
+              :title="task.name"
+              :subtitle="task.site_name"
+              :active="task.id === selectedTaskId"
+              @click="selectTask(task.id)"
+            >
+              <template #prepend>
+                <VIcon :icon="taskStateMeta(task.state, task.enabled).icon" :color="taskStateMeta(task.state, task.enabled).color" size="18" />
+              </template>
+            </VListItem>
+          </VList>
+        </VMenu>
         <VChip v-if="summary.total_tasks" size="small" variant="tonal">
           {{ summary.enabled_tasks || 0 }} / {{ summary.total_tasks }} 启用
         </VChip>
@@ -2421,36 +2445,83 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
-/* 顶部品牌头：细分隔线 + 当前任务/托管 上下文信息（方案 A） */
-.magicflow-page .magicflow-head-divider {
-  inline-size: 1px;
-  block-size: 26px;
-  flex: 0 0 auto;
-  background: rgba(140, 150, 220, 0.18);
+/* 顶部「当前任务」切换下拉（方案 B） */
+.magicflow-page .magicflow-task-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  max-inline-size: 22rem;
+  padding: 6px 10px 6px 7px;
+  border: 1px solid rgba(139, 123, 240, 0.26);
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgba(139, 123, 240, 0.16), rgba(139, 123, 240, 0.05));
+  color: rgb(var(--v-theme-on-surface));
+  font: inherit;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(139, 123, 240, 0.16);
 }
 
-.magicflow-page .magicflow-head-meta {
+.magicflow-page .magicflow-task-switch:hover {
+  border-color: rgba(139, 123, 240, 0.42);
+}
+
+.magicflow-page .magicflow-task-switch:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 2px;
+}
+
+.magicflow-page .magicflow-task-switch__icon {
+  inline-size: 26px;
+  block-size: 26px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 8px;
+  color: #fff;
+  background: linear-gradient(145deg, #9484f5, #5b4fb8);
+}
+
+.magicflow-page .magicflow-task-switch__icon img {
+  inline-size: 62%;
+  block-size: 62%;
+  object-fit: contain;
+  border-radius: 5px;
+}
+
+.magicflow-page .magicflow-task-switch__body {
   display: flex;
   flex-direction: column;
   gap: 1px;
   min-inline-size: 0;
-  line-height: 1.2;
+  line-height: 1.15;
+  text-align: start;
 }
 
-.magicflow-page .magicflow-head-meta__k {
-  font-size: 10.5px;
+.magicflow-page .magicflow-task-switch__k {
+  font-size: 10px;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
 
-.magicflow-page .magicflow-head-meta__v {
+.magicflow-page .magicflow-task-switch__v {
   font-size: 13px;
   font-weight: 600;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.magicflow-page .magicflow-task-switch__chev {
+  flex: 0 0 auto;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.magicflow-page .magicflow-task-switch__menu {
+  min-inline-size: 15rem;
 }
 
 @media (max-width: 959px) {
-  .magicflow-page .magicflow-head-divider,
-  .magicflow-page .magicflow-head-meta {
+  .magicflow-page .magicflow-task-switch {
     display: none;
   }
 }
