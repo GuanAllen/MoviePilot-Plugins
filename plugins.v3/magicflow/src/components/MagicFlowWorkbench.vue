@@ -647,25 +647,34 @@ onUnmounted(() => {
     </div>
 
     <template v-else>
-      <VSelect
-        v-if="tasks.length > 1"
-        class="magicflow-mobile-select"
-        :model-value="selectedTaskId"
-        :items="tasks"
-        item-title="name"
-        item-value="id"
-        label="当前任务"
-        hide-details
-        @update:model-value="selectTask"
-      >
-        <template #item="{ props: itemProps, item }">
-          <VListItem v-bind="itemProps" :subtitle="item.raw.site_name">
-            <template #prepend>
-              <VIcon :icon="taskStateMeta(item.raw.state, item.raw.enabled).icon" :color="taskStateMeta(item.raw.state, item.raw.enabled).color" />
-            </template>
-          </VListItem>
-        </template>
-      </VSelect>
+      <div class="magicflow-mobile-toolbar">
+        <VSelect
+          v-if="tasks.length > 1"
+          class="magicflow-mobile-select"
+          :model-value="selectedTaskId"
+          :items="tasks"
+          item-title="name"
+          item-value="id"
+          label="当前任务"
+          hide-details
+          @update:model-value="selectTask"
+        >
+          <template #item="{ props: itemProps, item }">
+            <VListItem v-bind="itemProps" :subtitle="item.raw.site_name">
+              <template #prepend>
+                <VIcon :icon="taskStateMeta(item.raw.state, item.raw.enabled).icon" :color="taskStateMeta(item.raw.state, item.raw.enabled).color" />
+              </template>
+            </VListItem>
+          </template>
+        </VSelect>
+        <div v-else class="magicflow-mobile-current">
+          <span>当前任务</span>
+          <strong>{{ selectedTask?.name || '—' }}</strong>
+        </div>
+        <VBtn class="magicflow-mobile-add" variant="tonal" color="primary" prepend-icon="mdi-plus" @click="openCreateTask">
+          新建
+        </VBtn>
+      </div>
 
       <div class="magicflow-layout">
         <VSheet tag="aside" class="magicflow-task-rail app-surface-static">
@@ -935,7 +944,7 @@ onUnmounted(() => {
                   <div class="text-subtitle-1 font-weight-medium">种子池</div>
                   <div class="text-body-2 text-medium-emphasis">
                     <template v-if="poolView === 'candidates'">
-                      待办队列：按站点魔力公式评分排序，共 {{ candidateData.total || 0 }} 个通过过滤
+                      待办队列 · 共 {{ candidateData.total || 0 }} 个通过过滤
                     </template>
                     <template v-else>
                       已托管：共 {{ bonusData.torrent_count || 0 }} 个（黑盒：仅展示状态与进度）
@@ -955,7 +964,7 @@ onUnmounted(() => {
                   <header class="magicflow-panel__head">
                     <div>
                       <div class="text-subtitle-1 font-weight-medium">候选排行</div>
-                      <div class="text-body-2 text-medium-emphasis">预计魔力效率从高到低（按 4 周稳定期估算）</div>
+                      <div class="text-body-2 text-medium-emphasis">待办名次由站点魔力效率内部排序 · 仅供选种参考</div>
                     </div>
                   </header>
                   <ol class="magicflow-pipeline">
@@ -965,7 +974,6 @@ onUnmounted(() => {
                         <strong>{{ candidate.title || '未知种子' }}</strong>
                         <span>{{ Number(candidate.size_gb || 0).toFixed(2) }} GB · {{ candidate.seeders }} 做种 · {{ Number(candidate.age_weeks || 0).toFixed(1) }} 周</span>
                       </div>
-                      <VChip size="small" variant="tonal">{{ Number(candidate.bonus_per_hour || 0).toFixed(2) }}/h</VChip>
                     </li>
                     <li v-if="!(candidateData.candidates || []).length">
                       <div class="magicflow-table-empty">暂无候选</div>
@@ -1181,17 +1189,9 @@ onUnmounted(() => {
             <div><dt>状态</dt><dd><VChip size="small" :color="stateColor(activeTorrent.state)" variant="tonal">{{ stateLabel(activeTorrent.state) }}</VChip></dd></div>
             <div><dt>下载进度</dt><dd>{{ (Number(activeTorrent.progress || 0) * 100).toFixed(1) }}%</dd></div>
             <div><dt>大小</dt><dd>{{ Number(activeTorrent.size_gb || 0).toFixed(2) }} GB</dd></div>
-            <div><dt>做种 / 下载</dt><dd>{{ activeTorrent.seeders || 0 }} / {{ activeTorrent.leechers || 0 }}</dd></div>
             <div><dt>上传量</dt><dd>{{ formatBytes(activeTorrent.uploaded) }}</dd></div>
             <div><dt>分享率</dt><dd>{{ Number(activeTorrent.ratio || 0).toFixed(2) }}</dd></div>
-            <div><dt>种子年龄</dt><dd>{{ Number(activeTorrent.age_weeks || 0).toFixed(1) }} 周</dd></div>
-            <div><dt>魔力/时</dt><dd>{{ Number(activeTorrent.bonus_per_hour || 0).toFixed(3) }}</dd></div>
-            <div><dt>时间因子</dt><dd>{{ Number(activeTorrent.time_factor || 0).toFixed(3) }}</dd></div>
-            <div><dt>人数因子</dt><dd>{{ Number(activeTorrent.people_factor || 0).toFixed(3) }}</dd></div>
-            <div><dt>零魔种子</dt><dd>{{ activeTorrent.is_zero_bonus ? '是' : '否' }}</dd></div>
             <div><dt>手动保留</dt><dd>{{ activeTorrent.is_protected ? '已保护' : '未保护' }}</dd></div>
-            <div><dt>站内排名</dt><dd>{{ activeTorrent.rank }}</dd></div>
-            <div><dt>策略建议</dt><dd>{{ activeTorrent.recommendation || '-' }}</dd></div>
           </dl>
           <div class="text-caption text-medium-emphasis magicflow-hash-line">infohash：{{ activeTorrent.hash }}</div>
         </VCardText>
@@ -1368,6 +1368,10 @@ onUnmounted(() => {
 }
 
 .magicflow-mobile-select {
+  display: none;
+}
+
+.magicflow-mobile-toolbar {
   display: none;
 }
 
@@ -1917,8 +1921,41 @@ onUnmounted(() => {
     display: none;
   }
 
-  .magicflow-mobile-select {
+  .magicflow-mobile-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-block-end: 4px;
+  }
+
+  .magicflow-mobile-toolbar .magicflow-mobile-select {
     display: block;
+    flex: 1 1 auto;
+    min-inline-size: 0;
+  }
+
+  .magicflow-mobile-current {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    justify-content: center;
+    min-inline-size: 0;
+    padding-inline: 2px;
+  }
+
+  .magicflow-mobile-current span {
+    font-size: 11px;
+    color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  }
+
+  .magicflow-mobile-current strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .magicflow-mobile-add {
+    flex: 0 0 auto;
   }
 
   .magicflow-layout {
@@ -2524,200 +2561,6 @@ onUnmounted(() => {
 @media (max-width: 699px) {
   .magicflow-page {
     padding-block-end: 76px;
-  }
-}
-/* ---------- 魔力计算 tab ---------- */
-.magicflow-calc__meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11.5px;
-  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
-}
-
-.magicflow-calc__meta .is-fallback {
-  color: rgb(var(--v-theme-warning));
-}
-
-.magicflow-calc__expr {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11.5px;
-  line-height: 1.95;
-  padding: 12px 14px;
-  border-radius: 12px;
-  margin-block: 2px 12px;
-  background: rgba(8, 12, 26, 0.5);
-  border: 1px solid var(--magicflow-panel-brd);
-  white-space: nowrap;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-}
-
-.magicflow-calc__expr-line + .magicflow-calc__expr-line {
-  margin-block-start: 4px;
-}
-
-.magicflow-calc__chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-}
-
-.magicflow-calc__chip {
-  font-size: 11px;
-  padding: 4px 9px;
-  border-radius: 8px;
-  color: rgba(var(--v-theme-on-surface), 0.82);
-  background: rgba(139, 123, 240, 0.1);
-  border: 1px solid rgba(139, 123, 240, 0.24);
-}
-
-.magicflow-calc__chip b {
-  color: rgb(var(--v-theme-on-surface));
-}
-
-.magicflow-calc__chip.is-hi {
-  color: #bfeef5;
-  background: rgba(94, 200, 216, 0.12);
-  border-color: rgba(94, 200, 216, 0.32);
-}
-
-.magicflow-calc__chip.is-hi b {
-  color: #e5fbff;
-}
-
-.magicflow-calc__stats {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-  margin-block: 2px 12px;
-}
-
-.magicflow-calc__stat {
-  padding: 11px;
-  border-radius: 12px;
-  text-align: center;
-  background: rgba(139, 123, 240, 0.07);
-  border: 1px solid rgba(139, 123, 240, 0.14);
-}
-
-.magicflow-calc__stat b {
-  display: block;
-  font-size: 16px;
-  font-weight: 650;
-}
-
-.magicflow-calc__stat span {
-  font-size: 10.5px;
-  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
-}
-
-.magicflow-calc__stat.is-accent b {
-  color: #c0b6ff;
-}
-
-.magicflow-calc__stat.is-ok b {
-  color: #8fe3ef;
-}
-
-.magicflow-calc__chain {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11.5px;
-  color: rgba(var(--v-theme-on-surface), 0.78);
-  background: rgba(8, 12, 26, 0.45);
-  border: 1px solid var(--magicflow-panel-brd);
-  border-radius: 11px;
-  padding: 10px 12px;
-  margin-block-end: 14px;
-}
-
-.magicflow-calc__chain b {
-  color: #d6d2ff;
-}
-
-.magicflow-calc__arrow {
-  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
-}
-
-.magicflow-calc__dev {
-  font-size: 10.5px;
-  color: #8fe3ef;
-  background: rgba(94, 200, 216, 0.12);
-  border: 1px solid rgba(94, 200, 216, 0.3);
-  padding: 3px 8px;
-  border-radius: 7px;
-}
-
-.magicflow-calc__top {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.magicflow-calc__top-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.82);
-  margin-block-end: 2px;
-}
-
-.magicflow-calc__top-row {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  font-size: 12px;
-}
-
-.magicflow-calc__rk {
-  flex: 0 0 16px;
-  text-align: center;
-  font-size: 10.5px;
-  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
-}
-
-.magicflow-calc__tt {
-  flex: 1 1 auto;
-  min-inline-size: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.magicflow-calc__tt i {
-  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
-  font-style: normal;
-  font-size: 10.5px;
-}
-
-.magicflow-calc__bar {
-  flex: 0 0 52px;
-  height: 5px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  overflow: hidden;
-}
-
-.magicflow-calc__bar i {
-  display: block;
-  height: 100%;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #6a5cd8, #9c8cff);
-}
-
-.magicflow-calc__bv {
-  flex: 0 0 52px;
-  text-align: right;
-  font-weight: 600;
-  color: #d6d2ff;
-}
-
-@media (max-width: 699px) {
-  .magicflow-calc__stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 </style>

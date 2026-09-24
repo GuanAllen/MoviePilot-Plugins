@@ -65,7 +65,7 @@ from .persistence import MagicFlowStore, OperationItem
 from .sites import BonusCalculator, get_calculator, get_formula_params
 from .sites.formula_fetch import fetch_site_formula, refresh_site_preset, fetch_seeding_pubdates, fetch_seeding_list
 
-__version__ = "1.0.57"
+__version__ = "1.0.58"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -2452,7 +2452,7 @@ class MagicFlow(_PluginBase):
             return Response(success=False, message=str(e))
 
     def get_task_candidates(self, task_id: str) -> Response:
-        """获取候选种子及魔力评分。"""
+        """获取候选种子（黑盒：不对外暴露自算魔力评分，仅返回名次与基础属性）。"""
         task = self._get_task_config(task_id)
         if not task:
             return Response(success=False, message="任务不存在")
@@ -2504,10 +2504,8 @@ class MagicFlow(_PluginBase):
                     "seeders": t.seeders,
                     "leechers": t.leechers,
                     "age_weeks": round(t.age_weeks, 2),
-                    "bonus_per_hour": round(t.bonus_per_hour, 4),
                     "is_zero_bonus": t.is_zero_bonus,
                     "rank": rc.rank,
-                    "recommendation": rc.recommendation,
                 })
 
             return Response(success=True, data={
