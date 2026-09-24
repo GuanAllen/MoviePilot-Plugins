@@ -61,7 +61,7 @@ from .persistence import MagicFlowStore, OperationItem
 from .sites import BonusCalculator, get_calculator, get_formula_params
 from .sites.formula_fetch import fetch_site_formula, refresh_site_preset
 
-__version__ = "1.0.44"
+__version__ = "1.0.45"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -755,6 +755,7 @@ class MagicFlow(_PluginBase):
                 1 for t in managed
                 if str(getattr(t, "state", "") or "").lower() in QB_DOWNLOADING_STATES
             )
+            dl_limit = max(int(task.max_download_concurrent or 10), 1)
             self._log(
                 f"魔力管家 [{task.name}] 托管 {base_cnt} 个 / {base_size:.2f}GB"
                 f"（下载中 {dl_concurrent} 个），标签「{task.brush_tag}」"
@@ -770,6 +771,18 @@ class MagicFlow(_PluginBase):
 
             # ---------- ① 入口前置检查（不抓取、游标不推进）----------
             self._set_phase(task.id, "entry")
+            if dl_concurrent >= dl_limit:
+                reason = (
+                    f"下载并发已达上限（{dl_concurrent}/{dl_limit}），本轮不抓取不推进游标，"
+                    "等待现有下载完成（清理归 check）"
+                )
+                self._log(f"魔力管家 [{task.name}] {reason}")
+                if self._store:
+                    self._store.record_run_summary(task.id, "noop", reason)
+                    self._store.record_run_success(task.id, added=0, deleted=0, kept=base_cnt)
+                self._invalidate_summary()
+                self._set_phase(task.id, "done")
+                return {"status": "noop", "reason": reason, "added": 0, "reused": 0, "deleted": 0, "kept": base_cnt}
             if (max_keep and base_cnt >= max_keep) or (disk_gb and base_size >= disk_gb):
                 reason = "保种池容量/数量已满，本轮停止抓取，等待 check 任务清理低效种子释放空间"
                 self._log(f"魔力管家 [{task.name}] {reason}")
@@ -790,7 +803,6 @@ class MagicFlow(_PluginBase):
             add_cnt = 0
             add_size = 0.0
             dl_budget = int(task.max_add_per_run or 0)
-            dl_limit = max(int(task.max_download_concurrent or 10), 1)
             seen_cooldown = max(float(task.seen_cooldown_hours or 0), 0.0) * 3600
 
             if not task.site_domain:
