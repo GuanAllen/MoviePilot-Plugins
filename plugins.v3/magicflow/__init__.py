@@ -79,7 +79,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "1.0.66"
+__version__ = "1.0.67"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -150,6 +150,11 @@ class MagicFlowTaskConfig:
     cleanup_no_progress: bool = True             # 每次运行清理「没进度」的种子
     no_progress_minutes: int = 30                # 加入下载器超过该分钟数仍无进度才清理
 
+    # 慢速清理（用「下载速度 ÷ 体积」估算，长期下不完的种子占着下载名额）
+    cleanup_slow_progress: bool = True           # 清理「下载过慢」的种子
+    slow_progress_grace_minutes: int = 60        # 加入后多少分钟内不判「慢」（给新种起步时间）
+    slow_progress_max_hours: float = 48.0        # 按当前速度预计还要超过该小时数才下完 → 判「过慢」
+
     # 自动恢复被暂停的已完成种子（暂停 = 0 产出）
     auto_resume_paused: bool = True
 
@@ -218,6 +223,9 @@ class MagicFlowTaskConfig:
             "reuse_verify": self.reuse_verify,
             "cleanup_no_progress": self.cleanup_no_progress,
             "no_progress_minutes": self.no_progress_minutes,
+            "cleanup_slow_progress": self.cleanup_slow_progress,
+            "slow_progress_grace_minutes": self.slow_progress_grace_minutes,
+            "slow_progress_max_hours": self.slow_progress_max_hours,
             "auto_resume_paused": self.auto_resume_paused,
             "ti_source": self.ti_source,
             "seen_cooldown_hours": self.seen_cooldown_hours,
@@ -1095,8 +1103,18 @@ class MagicFlow(_PluginBase):
                 else:
                     group_b.append((bonus, cand))
 
-            group_a.sort(key=lambda x: x[0].bonus_per_hour, reverse=True)
-            group_b.sort(key=lambda x: x[0].bonus_per_hour, reverse=True)
+            # ★ 与洗池同一套排序键：名额受限→边际 value 降序；仅磁盘受限→每 GB 效率 efficiency 降序。
+            # （修 bug：原此处用旧的「单种魔力」bonus_per_hour 重排，把洗池的边际排序又覆盖回去了）
+            _disk_bound = _disk_left is not None and _count_left is None
+
+            def _rank_key(pair: Any):
+                _c = pair[1]
+                if _disk_bound:
+                    return (getattr(_c, "_eff", 0.0), getattr(_c, "_value", 0.0))
+                return (getattr(_c, "_value", 0.0), getattr(_c, "_eff", 0.0))
+
+            group_a.sort(key=_rank_key, reverse=True)
+            group_b.sort(key=_rank_key, reverse=True)
             ordered: List[Any] = list(group_a) + list(group_b)
             self._log(
                 f"魔力管家 [{task.name}] Top{len(topn)} 排序：复用 {len(group_a)} / 下载 {len(group_b)}"
@@ -1393,7 +1411,7 @@ class MagicFlow(_PluginBase):
         返回计数 {resumed, no_progress, low_eff, deleted, kept, total_before, total_after}。
         """
         out: Dict[str, Any] = {
-            "resumed": 0, "no_progress": 0, "low_eff": 0, "deleted": 0,
+            "resumed": 0, "no_progress": 0, "slow": 0, "low_eff": 0, "deleted": 0,
             "kept": 0, "total_before": 0.0, "total_after": 0.0,
         }
         if not downloader or not downloader.is_available:
@@ -1422,6 +1440,16 @@ class MagicFlow(_PluginBase):
                 out["no_progress"] = np_deleted
             except Exception as _cleanup_err:
                 self._log(f"魔力管家 [{task.name}] 清理无进度种子异常: {_cleanup_err}", "warning")
+
+        # ②b 清理「下载过慢」的种子（用「下载速度 ÷ 体积」估算 ETA，长期下不完的腾名额）
+        if all_tagged:
+            try:
+                slow_deleted, _slow_removed = self._cleanup_slow_progress(
+                    task, downloader, list(all_tagged), protected
+                )
+                out["slow"] = slow_deleted
+            except Exception as _slow_err:
+                self._log(f"魔力管家 [{task.name}] 清理过慢种子异常: {_slow_err}", "warning")
 
         # ③ 删低效种子（零魔 / 做种人数过多 / 低于门槛 / 超保种上限）
         try:
@@ -1477,13 +1505,13 @@ class MagicFlow(_PluginBase):
                 )
 
         out["low_eff"] = deleted_count
-        out["deleted"] = int(out["no_progress"]) + deleted_count
+        out["deleted"] = int(out["no_progress"]) + int(out["slow"]) + deleted_count
         out["kept"] = len(result.to_keep)
         out["total_before"] = result.total_bonus_before
         out["total_after"] = result.total_bonus_after
         self._log(
             f"魔力管家 [{task.name}] 完成："
-            f"恢复 {out['resumed']} / 无进度 {out['no_progress']} / 低效 {deleted_count}；"
+            f"恢复 {out['resumed']} / 无进度 {out['no_progress']} / 过慢 {out['slow']} / 低效 {deleted_count}；"
             f"保留 {out['kept']} 个，"
             f"魔力产出 {result.total_bonus_before:.2f} -> {result.total_bonus_after:.2f}/h"
         )
@@ -2094,6 +2122,93 @@ class MagicFlow(_PluginBase):
         )
         return deleted, removed
 
+    def _is_too_slow(self, torrent: TorrentInfo, task: MagicFlowTaskConfig, now: float) -> bool:
+        """判断种子是否「下载过慢」（用「下载速度 ÷ 体积」估算）。
+
+        口径（Master 指定）：value = 下载速度 / 体积 → 每小时完成比例，
+        再算 ETA = 剩余比例 / value；超过 slow_progress_max_hours 小时才下得完 → 过慢。
+
+        只判「正在下载」的种子（paused 的交给自动恢复/无进度规则，不在此列）：
+          - 加入不足 slow_progress_grace_minutes 分钟的新种不判（给新种起步时间）；
+          - 速度为 0（含 stalledDL）= 完全不动 → 过慢；
+          - 否则按 ETA 超过阈值 → 过慢。
+        """
+        try:
+            state = str(getattr(torrent, "state", "") or "").strip().lower()
+            size = float(getattr(torrent, "size", 0) or 0)
+            progress = float(getattr(torrent, "progress", 0) or 0)
+            added_on = float(getattr(torrent, "added_on", 0) or 0)
+            speed = float(getattr(torrent, "download_speed", 0) or 0)
+        except (TypeError, ValueError):
+            return False
+        if state not in QB_DOWNLOADING_STATES:
+            return False
+        if size <= 0:
+            return False
+        grace = max(int(getattr(task, "slow_progress_grace_minutes", 60) or 60), 1) * 60
+        if added_on > 0 and (now - added_on) < grace:
+            return False
+        remaining_ratio = max(1.0 - min(max(progress, 0.0), 1.0), 0.0)
+        if remaining_ratio <= 0:
+            return False
+        if speed <= 0:
+            return True
+        max_hours = float(getattr(task, "slow_progress_max_hours", 48.0) or 48.0)
+        rate_per_hour = speed / size * 3600.0  # 「速度 ÷ 体积」→ 每小时完成比例
+        eta_hours = remaining_ratio / rate_per_hour if rate_per_hour > 0 else float("inf")
+        return eta_hours > max_hours
+
+    def _cleanup_slow_progress(
+        self,
+        task: MagicFlowTaskConfig,
+        downloader: DownloaderAdapter,
+        managed: List[TorrentInfo],
+        protected_hashes: Optional[Set[str]] = None,
+    ) -> Tuple[int, List[TorrentInfo]]:
+        """清理「下载过慢」的种子（速度÷体积 → ETA 超过阈值），返回 (删除数, 列表)。
+
+        过慢种子长期霸占下载名额、把入口堵死 → 清掉腾位，并记 dead 防止下轮重复选到。
+        """
+        if not getattr(task, "cleanup_slow_progress", True) or not managed:
+            return 0, []
+        protected_hashes = protected_hashes or set()
+        now = time.time()
+        slow = [
+            t for t in managed
+            if t.hash and t.hash not in protected_hashes and self._is_too_slow(t, task, now)
+        ]
+        if not slow:
+            return 0, []
+        deleted, err = downloader.delete_torrents(
+            hashes=[t.hash for t in slow], delete_file=task.delete_files
+        )
+        if deleted <= 0:
+            if err:
+                self._log(f"魔力管家 [{task.name}] 清理过慢种子失败：{err}", "warning")
+            return 0, []
+        removed = slow[:deleted]
+        for t in removed:
+            self._dead_hashes[(t.hash or "").lower()] = now
+        if self._store:
+            self._store.dead.mark(
+                task.id,
+                [f"hash:{(t.hash or '').lower()}" for t in removed if t.hash],
+                ts=now,
+            )
+            self._store.journal.record(
+                task_id=task.id,
+                kind="deletion",
+                items=[
+                    OperationItem(hash=t.hash, title=t.title, reason="下载过慢（占名额）", bonus_per_hour=0.0)
+                    for t in removed
+                ],
+            )
+        self._log(
+            f"魔力管家 [{task.name}] 清理下载过慢种子 {deleted} 个"
+            f"（速度÷体积估算 > {float(getattr(task, 'slow_progress_max_hours', 48.0) or 48.0):g}h 才下完）"
+        )
+        return deleted, removed
+
     def _is_dead_cached(self, task_id: str, torrent_hash: str) -> bool:
         """近期刚被判定「没进度」并清掉的种子，短时间内不再重复添加。"""
         if not torrent_hash:
@@ -2509,6 +2624,9 @@ class MagicFlow(_PluginBase):
             reuse_verify=payload.reuse_verify,
             cleanup_no_progress=payload.cleanup_no_progress,
             no_progress_minutes=payload.no_progress_minutes,
+            cleanup_slow_progress=getattr(payload, "cleanup_slow_progress", True) is not False,
+            slow_progress_grace_minutes=int(getattr(payload, "slow_progress_grace_minutes", 60) or 60),
+            slow_progress_max_hours=float(getattr(payload, "slow_progress_max_hours", 48.0) or 48.0),
             auto_resume_paused=getattr(payload, "auto_resume_paused", True) is not False,
             seen_cooldown_hours=payload.seen_cooldown_hours,
             bonus_t0=payload.bonus_t0,
@@ -2581,6 +2699,9 @@ class MagicFlow(_PluginBase):
         task.reuse_verify = payload.reuse_verify
         task.cleanup_no_progress = payload.cleanup_no_progress
         task.no_progress_minutes = payload.no_progress_minutes
+        task.cleanup_slow_progress = getattr(payload, "cleanup_slow_progress", True) is not False
+        task.slow_progress_grace_minutes = int(getattr(payload, "slow_progress_grace_minutes", 60) or 60)
+        task.slow_progress_max_hours = float(getattr(payload, "slow_progress_max_hours", 48.0) or 48.0)
         task.auto_resume_paused = getattr(payload, "auto_resume_paused", True) is not False
         task.seen_cooldown_hours = payload.seen_cooldown_hours
         task.bonus_t0 = payload.bonus_t0

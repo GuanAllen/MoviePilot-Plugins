@@ -26,6 +26,9 @@ const taskDefaults = {
   reuse_verify: true,
   cleanup_no_progress: true,
   no_progress_minutes: 30,
+  cleanup_slow_progress: true,
+  slow_progress_grace_minutes: 60,
+  slow_progress_max_hours: 48,
   auto_resume_paused: true,
   ti_source: 'publish',
   seen_cooldown_hours: 24,
@@ -124,6 +127,9 @@ function normalizeTask(task) {
   result.reuse_verify = Boolean(result.reuse_verify ?? true);
   result.cleanup_no_progress = Boolean(result.cleanup_no_progress ?? true);
   result.no_progress_minutes = Number(result.no_progress_minutes || 30);
+  result.cleanup_slow_progress = Boolean(result.cleanup_slow_progress ?? true);
+  result.slow_progress_grace_minutes = Number(result.slow_progress_grace_minutes || 60);
+  result.slow_progress_max_hours = Number(result.slow_progress_max_hours || 48);
   result.auto_resume_paused = Boolean(result.auto_resume_paused ?? true);
   result.ti_source = ['publish', 'seed_time'].includes(result.ti_source) ? result.ti_source : 'publish';
   result.seen_cooldown_hours = Number(result.seen_cooldown_hours ?? 24);

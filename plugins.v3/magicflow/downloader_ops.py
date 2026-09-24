@@ -601,8 +601,10 @@ class DownloaderAdapter:
         seed_time = float(_kv(torrent, "seeding_time", 0) or _kv(torrent, "seed_time", 0) or 0)
         ratio = float(_kv(torrent, "ratio", 0) or 0)
         uploaded = float(_kv(torrent, "uploaded", 0) or _kv(torrent, "uploadedEver", 0) or 0)
-        upload_speed = float(_kv(torrent, "up_speed", 0) or 0)
-        download_speed = float(_kv(torrent, "dl_speed", 0) or 0)
+        # 注意：qBittorrent 原始字段是 upspeed/dlspeed（字节/秒），
+        # 旧代码只读 up_speed/dl_speed → qB 下恒为 0（慢速清理因此拿不到速度）。
+        upload_speed = float(_kv(torrent, "up_speed", 0) or _kv(torrent, "upspeed", 0) or 0)
+        download_speed = float(_kv(torrent, "dl_speed", 0) or _kv(torrent, "dlspeed", 0) or 0)
         category = _kv(torrent, "category", "") or ""
         save_path = _kv(torrent, "save_path", "") or ""
         # 进度与加入时间（qb: progress 0~1 / added_on；tr: percent_done / added_date）
