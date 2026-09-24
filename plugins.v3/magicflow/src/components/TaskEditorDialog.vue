@@ -313,6 +313,13 @@ async function saveTask() {
                     hide-details
                     inset
                   />
+                  <VSwitch
+                    v-model="localTask.auto_resume_paused"
+                    label="自动恢复被暂停的已完成种子（重新做种）"
+                    color="primary"
+                    hide-details
+                    inset
+                  />
                 </div>
                 <VRow v-if="localTask.cleanup_no_progress">
                   <VCol cols="12" md="6">

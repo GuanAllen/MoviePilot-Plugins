@@ -33,9 +33,11 @@ def _kv(obj: Any, key: str, default: Any = None) -> Any:
 
 
 # qBittorrent 原始状态字符串（低层客户端不归一，直接用 qb 自身取值）
+# 「做种中」只含**真正在向 tracker 汇报/上传**的状态；pausedUP/pausedDL 是
+# 用户（或插件）明确停下的种子，tracker 不再计入做种，故归入 QB_PAUSED_STATES。
 QB_SEEDING_STATES = {
     "uploading", "stalledup", "forcedup", "queuedup", "checkingup",
-    "pausedup", "allocating",
+    "allocating",
 }
 QB_DOWNLOADING_STATES = {
     "downloading", "metadl", "forceddl", "stalleddl", "queueddl",
