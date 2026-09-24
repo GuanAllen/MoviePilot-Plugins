@@ -57,8 +57,9 @@ from .models import (
 )
 from .persistence import MagicFlowStore, OperationItem
 from .sites import BonusCalculator, get_calculator, get_formula_params
+from .sites.formula_fetch import fetch_site_formula, refresh_site_preset
 
-__version__ = "1.0.38"
+__version__ = "1.0.39"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -408,6 +409,13 @@ class MagicFlow(_PluginBase):
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "手动删除种子",
+            },
+            {
+                "path": "/sites/{site_id}/bonus-formula",
+                "endpoint": self.probe_site_formula,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "抓取站点魔力公式与参数（诊断）",
             },
         ]
 
@@ -1679,6 +1687,30 @@ class MagicFlow(_PluginBase):
                 },
             },
         )
+
+    def probe_site_formula(self, site_id: int, persist: bool = False) -> Response:
+        """诊断：抓取站点 mybonus.php 并解析魔力公式与参数。
+
+        Args:
+            site_id: 站点 ID。
+            persist: 是否同时把结果写入站点公式预设缓存（供内核命中）。
+        """
+        site = self._get_site(site_id)
+        if not site:
+            return Response(success=False, message="站点不存在")
+        try:
+            cap = fetch_site_formula(site)
+            if persist and cap.ok:
+                refresh_site_preset(site)
+        except Exception as err:
+            return Response(success=False, message=f"抓取失败: {err}")
+        self._log(
+            f"公式探测：site={site_id} ({getattr(site, 'domain', '')}) {cap.note} "
+            f"ok={cap.ok} params={cap.params} extra={cap.extra} persist={persist}"
+        )
+        data = {"site_id": site_id, "domain": getattr(site, "domain", ""), "persisted": bool(persist and cap.ok)}
+        data.update(cap.as_dict())
+        return Response(success=True, data=data)
 
     def update_settings(self, payload: MagicFlowSettingsPayload) -> Response:
         """更新插件全局设置。"""
