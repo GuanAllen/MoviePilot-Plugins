@@ -602,9 +602,9 @@ onUnmounted(() => {
         <VChip v-if="summary.total_tasks" size="small" variant="tonal">
           {{ summary.enabled_tasks || 0 }} / {{ summary.total_tasks }} 启用
         </VChip>
-        <VChip v-if="summary.bonus_per_hour" size="small" variant="tonal" color="primary">
-          {{ formatBonus(summary.bonus_per_hour) }}
-        </VChip>
+        <VBtn class="magicflow-header-create" color="primary" variant="flat" prepend-icon="mdi-plus" @click="openCreateTask">
+          新建任务
+        </VBtn>
         <VMenu v-model="settingsMenu" :close-on-content-click="false" location="bottom end">
           <template #activator="{ props: menuProps }">
             <VBtn v-bind="menuProps" icon="mdi-tune-variant" variant="text" aria-label="全局设置" />
@@ -749,6 +749,11 @@ onUnmounted(() => {
               <VTooltip text="编辑任务">
                 <template #activator="{ props: tipProps }">
                   <VBtn v-bind="tipProps" icon="mdi-pencil-outline" variant="text" @click="openEditTask" />
+                </template>
+              </VTooltip>
+              <VTooltip text="删除任务">
+                <template #activator="{ props: tipProps }">
+                  <VBtn v-bind="tipProps" icon="mdi-delete-outline" variant="text" color="error" @click="deleteDialog = true" />
                 </template>
               </VTooltip>
             </div>
@@ -1972,6 +1977,11 @@ onUnmounted(() => {
 }
 
 @media (max-width: 699px) {
+  /* 窄屏隐藏顶部「新建任务」，交给移动工具栏的「新建」按钮 */
+  .magicflow-page .magicflow-header-create {
+    display: none;
+  }
+
   .magicflow-task-head {
     flex-direction: column;
     gap: 0;
@@ -2370,9 +2380,10 @@ onUnmounted(() => {
 }
 
 .magicflow-page .magicflow-page__identity h1 {
-  font-size: 16px;
-  font-weight: 650;
+  font-size: 17px;
+  font-weight: 700;
   line-height: 1.25;
+  letter-spacing: 0.2px;
 }
 
 /* 品牌区版本号徽标（版本必须常驻显示） */
@@ -2393,6 +2404,18 @@ onUnmounted(() => {
 .magicflow-page .magicflow-page__identity p {
   margin-block-start: 2px;
   font-size: 11px;
+}
+
+/* 顶部「新建任务」按钮（桌面端；移动端由工具栏承担，避免重复） */
+.magicflow-page .magicflow-header-create {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+/* 任务头「删除」按钮：与其余图标按钮拉开一点距离，降低误触 */
+.magicflow-page .magicflow-task-head__actions .v-btn[color='error'] {
+  margin-inline-start: 2px;
 }
 
 .magicflow-page .magicflow-task-head h2 {
