@@ -44,7 +44,7 @@ class MagicFlowTaskPayload(BaseModel):
     refill_when_empty: bool = Field(True, description="清理低效种子后主动补种，保持任务做种量")
     max_add_per_run: int = Field(10, ge=1, description="单轮最多新增种子数（未设「最多保留 / 保种体积」时，每轮就按这个名额补种）")
     max_download_concurrent: int = Field(10, ge=1, le=100, description="本任务同时「下载中」上限（queued 排队不计入），复用/辅种不受此限制")
-    top_n: int = Field(100, ge=1, le=1000, description="每轮参与排序处理的候选上限（TopN，超过即裁剪）")
+    top_n: int = Field(30, ge=1, le=1000, description="每轮参与排序处理的候选上限（TopN，超过即裁剪）")
     browse_pages: int = Field(3, ge=1, le=50, description="每轮站点列表翻页数（游标深翻，从上次游标处继续）")
 
     # 存量复用（辅种）：优先复用下载器/本机已有资源，避免重复下载

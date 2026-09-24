@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { _ as _export_sfc, c as cloneTask, n as normalizeTask, t as taskStateMeta, r as runStatusText, f as formatBonus, a as formatDateTime, b as formatDurationSeconds, d as formatBytes, u as unwrapResponse, e as normalizeSettings, g as formatDuration } from './_plugin-vue_export-helper-BQir2kiS.js';
+import { _ as _export_sfc, c as cloneTask, n as normalizeTask, t as taskStateMeta, r as runStatusText, f as formatBonus, a as formatDateTime, b as formatDurationSeconds, d as formatBytes, u as unwrapResponse, e as normalizeSettings, g as formatDuration } from './_plugin-vue_export-helper-DwP2EyH1.js';
 
 const {unref:_unref$1,toDisplayString:_toDisplayString$1,createTextVNode:_createTextVNode$1,resolveComponent:_resolveComponent$1,withCtx:_withCtx$1,createVNode:_createVNode$1,openBlock:_openBlock$1,createBlock:_createBlock$1,createCommentVNode:_createCommentVNode$1,createElementVNode:_createElementVNode$1,withModifiers:_withModifiers$1} = await importShared('vue');
 
@@ -554,7 +554,7 @@ return (_ctx, _cache) => {
                                       type: "number",
                                       min: "1",
                                       label: "每轮参评候选数",
-                                      placeholder: "默认 100",
+                                      placeholder: "默认 30",
                                       suffix: "个",
                                       clearable: ""
                                     }, null, 8, ["modelValue"])
@@ -1125,7 +1125,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-fbc81d9a"]]);
+const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-67f78086"]]);
 
 const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,openBlock:_openBlock,createElementBlock:_createElementBlock,createCommentVNode:_createCommentVNode,createTextVNode:_createTextVNode,withCtx:_withCtx,createBlock:_createBlock,unref:_unref,mergeProps:_mergeProps,renderList:_renderList,Fragment:_Fragment,normalizeClass:_normalizeClass,normalizeStyle:_normalizeStyle,withModifiers:_withModifiers} = await importShared('vue');
 
@@ -3210,7 +3210,7 @@ return (_ctx, _cache) => {
                                     ]),
                                     _createElementVNode("div", null, [
                                       _cache[103] || (_cache[103] = _createElementVNode("dt", null, "每轮参评候选", -1)),
-                                      _createElementVNode("dd", null, _toDisplayString(taskConfig.value.top_n ?? 100) + " 个", 1)
+                                      _createElementVNode("dd", null, _toDisplayString(taskConfig.value.top_n ?? 30) + " 个", 1)
                                     ]),
                                     _createElementVNode("div", null, [
                                       _cache[104] || (_cache[104] = _createElementVNode("dt", null, "每轮翻页数", -1)),
@@ -3532,6 +3532,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-ecf6ff88"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-cb7379b9"]]);
 
 export { MagicFlowWorkbench as M };

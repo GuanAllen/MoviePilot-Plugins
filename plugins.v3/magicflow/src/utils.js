@@ -20,7 +20,7 @@ export const taskDefaults = {
   refill_when_empty: true,
   max_add_per_run: 10,
   max_download_concurrent: 10,
-  top_n: 100,
+  top_n: 30,
   browse_pages: 3,
   reuse_existing: true,
   reuse_verify: true,
@@ -117,7 +117,7 @@ export function normalizeTask(task) {
   result.refill_when_empty = Boolean(result.refill_when_empty)
   result.max_add_per_run = Number(result.max_add_per_run || 10)
   result.max_download_concurrent = Number(result.max_download_concurrent || 10)
-  result.top_n = Number(result.top_n || 100)
+  result.top_n = Number(result.top_n || 30)
   result.browse_pages = Number(result.browse_pages || 3)
   result.reuse_existing = Boolean(result.reuse_existing ?? true)
   result.reuse_verify = Boolean(result.reuse_verify ?? true)
