@@ -416,6 +416,111 @@ def fetch_seeding_pubdates(site: Any, userid: Any, timeout: int = 25) -> Dict[st
     return {r['title_norm']: r['pubdate'] for r in fetch_seeding_list(site, userid, timeout)}
 
 
+# ============================================================
+# 官种（official）识别：抓站点「官方」标签页，收集官种标题
+# ============================================================
+
+_TORRENTNAME_SPLIT = re.compile(r'<table[^>]*class="torrentname"', re.I)
+_OFFICIAL_TAG_RE = re.compile(
+    r'href="\?tag_id=(\d+)"[^>]*>\s*<span[^>]*>\s*官方\s*</span>', re.I
+)
+
+
+def detect_official_tag_id(html_text: str):
+    """从 torrents.php 的标签导航中找出「官方」标签的 tag_id（找不到返回 None）。"""
+    if not html_text:
+        return None
+    m = _OFFICIAL_TAG_RE.search(html_text)
+    return int(m.group(1)) if m else None
+
+
+def parse_official_titles(html_text: str) -> list:
+    """解析站点列表页，抽取每行种子标题（规范化）。纯函数。
+
+    用于「官方」标签页：该页所列种子即官种。
+    """
+    out = []
+    if not html_text:
+        return out
+    for blk in _TORRENTNAME_SPLIT.split(html_text)[1:]:
+        seg = blk[:3000]
+        m = re.search(r'title="([^"]+)"[^>]*href="details\.php\?id=\d+', seg)
+        if not m:
+            m = re.search(r'href="details\.php\?id=\d+[^"]*"[^>]*>(.*?)</a>', seg, re.S)
+        if not m:
+            continue
+        title = _html.unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip()
+        title = re.sub(r"\s+", " ", title)
+        if title:
+            out.append(_norm_title(title))
+    return out
+
+
+def fetch_official_titles(site: Any, pages: int = 2, timeout: int = 25) -> list:
+    """抓取站点「官方」标签页，返回官种标题（规范化）列表。
+
+    先探测 tag_id（找不到回落 1，HDFans 官种 tag_id=1），再翻若干页收集标题。
+    cookie/UA 直接取自站点配置。
+    """
+    domain = (getattr(site, "domain", "") or "").strip()
+    base = (getattr(site, "url", "") or (f"https://{domain}" if domain else "")).rstrip("/")
+    cookie = getattr(site, "cookie", None)
+    ua = getattr(site, "ua", None) or _DEFAULT_UA
+    if not base:
+        return []
+    try:
+        from app.sdk.network import RequestUtils  # noqa: WPS433
+    except Exception:
+        return []
+
+    try:
+        req = RequestUtils(cookies=cookie, ua=ua, timeout=timeout, referer=f"{base}/")
+    except Exception:
+        return []
+
+    def _get(url: str):
+        try:
+            resp = req.get_res(url)
+        except Exception:
+            return None
+        if resp is None or not getattr(resp, "ok", False):
+            try:
+                resp and resp.close()
+            except Exception:
+                pass
+            return None
+        try:
+            raw = resp.content
+            try:
+                return raw.decode("utf-8")
+            except UnicodeDecodeError:
+                return raw.decode("gbk", "ignore")
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+
+    first = _get(f"{base}/torrents.php")
+    tag_id = detect_official_tag_id(first) if first else None
+    if tag_id is None:
+        tag_id = 1
+
+    seen = set()
+    titles = []
+    for page in range(max(int(pages), 1)):
+        text = _get(f"{base}/torrents.php?tag_id={tag_id}&page={page}")
+        if not text:
+            if page == 0:
+                continue
+            break
+        for t in parse_official_titles(text):
+            if t and t not in seen:
+                seen.add(t)
+                titles.append(t)
+    return titles
+
+
 def refresh_site_preset(site: Any) -> FormulaCapture:
     """
     抓取站点公式并写入 ``sites`` 参数预设缓存（供 ``get_formula_params`` 命中）。

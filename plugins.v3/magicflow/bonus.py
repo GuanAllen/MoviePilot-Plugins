@@ -230,26 +230,40 @@ def calc_bonus_score(
     age_weeks: float,
     is_zero_bonus: bool = False,
     params: Optional[BonusParams] = None,
+    is_official: bool = False,
 ) -> float:
     """
     计算种子魔力产出评分（相对值，未归一化）。
 
     公式: bonus_score = time_factor × Si × people_factor × Wi
 
+    **只包含影响「单个种子」的因子**（时间 Ti / 体积 Si / 人数 Ni / 权重 Wi）。
+    后宫加成（依赖他人种子、和用户整体做种集合有关，与「选哪一颗」无关）
+    与「做种数固定奖励」都不在此处体现，故不参与选种/排序。
+
+    官种（is_official）是**单种自身**的加成：站点对官种单独按同一公式再算一遍
+    并乘官种系数（如 HDFans=0.1）。在 A 较小时 arctan 近似线性，等价于把该种
+    的 A 放大 ``(1 + official_coef)``——用于选种排序与删种排序都成立。
+
     Args:
         size_gb: 种子大小（GB）
         seeders: 当前做种人数
         age_weeks: 生存时间（周）
         is_zero_bonus: 是否零魔
+        is_official: 是否官种（单种加成）
 
     Returns:
         魔力产出评分（相对值）
     """
-    time_factor = calc_time_factor(age_weeks, params)
-    people_factor = calc_people_factor(seeders, params)
-    weight = calc_weight(is_zero_bonus, params)
+    p = BonusParams.normalized(params)
+    time_factor = calc_time_factor(age_weeks, p)
+    people_factor = calc_people_factor(seeders, p)
+    weight = calc_weight(is_zero_bonus, p)
 
-    return time_factor * size_gb * people_factor * weight
+    score = time_factor * size_gb * people_factor * weight
+    if is_official and p.official_coef:
+        score *= (1.0 + p.official_coef)
+    return score
 
 
 def calc_bonus_per_hour(
@@ -258,24 +272,26 @@ def calc_bonus_per_hour(
     age_weeks: float,
     is_zero_bonus: bool = False,
     params: Optional[BonusParams] = None,
+    is_official: bool = False,
 ) -> float:
     """
     估算每小时魔力产出。
 
     使用简化公式估算：B ≈ B0 × 2/π × arctan(A/L)
-    其中 A = time_factor × Si × people_factor × Wi
+    其中 A = time_factor × Si × people_factor × Wi（官种再 ×(1+官种系数)）
 
     Args:
         size_gb: 种子大小（GB）
         seeders: 当前做种人数
         age_weeks: 生存时间（周）
         is_zero_bonus: 是否零魔
+        is_official: 是否官种（单种加成）
 
     Returns:
         估算每小时魔力产出
     """
     p = BonusParams.normalized(params)
-    a = calc_bonus_score(size_gb, seeders, age_weeks, is_zero_bonus, params=p)
+    a = calc_bonus_score(size_gb, seeders, age_weeks, is_zero_bonus, params=p, is_official=is_official)
     # 魔力值曲线
     bonus = p.b0 * 2 / math.pi * math.atan(a / p.l)
     return bonus
@@ -367,16 +383,17 @@ def calc_candidate_bonus_per_hour(
     is_zero_bonus: bool = False,
     ref_weeks: float = DEFAULT_CANDIDATE_REF_WEEKS,
     params: Optional[BonusParams] = None,
+    is_official: bool = False,
 ) -> float:
     """候选种子「预计魔力/时」。
 
     站点浏览（browse）只能拿到最新种子，实际年龄 Ti≈0，
     直接代入公式恒为 ~0/h → 排序失去意义。
     这里把年龄下限抬到 ref_weeks（默认 4 周），用「稳定期产出」
-    给候选排序，体现大小 / 做种人数 / 权重差异。
+    给候选排序，体现大小 / 做种人数 / 权重（含官种加成）差异。
     """
     eff = max(float(age_weeks or 0.0), float(ref_weeks or 0.0))
-    return calc_bonus_per_hour(size_gb, seeders, eff, is_zero_bonus, params)
+    return calc_bonus_per_hour(size_gb, seeders, eff, is_zero_bonus, params, is_official=is_official)
 
 
 def calc_torrent_bonus(
@@ -391,6 +408,7 @@ def calc_torrent_bonus(
     is_free: bool = False,
     is_double_free: bool = False,
     hit_and_run: bool = False,
+    is_official: bool = False,
     pubdate: Optional[str] = None,
     page_url: Optional[str] = None,
     params: Optional[BonusParams] = None,
@@ -419,8 +437,8 @@ def calc_torrent_bonus(
     time_factor = calc_time_factor(age_weeks, params)
     people_factor = calc_people_factor(seeders, params)
     weight = calc_weight(is_zero_bonus, params)
-    bonus_score = calc_bonus_score(size_gb, seeders, age_weeks, is_zero_bonus, params)
-    bonus_per_hour = calc_bonus_per_hour(size_gb, seeders, age_weeks, is_zero_bonus, params)
+    bonus_score = calc_bonus_score(size_gb, seeders, age_weeks, is_zero_bonus, params, is_official=is_official)
+    bonus_per_hour = calc_bonus_per_hour(size_gb, seeders, age_weeks, is_zero_bonus, params, is_official=is_official)
 
     return TorrentBonusInfo(
         hash=hash,
@@ -434,6 +452,7 @@ def calc_torrent_bonus(
         is_free=is_free,
         is_double_free=is_double_free,
         hit_and_run=hit_and_run,
+        is_official=is_official,
         time_factor=time_factor,
         people_factor=people_factor,
         weight=weight,
