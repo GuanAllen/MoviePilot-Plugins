@@ -115,6 +115,11 @@ class TaskState:
     last_phase_label: str = ""      # 阶段中文名
     last_phase_at: float = 0.0
     page_cursor: int = 0            # 站点列表页游标（游标深翻）
+    # 种子详情页映射（hash→details 页 URL）。供「检查」时回站点核对促销/免费状态。
+    torrent_pages: Dict[str, str] = field(default_factory=dict)
+    # 刷流模式：每种子「上传快照」（hash→{up:上次上传字节, idle:连续无上传次数, ts:检查时间}）。
+    # 每次检查比对 uploaded 增量；连续 N 次近乎零上传 → 判定「无上传」→ 清理。
+    brush_upload: Dict[str, dict] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -147,6 +152,8 @@ class TaskState:
             "last_phase_label": self.last_phase_label,
             "last_phase_at": self.last_phase_at,
             "page_cursor": self.page_cursor,
+            "torrent_pages": dict(self.torrent_pages),
+            "brush_upload": {str(k).lower(): dict(v) for k, v in self.brush_upload.items()},
         }
 
     @staticmethod
@@ -181,6 +188,8 @@ class TaskState:
             last_phase_label=d.get("last_phase_label", ""),
             last_phase_at=d.get("last_phase_at", 0.0),
             page_cursor=d.get("page_cursor", 0),
+            torrent_pages={str(k).lower(): str(v) for k, v in (d.get("torrent_pages") or {}).items() if k and v},
+            brush_upload={str(k).lower(): dict(v) for k, v in (d.get("brush_upload") or {}).items() if k and isinstance(v, dict)},
         )
 
 
@@ -205,7 +214,27 @@ class OperationJournal:
         self.data_dir = data_dir
         self.operations_file = data_dir / "operations.json"
         self._operations: Dict[str, OperationRecord] = {}
+        # 每任务保留的最大操作记录数（0 = 不限）。由插件全局设置注入。
+        self.keep: int = 0
         self._load()
+
+    def set_keep(self, keep: int) -> None:
+        """设置每个任务保留的最大操作记录数（0 = 不限）。"""
+        try:
+            self.keep = max(0, int(keep or 0))
+        except (TypeError, ValueError):
+            self.keep = 0
+
+    def _prune_task(self, task_id: str) -> None:
+        """裁剪某任务的历史记录，只保留最新的 keep 条。"""
+        if not self.keep:
+            return
+        rows = [op for op in self._operations.values() if op.task_id == task_id]
+        if len(rows) <= self.keep:
+            return
+        rows.sort(key=lambda x: x.created_at, reverse=True)
+        for op in rows[self.keep:]:
+            self._operations.pop(op.operation_id, None)
 
     def _load(self) -> None:
         """从磁盘加载操作日志。"""
@@ -263,6 +292,7 @@ class OperationJournal:
         )
 
         self._operations[operation_id] = record
+        self._prune_task(task_id)
         self._save()
         return record
 
@@ -395,6 +425,17 @@ class OperationJournal:
             self._save()
 
         return len(old_ids)
+
+    def delete_task(self, task_id: str) -> int:
+        """删除某任务的全部操作记录（任务被删除时调用，避免残留孤儿数据）。"""
+        if not task_id:
+            return 0
+        doomed = [op_id for op_id, op in self._operations.items() if op.task_id == task_id]
+        for op_id in doomed:
+            self._operations.pop(op_id, None)
+        if doomed:
+            self._save()
+        return len(doomed)
 
 
 # ============================================================
@@ -536,6 +577,13 @@ class SeenStore:
             return False
         return True
 
+    def get_bucket(self, task_id: str) -> Dict[str, float]:
+        """返回某任务的 seen 原始映射（key→时间戳），供外部重建 hash↔页面配对。"""
+        if not task_id:
+            return {}
+        bucket = self._data.get(task_id)
+        return dict(bucket) if isinstance(bucket, dict) else {}
+
     def mark(self, task_id: str, keys: List[str], ts: Optional[float] = None) -> None:
         """记录一批已处理的 key。"""
         if not task_id or not keys:
@@ -569,6 +617,15 @@ class SeenStore:
 
     def count(self, task_id: str) -> int:
         return len(self._data.get(task_id) or {})
+
+    def delete(self, task_id: str) -> bool:
+        """删除某任务的全部去重记录（任务被删除时调用，避免残留孤儿数据）。"""
+        if not task_id:
+            return False
+        if self._data.pop(task_id, None) is not None:
+            self._save()
+            return True
+        return False
 
 
 class DeadStore(SeenStore):
@@ -651,6 +708,52 @@ class MagicFlowStore:
         if not state:
             state = self.task_states.create(task_id)
         state.page_cursor = max(int(cursor or 0), 0)
+        self.task_states.save(state)
+
+    # -------------------- 种子详情页映射（hash→details URL） --------------------
+
+    def get_torrent_pages(self, task_id: str) -> Dict[str, str]:
+        """读取本任务记录的「种子详情页」映射（hash→URL）。"""
+        state = self.task_states.get(task_id)
+        if not state:
+            return {}
+        return dict(getattr(state, "torrent_pages", {}) or {})
+
+    def note_torrent_pages(self, task_id: str, mapping: Dict[str, str]) -> None:
+        """记录一批「hash→详情页 URL」映射（仅在有值时写入）。"""
+        if not task_id or not mapping:
+            return
+        state = self.task_states.get(task_id)
+        if not state:
+            state = self.task_states.create(task_id)
+        pages = state.torrent_pages or {}
+        changed = False
+        for h, url in mapping.items():
+            hs = str(h or "").lower()
+            u = str(url or "").strip()
+            if hs and u and pages.get(hs) != u:
+                pages[hs] = u
+                changed = True
+        if changed:
+            state.torrent_pages = pages
+            self.task_states.save(state)
+
+    # -------------------- 刷流：上传快照（无上传清理用） --------------------
+
+    def get_brush_upload(self, task_id: str) -> Dict[str, dict]:
+        """读取本任务的「上传快照」表（hash→{up, idle, ts}）。"""
+        state = self.task_states.get(task_id)
+        if not state:
+            return {}
+        return {str(k).lower(): dict(v) for k, v in (getattr(state, "brush_upload", {}) or {}).items()}
+
+    def set_brush_upload(self, task_id: str, mapping: Dict[str, dict]) -> None:
+        """整体写回「上传快照」表。"""
+        state = self.task_states.get(task_id)
+        if not state:
+            state = self.task_states.create(task_id)
+        clean = {str(k).lower(): dict(v) for k, v in (mapping or {}).items() if k and isinstance(v, dict)}
+        state.brush_upload = clean
         self.task_states.save(state)
 
     # -------------------- 发布时间（Ti 口径校准） --------------------

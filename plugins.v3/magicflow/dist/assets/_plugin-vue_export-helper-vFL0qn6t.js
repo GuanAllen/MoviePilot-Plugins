@@ -8,6 +8,11 @@ const taskDefaults = {
   downloader: '',
   brush_tag: null,
   save_path: null,
+  task_type: 'bonus',
+  brush_grace_minutes: 15,
+  upload_idle_minutes: 10,
+  upload_min_kbps: 200,
+  brush_min_leechers: 1,
   brush_interval: 5,
   check_interval: 1,
   cron_expression: null,
@@ -29,6 +34,7 @@ const taskDefaults = {
   cleanup_slow_progress: true,
   slow_progress_grace_minutes: 60,
   slow_progress_max_hours: 48,
+  purge_unfree_incomplete: true,
   auto_resume_paused: true,
   ti_source: 'publish',
   seen_cooldown_hours: 24,
@@ -130,10 +136,16 @@ function normalizeTask(task) {
   result.cleanup_slow_progress = Boolean(result.cleanup_slow_progress ?? true);
   result.slow_progress_grace_minutes = Number(result.slow_progress_grace_minutes || 60);
   result.slow_progress_max_hours = Number(result.slow_progress_max_hours || 48);
+  result.purge_unfree_incomplete = Boolean(result.purge_unfree_incomplete ?? true);
   result.auto_resume_paused = Boolean(result.auto_resume_paused ?? true);
   result.ti_source = ['publish', 'seed_time'].includes(result.ti_source) ? result.ti_source : 'publish';
   result.seen_cooldown_hours = Number(result.seen_cooldown_hours ?? 24);
   result.freeleech = result.freeleech || '';
+  result.task_type = ['bonus', 'brush'].includes(result.task_type) ? result.task_type : 'bonus';
+  result.brush_grace_minutes = Number(result.brush_grace_minutes ?? 15);
+  result.upload_idle_minutes = Number(result.upload_idle_minutes ?? 10);
+  result.upload_min_kbps = Number(result.upload_min_kbps ?? 200);
+  result.brush_min_leechers = Number(result.brush_min_leechers ?? 1);
   result.delete_files = Boolean(result.delete_files);
   result.exclude_zero_bonus = Boolean(result.exclude_zero_bonus);
   result.rss_support = Boolean(result.rss_support);
@@ -143,9 +155,70 @@ function normalizeTask(task) {
 
 /** 标准化全局设置。 */
 function normalizeSettings(settings = {}) {
+  const journalKeep = Number(settings.journal_keep);
+  const requestInterval = Number(settings.request_interval);
   return {
     enabled: Boolean(settings.enabled),
     show_sidebar_nav: Boolean(settings.show_sidebar_nav),
+    debug_log: Boolean(settings.debug_log),
+    compact_mode: Boolean(settings.compact_mode),
+    journal_keep: Number.isFinite(journalKeep) ? Math.max(0, Math.round(journalKeep)) : 200,
+    request_interval: Number.isFinite(requestInterval) ? Math.max(0, requestInterval) : 0,
+  }
+}
+
+/** 标准化「下载器全局参数」（速度单位 KB/s）。 */
+function normalizeDownloaderPrefs(prefs = {}) {
+  const num = (value, fallback) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback
+  };
+  return {
+    download_limit_kbps: Math.max(0, num(prefs.download_limit_kbps, 0)),
+    upload_limit_kbps: Math.max(0, num(prefs.upload_limit_kbps, 0)),
+    max_connec: Math.max(0, Math.round(num(prefs.max_connec, 500))),
+    max_connec_per_torrent: Math.max(0, Math.round(num(prefs.max_connec_per_torrent, 100))),
+    max_uploads: Math.round(num(prefs.max_uploads, 50)),
+    max_uploads_per_torrent: Math.round(num(prefs.max_uploads_per_torrent, 10)),
+    max_active_downloads: Math.round(num(prefs.max_active_downloads, 3)),
+    max_active_torrents: Math.round(num(prefs.max_active_torrents, 5)),
+    queueing_enabled: Boolean(prefs.queueing_enabled),
+  }
+}
+
+/** 标准化「下载目录」（qBittorrent 全局路径）。 */
+function normalizeDownloaderPaths(paths = {}) {
+  return {
+    save_path: String(paths.save_path || ''),
+    temp_path: String(paths.temp_path || ''),
+    temp_path_enabled: Boolean(paths.temp_path_enabled),
+  }
+}
+
+/** 标准化「默认任务模板」。 */
+function normalizeDefaults(raw = {}) {
+  const num = (value, fallback) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback
+  };
+  return {
+    downloader: String(raw.downloader || ''),
+    save_path: String(raw.save_path || ''),
+    brush_interval: Math.max(1, Math.round(num(raw.brush_interval, 5))),
+    check_interval: Math.max(1, Math.round(num(raw.check_interval, 1))),
+    max_add_per_run: Math.max(1, Math.round(num(raw.max_add_per_run, 10))),
+    max_download_concurrent: Math.max(1, Math.round(num(raw.max_download_concurrent, 10))),
+    top_n: Math.max(1, Math.round(num(raw.top_n, 30))),
+    browse_pages: Math.max(1, Math.round(num(raw.browse_pages, 3))),
+    seen_cooldown_hours: Math.max(0, num(raw.seen_cooldown_hours, 24)),
+    refill_when_empty: raw.refill_when_empty !== false,
+    reuse_existing: raw.reuse_existing !== false,
+    reuse_verify: raw.reuse_verify !== false,
+    cleanup_no_progress: raw.cleanup_no_progress !== false,
+    cleanup_slow_progress: raw.cleanup_slow_progress !== false,
+    purge_unfree_incomplete: raw.purge_unfree_incomplete !== false,
+    auto_resume_paused: raw.auto_resume_paused !== false,
+    delete_files: raw.delete_files !== false,
   }
 }
 
@@ -230,4 +303,4 @@ const _export_sfc = (sfc, props) => {
   return target;
 };
 
-export { _export_sfc as _, formatDateTime as a, formatDurationSeconds as b, cloneTask as c, formatBytes as d, normalizeSettings as e, formatBonus as f, formatDuration as g, normalizeTask as n, runStatusText as r, taskStateMeta as t, unwrapResponse as u };
+export { _export_sfc as _, normalizeDownloaderPrefs as a, normalizeDownloaderPaths as b, cloneTask as c, normalizeDefaults as d, formatBytes as e, formatBonus as f, formatDateTime as g, formatDurationSeconds as h, normalizeSettings as i, formatDuration as j, normalizeTask as n, runStatusText as r, taskStateMeta as t, unwrapResponse as u };

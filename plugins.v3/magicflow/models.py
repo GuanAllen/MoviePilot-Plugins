@@ -17,7 +17,7 @@ def _normalize_optional_positive_number(value):
 
 
 class MagicFlowTaskPayload(BaseModel):
-    """魔力管家任务新增与更新请求模型"""
+    """魔流任务新增与更新请求模型"""
 
     id: Optional[str] = None
     name: str = Field(..., min_length=1, max_length=80)
@@ -60,11 +60,21 @@ class MagicFlowTaskPayload(BaseModel):
     slow_progress_grace_minutes: int = Field(60, ge=1, le=1440, description="种子加入后多少分钟内不判「慢」（给新种起步时间）")
     slow_progress_max_hours: float = Field(48.0, gt=0, le=8760, description="按当前速度预计还要超过该小时数才下完 → 判「过慢」")
 
+    # 促销失效清理：下载中的种子若站点已不再免费（促销过期 / 非免费）→ 删除，避免白拉流量拉低分享率
+    purge_unfree_incomplete: bool = Field(True, description="下载中但站点已不再免费的种子自动清理（回站点核对促销状态）")
+
     # 自动恢复：被暂停的已完成种子自动重新做种（暂停 = tracker 不计做种 = 0 魔力）
     auto_resume_paused: bool = Field(True, description="自动恢复被暂停的已完成种子（重新开始做种），保证魔力产出")
 
     # Ti 口径：publish（默认，自发布时间）| seed_time（qB 做种时长）
     ti_source: str = Field("publish", description="Ti 口径：publish（发布时长，默认）或 seed_time（做种时长）")
+
+    # 任务类型：bonus=刷魔力（默认）；brush=刷流（按上传产出，无上传即清理）
+    task_type: Literal["bonus", "brush"] = Field("bonus", description="任务类型：bonus=刷魔力；brush=刷流")
+    brush_grace_minutes: int = Field(15, ge=0, le=1440, description="刷流模式：新种加入后多少分钟内不判「无上传」")
+    upload_idle_minutes: int = Field(10, ge=0, le=1440, description="刷流模式：连续多少分钟无上传则清理（0=自动≈2×检查间隔）")
+    upload_min_kbps: int = Field(200, ge=1, le=102400, description="刷流模式：平均上传速率门槛（KB/s），低于此值视为「无上传」")
+    brush_min_leechers: int = Field(1, ge=0, le=100000, description="刷流模式：最小下载人数（有下载需求才值得下）")
 
     # 已处理去重：站点列表页每次都返回同一批最新种子，记录已处理候选避免重复拉取
     seen_cooldown_hours: float = Field(24.0, ge=0, le=8760, description="同一候选在多少小时内不重复拉取（0=不跳过）")
@@ -175,16 +185,87 @@ class MagicFlowTaskPayload(BaseModel):
 
 
 class MagicFlowTaskStatePayload(BaseModel):
-    """魔力管家任务启停请求模型"""
+    """魔流任务启停请求模型"""
 
     enabled: bool
 
 
 class MagicFlowSettingsPayload(BaseModel):
-    """魔力管家插件全局设置请求模型"""
+    """魔流插件全局设置请求模型"""
 
+    # 基础
     enabled: bool = True
     show_sidebar_nav: bool = True
+
+    # 运行
+    debug_log: bool = False
+    journal_keep: int = Field(200, ge=0, le=5000, description="每个任务保留的操作记录上限，0 = 不限")
+    request_interval: float = Field(0.0, ge=0, le=600, description="站点翻页请求之间的最小间隔（秒），0 = 不限速")
+
+    # 界面
+    compact_mode: bool = False
+
+
+class MagicFlowDownloaderPrefsPayload(BaseModel):
+    """魔流「下载器全局参数」请求模型
+
+    直接写入 qBittorrent 应用级偏好，会影响所有使用该下载器的插件，请谨慎调整。
+    速度类字段单位 **KB/s**，0 = 不限。
+    """
+
+    download_limit_kbps: float = Field(0.0, ge=0, le=1048576, description="最大下载速度 KB/s，0 = 不限")
+    upload_limit_kbps: float = Field(0.0, ge=0, le=1048576, description="最大上传速度 KB/s，0 = 不限")
+    max_connec: int = Field(500, ge=0, le=100000, description="全局最大连接数")
+    max_connec_per_torrent: int = Field(100, ge=0, le=100000, description="每个种子最大连接数")
+    max_uploads: int = Field(50, ge=-1, le=100000, description="全局最大上传连接数，-1 = 不限")
+    max_uploads_per_torrent: int = Field(10, ge=-1, le=100000, description="每个种子最大上传连接数，-1 = 不限")
+    max_active_downloads: int = Field(3, ge=-1, le=100000, description="最大活动下载数，-1 = 不限")
+    max_active_torrents: int = Field(5, ge=-1, le=100000, description="最大活动种子数，-1 = 不限")
+    queueing_enabled: bool = Field(False, description="启用队列限制（活动数上限生效的前提）")
+
+
+# 「恢复推荐值」的推荐取值（速度 KB/s）
+DOWNLOADER_PREF_RECOMMENDED = {
+    "download_limit_kbps": 0.0,
+    "upload_limit_kbps": 0.0,
+    "max_connec": 500,
+    "max_connec_per_torrent": 100,
+    "max_uploads": 50,
+    "max_uploads_per_torrent": 10,
+    "max_active_downloads": 3,
+    "max_active_torrents": 5,
+    "queueing_enabled": True,
+}
+
+
+class MagicFlowDownloaderPathsPayload(BaseModel):
+    """魔流「下载目录」请求模型（写入 qBittorrent 全局路径）。"""
+
+    save_path: str = Field("", max_length=500, description="默认保存路径")
+    temp_path: str = Field("", max_length=500, description="临时下载路径")
+    temp_path_enabled: bool = Field(False, description="启用临时下载路径（下载中放临时目录，完成后移入保存路径）")
+
+
+class MagicFlowDefaultsPayload(BaseModel):
+    """魔流「默认任务模板」请求模型（新建任务时的预填默认值）。"""
+
+    downloader: str = Field("", max_length=80, description="默认下载器")
+    save_path: str = Field("", max_length=500, description="任务保存目录（新建任务默认保存路径）")
+    brush_interval: int = Field(5, ge=1, le=1440, description="选种周期（分钟）")
+    check_interval: int = Field(1, ge=1, le=1440, description="检查周期（分钟）")
+    max_add_per_run: int = Field(10, ge=1, le=1000, description="单轮最多新增种子数")
+    max_download_concurrent: int = Field(10, ge=1, le=100, description="同时下载数上限")
+    top_n: int = Field(30, ge=1, le=1000, description="每轮处理候选上限 TopN")
+    browse_pages: int = Field(3, ge=1, le=50, description="每轮站点翻页数")
+    seen_cooldown_hours: float = Field(24.0, ge=0, le=8760, description="候选去重冷却（小时）")
+    refill_when_empty: bool = True
+    reuse_existing: bool = True
+    reuse_verify: bool = True
+    cleanup_no_progress: bool = True
+    cleanup_slow_progress: bool = True
+    purge_unfree_incomplete: bool = True
+    auto_resume_paused: bool = True
+    delete_files: bool = True
 
 
 class MagicFlowTorrentBatchPayload(BaseModel):

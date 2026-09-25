@@ -40,7 +40,7 @@ _DL_GATE_LOCK = threading.Lock()
 _DL_GATE_AT = [0.0]
 _DL_GATE_INTERVAL = [1.0]
 _DL_GATE_BASE = 1.0
-_DL_GATE_MAX = 15.0
+_DL_GATE_MAX = 30.0
 _FLOW_MARKERS = (
     "流控", "429", "too many requests", "rate limit", "ratelimit",
     "稍后重试", "请求过于频繁", "too frequent",
@@ -61,10 +61,28 @@ def _dl_gate() -> None:
         _DL_GATE_AT[0] = time.time()
 
 
+def set_dl_gate_base(seconds: float) -> None:
+    """由插件全局设置「请求间隔」驱动的基准间隔（秒）。
+
+    站点请求间隔（request_interval）此前只作用于浏览列表翻页，并不影响 .torrent
+    下载；而 PT时间 这类站点的流控恰好打在下种接口上。这里把同一设置下推到下载
+    闸门：设置越大 → 两次下种的最小间隔越大 → 越不容易被流控。传 0 恢复基准 1s。
+    """
+    global _DL_GATE_BASE
+    try:
+        v = max(0.0, float(seconds or 0))
+    except (TypeError, ValueError):
+        v = 0.0
+    with _DL_GATE_LOCK:
+        _DL_GATE_BASE = max(1.0, v)
+        if _DL_GATE_INTERVAL[0] < _DL_GATE_BASE:
+            _DL_GATE_INTERVAL[0] = _DL_GATE_BASE
+
+
 def _dl_note_flow_control() -> None:
     """命中流控：指数加大全局限速间隔（上限 _DL_GATE_MAX）。"""
     with _DL_GATE_LOCK:
-        _DL_GATE_INTERVAL[0] = min(_DL_GATE_MAX, max(_DL_GATE_INTERVAL[0] * 2, 2.0))
+        _DL_GATE_INTERVAL[0] = min(_DL_GATE_MAX, max(_DL_GATE_INTERVAL[0] * 2, _DL_GATE_BASE))
         logger.warning(f"MagicFlow：.torrent 下载命中站点流控，限速间隔调整为 {_DL_GATE_INTERVAL[0]:.1f}s")
 
 
@@ -114,6 +132,24 @@ QB_PAUSED_STATES = {"pausedup", "pauseddl"}
 QB_DEAD_STATES = {
     "stalleddl", "metadl", "error", "missingfiles", "unknown",
 }
+
+# qBittorrent 应用级偏好里本插件读写的键
+#   速度类（dl_limit / up_limit）单位为**字节/秒**，0 = 不限。
+QB_APP_PREF_KEYS = (
+    "dl_limit",
+    "up_limit",
+    "max_connec",
+    "max_connec_per_torrent",
+    "max_uploads",
+    "max_uploads_per_torrent",
+    "max_active_downloads",
+    "max_active_torrents",
+    "max_active_uploads",
+    "queueing_enabled",
+    "save_path",
+    "temp_path",
+    "temp_path_enabled",
+)
 
 
 def _ensure_sdk():
@@ -1047,6 +1083,60 @@ class DownloaderAdapter:
             "display_name": self._service.display_name if self._service else "",
             "config_name": self._service.name if self._service else "",
         }
+
+    # ---------------------------------------------------------------
+    # qBittorrent 应用级偏好（全局参数，影响所有用该下载器的插件）
+    # ---------------------------------------------------------------
+
+    def _qb_client(self) -> Any:
+        """返回底层 qbittorrentapi.Client（仅 qBittorrent 且已登录时可用）。"""
+        if self.downloader_name != "qbittorrent" or not self._downloader:
+            return None
+        return getattr(self._downloader, "qbc", None)
+
+    def get_app_preferences(self) -> Tuple[Dict[str, Any], Optional[str]]:
+        """读取 qBittorrent 应用级偏好（本插件关心的子集）。
+
+        Returns:
+            (偏好字典, 错误信息)。速度类字段返回**字节/秒**原值。
+        """
+        qbc = self._qb_client()
+        if qbc is None:
+            return {}, f"下载器 {self.downloader_name} 不支持读取全局参数"
+        try:
+            prefs = qbc.app_preferences()
+            data = {}
+            for key in QB_APP_PREF_KEYS:
+                try:
+                    data[key] = prefs.get(key)
+                except Exception:
+                    data[key] = None
+            return data, None
+        except Exception as e:
+            logger.error(f"读取 qBittorrent 全局参数失败: {e}")
+            return {}, str(e)
+
+    def set_app_preferences(self, prefs: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        """写入 qBittorrent 应用级偏好（仅传入的键会生效）。
+
+        Args:
+            prefs: 偏好字典（速度类字段为**字节/秒**）。
+
+        Returns:
+            (是否成功, 错误信息)
+        """
+        qbc = self._qb_client()
+        if qbc is None:
+            return False, f"下载器 {self.downloader_name} 不支持写入全局参数"
+        payload = {k: v for k, v in (prefs or {}).items() if k in QB_APP_PREF_KEYS}
+        if not payload:
+            return False, "无可写入的参数"
+        try:
+            qbc.app_set_preferences(payload)
+            return True, None
+        except Exception as e:
+            logger.error(f"写入 qBittorrent 全局参数失败: {e}")
+            return False, str(e)
 
 
 # ============================================================

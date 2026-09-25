@@ -24,6 +24,23 @@ SITE_TZ = timezone(timedelta(hours=SITE_TZ_OFFSET_HOURS))
 logger = logging.getLogger("magicflow")
 TorrentsChain = None
 
+# 站点请求最小间隔（秒），由插件全局设置注入；0 = 不限速。
+_REQUEST_INTERVAL = 0.0
+
+
+def set_request_interval(seconds: float) -> None:
+    """设置站点翻页请求之间的最小间隔（秒）。0 表示不限速。"""
+    global _REQUEST_INTERVAL
+    try:
+        _REQUEST_INTERVAL = max(0.0, float(seconds or 0))
+    except (TypeError, ValueError):
+        _REQUEST_INTERVAL = 0.0
+
+
+def get_request_interval() -> float:
+    """读取当前站点请求最小间隔（秒）。"""
+    return _REQUEST_INTERVAL
+
 
 def _ensure_sdk():
     """延迟导入 MoviePilot SDK。"""
@@ -208,6 +225,9 @@ class SiteFetcher:
         base_page = max(int(start_page or 0), 0)
         collected: List[Any] = []
         for p in range(total):
+            # 站点请求节流：翻页之间按全局设置休眠，降低被站点限速/封禁的风险
+            if p and _REQUEST_INTERVAL > 0:
+                time.sleep(_REQUEST_INTERVAL)
             page_no = base_page + p
             if p and not can_page:
                 logger.warning("[探测] browse 不支持 page 参数，无法翻页（仅取首页）")
@@ -307,8 +327,18 @@ class SiteFetcher:
                 hash_string = page_url or enclosure or title
 
             # 免费/零魔检测
-            downloadvolumefactor = float(getattr(torrent, "downloadvolumefactor", 1.0) or 1.0)
-            uploadvolumefactor = float(getattr(torrent, "uploadvolumefactor", 1.0) or 1.0)
+            # 注意：免费种子的 downloadvolumefactor 就是 0.0，不能用 `x or 1.0` 兜底
+            # （0.0 是 falsy，会被错误地抬成 1.0 → 所有免费种子都被当成非免费）。
+            _dv = getattr(torrent, "downloadvolumefactor", None)
+            try:
+                downloadvolumefactor = float(_dv) if _dv not in (None, "") else 1.0
+            except (TypeError, ValueError):
+                downloadvolumefactor = 1.0
+            _uv = getattr(torrent, "uploadvolumefactor", None)
+            try:
+                uploadvolumefactor = float(_uv) if _uv not in (None, "") else 1.0
+            except (TypeError, ValueError):
+                uploadvolumefactor = 1.0
 
             is_free = downloadvolumefactor == 0
             is_double_free = downloadvolumefactor == 0 and uploadvolumefactor == 2
@@ -411,10 +441,11 @@ def ts_to_age_weeks(ts: float) -> float:
 
 @dataclass
 class FilterPolicy:
-    """魔力管家选种过滤策略。"""
+    """魔流选种过滤策略。"""
     # 做种人数范围
     min_seeders: int = 0       # 最少做种人数（魔力角度，人越少越好）
     max_seeders: int = 99999   # 最多做种人数（过滤掉太热门的）
+    min_leechers: int = 0      # 最少下载人数（刷流角度：有下载需求才值得下）
 
     # 种子大小范围（GB）
     min_size_gb: float = 0.0
@@ -428,8 +459,16 @@ class FilterPolicy:
     exclude_zero_bonus: bool = True  # 排除零魔种子
     exclude_free: bool = False       # 排除免费种子
 
+    # 免费要求（来自任务「免费」选项）
+    free_only: bool = False          # 仅保留免费种子
+    double_free_only: bool = False   # 仅保留双倍免费种子
+
     # H&R 处理
     exclude_hnr: bool = False  # 排除 H&R 种子
+
+    # 发布时间范围（分钟，来自任务「发布时间（分钟）」；0=不限）
+    pub_minutes_min: float = 0.0
+    pub_minutes_max: float = 0.0
 
     # 正则过滤
     include_pattern: str = ""   # 必须包含的正则
@@ -480,6 +519,10 @@ def filter_candidates(
         elif torrent.size_gb > policy.max_size_gb:
             reason = "种子大小超过上限"
 
+        # 下载人数过滤（刷流标准：下载者太少说明没需求，不值得下）
+        elif policy.min_leechers > 0 and torrent.leechers < policy.min_leechers:
+            reason = "下载人数低于下限"
+
         # 年龄过滤（MagicFlow 偏好老种子）
         elif torrent.age_weeks < policy.min_age_weeks:
             reason = "种子太新"
@@ -490,13 +533,23 @@ def filter_candidates(
         elif policy.exclude_zero_bonus and torrent.is_zero_bonus:
             reason = "零魔种子"
 
-        # 免费排除
+        # 免费排除 / 仅免费
         elif policy.exclude_free and torrent.is_free:
             reason = "免费种子"
+        elif policy.double_free_only and not torrent.is_double_free:
+            reason = "非双倍免费"
+        elif policy.free_only and not torrent.is_free:
+            reason = "非免费种子"
 
         # H&R 排除
         elif policy.exclude_hnr and torrent.hit_and_run:
             reason = "H&R 种子"
+
+        # 发布时间范围（分钟）。年龄未知（age_weeks<=0）时不做限制，避免误杀。
+        elif policy.pub_minutes_min > 0 and torrent.age_weeks > 0 and torrent.age_weeks * 10080 < policy.pub_minutes_min:
+            reason = "发布时间过短"
+        elif policy.pub_minutes_max > 0 and torrent.age_weeks > 0 and torrent.age_weeks * 10080 > policy.pub_minutes_max:
+            reason = "发布时间过长"
 
         # 包含正则
         elif policy.include_pattern:
@@ -551,6 +604,31 @@ def get_default_filter_policy() -> FilterPolicy:
         exclude_hnr=False,        # 不排除 H&R（魔力公式里 H&R 种子可能魔力更高）
         # 数量限制：只做病态保护，不能太小——否则「按年龄排序+截断」会把新种全裁掉，
         # 只剩老种反复被去重拦下，导致永远新增 0。
+        max_candidates=1000,
+    )
+
+
+def get_default_brush_filter_policy() -> FilterPolicy:
+    """
+    刷流模式的默认过滤策略（“刷流自己的标准”，与刷魔力的魔力口径相反）：
+
+        - **不设做种人数上限**：热门大种正是上传主力，不能按“人少=魔力高”排除；
+        - 做种人数下限 0（无做种也能抢流量）；
+        - 体积、年龄不限；不排除零魔（零魔与上传无关）；
+        - **要求有下载需求**：下载人数 ≥ min_leechers（默认 1）；
+        - 免费要求仍由任务 `freeleech` 选项决定（free_only / double_free_only）。
+    """
+    return FilterPolicy(
+        min_seeders=0,
+        max_seeders=99999,
+        min_leechers=1,
+        min_size_gb=0.0,
+        max_size_gb=99999.0,
+        min_age_weeks=0.0,
+        max_age_weeks=999.0,
+        exclude_zero_bonus=False,
+        exclude_free=False,
+        exclude_hnr=False,
         max_candidates=1000,
     )
 

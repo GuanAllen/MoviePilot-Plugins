@@ -1,4 +1,4 @@
-# MagicFlow - 魔力管家插件
+# MagicFlow - 魔流插件
 
 根据站点魔力公式自动优化做种，智能删除低魔力产出种子。
 
@@ -83,6 +83,28 @@ class NewSiteBonusCalculator(BonusCalculator):
         # 实现站点魔力公式
         ...
 ```
+
+## 版本号规则（语义化 · 强制）
+
+格式 `MAJOR.MINOR.PATCH`，例：`1.1.0`。
+
+| 改动类型 | 递增 | 例 |
+| --- | --- | --- |
+| 新功能 / 新标签页 / 新端点 | **+MINOR** | `1.1.0 → 1.2.0` |
+| Bug 修复 / 文案 / 样式小改 | **+PATCH** | `1.1.0 → 1.1.1` |
+| 不兼容变更（配置迁移、数据格式变） | **+MAJOR** | `1.1.0 → 2.0.0` |
+
+- **PATCH 不超过 99**：到 99 后下一次改动改为 +MINOR 并把 PATCH 归零，**彻底避免 1.0.999 这类超长号**。
+- **一次发版只 bump 一次**：一轮改动（一个功能或一批修复）只在收尾统一改版本号；开发中途验证靠硬刷新（`Ctrl+Shift+R`）或临时手动改 `?v`，**不要每改一点就 bump**（1.0.93~1.0.108 就是单改一个设置弹窗蹭出来的）。
+- **必须同步的位置（缺一即市场/缓存错乱）**：
+  1. `magicflow/__init__.py` → `__version__`
+  2. `magicflow/package.json` → `version`
+  3. 市场仓 `moviepilot-plugins-git/package.v3.json` → `version` + `history` 新条目
+  4. 市场仓 `plugins.v3/magicflow/{__init__.py, package.json}` → `__version__` / `version`
+  5. 本地市场索引 `core/local-plugins/package.v3.json` → `version` + `history`
+  6. 本地仓 `core/local-plugins/plugins.v3/magicflow/{__init__.py, package.json}`
+  7. 已安装副本 `config/plugins_backup/magicflow/`（由 monitor 自动同步覆盖，通常不用手改）
+- **为什么必须 bump**：MoviePilot 插件前端走 `remoteEntry.js?v=<__version__>`，不 bump 客户端继续吃旧 chunk；`__version__` 同时是市场判定「有无更新」的依据。
 
 ## 协议
 

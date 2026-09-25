@@ -106,6 +106,7 @@ class TorrentBonusInfo:
     # 附加信息
     pubdate: Optional[str] = None  # 发布时间
     page_url: Optional[str] = None # 种子页面 URL
+    ratio: float = 0.0             # 当前分享率（上传/下载）
 
 
 @dataclass
@@ -138,7 +139,7 @@ class DeletionResult:
 
 @dataclass
 class MagicPolicy:
-    """魔力管家策略配置。"""
+    """魔流策略配置。"""
     # 魔力阈值
     min_bonus_per_hour: float = 0.0     # 每小时最低魔力产出阈值
     bonus_protect_threshold: float = float('inf')  # 魔力保护阈值（超过此值不删种）
@@ -147,6 +148,7 @@ class MagicPolicy:
     # 做种配置
     max_keep_torrents: Optional[int] = 50   # 最多保留种子数（None=不限，由保种体积决定）
     min_seed_time_hours: float = 0.0    # 最低做种时间（小时）
+    min_ratio: float = 0.0              # 最低分享率（低于此值的种子不删，0=不限）
 
     # 评分权重（用于综合魔力评分）
     weight_time_factor: float = 1.0     # 时间因子权重
@@ -775,6 +777,11 @@ def decide_deletions(
             to_keep.append(torrent)
             continue
 
+        # 分享率保护：分享率低于下限的种子不删（先养着，避免留下“欠账”）
+        if policy.min_ratio > 0 and torrent.ratio < policy.min_ratio:
+            to_keep.append(torrent)
+            continue
+
         reasons: List[str] = []
         priority = 0
 
@@ -821,6 +828,8 @@ def decide_deletions(
             if t.hash in protected_hashes or t.hit_and_run:
                 return True
             if policy.min_seed_time_hours > 0 and t.age_weeks * 168 < policy.min_seed_time_hours:
+                return True
+            if policy.min_ratio > 0 and t.ratio < policy.min_ratio:
                 return True
             return False
 
