@@ -23,6 +23,9 @@ const taskDefaults = {
   bonus_protect_threshold: null,
   min_bonus_to_keep: null,
   disk_size_gb: null,
+  protect_perfect: true,
+  perfect_max_seeders: 3,
+  perfect_min_weeks: 4,
   refill_when_empty: true,
   max_add_per_run: 10,
   max_download_concurrent: 10,
@@ -125,6 +128,9 @@ function normalizeTask(task) {
   result.site_id = Number(result.site_id);
   result.brush_interval = Number(result.brush_interval || 5);
   result.check_interval = Number(result.check_interval || 1);
+  result.protect_perfect = result.protect_perfect !== false;
+  result.perfect_max_seeders = Number(result.perfect_max_seeders ?? 3);
+  result.perfect_min_weeks = Number(result.perfect_min_weeks ?? 4);
   result.refill_when_empty = Boolean(result.refill_when_empty);
   result.max_add_per_run = Number(result.max_add_per_run || 10);
   result.max_download_concurrent = Number(result.max_download_concurrent || 10);

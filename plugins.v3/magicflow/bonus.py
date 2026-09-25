@@ -150,6 +150,12 @@ class MagicPolicy:
     min_seed_time_hours: float = 0.0    # 最低做种时间（小时）
     min_ratio: float = 0.0              # 最低分享率（低于此值的种子不删，0=不限）
 
+    # 完美种保护：满足（非零魔 · 做种人数≤上限 · 做种周数≥下限）的「优质老种」
+    # 永久保留、不参与任何清理（魔力靠「养」，越老越肥，绝不因清理把它重置）
+    protect_perfect: bool = True
+    perfect_max_seeders: int = 3        # 站内做种人数上限（0=不限制）
+    perfect_min_weeks: float = 4.0      # 做种周数下限
+
     # 评分权重（用于综合魔力评分）
     weight_time_factor: float = 1.0     # 时间因子权重
     weight_people_factor: float = 1.0   # 人数因子权重
@@ -702,6 +708,23 @@ def rank_candidates(
     return ranked
 
 
+def is_perfect_seed(torrent: TorrentBonusInfo, policy: MagicPolicy) -> bool:
+    """判定「完美种」（优质老种）：非零魔 · 站内做种人数少 · 挂得够老。
+
+    这类种子魔力随做种时长（Ti）增长、人数因子又高（Ni 小），是魔力模式的**终局资产**：
+    应长期挂住、不参与任何清理（一旦被删，Ti 清零重来，越折腾越亏）。
+    """
+    if not policy.protect_perfect:
+        return False
+    if torrent.is_zero_bonus:
+        return False
+    if policy.perfect_max_seeders > 0 and torrent.seeders > policy.perfect_max_seeders:
+        return False
+    if policy.perfect_min_weeks > 0 and torrent.age_weeks < policy.perfect_min_weeks:
+        return False
+    return True
+
+
 def decide_deletions(
     seeding_torrents: List[TorrentBonusInfo],
     policy: MagicPolicy,
@@ -772,6 +795,11 @@ def decide_deletions(
             to_keep.append(torrent)
             continue
 
+        # 完美种保护：优质老种永久保留，不参与任何清理理由
+        if is_perfect_seed(torrent, policy):
+            to_keep.append(torrent)
+            continue
+
         # 保护期：做种时间不足的种子不参与删种
         if policy.min_seed_time_hours > 0 and torrent.age_weeks * 168 < policy.min_seed_time_hours:
             to_keep.append(torrent)
@@ -826,6 +854,8 @@ def decide_deletions(
     if policy.max_keep_torrents is not None and len(to_keep) > policy.max_keep_torrents:
         def _pinned(t: TorrentBonusInfo) -> bool:
             if t.hash in protected_hashes or t.hit_and_run:
+                return True
+            if is_perfect_seed(t, policy):
                 return True
             if policy.min_seed_time_hours > 0 and t.age_weeks * 168 < policy.min_seed_time_hours:
                 return True
