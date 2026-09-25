@@ -1187,19 +1187,21 @@ class MagicFlow(_PluginBase):
     ) -> List[Any]:
         """站点级共享抓取（single-flight + 短 TTL）。
 
-        同一站点的多个任务共享**同一份候选列表**（把「N 次请求」压成「1 次」），
-        避免几十个任务重复打站点触发流控。
-          - 缓存 key 含 站点/翻页/起始页/是否 RSS/是否免费直连；
-          - 同一 key 并发时用锁做「单飞」：先到的抓，后到的等它填缓存再复用；
+        **同一站点只抓一份候选列表**，刷流与魔力任务共用——二者只是**排序/筛选**不同，
+        数据源是同一份（把「N 个任务 × 每任务一次抓取」压成「1 次」），避免几十个任务
+        同站重复取列表触发流控。
+          - 缓存 key 只含 **站点 + 翻页数**（不含任务/免费标志/起始页）→ 同站所有任务共享；
+          - 同 key 并发时用锁「单飞」：先到的抓，后到的等它填缓存再复用；
           - 返回**浅拷贝**（每任务各自改 _score/raw/real_hash，互不串味）。
+
+        ``np_free`` 保留仅为兼容：现在统一抓**完整列表**，刷流侧自行筛免费
+        （见 _brush_impl），以保证魔力任务也能用同一份数据。
         """
         site_key = (
             str(getattr(task, "site_domain", "") or "") or f"site:{getattr(task, 'site_id', '')}"
         ).strip().lower()
-        cache_key = (
-            f"{site_key}|{int(pages)}|{int(start_page)}"
-            f"|{1 if getattr(task, 'rss_support', False) else 0}|{1 if np_free else 0}"
-        )
+        # 一份数据：同站（同翻页）共享同一 key；刷流/魔力只是用不同的排序/筛选消费它。
+        cache_key = f"{site_key}|{int(pages)}"
         now = time.time()
         cache = getattr(self, "_site_fetch_cache", None)
         if cache is None:
@@ -1225,25 +1227,16 @@ class MagicFlow(_PluginBase):
             if not fetcher.is_available:
                 return []
             cands: List[Any] = []
-            if np_free:
-                site_obj = self._get_site(task.site_id)
-                if site_obj is not None:
-                    try:
-                        cands = fetcher.browse_site_np_free(site_obj, pages=pages, start_page=start_page) or []
-                    except Exception as _np_err:  # noqa: BLE001
-                        self._log(f"魔流 [{task.name}] 直连免费索引失败，回退 SDK：{_np_err}", "warning")
-                        cands = []
-            if not cands:
-                try:
-                    cands = fetcher.browse_site(
-                        task.site_domain,
-                        rss_support=getattr(task, "rss_support", False),
-                        pages=pages,
-                        start_page=start_page,
-                    ) or []
-                except Exception as err:  # noqa: BLE001
-                    self._log(f"魔流 [{task.name}] 站点抓取失败：{err}", "warning")
-                    cands = []
+            try:
+                cands = fetcher.browse_site(
+                    task.site_domain,
+                    rss_support=getattr(task, "rss_support", False),
+                    pages=pages,
+                    start_page=start_page,
+                ) or []
+            except Exception as err:  # noqa: BLE001
+                self._log(f"魔流 [{task.name}] 站点抓取失败：{err}", "warning")
+                cands = []
             cands = list(cands)
             cache[cache_key] = (time.time(), cands)
             return [copy.copy(c) for c in cands]
@@ -1362,9 +1355,7 @@ class MagicFlow(_PluginBase):
                 return
             pages = max(int(task.browse_pages or BROWSE_PAGES), 1)
             # 站点级共享抓取：同站多任务共用一份候选（single-flight + 短 TTL）
-            candidates = self._fetch_site_candidates(task, pages=pages, start_page=0, np_free=True)
-            if not candidates:
-                candidates = self._fetch_site_candidates(task, pages=pages, start_page=0)
+            candidates = self._fetch_site_candidates(task, pages=pages, start_page=0)
             if not candidates:
                 return
             filter_policy = self._build_filter_policy(task)
@@ -1771,17 +1762,18 @@ class MagicFlow(_PluginBase):
             _brush_crawl = str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush"
             cursor = 0 if _brush_crawl else (self._store.get_page_cursor(task.id) if self._store else 0)
             candidates = None
-            if _brush_crawl and not task.rss_support:
-                # 直连站点索引：刷流只需免费（含 2X免费），直接按 spstate 抓而非全抓再筛。
-                # 只对站点自己的域名发请求，cookie 仍来自站点配置、不落盘不外传。
-                # 站点级共享抓取：同站多任务在 TTL 内只抓一份候选。
-                candidates = self._fetch_site_candidates(task, pages=pages, start_page=0, np_free=True)
-                if candidates:
-                    self._log(
-                        f"魔流 [{task.name}] 直连站点索引·免费筛选 命中 {len(candidates)} 个"
-                    )
-            if not candidates:
-                candidates = self._fetch_site_candidates(task, pages=pages, start_page=cursor)
+            # 站点级共享：同站只抓一份**完整**候选列表，刷流与魔力共用
+            # （二者只是排序/筛选不同；谁先抓谁填缓存，其余在 TTL 内复用）。
+            candidates = self._fetch_site_candidates(
+                task, pages=pages, start_page=(0 if _brush_crawl else cursor)
+            )
+            if _brush_crawl and candidates:
+                # 刷流只吃免费/2X免费：从共享的完整列表里筛（不动共享数据本体）。
+                candidates = [
+                    c for c in candidates
+                    if getattr(c, "is_free", False) or getattr(c, "is_double_free", False)
+                ]
+                self._log(f"魔流 [{task.name}] 刷流·免费筛选 命中 {len(candidates)} 个")
             if not candidates:
                 self._log(f"魔力任务 [{task.name}] 未获取到候选种子（游标 {cursor}）")
                 return {"status": "noop", "reason": "未获取到候选种子", "candidates": 0, "filtered": 0}
@@ -5262,10 +5254,13 @@ class MagicFlow(_PluginBase):
 
             candidates = None
             _pages = max(int(task.browse_pages or BROWSE_PAGES), 1)
-            if str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush" and not task.rss_support:
-                candidates = self._fetch_site_candidates(task, pages=_pages, start_page=0, np_free=True)
-            if not candidates:
-                candidates = self._fetch_site_candidates(task, pages=_pages, start_page=0)
+            # 站点级共享：同站一份完整列表，刷流侧再筛免费（与主流程一致）。
+            candidates = self._fetch_site_candidates(task, pages=_pages, start_page=0)
+            if str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush" and candidates:
+                candidates = [
+                    c for c in candidates
+                    if getattr(c, "is_free", False) or getattr(c, "is_double_free", False)
+                ]
             if not candidates:
                 return Response(success=True, data={"candidates": [], "total": 0, "reason_counts": {}})
 
