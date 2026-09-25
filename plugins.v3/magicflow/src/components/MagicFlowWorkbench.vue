@@ -127,6 +127,18 @@ const brushSeedDays = computed(() => {
   const v = taskConfig.value?.brush_seed_days
   return v === undefined || v === null || v === '' ? 2 : Number(v)
 })
+// 未设置「任务目标」的任务（用于顶部提醒）
+const tasksMissingGoal = computed(() => tasks.value.filter(t => !t.goal_has))
+// 当前任务的「任务目标」完成情况文案
+const goalFactText = computed(() => {
+  const t = taskConfig.value || {}
+  if (!t.goal_has) return '未设置'
+  const unit = t.goal_unit || (t.task_type === 'brush' ? 'GB' : '魔力值')
+  const cur = Number(t.goal_current || 0)
+  const tgt = Number(t.goal_target || 0)
+  const curText = unit === 'GB' ? cur.toFixed(1) : cur.toFixed(2)
+  return `${curText} / ${tgt} ${unit}${t.goal_reached ? '（已达标）' : ''}`
+})
 const taskSiteIcon = computed(() => {
   const id = Number(selectedTask.value?.site_id)
   return id ? siteIcons.value[id] || '' : ''
@@ -230,7 +242,7 @@ function notify(message, color = 'success') {
   }
 }
 
-const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reuse: '存量复用', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验' }
+const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reuse: '存量复用', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止' }
 const STATE_TEXT = { submitting: '提交中', accepted: '已受理', completed: '已完成', failed: '失败' }
 const KIND_ICON = {
   run: 'mdi-play-circle-outline',
@@ -242,6 +254,7 @@ const KIND_ICON = {
   pause: 'mdi-pause-circle-outline',
   resume: 'mdi-play-circle-outline',
   recheck: 'mdi-sync',
+  goal: 'mdi-flag-checkered',
 }
 
 function operationKindText(kind) {
@@ -1021,6 +1034,15 @@ onUnmounted(() => {
     <VAlert v-if="statusLoaded && !status.enabled" type="warning" variant="tonal">
       插件当前未启用，任务配置与历史仍可查看，启用后才会注册选种刷新和做种检查服务。
     </VAlert>
+    <VAlert
+      v-if="statusLoaded && status.enabled && tasksMissingGoal.length"
+      type="warning"
+      variant="tonal"
+      icon="mdi-flag-alert"
+    >
+      还有 <strong>{{ tasksMissingGoal.length }}</strong> 个任务未设置「任务目标」，达到目标后无法自动停止。
+      请到「任务配置 → 基础与调度 → 任务目标」补填（魔力任务填站点魔力值，刷流任务填上传量 GB）。
+    </VAlert>
 
     <div v-if="loading && !tasks.length" class="magicflow-loading">
       <VSkeletonLoader type="list-item-three-line, list-item-three-line, article" />
@@ -1224,6 +1246,7 @@ onUnmounted(() => {
                     <VChip :color="selectedState.color" size="small" variant="tonal">{{ selectedState.text }}</VChip>
                   </header>
                   <dl class="magicflow-facts">
+                    <div><dt>任务目标</dt><dd>{{ goalFactText }}</dd></div>
                     <div><dt>选种周期</dt><dd>{{ taskConfig.cron_expression || `每 ${taskConfig.brush_interval} 分钟` }}</dd></div>
                     <div><dt>检查周期</dt><dd>每 {{ taskConfig.check_interval }} 分钟</dd></div>
                     <div><dt>开启时段</dt><dd>{{ taskConfig.active_time_range || '全天' }}</dd></div>
@@ -1635,6 +1658,7 @@ onUnmounted(() => {
                   </header>
                   <dl class="magicflow-facts magicflow-facts--two">
                     <div><dt>任务状态</dt><dd>{{ selectedTask.enabled ? '启用' : '暂停' }}</dd></div>
+                    <div><dt>任务目标</dt><dd>{{ goalFactText }}</dd></div>
                     <div><dt>站点</dt><dd>{{ selectedTask.site_name }}</dd></div>
                     <div><dt>下载器</dt><dd>{{ selectedTask.downloader }}</dd></div>
                     <div><dt>下载器标签</dt><dd>{{ selectedTask.brush_tag || '未设置' }}</dd></div>

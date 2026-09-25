@@ -80,6 +80,9 @@ class MagicFlowTaskPayload(BaseModel):
     brush_min_leechers: int = Field(1, ge=0, le=100000, description="刷流模式：最小下载人数（有下载需求才值得下）")
     brush_seed_days: int = Field(2, ge=0, le=365, description="刷流模式：做种满多少天后清理换新（默认 2 天；0=不按天数，改回「无上传」判定）")
 
+    # 任务目标：达到后任务自动停止（bonus=站点魔力值；brush=站点上传量 GB）
+    goal_value: Optional[float] = Field(None, ge=0, description="任务目标：bonus=站点魔力值达到多少；brush=站点上传量（GB）。达到后任务自动停止；留空=未设目标（前端会提醒）")
+
     # 已处理去重：站点列表页每次都返回同一批最新种子，记录已处理候选避免重复拉取
     seen_cooldown_hours: float = Field(24.0, ge=0, le=8760, description="同一候选在多少小时内不重复拉取（0=不跳过）")
 
