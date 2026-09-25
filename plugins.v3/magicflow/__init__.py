@@ -92,7 +92,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "2.7.2"
+__version__ = "2.7.3"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -1726,6 +1726,14 @@ class MagicFlow(_PluginBase):
 
             def _rank_key(pair: Any):
                 _c = pair[1]
+                # 刷流：下载优先序按「上传潜力」——下载人数↓、体积↓、新鲜度↑
+                # （与洗池排序一致；此前无分支，刷流被魔力 value/eff 覆盖）。
+                if _is_brush_task:
+                    return (
+                        int(getattr(_c, "leechers", 0) or 0),
+                        float(getattr(_c, "size_gb", 0.0) or 0.0),
+                        -float(getattr(_c, "age_weeks", 0.0) or 0.0),
+                    )
                 if _disk_bound:
                     return (getattr(_c, "_eff", 0.0), getattr(_c, "_value", 0.0))
                 return (getattr(_c, "_value", 0.0), getattr(_c, "_eff", 0.0))
@@ -4716,12 +4724,25 @@ class MagicFlow(_PluginBase):
                 bonus_info.age_weeks = c.age_weeks
                 bonus_list.append(bonus_info)
 
-            policy = self._build_magic_policy(task, bonus_list)
-            ranked = rank_candidates(bonus_list, policy)
+            _is_brush = str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush"
+            if _is_brush:
+                # 刷流：候选排行按「上传潜力」——下载人数↓、体积↓、新鲜度↑
+                # （与 _brush_impl 选种/下载序一致；此前统一走魔力排序，与卡片标题矛盾）。
+                ordered = sorted(
+                    bonus_list,
+                    key=lambda _t: (
+                        int(getattr(_t, "leechers", 0) or 0),
+                        float(getattr(_t, "size_gb", 0.0) or 0.0),
+                        -float(getattr(_t, "age_weeks", 0.0) or 0.0),
+                    ),
+                    reverse=True,
+                )
+            else:
+                policy = self._build_magic_policy(task, bonus_list)
+                ordered = [rc.torrent for rc in rank_candidates(bonus_list, policy)]
 
             candidates_data = []
-            for rc in ranked:
-                t = rc.torrent
+            for _idx, t in enumerate(ordered, 1):
                 candidates_data.append({
                     "hash": t.hash,
                     "title": t.title,
@@ -4731,7 +4752,7 @@ class MagicFlow(_PluginBase):
                     "age_weeks": round(t.age_weeks, 2),
                     "is_zero_bonus": t.is_zero_bonus,
                     "is_official": bool(t.is_official),
-                    "rank": rc.rank,
+                    "rank": _idx,
                 })
 
             return Response(success=True, data={
