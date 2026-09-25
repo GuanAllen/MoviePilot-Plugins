@@ -92,7 +92,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "2.1.1"
+__version__ = "2.2.1"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -1205,12 +1205,27 @@ class MagicFlow(_PluginBase):
             # 不做游标深翻（深翻只会翻到促销早已过期的老种）。刷魔力才需要深翻老种。
             _brush_crawl = str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush"
             cursor = 0 if _brush_crawl else (self._store.get_page_cursor(task.id) if self._store else 0)
-            candidates = fetcher.browse_site(
-                task.site_domain,
-                rss_support=task.rss_support,
-                pages=pages,
-                start_page=cursor,
-            )
+            candidates = None
+            if _brush_crawl and not task.rss_support:
+                # 直连站点索引：刷流只需免费（含 2X免费），直接按 spstate 抓而非全抓再筛。
+                # 只对站点自己的域名发请求，cookie 仍来自站点配置、不落盘不外传。
+                _site_obj = self._get_site(task.site_id)
+                if _site_obj is not None:
+                    try:
+                        candidates = fetcher.browse_site_np_free(_site_obj, pages=pages, start_page=0)
+                        self._log(
+                            f"魔流 [{task.name}] 直连站点索引·免费筛选 命中 {len(candidates) if candidates else 0} 个"
+                        )
+                    except Exception as _np_err:  # noqa: BLE001
+                        self._log(f"魔流 [{task.name}] 直连免费索引失败，回退 SDK：{_np_err}", "warning")
+                        candidates = None
+            if not candidates:
+                candidates = fetcher.browse_site(
+                    task.site_domain,
+                    rss_support=task.rss_support,
+                    pages=pages,
+                    start_page=cursor,
+                )
             if not candidates:
                 self._log(f"魔力任务 [{task.name}] 未获取到候选种子（游标 {cursor}）")
                 return {"status": "noop", "reason": "未获取到候选种子", "candidates": 0, "filtered": 0}
@@ -3639,22 +3654,59 @@ class MagicFlow(_PluginBase):
         except Exception as err:
             return Response(success=False, message=str(err))
 
+    @staticmethod
+    def _url_host(value: str) -> str:
+        """从未必带 scheme 的地址中取出主机名（小写）。"""
+        try:
+            from urllib.parse import urlsplit
+            raw = value if "://" in value else f"https://{value}"
+            return (urlsplit(raw).hostname or "").lower()
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _url_allowed_for_site(self, url: str, site: Any) -> bool:
+        """仅允许抓取该站点自身域名下的地址（防 cookie 外带 / SSRF）。"""
+        try:
+            from urllib.parse import urlsplit
+        except Exception:  # noqa: BLE001
+            return False
+        parsed = urlsplit(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return False
+        host = parsed.hostname.lower()
+        site_hosts = set()
+        for cand in (getattr(site, "url", "") or "", getattr(site, "domain", "") or ""):
+            h = self._url_host(cand)
+            if h:
+                site_hosts.add(h)
+        for sh in site_hosts:
+            if host == sh or host.endswith("." + sh) or sh.endswith("." + host):
+                return True
+        return False
+
     def debug_fetch_page(self, site_id: int = 0, url: str = "", limit: int = 8000) -> Response:
-        """诊断：用站点 cookie 抓取任意页面，返回文本片段（只读）。"""
+        """诊断：用站点 cookie 抓取**该站点域名下**的页面，返回文本片段（只读）。
+
+        安全：必须指定 ``site_id``，且请求地址必须属于该站点域名，防止
+        cookie 被带到外站（cookie 外带 / SSRF）。
+        """
         if not url:
             return Response(success=False, message="缺少 url")
+        if not site_id:
+            return Response(success=False, message="必须指定 site_id（仅允许抓取该站点域名）")
+        site = self._get_site(int(site_id))
+        if not site:
+            return Response(success=False, message="站点不存在")
+        if not self._url_allowed_for_site(url, site):
+            return Response(success=False, message="仅允许抓取该站点域名下的页面")
         try:
             from app.sdk.network import RequestUtils  # noqa: WPS433
         except Exception as err:
             return Response(success=False, message=f"SDK 不可用: {err}")
-        cookie = ua = referer = None
-        if site_id:
-            site = self._get_site(int(site_id))
-            if site:
-                cookie = getattr(site, "cookie", None)
-                ua = getattr(site, "ua", None)
-                base = (getattr(site, "url", "") or (f"https://{getattr(site, 'domain', '')}")).rstrip("/")
-                referer = f"{base}/"
+        cookie = getattr(site, "cookie", None)
+        ua = getattr(site, "ua", None)
+        base = (getattr(site, "url", "") or (f"https://{getattr(site, 'domain', '')}")).rstrip("/")
+        referer = f"{base}/"
         try:
             req = RequestUtils(cookies=cookie, ua=ua, timeout=30, referer=referer)
             resp = req.get_res(url)
@@ -4209,11 +4261,21 @@ class MagicFlow(_PluginBase):
             if not fetcher.is_available:
                 return Response(success=False, message="站点抓取不可用")
 
-            candidates = fetcher.browse_site(
-                task.site_domain,
-                rss_support=task.rss_support,
-                pages=max(int(task.browse_pages or BROWSE_PAGES), 1),
-            )
+            candidates = None
+            _pages = max(int(task.browse_pages or BROWSE_PAGES), 1)
+            if str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush" and not task.rss_support:
+                _site_obj = self._get_site(task.site_id)
+                if _site_obj is not None:
+                    try:
+                        candidates = fetcher.browse_site_np_free(_site_obj, pages=_pages, start_page=0)
+                    except Exception:  # noqa: BLE001
+                        candidates = None
+            if not candidates:
+                candidates = fetcher.browse_site(
+                    task.site_domain,
+                    rss_support=task.rss_support,
+                    pages=_pages,
+                )
             if not candidates:
                 return Response(success=True, data={"candidates": [], "total": 0, "reason_counts": {}})
 

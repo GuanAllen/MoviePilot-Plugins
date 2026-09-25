@@ -1943,14 +1943,22 @@ const candidateRawTotal = computed(() => {
   return (candidateData.value.candidates || []).length + rejected
 });
 
-// 运行诊断流程链（v5 阶段）
-const FLOW_STEPS = [
+// 运行诊断流程链（v5 阶段）—— 骨架五阶段两模式共用，但每阶段实做不同，文案按类型分显
+const FLOW_STEPS_BONUS = [
   { key: 'entry', label: '入口检查' },
   { key: 'fetch', label: '抓取候选' },
   { key: 'wash', label: '洗池过滤' },
-  { key: 'classify', label: '分类排序' },
-  { key: 'process', label: '处理入库' },
+  { key: 'classify', label: '魔力排序' },
+  { key: 'process', label: '保种入库' },
 ];
+const FLOW_STEPS_BRUSH = [
+  { key: 'entry', label: '入口检查' },
+  { key: 'fetch', label: '抓取候选' },
+  { key: 'wash', label: '免费筛选' },
+  { key: 'classify', label: '下载人数排序' },
+  { key: 'process', label: '复用·入库' },
+];
+const flowSteps = computed(() => (taskIsBrush.value ? FLOW_STEPS_BRUSH : FLOW_STEPS_BONUS));
 
 // 工作台标签（预览图：分段式标签卡）
 const MF_TABS = [
@@ -1962,8 +1970,9 @@ const MF_TABS = [
 const flowNodes = computed(() => {
   const phase = detail.value?.last_phase || '';
   const active = !!detail.value?.run_active;
-  const idx = FLOW_STEPS.findIndex(step => step.key === phase);
-  return FLOW_STEPS.map((step, i) => {
+  const steps = flowSteps.value;
+  const idx = steps.findIndex(step => step.key === phase);
+  return steps.map((step, i) => {
     let state = 'idle';
     if (active) {
       if (idx >= 0 && i < idx) state = 'done';
@@ -1983,7 +1992,7 @@ const flowPhaseText = computed(() => {
     const running = flowNodes.value.find(item => item.state === 'running');
     if (running) return running.label
   }
-  const step = FLOW_STEPS.find(item => item.key === (detail.value?.last_phase || ''));
+  const step = flowSteps.value.find(item => item.key === (detail.value?.last_phase || ''));
   return step ? step.label : runStatusText(detail.value?.last_run_status)
 });
 
@@ -5313,6 +5322,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-62128a4a"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-d6210381"]]);
 
 export { MagicFlowWorkbench as M };
