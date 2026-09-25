@@ -584,6 +584,42 @@ async function saveTask() {
                   <VSwitch v-model="localTask.delete_files" label="删种同时删除文件" color="primary" hide-details inset />
                 </div>
               </section>
+              <section class="editor-section">
+                <header class="editor-section__head">
+                  <div>
+                    <div class="text-subtitle-1 font-weight-medium">完美种保护</div>
+                    <div class="text-body-2 text-medium-emphasis">优质老种（非零魔 · 做种人数少 · 挂得够老）永久保留，不参与任何清理——魔力靠「养」，越老越肥</div>
+                  </div>
+                </header>
+                <div class="editor-switches">
+                  <VSwitch v-model="localTask.protect_perfect" label="启用完美种保护（满足条件的种子永不清理）" color="primary" hide-details inset />
+                </div>
+                <VRow v-if="localTask.protect_perfect">
+                  <VCol cols="12" md="6">
+                    <VTextField
+                      v-model.number="localTask.perfect_max_seeders"
+                      type="number"
+                      min="0"
+                      label="完美种：做种人数上限"
+                      hint="站内做种人数 ≤ 该值才算完美（0 = 不限制）"
+                      suffix="人"
+                      persistent-hint
+                    />
+                  </VCol>
+                  <VCol cols="12" md="6">
+                    <VTextField
+                      v-model.number="localTask.perfect_min_weeks"
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      label="完美种：做种周数下限"
+                      hint="做种周数 ≥ 该值才算完美（0 = 不限制）"
+                      suffix="周"
+                      persistent-hint
+                    />
+                  </VCol>
+                </VRow>
+              </section>
             </VWindowItem>
 
             <VWindowItem v-if="!isBrush" value="formula">
