@@ -116,6 +116,7 @@ class TaskState:
     # 运行阶段（供前端「运行诊断」流程链转圈用）
     last_phase: str = ""            # entry|fetch|wash|classify|process|done|error
     last_phase_label: str = ""      # 阶段中文名
+    last_phase_detail: str = ""     # 阶段内的细粒度进度（如「取种 14/45」），供前端显示避免「像卡住」
     last_phase_at: float = 0.0
     page_cursor: int = 0            # 站点列表页游标（游标深翻）
     # 种子详情页映射（hash→details 页 URL）。供「检查」时回站点核对促销/免费状态。
@@ -156,6 +157,7 @@ class TaskState:
             "revision": self.revision,
             "last_phase": self.last_phase,
             "last_phase_label": self.last_phase_label,
+            "last_phase_detail": self.last_phase_detail,
             "last_phase_at": self.last_phase_at,
             "page_cursor": self.page_cursor,
             "torrent_pages": dict(self.torrent_pages),
@@ -193,6 +195,7 @@ class TaskState:
             revision=d.get("revision", 0),
             last_phase=d.get("last_phase", ""),
             last_phase_label=d.get("last_phase_label", ""),
+            last_phase_detail=d.get("last_phase_detail", ""),
             last_phase_at=d.get("last_phase_at", 0.0),
             page_cursor=d.get("page_cursor", 0),
             torrent_pages={str(k).lower(): str(v) for k, v in (d.get("torrent_pages") or {}).items() if k and v},
@@ -738,8 +741,11 @@ class MagicFlowStore:
 
     # -------------------- 运行阶段 / 游标 --------------------
 
-    def record_phase(self, task_id: str, phase: str, label: str = "") -> None:
-        """记录当前运行阶段（供前端「运行诊断」流程链转圈）。"""
+    def record_phase(self, task_id: str, phase: str, label: str = "", detail: str = "") -> None:
+        """记录当前运行阶段（供前端「运行诊断」流程链转圈）。
+
+        detail 为阶段内的细粒度进度（如「取种 14/45」），前端显示以避免长时间无变化「像卡住」。
+        """
         if not task_id:
             return
         state = self.task_states.get(task_id)
@@ -747,6 +753,7 @@ class MagicFlowStore:
             state = self.task_states.create(task_id)
         state.last_phase = phase or ""
         state.last_phase_label = label or ""
+        state.last_phase_detail = detail or ""
         state.last_phase_at = time.time()
         self.task_states.save(state)
 
@@ -754,10 +761,11 @@ class MagicFlowStore:
         """读取当前运行阶段。"""
         state = self.task_states.get(task_id)
         if not state:
-            return {"last_phase": "", "last_phase_label": "", "last_phase_at": 0.0}
+            return {"last_phase": "", "last_phase_label": "", "last_phase_detail": "", "last_phase_at": 0.0}
         return {
             "last_phase": state.last_phase,
             "last_phase_label": state.last_phase_label,
+            "last_phase_detail": state.last_phase_detail,
             "last_phase_at": state.last_phase_at,
         }
 
@@ -1200,6 +1208,7 @@ class MagicFlowStore:
                 "protected_count": 0,
                 "last_phase": "",
                 "last_phase_label": "",
+                "last_phase_detail": "",
                 "last_phase_at": 0.0,
                 "page_cursor": 0,
             }
@@ -1226,6 +1235,7 @@ class MagicFlowStore:
             "protected_count": len(state.protected_torrents),
             "last_phase": state.last_phase,
             "last_phase_label": state.last_phase_label,
+            "last_phase_detail": state.last_phase_detail,
             "last_phase_at": state.last_phase_at,
             "page_cursor": state.page_cursor,
         }
