@@ -8,6 +8,9 @@ import {
   formatDateTime,
   formatDuration,
   formatDurationSeconds,
+  normalizeDefaults,
+  normalizeDownloaderPaths,
+  normalizeDownloaderPrefs,
   normalizeSettings,
   normalizeTask,
   runStatusText,
@@ -40,6 +43,9 @@ const status = ref({
 })
 const detail = ref(null)
 const bonusData = ref({ torrents: [], total_bonus: 0, torrent_count: 0, protected_count: 0 })
+const bonusLoadedFor = ref('')
+// 按任务缓存托管种子（切任务时秒显，再后台静默刷新）
+const bonusCache = {}
 const candidateData = ref({ candidates: [], total: 0, reason_counts: {} })
 const candidateLoadedAt = ref(0)
 const operationData = ref({ operations: [], total: 0 })
@@ -63,8 +69,23 @@ const batchDeleteDialog = ref(false)
 const selectedHashes = computed(() =>
   (selectedRows.value || []).map(row => row?.hash).filter(Boolean),
 )
-const settingsMenu = ref(false)
-const settingsDraft = ref({ enabled: false, show_sidebar_nav: true })
+const settingsDialog = ref(false)
+const settingsTab = ref('general')
+const settingsDraft = ref({
+  enabled: false,
+  show_sidebar_nav: true,
+  debug_log: false,
+  compact_mode: false,
+  journal_keep: 200,
+  request_interval: 0,
+})
+const downloaderPrefsDraft = ref(normalizeDownloaderPrefs({}))
+const downloaderPrefsRecommended = ref(null)
+const downloaderPrefsLoading = ref(false)
+const downloaderPrefsRaw = ref(null)
+const downloaderPathsDraft = ref(normalizeDownloaderPaths({}))
+const defaultsDraft = ref(normalizeDefaults({}))
+const defaultsLoading = ref(false)
 let refreshTimer
 let phaseTimer
 
@@ -88,11 +109,16 @@ async function loadSiteIcon(siteId) {
 
 const pluginBase = computed(() => `plugin/${props.pluginId || 'MagicFlow'}`)
 const tasks = computed(() => status.value.tasks || [])
+const defaultSavePath = computed(() => (status.value.defaults || {}).save_path || '')
 const selectedTask = computed(() => tasks.value.find(item => item.id === selectedTaskId.value) || null)
 const summary = computed(() => status.value.summary || {})
 const selectedState = computed(() =>
   taskStateMeta(selectedTask.value?.state, selectedTask.value?.enabled ?? status.value.enabled),
 )
+// 当前任务是否刷流模式（驱动整块工作台按类型显示）
+const taskIsBrush = computed(() => selectedTask.value?.task_type === 'brush')
+// 站点账号真实数据（上传/下载/分享率/做种数，来自站点用户页）
+const siteUser = computed(() => detailStats.value?.site_user || selectedTask.value?.site_user || {})
 const taskConfig = computed(() => selectedTask.value || {})
 const taskSiteIcon = computed(() => {
   const id = Number(selectedTask.value?.site_id)
@@ -338,6 +364,10 @@ async function loadStatus() {
     settingsDraft.value = normalizeSettings({
       enabled: status.value.enabled,
       show_sidebar_nav: status.value.show_sidebar_nav,
+      debug_log: status.value.debug_log,
+      compact_mode: status.value.compact_mode,
+      journal_keep: status.value.journal_keep,
+      request_interval: status.value.request_interval,
     })
     statusLoaded.value = true
     if (!selectedTaskId.value && tasks.value.length) {
@@ -362,14 +392,33 @@ async function loadDetail(taskId) {
 }
 
 // 加载托管种子与魔力汇总。
-async function loadBonus(taskId) {
-  taskLoading.value = true
+// silent=true：已有数据时后台刷新，不置加载态（切换「托管」时秒显，避免 1~2 秒空白）。
+async function loadBonus(taskId, { silent = false } = {}) {
+  if (!silent) taskLoading.value = true
   try {
-    bonusData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/tasks/${taskId}/bonus`)) || bonusData.value
+    const data = unwrapResponse(await props.api.get(`${pluginBase.value}/tasks/${taskId}/bonus`)) || bonusData.value
+    bonusData.value = data
+    bonusCache[taskId] = data
+    bonusLoadedFor.value = taskId
   } catch (err) {
     error.value = err?.message || String(err)
   } finally {
-    taskLoading.value = false
+    if (!silent) taskLoading.value = false
+  }
+}
+
+const backfilling = ref(false)
+async function backfillPages() {
+  const taskId = selectedTaskId.value
+  if (!taskId || backfilling.value) return
+  backfilling.value = true
+  try {
+    const data = unwrapResponse(await props.api.post(`${pluginBase.value}/tasks/${taskId}/backfill-pages`)) || {}
+    notify(`已回填 ${data.resolved || 0} 个详情页链接${data.unresolved ? `（${data.unresolved} 个未匹配）` : ''}`)
+  } catch (err) {
+    notify(err?.response?.data?.message || err?.message || '回填失败', 'error')
+  } finally {
+    backfilling.value = false
   }
 }
 
@@ -412,7 +461,7 @@ function selectTask(taskId) {
   if (taskId === selectedTaskId.value) return
   selectedTaskId.value = taskId
   reloadSelected()
-  if (activeTab.value === 'pool') loadCandidates(taskId)
+  if (activeTab.value === 'pool' && poolView.value === 'candidates') loadCandidates(taskId)
 }
 
 // 重新拉取当前任务的全部明细数据。
@@ -420,13 +469,21 @@ function reloadSelected(taskId = selectedTaskId.value) {
   if (!taskId) return
   selectedTaskId.value = taskId
   detail.value = null
-  bonusData.value = { torrents: [], total_bonus: 0, torrent_count: 0, protected_count: 0 }
+  const cachedBonus = bonusCache[taskId]
+  if (cachedBonus) {
+    // 命中缓存：先秒显，再后台静默刷新
+    bonusData.value = cachedBonus
+    bonusLoadedFor.value = taskId
+  } else {
+    bonusData.value = { torrents: [], total_bonus: 0, torrent_count: 0, protected_count: 0 }
+    bonusLoadedFor.value = ''
+  }
   candidateData.value = { candidates: [], total: 0, reason_counts: {} }
   candidateLoadedFor.value = ''
   candidateLoadedAt.value = 0
   operationData.value = { operations: [], total: 0 }
   loadDetail(taskId)
-  loadBonus(taskId)
+  loadBonus(taskId, { silent: !!cachedBonus })
   loadOperations(taskId)
 }
 
@@ -475,7 +532,7 @@ async function toggleSelectedTask() {
 
 // 打开新建任务弹窗。
 function openCreateTask() {
-  editorTask.value = cloneTask()
+  editorTask.value = cloneTask(status.value.defaults || {})
   editorOpen.value = true
 }
 
@@ -680,12 +737,139 @@ async function detailTorrentAction(action) {
   if (found) activeTorrent.value = found
 }
 
+// 打开插件设置弹窗。
+async function openSettings(tab = 'general') {
+  settingsTab.value = tab
+  settingsDialog.value = true
+  await Promise.all([loadDownloaderPrefs(), loadDefaults()])
+}
+
+// 加载下载器全局参数。
+async function loadDownloaderPrefs() {
+  downloaderPrefsLoading.value = true
+  try {
+    const data = unwrapResponse(await props.api.get(`${pluginBase.value}/downloader/prefs`))
+    if (data && data.available) {
+      downloaderPrefsDraft.value = normalizeDownloaderPrefs(data)
+      downloaderPathsDraft.value = normalizeDownloaderPaths(data)
+      downloaderPrefsRecommended.value = data.recommended || null
+      downloaderPrefsRaw.value = data.raw || null
+    }
+  } catch (err) {
+    error.value = err?.message || String(err)
+  } finally {
+    downloaderPrefsLoading.value = false
+  }
+}
+
+// 把下载器参数恢复为推荐值（仅填表，点保存才写入）。
+function applyRecommendedPrefs() {
+  if (downloaderPrefsRecommended.value) {
+    downloaderPrefsDraft.value = normalizeDownloaderPrefs(downloaderPrefsRecommended.value)
+    notify('已填入推荐值，点「保存」后生效')
+  }
+}
+
+// 保存下载器全局参数。
+async function saveDownloaderPrefs() {
+  saving.value = true
+  try {
+    const data = unwrapResponse(
+      await props.api.post(`${pluginBase.value}/downloader/prefs`, normalizeDownloaderPrefs(downloaderPrefsDraft.value)),
+    )
+    if (data && data.available) {
+      downloaderPrefsDraft.value = normalizeDownloaderPrefs(data)
+      downloaderPrefsRaw.value = data.raw || null
+    }
+    notify('下载器参数已保存')
+    emit('action')
+  } catch (err) {
+    error.value = err?.message || String(err)
+  } finally {
+    saving.value = false
+  }
+}
+
+// 保存下载目录。
+async function saveDownloaderPaths() {
+  saving.value = true
+  try {
+    const data = unwrapResponse(
+      await props.api.post(`${pluginBase.value}/downloader/paths`, normalizeDownloaderPaths(downloaderPathsDraft.value)),
+    )
+    if (data && data.available) {
+      downloaderPathsDraft.value = normalizeDownloaderPaths(data)
+      downloaderPrefsRaw.value = data.raw || null
+    }
+    notify('下载目录已保存')
+    emit('action')
+  } catch (err) {
+    error.value = err?.message || String(err)
+  } finally {
+    saving.value = false
+  }
+}
+
+// 加载默认任务模板。
+async function loadDefaults() {
+  defaultsLoading.value = true
+  try {
+    const data = unwrapResponse(await props.api.get(`${pluginBase.value}/defaults`))
+    defaultsDraft.value = normalizeDefaults(data || {})
+  } catch (err) {
+    error.value = err?.message || String(err)
+  } finally {
+    defaultsLoading.value = false
+  }
+}
+
+// 保存默认任务模板。
+async function saveDefaults() {
+  saving.value = true
+  try {
+    unwrapResponse(await props.api.post(`${pluginBase.value}/defaults`, normalizeDefaults(defaultsDraft.value)))
+    notify('默认任务模板已保存')
+    await loadStatus()
+    emit('action')
+  } catch (err) {
+    error.value = err?.message || String(err)
+  } finally {
+    saving.value = false
+  }
+}
+
+// 保存当前设置标签页。
+function saveActiveSettings() {
+  const tab = settingsTab.value
+  if (tab === 'downloader') return saveDownloaderPrefs()
+  if (tab === 'paths') return savePathsTab()
+  if (tab === 'template') return saveDefaults()
+  return saveSettings()
+}
+
+// 保存「下载目录」标签：qBittorrent 全局路径 + 任务保存目录（默认模板）。
+async function savePathsTab() {
+  saving.value = true
+  try {
+    unwrapResponse(
+      await props.api.post(`${pluginBase.value}/downloader/paths`, normalizeDownloaderPaths(downloaderPathsDraft.value)),
+    )
+    unwrapResponse(await props.api.post(`${pluginBase.value}/defaults`, normalizeDefaults(defaultsDraft.value)))
+    notify('下载目录已保存')
+    await loadStatus()
+    emit('action')
+  } catch (err) {
+    error.value = err?.message || String(err)
+  } finally {
+    saving.value = false
+  }
+}
+
 // 保存全局设置。
 async function saveSettings() {
   saving.value = true
   try {
     unwrapResponse(await props.api.post(`${pluginBase.value}/settings`, normalizeSettings(settingsDraft.value)))
-    settingsMenu.value = false
     notify('设置已保存')
     await loadStatus()
     emit('action')
@@ -700,6 +884,7 @@ watch(activeTab, tab => {
   // 进入「种子池」重新拉候选 / 托管，保证最新
   if (tab === 'pool' && selectedTaskId.value) {
     if (poolView.value === 'candidates') loadCandidates(selectedTaskId.value)
+    else if (bonusLoadedFor.value === selectedTaskId.value) loadBonus(selectedTaskId.value, { silent: true })
     else loadBonus(selectedTaskId.value)
   }
   if (tab === 'diagnostics' && selectedTaskId.value) {
@@ -710,8 +895,14 @@ watch(activeTab, tab => {
 
 watch(poolView, view => {
   if (!selectedTaskId.value) return
-  if (view === 'candidates') loadCandidates(selectedTaskId.value)
-  else loadBonus(selectedTaskId.value)
+  if (view === 'candidates') {
+    loadCandidates(selectedTaskId.value)
+  } else if (bonusLoadedFor.value === selectedTaskId.value) {
+    // 已有托管数据：立即展示，后台静默刷新
+    loadBonus(selectedTaskId.value, { silent: true })
+  } else {
+    loadBonus(selectedTaskId.value)
+  }
 })
 
 watch(
@@ -746,13 +937,13 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="magicflow-page" :class="{ 'magicflow-page--compact': compact }">
+  <div class="magicflow-page" :class="{ 'magicflow-page--compact': compact || status.compact_mode }">
     <header class="magicflow-page__header">
       <div class="magicflow-page__identity">
         <span class="magicflow-logo"><VIcon icon="mdi-magnet" size="20" /></span>
         <div>
-          <h1>魔力管家</h1>
-          <p>PT 做种 · 魔力养护后台</p>
+          <h1>魔流</h1>
+          <p>PT 做种 · 魔力养护 / 刷流保种</p>
         </div>
       </div>
       <div class="magicflow-page__actions">
@@ -797,27 +988,13 @@ onUnmounted(() => {
         <VBtn class="magicflow-header-create" color="primary" variant="flat" prepend-icon="mdi-plus" @click="openCreateTask">
           新建任务
         </VBtn>
-        <VMenu v-model="settingsMenu" :close-on-content-click="false" location="bottom end">
-          <template #activator="{ props: menuProps }">
-            <VBtn v-bind="menuProps" icon="mdi-tune-variant" variant="text" aria-label="全局设置" />
-          </template>
-          <VCard class="magicflow-settings-menu" title="全局设置">
-            <VCardText class="settings-menu__body">
-              <VSwitch v-model="settingsDraft.enabled" label="启用插件" color="primary" hide-details inset />
-              <VSwitch
-                v-model="settingsDraft.show_sidebar_nav"
-                label="显示侧栏入口"
-                color="primary"
-                hide-details
-                inset
-              />
-            </VCardText>
-            <VCardActions>
-              <VSpacer />
-              <VBtn color="primary" variant="flat" :loading="saving" @click="saveSettings">保存</VBtn>
-            </VCardActions>
-          </VCard>
-        </VMenu>
+        <VBtn
+          class="magicflow-settings-btn"
+          icon="mdi-tune-variant"
+          variant="text"
+          aria-label="插件设置"
+          @click="openSettings()"
+        />
         <VBtn v-if="showClose" icon="mdi-close" variant="text" aria-label="关闭" @click="emit('close')" />
       </div>
     </header>
@@ -833,8 +1010,8 @@ onUnmounted(() => {
 
     <div v-else-if="!tasks.length" class="magicflow-empty">
       <VIcon icon="mdi-star-four-points-outline" size="52" color="medium-emphasis" />
-      <div class="text-h6">还没有魔力任务</div>
-      <div class="text-body-2 text-medium-emphasis">创建任务后可按站点魔力公式独立养护做种</div>
+      <div class="text-h6">还没有任务</div>
+      <div class="text-body-2 text-medium-emphasis">创建任务后可按站点魔力公式养护做种，或按上传产出刷流保种</div>
       <VBtn color="primary" variant="flat" prepend-icon="mdi-plus" @click="openCreateTask">创建第一个任务</VBtn>
     </div>
 
@@ -887,7 +1064,7 @@ onUnmounted(() => {
       <div class="magicflow-layout">
         <VSheet tag="aside" class="magicflow-task-rail app-surface-static">
           <div class="magicflow-task-rail__head">
-            <span class="text-subtitle-2">魔力任务</span>
+            <span class="text-subtitle-2">任务</span>
             <VChip size="x-small" variant="tonal">{{ tasks.length }}</VChip>
           </div>
           <div class="magicflow-task-list">
@@ -907,7 +1084,8 @@ onUnmounted(() => {
               <span>{{ task.site_name }} · {{ task.downloader }}</span>
               <span class="magicflow-task-item__meta">
                 <span>{{ task.seeding_count || 0 }} 个种子</span>
-                <span>{{ task.site_bonus_ok ? formatBonus(task.site_bonus_per_hour) : '—' }}</span>
+                <span v-if="task.task_type === 'brush'">{{ formatBytes(task.task_uploaded || 0) }} 上传</span>
+                <span v-else>{{ task.site_bonus_ok ? formatBonus(task.site_bonus_per_hour) : '—' }}</span>
               </span>
             </button>
           </div>
@@ -926,6 +1104,9 @@ onUnmounted(() => {
               <div class="magicflow-task-head__body">
                 <div class="magicflow-task-head__title">
                   <h2>{{ selectedTask.name }}</h2>
+                  <VChip size="small" variant="tonal" :color="selectedTask.task_type === 'brush' ? 'info' : 'primary'" :prepend-icon="selectedTask.task_type === 'brush' ? 'mdi-upload-network-outline' : 'mdi-star-four-points-outline'">
+                    {{ selectedTask.task_type === 'brush' ? '刷流' : '刷魔力' }}
+                  </VChip>
                   <VChip :color="selectedState.color" size="small" variant="tonal" :prepend-icon="selectedState.icon">
                     {{ selectedState.text }}
                   </VChip>
@@ -989,14 +1170,26 @@ onUnmounted(() => {
                   <strong>{{ selectedTask.seeding_count || 0 }}</strong>
                   <span>托管种子 · {{ selectedTask.active_seeding_count || 0 }} 做种中 / {{ selectedTask.downloading_count || 0 }} 下载中 / {{ selectedTask.paused_count || 0 }} 已暂停</span>
                 </VSheet>
-                <VSheet class="magicflow-stat app-surface-static">
-                  <strong>{{ selectedTask.site_bonus_ok ? formatBonus(selectedTask.site_bonus_per_hour) : '—' }}</strong>
-                  <span>站点上报时魔 · 站点实时值</span>
-                </VSheet>
-                <VSheet class="magicflow-stat app-surface-static">
-                  <strong>{{ Number(selectedTask.site_current_bonus || 0).toFixed(2) }}</strong>
-                  <span>站点当前魔力 · 该站点实时存量</span>
-                </VSheet>
+                <template v-if="taskIsBrush">
+                  <VSheet class="magicflow-stat app-surface-static">
+                    <strong>{{ formatBytes(selectedTask.task_uploaded || 0) }}</strong>
+                    <span>本任务上传量 · 下载器累计（{{ selectedTask.task_upload_active || 0 }} 个有上传）</span>
+                  </VSheet>
+                  <VSheet class="magicflow-stat app-surface-static">
+                    <strong>{{ siteUser.ok ? formatBytes(siteUser.upload || 0) : '—' }}</strong>
+                    <span>站点上传量 · 账号真实值{{ siteUser.ok ? ` · 下载 ${formatBytes(siteUser.download || 0)}` : '' }}</span>
+                  </VSheet>
+                </template>
+                <template v-else>
+                  <VSheet class="magicflow-stat app-surface-static">
+                    <strong>{{ selectedTask.site_bonus_ok ? formatBonus(selectedTask.site_bonus_per_hour) : '—' }}</strong>
+                    <span>站点上报时魔 · 站点实时值</span>
+                  </VSheet>
+                  <VSheet class="magicflow-stat app-surface-static">
+                    <strong>{{ Number(selectedTask.site_current_bonus || 0).toFixed(2) }}</strong>
+                    <span>站点当前魔力 · 该站点实时存量</span>
+                  </VSheet>
+                </template>
                 <VSheet class="magicflow-stat app-surface-static">
                   <strong>{{ detailStats.last_added || 0 }} / {{ detailStats.last_reused || 0 }} / {{ detailStats.last_deleted || 0 }}</strong>
                   <span>上次运行 新增/复用/删除 · 当前托管 {{ detailStats.last_kept || selectedTask.seeding_count || 0 }}</span>
@@ -1016,16 +1209,44 @@ onUnmounted(() => {
                     <div><dt>选种周期</dt><dd>{{ taskConfig.cron_expression || `每 ${taskConfig.brush_interval} 分钟` }}</dd></div>
                     <div><dt>检查周期</dt><dd>每 {{ taskConfig.check_interval }} 分钟</dd></div>
                     <div><dt>开启时段</dt><dd>{{ taskConfig.active_time_range || '全天' }}</dd></div>
-                    <div><dt>最低魔力</dt><dd>{{ taskConfig.min_bonus_per_hour == null ? '自动' : `${Number(taskConfig.min_bonus_per_hour).toFixed(2)} /h` }}</dd></div>
-                    <div><dt>最多保留</dt><dd>{{ taskConfig.max_keep_torrents == null ? (taskConfig.disk_size_gb ? `按 ${taskConfig.disk_size_gb}GB 自动` : '不限') : `${taskConfig.max_keep_torrents} 个` }}</dd></div>
-                    <div><dt>保护阈值</dt><dd>{{ taskConfig.bonus_protect_threshold == null ? '站点当前魔力' : Number(taskConfig.bonus_protect_threshold).toFixed(0) }}</dd></div>
+                    <template v-if="taskIsBrush">
+                      <div><dt>上传速率门槛</dt><dd>{{ taskConfig.upload_min_kbps ?? 200 }} KB/s</dd></div>
+                      <div><dt>无上传判定</dt><dd>{{ taskConfig.upload_idle_minutes ? `${taskConfig.upload_idle_minutes} 分钟` : '自动（约 2×检查间隔）' }}</dd></div>
+                      <div><dt>起步宽限</dt><dd>{{ taskConfig.brush_grace_minutes ?? 15 }} 分钟</dd></div>
+                      <div><dt>最小下载人数</dt><dd>{{ taskConfig.brush_min_leechers ?? 1 }} 人</dd></div>
+                    </template>
+                    <template v-else>
+                      <div><dt>最低魔力</dt><dd>{{ taskConfig.min_bonus_per_hour == null ? '自动' : `${Number(taskConfig.min_bonus_per_hour).toFixed(2)} /h` }}</dd></div>
+                      <div><dt>最多保留</dt><dd>{{ taskConfig.max_keep_torrents == null ? (taskConfig.disk_size_gb ? `按 ${taskConfig.disk_size_gb}GB 自动` : '不限') : `${taskConfig.max_keep_torrents} 个` }}</dd></div>
+                      <div><dt>保护阈值</dt><dd>{{ taskConfig.bonus_protect_threshold == null ? '站点当前魔力' : Number(taskConfig.bonus_protect_threshold).toFixed(0) }}</dd></div>
+                    </template>
                     <div><dt>自动补种</dt><dd>{{ taskConfig.refill_when_empty ? '开启' : '关闭' }}</dd></div>
                     <div><dt>存量复用</dt><dd>{{ taskConfig.reuse_existing ? '开启' : '关闭' }}</dd></div>
                     <div><dt>无进度清理</dt><dd>{{ taskConfig.cleanup_no_progress ? `开启（${taskConfig.no_progress_minutes ?? 30} 分钟）` : '关闭' }}</dd></div>
                     <div><dt>慢速清理</dt><dd>{{ taskConfig.cleanup_slow_progress === false ? '关闭' : `开启（> ${taskConfig.slow_progress_max_hours ?? 48}h 下不完即清）` }}</dd></div>
+                    <div><dt>促销失效清理</dt><dd>{{ taskConfig.purge_unfree_incomplete === false ? '关闭' : '开启（已非免费且未下完→清）' }}</dd></div>
                     <div><dt>自动恢复暂停</dt><dd>{{ taskConfig.auto_resume_paused === false ? '关闭' : '开启' }}</dd></div>
                     <div><dt>选种来源</dt><dd>{{ taskConfig.rss_support ? 'RSS' : '站点列表页' }}</dd></div>
-                    <div><dt>促销要求</dt><dd>{{ taskConfig.freeleech === '2xfree' ? '2X 免费' : taskConfig.freeleech === 'free' ? '免费' : '全部' }}</dd></div>
+                    <div><dt>促销要求</dt><dd>{{ taskIsBrush ? '免费（含 2X免费）' : (taskConfig.freeleech === '2xfree' ? '2X 免费' : taskConfig.freeleech === 'free' ? '免费' : '全部') }}</dd></div>
+                  </dl>
+                </VSheet>
+
+                <VSheet tag="section" class="magicflow-panel app-surface-static">
+                  <header class="magicflow-panel__head">
+                    <div>
+                      <div class="text-subtitle-1 font-weight-medium">站点账号真实数据</div>
+                      <div class="text-body-2 text-medium-emphasis">取自站点用户页（非下载器本地统计）{{ siteUser.updated_at ? ` · 更新于 ${siteUser.updated_at}` : '' }}</div>
+                    </div>
+                    <VChip v-if="siteUser.ok" size="small" variant="tonal" color="success">已同步</VChip>
+                    <VChip v-else size="small" variant="tonal">暂无数据</VChip>
+                  </header>
+                  <dl class="magicflow-facts">
+                    <div><dt>上传量</dt><dd>{{ siteUser.ok ? formatBytes(siteUser.upload || 0) : '—' }}</dd></div>
+                    <div><dt>下载量</dt><dd>{{ siteUser.ok ? formatBytes(siteUser.download || 0) : '—' }}</dd></div>
+                    <div><dt>分享率</dt><dd>{{ siteUser.ok ? Number(siteUser.ratio || 0).toFixed(3) : '—' }}</dd></div>
+                    <div><dt>做种数 / 下载数</dt><dd>{{ siteUser.ok ? `${siteUser.seeding || 0} / ${siteUser.leeching || 0}` : '—' }}</dd></div>
+                    <div><dt>做种体积</dt><dd>{{ siteUser.ok ? formatBytes(siteUser.seeding_size || 0) : '—' }}</dd></div>
+                    <div><dt>站点魔力</dt><dd>{{ siteUser.ok ? Number(siteUser.bonus || 0).toFixed(2) : '—' }}</dd></div>
                   </dl>
                 </VSheet>
 
@@ -1071,7 +1292,7 @@ onUnmounted(() => {
                   <div>
                     <div class="text-subtitle-1 font-weight-medium">运行流程</div>
                     <div class="text-body-2 text-medium-emphasis">
-                      {{ detailStats.run_active ? '正在执行本轮刷流…' : (detailStats.last_run_at ? `最近执行 ${formatDateTime(detailStats.last_run_at)}` : '尚未运行') }}
+                      {{ detailStats.run_active ? (taskIsBrush ? '正在执行本轮刷流…' : '正在执行本轮养护…') : (detailStats.last_run_at ? `最近执行 ${formatDateTime(detailStats.last_run_at)}` : '尚未运行') }}
                       · 翻页游标 {{ detailStats.page_cursor ?? 0 }}
                     </div>
                   </div>
@@ -1161,7 +1382,7 @@ onUnmounted(() => {
                       待办队列 · 共 {{ candidateData.total || 0 }} 个通过过滤
                     </template>
                     <template v-else>
-                      已托管：共 {{ bonusData.torrent_count || 0 }} 个（黑盒：仅展示状态与进度）
+                      已托管：共 {{ bonusData.torrent_count || 0 }} 个
                     </template>
                   </div>
                 </div>
@@ -1170,6 +1391,15 @@ onUnmounted(() => {
                     <VBtn value="candidates" prepend-icon="mdi-filter-variant">候选</VBtn>
                     <VBtn value="torrents" prepend-icon="mdi-seed-outline">托管（{{ bonusData.torrent_count || 0 }}）</VBtn>
                   </VBtnToggle>
+                  <VBtn
+                    v-if="poolView === 'torrents'"
+                    size="small"
+                    variant="tonal"
+                    color="primary"
+                    prepend-icon="mdi-link-variant-plus"
+                    :loading="backfilling"
+                    @click="backfillPages"
+                  >回填链接</VBtn>
                 </div>
               </div>
 
@@ -1178,7 +1408,7 @@ onUnmounted(() => {
                   <header class="magicflow-panel__head">
                     <div>
                       <div class="text-subtitle-1 font-weight-medium">候选排行</div>
-                      <div class="text-body-2 text-medium-emphasis">待办名次由站点魔力效率内部排序 · 仅供选种参考</div>
+                      <div class="text-body-2 text-medium-emphasis">{{ taskIsBrush ? '按上传潜力（下载人数）排序 · 仅供选种参考' : '待办名次由站点魔力效率内部排序 · 仅供选种参考' }}</div>
                     </div>
                   </header>
                   <ol class="magicflow-pipeline">
@@ -1199,14 +1429,8 @@ onUnmounted(() => {
               <template v-else>
               <VSheet tag="section" class="magicflow-panel magicflow-torrents app-surface-static">
                 <header class="magicflow-panel__head">
-                  <div>
-                    <div class="magicflow-panel__title-row">
-                      <span class="text-subtitle-1 font-weight-medium">托管种子</span>
-                      <VChip size="x-small" variant="tonal">{{ bonusData.torrent_count || 0 }}</VChip>
-                    </div>
-                    <div class="text-body-2 text-medium-emphasis">
-                      共 {{ bonusData.torrent_count || 0 }} 个 · 点击任意行查看详情 / 手动保留 / 删除
-                    </div>
+                  <div class="text-body-2 text-medium-emphasis">
+                    点击任意行查看详情 / 手动保留 / 删除
                   </div>
                   <div class="magicflow-torrent-filters">
                     <VSelect
@@ -1388,8 +1612,8 @@ onUnmounted(() => {
                 <VSheet tag="section" class="magicflow-panel app-surface-static">
                   <header class="magicflow-panel__head">
                     <div>
-                      <div class="text-subtitle-1 font-weight-medium">任务规则</div>
-                      <div class="text-body-2 text-medium-emphasis">当前服务端生效配置</div>
+                      <div class="text-subtitle-1 font-weight-medium">{{ taskIsBrush ? '刷流规则' : '魔力规则' }}</div>
+                      <div class="text-body-2 text-medium-emphasis">{{ taskIsBrush ? '刷流标准：免费 + 有下载者；无上传即清理' : '当前服务端生效的魔力养护配置' }}</div>
                     </div>
                   </header>
                   <dl class="magicflow-facts magicflow-facts--two">
@@ -1397,31 +1621,48 @@ onUnmounted(() => {
                     <div><dt>站点</dt><dd>{{ selectedTask.site_name }}</dd></div>
                     <div><dt>下载器</dt><dd>{{ selectedTask.downloader }}</dd></div>
                     <div><dt>下载器标签</dt><dd>{{ selectedTask.brush_tag || '未设置' }}</dd></div>
-                    <div><dt>种子大小</dt><dd>{{ taskConfig.size || '不限' }}</dd></div>
-                    <div><dt>做种人数</dt><dd>{{ taskConfig.seeder || '不限' }}</dd></div>
-                    <div><dt>发布时间</dt><dd>{{ taskConfig.pubtime ? `${taskConfig.pubtime} 分钟` : '不限' }}</dd></div>
-                    <div><dt>排除 H&R</dt><dd>{{ taskConfig.hr === 'yes' ? '是' : '否' }}</dd></div>
-                    <div><dt>包含规则</dt><dd>{{ taskConfig.include || '无' }}</dd></div>
-                    <div><dt>排除规则</dt><dd>{{ taskConfig.exclude || '无' }}</dd></div>
-                    <div><dt>最短做种</dt><dd>{{ taskConfig.min_seed_time ? `${taskConfig.min_seed_time} 小时` : '不限' }}</dd></div>
-                    <div><dt>最低分享率</dt><dd>{{ Number(taskConfig.min_ratio || 0).toFixed(2) }}</dd></div>
-                    <div><dt>保种体积</dt><dd>{{ taskConfig.disk_size_gb ? `${taskConfig.disk_size_gb} GB` : '不限' }}</dd></div>
-                    <div><dt>最低魔力</dt><dd>{{ taskConfig.min_bonus_per_hour == null ? '自动' : `${Number(taskConfig.min_bonus_per_hour).toFixed(2)} /h` }}</dd></div>
-                    <div><dt>最多保留</dt><dd>{{ taskConfig.max_keep_torrents == null ? '自动 / 不限' : `${taskConfig.max_keep_torrents} 个` }}</dd></div>
+                    <div><dt>促销要求</dt><dd>{{ taskIsBrush ? '免费（含 2X免费）' : (taskConfig.freeleech === '2xfree' ? '2X 免费' : taskConfig.freeleech === 'free' ? '免费' : '全部') }}</dd></div>
+                    <div><dt>选种来源</dt><dd>{{ taskConfig.rss_support ? 'RSS' : '站点列表页' }}</dd></div>
+                    <template v-if="taskIsBrush">
+                      <div><dt>上传速率门槛</dt><dd>{{ taskConfig.upload_min_kbps ?? 200 }} KB/s</dd></div>
+                      <div><dt>无上传判定</dt><dd>{{ taskConfig.upload_idle_minutes ? `${taskConfig.upload_idle_minutes} 分钟` : '自动（约 2×检查间隔）' }}</dd></div>
+                      <div><dt>起步宽限</dt><dd>{{ taskConfig.brush_grace_minutes ?? 15 }} 分钟</dd></div>
+                      <div><dt>最小下载人数</dt><dd>{{ taskConfig.brush_min_leechers ?? 1 }} 人</dd></div>
+                      <div><dt>种子大小</dt><dd>{{ taskConfig.size || '不限' }}</dd></div>
+                      <div><dt>做种人数</dt><dd>{{ taskConfig.seeder || '不限' }}</dd></div>
+                      <div><dt>发布时间</dt><dd>{{ taskConfig.pubtime ? `${taskConfig.pubtime} 分钟` : '不限' }}</dd></div>
+                      <div><dt>排除 H&R</dt><dd>{{ taskConfig.hr === 'yes' ? '是' : '否' }}</dd></div>
+                      <div><dt>包含规则</dt><dd>{{ taskConfig.include || '无' }}</dd></div>
+                      <div><dt>排除规则</dt><dd>{{ taskConfig.exclude || '无' }}</dd></div>
+                    </template>
+                    <template v-else>
+                      <div><dt>保种体积</dt><dd>{{ taskConfig.disk_size_gb ? `${taskConfig.disk_size_gb} GB` : '不限' }}</dd></div>
+                      <div><dt>最低魔力</dt><dd>{{ taskConfig.min_bonus_per_hour == null ? '自动' : `${Number(taskConfig.min_bonus_per_hour).toFixed(2)} /h` }}</dd></div>
+                      <div><dt>最多保留</dt><dd>{{ taskConfig.max_keep_torrents == null ? '自动 / 不限' : `${taskConfig.max_keep_torrents} 个` }}</dd></div>
+                      <div><dt>保护阈值</dt><dd>{{ taskConfig.bonus_protect_threshold == null ? '站点当前魔力' : Number(taskConfig.bonus_protect_threshold).toFixed(0) }}</dd></div>
+                      <div><dt>公式 T0/N0</dt><dd>{{ taskConfig.bonus_t0 ?? '默认' }} / {{ taskConfig.bonus_n0 ?? '默认' }}</dd></div>
+                      <div><dt>公式 B0/L</dt><dd>{{ taskConfig.bonus_b0 ?? '默认' }} / {{ taskConfig.bonus_l ?? '默认' }}</dd></div>
+                      <div><dt>零魔权重</dt><dd>{{ taskConfig.bonus_zero_weight ?? '默认' }}</dd></div>
+                      <div><dt>保底魔力</dt><dd>{{ Number(taskConfig.min_bonus_to_keep || 0).toFixed(2) }}</dd></div>
+                      <div><dt>种子大小</dt><dd>{{ taskConfig.size || '不限' }}</dd></div>
+                      <div><dt>做种人数</dt><dd>{{ taskConfig.seeder || '不限' }}</dd></div>
+                      <div><dt>发布时间</dt><dd>{{ taskConfig.pubtime ? `${taskConfig.pubtime} 分钟` : '不限' }}</dd></div>
+                      <div><dt>排除 H&R</dt><dd>{{ taskConfig.hr === 'yes' ? '是' : '否' }}</dd></div>
+                      <div><dt>包含规则</dt><dd>{{ taskConfig.include || '无' }}</dd></div>
+                      <div><dt>排除规则</dt><dd>{{ taskConfig.exclude || '无' }}</dd></div>
+                      <div><dt>最短做种</dt><dd>{{ taskConfig.min_seed_time ? `${taskConfig.min_seed_time} 小时` : '不限' }}</dd></div>
+                      <div><dt>最低分享率</dt><dd>{{ Number(taskConfig.min_ratio || 0).toFixed(2) }}</dd></div>
+                    </template>
                     <div><dt>单轮最多新增</dt><dd>{{ taskConfig.max_add_per_run ?? 10 }} 个</dd></div>
                     <div><dt>同时下载上限</dt><dd>{{ taskConfig.max_download_concurrent ?? 10 }} 个</dd></div>
                     <div><dt>每轮参评候选</dt><dd>{{ taskConfig.top_n ?? 30 }} 个</dd></div>
                     <div><dt>每轮翻页数</dt><dd>{{ taskConfig.browse_pages ?? 3 }} 页</dd></div>
-                    <div><dt>保护阈值</dt><dd>{{ taskConfig.bonus_protect_threshold == null ? '站点当前魔力' : Number(taskConfig.bonus_protect_threshold).toFixed(0) }}</dd></div>
                     <div><dt>自动补种</dt><dd>{{ taskConfig.refill_when_empty ? '开启' : '关闭' }}</dd></div>
                     <div><dt>存量复用</dt><dd>{{ taskConfig.reuse_existing ? (taskConfig.reuse_verify ? '开启（校验）' : '开启（跳过校验）') : '关闭' }}</dd></div>
                     <div><dt>无进度清理</dt><dd>{{ taskConfig.cleanup_no_progress ? `开启（${taskConfig.no_progress_minutes ?? 30} 分钟）` : '关闭' }}</dd></div>
                     <div><dt>慢速清理</dt><dd>{{ taskConfig.cleanup_slow_progress === false ? '关闭' : `开启（> ${taskConfig.slow_progress_max_hours ?? 48}h 下不完即清）` }}</dd></div>
+                    <div><dt>促销失效清理</dt><dd>{{ taskConfig.purge_unfree_incomplete === false ? '关闭' : '开启（已非免费且未下完→清）' }}</dd></div>
                     <div><dt>自动恢复暂停</dt><dd>{{ taskConfig.auto_resume_paused === false ? '关闭' : '开启' }}</dd></div>
-                    <div><dt>公式 T0/N0</dt><dd>{{ taskConfig.bonus_t0 ?? '默认' }} / {{ taskConfig.bonus_n0 ?? '默认' }}</dd></div>
-                    <div><dt>公式 B0/L</dt><dd>{{ taskConfig.bonus_b0 ?? '默认' }} / {{ taskConfig.bonus_l ?? '默认' }}</dd></div>
-                    <div><dt>零魔权重</dt><dd>{{ taskConfig.bonus_zero_weight ?? '默认' }}</dd></div>
-                    <div><dt>保底魔力</dt><dd>{{ Number(taskConfig.min_bonus_to_keep || 0).toFixed(2) }}</dd></div>
                   </dl>
                 </VSheet>
 
@@ -1435,7 +1676,7 @@ onUnmounted(() => {
                   <div class="magicflow-config-actions">
                     <div>
                       <strong>执行一次</strong>
-                      <span>立即按当前策略抓取候选并养护做种</span>
+                      <span>{{ taskIsBrush ? '立即按刷流标准抓取免费热种并保持上传' : '立即按当前策略抓取候选并养护做种' }}</span>
                       <VBtn color="primary" variant="tonal" prepend-icon="mdi-sync" :loading="saving" @click="runOperation">
                         立即执行
                       </VBtn>
@@ -1443,7 +1684,7 @@ onUnmounted(() => {
                     <VDivider />
                     <div>
                       <strong>编辑任务</strong>
-                      <span>调整调度、魔力门槛与公式参数</span>
+                      <span>{{ taskIsBrush ? '调整调度、刷流门槛与清理策略' : '调整调度、魔力门槛与公式参数' }}</span>
                       <VBtn variant="tonal" prepend-icon="mdi-pencil-outline" @click="openEditTask">编辑任务</VBtn>
                     </div>
                     <VDivider />
@@ -1466,9 +1707,251 @@ onUnmounted(() => {
       :task="editorTask"
       :sites="status.options.sites"
       :downloaders="status.options.downloaders"
+      :default-save-path="defaultSavePath"
       :saving="saving"
       @save="saveTask"
     />
+
+    <VDialog v-model="settingsDialog" max-width="40rem">
+      <VCard class="magicflow-dialog magicflow-settings-dialog">
+        <header class="magicflow-settings-dialog__head">
+          <span class="magicflow-settings-dialog__title">插件设置</span>
+          <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="settingsDialog = false" />
+        </header>
+
+        <VTabs v-model="settingsTab" class="magicflow-settings-dialog__tabs" density="comfortable" show-arrows>
+          <VTab value="general" class="magicflow-settings-tab">常规</VTab>
+          <VTab value="downloader" class="magicflow-settings-tab">下载器参数</VTab>
+          <VTab value="paths" class="magicflow-settings-tab">下载目录</VTab>
+          <VTab value="template" class="magicflow-settings-tab">默认任务模板</VTab>
+        </VTabs>
+        <VDivider />
+
+        <div class="magicflow-settings-dialog__body">
+          <div v-if="settingsTab === 'general'" class="magicflow-settings-form">
+            <VSwitch v-model="settingsDraft.enabled" label="启用插件" color="primary" hide-details inset />
+            <VSwitch
+              v-model="settingsDraft.show_sidebar_nav"
+              label="显示侧栏入口"
+              color="primary"
+              hide-details
+              inset
+            />
+            <VTextField
+              v-model.number="settingsDraft.request_interval"
+              type="number"
+              min="0"
+              step="0.5"
+              label="站点请求间隔（秒）"
+              hint="站点翻页请求之间的最小间隔，0 = 不限速；对强流控站点可适当加大"
+              persistent-hint
+              variant="outlined"
+              density="comfortable"
+            />
+            <VTextField
+              v-model.number="settingsDraft.journal_keep"
+              type="number"
+              min="0"
+              label="操作记录保留上限"
+              hint="每个任务最多保留的操作记录条数，0 = 不限"
+              persistent-hint
+              variant="outlined"
+              density="comfortable"
+            />
+            <VSwitch v-model="settingsDraft.debug_log" label="调试日志" color="primary" hide-details inset />
+            <VSwitch v-model="settingsDraft.compact_mode" label="紧凑模式" color="primary" hide-details inset />
+          </div>
+
+          <div v-else-if="settingsTab === 'downloader'" class="magicflow-settings-form">
+            <p class="magicflow-settings-hint magicflow-settings-hint--warn">
+              以下为 qBittorrent 全局参数，将直接写入下载器，会影响所有使用该下载器的插件。
+            </p>
+            <div class="magicflow-settings-grid">
+              <VTextField
+                v-model.number="downloaderPrefsDraft.download_limit_kbps"
+                type="number"
+                min="0"
+                label="最大下载速度"
+                suffix="KB/s"
+                hint="0 = 不限"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="downloaderPrefsDraft.upload_limit_kbps"
+                type="number"
+                min="0"
+                label="最大上传速度"
+                suffix="KB/s"
+                hint="0 = 不限"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="downloaderPrefsDraft.max_connec"
+                type="number"
+                min="0"
+                label="最大连接数"
+                variant="outlined"
+                density="comfortable"
+                hide-details
+              />
+              <VTextField
+                v-model.number="downloaderPrefsDraft.max_connec_per_torrent"
+                type="number"
+                min="0"
+                label="每种子连接数"
+                variant="outlined"
+                density="comfortable"
+                hide-details
+              />
+              <VTextField
+                v-model.number="downloaderPrefsDraft.max_uploads"
+                type="number"
+                min="-1"
+                label="最大上传连接数"
+                hint="-1 = 不限"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="downloaderPrefsDraft.max_uploads_per_torrent"
+                type="number"
+                min="-1"
+                label="每种子上传连接数"
+                hint="-1 = 不限"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="downloaderPrefsDraft.max_active_downloads"
+                type="number"
+                min="-1"
+                label="最大活动下载数"
+                hint="排队不计入；-1 = 不限"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="downloaderPrefsDraft.max_active_torrents"
+                type="number"
+                min="-1"
+                label="最大活动种子数"
+                hint="-1 = 不限"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+            </div>
+            <VSwitch
+              v-model="downloaderPrefsDraft.queueing_enabled"
+              label="启用队列限制（活动数上限生效的前提）"
+              color="primary"
+              hide-details
+              inset
+            />
+          </div>
+
+          <div v-else-if="settingsTab === 'paths'" class="magicflow-settings-form">
+            <p class="magicflow-settings-hint">
+              qBittorrent 全局目录，写入后影响所有使用该下载器的插件。
+            </p>
+            <VTextField
+              v-model="downloaderPathsDraft.save_path"
+              label="默认保存路径"
+              placeholder="如 /vol3/1000/media"
+              variant="outlined"
+              density="comfortable"
+              hide-details
+            />
+            <VTextField
+              v-model="downloaderPathsDraft.temp_path"
+              label="临时下载路径"
+              placeholder="下载中暂存目录"
+              variant="outlined"
+              density="comfortable"
+              hide-details
+            />
+            <VSwitch
+              v-model="downloaderPathsDraft.temp_path_enabled"
+              label="启用临时下载路径（下载中放临时目录，完成后移入保存路径）"
+              color="primary"
+              hide-details
+              inset
+            />
+
+            <VDivider class="my-2" />
+            <div class="text-subtitle-2 font-weight-medium">任务保存目录</div>
+            <p class="magicflow-settings-hint">
+              仅对魔流生效，不影响下载器全局设置。
+            </p>
+            <VTextField
+              v-model="defaultsDraft.save_path"
+              label="任务保存目录"
+              placeholder="如 /vol3/1000/media/magicflow"
+              hint="新建任务时自动预填此目录（不影响已有任务，任务内仍可单独修改）"
+              persistent-hint
+              variant="outlined"
+              density="comfortable"
+            />
+          </div>
+
+          <div v-else class="magicflow-settings-form">
+            <p class="magicflow-settings-hint">
+              仅用于新建任务时预填，不影响已有任务。
+            </p>
+            <div class="magicflow-settings-grid">
+              <VSelect
+                v-model="defaultsDraft.downloader"
+                :items="status.options.downloaders"
+                label="默认下载器"
+                placeholder="不指定（新建任务时再选）"
+                variant="outlined"
+                density="comfortable"
+                hide-details
+              />
+              <VTextField v-model.number="defaultsDraft.brush_interval" type="number" min="1" label="选种周期（分钟）" variant="outlined" density="comfortable" hide-details />
+              <VTextField v-model.number="defaultsDraft.check_interval" type="number" min="1" label="检查周期（分钟）" variant="outlined" density="comfortable" hide-details />
+              <VTextField v-model.number="defaultsDraft.max_add_per_run" type="number" min="1" label="单轮最多新增" variant="outlined" density="comfortable" hide-details />
+              <VTextField v-model.number="defaultsDraft.max_download_concurrent" type="number" min="1" label="同时下载数上限" variant="outlined" density="comfortable" hide-details />
+              <VTextField v-model.number="defaultsDraft.top_n" type="number" min="1" label="候选 TopN" variant="outlined" density="comfortable" hide-details />
+              <VTextField v-model.number="defaultsDraft.browse_pages" type="number" min="1" label="每轮翻页数" variant="outlined" density="comfortable" hide-details />
+              <VTextField v-model.number="defaultsDraft.seen_cooldown_hours" type="number" min="0" label="候选去重冷却（小时）" variant="outlined" density="comfortable" hide-details />
+            </div>
+            <div class="magicflow-settings-switches">
+              <VSwitch v-model="defaultsDraft.refill_when_empty" label="清理后自动补种" color="primary" hide-details inset />
+              <VSwitch v-model="defaultsDraft.reuse_existing" label="复用本机已有资源（辅种）" color="primary" hide-details inset />
+              <VSwitch v-model="defaultsDraft.reuse_verify" label="辅种前校验" color="primary" hide-details inset />
+              <VSwitch v-model="defaultsDraft.cleanup_no_progress" label="清理无进度种子" color="primary" hide-details inset />
+              <VSwitch v-model="defaultsDraft.cleanup_slow_progress" label="清理过慢种子" color="primary" hide-details inset />
+              <VSwitch v-model="defaultsDraft.purge_unfree_incomplete" label="清理「已非免费」未下完种子" color="primary" hide-details inset />
+              <VSwitch v-model="defaultsDraft.auto_resume_paused" label="自动恢复被暂停种子" color="primary" hide-details inset />
+              <VSwitch v-model="defaultsDraft.delete_files" label="删种同时删除文件" color="primary" hide-details inset />
+            </div>
+          </div>
+        </div>
+
+        <footer class="magicflow-settings-dialog__footer">
+          <VBtn
+            v-if="settingsTab === 'downloader'"
+            variant="tonal"
+            color="primary"
+            :disabled="!downloaderPrefsRecommended"
+            @click="applyRecommendedPrefs"
+          >
+            恢复推荐值
+          </VBtn>
+          <VSpacer />
+          <VBtn variant="text" @click="settingsDialog = false">取消</VBtn>
+          <VBtn color="primary" variant="flat" :loading="saving" @click="saveActiveSettings">保存</VBtn>
+        </footer>
+      </VCard>
+    </VDialog>
 
     <VDialog v-model="torrentDialog" max-width="34rem">
       <VCard v-if="activeTorrent" class="magicflow-dialog magicflow-torrent-dialog">
@@ -1700,15 +2183,97 @@ onUnmounted(() => {
   gap: 8px;
 }
 
-.settings-menu__body {
-  display: grid;
-  gap: 8px;
-  max-block-size: min(70vh, 34rem);
-  overflow-y: auto;
+.magicflow-settings-btn {
+  margin-inline-start: 2px;
 }
 
-.magicflow-settings-menu {
-  inline-size: min(25rem, calc(100vw - 24px));
+.magicflow-settings-dialog__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 12px;
+}
+
+.magicflow-settings-dialog__title {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.magicflow-settings-dialog__tabs {
+  padding-inline: 8px;
+}
+
+.magicflow-settings-hint {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  background: rgba(var(--v-theme-primary), 0.07);
+  border-inline-start: 3px solid rgba(var(--v-theme-primary), 0.45);
+}
+
+.magicflow-settings-hint--warn {
+  background: rgba(var(--v-theme-warning), 0.12);
+  border-inline-start-color: rgba(var(--v-theme-warning), 0.7);
+}
+
+.magicflow-settings-dialog {
+  display: flex;
+  flex-direction: column;
+  block-size: min(84vh, 40rem);
+  max-block-size: 92vh;
+  overflow: hidden;
+}
+
+.magicflow-settings-dialog__head,
+.magicflow-settings-dialog__tabs,
+.magicflow-settings-dialog > .v-divider {
+  flex: 0 0 auto;
+}
+
+.magicflow-settings-dialog__body {
+  flex: 1 1 0;
+  min-block-size: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-block: 8px;
+}
+
+.magicflow-settings-form {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  padding: 16px 18px 14px;
+}
+
+.magicflow-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+
+.magicflow-settings-switches {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 16px;
+}
+
+.magicflow-settings-actions {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+}
+
+.magicflow-settings-dialog__footer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px 14px;
+  border-top: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
 }
 
 .magicflow-loading,
@@ -2467,6 +3032,33 @@ onUnmounted(() => {
     display: none;
   }
 
+  /* 设置面板：单列字段、收紧留白 */
+  .magicflow-settings-grid,
+  .magicflow-settings-switches {
+    grid-template-columns: 1fr;
+  }
+
+  /* 设置面板：窄屏收缩 tab，尽量一排放下 */
+  .magicflow-settings-tab {
+    padding-inline: 6px;
+    min-width: auto !important;
+    font-size: 12px;
+    text-transform: none;
+  }
+
+  .magicflow-settings-dialog {
+    block-size: min(90vh, 38rem);
+    max-block-size: 94vh;
+  }
+
+  .magicflow-settings-form {
+    padding: 12px 14px 10px;
+  }
+
+  .magicflow-settings-dialog__footer {
+    padding: 10px 14px 12px;
+  }
+
   /* 种子详情弹窗：窄屏收紧留白与网格间距 */
   .magicflow-torrent-dialog {
     padding: 16px 14px 4px;
@@ -3184,5 +3776,39 @@ onUnmounted(() => {
   .magicflow-page {
     padding-block-end: 76px;
   }
+}
+</style>
+
+<style>
+/* 滚动条适配主题（避免真实浏览器里出现刺眼的默认亮色滚动条） */
+.magicflow-settings-dialog__body,
+.magicflow-dialog {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(var(--v-border-color), 0.32) transparent;
+}
+
+.magicflow-settings-dialog__body::-webkit-scrollbar,
+.magicflow-dialog::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.magicflow-settings-dialog__body::-webkit-scrollbar-track,
+.magicflow-dialog::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.magicflow-settings-dialog__body::-webkit-scrollbar-thumb,
+.magicflow-dialog::-webkit-scrollbar-thumb {
+  background: rgba(var(--v-border-color), 0.3);
+  background-clip: content-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
+}
+
+.magicflow-settings-dialog__body::-webkit-scrollbar-thumb:hover,
+.magicflow-dialog::-webkit-scrollbar-thumb:hover {
+  background: rgba(var(--v-border-color), 0.5);
+  background-clip: content-box;
 }
 </style>

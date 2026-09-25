@@ -447,6 +447,149 @@ def fetch_site_formula(site: Any, timeout: int = 30) -> FormulaCapture:
     return cap
 
 
+def parse_torrent_promotion(html_text: str) -> Dict[str, Any]:
+    """从 NexusPHP / PTT-NP 详情页解析促销状态。
+
+    详情页标题行（``<h1 id='top'>``）内含促销括号，如：
+      ``标题 [免费 57分钟][0个做种者]`` / ``标题 [50%免费][2个做种者]`` / ``标题 [2X免费][1个做种者]``
+    非免费种子只有 ``[N个做种者]``。
+
+    返回 ``{"promotion": ..., "raw": ...}``，promotion 取值：
+      - ``free``     全站免费（下载不计量）
+      - ``2xfree``   2X 免费（下载不计，上传 2X）
+      - ``partial``  部分免费（50% / 30% 等，下载仍计一部分量）
+      - ``twoup``    仅 2X 上传（下载照常计费，**非免费**）
+      - ``none``     无促销（非免费）
+      - ``unknown``  无法解析（未找到标题区 / 页面异常）→ 调用方应跳过，不删种
+    """
+    if not html_text:
+        return {"promotion": "unknown", "raw": ""}
+    m = re.search(r"id=['\"]?top['\"]?[^>]*>(.*?)</h1>", html_text, re.S | re.I)
+    if not m:
+        return {"promotion": "unknown", "raw": ""}
+    scope = re.sub(r"<[^>]+>", "", m.group(1)).replace("&nbsp;", " ")
+    raw = ""
+    for bracket in re.findall(r"\[([^\[\]]{1,40})\]", scope):
+        txt = bracket.strip()
+        if "免费" in txt or "2x" in txt.lower():
+            raw = txt
+            break
+    if not raw:
+        return {"promotion": "none", "raw": ""}
+    low = raw.lower()
+    if "50%" in raw or "30%" in raw or "25%" in raw or "半价" in raw:
+        promo = "partial"
+    elif "免费" in raw:
+        promo = "2xfree" if "2x" in low else "free"
+    elif "2x" in low:
+        promo = "twoup"
+    else:
+        promo = "none"
+    return {"promotion": promo, "raw": raw}
+
+
+def fetch_torrent_promotion(site: Any, page_url: str, timeout: int = 20) -> Dict[str, Any]:
+    """抓取单个种子详情页并解析促销/免费状态。cookie/UA 取自站点配置。
+
+    返回 ``{"promotion": ..., "raw": ..., "length"?: int, "error"?: str}``。
+    任何异常都返回 ``promotion=unknown``（调用方据此跳过，不误删）。
+    """
+    if not page_url:
+        return {"promotion": "unknown", "raw": "", "error": "缺少页面 URL"}
+    domain = (getattr(site, "domain", "") or "").strip()
+    base = (getattr(site, "url", "") or (f"https://{domain}" if domain else "")).rstrip("/")
+    cookie = getattr(site, "cookie", None)
+    ua = getattr(site, "ua", None) or _DEFAULT_UA
+    url = page_url.strip()
+    if url.startswith("//"):
+        url = "https:" + url
+    try:
+        from app.sdk.network import RequestUtils  # noqa: WPS433 (惰性导入)
+    except Exception as err:
+        return {"promotion": "unknown", "raw": "", "error": f"SDK 不可用: {err}"}
+    try:
+        req = RequestUtils(cookies=cookie, ua=ua, timeout=timeout, referer=f"{base}/")
+        resp = req.get_res(url)
+    except Exception as err:
+        return {"promotion": "unknown", "raw": "", "error": f"请求失败: {err}"}
+    if resp is None or not getattr(resp, "ok", False):
+        code = getattr(resp, "status_code", "?")
+        try:
+            resp and resp.close()
+        except Exception:
+            pass
+        return {"promotion": "unknown", "raw": "", "error": f"HTTP {code}"}
+    try:
+        raw_bytes = resp.content
+        try:
+            text = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw_bytes.decode("gbk", "ignore")
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+    out = parse_torrent_promotion(text)
+    out["length"] = len(text)
+    return out
+
+
+def fetch_user_torrent_urls(
+    site: Any, userid: Any, ttype: str = "leeching", timeout: int = 25
+) -> Dict[str, str]:
+    """抓取用户种子列表（``type=leeching/seeding``），返回 ``{规范化标题: 详情页URL}``。
+
+    用于给「没记录详情页链接」的种子回填站点链接（由下载中/做种列表反查）。
+    """
+    domain = (getattr(site, "domain", "") or "").strip()
+    base = (getattr(site, "url", "") or (f"https://{domain}" if domain else "")).rstrip("/")
+    if not base or not userid:
+        return {}
+    cookie = getattr(site, "cookie", None)
+    ua = getattr(site, "ua", None) or _DEFAULT_UA
+    url = f"{base}/getusertorrentlistajax.php?userid={int(userid)}&type={ttype}"
+    try:
+        from app.sdk.network import RequestUtils  # noqa: WPS433
+    except Exception:
+        return {}
+    try:
+        req = RequestUtils(cookies=cookie, ua=ua, timeout=timeout, referer=f"{base}/")
+        resp = req.get_res(url)
+    except Exception:
+        return {}
+    if resp is None or not getattr(resp, "ok", False):
+        try:
+            resp and resp.close()
+        except Exception:
+            pass
+        return {}
+    try:
+        raw = resp.content
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("gbk", "ignore")
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+    out: Dict[str, str] = {}
+    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", text, re.S):
+        mid = re.search(r"details\.php\?id=(\d+)", row)
+        if not mid:
+            continue
+        m = _TITLE_ATTR_RE.search(row) or _TITLE_TEXT_RE.search(row)
+        title = ""
+        if m:
+            title = _html.unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip()
+        if not title:
+            continue
+        out.setdefault(_norm_title(title), f"{base}/details.php?id={mid.group(1)}")
+    return out
+
+
 def acquire_site_params(site: Any, base: Optional[BonusParams] = None) -> BonusParams:
     """抓取站点公式并返回解析后的 ``BonusParams``（失败则回落 base/默认）。"""
     cap = fetch_site_formula(site)

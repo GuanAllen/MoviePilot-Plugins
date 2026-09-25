@@ -1,5 +1,5 @@
 """
-MagicFlow 魔力管家插件
+MagicFlow 魔流插件
 
 根据站点魔力公式自动优化做种，最大化魔力产出。
 与 BrushFlow（优化分享率/容量）目标互斥，必须独立运行。
@@ -49,6 +49,7 @@ from .downloader_ops import (
     DownloaderAdapter,
     TorrentInfo,
     TorrentFetchFlowControl,
+    set_dl_gate_base,
     _kv,
     QB_SEEDING_STATES,
     QB_DEAD_STATES,
@@ -62,15 +63,21 @@ from .fetcher import (
     SiteCandidateTorrent,
     SiteFetcher,
     filter_candidates,
+    get_default_brush_filter_policy,
     get_default_filter_policy,
     pubdate_to_ts,
+    set_request_interval,
     ts_to_age_weeks,
 )
 from .models import (
+    MagicFlowDefaultsPayload,
+    MagicFlowDownloaderPathsPayload,
+    MagicFlowDownloaderPrefsPayload,
     MagicFlowSettingsPayload,
     MagicFlowTaskPayload,
     MagicFlowTaskStatePayload,
     MagicFlowTorrentBatchPayload,
+    DOWNLOADER_PREF_RECOMMENDED,
 )
 from .persistence import MagicFlowStore, OperationItem
 from .sites import BonusCalculator, get_calculator, get_formula_params
@@ -80,10 +87,12 @@ from .sites.formula_fetch import (
     fetch_seeding_pubdates,
     fetch_seeding_list,
     fetch_official_titles,
+    fetch_torrent_promotion,
+    fetch_user_torrent_urls,
     _norm_title as normalize_title,
 )
 
-__version__ = "1.0.92"
+__version__ = "2.1.1"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -100,6 +109,11 @@ TORRENT_DL_RETRIES = 3
 # 站点魔力公式抓取缓存 TTL（秒）；抓取失败时只缓存 SHORT 秒后重试。
 SITE_FORMULA_TTL = 6 * 3600
 SITE_FORMULA_RETRY = 30 * 60
+# /status 实时统计（每任务一次下载器查询）缓存 TTL（秒）：
+# 同一请求内「总览」与「任务列表」会各算一次，缓存可去重；也令 30s 轮询与二次进入更廉价。
+STATS_TTL = 6
+# /status 整包重数据缓存 TTL（秒）——stale-while-revalidate：命中秒回，过期后台静默刷新。
+STATUS_TTL = 15
 # 官种（official）列表抓取：缓存 TTL 与翻页数。
 # 官种加成是「单种自身」的加成，会影响选种/删种排序，值得缓存抓取；
 # 后宫加成依赖他人种子（用户级），与「选哪一颗」无关，不参与决策，故不抓取。
@@ -165,7 +179,7 @@ class _SizeIndex:
 
 @dataclass
 class MagicFlowTaskConfig:
-    """魔力管家任务配置。"""
+    """魔流任务配置。"""
     id: str = ""
     name: str = ""
     enabled: bool = True
@@ -175,6 +189,8 @@ class MagicFlowTaskConfig:
     downloader: str = "qbittorrent"
     brush_tag: str = ""
     save_path: str = ""
+    # 任务类型：bonus=刷魔力（默认）；brush=刷流
+    task_type: str = "bonus"
 
     # 调度配置
     brush_interval: int = 5      # 刷流间隔（分钟）
@@ -207,8 +223,17 @@ class MagicFlowTaskConfig:
     slow_progress_grace_minutes: int = 60        # 加入后多少分钟内不判「慢」（给新种起步时间）
     slow_progress_max_hours: float = 48.0        # 按当前速度预计还要超过该小时数才下完 → 判「过慢」
 
+    # 促销失效清理：下载中的种子若站点已不再免费（促销过期/非免费）→ 删，避免白拉流量
+    purge_unfree_incomplete: bool = True         # 下载中但站点已不再免费 → 清理（回站点核对促销）
+
     # 自动恢复被暂停的已完成种子（暂停 = 0 产出）
     auto_resume_paused: bool = True
+
+    # 刷流模式（task_type=brush）：以「上传产出」为准的清理
+    brush_grace_minutes: int = 15    # 新种加入后多少分钟内不判「无上传」
+    upload_idle_minutes: int = 10    # 连续多少分钟上传低于门槛 → 清理（0=自动≈2×检查间隔）
+    upload_min_kbps: int = 200       # 平均上传速率门槛（KB/s）：低于此值视为「无上传」
+    brush_min_leechers: int = 1      # 刷流选种标准：最小下载人数（有下载需求才下）
 
     # Ti 口径：publish（默认，= 自发布时间，站点文档口径；配合站点真实 Ni 与站点 A 吻合）
     #          seed_time（= qB 做种时长；无发布时间时的回落值）
@@ -257,6 +282,7 @@ class MagicFlowTaskConfig:
             "downloader": self.downloader,
             "brush_tag": self.brush_tag,
             "save_path": self.save_path,
+            "task_type": self.task_type,
             "brush_interval": self.brush_interval,
             "check_interval": self.check_interval,
             "cron_expression": self.cron_expression,
@@ -278,7 +304,12 @@ class MagicFlowTaskConfig:
             "cleanup_slow_progress": self.cleanup_slow_progress,
             "slow_progress_grace_minutes": self.slow_progress_grace_minutes,
             "slow_progress_max_hours": self.slow_progress_max_hours,
+            "purge_unfree_incomplete": self.purge_unfree_incomplete,
             "auto_resume_paused": self.auto_resume_paused,
+            "brush_grace_minutes": self.brush_grace_minutes,
+            "upload_idle_minutes": self.upload_idle_minutes,
+            "upload_min_kbps": self.upload_min_kbps,
+            "brush_min_leechers": self.brush_min_leechers,
             "ti_source": self.ti_source,
             "seen_cooldown_hours": self.seen_cooldown_hours,
             "bonus_t0": self.bonus_t0,
@@ -316,13 +347,13 @@ class MagicFlowTaskConfig:
 # ============================================================
 
 class MagicFlow(_PluginBase):
-    """魔力管家插件主类。"""
+    """魔流插件主类。"""
 
-    plugin_name = "魔力管家"
-    plugin_desc = "按站点魔力公式自动养护做种，最大化魔力产出。"
+    plugin_name = "魔流"
+    plugin_desc = "PT 自动选种与做种管理：魔力养护 + 刷流双模式。"
     plugin_icon = "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png"
     plugin_version = __version__
-    plugin_label = "站点,做种,魔力"
+    plugin_label = "站点,做种,魔力,刷流"
     plugin_author = "IronOx"
     author_url = "https://github.com/ironox"
     plugin_config_prefix = "magicflow_"
@@ -341,6 +372,7 @@ class MagicFlow(_PluginBase):
     _dead_hashes: Dict[str, float] = {}          # 近期判定「没进度」的 hash -> 时间戳
     _dead_cooldown: float = 6 * 3600.0           # 6 小时内不再重复添加
     _store: Optional[MagicFlowStore] = None
+    _defaults: Dict[str, Any] = {}
 
     def init_plugin(self, config: dict = None) -> None:
         """初始化全局开关、任务配置与持久化存储。"""
@@ -351,10 +383,35 @@ class MagicFlow(_PluginBase):
         self._last_run_times: Dict[str, float] = {}
         self._summary_cache: Optional[Dict[str, Any]] = None
         self._summary_cache_at: float = 0.0
+        self._stats_cache: Dict[str, Dict[str, Any]] = {}
+        # /status 重数据（总览+任务列表+选项）stale-while-revalidate 缓存
+        self._status_heavy: Optional[Dict[str, Any]] = None
+        self._status_heavy_at: float = 0.0
+        self._status_refreshing: bool = False
         self._enabled = bool(raw_config.get("enabled", False))
         self._show_sidebar_nav = bool(raw_config.get("show_sidebar_nav", True))
+        self._debug_log = bool(raw_config.get("debug_log", False))
+        self._compact_mode = bool(raw_config.get("compact_mode", False))
+        try:
+            self._journal_keep = int(raw_config.get("journal_keep", 200) or 0)
+        except (TypeError, ValueError):
+            self._journal_keep = 200
+        try:
+            self._request_interval = float(raw_config.get("request_interval", 0) or 0)
+        except (TypeError, ValueError):
+            self._request_interval = 0.0
+        rows_defaults = raw_config.get("defaults")
+        if not isinstance(rows_defaults, dict):
+            rows_defaults = self.get_data("defaults") or {}
+            if not isinstance(rows_defaults, dict):
+                rows_defaults = {}
+        try:
+            self._defaults = MagicFlowDefaultsPayload(**rows_defaults).model_dump()
+        except Exception:
+            self._defaults = MagicFlowDefaultsPayload().model_dump()
 
         self._store = MagicFlowStore(self.get_data_path())
+        self._apply_runtime_settings()
 
         # 任务配置：优先从 config 读取，兼容旧版 plugindata
         rows = raw_config.get("tasks")
@@ -371,7 +428,7 @@ class MagicFlow(_PluginBase):
             if not task.id:
                 task.id = uuid.uuid4().hex[:12]
             if not task.brush_tag:
-                task.brush_tag = f"魔力管家-{task.name or task.id}"
+                task.brush_tag = f"魔流-{task.name or task.id}"
             self._task_configs[task.id] = task
 
         # 回写规范化配置
@@ -396,13 +453,13 @@ class MagicFlow(_PluginBase):
         return "vue", "dist/assets"
 
     def get_sidebar_nav(self) -> List[Dict[str, Any]]:
-        """向主界面整理分组注册魔力管家入口"""
+        """向主界面整理分组注册魔流入口"""
         if not self.get_state() or not getattr(self, "_show_sidebar_nav", True):
             return []
         return [
             {
                 "nav_key": "main",
-                "title": "魔力管家",
+                "title": "魔流",
                 "icon": "mdi-magnet",
                 "section": "organize",
                 "permission": "manage",
@@ -411,56 +468,105 @@ class MagicFlow(_PluginBase):
         ]
 
     def get_api(self) -> List[Dict[str, Any]]:
-        """注册 Vue 工作台使用的魔力管家任务 API"""
+        """注册 Vue 工作台使用的魔流任务 API"""
         return [
             {
                 "path": "/status",
                 "endpoint": self.get_status,
                 "methods": ["GET"],
                 "auth": "bear",
-                "summary": "获取魔力管家总览",
+                "summary": "获取魔流总览",
+            },
+            {
+                "path": "/debug/torrents",
+                "endpoint": self.debug_qb_torrents,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "诊断：列出下载器全部种子并按标签分组（只读）",
+            },
+            {
+                "path": "/debug/fetch",
+                "endpoint": self.debug_fetch_page,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "诊断：用站点 cookie 抓取页面片段（只读）",
             },
             {
                 "path": "/settings",
                 "endpoint": self.update_settings,
                 "methods": ["POST"],
                 "auth": "bear",
-                "summary": "更新魔力管家插件设置",
+                "summary": "更新魔流插件设置",
+            },
+            {
+                "path": "/downloader/prefs",
+                "endpoint": self.get_downloader_prefs,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "读取下载器全局参数",
+            },
+            {
+                "path": "/downloader/prefs",
+                "endpoint": self.update_downloader_prefs,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "写入下载器全局参数",
+            },
+            {
+                "path": "/downloader/paths",
+                "endpoint": self.update_downloader_paths,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "写入下载器全局目录",
+            },
+            {
+                "path": "/defaults",
+                "endpoint": self.get_defaults,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "读取默认任务模板",
+            },
+            {
+                "path": "/defaults",
+                "endpoint": self.update_defaults,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "保存默认任务模板",
             },
             {
                 "path": "/tasks",
                 "endpoint": self.create_task,
                 "methods": ["POST"],
                 "auth": "bear",
-                "summary": "创建魔力管家任务",
+                "summary": "创建魔流任务",
             },
             {
                 "path": "/tasks/{task_id}",
                 "endpoint": self.get_task_detail,
                 "methods": ["GET"],
                 "auth": "bear",
-                "summary": "获取魔力管家任务详情",
+                "summary": "获取魔流任务详情",
             },
             {
                 "path": "/tasks/{task_id}",
                 "endpoint": self.update_task,
                 "methods": ["PUT"],
                 "auth": "bear",
-                "summary": "更新魔力管家任务",
+                "summary": "更新魔流任务",
             },
             {
                 "path": "/tasks/{task_id}",
                 "endpoint": self.delete_task,
                 "methods": ["DELETE"],
                 "auth": "bear",
-                "summary": "删除魔力管家任务",
+                "summary": "删除魔流任务",
             },
             {
                 "path": "/tasks/{task_id}/state",
                 "endpoint": self.update_task_state,
                 "methods": ["POST"],
                 "auth": "bear",
-                "summary": "启用或暂停魔力管家任务",
+                "summary": "启用或暂停魔流任务",
             },
             {
                 "path": "/tasks/{task_id}/run",
@@ -482,6 +588,20 @@ class MagicFlow(_PluginBase):
                 "methods": ["GET"],
                 "auth": "bear",
                 "summary": "获取站点候选种子及魔力评分",
+            },
+            {
+                "path": "/tasks/{task_id}/backfill-pages",
+                "endpoint": self.backfill_torrent_pages,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "回填存量托管种子的详情页链接（供促销核对）",
+            },
+            {
+                "path": "/backfill-pages",
+                "endpoint": self.backfill_batch,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "对所有任务批量回填详情页链接",
             },
             {
                 "path": "/tasks/{task_id}/preview",
@@ -564,13 +684,13 @@ class MagicFlow(_PluginBase):
         return []
 
     def get_dashboard(self, key: str, **kwargs) -> Optional[Tuple[Dict[str, Any], Dict[str, Any], None]]:
-        """注册魔力管家仪表板卡片，由 Vue 组件渲染"""
+        """注册魔流仪表板卡片，由 Vue 组件渲染"""
         if not self.get_state():
             return None
         return (
             {"cols": 12, "sm": 6, "md": 6},
             {
-                "title": "魔力管家",
+                "title": "魔流",
                 "subtitle": "魔力产出概览",
                 "refresh": 30,
                 "border": True,
@@ -592,7 +712,7 @@ class MagicFlow(_PluginBase):
                     brush_trigger: Union[str, CronTrigger] = CronTrigger.from_crontab(task.cron_expression)
                     brush_kwargs: Dict[str, Any] = {}
                 except ValueError as err:
-                    logger.error(f"魔力管家任务 [{task.name}] CRON 表达式无效：{str(err)}")
+                    logger.error(f"魔流任务 [{task.name}] CRON 表达式无效：{str(err)}")
                     brush_trigger = "interval"
                     brush_kwargs = {"minutes": task.brush_interval}
             else:
@@ -602,7 +722,7 @@ class MagicFlow(_PluginBase):
             services.append(
                 {
                     "id": f"Task_{task.id}_Brush",
-                    "name": f"魔力管家 - {task.name}",
+                    "name": f"魔流 - {task.name}",
                     "trigger": brush_trigger,
                     "func": self.brush,
                     "kwargs": brush_kwargs,
@@ -642,8 +762,26 @@ class MagicFlow(_PluginBase):
             "schema_version": self.DATA_SCHEMA_VERSION,
             "enabled": bool(getattr(self, "_enabled", False)),
             "show_sidebar_nav": bool(getattr(self, "_show_sidebar_nav", True)),
+            "debug_log": bool(getattr(self, "_debug_log", False)),
+            "compact_mode": bool(getattr(self, "_compact_mode", False)),
+            "journal_keep": int(getattr(self, "_journal_keep", 200) or 0),
+            "request_interval": float(getattr(self, "_request_interval", 0) or 0),
+            "defaults": dict(getattr(self, "_defaults", {}) or {}),
             "tasks": [task.to_dict() for task in self._task_configs.values()],
         }
+
+    def _apply_runtime_settings(self) -> None:
+        """把全局设置下推到运行时组件（操作记录裁剪 / 站点请求节流）。"""
+        if self._store is not None:
+            try:
+                self._store.journal.set_keep(getattr(self, "_journal_keep", 0))
+            except Exception as err:
+                self._log(f"应用操作记录上限失败：{err}")
+        try:
+            set_request_interval(getattr(self, "_request_interval", 0))
+            set_dl_gate_base(getattr(self, "_request_interval", 0))
+        except Exception as err:
+            self._log(f"应用站点请求间隔失败：{err}")
 
     def _save_config(self) -> None:
         """保存全局设置和全部任务配置"""
@@ -654,11 +792,14 @@ class MagicFlow(_PluginBase):
         try:
             Scheduler().update_plugin_job(self.__class__.__name__)
         except Exception as err:
-            logger.error(f"更新魔力管家调度失败：{str(err)}")
+            logger.error(f"更新魔流调度失败：{str(err)}")
 
     def _invalidate_summary(self) -> None:
         self._summary_cache = None
         self._summary_cache_at = 0.0
+        self._stats_cache = {}
+        self._status_heavy = None
+        self._status_heavy_at = 0.0
 
     # ---------------------------------------------------------
     # 站点 / 下载器辅助
@@ -666,8 +807,13 @@ class MagicFlow(_PluginBase):
 
     def _log(self, message: str, level: str = "info") -> None:
         """写插件日志。"""
-        text = f"魔力管家：{message}"
+        text = f"魔流：{message}"
         getattr(logger, level if hasattr(logger, level) else "info")(text)
+
+    def _dbg(self, message: str) -> None:
+        """调试日志：仅在全局「调试日志」开启时输出。"""
+        if getattr(self, "_debug_log", False):
+            self._log(f"[调试] {message}")
 
     # 运行阶段（供前端「运行诊断」流程链转圈）
     PHASE_LABELS = {
@@ -752,7 +898,7 @@ class MagicFlow(_PluginBase):
             return False
         if started:
             self._log(
-                f"魔力管家：检测到任务 {task_id} 上一轮已运行 "
+                f"魔流：检测到任务 {task_id} 上一轮已运行 "
                 f"{int(now - started)} 秒仍未结束，判定为卡死，放行新一轮"
             )
         self._task_runs[task_id] = now
@@ -787,7 +933,7 @@ class MagicFlow(_PluginBase):
         task = self._get_task_config(task_id)
         if not self._try_begin_run(task_id):
             if task:
-                self._log(f"魔力管家 [{task.name}] 上一轮仍在执行，跳过本轮")
+                self._log(f"魔流 [{task.name}] 上一轮仍在执行，跳过本轮")
             return
         started = time.time()
         record = None
@@ -817,7 +963,7 @@ class MagicFlow(_PluginBase):
                 )
         except Exception as e:
             import traceback
-            logger.error(f"魔力管家 brush 异常: {e}\n{traceback.format_exc()}")
+            logger.error(f"魔流 brush 异常: {e}\n{traceback.format_exc()}")
             if self._store:
                 if record:
                     self._store.journal.finalize(
@@ -933,7 +1079,7 @@ class MagicFlow(_PluginBase):
 
         if adopted:
             self._log(
-                f"魔力管家 [{task.name}] 同站纳管：本站 tracker 种子 {matched} 个，"
+                f"魔流 [{task.name}] 同站纳管：本站 tracker 种子 {matched} 个，"
                 f"新纳管并保护 {adopted} 个（已在管 {already}）"
             )
         return {"matched": matched, "adopted": adopted, "already": already, "protected": protected}
@@ -943,11 +1089,11 @@ class MagicFlow(_PluginBase):
         task = self._get_task_config(task_id)
         if not task or not task.enabled:
             return {"status": "skipped", "reason": "任务未启用"}
-        self._log(f"魔力管家 [{task.name}] brush 开始（任务 {task_id}）")
+        self._log(f"魔流 [{task.name}] brush 开始（任务 {task_id}）")
         if self._store:
             self._store.record_run_start(task.id)
         if task.active_time_range and not self._is_in_active_time(task.active_time_range):
-            self._log(f"魔力管家 [{task.name}] 当前不在活跃时间段，跳过")
+            self._log(f"魔流 [{task.name}] 当前不在活跃时间段，跳过")
             return {"status": "skipped", "reason": "不在活跃时间段"}
 
         downloader = self._get_downloader(task.downloader)
@@ -962,11 +1108,11 @@ class MagicFlow(_PluginBase):
             _cl = self._cleanup_round(task, downloader)
             if _cl.get("deleted"):
                 self._log(
-                    f"魔力管家 [{task.name}] 入口前清理：删 {_cl['deleted']} 个"
+                    f"魔流 [{task.name}] 入口前清理：删 {_cl['deleted']} 个"
                     f"（无进度 {_cl.get('no_progress', 0)} / 低效 {_cl.get('low_eff', 0)}）"
                 )
         except Exception as _cle:
-            self._log(f"魔力管家 [{task.name}] 入口前清理异常: {_cle}", "warning")
+            self._log(f"魔流 [{task.name}] 入口前清理异常: {_cle}", "warning")
 
         # ---------- ⓪b 同站纳管：把本机上「属于本站」的已有种子补打 tag ----------
         # 本插件自己刷流加的照常按效率清理；本机早已存在的同站种子（IYUU/其它插件/
@@ -974,7 +1120,7 @@ class MagicFlow(_PluginBase):
         try:
             self._adopt_same_site(task, downloader)
         except Exception as _ade:
-            self._log(f"魔力管家 [{task.name}] 同站纳管异常: {_ade}", "warning")
+            self._log(f"魔流 [{task.name}] 同站纳管异常: {_ade}", "warning")
 
         try:
             # ---------- 本任务托管（tag）快照 ----------
@@ -995,7 +1141,7 @@ class MagicFlow(_PluginBase):
             )
             dl_limit = max(int(task.max_download_concurrent or 10), 1)
             self._log(
-                f"魔力管家 [{task.name}] 托管 {base_cnt} 个 / {base_size:.2f}GB"
+                f"魔流 [{task.name}] 托管 {base_cnt} 个 / {base_size:.2f}GB"
                 f"（下载中 {dl_concurrent} 个），标签「{task.brush_tag}」"
             )
 
@@ -1016,12 +1162,12 @@ class MagicFlow(_PluginBase):
             concurrency_full = dl_concurrent >= dl_limit
             if concurrency_full:
                 self._log(
-                    f"魔力管家 [{task.name}] 下载并发已达上限（{dl_concurrent}/{dl_limit}），"
+                    f"魔流 [{task.name}] 下载并发已达上限（{dl_concurrent}/{dl_limit}），"
                     "本轮仍抓取候选以尝试存量复用（复用通常不占下载名额；本地未完成/未校验辅种会补下载，按名额计）"
                 )
             if (max_keep and base_cnt >= max_keep) or (disk_gb and base_size >= disk_gb):
                 reason = "保种池容量/数量已满，本轮停止抓取，等待 check 任务清理低效种子释放空间"
-                self._log(f"魔力管家 [{task.name}] {reason}")
+                self._log(f"魔流 [{task.name}] {reason}")
                 if self._store:
                     self._store.record_run_summary(task.id, "noop", reason)
                     self._store.record_run_success(task.id, added=0, deleted=0, kept=base_cnt)
@@ -1055,7 +1201,10 @@ class MagicFlow(_PluginBase):
                 return {"status": "failed", "reason": "站点抓取不可用"}
 
             pages = max(int(task.browse_pages or BROWSE_PAGES), 1)
-            cursor = self._store.get_page_cursor(task.id) if self._store else 0
+            # 刷流有自己的「翻页口径」：只看**最新**几页（免费热种永远在最新页），
+            # 不做游标深翻（深翻只会翻到促销早已过期的老种）。刷魔力才需要深翻老种。
+            _brush_crawl = str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush"
+            cursor = 0 if _brush_crawl else (self._store.get_page_cursor(task.id) if self._store else 0)
             candidates = fetcher.browse_site(
                 task.site_domain,
                 rss_support=task.rss_support,
@@ -1066,7 +1215,7 @@ class MagicFlow(_PluginBase):
                 self._log(f"魔力任务 [{task.name}] 未获取到候选种子（游标 {cursor}）")
                 return {"status": "noop", "reason": "未获取到候选种子", "candidates": 0, "filtered": 0}
 
-            next_cursor = cursor + pages
+            next_cursor = 0 if _brush_crawl else (cursor + pages)
             if next_cursor > MAX_PAGE_CURSOR:
                 next_cursor = 0
             # 非并发满：沿用原行为，抓取成功即推进游标；
@@ -1074,7 +1223,7 @@ class MagicFlow(_PluginBase):
             if self._store and not concurrency_full:
                 self._store.set_page_cursor(task.id, next_cursor)
             self._log(
-                f"魔力管家 [{task.name}] 抓取返回 {len(candidates)} 个候选"
+                f"魔流 [{task.name}] 抓取返回 {len(candidates)} 个候选"
                 f"（游标 {cursor}，本次翻 {pages} 页）"
             )
 
@@ -1103,7 +1252,7 @@ class MagicFlow(_PluginBase):
             if task.reuse_existing:
                 try:
                     local_index, local_by_size = self._local_reuse_index(downloader)
-                    self._log(f"魔力管家 [{task.name}] 本机已有种子 {len(local_index)} 个，启用存量复用")
+                    self._log(f"魔流 [{task.name}] 本机已有种子 {len(local_index)} 个，启用存量复用")
                 except Exception as e:
                     self._log(f"建立本机资源索引失败：{e}", "warning")
 
@@ -1190,12 +1339,27 @@ class MagicFlow(_PluginBase):
             # 仅磁盘受限 → 按每 GB 效率 efficiency 降序（把每 GB 收益最大的先装）。
             _disk_left = (float(disk_gb) - base_size) if disk_gb else None
             _count_left = (int(max_keep) - base_cnt) if max_keep else None
-            if _disk_left is not None and _count_left is None:
+            _is_brush_task = str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush"
+            if _is_brush_task:
+                # 刷流模式：按「上传潜力」排序 —— leechers（下载需求）优先，其次体积大、更新鲜。
+                scored.sort(
+                    key=lambda pair: (
+                        int(getattr(pair[1], "leechers", 0) or 0),
+                        float(getattr(pair[1], "size_gb", 0.0) or 0.0),
+                        -float(getattr(pair[1], "age_weeks", 0.0) or 0.0),
+                    ),
+                    reverse=True,
+                )
+            elif _disk_left is not None and _count_left is None:
                 scored.sort(key=lambda pair: (getattr(pair[1], "_eff", 0.0), getattr(pair[1], "_value", 0.0)), reverse=True)
             else:
                 scored.sort(key=lambda pair: (getattr(pair[1], "_value", 0.0), getattr(pair[1], "_eff", 0.0)), reverse=True)
             top_n = max(int(task.top_n or 0), 1)
             topn = scored[:top_n]
+            self._dbg(
+                f"[{task.name}] 洗池 {len(candidates)}→通过 {len(scored)}→Top{len(topn)}"
+                f"（disk_left={_disk_left} count_left={_count_left}）"
+            )
 
             # ★ 辅种不参与魔力排名：非 TopN（魔力排不进前 N）但「体积邻近本机种子」的候选
             #   也一并纳入复用扫描——TopN 只决定「要下载哪些」，可复用的候选无需参与竞争。
@@ -1309,7 +1473,7 @@ class MagicFlow(_PluginBase):
             if _raw_ok < len(fetch_list):
                 _sample = fetch_list[0][1]
                 self._log(
-                    f"魔力管家 [{task.name}] 种子文件获取 {_raw_ok}/{len(fetch_list)}；"
+                    f"魔流 [{task.name}] 种子文件获取 {_raw_ok}/{len(fetch_list)}；"
                     f"示例 enclosure={getattr(_sample, 'enclosure', '')[:90]!r} "
                     f"err={getattr(_sample, 'fetch_error', '')!r}",
                     "warning",
@@ -1348,7 +1512,7 @@ class MagicFlow(_PluginBase):
                     group_b.append((bonus, cand))
             if task.reuse_existing:
                 self._log(
-                    f"魔力管家 [{task.name}] 存量复用扫描：复用命中 {len(group_a)} 个"
+                    f"魔流 [{task.name}] 存量复用扫描：复用命中 {len(group_a)} 个"
                     f"（体积邻近比对 {_cross_near} / 特征码命中 {_cross_hit}，另扫非 TopN {_reuse_extra} 个）"
                 )
 
@@ -1366,7 +1530,7 @@ class MagicFlow(_PluginBase):
             group_b.sort(key=_rank_key, reverse=True)
             ordered: List[Any] = list(group_a) + list(group_b)
             self._log(
-                f"魔力管家 [{task.name}] Top{len(topn)} 排序：复用 {len(group_a)} / 下载 {len(group_b)}"
+                f"魔流 [{task.name}] Top{len(topn)} 排序：复用 {len(group_a)} / 下载 {len(group_b)}"
             )
 
             # ---------- ⑤ 处理循环（A 复用优先，其后 B 下载）----------
@@ -1374,6 +1538,7 @@ class MagicFlow(_PluginBase):
             added = 0
             reused = 0
             new_pub: Dict[str, float] = {}
+            new_pages: Dict[str, str] = {}  # hash→详情页 URL（供「已非免费→清理」核对）
             add_failed = 0
             skipped_dup = 0
             skipped_quota = 0
@@ -1470,6 +1635,8 @@ class MagicFlow(_PluginBase):
                     pub_ts = self._pubdate_ts(getattr(cand, "pubdate", None))
                     if pub_ts and h:
                         new_pub[h] = pub_ts
+                    if h and getattr(cand, "page_url", ""):
+                        new_pages[h] = str(cand.page_url)
                     if reuse_downloads:
                         dl_budget -= 1
                         dl_concurrent += 1
@@ -1512,6 +1679,8 @@ class MagicFlow(_PluginBase):
                     pub_ts = self._pubdate_ts(getattr(cand, "pubdate", None))
                     if pub_ts and nh:
                         new_pub[nh] = pub_ts
+                    if nh and getattr(cand, "page_url", ""):
+                        new_pages[nh] = str(cand.page_url)
                     if self._store:
                         keys = [f"hash:{nh}"]
                         if ckey:
@@ -1527,6 +1696,9 @@ class MagicFlow(_PluginBase):
             if self._store and new_pub:
                 self._store.note_pub_dates(task.id, new_pub, tz=SITE_TZ_OFFSET_HOURS)
 
+            if self._store and new_pages:
+                self._store.note_torrent_pages(task.id, new_pages)
+
             if reused and self._store:
                 self._store.journal.record(
                     task_id=task.id,
@@ -1540,11 +1712,11 @@ class MagicFlow(_PluginBase):
                     if self._store:
                         self._store.set_page_cursor(task.id, next_cursor)
                     self._log(
-                        f"魔力管家 [{task.name}] 并发满但本轮复用 {reused} 个，游标 {cursor}→{next_cursor}"
+                        f"魔流 [{task.name}] 并发满但本轮复用 {reused} 个，游标 {cursor}→{next_cursor}"
                     )
                 else:
                     self._log(
-                        f"魔力管家 [{task.name}] 并发满且本轮无复用产出，判定空转，游标保持 {cursor} 不推进"
+                        f"魔流 [{task.name}] 并发满且本轮无复用产出，判定空转，游标保持 {cursor} 不推进"
                     )
             cursor_note = (
                 f"{cursor}→{next_cursor}"
@@ -1563,7 +1735,7 @@ class MagicFlow(_PluginBase):
                 f" / 配额满 {skipped_quota} / 复用限并发 {skipped_reuse_limit} / 流控 {skipped_rate} / 失败 {add_failed}）"
             )
             self._log(
-                f"魔力管家 [{task.name}] 候选 {len(candidates)}→洗池 {len(scored)}→Top{len(topn)} | "
+                f"魔流 [{task.name}] 候选 {len(candidates)}→洗池 {len(scored)}→Top{len(topn)} | "
                 f"新增 {added} / 复用 {reused}（当前托管 {len(managed_hashes)}，游标 {cursor_note}）{detail}"
             )
             return {
@@ -1579,7 +1751,7 @@ class MagicFlow(_PluginBase):
 
         except Exception as e:
             import traceback
-            self._log(f"魔力管家 [{task.name}] 刷流失败: {e}\n{traceback.format_exc()}", "error")
+            self._log(f"魔流 [{task.name}] 刷流失败: {e}\n{traceback.format_exc()}", "error")
             self._set_phase(task.id, "error")
             if self._store:
                 try:
@@ -1616,7 +1788,7 @@ class MagicFlow(_PluginBase):
         return (time.time() - last_run) >= task.check_interval * 60
 
     def _run_check(self, task_id: str) -> None:
-        """执行魔力管家核心流程（带并发保护）。"""
+        """执行魔流核心流程（带并发保护）。"""
         task = self._get_task_config(task_id)
         if not task:
             return
@@ -1628,7 +1800,7 @@ class MagicFlow(_PluginBase):
             self._end_run(task_id)
 
     def _run_check_impl(self, task: MagicFlowTaskConfig) -> None:
-        """执行魔力管家核心流程（内部实现）。"""
+        """执行魔流核心流程（内部实现）。"""
         self._last_run_times[task.id] = time.time()
         self._store.record_run_start(task.id)
 
@@ -1649,7 +1821,7 @@ class MagicFlow(_PluginBase):
             self._invalidate_summary()
 
         except Exception as e:
-            self._log(f"魔力管家 [{task.name}] 执行失败: {e}", "error")
+            self._log(f"魔流 [{task.name}] 执行失败: {e}", "error")
             self._store.record_run_error(task.id, str(e))
 
     def _cleanup_round(self, task: MagicFlowTaskConfig, downloader: DownloaderAdapter) -> Dict[str, Any]:
@@ -1662,12 +1834,13 @@ class MagicFlow(_PluginBase):
         返回计数 {resumed, no_progress, low_eff, deleted, kept, total_before, total_after}。
         """
         out: Dict[str, Any] = {
-            "resumed": 0, "no_progress": 0, "slow": 0, "low_eff": 0, "deleted": 0,
+            "resumed": 0, "no_progress": 0, "slow": 0, "unfree": 0, "no_upload": 0, "low_eff": 0, "deleted": 0,
             "kept": 0, "total_before": 0.0, "total_after": 0.0,
         }
         if not downloader or not downloader.is_available:
             return out
         protected = self._store.get_protected_torrents(task.id) if self._store else set()
+        _is_brush = str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush"
 
         # 把「保护 / 同站纳管」记录与下载器真实种子对齐：已从下载器消失的种子会留下陈旧
         # hash（历史误删 / 手动删除），导致「受保护」计数虚高、同一资源不再被重新纳管。
@@ -1679,10 +1852,10 @@ class MagicFlow(_PluginBase):
                         task.id, [(t.hash or "") for t in live_all if t.hash]
                     )
                     if cleaned:
-                        self._log(f"魔力管家 [{task.name}] 清理陈旧保护/纳管记录 {cleaned} 条")
+                        self._log(f"魔流 [{task.name}] 清理陈旧保护/纳管记录 {cleaned} 条")
                         protected = self._store.get_protected_torrents(task.id)
             except Exception as _rec_err:
-                self._log(f"魔力管家 [{task.name}] 保护记录校准失败: {_rec_err}", "warning")
+                self._log(f"魔流 [{task.name}] 保护记录校准失败: {_rec_err}", "warning")
 
         # 拉一次标签内全部种子（任意状态）：用于「自动恢复暂停」+「清理无进度」
         try:
@@ -1695,7 +1868,7 @@ class MagicFlow(_PluginBase):
             try:
                 out["resumed"] = self._resume_paused_managed(task, downloader, list(all_tagged))
             except Exception as _resume_err:
-                self._log(f"魔力管家 [{task.name}] 自动恢复暂停种子异常: {_resume_err}", "warning")
+                self._log(f"魔流 [{task.name}] 自动恢复暂停种子异常: {_resume_err}", "warning")
 
         # ② 清理「没进度」的种子（进度为 0 且停滞/出错/暂停，挂了够久）
         if all_tagged:
@@ -1705,17 +1878,51 @@ class MagicFlow(_PluginBase):
                 )
                 out["no_progress"] = np_deleted
             except Exception as _cleanup_err:
-                self._log(f"魔力管家 [{task.name}] 清理无进度种子异常: {_cleanup_err}", "warning")
+                self._log(f"魔流 [{task.name}] 清理无进度种子异常: {_cleanup_err}", "warning")
 
         # ②b 清理「下载过慢」的种子（用「下载速度 ÷ 体积」估算 ETA，长期下不完的腾名额）
-        if all_tagged:
+        #     刷流模式不做：刷流只要「有上传」就保留，哪怕下得慢（没完整下完也会有上传）。
+        if all_tagged and not _is_brush:
             try:
                 slow_deleted, _slow_removed = self._cleanup_slow_progress(
                     task, downloader, list(all_tagged), protected
                 )
                 out["slow"] = slow_deleted
             except Exception as _slow_err:
-                self._log(f"魔力管家 [{task.name}] 清理过慢种子异常: {_slow_err}", "warning")
+                self._log(f"魔流 [{task.name}] 清理过慢种子异常: {_slow_err}", "warning")
+
+        # ②c 清理「促销失效」的种子（下载中但站点已不再免费 → 删，避免白拉流量）
+        if all_tagged and getattr(task, "purge_unfree_incomplete", True):
+            try:
+                out["unfree"] = self._cleanup_unfree_incomplete(
+                    task, downloader, list(all_tagged), protected
+                )
+            except Exception as _unfree_err:
+                self._log(f"魔流 [{task.name}] 清理「已非免费」种子异常: {_unfree_err}", "warning")
+
+        # ②d 刷流模式：清理「无上传」的种子（连续 idle 次检查 uploaded 增量≈0 → 删）
+        if _is_brush:
+            if all_tagged:
+                try:
+                    out["no_upload"] = self._cleanup_no_upload(
+                        task, downloader, list(all_tagged), protected
+                    )
+                except Exception as _nu_err:
+                    self._log(f"魔流 [{task.name}] 刷流「无上传」清理异常: {_nu_err}", "warning")
+            # 刷流模式不套用魔力门槛删种；直接收尾返回。
+            try:
+                _st, _st_err = downloader.get_seeding_torrents(tag=task.brush_tag)
+            except Exception:
+                _st = []
+            _tt = [t for t in (_st or []) if task.brush_tag in t.tags]
+            out["deleted"] = int(out["no_progress"]) + int(out.get("no_upload", 0))
+            out["kept"] = len(_tt)
+            self._log(
+                f"魔流 [{task.name}] 刷流完成："
+                f"恢复 {out['resumed']} / 无进度 {out['no_progress']} / 无上传 {out.get('no_upload', 0)}；"
+                f"保留 {out['kept']} 个"
+            )
+            return out
 
         # ③ 删低效种子（零魔 / 做种人数过多 / 低于门槛 / 超保种上限）
         try:
@@ -1777,6 +1984,7 @@ class MagicFlow(_PluginBase):
         out["kept"] = len(result.to_keep)
         # ★ 站点口径合计时魔（对合计 A 只取一次 arctan + 做种固定奖励），使数值与站点上报对齐。
         # 原来把每颗种子各自的时魔简单相加 → 漏掉「做种数 × 每种子」固定奖励，只有站点值的 ~1/3。
+        # 「做种固定奖励」按**站点账号去重后的做种数**计（非本任务托管数），否则会比站点整号值偏低。
         try:
             _agg_params = self._build_formula_params(task)
             try:
@@ -1785,20 +1993,23 @@ class MagicFlow(_PluginBase):
                 _harem_hourly = 0.0
             _deleted_hashes = {d.torrent.hash for d in result.to_delete}
             _kept_list = [t for t in torrent_bonus_list if t.hash not in _deleted_hashes]
+            _site_seed_count = self._site_seeding_count(task.site_id)
+            _before_count = _site_seed_count or len(torrent_bonus_list)
+            _after_count = max(_site_seed_count - len(result.to_delete), 0) if _site_seed_count else len(_kept_list)
             out["total_before"] = aggregate_breakdown(
                 torrent_bonus_list, _agg_params,
-                seeding_count=len(torrent_bonus_list), harem_hourly=_harem_hourly,
+                seeding_count=_before_count, harem_hourly=_harem_hourly,
             )["total"]
             out["total_after"] = aggregate_breakdown(
                 _kept_list, _agg_params,
-                seeding_count=len(_kept_list), harem_hourly=_harem_hourly,
+                seeding_count=_after_count, harem_hourly=_harem_hourly,
             )["total"]
         except Exception as _agg_err:
-            self._log(f"魔力管家 [{task.name}] 站点口径时魔汇总失败，回落逐种相加：{_agg_err}", "warning")
+            self._log(f"魔流 [{task.name}] 站点口径时魔汇总失败，回落逐种相加：{_agg_err}", "warning")
             out["total_before"] = result.total_bonus_before
             out["total_after"] = result.total_bonus_after
         self._log(
-            f"魔力管家 [{task.name}] 完成："
+            f"魔流 [{task.name}] 完成："
             f"恢复 {out['resumed']} / 无进度 {out['no_progress']} / 过慢 {out['slow']} / 低效 {deleted_count}；"
             f"保留 {out['kept']} 个，"
             f"站点口径时魔 {out['total_before']:.2f} -> {out['total_after']:.2f}/h"
@@ -1895,6 +2106,10 @@ class MagicFlow(_PluginBase):
                 is_official=is_official,
                 params=params,
             )
+            try:
+                bonus_info.ratio = float(getattr(t, "ratio", 0) or 0)
+            except (TypeError, ValueError):
+                bonus_info.ratio = 0.0
             result.append(bonus_info)
         return result
 
@@ -1935,31 +2150,58 @@ class MagicFlow(_PluginBase):
         cached = cache.get(domain)
         if cached and (now - float(cached.get("ts", 0))) < SITE_FORMULA_TTL:
             return cached.get("cap")
+        # 未命中/已过期：不阻塞当前请求——后台单飞抓取，本次先返回旧值（可能为 None）。
+        # 这样 /status、总览等永远不会因站点 mybonus.php 卡顿/超时而拖慢。
+        self._schedule_formula_fetch(task, domain, cache)
+        return cached.get("cap") if cached else None
 
-        site = self._get_site(task.site_id) if getattr(task, "site_id", 0) else None
-        cap = None
-        if site is None:
-            # 站点未就绪时不缓存失败（否则会 30 分钟不再重试）
-            self._log(f"站点公式：未找到站点 {getattr(task, 'site_id', 0)}，本轮跳过", "warning")
-            return None
-        try:
-            cap = fetch_site_formula(site, timeout=15)
-        except Exception as err:
-            self._log(f"站点公式抓取失败 [{domain}]: {err}", "warning")
-            cap = None
-        if cap and cap.ok:
+    def _schedule_formula_fetch(self, task: MagicFlowTaskConfig, domain: str, cache: Dict[str, Any]) -> None:
+        """后台抓取站点公式（每域名单飞，避免并发重复请求；不阻塞调用方）。"""
+        flights = getattr(self, "_formula_flights", None)
+        lock = getattr(self, "_formula_flight_lock", None)
+        if flights is None or lock is None:
+            lock = self._formula_flight_lock = threading.Lock()
+            flights = self._formula_flights = set()
+        with lock:
+            if domain in flights:
+                return
+            flights.add(domain)
+
+        def _worker() -> None:
             try:
-                refresh_site_preset(site)
-                self._log(
-                    f"站点公式已获取 [{domain}] {cap.note} params={cap.params} extra={cap.extra}"
-                )
-            except Exception:
-                pass
-            cache[domain] = {"ts": now, "cap": cap}
-        else:
-            # 失败：短缓存，稍后自动重试
-            cache[domain] = {"ts": now - SITE_FORMULA_TTL + SITE_FORMULA_RETRY, "cap": cap}
-        return cap
+                site = self._get_site(task.site_id) if getattr(task, "site_id", 0) else None
+                if site is None:
+                    self._log(f"站点公式：未找到站点 {getattr(task, 'site_id', 0)}，本轮跳过", "warning")
+                    return
+                try:
+                    cap = fetch_site_formula(site, timeout=15)
+                except Exception as err:
+                    self._log(f"站点公式抓取失败 [{domain}]: {err}", "warning")
+                    cap = None
+                ts = time.time()
+                if cap and cap.ok:
+                    try:
+                        refresh_site_preset(site)
+                        self._log(f"站点公式已获取 [{domain}] {cap.note} params={cap.params} extra={cap.extra}")
+                    except Exception:
+                        pass
+                    cache[domain] = {"ts": ts, "cap": cap}
+                else:
+                    cache[domain] = {"ts": ts - SITE_FORMULA_TTL + SITE_FORMULA_RETRY, "cap": cap}
+                # 公式就绪后让统计/总览失算失效；保留旧 heavy 供下次请求秒回并后台刷新。
+                self._summary_cache = None
+                self._summary_cache_at = 0.0
+                self._stats_cache = {}
+                self._status_heavy_at = 0.0
+            finally:
+                with lock:
+                    flights.discard(domain)
+
+        try:
+            threading.Thread(target=_worker, daemon=True).start()
+        except Exception:
+            with lock:
+                flights.discard(domain)
 
     def _bonus_formula_block(self, task: MagicFlowTaskConfig, torrent_list, seeding_count: Optional[int] = None) -> Dict[str, Any]:
         """组装「魔力计算」页所需的公式信息 + 本轮汇总推导链。"""
@@ -1972,7 +2214,7 @@ class MagicFlow(_PluginBase):
         if cache and domain in cache:
             age = max(0, int(time.time() - float(cache[domain].get("ts", 0))))
         if seeding_count is None:
-            seeding_count = len(torrent_list or [])
+            seeding_count = self._site_seeding_count(task.site_id) or len(torrent_list or [])
         bd = aggregate_breakdown(torrent_list, params, seeding_count=seeding_count, harem_hourly=float(extra.get("harem_hourly") or 0))
         site_reported = extra.get("current_bonus_per_hour")
         site_reported_a = extra.get("current_a")
@@ -2135,6 +2377,32 @@ class MagicFlow(_PluginBase):
                 return row
         return None
 
+    def _site_seeding_count(self, site_id: int) -> int:
+        """站点账号「去重后」的做种数（站点「0.5×做种数」固定奖励用的就是这个口径）。
+
+        注意：部分站点（如 Pttime）userdata 的 ``seeding`` 会含重复条目，而站点计算
+        「做种固定奖励」时按去重后的做种数计（实测 Pttime seeding=32、去重后=23，站点
+        B 恰按 23 算）。故以 ``seeding_info`` 去重为准，取不到时回落 ``seeding`` 字段，
+        再取不到返回 0（调用方回落到本任务托管数）。
+        """
+        row = self._userdata_row(site_id)
+        if row is None:
+            return 0
+        si = self._ud_get(row, "seeding_info")
+        if si:
+            uniq = set()
+            for it in si or []:
+                try:
+                    uniq.add((int(it[0]), float(it[1])))
+                except (TypeError, ValueError, IndexError):
+                    continue
+            if uniq:
+                return len(uniq)
+        try:
+            return int(self._ud_get(row, "seeding", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
     def _site_ni_map(self, site_id: int, managed) -> Dict[str, int]:
         """从站点用户数据取每颗种子的真实做种人数 Ni（按体积 1% 容差匹配）。
 
@@ -2173,6 +2441,72 @@ class MagicFlow(_PluginBase):
                 out[h] = int(best)
         return out
 
+    def _site_user_stats(self, site_id: int) -> Dict[str, Any]:
+        """站点账号「真实数据」（来自 MoviePilot 站点用户数据）——上传/下载/分享率/做种/下载数/魔力。
+
+        字节量（upload/download/seeding_size/leeching_size）与积分（bonus）原样返回，
+        另带数据更新时间，供前端展示「站点侧真实情况」（区别于下载器本地统计）。
+        """
+        out: Dict[str, Any] = {
+            "ok": False,
+            "upload": 0.0,
+            "download": 0.0,
+            "ratio": 0.0,
+            "seeding": 0,
+            "leeching": 0,
+            "seeding_size": 0.0,
+            "leeching_size": 0.0,
+            "bonus": 0.0,
+            "user_level": "",
+            "join_at": "",
+            "updated_at": "",
+        }
+        try:
+            row = self._userdata_row(site_id)
+        except Exception:
+            row = None
+        if row is None:
+            return out
+
+        def _f(key: str) -> float:
+            try:
+                return float(self._ud_get(row, key, 0) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        def _i(key: str) -> int:
+            try:
+                return int(self._ud_get(row, key, 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        _upload = _f("upload")
+        _download = _f("download")
+        _ratio = _f("ratio")
+        # 部分站点（如 PTT）不在用户数据里写分享率，用上传/下载兜底算一个。
+        if _ratio <= 0 and _download > 0:
+            _ratio = round(_upload / _download, 3)
+        out.update({
+            "ok": True,
+            "upload": _upload,
+            "download": _download,
+            "ratio": _ratio,
+            "seeding": _i("seeding"),
+            "leeching": _i("leeching"),
+            "seeding_size": _f("seeding_size"),
+            "leeching_size": _f("leeching_size"),
+            "bonus": _f("bonus"),
+            "user_level": str(self._ud_get(row, "user_level", "") or ""),
+            "join_at": str(self._ud_get(row, "join_at", "") or ""),
+            "updated_at": " ".join(
+                str(x).strip() for x in (
+                    self._ud_get(row, "updated_day", ""),
+                    self._ud_get(row, "updated_time", ""),
+                ) if x
+            ),
+        })
+        return out
+
     def _site_reported(self, task: MagicFlowTaskConfig) -> Dict[str, Any]:
         """站点上报的魔力数据（黑盒：不展示自算值）。
 
@@ -2193,6 +2527,7 @@ class MagicFlow(_PluginBase):
             "source": "",
             "site_domain": getattr(task, "site_domain", "") or "",
             "site_name": getattr(task, "site_name", "") or "",
+            "user": {},
         }
         try:
             cap = self._acquire_site_formula(task)
@@ -2214,7 +2549,9 @@ class MagicFlow(_PluginBase):
                 out["source"] = getattr(cap, "source", "") or ""
         except Exception as err:
             self._log(f"读取站点上报魔力失败: {err}", "warning")
-        out["current_bonus"] = self._site_current_bonus(task.site_id)
+        user = self._site_user_stats(task.site_id)
+        out["user"] = user
+        out["current_bonus"] = float(user.get("bonus") or 0.0)
         return out
 
     def _site_current_bonus(self, site_id: int) -> float:
@@ -2287,6 +2624,7 @@ class MagicFlow(_PluginBase):
             min_bonus_to_keep=task.min_bonus_to_keep or 0.0,
             max_keep_torrents=max_keep,
             min_seed_time_hours=float(task.min_seed_time or 0),
+            min_ratio=float(getattr(task, "min_ratio", 0) or 0),
             weight_time_factor=1.0,
             weight_people_factor=1.0,
             weight_size=0.5,
@@ -2364,10 +2702,112 @@ class MagicFlow(_PluginBase):
                 self._log(f"恢复做种失败 {h[:8]}: {err}", "warning")
         if resumed or skipped:
             self._log(
-                f"魔力管家 [{task.name}] 自动恢复暂停种子：恢复 {resumed} 个"
+                f"魔流 [{task.name}] 自动恢复暂停种子：恢复 {resumed} 个"
                 f"（跳过未完成 {skipped} 个）"
             )
         return resumed
+
+    def _brush_idle_params(self, task: MagicFlowTaskConfig) -> Tuple[int, float, float]:
+        """刷流「无上传」判定参数 → (需连续低于门槛的次数 need, 单次检查上传字节门槛 thr, 宽限秒 grace)。
+
+        门槛按「平均上传速率」折算：``thr = upload_min_kbps × 1024 × 检查间隔秒``。
+        每次检查比对 uploaded 增量，增量 < thr（即平均速率低于门槛）即累加一次「冷」。
+        """
+        ci = max(int(getattr(task, "check_interval", 1) or 1), 1) * 60
+        grace = max(int(getattr(task, "brush_grace_minutes", 15) or 0), 0) * 60
+        idle_min = int(getattr(task, "upload_idle_minutes", 10) or 0)
+        if idle_min <= 0:
+            idle_min = max((2 * ci) // 60, 1)  # 自动：约 2×检查间隔
+        need = max(int(round(idle_min * 60 / ci)), 1)
+        kbps = float(getattr(task, "upload_min_kbps", 200) or 0)
+        thr = kbps * 1024 * ci
+        return need, thr, grace
+
+    def _cleanup_no_upload(
+        self,
+        task: MagicFlowTaskConfig,
+        downloader: DownloaderAdapter,
+        managed: List[TorrentInfo],
+        protected_hashes: Optional[Set[str]] = None,
+    ) -> int:
+        """刷流模式：清理「无上传」的种子，返回删除数。
+
+        每次检查比对 uploaded 增量：连续 ``need`` 次平均上传速率 < ``upload_min_kbps`` → 判定「无上传」→ 删。
+        * 新种在 ``brush_grace_minutes`` 宽限期内不判（给起步时间）；
+        * 「没完整下完也会有上传」：只看上传，不管进度/速度；
+        * protected / 手动保留的种子只记录快照、永不删。
+        """
+        if not managed:
+            return 0
+        protected_hashes = protected_hashes or set()
+        now = time.time()
+        need, thr, grace = self._brush_idle_params(task)
+
+        prev = self._store.get_brush_upload(task.id) if self._store else {}
+        new_state: Dict[str, dict] = {}
+        to_delete: List[TorrentInfo] = []
+        for t in managed:
+            h = (t.hash or "").lower()
+            if not h:
+                continue
+            try:
+                up = float(getattr(t, "uploaded", 0) or 0)
+            except (TypeError, ValueError):
+                up = 0.0
+            if h in protected_hashes:
+                new_state[h] = {"up": up, "idle": 0, "ts": now}
+                continue
+            try:
+                added = float(getattr(t, "added_on", 0) or 0)
+            except (TypeError, ValueError):
+                added = 0.0
+            age = (now - added) if added > 0 else 0.0
+            p = prev.get(h)
+            if p is None:
+                new_state[h] = {"up": up, "idle": 0, "ts": now}
+                continue
+            delta = up - float(p.get("up", 0) or 0)
+            idle = int(p.get("idle", 0) or 0)
+            idle = 0 if delta >= thr else idle + 1
+            new_state[h] = {"up": up, "idle": idle, "ts": now}
+            if added > 0 and age < grace:
+                continue
+            if idle >= need:
+                to_delete.append(t)
+
+        deleted = 0
+        if to_delete:
+            hashes = [t.hash for t in to_delete if t.hash]
+            try:
+                success, error = downloader.delete_torrents(
+                    hashes=hashes, delete_file=bool(getattr(task, "delete_files", True))
+                )
+            except Exception:
+                success, error = 0, "删除异常"
+            deleted = int(success or 0)
+            if deleted and self._store:
+                items = [
+                    OperationItem(
+                        hash=t.hash,
+                        title=str(getattr(t, "title", "") or ""),
+                        reason="刷流：无上传",
+                        bonus_per_hour=0.0,
+                    )
+                    for t in to_delete[:deleted]
+                ]
+                self._store.journal.record(task_id=task.id, kind="deletion", items=items)
+                self._store.forget_torrents(task.id, [t.hash for t in to_delete[:deleted]])
+                for t in to_delete[:deleted]:
+                    new_state.pop((t.hash or "").lower(), None)
+            _ci = max(int(getattr(task, "check_interval", 1) or 1), 1) * 60
+            _kbps = int(round(thr / 1024 / _ci)) if _ci else 0
+            self._log(
+                f"魔流 [{task.name}] 刷流清理「无上传」种子 {deleted} 个"
+                f"（连续 {need} 次检查平均上传 < {_kbps} KB/s）"
+            )
+        if self._store:
+            self._store.set_brush_upload(task.id, new_state)
+        return deleted
 
     def _cleanup_no_progress(
         self,
@@ -2391,7 +2831,7 @@ class MagicFlow(_PluginBase):
         deleted, err = downloader.delete_torrents(hashes=hashes, delete_file=task.delete_files)
         if deleted <= 0:
             if err:
-                self._log(f"魔力管家 [{task.name}] 清理无进度种子失败：{err}", "warning")
+                self._log(f"魔流 [{task.name}] 清理无进度种子失败：{err}", "warning")
             return 0, []
         removed = dead[:deleted]
         for t in removed:
@@ -2412,7 +2852,7 @@ class MagicFlow(_PluginBase):
             )
             self._store.forget_torrents(task.id, [t.hash for t in removed])
         self._log(
-            f"魔力管家 [{task.name}] 清理无进度种子 {deleted} 个"
+            f"魔流 [{task.name}] 清理无进度种子 {deleted} 个"
             f"（进度为 0 且 {task.no_progress_minutes} 分钟未动）"
         )
         return deleted, removed
@@ -2479,7 +2919,7 @@ class MagicFlow(_PluginBase):
         )
         if deleted <= 0:
             if err:
-                self._log(f"魔力管家 [{task.name}] 清理过慢种子失败：{err}", "warning")
+                self._log(f"魔流 [{task.name}] 清理过慢种子失败：{err}", "warning")
             return 0, []
         removed = slow[:deleted]
         for t in removed:
@@ -2500,10 +2940,186 @@ class MagicFlow(_PluginBase):
             )
             self._store.forget_torrents(task.id, [t.hash for t in removed])
         self._log(
-            f"魔力管家 [{task.name}] 清理下载过慢种子 {deleted} 个"
+            f"魔流 [{task.name}] 清理下载过慢种子 {deleted} 个"
             f"（速度÷体积估算 > {float(getattr(task, 'slow_progress_max_hours', 48.0) or 48.0):g}h 才下完）"
         )
         return deleted, removed
+
+    def _seen_page_pairs(self, task_id: str) -> Dict[str, str]:
+        """从 seen 记录重建 hash→详情页 URL。
+
+        插件写入 seen 时会把 ``hash:<h>`` 与 ``cand:<url>`` 用**同一时间戳**批量写入，
+        故可按时间戳配对得到历史种子的详情页链接（老数据无 torrent_pages 时的回摆）。
+        """
+        if not self._store:
+            return {}
+        bucket = self._store.seen.get_bucket(task_id)
+        if not bucket:
+            return {}
+        by_ts: Dict[float, List[str]] = {}
+        for key, ts in bucket.items():
+            try:
+                by_ts.setdefault(round(float(ts), 3), []).append(str(key))
+            except (TypeError, ValueError):
+                continue
+        pages: Dict[str, str] = {}
+        for keys in by_ts.values():
+            h = u = ""
+            for k in keys:
+                if k.startswith("hash:"):
+                    h = k[5:]
+                elif k.startswith("h:"):
+                    h = k[2:]
+                elif k.startswith("cand:"):
+                    u = k[5:]
+                elif k.startswith("http"):
+                    u = k
+            if h and u:
+                pages[h.lower()] = u
+        return pages
+
+    _PROMO_TTL = 600  # 促销状态内存缓存（秒），避免每轮检查都回站点逐个抗详情页
+    _TITLE_URL_TTL = 600  # 「我的种子」列表回填 URL 的缓存时长（秒）
+
+    def _title_url_map(self, task: MagicFlowTaskConfig, site: Any) -> Dict[str, str]:
+        """站点「我的种子」列表（下载中+做种）→ {规范化标题: 详情页URL}（带缓存）。"""
+        cache = getattr(self, "_title_url_cache", None)
+        if cache is None:
+            cache = self._title_url_cache = {}
+        now = time.time()
+        hit = cache.get(task.id)
+        if hit and (now - hit[1]) < self._TITLE_URL_TTL:
+            return hit[0]
+        mapping: Dict[str, str] = {}
+        try:
+            uid = self._site_user_id(site)
+            if uid:
+                for ttype in ("leeching", "seeding"):
+                    mapping.update(fetch_user_torrent_urls(site, uid, ttype))
+        except Exception as err:
+            self._log(f"魔流 [{task.name}] 回填详情页链接失败: {err}", "info")
+        cache[task.id] = (mapping, now)
+        return mapping
+
+    def _promotion_of(self, task: MagicFlowTaskConfig, site: Any, hash_string: str, page_url: str) -> Dict[str, Any]:
+        """回站点抗取种子当前促销状态（带内存缓存）。"""
+        cache = getattr(self, "_promo_cache", None)
+        if cache is None:
+            cache = self._promo_cache = {}
+        key = (hash_string or "").lower()
+        now = time.time()
+        hit = cache.get(key)
+        if hit and (now - hit[1]) < self._PROMO_TTL:
+            return hit[0]
+        if not site or not page_url:
+            return {"promotion": "unknown", "raw": ""}
+        try:
+            info = fetch_torrent_promotion(site, page_url)
+        except Exception as err:
+            info = {"promotion": "unknown", "raw": "", "error": str(err)}
+        cache[key] = (info, now)
+        return info
+
+    def _cleanup_unfree_incomplete(
+        self,
+        task: MagicFlowTaskConfig,
+        downloader: DownloaderAdapter,
+        managed: List[TorrentInfo],
+        protected_hashes: Optional[Set[str]] = None,
+    ) -> int:
+        """清理「已不再免费且尚未下完」的种子，返回删除数。
+
+        逐个回站点详情页核对「下载中」种子的当前促销：已非全免（促销过期 / 本来非免费）
+        → 删除，避免白拉流量拉低分享率。「unknown」（拿不到页面/无法解析）时**保守跳过**，不误删。
+        """
+        if not getattr(task, "purge_unfree_incomplete", True) or not managed or not downloader:
+            return 0
+        protected_hashes = protected_hashes or set()
+        site = self._get_site(task.site_id) if getattr(task, "site_id", 0) else None
+        pages = dict(self._store.get_torrent_pages(task.id) if self._store else {})
+        if self._store:
+            for h, u in self._seen_page_pairs(task.id).items():
+                pages.setdefault(h, u)
+        mode = (getattr(task, "freeleech", "") or "").strip().lower()
+        acceptable = {"2xfree"} if mode == "2xfree" else {"free", "2xfree"}
+
+        # 兜底：缺失详情页链接的「下载中」种子 → 用站点「我的种子」列表按标题回填 URL
+        need = [
+            t for t in managed
+            if (t.hash or "").lower() and (t.hash or "").lower() not in protected_hashes
+            and (t.hash or "").lower() not in pages
+            and float(getattr(t, "progress", 0) or 0) < 0.999
+        ]
+        if need and site:
+            umap = self._title_url_map(task, site)
+            for t in need:
+                u = umap.get(normalize_title(t.title or ""))
+                if u:
+                    pages[(t.hash or "").lower()] = u
+
+        pending: List[Tuple[TorrentInfo, str]] = []
+        for t in managed:
+            h = (t.hash or "").lower()
+            if not h or h in protected_hashes:
+                continue
+            # 只处理「还没下完」的种子（已完成/做种中的交给魔力规则管）
+            if float(getattr(t, "progress", 0) or 0) >= 0.999:
+                continue
+            if self._is_dead_cached(task.id, h):
+                continue
+            page = pages.get(h) or ""
+            if not page:
+                continue
+            info = self._promotion_of(task, site, h, page)
+            promo = info.get("promotion")
+            if promo == "unknown":
+                self._log(
+                    f"魔流 [{task.name}] 促销核对失败（跳过）：{t.title}"
+                    f"（{info.get('error') or '无标题区'}）",
+                    "info",
+                )
+                continue
+            if promo in acceptable:
+                continue
+            pending.append((t, str(info.get("raw") or promo)))
+
+        if not pending:
+            return 0
+        deleted, err = downloader.delete_torrents(
+            hashes=[t.hash for t, _ in pending], delete_file=task.delete_files
+        )
+        if deleted <= 0:
+            if err:
+                self._log(f"魔流 [{task.name}] 清理「已非免费」种子失败：{err}", "warning")
+            return 0
+        removed = pending[:deleted]
+        now = time.time()
+        for t, _ in removed:
+            self._dead_hashes[(t.hash or "").lower()] = now
+        if self._store:
+            self._store.dead.mark(
+                task.id,
+                [f"hash:{(t.hash or '').lower()}" for t, _ in removed if t.hash],
+                ts=now,
+            )
+            self._store.journal.record(
+                task_id=task.id,
+                kind="deletion",
+                items=[
+                    OperationItem(
+                        hash=t.hash, title=t.title,
+                        reason=f"已非免费（促销={promo}）且未下完", bonus_per_hour=0.0,
+                    )
+                    for t, promo in removed
+                ],
+            )
+            self._store.forget_torrents(task.id, [t.hash for t, _ in removed])
+        self._log(
+            f"魔流 [{task.name}] 清理「已非免费」未下完种子 {deleted} 个："
+            + "、".join(f"{t.title[:24]}({promo})" for t, promo in removed[:6])
+            + ("…" if len(removed) > 6 else "")
+        )
+        return deleted
 
     def _is_dead_cached(self, task_id: str, torrent_hash: str) -> bool:
         """近期刚被判定「没进度」并清掉的种子，短时间内不再重复添加。"""
@@ -2628,7 +3244,16 @@ class MagicFlow(_PluginBase):
 
     def _build_filter_policy(self, task: MagicFlowTaskConfig) -> FilterPolicy:
         """从任务配置构建过滤策略。"""
-        policy = get_default_filter_policy()
+        _is_brush = str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush"
+        # 刷流有自己的选种标准（不看魔力口径）：不设人数上限、体积/年龄不限、不排除零魔、
+        # 只要求「有下载需求」（下载人数 ≥ min_leechers）。
+        policy = get_default_brush_filter_policy() if _is_brush else get_default_filter_policy()
+
+        if _is_brush:
+            try:
+                policy.min_leechers = max(int(getattr(task, "brush_min_leechers", 1) or 0), 0)
+            except (TypeError, ValueError):
+                policy.min_leechers = 1
 
         if task.seeder:
             try:
@@ -2650,17 +3275,50 @@ class MagicFlow(_PluginBase):
             except Exception:
                 pass
 
+        # 发布时间范围（分钟）：单值或「最小-最大」
+        if getattr(task, "pubtime", ""):
+            try:
+                parts = str(task.pubtime).split("-")
+                if len(parts) == 1:
+                    policy.pub_minutes_max = float(parts[0])
+                elif len(parts) == 2:
+                    policy.pub_minutes_min = float(parts[0])
+                    policy.pub_minutes_max = float(parts[1])
+            except Exception:
+                pass
+
         policy.include_pattern = task.include
         policy.exclude_pattern = task.exclude
         policy.exclude_zero_bonus = task.exclude_zero_bonus
+        # 「免费」选项真正生效（历史上只存了任务字段、没接进筛选 → 照下非免费）
+        mode = (task.freeleech or "").strip().lower()
+        if mode == "2xfree":
+            policy.double_free_only = True
+        elif mode == "free":
+            policy.free_only = True
+        # 「排除 H&R」选项（hr=yes → 过滤掉 H&R 种子）
+        if str(getattr(task, "hr", "") or "").strip().lower() in ("yes", "y", "1", "true", "是"):
+            policy.exclude_hnr = True
         return policy
 
     # ---------------------------------------------------------
     # 任务数据构建
     # ---------------------------------------------------------
 
-    def _task_runtime_stats(self, task: MagicFlowTaskConfig) -> Dict[str, Any]:
-        """计算单个任务的实时托管种子数与魔力产出。"""
+    def _task_runtime_stats(self, task: MagicFlowTaskConfig, force: bool = False) -> Dict[str, Any]:
+        """计算单个任务的实时托管种子数与魔力产出。
+
+        带 STATS_TTL 短缓存：同一轮 /status 内「总览」与「任务列表」各算一次，
+        缓存后只查一次下载器（去重），并让前端轮询/二次进入更快。
+        """
+        now = time.time()
+        cache = getattr(self, "_stats_cache", None)
+        if cache is None:
+            cache = self._stats_cache = {}
+        if not force:
+            hit = cache.get(task.id)
+            if hit and (now - float(hit.get("ts", 0))) < STATS_TTL:
+                return hit["data"]
         stats = {
             "seeding_count": 0,
             "active_seeding_count": 0,
@@ -2676,6 +3334,9 @@ class MagicFlow(_PluginBase):
             "ceiling_pct": 0.0,
             "state": "idle",
             "protected_count": 0,
+            "site_user": {},
+            "task_uploaded": 0,
+            "task_upload_active": 0,
         }
         # 站点上报（黑盒：不再自算模型值）
         try:
@@ -2686,6 +3347,8 @@ class MagicFlow(_PluginBase):
             stats["site_bonus_ok"] = bool(rep["ok"])
             # 该站点自己的「当前魔力存量」（不能跨站相加：各站魔力不可通约）
             stats["site_current_bonus"] = round(float(rep.get("current_bonus") or 0.0), 2)
+            # 站点账号真实数据（上传/下载/分享率/做种/下载数）
+            stats["site_user"] = rep.get("user") or {}
         except Exception as err:
             self._log(f"统计任务 [{task.name}] 站点魔力失败: {err}", "warning")
         # 站点上限感知：时魔天花板（B0 + 固定奖励封顶）+ 距上限占用
@@ -2714,6 +3377,16 @@ class MagicFlow(_PluginBase):
                 ]
                 stats["seeding_count"] = len(managed)
                 stats["active_seeding_count"] = len(seeding)
+                # 本任务在下载器的累计上传量 / 有上传的种子数（刷流视角）
+                uploaded_sum = 0.0
+                upload_active = 0
+                for t in managed:
+                    up = float(getattr(t, "uploaded", 0) or 0)
+                    uploaded_sum += up
+                    if up > 0:
+                        upload_active += 1
+                stats["task_uploaded"] = round(uploaded_sum)
+                stats["task_upload_active"] = upload_active
                 stats["paused_count"] = sum(
                     1 for t in managed
                     if str(getattr(t, "state", "") or "").lower() in QB_PAUSED_STATES
@@ -2738,7 +3411,41 @@ class MagicFlow(_PluginBase):
         started = self._task_runs.get(task.id)
         if started is not None and (time.time() - started) < self._task_run_timeout:
             stats["state"] = "running"
+        cache[task.id] = {"ts": time.time(), "data": stats}
         return stats
+
+    def _runtime_stats_bulk(self, tasks: List[MagicFlowTaskConfig]) -> Dict[str, Dict[str, Any]]:
+        """并发计算多任务实时统计（线程池）；异常时回退串行。
+
+        * 并发仅跨「不同任务」；单任务内部仍串行；
+        * 命中 STATS_TTL 缓存的任务不会重复查询下载器；
+        * 站点公式先在主线程预热（6h 缓存；冷启动只串行抓一次，避免并发重复请求站点页）。
+        """
+        result: Dict[str, Dict[str, Any]] = {}
+        tasks = list(tasks or [])
+        if not tasks:
+            return result
+        prewarm: Dict[str, MagicFlowTaskConfig] = {}
+        for t in tasks:
+            d = (getattr(t, "site_domain", "") or "").strip().lower()
+            if d and d not in prewarm:
+                prewarm[d] = t
+        for t in prewarm.values():
+            try:
+                self._acquire_site_formula(t)
+            except Exception:
+                pass
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=min(8, len(tasks))) as pool:
+                stats_list = list(pool.map(self._task_runtime_stats, tasks))
+            for task, st in zip(tasks, stats_list):
+                result[task.id] = st
+        except Exception as err:
+            self._log(f"并发统计失败，回退串行：{err}", "warning")
+            for task in tasks:
+                result[task.id] = self._task_runtime_stats(task)
+        return result
 
     def _phase_info(self, task_id: str) -> Dict[str, Any]:
         """当前运行阶段 + 是否在跑（供前端「运行诊断」流程链转圈）。"""
@@ -2779,19 +3486,26 @@ class MagicFlow(_PluginBase):
         bonus_per_hour = 0.0
         current_bonus = 0.0
         ceiling = 0.0
+        site_upload = 0.0
+        site_download = 0.0
 
         # 站点上报魔力按「站点」去重（同一站点多任务不重复计）
         site_tasks: Dict[int, MagicFlowTaskConfig] = {}
-        for task in self._task_configs.values():
+        # 预热「全部任务」统计（含未启用）：任务列表随后直接命中缓存，避免串行补算。
+        all_tasks = list(self._task_configs.values())
+        stats_by_id = self._runtime_stats_bulk(all_tasks)
+        for task in all_tasks:
             if not task.enabled:
                 continue
-            stats = self._task_runtime_stats(task)
-            seeding_count += stats["seeding_count"]
+            seeding_count += int((stats_by_id.get(task.id) or {}).get("seeding_count", 0) or 0)
             site_tasks.setdefault(int(task.site_id or 0), task)
         for task in site_tasks.values():
             rep = self._site_reported(task)
             bonus_per_hour += rep["bonus_per_hour"]
             current_bonus += rep["current_bonus"]
+            user = rep.get("user") or {}
+            site_upload += float(user.get("upload") or 0)
+            site_download += float(user.get("download") or 0)
             try:
                 ceiling += float(site_ceiling(self._build_formula_params(task)))
             except Exception:
@@ -2805,6 +3519,9 @@ class MagicFlow(_PluginBase):
             "current_bonus": round(current_bonus, 2),
             "ceiling": round(ceiling, 2),
             "ceiling_pct": round(min(bonus_per_hour / ceiling * 100.0, 999.0), 1) if ceiling > 0 else 0.0,
+            "site_upload": round(site_upload),
+            "site_download": round(site_download),
+            "site_ratio": round(site_upload / site_download, 3) if site_download > 0 else 0.0,
         }
         self._summary_cache = summary
         self._summary_cache_at = now
@@ -2813,8 +3530,9 @@ class MagicFlow(_PluginBase):
     def _build_task_list(self) -> List[Dict[str, Any]]:
         """构建任务列表（含实时统计）。"""
         tasks: List[Dict[str, Any]] = []
+        stats_by_id = self._runtime_stats_bulk(list(self._task_configs.values()))
         for task in self._task_configs.values():
-            runtime = self._task_runtime_stats(task)
+            runtime = stats_by_id.get(task.id, {})
             tasks.append({**task.to_dict(), **runtime, **self._phase_info(task.id)})
         return tasks
 
@@ -2822,27 +3540,144 @@ class MagicFlow(_PluginBase):
     # API：全局
     # ---------------------------------------------------------
 
-    def get_status(self) -> Response:
-        """获取插件总览状态。"""
+    def _build_status_heavy(self) -> Dict[str, Any]:
+        """构建总览的重数据（统计 + 任务列表 + 选项）。"""
         summary = self._compute_summary()
         self._log(
             f"API 总览：任务 {summary.get('total_tasks')} 启用 {summary.get('enabled_tasks')} "
             f"托管 {summary.get('seeding_count')} 魔力 {summary.get('bonus_per_hour')}/h"
         )
-        return Response(
-            success=True,
-            data={
-                "enabled": self.get_state(),
-                "version": __version__,
-                "show_sidebar_nav": bool(getattr(self, "_show_sidebar_nav", True)),
-                "summary": summary,
-                "tasks": self._build_task_list(),
-                "options": {
-                    "sites": self._list_sites(),
-                    "downloaders": self._list_downloaders(),
-                },
+        return {
+            "summary": summary,
+            "tasks": self._build_task_list(),
+            "options": {
+                "sites": self._list_sites(),
+                "downloaders": self._list_downloaders(),
             },
-        )
+        }
+
+    def _refresh_status_async(self) -> None:
+        """后台异步刷新总览重数据（stale-while-revalidate，不阻塞请求）。"""
+        if getattr(self, "_status_refreshing", False):
+            return
+
+        def _worker() -> None:
+            self._status_refreshing = True
+            try:
+                heavy = self._build_status_heavy()
+                self._status_heavy = heavy
+                self._status_heavy_at = time.time()
+            except Exception as err:
+                self._log(f"后台刷新总览失败：{err}", "warning")
+            finally:
+                self._status_refreshing = False
+
+        try:
+            threading.Thread(target=_worker, daemon=True).start()
+        except Exception:
+            pass
+
+    def get_status(self) -> Response:
+        """获取插件总览状态（重数据带 STATUS_TTL 缓存 + 后台静默刷新）。"""
+        now = time.time()
+        heavy = getattr(self, "_status_heavy", None)
+        if heavy is None:
+            heavy = self._build_status_heavy()
+            self._status_heavy = heavy
+            self._status_heavy_at = now
+        elif (now - float(getattr(self, "_status_heavy_at", 0.0))) >= STATUS_TTL:
+            self._refresh_status_async()
+        data = dict(heavy)
+        data.update({
+            "enabled": self.get_state(),
+            "version": __version__,
+            "show_sidebar_nav": bool(getattr(self, "_show_sidebar_nav", True)),
+            "debug_log": bool(getattr(self, "_debug_log", False)),
+            "compact_mode": bool(getattr(self, "_compact_mode", False)),
+            "journal_keep": int(getattr(self, "_journal_keep", 200) or 0),
+            "request_interval": float(getattr(self, "_request_interval", 0) or 0),
+            "defaults": dict(getattr(self, "_defaults", {}) or {}),
+        })
+        return Response(success=True, data=data)
+
+    def debug_qb_torrents(self, downloader: str = "qbittorrent") -> Response:
+        """诊断：列出指定下载器的全部种子并按标签分组（只读）。"""
+        try:
+            dl = self._get_downloader(downloader or "qbittorrent")
+            if not dl or not dl.is_available:
+                return Response(success=False, message=f"下载器不可用: {downloader}")
+            torrents, error = dl.get_torrents()
+            if error:
+                return Response(success=False, message=str(error))
+            from collections import Counter
+            tag_count: Counter = Counter()
+            by_tag: Dict[str, List[Dict[str, Any]]] = {}
+            rows: List[Dict[str, Any]] = []
+            for t in (torrents or []):
+                tags = getattr(t, "tags", None) or []
+                if isinstance(tags, str):
+                    tags = [x.strip() for x in tags.split(",") if x.strip()]
+                tags = list(tags)
+                state = str(getattr(t, "state", "") or "")
+                item = {
+                    "hash": getattr(t, "hash", ""),
+                    "name": getattr(t, "title", ""),
+                    "tags": tags,
+                    "state": state,
+                    "size_gb": round(float(getattr(t, "size_gb", 0) or 0), 2),
+                    "progress": round(float(getattr(t, "progress", 0) or 0), 3),
+                }
+                rows.append(item)
+                for tg in (tags or ["<无标签>"]):
+                    tag_count[tg] += 1
+                    by_tag.setdefault(tg, []).append(item)
+            return Response(success=True, data={
+                "total": len(rows),
+                "tag_counts": dict(tag_count.most_common()),
+                "by_tag": by_tag,
+            })
+        except Exception as err:
+            return Response(success=False, message=str(err))
+
+    def debug_fetch_page(self, site_id: int = 0, url: str = "", limit: int = 8000) -> Response:
+        """诊断：用站点 cookie 抓取任意页面，返回文本片段（只读）。"""
+        if not url:
+            return Response(success=False, message="缺少 url")
+        try:
+            from app.sdk.network import RequestUtils  # noqa: WPS433
+        except Exception as err:
+            return Response(success=False, message=f"SDK 不可用: {err}")
+        cookie = ua = referer = None
+        if site_id:
+            site = self._get_site(int(site_id))
+            if site:
+                cookie = getattr(site, "cookie", None)
+                ua = getattr(site, "ua", None)
+                base = (getattr(site, "url", "") or (f"https://{getattr(site, 'domain', '')}")).rstrip("/")
+                referer = f"{base}/"
+        try:
+            req = RequestUtils(cookies=cookie, ua=ua, timeout=30, referer=referer)
+            resp = req.get_res(url)
+        except Exception as err:
+            return Response(success=False, message=f"请求失败: {err}")
+        if resp is None:
+            return Response(success=False, message="无响应")
+        status = getattr(resp, "status_code", 0)
+        try:
+            raw = resp.content
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                text = raw.decode("gbk", "ignore")
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+        return Response(success=True, data={
+            "url": url, "status": status, "length": len(text),
+            "text": text[: max(0, int(limit))],
+        })
 
     def probe_site_formula(self, site_id: int, persist: bool = False) -> Response:
         """诊断：抓取站点 mybonus.php 并解析魔力公式与参数。
@@ -2872,16 +3707,143 @@ class MagicFlow(_PluginBase):
         """更新插件全局设置。"""
         self._enabled = bool(payload.enabled)
         self._show_sidebar_nav = bool(payload.show_sidebar_nav)
+        self._debug_log = bool(payload.debug_log)
+        self._compact_mode = bool(payload.compact_mode)
+        try:
+            self._journal_keep = max(0, int(payload.journal_keep or 0))
+        except (TypeError, ValueError):
+            self._journal_keep = 200
+        try:
+            self._request_interval = max(0.0, float(payload.request_interval or 0))
+        except (TypeError, ValueError):
+            self._request_interval = 0.0
         self._save_config()
+        self._apply_runtime_settings()
         self._refresh_scheduler()
+        self._dbg(
+            f"全局设置已更新：enabled={self._enabled} sidebar={self._show_sidebar_nav} "
+            f"debug={self._debug_log} compact={self._compact_mode} "
+            f"journal_keep={self._journal_keep} req_interval={self._request_interval}"
+        )
         return Response(success=True, message="设置已保存", data=self._current_config())
 
     # ---------------------------------------------------------
-    # API：任务 CRUD
+    # API：下载器全局参数（qBittorrent 应用级偏好）
     # ---------------------------------------------------------
 
+    @staticmethod
+    def _kbps_to_bps(kbps: Any) -> int:
+        """KB/s → 字节/秒（qbittorrentapi 用字节/秒）。负数/非法值规整为 0。"""
+        try:
+            v = float(kbps or 0)
+        except (TypeError, ValueError):
+            v = 0.0
+        return max(0, int(round(v * 1024)))
+
+    @staticmethod
+    def _bps_to_kbps(bps: Any) -> float:
+        """字节/秒 → KB/s（保留 1 位小数）。"""
+        try:
+            v = float(bps or 0)
+        except (TypeError, ValueError):
+            v = 0.0
+        if v <= 0:
+            return 0.0
+        return round(v / 1024.0, 1)
+
+    def get_downloader_prefs(self) -> Response:
+        """读取下载器（qBittorrent）全局参数 + 推荐值。"""
+        downloader = self._get_downloader()
+        if downloader is None:
+            return Response(success=False, message="下载器不可用")
+        prefs, error = downloader.get_app_preferences()
+        if error:
+            return Response(success=False, message=error)
+        data = {
+            "available": True,
+            "downloader": getattr(downloader, "downloader_name", "qbittorrent"),
+            "download_limit_kbps": self._bps_to_kbps(prefs.get("dl_limit")),
+            "upload_limit_kbps": self._bps_to_kbps(prefs.get("up_limit")),
+            "max_connec": prefs.get("max_connec"),
+            "max_connec_per_torrent": prefs.get("max_connec_per_torrent"),
+            "max_uploads": prefs.get("max_uploads"),
+            "max_uploads_per_torrent": prefs.get("max_uploads_per_torrent"),
+            "max_active_downloads": prefs.get("max_active_downloads"),
+            "max_active_torrents": prefs.get("max_active_torrents"),
+            "queueing_enabled": bool(prefs.get("queueing_enabled")),
+            "save_path": prefs.get("save_path") or "",
+            "temp_path": prefs.get("temp_path") or "",
+            "temp_path_enabled": bool(prefs.get("temp_path_enabled")),
+            "raw": prefs,
+            "recommended": dict(DOWNLOADER_PREF_RECOMMENDED),
+        }
+        return Response(success=True, data=data)
+
+    def update_downloader_prefs(self, payload: MagicFlowDownloaderPrefsPayload) -> Response:
+        """写入下载器（qBittorrent）全局参数。"""
+        downloader = self._get_downloader()
+        if downloader is None:
+            return Response(success=False, message="下载器不可用")
+        target = {
+            "dl_limit": self._kbps_to_bps(payload.download_limit_kbps),
+            "up_limit": self._kbps_to_bps(payload.upload_limit_kbps),
+            "max_connec": int(payload.max_connec),
+            "max_connec_per_torrent": int(payload.max_connec_per_torrent),
+            "max_uploads": int(payload.max_uploads),
+            "max_uploads_per_torrent": int(payload.max_uploads_per_torrent),
+            "max_active_downloads": int(payload.max_active_downloads),
+            "max_active_torrents": int(payload.max_active_torrents),
+            "queueing_enabled": bool(payload.queueing_enabled),
+        }
+        ok, error = downloader.set_app_preferences(target)
+        if not ok:
+            return Response(success=False, message=error or "写入失败")
+        self._log(
+            f"下载器全局参数已更新：下载限速={payload.download_limit_kbps}KB/s "
+            f"上传限速={payload.upload_limit_kbps}KB/s 连接={payload.max_connec}/"
+            f"{payload.max_connec_per_torrent} 上传连接={payload.max_uploads}/"
+            f"{payload.max_uploads_per_torrent} 活动下载/种子={payload.max_active_downloads}/"
+            f"{payload.max_active_torrents} 队列={payload.queueing_enabled}"
+        )
+        return Response(success=True, message="下载器参数已保存", data=self.get_downloader_prefs().data)
+
+    def update_downloader_paths(self, payload: MagicFlowDownloaderPathsPayload) -> Response:
+        """写入下载器（qBittorrent）全局路径。"""
+        downloader = self._get_downloader()
+        if downloader is None:
+            return Response(success=False, message="下载器不可用")
+        target = {
+            "save_path": str(payload.save_path or "").strip(),
+            "temp_path": str(payload.temp_path or "").strip(),
+            "temp_path_enabled": bool(payload.temp_path_enabled),
+        }
+        ok, error = downloader.set_app_preferences(target)
+        if not ok:
+            return Response(success=False, message=error or "写入失败")
+        self._log(
+            f"下载器目录已更新：保存路径={target['save_path'] or '(空)'} "
+            f"临时路径={target['temp_path'] or '(空)'} 启用临时={target['temp_path_enabled']}"
+        )
+        return Response(success=True, message="下载目录已保存", data=self.get_downloader_prefs().data)
+
+    # ---------------------------------------------------------
+    # API：默认任务模板 + 维护
+    # ---------------------------------------------------------
+
+    def get_defaults(self) -> Response:
+        """读取「默认任务模板」。"""
+        data = MagicFlowDefaultsPayload(**(getattr(self, "_defaults", {}) or {})).model_dump()
+        return Response(success=True, data=data)
+
+    def update_defaults(self, payload: MagicFlowDefaultsPayload) -> Response:
+        """保存「默认任务模板」（仅用于新建任务时预填，不影响已存在任务）。"""
+        self._defaults = payload.model_dump()
+        self.save_data(key="defaults", value=dict(self._defaults))
+        self._save_config()
+        return Response(success=True, message="默认任务模板已保存", data=dict(self._defaults))
+
     def create_task(self, payload: MagicFlowTaskPayload) -> Response:
-        """创建魔力管家任务。"""
+        """创建魔流任务。"""
         task_id = payload.id or uuid.uuid4().hex[:12]
         if task_id in self._task_configs:
             return Response(success=False, message="任务 ID 已存在")
@@ -2898,8 +3860,13 @@ class MagicFlow(_PluginBase):
             site_domain=payload.site_domain or getattr(site, "domain", "") or "",
             site_name=payload.site_name or getattr(site, "name", "") or "",
             downloader=payload.downloader,
-            brush_tag=payload.brush_tag or f"魔力管家-{payload.name}",
+            brush_tag=payload.brush_tag or f"魔流-{payload.name}",
             save_path=payload.save_path or "",
+            task_type=getattr(payload, "task_type", "bonus") or "bonus",
+            brush_grace_minutes=int(getattr(payload, "brush_grace_minutes", 15) or 0),
+            upload_idle_minutes=int(getattr(payload, "upload_idle_minutes", 10) or 0),
+            upload_min_kbps=int(getattr(payload, "upload_min_kbps", 200) or 0),
+            brush_min_leechers=int(getattr(payload, "brush_min_leechers", 1) or 0),
             brush_interval=payload.brush_interval,
             check_interval=payload.check_interval,
             cron_expression=payload.cron_expression or "",
@@ -2921,6 +3888,7 @@ class MagicFlow(_PluginBase):
             cleanup_slow_progress=getattr(payload, "cleanup_slow_progress", True) is not False,
             slow_progress_grace_minutes=int(getattr(payload, "slow_progress_grace_minutes", 60) or 60),
             slow_progress_max_hours=float(getattr(payload, "slow_progress_max_hours", 48.0) or 48.0),
+            purge_unfree_incomplete=getattr(payload, "purge_unfree_incomplete", True) is not False,
             auto_resume_paused=getattr(payload, "auto_resume_paused", True) is not False,
             seen_cooldown_hours=payload.seen_cooldown_hours,
             bonus_t0=payload.bonus_t0,
@@ -2958,7 +3926,7 @@ class MagicFlow(_PluginBase):
         return Response(success=True, data=detail)
 
     def update_task(self, task_id: str, payload: MagicFlowTaskPayload) -> Response:
-        """更新魔力管家任务。"""
+        """更新魔流任务。"""
         task = self._get_task_config(task_id)
         if not task:
             return Response(success=False, message="任务不存在")
@@ -2973,8 +3941,13 @@ class MagicFlow(_PluginBase):
         task.site_domain = payload.site_domain or getattr(site, "domain", "") or ""
         task.site_name = payload.site_name or getattr(site, "name", "") or ""
         task.downloader = payload.downloader
-        task.brush_tag = payload.brush_tag or task.brush_tag or f"魔力管家-{payload.name}"
+        task.brush_tag = payload.brush_tag or task.brush_tag or f"魔流-{payload.name}"
         task.save_path = payload.save_path or ""
+        task.task_type = getattr(payload, "task_type", "bonus") or "bonus"
+        task.brush_grace_minutes = int(getattr(payload, "brush_grace_minutes", 15) or 0)
+        task.upload_idle_minutes = int(getattr(payload, "upload_idle_minutes", 10) or 0)
+        task.upload_min_kbps = int(getattr(payload, "upload_min_kbps", 200) or 0)
+        task.brush_min_leechers = int(getattr(payload, "brush_min_leechers", 1) or 0)
         task.brush_interval = payload.brush_interval
         task.check_interval = payload.check_interval
         task.cron_expression = payload.cron_expression or ""
@@ -2996,6 +3969,7 @@ class MagicFlow(_PluginBase):
         task.cleanup_slow_progress = getattr(payload, "cleanup_slow_progress", True) is not False
         task.slow_progress_grace_minutes = int(getattr(payload, "slow_progress_grace_minutes", 60) or 60)
         task.slow_progress_max_hours = float(getattr(payload, "slow_progress_max_hours", 48.0) or 48.0)
+        task.purge_unfree_incomplete = getattr(payload, "purge_unfree_incomplete", True) is not False
         task.auto_resume_paused = getattr(payload, "auto_resume_paused", True) is not False
         task.seen_cooldown_hours = payload.seen_cooldown_hours
         task.bonus_t0 = payload.bonus_t0
@@ -3024,13 +3998,22 @@ class MagicFlow(_PluginBase):
         return Response(success=True, message="任务已更新", data=self._build_task_detail(task_id))
 
     def delete_task(self, task_id: str) -> Response:
-        """删除魔力管家任务。"""
+        """删除魔流任务。"""
         if task_id not in self._task_configs:
             return Response(success=False, message="任务不存在")
 
         del self._task_configs[task_id]
         if self._store:
             self._store.task_states.delete(task_id)
+            # 同步清掉去重（seen）与操作记录，避免残留孤儿数据（每个任务都有独立桶）。
+            try:
+                self._store.seen.delete(task_id)
+            except Exception as err:
+                self._log(f"清理任务去重记录失败：{err}", "warning")
+            try:
+                self._store.journal.delete_task(task_id)
+            except Exception as err:
+                self._log(f"清理任务操作记录失败：{err}", "warning")
         self._save_config()
         self._refresh_scheduler()
         self._invalidate_summary()
@@ -3060,6 +4043,93 @@ class MagicFlow(_PluginBase):
     # API：魔力明细
     # ---------------------------------------------------------
 
+    def backfill_torrent_pages(self, task_id: str) -> Response:
+        """回填存量托管种子的详情页链接（供「已非免费→清理」核对促销）。
+
+        对当前托管（标签内）但未记录详情页链接的种子，依次尝试：
+          ① seen 记录（hash↔cand 同时间戳配对）；② 站点「我的种子」列表按标题回填。
+        只写本地记录，**不删任何种子**。
+        """
+        task = self._get_task_config(task_id)
+        if not task:
+            return Response(success=False, message="任务不存在")
+        if not self._store:
+            return Response(success=False, message="存储不可用")
+        try:
+            downloader = self._get_downloader(task.downloader)
+            if not downloader or not downloader.is_available:
+                return Response(success=False, message="下载器不可用")
+            tagged, error = downloader.get_torrents(tags=[task.brush_tag])
+            if error:
+                return Response(success=False, message=str(error))
+            managed = list(tagged or [])
+            site = self._get_site(task.site_id)
+
+            pages = dict(self._store.get_torrent_pages(task.id) or {})
+            managed_hashes = {(t.hash or "").lower() for t in managed if t.hash}
+            mapping: Dict[str, str] = {}
+            # ① seen 记录（hash↔cand 同时间戳配对）→ 只保留当前托管的
+            for h, u in self._seen_page_pairs(task.id).items():
+                if h in managed_hashes and not pages.get(h):
+                    mapping[h] = u
+            pages.update(mapping)
+
+            # 强制刷新「我的种子」列表缓存后按标题回填
+            cache = getattr(self, "_title_url_cache", None)
+            if cache:
+                cache.pop(task.id, None)
+            umap = self._title_url_map(task, site) if site else {}
+
+            unresolved = 0
+            for t in managed:
+                h = (t.hash or "").lower()
+                if not h or pages.get(h):
+                    continue
+                url = umap.get(normalize_title(t.title or ""))
+                if url:
+                    mapping[h] = url
+                    pages[h] = url
+                else:
+                    unresolved += 1
+            if mapping:
+                self._store.note_torrent_pages(task.id, mapping)
+            total_known = len(self._store.get_torrent_pages(task.id) or {})
+            self._log(
+                f"魔流 [{task.name}] 回填详情页链接：托管 {len(managed)} 个，"
+                f"本次解析 {len(mapping)}，未匹配 {unresolved}，当前已知 {total_known}"
+            )
+            return Response(
+                success=True,
+                message=f"已回填 {len(mapping)} 个详情页链接（{unresolved} 个未能匹配）",
+                data={
+                    "managed": len(managed),
+                    "resolved": len(mapping),
+                    "unresolved": unresolved,
+                    "total_known": total_known,
+                },
+            )
+        except Exception as err:
+            self._log(f"回填详情页链接失败: {err}", "error")
+            return Response(success=False, message=str(err))
+
+    def backfill_batch(self) -> Response:
+        """对所有任务批量回填详情页链接（只写记录，不删种）。"""
+        total_managed = total_resolved = total_unresolved = 0
+        for task_id in list(self._task_configs.keys()):
+            try:
+                resp = self.backfill_torrent_pages(task_id)
+                data = resp.data or {}
+                total_managed += int(data.get("managed") or 0)
+                total_resolved += int(data.get("resolved") or 0)
+                total_unresolved += int(data.get("unresolved") or 0)
+            except Exception:
+                continue
+        return Response(
+            success=True,
+            message=f"已回填 {total_resolved} 个链接（{total_unresolved} 个未能匹配）",
+            data={"managed": total_managed, "resolved": total_resolved, "unresolved": total_unresolved},
+        )
+
     def get_task_bonus(self, task_id: str) -> Response:
         """获取任务魔力统计及种子列表。"""
         task = self._get_task_config(task_id)
@@ -3072,12 +4142,11 @@ class MagicFlow(_PluginBase):
                 self._log(f"API 做种明细：下载器不可用（{task.downloader}）", "warning")
                 return Response(success=False, message="下载器不可用")
 
-            seeding_torrents, error = downloader.get_seeding_torrents(tag=task.brush_tag)
-            all_tagged, _ = downloader.get_torrents(tags=[task.brush_tag])
+            # 一次拉取即得：按标签取全部托管种子（黑盒：不再额外查 seeding，避免多打一次 qB）
+            all_tagged, error = downloader.get_torrents(tags=[task.brush_tag])
             task_torrents = list(all_tagged or [])
             self._log(
-                f"API 做种明细：task={task_id} tag=「{task.brush_tag}」 "
-                f"seeding={len(seeding_torrents or [])} err={error} tagged={len(task_torrents)}"
+                f"API 做种明细：task={task_id} tag=「{task.brush_tag}」 tagged={len(task_torrents)} err={error}"
             )
             if error:
                 return Response(success=True, data={"torrents": [], "total_bonus": 0, "torrent_count": 0, "protected_count": 0, "site": self._site_reported(task)})
@@ -3217,6 +4286,40 @@ class MagicFlow(_PluginBase):
             task_torrents = [t for t in seeding_torrents if task.brush_tag in t.tags]
             torrent_bonus_list = self._convert_to_bonus_list(task_torrents, self._build_formula_params(task), self._task_pub_dates(task), getattr(task, "ti_source", "publish"), self._site_ni_map(task.site_id, task_torrents), self._site_official_titles(task.site_id))
             protected_hashes = self._store.get_protected_torrents(task_id) if self._store else set()
+
+            # 刷流模式：预览「无上传将被清理」的种子（只读，不删）
+            if str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush":
+                try:
+                    all_t, _ = downloader.get_torrents(tags=[task.brush_tag])
+                except Exception:
+                    all_t = []
+                tt = [t for t in (all_t or []) if task.brush_tag in t.tags]
+                prev = self._store.get_brush_upload(task_id) if self._store else {}
+                need, thr, _grace = self._brush_idle_params(task)
+                would = []
+                for t in tt:
+                    h = (t.hash or "").lower()
+                    if not h or h in protected_hashes:
+                        continue
+                    p = prev.get(h)
+                    if not p:
+                        continue
+                    up = float(getattr(t, "uploaded", 0) or 0)
+                    idle = int(p.get("idle", 0) or 0)
+                    if up - float(p.get("up", 0) or 0) < thr:
+                        idle += 1
+                    if idle >= need:
+                        would.append({
+                            "hash": t.hash,
+                            "title": str(getattr(t, "title", "") or ""),
+                            "reason": "无上传",
+                        })
+                return Response(success=True, data={
+                    "mode": "brush",
+                    "preview": {"to_delete": would, "count": len(would)},
+                    "message": f"刷流模式：预计清理「无上传」种子 {len(would)} 个",
+                })
+
             policy = self._build_magic_policy(task, torrent_bonus_list)
 
             preview = preview_deletions(torrent_bonus_list, policy, protected_hashes)
