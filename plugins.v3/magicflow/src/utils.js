@@ -165,6 +165,10 @@ export function normalizeTask(task) {
 export function normalizeSettings(settings = {}) {
   const journalKeep = Number(settings.journal_keep)
   const requestInterval = Number(settings.request_interval)
+  const num = (value, fallback) => {
+    const n = Number(value)
+    return Number.isFinite(n) ? n : fallback
+  }
   return {
     enabled: Boolean(settings.enabled),
     show_sidebar_nav: Boolean(settings.show_sidebar_nav),
@@ -172,6 +176,8 @@ export function normalizeSettings(settings = {}) {
     compact_mode: Boolean(settings.compact_mode),
     journal_keep: Number.isFinite(journalKeep) ? Math.max(0, Math.round(journalKeep)) : 200,
     request_interval: Number.isFinite(requestInterval) ? Math.max(0, requestInterval) : 0,
+    bonus_upload_limit_kbps: Math.max(0, num(settings.bonus_upload_limit_kbps, 200)),
+    brush_upload_limit_kbps: Math.max(0, num(settings.brush_upload_limit_kbps, 10240)),
   }
 }
 

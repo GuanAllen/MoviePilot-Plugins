@@ -92,7 +92,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "2.4.0"
+__version__ = "2.5.0"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -373,6 +373,10 @@ class MagicFlow(_PluginBase):
     _dead_cooldown: float = 6 * 3600.0           # 6 小时内不再重复添加
     _store: Optional[MagicFlowStore] = None
     _defaults: Dict[str, Any] = {}
+    # 任务流量（qB 全局上传限速，按在跑任务类型自动切档）
+    _bonus_upload_limit_kbps: float = 200.0
+    _brush_upload_limit_kbps: float = 10240.0
+    _last_up_limit_bps: Optional[int] = None
 
     def init_plugin(self, config: dict = None) -> None:
         """初始化全局开关、任务配置与持久化存储。"""
@@ -400,6 +404,15 @@ class MagicFlow(_PluginBase):
             self._request_interval = float(raw_config.get("request_interval", 0) or 0)
         except (TypeError, ValueError):
             self._request_interval = 0.0
+        try:
+            self._bonus_upload_limit_kbps = max(0.0, float(raw_config.get("bonus_upload_limit_kbps", 200.0) or 0))
+        except (TypeError, ValueError):
+            self._bonus_upload_limit_kbps = 200.0
+        try:
+            self._brush_upload_limit_kbps = max(0.0, float(raw_config.get("brush_upload_limit_kbps", 10240.0) or 0))
+        except (TypeError, ValueError):
+            self._brush_upload_limit_kbps = 10240.0
+        self._last_up_limit_bps = None
         rows_defaults = raw_config.get("defaults")
         if not isinstance(rows_defaults, dict):
             rows_defaults = self.get_data("defaults") or {}
@@ -766,6 +779,8 @@ class MagicFlow(_PluginBase):
             "compact_mode": bool(getattr(self, "_compact_mode", False)),
             "journal_keep": int(getattr(self, "_journal_keep", 200) or 0),
             "request_interval": float(getattr(self, "_request_interval", 0) or 0),
+            "bonus_upload_limit_kbps": float(getattr(self, "_bonus_upload_limit_kbps", 200.0) or 0),
+            "brush_upload_limit_kbps": float(getattr(self, "_brush_upload_limit_kbps", 10240.0) or 0),
             "defaults": dict(getattr(self, "_defaults", {}) or {}),
             "tasks": [task.to_dict() for task in self._task_configs.values()],
         }
@@ -782,6 +797,65 @@ class MagicFlow(_PluginBase):
             set_dl_gate_base(getattr(self, "_request_interval", 0))
         except Exception as err:
             self._log(f"应用站点请求间隔失败：{err}")
+
+    # ---------------------------------------------------------
+    # 任务流量：qB 全局上传限速（按在跑任务类型自动切档，只限上传）
+    # ---------------------------------------------------------
+
+    def _resolve_task_upload_limit_kbps(self) -> Tuple[float, str]:
+        """按「在跑的任务类型」解析应设的全局上传限速（KB/s）。
+
+        优先级：刷流 > 魔力 > 无（清除）。插件全局未启用时一律清除。
+        返回 (限速KB/s, 来源说明)。
+        """
+        if not self.get_state():
+            return 0.0, "插件未启用"
+        has_brush = False
+        has_bonus = False
+        for task in self._task_configs.values():
+            if not getattr(task, "enabled", False):
+                continue
+            ttype = str(getattr(task, "task_type", "bonus") or "bonus").strip().lower()
+            if ttype == "brush":
+                has_brush = True
+            else:
+                has_bonus = True
+        if has_brush:
+            return float(getattr(self, "_brush_upload_limit_kbps", 10240.0) or 0), "刷流"
+        if has_bonus:
+            return float(getattr(self, "_bonus_upload_limit_kbps", 200.0) or 0), "魔力"
+        return 0.0, "无启用任务"
+
+    def _apply_task_traffic_limit(self, force: bool = False) -> None:
+        """把 qB 全局上传限速写成「按在跑任务类型」的值（刷流>魔力>清除）。
+
+        - 只限上传（up_limit），不动下载；
+        - 值未变化时跳过写入（force=True 强制写）；
+        - 无启用任务 / 插件未启用 → 清除（0=不限）。
+        """
+        kbps, label = self._resolve_task_upload_limit_kbps()
+        bps = self._kbps_to_bps(kbps)
+        if not force and bps == getattr(self, "_last_up_limit_bps", None):
+            return
+        # 选一个在跑任务的下载器（缺省 qbittorrent）
+        dl_name = "qbittorrent"
+        for task in self._task_configs.values():
+            if getattr(task, "enabled", False) and getattr(task, "downloader", ""):
+                dl_name = task.downloader
+                break
+        dl = self._get_downloader(dl_name)
+        if not dl:
+            return
+        try:
+            ok, err = dl.set_app_preferences({"up_limit": bps})
+        except Exception as exc:
+            ok, err = False, str(exc)
+        if ok:
+            self._last_up_limit_bps = bps
+            self._dbg(f"任务流量：qB 全局上传限速 → {kbps:g} KB/s（按{label}）")
+            self._log(f"任务流量：qB 全局上传限速 → {kbps:g} KB/s（按{label}）")
+        else:
+            self._log(f"任务流量：设置全局上传限速失败：{err}", "warning")
 
     def _save_config(self) -> None:
         """保存全局设置和全部任务配置"""
@@ -931,6 +1005,7 @@ class MagicFlow(_PluginBase):
     def brush(self, task_id: str) -> None:
         """抓取站点候选并补充优质魔力种子（刷流，带并发保护）。"""
         task = self._get_task_config(task_id)
+        self._apply_task_traffic_limit()
         if not self._try_begin_run(task_id):
             if task:
                 self._log(f"魔流 [{task.name}] 上一轮仍在执行，跳过本轮")
@@ -1777,6 +1852,7 @@ class MagicFlow(_PluginBase):
 
     def check(self, task_id: str) -> None:
         """执行魔力优化一轮（评估并删除低魔力产出种子）。"""
+        self._apply_task_traffic_limit()
         self._run_check(task_id)
 
     def _is_in_active_time(self, time_range: str) -> bool:
@@ -3693,6 +3769,8 @@ class MagicFlow(_PluginBase):
             "compact_mode": bool(getattr(self, "_compact_mode", False)),
             "journal_keep": int(getattr(self, "_journal_keep", 200) or 0),
             "request_interval": float(getattr(self, "_request_interval", 0) or 0),
+            "bonus_upload_limit_kbps": float(getattr(self, "_bonus_upload_limit_kbps", 200.0) or 0),
+            "brush_upload_limit_kbps": float(getattr(self, "_brush_upload_limit_kbps", 10240.0) or 0),
             "defaults": dict(getattr(self, "_defaults", {}) or {}),
         })
         return Response(success=True, data=data)
@@ -3851,9 +3929,18 @@ class MagicFlow(_PluginBase):
             self._request_interval = max(0.0, float(payload.request_interval or 0))
         except (TypeError, ValueError):
             self._request_interval = 0.0
+        try:
+            self._bonus_upload_limit_kbps = max(0.0, float(payload.bonus_upload_limit_kbps or 0))
+        except (TypeError, ValueError):
+            self._bonus_upload_limit_kbps = 200.0
+        try:
+            self._brush_upload_limit_kbps = max(0.0, float(payload.brush_upload_limit_kbps or 0))
+        except (TypeError, ValueError):
+            self._brush_upload_limit_kbps = 10240.0
         self._save_config()
         self._apply_runtime_settings()
         self._refresh_scheduler()
+        self._apply_task_traffic_limit(force=True)
         self._dbg(
             f"全局设置已更新：enabled={self._enabled} sidebar={self._show_sidebar_nav} "
             f"debug={self._debug_log} compact={self._compact_mode} "
@@ -4050,6 +4137,7 @@ class MagicFlow(_PluginBase):
         self._save_config()
         self._refresh_scheduler()
         self._invalidate_summary()
+        self._apply_task_traffic_limit()
         return Response(success=True, message="任务创建成功", data=self._build_task_detail(task.id))
 
     def get_task_detail(self, task_id: str) -> Response:
@@ -4129,6 +4217,7 @@ class MagicFlow(_PluginBase):
         self._save_config()
         self._refresh_scheduler()
         self._invalidate_summary()
+        self._apply_task_traffic_limit()
         return Response(success=True, message="任务已更新", data=self._build_task_detail(task_id))
 
     def delete_task(self, task_id: str) -> Response:
@@ -4151,6 +4240,7 @@ class MagicFlow(_PluginBase):
         self._save_config()
         self._refresh_scheduler()
         self._invalidate_summary()
+        self._apply_task_traffic_limit()
         return Response(success=True, message="任务已删除")
 
     def update_task_state(self, task_id: str, payload: MagicFlowTaskStatePayload) -> Response:
@@ -4162,6 +4252,7 @@ class MagicFlow(_PluginBase):
         self._save_config()
         self._refresh_scheduler()
         self._invalidate_summary()
+        self._apply_task_traffic_limit()
         return Response(success=True, data=self._build_task_detail(task_id))
 
     def run_task(self, task_id: str) -> Response:

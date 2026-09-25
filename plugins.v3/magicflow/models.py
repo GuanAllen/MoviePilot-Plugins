@@ -206,6 +206,10 @@ class MagicFlowSettingsPayload(BaseModel):
     journal_keep: int = Field(200, ge=0, le=5000, description="每个任务保留的操作记录上限，0 = 不限")
     request_interval: float = Field(0.0, ge=0, le=600, description="站点翻页请求之间的最小间隔（秒），0 = 不限速")
 
+    # 任务流量（qB 全局上传限速，按「在跑的任务类型」自动切档；只限上传）
+    bonus_upload_limit_kbps: float = Field(200.0, ge=0, le=1048576, description="魔力任务在跑时的 qB 全局上传限速 KB/s（无刷流任务时生效），0 = 不限")
+    brush_upload_limit_kbps: float = Field(10240.0, ge=0, le=1048576, description="刷流任务在跑时的 qB 全局上传限速 KB/s（刷流优先），0 = 不限")
+
     # 界面
     compact_mode: bool = False
 
