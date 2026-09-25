@@ -3822,7 +3822,7 @@ return (_ctx, _cache) => {
                                           _createElementVNode("span", _hoisted_66, _toDisplayString(candidate.rank), 1),
                                           _createElementVNode("div", null, [
                                             _createElementVNode("strong", null, _toDisplayString(candidate.title || '未知种子'), 1),
-                                            _createElementVNode("span", null, _toDisplayString(Number(candidate.size_gb || 0).toFixed(2)) + " GB · " + _toDisplayString(candidate.seeders) + " 做种 · " + _toDisplayString(Number(candidate.age_weeks || 0).toFixed(1)) + " 周", 1)
+                                            _createElementVNode("span", null, _toDisplayString(Number(candidate.size_gb || 0).toFixed(2)) + " GB · " + _toDisplayString(candidate.seeders) + " 做种 · " + _toDisplayString(candidate.leechers) + " 下载 · " + _toDisplayString(Number(candidate.age_weeks || 0).toFixed(1)) + " 周", 1)
                                           ])
                                         ]))
                                       }), 128)),
@@ -5322,6 +5322,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-d6210381"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-98cfe7f6"]]);
 
 export { MagicFlowWorkbench as M };
