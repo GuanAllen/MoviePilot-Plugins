@@ -257,7 +257,7 @@ function notify(message, color = 'success') {
   }
 }
 
-const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reuse: '存量复用', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止', state: '运行状态' }
+const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reuse: '存量复用', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止', state: '运行状态', tag: '标签变更' }
 const STATE_TEXT = { submitting: '提交中', accepted: '已受理', completed: '已完成', failed: '失败' }
 const KIND_ICON = {
   run: 'mdi-play-circle-outline',
@@ -271,6 +271,7 @@ const KIND_ICON = {
   recheck: 'mdi-sync',
   goal: 'mdi-flag-checkered',
   state: 'mdi-power',
+  tag: 'mdi-tag-outline',
 }
 
 function operationKindText(kind) {
@@ -288,8 +289,38 @@ function operationIcon(kind) {
 function operationColor(record) {
   if (record.state === 'failed') return 'error'
   if (record.kind === 'deletion') return 'warning'
+  if (record.kind === 'tag') return 'purple'
   if (record.kind === 'run') return 'secondary'
   return 'primary'
+}
+
+/** 操作记录明细：展开状态表（key=operation_id）。 */
+const expandedOps = ref({})
+
+/** 可展开的明细条目：仅 run 记录展开（tags/watchdog 等单条事件摘要已够）。
+ *  run 记录第 0 项是汇总行，与上方摘要重复，过滤掉。 */
+function opDetailItems(record) {
+  if (!record || record.kind !== 'run') return []
+  return (record.items || []).filter((it) => it.source && it.source !== 'run')
+}
+
+function hasOpDetail(record) {
+  return opDetailItems(record).length > 0
+}
+
+function isOpDetailOpen(opId) {
+  return !!expandedOps.value[opId]
+}
+
+function toggleOpDetail(opId) {
+  expandedOps.value = { ...expandedOps.value, [opId]: !expandedOps.value[opId] }
+}
+
+/** 明细行的短标签（来源/动作）。 */
+const ITEM_SOURCE_TEXT = { add: '新增', 'add-fail': '失败', reuse: '复用', 'reuse-fail': '辅种失败', adopt: '纳管', watchdog: '看门狗', run: '汇总' }
+
+function itemSourceText(src) {
+  return ITEM_SOURCE_TEXT[src] || ''
 }
 
 /** 操作记录的耗时文本（优先用后端记录，回退到创建/完成时间差）。 */
@@ -1405,7 +1436,7 @@ onUnmounted(() => {
                 <header class="magicflow-panel__head">
                   <div>
                     <div class="text-subtitle-1 font-weight-medium">操作记录</div>
-                    <div class="text-body-2 text-medium-emphasis">每次执行 / 选种 / 删种 / 保护的流水（含耗时）</div>
+                    <div class="text-body-2 text-medium-emphasis">每次执行 / 选种 / 删种 / 保护 / 标签 的流水（可展开明细）</div>
                   </div>
                   <VBtn variant="text" color="primary" prepend-icon="mdi-refresh" @click="loadOperations(selectedTaskId)">刷新</VBtn>
                 </header>
@@ -1421,9 +1452,31 @@ onUnmounted(() => {
                       <span>
                         {{ formatDateTime(record.created_at) }} ·
                         耗时 {{ operationDuration(record) }}
-                        <template v-if="record.duration == null && (record.items || []).length > 1"> · {{ (record.items || []).length }} 个条目</template>
+                        <template v-if="hasOpDetail(record)"> · {{ opDetailItems(record).length }} 条明细</template>
                       </span>
                       <span v-if="record.error_message" class="text-error">{{ record.error_message }}</span>
+                      <button
+                        v-if="hasOpDetail(record)"
+                        type="button"
+                        class="magicflow-events__toggle"
+                        @click="toggleOpDetail(record.operation_id)"
+                      >
+                        {{ isOpDetailOpen(record.operation_id) ? '收起明细' : '展开明细' }}
+                        <VIcon :icon="isOpDetailOpen(record.operation_id) ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="14" />
+                      </button>
+                      <ul v-if="isOpDetailOpen(record.operation_id)" class="magicflow-events__detail">
+                        <li v-for="(it, idx) in opDetailItems(record)" :key="idx">
+                          <span class="magicflow-events__detail-line">
+                            <em v-if="itemSourceText(it.source)" class="magicflow-events__detail-src">{{ itemSourceText(it.source) }}</em>
+                            <span class="magicflow-events__detail-title" :title="it.title || it.hash">{{ it.title || it.hash || '—' }}</span>
+                          </span>
+                          <span class="magicflow-events__detail-sub">
+                            <template v-if="it.reason">{{ it.reason }}</template>
+                            <template v-if="it.size_gb"> · {{ Number(it.size_gb).toFixed(2) }}G</template>
+                            <template v-if="it.seeders"> · 做种 {{ it.seeders }}</template>
+                          </span>
+                        </li>
+                      </ul>
                     </div>
                   </article>
                   <div v-if="!(operationData.operations || []).length" class="magicflow-table-empty">暂无操作记录</div>
@@ -3822,6 +3875,78 @@ onUnmounted(() => {
 .magicflow-page .magicflow-events article strong {
   font-size: 12.5px;
   font-weight: 600;
+}
+
+/* 操作记录 · 明细展开（手机优先：单行省略，不撑破卡片） */
+.magicflow-page .magicflow-events__toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-block-start: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: rgb(var(--v-theme-primary));
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.magicflow-page .magicflow-events__detail {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+}
+
+.magicflow-page .magicflow-events__detail li {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-inline-size: 0;
+  padding-block: 5px;
+  border-top: 1px dashed rgba(140, 150, 220, 0.14);
+}
+
+.magicflow-page .magicflow-events__detail li:first-child {
+  border-top: 0;
+}
+
+.magicflow-page .magicflow-events__detail-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-inline-size: 0;
+}
+
+.magicflow-page .magicflow-events__detail-src {
+  flex: 0 0 auto;
+  font-style: normal;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0 5px;
+  border-radius: 5px;
+  color: rgb(var(--v-theme-primary));
+  background: rgba(139, 123, 240, 0.16);
+}
+
+.magicflow-page .magicflow-events__detail-title {
+  min-inline-size: 0;
+  flex: 1 1 auto;
+  font-size: 0.78rem;
+  color: rgba(var(--v-theme-on-surface), 0.86);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.magicflow-page .magicflow-events__detail-sub {
+  font-size: 0.72rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  overflow-wrap: anywhere;
 }
 
 /* 任务头卡片内边距（对齐预览图 .thead） */

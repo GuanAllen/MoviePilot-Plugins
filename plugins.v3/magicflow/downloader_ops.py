@@ -8,7 +8,9 @@ MagicFlow 下载器操作模块
 """
 
 import math
+import base64
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -113,6 +115,32 @@ def _kv(obj: Any, key: str, default: Any = None) -> Any:
     except Exception:
         pass
     return getattr(obj, key, default)
+
+
+def _split_tags(raw: Any) -> List[str]:
+    """把 qB 的逗号分隔标签串 / 列表统一规整为去空白的字符串列表。"""
+    if isinstance(raw, str):
+        return [x.strip() for x in raw.split(",") if x.strip()]
+    try:
+        return [str(x).strip() for x in (raw or []) if str(x).strip()]
+    except Exception:
+        return []
+
+
+def _magnet_infohash(magnet: Any) -> Optional[str]:
+    """从磁力链解析 btih（v1 infohash，小写 40 位 hex）。"""
+    try:
+        m = re.search(r"xt=urn:btih:([A-Za-z0-9]+)", str(magnet or ""))
+        if not m:
+            return None
+        raw = m.group(1)
+        if len(raw) == 40:
+            return raw.lower()
+        if len(raw) == 32:  # base32
+            return base64.b32decode(raw.upper()).hex()
+    except Exception:
+        return None
+    return None
 
 
 # qBittorrent 原始状态字符串（低层客户端不归一，直接用 qb 自身取值）
@@ -550,6 +578,8 @@ class DownloaderAdapter:
 
         tag_list = [tag] if tag else []
         hash_string: Optional[str] = None
+        # 🔎 标签审计：辅种复用添加种子
+        logger.info(f"[标签审计] ADD-REUSE dir={save_path or '-'} tags={tag_list} paused=True")
         try:
             result = self._downloader.add_torrent(
                 content=torrent_bytes,
@@ -569,6 +599,14 @@ class DownloaderAdapter:
         except Exception as e:
             return None, f"添加种子失败: {e}"
 
+        if not hash_string and torrent_bytes:
+            # 优先本地算 infohash（不依赖下载器回查，绝不触发临时标签删除）
+            try:
+                hash_string = info_hash(torrent_bytes)
+            except Exception:
+                hash_string = None
+        if hash_string:
+            hash_string = str(hash_string).lower()
         if not hash_string:
             hash_string = self._get_torrent_hash_by_tag(tag or "temp")
         if not hash_string:
@@ -809,7 +847,9 @@ class DownloaderAdapter:
             ok, ids = self._normalize_add_result(result)
             if not ok:
                 return None, "qBittorrent 添加种子失败"
-            hash_string = ids[0] if ids else self._get_torrent_hash_by_tag(tag or "temp")
+            hash_string = str(ids[0]).lower() if ids else _magnet_infohash(content)
+            if not hash_string:
+                hash_string = self._get_torrent_hash_by_tag(tag or "temp")
             return hash_string, None
 
         # 处理 URL 或种子文件
@@ -836,6 +876,8 @@ class DownloaderAdapter:
 
         # 添加种子
         tag_list = [tag] if tag else []
+        # 🔎 标签审计：添加种子时带的标签只作用于该种子，不会删除标签定义。
+        logger.info(f"[标签审计] ADD dir={download_dir or '-'} tags={tag_list}")
         result = self._downloader.add_torrent(
             content=content,
             download_dir=download_dir,
@@ -872,13 +914,46 @@ class DownloaderAdapter:
         return bool(result), []
 
     def _get_torrent_hash_by_tag(self, tag: str) -> Optional[str]:
-        """通过标签获取种子 hash。"""
-        try:
-            hash_string = self._downloader.get_torrent_id_by_tag(tags=tag)
-            return hash_string
-        except Exception as e:
-            logger.warning(f"获取种子 hash 失败: {e}")
+        """按标签读取种子 hash（**只读**，绝不删除标签）。
+
+        ⚠️ 严禁使用 MoviePilot 的 ``get_torrent_id_by_tag()``：它会把手里的 tag
+        当作“临时标签”，查完就调用 ``delete_torrents_tag()`` 把它**全局删除**。
+        魔流过去把任务的正式标签（brush_tag，如「魔流-聆音刷流」）传了进去，
+        于是每加一次种子就把该标签从下载器里抹掉 —— 所有托管种子瞬间掉标签，
+        工作台表现为“托管 0 个 / 任务被清空”。这里改为只读查询：列出带该标签
+        的种子，取最新加入的一个。
+        """
+        if not self._downloader or not tag:
             return None
+        # 🔎 标签审计：确认走的是“只读”路径（绝不调用 MoviePilot 的 get_torrent_id_by_tag）。
+        logger.info(f"[标签审计] LOOKUP(read-only) tag={tag}")
+        try:
+            torrents, _err = self._downloader.get_torrents(tags=[tag])
+        except Exception:
+            torrents = None
+        if not torrents:
+            try:
+                all_t, _err = self._downloader.get_torrents()
+                torrents = [t for t in (all_t or []) if tag in _split_tags(_kv(t, "tags", ""))]
+            except Exception:
+                torrents = []
+        if not torrents:
+            return None
+
+        def _added_on(t: Any) -> float:
+            try:
+                return float(_kv(t, "added_on", 0) or _kv(t, "added_date", 0) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        try:
+            torrents = sorted(torrents, key=_added_on, reverse=True)
+        except Exception:
+            pass
+        h = str(
+            _kv(torrents[0], "hash", "") or _kv(torrents[0], "hash_string", "") or ""
+        ).strip().lower()
+        return h or None
 
     def _add_torrent_transmission(
         self,
@@ -998,17 +1073,25 @@ class DownloaderAdapter:
         if not self._downloader or not hash_string:
             return False
 
+        # 🔎 标签审计：任何对种子的标签写操作都留痕，方便日后定位“掉标签/被清空”。
+        logger.info(
+            f"[标签审计] SET hash={hash_string} tags={list(tags or [])} "
+            f"（本次只影响该种子，不删除标签定义）"
+        )
         try:
             # 优先 append 语义（qB: torrents_add_tags），避免覆盖已有标签
             if hasattr(self._downloader, "add_torrent_tag"):
                 if self._downloader.add_torrent_tag(hash_string, tags):
+                    logger.info(f"[标签审计] SET-OK(append) hash={hash_string}")
                     return True
             if hasattr(self._downloader, "set_torrents_tag"):
+                logger.info(f"[标签审计] SET-FALLBACK(replace) hash={hash_string} tags={list(tags or [])}")
                 self._downloader.set_torrents_tag(ids=hash_string, tags=list(tags or []))
                 return True
+            logger.warning(f"[标签审计] SET-FAIL 下载器不支持标签操作 hash={hash_string}")
             return False
         except Exception as e:
-            logger.error(f"设置种子标签失败: {e}")
+            logger.error(f"[标签审计] SET-ERR hash={hash_string}: {e}")
             return False
 
     def resume_torrent(self, hash_string: str) -> bool:

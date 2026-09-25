@@ -5,6 +5,7 @@ MagicFlow 持久化模块
 """
 
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
@@ -26,6 +27,8 @@ class OperationItem:
     bonus_per_hour: float = 0.0
     size_gb: float = 0.0
     seeders: int = 0
+    source: str = ""   # 来源/动作：add/reuse/adopt/tag/watchdog…（供流水明细筛选）
+    tags: str = ""     # 标签变更（before→after），仅标签类事件使用
 
 
 @dataclass
@@ -120,6 +123,9 @@ class TaskState:
     # 刷流模式：每种子「上传快照」（hash→{up:上次上传字节, idle:连续无上传次数, ts:检查时间}）。
     # 每次检查比对 uploaded 增量；连续 N 次近乎零上传 → 判定「无上传」→ 清理。
     brush_upload: Dict[str, dict] = field(default_factory=dict)
+    # 「托管数看门狗」：上一轮观测到的托管（带标签）数。用于检测「种子还在、标签却被抹掉」
+    # 这类**不产生删种记录**的异常（托管骤降但本轮删除为 0）。
+    last_tagged_count: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -154,6 +160,7 @@ class TaskState:
             "page_cursor": self.page_cursor,
             "torrent_pages": dict(self.torrent_pages),
             "brush_upload": {str(k).lower(): dict(v) for k, v in self.brush_upload.items()},
+            "last_tagged_count": self.last_tagged_count,
         }
 
     @staticmethod
@@ -190,6 +197,7 @@ class TaskState:
             page_cursor=d.get("page_cursor", 0),
             torrent_pages={str(k).lower(): str(v) for k, v in (d.get("torrent_pages") or {}).items() if k and v},
             brush_upload={str(k).lower(): dict(v) for k, v in (d.get("brush_upload") or {}).items() if k and isinstance(v, dict)},
+            last_tagged_count=int(d.get("last_tagged_count", 0) or 0),
         )
 
 
@@ -236,6 +244,37 @@ class OperationJournal:
         for op in rows[self.keep:]:
             self._operations.pop(op.operation_id, None)
 
+    # 状态“完成度”排序：数字越大越接近终态。合并同一记录时保留更新的那份。
+    _STATE_RANK = {"submitting": 0, "accepted": 1, "failed": 2, "completed": 2}
+
+    @classmethod
+    def _more_final(cls, a: OperationRecord, b: OperationRecord) -> OperationRecord:
+        """两条同一 operation_id 的记录，返回更“新/终”的那条。"""
+        ra = cls._STATE_RANK.get(a.state, 0)
+        rb = cls._STATE_RANK.get(b.state, 0)
+        if ra != rb:
+            return a if ra > rb else b
+        ta = a.resolved_at or 0.0
+        tb = b.resolved_at or 0.0
+        if ta != tb:
+            return a if ta > tb else b
+        # 同状态同时间：保留条目更多的那份
+        return a if len(a.items or []) >= len(b.items or []) else b
+
+    def _prune_all(self) -> None:
+        """按任务裁剪全部历史（merge 后调用，避免已裁剪记录被磁盘旧数据复活）。"""
+        if not self.keep:
+            return
+        by_task: Dict[str, List[OperationRecord]] = {}
+        for op in self._operations.values():
+            by_task.setdefault(op.task_id, []).append(op)
+        for task_id, rows in by_task.items():
+            if len(rows) <= self.keep:
+                continue
+            rows.sort(key=lambda x: x.created_at, reverse=True)
+            for op in rows[self.keep:]:
+                self._operations.pop(op.operation_id, None)
+
     def _load(self) -> None:
         """从磁盘加载操作日志。"""
         if not self.operations_file.exists():
@@ -251,12 +290,35 @@ class OperationJournal:
             self._operations = {}
 
     def _save(self) -> None:
-        """保存操作日志到磁盘。"""
+        """保存操作日志到磁盘。
+
+        采用「与磁盘并集合并」再写回：热重载会同时存在多个插件实例，
+        旧实例若用内存快照整表覆盖，会把新实例刚写入的记录覆盖丢失/状态回退。
+        合并时同一 operation_id 取更“终态/更新”的那份，保证记录只增不减、状态不倒退。
+        """
         try:
             self.data_dir.mkdir(parents=True, exist_ok=True)
+            merged: Dict[str, OperationRecord] = {}
+            if self.operations_file.exists():
+                try:
+                    with open(self.operations_file, "r", encoding="utf-8") as f:
+                        disk = json.load(f)
+                    for op_id, op_dict in disk.items():
+                        merged[op_id] = OperationRecord.from_dict(op_dict)
+                except Exception:
+                    merged = {}
+            for op_id, op in self._operations.items():
+                if op_id in merged:
+                    merged[op_id] = self._more_final(op, merged[op_id])
+                else:
+                    merged[op_id] = op
+            self._operations = merged
+            self._prune_all()
             data = {op_id: op.to_dict() for op_id, op in self._operations.items()}
-            with open(self.operations_file, "w", encoding="utf-8") as f:
+            tmp = self.operations_file.with_name(self.operations_file.name + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, self.operations_file)
         except Exception:
             pass
 
@@ -754,6 +816,24 @@ class MagicFlowStore:
             state = self.task_states.create(task_id)
         clean = {str(k).lower(): dict(v) for k, v in (mapping or {}).items() if k and isinstance(v, dict)}
         state.brush_upload = clean
+        self.task_states.save(state)
+
+    # -------------------- 托管数看门狗 --------------------
+
+    def get_last_tagged_count(self, task_id: str) -> int:
+        """读取上一轮记录的托管（带标签）种子数。"""
+        state = self.task_states.get(task_id)
+        return int(getattr(state, "last_tagged_count", 0) or 0)
+
+    def set_last_tagged_count(self, task_id: str, count: int) -> None:
+        """写回本轮托管（带标签）种子数。"""
+        state = self.task_states.get(task_id)
+        if not state:
+            state = self.task_states.create(task_id)
+        try:
+            state.last_tagged_count = max(int(count or 0), 0)
+        except (TypeError, ValueError):
+            state.last_tagged_count = 0
         self.task_states.save(state)
 
     # -------------------- 发布时间（Ti 口径校准） --------------------

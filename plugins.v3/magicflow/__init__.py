@@ -92,7 +92,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "2.7.4"
+__version__ = "2.8.0"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -1140,7 +1140,7 @@ class MagicFlow(_PluginBase):
                     self._store.journal.finalize(
                         record.operation_id,
                         "completed" if summary.get("status") != "failed" else "failed",
-                        items=[OperationItem(hash="", title=self._run_summary_text(summary), reason=f"耗时 {duration:.1f}s")],
+                        items=self._run_items(summary, duration),
                         duration=duration,
                         error_message=summary.get("reason") if summary.get("status") == "failed" else None,
                     )
@@ -1161,6 +1161,17 @@ class MagicFlow(_PluginBase):
                 self._store.record_run_summary(task_id, "failed", str(e), time.time() - started)
         finally:
             self._end_run(task_id)
+
+    def _run_items(self, summary: Dict[str, Any], duration: float) -> List[OperationItem]:
+        """一轮刷流的操作明细：首行摘要 + 逐条「新增 / 复用 / 失败」明细。"""
+        items = [OperationItem(
+            hash="",
+            title=self._run_summary_text(summary),
+            reason=f"耗时 {duration:.1f}s",
+            source="run",
+        )]
+        items.extend([it for it in (summary.get("items") or []) if isinstance(it, OperationItem)])
+        return items
 
     @staticmethod
     def _run_summary_text(summary: Dict[str, Any]) -> str:
@@ -1257,8 +1268,28 @@ class MagicFlow(_PluginBase):
             to_adopt.append(h)
             adopted += 1
 
+        if to_tag:
+            # 🔎 标签审计：纳管同站种子（打任务标签）
+            self._log(
+                f"[标签审计] 纳管同站种子 {len(to_tag)} 个 → 标签「{task.brush_tag}」"
+            )
         for h in to_tag:
             downloader.set_torrent_tags(h, [task.brush_tag])
+        if to_tag and self._store:
+            try:
+                self._store.journal.record(
+                    task_id=task.id,
+                    kind="tag",
+                    items=[OperationItem(
+                        hash="",
+                        title=f"同站纳管·补标签 {len(to_tag)} 个",
+                        reason=f"→「{task.brush_tag}」",
+                        source="adopt",
+                        tags=f"→{task.brush_tag}",
+                    )],
+                )
+            except Exception as _jerr:
+                self._log(f"记录纳管标签事件失败：{_jerr}", "warning")
         protected = 0
         if store and to_adopt:
             store.note_adopted(task.id, to_adopt)
@@ -1272,6 +1303,40 @@ class MagicFlow(_PluginBase):
                 f"新纳管并保护 {adopted} 个（已在管 {already}）"
             )
         return {"matched": matched, "adopted": adopted, "already": already, "protected": protected}
+
+    def _watch_tag_integrity(self, task: MagicFlowTaskConfig, count: int) -> None:
+        """托管数看门狗：与上一轮对比，骤降至一半以下 → 记「标签疑似被外部清除」。
+
+        专用于捕捉“种子还在、标签却被抹掉”这类**不产生删种记录**的异常
+        （如 MoviePilot 核心 get_torrent_id_by_tag → delete_torrents_tags 删全局标签定义）。
+        正常清理会带来 deleted>0，本看门狗只看“无删种却骤降”。
+        """
+        if not self._store or count is None:
+            return
+        try:
+            c = int(count)
+        except (TypeError, ValueError):
+            return
+        prev = self._store.get_last_tagged_count(task.id)
+        if prev >= 3 and c < prev * 0.5:
+            self._log(
+                f"魔流 [{task.name}] ⚠️ 托管数骤降 {prev} → {c}（本轮未见删种，疑似标签被外部清除）",
+                "warning",
+            )
+            try:
+                self._store.journal.record(
+                    task_id=task.id,
+                    kind="tag",
+                    items=[OperationItem(
+                        hash="", source="watchdog",
+                        title=f"⚠️ 托管数骤降 {prev} → {c}",
+                        reason="本轮未见删种，疑似标签被外部工具清除",
+                    )],
+                )
+            except Exception:
+                pass
+        # 记“较高值”：一次骤降后不被低值覆盖，保证下次仍能对比出新的骤降
+        self._store.set_last_tagged_count(task.id, max(prev, c))
 
     def _brush_impl(self, task_id: str) -> None:
         """抓取站点候选并补充优质魔力种子（刷流，v5 流程）。"""
@@ -1756,6 +1821,8 @@ class MagicFlow(_PluginBase):
             skipped_quota = 0
             skipped_reuse_limit = 0
             skipped_rate = 0
+            tagged_reuse = 0
+            detail_items: List[OperationItem] = []  # 逐条明细（供操作流水展开）
             for item in ordered:
                 is_reuse = len(item) == 4
                 if is_reuse:
@@ -1820,11 +1887,14 @@ class MagicFlow(_PluginBase):
                         if dl_budget <= 0:
                             break
                     ok = False
+                    _rerr = ""
                     if mode == "hash":
                         ok = downloader.set_torrent_tags(h, [task.brush_tag])
                         st = str(getattr(linfo, "state", "") or "").lower()
                         if st in (QB_PAUSED_STATES | {"error", "missingfiles"}):
                             downloader.resume_torrent(h)
+                        if ok:
+                            tagged_reuse += 1
                     else:  # 跨站辅种
                         hs, err = downloader.add_torrent_reuse(
                             torrent_bytes=cand.raw,
@@ -1836,8 +1906,14 @@ class MagicFlow(_PluginBase):
                         if ok and hs:
                             h = hs.lower()
                         if not ok and err:
+                            _rerr = str(err)
                             self._log(f"辅种失败：{cand.title}（{err}）", "warning")
                     if not ok:
+                        detail_items.append(OperationItem(
+                            hash=h or "", title=cand.title,
+                            reason=f"辅种失败：{_rerr or '校验不通过/未匹配'}",
+                            size_gb=size_gb, source="reuse-fail",
+                        ))
                         if self._store and ckey:
                             self._store.dead.mark(task.id, [f"cand:{ckey}"])
                         continue
@@ -1861,6 +1937,12 @@ class MagicFlow(_PluginBase):
                         if keys:
                             self._store.seen.mark(task.id, keys)
                     self._log(f"复用入库{'（补下载）' if reuse_downloads else ''}：{cand.title}")
+                    detail_items.append(OperationItem(
+                        hash=h or "", title=cand.title,
+                        reason="复用·补下载" if reuse_downloads else "复用",
+                        size_gb=size_gb, source="reuse",
+                        seeders=int(getattr(cand, "seeders", 0) or 0),
+                    ))
                     continue
 
                 # B：需下载
@@ -1899,11 +1981,21 @@ class MagicFlow(_PluginBase):
                             keys.append(f"cand:{ckey}")
                         self._store.seen.mark(task.id, keys)
                     self._log(f"新增：{cand.title}")
+                    detail_items.append(OperationItem(
+                        hash=nh, title=cand.title, reason="新增",
+                        size_gb=size_gb, source="add",
+                        seeders=int(getattr(cand, "seeders", 0) or 0),
+                    ))
                 else:
                     add_failed += 1
                     if self._store and ckey:
                         self._store.dead.mark(task.id, [f"cand:{ckey}"])
                     self._log(f"添加失败：{cand.title}（{error}）", "warning")
+                    detail_items.append(OperationItem(
+                        hash=h or "", title=cand.title,
+                        reason=f"添加失败：{error or '未知原因'}",
+                        size_gb=size_gb, source="add-fail",
+                    ))
 
             if self._store and new_pub:
                 self._store.note_pub_dates(task.id, new_pub, tz=SITE_TZ_OFFSET_HOURS)
@@ -1917,6 +2009,19 @@ class MagicFlow(_PluginBase):
                     kind="reuse",
                     items=[OperationItem(hash="", title=f"存量复用 {reused} 个", reason="辅种")],
                 )
+            if tagged_reuse and self._store:
+                try:
+                    self._store.journal.record(
+                        task_id=task.id,
+                        kind="tag",
+                        items=[OperationItem(
+                            hash="", title=f"复用·补标签 {tagged_reuse} 个",
+                            reason=f"→「{task.brush_tag}」", source="reuse",
+                            tags=f"→{task.brush_tag}",
+                        )],
+                    )
+                except Exception as _jerr:
+                    self._log(f"记录复用标签事件失败：{_jerr}", "warning")
 
             # 游标推进判定：并发满时，只有本轮复用成功才推进；零复用视为空转不推进。
             if concurrency_full:
@@ -1959,6 +2064,7 @@ class MagicFlow(_PluginBase):
                 "kept": len(managed_hashes),
                 "candidates": len(candidates),
                 "filtered": len(scored),
+                "items": detail_items,
             }
 
         except Exception as e:
@@ -2078,6 +2184,13 @@ class MagicFlow(_PluginBase):
             all_tagged, _tag_err = downloader.get_torrents(tags=[task.brush_tag])
         except Exception as _tag_exc:
             all_tagged, _tag_err = [], str(_tag_exc)
+
+        # 看门狗：与上一轮对比，检测「种子还在、标签却被抹掉」（托管骤降但本轮无删种）
+        if not _tag_err:
+            try:
+                self._watch_tag_integrity(task, len(all_tagged or []))
+            except Exception as _wd_err:
+                self._log(f"魔流 [{task.name}] 标签看门狗异常: {_wd_err}", "warning")
 
         # ① 自动恢复被暂停的已完成种子（暂停 → tracker 不计做种 → 0 产出）
         if getattr(task, "auto_resume_paused", True) and all_tagged:
