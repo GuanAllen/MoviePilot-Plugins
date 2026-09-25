@@ -181,7 +181,28 @@ function normalizeSettings(settings = {}) {
     request_interval: Number.isFinite(requestInterval) ? Math.max(0, requestInterval) : 0,
     bonus_upload_limit_kbps: Math.max(0, num(settings.bonus_upload_limit_kbps, 200)),
     brush_upload_limit_kbps: Math.max(0, num(settings.brush_upload_limit_kbps, 10240)),
+    iyuu_token: String(settings.iyuu_token || ''),
+    iyuu_sites: normalizeIyuuSites(settings.iyuu_sites),
   }
+}
+
+/** 标准化「IYUU 站点密钥表」：domain -> { passkey/uid/downhash }。 */
+function normalizeIyuuSites(sites = {}) {
+  const out = {};
+  if (!sites || typeof sites !== 'object') return out
+  const KEYS = ['passkey', 'uid', 'downhash', 'authkey', 'rsskey'];
+  Object.keys(sites).forEach(domain => {
+    const key = String(domain || '').trim().toLowerCase();
+    const row = sites[domain];
+    if (!key || !row || typeof row !== 'object') return
+    const clean = {};
+    KEYS.forEach(k => {
+      const val = String(row[k] == null ? '' : row[k]).trim();
+      if (val) clean[k] = val;
+    });
+    if (Object.keys(clean).length) out[key] = clean;
+  });
+  return out
 }
 
 /** 标准化「下载器全局参数」（速度单位 KB/s）。 */
@@ -334,4 +355,4 @@ const _export_sfc = (sfc, props) => {
   return target;
 };
 
-export { RUN_MODES as R, _export_sfc as _, normalizeDownloaderPrefs as a, normalizeDownloaderPaths as b, cloneTask as c, normalizeDefaults as d, runStatusText as e, formatBonus as f, formatBytes as g, formatDateTime as h, formatDurationSeconds as i, normalizeSettings as j, formatDuration as k, normalizeTask as n, runModeMeta as r, taskStateMeta as t, unwrapResponse as u };
+export { RUN_MODES as R, _export_sfc as _, normalizeDownloaderPrefs as a, normalizeDownloaderPaths as b, cloneTask as c, normalizeDefaults as d, runStatusText as e, formatBonus as f, formatBytes as g, formatDateTime as h, formatDurationSeconds as i, normalizeSettings as j, formatDuration as k, normalizeIyuuSites as l, normalizeTask as n, runModeMeta as r, taskStateMeta as t, unwrapResponse as u };

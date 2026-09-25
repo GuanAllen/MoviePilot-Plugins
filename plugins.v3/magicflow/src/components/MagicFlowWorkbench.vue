@@ -11,6 +11,7 @@ import {
   normalizeDefaults,
   normalizeDownloaderPaths,
   normalizeDownloaderPrefs,
+  normalizeIyuuSites,
   normalizeSettings,
   normalizeTask,
   RUN_MODES,
@@ -82,6 +83,8 @@ const settingsDraft = ref({
   request_interval: 0,
   bonus_upload_limit_kbps: 200,
   brush_upload_limit_kbps: 10240,
+  iyuu_token: '',
+  iyuu_sites: {},
 })
 const downloaderPrefsDraft = ref(normalizeDownloaderPrefs({}))
 const downloaderPrefsRecommended = ref(null)
@@ -90,6 +93,12 @@ const downloaderPrefsRaw = ref(null)
 const downloaderPathsDraft = ref(normalizeDownloaderPaths({}))
 const defaultsDraft = ref(normalizeDefaults({}))
 const defaultsLoading = ref(false)
+// IYUU 云端辅种（可选）：站点表按 MoviePilot 已配置站点生成
+const iyuuSites = ref([])
+const iyuuLoading = ref(false)
+const iyuuTesting = ref(false)
+const iyuuStatus = ref(null)
+const iyuuShowMore = ref({})
 let refreshTimer
 let phaseTimer
 
@@ -446,6 +455,8 @@ async function loadStatus() {
       request_interval: status.value.request_interval,
       bonus_upload_limit_kbps: status.value.bonus_upload_limit_kbps,
       brush_upload_limit_kbps: status.value.brush_upload_limit_kbps,
+      iyuu_token: status.value.iyuu_token,
+      iyuu_sites: status.value.iyuu_sites,
     })
     statusLoaded.value = true
     if (!selectedTaskId.value && tasks.value.length) {
@@ -819,7 +830,81 @@ async function detailTorrentAction(action) {
 async function openSettings(tab = 'general') {
   settingsTab.value = tab
   settingsDialog.value = true
-  await Promise.all([loadDownloaderPrefs(), loadDefaults()])
+  await Promise.all([loadDownloaderPrefs(), loadDefaults(), loadIyuuSites()])
+}
+
+// 加载 IYUU 站点表（按 MoviePilot 已配置站点生成）。
+async function loadIyuuSites() {
+  iyuuLoading.value = true
+  try {
+    const data = unwrapResponse(await props.api.get(`${pluginBase.value}/iyuu/sites`))
+    iyuuStatus.value = data || null
+    const draftFill = normalizeIyuuSites(settingsDraft.value.iyuu_sites)
+    iyuuSites.value = (data?.sites || []).map(row => {
+      const domain = String(row.domain || '').toLowerCase()
+      const serverFill = normalizeIyuuSites({ d: row.fill || {} }).d || {}
+      const fill = draftFill[domain] || serverFill
+      return {
+        id: row.id,
+        name: row.name || row.domain || '',
+        domain: row.domain || '',
+        iyuu_sid: row.iyuu_sid,
+        is_active: row.is_active,
+        has_apikey: row.has_apikey,
+        has_cookie: row.has_cookie,
+        passkey: fill.passkey || '',
+        uid: fill.uid || '',
+        downhash: fill.downhash || '',
+      }
+    })
+  } catch (err) {
+    error.value = err?.message || String(err)
+  } finally {
+    iyuuLoading.value = false
+  }
+}
+
+// 把站点密钥表写回 settingsDraft（保存前调用）。
+function syncIyuuToDraft() {
+  const map = {}
+  iyuuSites.value.forEach(row => {
+    const domain = String(row.domain || '').toLowerCase()
+    if (!domain) return
+    const clean = normalizeIyuuSites({ d: { passkey: row.passkey, uid: row.uid, downhash: row.downhash } }).d
+    if (clean) map[domain] = clean
+  })
+  settingsDraft.value.iyuu_sites = map
+}
+
+// 测试 IYUU Token。
+async function testIyuu() {
+  iyuuTesting.value = true
+  try {
+    syncIyuuToDraft()
+    const data = unwrapResponse(await props.api.get(`${pluginBase.value}/iyuu/test`))
+    notify(`IYUU Token 有效（账号 ${data?.username || data?.id || '-'}，站点表 ${data?.sites ?? 0} 条）`)
+  } catch (err) {
+    notify(err?.message || String(err))
+  } finally {
+    iyuuTesting.value = false
+  }
+}
+
+// 保存 IYUU 设置（Token + 站点密钥表）。
+async function saveIyuu() {
+  saving.value = true
+  try {
+    syncIyuuToDraft()
+    unwrapResponse(await props.api.post(`${pluginBase.value}/settings`, normalizeSettings(settingsDraft.value)))
+    notify('IYUU 设置已保存')
+    await loadStatus()
+    await loadIyuuSites()
+    emit('action')
+  } catch (err) {
+    error.value = err?.message || String(err)
+  } finally {
+    saving.value = false
+  }
 }
 
 // 加载下载器全局参数。
@@ -922,6 +1007,7 @@ function saveActiveSettings() {
   if (tab === 'downloader') return saveDownloaderPrefs()
   if (tab === 'paths') return savePathsTab()
   if (tab === 'template') return saveDefaults()
+  if (tab === 'iyuu') return saveIyuu()
   return saveSettings()
 }
 
@@ -1835,6 +1921,7 @@ onUnmounted(() => {
           <VTab value="downloader" class="magicflow-settings-tab">下载器参数</VTab>
           <VTab value="paths" class="magicflow-settings-tab">下载目录</VTab>
           <VTab value="template" class="magicflow-settings-tab">默认任务模板</VTab>
+          <VTab value="iyuu" class="magicflow-settings-tab">IYUU 辅种</VTab>
         </VTabs>
         <VDivider />
 
@@ -2037,6 +2124,92 @@ onUnmounted(() => {
               variant="outlined"
               density="comfortable"
             />
+          </div>
+
+          <div v-else-if="settingsTab === 'iyuu'" class="magicflow-settings-form">
+            <p class="magicflow-settings-hint">
+              IYUU 云端辅种为<strong>可选增强</strong>：填写 Token 后，复用/刷流会优先用 IYUU 云端匹配<strong>他站同资源</strong>；
+              下方站点密钥可手填（留空则自动尝试用 MoviePilot 已存的 apikey / cookie 取链）。
+              <strong>不填 Token 则完全不启用</strong>，一切照旧走内置跨站特征码方案。
+            </p>
+            <div class="magicflow-iyuu-token">
+              <VTextField
+                v-model="settingsDraft.iyuu_token"
+                label="IYUU 云端 Token"
+                placeholder="留空 = 不启用 IYUU 辅种"
+                variant="outlined"
+                density="comfortable"
+                hide-details
+                autocomplete="off"
+              />
+              <VBtn
+                variant="tonal"
+                color="primary"
+                size="small"
+                prepend-icon="mdi-connection"
+                :loading="iyuuTesting"
+                :disabled="!settingsDraft.iyuu_token"
+                @click="testIyuu"
+              >测试</VBtn>
+            </div>
+            <div class="magicflow-iyuu-sites">
+              <div class="magicflow-iyuu-sites__head">
+                <span>站点密钥（按 MoviePilot 已配置站点生成）</span>
+                <VChip
+                  v-if="iyuuStatus"
+                  size="x-small"
+                  variant="tonal"
+                  :color="iyuuStatus.enabled ? 'success' : 'grey'"
+                >{{ iyuuStatus.enabled ? '已启用' : '未启用' }}</VChip>
+              </div>
+              <p v-if="iyuuLoading" class="magicflow-settings-hint">加载中…</p>
+              <p v-else-if="!iyuuSites.length" class="magicflow-settings-hint">
+                未检测到已配置站点（请先在 MoviePilot 中添加站点）。
+              </p>
+              <div v-for="row in iyuuSites" :key="row.domain || row.name" class="magicflow-iyuu-row">
+                <div class="magicflow-iyuu-row__head">
+                  <span class="magicflow-iyuu-row__name">{{ row.name }}</span>
+                  <VChip v-if="row.iyuu_sid" size="x-small" variant="tonal">IYUU #{{ row.iyuu_sid }}</VChip>
+                  <VChip v-if="row.has_apikey" size="x-small" variant="tonal" color="success">API</VChip>
+                  <VChip v-if="row.has_cookie" size="x-small" variant="tonal" color="info">Cookie</VChip>
+                  <VSpacer />
+                  <VBtn
+                    size="x-small"
+                    variant="text"
+                    :append-icon="iyuuShowMore[row.domain || row.name] ? 'mdi-chevron-up' : 'mdi-chevron-down'"
+                    @click="iyuuShowMore[row.domain || row.name] = !iyuuShowMore[row.domain || row.name]"
+                  >{{ iyuuShowMore[row.domain || row.name] ? '收起' : '更多' }}</VBtn>
+                </div>
+                <div class="magicflow-iyuu-row__fields">
+                  <VTextField
+                    v-model="row.passkey"
+                    label="passkey"
+                    placeholder="留空 = 自动获取"
+                    variant="outlined"
+                    density="compact"
+                    hide-details
+                    autocomplete="off"
+                  />
+                  <VTextField
+                    v-model="row.uid"
+                    label="uid（可选）"
+                    variant="outlined"
+                    density="compact"
+                    hide-details
+                    autocomplete="off"
+                  />
+                </div>
+                <VTextField
+                  v-if="iyuuShowMore[row.domain || row.name]"
+                  v-model="row.downhash"
+                  label="downhash（可选）"
+                  variant="outlined"
+                  density="compact"
+                  hide-details
+                  autocomplete="off"
+                />
+              </div>
+            </div>
           </div>
 
           <div v-else class="magicflow-settings-form">
@@ -2404,6 +2577,65 @@ onUnmounted(() => {
   display: grid;
   gap: 10px;
   justify-items: start;
+}
+
+/* IYUU 辅种设置 */
+.magicflow-iyuu-token {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.magicflow-iyuu-sites {
+  display: grid;
+  gap: 10px;
+}
+
+.magicflow-iyuu-sites__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), var(--v-high-emphasis-opacity));
+}
+
+.magicflow-iyuu-row {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+
+.magicflow-iyuu-row__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-inline-size: 0;
+}
+
+.magicflow-iyuu-row__name {
+  font-weight: 600;
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.magicflow-iyuu-row__fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.7fr);
+  gap: 8px;
+}
+
+@media (max-width: 480px) {
+  .magicflow-iyuu-row__fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .magicflow-settings-dialog__footer {

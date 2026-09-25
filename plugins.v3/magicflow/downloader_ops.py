@@ -621,6 +621,23 @@ class DownloaderAdapter:
             return None, "种子内容为空"
 
         tag_list = [tag] if tag else []
+
+        # 添加前记录该标签下的 hash，用于可靠定位「刚添加的这颗」（不靠猜）
+        before_hashes: set = set()
+        if tag:
+            try:
+                _b, _ = self._downloader.get_torrents(tags=tag)
+                before_hashes = {str(t.get("hash", "")).lower() for t in (_b or [])}
+            except Exception:
+                before_hashes = set()
+
+        # 兜底 hash：本地直接算 infohash（不依赖下载器回查，也绝不触发标签删除）
+        local_hash: Optional[str] = None
+        try:
+            local_hash = str(info_hash(torrent_bytes)).lower()
+        except Exception:
+            local_hash = None
+
         hash_string: Optional[str] = None
         # 🔎 标签审计：辅种复用添加种子
         logger.info(f"[标签审计] ADD-REUSE dir={save_path or '-'} tags={tag_list} paused=True")
@@ -637,24 +654,45 @@ class DownloaderAdapter:
             if isinstance(result, tuple) and len(result) == 2:
                 ok, ids = result
                 if ids:
-                    hash_string = next(iter(ids))
-                if not ok and not hash_string:
+                    hash_string = str(next(iter(ids))).lower()
+                if not ok and not hash_string and not local_hash:
                     return None, "qBittorrent 添加种子失败"
         except Exception as e:
             return None, f"添加种子失败: {e}"
 
-        if not hash_string and torrent_bytes:
-            # 优先本地算 infohash（不依赖下载器回查，绝不触发临时标签删除）
+        if not hash_string:
+            hash_string = local_hash
+        if not hash_string and tag:
+            # 最后兜底：取该标签下「添加前不存在」的种子（最新的那颗）
             try:
-                hash_string = info_hash(torrent_bytes)
+                _a, _ = self._downloader.get_torrents(tags=tag)
+                new = [t for t in (_a or [])
+                       if str(t.get("hash", "")).lower() not in before_hashes]
+                if new:
+                    new.sort(key=lambda t: t.get("added_on") or 0)
+                    hash_string = str(new[-1].get("hash", "")).lower()
             except Exception:
                 hash_string = None
-        if hash_string:
-            hash_string = str(hash_string).lower()
         if not hash_string:
-            hash_string = self._get_torrent_hash_by_tag(tag or "temp")
-        if not hash_string:
-            return None, "添加成功但未获取到 hash"
+            # 定位不到新种子 → 不冒险操作别的种，直接放弃本次辅种
+            return None, "添加成功但未能定位新种子 hash（已放弃辅种）"
+
+        def _delete_added(reason: str) -> str:
+            """撤销刚添加的辅种种（不删文件），并复核确已删除。"""
+            for _try in range(2):
+                try:
+                    self._downloader.delete_torrents(ids=[hash_string], delete_file=False)
+                except Exception as e:
+                    logger.warning(f"撤销辅种删除失败 {hash_string}: {e}")
+                try:
+                    _chk, _ = self._downloader.get_torrents(ids=hash_string)
+                    if not _chk:
+                        return reason
+                except Exception:
+                    return reason
+                time.sleep(1.5)
+            logger.warning(f"撤销辅种后种子仍存在（需人工清理）: {hash_string}")
+            return reason
 
         # 重新校验：指向已有文件，若命中则瞬时 100%
         try:
@@ -665,14 +703,11 @@ class DownloaderAdapter:
         if verify:
             progress = self._wait_checked(hash_string, timeout=timeout)
             if progress is None:
-                return hash_string, "校验状态未知（保留种子待人工确认）"
+                # 校验超时/无法确认 → 撤销，避免留下「暂停·0%」僵尸种
+                return None, _delete_added("校验超时/未知，已撤销（避免残留）")
             if progress < 0.999:
                 # 文件不匹配 → 撤销，避免白白下载
-                try:
-                    self._downloader.delete_torrents(ids=[hash_string], delete_file=False)
-                except Exception:
-                    pass
-                return None, f"文件不匹配（校验 {progress:.1%}），已撤销"
+                return None, _delete_added(f"文件不匹配（校验 {progress:.1%}），已撤销")
 
         # 开始做种
         try:

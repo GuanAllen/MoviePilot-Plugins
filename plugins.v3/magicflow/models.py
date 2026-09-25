@@ -1,5 +1,5 @@
 import re
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -222,6 +222,13 @@ class MagicFlowSettingsPayload(BaseModel):
 
     # 界面
     compact_mode: bool = False
+
+    # IYUU 云端辅种（可选）：Token 留空 = 不启用，退回内置跨站复用
+    iyuu_token: str = Field("", max_length=200, description="IYUU 云端 Token，留空 = 不启用 IYUU 辅种")
+    iyuu_sites: Dict[str, Dict[str, str]] = Field(
+        default_factory=dict,
+        description="站点密钥表：domain -> {passkey/uid/downhash...}（用户手填，优先于自动获取）",
+    )
 
 
 class MagicFlowDownloaderPrefsPayload(BaseModel):
