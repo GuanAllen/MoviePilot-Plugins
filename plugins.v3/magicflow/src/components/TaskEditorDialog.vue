@@ -84,10 +84,29 @@ function closeDialog() {
   emit('update:modelValue', false)
 }
 
-// 校验必填项后提交标准化任务数据。
+// 未填「任务目标」时的提醒弹窗
+const goalWarning = ref(false)
+
+// 是否已填写有效的任务目标（>0）
+function hasGoal() {
+  const v = localTask.value.goal_value
+  return !(v === '' || v === null || v === undefined) && Number(v) > 0
+}
+
+// 校验必填项后提交标准化任务数据；未填任务目标先弹窗提醒。
 async function saveTask() {
   const result = await formRef.value?.validate()
   if (result && !result.valid) return
+  if (!hasGoal()) {
+    goalWarning.value = true
+    return
+  }
+  emit('save', normalizeTask(localTask.value))
+}
+
+// 确认「仍然保存」（不带目标）
+function confirmSaveWithoutGoal() {
+  goalWarning.value = false
   emit('save', normalizeTask(localTask.value))
 }
 </script>
@@ -244,6 +263,33 @@ async function saveTask() {
                   </VCol>
                   <VCol cols="12" md="6">
                     <VTextField v-model="localTask.active_time_range" label="开启时间段" placeholder="如 00:00-08:00" />
+                  </VCol>
+                </VRow>
+              </section>
+
+              <section class="editor-section">
+                <header class="editor-section__head">
+                  <div>
+                    <div class="text-subtitle-1 font-weight-medium">任务目标</div>
+                    <div class="text-body-2 text-medium-emphasis">
+                      {{ isBrush ? '站点上传量达到目标后，任务自动停止' : '站点魔力值达到目标后，任务自动停止' }}
+                    </div>
+                  </div>
+                  <VChip size="small" color="primary" variant="tonal">建议填写</VChip>
+                </header>
+                <VRow>
+                  <VCol cols="12" md="6">
+                    <VTextField
+                      v-model.number="localTask.goal_value"
+                      type="number"
+                      min="0"
+                      :step="isBrush ? 100 : 1000"
+                      :label="isBrush ? '目标上传量（GB）' : '目标魔力值'"
+                      :suffix="isBrush ? 'GB' : '魔力值'"
+                      hint="达到目标后任务自动停止（仅停调度，不撤种、不删种）；未填会弹窗提醒"
+                      persistent-hint
+                      clearable
+                    />
                   </VCol>
                 </VRow>
               </section>
@@ -796,6 +842,10 @@ async function saveTask() {
                   <div><dt>下载器</dt><dd>{{ localTask.downloader || '未选择' }}</dd></div>
                   <div><dt>调度</dt><dd>{{ scheduleText }}</dd></div>
                   <div><dt>开启时段</dt><dd>{{ localTask.active_time_range || '全天' }}</dd></div>
+                  <div>
+                    <dt>任务目标</dt>
+                    <dd>{{ hasGoal() ? (isBrush ? `${localTask.goal_value} GB 上传量` : `${localTask.goal_value} 魔力值`) : '未设置' }}</dd>
+                  </div>
                 </dl>
               </section>
             </VWindowItem>
@@ -803,6 +853,27 @@ async function saveTask() {
         </VForm>
       </VCardText>
     </VCard>
+
+    <VDialog v-model="goalWarning" max-width="30rem">
+      <VCard class="pa-2">
+        <VCardText>
+          <div class="d-flex align-center mb-2">
+            <VIcon icon="mdi-flag-alert" color="warning" class="mr-2" />
+            <span class="text-subtitle-1 font-weight-medium">尚未设置任务目标</span>
+          </div>
+          <div class="text-body-2 text-medium-emphasis">
+            建议为每个任务设置目标，达到后会自动停止：
+            <strong>{{ isBrush ? '站点上传量（GB）' : '站点魔力值' }}</strong>。
+            未设置目标的任务将一直运行下去。
+          </div>
+        </VCardText>
+        <VCardActions>
+          <VSpacer />
+          <VBtn variant="text" @click="goalWarning = false">返回填写</VBtn>
+          <VBtn color="warning" variant="flat" @click="confirmSaveWithoutGoal">仍然保存</VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
   </VDialog>
 </template>
 <style scoped>

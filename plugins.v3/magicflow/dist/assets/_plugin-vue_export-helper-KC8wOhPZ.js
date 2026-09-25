@@ -14,6 +14,7 @@ const taskDefaults = {
   upload_min_kbps: 200,
   brush_min_leechers: 1,
   brush_seed_days: 2,
+  goal_value: null,
   brush_interval: 5,
   check_interval: 1,
   cron_expression: null,
@@ -97,6 +98,7 @@ function normalizeTask(task) {
     'min_ratio',
     'up_speed',
     'dl_speed',
+    'goal_value',
     'site_id',
   ];
   const optionalText = [

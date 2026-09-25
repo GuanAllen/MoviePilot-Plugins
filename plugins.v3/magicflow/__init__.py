@@ -92,7 +92,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "2.5.0"
+__version__ = "2.6.0"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -234,6 +234,15 @@ class MagicFlowTaskConfig:
     upload_idle_minutes: int = 10    # 连续多少分钟上传低于门槛 → 清理（0=自动≈2×检查间隔）
     upload_min_kbps: int = 200       # 平均上传速率门槛（KB/s）：低于此值视为「无上传」
     brush_min_leechers: int = 1      # 刷流选种标准：最小下载人数（有下载需求才下）
+    brush_seed_days: int = 2         # 刷流：做种满 N 天清理换新（0=回退「无上传」判定）
+
+    # 完美种保护：非零魔 ∧ 站内做种人数≤上限 ∧ 做种周数≥下限 的优质老种永久保留
+    protect_perfect: bool = True
+    perfect_max_seeders: int = 3
+    perfect_min_weeks: float = 4.0
+
+    # 任务目标：达到后任务自动停止（bonus=站点魔力值；brush=站点上传量 GB；None=未设）
+    goal_value: Optional[float] = None
 
     # Ti 口径：publish（默认，= 自发布时间，站点文档口径；配合站点真实 Ni 与站点 A 吻合）
     #          seed_time（= qB 做种时长；无发布时间时的回落值）
@@ -310,6 +319,11 @@ class MagicFlowTaskConfig:
             "upload_idle_minutes": self.upload_idle_minutes,
             "upload_min_kbps": self.upload_min_kbps,
             "brush_min_leechers": self.brush_min_leechers,
+            "brush_seed_days": self.brush_seed_days,
+            "protect_perfect": self.protect_perfect,
+            "perfect_max_seeders": self.perfect_max_seeders,
+            "perfect_min_weeks": self.perfect_min_weeks,
+            "goal_value": self.goal_value,
             "ti_source": self.ti_source,
             "seen_cooldown_hours": self.seen_cooldown_hours,
             "bonus_t0": self.bonus_t0,
@@ -1006,6 +1020,8 @@ class MagicFlow(_PluginBase):
         """抓取站点候选并补充优质魔力种子（刷流，带并发保护）。"""
         task = self._get_task_config(task_id)
         self._apply_task_traffic_limit()
+        if task and self._maybe_autostop_for_goal(task):
+            return
         if not self._try_begin_run(task_id):
             if task:
                 self._log(f"魔流 [{task.name}] 上一轮仍在执行，跳过本轮")
@@ -1853,6 +1869,9 @@ class MagicFlow(_PluginBase):
     def check(self, task_id: str) -> None:
         """执行魔力优化一轮（评估并删除低魔力产出种子）。"""
         self._apply_task_traffic_limit()
+        task = self._get_task_config(task_id)
+        if task and self._maybe_autostop_for_goal(task):
+            return
         self._run_check(task_id)
 
     def _is_in_active_time(self, time_range: str) -> bool:
@@ -2660,6 +2679,75 @@ class MagicFlow(_PluginBase):
             return float(self._ud_get(row, "bonus", 0) or 0)
         except (TypeError, ValueError):
             return 0.0
+
+    # ---------------------------------------------------------
+    # 任务目标（达到后自动停止任务）
+    # ---------------------------------------------------------
+
+    def _task_goal_status(self, task: MagicFlowTaskConfig) -> Dict[str, Any]:
+        """任务目标完成情况（用于展示与自动停止判定）。
+
+        目标口径随任务类型：
+          - bonus：站点魔力值（SiteUserData.bonus）达到 ``goal_value``；
+          - brush：站点上传量（SiteUserData.upload，字节）达到 ``goal_value`` GB。
+        返回以 ``goal_`` 前缀的字段，避免与任务其它字段冲突。
+        """
+        is_brush = str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush"
+        unit = "GB" if is_brush else "魔力值"
+        out: Dict[str, Any] = {
+            "goal_has": False,
+            "goal_reached": False,
+            "goal_current": 0.0,
+            "goal_target": 0.0,
+            "goal_unit": unit,
+        }
+        try:
+            tgt = float(getattr(task, "goal_value", None) or 0)
+        except (TypeError, ValueError):
+            tgt = 0.0
+        if tgt <= 0:
+            return out
+        out["goal_has"] = True
+        out["goal_target"] = tgt
+        stats = self._site_user_stats(task.site_id) or {}
+        if is_brush:
+            cur = float(stats.get("upload") or 0.0) / (1024 ** 3)   # 字节 → GB
+        else:
+            cur = float(stats.get("bonus") or 0.0)
+        out["goal_current"] = cur
+        out["goal_reached"] = bool(stats.get("ok")) and cur >= tgt - 1e-9
+        return out
+
+    def _maybe_autostop_for_goal(self, task: MagicFlowTaskConfig) -> bool:
+        """任务达到目标则自动停用（仅停调度：不搬种、不撤种、不删种）。返回是否因此停用。"""
+        if not getattr(task, "enabled", False):
+            return False
+        st = self._task_goal_status(task)
+        if not (st.get("goal_has") and st.get("goal_reached")):
+            return False
+        task.enabled = False
+        self._save_config()
+        self._refresh_scheduler()
+        self._invalidate_summary()
+        self._apply_task_traffic_limit()
+        self._log(
+            f"魔流 [{task.name}] 已达任务目标（{st['goal_current']:.4g}/{st['goal_target']:.4g} "
+            f"{st['goal_unit']}）→ 自动停止任务"
+        )
+        if self._store:
+            try:
+                self._store.journal.record(
+                    task_id=task.id,
+                    kind="goal",
+                    items=[OperationItem(
+                        hash="",
+                        title="已达目标，自动停止",
+                        reason=f"{st['goal_current']:.4g}/{st['goal_target']:.4g} {st['goal_unit']}",
+                    )],
+                )
+            except Exception as err:
+                self._log(f"记录达标停止失败：{err}", "warning")
+        return True
 
     def _site_current_bonus_old(self, site_id: int) -> float:
         """（已弃用）旧实现：依赖 row 为 dict，实际 ORM 对象会全部跳过。"""
@@ -3645,7 +3733,12 @@ class MagicFlow(_PluginBase):
         if not task:
             return None
         store_stats = self._store.get_task_stats(task_id) if self._store else {}
-        return {**task.to_dict(), **store_stats, **self._phase_info(task_id)}
+        return {
+            **task.to_dict(),
+            **store_stats,
+            **self._phase_info(task_id),
+            **self._task_goal_status(task),
+        }
 
     def _compute_summary(self) -> Dict[str, Any]:
         """计算总览统计（20 秒缓存）。"""
@@ -3706,7 +3799,12 @@ class MagicFlow(_PluginBase):
         stats_by_id = self._runtime_stats_bulk(list(self._task_configs.values()))
         for task in self._task_configs.values():
             runtime = stats_by_id.get(task.id, {})
-            tasks.append({**task.to_dict(), **runtime, **self._phase_info(task.id)})
+            tasks.append({
+                **task.to_dict(),
+                **runtime,
+                **self._phase_info(task.id),
+                **self._task_goal_status(task),
+            })
         return tasks
 
     # ---------------------------------------------------------
@@ -4088,6 +4186,11 @@ class MagicFlow(_PluginBase):
             upload_idle_minutes=int(getattr(payload, "upload_idle_minutes", 10) or 0),
             upload_min_kbps=int(getattr(payload, "upload_min_kbps", 200) or 0),
             brush_min_leechers=int(getattr(payload, "brush_min_leechers", 1) or 0),
+            brush_seed_days=int(getattr(payload, "brush_seed_days", 2) if getattr(payload, "brush_seed_days", 2) is not None else 2),
+            protect_perfect=getattr(payload, "protect_perfect", True) is not False,
+            perfect_max_seeders=int(getattr(payload, "perfect_max_seeders", 3) or 0),
+            perfect_min_weeks=float(getattr(payload, "perfect_min_weeks", 4.0) or 0.0),
+            goal_value=float(payload.goal_value) if getattr(payload, "goal_value", None) not in (None, "") else None,
             brush_interval=payload.brush_interval,
             check_interval=payload.check_interval,
             cron_expression=payload.cron_expression or "",
@@ -4170,6 +4273,11 @@ class MagicFlow(_PluginBase):
         task.upload_idle_minutes = int(getattr(payload, "upload_idle_minutes", 10) or 0)
         task.upload_min_kbps = int(getattr(payload, "upload_min_kbps", 200) or 0)
         task.brush_min_leechers = int(getattr(payload, "brush_min_leechers", 1) or 0)
+        task.brush_seed_days = int(getattr(payload, "brush_seed_days", 2) if getattr(payload, "brush_seed_days", 2) is not None else 2)
+        task.protect_perfect = getattr(payload, "protect_perfect", True) is not False
+        task.perfect_max_seeders = int(getattr(payload, "perfect_max_seeders", 3) or 0)
+        task.perfect_min_weeks = float(getattr(payload, "perfect_min_weeks", 4.0) or 0.0)
+        task.goal_value = float(payload.goal_value) if getattr(payload, "goal_value", None) not in (None, "") else None
         task.brush_interval = payload.brush_interval
         task.check_interval = payload.check_interval
         task.cron_expression = payload.cron_expression or ""
