@@ -6,6 +6,7 @@ MagicFlow 魔流插件
 """
 
 import bisect
+import copy
 import re
 import threading
 import time
@@ -93,7 +94,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "2.9.1"
+__version__ = "2.10.0"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -122,6 +123,9 @@ REUSE_SCAN_MAX = 15
 #   - 每轮批量：一次只取这么多个候选的 .torrent 做辅种判定。
 REUSE_INTERVAL_MINUTES = 15
 REUSE_WORKER_BATCH = 5
+# 站点级候选抓取共享缓存 TTL（秒）：同站点的多个任务在此时窗内只抓**一份**候选，
+# 避免 N 个任务重复打同一站点 → 触发流控（这正是「几十个任务」的主要压力来源）。
+SITE_FETCH_TTL = 240.0
 # 站点魔力公式抓取缓存 TTL（秒）；抓取失败时只缓存 SHORT 秒后重试。
 SITE_FORMULA_TTL = 6 * 3600
 SITE_FORMULA_RETRY = 30 * 60
@@ -1174,6 +1178,76 @@ class MagicFlow(_PluginBase):
         """获取站点魔力计算器。"""
         return get_calculator(site_domain)
 
+    def _fetch_site_candidates(
+        self,
+        task: "MagicFlowTaskConfig",
+        pages: int = 1,
+        start_page: int = 0,
+        np_free: bool = False,
+    ) -> List[Any]:
+        """站点级共享抓取（single-flight + 短 TTL）。
+
+        同一站点的多个任务共享**同一份候选列表**（把「N 次请求」压成「1 次」），
+        避免几十个任务重复打站点触发流控。
+          - 缓存 key 含 站点/翻页/起始页/是否 RSS/是否免费直连；
+          - 同一 key 并发时用锁做「单飞」：先到的抓，后到的等它填缓存再复用；
+          - 返回**浅拷贝**（每任务各自改 _score/raw/real_hash，互不串味）。
+        """
+        site_key = (
+            str(getattr(task, "site_domain", "") or "") or f"site:{getattr(task, 'site_id', '')}"
+        ).strip().lower()
+        cache_key = (
+            f"{site_key}|{int(pages)}|{int(start_page)}"
+            f"|{1 if getattr(task, 'rss_support', False) else 0}|{1 if np_free else 0}"
+        )
+        now = time.time()
+        cache = getattr(self, "_site_fetch_cache", None)
+        if cache is None:
+            cache = self._site_fetch_cache = {}
+        # 顺手清理过期项，防无界增长
+        if len(cache) > 64:
+            for _k in [k for k, v in cache.items() if (now - float(v[0])) >= SITE_FETCH_TTL]:
+                cache.pop(_k, None)
+        hit = cache.get(cache_key)
+        if hit and (now - float(hit[0])) < SITE_FETCH_TTL:
+            return [copy.copy(c) for c in hit[1]]
+
+        locks = getattr(self, "_site_fetch_locks", None)
+        if locks is None:
+            locks = self._site_fetch_locks = {}
+        lock = locks.setdefault(cache_key, threading.Lock())
+        with lock:
+            # double-check：可能已被同站的其他任务填充
+            hit = cache.get(cache_key)
+            if hit and (time.time() - float(hit[0])) < SITE_FETCH_TTL:
+                return [copy.copy(c) for c in hit[1]]
+            fetcher = SiteFetcher()
+            if not fetcher.is_available:
+                return []
+            cands: List[Any] = []
+            if np_free:
+                site_obj = self._get_site(task.site_id)
+                if site_obj is not None:
+                    try:
+                        cands = fetcher.browse_site_np_free(site_obj, pages=pages, start_page=start_page) or []
+                    except Exception as _np_err:  # noqa: BLE001
+                        self._log(f"魔流 [{task.name}] 直连免费索引失败，回退 SDK：{_np_err}", "warning")
+                        cands = []
+            if not cands:
+                try:
+                    cands = fetcher.browse_site(
+                        task.site_domain,
+                        rss_support=getattr(task, "rss_support", False),
+                        pages=pages,
+                        start_page=start_page,
+                    ) or []
+                except Exception as err:  # noqa: BLE001
+                    self._log(f"魔流 [{task.name}] 站点抓取失败：{err}", "warning")
+                    cands = []
+            cands = list(cands)
+            cache[cache_key] = (time.time(), cands)
+            return [copy.copy(c) for c in cands]
+
     # ---------------------------------------------------------
     # 调度与服务实现
     # ---------------------------------------------------------
@@ -1287,17 +1361,10 @@ class MagicFlow(_PluginBase):
             if not fetcher.is_available:
                 return
             pages = max(int(task.browse_pages or BROWSE_PAGES), 1)
-            site_obj = self._get_site(task.site_id)
-            candidates = None
-            if site_obj is not None:
-                try:
-                    candidates = fetcher.browse_site_np_free(site_obj, pages=pages, start_page=0)
-                except Exception:  # noqa: BLE001
-                    candidates = None
+            # 站点级共享抓取：同站多任务共用一份候选（single-flight + 短 TTL）
+            candidates = self._fetch_site_candidates(task, pages=pages, start_page=0, np_free=True)
             if not candidates:
-                candidates = fetcher.browse_site(
-                    task.site_domain, rss_support=task.rss_support, pages=pages, start_page=0
-                )
+                candidates = self._fetch_site_candidates(task, pages=pages, start_page=0)
             if not candidates:
                 return
             filter_policy = self._build_filter_policy(task)
@@ -1707,23 +1774,14 @@ class MagicFlow(_PluginBase):
             if _brush_crawl and not task.rss_support:
                 # 直连站点索引：刷流只需免费（含 2X免费），直接按 spstate 抓而非全抓再筛。
                 # 只对站点自己的域名发请求，cookie 仍来自站点配置、不落盘不外传。
-                _site_obj = self._get_site(task.site_id)
-                if _site_obj is not None:
-                    try:
-                        candidates = fetcher.browse_site_np_free(_site_obj, pages=pages, start_page=0)
-                        self._log(
-                            f"魔流 [{task.name}] 直连站点索引·免费筛选 命中 {len(candidates) if candidates else 0} 个"
-                        )
-                    except Exception as _np_err:  # noqa: BLE001
-                        self._log(f"魔流 [{task.name}] 直连免费索引失败，回退 SDK：{_np_err}", "warning")
-                        candidates = None
+                # 站点级共享抓取：同站多任务在 TTL 内只抓一份候选。
+                candidates = self._fetch_site_candidates(task, pages=pages, start_page=0, np_free=True)
+                if candidates:
+                    self._log(
+                        f"魔流 [{task.name}] 直连站点索引·免费筛选 命中 {len(candidates)} 个"
+                    )
             if not candidates:
-                candidates = fetcher.browse_site(
-                    task.site_domain,
-                    rss_support=task.rss_support,
-                    pages=pages,
-                    start_page=cursor,
-                )
+                candidates = self._fetch_site_candidates(task, pages=pages, start_page=cursor)
             if not candidates:
                 self._log(f"魔力任务 [{task.name}] 未获取到候选种子（游标 {cursor}）")
                 return {"status": "noop", "reason": "未获取到候选种子", "candidates": 0, "filtered": 0}
@@ -5205,18 +5263,9 @@ class MagicFlow(_PluginBase):
             candidates = None
             _pages = max(int(task.browse_pages or BROWSE_PAGES), 1)
             if str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush" and not task.rss_support:
-                _site_obj = self._get_site(task.site_id)
-                if _site_obj is not None:
-                    try:
-                        candidates = fetcher.browse_site_np_free(_site_obj, pages=_pages, start_page=0)
-                    except Exception:  # noqa: BLE001
-                        candidates = None
+                candidates = self._fetch_site_candidates(task, pages=_pages, start_page=0, np_free=True)
             if not candidates:
-                candidates = fetcher.browse_site(
-                    task.site_domain,
-                    rss_support=task.rss_support,
-                    pages=_pages,
-                )
+                candidates = self._fetch_site_candidates(task, pages=_pages, start_page=0)
             if not candidates:
                 return Response(success=True, data={"candidates": [], "total": 0, "reason_counts": {}})
 
