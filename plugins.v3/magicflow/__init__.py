@@ -93,7 +93,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "2.9.0"
+__version__ = "2.9.1"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -117,6 +117,11 @@ TORRENT_FETCH_PER_TIMEOUT = 20.0
 # 原为 60，会让单轮取种数达到 TopN+60（如 30+55≈85），叠加站点 .torrent 限速后
 # 单轮分类阶段动辄上百秒，正是「任务卡在分类排序」的主因之一；收敛到 15。
 REUSE_SCAN_MAX = 15
+# ★ 辅种慢扫（独立 worker）：把「复用/辅种」从主刷流流程里切出来，单独低频跑。
+#   - 间隔（分钟）：比刷流间隔长很多，慢慢扫，避免短时间大量取种触发站点流控。
+#   - 每轮批量：一次只取这么多个候选的 .torrent 做辅种判定。
+REUSE_INTERVAL_MINUTES = 15
+REUSE_WORKER_BATCH = 5
 # 站点魔力公式抓取缓存 TTL（秒）；抓取失败时只缓存 SHORT 秒后重试。
 SITE_FORMULA_TTL = 6 * 3600
 SITE_FORMULA_RETRY = 30 * 60
@@ -465,7 +470,7 @@ class MagicFlow(_PluginBase):
             for k, v in (_iyuu_sites or {}).items()
             if isinstance(v, dict)
         }
-        self._iyuu_client = IyuuCloud(self._iyuu_token, logger=self._log)
+        self._iyuu_client = self._build_iyuu_client(self._iyuu_token)
         rows_defaults = raw_config.get("defaults")
         if not isinstance(rows_defaults, dict):
             rows_defaults = self.get_data("defaults") or {}
@@ -817,6 +822,23 @@ class MagicFlow(_PluginBase):
                     "func": self.check,
                     "kwargs": {"minutes": task.check_interval},
                     "func_kwargs": {"task_id": task.id},
+                }
+            )
+        # ★ 辅种慢扫：插件级**单 worker**（在循环外注册一次；一个服务，遍历所有符合条件的魔力任务）。
+        #   每轮只处理一个任务 → 服务数不随任务数增长，天然错峰/限流，避免几十个任务
+        #   同时取种撞站点流控。刷流任务只辅助「排名内」的种子（主流程顺带做），不纳入。
+        if any(
+            getattr(t, "enabled", False) and getattr(t, "reuse_existing", False)
+            and str(getattr(t, "task_type", "bonus") or "bonus").strip().lower() != "brush"
+            for t in self._task_configs.values()
+        ):
+            services.append(
+                {
+                    "id": "Reuse",
+                    "name": "辅种慢扫",
+                    "trigger": "interval",
+                    "func": self.reuse_scan,
+                    "kwargs": {"minutes": REUSE_INTERVAL_MINUTES},
                 }
             )
         return services
@@ -1204,6 +1226,179 @@ class MagicFlow(_PluginBase):
         finally:
             self._end_run(task_id)
 
+    def reuse_scan(self) -> None:
+        """辅种慢扫（插件级**单 worker**，低频）。
+
+        不再每任务注册服务，而是**一个插件级服务**遍历所有符合条件的魔力任务，
+        每轮只处理其中**一个**（round-robin）→ 服务数不随任务数增长，天然错峰/限流，
+        避免几十个任务在同一时刻一起取种、撞站点流控。
+        刷流任务只辅助「排名内」的种子（主流程顺带做），不纳入。
+        """
+        eligible = [
+            t for t in self._task_configs.values()
+            if getattr(t, "enabled", False) and getattr(t, "reuse_existing", False)
+            and str(getattr(t, "task_type", "bonus") or "bonus").strip().lower() != "brush"
+        ]
+        if not eligible:
+            return
+        eligible.sort(key=lambda t: str(t.id))
+        ids = [str(t.id) for t in eligible]
+        last = str(getattr(self, "_reuse_cursor", "") or "")
+        start = (ids.index(last) + 1) % len(eligible) if last in ids else 0
+        task = eligible[start]
+        self._reuse_cursor = str(task.id)
+        try:
+            self._reuse_scan_task(task)
+        except Exception as e:  # noqa: BLE001
+            import traceback
+            logger.error(f"魔流 辅种慢扫 调度异常: {e}\n{traceback.format_exc()}")
+
+    def _reuse_scan_task(self, task: MagicFlowTaskConfig) -> None:
+        """对单个任务做一轮辅种慢扫（内部实现）。"""
+        task_id = str(task.id)
+        if not task.enabled or not task.reuse_existing:
+            return
+        if str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush":
+            return
+        if not self._try_begin_run(task_id):
+            self._log(f"魔流 [{task.name}] 辅种慢扫：上一轮仍在执行，跳过")
+            return
+        started = time.time()
+        reused = 0
+        scanned = 0
+        try:
+            downloader = self._get_downloader(task.downloader)
+            if not downloader or not downloader.is_available:
+                self._log(f"魔流 [{task.name}] 辅种慢扫：下载器不可用", "warning")
+                return
+            if not task.site_domain:
+                site = self._get_site(task.site_id)
+                if site:
+                    task.site_domain = getattr(site, "domain", "") or task.site_domain
+            try:
+                local_index, local_by_size = self._local_reuse_index(downloader)
+            except Exception as _le:  # noqa: BLE001
+                self._log(f"魔流 [{task.name}] 辅种慢扫：建本机索引失败 {_le}", "warning")
+                return
+            if not local_index:
+                return
+
+            fetcher = SiteFetcher()
+            if not fetcher.is_available:
+                return
+            pages = max(int(task.browse_pages or BROWSE_PAGES), 1)
+            site_obj = self._get_site(task.site_id)
+            candidates = None
+            if site_obj is not None:
+                try:
+                    candidates = fetcher.browse_site_np_free(site_obj, pages=pages, start_page=0)
+                except Exception:  # noqa: BLE001
+                    candidates = None
+            if not candidates:
+                candidates = fetcher.browse_site(
+                    task.site_domain, rss_support=task.rss_support, pages=pages, start_page=0
+                )
+            if not candidates:
+                return
+            filter_policy = self._build_filter_policy(task)
+            filtered, _rc = filter_candidates(candidates, filter_policy)
+
+            # 选「体积邻近本机」且尚未由本 worker 处理过的候选
+            pool = []
+            for c in filtered:
+                if not getattr(c, "enclosure", ""):
+                    continue
+                ckey = self._candidate_key(c)
+                if not ckey:
+                    continue
+                if self._store and self._store.seen.is_seen(task.id, f"reuse:{ckey}", 0):
+                    continue
+                if not local_by_size.near(int(getattr(c, "size", 0) or 0)):
+                    continue
+                pool.append(c)
+            if not pool:
+                return
+            pool = pool[: max(int(REUSE_WORKER_BATCH), 1)]
+            scanned = len(pool)
+
+            fp_cache: Dict[str, Optional[str]] = {}
+            tag = task.brush_tag
+            for c in pool:
+                ckey = self._candidate_key(c)
+                raw = None
+                try:
+                    raw = downloader.fetch_torrent_bytes(
+                        c.enclosure,
+                        cookie=getattr(c, "site_cookie", None),
+                        user_agent=getattr(c, "site_ua", None),
+                        referer=getattr(c, "page_url", "") or None,
+                    )
+                except TorrentFetchFlowControl as _fe:
+                    self._log(f"魔流 [{task.name}] 辅种慢扫：站点流控，本轮中止（{_fe}）", "warning")
+                    break
+                except Exception:  # noqa: BLE001
+                    raw = None
+                if self._store and ckey:
+                    self._store.seen.mark(task.id, [f"reuse:{ckey}"])
+                if not raw:
+                    continue
+                try:
+                    c.raw = raw
+                    h = (info_hash(raw) or "").lower()
+                except Exception:  # noqa: BLE001
+                    h = ""
+
+                mode, linfo = "", None
+                if h and h in local_index:
+                    _loc = local_index[h]
+                    if str(getattr(_loc, "state", "") or "").lower() not in QB_DOWNLOADING_STATES:
+                        mode, linfo = "hash", _loc
+                if not mode:
+                    mode, linfo = self._detect_crosssite_reuse(downloader, c, local_by_size, fp_cache, raw=raw)
+                if not mode or linfo is None:
+                    continue
+
+                if mode == "hash":
+                    ok = downloader.set_torrent_tags(h, [tag])
+                    st = str(getattr(linfo, "state", "") or "").lower()
+                    if ok and st in (QB_PAUSED_STATES | {"error", "missingfiles"}):
+                        downloader.resume_torrent(h)
+                    if ok:
+                        reused += 1
+                        self._log(f"魔流 [{task.name}] 辅种慢扫·复用（本机同 hash）：{c.title}")
+                else:
+                    hs, err = downloader.add_torrent_reuse(
+                        torrent_bytes=raw,
+                        save_path=(getattr(linfo, "save_path", "") or task.save_path or ""),
+                        tag=tag,
+                        verify=task.reuse_verify,
+                    )
+                    if hs:
+                        reused += 1
+                        self._log(f"魔流 [{task.name}] 辅种慢扫·跨站辅种：{c.title}")
+                    elif err:
+                        self._log(f"魔流 [{task.name}] 辅种慢扫·辅种失败：{c.title}（{err}）", "warning")
+
+            self._log(
+                f"魔流 [{task.name}] 辅种慢扫完成：命中 {reused} 个（本轮扫 {scanned} 个候选，"
+                f"耗时 {time.time() - started:.1f}s）"
+            )
+            if self._store:
+                self._store.journal.add(
+                    task_id=task_id,
+                    kind="reuse",
+                    items=[OperationItem(
+                        hash="", title=f"辅种慢扫：命中 {reused} / 扫 {scanned}",
+                        reason="复用（本机已有资源）", source="reuse",
+                    )],
+                )
+        except Exception as e:  # noqa: BLE001
+            import traceback
+            logger.error(f"魔流 辅种慢扫异常: {e}\n{traceback.format_exc()}")
+            self._log(f"魔流 [{task.name}] 辅种慢扫异常：{e}", "warning")
+        finally:
+            self._end_run(task_id)
+
     def _run_items(self, summary: Dict[str, Any], duration: float) -> List[OperationItem]:
         """一轮刷流的操作明细：首行摘要 + 逐条「新增 / 复用 / 失败」明细。"""
         items = [OperationItem(
@@ -1457,10 +1652,17 @@ class MagicFlow(_PluginBase):
             # 但本轮若一个都没复用成功 → 判定为空转，不推进游标，等现有下载完成后再重试同一批。
             concurrency_full = dl_concurrent >= dl_limit
             if concurrency_full:
-                self._log(
-                    f"魔流 [{task.name}] 下载并发已达上限（{dl_concurrent}/{dl_limit}），"
-                    "本轮仍抓取候选以尝试存量复用（复用通常不占下载名额；本地未完成/未校验辅种会补下载，按名额计）"
+                _reason = (
+                    f"下载并发已达上限（{dl_concurrent}/{dl_limit}），无空闲槽位，"
+                    "本轮不抓取不下种（避免无效请求），等待槽位释放"
                 )
+                self._log(f"魔流 [{task.name}] {_reason}")
+                if self._store:
+                    self._store.record_run_summary(task.id, "noop", _reason)
+                    self._store.record_run_success(task.id, added=0, deleted=0, kept=base_cnt)
+                self._invalidate_summary()
+                self._set_phase(task.id, "done")
+                return {"status": "noop", "reason": _reason, "added": 0, "reused": 0, "deleted": 0, "kept": base_cnt}
             if (max_keep and base_cnt >= max_keep) or (disk_gb and base_size >= disk_gb):
                 reason = "保种池容量/数量已满，本轮停止抓取，等待 check 任务清理低效种子释放空间"
                 self._log(f"魔流 [{task.name}] {reason}")
@@ -1613,7 +1815,8 @@ class MagicFlow(_PluginBase):
                 if not sc.viable:
                     skipped_nosrc += 1
                     # 无做种源 ≠ 不能辅种：本机已有同一资源就能直接辅（免下载）。
-                    if task.reuse_existing and local_by_size.near(int(getattr(c, "size", 0) or 0)):
+                    # 但刷流任务只辅助「排名内」的种子，不做非 TopN 的额外复用扫描。
+                    if not _brush_crawl and task.reuse_existing and local_by_size.near(int(getattr(c, "size", 0) or 0)):
                         reuse_pool.append((bonus, c))
                     continue
                 setattr(c, "_score", sc)
@@ -1622,7 +1825,8 @@ class MagicFlow(_PluginBase):
                 if min_bonus and bonus.bonus_per_hour < min_bonus:
                     skipped_low += 1
                     # 魔力偏低 ≠ 不能辅种；免下载的依然是白得的魔力。
-                    if task.reuse_existing and local_by_size.near(int(getattr(c, "size", 0) or 0)):
+                    # 刷流任务不做非 TopN 的额外复用扫描。
+                    if not _brush_crawl and task.reuse_existing and local_by_size.near(int(getattr(c, "size", 0) or 0)):
                         reuse_pool.append((bonus, c))
                     continue
                 scored.append((bonus, c))
@@ -1672,20 +1876,10 @@ class MagicFlow(_PluginBase):
                 f"（disk_left={_disk_left} count_left={_count_left}）"
             )
 
-            # ★ 辅种不参与魔力排名：非 TopN（魔力排不进前 N）但「体积邻近本机种子」的候选
-            #   也一并纳入复用扫描——TopN 只决定「要下载哪些」，可复用的候选无需参与竞争。
-            if task.reuse_existing and local_by_size:
-                _have = {self._candidate_key(p[1]) for p in reuse_pool}
-                for _pair in scored[top_n:]:
-                    _c = _pair[1]
-                    _k = self._candidate_key(_c)
-                    if _k in _have:
-                        continue
-                    if local_by_size.near(int(getattr(_c, "size", 0) or 0)):
-                        reuse_pool.append(_pair)
-                        _have.add(_k)
+            # ★ 复用/辅种已从主流程切出，交给独立的「辅种慢扫」worker 处理（见 reuse_scan）。
+            #   主流程只针对 TopN 取种下单；已取回的 TopN 种仍会「顺带」做一次复用判定（零额外请求）。
 
-            # ---------- ④ 分类：辅种(复用) 全量扫描 + 下载候选 TopN ----------
+            # ---------- ④ 分类：下载候选 TopN（顺带复用已取回的种）----------
             self._set_phase(task.id, "classify")
             group_a: List[Tuple[TorrentBonusInfo, SiteCandidateTorrent, str, TorrentInfo]] = []
             group_b: List[Tuple[TorrentBonusInfo, SiteCandidateTorrent]] = []
@@ -1705,25 +1899,18 @@ class MagicFlow(_PluginBase):
                 _topn_keys.add(k)
                 _fetch_map[k] = pair
             _reuse_extra = 0
-            if task.reuse_existing and reuse_pool:
-                _pool = []
-                for pair in reuse_pool:
-                    sz = int(getattr(pair[1], "size", 0) or 0)
-                    near = local_by_size.near(sz)
-                    if not near:
-                        continue
-                    diff = min(abs(sz - int(getattr(t, "size", 0) or 0)) for t in near)
-                    _pool.append((diff, pair))
-                _pool.sort(key=lambda x: x[0])
-                for _diff, pair in _pool:
-                    if len(_fetch_map) >= top_n + REUSE_SCAN_MAX:
-                        break
-                    k = _ckey_of(pair)
-                    if k in _fetch_map:
-                        continue
-                    _fetch_map[k] = pair
-                    _reuse_extra += 1
             fetch_list = list(_fetch_map.values())
+            # ★ 只为「能真正用上的名额」取种：空闲槽位不足时，多余取种是纯无效请求（还会触发站点流控）。
+            #   刷流任务尤其重要：有 N 个空位就只取 N 个，不再一次取满 TopN。
+            if _brush_crawl:
+                _free_slots = max(int(dl_limit) - int(dl_concurrent), 0)
+                if _free_slots and len(fetch_list) > _free_slots:
+                    _before_n = len(fetch_list)
+                    fetch_list = fetch_list[:_free_slots]
+                    self._log(
+                        f"魔流 [{task.name}] 取种数按空闲槽位封顶：{_before_n} → {len(fetch_list)}"
+                        f"（空位 {_free_slots}/{dl_limit}）"
+                    )
 
             # 并发预取 .torrent（TopN + 可复用候选）。
             # 每个请求各自新建 RequestUtils 会话，无共享状态，可安全并发。
@@ -4413,7 +4600,7 @@ class MagicFlow(_PluginBase):
             }
         self.save_data(key="iyuu_sites", value=dict(self._iyuu_sites))
         if self._iyuu_client is None:
-            self._iyuu_client = IyuuCloud(self._iyuu_token, logger=self._log)
+            self._iyuu_client = self._build_iyuu_client(self._iyuu_token)
         else:
             self._iyuu_client.set_token(self._iyuu_token)
         self._save_config()
@@ -4561,6 +4748,15 @@ class MagicFlow(_PluginBase):
     def _iyuu_enabled(self) -> bool:
         """IYUU 云端辅种是否启用（填了 Token 才算）。"""
         return bool(self._iyuu_client is not None and self._iyuu_client.enabled)
+
+    def _build_iyuu_client(self, token: str) -> IyuuCloud:
+        """构造 IYUU 云端客户端，并挂上「站点表 / sid_sha1」磁盘缓存（避免热重载后重复撞限流）。"""
+        return IyuuCloud(
+            token,
+            logger=self._log,
+            cache_loader=lambda: self.get_data("iyuu_cache"),
+            cache_saver=lambda cache: self.save_data(key="iyuu_cache", value=cache),
+        )
 
     def get_iyuu_sites(self) -> Response:
         """列出 MoviePilot 已配置站点（供「IYUU 密钥表」）+ 当前 IYUU 设置。"""

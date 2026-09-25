@@ -33,6 +33,7 @@ _SITES_TTL = 24 * 3600.0        # 站点表缓存
 _REPORT_TTL = 7 * 24 * 3600.0   # sid_sha1 缓存（云端声明 7 天）
 _QUERY_MIN_INTERVAL = 3.0       # 两次辅种查询之间的最小间隔（秒）——云端有严格限流
 _RATE_BACKOFF = 60.0            # 命中「访问频率过快」后的冷却
+_SITES_BACKOFF = 300.0          # 站点表拉取失败（含限流）后的冷却，避免反复撞「访问频率过快」
 
 _PASSKEY_RE = re.compile(r"passkey=([0-9a-fA-F]{16,64})")
 _HASH_RE = re.compile(r"(?:downhash|hash)=([0-9a-zA-Z]{8,64})")
@@ -45,7 +46,8 @@ def _sha1(text: str) -> str:
 class IyuuCloud:
     """IYUU 云端客户端（Token 为空则 `enabled=False`，所有方法直接返回空）。"""
 
-    def __init__(self, token: str = "", logger: Any = None) -> None:
+    def __init__(self, token: str = "", logger: Any = None,
+                 cache_loader: Any = None, cache_saver: Any = None) -> None:
         self._token = (token or "").strip()
         self._log = logger
         self._lock = threading.Lock()
@@ -53,8 +55,54 @@ class IyuuCloud:
         self._sites_at = 0.0
         self._sid_sha1: Optional[str] = None
         self._sid_sha1_at = 0.0
+        self._sid_sha1_key = ""
         self._last_query_at = 0.0
         self._blocked_until = 0.0
+        self._sites_blocked_until = 0.0
+        # 磁盘缓存读写回调（可选）：跨热重载/重启复用站点表与 sid_sha1，避免重复撞云端限流
+        self._cache_loader = cache_loader
+        self._cache_saver = cache_saver
+        self._load_cache()
+
+    # ---------------------------------------------------------------- 缓存
+    def _load_cache(self) -> None:
+        if not self._cache_loader:
+            return
+        try:
+            data = self._cache_loader() or {}
+        except Exception:  # noqa: BLE001
+            return
+        if not isinstance(data, dict):
+            return
+        sites = data.get("sites")
+        if isinstance(sites, dict) and sites:
+            self._sites = {str(k): v for k, v in sites.items() if isinstance(v, dict)}
+            try:
+                self._sites_at = float(data.get("sites_at") or 0.0)
+            except (TypeError, ValueError):
+                self._sites_at = 0.0
+        sha1 = data.get("sid_sha1")
+        if sha1:
+            self._sid_sha1 = str(sha1)
+            self._sid_sha1_key = str(data.get("sid_sha1_key") or "")
+            try:
+                self._sid_sha1_at = float(data.get("sid_sha1_at") or 0.0)
+            except (TypeError, ValueError):
+                self._sid_sha1_at = 0.0
+
+    def _save_cache(self) -> None:
+        if not self._cache_saver:
+            return
+        try:
+            self._cache_saver({
+                "sites": self._sites or {},
+                "sites_at": self._sites_at,
+                "sid_sha1": self._sid_sha1 or "",
+                "sid_sha1_key": self._sid_sha1_key,
+                "sid_sha1_at": self._sid_sha1_at,
+            })
+        except Exception:  # noqa: BLE001
+            pass
 
     # ---------------------------------------------------------------- 基础
     @property
@@ -65,9 +113,10 @@ class IyuuCloud:
         token = (token or "").strip()
         if token != self._token:
             self._token = token
-            self._sites = None
             self._sid_sha1 = None
+            self._sid_sha1_key = ""
             self._blocked_until = 0.0
+            self._save_cache()
 
     def _warn(self, msg: str) -> None:
         if self._log is not None:
@@ -119,6 +168,9 @@ class IyuuCloud:
         now = time.time()
         if not force and self._sites is not None and now - self._sites_at < _SITES_TTL:
             return self._sites
+        # 失败/限流冷却期内：直接用已有缓存，绝不反复请求（否则必撞「访问频率过快」）
+        if not force and now < self._sites_blocked_until:
+            return self._sites or {}
         data = self._request("GET", "/reseed/sites/index")
         table: Dict[str, Dict[str, Any]] = {}
         if data:
@@ -129,6 +181,10 @@ class IyuuCloud:
         if table:
             self._sites = table
             self._sites_at = now
+            self._sites_blocked_until = 0.0
+            self._save_cache()
+        else:
+            self._sites_blocked_until = now + _SITES_BACKOFF
         return self._sites or {}
 
     def sid_by_domain(self, domain: str) -> Optional[int]:
@@ -165,6 +221,7 @@ class IyuuCloud:
             self._sid_sha1 = str(sha1)
             self._sid_sha1_key = key
             self._sid_sha1_at = now
+            self._save_cache()
         return self._sid_sha1
 
     # ------------------------------------------------------------ 辅种批量查询

@@ -91,6 +91,24 @@ def _is_flow_control(text: Any) -> bool:
     return any(m in t for m in _FLOW_MARKERS)
 
 
+def _looks_like_torrent(data: Any) -> bool:
+    """粗略校验是否为有效 .torrent（bencode dict 且含 info 段）。
+
+    站点流控/未登录时可能返回 200 + HTML 提示页；这类内容喂给下载器会表现为
+    「添加种子失败」。这里提前识别，避免把垃圾字节当成种子。
+    """
+    if not data:
+        return False
+    if isinstance(data, str):
+        data = data.encode("utf-8", "ignore")
+    if not isinstance(data, (bytes, bytearray)):
+        return False
+    raw = bytes(data)
+    if raw.lstrip()[:1] != b"d":
+        return False
+    return b"4:info" in raw[:65536]
+
+
 def _dl_gate() -> None:
     """全局串行限速：两次 .torrent 下载至少间隔当前动态间隔。"""
     with _DL_GATE_LOCK:
@@ -510,8 +528,13 @@ class DownloaderAdapter:
                     cache_invalid=False,
                 )
                 if content:
-                    _dl_note_success()
                     _bytes = content if isinstance(content, bytes) else str(content).encode("utf-8")
+                    if not _looks_like_torrent(_bytes):
+                        # 拿到 200 但不是有效种子（多半是站点流控/登录提示页）
+                        logger.warning(f"TorrentHelper 返回内容非有效种子（疑似流控）{url}")
+                        _dl_note_flow_control()
+                        raise TorrentFetchFlowControl("返回内容非有效种子（疑似站点流控/登录页）")
+                    _dl_note_success()
                     _torrent_cache_put(url, _bytes)
                     return _bytes
                 if err:
@@ -561,6 +584,9 @@ class DownloaderAdapter:
                     raise TorrentFetchFlowControl(f"HTTP {_status}")
                 return None
             _dl_note_success()
+            if not _looks_like_torrent(response.content):
+                _dl_note_flow_control()
+                raise TorrentFetchFlowControl("返回内容非有效种子（疑似站点流控/登录页）")
             _torrent_cache_put(url, response.content)
             return response.content
         except ImportError:
