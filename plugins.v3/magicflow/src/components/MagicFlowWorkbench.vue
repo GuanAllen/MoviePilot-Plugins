@@ -1382,7 +1382,7 @@ onUnmounted(() => {
                     <div class="text-subtitle-1 font-weight-medium">运行流程</div>
                     <div class="text-body-2 text-medium-emphasis">
                       {{ detailStats.run_active ? (taskIsBrush ? '正在执行本轮刷流…' : '正在执行本轮养护…') : (detailStats.last_run_at ? `最近执行 ${formatDateTime(detailStats.last_run_at)}` : '尚未运行') }}
-                      · 翻页游标 {{ detailStats.page_cursor ?? 0 }}
+                      · 翻页游标 {{ detailStats.page_cursor ?? 0 }}<template v-if="detailStats.last_phase_detail"> · {{ detailStats.last_phase_detail }}</template>
                     </div>
                   </div>
                   <span class="magicflow-flow__tag" :class="{ 'is-live': detailStats.run_active, 'is-error': detailStats.last_run_status === 'failed' }">

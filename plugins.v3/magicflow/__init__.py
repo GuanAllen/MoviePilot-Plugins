@@ -10,7 +10,7 @@ import re
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
@@ -92,7 +92,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "2.8.0"
+__version__ = "2.8.1"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -106,6 +106,16 @@ TORRENT_FETCH_WORKERS = 3
 # 下载 .torrent 的最小间隔（秒，全局串行限速）与单种子重试次数。
 TORRENT_DL_MIN_INTERVAL = 1.0
 TORRENT_DL_RETRIES = 3
+# 分类阶段「取种」整段时长上限（秒）：超过则不再等待剩余候选（个别请求可能卡死），
+# 本轮跳过、下轮重试；避免把整轮拖到运行超时（600s）而触发「判定为卡死」。
+TORRENT_FETCH_DEADLINE = 120.0
+# 分类阶段「单次取种」硬超时（秒）：若在飞请求连续这么久都没有任何完成（典型=请求卡死/站点限速），
+# 则放弃等待剩余候选、立即进入处理阶段，避免个别慢请求把整段拖满。
+TORRENT_FETCH_PER_TIMEOUT = 20.0
+# 复用扫描上限：TopN 之外额外取回「体积邻近本机」候选做辅种判定的最大数量。
+# 原为 60，会让单轮取种数达到 TopN+60（如 30+55≈85），叠加站点 .torrent 限速后
+# 单轮分类阶段动辄上百秒，正是「任务卡在分类排序」的主因之一；收敛到 15。
+REUSE_SCAN_MAX = 15
 # 站点魔力公式抓取缓存 TTL（秒）；抓取失败时只缓存 SHORT 秒后重试。
 SITE_FORMULA_TTL = 6 * 3600
 SITE_FORMULA_RETRY = 30 * 60
@@ -1012,12 +1022,12 @@ class MagicFlow(_PluginBase):
         "error": "执行出错",
     }
 
-    def _set_phase(self, task_id: str, phase: str) -> None:
-        """上报当前运行阶段。"""
+    def _set_phase(self, task_id: str, phase: str, detail: str = "") -> None:
+        """上报当前运行阶段（detail 为阶段内细粒度进度，供前端显示）。"""
         if not self._store:
             return
         try:
-            self._store.record_phase(task_id, phase, self.PHASE_LABELS.get(phase, phase))
+            self._store.record_phase(task_id, phase, self.PHASE_LABELS.get(phase, phase), detail)
         except Exception:
             pass
 
@@ -1650,7 +1660,7 @@ class MagicFlow(_PluginBase):
 
             # ★ 辅种不参与魔力排名：只要「体积邻近本机种子」就纳入扫描（免下载 = 白得的魔力）。
             #   TopN 只决定「要下载哪些」；可复用的额外候选即便魔力排不进 TopN 也一起取回判定。
-            REUSE_SCAN_MAX = 60
+            #   （扫描上限 REUSE_SCAN_MAX 见模块顶部常量）
 
             def _ckey_of(pair: Any) -> str:
                 c = pair[1]
@@ -1730,12 +1740,64 @@ class MagicFlow(_PluginBase):
                 except Exception:
                     _c.real_hash = ""
 
+            _t_pref = time.time()
+            _pref_done = 0
             if len(fetch_list) > 1:
-                with ThreadPoolExecutor(max_workers=min(TORRENT_FETCH_WORKERS, len(fetch_list))) as _ex:
-                    list(_ex.map(_prefetch, fetch_list))
+                _ex = ThreadPoolExecutor(max_workers=min(TORRENT_FETCH_WORKERS, len(fetch_list)))
+                _futs = {_ex.submit(_prefetch, _p): _p for _p in fetch_list}
+                _pending = set(_futs.keys())
+                _batch_deadline = _t_pref + TORRENT_FETCH_DEADLINE
+                _last_prog = _t_pref
+                try:
+                    # 边完成边推进：同时受「整段上限」与「单次硬超时」双重约束。
+                    # 单次硬超时 = 连续 TORRENT_FETCH_PER_TIMEOUT 秒内没有任何一个请求完成
+                    # （典型=在飞请求全部卡死/站点限速）→ 放弃等待剩余候选，立即进入处理阶段。
+                    while _pending:
+                        _remain = _batch_deadline - time.time()
+                        if _remain <= 0:
+                            break
+                        _done, _pending = wait(
+                            _pending,
+                            timeout=min(TORRENT_FETCH_PER_TIMEOUT, _remain),
+                            return_when=FIRST_COMPLETED,
+                        )
+                        for _fut in _done:
+                            try:
+                                _fut.result()
+                            except Exception:
+                                pass
+                            _pref_done += 1
+                        if not _done:
+                            # 单次硬超时：在飞请求全部无响应，放弃等待，避免整段被拖满。
+                            self._log(
+                                f"魔流 [{task.name}] 分类取种单次超时"
+                                f"（{TORRENT_FETCH_PER_TIMEOUT:.0f}s 无进展，已取 {_pref_done}/{len(fetch_list)}）"
+                            )
+                            break
+                        # 细粒度进度（限流，避免频繁写盘）：供前端显示，避免「像卡住」
+                        _now = time.time()
+                        if _now - _last_prog >= 5.0:
+                            _last_prog = _now
+                            self._set_phase(task.id, "classify", f"取种 {_pref_done}/{len(fetch_list)}")
+                finally:
+                    _ex.shutdown(wait=False, cancel_futures=True)
+                # 未完成（被取消/未执行）的候选标记「超时跳过」，供处理循环安全跳过（不记 dead）
+                for _p in fetch_list:
+                    if getattr(_p[1], "raw", None) is None and not getattr(_p[1], "fetch_error", ""):
+                        _p[1].raw = None
+                        _p[1].fetch_error = "分类取种超时（本轮跳过）"
+                        try:
+                            _p[1].real_hash = ""
+                        except Exception:
+                            pass
             else:
                 for _p in fetch_list:
                     _prefetch(_p)
+                _pref_done = len(fetch_list)
+            self._log(
+                f"魔流 [{task.name}] 分类取种 {_pref_done}/{len(fetch_list)} 个"
+                f"（耗时 {time.time() - _t_pref:.1f}s）"
+            )
 
             # 分类诊断：本轮取回多少 .torrent；没拿到时打样本原因
             _raw_ok = sum(1 for _p in fetch_list if getattr(_p[1], "raw", None))
@@ -1843,11 +1905,11 @@ class MagicFlow(_PluginBase):
                     continue
                 if not getattr(cand, "raw", None):
                     _err = str(getattr(cand, "fetch_error", "") or "")
-                    if "流控" in _err:
-                        # 临时限流：不记 dead（下轮重试），单独计数。
+                    if "流控" in _err or "超时" in _err:
+                        # 临时限流 / 取种超时：不记 dead（下轮重试），单独计数。
                         skipped_rate += 1
                         self._log(
-                            f"跳过·站点流控，本轮不处理，下轮重试：{cand.title}",
+                            f"跳过·站点流控/取种超时，本轮不处理，下轮重试：{cand.title}",
                             "warning",
                         )
                         continue
@@ -2229,17 +2291,37 @@ class MagicFlow(_PluginBase):
             except Exception as _unfree_err:
                 self._log(f"魔流 [{task.name}] 清理「已非免费」种子异常: {_unfree_err}", "warning")
 
-        # ②d 刷流模式：清理到期的托管种
-        #    默认「做种满 brush_seed_days 天」轮换（挂种 N 天换新）；
-        #    brush_seed_days=0 时回退旧的「无上传」判定。
+        # ②d 刷流模式：清理到期/无上传的托管种
+        #    设计：**下载中**的种过了宽限期后，每次 check（每 check_interval 分钟）都按上传速率
+        #    考核，连续 need 次「无上传」即杀（它们要一直上传才能活过整个下载周期）；
+        #    **已下完**的种走「满 brush_seed_days 天」轮换（挂种 N 天换新）。
+        #    brush_seed_days=0 时回退：不分状态，统一按「无上传」判定。
         if _is_brush:
             _seed_days = int(getattr(task, "brush_seed_days", 0) or 0)
             if all_tagged:
                 try:
                     if _seed_days > 0:
-                        out["aged"] = self._cleanup_aged(task, downloader, list(all_tagged), protected)
+                        # 下载中：上传考核（每 check 一次，无上传即杀）
+                        _incomplete = [
+                            t for t in all_tagged
+                            if float(getattr(t, "progress", 0) or 0) < 0.999
+                        ]
+                        # 已下完：满 N 天轮换
+                        _complete = [
+                            t for t in all_tagged
+                            if float(getattr(t, "progress", 0) or 0) >= 0.999
+                        ]
+                        out["no_upload"] = self._cleanup_no_upload(
+                            task, downloader, _incomplete, protected
+                        )
+                        out["aged"] = self._cleanup_aged(
+                            task, downloader, _complete, protected
+                        )
                     else:
-                        out["no_upload"] = self._cleanup_no_upload(task, downloader, list(all_tagged), protected)
+                        # 未设天数：不分状态统一按「无上传」判定
+                        out["no_upload"] = self._cleanup_no_upload(
+                            task, downloader, list(all_tagged), protected
+                        )
                 except Exception as _nu_err:
                     self._log(f"魔流 [{task.name}] 刷流清理异常: {_nu_err}", "warning")
             # 刷流模式不套用魔力门槛删种；直接收尾返回。
@@ -3226,10 +3308,10 @@ class MagicFlow(_PluginBase):
         managed: List[TorrentInfo],
         protected_hashes: Optional[Set[str]] = None,
     ) -> int:
-        """刷流模式：做种满 ``brush_seed_days`` 天的种子清理（轮换腾位），返回删除数。
+        """刷流模式：已下完的种子按做种时长满 ``brush_seed_days`` 天清理（轮换腾位），返回删除数。
 
-        * 已完成种：按**做种时长**（qB seeding_time）计；拿不到时用「加入下载器时长」兜底。
-        * 未下完的：按**加入时长**轮换（挂很久还下不完的没意义）。
+        * **只处理已下完的种**（progress>=0.999）；未下完的交给「无上传」判定（_cleanup_no_upload）。
+        * 完成种按**做种时长**（qB seeding_time）计；拿不到时用「加入下载器时长」兜底。
         * protected / 手动保留的种子只记录快照、永不删。
         保种期内（< 天数）一律保留，不按上传速率判。
         """

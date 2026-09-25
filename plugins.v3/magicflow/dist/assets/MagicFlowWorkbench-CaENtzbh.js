@@ -3878,7 +3878,14 @@ return (_ctx, _cache) => {
                                 _createElementVNode("header", _hoisted_46, [
                                   _createElementVNode("div", null, [
                                     _cache[131] || (_cache[131] = _createElementVNode("div", { class: "text-subtitle-1 font-weight-medium" }, "运行流程", -1)),
-                                    _createElementVNode("div", _hoisted_47, _toDisplayString(detailStats.value.run_active ? (taskIsBrush.value ? '正在执行本轮刷流…' : '正在执行本轮养护…') : (detailStats.value.last_run_at ? `最近执行 ${_unref(formatDateTime)(detailStats.value.last_run_at)}` : '尚未运行')) + " · 翻页游标 " + _toDisplayString(detailStats.value.page_cursor ?? 0), 1)
+                                    _createElementVNode("div", _hoisted_47, [
+                                      _createTextVNode(_toDisplayString(detailStats.value.run_active ? (taskIsBrush.value ? '正在执行本轮刷流…' : '正在执行本轮养护…') : (detailStats.value.last_run_at ? `最近执行 ${_unref(formatDateTime)(detailStats.value.last_run_at)}` : '尚未运行')) + " · 翻页游标 " + _toDisplayString(detailStats.value.page_cursor ?? 0), 1),
+                                      (detailStats.value.last_phase_detail)
+                                        ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
+                                            _createTextVNode(" · " + _toDisplayString(detailStats.value.last_phase_detail), 1)
+                                          ], 64))
+                                        : _createCommentVNode("", true)
+                                    ])
                                   ]),
                                   _createElementVNode("span", {
                                     class: _normalizeClass(["magicflow-flow__tag", { 'is-live': detailStats.value.run_active, 'is-error': detailStats.value.last_run_status === 'failed' }])
@@ -5738,6 +5745,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-3916d74d"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-f8703687"]]);
 
 export { MagicFlowWorkbench as M };

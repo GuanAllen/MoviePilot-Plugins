@@ -13,6 +13,7 @@ import logging
 import re
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -43,6 +44,42 @@ _DL_GATE_AT = [0.0]
 _DL_GATE_INTERVAL = [1.0]
 _DL_GATE_BASE = 1.0
 _DL_GATE_MAX = 30.0
+
+# .torrent 字节缓存：以 enclosure URL 为键（passkey/uid 通常稳定 → 同一种子 URL 不变）。
+# 命中即免网络、**免限速闸门**。目的：稳定种子池下「分类取种」每轮会重复下载同一批
+# .torrent（每轮 ~N 次，各自至少受 1s 闸门约束），正是「任务卡在分类排序」的主因；
+# 缓存后重复轮近乎零耗时。注意：只在真正发起外网请求前过闸门，缓存命中直接返回。
+_TORRENT_BYTES_CACHE: "OrderedDict[str, bytes]" = OrderedDict()
+_TORRENT_BYTES_CACHE_MAX = 300
+_TORRENT_BYTES_LOCK = threading.Lock()
+
+
+def _torrent_cache_get(url: str) -> Optional[bytes]:
+    """读取缓存的 .torrent 字节（命中则移到队尾，LRU）。"""
+    if not url:
+        return None
+    with _TORRENT_BYTES_LOCK:
+        v = _TORRENT_BYTES_CACHE.get(url)
+        if v is not None:
+            _TORRENT_BYTES_CACHE.move_to_end(url)
+        return v
+
+
+def _torrent_cache_put(url: str, content: Any) -> None:
+    """写入 .torrent 字节缓存（LRU 淘汰）。"""
+    if not url or not content:
+        return
+    try:
+        data = content if isinstance(content, bytes) else bytes(content)
+    except Exception:
+        return
+    if not data:
+        return
+    with _TORRENT_BYTES_LOCK:
+        _TORRENT_BYTES_CACHE[url] = data
+        _TORRENT_BYTES_CACHE.move_to_end(url)
+        while len(_TORRENT_BYTES_CACHE) > _TORRENT_BYTES_CACHE_MAX:
+            _TORRENT_BYTES_CACHE.popitem(last=False)
 _FLOW_MARKERS = (
     "流控", "429", "too many requests", "rate limit", "ratelimit",
     "稍后重试", "请求过于频繁", "too frequent",
@@ -448,9 +485,13 @@ class DownloaderAdapter:
         """
         if not url:
             return None
+        # 0) 本地字节缓存命中：免网络、**免限速闸门**（同一 URL 在稳定种子池下重复轮近乎零耗时）
+        _cached = _torrent_cache_get(url)
+        if _cached is not None:
+            return _cached
         _ensure_sdk()
 
-        # 0) 全局自适应限速闸门（流控时自动降速）
+        # 1) 全局自适应限速闸门（流控时自动降速）
         _dl_gate()
 
         # 1) 宿主 SDK 的种子下载（与本体一致，处理 301 链 + 首次下载页）
@@ -470,7 +511,9 @@ class DownloaderAdapter:
                 )
                 if content:
                     _dl_note_success()
-                    return content if isinstance(content, bytes) else str(content).encode("utf-8")
+                    _bytes = content if isinstance(content, bytes) else str(content).encode("utf-8")
+                    _torrent_cache_put(url, _bytes)
+                    return _bytes
                 if err:
                     logger.warning(f"TorrentHelper 下载种子未成功 {url}: {err}")
                     if _is_flow_control(err):
@@ -518,6 +561,7 @@ class DownloaderAdapter:
                     raise TorrentFetchFlowControl(f"HTTP {_status}")
                 return None
             _dl_note_success()
+            _torrent_cache_put(url, response.content)
             return response.content
         except ImportError:
             return None
