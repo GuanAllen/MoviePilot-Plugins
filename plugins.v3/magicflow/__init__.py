@@ -92,7 +92,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "2.6.0"
+__version__ = "2.7.0"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -191,6 +191,11 @@ class MagicFlowTaskConfig:
     save_path: str = ""
     # 任务类型：bonus=刷魔力（默认）；brush=刷流
     task_type: str = "bonus"
+    # 运行状态（三态）：running=运行中（调度开、种子正常下载/做种）
+    #   seeding=做种中（停调度 + 未完成种暂停 + 已完成种继续做种）
+    #   stopped=已停止（停调度 + 全部托管种暂停，保文件可逆）
+    # enabled 为其派生值：enabled = (run_mode == "running")
+    run_mode: str = "running"
 
     # 调度配置
     brush_interval: int = 5      # 刷流间隔（分钟）
@@ -292,6 +297,7 @@ class MagicFlowTaskConfig:
             "brush_tag": self.brush_tag,
             "save_path": self.save_path,
             "task_type": self.task_type,
+            "run_mode": self.run_mode,
             "brush_interval": self.brush_interval,
             "check_interval": self.check_interval,
             "cron_expression": self.cron_expression,
@@ -353,6 +359,13 @@ class MagicFlowTaskConfig:
         for key, value in (d or {}).items():
             if hasattr(config, key):
                 setattr(config, key, value)
+        # run_mode 为「运行状态」唯一真源；历史配置缺该字段时按 enabled 回退。
+        raw = d or {}
+        mode = str(raw.get("run_mode") or "").strip().lower()
+        if mode not in ("running", "seeding", "stopped"):
+            mode = "running" if bool(raw.get("enabled", True)) else "stopped"
+        config.run_mode = mode
+        config.enabled = (mode == "running")
         return config
 
 
@@ -870,6 +883,91 @@ class MagicFlow(_PluginBase):
             self._log(f"任务流量：qB 全局上传限速 → {kbps:g} KB/s（按{label}）")
         else:
             self._log(f"任务流量：设置全局上传限速失败：{err}", "warning")
+
+    def _spawn_run_mode_apply(self, task: MagicFlowTaskConfig, mode: str) -> None:
+        """异步应用运行状态对应的种子操作（暂停/恢复），并在「运行中」时立即跑一轮 check。"""
+        def _worker():
+            try:
+                self._apply_run_mode(task, mode)
+            except Exception as err:
+                self._log(f"魔流 [{task.name}] 应用运行状态失败：{err}", "warning")
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _apply_run_mode(self, task: MagicFlowTaskConfig, mode: str) -> Dict[str, int]:
+        """按运行状态操作托管种子（只动本任务标签内的种子，保文件、可逆）。
+
+        - ``running``：恢复所有被暂停的托管种（尊重手动暂停），随后立刻跑一轮 check；
+        - ``seeding``：暂停「未完成」种（防非免费偷下），已完成种继续做种；
+        - ``stopped``：暂停全部托管种（保文件）。
+
+        返回 {paused, resumed}。
+        """
+        mode = self._normalize_run_mode(mode)
+        out = {"paused": 0, "resumed": 0}
+        downloader = self._get_downloader(task.downloader)
+        if not downloader or not downloader.is_available:
+            if mode == "running":
+                self._run_check(task.id)
+            return out
+        try:
+            all_tagged, _err = downloader.get_torrents(tags=[task.brush_tag])
+        except Exception as exc:
+            self._log(f"魔流 [{task.name}] 读取托管种子失败：{exc}", "warning")
+            all_tagged = []
+        managed = list(all_tagged or [])
+        manual_paused = self._store.get_manual_paused(task.id) if self._store else set()
+        pause_hashes: List[str] = []
+        resume_hashes: List[str] = []
+        for t in managed:
+            h = getattr(t, "hash", "") or ""
+            if not h:
+                continue
+            state = str(getattr(t, "state", "") or "").lower()
+            paused = state in QB_PAUSED_STATES
+            try:
+                progress = float(getattr(t, "progress", 0) or 0)
+            except (TypeError, ValueError):
+                progress = 0.0
+            if mode == "stopped":
+                if not paused:
+                    pause_hashes.append(h)
+            elif mode == "seeding":
+                if progress >= 0.999:
+                    if paused and (h or "").lower() not in manual_paused:
+                        resume_hashes.append(h)
+                else:
+                    if not paused:
+                        pause_hashes.append(h)
+            else:  # running
+                if paused and (h or "").lower() not in manual_paused:
+                    resume_hashes.append(h)
+        if pause_hashes:
+            n, _e = downloader.pause_torrents(pause_hashes)
+            out["paused"] = int(n or 0)
+        if resume_hashes:
+            n, _e = downloader.resume_torrents(resume_hashes)
+            out["resumed"] = int(n or 0)
+        mode_label = {"running": "运行中", "seeding": "做种中", "stopped": "已停止"}.get(mode, mode)
+        self._log(
+            f"魔流 [{task.name}] 运行状态 → {mode_label}"
+            f"（暂停 {out['paused']} / 恢复 {out['resumed']}）"
+        )
+        if self._store:
+            try:
+                self._store.journal.record(
+                    task_id=task.id,
+                    kind="state",
+                    items=[OperationItem(
+                        hash="",
+                        title=f"运行状态 → {mode_label}",
+                        reason=f"暂停 {out['paused']} / 恢复 {out['resumed']}",
+                    )],
+                )
+            except Exception as err:
+                self._log(f"记录运行状态变更失败：{err}", "warning")
+        if mode == "running":
+            self._run_check(task.id)
+        return out
 
     def _save_config(self) -> None:
         """保存全局设置和全部任务配置"""
@@ -2725,6 +2823,7 @@ class MagicFlow(_PluginBase):
         st = self._task_goal_status(task)
         if not (st.get("goal_has") and st.get("goal_reached")):
             return False
+        task.run_mode = "stopped"
         task.enabled = False
         self._save_config()
         self._refresh_scheduler()
@@ -2734,6 +2833,8 @@ class MagicFlow(_PluginBase):
             f"魔流 [{task.name}] 已达任务目标（{st['goal_current']:.4g}/{st['goal_target']:.4g} "
             f"{st['goal_unit']}）→ 自动停止任务"
         )
+        # 异步暂停全部托管种（保文件、可逆），避免达标后继续非免费下载
+        self._spawn_run_mode_apply(task, "stopped")
         if self._store:
             try:
                 self._store.journal.record(
@@ -4051,6 +4152,18 @@ class MagicFlow(_PluginBase):
     # ---------------------------------------------------------
 
     @staticmethod
+    def _normalize_run_mode(mode: Any, enabled: Any = None) -> str:
+        """规整运行状态：running / seeding / stopped。
+
+        - 传了合法 mode → 直接用；
+        - 否则按 enabled 回退（True→running / False→stopped）。
+        """
+        m = str(mode or "").strip().lower()
+        if m in ("running", "seeding", "stopped"):
+            return m
+        return "running" if bool(enabled) else "stopped"
+
+    @staticmethod
     def _kbps_to_bps(kbps: Any) -> int:
         """KB/s → 字节/秒（qbittorrentapi 用字节/秒）。负数/非法值规整为 0。"""
         try:
@@ -4171,10 +4284,11 @@ class MagicFlow(_PluginBase):
         if not site:
             return Response(success=False, message="站点不存在")
 
+        run_mode = self._normalize_run_mode(getattr(payload, "run_mode", None), payload.enabled)
         task = MagicFlowTaskConfig(
             id=task_id,
             name=payload.name,
-            enabled=payload.enabled,
+            enabled=(run_mode == "running"),
             site_id=payload.site_id,
             site_domain=payload.site_domain or getattr(site, "domain", "") or "",
             site_name=payload.site_name or getattr(site, "name", "") or "",
@@ -4182,6 +4296,7 @@ class MagicFlow(_PluginBase):
             brush_tag=payload.brush_tag or f"魔流-{payload.name}",
             save_path=payload.save_path or "",
             task_type=getattr(payload, "task_type", "bonus") or "bonus",
+            run_mode=run_mode,
             brush_grace_minutes=int(getattr(payload, "brush_grace_minutes", 15) or 0),
             upload_idle_minutes=int(getattr(payload, "upload_idle_minutes", 10) or 0),
             upload_min_kbps=int(getattr(payload, "upload_min_kbps", 200) or 0),
@@ -4261,7 +4376,17 @@ class MagicFlow(_PluginBase):
             return Response(success=False, message="站点不存在")
 
         task.name = payload.name
-        task.enabled = payload.enabled
+        # 运行状态：编辑器「启用」开关优先（开启→运行中；关闭→已停止；做种中 保持不变）
+        _req_mode = str(getattr(payload, "run_mode", None) or "").strip().lower()
+        _prev_mode = str(getattr(task, "run_mode", "running") or "running")
+        if payload.enabled and _req_mode != "running":
+            _run_mode = "running"
+        elif (not payload.enabled) and _req_mode == "running":
+            _run_mode = "stopped"
+        else:
+            _run_mode = self._normalize_run_mode(_req_mode or _prev_mode, payload.enabled)
+        task.run_mode = _run_mode
+        task.enabled = (_run_mode == "running")
         task.site_id = payload.site_id
         task.site_domain = payload.site_domain or getattr(site, "domain", "") or ""
         task.site_name = payload.site_name or getattr(site, "name", "") or ""
@@ -4326,6 +4451,8 @@ class MagicFlow(_PluginBase):
         self._refresh_scheduler()
         self._invalidate_summary()
         self._apply_task_traffic_limit()
+        if _run_mode != _prev_mode:
+            self._spawn_run_mode_apply(task, _run_mode)
         return Response(success=True, message="任务已更新", data=self._build_task_detail(task_id))
 
     def delete_task(self, task_id: str) -> Response:
@@ -4352,15 +4479,21 @@ class MagicFlow(_PluginBase):
         return Response(success=True, message="任务已删除")
 
     def update_task_state(self, task_id: str, payload: MagicFlowTaskStatePayload) -> Response:
-        """启用或暂停任务。"""
+        """切换任务运行状态（running / seeding / stopped）。"""
         task = self._get_task_config(task_id)
         if not task:
             return Response(success=False, message="任务不存在")
-        task.enabled = payload.enabled
+        mode = self._normalize_run_mode(
+            getattr(payload, "mode", None), getattr(payload, "enabled", None)
+        )
+        task.run_mode = mode
+        task.enabled = (mode == "running")
         self._save_config()
         self._refresh_scheduler()
         self._invalidate_summary()
         self._apply_task_traffic_limit()
+        # 异步应用种子操作（暂停/恢复）；「运行中」时立即跑一轮 check，避免非免费偷下空窗
+        self._spawn_run_mode_apply(task, mode)
         return Response(success=True, data=self._build_task_detail(task_id))
 
     def run_task(self, task_id: str) -> Response:

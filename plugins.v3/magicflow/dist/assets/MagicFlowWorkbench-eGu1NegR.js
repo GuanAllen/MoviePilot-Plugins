@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { _ as _export_sfc, c as cloneTask, n as normalizeTask, a as normalizeDownloaderPrefs, b as normalizeDownloaderPaths, d as normalizeDefaults, t as taskStateMeta, r as runStatusText, e as formatBytes, f as formatBonus, g as formatDateTime, h as formatDurationSeconds, u as unwrapResponse, i as normalizeSettings, j as formatDuration } from './_plugin-vue_export-helper-KC8wOhPZ.js';
+import { _ as _export_sfc, c as cloneTask, n as normalizeTask, a as normalizeDownloaderPrefs, b as normalizeDownloaderPaths, d as normalizeDefaults, t as taskStateMeta, r as runModeMeta, e as runStatusText, g as formatBytes, f as formatBonus, R as RUN_MODES, h as formatDateTime, i as formatDurationSeconds, u as unwrapResponse, j as normalizeSettings, k as formatDuration } from './_plugin-vue_export-helper-O13fH5Mh.js';
 
 const {unref:_unref$1,toDisplayString:_toDisplayString$1,createTextVNode:_createTextVNode$1,resolveComponent:_resolveComponent$1,withCtx:_withCtx$1,createVNode:_createVNode$1,openBlock:_openBlock$1,createBlock:_createBlock$1,createCommentVNode:_createCommentVNode$1,renderList:_renderList$1,Fragment:_Fragment$1,createElementBlock:_createElementBlock$1,createElementVNode:_createElementVNode$1,withModifiers:_withModifiers$1} = await importShared('vue');
 
@@ -1806,7 +1806,7 @@ return (_ctx, _cache) => {
 };
 const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-e0f35029"]]);
 
-const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,openBlock:_openBlock,createElementBlock:_createElementBlock,createCommentVNode:_createCommentVNode,createBlock:_createBlock,toDisplayString:_toDisplayString,normalizeClass:_normalizeClass,mergeProps:_mergeProps,renderList:_renderList,Fragment:_Fragment,unref:_unref,withCtx:_withCtx,createTextVNode:_createTextVNode,normalizeStyle:_normalizeStyle,withModifiers:_withModifiers} = await importShared('vue');
+const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,openBlock:_openBlock,createElementBlock:_createElementBlock,createCommentVNode:_createCommentVNode,createBlock:_createBlock,toDisplayString:_toDisplayString,normalizeClass:_normalizeClass,mergeProps:_mergeProps,renderList:_renderList,Fragment:_Fragment,withCtx:_withCtx,createTextVNode:_createTextVNode,unref:_unref,normalizeStyle:_normalizeStyle,withModifiers:_withModifiers} = await importShared('vue');
 
 
 const _hoisted_1 = { class: "magicflow-page__header" };
@@ -2065,9 +2065,24 @@ const tasks = computed(() => status.value.tasks || []);
 const defaultSavePath = computed(() => (status.value.defaults || {}).save_path || '');
 const selectedTask = computed(() => tasks.value.find(item => item.id === selectedTaskId.value) || null);
 const summary = computed(() => status.value.summary || {});
-const selectedState = computed(() =>
-  taskStateMeta(selectedTask.value?.state, selectedTask.value?.enabled ?? status.value.enabled),
-);
+const selectedState = computed(() => {
+  const t = selectedTask.value;
+  if (!t) return taskStateMeta('idle', false)
+  const mode = t.run_mode || 'running';
+  if (mode === 'seeding') return { text: '做种中', color: 'primary', icon: 'mdi-seed-outline' }
+  if (mode === 'stopped') return { text: '已停止', color: 'secondary', icon: 'mdi-stop-circle-outline' }
+  return taskStateMeta(t.state, true)
+});
+// 当前任务的运行状态（三态）；与运行时的状态徽章互不冲突
+const selectedRunMode = computed(() => runModeMeta(selectedTask.value?.run_mode || 'running'));
+
+// 任务徽章：非「运行中」时直接显示运行状态；运行中则显示实时状态。
+function taskBadge(task) {
+  const mode = task?.run_mode || 'running';
+  if (mode === 'seeding') return runModeMeta('seeding')
+  if (mode === 'stopped') return runModeMeta('stopped')
+  return taskStateMeta(task?.state, task?.enabled ?? true)
+}
 // 当前任务是否刷流模式（驱动整块工作台按类型显示）
 const taskIsBrush = computed(() => selectedTask.value?.task_type === 'brush');
 // 站点账号真实数据（上传/下载/分享率/做种数，来自站点用户页）
@@ -2193,7 +2208,7 @@ function notify(message, color = 'success') {
   }
 }
 
-const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reuse: '存量复用', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止' };
+const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reuse: '存量复用', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止', state: '运行状态' };
 const STATE_TEXT = { submitting: '提交中', accepted: '已受理', completed: '已完成', failed: '失败' };
 const KIND_ICON = {
   run: 'mdi-play-circle-outline',
@@ -2206,6 +2221,7 @@ const KIND_ICON = {
   resume: 'mdi-play-circle-outline',
   recheck: 'mdi-sync',
   goal: 'mdi-flag-checkered',
+  state: 'mdi-power',
 };
 
 function operationKindText(kind) {
@@ -2492,17 +2508,17 @@ async function runOperation() {
   }
 }
 
-// 切换当前任务启停状态。
-async function toggleSelectedTask() {
+// 切换当前任务的运行状态（running / seeding / stopped）。
+async function setRunMode(mode) {
   if (!selectedTask.value) return
+  const target = mode || 'running';
+  if (target === (selectedTask.value.run_mode || 'running')) return
   saving.value = true;
   try {
     unwrapResponse(
-      await props.api.post(`${pluginBase.value}/tasks/${selectedTask.value.id}/state`, {
-        enabled: !selectedTask.value.enabled,
-      }),
+      await props.api.post(`${pluginBase.value}/tasks/${selectedTask.value.id}/state`, { mode: target }),
     );
-    notify(selectedTask.value.enabled ? '任务已暂停' : '任务已启用');
+    notify(`运行状态已切换为「${runModeMeta(target).text}」`);
     await loadStatus();
     emit('action');
   } catch (err) {
@@ -3000,8 +3016,8 @@ return (_ctx, _cache) => {
                       }, {
                         prepend: _withCtx(() => [
                           _createVNode(_component_VIcon, {
-                            icon: _unref(taskStateMeta)(task.state, task.enabled).icon,
-                            color: _unref(taskStateMeta)(task.state, task.enabled).color,
+                            icon: taskBadge(task).icon,
+                            color: taskBadge(task).color,
                             size: "18"
                           }, null, 8, ["icon", "color"])
                         ]),
@@ -3180,8 +3196,8 @@ return (_ctx, _cache) => {
                             }, {
                               prepend: _withCtx(() => [
                                 _createVNode(_component_VIcon, {
-                                  icon: _unref(taskStateMeta)(task.state, task.enabled).icon,
-                                  color: _unref(taskStateMeta)(task.state, task.enabled).color,
+                                  icon: taskBadge(task).icon,
+                                  color: taskBadge(task).color,
                                   size: "18"
                                 }, null, 8, ["icon", "color"])
                               ]),
@@ -3241,7 +3257,7 @@ return (_ctx, _cache) => {
                         _createElementVNode("span", _hoisted_23, [
                           _createElementVNode("strong", null, _toDisplayString(task.name), 1),
                           _createElementVNode("span", {
-                            class: _normalizeClass(["magicflow-status-dot", `magicflow-status-dot--${_unref(taskStateMeta)(task.state, task.enabled).color}`])
+                            class: _normalizeClass(["magicflow-status-dot", `magicflow-status-dot--${taskBadge(task).color}`])
                           }, null, 2)
                         ]),
                         _createElementVNode("span", null, _toDisplayString(task.site_name) + " · " + _toDisplayString(task.downloader), 1),
@@ -3346,18 +3362,36 @@ return (_ctx, _cache) => {
                           ]),
                           _: 1
                         }),
-                        _createVNode(_component_VTooltip, {
-                          text: selectedTask.value.enabled ? '暂停任务' : '启用任务'
-                        }, {
-                          activator: _withCtx(({ props: tipProps }) => [
-                            _createVNode(_component_VBtn, _mergeProps(tipProps, {
-                              icon: selectedTask.value.enabled ? 'mdi-pause' : 'mdi-play',
-                              variant: "text",
-                              onClick: toggleSelectedTask
-                            }), null, 16, ["icon"])
+                        _createVNode(_component_VMenu, { location: "bottom end" }, {
+                          activator: _withCtx(({ props: menuProps }) => [
+                            _createVNode(_component_VBtn, _mergeProps(menuProps, {
+                              icon: selectedRunMode.value.icon,
+                              color: selectedRunMode.value.color,
+                              variant: "text"
+                            }), null, 16, ["icon", "color"])
+                          ]),
+                          default: _withCtx(() => [
+                            _createVNode(_component_VList, {
+                              density: "compact",
+                              "min-width": "248"
+                            }, {
+                              default: _withCtx(() => [
+                                (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_unref(RUN_MODES), (mode) => {
+                                  return (_openBlock(), _createBlock(_component_VListItem, {
+                                    key: mode.value,
+                                    "prepend-icon": mode.icon,
+                                    title: mode.text,
+                                    subtitle: mode.hint,
+                                    active: (selectedTask.value.run_mode || 'running') === mode.value,
+                                    onClick: $event => (setRunMode(mode.value))
+                                  }, null, 8, ["prepend-icon", "title", "subtitle", "active", "onClick"]))
+                                }), 128))
+                              ]),
+                              _: 1
+                            })
                           ]),
                           _: 1
-                        }, 8, ["text"]),
+                        }),
                         _createVNode(_component_VTooltip, { text: "编辑任务" }, {
                           activator: _withCtx(({ props: tipProps }) => [
                             _createVNode(_component_VBtn, _mergeProps(tipProps, {
@@ -4435,7 +4469,7 @@ return (_ctx, _cache) => {
                                   _createElementVNode("dl", _hoisted_84, [
                                     _createElementVNode("div", null, [
                                       _cache[160] || (_cache[160] = _createElementVNode("dt", null, "任务状态", -1)),
-                                      _createElementVNode("dd", null, _toDisplayString(selectedTask.value.enabled ? '启用' : '暂停'), 1)
+                                      _createElementVNode("dd", null, _toDisplayString(selectedRunMode.value.text), 1)
                                     ]),
                                     _createElementVNode("div", null, [
                                       _cache[161] || (_cache[161] = _createElementVNode("dt", null, "任务目标", -1)),
@@ -5558,6 +5592,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-303063ef"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-81e1f2be"]]);
 
 export { MagicFlowWorkbench as M };
