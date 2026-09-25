@@ -284,9 +284,7 @@ function confirmSaveWithoutGoal() {
                       type="number"
                       min="0"
                       step="any"
-                      :label="isBrush ? '目标上传量（GB）' : '目标魔力值（可填任意大，如 100000 即十万）'"
-                      :hint="isBrush ? '站点上传量达到目标后任务自动停止；未填会弹窗提醒' : '站点魔力值达到目标后任务自动停止；未填会弹窗提醒'"
-                      persistent-hint
+                      :label="isBrush ? '目标上传量（GB）' : '目标魔力值'"
                       clearable
                     />
                   </VCol>
@@ -863,7 +861,6 @@ function confirmSaveWithoutGoal() {
           <div class="text-body-2 text-medium-emphasis">
             建议为每个任务设置目标，达到后会自动停止：
             <strong>{{ isBrush ? '站点上传量（GB）' : '站点魔力值' }}</strong>。
-            未设置目标的任务将一直运行下去。
           </div>
         </VCardText>
         <VCardActions>
