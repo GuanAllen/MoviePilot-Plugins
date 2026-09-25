@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urljoin
 
 # 站点页面上的「发布时间」是站点本地时间（国内 PT 站均为 UTC+8）。
 # MoviePilot 容器时区同为 Asia/Shanghai，解析出的 naive 时间即本地时间，
@@ -107,6 +108,39 @@ class FetchResult:
     candidates: List[SiteCandidateTorrent] = field(default_factory=list)
     reason_counts: Dict[str, int] = field(default_factory=dict)
     error: Optional[str] = None
+
+
+# ============================================================
+# NexusPHP 直连索引：按「促销状态」直接拿免费种
+# ============================================================
+# NexusPHP 标准 spstate 促销筛选值（站点列表页 / 顶部的促销快捷筛选）。
+#   1=普通  2=免费  3=2X上传  4=2X免费  5=50%免费
+#   6=2X上传&50%免费  7=30%免费  8=0流量
+# 刷流只关心「下载免费」→ 取 2(免费) + 4(2X免费)。
+NP_FREE_SPSTATES: Tuple[int, ...] = (2, 4)
+
+# NexusPHP 促销 class → (下载系数 dv, 上传系数 uv)，用于换算免费/双倍。
+_NP_PROMO_FACTORS: Dict[str, Tuple[float, float]] = {
+    "free": (0.0, 1.0),
+    "twoupfree": (0.0, 2.0),
+    "zeroupzerodown": (0.0, 0.0),
+    "halfdown": (0.5, 1.0),
+    "twouphalfdown": (0.5, 2.0),
+    "thirtypercent": (0.7, 1.0),
+    "twoup": (1.0, 2.0),
+}
+
+_NP_ROW_RE = re.compile(r"<tr\s+data=(\d+)>", re.IGNORECASE)
+_NP_SIZE_UNITS = {"B": 1, "KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3, "TB": 1024 ** 4}
+
+
+def _np_size_to_bytes(num: str, unit: str) -> float:
+    """把列表页的大小（如 ``83.28`` + ``GB``）换算为字节。"""
+    try:
+        val = float(str(num).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return 0.0
+    return val * _NP_SIZE_UNITS.get((unit or "GB").upper(), 1024 ** 3)
 
 
 # ============================================================
@@ -256,6 +290,180 @@ class SiteFetcher:
             if not batch:
                 break
         return collected
+
+    def _parse_np_rows(
+        self,
+        html_text: str,
+        site_domain: str,
+        base_url: str,
+        cookie: Optional[str],
+        ua: Optional[str],
+    ) -> List[SiteCandidateTorrent]:
+        """解析 NexusPHP 列表页（torrents.php）为候选种子列表。
+
+        只依赖列表页可见字段：标题 / 促销 class / 添加时间 / 大小 / 做种人数 / 下载人数 /
+        下载链接。行内无 infohash，故 hash 退化为详情页 URL（与 SDK 路径一致）。
+        """
+        out: List[SiteCandidateTorrent] = []
+        if not html_text:
+            return out
+        base = base_url.rstrip("/")
+        starts = [m.start() for m in _NP_ROW_RE.finditer(html_text)]
+        for i, start in enumerate(starts):
+            end = starts[i + 1] if i + 1 < len(starts) else len(html_text)
+            chunk = html_text[start:end]
+
+            # 标题：优先 torrentname_title 锚点（属性顺序兼容两种）
+            tm = re.search(
+                r'class=["\']torrentname_title["\'][^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+                chunk, re.DOTALL,
+            )
+            if not tm:
+                tm = re.search(
+                    r'href=["\']([^"\']*details\.php\?id=[^"\']+)["\'][^>]*class=["\']torrentname_title["\'][^>]*>(.*?)</a>',
+                    chunk, re.DOTALL,
+                )
+            if not tm:
+                continue
+            href, inner = tm.group(1), tm.group(2)
+            title = re.sub(r"<[^>]+>", "", inner).strip()
+            if not title:
+                continue
+            page_url = urljoin(base + "/", href)
+
+            # 促销状态（跳过 promotion bb=字幕/附件 之类非促销标记）
+            promo = ""
+            for pm in re.finditer(r"class=['\"]promotion\s+(\w+)['\"]", chunk):
+                cls = pm.group(1).lower()
+                if cls in _NP_PROMO_FACTORS:
+                    promo = cls
+                    break
+            dv, uv = _NP_PROMO_FACTORS.get(promo, (1.0, 1.0))
+
+            # 添加时间（列表页 <span title="YYYY-MM-DD HH:MM:SS">）
+            pubdate = None
+            dm = re.search(r'<span title=["\'](\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})["\']', chunk)
+            if dm:
+                pubdate = dm.group(1)
+
+            # 大小（形如：<td class="rowfollow">83.28<br>GB</td>）
+            size = 0.0
+            sm = re.search(r'class="rowfollow">\s*([\d.,]+)\s*<br\s*/?>\s*([KMGT]?B)', chunk)
+            if sm:
+                size = _np_size_to_bytes(sm.group(1), sm.group(2))
+
+            # 做种/下载人数（详情页的 dllist 锚点带 #seeders / #leechers）
+            seeders = leechers = 0
+            s1 = re.search(r'#seeders["\']>(\d+)<', chunk)
+            if s1:
+                seeders = int(s1.group(1))
+            s2 = re.search(r'#leechers["\']>(\d+)<', chunk)
+            if s2:
+                leechers = int(s2.group(1))
+
+            # 下载链接（enclosure）
+            enclosure = ""
+            em = re.search(r'href=["\']([^"\']*download\.php[^"\']*)["\']', chunk)
+            if em:
+                enclosure = urljoin(base + "/", em.group(1))
+
+            out.append(SiteCandidateTorrent(
+                hash=page_url,
+                title=title,
+                size=size,
+                size_gb=size / (1024 ** 3) if size else 0.0,
+                seeders=seeders,
+                leechers=leechers,
+                pubdate=pubdate,
+                age_weeks=ts_to_age_weeks(pubdate_to_ts(pubdate)) if pubdate else 0.0,
+                page_url=page_url,
+                enclosure=enclosure,
+                site_name=site_domain,
+                site_domain=site_domain,
+                is_free=(dv == 0),
+                is_double_free=(dv == 0 and uv == 2),
+                hit_and_run=False,
+                volume_factor=dv,
+                site_cookie=cookie,
+                site_ua=ua,
+                downloadvolumefactor=dv,
+                uploadvolumefactor=uv,
+            ))
+        return out
+
+    def browse_site_np_free(
+        self,
+        site: Any,
+        pages: int = 1,
+        spstates: Tuple[int, ...] = NP_FREE_SPSTATES,
+        start_page: int = 0,
+    ) -> List[SiteCandidateTorrent]:
+        """NexusPHP 直连：用站点 cookie 按 spstate 直接抓「免费」列表页。
+
+        绕开 SDK ``browse``（它不暴露 spstate），自己拼 ``torrents.php?incldead=1&spstate=…``
+        直接只取免费种 —— 免费是硬门槛，直接抓比「全抓回来再筛」省请求、也不易触发站内流控。
+
+        安全：cookie 仍来自站点配置，且**只发给该站点自己的域名**，不落盘、不外传。
+        任何异常 / 无结果时返回 ``[]``，由调用方回退到 SDK ``browse_site``。
+        """
+        out: List[SiteCandidateTorrent] = []
+        seen: set = set()
+        base = (getattr(site, "url", "") or f"https://{getattr(site, 'domain', '')}").rstrip("/")
+        domain = getattr(site, "domain", "") or base
+        cookie = getattr(site, "cookie", None)
+        ua = getattr(site, "ua", None)
+        if not base:
+            return out
+        try:
+            from app.sdk.network import RequestUtils  # noqa: WPS433
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"NexusPHP 直连需要 SDK：{err}")
+            return out
+
+        req = RequestUtils(cookies=cookie, ua=ua, timeout=30, referer=f"{base}/")
+        total_pages = max(int(pages or 1), 1)
+        for sp in spstates:
+            for p in range(total_pages):
+                if out and _REQUEST_INTERVAL > 0:
+                    time.sleep(_REQUEST_INTERVAL)
+                url = f"{base}/torrents.php?incldead=1&spstate={sp}&page={int(start_page) + p}"
+                try:
+                    resp = req.get_res(url)
+                except Exception as err:  # noqa: BLE001
+                    logger.warning(f"NexusPHP 直连请求失败 {url}: {err}")
+                    continue
+                if resp is None:
+                    continue
+                try:
+                    try:
+                        text = resp.text or ""
+                    except Exception:  # noqa: BLE001
+                        text = ""
+                    if not text:
+                        raw = getattr(resp, "content", b"") or b""
+                        try:
+                            text = raw.decode("utf-8")
+                        except UnicodeDecodeError:
+                            text = raw.decode("gbk", "ignore")
+                finally:
+                    try:
+                        resp.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                batch = self._parse_np_rows(text, domain, base, cookie, ua)
+                for cand in batch:
+                    key = cand.page_url or cand.title
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    out.append(cand)
+                logger.info(
+                    f"NexusPHP 直连 spstate={sp} page={int(start_page) + p} 本页 {len(batch)} 个，累计 {len(out)} 个"
+                )
+                # 空页即到底：免费列表通常只有 1 页，提前止步，不浪费请求。
+                if not batch:
+                    break
+        return out
 
     def browse_all_sites(
         self,
