@@ -213,6 +213,7 @@ export function normalizeDefaults(raw = {}) {
     top_n: Math.max(1, Math.round(num(raw.top_n, 30))),
     browse_pages: Math.max(1, Math.round(num(raw.browse_pages, 3))),
     seen_cooldown_hours: Math.max(0, num(raw.seen_cooldown_hours, 24)),
+    brush_seed_days: Math.max(0, Math.round(num(raw.brush_seed_days, 2))),
     refill_when_empty: raw.refill_when_empty !== false,
     reuse_existing: raw.reuse_existing !== false,
     reuse_verify: raw.reuse_verify !== false,

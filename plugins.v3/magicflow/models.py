@@ -259,6 +259,7 @@ class MagicFlowDefaultsPayload(BaseModel):
     top_n: int = Field(30, ge=1, le=1000, description="每轮处理候选上限 TopN")
     browse_pages: int = Field(3, ge=1, le=50, description="每轮站点翻页数")
     seen_cooldown_hours: float = Field(24.0, ge=0, le=8760, description="候选去重冷却（小时）")
+    brush_seed_days: int = Field(2, ge=0, le=365, description="默认刷流保种天数（0=按无上传判定）")
     refill_when_empty: bool = True
     reuse_existing: bool = True
     reuse_verify: bool = True
