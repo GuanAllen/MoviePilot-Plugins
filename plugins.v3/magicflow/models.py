@@ -75,6 +75,7 @@ class MagicFlowTaskPayload(BaseModel):
     upload_idle_minutes: int = Field(10, ge=0, le=1440, description="刷流模式：连续多少分钟无上传则清理（0=自动≈2×检查间隔）")
     upload_min_kbps: int = Field(200, ge=1, le=102400, description="刷流模式：平均上传速率门槛（KB/s），低于此值视为「无上传」")
     brush_min_leechers: int = Field(1, ge=0, le=100000, description="刷流模式：最小下载人数（有下载需求才值得下）")
+    brush_seed_days: int = Field(2, ge=0, le=365, description="刷流模式：做种满多少天后清理换新（默认 2 天；0=不按天数，改回「无上传」判定）")
 
     # 已处理去重：站点列表页每次都返回同一批最新种子，记录已处理候选避免重复拉取
     seen_cooldown_hours: float = Field(24.0, ge=0, le=8760, description="同一候选在多少小时内不重复拉取（0=不跳过）")

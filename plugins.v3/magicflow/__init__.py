@@ -92,7 +92,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "2.2.2"
+__version__ = "2.3.0"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -1915,26 +1915,32 @@ class MagicFlow(_PluginBase):
             except Exception as _unfree_err:
                 self._log(f"魔流 [{task.name}] 清理「已非免费」种子异常: {_unfree_err}", "warning")
 
-        # ②d 刷流模式：清理「无上传」的种子（连续 idle 次检查 uploaded 增量≈0 → 删）
+        # ②d 刷流模式：清理到期的托管种
+        #    默认「做种满 brush_seed_days 天」轮换（挂种 N 天换新）；
+        #    brush_seed_days=0 时回退旧的「无上传」判定。
         if _is_brush:
+            _seed_days = int(getattr(task, "brush_seed_days", 0) or 0)
             if all_tagged:
                 try:
-                    out["no_upload"] = self._cleanup_no_upload(
-                        task, downloader, list(all_tagged), protected
-                    )
+                    if _seed_days > 0:
+                        out["aged"] = self._cleanup_aged(task, downloader, list(all_tagged), protected)
+                    else:
+                        out["no_upload"] = self._cleanup_no_upload(task, downloader, list(all_tagged), protected)
                 except Exception as _nu_err:
-                    self._log(f"魔流 [{task.name}] 刷流「无上传」清理异常: {_nu_err}", "warning")
+                    self._log(f"魔流 [{task.name}] 刷流清理异常: {_nu_err}", "warning")
             # 刷流模式不套用魔力门槛删种；直接收尾返回。
             try:
                 _st, _st_err = downloader.get_seeding_torrents(tag=task.brush_tag)
             except Exception:
                 _st = []
             _tt = [t for t in (_st or []) if task.brush_tag in t.tags]
-            out["deleted"] = int(out["no_progress"]) + int(out.get("no_upload", 0))
+            _aged = int(out.get("aged", 0))
+            _noupl = int(out.get("no_upload", 0))
+            out["deleted"] = int(out["no_progress"]) + _aged + _noupl
             out["kept"] = len(_tt)
             self._log(
                 f"魔流 [{task.name}] 刷流完成："
-                f"恢复 {out['resumed']} / 无进度 {out['no_progress']} / 无上传 {out.get('no_upload', 0)}；"
+                f"恢复 {out['resumed']} / 无进度 {out['no_progress']} / 到期 {_aged} / 无上传 {_noupl}；"
                 f"保留 {out['kept']} 个"
             )
             return out
@@ -2822,6 +2828,79 @@ class MagicFlow(_PluginBase):
             )
         if self._store:
             self._store.set_brush_upload(task.id, new_state)
+        return deleted
+
+    def _cleanup_aged(
+        self,
+        task: MagicFlowTaskConfig,
+        downloader: DownloaderAdapter,
+        managed: List[TorrentInfo],
+        protected_hashes: Optional[Set[str]] = None,
+    ) -> int:
+        """刷流模式：做种满 ``brush_seed_days`` 天的种子清理（轮换腾位），返回删除数。
+
+        * 已完成种：按**做种时长**（qB seeding_time）计；拿不到时用「加入下载器时长」兜底。
+        * 未下完的：按**加入时长**轮换（挂很久还下不完的没意义）。
+        * protected / 手动保留的种子只记录快照、永不删。
+        保种期内（< 天数）一律保留，不按上传速率判。
+        """
+        days = int(getattr(task, "brush_seed_days", 0) or 0)
+        if days <= 0 or not managed:
+            return 0
+        thr = days * 86400
+        now = time.time()
+        protected_hashes = protected_hashes or set()
+
+        to_delete: List[TorrentInfo] = []
+        for t in managed:
+            h = (t.hash or "").lower()
+            if not h or h in protected_hashes:
+                continue
+            try:
+                seed_secs = float(getattr(t, "seed_time", 0) or 0)
+            except (TypeError, ValueError):
+                seed_secs = 0.0
+            try:
+                added = float(getattr(t, "added_on", 0) or 0)
+            except (TypeError, ValueError):
+                added = 0.0
+            try:
+                prog = float(getattr(t, "progress", 0) or 0)
+            except (TypeError, ValueError):
+                prog = 0.0
+            age = (now - added) if added > 0 else 0.0
+            if prog >= 0.999:
+                eff = seed_secs if seed_secs > 0 else age
+            else:
+                eff = age
+            if eff >= thr:
+                to_delete.append(t)
+
+        deleted = 0
+        if to_delete:
+            hashes = [t.hash for t in to_delete if t.hash]
+            try:
+                success, error = downloader.delete_torrents(
+                    hashes=hashes, delete_file=bool(getattr(task, "delete_files", True))
+                )
+            except Exception:
+                success, error = 0, "删除异常"
+            deleted = int(success or 0)
+            if deleted and self._store:
+                items = [
+                    OperationItem(
+                        hash=t.hash,
+                        title=str(getattr(t, "title", "") or ""),
+                        reason=f"刷流：做种满 {days} 天",
+                        bonus_per_hour=0.0,
+                    )
+                    for t in to_delete[:deleted]
+                ]
+                self._store.journal.record(task_id=task.id, kind="deletion", items=items)
+                self._store.forget_torrents(task.id, [t.hash for t in to_delete[:deleted]])
+            self._log(
+                f"魔流 [{task.name}] 刷流清理「做种满 {days} 天」种子 {deleted} 个"
+            )
         return deleted
 
     def _cleanup_no_progress(

@@ -18,7 +18,7 @@ const formRef = ref(null)
 const activeTab = ref('base')
 const localTask = ref(cloneTask())
 
-// 刷流模式：清理以「上传」为准（无上传即清理），不套用魔力门槛。
+// 刷流模式：做种满设定天数即清理换新（保种天数），不套用魔力门槛。
 const isBrush = computed(() => localTask.value.task_type === 'brush')
 const dialogTitle = computed(() => {
   const kind = isBrush.value ? '刷流任务' : '魔力任务'
@@ -143,7 +143,7 @@ async function saveTask() {
                       label="类型"
                       :items="[
                         { title: '刷魔力（魔力/小时最大化）', value: 'bonus' },
-                        { title: '刷流（按上传产出，无上传即清理）', value: 'brush' },
+                        { title: '刷流（按上传潜力选种，做种满天数轮换）', value: 'brush' },
                       ]"
                       hint="刷流模式在「刷流运维」标签配置，魔力门槛/公式自动隐藏"
                       persistent-hint
@@ -253,46 +253,25 @@ async function saveTask() {
               <VAlert type="info" variant="tonal" density="compact" class="mb-2" icon="mdi-upload-network-outline">
                 刷流模式：<strong>按「上传潜力」运行，有自己的选种标准</strong> —— 只挑<strong>免费（含 2X免费）且有下载者</strong>的种，
                 不设做种人数上限、体积/年龄不限（热门大种才是上传主力）；定期检查每个种子，
-                <strong>平均上传速率长期低于门槛就删掉换新的</strong>；没下完也算（只要在上传）。
+                <strong>做种满设定天数即清理换新的</strong>（默认 2 天）；没下完也算（只要在上传）。
               </VAlert>
               <section class="editor-section">
                 <header class="editor-section__head">
                   <div>
-                    <div class="text-subtitle-1 font-weight-medium">刷流门槛</div>
-                    <div class="text-body-2 text-medium-emphasis">低于速率门槛即判「无上传」，连续若干次后清理换新</div>
+                    <div class="text-subtitle-1 font-weight-medium">刷流轮换</div>
+                    <div class="text-body-2 text-medium-emphasis">做种满设定天数即清理换新（默认 2 天）</div>
                   </div>
                 </header>
                 <VRow>
                   <VCol cols="12" md="6">
-                    <VSelect
-                      v-model.number="localTask.upload_min_kbps"
-                      label="上传速率门槛"
-                      :items="uploadRateOptions"
-                      hint="窗口内平均上传速率低于该值 → 判「无上传」（连续若干次后删除）"
-                      persistent-hint
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
                     <VTextField
-                      v-model.number="localTask.upload_idle_minutes"
+                      v-model.number="localTask.brush_seed_days"
                       type="number"
                       min="0"
-                      max="1440"
-                      label="无上传判定时长"
-                      hint="连续多少分钟低于速率门槛就清理（0 = 自动：约 2×检查间隔）"
-                      suffix="分钟"
-                      persistent-hint
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.brush_grace_minutes"
-                      type="number"
-                      min="0"
-                      max="1440"
-                      label="起步宽限"
-                      hint="新种加入后多少分钟内不判「无上传」"
-                      suffix="分钟"
+                      max="365"
+                      label="保种天数"
+                      hint="做种满该天数后清理换新；0 = 不按天数，改回「无上传」判定"
+                      suffix="天"
                       persistent-hint
                     />
                   </VCol>
@@ -328,7 +307,7 @@ async function saveTask() {
                 <header class="editor-section__head">
                   <div>
                     <div class="text-subtitle-1 font-weight-medium">复用与清理</div>
-                    <div class="text-body-2 text-medium-emphasis">优先复用本机已有资源；无上传 / 促销失效的种子清理</div>
+                    <div class="text-body-2 text-medium-emphasis">优先复用本机已有资源；做种满天数 / 促销失效的种子清理</div>
                   </div>
                 </header>
                 <div class="editor-switches">

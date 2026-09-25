@@ -13,6 +13,7 @@ const taskDefaults = {
   upload_idle_minutes: 10,
   upload_min_kbps: 200,
   brush_min_leechers: 1,
+  brush_seed_days: 2,
   brush_interval: 5,
   check_interval: 1,
   cron_expression: null,
@@ -146,6 +147,7 @@ function normalizeTask(task) {
   result.upload_idle_minutes = Number(result.upload_idle_minutes ?? 10);
   result.upload_min_kbps = Number(result.upload_min_kbps ?? 200);
   result.brush_min_leechers = Number(result.brush_min_leechers ?? 1);
+  result.brush_seed_days = Number(result.brush_seed_days ?? 2);
   result.delete_files = Boolean(result.delete_files);
   result.exclude_zero_bonus = Boolean(result.exclude_zero_bonus);
   result.rss_support = Boolean(result.rss_support);
