@@ -120,6 +120,11 @@ const taskIsBrush = computed(() => selectedTask.value?.task_type === 'brush')
 // 站点账号真实数据（上传/下载/分享率/做种数，来自站点用户页）
 const siteUser = computed(() => detailStats.value?.site_user || selectedTask.value?.site_user || {})
 const taskConfig = computed(() => selectedTask.value || {})
+// 刷流保种天数（缺省=2，兼容未写入该字段的旧任务）
+const brushSeedDays = computed(() => {
+  const v = taskConfig.value?.brush_seed_days
+  return v === undefined || v === null || v === '' ? 2 : Number(v)
+})
 const taskSiteIcon = computed(() => {
   const id = Number(selectedTask.value?.site_id)
   return id ? siteIcons.value[id] || '' : ''
@@ -1219,9 +1224,7 @@ onUnmounted(() => {
                     <div><dt>检查周期</dt><dd>每 {{ taskConfig.check_interval }} 分钟</dd></div>
                     <div><dt>开启时段</dt><dd>{{ taskConfig.active_time_range || '全天' }}</dd></div>
                     <template v-if="taskIsBrush">
-                      <div><dt>上传速率门槛</dt><dd>{{ taskConfig.upload_min_kbps ?? 200 }} KB/s</dd></div>
-                      <div><dt>无上传判定</dt><dd>{{ taskConfig.upload_idle_minutes ? `${taskConfig.upload_idle_minutes} 分钟` : '自动（约 2×检查间隔）' }}</dd></div>
-                      <div><dt>起步宽限</dt><dd>{{ taskConfig.brush_grace_minutes ?? 15 }} 分钟</dd></div>
+                      <div><dt>保种天数</dt><dd>{{ brushSeedDays > 0 ? `做种满 ${brushSeedDays} 天清理` : '不按天数（按无上传）' }}</dd></div>
                       <div><dt>最小下载人数</dt><dd>{{ taskConfig.brush_min_leechers ?? 1 }} 人</dd></div>
                     </template>
                     <template v-else>
@@ -1622,7 +1625,7 @@ onUnmounted(() => {
                   <header class="magicflow-panel__head">
                     <div>
                       <div class="text-subtitle-1 font-weight-medium">{{ taskIsBrush ? '刷流规则' : '魔力规则' }}</div>
-                      <div class="text-body-2 text-medium-emphasis">{{ taskIsBrush ? '刷流标准：免费 + 有下载者；无上传即清理' : '当前服务端生效的魔力养护配置' }}</div>
+                      <div class="text-body-2 text-medium-emphasis">{{ taskIsBrush ? '刷流标准：免费 + 有下载者；做种满天数清理' : '当前服务端生效的魔力养护配置' }}</div>
                     </div>
                   </header>
                   <dl class="magicflow-facts magicflow-facts--two">
@@ -1633,9 +1636,7 @@ onUnmounted(() => {
                     <div><dt>促销要求</dt><dd>{{ taskIsBrush ? '免费（含 2X免费）' : (taskConfig.freeleech === '2xfree' ? '2X 免费' : taskConfig.freeleech === 'free' ? '免费' : '全部') }}</dd></div>
                     <div><dt>选种来源</dt><dd>{{ taskConfig.rss_support ? 'RSS' : '站点列表页' }}</dd></div>
                     <template v-if="taskIsBrush">
-                      <div><dt>上传速率门槛</dt><dd>{{ taskConfig.upload_min_kbps ?? 200 }} KB/s</dd></div>
-                      <div><dt>无上传判定</dt><dd>{{ taskConfig.upload_idle_minutes ? `${taskConfig.upload_idle_minutes} 分钟` : '自动（约 2×检查间隔）' }}</dd></div>
-                      <div><dt>起步宽限</dt><dd>{{ taskConfig.brush_grace_minutes ?? 15 }} 分钟</dd></div>
+                      <div><dt>保种天数</dt><dd>{{ brushSeedDays > 0 ? `做种满 ${brushSeedDays} 天清理` : '不按天数（按无上传）' }}</dd></div>
                       <div><dt>最小下载人数</dt><dd>{{ taskConfig.brush_min_leechers ?? 1 }} 人</dd></div>
                       <div><dt>种子大小</dt><dd>{{ taskConfig.size || '不限' }}</dd></div>
                       <div><dt>做种人数</dt><dd>{{ taskConfig.seeder || '不限' }}</dd></div>
