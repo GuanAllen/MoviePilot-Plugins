@@ -78,6 +78,8 @@ const settingsDraft = ref({
   compact_mode: false,
   journal_keep: 200,
   request_interval: 0,
+  bonus_upload_limit_kbps: 200,
+  brush_upload_limit_kbps: 10240,
 })
 const downloaderPrefsDraft = ref(normalizeDownloaderPrefs({}))
 const downloaderPrefsRecommended = ref(null)
@@ -382,6 +384,8 @@ async function loadStatus() {
       compact_mode: status.value.compact_mode,
       journal_keep: status.value.journal_keep,
       request_interval: status.value.request_interval,
+      bonus_upload_limit_kbps: status.value.bonus_upload_limit_kbps,
+      brush_upload_limit_kbps: status.value.brush_upload_limit_kbps,
     })
     statusLoaded.value = true
     if (!selectedTaskId.value && tasks.value.length) {
@@ -1770,6 +1774,33 @@ onUnmounted(() => {
               variant="outlined"
               density="comfortable"
             />
+            <p class="magicflow-settings-hint">
+              任务流量：按「在跑的任务类型」自动设 qB <strong>全局上传限速</strong>（只限上传，不动下载）。有刷流任务时用刷流档，只有魔力任务时用魔力档；两者同时在跑取刷流档；一个启用的任务都没有则清除限速。
+            </p>
+            <div class="magicflow-settings-grid">
+              <VTextField
+                v-model.number="settingsDraft.bonus_upload_limit_kbps"
+                type="number"
+                min="0"
+                step="10"
+                label="魔力任务上传限速（KB/s）"
+                hint="仅有魔力任务在跑时生效，0 = 不限"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="settingsDraft.brush_upload_limit_kbps"
+                type="number"
+                min="0"
+                step="10"
+                label="刷流任务上传限速（KB/s）"
+                hint="有刷流任务在跑时生效（优先），0 = 不限"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+            </div>
             <VSwitch v-model="settingsDraft.debug_log" label="调试日志" color="primary" hide-details inset />
             <VSwitch v-model="settingsDraft.compact_mode" label="紧凑模式" color="primary" hide-details inset />
           </div>
