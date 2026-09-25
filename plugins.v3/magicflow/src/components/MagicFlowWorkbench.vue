@@ -144,8 +144,6 @@ const brushSeedDays = computed(() => {
   const v = taskConfig.value?.brush_seed_days
   return v === undefined || v === null || v === '' ? 2 : Number(v)
 })
-// 未设置「任务目标」的任务（用于顶部提醒）
-const tasksMissingGoal = computed(() => tasks.value.filter(t => !t.goal_has))
 // 当前任务的「任务目标」完成情况文案
 const goalFactText = computed(() => {
   const t = taskConfig.value || {}
@@ -1051,15 +1049,6 @@ onUnmounted(() => {
     <VAlert v-if="error" type="error" variant="tonal" closable @click:close="error = ''">{{ error }}</VAlert>
     <VAlert v-if="statusLoaded && !status.enabled" type="warning" variant="tonal">
       插件当前未启用，任务配置与历史仍可查看，启用后才会注册选种刷新和做种检查服务。
-    </VAlert>
-    <VAlert
-      v-if="statusLoaded && status.enabled && tasksMissingGoal.length"
-      type="warning"
-      variant="tonal"
-      icon="mdi-flag-alert"
-    >
-      还有 <strong>{{ tasksMissingGoal.length }}</strong> 个任务未设置「任务目标」，达到目标后无法自动停止。
-      请到「任务配置 → 基础与调度 → 任务目标」补填（魔力任务填站点魔力值，刷流任务填上传量 GB）。
     </VAlert>
 
     <div v-if="loading && !tasks.length" class="magicflow-loading">
