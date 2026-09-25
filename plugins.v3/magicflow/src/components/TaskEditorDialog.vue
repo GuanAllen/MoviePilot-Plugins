@@ -334,6 +334,50 @@ function confirmSaveWithoutGoal() {
               <section class="editor-section">
                 <header class="editor-section__head">
                   <div>
+                    <div class="text-subtitle-1 font-weight-medium">无上传判定（保种天数 = 0 时启用）</div>
+                    <div class="text-body-2 text-medium-emphasis">保种天数填 0 时不按天数轮换，而是以「平均上传速率」为准清理换新</div>
+                  </div>
+                </header>
+                <VRow>
+                  <VCol cols="12" md="6">
+                    <VSelect
+                      v-model.number="localTask.upload_min_kbps"
+                      label="上传速率门槛"
+                      :items="uploadRateOptions"
+                      hint="窗口内平均上传速率低于该值 → 判「无上传」（连续若干次后删除）"
+                      persistent-hint
+                    />
+                  </VCol>
+                  <VCol cols="12" md="6">
+                    <VTextField
+                      v-model.number="localTask.upload_idle_minutes"
+                      type="number"
+                      min="0"
+                      max="1440"
+                      label="清理时间（无上传判定时长）"
+                      hint="连续多少分钟低于速率门槛就清理（0 = 自动：约 2×检查间隔）"
+                      suffix="分钟"
+                      persistent-hint
+                    />
+                  </VCol>
+                  <VCol cols="12" md="6">
+                    <VTextField
+                      v-model.number="localTask.brush_grace_minutes"
+                      type="number"
+                      min="0"
+                      max="1440"
+                      label="宽容时间（起步宽限）"
+                      hint="新种加入后多少分钟内不判「无上传」"
+                      suffix="分钟"
+                      persistent-hint
+                    />
+                  </VCol>
+                </VRow>
+              </section>
+
+              <section class="editor-section">
+                <header class="editor-section__head">
+                  <div>
                     <div class="text-subtitle-1 font-weight-medium">抓取与并发</div>
                     <div class="text-body-2 text-medium-emphasis">刷流只看最新页（免费热种在最新页），不深翻</div>
                   </div>
