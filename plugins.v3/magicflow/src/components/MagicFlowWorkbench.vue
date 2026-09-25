@@ -13,6 +13,8 @@ import {
   normalizeDownloaderPrefs,
   normalizeSettings,
   normalizeTask,
+  RUN_MODES,
+  runModeMeta,
   runStatusText,
   taskStateMeta,
   unwrapResponse,
@@ -114,9 +116,24 @@ const tasks = computed(() => status.value.tasks || [])
 const defaultSavePath = computed(() => (status.value.defaults || {}).save_path || '')
 const selectedTask = computed(() => tasks.value.find(item => item.id === selectedTaskId.value) || null)
 const summary = computed(() => status.value.summary || {})
-const selectedState = computed(() =>
-  taskStateMeta(selectedTask.value?.state, selectedTask.value?.enabled ?? status.value.enabled),
-)
+const selectedState = computed(() => {
+  const t = selectedTask.value
+  if (!t) return taskStateMeta('idle', false)
+  const mode = t.run_mode || 'running'
+  if (mode === 'seeding') return { text: '做种中', color: 'primary', icon: 'mdi-seed-outline' }
+  if (mode === 'stopped') return { text: '已停止', color: 'secondary', icon: 'mdi-stop-circle-outline' }
+  return taskStateMeta(t.state, true)
+})
+// 当前任务的运行状态（三态）；与运行时的状态徽章互不冲突
+const selectedRunMode = computed(() => runModeMeta(selectedTask.value?.run_mode || 'running'))
+
+// 任务徽章：非「运行中」时直接显示运行状态；运行中则显示实时状态。
+function taskBadge(task) {
+  const mode = task?.run_mode || 'running'
+  if (mode === 'seeding') return runModeMeta('seeding')
+  if (mode === 'stopped') return runModeMeta('stopped')
+  return taskStateMeta(task?.state, task?.enabled ?? true)
+}
 // 当前任务是否刷流模式（驱动整块工作台按类型显示）
 const taskIsBrush = computed(() => selectedTask.value?.task_type === 'brush')
 // 站点账号真实数据（上传/下载/分享率/做种数，来自站点用户页）
@@ -242,7 +259,7 @@ function notify(message, color = 'success') {
   }
 }
 
-const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reuse: '存量复用', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止' }
+const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reuse: '存量复用', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止', state: '运行状态' }
 const STATE_TEXT = { submitting: '提交中', accepted: '已受理', completed: '已完成', failed: '失败' }
 const KIND_ICON = {
   run: 'mdi-play-circle-outline',
@@ -255,6 +272,7 @@ const KIND_ICON = {
   resume: 'mdi-play-circle-outline',
   recheck: 'mdi-sync',
   goal: 'mdi-flag-checkered',
+  state: 'mdi-power',
 }
 
 function operationKindText(kind) {
@@ -541,17 +559,17 @@ async function runOperation() {
   }
 }
 
-// 切换当前任务启停状态。
-async function toggleSelectedTask() {
+// 切换当前任务的运行状态（running / seeding / stopped）。
+async function setRunMode(mode) {
   if (!selectedTask.value) return
+  const target = mode || 'running'
+  if (target === (selectedTask.value.run_mode || 'running')) return
   saving.value = true
   try {
     unwrapResponse(
-      await props.api.post(`${pluginBase.value}/tasks/${selectedTask.value.id}/state`, {
-        enabled: !selectedTask.value.enabled,
-      }),
+      await props.api.post(`${pluginBase.value}/tasks/${selectedTask.value.id}/state`, { mode: target }),
     )
-    notify(selectedTask.value.enabled ? '任务已暂停' : '任务已启用')
+    notify(`运行状态已切换为「${runModeMeta(target).text}」`)
     await loadStatus()
     emit('action')
   } catch (err) {
@@ -1008,7 +1026,7 @@ onUnmounted(() => {
               @click="selectTask(task.id)"
             >
               <template #prepend>
-                <VIcon :icon="taskStateMeta(task.state, task.enabled).icon" :color="taskStateMeta(task.state, task.enabled).color" size="18" />
+                <VIcon :icon="taskBadge(task).icon" :color="taskBadge(task).color" size="18" />
               </template>
             </VListItem>
           </VList>
@@ -1087,7 +1105,7 @@ onUnmounted(() => {
               @click="selectTask(task.id)"
             >
               <template #prepend>
-                <VIcon :icon="taskStateMeta(task.state, task.enabled).icon" :color="taskStateMeta(task.state, task.enabled).color" size="18" />
+                <VIcon :icon="taskBadge(task).icon" :color="taskBadge(task).color" size="18" />
               </template>
             </VListItem>
           </VList>
@@ -1119,7 +1137,7 @@ onUnmounted(() => {
             >
               <span class="magicflow-task-item__title">
                 <strong>{{ task.name }}</strong>
-                <span class="magicflow-status-dot" :class="`magicflow-status-dot--${taskStateMeta(task.state, task.enabled).color}`" />
+                <span class="magicflow-status-dot" :class="`magicflow-status-dot--${taskBadge(task).color}`" />
               </span>
               <span>{{ task.site_name }} · {{ task.downloader }}</span>
               <span class="magicflow-task-item__meta">
@@ -1165,16 +1183,27 @@ onUnmounted(() => {
                   <VBtn v-bind="tipProps" icon="mdi-refresh" variant="text" @click="reloadSelected()" />
                 </template>
               </VTooltip>
-              <VTooltip :text="selectedTask.enabled ? '暂停任务' : '启用任务'">
-                <template #activator="{ props: tipProps }">
+              <VMenu location="bottom end">
+                <template #activator="{ props: menuProps }">
                   <VBtn
-                    v-bind="tipProps"
-                    :icon="selectedTask.enabled ? 'mdi-pause' : 'mdi-play'"
+                    v-bind="menuProps"
+                    :icon="selectedRunMode.icon"
+                    :color="selectedRunMode.color"
                     variant="text"
-                    @click="toggleSelectedTask"
                   />
                 </template>
-              </VTooltip>
+                <VList density="compact" min-width="248">
+                  <VListItem
+                    v-for="mode in RUN_MODES"
+                    :key="mode.value"
+                    :prepend-icon="mode.icon"
+                    :title="mode.text"
+                    :subtitle="mode.hint"
+                    :active="(selectedTask.run_mode || 'running') === mode.value"
+                    @click="setRunMode(mode.value)"
+                  />
+                </VList>
+              </VMenu>
               <VTooltip text="编辑任务">
                 <template #activator="{ props: tipProps }">
                   <VBtn v-bind="tipProps" icon="mdi-pencil-outline" variant="text" @click="openEditTask" />
@@ -1657,7 +1686,7 @@ onUnmounted(() => {
                     </div>
                   </header>
                   <dl class="magicflow-facts magicflow-facts--two">
-                    <div><dt>任务状态</dt><dd>{{ selectedTask.enabled ? '启用' : '暂停' }}</dd></div>
+                    <div><dt>任务状态</dt><dd>{{ selectedRunMode.text }}</dd></div>
                     <div><dt>任务目标</dt><dd>{{ goalFactText }}</dd></div>
                     <div><dt>站点</dt><dd>{{ selectedTask.site_name }}</dd></div>
                     <div><dt>下载器</dt><dd>{{ selectedTask.downloader }}</dd></div>

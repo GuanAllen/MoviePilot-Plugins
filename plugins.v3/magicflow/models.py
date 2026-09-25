@@ -74,6 +74,8 @@ class MagicFlowTaskPayload(BaseModel):
 
     # 任务类型：bonus=刷魔力（默认）；brush=刷流（按上传产出，无上传即清理）
     task_type: Literal["bonus", "brush"] = Field("bonus", description="任务类型：bonus=刷魔力；brush=刷流")
+    # 运行状态：running=运行中；seeding=做种中（停调度、未完成种暂停、已完成种继续做种）；stopped=已停止（全部暂停，保文件）
+    run_mode: Optional[Literal["running", "seeding", "stopped"]] = Field(None, description="运行状态；留空则按 enabled 推算（True→running / False→stopped）")
     brush_grace_minutes: int = Field(15, ge=0, le=1440, description="刷流模式：新种加入后多少分钟内不判「无上传」")
     upload_idle_minutes: int = Field(10, ge=0, le=1440, description="刷流模式：连续多少分钟无上传则清理（0=自动≈2×检查间隔）")
     upload_min_kbps: int = Field(200, ge=1, le=102400, description="刷流模式：平均上传速率门槛（KB/s），低于此值视为「无上传」")
@@ -192,9 +194,14 @@ class MagicFlowTaskPayload(BaseModel):
 
 
 class MagicFlowTaskStatePayload(BaseModel):
-    """魔流任务启停请求模型"""
+    """魔流任务启停请求模型
 
-    enabled: bool
+    - ``mode``：running（运行中）/ seeding（做种中）/ stopped（已停止）；
+    - ``enabled``：兼容旧调用（True→running / False→stopped）；两者同传时以 mode 为准。
+    """
+
+    enabled: Optional[bool] = None
+    mode: Optional[Literal["running", "seeding", "stopped"]] = None
 
 
 class MagicFlowSettingsPayload(BaseModel):

@@ -9,6 +9,7 @@ export const taskDefaults = {
   brush_tag: null,
   save_path: null,
   task_type: 'bonus',
+  run_mode: 'running',
   brush_grace_minutes: 15,
   upload_idle_minutes: 10,
   upload_min_kbps: 200,
@@ -295,6 +296,19 @@ export function runStatusText(status) {
 export function formatBonus(value) {
   const number = Number(value || 0)
   return `${number.toFixed(2)} /h`
+}
+
+/** 运行状态（三态）可选值 + 元数据。 */
+export const RUN_MODES = [
+  { value: 'running', text: '运行中', icon: 'mdi-play-circle-outline', color: 'success', hint: '正常调度：下载新种 + 做种' },
+  { value: 'seeding', text: '做种中', icon: 'mdi-seed-outline', color: 'primary', hint: '停调度：未完成种暂停、已完成种继续做种' },
+  { value: 'stopped', text: '已停止', icon: 'mdi-stop-circle-outline', color: 'secondary', hint: '停调度：全部托管种暂停（保文件，可恢复）' },
+]
+
+/** 返回运行状态对应的中文文本、主题色和图标。 */
+export function runModeMeta(mode) {
+  const fallback = RUN_MODES[0]
+  return RUN_MODES.find(item => item.value === mode) || { ...fallback, value: mode || 'running' }
 }
 
 /** 返回任务状态对应的中文文本、主题色和图标。 */

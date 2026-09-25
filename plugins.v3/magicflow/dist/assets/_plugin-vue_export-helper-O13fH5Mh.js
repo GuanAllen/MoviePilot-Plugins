@@ -9,6 +9,7 @@ const taskDefaults = {
   brush_tag: null,
   save_path: null,
   task_type: 'bonus',
+  run_mode: 'running',
   brush_grace_minutes: 15,
   upload_idle_minutes: 10,
   upload_min_kbps: 200,
@@ -297,6 +298,19 @@ function formatBonus(value) {
   return `${number.toFixed(2)} /h`
 }
 
+/** 运行状态（三态）可选值 + 元数据。 */
+const RUN_MODES = [
+  { value: 'running', text: '运行中', icon: 'mdi-play-circle-outline', color: 'success', hint: '正常调度：下载新种 + 做种' },
+  { value: 'seeding', text: '做种中', icon: 'mdi-seed-outline', color: 'primary', hint: '停调度：未完成种暂停、已完成种继续做种' },
+  { value: 'stopped', text: '已停止', icon: 'mdi-stop-circle-outline', color: 'secondary', hint: '停调度：全部托管种暂停（保文件，可恢复）' },
+];
+
+/** 返回运行状态对应的中文文本、主题色和图标。 */
+function runModeMeta(mode) {
+  const fallback = RUN_MODES[0];
+  return RUN_MODES.find(item => item.value === mode) || { ...fallback, value: mode || 'running' }
+}
+
 /** 返回任务状态对应的中文文本、主题色和图标。 */
 function taskStateMeta(state, enabled = true) {
   const states = {
@@ -320,4 +334,4 @@ const _export_sfc = (sfc, props) => {
   return target;
 };
 
-export { _export_sfc as _, normalizeDownloaderPrefs as a, normalizeDownloaderPaths as b, cloneTask as c, normalizeDefaults as d, formatBytes as e, formatBonus as f, formatDateTime as g, formatDurationSeconds as h, normalizeSettings as i, formatDuration as j, normalizeTask as n, runStatusText as r, taskStateMeta as t, unwrapResponse as u };
+export { RUN_MODES as R, _export_sfc as _, normalizeDownloaderPrefs as a, normalizeDownloaderPaths as b, cloneTask as c, normalizeDefaults as d, runStatusText as e, formatBonus as f, formatBytes as g, formatDateTime as h, formatDurationSeconds as i, normalizeSettings as j, formatDuration as k, normalizeTask as n, runModeMeta as r, taskStateMeta as t, unwrapResponse as u };
