@@ -1425,7 +1425,7 @@ onUnmounted(() => {
                       <span class="magicflow-pipeline__index">{{ candidate.rank }}</span>
                       <div>
                         <strong>{{ candidate.title || '未知种子' }}</strong>
-                        <span>{{ Number(candidate.size_gb || 0).toFixed(2) }} GB · {{ candidate.seeders }} 做种 · {{ Number(candidate.age_weeks || 0).toFixed(1) }} 周</span>
+                        <span>{{ Number(candidate.size_gb || 0).toFixed(2) }} GB · {{ candidate.seeders }} 做种 · {{ candidate.leechers }} 下载 · {{ Number(candidate.age_weeks || 0).toFixed(1) }} 周</span>
                       </div>
                     </li>
                     <li v-if="!(candidateData.candidates || []).length">
