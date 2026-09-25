@@ -57,6 +57,7 @@ from .downloader_ops import (
     QB_PAUSED_STATES,
 )
 from .fingerprint import fingerprint, info_hash
+from .iyuu_cloud import IyuuCloud, build_download_url, resolve_link_vars
 from .fetcher import (
     SITE_TZ_OFFSET_HOURS,
     FilterPolicy,
@@ -92,7 +93,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "2.8.1"
+__version__ = "2.9.0"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -414,6 +415,10 @@ class MagicFlow(_PluginBase):
     _bonus_upload_limit_kbps: float = 200.0
     _brush_upload_limit_kbps: float = 10240.0
     _last_up_limit_bps: Optional[int] = None
+    # IYUU 云端辅种（可选）
+    _iyuu_token: str = ""
+    _iyuu_sites: Dict[str, Dict[str, str]] = {}
+    _iyuu_client: Optional[IyuuCloud] = None
 
     def init_plugin(self, config: dict = None) -> None:
         """初始化全局开关、任务配置与持久化存储。"""
@@ -450,6 +455,17 @@ class MagicFlow(_PluginBase):
         except (TypeError, ValueError):
             self._brush_upload_limit_kbps = 10240.0
         self._last_up_limit_bps = None
+        # IYUU 云端辅种配置（Token 为空 = 不启用）
+        self._iyuu_token = str(raw_config.get("iyuu_token") or "").strip()
+        _iyuu_sites = raw_config.get("iyuu_sites")
+        if not isinstance(_iyuu_sites, dict):
+            _iyuu_sites = self.get_data("iyuu_sites") or {}
+        self._iyuu_sites = {
+            str(k).strip().lower(): dict(v)
+            for k, v in (_iyuu_sites or {}).items()
+            if isinstance(v, dict)
+        }
+        self._iyuu_client = IyuuCloud(self._iyuu_token, logger=self._log)
         rows_defaults = raw_config.get("defaults")
         if not isinstance(rows_defaults, dict):
             rows_defaults = self.get_data("defaults") or {}
@@ -582,6 +598,20 @@ class MagicFlow(_PluginBase):
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "保存默认任务模板",
+            },
+            {
+                "path": "/iyuu/sites",
+                "endpoint": self.get_iyuu_sites,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "列出 MoviePilot 已配置站点 + 当前 IYUU 设置（供密钥表）",
+            },
+            {
+                "path": "/iyuu/test",
+                "endpoint": self.test_iyuu,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "测试 IYUU Token 连通性",
             },
             {
                 "path": "/tasks",
@@ -818,6 +848,8 @@ class MagicFlow(_PluginBase):
             "request_interval": float(getattr(self, "_request_interval", 0) or 0),
             "bonus_upload_limit_kbps": float(getattr(self, "_bonus_upload_limit_kbps", 200.0) or 0),
             "brush_upload_limit_kbps": float(getattr(self, "_brush_upload_limit_kbps", 10240.0) or 0),
+            "iyuu_token": str(getattr(self, "_iyuu_token", "") or ""),
+            "iyuu_sites": dict(getattr(self, "_iyuu_sites", {}) or {}),
             "defaults": dict(getattr(self, "_defaults", {}) or {}),
             "tasks": [task.to_dict() for task in self._task_configs.values()],
         }
@@ -1810,8 +1842,25 @@ class MagicFlow(_PluginBase):
                     "warning",
                 )
 
+            # ★ IYUU 云端辅种：一次批量查询本轮候选 → 他站同资源 infohash（补齐本地匹配；
+            #   只在填了 Token 时启用，否则完全退回内置特征码方案）。
+            _iyuu_map: Dict[str, List[str]] = {}
+            if task.reuse_existing and self._iyuu_enabled() and fetch_list:
+                _cand_hashes = [c.real_hash for _, c in fetch_list if getattr(c, "real_hash", None)]
+                if _cand_hashes and self._iyuu_client is not None:
+                    try:
+                        _iyuu_map = self._iyuu_client.sibling_hashes(_cand_hashes)
+                    except Exception as err:  # noqa: BLE001
+                        self._log(f"魔流 [{task.name}] IYUU 查询失败：{err}", "warning")
+                    if _iyuu_map:
+                        self._log(
+                            f"魔流 [{task.name}] IYUU 云端命中：{len(_iyuu_map)}/{len(_cand_hashes)} "
+                            f"个候选存在他站同资源"
+                        )
+
             _cross_near = 0
             _cross_hit = 0
+            _iyuu_hit = 0
             for bonus, cand in fetch_list:
                 ckey = _ckey_of((bonus, cand))
                 _in_topn = ckey in _topn_keys
@@ -1836,6 +1885,17 @@ class MagicFlow(_PluginBase):
                     )
                     if mode == "cross":
                         _cross_hit += 1
+                    # IYUU 补齐：候选在他站的同资源 infohash 若本机已完成 → 直接复用（免下）
+                    if not mode and _iyuu_map and h:
+                        for _sib in _iyuu_map.get(str(h).lower(), []):
+                            _loc = local_index.get(_sib)
+                            if _loc is None:
+                                continue
+                            if str(getattr(_loc, "state", "") or "").lower() in QB_DOWNLOADING_STATES:
+                                continue
+                            mode, linfo = "cross", _loc
+                            _iyuu_hit += 1
+                            break
                 if mode and linfo is not None:
                     group_a.append((bonus, cand, mode, linfo))
                 elif _in_topn:
@@ -1844,7 +1904,8 @@ class MagicFlow(_PluginBase):
             if task.reuse_existing:
                 self._log(
                     f"魔流 [{task.name}] 存量复用扫描：复用命中 {len(group_a)} 个"
-                    f"（体积邻近比对 {_cross_near} / 特征码命中 {_cross_hit}，另扫非 TopN {_reuse_extra} 个）"
+                    f"（体积邻近比对 {_cross_near} / 特征码命中 {_cross_hit} / IYUU 命中 {_iyuu_hit}，"
+                    f"另扫非 TopN {_reuse_extra} 个）"
                 )
 
             # ★ 与洗池同一套排序键：名额受限→边际 value 降序；仅磁盘受限→每 GB 效率 efficiency 降序。
@@ -4173,6 +4234,8 @@ class MagicFlow(_PluginBase):
             "request_interval": float(getattr(self, "_request_interval", 0) or 0),
             "bonus_upload_limit_kbps": float(getattr(self, "_bonus_upload_limit_kbps", 200.0) or 0),
             "brush_upload_limit_kbps": float(getattr(self, "_brush_upload_limit_kbps", 10240.0) or 0),
+            "iyuu_token": str(getattr(self, "_iyuu_token", "") or ""),
+            "iyuu_sites": dict(getattr(self, "_iyuu_sites", {}) or {}),
             "defaults": dict(getattr(self, "_defaults", {}) or {}),
         })
         return Response(success=True, data=data)
@@ -4339,6 +4402,20 @@ class MagicFlow(_PluginBase):
             self._brush_upload_limit_kbps = max(0.0, float(payload.brush_upload_limit_kbps or 0))
         except (TypeError, ValueError):
             self._brush_upload_limit_kbps = 10240.0
+        # IYUU 云端辅种配置
+        self._iyuu_token = str(getattr(payload, "iyuu_token", "") or "").strip()
+        raw_sites = getattr(payload, "iyuu_sites", None)
+        if isinstance(raw_sites, dict):
+            self._iyuu_sites = {
+                str(k).strip().lower(): {str(vk): str(vv) for vk, vv in dict(v).items()}
+                for k, v in raw_sites.items()
+                if isinstance(v, dict) and str(k).strip()
+            }
+        self.save_data(key="iyuu_sites", value=dict(self._iyuu_sites))
+        if self._iyuu_client is None:
+            self._iyuu_client = IyuuCloud(self._iyuu_token, logger=self._log)
+        else:
+            self._iyuu_client.set_token(self._iyuu_token)
         self._save_config()
         self._apply_runtime_settings()
         self._refresh_scheduler()
@@ -4476,6 +4553,57 @@ class MagicFlow(_PluginBase):
         self.save_data(key="defaults", value=dict(self._defaults))
         self._save_config()
         return Response(success=True, message="默认任务模板已保存", data=dict(self._defaults))
+
+    # ---------------------------------------------------------
+    # API：IYUU 云端辅种（可选）
+    # ---------------------------------------------------------
+
+    def _iyuu_enabled(self) -> bool:
+        """IYUU 云端辅种是否启用（填了 Token 才算）。"""
+        return bool(self._iyuu_client is not None and self._iyuu_client.enabled)
+
+    def get_iyuu_sites(self) -> Response:
+        """列出 MoviePilot 已配置站点（供「IYUU 密钥表」）+ 当前 IYUU 设置。"""
+        client = self._iyuu_client
+        rows: List[Dict[str, Any]] = []
+        try:
+            from app.db.oper.site import SiteOper
+            for site in SiteOper().list() or []:
+                domain = str(getattr(site, "domain", "") or "")
+                rows.append({
+                    "id": getattr(site, "id", None),
+                    "name": getattr(site, "name", "") or domain,
+                    "domain": domain,
+                    "url": getattr(site, "url", "") or "",
+                    "is_active": bool(getattr(site, "is_active", True)),
+                    "has_apikey": bool(str(getattr(site, "apikey", "") or "").strip()),
+                    "has_cookie": bool(str(getattr(site, "cookie", "") or "").strip()),
+                    "iyuu_sid": client.sid_by_domain(domain) if (client and client.enabled) else None,
+                    "fill": dict(self._iyuu_sites.get(domain.lower(), {})),
+                })
+        except Exception as err:  # noqa: BLE001
+            self._log(f"列出已配置站点失败：{err}", "warning")
+        return Response(success=True, data={
+            "token_set": bool(self._iyuu_token),
+            "token": self._iyuu_token,
+            "enabled": self._iyuu_enabled(),
+            "sites": sorted(rows, key=lambda r: str(r.get("name") or "")),
+        })
+
+    def test_iyuu(self) -> Response:
+        """测试已保存的 IYUU Token（拉一次账号信息）。"""
+        if not self._iyuu_token:
+            return Response(success=False, message="未填写 IYUU Token")
+        probe = IyuuCloud(self._iyuu_token, logger=self._log)
+        profile = probe.profile()
+        if not profile:
+            return Response(success=False, message="Token 无效或云端不可达")
+        return Response(success=True, message="Token 有效", data={
+            "id": profile.get("id"),
+            "username": profile.get("username"),
+            "sid": profile.get("sid"),
+            "sites": len(probe.sites()),
+        })
 
     def create_task(self, payload: MagicFlowTaskPayload) -> Response:
         """创建魔流任务。"""
