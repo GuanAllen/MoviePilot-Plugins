@@ -131,7 +131,7 @@
   overflow-wrap: anywhere;
 }
 
-.magicflow-page[data-v-882f15ca] {
+.magicflow-page[data-v-3916d74d] {
   /* ===== 深色磨砂主题（仅限本插件工作台作用域）===== */
   --v-theme-background: 7, 11, 24;
   --v-theme-on-background: 231, 234, 246;
@@ -169,52 +169,52 @@
     radial-gradient(820px 480px at 104% -4%, rgba(74, 46, 128, 0.42) 0%, transparent 56%),
     linear-gradient(180deg, #0b1226 0%, #070b18 100%);
 }
-.magicflow-page--compact[data-v-882f15ca] {
+.magicflow-page--compact[data-v-3916d74d] {
   padding: 20px;
 }
-.magicflow-page__header[data-v-882f15ca],
-.magicflow-page__identity[data-v-882f15ca],
-.magicflow-page__actions[data-v-882f15ca],
-.magicflow-task-head[data-v-882f15ca],
-.magicflow-task-head__identity[data-v-882f15ca],
-.magicflow-task-head__title[data-v-882f15ca],
-.magicflow-task-head__actions[data-v-882f15ca],
-.magicflow-panel__head[data-v-882f15ca],
-.magicflow-panel__title-row[data-v-882f15ca],
-.magicflow-task-item__title[data-v-882f15ca],
-.magicflow-task-item__meta[data-v-882f15ca],
-.magicflow-mobile-torrent__head[data-v-882f15ca],
-.magicflow-mobile-torrent__meta[data-v-882f15ca],
-.magicflow-diagnostic-head[data-v-882f15ca] {
+.magicflow-page__header[data-v-3916d74d],
+.magicflow-page__identity[data-v-3916d74d],
+.magicflow-page__actions[data-v-3916d74d],
+.magicflow-task-head[data-v-3916d74d],
+.magicflow-task-head__identity[data-v-3916d74d],
+.magicflow-task-head__title[data-v-3916d74d],
+.magicflow-task-head__actions[data-v-3916d74d],
+.magicflow-panel__head[data-v-3916d74d],
+.magicflow-panel__title-row[data-v-3916d74d],
+.magicflow-task-item__title[data-v-3916d74d],
+.magicflow-task-item__meta[data-v-3916d74d],
+.magicflow-mobile-torrent__head[data-v-3916d74d],
+.magicflow-mobile-torrent__meta[data-v-3916d74d],
+.magicflow-diagnostic-head[data-v-3916d74d] {
   display: flex;
   align-items: center;
 }
-.magicflow-page__header[data-v-882f15ca],
-.magicflow-task-head[data-v-882f15ca],
-.magicflow-panel__head[data-v-882f15ca],
-.magicflow-mobile-torrent__head[data-v-882f15ca],
-.magicflow-diagnostic-head[data-v-882f15ca] {
+.magicflow-page__header[data-v-3916d74d],
+.magicflow-task-head[data-v-3916d74d],
+.magicflow-panel__head[data-v-3916d74d],
+.magicflow-mobile-torrent__head[data-v-3916d74d],
+.magicflow-diagnostic-head[data-v-3916d74d] {
   justify-content: space-between;
 }
-.magicflow-page__header[data-v-882f15ca] {
+.magicflow-page__header[data-v-3916d74d] {
   min-block-size: 48px;
   gap: 16px;
 }
-.magicflow-page__identity[data-v-882f15ca],
-.magicflow-task-head__identity[data-v-882f15ca] {
+.magicflow-page__identity[data-v-3916d74d],
+.magicflow-task-head__identity[data-v-3916d74d] {
   min-inline-size: 0;
   gap: 12px;
 }
-.magicflow-page__identity h1[data-v-882f15ca],
-.magicflow-task-head h2[data-v-882f15ca] {
+.magicflow-page__identity h1[data-v-3916d74d],
+.magicflow-task-head h2[data-v-3916d74d] {
   margin: 0;
   font-size: 1.35rem;
   font-weight: 600;
   line-height: 1.3;
   letter-spacing: 0;
 }
-.magicflow-page__identity p[data-v-882f15ca],
-.magicflow-task-head p[data-v-882f15ca] {
+.magicflow-page__identity p[data-v-3916d74d],
+.magicflow-task-head p[data-v-3916d74d] {
   margin: 2px 0 0;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
   font-size: 0.875rem;
@@ -223,42 +223,42 @@
 }
 
 /* 任务头卡：站点图标（方形圆角，居中于头像位） */
-.magicflow-task-head__avatar[data-v-882f15ca] {
+.magicflow-task-head__avatar[data-v-3916d74d] {
   overflow: hidden;
 }
-.magicflow-task-head__site-icon[data-v-882f15ca] {
+.magicflow-task-head__site-icon[data-v-3916d74d] {
   display: block;
   inline-size: 64%;
   block-size: 64%;
   object-fit: contain;
   border-radius: 6px;
 }
-.magicflow-page__actions[data-v-882f15ca],
-.magicflow-task-head__actions[data-v-882f15ca],
-.magicflow-task-head__title[data-v-882f15ca],
-.magicflow-panel__title-row[data-v-882f15ca],
-.magicflow-mobile-torrent__meta[data-v-882f15ca] {
+.magicflow-page__actions[data-v-3916d74d],
+.magicflow-task-head__actions[data-v-3916d74d],
+.magicflow-task-head__title[data-v-3916d74d],
+.magicflow-panel__title-row[data-v-3916d74d],
+.magicflow-mobile-torrent__meta[data-v-3916d74d] {
   flex-wrap: wrap;
   gap: 8px;
 }
-.magicflow-settings-btn[data-v-882f15ca] {
+.magicflow-settings-btn[data-v-3916d74d] {
   margin-inline-start: 2px;
 }
-.magicflow-settings-dialog__head[data-v-882f15ca] {
+.magicflow-settings-dialog__head[data-v-3916d74d] {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 16px 18px 12px;
 }
-.magicflow-settings-dialog__title[data-v-882f15ca] {
+.magicflow-settings-dialog__title[data-v-3916d74d] {
   font-size: 1.05rem;
   font-weight: 600;
 }
-.magicflow-settings-dialog__tabs[data-v-882f15ca] {
+.magicflow-settings-dialog__tabs[data-v-3916d74d] {
   padding-inline: 8px;
 }
-.magicflow-settings-hint[data-v-882f15ca] {
+.magicflow-settings-hint[data-v-3916d74d] {
   margin: 0;
   padding: 8px 12px;
   border-radius: 8px;
@@ -268,46 +268,46 @@
   background: rgba(var(--v-theme-primary), 0.07);
   border-inline-start: 3px solid rgba(var(--v-theme-primary), 0.45);
 }
-.magicflow-settings-hint--warn[data-v-882f15ca] {
+.magicflow-settings-hint--warn[data-v-3916d74d] {
   background: rgba(var(--v-theme-warning), 0.12);
   border-inline-start-color: rgba(var(--v-theme-warning), 0.7);
 }
-.magicflow-settings-dialog[data-v-882f15ca] {
+.magicflow-settings-dialog[data-v-3916d74d] {
   display: flex;
   flex-direction: column;
   block-size: min(84vh, 40rem);
   max-block-size: 92vh;
   overflow: hidden;
 }
-.magicflow-settings-dialog__body[data-v-882f15ca] {
+.magicflow-settings-dialog__body[data-v-3916d74d] {
   flex: 1 1 0;
   min-block-size: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   scroll-padding-block: 8px;
 }
-.magicflow-settings-form[data-v-882f15ca] {
+.magicflow-settings-form[data-v-3916d74d] {
   display: grid;
   gap: 14px;
   align-content: start;
   padding: 16px 18px 14px;
 }
-.magicflow-settings-grid[data-v-882f15ca] {
+.magicflow-settings-grid[data-v-3916d74d] {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px 16px;
 }
-.magicflow-settings-switches[data-v-882f15ca] {
+.magicflow-settings-switches[data-v-3916d74d] {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 4px 16px;
 }
-.magicflow-settings-actions[data-v-882f15ca] {
+.magicflow-settings-actions[data-v-3916d74d] {
   display: grid;
   gap: 10px;
   justify-items: start;
 }
-.magicflow-settings-dialog__footer[data-v-882f15ca] {
+.magicflow-settings-dialog__footer[data-v-3916d74d] {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
@@ -315,31 +315,31 @@
   padding: 10px 18px 14px;
   border-top: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
 }
-.magicflow-loading[data-v-882f15ca],
-.magicflow-empty[data-v-882f15ca] {
+.magicflow-loading[data-v-3916d74d],
+.magicflow-empty[data-v-3916d74d] {
   min-block-size: 20rem;
 }
-.magicflow-empty[data-v-882f15ca] {
+.magicflow-empty[data-v-3916d74d] {
   display: grid;
   place-items: center;
   align-content: center;
   gap: 12px;
   text-align: center;
 }
-.magicflow-mobile-select[data-v-882f15ca] {
+.magicflow-mobile-select[data-v-3916d74d] {
   display: none;
 }
-.magicflow-mobile-toolbar[data-v-882f15ca] {
+.magicflow-mobile-toolbar[data-v-3916d74d] {
   display: none;
 }
-.magicflow-layout[data-v-882f15ca] {
+.magicflow-layout[data-v-3916d74d] {
   display: grid;
   grid-template-columns: minmax(13.5rem, 0.3fr) minmax(0, 1.7fr);
   align-items: start;
   gap: 18px;
   min-inline-size: 0;
 }
-.magicflow-task-rail[data-v-882f15ca] {
+.magicflow-task-rail[data-v-3916d74d] {
   position: sticky;
   top: 76px;
   display: flex;
@@ -351,22 +351,22 @@
   border: var(--app-surface-border);
   border-radius: var(--app-surface-radius);
 }
-.magicflow-task-rail__head[data-v-882f15ca] {
+.magicflow-task-rail__head[data-v-3916d74d] {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   padding-inline: 4px;
 }
-.magicflow-task-list[data-v-882f15ca] {
+.magicflow-task-list[data-v-3916d74d] {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
-.magicflow-create-task[data-v-882f15ca] {
+.magicflow-create-task[data-v-3916d74d] {
   flex: 0 0 auto;
 }
-.magicflow-task-item[data-v-882f15ca] {
+.magicflow-task-item[data-v-3916d74d] {
   appearance: none;
   display: flex;
   flex-direction: column;
@@ -381,158 +381,158 @@
   text-align: start;
   cursor: pointer;
 }
-.magicflow-task-item[data-v-882f15ca]:hover {
+.magicflow-task-item[data-v-3916d74d]:hover {
   background: rgba(var(--v-theme-primary), 0.05);
 }
-.magicflow-task-item[data-v-882f15ca]:focus-visible {
+.magicflow-task-item[data-v-3916d74d]:focus-visible {
   outline: 2px solid rgb(var(--v-theme-primary));
   outline-offset: 2px;
 }
-.magicflow-task-item--selected[data-v-882f15ca] {
+.magicflow-task-item--selected[data-v-3916d74d] {
   border-color: rgba(var(--v-theme-primary), 0.28);
   background: rgba(var(--v-theme-primary), 0.1);
 }
-.magicflow-task-item__title[data-v-882f15ca],
-.magicflow-task-item__meta[data-v-882f15ca] {
+.magicflow-task-item__title[data-v-3916d74d],
+.magicflow-task-item__meta[data-v-3916d74d] {
   justify-content: space-between;
   gap: 8px;
 }
-.magicflow-task-item__title strong[data-v-882f15ca] {
+.magicflow-task-item__title strong[data-v-3916d74d] {
   min-inline-size: 0;
   overflow-wrap: anywhere;
 }
-.magicflow-task-item > span[data-v-882f15ca]:not(.magicflow-task-item__title) {
+.magicflow-task-item > span[data-v-3916d74d]:not(.magicflow-task-item__title) {
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
   font-size: 0.78rem;
 }
-.magicflow-status-dot[data-v-882f15ca] {
+.magicflow-status-dot[data-v-3916d74d] {
   inline-size: 8px;
   block-size: 8px;
   flex: 0 0 auto;
   border-radius: 50%;
   background: rgb(var(--v-theme-secondary));
 }
-.magicflow-status-dot--success[data-v-882f15ca] { background: rgb(var(--v-theme-success));
+.magicflow-status-dot--success[data-v-3916d74d] { background: rgb(var(--v-theme-success));
 }
-.magicflow-status-dot--primary[data-v-882f15ca] { background: rgb(var(--v-theme-primary));
+.magicflow-status-dot--primary[data-v-3916d74d] { background: rgb(var(--v-theme-primary));
 }
-.magicflow-status-dot--info[data-v-882f15ca] { background: rgb(var(--v-theme-info));
+.magicflow-status-dot--info[data-v-3916d74d] { background: rgb(var(--v-theme-info));
 }
-.magicflow-status-dot--warning[data-v-882f15ca] { background: rgb(var(--v-theme-warning));
+.magicflow-status-dot--warning[data-v-3916d74d] { background: rgb(var(--v-theme-warning));
 }
-.magicflow-status-dot--error[data-v-882f15ca] { background: rgb(var(--v-theme-error));
+.magicflow-status-dot--error[data-v-3916d74d] { background: rgb(var(--v-theme-error));
 }
-.magicflow-workspace[data-v-882f15ca] {
+.magicflow-workspace[data-v-3916d74d] {
   min-inline-size: 0;
 }
-.magicflow-task-head[data-v-882f15ca] {
+.magicflow-task-head[data-v-3916d74d] {
   min-block-size: 52px;
   gap: 12px;
   margin-block-end: 12px;
 }
-.magicflow-tabs[data-v-882f15ca] {
+.magicflow-tabs[data-v-3916d74d] {
   max-inline-size: 100%;
 }
-.magicflow-window[data-v-882f15ca] {
+.magicflow-window[data-v-3916d74d] {
   padding-block-start: 16px;
 }
-.magicflow-stat-grid[data-v-882f15ca] {
+.magicflow-stat-grid[data-v-3916d74d] {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
-.magicflow-stat[data-v-882f15ca],
-.magicflow-panel[data-v-882f15ca] {
+.magicflow-stat[data-v-3916d74d],
+.magicflow-panel[data-v-3916d74d] {
   border: var(--app-surface-border);
   border-radius: var(--app-surface-radius);
 }
-.magicflow-stat[data-v-882f15ca] {
+.magicflow-stat[data-v-3916d74d] {
   display: flex;
   flex-direction: column;
   gap: 4px;
   min-block-size: 116px;
   padding: 16px;
 }
-.magicflow-stat > span[data-v-882f15ca],
-.magicflow-stat > small[data-v-882f15ca] {
+.magicflow-stat > span[data-v-3916d74d],
+.magicflow-stat > small[data-v-3916d74d] {
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
-.magicflow-stat > strong[data-v-882f15ca] {
+.magicflow-stat > strong[data-v-3916d74d] {
   font-size: 1.25rem;
   font-weight: 600;
   line-height: 1.3;
   overflow-wrap: anywhere;
 }
-.magicflow-overview-grid[data-v-882f15ca],
-.magicflow-diagnostic-grid[data-v-882f15ca],
-.magicflow-config-grid[data-v-882f15ca] {
+.magicflow-overview-grid[data-v-3916d74d],
+.magicflow-diagnostic-grid[data-v-3916d74d],
+.magicflow-config-grid[data-v-3916d74d] {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   margin-block-start: 12px;
 }
-.magicflow-panel[data-v-882f15ca] {
+.magicflow-panel[data-v-3916d74d] {
   min-inline-size: 0;
   padding: 16px;
 }
-.magicflow-panel__head[data-v-882f15ca],
-.magicflow-diagnostic-head[data-v-882f15ca] {
+.magicflow-panel__head[data-v-3916d74d],
+.magicflow-diagnostic-head[data-v-3916d74d] {
   align-items: flex-start;
   gap: 12px;
 }
-.magicflow-facts[data-v-882f15ca] {
+.magicflow-facts[data-v-3916d74d] {
   display: grid;
   gap: 11px;
   margin: 18px 0 0;
 }
-.magicflow-facts--two[data-v-882f15ca] {
+.magicflow-facts--two[data-v-3916d74d] {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
-.magicflow-facts > div[data-v-882f15ca] {
+.magicflow-facts > div[data-v-3916d74d] {
   display: flex;
   justify-content: space-between;
   gap: 12px;
   min-inline-size: 0;
 }
-.magicflow-facts dt[data-v-882f15ca] {
+.magicflow-facts dt[data-v-3916d74d] {
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
-.magicflow-facts dd[data-v-882f15ca] {
+.magicflow-facts dd[data-v-3916d74d] {
   margin: 0;
   text-align: end;
   overflow-wrap: anywhere;
 }
-.magicflow-run-summary[data-v-882f15ca] {
+.magicflow-run-summary[data-v-3916d74d] {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   margin-block: 20px;
 }
-.magicflow-run-summary > div[data-v-882f15ca] {
+.magicflow-run-summary > div[data-v-3916d74d] {
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
-.magicflow-run-summary span[data-v-882f15ca] {
+.magicflow-run-summary span[data-v-3916d74d] {
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
   font-size: 0.8rem;
 }
-.magicflow-run-summary strong[data-v-882f15ca] {
+.magicflow-run-summary strong[data-v-3916d74d] {
   font-size: 1.2rem;
 }
-.magicflow-torrents[data-v-882f15ca] {
+.magicflow-torrents[data-v-3916d74d] {
   margin-block-start: 12px;
 }
-.magicflow-torrent-filters[data-v-882f15ca] {
+.magicflow-torrent-filters[data-v-3916d74d] {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.magicflow-status-filter[data-v-882f15ca] {
+.magicflow-status-filter[data-v-3916d74d] {
   inline-size: 13rem;
   max-inline-size: 100%;
 }
-.magicflow-bulk-bar[data-v-882f15ca] {
+.magicflow-bulk-bar[data-v-3916d74d] {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -543,52 +543,52 @@
   background: rgba(139, 123, 240, 0.12);
   box-shadow: inset 0 0 0 1px rgba(139, 123, 240, 0.28);
 }
-.magicflow-bulk-bar__count[data-v-882f15ca] {
+.magicflow-bulk-bar__count[data-v-3916d74d] {
   font-size: 12px;
   font-weight: 600;
   color: #cfc7ff;
   margin-inline-end: 4px;
 }
-.magicflow-mobile-torrent__check[data-v-882f15ca] {
+.magicflow-mobile-torrent__check[data-v-3916d74d] {
   flex: 0 0 auto;
   margin-inline-end: 2px;
 }
-.magicflow-torrent-table th[data-v-882f15ca]:first-child,
-.magicflow-torrent-table td[data-v-882f15ca]:first-child {
+.magicflow-torrent-table th[data-v-3916d74d]:first-child,
+.magicflow-torrent-table td[data-v-3916d74d]:first-child {
   padding-inline: 6px;
 }
 
 /* ---------- 种子详情弹窗 ---------- */
-.magicflow-torrent-dialog[data-v-882f15ca] {
+.magicflow-torrent-dialog[data-v-3916d74d] {
   padding: 18px 20px 8px;
 }
-.magicflow-torrent-dialog__head[data-v-882f15ca] {
+.magicflow-torrent-dialog__head[data-v-3916d74d] {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
 }
-.magicflow-torrent-dialog__tags[data-v-882f15ca] {
+.magicflow-torrent-dialog__tags[data-v-3916d74d] {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   min-inline-size: 0;
 }
-.magicflow-torrent-dialog__title[data-v-882f15ca] {
+.magicflow-torrent-dialog__title[data-v-3916d74d] {
   margin-block: 10px 0;
   font-size: 15px;
   font-weight: 650;
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
-.magicflow-torrent-dialog__progress[data-v-882f15ca] {
+.magicflow-torrent-dialog__progress[data-v-3916d74d] {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-block: 12px 4px;
 }
-.magicflow-torrent-dialog__pct[data-v-882f15ca] {
+.magicflow-torrent-dialog__pct[data-v-3916d74d] {
   flex: 0 0 auto;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
@@ -596,7 +596,7 @@
   min-inline-size: 3.2em;
   text-align: end;
 }
-.magicflow-torrent-dialog__grid[data-v-882f15ca] {
+.magicflow-torrent-dialog__grid[data-v-3916d74d] {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px 14px;
@@ -606,33 +606,33 @@
   background: rgba(139, 123, 240, 0.07);
   box-shadow: inset 0 0 0 1px rgba(139, 123, 240, 0.16);
 }
-.magicflow-torrent-dialog__grid > div[data-v-882f15ca] {
+.magicflow-torrent-dialog__grid > div[data-v-3916d74d] {
   min-inline-size: 0;
 }
-.magicflow-torrent-dialog__grid dt[data-v-882f15ca] {
+.magicflow-torrent-dialog__grid dt[data-v-3916d74d] {
   font-size: 11px;
   color: rgba(200, 208, 232, 0.65);
   margin-block-end: 2px;
 }
-.magicflow-torrent-dialog__grid dd[data-v-882f15ca] {
+.magicflow-torrent-dialog__grid dd[data-v-3916d74d] {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
-.magicflow-torrent-dialog__hash[data-v-882f15ca] {
+.magicflow-torrent-dialog__hash[data-v-3916d74d] {
   display: flex;
   align-items: center;
   gap: 6px;
   margin-block: 12px 0;
   min-inline-size: 0;
 }
-.magicflow-torrent-dialog__hash-label[data-v-882f15ca] {
+.magicflow-torrent-dialog__hash-label[data-v-3916d74d] {
   flex: 0 0 auto;
   font-size: 11px;
   color: rgba(200, 208, 232, 0.6);
 }
-.magicflow-torrent-dialog__hash code[data-v-882f15ca] {
+.magicflow-torrent-dialog__hash code[data-v-3916d74d] {
   flex: 1 1 auto;
   min-inline-size: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -640,67 +640,67 @@
   overflow-wrap: anywhere;
   color: rgba(210, 216, 240, 0.8);
 }
-.magicflow-torrent-dialog__actions[data-v-882f15ca] {
+.magicflow-torrent-dialog__actions[data-v-3916d74d] {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   padding: 14px 0 8px;
 }
-.magicflow-torrent-table[data-v-882f15ca] {
+.magicflow-torrent-table[data-v-3916d74d] {
   margin-block-start: 8px;
   background: transparent;
 }
-.torrent-table-clickable[data-v-882f15ca] tbody tr {
+.torrent-table-clickable[data-v-3916d74d] tbody tr {
   cursor: pointer;
 }
-.magicflow-torrent-detail[data-v-882f15ca] {
+.magicflow-torrent-detail[data-v-3916d74d] {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
-.magicflow-hash-line[data-v-882f15ca] {
+.magicflow-hash-line[data-v-3916d74d] {
   margin-block-start: 10px;
   overflow-wrap: anywhere;
 }
-.torrent-title-cell[data-v-882f15ca] {
+.torrent-title-cell[data-v-3916d74d] {
   display: flex;
   flex-direction: column;
   gap: 2px;
   max-inline-size: 30rem;
 }
-.torrent-status-cell[data-v-882f15ca] {
+.torrent-status-cell[data-v-3916d74d] {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 2px;
 }
-.torrent-title-cell strong[data-v-882f15ca],
-.torrent-title-cell span[data-v-882f15ca] {
+.torrent-title-cell strong[data-v-3916d74d],
+.torrent-title-cell span[data-v-3916d74d] {
   overflow-wrap: anywhere;
 }
-.torrent-title-cell span[data-v-882f15ca] {
+.torrent-title-cell span[data-v-3916d74d] {
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
   font-size: 0.78rem;
 }
-.magicflow-table-empty[data-v-882f15ca] {
+.magicflow-table-empty[data-v-3916d74d] {
   padding: 28px 12px;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
   text-align: center;
 }
-.magicflow-mobile-torrents[data-v-882f15ca] {
+.magicflow-mobile-torrents[data-v-3916d74d] {
   display: none;
 }
-.magicflow-mobile-torrent__actions[data-v-882f15ca] {
+.magicflow-mobile-torrent__actions[data-v-3916d74d] {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
-.magicflow-mobile-torrent__title[data-v-882f15ca] {
+.magicflow-mobile-torrent__title[data-v-3916d74d] {
   display: flex;
   flex-direction: column;
   gap: 2px;
   min-inline-size: 0;
 }
-.magicflow-mobile-torrent__title strong[data-v-882f15ca] {
+.magicflow-mobile-torrent__title strong[data-v-3916d74d] {
   min-inline-size: 0;
   overflow-wrap: anywhere;
   display: -webkit-box;
@@ -709,22 +709,22 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-.magicflow-mobile-torrent__title span[data-v-882f15ca] {
+.magicflow-mobile-torrent__title span[data-v-3916d74d] {
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
   font-size: 0.75rem;
 }
-.magicflow-mobile-torrent__state[data-v-882f15ca] {
+.magicflow-mobile-torrent__state[data-v-3916d74d] {
   flex: 0 0 auto;
 }
-.magicflow-mobile-torrent__bar[data-v-882f15ca] {
+.magicflow-mobile-torrent__bar[data-v-3916d74d] {
   margin-block: 2px 4px;
 }
-.magicflow-mobile-torrent__grid[data-v-882f15ca] {
+.magicflow-mobile-torrent__grid[data-v-3916d74d] {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px 12px;
 }
-.magicflow-mobile-torrent__grid span[data-v-882f15ca] {
+.magicflow-mobile-torrent__grid span[data-v-3916d74d] {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -732,21 +732,21 @@
   min-inline-size: 0;
   font-size: 0.8rem;
 }
-.magicflow-mobile-torrent__grid em[data-v-882f15ca] {
+.magicflow-mobile-torrent__grid em[data-v-3916d74d] {
   flex: 0 0 auto;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
   font-style: normal;
 }
-.magicflow-mobile-torrent__grid b[data-v-882f15ca] {
+.magicflow-mobile-torrent__grid b[data-v-3916d74d] {
   min-inline-size: 0;
   font-weight: 500;
   text-align: end;
   overflow-wrap: anywhere;
 }
-.magicflow-diagnostic-head[data-v-882f15ca] {
+.magicflow-diagnostic-head[data-v-3916d74d] {
   margin-block-end: 12px;
 }
-.magicflow-pipeline[data-v-882f15ca] {
+.magicflow-pipeline[data-v-3916d74d] {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -754,29 +754,29 @@
   padding: 0;
   list-style: none;
 }
-.magicflow-pipeline li[data-v-882f15ca] {
+.magicflow-pipeline li[data-v-3916d74d] {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   padding-block: 7px;
 }
-.magicflow-pipeline li > div[data-v-882f15ca],
-.magicflow-events article > div[data-v-882f15ca],
-.magicflow-config-actions > div[data-v-882f15ca] {
+.magicflow-pipeline li > div[data-v-3916d74d],
+.magicflow-events article > div[data-v-3916d74d],
+.magicflow-config-actions > div[data-v-3916d74d] {
   display: flex;
   flex-direction: column;
   gap: 3px;
   min-inline-size: 0;
 }
-.magicflow-pipeline li span[data-v-882f15ca],
-.magicflow-events article span[data-v-882f15ca],
-.magicflow-config-actions span[data-v-882f15ca] {
+.magicflow-pipeline li span[data-v-3916d74d],
+.magicflow-events article span[data-v-3916d74d],
+.magicflow-config-actions span[data-v-3916d74d] {
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
   font-size: 0.82rem;
   overflow-wrap: anywhere;
 }
-.magicflow-pipeline__index[data-v-882f15ca] {
+.magicflow-pipeline__index[data-v-3916d74d] {
   display: grid;
   place-items: center;
   inline-size: 28px;
@@ -786,7 +786,7 @@
   background: rgb(var(--v-theme-primary));
   font-size: 0.78rem;
 }
-.magicflow-reasons[data-v-882f15ca] {
+.magicflow-reasons[data-v-3916d74d] {
   display: flex;
   flex-direction: column;
   gap: 13px;
@@ -797,26 +797,26 @@
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
-.magicflow-reason > div[data-v-882f15ca] {
+.magicflow-reason > div[data-v-3916d74d] {
   display: flex;
   justify-content: space-between;
   gap: 12px;
   margin-block-end: 5px;
 }
-.magicflow-reason__track[data-v-882f15ca] {
+.magicflow-reason__track[data-v-3916d74d] {
   display: block;
   block-size: 6px;
   overflow: hidden;
   border-radius: 3px;
   background: rgba(var(--v-theme-on-surface), 0.08);
 }
-.magicflow-reason__track i[data-v-882f15ca] {
+.magicflow-reason__track i[data-v-3916d74d] {
   display: block;
   block-size: 100%;
   border-radius: inherit;
   background: rgb(var(--v-theme-warning));
 }
-.magicflow-events[data-v-882f15ca] {
+.magicflow-events[data-v-3916d74d] {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -827,13 +827,13 @@
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
-.magicflow-events article[data-v-882f15ca] {
+.magicflow-events article[data-v-3916d74d] {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: start;
   gap: 10px;
 }
-.magicflow-config-actions[data-v-882f15ca] {
+.magicflow-config-actions[data-v-3916d74d] {
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -841,26 +841,26 @@
 }
 @media (min-width: 960px) {
   /* 详情弹窗由宿主提供固定高度，内部只让右侧工作区承担页面滚动。 */
-.magicflow-page--compact[data-v-882f15ca] {
+.magicflow-page--compact[data-v-3916d74d] {
     block-size: calc(100dvh - 48px);
     min-block-size: 0;
     overflow: hidden;
 }
-.magicflow-page--compact .magicflow-layout[data-v-882f15ca] {
+.magicflow-page--compact .magicflow-layout[data-v-3916d74d] {
     flex: 1 1 auto;
     grid-template-rows: minmax(0, 1fr);
     align-items: stretch;
     min-block-size: 0;
     overflow: hidden;
 }
-.magicflow-page--compact .magicflow-task-rail[data-v-882f15ca] {
+.magicflow-page--compact .magicflow-task-rail[data-v-3916d74d] {
     position: static;
     block-size: 100%;
     min-block-size: 0;
     max-block-size: none;
     overflow: hidden;
 }
-.magicflow-page--compact .magicflow-task-list[data-v-882f15ca] {
+.magicflow-page--compact .magicflow-task-list[data-v-3916d74d] {
     flex: 1 1 auto;
     min-block-size: 0;
     padding-inline-end: 2px;
@@ -868,7 +868,7 @@
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
 }
-.magicflow-page--compact .magicflow-workspace[data-v-882f15ca] {
+.magicflow-page--compact .magicflow-workspace[data-v-3916d74d] {
     block-size: 100%;
     min-block-size: 0;
     padding-inline-end: 4px;
@@ -878,18 +878,18 @@
 }
 }
 @media (max-width: 1199px) {
-.magicflow-stat-grid[data-v-882f15ca] {
+.magicflow-stat-grid[data-v-3916d74d] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 }
 @media (max-width: 959px) {
-.magicflow-page[data-v-882f15ca] {
+.magicflow-page[data-v-3916d74d] {
     padding: 12px;
 }
-.magicflow-page--compact[data-v-882f15ca] {
+.magicflow-page--compact[data-v-3916d74d] {
     padding-block-start: 0;
 }
-.magicflow-page--compact .magicflow-page__header[data-v-882f15ca] {
+.magicflow-page--compact .magicflow-page__header[data-v-3916d74d] {
     position: sticky;
     top: 0;
     z-index: 4;
@@ -899,25 +899,25 @@
     backdrop-filter: blur(var(--transparent-blur, 0px));
     background-color: rgba(var(--v-theme-surface), var(--transparent-opacity-heavy, 1));
 }
-.magicflow-page__header[data-v-882f15ca],
-  .magicflow-task-head[data-v-882f15ca] {
+.magicflow-page__header[data-v-3916d74d],
+  .magicflow-task-head[data-v-3916d74d] {
     align-items: flex-start;
 }
-.magicflow-task-rail[data-v-882f15ca] {
+.magicflow-task-rail[data-v-3916d74d] {
     display: none;
 }
-.magicflow-mobile-toolbar[data-v-882f15ca] {
+.magicflow-mobile-toolbar[data-v-3916d74d] {
     display: flex;
     align-items: center;
     gap: 8px;
     margin-block-end: 4px;
 }
-.magicflow-mobile-toolbar .magicflow-mobile-select[data-v-882f15ca] {
+.magicflow-mobile-toolbar .magicflow-mobile-select[data-v-3916d74d] {
     display: block;
     flex: 1 1 auto;
     min-inline-size: 0;
 }
-.magicflow-mobile-current[data-v-882f15ca] {
+.magicflow-mobile-current[data-v-3916d74d] {
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
@@ -925,125 +925,125 @@
     min-inline-size: 0;
     padding-inline: 2px;
 }
-.magicflow-mobile-current span[data-v-882f15ca] {
+.magicflow-mobile-current span[data-v-3916d74d] {
     font-size: 11px;
     color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
-.magicflow-mobile-current strong[data-v-882f15ca] {
+.magicflow-mobile-current strong[data-v-3916d74d] {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.magicflow-mobile-add[data-v-882f15ca] {
+.magicflow-mobile-add[data-v-3916d74d] {
     flex: 0 0 auto;
 }
-.magicflow-layout[data-v-882f15ca] {
+.magicflow-layout[data-v-3916d74d] {
     grid-template-columns: 1fr;
 }
-.magicflow-overview-grid[data-v-882f15ca],
-  .magicflow-diagnostic-grid[data-v-882f15ca],
-  .magicflow-config-grid[data-v-882f15ca] {
+.magicflow-overview-grid[data-v-3916d74d],
+  .magicflow-diagnostic-grid[data-v-3916d74d],
+  .magicflow-config-grid[data-v-3916d74d] {
     grid-template-columns: 1fr;
 }
 }
 @media (max-width: 699px) {
   /* 窄屏隐藏顶部「新建任务」，交给移动工具栏的「新建」按钮 */
-.magicflow-page .magicflow-header-create[data-v-882f15ca] {
+.magicflow-page .magicflow-header-create[data-v-3916d74d] {
     display: none;
 }
 
   /* 设置面板：单列字段、收紧留白 */
-.magicflow-settings-grid[data-v-882f15ca],
-  .magicflow-settings-switches[data-v-882f15ca] {
+.magicflow-settings-grid[data-v-3916d74d],
+  .magicflow-settings-switches[data-v-3916d74d] {
     grid-template-columns: 1fr;
 }
 
   /* 设置面板：窄屏收缩 tab，尽量一排放下 */
-.magicflow-settings-tab[data-v-882f15ca] {
+.magicflow-settings-tab[data-v-3916d74d] {
     padding-inline: 6px;
     min-width: auto !important;
     font-size: 12px;
     text-transform: none;
 }
-.magicflow-settings-dialog[data-v-882f15ca] {
+.magicflow-settings-dialog[data-v-3916d74d] {
     block-size: min(90vh, 38rem);
     max-block-size: 94vh;
 }
-.magicflow-settings-form[data-v-882f15ca] {
+.magicflow-settings-form[data-v-3916d74d] {
     padding: 12px 14px 10px;
 }
-.magicflow-settings-dialog__footer[data-v-882f15ca] {
+.magicflow-settings-dialog__footer[data-v-3916d74d] {
     padding: 10px 14px 12px;
 }
 
   /* 种子详情弹窗：窄屏收紧留白与网格间距 */
-.magicflow-torrent-dialog[data-v-882f15ca] {
+.magicflow-torrent-dialog[data-v-3916d74d] {
     padding: 16px 14px 4px;
 }
-.magicflow-torrent-dialog__grid[data-v-882f15ca] {
+.magicflow-torrent-dialog__grid[data-v-3916d74d] {
     gap: 8px 10px;
     padding: 10px 12px;
 }
-.magicflow-torrent-dialog__actions[data-v-882f15ca] {
+.magicflow-torrent-dialog__actions[data-v-3916d74d] {
     gap: 4px;
 }
-.magicflow-task-head[data-v-882f15ca] {
+.magicflow-task-head[data-v-3916d74d] {
     flex-direction: column;
     gap: 0;
 }
-.magicflow-task-head__identity[data-v-882f15ca] {
+.magicflow-task-head__identity[data-v-3916d74d] {
     align-items: flex-start;
     inline-size: 100%;
 }
 
   /* 预览图：任务名左侧、状态徽章推到卡片最右 */
-.magicflow-task-head__body[data-v-882f15ca] {
+.magicflow-task-head__body[data-v-3916d74d] {
     flex: 1 1 auto;
     min-inline-size: 0;
 }
-.magicflow-task-head__title[data-v-882f15ca] {
+.magicflow-task-head__title[data-v-3916d74d] {
     inline-size: 100%;
     justify-content: space-between;
     align-items: center;
 }
-.magicflow-diagnostic-head[data-v-882f15ca],
-  .magicflow-panel__head[data-v-882f15ca] {
+.magicflow-diagnostic-head[data-v-3916d74d],
+  .magicflow-panel__head[data-v-3916d74d] {
     flex-direction: column;
     align-items: flex-start;
 }
 
   /* 预览图：运行流程卡头部保持标题左 / 阶段标签右（不堆叠） */
-.magicflow-flow .magicflow-panel__head[data-v-882f15ca] {
+.magicflow-flow .magicflow-panel__head[data-v-3916d74d] {
     flex-direction: row;
     align-items: flex-start;
     justify-content: space-between;
     gap: 8px;
 }
-.magicflow-flow .magicflow-panel__head > div[data-v-882f15ca] {
+.magicflow-flow .magicflow-panel__head > div[data-v-3916d74d] {
     min-inline-size: 0;
 }
-.magicflow-page__header[data-v-882f15ca] {
+.magicflow-page__header[data-v-3916d74d] {
     align-items: center;
     flex-direction: row;
 }
-.magicflow-page__identity[data-v-882f15ca] {
+.magicflow-page__identity[data-v-3916d74d] {
     flex: 1 1 auto;
     overflow: hidden;
 }
-.magicflow-page__identity > div[data-v-882f15ca] {
+.magicflow-page__identity > div[data-v-3916d74d] {
     min-inline-size: 0;
 }
-.magicflow-page__identity h1[data-v-882f15ca],
-  .magicflow-page__identity p[data-v-882f15ca] {
+.magicflow-page__identity h1[data-v-3916d74d],
+  .magicflow-page__identity p[data-v-3916d74d] {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.magicflow-page--compact .magicflow-page__header[data-v-882f15ca] {
+.magicflow-page--compact .magicflow-page__header[data-v-3916d74d] {
     align-items: center;
     flex-direction: row;
 }
-.magicflow-task-head__actions[data-v-882f15ca] {
+.magicflow-task-head__actions[data-v-3916d74d] {
     inline-size: 100%;
     justify-content: flex-end;
     gap: 0;
@@ -1051,49 +1051,49 @@
     padding-block-start: 8px;
     border-block-start: 1px solid rgba(140, 150, 220, 0.1);
 }
-.magicflow-page__actions[data-v-882f15ca],
-  .magicflow-page--compact .magicflow-page__actions[data-v-882f15ca] {
+.magicflow-page__actions[data-v-3916d74d],
+  .magicflow-page--compact .magicflow-page__actions[data-v-3916d74d] {
     flex: 0 0 auto;
     flex-wrap: nowrap;
     inline-size: auto;
     margin-inline-start: auto;
 }
-.magicflow-stat-grid[data-v-882f15ca] {
+.magicflow-stat-grid[data-v-3916d74d] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
-.magicflow-stat[data-v-882f15ca] {
+.magicflow-stat[data-v-3916d74d] {
     min-block-size: 104px;
     padding: 13px;
 }
-.magicflow-stat > strong[data-v-882f15ca] {
+.magicflow-stat > strong[data-v-3916d74d] {
     font-size: 1.05rem;
 }
-.magicflow-panel[data-v-882f15ca] {
+.magicflow-panel[data-v-3916d74d] {
     padding: 14px;
 }
-.magicflow-panel__head[data-v-882f15ca] {
+.magicflow-panel__head[data-v-3916d74d] {
     flex-wrap: wrap;
 }
-.magicflow-facts--two[data-v-882f15ca] {
+.magicflow-facts--two[data-v-3916d74d] {
     grid-template-columns: 1fr;
 }
-.magicflow-torrent-table[data-v-882f15ca] {
+.magicflow-torrent-table[data-v-3916d74d] {
     display: none;
 }
-.magicflow-torrent-filters[data-v-882f15ca] {
+.magicflow-torrent-filters[data-v-3916d74d] {
     inline-size: 100%;
     flex-wrap: wrap;
 }
-.magicflow-status-filter[data-v-882f15ca] {
+.magicflow-status-filter[data-v-3916d74d] {
     inline-size: 100%;
 }
-.magicflow-mobile-torrents[data-v-882f15ca] {
+.magicflow-mobile-torrents[data-v-3916d74d] {
     display: flex;
     flex-direction: column;
     gap: 0;
     margin-block-start: 12px;
 }
-.magicflow-mobile-torrent[data-v-882f15ca] {
+.magicflow-mobile-torrent[data-v-3916d74d] {
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -1101,34 +1101,34 @@
     border-block-end: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
     cursor: pointer;
 }
-.magicflow-mobile-torrent__head[data-v-882f15ca] {
+.magicflow-mobile-torrent__head[data-v-3916d74d] {
     align-items: flex-start;
     gap: 8px;
 }
-.magicflow-mobile-torrent__head strong[data-v-882f15ca] {
+.magicflow-mobile-torrent__head strong[data-v-3916d74d] {
     min-inline-size: 0;
     overflow-wrap: anywhere;
 }
-.magicflow-run-summary[data-v-882f15ca] {
+.magicflow-run-summary[data-v-3916d74d] {
     grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 }
 @media (max-width: 419px) {
-.magicflow-stat-grid[data-v-882f15ca] {
+.magicflow-stat-grid[data-v-3916d74d] {
     grid-template-columns: 1fr;
 }
-.magicflow-page:not(.magicflow-page--compact) .magicflow-page__header[data-v-882f15ca],
-  .magicflow-page:not(.magicflow-page--compact) .magicflow-page__identity[data-v-882f15ca] {
+.magicflow-page:not(.magicflow-page--compact) .magicflow-page__header[data-v-3916d74d],
+  .magicflow-page:not(.magicflow-page--compact) .magicflow-page__identity[data-v-3916d74d] {
     gap: 8px;
 }
-.magicflow-task-head__title[data-v-882f15ca] {
+.magicflow-task-head__title[data-v-3916d74d] {
     align-items: center;
     flex-wrap: wrap;
 }
 }
 
 /* 「运行诊断」流程链 */
-.magicflow-flow__chain[data-v-882f15ca] {
+.magicflow-flow__chain[data-v-3916d74d] {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -1137,7 +1137,7 @@
   padding: 0;
   list-style: none;
 }
-.magicflow-flow__node[data-v-882f15ca] {
+.magicflow-flow__node[data-v-3916d74d] {
   position: relative;
   flex: 1 1 0;
   display: flex;
@@ -1149,7 +1149,7 @@
 }
 
 /* 待执行：细空心灰圈，无填充、无光晕 */
-.magicflow-flow__dot[data-v-882f15ca] {
+.magicflow-flow__dot[data-v-3916d74d] {
   position: relative;
   display: inline-flex;
   align-items: center;
@@ -1162,18 +1162,18 @@
   color: transparent;
   z-index: 1;
 }
-.magicflow-flow__label[data-v-882f15ca] {
+.magicflow-flow__label[data-v-3916d74d] {
   font-size: 10.5px;
   line-height: 1.2;
   color: #5f688c;
   white-space: nowrap;
 }
-.magicflow-flow__node.is-done .magicflow-flow__label[data-v-882f15ca] {
+.magicflow-flow__node.is-done .magicflow-flow__label[data-v-3916d74d] {
   color: #9aa3c7;
 }
 
 /* 连接线：未执行=浅灰虚线；已走过=紫色实线 */
-.magicflow-flow__line[data-v-882f15ca] {
+.magicflow-flow__line[data-v-3916d74d] {
   position: absolute;
   top: 14px;
   right: -50%;
@@ -1182,14 +1182,14 @@
   border-top: 2px dashed rgba(150, 158, 200, 0.3);
   z-index: 0;
 }
-.magicflow-flow__line.is-done[data-v-882f15ca] {
+.magicflow-flow__line.is-done[data-v-3916d74d] {
   border-top-style: solid;
   border-top-color: #8b7bf0;
   box-shadow: 0 0 8px rgba(139, 123, 240, 0.35);
 }
 
 /* 已完成：紫色实心圆 + 白色对勾，无光晕 */
-.magicflow-flow__node.is-done .magicflow-flow__dot[data-v-882f15ca] {
+.magicflow-flow__node.is-done .magicflow-flow__dot[data-v-3916d74d] {
   border-color: #8b7bf0;
   background: linear-gradient(150deg, #9484f5, #6a5cd8);
   box-shadow: 0 4px 14px rgba(139, 123, 240, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.25);
@@ -1197,38 +1197,38 @@
 }
 
 /* 运行中：紫色实心圆 + 白色对勾 + 细小缓慢脉冲环 + 微弱光晕（仅当前节点） */
-.magicflow-flow__node.is-running .magicflow-flow__dot[data-v-882f15ca] {
+.magicflow-flow__node.is-running .magicflow-flow__dot[data-v-3916d74d] {
   border-color: #a396ff;
   background: linear-gradient(150deg, #9c8cff, #6f60dd);
   color: #fff;
   box-shadow: 0 0 10px rgba(139, 123, 240, 0.5);
 }
-.magicflow-flow__node.is-running .magicflow-flow__dot[data-v-882f15ca]::before,
-.magicflow-flow__node.is-running .magicflow-flow__dot[data-v-882f15ca]::after {
+.magicflow-flow__node.is-running .magicflow-flow__dot[data-v-3916d74d]::before,
+.magicflow-flow__node.is-running .magicflow-flow__dot[data-v-3916d74d]::after {
   content: '';
   position: absolute;
   inset: -2px;
   border-radius: 50%;
   border: 1.5px solid rgba(160, 148, 255, 0.85);
-  animation: magicflow-halo-882f15ca 2.6s cubic-bezier(0.22, 0.61, 0.36, 1) infinite;
+  animation: magicflow-halo-3916d74d 2.6s cubic-bezier(0.22, 0.61, 0.36, 1) infinite;
 }
-.magicflow-flow__node.is-running .magicflow-flow__dot[data-v-882f15ca]::before {
+.magicflow-flow__node.is-running .magicflow-flow__dot[data-v-3916d74d]::before {
   animation-delay: 1.3s;
 }
-.magicflow-flow__node.is-running .magicflow-flow__label[data-v-882f15ca] {
+.magicflow-flow__node.is-running .magicflow-flow__label[data-v-3916d74d] {
   color: #cfc7ff;
   font-weight: 600;
 }
 
 /* 出错：红色实心圆 + 白色感叹号 */
-.magicflow-flow__node.is-error .magicflow-flow__dot[data-v-882f15ca] {
+.magicflow-flow__node.is-error .magicflow-flow__dot[data-v-3916d74d] {
   border-color: rgb(var(--v-theme-error));
   background: rgb(var(--v-theme-error));
   color: #fff;
 }
 
 /* 运行流程右上角阶段标签（预览图：阶段名 pill + 呼吸圆点） */
-.magicflow-flow__tag[data-v-882f15ca] {
+.magicflow-flow__tag[data-v-3916d74d] {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1242,34 +1242,34 @@
   line-height: 1.4;
   white-space: nowrap;
 }
-.magicflow-flow__tag i[data-v-882f15ca] {
+.magicflow-flow__tag i[data-v-3916d74d] {
   inline-size: 6px;
   block-size: 6px;
   border-radius: 50%;
   background: #8b7bf0;
   box-shadow: 0 0 8px #8b7bf0;
 }
-.magicflow-flow__tag.is-live i[data-v-882f15ca] {
-  animation: magicflow-blink-882f15ca 1.6s ease-in-out infinite;
+.magicflow-flow__tag.is-live i[data-v-3916d74d] {
+  animation: magicflow-blink-3916d74d 1.6s ease-in-out infinite;
 }
-.magicflow-flow__tag.is-error[data-v-882f15ca] {
+.magicflow-flow__tag.is-error[data-v-3916d74d] {
   border-color: rgba(235, 100, 122, 0.32);
   background: rgba(235, 100, 122, 0.16);
   color: #f0a0af;
 }
-.magicflow-flow__tag.is-error i[data-v-882f15ca] {
+.magicflow-flow__tag.is-error i[data-v-3916d74d] {
   background: rgb(var(--v-theme-error));
   box-shadow: 0 0 8px rgb(var(--v-theme-error));
 }
 
 /* 仅运行中节点有光晕；任务结束后 running 类被移除，脉冲动画随之销毁 */
-@keyframes magicflow-halo-882f15ca {
+@keyframes magicflow-halo-3916d74d {
 0% { transform: scale(1); opacity: 0.45;
 }
 100% { transform: scale(1.7); opacity: 0;
 }
 }
-@keyframes magicflow-blink-882f15ca {
+@keyframes magicflow-blink-3916d74d {
 0%, 100% { opacity: 1;
 }
 50% { opacity: 0.35;
@@ -1277,12 +1277,12 @@
 }
 
 /* ===== 深色磨砂主题：卡片 / 面板 / 弹窗 ===== */
-.magicflow-page .magicflow-panel[data-v-882f15ca],
-.magicflow-page .magicflow-stat[data-v-882f15ca],
-.magicflow-page .magicflow-task-rail[data-v-882f15ca],
-.magicflow-page .magicflow-task-head[data-v-882f15ca],
-.magicflow-page .magicflow-flow[data-v-882f15ca],
-.magicflow-page .magicflow-torrents[data-v-882f15ca] {
+.magicflow-page .magicflow-panel[data-v-3916d74d],
+.magicflow-page .magicflow-stat[data-v-3916d74d],
+.magicflow-page .magicflow-task-rail[data-v-3916d74d],
+.magicflow-page .magicflow-task-head[data-v-3916d74d],
+.magicflow-page .magicflow-flow[data-v-3916d74d],
+.magicflow-page .magicflow-torrents[data-v-3916d74d] {
   background: var(--magicflow-panel-bg) !important;
   border: 1px solid var(--magicflow-panel-brd);
   border-radius: 16px;
@@ -1290,21 +1290,21 @@
   -webkit-backdrop-filter: blur(14px) saturate(120%);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
-.magicflow-page .magicflow-task-item[data-v-882f15ca] {
+.magicflow-page .magicflow-task-item[data-v-3916d74d] {
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid transparent;
   border-radius: 12px;
 }
-.magicflow-page .magicflow-task-item--selected[data-v-882f15ca] {
+.magicflow-page .magicflow-task-item--selected[data-v-3916d74d] {
   background: rgba(139, 123, 240, 0.16);
   border-color: rgba(139, 123, 240, 0.42);
 }
-.magicflow-page .magicflow-task-item[data-v-882f15ca]:hover {
+.magicflow-page .magicflow-task-item[data-v-3916d74d]:hover {
   background: rgba(139, 123, 240, 0.1);
 }
 
 /* 弹窗（会 teleport 到 body，按专属类名限定，不污染宿主） */
-.magicflow-dialog[data-v-882f15ca] {
+.magicflow-dialog[data-v-3916d74d] {
   --v-theme-surface: 17, 23, 43;
   --v-theme-on-surface: 231, 234, 246;
   --v-theme-surface-variant: 38, 46, 78;
@@ -1323,11 +1323,11 @@
 }
 
 /* ===== 按预览图对齐：品牌头 / 分段标签 / 数据卡排版 ===== */
-.magicflow-page .magicflow-page__header[data-v-882f15ca] {
+.magicflow-page .magicflow-page__header[data-v-3916d74d] {
   gap: 12px;
   min-block-size: 44px;
 }
-.magicflow-page .magicflow-logo[data-v-882f15ca] {
+.magicflow-page .magicflow-logo[data-v-3916d74d] {
   inline-size: 38px;
   block-size: 38px;
   flex: 0 0 auto;
@@ -1338,7 +1338,7 @@
   background: linear-gradient(145deg, #9484f5, #5b4fb8);
   box-shadow: 0 6px 20px rgba(139, 123, 240, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.25);
 }
-.magicflow-page .magicflow-page__identity h1[data-v-882f15ca] {
+.magicflow-page .magicflow-page__identity h1[data-v-3916d74d] {
   font-size: 17px;
   font-weight: 700;
   line-height: 1.25;
@@ -1346,7 +1346,7 @@
 }
 
 /* 品牌区版本号徽标（版本必须常驻显示） */
-.magicflow-page .magicflow-page__version[data-v-882f15ca] {
+.magicflow-page .magicflow-page__version[data-v-3916d74d] {
   display: inline-block;
   margin-inline-start: 8px;
   padding: 1px 7px;
@@ -1359,20 +1359,20 @@
   line-height: 1.5;
   vertical-align: middle;
 }
-.magicflow-page .magicflow-page__identity p[data-v-882f15ca] {
+.magicflow-page .magicflow-page__identity p[data-v-3916d74d] {
   margin-block-start: 2px;
   font-size: 11px;
 }
 
 /* 顶部「新建任务」按钮（桌面端；移动端由工具栏承担，避免重复） */
-.magicflow-page .magicflow-header-create[data-v-882f15ca] {
+.magicflow-page .magicflow-header-create[data-v-3916d74d] {
   text-transform: none;
   letter-spacing: 0;
   font-weight: 600;
 }
 
 /* 顶部「当前任务」切换下拉（方案 B） */
-.magicflow-page .magicflow-task-switch[data-v-882f15ca] {
+.magicflow-page .magicflow-task-switch[data-v-3916d74d] {
   display: inline-flex;
   align-items: center;
   gap: 9px;
@@ -1386,14 +1386,14 @@
   cursor: pointer;
   box-shadow: 0 6px 18px rgba(139, 123, 240, 0.16);
 }
-.magicflow-page .magicflow-task-switch[data-v-882f15ca]:hover {
+.magicflow-page .magicflow-task-switch[data-v-3916d74d]:hover {
   border-color: rgba(139, 123, 240, 0.42);
 }
-.magicflow-page .magicflow-task-switch[data-v-882f15ca]:focus-visible {
+.magicflow-page .magicflow-task-switch[data-v-3916d74d]:focus-visible {
   outline: 2px solid rgb(var(--v-theme-primary));
   outline-offset: 2px;
 }
-.magicflow-page .magicflow-task-switch__icon[data-v-882f15ca] {
+.magicflow-page .magicflow-task-switch__icon[data-v-3916d74d] {
   inline-size: 26px;
   block-size: 26px;
   flex: 0 0 auto;
@@ -1404,13 +1404,13 @@
   color: #fff;
   background: linear-gradient(145deg, #9484f5, #5b4fb8);
 }
-.magicflow-page .magicflow-task-switch__icon img[data-v-882f15ca] {
+.magicflow-page .magicflow-task-switch__icon img[data-v-3916d74d] {
   inline-size: 62%;
   block-size: 62%;
   object-fit: contain;
   border-radius: 5px;
 }
-.magicflow-page .magicflow-task-switch__body[data-v-882f15ca] {
+.magicflow-page .magicflow-task-switch__body[data-v-3916d74d] {
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -1418,56 +1418,56 @@
   line-height: 1.15;
   text-align: start;
 }
-.magicflow-page .magicflow-task-switch__k[data-v-882f15ca] {
+.magicflow-page .magicflow-task-switch__k[data-v-3916d74d] {
   font-size: 10px;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
-.magicflow-page .magicflow-task-switch__v[data-v-882f15ca] {
+.magicflow-page .magicflow-task-switch__v[data-v-3916d74d] {
   font-size: 13px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.magicflow-page .magicflow-task-switch__chev[data-v-882f15ca] {
+.magicflow-page .magicflow-task-switch__chev[data-v-3916d74d] {
   flex: 0 0 auto;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
-.magicflow-page .magicflow-task-switch__menu[data-v-882f15ca] {
+.magicflow-page .magicflow-task-switch__menu[data-v-3916d74d] {
   min-inline-size: 15rem;
 }
 @media (max-width: 959px) {
   /* 桌面品牌头里的切换胶囊隐藏；移动端由工具栏承担 */
-.magicflow-page__actions .magicflow-task-switch[data-v-882f15ca] {
+.magicflow-page__actions .magicflow-task-switch[data-v-3916d74d] {
     display: none;
 }
 
   /* 移动工具栏沿用「方案 B」胶囊：站点图标 + 任务名·站点 + 状态点 + ⌄ */
-.magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch[data-v-882f15ca] {
+.magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch[data-v-3916d74d] {
     display: inline-flex;
     flex: 1 1 auto;
     min-inline-size: 0;
     max-inline-size: none;
 }
-.magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch__k[data-v-882f15ca] {
+.magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch__k[data-v-3916d74d] {
     display: none;
 }
-.magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch__v[data-v-882f15ca] {
+.magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch__v[data-v-3916d74d] {
     font-size: 14px;
 }
 }
 
 /* 任务头「删除」按钮：与其余图标按钮拉开一点距离，降低误触 */
-.magicflow-page .magicflow-task-head h2[data-v-882f15ca] {
+.magicflow-page .magicflow-task-head h2[data-v-3916d74d] {
   font-size: 15px;
   font-weight: 650;
 }
-.magicflow-page .magicflow-task-head p[data-v-882f15ca] {
+.magicflow-page .magicflow-task-head p[data-v-3916d74d] {
   font-size: 11px;
 }
 
 /* 分段式标签卡（预览图样式） */
-.magicflow-page .magicflow-tabs[data-v-882f15ca] {
+.magicflow-page .magicflow-tabs[data-v-3916d74d] {
   display: flex;
   gap: 4px;
   padding: 6px;
@@ -1478,7 +1478,7 @@
   -webkit-backdrop-filter: blur(14px) saturate(120%);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
-.magicflow-page .magicflow-tab[data-v-882f15ca] {
+.magicflow-page .magicflow-tab[data-v-3916d74d] {
   flex: 1 1 0;
   min-inline-size: 0;
   padding: 9px 4px;
@@ -1493,7 +1493,7 @@
   cursor: pointer;
   transition: background-color 0.15s ease, color 0.15s ease;
 }
-.magicflow-page .magicflow-tab.is-active[data-v-882f15ca] {
+.magicflow-page .magicflow-tab.is-active[data-v-3916d74d] {
   color: #cfc7ff;
   background: rgba(139, 123, 240, 0.18);
   font-weight: 600;
@@ -1502,81 +1502,146 @@
 
 /* 数据卡：数值在上、说明在下（预览图样式） */
 @media (max-width: 1199px) {
-.magicflow-page .magicflow-stat-grid[data-v-882f15ca] {
+.magicflow-page .magicflow-stat-grid[data-v-3916d74d] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 }
-.magicflow-page .magicflow-stat[data-v-882f15ca] {
+.magicflow-page .magicflow-stat[data-v-3916d74d] {
   gap: 6px;
   min-block-size: 84px;
   padding: 14px 16px;
 }
-.magicflow-page .magicflow-stat > strong[data-v-882f15ca] {
+.magicflow-page .magicflow-stat > strong[data-v-3916d74d] {
   font-size: 20px;
   font-weight: 680;
   line-height: 1.2;
   letter-spacing: 0.2px;
 }
-.magicflow-page .magicflow-stat > span[data-v-882f15ca],
-.magicflow-page .magicflow-stat > small[data-v-882f15ca] {
+.magicflow-page .magicflow-stat > span[data-v-3916d74d],
+.magicflow-page .magicflow-stat > small[data-v-3916d74d] {
   font-size: 11px;
 }
-.magicflow-page .magicflow-stat--accent > strong[data-v-882f15ca] {
+.magicflow-page .magicflow-stat--accent > strong[data-v-3916d74d] {
   color: #c3b8ff;
 }
 
 /* 面板标题排版（预览图：14px/600 + 11px 说明） */
-.magicflow-page .magicflow-panel[data-v-882f15ca] {
+.magicflow-page .magicflow-panel[data-v-3916d74d] {
   padding: 18px 16px;
 }
-.magicflow-page .magicflow-panel__head .text-subtitle-1[data-v-882f15ca] {
+.magicflow-page .magicflow-panel__head .text-subtitle-1[data-v-3916d74d] {
   font-size: 14px;
   font-weight: 600;
 }
-.magicflow-page .magicflow-panel__head .text-body-2[data-v-882f15ca] {
+.magicflow-page .magicflow-panel__head .text-body-2[data-v-3916d74d] {
   font-size: 11px;
 }
 
 /* 过滤原因条形图（预览图：8px 圆角 + 紫色渐变） */
-.magicflow-page .magicflow-reason > div[data-v-882f15ca] {
+.magicflow-page .magicflow-reason > div[data-v-3916d74d] {
   font-size: 11.5px;
 }
-.magicflow-page .magicflow-reason__track[data-v-882f15ca] {
+.magicflow-page .magicflow-reason__track[data-v-3916d74d] {
   block-size: 8px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.05);
 }
-.magicflow-page .magicflow-reason__track i[data-v-882f15ca] {
+.magicflow-page .magicflow-reason__track i[data-v-3916d74d] {
   border-radius: 999px;
   background: linear-gradient(90deg, #6a5cd8, #9c8cff);
   box-shadow: 0 0 12px rgba(139, 123, 240, 0.5);
 }
 
 /* 操作记录（预览图：图标瓦片 + 顶部细分隔线） */
-.magicflow-page .magicflow-events article[data-v-882f15ca] {
+.magicflow-page .magicflow-events article[data-v-3916d74d] {
   align-items: start;
   gap: 11px;
   padding-block: 11px;
   border-top: 1px solid rgba(140, 150, 220, 0.1);
 }
-.magicflow-page .magicflow-events article[data-v-882f15ca]:first-child {
+.magicflow-page .magicflow-events article[data-v-3916d74d]:first-child {
   padding-block-start: 0;
   border-top: 0;
 }
-.magicflow-page .magicflow-events article strong[data-v-882f15ca] {
+.magicflow-page .magicflow-events article strong[data-v-3916d74d] {
   font-size: 12.5px;
   font-weight: 600;
 }
 
+/* 操作记录 · 明细展开（手机优先：单行省略，不撑破卡片） */
+.magicflow-page .magicflow-events__toggle[data-v-3916d74d] {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-block-start: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: rgb(var(--v-theme-primary));
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.magicflow-page .magicflow-events__detail[data-v-3916d74d] {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+}
+.magicflow-page .magicflow-events__detail li[data-v-3916d74d] {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-inline-size: 0;
+  padding-block: 5px;
+  border-top: 1px dashed rgba(140, 150, 220, 0.14);
+}
+.magicflow-page .magicflow-events__detail li[data-v-3916d74d]:first-child {
+  border-top: 0;
+}
+.magicflow-page .magicflow-events__detail-line[data-v-3916d74d] {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-inline-size: 0;
+}
+.magicflow-page .magicflow-events__detail-src[data-v-3916d74d] {
+  flex: 0 0 auto;
+  font-style: normal;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0 5px;
+  border-radius: 5px;
+  color: rgb(var(--v-theme-primary));
+  background: rgba(139, 123, 240, 0.16);
+}
+.magicflow-page .magicflow-events__detail-title[data-v-3916d74d] {
+  min-inline-size: 0;
+  flex: 1 1 auto;
+  font-size: 0.78rem;
+  color: rgba(var(--v-theme-on-surface), 0.86);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.magicflow-page .magicflow-events__detail-sub[data-v-3916d74d] {
+  font-size: 0.72rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  overflow-wrap: anywhere;
+}
+
 /* 任务头卡片内边距（对齐预览图 .thead） */
-.magicflow-page .magicflow-task-head[data-v-882f15ca] {
+.magicflow-page .magicflow-task-head[data-v-3916d74d] {
   padding: 14px 16px;
 }
 
 /* 种子名称过长时收成 2 行，避免撑破卡片 */
-.magicflow-page .torrent-title-cell strong[data-v-882f15ca],
-.magicflow-page .magicflow-pipeline li strong[data-v-882f15ca],
-.magicflow-page .magicflow-mobile-torrent__title strong[data-v-882f15ca] {
+.magicflow-page .torrent-title-cell strong[data-v-3916d74d],
+.magicflow-page .magicflow-pipeline li strong[data-v-3916d74d],
+.magicflow-page .magicflow-mobile-torrent__title strong[data-v-3916d74d] {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   line-clamp: 2;
@@ -1585,16 +1650,16 @@
 }
 
 /* 移动端任务选择器：紧凑成圆角下拉，避免大块空白 */
-.magicflow-page .magicflow-mobile-select[data-v-882f15ca] {
+.magicflow-page .magicflow-mobile-select[data-v-3916d74d] {
   padding-block: 0;
 }
-.magicflow-page .magicflow-mobile-select .app-responsive-input__meta[data-v-882f15ca] {
+.magicflow-page .magicflow-mobile-select .app-responsive-input__meta[data-v-3916d74d] {
   margin-block-end: 4px;
 }
 
 /* 底部宿主悬浮导航会盖住内容，预留安全间距 */
 @media (max-width: 699px) {
-.magicflow-page[data-v-882f15ca] {
+.magicflow-page[data-v-3916d74d] {
     padding-block-end: 76px;
 }
 }
