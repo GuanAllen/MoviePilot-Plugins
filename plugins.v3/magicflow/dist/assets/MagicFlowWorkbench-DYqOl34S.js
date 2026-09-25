@@ -522,10 +522,7 @@ return (_ctx, _cache) => {
                             ]),
                             _createVNode$1(_component_VRow, null, {
                               default: _withCtx$1(() => [
-                                _createVNode$1(_component_VCol, {
-                                  cols: "12",
-                                  md: "6"
-                                }, {
+                                _createVNode$1(_component_VCol, { cols: "12" }, {
                                   default: _withCtx$1(() => [
                                     _createVNode$1(_component_VTextField, {
                                       modelValue: localTask.value.goal_value,
@@ -533,13 +530,12 @@ return (_ctx, _cache) => {
                                       modelModifiers: { number: true },
                                       type: "number",
                                       min: "0",
-                                      step: isBrush.value ? 100 : 1000,
-                                      label: isBrush.value ? '目标上传量（GB）' : '目标魔力值',
-                                      suffix: isBrush.value ? 'GB' : '魔力值',
-                                      hint: "达到目标后任务自动停止（仅停调度，不撤种、不删种）；未填会弹窗提醒",
+                                      step: "any",
+                                      label: isBrush.value ? '目标上传量（GB）' : '目标魔力值（可填任意大，如 100000 即十万）',
+                                      hint: isBrush.value ? '站点上传量达到目标后任务自动停止；未填会弹窗提醒' : '站点魔力值达到目标后任务自动停止；未填会弹窗提醒',
                                       "persistent-hint": "",
                                       clearable: ""
-                                    }, null, 8, ["modelValue", "step", "label", "suffix"])
+                                    }, null, 8, ["modelValue", "label", "hint"])
                                   ]),
                                   _: 1
                                 })
@@ -1804,7 +1800,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-e0f35029"]]);
+const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-aa38ceb4"]]);
 
 const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,openBlock:_openBlock,createElementBlock:_createElementBlock,createCommentVNode:_createCommentVNode,createBlock:_createBlock,toDisplayString:_toDisplayString,normalizeClass:_normalizeClass,mergeProps:_mergeProps,renderList:_renderList,Fragment:_Fragment,withCtx:_withCtx,createTextVNode:_createTextVNode,unref:_unref,normalizeStyle:_normalizeStyle,withModifiers:_withModifiers} = await importShared('vue');
 

@@ -1,5 +1,5 @@
 
-.magicflow-editor[data-v-e0f35029] {
+.magicflow-editor[data-v-aa38ceb4] {
   /* 深色磨砂主题（与工作台保持一致）*/
   --v-theme-surface: 17, 23, 43;
   --v-theme-on-surface: 231, 234, 246;
@@ -19,88 +19,88 @@
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
   color: rgb(var(--v-theme-on-surface));
 }
-.magicflow-editor__toolbar[data-v-e0f35029] {
+.magicflow-editor__toolbar[data-v-aa38ceb4] {
   flex: 0 0 auto;
   padding-inline: 8px;
   z-index: 4;
   backdrop-filter: blur(var(--transparent-blur, 0px));
   background-color: rgba(var(--v-theme-surface), var(--transparent-opacity-heavy, 1));
 }
-.magicflow-editor__body[data-v-e0f35029] {
+.magicflow-editor__body[data-v-aa38ceb4] {
   padding: 0;
 }
-.magicflow-editor__form[data-v-e0f35029] {
+.magicflow-editor__form[data-v-aa38ceb4] {
   display: grid;
   grid-template-columns: 12rem auto minmax(0, 1fr) minmax(12rem, 0.34fr);
   min-block-size: 34rem;
 }
-.magicflow-editor__tabs[data-v-e0f35029] {
+.magicflow-editor__tabs[data-v-aa38ceb4] {
   padding: 12px 8px;
 }
-.magicflow-editor__window[data-v-e0f35029] {
+.magicflow-editor__window[data-v-aa38ceb4] {
   min-inline-size: 0;
   padding: 20px;
 }
-.editor-section[data-v-e0f35029] {
+.editor-section[data-v-aa38ceb4] {
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
-.editor-section + .editor-section[data-v-e0f35029] {
+.editor-section + .editor-section[data-v-aa38ceb4] {
   margin-block-start: 28px;
   padding-block-start: 24px;
   border-block-start: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
 }
-.editor-section__head[data-v-e0f35029] {
+.editor-section__head[data-v-aa38ceb4] {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
-.editor-switches[data-v-e0f35029] {
+.editor-switches[data-v-aa38ceb4] {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 24px;
 }
-.magicflow-editor__summary[data-v-e0f35029] {
+.magicflow-editor__summary[data-v-aa38ceb4] {
   padding: 20px 16px;
   border-inline-start: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
 }
-.magicflow-editor__summary dl[data-v-e0f35029] {
+.magicflow-editor__summary dl[data-v-aa38ceb4] {
   display: grid;
   gap: 12px;
   margin: 18px 0 0;
 }
-.magicflow-editor__summary dl > div[data-v-e0f35029] {
+.magicflow-editor__summary dl > div[data-v-aa38ceb4] {
   display: flex;
   justify-content: space-between;
   gap: 12px;
 }
-.magicflow-editor__summary dt[data-v-e0f35029] {
+.magicflow-editor__summary dt[data-v-aa38ceb4] {
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
-.magicflow-editor__summary dd[data-v-e0f35029] {
+.magicflow-editor__summary dd[data-v-aa38ceb4] {
   margin: 0;
   text-align: end;
   overflow-wrap: anywhere;
 }
 @media (max-width: 959px) {
-.magicflow-editor[data-v-e0f35029] {
+.magicflow-editor[data-v-aa38ceb4] {
     max-block-size: none;
 }
-.magicflow-editor__form[data-v-e0f35029] {
+.magicflow-editor__form[data-v-aa38ceb4] {
     grid-template-columns: 1fr;
     min-block-size: 0;
 }
-.magicflow-editor__tabs[data-v-e0f35029] {
+.magicflow-editor__tabs[data-v-aa38ceb4] {
     max-inline-size: 100%;
     padding-block: 0;
     overflow-x: auto;
 }
-.magicflow-editor__window[data-v-e0f35029] {
+.magicflow-editor__window[data-v-aa38ceb4] {
     padding: 16px;
 }
-.magicflow-editor__summary[data-v-e0f35029] {
+.magicflow-editor__summary[data-v-aa38ceb4] {
     border-inline-start: 0;
     border-block-start: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
 }
@@ -108,24 +108,24 @@
 @media (max-width: 599px) {
 }
 
-.magicflow-facts[data-v-e0f35029] {
+.magicflow-facts[data-v-aa38ceb4] {
   display: grid;
   gap: 11px;
   margin: 18px 0 0;
 }
-.magicflow-facts--two[data-v-e0f35029] {
+.magicflow-facts--two[data-v-aa38ceb4] {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
-.magicflow-facts > div[data-v-e0f35029] {
+.magicflow-facts > div[data-v-aa38ceb4] {
   display: flex;
   justify-content: space-between;
   gap: 12px;
   min-inline-size: 0;
 }
-.magicflow-facts dt[data-v-e0f35029] {
+.magicflow-facts dt[data-v-aa38ceb4] {
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
-.magicflow-facts dd[data-v-e0f35029] {
+.magicflow-facts dd[data-v-aa38ceb4] {
   margin: 0;
   text-align: end;
   overflow-wrap: anywhere;

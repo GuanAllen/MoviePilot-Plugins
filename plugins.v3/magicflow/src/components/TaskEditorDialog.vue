@@ -278,15 +278,14 @@ function confirmSaveWithoutGoal() {
                   <VChip size="small" color="primary" variant="tonal">建议填写</VChip>
                 </header>
                 <VRow>
-                  <VCol cols="12" md="6">
+                  <VCol cols="12">
                     <VTextField
                       v-model.number="localTask.goal_value"
                       type="number"
                       min="0"
-                      :step="isBrush ? 100 : 1000"
-                      :label="isBrush ? '目标上传量（GB）' : '目标魔力值'"
-                      :suffix="isBrush ? 'GB' : '魔力值'"
-                      hint="达到目标后任务自动停止（仅停调度，不撤种、不删种）；未填会弹窗提醒"
+                      step="any"
+                      :label="isBrush ? '目标上传量（GB）' : '目标魔力值（可填任意大，如 100000 即十万）'"
+                      :hint="isBrush ? '站点上传量达到目标后任务自动停止；未填会弹窗提醒' : '站点魔力值达到目标后任务自动停止；未填会弹窗提醒'"
                       persistent-hint
                       clearable
                     />
