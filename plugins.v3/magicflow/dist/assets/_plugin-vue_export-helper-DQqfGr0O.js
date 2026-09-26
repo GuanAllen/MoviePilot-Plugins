@@ -200,7 +200,48 @@ function normalizeSettings(settings = {}) {
     recommend_notify: settings.recommend_notify === undefined ? true : Boolean(settings.recommend_notify),
     recommend_temp_ttl_days: Math.max(0, num(settings.recommend_temp_ttl_days, 7)),
     recommend_disk_min_free_gb: Math.max(0, num(settings.recommend_disk_min_free_gb, 50)),
+    fallback_enabled: settings.fallback_enabled === undefined ? true : Boolean(settings.fallback_enabled),
+    fallback_sources: normalizeFallbackSources(settings.fallback_sources),
+    fallback_paths: normalizePathList(settings.fallback_paths),
+    fallback_interval_minutes: Math.max(5, num(settings.fallback_interval_minutes, 30)),
+    fallback_scan_max: Math.max(1, Math.round(num(settings.fallback_scan_max, 30))),
+    fallback_sp_to_s00: Boolean(settings.fallback_sp_to_s00),
+    fallback_after_import: settings.fallback_after_import === undefined ? true : Boolean(settings.fallback_after_import),
+    fallback_dry_run: Boolean(settings.fallback_dry_run),
   }
+}
+
+/** 可选的识别来源（与 MoviePilot 内置 MediaSource 对齐）。 */
+const FALLBACK_SOURCE_OPTIONS = [
+  { value: 'themoviedb', title: 'TMDB', hint: 'TheMovieDB，影视主力数据源' },
+  { value: 'bangumi', title: 'Bangumi', hint: '番组计划，中日番剧最全' },
+  { value: 'douban', title: '豆瓣', hint: '豆瓣，国漫 / 国产剧补充' },
+  { value: 'anilist', title: 'AniList', hint: 'AniList，番剧备选' },
+  { value: 'tvdb', title: 'TVDB', hint: 'TheTVDB，剧集备选' },
+  { value: 'imdb', title: 'IMDb', hint: 'IMDb，欧美影视备选' },
+];
+
+/** 标准化「识别来源顺序」：去重 + 只留已知来源。 */
+function normalizeFallbackSources(value) {
+  const known = FALLBACK_SOURCE_OPTIONS.map(o => o.value);
+  const list = Array.isArray(value) ? value : [];
+  const out = [];
+  list.forEach(v => {
+    const key = String(v || '').trim().toLowerCase();
+    if (key && known.includes(key) && !out.includes(key)) out.push(key);
+  });
+  return out.length ? out : ['themoviedb', 'bangumi', 'douban']
+}
+
+/** 标准化字符串列表（去空、去重、去首尾空白）。 */
+function normalizePathList(value) {
+  const list = Array.isArray(value) ? value : [];
+  const out = [];
+  list.forEach(v => {
+    const s = String(v == null ? '' : v).trim();
+    if (s && !out.includes(s)) out.push(s);
+  });
+  return out
 }
 
 /** 推荐状态元信息（标签文案 + 颜色）。 */
@@ -384,4 +425,4 @@ const _export_sfc = (sfc, props) => {
   return target;
 };
 
-export { RUN_MODES as R, _export_sfc as _, normalizeDownloaderPrefs as a, normalizeDownloaderPaths as b, cloneTask as c, normalizeDefaults as d, runStatusText as e, formatBonus as f, formatBytes as g, formatDateTime as h, formatDurationSeconds as i, recommendStatusMeta as j, normalizeSettings as k, formatDuration as l, normalizeIyuuSites as m, normalizeTask as n, runModeMeta as r, taskStateMeta as t, unwrapResponse as u };
+export { FALLBACK_SOURCE_OPTIONS as F, RUN_MODES as R, _export_sfc as _, normalizeDownloaderPrefs as a, normalizeDownloaderPaths as b, cloneTask as c, normalizeDefaults as d, runStatusText as e, formatBonus as f, formatBytes as g, formatDateTime as h, formatDurationSeconds as i, recommendStatusMeta as j, normalizeSettings as k, formatDuration as l, normalizeIyuuSites as m, normalizeTask as n, runModeMeta as r, taskStateMeta as t, unwrapResponse as u };

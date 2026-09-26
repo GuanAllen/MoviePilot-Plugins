@@ -8,6 +8,7 @@ import {
   formatDateTime,
   formatDuration,
   formatDurationSeconds,
+  FALLBACK_SOURCE_OPTIONS,
   normalizeDefaults,
   normalizeDownloaderPaths,
   normalizeDownloaderPrefs,
@@ -90,7 +91,19 @@ const settingsDraft = ref({
   brush_upload_limit_kbps: 10240,
   iyuu_token: '',
   iyuu_sites: {},
+  fallback_enabled: true,
+  fallback_sources: ['themoviedb', 'bangumi', 'douban'],
+  fallback_paths: [],
+  fallback_interval_minutes: 30,
+  fallback_scan_max: 30,
+  fallback_sp_to_s00: false,
+  fallback_after_import: true,
+  fallback_dry_run: false,
 })
+const fallbackState = ref(null)
+const fallbackLoading = ref(false)
+const fallbackRunning = ref(false)
+const fallbackSourceDraft = ref('')
 const downloaderPrefsDraft = ref(normalizeDownloaderPrefs({}))
 const downloaderPrefsRecommended = ref(null)
 const downloaderPrefsLoading = ref(false)
@@ -273,7 +286,7 @@ function notify(message, color = 'success') {
   }
 }
 
-const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reuse: '存量复用', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止', state: '运行状态', tag: '标签变更' }
+const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reuse: '存量复用', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止', state: '运行状态', tag: '标签变更', fallback: '元数据兜底' }
 const STATE_TEXT = { submitting: '提交中', accepted: '已受理', completed: '已完成', failed: '失败' }
 const KIND_ICON = {
   run: 'mdi-play-circle-outline',
@@ -288,6 +301,7 @@ const KIND_ICON = {
   goal: 'mdi-flag-checkered',
   state: 'mdi-power',
   tag: 'mdi-tag-outline',
+  fallback: 'mdi-file-xml-box',
 }
 
 function operationKindText(kind) {
@@ -464,6 +478,7 @@ async function loadStatus() {
       brush_upload_limit_kbps: status.value.brush_upload_limit_kbps,
       iyuu_token: status.value.iyuu_token,
       iyuu_sites: status.value.iyuu_sites,
+      ...(status.value.fallback || {}),
     })
     statusLoaded.value = true
     if (!selectedTaskId.value && tasks.value.length) {
@@ -940,6 +955,70 @@ async function openSettings(tab = 'general') {
   settingsTab.value = tab
   settingsDialog.value = true
   await Promise.all([loadDownloaderPrefs(), loadDefaults(), loadIyuuSites()])
+  if (tab === 'fallback') loadFallback()
+}
+
+// ── 元数据兜底 ─────────────────────────────────────────────
+// 可选来源（与后端 MediaSource 对齐）；顺序可调，识别时按顺序回退。
+const fallbackSourceOptions = FALLBACK_SOURCE_OPTIONS
+const usedFallbackSources = computed(() => settingsDraft.value.fallback_sources || [])
+const unusedFallbackSources = computed(() =>
+  FALLBACK_SOURCE_OPTIONS.filter(opt => !usedFallbackSources.value.includes(opt.value)),
+)
+
+function fallbackSourceLabel(value) {
+  const found = FALLBACK_SOURCE_OPTIONS.find(opt => opt.value === value)
+  return found ? found.title : String(value || '')
+}
+
+function moveFallbackSource(index, delta) {
+  const list = [...(settingsDraft.value.fallback_sources || [])]
+  const target = index + delta
+  if (target < 0 || target >= list.length) return
+  const tmp = list[index]
+  list[index] = list[target]
+  list[target] = tmp
+  settingsDraft.value.fallback_sources = list
+}
+
+function removeFallbackSource(value) {
+  settingsDraft.value.fallback_sources = (settingsDraft.value.fallback_sources || []).filter(v => v !== value)
+}
+
+function addFallbackSource() {
+  const value = String(fallbackSourceDraft.value || '').trim().toLowerCase()
+  if (!value) return
+  const list = [...(settingsDraft.value.fallback_sources || [])]
+  if (!list.includes(value)) list.push(value)
+  settingsDraft.value.fallback_sources = list
+  fallbackSourceDraft.value = ''
+}
+
+async function loadFallback() {
+  fallbackLoading.value = true
+  try {
+    fallbackState.value = unwrapResponse(await props.api.get(`${pluginBase.value}/fallback?resolve_paths=true`))
+  } catch (err) {
+    error.value = err?.message || String(err)
+  } finally {
+    fallbackLoading.value = false
+    if (fallbackState.value?.running) setTimeout(() => { loadFallback() }, 6000)
+  }
+}
+
+async function runFallback(dryRun = false) {
+  fallbackRunning.value = true
+  try {
+    unwrapResponse(
+      await props.api.post(`${pluginBase.value}/fallback/run?dry_run=${dryRun ? 'true' : 'false'}`),
+    )
+    notify(dryRun ? '演练扫描已开始（不会写 NFO）' : '元数据兜底已开始')
+    setTimeout(() => { loadFallback() }, 3000)
+  } catch (err) {
+    error.value = err?.message || String(err)
+  } finally {
+    fallbackRunning.value = false
+  }
 }
 
 // 加载 IYUU 站点表（按 MoviePilot 已配置站点生成）。
@@ -1117,6 +1196,7 @@ function saveActiveSettings() {
   if (tab === 'paths') return savePathsTab()
   if (tab === 'template') return saveDefaults()
   if (tab === 'iyuu') return saveIyuu()
+  if (tab === 'fallback') return saveSettings()
   return saveSettings()
 }
 
@@ -2062,6 +2142,7 @@ onUnmounted(() => {
           <VTab value="paths" class="magicflow-settings-tab">下载目录</VTab>
           <VTab value="template" class="magicflow-settings-tab">默认任务模板</VTab>
           <VTab value="iyuu" class="magicflow-settings-tab">IYUU 辅种</VTab>
+          <VTab value="fallback" class="magicflow-settings-tab">元数据兜底</VTab>
           <VTab value="recommend" class="magicflow-settings-tab">推荐</VTab>
         </VTabs>
         <VDivider />
@@ -2452,6 +2533,115 @@ onUnmounted(() => {
               <VSwitch v-model="settingsDraft.recommend_require_chart" label="榜单 / 热映 / 订阅命中也算达标（与评分为「或」关系）" color="primary" hide-details inset />
               <VSwitch v-model="settingsDraft.recommend_auto_import" label="确认后自动整理入库" color="primary" hide-details inset />
               <VSwitch v-model="settingsDraft.recommend_notify" label="发现推荐时通知" color="primary" hide-details inset />
+            </div>
+          </div>
+
+          <div v-else-if="settingsTab === 'fallback'" class="magicflow-settings-form">
+            <p class="magicflow-settings-hint">
+              TMDB 对<strong>番剧特别篇/前传、国漫、B站特供</strong>常常「根本没有」，离了 TMDB 就没元数据可用。
+              这里做<strong>多源识别回退</strong>（按顺序试各来源）→ 给库里缺 NFO 的集补一份<strong>最小 NFO</strong>，
+              让播放器 / 飞牛影视能显示名称与集号。<strong>只写 NFO，不动媒体文件，已存在的好 NFO 不覆盖。</strong>
+            </p>
+            <div class="magicflow-settings-switches">
+              <VSwitch v-model="settingsDraft.fallback_enabled" label="启用元数据兜底" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.fallback_after_import" label="每次整理入库后自动兜底" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.fallback_dry_run" label="演练模式（只报告不写 NFO）" color="primary" hide-details inset />
+            </div>
+
+            <div class="magicflow-settings-field">
+              <div class="magicflow-settings-label">识别来源顺序（自上而下依次尝试）</div>
+              <ol class="magicflow-fb-sources">
+                <li v-for="(src, idx) in usedFallbackSources" :key="src" class="magicflow-fb-source">
+                  <span class="magicflow-fb-source__idx">{{ idx + 1 }}</span>
+                  <span class="magicflow-fb-source__name">{{ fallbackSourceLabel(src) }}</span>
+                  <VBtn icon="mdi-arrow-up" size="x-small" variant="text" :disabled="idx === 0" aria-label="上移" @click="moveFallbackSource(idx, -1)" />
+                  <VBtn icon="mdi-arrow-down" size="x-small" variant="text" :disabled="idx === usedFallbackSources.length - 1" aria-label="下移" @click="moveFallbackSource(idx, 1)" />
+                  <VBtn icon="mdi-close" size="x-small" variant="text" aria-label="移除" @click="removeFallbackSource(src)" />
+                </li>
+              </ol>
+              <div class="magicflow-fb-source-add">
+                <VSelect
+                  v-model="fallbackSourceDraft"
+                  :items="unusedFallbackSources"
+                  item-title="title"
+                  item-value="value"
+                  label="添加来源"
+                  variant="outlined"
+                  density="comfortable"
+                  hide-details
+                  clearable
+                />
+                <VBtn variant="tonal" color="primary" :disabled="!fallbackSourceDraft" @click="addFallbackSource">添加</VBtn>
+              </div>
+            </div>
+
+            <VCombobox
+              v-model="settingsDraft.fallback_paths"
+              :items="fallbackState?.effective_paths || []"
+              label="兜底扫描的库目录"
+              hint="留空 = 自动取 MoviePilot 目录配置里的 library 路径（如 /movie）"
+              persistent-hint
+              variant="outlined"
+              density="comfortable"
+              multiple
+              chips
+              clearable
+            />
+
+            <div class="magicflow-settings-grid">
+              <VTextField
+                v-model.number="settingsDraft.fallback_interval_minutes"
+                type="number"
+                label="扫描周期（分钟）"
+                hint="定时扫库兜底，默认 30"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="settingsDraft.fallback_scan_max"
+                type="number"
+                label="每轮最多处理剧集数"
+                hint="其余下轮继续，避免一次卡爆，默认 30"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+            </div>
+
+            <div class="magicflow-settings-switches">
+              <VSwitch v-model="settingsDraft.fallback_sp_to_s00" label="特别篇归位：源中不存在的集改归 Season 0（S00EXX）" color="primary" hide-details inset />
+            </div>
+
+            <VDivider class="magicflow-fb-divider" />
+
+            <div class="magicflow-fb-actions">
+              <VBtn variant="tonal" color="primary" size="small" :loading="fallbackRunning" :disabled="fallbackRunning" @click="runFallback(true)">演练扫描</VBtn>
+              <VBtn variant="flat" color="primary" size="small" :loading="fallbackRunning" :disabled="fallbackRunning" @click="runFallback(false)">立即执行</VBtn>
+              <VBtn variant="text" size="small" :loading="fallbackLoading" @click="loadFallback">刷新结果</VBtn>
+              <span v-if="fallbackState?.running" class="magicflow-fb-running">● 扫描中…</span>
+            </div>
+
+            <div v-if="fallbackState?.report" class="magicflow-fb-report">
+              <div class="magicflow-fb-report__line">
+                上次{{ fallbackState.report.applied === false ? '演练' : '执行' }}：
+                扫描 {{ fallbackState.report.stats?.shows || 0 }} 剧 ·
+                识别 {{ fallbackState.report.stats?.resolved || 0 }} ·
+                补集 NFO {{ fallbackState.report.stats?.ep_nfo || 0 }} ·
+                补剧 NFO {{ fallbackState.report.stats?.show_nfo || 0 }} ·
+                源中缺失 {{ fallbackState.report.stats?.missing || 0 }} ·
+                归位 {{ fallbackState.report.stats?.renumbered || 0 }} ·
+                {{ fallbackState.report.duration }}s
+              </div>
+              <details v-if="(fallbackState.report.shows || []).length" class="magicflow-fb-report__details">
+                <summary>展开本剧集明细（{{ fallbackState.report.shows.length }} 部有变动）</summary>
+                <ul class="magicflow-fb-report__list">
+                  <li v-for="item in fallbackState.report.shows" :key="item.show">
+                    <strong>{{ item.show }}</strong>
+                    <span class="magicflow-fb-report__meta">识别自 {{ item.resolved || '未命中' }}｜补集 {{ (item.episodes || []).filter(e => e.nfo).length }}｜归位 {{ (item.renumbered || []).length }}</span>
+                  </li>
+                </ul>
+              </details>
             </div>
           </div>
         </div>
@@ -2883,6 +3073,120 @@ onUnmounted(() => {
   display: grid;
   gap: 10px;
   justify-items: start;
+}
+
+/* 元数据兜底设置 */
+.magicflow-settings-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  margin-block-end: 6px;
+}
+
+.magicflow-fb-sources {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.magicflow-fb-source {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 10px;
+  border-radius: 10px;
+  background: rgba(var(--v-theme-primary), 0.06);
+  border: 1px solid rgba(var(--v-border-color), 0.28);
+}
+
+.magicflow-fb-source__idx {
+  inline-size: 20px;
+  block-size: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: rgb(var(--v-theme-on-primary));
+  background: rgba(var(--v-theme-primary), 0.85);
+  flex: 0 0 auto;
+}
+
+.magicflow-fb-source__name {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.magicflow-fb-source-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin-block-start: 8px;
+}
+
+.magicflow-fb-divider {
+  margin-block: 4px;
+}
+
+.magicflow-fb-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.magicflow-fb-running {
+  font-size: 0.78rem;
+  color: rgb(var(--v-theme-primary));
+}
+
+.magicflow-fb-report {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+.magicflow-fb-report__line {
+  overflow-wrap: anywhere;
+}
+
+.magicflow-fb-report__details summary {
+  cursor: pointer;
+  color: rgba(var(--v-theme-primary), 1);
+}
+
+.magicflow-fb-report__list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  max-block-size: 16rem;
+  overflow-y: auto;
+}
+
+.magicflow-fb-report__list li {
+  display: grid;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  overflow-wrap: anywhere;
+}
+
+.magicflow-fb-report__meta {
+  font-size: 0.74rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
 
 /* IYUU 辅种设置 */
