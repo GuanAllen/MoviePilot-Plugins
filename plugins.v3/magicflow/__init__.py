@@ -97,7 +97,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.0.12"
+__version__ = "3.0.13"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -2577,6 +2577,17 @@ class MagicFlow(_PluginBase):
         if not downloader or not downloader.is_available:
             self._log(f"下载器不可用: {task.downloader}", "error")
             return {"status": "failed", "reason": "下载器不可用"}
+
+        # ---------- ⓪a 保存目录守卫 ----------
+        # 保存目录为空时若继续加种，下载器会回落到「默认目录」（历史上是 /vol3 下载盘），
+        # 刷流会一路把默认盘灌满。这里直接拒绝，避免误伤。
+        if not str(task.save_path or "").strip():
+            self._log(
+                f"魔流 [{task.name}] 未配置保存目录（save_path），已跳过——"
+                f"避免种子落到下载器默认目录把盘灌满",
+                "error",
+            )
+            return {"status": "skipped", "reason": "未配置保存目录"}
 
         # ---------- ⓪ 先清理（放在**入口检查之前**）----------
         # 池满时不再直接 noop，而是先清掉零魔 / 做种人数过多 / 低于门槛 / 无进度的种子
