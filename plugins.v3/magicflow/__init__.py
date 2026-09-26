@@ -96,7 +96,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.0.4"
+__version__ = "3.0.5"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -3015,6 +3015,7 @@ class MagicFlow(_PluginBase):
             reused = 0
             new_pub: Dict[str, float] = {}
             new_pages: Dict[str, str] = {}  # hash→详情页 URL（供「已非免费→清理」核对）
+            new_free: Dict[str, float] = {}  # hash→促销到期时刻(unix)，供「到期即清」
             add_failed = 0
             skipped_dup = 0
             skipped_quota = 0
@@ -3137,6 +3138,9 @@ class MagicFlow(_PluginBase):
                         new_pub[h] = pub_ts
                     if h and getattr(cand, "page_url", ""):
                         new_pages[h] = str(cand.page_url)
+                    _fu = float(getattr(cand, "free_remaining_sec", -1.0) or -1.0)
+                    if h and _fu >= 0:
+                        new_free[h] = time.time() + _fu
                     if reuse_downloads:
                         dl_budget -= 1
                         dl_concurrent += 1
@@ -3199,6 +3203,9 @@ class MagicFlow(_PluginBase):
                         new_pub[nh] = pub_ts
                     if nh and getattr(cand, "page_url", ""):
                         new_pages[nh] = str(cand.page_url)
+                    _fu2 = float(getattr(cand, "free_remaining_sec", -1.0) or -1.0)
+                    if nh and _fu2 >= 0:
+                        new_free[nh] = time.time() + _fu2
                     if self._store:
                         keys = [f"hash:{nh}"]
                         if ckey:
@@ -3226,6 +3233,8 @@ class MagicFlow(_PluginBase):
 
             if self._store and new_pages:
                 self._store.note_torrent_pages(task.id, new_pages)
+            if self._store and new_free:
+                self._store.note_torrent_free_until(task.id, new_free)
 
             if reused and self._store:
                 self._store.journal.record(
@@ -4796,6 +4805,9 @@ class MagicFlow(_PluginBase):
                     pages[(t.hash or "").lower()] = u
 
         pending: List[Tuple[TorrentInfo, str]] = []
+        now_ts = time.time()
+        free_until_map = dict(self._store.get_torrent_free_until(task.id) if self._store else {})
+        recorded_hits = 0
         for t in managed:
             h = (t.hash or "").lower()
             if not h or h in protected_hashes:
@@ -4804,6 +4816,15 @@ class MagicFlow(_PluginBase):
             if float(getattr(t, "progress", 0) or 0) >= 0.999:
                 continue
             if self._is_dead_cached(task.id, h):
+                continue
+            # ★ 优先用入种时记下的「促销到期时刻」：到点直接清（免回详情页）；未到期则确认仍有效 → 也不必回详情页。
+            _fu = float(free_until_map.get(h) or 0.0)
+            if _fu > 0:
+                if now_ts >= _fu:
+                    recorded_hits += 1
+                    pending.append(
+                        (t, "记录到期 " + time.strftime("%m-%d %H:%M", time.localtime(_fu)))
+                    )
                 continue
             page = pages.get(h) or ""
             if not page:
@@ -4856,6 +4877,7 @@ class MagicFlow(_PluginBase):
             f"魔流 [{task.name}] 清理「已非免费」未下完种子 {deleted} 个："
             + "、".join(f"{t.title[:24]}({promo})" for t, promo in removed[:6])
             + ("…" if len(removed) > 6 else "")
+            + (f"（其中按期记录到期 {recorded_hits} 个）" if recorded_hits else "")
         )
         return deleted
 
