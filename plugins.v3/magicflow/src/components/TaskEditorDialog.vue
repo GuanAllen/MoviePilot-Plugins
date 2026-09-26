@@ -329,6 +329,35 @@ function confirmSaveWithoutGoal() {
                     />
                   </VCol>
                 </VRow>
+                <VRow>
+                  <VCol cols="12" md="6">
+                    <VTextField
+                      v-model.number="localTask.rotate_upload_gb"
+                      type="number"
+                      min="0"
+                      label="产出换新：单种上传量"
+                      hint="单种已上传达到该 GB 即清理换新；留空 = 不看上传量"
+                      suffix="GB"
+                      clearable
+                      persistent-hint
+                    />
+                  </VCol>
+                  <VCol cols="12" md="6">
+                    <VTextField
+                      v-model.number="localTask.rotate_ratio"
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      label="产出换新：单种分享率"
+                      hint="单种分享率达到该值即清理换新；留空 = 不看分享率"
+                      clearable
+                      persistent-hint
+                    />
+                  </VCol>
+                </VRow>
+                <div class="editor-switches">
+                  <VSwitch v-model="localTask.except_subscribe" label="选种排除订阅命中（不抢主人要看的片）" color="primary" hide-details inset />
+                </div>
               </section>
 
               <section class="editor-section">
@@ -407,6 +436,17 @@ function confirmSaveWithoutGoal() {
                   <VSwitch v-model="localTask.auto_resume_paused" label="自动恢复被暂停的已完成种子" color="primary" hide-details inset />
                   <VSwitch v-model="localTask.delete_files" label="删种同时删除文件" color="primary" hide-details inset />
                 </div>
+                <VRow>
+                  <VCol cols="12">
+                    <VTextField
+                      v-model="localTask.delete_except_tags"
+                      label="永不删除的标签（可选，逗号分隔）"
+                      hint="叠加在「已整理 / 辅种」之上：带这些标签的种子删种时永不删除"
+                      persistent-hint
+                      clearable
+                    />
+                  </VCol>
+                </VRow>
                 <VRow v-if="localTask.cleanup_no_progress">
                   <VCol cols="12" md="6"><VTextField v-model.number="localTask.no_progress_minutes" type="number" min="1" label="无进度判定时长（分钟）" persistent-hint /></VCol>
                   <VCol cols="12" md="6"><VTextField v-model.number="localTask.seen_cooldown_hours" type="number" min="0" label="已处理去重窗口（小时）" hint="同一候选在该时长内不重复拉取，0 = 不跳过" persistent-hint /></VCol>
@@ -670,6 +710,17 @@ function confirmSaveWithoutGoal() {
                 <div class="editor-switches">
                   <VSwitch v-model="localTask.delete_files" label="删种同时删除文件" color="primary" hide-details inset />
                 </div>
+                <VRow>
+                  <VCol cols="12">
+                    <VTextField
+                      v-model="localTask.delete_except_tags"
+                      label="永不删除的标签（可选，逗号分隔）"
+                      hint="叠加在「已整理 / 辅种」之上：带这些标签的种子删种时永不删除"
+                      persistent-hint
+                      clearable
+                    />
+                  </VCol>
+                </VRow>
               </section>
               <section class="editor-section">
                 <header class="editor-section__head">

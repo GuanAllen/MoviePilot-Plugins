@@ -1166,6 +1166,15 @@ class DownloaderAdapter:
         if not hashes:
             return 0, None
 
+        # ★ 删种前先向 tracker 报到一次：站点更快把状态从「下载中/做种中」更新为已停止，
+        #   对症「站点一直显示下载中」。尽力而为，失败仅记日志、不阻断删除。
+        try:
+            _rn, _rn_err = self.reannounce(hashes)
+            if _rn:
+                logger.info(f"[报到] 删除前已重新报到 {_rn} 个种子")
+        except Exception as _rn_exc:  # noqa: BLE001
+            logger.debug(f"删除前重新报到异常（忽略）: {_rn_exc}")
+
         try:
             success_count = 0
             for hash_string in hashes:
@@ -1179,6 +1188,30 @@ class DownloaderAdapter:
 
         except Exception as e:
             logger.error(f"删除种子失败: {e}")
+            return 0, str(e)
+
+    def reannounce(self, hashes: List[str]) -> Tuple[int, Optional[str]]:
+        """向 tracker 重新报到（尽力而为，失败不阻断）。
+
+        主要用于删种前报到一次，让站点更快更新状态。
+
+        Returns:
+            (成功数量, 错误信息)
+        """
+        hashes = [h for h in (hashes or []) if h]
+        if not hashes:
+            return 0, None
+        try:
+            client = self._qb_client()
+            if client is not None:
+                client.torrents_reannounce(torrent_hashes=hashes)
+                return len(hashes), None
+            func = getattr(self._downloader, "reannounce_torrents", None)
+            if func:
+                func(hashes)
+                return len(hashes), None
+            return 0, "下载器不支持重新报到"
+        except Exception as e:  # noqa: BLE001
             return 0, str(e)
 
     def set_torrent_tags(

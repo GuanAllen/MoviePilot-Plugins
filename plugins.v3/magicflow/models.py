@@ -82,6 +82,16 @@ class MagicFlowTaskPayload(BaseModel):
     brush_min_leechers: int = Field(1, ge=0, le=100000, description="刷流模式：最小下载人数（有下载需求才值得下）")
     brush_seed_days: int = Field(2, ge=0, le=365, description="刷流模式：做种满多少天后清理换新（默认 2 天；0=不按天数，改回「无上传」判定）")
 
+    # 产出换种（刷流）：以「产出」而非「时间」为口径换新 —— 单种已上传达标 / 分享率达标即清理
+    rotate_upload_gb: Optional[float] = Field(None, ge=0, description="刷流：单种已上传达到该 GB 数即清理换新（留空=不看上传量）")
+    rotate_ratio: Optional[float] = Field(None, ge=0, description="刷流：单种分享率达到该值即清理换新（留空=不看分享率）")
+
+    # 选种排除订阅命中（刷流）：候选命中当前订阅标题 → 不选，避免抢主人要看的片
+    except_subscribe: bool = Field(True, description="刷流选种：排除命中当前订阅标题的候选")
+
+    # 删除排除标签（任务级，叠加在「已整理/辅种」硬保护之上）：逗号分隔，命中者永不删除
+    delete_except_tags: str = Field("", max_length=200, description="永不删除的标签（逗号分隔，叠加在「已整理/辅种」之上）")
+
     # 任务目标：达到后任务自动停止（bonus=站点魔力值；brush=站点上传量 GB）
     goal_value: Optional[float] = Field(None, ge=0, description="任务目标：bonus=站点魔力值达到多少；brush=站点上传量（GB）。达到后任务自动停止；留空=未设目标（前端会提醒）")
 
@@ -119,6 +129,7 @@ class MagicFlowTaskPayload(BaseModel):
         "min_bonus_per_hour", "max_keep_torrents", "bonus_protect_threshold",
         "min_bonus_to_keep", "min_seed_time", "min_ratio", "up_speed", "dl_speed",
         "bonus_t0", "bonus_n0", "bonus_b0", "bonus_l", "disk_size_gb",
+        "rotate_upload_gb", "rotate_ratio",
         mode="before",
     )
     @classmethod
