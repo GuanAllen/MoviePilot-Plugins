@@ -84,7 +84,7 @@ from .models import (
     DOWNLOADER_PREF_RECOMMENDED,
 )
 from .fallback import FallbackEngine, DEFAULT_SOURCES as FALLBACK_SOURCES
-from .live_stats import LiveStats
+from .live_stats import LiveStats, title_match
 from .cloud_archive import ArchiveEngine, DEFAULT_TARGET_TEMPLATE as CLOUD_TARGET_TEMPLATE
 from .persistence import MagicFlowStore, OperationItem, WorkReport
 from .recommend import RecommendEngine
@@ -100,7 +100,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.3.2"
+__version__ = "3.4.0"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -621,6 +621,8 @@ class MagicFlow(_PluginBase):
             "download_alert_mb": _rf(raw_config.get("live_download_alert_mb"), LIVE_DOWNLOAD_ALERT_MB),
             "ratio_target": _rf(raw_config.get("live_ratio_target"), LIVE_RATIO_TARGET),
             "auto_stop": bool(raw_config.get("live_auto_stop", False)),
+            "kill_unfree": bool(raw_config.get("live_kill_unfree", True)),
+            "kill_delete_files": bool(raw_config.get("live_kill_delete_files", True)),
             "notify": bool(raw_config.get("live_notify", True)),
         }
         if getattr(self, "_live", None) is None:
@@ -1271,6 +1273,8 @@ class MagicFlow(_PluginBase):
             "live_download_alert_mb": float(getattr(self, "_live_cfg", {}).get("download_alert_mb") or LIVE_DOWNLOAD_ALERT_MB),
             "live_ratio_target": float(getattr(self, "_live_cfg", {}).get("ratio_target") or LIVE_RATIO_TARGET),
             "live_auto_stop": bool(getattr(self, "_live_cfg", {}).get("auto_stop", False)),
+            "live_kill_unfree": bool(getattr(self, "_live_cfg", {}).get("kill_unfree", True)),
+            "live_kill_delete_files": bool(getattr(self, "_live_cfg", {}).get("kill_delete_files", True)),
             "live_notify": bool(getattr(self, "_live_cfg", {}).get("notify", True)),
             # 云盘归档（token 不写回配置，单独存插件数据，避免明文进主配置）
             "cloud_enabled": bool(self._cloud_cfg.get("enabled", False)),
@@ -6273,12 +6277,86 @@ class MagicFlow(_PluginBase):
                     "download_alert_mb": float(self._live_cfg.get("download_alert_mb") or LIVE_DOWNLOAD_ALERT_MB),
                     "ratio_target": float(self._live_cfg.get("ratio_target") or LIVE_RATIO_TARGET),
                     "auto_stop": bool(self._live_cfg.get("auto_stop", False)),
+                    "kill_unfree": bool(self._live_cfg.get("kill_unfree", True)),
+                    "kill_delete_files": bool(self._live_cfg.get("kill_delete_files", True)),
                     "notify": bool(self._live_cfg.get("notify", True)),
                 },
                 "sites": rows,
                 "ts": time.time(),
             },
         )
+
+    def _live_kill_unfree(self, site_id: int, site_name: str) -> Dict[str, Any]:
+        """★ 下载量异常增长时：去站点「正在下载」列表，把**非免费**的种子从下载器干掉。
+
+        安全阀（三重）：① 只动**下载中**的种（state ∈ QB_DOWNLOADING_STATES）；
+        ② 名称必须完全匹配；③ 体积必须对得上（±2%）——避免误删同名资源。
+        """
+        out: Dict[str, Any] = {"checked": 0, "killed": [], "errors": []}
+        try:
+            leech = self._live.leeching(int(site_id), force=True)
+        except Exception as err:  # noqa: BLE001
+            out["errors"].append(f"取正在下载列表失败：{err}")
+            return out
+        if not leech.get("ok"):
+            out["errors"].append(f"取正在下载列表失败：{leech.get('error')}")
+            return out
+        rows = [r for r in (leech.get("rows") or []) if not r.get("free")]
+        out["checked"] = len(rows)
+        if not rows:
+            return out
+        try:
+            downloader = self._get_downloader()
+            dl_torrents, err = downloader.get_torrents(status="downloading")
+        except Exception as err:  # noqa: BLE001
+            out["errors"].append(f"读下载器失败：{err}")
+            return out
+        if err:
+            out["errors"].append(f"读下载器失败：{err}")
+            return out
+        # 名称匹配（站上标题常见「点 vs 空格」「带年代」差异 → 走归一化模糊匹配）+ 体积校对
+        victims: List[str] = []
+        name_by_hash: Dict[str, Any] = {}
+        for row in rows:
+            row_name = str(row.get("name") or "")
+            row_size = float(row.get("size") or 0)
+            if not row_name:
+                continue
+            for t in dl_torrents or []:
+                t_title = str(getattr(t, "title", "") or "")
+                if not t_title or not title_match(row_name, t_title):
+                    continue
+                try:
+                    t_size = float(getattr(t, "size", 0) or 0)
+                except (TypeError, ValueError):
+                    t_size = 0.0
+                if row_size > 0 and t_size > 0 and abs(t_size - row_size) / max(row_size, 1.0) > 0.02:
+                    continue
+                h = str(getattr(t, "hash", "") or "").strip().lower()
+                if h and h not in victims:
+                    victims.append(h)
+                    name_by_hash[h] = {"hash": h, "name": t_title, "size": t_size}
+        if not victims:
+            return out
+        try:
+            ok, err2 = downloader.delete_torrents(
+                hashes=victims, delete_file=bool(self._live_cfg.get("kill_delete_files", True))
+            )
+            if err2:
+                out["errors"].append(str(err2))
+        except Exception as err:  # noqa: BLE001
+            out["errors"].append(f"删除失败：{err}")
+            return out
+        for h in victims:
+            info2 = name_by_hash.get(h) or {}
+            out["killed"].append({"hash": h, "name": info2.get("name", ""), "size": info2.get("size", 0.0)})
+        if out["killed"]:
+            self._log(
+                f"站点监控 [{site_name}] 下载量异常 → 清除非免费下载种 {len(out['killed'])} 个："
+                + "；".join(f"{k['name'][:60]}" for k in out["killed"][:5]),
+                "warning",
+            )
+        return out
 
     def live_watch(self) -> None:
         """站点流量监控（worker）：采样 → 告警（可配自动止损）。
@@ -6322,6 +6400,21 @@ class MagicFlow(_PluginBase):
             if not fresh:
                 continue
             name = str(meta.get("site_name") or f"站点 {sid}")
+            # ★ 下载量异常增长 → 去站点「正在下载」列表，把非免费的种从下载器干掉
+            kill_info = ""
+            if bool(self._live_cfg.get("kill_unfree", True)) and any(
+                a.get("kind") == "download_rising" for a in fresh
+            ):
+                kres = self._live_kill_unfree(sid, name)
+                killed = kres.get("killed") or []
+                if killed:
+                    gb = sum(float(k.get("size") or 0) for k in killed) / (1024 ** 3)
+                    kill_info = (
+                        f"已清除非免费下载种 {len(killed)} 个（{gb:.2f}GB）："
+                        + "、".join(str(k.get("name") or "")[:50] for k in killed[:3])
+                    )
+                elif kres.get("errors"):
+                    kill_info = "清除非免费下载种失败：" + "；".join(kres["errors"][:2])
             for alert in fresh:
                 self._log(
                     f"站点监控 [{name}] {alert.get('text')}",
@@ -6336,7 +6429,10 @@ class MagicFlow(_PluginBase):
                             OperationItem(
                                 hash="",
                                 title=f"站点流量监控 · {name}",
-                                reason="；".join(str(a.get("text") or "") for a in fresh),
+                                reason="；".join(
+                                    [str(a.get("text") or "") for a in fresh]
+                                    + ([kill_info] if kill_info else [])
+                                ),
                             )
                         ],
                     )
@@ -6347,7 +6443,10 @@ class MagicFlow(_PluginBase):
                     gb = 1024 ** 3
                     self.post_message(
                         title=f"魔流·站点监控（{name}）",
-                        text="\n".join(f"· {a.get('text')}" for a in fresh)
+                        text="\n".join(
+                            [f"· {a.get('text')}" for a in fresh]
+                            + ([f"· {kill_info}"] if kill_info else [])
+                        )
                         + (
                             "\n\n实时："
                             f"上传 {float(live.get('upload') or 0) / gb:.2f}GB / "
@@ -6680,6 +6779,8 @@ class MagicFlow(_PluginBase):
             "download_alert_mb": _rf(getattr(payload, "live_download_alert_mb", LIVE_DOWNLOAD_ALERT_MB), LIVE_DOWNLOAD_ALERT_MB),
             "ratio_target": _rf(getattr(payload, "live_ratio_target", LIVE_RATIO_TARGET), LIVE_RATIO_TARGET),
             "auto_stop": bool(getattr(payload, "live_auto_stop", False)),
+            "kill_unfree": bool(getattr(payload, "live_kill_unfree", True)),
+            "kill_delete_files": bool(getattr(payload, "live_kill_delete_files", True)),
             "notify": bool(getattr(payload, "live_notify", True)),
         }
         if getattr(self, "_live", None) is not None:

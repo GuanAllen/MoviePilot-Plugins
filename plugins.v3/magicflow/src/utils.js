@@ -213,6 +213,8 @@ export function normalizeSettings(settings = {}) {
     live_download_alert_mb: Math.max(1, num(settings.live_download_alert_mb, 50)),
     live_ratio_target: Math.max(0, num(settings.live_ratio_target, 0.5)),
     live_auto_stop: Boolean(settings.live_auto_stop),
+    live_kill_unfree: settings.live_kill_unfree === undefined ? true : Boolean(settings.live_kill_unfree),
+    live_kill_delete_files: settings.live_kill_delete_files === undefined ? true : Boolean(settings.live_kill_delete_files),
     live_notify: settings.live_notify === undefined ? true : Boolean(settings.live_notify),
     cloud_enabled: Boolean(settings.cloud_enabled),
     cloud_openlist_url: String(settings.cloud_openlist_url || ''),
