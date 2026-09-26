@@ -104,6 +104,8 @@ const fallbackState = ref(null)
 const fallbackLoading = ref(false)
 const fallbackRunning = ref(false)
 const fallbackSourceDraft = ref('')
+const fallbackProblemShows = computed(() => (((fallbackState.value || {}).report || {}).scanned || []).filter(s => (s.problems || []).length))
+const fallbackProblemCount = computed(() => fallbackProblemShows.value.reduce((acc, s) => acc + (s.problems || []).length, 0))
 const downloaderPrefsDraft = ref(normalizeDownloaderPrefs({}))
 const downloaderPrefsRecommended = ref(null)
 const downloaderPrefsLoading = ref(false)
@@ -2625,14 +2627,24 @@ onUnmounted(() => {
             <div v-if="fallbackState?.report" class="magicflow-fb-report">
               <div class="magicflow-fb-report__line">
                 上次{{ fallbackState.report.applied === false ? '演练' : '执行' }}：
-                扫描 {{ fallbackState.report.stats?.shows || 0 }} 剧 ·
+                扫描 {{ fallbackState.report.stats?.shows || 0 }} 剧<template v-if="fallbackState.report.stats?.total_shows">/共 {{ fallbackState.report.stats.total_shows }} 部</template> ·
                 识别 {{ fallbackState.report.stats?.resolved || 0 }} ·
                 补集 NFO {{ fallbackState.report.stats?.ep_nfo || 0 }} ·
                 补剧 NFO {{ fallbackState.report.stats?.show_nfo || 0 }} ·
                 源中缺失 {{ fallbackState.report.stats?.missing || 0 }} ·
+                多源补齐 {{ fallbackState.report.stats?.via_extra || 0 }} 集 ·
                 归位 {{ fallbackState.report.stats?.renumbered || 0 }} ·
                 {{ fallbackState.report.duration }}s
               </div>
+              <details v-if="fallbackProblemShows.length" class="magicflow-fb-report__details">
+                <summary>源里查不到的集（{{ fallbackProblemCount }} 集，已按本地文件兜底）</summary>
+                <ul class="magicflow-fb-report__list">
+                  <li v-for="item in fallbackProblemShows" :key="item.show">
+                    <strong>{{ item.show }}</strong>
+                    <span class="magicflow-fb-report__meta">{{ (item.problems || []).map(p => `S${String(p.season).padStart(2, '0')}E${String(p.episode).padStart(2, '0')}`).join(' ') }}</span>
+                  </li>
+                </ul>
+              </details>
               <details v-if="(fallbackState.report.shows || []).length" class="magicflow-fb-report__details">
                 <summary>展开本剧集明细（{{ fallbackState.report.shows.length }} 部有变动）</summary>
                 <ul class="magicflow-fb-report__list">
