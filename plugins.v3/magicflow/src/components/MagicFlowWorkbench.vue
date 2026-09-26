@@ -120,7 +120,17 @@ const settingsDraft = ref({
   cloud_delete_local: false,
   cloud_remove_torrent: false,
   cloud_notify: true,
+  live_enabled: true,
+  live_interval_minutes: 4,
+  live_download_alert_mb: 50,
+  live_ratio_target: 0.5,
+  live_auto_stop: false,
+  live_notify: true,
 })
+// ---- 站点实时数据 + 流量监控（直连站点，非 MP 6h 快照）----
+const liveState = ref(null)
+const liveLoading = ref(false)
+let liveTimer = null
 const fallbackState = ref(null)
 const fallbackLoading = ref(false)
 const fallbackRunning = ref(false)
@@ -517,6 +527,14 @@ async function loadStatus() {
       iyuu_token: status.value.iyuu_token,
       iyuu_sites: status.value.iyuu_sites,
       ...(status.value.fallback || {}),
+      ...(status.value.live ? {
+        live_enabled: status.value.live.enabled,
+        live_interval_minutes: status.value.live.interval,
+        live_download_alert_mb: status.value.live.download_alert_mb,
+        live_ratio_target: status.value.live.ratio_target,
+        live_auto_stop: status.value.live.auto_stop,
+        live_notify: status.value.live.notify,
+      } : {}),
       ...(status.value.cloud ? {
         cloud_enabled: status.value.cloud.enabled,
         cloud_openlist_url: status.value.cloud.url,
@@ -700,6 +718,29 @@ async function loadRecommend() {
     error.value = err?.message || String(err)
   }
 }
+
+async function loadLive() {
+  if (liveLoading.value) return
+  liveLoading.value = true
+  try {
+    liveState.value = unwrapResponse(await props.api.get(`${pluginBase.value}/live`)) || liveState.value
+  } catch (err) {
+    // 站点实时数据是增强信息，失败不打断界面
+  } finally {
+    liveLoading.value = false
+  }
+}
+
+const siteLive = computed(() => {
+  const sid = Number(selectedTask.value?.site_id || 0)
+  const rows = (liveState.value || {}).sites || []
+  return rows.find(row => Number(row.site_id) === sid) || null
+})
+const siteLiveCfg = computed(() => (liveState.value || {}).cfg || {})
+const siteLiveAlerts = computed(() => ((siteLive.value || {}).alerts || []))
+const siteLiveLevel = computed(() => (siteLive.value || {}).level || 'ok')
+const siteLiveInfo = computed(() => (siteLive.value || {}).live || {})
+const siteLiveRates = computed(() => (siteLive.value || {}).rates || {})
 
 async function actRecommend(hash, action, label) {
   if (!hash || recommendActing.value) return
@@ -1451,6 +1492,9 @@ onMounted(() => {
   refreshTimer = window.setInterval(loadStatus, 30000)
   // 推荐列表是全局的，低频刷新一下角标计数
   recommendTimer = window.setInterval(loadRecommend, 60000)
+  // 站点实时数据：采样周期 240s，这里 120s 轮询（服务端有缓存，不会重复打站点）
+  loadLive()
+  liveTimer = window.setInterval(loadLive, 120000)
   // 运行诊断页每秒多刷新一次任务阶段，驱动流程链转圈
   phaseTimer = window.setInterval(() => {
     if (activeTab.value === 'diagnostics' && selectedTaskId.value) loadDetail(selectedTaskId.value)
@@ -1461,6 +1505,7 @@ onUnmounted(() => {
   if (refreshTimer) window.clearInterval(refreshTimer)
   if (phaseTimer) window.clearInterval(phaseTimer)
   if (recommendTimer) window.clearInterval(recommendTimer)
+  if (liveTimer) window.clearInterval(liveTimer)
   if (warmingTimer) window.clearTimeout(warmingTimer)
   if (cloudPollTimer) window.clearInterval(cloudPollTimer)
 })
@@ -1851,6 +1896,35 @@ onUnmounted(() => {
                     <div><dt>做种体积</dt><dd>{{ siteUser.ok ? formatBytes(siteUser.seeding_size || 0) : '—' }}</dd></div>
                     <div><dt>站点魔力</dt><dd>{{ siteUser.ok ? Number(siteUser.bonus || 0).toFixed(2) : '—' }}</dd></div>
                   </dl>
+                </VSheet>
+
+                <VSheet tag="section" class="magicflow-panel app-surface-static">
+                  <header class="magicflow-panel__head">
+                    <div>
+                      <div class="text-subtitle-1 font-weight-medium">站点实时数据</div>
+                      <div class="text-body-2 text-medium-emphasis">
+                        魔流直连站点用户栏（不靠 MP 的 6 小时快照）{{ siteLiveInfo.ts ? ` · 采样于 ${new Date(Number(siteLiveInfo.ts) * 1000).toLocaleTimeString()}` : '' }}
+                      </div>
+                    </div>
+                    <VChip v-if="siteLiveInfo.ok" size="small" variant="tonal" :color="siteLiveLevel === 'warn' ? 'warning' : 'success'">
+                      {{ siteLiveLevel === 'warn' ? '有告警' : '正常' }}
+                    </VChip>
+                    <VChip v-else size="small" variant="tonal">暂无数据</VChip>
+                  </header>
+                  <dl class="magicflow-facts">
+                    <div><dt>上传 / 下载</dt><dd>{{ siteLiveInfo.ok ? `${formatBytes(siteLiveInfo.upload || 0)} / ${formatBytes(siteLiveInfo.download || 0)}` : '—' }}</dd></div>
+                    <div><dt>分享率</dt><dd>{{ siteLiveInfo.ok && siteLiveInfo.ratio != null ? Number(siteLiveInfo.ratio).toFixed(3) : '—' }}</dd></div>
+                    <div><dt>做种 / 下载数</dt><dd>{{ siteLiveInfo.ok ? `${siteLiveInfo.seeding ?? '—'} / ${siteLiveInfo.leeching ?? '—'}` : '—' }}</dd></div>
+                    <div><dt>站点魔力</dt><dd>{{ siteLiveInfo.ok && siteLiveInfo.bonus != null ? Number(siteLiveInfo.bonus).toFixed(1) : '—' }}{{ siteLiveInfo.ok && siteLiveInfo.bonus_per_hour != null ? ` · ${Number(siteLiveInfo.bonus_per_hour).toFixed(2)}/h` : '' }}</dd></div>
+                    <div><dt>上传速率</dt><dd>{{ siteLiveRates.ok ? `${Number(siteLiveRates.up_mb_min || 0).toFixed(1)} MB/分` : '采样中' }}</dd></div>
+                    <div><dt>下载速率</dt><dd :class="{ 'text-error': (siteLiveRates.down_mb_min || 0) >= (siteLiveCfg.download_alert_mb || 50) }">{{ siteLiveRates.ok ? `${Number(siteLiveRates.down_mb_min || 0).toFixed(1)} MB/分` : '采样中' }}</dd></div>
+                    <div><dt>近 1h 净增</dt><dd>{{ siteLiveRates.ok ? `⬆ ${formatBytes(Math.max(0, siteLiveRates.d_up || 0))} / ⬇ ${formatBytes(Math.max(0, siteLiveRates.d_down || 0))}` : '—' }}</dd></div>
+                  </dl>
+                  <div v-if="siteLiveAlerts.length" class="magicflow-live-alerts">
+                    <div v-for="(alert, idx) in siteLiveAlerts" :key="`${alert.kind}-${idx}`" class="magicflow-live-alert" :class="`magicflow-live-alert--${alert.level || 'info'}`">
+                      {{ alert.text }}
+                    </div>
+                  </div>
                 </VSheet>
 
                 <VSheet tag="section" class="magicflow-panel app-surface-static">
@@ -2354,6 +2428,7 @@ onUnmounted(() => {
           <VTab value="iyuu" class="magicflow-settings-tab">IYUU 辅种</VTab>
           <VTab value="fallback" class="magicflow-settings-tab">元数据兜底</VTab>
           <VTab value="cloud" class="magicflow-settings-tab">云盘归档</VTab>
+          <VTab value="live" class="magicflow-settings-tab">站点监控</VTab>
           <VTab value="recommend" class="magicflow-settings-tab">推荐</VTab>
         </VTabs>
         <VDivider />
@@ -2680,6 +2755,59 @@ onUnmounted(() => {
             </div>
           </div>
 
+          <div v-else-if="settingsTab === 'live'" class="magicflow-settings-form">
+            <p class="magicflow-settings-hint">
+              MoviePilot 的站点账号数据靠它自己的「站点数据刷新」任务写库（默认 <strong>6 小时</strong>一轮），
+              对展示够用，但魔流是拿它<strong>做决策</strong>的（任务目标达标 / 救号分享率 / 兑换提醒）—— 滞后 6 小时就是真偏差。
+              启用后魔流<strong>直连站点用户栏页</strong>拿实时值（上传 / 下载 / 分享率 / 魔力 / 做种数），
+              并监控<strong>「下载量在涨」</strong>——免费种不吃下载，下载量增长说明吃到促销尾巴了。
+              站点级缓存 + 单飞，抓不到自动回退 MP 数据。
+            </p>
+            <div class="magicflow-settings-switches">
+              <VSwitch v-model="settingsDraft.live_enabled" label="启用站点实时数据 + 流量监控" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.live_notify" label="命中告警时推送通知" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.live_auto_stop" label="自动止损：下载量异常增长时把该站任务切「做种中」（停调度、不删种）" color="primary" hide-details inset />
+            </div>
+            <div class="magicflow-settings-grid">
+              <VTextField
+                v-model.number="settingsDraft.live_interval_minutes"
+                type="number"
+                min="1"
+                label="采样周期（分钟）"
+                hint="默认 4 分钟；太频繁站点吃不消"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="settingsDraft.live_download_alert_mb"
+                type="number"
+                min="1"
+                label="下载增长告警阈值（MB/分钟）"
+                hint="超过则告警；默认 50"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="settingsDraft.live_ratio_target"
+                type="number"
+                min="0"
+                step="0.05"
+                label="分享率目标线"
+                hint="低于则告警并算缺口；0 = 不检查"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+            </div>
+            <div v-if="siteLiveAlerts.length" class="magicflow-live-alerts">
+              <div class="magicflow-live-alerts__head">当前「{{ selectedTask?.name }}」站点告警</div>
+              <div v-for="(alert, idx) in siteLiveAlerts" :key="`live-cfg-${idx}`" class="magicflow-live-alert" :class="`magicflow-live-alert--${alert.level || 'info'}`">
+                {{ alert.text }}
+              </div>
+            </div>
+          </div>
           <div v-else-if="settingsTab === 'recommend'" class="magicflow-settings-form">
             <p class="magicflow-settings-hint">
               刷流时顺带甄别「值得收藏 / 观看」的资源：命中的种子会打上推荐标签（受「媒体资产价值闸门」保护、不会被当临时种删掉）并通知你确认；错过确认窗口（过期 / 磁盘不足）则按临时种回收。
@@ -3963,6 +4091,37 @@ onUnmounted(() => {
   display: grid;
   gap: 11px;
   margin: 18px 0 0;
+}
+
+.magicflow-live-alerts {
+  display: grid;
+  gap: 6px;
+  margin-block-start: 12px;
+}
+
+.magicflow-live-alerts__head {
+  font-size: 0.78rem;
+  font-weight: 600;
+  opacity: 0.8;
+}
+
+.magicflow-live-alert {
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  border-inline-start: 3px solid transparent;
+}
+
+.magicflow-live-alert--warn {
+  background: rgba(255, 152, 0, 0.12);
+  border-inline-start-color: #ff9800;
+}
+
+.magicflow-live-alert--info {
+  background: rgba(var(--v-theme-info), 0.12);
+  border-inline-start-color: rgb(var(--v-theme-info));
 }
 
 .magicflow-facts--two {

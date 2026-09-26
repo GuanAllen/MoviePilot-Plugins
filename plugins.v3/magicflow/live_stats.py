@@ -1,0 +1,444 @@
+"""站点实时数据抓取 + 站点流量监控。
+
+背景：MoviePilot 的站点账号数据（上传 / 下载 / 分享率 / 魔力 / 做种数）由 MP 自己的
+「站点数据刷新」定时任务写入数据库（默认 **6 小时**一轮）。对"展示"够用，但魔流是拿它
+**做决策**的（任务目标达标、救号分享率、兑换提醒、下载量异常增长），滞后 6 小时就是真偏差。
+
+本模块直接抓**站点自身的用户栏页**（NexusPHP `index.php`），解析出**实时值**：
+
+    分享率 / 上传 / 下载 / 当前做种 / 当前下载 / 每小时魔力 / 当前魔力
+
+- 站点级缓存（默认 240s，可配）+ **single-flight**（同站并发只抓一次）+ 失败冷却；
+- 抓不到时返回 `ok=False`，由调用方回退 MoviePilot 的数据（可选 + 回退）；
+- 维护**采样环形缓冲**（内存 + 插件 data 持久化），据此算上传/下载速率与净增，
+  供「站点流量监控」判定：Δ下载超阈值 → 告警（免费种不吃下载，涨下载=吃到促销尾巴）。
+
+security：cookie 只发给该站点自己的域名；不落盘、不外传、不写日志。
+"""
+from __future__ import annotations
+
+import html as _html
+import re
+import threading
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
+# 采样历史：每站保留多少个点（按 240s 一点 ≈ 8 小时）
+SAMPLE_MAX = 120
+# 速率默认窗口（秒）
+RATE_WINDOW_SEC = 3600.0
+# 抓取默认 TTL（秒）——与候选列表抓取同口径，避免站点吃力
+DEFAULT_TTL = 240.0
+# 抓取失败后的站点级冷却（秒）
+FAIL_COOLDOWN = 180.0
+# 站点用户栏页（NexusPHP 通用）
+DEFAULT_PAGE = "/index.php"
+
+_SIZE_UNITS = {
+    "B": 1.0,
+    "K": 1024.0, "KB": 1024.0, "KIB": 1024.0,
+    "M": 1024.0 ** 2, "MB": 1024.0 ** 2, "MIB": 1024.0 ** 2,
+    "G": 1024.0 ** 3, "GB": 1024.0 ** 3, "GIB": 1024.0 ** 3,
+    "T": 1024.0 ** 4, "TB": 1024.0 ** 4, "TIB": 1024.0 ** 4,
+    "P": 1024.0 ** 5, "PB": 1024.0 ** 5, "PIB": 1024.0 ** 5,
+}
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def parse_size(text: Any) -> float:
+    """'100.91GB' / '1,024.5 MB' → 字节数（float）。解析不出来返回 0.0。"""
+    if text is None:
+        return 0.0
+    s = str(text).strip().replace(",", "").replace(" ", "")
+    m = re.match(r"^([0-9]*\.?[0-9]+)\s*([KMGTP]?I?B?)$", s, re.IGNORECASE)
+    if not m:
+        return 0.0
+    try:
+        val = float(m.group(1))
+    except (TypeError, ValueError):
+        return 0.0
+    unit = (m.group(2) or "B").strip().upper()
+    mult = _SIZE_UNITS.get(unit)
+    if mult is None:
+        mult = _SIZE_UNITS.get(unit.rstrip("B")) if unit.endswith("B") else None
+    return val * float(mult or 1.0)
+
+
+def _to_text(raw: str) -> str:
+    """HTML → 纯文本（去标签 + 反转义 + 归空白，保留 ⬆/⬇ 这类符号）。"""
+    s = _TAG_RE.sub(" ", str(raw or ""))
+    s = _html.unescape(s)
+    s = s.replace("\xa0", " ").replace("\u3000", " ")
+    return re.sub(r"[ \t\r\f\v]+", " ", s)
+
+
+def _first_num(pattern: str, text: str) -> Optional[float]:
+    m = re.search(pattern, text)
+    if not m:
+        return None
+    try:
+        return float(str(m.group(1)).replace(",", ""))
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def parse_user_bar(raw: str) -> Dict[str, Any]:
+    """解析 NexusPHP 用户栏 → {ratio, upload, download, seeding, leeching, bonus_per_hour, bonus}。
+
+    容错：不同站点/模板字段名不同（上传 / 上传量、魔力值(x 魔力/小时) / x 魔力/小时），
+    解析不出的字段为 None（**不猜值**），由调用方决定是否回退。
+    只在**要求冒号/括号紧邻数字**的位置取值，避开页面公告里的「分享率低于…」等说明文字。
+    """
+    text = _to_text(raw)
+    out: Dict[str, Any] = {
+        "ratio": None,
+        "upload": None,
+        "download": None,
+        "seeding": None,
+        "leeching": None,
+        "bonus_per_hour": None,
+        "bonus": None,
+    }
+    # 分享率（也兼容 "分享率 0.35"）
+    val = _first_num(r"分享率[：:]\s*([0-9]+(?:\.[0-9]+)?)", text)
+    if val is not None:
+        out["ratio"] = val
+    # 上传 / 下载（要求 "上传：100.91GB" 这种紧邻形式）
+    m = re.search(r"上传(?:量)?[：:]\s*([0-9][0-9.,]*\s*[KMGTP]?I?B)", text, re.IGNORECASE)
+    if m:
+        out["upload"] = parse_size(m.group(1))
+    m = re.search(r"下载(?:量)?[：:]\s*([0-9][0-9.,]*\s*[KMGTP]?I?B)", text, re.IGNORECASE)
+    if m:
+        out["download"] = parse_size(m.group(1))
+    # 每小时魔力：魔力值(77.12魔力/小时) / 77.12 魔力/小时
+    val = _first_num(r"魔力值?\(?\s*([0-9][0-9.,]*)\s*魔力?\s*/\s*(?:小时|時|h)", text)
+    if val is None:
+        val = _first_num(r"每小时\s*([0-9][0-9.,]*)\s*个?魔力", text)
+    if val is not None:
+        out["bonus_per_hour"] = val
+    # 当前魔力：形如 "魔力值(77.12魔力/小时)[使用&说明]：4001.1"
+    _tail = text
+    _m = re.search(r"魔力值?\([^)]*\)", text)
+    val = None
+    if _m:
+        val = _first_num(r"[^0-9]{0,40}?([0-9][0-9,]*(?:\.[0-9]+)?)", text[_m.end():])
+    if val is None:
+        val = _first_num(r"魔力值[^0-9]{0,30}?([0-9][0-9,]*(?:\.[0-9]+)?)", text)
+    if val is not None:
+        out["bonus"] = val
+    # 做种 / 下载数：优先抓 title 属性（"当前做种"），再退回 ⬆/⬇ 记法
+    raw_s = str(raw or "")
+    m = re.search(r"title\s*=\s*[\"']?(?:当前做种|做种中|做种)[\"']?[^>]*>[^<]*</font>?\s*([0-9]+)", raw_s)
+    if m:
+        out["seeding"] = int(m.group(1))
+    m = re.search(r"title\s*=\s*[\"']?(?:当前下载|下载中)[\"']?[^>]*>[^<]*</font>?\s*([0-9]+)", raw_s)
+    if m:
+        out["leeching"] = int(m.group(1))
+    if out["seeding"] is None:
+        val = _first_num(r"⬆\s*([0-9]+)", text)
+        if val is None:
+            val = _first_num(r"(?:做种中|正在做种|做种)[：:]?\s*([0-9]+)\s*(?:个|条)?", text)
+        if val is not None:
+            out["seeding"] = int(val)
+    if out["leeching"] is None:
+        val = _first_num(r"⬇\s*([0-9]+)", text)
+        if val is None:
+            val = _first_num(r"(?:下载中|正在下载)[：:]?\s*([0-9]+)\s*(?:个|条)?", text)
+        if val is not None:
+            out["leeching"] = int(val)
+    if out["ratio"] in (None, 0.0) and (out["upload"] or 0) > 0 and (out["download"] or 0) > 0:
+        out["ratio"] = round(float(out["upload"]) / float(out["download"]), 3)
+    return out
+
+
+class LiveStats:
+    """站点实时数据 + 采样历史（速率/净增/告警判定）。"""
+
+    def __init__(self, plugin: Any, ttl: float = DEFAULT_TTL) -> None:
+        self._plugin = plugin
+        self.ttl = float(ttl or DEFAULT_TTL)
+        self._cache: Dict[str, Dict[str, Any]] = {}
+        self._locks: Dict[str, threading.Lock] = {}
+        self._cooldown: Dict[str, float] = {}
+        self._samples: Dict[str, List[List[float]]] = {}
+        self._loaded = False
+
+    # ---------------------------------------------------------------- 抓取
+    def _log(self, msg: str, level: str = "info") -> None:
+        try:
+            self._plugin._log(f"[站点实时] {msg}", level)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _site(self, site_id: int) -> Any:
+        try:
+            return self._plugin._get_site(int(site_id))
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _fetch_once(self, site_id: int, page: str = DEFAULT_PAGE) -> Dict[str, Any]:
+        """真抓一次（无缓存）。返回 {ok, ...}；异常一律 ok=False（绝不抛出）。"""
+        site = self._site(site_id)
+        if not site:
+            return {"ok": False, "error": "站点不存在"}
+        base = (getattr(site, "url", "") or f"https://{getattr(site, 'domain', '')}").rstrip("/")
+        if not base:
+            return {"ok": False, "error": "站点地址为空"}
+        try:
+            from app.sdk.network import RequestUtils  # noqa: WPS433
+        except Exception as err:  # noqa: BLE001
+            return {"ok": False, "error": f"SDK 不可用: {err}"}
+        url = f"{base}/{str(page or DEFAULT_PAGE).lstrip('/')}"
+        try:
+            req = RequestUtils(
+                cookies=getattr(site, "cookie", None),
+                ua=getattr(site, "ua", None),
+                timeout=30,
+                referer=f"{base}/",
+            )
+            resp = req.get_res(url)
+        except Exception as err:  # noqa: BLE001
+            return {"ok": False, "error": f"请求失败: {err}"}
+        if resp is None:
+            return {"ok": False, "error": "无响应"}
+        status = int(getattr(resp, "status_code", 0) or 0)
+        try:
+            raw = resp.content or b""
+        except Exception:  # noqa: BLE001
+            raw = b""
+        finally:
+            try:
+                resp.close()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("gbk", "ignore")
+        if status >= 400 or not text:
+            return {"ok": False, "error": f"HTTP {status}", "status": status}
+        parsed = parse_user_bar(text)
+        got = [k for k, v in parsed.items() if v not in (None, 0.0)]
+        if not got:
+            return {"ok": False, "error": "用户栏未解析出字段（可能未登录/模板不同）", "status": status}
+        out = {"ok": True, "site_id": int(site_id), "url": url, "status": status, "ts": time.time()}
+        out.update(parsed)
+        out["fields"] = got
+        return out
+
+    def get(self, site_id: int, force: bool = False, page: str = DEFAULT_PAGE) -> Dict[str, Any]:
+        """带缓存 + single-flight 的实时数据。抓不到时**返回上次成功值并标记 stale**。"""
+        if not site_id:
+            return {"ok": False, "error": "缺少 site_id"}
+        key = str(int(site_id))
+        now = time.time()
+        hit = self._cache.get(key)
+        if hit and not force and (now - float(hit.get("_at", 0))) < self.ttl:
+            out = dict(hit)
+            out["cached"] = True
+            return out
+        if not force and float(self._cooldown.get(key, 0)) > now:
+            if hit:
+                out = dict(hit)
+                out.update({"cached": True, "stale": True, "error": out.get("error") or "冷却中"})
+                return out
+            return {"ok": False, "error": "冷却中"}
+        lock = self._locks.setdefault(key, threading.Lock())
+        with lock:
+            hit = self._cache.get(key)
+            if hit and not force and (time.time() - float(hit.get("_at", 0))) < self.ttl:
+                out = dict(hit)
+                out["cached"] = True
+                return out
+            res = self._fetch_once(int(site_id), page=page)
+            res["_at"] = time.time()
+            if res.get("ok"):
+                self._cooldown.pop(key, None)
+                self._cache[key] = res
+                self._push_sample(key, res)
+                self._save_samples()
+            else:
+                self._cooldown[key] = time.time() + FAIL_COOLDOWN
+                self._log(f"站点 {site_id} 实时数据抓取失败：{res.get('error')}", "warning")
+                if hit:  # 回退上次成功值（标记 stale）
+                    out = dict(hit)
+                    out.update({"cached": True, "stale": True, "error": res.get("error")})
+                    return out
+            return dict(res)
+
+    # ---------------------------------------------------------------- 采样历史
+    def _load_samples(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        try:
+            data = self._plugin.get_data("live_samples")
+        except Exception:  # noqa: BLE001
+            data = None
+        if isinstance(data, dict):
+            for k, rows in data.items():
+                if isinstance(rows, list):
+                    cleaned: List[List[float]] = []
+                    for row in rows[-SAMPLE_MAX:]:
+                        if isinstance(row, (list, tuple)) and len(row) >= 6:
+                            try:
+                                cleaned.append([float(x) for x in row[:6]])
+                            except (TypeError, ValueError):
+                                continue
+                    if cleaned:
+                        self._samples[str(k)] = cleaned
+
+    def _save_samples(self) -> None:
+        try:
+            self._plugin.save_data("live_samples", {k: v[-SAMPLE_MAX:] for k, v in self._samples.items()})
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _push_sample(self, key: str, res: Dict[str, Any]) -> None:
+        self._load_samples()
+        row = [
+            float(res.get("ts") or time.time()),
+            float(res.get("upload") or 0.0),
+            float(res.get("download") or 0.0),
+            float(res.get("seeding") or 0.0),
+            float(res.get("leeching") or 0.0),
+            float(res.get("bonus") or 0.0),
+        ]
+        rows = self._samples.setdefault(key, [])
+        # 相邻采样若站点数据没变（同一秒/完全一致）就跳过，避免速率被"零间隔"污染
+        if rows and row[0] - rows[-1][0] < 30:
+            rows[-1] = row
+        else:
+            rows.append(row)
+        if len(rows) > SAMPLE_MAX:
+            del rows[: len(rows) - SAMPLE_MAX]
+
+    def history(self, site_id: int) -> List[List[float]]:
+        self._load_samples()
+        return list(self._samples.get(str(int(site_id)), []))
+
+    def rates(self, site_id: int, window: float = RATE_WINDOW_SEC) -> Dict[str, Any]:
+        """按采样历史算速率/净增（窗口内首末两点差）。"""
+        rows = self.history(site_id)
+        out = {
+            "ok": False, "span_sec": 0.0, "samples": len(rows),
+            "up_bps": 0.0, "down_bps": 0.0, "up_mb_min": 0.0, "down_mb_min": 0.0,
+            "d_up": 0.0, "d_down": 0.0, "d_bonus": 0.0,
+        }
+        if len(rows) < 2:
+            return out
+        last = rows[-1]
+        cutoff = last[0] - float(window or RATE_WINDOW_SEC)
+        first = rows[0]
+        for row in rows:
+            if row[0] >= cutoff:
+                first = row
+                break
+        span = float(last[0] - first[0])
+        if span <= 0:
+            return out
+        d_up = float(last[1] - first[1])
+        d_down = float(last[2] - first[2])
+        d_bonus = float(last[5] - first[5])
+        out.update({
+            "ok": True, "span_sec": span, "samples": len(rows),
+            "d_up": d_up, "d_down": d_down, "d_bonus": d_bonus,
+            "up_bps": max(0.0, d_up / span), "down_bps": max(0.0, d_down / span),
+            "up_mb_min": max(0.0, d_up / span) * 60.0 / (1024 ** 2),
+            "down_mb_min": max(0.0, d_down / span) * 60.0 / (1024 ** 2),
+        })
+        return out
+
+    # ---------------------------------------------------------------- 监控判定
+    def evaluate(
+        self,
+        site_id: int,
+        cfg: Optional[Dict[str, Any]] = None,
+        live: Optional[Dict[str, Any]] = None,
+        local_managed: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """产出告警列表（纯函数式判断，不做任何写操作）。"""
+        cfg = cfg or {}
+        live = live if live is not None else self.get(site_id)
+        rates = self.rates(site_id)
+        alerts: List[Dict[str, Any]] = []
+        if not live.get("ok"):
+            return {"ok": False, "alerts": [], "rates": rates, "live": live}
+
+        # ① 下载量增长（唯一真危险信号：免费种不吃下载）
+        thr_mb = float(cfg.get("download_alert_mb") or 50.0)
+        down_mb_min = float(rates.get("down_mb_min") or 0.0)
+        if rates.get("ok") and down_mb_min >= thr_mb:
+            alerts.append({
+                "kind": "download_rising",
+                "level": "warn",
+                "text": (
+                    f"下载量在涨：近 {rates['span_sec'] / 60:.0f} 分钟 "
+                    f"+{rates['d_down'] / (1024 ** 3):.2f}GB（≈{down_mb_min:.1f}MB/分钟）"
+                    f"—— 可能有非免费/促销过期的种在跑"
+                ),
+            })
+        # ② 分享率低于目标线
+        tgt = float(cfg.get("ratio_target") or 0.0)
+        ratio = live.get("ratio")
+        if tgt > 0 and ratio is not None and float(ratio) < tgt:
+            need = tgt * float(live.get("download") or 0.0) - float(live.get("upload") or 0.0)
+            alerts.append({
+                "kind": "ratio_low",
+                "level": "warn",
+                "text": (
+                    f"分享率 {float(ratio):.3f} < 目标 {tgt:.2f}"
+                    + (f"，还差 {max(0.0, need) / (1024 ** 3):.1f}GB 上传" if need > 0 else "")
+                ),
+            })
+        # ③ 魔力够档（可提醒去兑换）
+        bonus = float(live.get("bonus") or 0.0)
+        if bonus >= 2000:
+            alerts.append({
+                "kind": "bonus_ready",
+                "level": "info",
+                "text": f"当前魔力 {bonus:.0f} ≥ 2000，可兑换 10GB 上传（留够考核余量再换）",
+            })
+        elif bonus >= 1200:
+            alerts.append({
+                "kind": "bonus_ready",
+                "level": "info",
+                "text": f"当前魔力 {bonus:.0f} ≥ 1200，可兑换 5GB 上传（留够考核余量再换）",
+            })
+        # ④ 站点视角做种数 vs 本地托管数
+        if local_managed is not None and live.get("seeding") is not None:
+            try:
+                site_seed = int(live.get("seeding") or 0)
+                local_seed = int(local_managed or 0)
+            except (TypeError, ValueError):
+                site_seed = local_seed = 0
+            if local_seed >= 5 and site_seed * 2 < local_seed:
+                alerts.append({
+                    "kind": "seeding_mismatch",
+                    "level": "warn",
+                    "text": f"站内只认 {site_seed} 个做种，本地托管 {local_seed} 个 → 可能有种子未 announce/被暂停",
+                })
+        level = "info"
+        for a in alerts:
+            if a.get("level") == "warn":
+                level = "warn"
+                break
+        return {"ok": True, "alerts": alerts, "level": level, "rates": rates, "live": live}
+
+    def snapshot(
+        self,
+        site_id: int,
+        cfg: Optional[Dict[str, Any]] = None,
+        local_managed: Optional[int] = None,
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        """实时数据 + 速率 + 告警 的组合快照（供 API 展示/看门狗使用）。"""
+        live = self.get(site_id, force=force)
+        ev = self.evaluate(site_id, cfg=cfg, live=live, local_managed=local_managed)
+        return {
+            "live": live,
+            "rates": ev.get("rates") or {},
+            "alerts": ev.get("alerts") or [],
+            "level": ev.get("level") or "ok",
+        }
