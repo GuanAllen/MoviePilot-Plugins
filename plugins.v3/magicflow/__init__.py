@@ -65,6 +65,7 @@ from .fetcher import (
     SiteCandidateTorrent,
     SiteFetcher,
     filter_candidates,
+    free_time_ok,
     get_default_brush_filter_policy,
     get_default_filter_policy,
     pubdate_to_ts,
@@ -95,7 +96,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.0.3"
+__version__ = "3.0.4"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -156,6 +157,12 @@ MEDIA_ASSET_TAGS: Tuple[str, ...] = ("已整理", "辅种")
 #  另外，命中「下载历史」的种子也视为资产（覆盖“手动下的、还没被整理”的情况）。
 #  历史集合按任务托管种批量查询，结果在此时长内缓存（秒），避免每轮都打 DB。
 MEDIA_ASSET_HISTORY_TTL = 120.0
+# ── 限时免费（促销到期）闸门（2026-09-26）──────────────────────────────
+#  Pttime 等站的「免费/2X免费」是**限时**促销，到期后继续下按原价计流量。
+#  候选已带出剩余免费时间（`SiteCandidateTorrent.free_remaining_sec`）：
+#  剩余 < 预估下载耗时 + 余量 → 不下（下了就是白送流量/魔力）。
+#  参数（速度/余量）在 fetcher.FREE_ASSUMED_SPEED_MBPS / FREE_MIN_MARGIN_SEC。
+#  被跳过的候选进 dead 冷却（沿用 `_dead_cooldown`，6h），避免反复评估同一颗。
 # /status 整包重数据缓存 TTL（秒）——stale-while-revalidate：命中秒回，过期后台静默刷新。
 STATUS_TTL = 15
 # 官种（official）列表抓取：缓存 TTL 与翻页数。
@@ -1537,25 +1544,53 @@ class MagicFlow(_PluginBase):
                 if site and getattr(site, "cookie", None):
                     np_free = fetcher.browse_site_np_free(site, pages=1) or []
                     if np_free:
-                        seen_keys = {
-                            (getattr(c, "page_url", "") or getattr(c, "hash", "") or getattr(c, "title", ""))
-                            for c in cands
-                        }
-                        added = 0
-                        for c in np_free:
-                            k = (
+                        def _ck(c: Any) -> str:
+                            return (
                                 getattr(c, "page_url", "")
                                 or getattr(c, "hash", "")
                                 or getattr(c, "title", "")
                             )
-                            if k and k not in seen_keys:
-                                seen_keys.add(k)
+
+                        by_key = {_ck(c): c for c in cands if _ck(c)}
+                        added = 0
+                        upgraded = 0
+                        for c in np_free:
+                            k = _ck(c)
+                            if not k:
+                                continue
+                            old = by_key.get(k)
+                            if old is None:
+                                by_key[k] = c
                                 cands.append(c)
                                 added += 1
-                        if added:
+                                continue
+                            # ★ 同一种：把「限时免费到期时间」等促销信息并进已有候选。
+                            # 最新页走 SDK（不含到期时间），免费定向视图才有 → 必须回填，
+                            # 否则「免费即将到期」闸门对最新页那批种失效。
+                            try:
+                                if float(getattr(c, "free_remaining_sec", -1.0) or -1.0) >= 0:
+                                    old.free_until = getattr(c, "free_until", "") or ""
+                                    old.free_remaining_sec = c.free_remaining_sec
+                                    if getattr(c, "is_free", False):
+                                        old.is_free = True
+                                        old.is_double_free = bool(
+                                            getattr(c, "is_double_free", False)
+                                        )
+                                        old.downloadvolumefactor = getattr(
+                                            c, "downloadvolumefactor", 0.0
+                                        )
+                                        old.uploadvolumefactor = getattr(
+                                            c, "uploadvolumefactor", 1.0
+                                        )
+                                        old.volume_factor = getattr(c, "volume_factor", 0.0)
+                                    upgraded += 1
+                            except Exception:  # noqa: BLE001
+                                pass
+                        if added or upgraded:
                             self._log(
                                 f"魔流 [{task.name}] 站点共享列表补充免费定向 {added} 个"
                                 f"（最新页窗口漏掉的免费种）"
+                                + (f"，回填到期时间 {upgraded} 个" if upgraded else "")
                             )
             except Exception as err:  # noqa: BLE001
                 self._log(f"魔流 [{task.name}] 免费定向补充失败（忽略）：{err}", "warning")
@@ -1825,7 +1860,6 @@ class MagicFlow(_PluginBase):
         return engine
 
     @staticmethod
-    @staticmethod
     def _recommend_media_key(media: Optional[Dict[str, Any]], info: Dict[str, Any]) -> str:
         """作品级去重 key：优先「数据源_原生ID」，否则回退「标题(+年份)」。"""
         if media and media.get("source") and media.get("id"):
@@ -1919,6 +1953,7 @@ class MagicFlow(_PluginBase):
                 return str(h)
         return None
 
+    @staticmethod
     def _recommend_worth(info: Dict[str, Any], cfg: Dict[str, Any]) -> bool:
         """是否够格推荐：评分 > 门槛 且（按需）叠加 榜单/热映/订阅。"""
         if not info.get("recognized"):
@@ -2576,6 +2611,31 @@ class MagicFlow(_PluginBase):
             filter_policy = self._build_filter_policy(task)
             filtered, reason_counts = filter_candidates(candidates, filter_policy)
             wash_reasons: Dict[str, int] = dict(reason_counts)
+            # ★ 限时免费闸门（洗池级）：促销剩的免费时间不够下完 → 直接洗掉。
+            # 常见于 Pttime 这类「12 分钟～6 天」的限时免费；到期后下载按原价计流量。
+            if filtered:
+                _keep_c: List[Any] = []
+                _expiring = 0
+                _expiring_sample = ""
+                for _c in filtered:
+                    _ok, _need, _remain = free_time_ok(_c)
+                    if _ok:
+                        _keep_c.append(_c)
+                    else:
+                        _expiring += 1
+                        if not _expiring_sample:
+                            _expiring_sample = (
+                                f"{getattr(_c, 'title', '')}（剩余 {int(_remain / 60)} 分 "
+                                f"< 需 {int(_need / 60)} 分）"
+                            )
+                if _expiring:
+                    filtered = _keep_c
+                    wash_reasons["免费即将到期"] = _expiring
+                    self._log(
+                        f"魔流 [{task.name}] 洗掉「免费即将到期」{_expiring} 个"
+                        f"（如：{_expiring_sample}）",
+                        "warning",
+                    )
             # ★ 最优解算法（做种人数 Ni × 体积 Si）：真实边际时魔。
             # a_current = 现有池子合计 A；边际增益 B(A+a)−B(A) 才能反映「再加一颗」的真实收益。
             a_current = 0.0
@@ -2958,6 +3018,7 @@ class MagicFlow(_PluginBase):
             add_failed = 0
             skipped_dup = 0
             skipped_quota = 0
+            skipped_expiring = 0
             skipped_reuse_limit = 0
             skipped_rate = 0
             tagged_reuse = 0
@@ -3010,6 +3071,18 @@ class MagicFlow(_PluginBase):
                         reuse_downloads = local_progress < 0.999
                     else:
                         reuse_downloads = not task.reuse_verify
+                    # ★ 兜底闸门：确需补下载时，若促销快到期也不补（下不完=白烧流量）。
+                    if reuse_downloads and not free_time_ok(cand)[0]:
+                        _ok, _need, _remain = free_time_ok(cand)
+                        skipped_expiring += 1
+                        self._log(
+                            f"跳过·免费剩余不足（{int(_remain / 60)}分 < 需 "
+                            f"{int(_need / 60)}分）：{cand.title}",
+                            "warning",
+                        )
+                        if self._store and ckey:
+                            self._store.dead.mark(task.id, [f"cand:{ckey}"])
+                        continue
                     # ★ 辅种（免下载）不参与配额/排名限制：直接加（白得的魔力）。
                     #   （仅当确需补下载时才受下载名额/预算约束，见下）
                     if over_quota:
@@ -3091,6 +3164,18 @@ class MagicFlow(_PluginBase):
                     break
                 if over_quota:
                     skipped_quota += 1
+                    continue
+                # ★ 兜底闸门：限时免费剩的免费时间不够下完 → 不下（洗池阶段拦不到时）。
+                _ok_t, _need_t, _remain_t = free_time_ok(cand)
+                if not _ok_t:
+                    skipped_expiring += 1
+                    self._log(
+                        f"跳过·免费剩余不足（{int(_remain_t / 60)}分 < 需 "
+                        f"{int(_need_t / 60)}分）：{cand.title}",
+                        "warning",
+                    )
+                    if self._store and ckey:
+                        self._store.dead.mark(task.id, [f"cand:{ckey}"])
                     continue
                 hash_string, error = downloader.add_torrent(
                     content=cand.raw,
@@ -3184,7 +3269,8 @@ class MagicFlow(_PluginBase):
             self._set_phase(task.id, "done")
             detail = (
                 f"（复用 {reused} / 新增 {added} / 去重 {skipped_dup}"
-                f" / 配额满 {skipped_quota} / 复用限并发 {skipped_reuse_limit} / 流控 {skipped_rate} / 失败 {add_failed}）"
+                f" / 配额满 {skipped_quota} / 复用限并发 {skipped_reuse_limit} / 流控 {skipped_rate}"
+                f" / 免费到期 {skipped_expiring} / 失败 {add_failed}）"
             )
             self._log(
                 f"魔流 [{task.name}] 候选 {len(candidates)}→洗池 {len(scored)}→Top{len(topn)} | "

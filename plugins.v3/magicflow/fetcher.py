@@ -29,6 +29,47 @@ TorrentsChain = None
 _REQUEST_INTERVAL = 0.0
 
 
+def promo_remaining_sec(until: str) -> float:
+    """促销到期时间（站点本地时间字符串）距现在的秒数；解析失败返回 -1（视为未知）。
+
+    PT 站（如 Pttime）的「免费/2X免费」普遍是**限时**促销，列表页在促销标记后紧跟
+    ``<span title="YYYY-MM-DD HH:MM:SS">剩余</span>``。到期后继续下载会按原价计流量，
+    所以必须把「还剩多久」带出来，供下载前判断够不够下完。
+    """
+    try:
+        dt = datetime.strptime(str(until).strip(), "%Y-%m-%d %H:%M:%S").replace(tzinfo=SITE_TZ)
+        return dt.timestamp() - time.time()
+    except Exception:  # noqa: BLE001
+        return -1.0
+
+
+# ── 限时免费（促销到期）闸门参数 ─────────────────────────────
+# PT 站的「免费/2X免费」多为**限时**促销（Pttime 实测：12 分钟～6 天不等）。
+# 到期后继续下载会按原价计流量 → 得判断「剩余免费时间够不够下完」。
+FREE_ASSUMED_SPEED_MBPS = 20.0   # 预估下载速度（MB/s），用于估算下载耗时
+FREE_MIN_MARGIN_SEC = 1800.0     # 安全余量（秒）：再留 30 分钟缓冲
+
+
+def free_time_ok(cand) -> Tuple[bool, float, float]:
+    """限时免费种子的剩余免费时间是否足够下完。
+
+    返回 ``(是否放行, 预估需要秒数, 剩余秒数)``。
+    剩余时间未知（-1）→ 放行（不误杀：非限时/非 NexusPHP 站点本就没有该字段）。
+    """
+    try:
+        remain = float(getattr(cand, "free_remaining_sec", -1.0) or -1.0)
+    except (TypeError, ValueError):
+        remain = -1.0
+    if remain < 0:
+        return True, 0.0, -1.0
+    try:
+        size_gb = float(getattr(cand, "size_gb", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        size_gb = 0.0
+    need = (size_gb * 1024.0 / max(FREE_ASSUMED_SPEED_MBPS, 1.0)) + FREE_MIN_MARGIN_SEC
+    return (remain >= need), need, remain
+
+
 def set_request_interval(seconds: float) -> None:
     """设置站点翻页请求之间的最小间隔（秒）。0 表示不限速。"""
     global _REQUEST_INTERVAL
@@ -93,6 +134,9 @@ class SiteCandidateTorrent:
     site_ua: Optional[str] = None
     downloadvolumefactor: float = 1.0
     uploadvolumefactor: float = 1.0
+    # ★ 促销到期（限时免费）：站点本地时间字符串 + 距现在剩余秒数（-1=未知/不限期）
+    free_until: str = ""
+    free_remaining_sec: float = -1.0
 
     def __post_init__(self):
         if self.size_gb <= 0:
@@ -340,6 +384,19 @@ class SiteFetcher:
                     break
             dv, uv = _NP_PROMO_FACTORS.get(promo, (1.0, 1.0))
 
+            # ★ 促销到期（限时免费）：紧跟在促销标记后的 <span title="YYYY-MM-DD HH:MM:SS">
+            free_until = ""
+            free_remaining_sec = -1.0
+            if promo:
+                _em = re.search(
+                    r"promotion\s+%s['\"]\s*>[^<]*</font>\s*<span\s+title=[\"']"
+                    r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[\"']" % re.escape(promo),
+                    chunk,
+                )
+                if _em:
+                    free_until = _em.group(1)
+                    free_remaining_sec = promo_remaining_sec(free_until)
+
             # 添加时间（列表页 <span title="YYYY-MM-DD HH:MM:SS">）
             pubdate = None
             dm = re.search(r'<span title=["\'](\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})["\']', chunk)
@@ -388,6 +445,8 @@ class SiteFetcher:
                 site_ua=ua,
                 downloadvolumefactor=dv,
                 uploadvolumefactor=uv,
+                free_until=free_until,
+                free_remaining_sec=free_remaining_sec,
             ))
         return out
 
