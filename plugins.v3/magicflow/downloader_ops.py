@@ -363,6 +363,39 @@ class DownloaderAdapter:
         """检查下载器是否可用。"""
         return self._downloader is not None
 
+    def normalize_path(self, path: str) -> str:
+        """把下载器返回的（宿主）路径反向映射为 MoviePilot 可访问（容器）路径。
+
+        依据下载器配置里的 ``path_mapping``（每项 ``[容器路径, 宿主路径]``）做前缀替换；
+        无法映射时原样返回（例如本就已是容器路径）。
+        """
+        if not path:
+            return path
+        try:
+            _ensure_sdk()
+            conf = None
+            if DownloaderHelper is not None:
+                try:
+                    conf = DownloaderHelper().get_config(name=self.downloader_name)
+                except Exception:  # noqa: BLE001
+                    conf = None
+            mapping = getattr(conf, "path_mapping", None) or []
+            norm = path.rstrip("/") or "/"
+            for pair in mapping:
+                try:
+                    storage_path, download_path = (list(pair) + [None, None])[:2]
+                except Exception:  # noqa: BLE001
+                    continue
+                if not storage_path or not download_path:
+                    continue
+                dp = str(download_path).rstrip("/")
+                sp = str(storage_path).rstrip("/")
+                if dp and (norm == dp or norm.startswith(dp + "/")):
+                    return sp + norm[len(dp):]
+        except Exception as _e:  # noqa: BLE001
+            logger.warning(f"[路径映射] 失败: {_e}")
+        return path
+
     def get_torrents(
         self,
         tags: Optional[List[str]] = None,
@@ -807,6 +840,7 @@ class DownloaderAdapter:
         download_speed = float(_kv(torrent, "dl_speed", 0) or _kv(torrent, "dlspeed", 0) or 0)
         category = _kv(torrent, "category", "") or ""
         save_path = _kv(torrent, "save_path", "") or ""
+        content_path = str(_kv(torrent, "content_path", "") or "")
         # 进度与加入时间（qb: progress 0~1 / added_on；tr: percent_done / added_date）
         progress_raw = _kv(torrent, "progress", None)
         if progress_raw is None:
@@ -874,6 +908,7 @@ class DownloaderAdapter:
             category=category,
             tags=tags,
             save_path=save_path,
+            content_path=content_path,
             progress=progress,
             downloaded=downloaded,
             added_on=added_on,
