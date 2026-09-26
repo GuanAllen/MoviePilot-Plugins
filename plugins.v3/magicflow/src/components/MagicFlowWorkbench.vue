@@ -5243,38 +5243,39 @@ onUnmounted(() => {
     display: none;
   }
 
-  /* ★ 品牌独占一行：控件留在 top 栏，品牌（logo + 魔流 + 版本 + 副标题）挪到 top 栏下面另起一行，
-     避免窄屏被右侧按钮挤成「魔..」/「PT ...」 */
+  /* ★ 窄屏：品牌留在 top 栏左侧（信息层级自然），靠「隐藏副标题 + 隐藏状态胶囊」腾位置，
+     而不是把品牌挤成「魔..」；品牌名 + 版本徽标始终完整可见 */
   .magicflow-page__header {
-    flex-wrap: wrap;
-    row-gap: 6px;
+    flex-wrap: nowrap;
     align-items: center;
-  }
-
-  .magicflow-page__actions {
-    order: 1;
-    flex: 1 1 100%;
-    inline-size: 100%;
-    margin-inline-start: 0;
-  }
-
-  /* 控件行：状态胶囊靠左，图标按钮靠右 */
-  .magicflow-page__actions > :deep(.v-chip) {
-    margin-inline-end: auto;
+    gap: 8px;
   }
 
   .magicflow-page__identity {
-    order: 2;
-    flex: 1 1 100%;
-    inline-size: 100%;
-    overflow: visible;
+    flex: 1 1 auto;
+    overflow: hidden;
   }
 
-  .magicflow-page__identity h1,
+  /* 副标题（PT 做种 · 魔力养护 / 刷流保种）窄屏不显示，避免占位与截断 */
   .magicflow-page__identity p {
-    overflow: visible;
-    text-overflow: clip;
-    white-space: normal;
+    display: none;
+  }
+
+  .magicflow-page__identity h1 {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 操作区不再抢占品牌空间：只留图标按钮，状态胶囊窄屏收起（总览/任务卡里都有） */
+  .magicflow-page__actions {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    margin-inline-start: 0;
+  }
+
+  .magicflow-page__actions > :deep(.v-chip) {
+    display: none;
   }
 
   /* 移动工具栏沿用「方案 B」胶囊：站点图标 + 任务名·站点 + 状态点 + ⌄ */
