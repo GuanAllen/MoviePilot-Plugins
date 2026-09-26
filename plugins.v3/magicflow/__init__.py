@@ -84,6 +84,7 @@ from .models import (
     DOWNLOADER_PREF_RECOMMENDED,
 )
 from .fallback import FallbackEngine, DEFAULT_SOURCES as FALLBACK_SOURCES
+from .live_stats import LiveStats
 from .cloud_archive import ArchiveEngine, DEFAULT_TARGET_TEMPLATE as CLOUD_TARGET_TEMPLATE
 from .persistence import MagicFlowStore, OperationItem, WorkReport
 from .recommend import RecommendEngine
@@ -99,7 +100,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.2.9"
+__version__ = "3.3.0"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -175,6 +176,16 @@ FALLBACK_SCAN_MAX = 30
 # 云盘归档（夸克冷库）：默认轮询周期 / 每轮上限
 CLOUD_INTERVAL_MINUTES = 360
 CLOUD_SCAN_MAX = 50
+
+# ── 站点实时数据 + 站点流量监控（2026-09-26）────────────────────────────
+#  MoviePilot 的站点账号数据走它自己的「站点数据刷新」任务（默认 6 小时一轮），
+#  对展示够用，但对魔流的**决策**（任务目标达标 / 救号分享率 / 兑换提醒 / 下载量异常增长）太滞后。
+#  这里直连站点用户栏页拿实时值，站点级缓存 + single-flight；抓不到自动回退 MP 数据。
+LIVE_DEFAULT_TTL = 240.0            # 抓取缓存 TTL（秒）——Master 定调：60s 太频繁，用 240
+LIVE_INTERVAL_MINUTES = 4           # 看门狗轮询周期（分钟，与缓存 TTL 对齐）
+LIVE_DOWNLOAD_ALERT_MB = 50.0       # 下载量增长告警阈值（MB/分钟）
+LIVE_RATIO_TARGET = 0.5             # 分享率目标线（低于则告警）
+LIVE_ALERT_COOLDOWN_MIN = 30        # 同类告警去重窗口（分钟），避免刷屏
 # 官种（official）列表抓取：缓存 TTL 与翻页数。
 # 官种加成是「单种自身」的加成，会影响选种/删种排序，值得缓存抓取；
 # 后宫加成依赖他人种子（用户级），与「选哪一颗」无关，不参与决策，故不抓取。
@@ -603,6 +614,20 @@ class MagicFlow(_PluginBase):
         else:
             self._fallback_engine.set_cfg(self._fallback_cfg)
 
+        # 站点实时数据 + 流量监控（不依赖 MP 的 6 小时站点数据快照）
+        self._live_cfg = {
+            "enabled": bool(raw_config.get("live_enabled", True)),
+            "interval": _rf(raw_config.get("live_interval_minutes"), float(LIVE_INTERVAL_MINUTES)),
+            "download_alert_mb": _rf(raw_config.get("live_download_alert_mb"), LIVE_DOWNLOAD_ALERT_MB),
+            "ratio_target": _rf(raw_config.get("live_ratio_target"), LIVE_RATIO_TARGET),
+            "auto_stop": bool(raw_config.get("live_auto_stop", False)),
+            "notify": bool(raw_config.get("live_notify", True)),
+        }
+        if getattr(self, "_live", None) is None:
+            self._live = LiveStats(self, ttl=LIVE_DEFAULT_TTL)
+        # 缓存 TTL 跟随采样周期（Master 定调：60s 太频繁，240s）
+        self._live.ttl = max(60.0, float(self._live_cfg.get("interval") or LIVE_INTERVAL_MINUTES) * 60.0)
+
         # 云盘归档（夸克冷库）：本地当热区、夸克当冷库
         #  Token 优先用配置；配置为空时回落插件数据（前端/手滑增删设置也不会丢密）
         _cloud_token = str(raw_config.get("cloud_openlist_token") or "").strip()
@@ -787,6 +812,13 @@ class MagicFlow(_PluginBase):
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "元数据兜底：立即扫描（dry_run=true 仅演练）",
+            },
+            {
+                "path": "/live",
+                "endpoint": self.get_live_state,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "站点实时数据 + 流量监控（直连站点，非 MP 6h 快照）",
             },
             {
                 "path": "/cloud",
@@ -1168,6 +1200,24 @@ class MagicFlow(_PluginBase):
                     },
                 }
             )
+        # ★ 站点实时数据 + 流量监控：插件级单 worker（采样所有「运行中」任务的站点）。
+        #   主人在意「下载量在涨」这一唯一真危险信号（免费种不吃下载）。
+        if bool(getattr(self, "_live_cfg", {}).get("enabled", True)) and any(
+            getattr(t, "enabled", False) for t in self._task_configs.values()
+        ):
+            _live_min = float(getattr(self, "_live_cfg", {}).get("interval", LIVE_INTERVAL_MINUTES) or LIVE_INTERVAL_MINUTES)
+            services.append(
+                {
+                    "id": "LiveWatch",
+                    "name": "站点流量监控",
+                    "trigger": "interval",
+                    "func": self.live_watch,
+                    "kwargs": {
+                        "minutes": _live_min,
+                        "jitter": self._jitter_seconds(_live_min),
+                    },
+                }
+            )
         return services
 
     def stop_service(self) -> None:
@@ -1216,6 +1266,12 @@ class MagicFlow(_PluginBase):
             "fallback_sp_to_s00": bool(self._fallback_cfg.get("sp_to_s00", False)),
             "fallback_after_import": bool(self._fallback_cfg.get("after_import", True)),
             "fallback_dry_run": bool(self._fallback_cfg.get("dry_run", False)),
+            "live_enabled": bool(getattr(self, "_live_cfg", {}).get("enabled", True)),
+            "live_interval_minutes": float(getattr(self, "_live_cfg", {}).get("interval") or LIVE_INTERVAL_MINUTES),
+            "live_download_alert_mb": float(getattr(self, "_live_cfg", {}).get("download_alert_mb") or LIVE_DOWNLOAD_ALERT_MB),
+            "live_ratio_target": float(getattr(self, "_live_cfg", {}).get("ratio_target") or LIVE_RATIO_TARGET),
+            "live_auto_stop": bool(getattr(self, "_live_cfg", {}).get("auto_stop", False)),
+            "live_notify": bool(getattr(self, "_live_cfg", {}).get("notify", True)),
             # 云盘归档（token 不写回配置，单独存插件数据，避免明文进主配置）
             "cloud_enabled": bool(self._cloud_cfg.get("enabled", False)),
             "cloud_openlist_url": str(self._cloud_cfg.get("url") or ""),
@@ -4829,10 +4885,25 @@ class MagicFlow(_PluginBase):
         out["goal_has"] = True
         out["goal_target"] = tgt
         stats = self._site_user_stats(task.site_id) or {}
+        # ★ 优先用「站点实时数据」（直连站点用户栏，240s 缓存），拿不到才回退 MP 的 6h 快照。
+        live: Dict[str, Any] = {}
+        try:
+            if getattr(self, "_live", None) is not None and int(task.site_id or 0):
+                live = self._live.get(int(task.site_id))
+        except Exception:  # noqa: BLE001
+            live = {}
+        live_ok = bool(isinstance(live, dict) and live.get("ok"))
+        out["goal_source"] = "live" if live_ok else "mp"
         if is_brush:
-            cur = float(stats.get("upload") or 0.0) / (1024 ** 3)   # 字节 → GB
+            base = float(live.get("upload") or 0.0) if live_ok else 0.0
+            if base <= 0:
+                base = float(stats.get("upload") or 0.0)
+            cur = base / (1024 ** 3)   # 字节 → GB
         else:
-            cur = float(stats.get("bonus") or 0.0)
+            base = float(live.get("bonus") or 0.0) if live_ok else 0.0
+            if base <= 0:
+                base = float(stats.get("bonus") or 0.0)
+            cur = base
         out["goal_current"] = cur
         out["goal_reached"] = bool(stats.get("ok")) and cur >= tgt - 1e-9
         return out
@@ -6109,6 +6180,206 @@ class MagicFlow(_PluginBase):
         except Exception:
             pass
 
+    # ---------------------------------------------------------
+    # 站点实时数据 + 站点流量监控
+    #   MoviePilot 的站点账号数据靠它自己的「站点数据刷新」（默认 6h）写库 → 魔流拿它做
+    #   决策（任务目标达标 / 救号分享率 / 兑换提醒 / 下载量异常）太滞后。这里直连站点用户栏
+    #   拿实时值（站点级缓存 + single-flight，抓不到回退 MP 数据），并监控「下载量在涨」。
+    # ---------------------------------------------------------
+    def _live_site_name(self, site_id: int) -> str:
+        try:
+            site = self._get_site(int(site_id))
+        except Exception:  # noqa: BLE001
+            site = None
+        if not site:
+            return f"站点 {site_id}"
+        return str(
+            getattr(site, "name", "") or getattr(site, "domain", "") or f"站点 {site_id}"
+        ).strip() or f"站点 {site_id}"
+
+    def _live_sites(self) -> Dict[int, Dict[str, Any]]:
+        """收集「运行中」任务涉及的站点（含各任务本地托管数）。"""
+        out: Dict[int, Dict[str, Any]] = {}
+        try:
+            stats_by_id = self._runtime_stats_bulk(list(self._task_configs.values()))
+        except Exception:  # noqa: BLE001
+            stats_by_id = {}
+        for task in self._task_configs.values():
+            if not getattr(task, "enabled", False):
+                continue
+            try:
+                sid = int(getattr(task, "site_id", 0) or 0)
+            except (TypeError, ValueError):
+                sid = 0
+            if not sid:
+                continue
+            item = out.setdefault(
+                sid,
+                {
+                    "site_id": sid,
+                    "site_name": self._live_site_name(sid),
+                    "local_managed": 0,
+                    "tasks": [],
+                },
+            )
+            managed = int((stats_by_id.get(task.id) or {}).get("seeding_count", 0) or 0)
+            item["local_managed"] += managed
+            item["tasks"].append({"id": task.id, "name": task.name, "managed": managed})
+        return out
+
+    def _live_snapshot(
+        self, site_id: int, local_managed: Optional[int] = None, force: bool = False
+    ) -> Dict[str, Any]:
+        """实时数据 + 速率 + 告警 的组合快照（绝不抛出）。"""
+        try:
+            return self._live.snapshot(
+                int(site_id), cfg=dict(self._live_cfg or {}), local_managed=local_managed, force=force
+            )
+        except Exception as err:  # noqa: BLE001
+            self._log(f"站点实时数据获取失败（站点 {site_id}）：{err}", "warning")
+            return {"live": {"ok": False}, "rates": {}, "alerts": [], "level": "ok"}
+
+    def get_live_state(self, force: bool = False) -> Response:
+        """站点实时数据 + 流量监控快照（只读，不做任何写操作）。"""
+        sites = self._live_sites()
+        rows: List[Dict[str, Any]] = []
+        for sid, meta in sites.items():
+            snap = self._live_snapshot(sid, local_managed=meta.get("local_managed"), force=bool(force))
+            rows.append(
+                {
+                    "site_id": sid,
+                    "site_name": meta.get("site_name"),
+                    "local_managed": meta.get("local_managed"),
+                    "tasks": meta.get("tasks") or [],
+                    "live": snap.get("live") or {},
+                    "rates": snap.get("rates") or {},
+                    "alerts": snap.get("alerts") or [],
+                    "level": snap.get("level") or "ok",
+                }
+            )
+        return Response(
+            success=True,
+            data={
+                "cfg": {
+                    "enabled": bool(self._live_cfg.get("enabled", True)),
+                    "interval_minutes": float(self._live_cfg.get("interval") or LIVE_INTERVAL_MINUTES),
+                    "download_alert_mb": float(self._live_cfg.get("download_alert_mb") or LIVE_DOWNLOAD_ALERT_MB),
+                    "ratio_target": float(self._live_cfg.get("ratio_target") or LIVE_RATIO_TARGET),
+                    "auto_stop": bool(self._live_cfg.get("auto_stop", False)),
+                    "notify": bool(self._live_cfg.get("notify", True)),
+                },
+                "sites": rows,
+                "ts": time.time(),
+            },
+        )
+
+    def live_watch(self) -> None:
+        """站点流量监控（worker）：采样 → 告警（可配自动止损）。
+
+        ⚠ 自动止损仅把该站「运行中」的任务切到「做种中」（停调度、只保做种），
+        **不删种、不搬种**，与主人「先尽量刷流」的纪律一致。
+        """
+        if not bool(self._live_cfg.get("enabled", True)):
+            return
+        try:
+            self._live_watch_impl()
+        except Exception as err:  # noqa: BLE001
+            self._log(f"站点流量监控异常：{err}", "warning")
+
+    def _live_watch_impl(self) -> None:
+        sites = self._live_sites()
+        if not sites:
+            return
+        try:
+            seen = self.get_data("live_alerts") or {}
+        except Exception:  # noqa: BLE001
+            seen = {}
+        if not isinstance(seen, dict):
+            seen = {}
+        now = time.time()
+        cooldown = float(LIVE_ALERT_COOLDOWN_MIN) * 60.0
+        changed = False
+        for sid, meta in sites.items():
+            snap = self._live_snapshot(sid, local_managed=meta.get("local_managed"))
+            live = snap.get("live") or {}
+            if not live.get("ok"):
+                continue
+            fresh: List[Dict[str, Any]] = []
+            for alert in snap.get("alerts") or []:
+                key = f"{sid}:{alert.get('kind')}"
+                if now - float(seen.get(key, 0) or 0) < cooldown:
+                    continue
+                seen[key] = now
+                changed = True
+                fresh.append(alert)
+            if not fresh:
+                continue
+            name = str(meta.get("site_name") or f"站点 {sid}")
+            for alert in fresh:
+                self._log(
+                    f"站点监控 [{name}] {alert.get('text')}",
+                    "warning" if alert.get("level") == "warn" else "info",
+                )
+            if self._store:
+                try:
+                    self._store.journal.record(
+                        task_id=str((meta.get("tasks") or [{}])[0].get("id") or ""),
+                        kind="live",
+                        items=[
+                            OperationItem(
+                                hash="",
+                                title=f"站点流量监控 · {name}",
+                                reason="；".join(str(a.get("text") or "") for a in fresh),
+                            )
+                        ],
+                    )
+                except Exception as err:  # noqa: BLE001
+                    self._log(f"记录站点监控事件失败：{err}", "warning")
+            if bool(self._live_cfg.get("notify", True)):
+                try:
+                    gb = 1024 ** 3
+                    self.post_message(
+                        title=f"魔流·站点监控（{name}）",
+                        text="\n".join(f"· {a.get('text')}" for a in fresh)
+                        + (
+                            "\n\n实时："
+                            f"上传 {float(live.get('upload') or 0) / gb:.2f}GB / "
+                            f"下载 {float(live.get('download') or 0) / gb:.2f}GB / "
+                            f"分享率 {live.get('ratio')}"
+                        ),
+                    )
+                except Exception as err:  # noqa: BLE001
+                    self._log(f"站点监控通知失败：{err}", "warning")
+            # 自动止损：下载量在涨 → 该站任务切「做种中」（停调度、不删种）
+            if bool(self._live_cfg.get("auto_stop", False)) and any(
+                a.get("kind") == "download_rising" for a in fresh
+            ):
+                stopped: List[str] = []
+                for tinfo in meta.get("tasks") or []:
+                    task = self._task_configs.get(str(tinfo.get("id") or ""))
+                    if task is None or not getattr(task, "enabled", False):
+                        continue
+                    task.run_mode = "seeding"
+                    task.enabled = False
+                    stopped.append(task.name)
+                    self._spawn_run_mode_apply(task, "seeding")
+                if stopped:
+                    self._log(
+                        f"站点监控 [{name}] 下载量异常增长 → 自动切「做种中」：{'、'.join(stopped)}",
+                        "warning",
+                    )
+                    try:
+                        self._save_config()
+                        self._refresh_scheduler()
+                        self._invalidate_summary()
+                    except Exception as err:  # noqa: BLE001
+                        self._log(f"自动止损应用失败：{err}", "warning")
+        if changed:
+            try:
+                self.save_data("live_alerts", seen)
+            except Exception:  # noqa: BLE001
+                pass
+
     def get_status(self) -> Response:
         """获取插件总览状态（重数据带 STATUS_TTL 缓存 + 后台静默刷新）。
 
@@ -6148,6 +6419,7 @@ class MagicFlow(_PluginBase):
             "iyuu_sites": dict(getattr(self, "_iyuu_sites", {}) or {}),
             "recommend": dict(getattr(self, "_recommend_cfg", {}) or {}),
             "fallback": dict(getattr(self, "_fallback_cfg", {}) or {}),
+            "live": dict(getattr(self, "_live_cfg", {}) or {}),
             "cloud": self._cloud_cfg_view(),
             "defaults": dict(getattr(self, "_defaults", {}) or {}),
         })
@@ -6394,6 +6666,17 @@ class MagicFlow(_PluginBase):
         }
         if getattr(self, "_fallback_engine", None) is not None:
             self._fallback_engine.set_cfg(dict(self._fallback_cfg))
+        # 站点实时数据 + 流量监控
+        self._live_cfg = {
+            "enabled": bool(getattr(payload, "live_enabled", True)),
+            "interval": _rf(getattr(payload, "live_interval_minutes", LIVE_INTERVAL_MINUTES), float(LIVE_INTERVAL_MINUTES)),
+            "download_alert_mb": _rf(getattr(payload, "live_download_alert_mb", LIVE_DOWNLOAD_ALERT_MB), LIVE_DOWNLOAD_ALERT_MB),
+            "ratio_target": _rf(getattr(payload, "live_ratio_target", LIVE_RATIO_TARGET), LIVE_RATIO_TARGET),
+            "auto_stop": bool(getattr(payload, "live_auto_stop", False)),
+            "notify": bool(getattr(payload, "live_notify", True)),
+        }
+        if getattr(self, "_live", None) is not None:
+            self._live.ttl = max(60.0, float(self._live_cfg.get("interval") or LIVE_INTERVAL_MINUTES) * 60.0)
         # 云盘归档（token 空 = 保持原值；避免前端未带该字段时把 token 抹掉）
         _new_token = str(getattr(payload, "cloud_openlist_token", "") or "").strip()
         if _new_token:

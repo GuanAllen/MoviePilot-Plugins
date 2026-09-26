@@ -277,6 +277,17 @@ class MagicFlowSettingsPayload(BaseModel):
     fallback_after_import: bool = Field(True, description="整理入库后立即对该剧做一次兜底")
     fallback_dry_run: bool = Field(False, description="演练模式：只报告不写 NFO")
 
+    # ── 站点实时数据 + 站点流量监控 ────────────────────────────────────
+    #  MoviePilot 的站点账号数据走它自己的「站点数据刷新」（默认 6h）→ 对魔流的**决策**太滞后。
+    #  这里直连站点用户栏页拿实时值（上传/下载/分享率/魔力/做种数），并监控「下载量在涨」
+    #  （唯一真危险信号：免费种不吃下载，涨下载 = 吃到促销尾巴）。抓不到自动回退 MP 数据。
+    live_enabled: bool = Field(True, description="启用「站点实时数据 + 流量监控」")
+    live_interval_minutes: float = Field(4.0, ge=1, le=120, description="采样周期（分钟）：60s 太频繁，站点吃不消，默认 240s")
+    live_download_alert_mb: float = Field(50.0, ge=1, description="下载量增长告警阈值（MB/分钟，超过则告警）")
+    live_ratio_target: float = Field(0.5, ge=0, le=100, description="分享率目标线（低于则告警并算缺口），0 = 不检查")
+    live_auto_stop: bool = Field(False, description="自动止损：下载量异常增长时把该站「运行中」任务切「做种中」（停调度、不删种）")
+    live_notify: bool = Field(True, description="站点监控命中时推送通知")
+
     # ── 云盘归档（夸克冷库）────────────────────────────────────────────
     #  本地当热区、夸克当冷库：把库内成品大文件上传到夸克（经 OpenList HTTP API），
     #  本地腾空；OpenList 的 Strm 视图自动生成播放指针，影视照常能看。
