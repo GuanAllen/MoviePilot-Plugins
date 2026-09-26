@@ -113,6 +113,14 @@ class RecommendEngine:
         self._subs = {"ts": time.time(), "keys": keys}
         return keys
 
+    def subscribed_titles(self) -> Set[str]:
+        """当前订阅的「归一化标题」集合（供刷流选种排除；从 ``_subscribe_keys`` 的 ``t:`` 键提取）。"""
+        titles: Set[str] = set()
+        for k in self._subscribe_keys():
+            if isinstance(k, str) and k.startswith("t:") and len(k) > 2:
+                titles.add(k[2:])
+        return titles
+
     def evaluate(self, name: str) -> Dict[str, Any]:
         """甄别一个种子名。始终不抛异常；``recognized=False`` 表示识别不出/非影视。"""
         out: Dict[str, Any] = {"recognized": False}

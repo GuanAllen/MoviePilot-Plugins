@@ -2,3 +2,4 @@ plugins.v3/magicflow/preview/
 plugins.v3/magicflow/screenshots/
 __pycache__/
 *.pyc
+plugins.v3/magicflow/docs/

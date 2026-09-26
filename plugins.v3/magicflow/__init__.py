@@ -96,7 +96,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.0.5"
+__version__ = "3.0.6"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -180,10 +180,16 @@ OFFICIAL_PAGES = 2
 # 复用：按「体积接近」预筛本机种子
 # ============================================================
 
-def _has_media_asset_tag(torrent: Any) -> bool:
-    """种子是否带「媒体资产」标签（已整理 / 辅种）→ 删种时永不删除。"""
+def _has_media_asset_tag(torrent: Any, extra_tags: Any = None) -> bool:
+    """种子是否带「媒体资产」标签（已整理 / 辅种，或任务自定义排除标签）→ 删种时永不删除。"""
     tags = getattr(torrent, "tags", None) or []
-    return any(t in MEDIA_ASSET_TAGS for t in tags)
+    if not tags:
+        return False
+    if any(t in MEDIA_ASSET_TAGS for t in tags):
+        return True
+    if extra_tags and any(t in extra_tags for t in tags):
+        return True
+    return False
 
 
 def _torrent_hash(torrent: Any) -> str:
@@ -302,6 +308,11 @@ class MagicFlowTaskConfig:
     upload_min_kbps: int = 200       # 平均上传速率门槛（KB/s）：低于此值视为「无上传」
     brush_min_leechers: int = 1      # 刷流选种标准：最小下载人数（有下载需求才下）
     brush_seed_days: int = 2         # 刷流：做种满 N 天清理换新（0=回退「无上传」判定）
+    # 产出换种（刷流）：单种已上传达标 / 分享率达标 → 清理换新（None=不看）
+    rotate_upload_gb: Optional[float] = None
+    rotate_ratio: Optional[float] = None
+    # 选种排除订阅命中（刷流）
+    except_subscribe: bool = True
 
     # 完美种保护：非零魔 ∧ 站内做种人数≤上限 ∧ 做种周数≥下限 的优质老种永久保留
     protect_perfect: bool = True
@@ -339,6 +350,7 @@ class MagicFlowTaskConfig:
     min_ratio: float = 0.0      # 最低分享率
     delete_files: bool = True   # 删除时是否删除文件
     exclude_zero_bonus: bool = True  # 排除零魔种子
+    delete_except_tags: str = ""  # 永不删除的标签（逗号分隔，叠加「已整理/辅种」之上）
 
     # RSS 配置
     rss_support: bool = False   # 是否使用 RSS 模式
@@ -388,6 +400,9 @@ class MagicFlowTaskConfig:
             "upload_min_kbps": self.upload_min_kbps,
             "brush_min_leechers": self.brush_min_leechers,
             "brush_seed_days": self.brush_seed_days,
+            "rotate_upload_gb": self.rotate_upload_gb,
+            "rotate_ratio": self.rotate_ratio,
+            "except_subscribe": self.except_subscribe,
             "protect_perfect": self.protect_perfect,
             "perfect_max_seeders": self.perfect_max_seeders,
             "perfect_min_weeks": self.perfect_min_weeks,
@@ -409,6 +424,7 @@ class MagicFlowTaskConfig:
             "min_seed_time": self.min_seed_time,
             "min_ratio": self.min_ratio,
             "delete_files": self.delete_files,
+            "delete_except_tags": self.delete_except_tags,
             "exclude_zero_bonus": self.exclude_zero_bonus,
             "rss_support": self.rss_support,
             "up_speed": self.up_speed,
@@ -1383,12 +1399,17 @@ class MagicFlow(_PluginBase):
         """
         hashes: Set[str] = set()
         cand: List[str] = []
+        # 任务级自定义「永不删除标签」（叠加在 MEDIA_ASSET_TAGS 之上）
+        extra_tags: Set[str] = set()
+        if task is not None:
+            _extra_raw = str(getattr(task, "delete_except_tags", "") or "")
+            extra_tags = {s.strip() for s in _extra_raw.replace("，", ",").split(",") if s.strip()}
         for t in torrents or []:
             h = _torrent_hash(t)
             if not h:
                 continue
             cand.append(h)
-            if _has_media_asset_tag(t):
+            if _has_media_asset_tag(t, extra_tags):
                 hashes.add(h)
         if not cand:
             return hashes
@@ -1858,6 +1879,31 @@ class MagicFlow(_PluginBase):
         if engine is None:
             engine = self._recommend_engine = RecommendEngine(self)
         return engine
+
+    def _exclude_subscribed(self, candidates: List[Any]) -> List[Any]:
+        """刷流选种：剔除命中「当前订阅标题」的候选。
+
+        用归一化标题**子串**匹配（订阅标题 ⊆ 候选标题）；识别不出 / 订阅为空 → 原样返回，
+        不误杀。订阅标题过短（<2 字符）不参与匹配，避免误伤。
+        """
+        engine = self._get_recommend_engine()
+        if not engine:
+            return candidates
+        try:
+            subs = engine.subscribed_titles()
+        except Exception:
+            return candidates
+        subs = {s for s in subs if len(s) >= 2}
+        if not subs:
+            return candidates
+        from .recommend import _norm  # noqa: WPS433
+        out: List[Any] = []
+        for c in candidates:
+            nt = _norm(getattr(c, "title", ""))
+            if nt and any(s in nt for s in subs):
+                continue
+            out.append(c)
+        return out
 
     @staticmethod
     def _recommend_media_key(media: Optional[Dict[str, Any]], info: Dict[str, Any]) -> str:
@@ -2636,6 +2682,17 @@ class MagicFlow(_PluginBase):
                         f"（如：{_expiring_sample}）",
                         "warning",
                     )
+            # ★ 订阅排除（刷流选种）：命中当前订阅标题的候选直接剔除，避免抢主人要看的片。
+            if filtered and getattr(task, "except_subscribe", True):
+                try:
+                    _before = len(filtered)
+                    filtered = self._exclude_subscribed(filtered)
+                    _excl = _before - len(filtered)
+                    if _excl:
+                        wash_reasons["订阅命中"] = _excl
+                        self._log(f"魔流 [{task.name}] 排除订阅命中 {_excl} 个")
+                except Exception as _sub_err:
+                    self._dbg(f"订阅排除失败（忽略）: {_sub_err}")
             # ★ 最优解算法（做种人数 Ni × 体积 Si）：真实边际时魔。
             # a_current = 现有池子合计 A；边际增益 B(A+a)−B(A) 才能反映「再加一颗」的真实收益。
             a_current = 0.0
@@ -3482,15 +3539,21 @@ class MagicFlow(_PluginBase):
             _seed_days = int(getattr(task, "brush_seed_days", 0) or 0)
             if all_tagged:
                 try:
+                    # ★ 产出换种优先：单种已上传/分享率达标 → 换新（先于时间/无上传判定）
+                    out["rotated"] = self._cleanup_rotated(
+                        task, downloader, list(all_tagged), protected
+                    )
+                    # 本轮流转掉的（已达产出阈值）不再参与时间/无上传判定，避免重复处理
+                    _still = [t for t in all_tagged if not self._rotate_reason(task, t)]
                     if _seed_days > 0:
                         # 下载中：上传考核（每 check 一次，无上传即杀）
                         _incomplete = [
-                            t for t in all_tagged
+                            t for t in _still
                             if float(getattr(t, "progress", 0) or 0) < 0.999
                         ]
                         # 已下完：满 N 天轮换
                         _complete = [
-                            t for t in all_tagged
+                            t for t in _still
                             if float(getattr(t, "progress", 0) or 0) >= 0.999
                         ]
                         out["no_upload"] = self._cleanup_no_upload(
@@ -3502,7 +3565,7 @@ class MagicFlow(_PluginBase):
                     else:
                         # 未设天数：不分状态统一按「无上传」判定
                         out["no_upload"] = self._cleanup_no_upload(
-                            task, downloader, list(all_tagged), protected
+                            task, downloader, _still, protected
                         )
                 except Exception as _nu_err:
                     self._log(f"魔流 [{task.name}] 刷流清理异常: {_nu_err}", "warning")
@@ -3514,11 +3577,12 @@ class MagicFlow(_PluginBase):
             _tt = [t for t in (_st or []) if task.brush_tag in t.tags]
             _aged = int(out.get("aged", 0))
             _noupl = int(out.get("no_upload", 0))
-            out["deleted"] = int(out["no_progress"]) + _aged + _noupl
+            _rot = int(out.get("rotated", 0))
+            out["deleted"] = int(out["no_progress"]) + _aged + _noupl + _rot
             out["kept"] = len(_tt)
             self._log(
                 f"魔流 [{task.name}] 刷流完成："
-                f"恢复 {out['resumed']} / 无进度 {out['no_progress']} / 到期 {_aged} / 无上传 {_noupl}；"
+                f"恢复 {out['resumed']} / 无进度 {out['no_progress']} / 到期 {_aged} / 产出 {_rot} / 无上传 {_noupl}；"
                 f"保留 {out['kept']} 个"
             )
             return out
@@ -4554,6 +4618,88 @@ class MagicFlow(_PluginBase):
             self._log(
                 f"魔流 [{task.name}] 刷流清理「做种满 {days} 天」种子 {deleted} 个"
             )
+        return deleted
+
+    @staticmethod
+    def _rotate_reason(task: MagicFlowTaskConfig, t: TorrentInfo) -> Optional[str]:
+        """单种是否达到「产出换种」阈值（返回理由，未达标返回 None）。"""
+        try:
+            up_gb = float(getattr(task, "rotate_upload_gb", None) or 0.0)
+        except (TypeError, ValueError):
+            up_gb = 0.0
+        try:
+            ratio_thr = float(getattr(task, "rotate_ratio", None) or 0.0)
+        except (TypeError, ValueError):
+            ratio_thr = 0.0
+        if up_gb <= 0 and ratio_thr <= 0:
+            return None
+        try:
+            uploaded = float(getattr(t, "uploaded", 0) or 0)
+        except (TypeError, ValueError):
+            uploaded = 0.0
+        try:
+            ratio = float(getattr(t, "ratio", 0) or 0)
+        except (TypeError, ValueError):
+            ratio = 0.0
+        if up_gb > 0 and uploaded >= up_gb * (1024 ** 3):
+            return f"刷流：单种上传达标 {uploaded / (1024 ** 3):.1f} GB"
+        if ratio_thr > 0 and ratio >= ratio_thr:
+            return f"刷流：分享率达标 {ratio:.2f}"
+        return None
+
+    def _cleanup_rotated(
+        self,
+        task: MagicFlowTaskConfig,
+        downloader: DownloaderAdapter,
+        managed: List[TorrentInfo],
+        protected_hashes: Optional[Set[str]] = None,
+    ) -> int:
+        """刷流模式：按「产出」换种 —— 单种已上传 ≥ ``rotate_upload_gb`` GB 或 分享率 ≥ ``rotate_ratio`` → 清理换新。
+
+        * 只作用于纯刷流临时种；protected / 资产闸门命中的种子永不删。
+        * 两个阈值都留空时不做任何事（返回 0）。
+        """
+        if not managed:
+            return 0
+        protected_hashes = protected_hashes or set()
+        to_delete: List[TorrentInfo] = []
+        reasons: Dict[str, str] = {}
+        for t in managed:
+            h = (t.hash or "").lower()
+            if not h or h in protected_hashes:
+                continue
+            reason = self._rotate_reason(task, t)
+            if reason:
+                to_delete.append(t)
+                reasons[h] = reason
+        if not to_delete:
+            return 0
+        deleted = 0
+        hashes = [t.hash for t in to_delete if t.hash]
+        try:
+            success, error = downloader.delete_torrents(
+                hashes=hashes, delete_file=bool(getattr(task, "delete_files", True))
+            )
+        except Exception:
+            success, error = 0, "删除异常"
+        deleted = int(success or 0)
+        if deleted and self._store:
+            items = [
+                OperationItem(
+                    hash=t.hash,
+                    title=str(getattr(t, "title", "") or ""),
+                    reason=reasons.get((t.hash or "").lower(), "刷流：产出换新"),
+                    bonus_per_hour=0.0,
+                )
+                for t in to_delete[:deleted]
+            ]
+            self._store.journal.record(task_id=task.id, kind="deletion", items=items)
+            self._store.forget_torrents(task.id, [t.hash for t in to_delete[:deleted]])
+        _sample = next(iter(reasons.values()), "")
+        self._log(
+            f"魔流 [{task.name}] 刷流清理「产出达标换新」种子 {deleted} 个"
+            + (f"（如：{_sample}）" if _sample else "")
+        )
         return deleted
 
     def _cleanup_no_progress(
@@ -5871,6 +6017,9 @@ class MagicFlow(_PluginBase):
             upload_min_kbps=int(getattr(payload, "upload_min_kbps", 200) or 0),
             brush_min_leechers=int(getattr(payload, "brush_min_leechers", 1) or 0),
             brush_seed_days=int(getattr(payload, "brush_seed_days", 2) if getattr(payload, "brush_seed_days", 2) is not None else 2),
+            rotate_upload_gb=float(payload.rotate_upload_gb) if getattr(payload, "rotate_upload_gb", None) not in (None, "") else None,
+            rotate_ratio=float(payload.rotate_ratio) if getattr(payload, "rotate_ratio", None) not in (None, "") else None,
+            except_subscribe=getattr(payload, "except_subscribe", True) is not False,
             protect_perfect=getattr(payload, "protect_perfect", True) is not False,
             perfect_max_seeders=int(getattr(payload, "perfect_max_seeders", 3) or 0),
             perfect_min_weeks=float(getattr(payload, "perfect_min_weeks", 4.0) or 0.0),
@@ -5914,6 +6063,7 @@ class MagicFlow(_PluginBase):
             min_seed_time=int(payload.min_seed_time or 0),
             min_ratio=payload.min_ratio or 0.0,
             delete_files=payload.delete_files,
+            delete_except_tags=str(getattr(payload, "delete_except_tags", "") or "").strip(),
             exclude_zero_bonus=payload.exclude_zero_bonus,
             rss_support=payload.rss_support,
             up_speed=int(payload.up_speed) if payload.up_speed else None,
@@ -5968,6 +6118,9 @@ class MagicFlow(_PluginBase):
         task.upload_min_kbps = int(getattr(payload, "upload_min_kbps", 200) or 0)
         task.brush_min_leechers = int(getattr(payload, "brush_min_leechers", 1) or 0)
         task.brush_seed_days = int(getattr(payload, "brush_seed_days", 2) if getattr(payload, "brush_seed_days", 2) is not None else 2)
+        task.rotate_upload_gb = float(payload.rotate_upload_gb) if getattr(payload, "rotate_upload_gb", None) not in (None, "") else None
+        task.rotate_ratio = float(payload.rotate_ratio) if getattr(payload, "rotate_ratio", None) not in (None, "") else None
+        task.except_subscribe = getattr(payload, "except_subscribe", True) is not False
         task.protect_perfect = getattr(payload, "protect_perfect", True) is not False
         task.perfect_max_seeders = int(getattr(payload, "perfect_max_seeders", 3) or 0)
         task.perfect_min_weeks = float(getattr(payload, "perfect_min_weeks", 4.0) or 0.0)
@@ -6011,6 +6164,7 @@ class MagicFlow(_PluginBase):
         task.min_seed_time = int(payload.min_seed_time or 0)
         task.min_ratio = payload.min_ratio or 0.0
         task.delete_files = payload.delete_files
+        task.delete_except_tags = str(getattr(payload, "delete_except_tags", "") or "").strip()
         task.exclude_zero_bonus = payload.exclude_zero_bonus
         task.rss_support = payload.rss_support
         task.up_speed = int(payload.up_speed) if payload.up_speed else None
