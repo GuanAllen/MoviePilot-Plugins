@@ -1772,7 +1772,11 @@ class MagicFlow(_PluginBase):
         for day in snap.get("days", []):
             for sid in (day.get("sites") or {}):
                 budgets[sid] = self._pv_budget(sid)
+        # 把「已配置但今天还没花 PV」的站点也列出来(否则看不出预算是否生效)
+        for sid, val in (getattr(self, "_pv_budget_cfg", {}) or {}).items():
+            budgets.setdefault(str(sid), int(val))
         snap["budgets"] = budgets
+        snap["pv_budget_default"] = int(getattr(self, "_pv_default_budget", 0) or 0)
         snap["cache"] = self.cache_status()
         return snap
 
