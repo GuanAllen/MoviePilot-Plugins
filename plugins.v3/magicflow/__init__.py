@@ -81,7 +81,7 @@ from .models import (
     MagicFlowTorrentBatchPayload,
     DOWNLOADER_PREF_RECOMMENDED,
 )
-from .persistence import MagicFlowStore, OperationItem
+from .persistence import MagicFlowStore, OperationItem, WorkReport
 from .sites import BonusCalculator, get_calculator, get_formula_params
 from .sites.formula_fetch import (
     fetch_site_formula,
@@ -94,7 +94,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "2.11.0"
+__version__ = "2.12.0"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -1201,6 +1201,15 @@ class MagicFlow(_PluginBase):
             except Exception:  # noqa: BLE001
                 pass
 
+    def _settle(self, report: WorkReport) -> None:
+        """统一分账入口：把 worker 的 WorkReport 交给 store.settle（无 store 则忽略）。"""
+        if not self._store:
+            return
+        try:
+            self._store.settle(report)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"魔流 分账失败：{e}")
+
     @staticmethod
     def _jitter_seconds(minutes: Any) -> int:
         """interval 抖动（秒）：取间隔的 ~15%，夹在 [3, 90]，错开几十个任务的同刻开火。"""
@@ -1381,12 +1390,17 @@ class MagicFlow(_PluginBase):
                         duration=duration,
                         error_message=summary.get("reason") if summary.get("status") == "failed" else None,
                     )
-                self._store.record_run_summary(
-                    task_id,
-                    summary.get("status", ""),
-                    summary.get("reason", ""),
-                    duration,
-                )
+                self._settle(WorkReport(
+                    task_id=task_id,
+                    source="brush",
+                    status=summary.get("status", ""),
+                    reason=summary.get("reason", ""),
+                    duration=duration,
+                    added=summary.get("added"),
+                    deleted=summary.get("deleted"),
+                    kept=summary.get("kept"),
+                    reused=summary.get("reused"),
+                ))
         except Exception as e:
             import traceback
             logger.error(f"魔流 brush 异常: {e}\n{traceback.format_exc()}")
@@ -1395,7 +1409,10 @@ class MagicFlow(_PluginBase):
                     self._store.journal.finalize(
                         record.operation_id, "failed", error_message=str(e), duration=time.time() - started
                     )
-                self._store.record_run_summary(task_id, "failed", str(e), time.time() - started)
+                self._settle(WorkReport(
+                    task_id=task_id, source="brush", status="failed",
+                    reason=str(e), duration=time.time() - started,
+                ))
         finally:
             self._end_run(task_id)
             self._release_worker_slot()
@@ -1553,6 +1570,15 @@ class MagicFlow(_PluginBase):
                 f"魔流 [{task.name}] 辅种慢扫完成：命中 {reused} 个（本轮扫 {scanned} 个候选，"
                 f"耗时 {time.time() - started:.1f}s）"
             )
+            # 分账：慢扫走独立命名空间（slow_reused），不碰刷流/检查的 last_* 字段
+            self._settle(WorkReport(
+                task_id=task_id,
+                source="reuse",
+                status="done",
+                slow_reused=reused,
+                scanned=scanned,
+                duration=time.time() - started,
+            ))
             if self._store:
                 self._store.journal.add(
                     task_id=task_id,
@@ -1827,25 +1853,16 @@ class MagicFlow(_PluginBase):
                     "本轮不抓取不下种（避免无效请求），等待槽位释放"
                 )
                 self._log(f"魔流 [{task.name}] {_reason}")
-                if self._store:
-                    self._store.record_run_summary(task.id, "noop", _reason)
-                    self._store.record_run_success(task.id, added=0, deleted=0, kept=base_cnt)
                 self._invalidate_summary()
                 self._set_phase(task.id, "done")
                 return {"status": "noop", "reason": _reason, "added": 0, "reused": 0, "deleted": 0, "kept": base_cnt}
             if (max_keep and base_cnt >= max_keep) or (disk_gb and base_size >= disk_gb):
                 reason = "保种池容量/数量已满，本轮停止抓取，等待 check 任务清理低效种子释放空间"
                 self._log(f"魔流 [{task.name}] {reason}")
-                if self._store:
-                    self._store.record_run_summary(task.id, "noop", reason)
-                    self._store.record_run_success(task.id, added=0, deleted=0, kept=base_cnt)
                 self._invalidate_summary()
                 self._set_phase(task.id, "done")
                 return {"status": "noop", "reason": reason, "added": 0, "reused": 0, "deleted": 0, "kept": base_cnt}
             if not task.refill_when_empty:
-                if self._store:
-                    self._store.record_run_summary(task.id, "noop", "未开启补种")
-                    self._store.record_run_success(task.id, added=0, deleted=0, kept=base_cnt)
                 self._invalidate_summary()
                 self._set_phase(task.id, "done")
                 return {"status": "noop", "reason": "未开启补种", "added": 0, "reused": 0, "deleted": 0, "kept": base_cnt}
@@ -2006,11 +2023,9 @@ class MagicFlow(_PluginBase):
                 )
             if not scored and not (task.reuse_existing and reuse_pool):
                 self._log(f"魔力任务 [{task.name}] 洗池后无可用候选（过滤通过 {len(filtered)}）")
-                if self._store:
-                    self._store.record_run_success(task.id, added=0, deleted=0, kept=base_cnt)
                 self._invalidate_summary()
                 self._set_phase(task.id, "done")
-                return {"status": "noop", "reason": "洗池后无可用候选", "candidates": len(candidates), "filtered": 0}
+                return {"status": "noop", "reason": "洗池后无可用候选", "candidates": len(candidates), "filtered": 0, "added": 0, "reused": 0, "deleted": 0, "kept": base_cnt}
 
             # ★ 最优解排序：名额受限（保种数上限）→ 按边际 value 降序；
             # 仅磁盘受限 → 按每 GB 效率 efficiency 降序（把每 GB 收益最大的先装）。
@@ -2513,10 +2528,6 @@ class MagicFlow(_PluginBase):
                 else f"{cursor}（空转未推进）"
             )
 
-            if self._store:
-                self._store.record_run_success(
-                    task.id, added=added, deleted=0, kept=len(managed_hashes), reused=reused
-                )
             self._invalidate_summary()
             self._set_phase(task.id, "done")
             detail = (
@@ -2543,11 +2554,6 @@ class MagicFlow(_PluginBase):
             import traceback
             self._log(f"魔流 [{task.name}] 刷流失败: {e}\n{traceback.format_exc()}", "error")
             self._set_phase(task.id, "error")
-            if self._store:
-                try:
-                    self._store.record_run_summary(task.id, "failed", str(e))
-                except Exception:
-                    pass
             return {"status": "failed", "reason": str(e)}
 
     def check(self, task_id: str) -> None:
@@ -2610,12 +2616,14 @@ class MagicFlow(_PluginBase):
                 return
 
             r = self._cleanup_round(task, downloader)
-            self._store.record_run_success(
-                task.id,
+            self._settle(WorkReport(
+                task_id=task.id,
+                source="check",
+                status="done",
                 added=0,
                 deleted=int(r.get("deleted", 0) or 0),
                 kept=int(r.get("kept", 0) or 0),
-            )
+            ))
             self._invalidate_summary()
 
         except Exception as e:
