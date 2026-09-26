@@ -131,6 +131,12 @@ class RecommendEngine:
             rating = float(getattr(info, "vote_average", 0) or 0)
         except Exception:  # noqa: BLE001
             rating = 0.0
+        try:
+            poster = info.get_poster_image() or ""
+        except Exception:  # noqa: BLE001
+            poster = ""
+        if not poster:
+            poster = str(getattr(info, "poster_path", "") or "")
         keys = self._keys_of(info)
         mtype = getattr(getattr(info, "type", None), "value", None) or str(
             getattr(info, "type", "") or ""
@@ -146,6 +152,8 @@ class RecommendEngine:
                 "douban_id": getattr(info, "douban_id", None),
                 "tmdb_id": getattr(info, "tmdb_id", None),
                 "rating": rating,
+                "poster": poster,
+                "overview": str(getattr(info, "overview", "") or ""),
                 "in_chart": bool(keys & self._chart_keys()),
                 "in_subscribe": bool(keys & self._subscribe_keys()),
             }

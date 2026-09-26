@@ -96,7 +96,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.0.7"
+__version__ = "3.0.8"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -2154,6 +2154,8 @@ class MagicFlow(_PluginBase):
                     "size_gb": float(getattr(t, "size_gb", 0) or 0),
                     "first_seen": first_seen,
                     "media": media,
+                    "poster": info.get("poster") or "",
+                    "overview": info.get("overview") or "",
                     "rating": info.get("rating"),
                     "in_chart": bool(info.get("in_chart")),
                     "in_subscribe": bool(info.get("in_subscribe")),
