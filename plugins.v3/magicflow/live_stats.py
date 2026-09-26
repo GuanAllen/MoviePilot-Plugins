@@ -33,6 +33,12 @@ DEFAULT_TTL = 240.0
 FAIL_COOLDOWN = 180.0
 # 站点用户栏页（NexusPHP 通用）
 DEFAULT_PAGE = "/index.php"
+# 「正在下载」列表页（NexusPHP 通用，带促销标记）
+LEECH_PAGE = "/getusertorrentlist.php?type=leeching&userid={uid}"
+# 回退页：站点没getusertorrentlist 时用 userdetails 的「当前下载」表
+LEECH_PAGE_ALT = "/userdetails.php?id={uid}"
+# 正在下载列表的缓存（秒）—— 只在告警时抓，抓完短缓存避免连环请求
+LEECH_TTL = 120.0
 
 _SIZE_UNITS = {
     "B": 1.0,
@@ -83,6 +89,62 @@ def _first_num(pattern: str, text: str) -> Optional[float]:
         return None
 
 
+def parse_uid(raw: str) -> Optional[int]:
+    """从任意站点页里抠出自己的 uid（`userdetails.php?id=116940` / `userid=116940`）。"""
+    s = str(raw or "")
+    m = re.search(r"userdetails\.php\?id=(\d+)", s)
+    if not m:
+        m = re.search(r"[?&]userid=(\d+)", s)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_free_promotion(cls: str, text: str) -> bool:
+    """促销标记 → 是否「完全免费」（免费 / 2X免费 都算免费；50%免费 **不算**）。"""
+    c = str(cls or "").lower()
+    t = str(text or "").strip()
+    if any(k in c for k in ("halfdown", "50pct", "30pct", "25pct", "1down")) or "%" in t:
+        return False
+    return bool("free" in c or ("免费" in t and "%" not in t))
+
+
+def parse_leeching_rows(raw: str) -> List[Dict[str, Any]]:
+    """解析「正在下载」列表 → [{tid, name, size, size_text, promotion, free}]（同 tid 去重）。"""
+    s = str(raw or "")
+    out: Dict[str, Dict[str, Any]] = {}
+    pattern = re.compile(
+        r"details\.php\?id=(\d+)[^>]*title=[\"']([^\"']+)[\"']",
+        re.S | re.I,
+    )
+    for m in pattern.finditer(s):
+        tid = str(m.group(1))
+        # 取本行往后一段作为「行块」：标题格 + 紧跟的大小格（不同模板列数不同，只看第一个带单位的大小）
+        block = s[m.start(): m.start() + 900]
+        # 促销标记只认**标题格**（第一个 </td> 之前），避免扫到下一行
+        title_cell = block.split("</td>")[0]
+        pm = re.search(r"class=[\"']promotion\s*([a-z0-9_\- ]+)[\"']", title_cell, re.I)
+        cls = (pm.group(1) if pm else "").strip()
+        tm = re.search(r">\s*([^<>]{1,24}?)\s*</font>", title_cell)
+        ptext = tm.group(1) if tm else ""
+        sm = re.search(r"\b(\d[\d.,]*\s*[KMGTP]?i?B)\b", block, re.I)
+        size_text = sm.group(1) if sm else ""
+        if tid in out:
+            continue
+        out[tid] = {
+            "tid": tid,
+            "name": _html.unescape(str(m.group(2))).strip(),
+            "size_text": size_text.strip(),
+            "size": parse_size(size_text),
+            "promotion": (ptext or cls).strip(),
+            "free": _is_free_promotion(cls, ptext),
+        }
+    return list(out.values())
+
+
 def parse_user_bar(raw: str) -> Dict[str, Any]:
     """解析 NexusPHP 用户栏 → {ratio, upload, download, seeding, leeching, bonus_per_hour, bonus}。
 
@@ -99,6 +161,7 @@ def parse_user_bar(raw: str) -> Dict[str, Any]:
         "leeching": None,
         "bonus_per_hour": None,
         "bonus": None,
+        "uid": parse_uid(raw),
     }
     # 分享率（也兼容 "分享率 0.35"）
     val = _first_num(r"分享率[：:]\s*([0-9]+(?:\.[0-9]+)?)", text)
@@ -152,6 +215,34 @@ def parse_user_bar(raw: str) -> Dict[str, Any]:
     return out
 
 
+def _norm_title(text: Any) -> frozenset:
+    """标题归一化：小写、去 [组名]、非字母数字/汉字都当分隔符、去年代 → 词集合。"""
+    s = str(text or "").lower()
+    s = re.sub(r"\[[^\]]*\]", " ", s)
+    s = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", " ", s)
+    s = re.sub(r"\b(19[0-9]{2}|20[0-9]{2})\b", " ", s)
+    return frozenset(t for t in s.split() if len(t) > 1)
+
+
+def title_match(a: Any, b: Any) -> bool:
+    """两个标题是否同一 Release（处理「点 vs 空格」「站上带年代」这类差异）。
+
+    规则：① 归一化后词集合完全相同 → 是；② Jaccard ≥ 0.8 → 是；
+    ③ 弱一些但重叠过半且双方都不是空 → 交/并 ≥ 0.5。绝不靠猜。
+    """
+    sa, sb = _norm_title(a), _norm_title(b)
+    if not sa or not sb:
+        return False
+    if sa == sb:
+        return True
+    inter = len(sa & sb)
+    union = len(sa | sb)
+    if union <= 0:
+        return False
+    j = inter / union
+    return j >= 0.8 or (inter >= 3 and j >= 0.5)
+
+
 class LiveStats:
     """站点实时数据 + 采样历史（速率/净增/告警判定）。"""
 
@@ -163,6 +254,7 @@ class LiveStats:
         self._cooldown: Dict[str, float] = {}
         self._samples: Dict[str, List[List[float]]] = {}
         self._loaded = False
+        self._leech: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 
     # ---------------------------------------------------------------- 抓取
     def _log(self, msg: str, level: str = "info") -> None:
@@ -177,18 +269,18 @@ class LiveStats:
         except Exception:  # noqa: BLE001
             return None
 
-    def _fetch_once(self, site_id: int, page: str = DEFAULT_PAGE) -> Dict[str, Any]:
-        """真抓一次（无缓存）。返回 {ok, ...}；异常一律 ok=False（绝不抛出）。"""
+    def _get_text(self, site_id: int, page: str) -> Tuple[str, Optional[str], int]:
+        """用站点 cookie 抓一页正文。返回 (text, error, status)。异常一律吞掉。"""
         site = self._site(site_id)
         if not site:
-            return {"ok": False, "error": "站点不存在"}
+            return "", "站点不存在", 0
         base = (getattr(site, "url", "") or f"https://{getattr(site, 'domain', '')}").rstrip("/")
         if not base:
-            return {"ok": False, "error": "站点地址为空"}
+            return "", "站点地址为空", 0
         try:
             from app.sdk.network import RequestUtils  # noqa: WPS433
         except Exception as err:  # noqa: BLE001
-            return {"ok": False, "error": f"SDK 不可用: {err}"}
+            return "", f"SDK 不可用: {err}", 0
         url = f"{base}/{str(page or DEFAULT_PAGE).lstrip('/')}"
         try:
             req = RequestUtils(
@@ -199,9 +291,9 @@ class LiveStats:
             )
             resp = req.get_res(url)
         except Exception as err:  # noqa: BLE001
-            return {"ok": False, "error": f"请求失败: {err}"}
+            return "", f"请求失败: {err}", 0
         if resp is None:
-            return {"ok": False, "error": "无响应"}
+            return "", "无响应", 0
         status = int(getattr(resp, "status_code", 0) or 0)
         try:
             raw = resp.content or b""
@@ -217,7 +309,19 @@ class LiveStats:
         except UnicodeDecodeError:
             text = raw.decode("gbk", "ignore")
         if status >= 400 or not text:
-            return {"ok": False, "error": f"HTTP {status}", "status": status}
+            return "", f"HTTP {status}", status
+        return text, None, status
+
+    def _fetch_once(self, site_id: int, page: str = DEFAULT_PAGE) -> Dict[str, Any]:
+        """真抓一次（无缓存）。返回 {ok, ...}；异常一律 ok=False（绝不抛出）。"""
+        site = self._site(site_id)
+        if not site:
+            return {"ok": False, "error": "站点不存在"}
+        base = (getattr(site, "url", "") or f"https://{getattr(site, 'domain', '')}").rstrip("/")
+        text, err, status = self._get_text(site_id, page)
+        if err:
+            return {"ok": False, "error": err, "status": status}
+        url = f"{base}/{str(page or DEFAULT_PAGE).lstrip('/')}"
         parsed = parse_user_bar(text)
         got = [k for k, v in parsed.items() if v not in (None, 0.0)]
         if not got:
@@ -226,6 +330,54 @@ class LiveStats:
         out.update(parsed)
         out["fields"] = got
         return out
+
+    def leeching(self, site_id: int, force: bool = False) -> Dict[str, Any]:
+        """抓「正在下载」列表（带促销标记）→ {ok, uid, rows, url}。
+
+        供「下载量异常增长 → 清除非免费下载种」使用。短缓存（LEECH_TTL）避免连环请求。
+        """
+        if not site_id:
+            return {"ok": False, "error": "缺少 site_id"}
+        key = str(int(site_id))
+        now = time.time()
+        hit = self._leech.get(key)
+        if hit and not force and (now - float(hit[0])) < LEECH_TTL:
+            return dict(hit[1])
+        live = self.get(site_id)
+        uid = live.get("uid")
+        if not uid:
+            text, err, _st = self._get_text(site_id, DEFAULT_PAGE)
+            uid = parse_uid(text) if not err else None
+        if not uid:
+            res = {"ok": False, "error": "未解析出 uid"}
+            self._leech[key] = (now, res)
+            return dict(res)
+        page = LEECH_PAGE.format(uid=int(uid))
+        text, err, status = self._get_text(site_id, page)
+        rows: List[Dict[str, Any]] = []
+        if not err:
+            rows = parse_leeching_rows(text)
+        if not rows and not err:
+            # 回退：站点可能没有 getusertorrentlist，改用 userdetails.php 的「当前下载」表
+            alt = LEECH_PAGE_ALT.format(uid=int(uid))
+            text2, err2, _st2 = self._get_text(site_id, alt)
+            if not err2:
+                rows = parse_leeching_rows(text2)
+                if rows:
+                    page = alt
+        if err and not rows:
+            res = {"ok": False, "error": err, "uid": int(uid)}
+            self._leech[key] = (now, res)
+            return dict(res)
+        res = {
+            "ok": True,
+            "uid": int(uid),
+            "page": page,
+            "rows": rows,
+            "ts": time.time(),
+        }
+        self._leech[key] = (now, res)
+        return dict(res)
 
     def get(self, site_id: int, force: bool = False, page: str = DEFAULT_PAGE) -> Dict[str, Any]:
         """带缓存 + single-flight 的实时数据。抓不到时**返回上次成功值并标记 stale**。"""

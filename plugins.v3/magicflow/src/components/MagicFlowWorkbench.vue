@@ -125,6 +125,8 @@ const settingsDraft = ref({
   live_download_alert_mb: 50,
   live_ratio_target: 0.5,
   live_auto_stop: false,
+  live_kill_unfree: true,
+  live_kill_delete_files: true,
   live_notify: true,
 })
 // ---- 站点实时数据 + 流量监控（直连站点，非 MP 6h 快照）----
@@ -533,6 +535,8 @@ async function loadStatus() {
         live_download_alert_mb: status.value.live.download_alert_mb,
         live_ratio_target: status.value.live.ratio_target,
         live_auto_stop: status.value.live.auto_stop,
+        live_kill_unfree: status.value.live.kill_unfree,
+        live_kill_delete_files: status.value.live.kill_delete_files,
         live_notify: status.value.live.notify,
       } : {}),
       ...(status.value.cloud ? {
@@ -2777,7 +2781,9 @@ onUnmounted(() => {
             <div class="magicflow-settings-switches">
               <VSwitch v-model="settingsDraft.live_enabled" label="启用站点实时数据 + 流量监控" color="primary" hide-details inset />
               <VSwitch v-model="settingsDraft.live_notify" label="命中告警时推送通知" color="primary" hide-details inset />
-              <VSwitch v-model="settingsDraft.live_auto_stop" label="自动止损：下载量异常增长时把该站任务切「做种中」（停调度、不删种）" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.live_kill_unfree" label="★ 下载量异常增长 → 去站点「正在下载」列表，把非免费的种从下载器干掉" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.live_kill_delete_files" label="干掉时连文件一起删（只动「下载中」且名称+体积对得上的种）" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.live_auto_stop" label="同时把该站「运行中」任务切「做种中」（停调度、不删种）" color="primary" hide-details inset />
             </div>
             <div class="magicflow-settings-grid">
               <VTextField

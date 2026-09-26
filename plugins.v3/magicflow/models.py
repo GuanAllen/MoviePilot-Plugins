@@ -286,6 +286,8 @@ class MagicFlowSettingsPayload(BaseModel):
     live_download_alert_mb: float = Field(50.0, ge=1, description="下载量增长告警阈值（MB/分钟，超过则告警）")
     live_ratio_target: float = Field(0.5, ge=0, le=100, description="分享率目标线（低于则告警并算缺口），0 = 不检查")
     live_auto_stop: bool = Field(False, description="自动止损：下载量异常增长时把该站「运行中」任务切「做种中」（停调度、不删种）")
+    live_kill_unfree: bool = Field(True, description="下载量异常增长时：取站点「正在下载」列表，把非免费的种从下载器干掉")
+    live_kill_delete_files: bool = Field(True, description="干掉非免费下载种时是否连文件一起删（只对「下载中」且名称+体积匹配的种生效）")
     live_notify: bool = Field(True, description="站点监控命中时推送通知")
 
     # ── 云盘归档（夸克冷库）────────────────────────────────────────────
