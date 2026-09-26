@@ -4650,7 +4650,8 @@ onUnmounted(() => {
     padding-block-start: 0;
   }
 
-  /* ★ 窄屏：顶栏吸附在滚动容器顶部 —— 往下滑时品牌栏常驻，不再跟着滑走 */
+  /* ★ 窄屏：顶栏吸附在滚动容器顶部 —— 往下滑时品牌栏常驻，不再跟着滑走
+     背景用不透明的页面底色（#0b1226），内容从下面穿过时不会被“透”出来 */
   .magicflow-page__header {
     position: sticky;
     top: var(--magicflow-sticky-top, 0px);
@@ -4658,8 +4659,9 @@ onUnmounted(() => {
     margin-inline: -12px;
     padding: 12px;
     border-block-end: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
-    background-color: var(--magicflow-panel-bg, rgba(11, 18, 38, 0.92));
-    backdrop-filter: blur(10px);
+    background-color: #0b1226;
+    background-image: none;
+    backdrop-filter: none;
   }
 
   .magicflow-page__header,
