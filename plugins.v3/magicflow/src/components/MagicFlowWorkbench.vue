@@ -579,6 +579,18 @@ const recommendItems = computed(() => {
   return items
 })
 const confirmedCount = computed(() => (recommendData.value.items || []).filter(i => i.status === 'confirmed').length)
+// 可手动确认的行：命中推荐（待确认），或「待核实」里非「已在库 / 重复」的临时种。
+function recommendActionable(rec) {
+  if (!rec) return false
+  const st = String(rec.status || '').toLowerCase()
+  if (st === 'recommended') return true
+  if (st === 'pending') {
+    const r = String(rec.reason || '')
+    return !r.includes('已在影视库') && !r.includes('重复推荐')
+  }
+  return false
+}
+const actionableCount = computed(() => (recommendData.value.items || []).filter(recommendActionable).length)
 
 async function loadRecommend() {
   try {
@@ -2557,6 +2569,8 @@ onUnmounted(() => {
           <div class="magicflow-recommend-dialog__summary">
             <span><strong>{{ recommendData.recommended || 0 }}</strong> 待确认</span>
             <i>·</i>
+            <span><strong>{{ actionableCount }}</strong> 可确认</span>
+            <i>·</i>
             <span><strong>{{ confirmedCount }}</strong> 已入库</span>
             <i>·</i>
             <span>共 {{ recommendData.total || 0 }} 条</span>
@@ -2574,7 +2588,7 @@ onUnmounted(() => {
             <header class="magicflow-panel__head">
               <div>
                 <div class="text-subtitle-2 font-weight-medium">甄别结果</div>
-                <div class="text-body-2 text-medium-emphasis">全部任务汇总 · 确认 = 自动整理入库；忽略 = 删除该临时种</div>
+                <div class="text-body-2 text-medium-emphasis">全部任务汇总 · 确认 = 自动整理入库；忽略 = 删除该临时种（«待核实»也可手动确认）</div>
               </div>
             </header>
             <div class="magicflow-recs">
@@ -2594,7 +2608,7 @@ onUnmounted(() => {
                     <template v-if="rec.note"> · {{ rec.note }}</template>
                   </span>
                 </div>
-                <div v-if="rec.status === 'recommended'" class="magicflow-rec__actions">
+                <div v-if="recommendActionable(rec)" class="magicflow-rec__actions">
                   <VBtn
                     size="small"
                     color="primary"
