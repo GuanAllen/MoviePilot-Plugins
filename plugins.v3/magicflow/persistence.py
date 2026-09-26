@@ -297,6 +297,35 @@ class OperationJournal:
             # 如果加载失败，初始化为空
             self._operations = {}
 
+        # 载入时自愈：进程中断/重载遗留的「卡在 submitting」孤儿记录 → 标记为中断
+        try:
+            self._heal_stale_submitting()
+        except Exception:
+            pass
+
+    # 超过该秒数仍 submitting 视为孤儿（正常运行 < _task_run_timeout=600s）
+    _STALE_SUBMITTING_SEC = 900.0
+
+    def _heal_stale_submitting(self) -> int:
+        """把过期仍处于 submitting 的记录标记为「中断」（进程异常/重载未正常收尾）。"""
+        now = time.time()
+        healed = 0
+        with self._lock:
+            for op in list(self._operations.values()):
+                try:
+                    created = float(getattr(op, "created_at", 0) or 0)
+                except (TypeError, ValueError):
+                    created = 0.0
+                if op.state == "submitting" and (now - created) > self._STALE_SUBMITTING_SEC:
+                    op.state = "failed"
+                    op.resolved_at = now
+                    if not getattr(op, "error_message", None):
+                        op.error_message = "中断（进程重载或异常，未正常收尾）"
+                    healed += 1
+            if healed:
+                self._save()
+        return healed
+
     def _save(self) -> None:
         """保存操作日志到磁盘。
 
