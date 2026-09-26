@@ -82,6 +82,7 @@ from .models import (
     DOWNLOADER_PREF_RECOMMENDED,
 )
 from .persistence import MagicFlowStore, OperationItem, WorkReport
+from .recommend import RecommendEngine
 from .sites import BonusCalculator, get_calculator, get_formula_params
 from .sites.formula_fetch import (
     fetch_site_formula,
@@ -94,7 +95,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "2.13.0"
+__version__ = "2.14.0"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -123,6 +124,9 @@ REUSE_SCAN_MAX = 15
 #   - 每轮批量：一次只取这么多个候选的 .torrent 做辅种判定。
 REUSE_INTERVAL_MINUTES = 15
 REUSE_WORKER_BATCH = 5
+# ★ 推荐甄别（刷流种价值生命周期）：独立低频 worker，同样插件级单 worker + 轮转。
+RECOMMEND_INTERVAL_MINUTES = 60
+RECOMMEND_SCAN_MAX = 15
 # 站点级候选抓取共享缓存 TTL（秒）：同站点的多个任务在此时窗内只抓**一份**候选，
 # 避免 N 个任务重复打同一站点 → 触发流控（这正是「几十个任务」的主要压力来源）。
 SITE_FETCH_TTL = 240.0
@@ -142,6 +146,14 @@ STATS_TTL = 6
 TAG_SNAPSHOT_TTL = 6.0
 # 站点/下载器「下拉选项」缓存 TTL（秒）：站点表/下载器表几乎不变，随 /status 重复拉取很浪费。
 OPTIONS_TTL = 300.0
+# ── 媒体资产价值闸门（2026-09-26）───────────────────────────────────────
+#  我们是「影视管理」类插件：下了的资源除了刷魔力/刷流，还有「看 / 收藏」的价值。
+#  命中下列标签的种子 = 已整理入库 / 跨站辅种（撑分享率）的「真·资产」
+#  → 删种时**永不删除**，绝不为提效把主人真正要看/收藏的资源连文件一起删（delete_files 默认 True！）。
+MEDIA_ASSET_TAGS: Tuple[str, ...] = ("已整理", "辅种")
+#  另外，命中「下载历史」的种子也视为资产（覆盖“手动下的、还没被整理”的情况）。
+#  历史集合按任务托管种批量查询，结果在此时长内缓存（秒），避免每轮都打 DB。
+MEDIA_ASSET_HISTORY_TTL = 120.0
 # /status 整包重数据缓存 TTL（秒）——stale-while-revalidate：命中秒回，过期后台静默刷新。
 STATUS_TTL = 15
 # 官种（official）列表抓取：缓存 TTL 与翻页数。
@@ -158,6 +170,17 @@ OFFICIAL_PAGES = 2
 # ============================================================
 # 复用：按「体积接近」预筛本机种子
 # ============================================================
+
+def _has_media_asset_tag(torrent: Any) -> bool:
+    """种子是否带「媒体资产」标签（已整理 / 辅种）→ 删种时永不删除。"""
+    tags = getattr(torrent, "tags", None) or []
+    return any(t in MEDIA_ASSET_TAGS for t in tags)
+
+
+def _torrent_hash(torrent: Any) -> str:
+    """取种子 infohash（小写）。"""
+    return str(getattr(torrent, "hash", "") or "").strip().lower()
+
 
 class _SizeIndex:
     """本机种子按体积索引，支持「邻近体积」查询。
@@ -495,6 +518,27 @@ class MagicFlow(_PluginBase):
         except Exception:
             self._defaults = MagicFlowDefaultsPayload().model_dump()
 
+        # 刷流种甄别与推荐（价值生命周期）
+        def _rf(v: Any, d: float) -> float:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return d
+
+        self._recommend_cfg = {
+            "enabled": bool(raw_config.get("recommend_enabled", True)),
+            "min_rating": _rf(raw_config.get("recommend_min_rating"), 7.5),
+            "require_chart": bool(raw_config.get("recommend_require_chart", True)),
+            "expire_days": _rf(raw_config.get("recommend_expire_days"), 7.0),
+            "tag": str(raw_config.get("recommend_tag") or "魔流-推荐").strip() or "魔流-推荐",
+            "auto_import": bool(raw_config.get("recommend_auto_import", True)),
+            "notify": bool(raw_config.get("recommend_notify", True)),
+            "temp_ttl_days": _rf(raw_config.get("recommend_temp_ttl_days"), 7.0),
+            "disk_min_free_gb": _rf(raw_config.get("recommend_disk_min_free_gb"), 50.0),
+        }
+        self._recommend_engine = RecommendEngine(self)
+        self._recommend_cursor = ""
+
         self._store = MagicFlowStore(self.get_data_path())
         self._apply_runtime_settings()
 
@@ -583,6 +627,27 @@ class MagicFlow(_PluginBase):
                 "summary": "诊断：用站点 cookie 抓取页面片段（只读）",
             },
             {
+                "path": "/debug/recognize",
+                "endpoint": self.debug_recognize,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "诊断：识别种子名（评分/榜单/订阅）",
+            },
+            {
+                "path": "/debug/recommend-run",
+                "endpoint": self.debug_recommend_run,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "诊断：立即跑一轮推荐甄别",
+            },
+            {
+                "path": "/debug/recommend-reset",
+                "endpoint": self.debug_recommend_reset,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "诊断：清空推荐甄别结果",
+            },
+            {
                 "path": "/settings",
                 "endpoint": self.update_settings,
                 "methods": ["POST"],
@@ -637,6 +702,34 @@ class MagicFlow(_PluginBase):
                 "methods": ["GET"],
                 "auth": "bear",
                 "summary": "测试 IYUU Token 连通性",
+            },
+            {
+                "path": "/recommend",
+                "endpoint": self.get_recommend_list,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "列出推荐甄别结果",
+            },
+            {
+                "path": "/recommend/{hash}/confirm",
+                "endpoint": self.confirm_recommend,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "确认推荐（自动整理入库）",
+            },
+            {
+                "path": "/recommend/{hash}/dismiss",
+                "endpoint": self.dismiss_recommend,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "忽略推荐并删除",
+            },
+            {
+                "path": "/recommend/{hash}/import",
+                "endpoint": self.import_recommend,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "手动整理入库",
             },
             {
                 "path": "/tasks",
@@ -870,6 +963,20 @@ class MagicFlow(_PluginBase):
                     },
                 }
             )
+        # ★ 推荐甄别：插件级单 worker（每轮只处理一个任务 → 服务数不随任务数增长）。
+        if bool(getattr(self, "_recommend_cfg", {}).get("enabled", True)):
+            services.append(
+                {
+                    "id": "Recommend",
+                    "name": "推荐甄别",
+                    "trigger": "interval",
+                    "func": self.recommend_scan,
+                    "kwargs": {
+                        "minutes": RECOMMEND_INTERVAL_MINUTES,
+                        "jitter": self._jitter_seconds(RECOMMEND_INTERVAL_MINUTES),
+                    },
+                }
+            )
         return services
 
     def stop_service(self) -> None:
@@ -901,6 +1008,15 @@ class MagicFlow(_PluginBase):
             "brush_upload_limit_kbps": float(getattr(self, "_brush_upload_limit_kbps", 10240.0) or 0),
             "iyuu_token": str(getattr(self, "_iyuu_token", "") or ""),
             "iyuu_sites": dict(getattr(self, "_iyuu_sites", {}) or {}),
+            "recommend_enabled": bool(self._recommend_cfg.get("enabled", True)),
+            "recommend_min_rating": float(self._recommend_cfg.get("min_rating", 7.5)),
+            "recommend_require_chart": bool(self._recommend_cfg.get("require_chart", True)),
+            "recommend_expire_days": float(self._recommend_cfg.get("expire_days", 7.0)),
+            "recommend_tag": str(self._recommend_cfg.get("tag", "魔流-推荐")),
+            "recommend_auto_import": bool(self._recommend_cfg.get("auto_import", True)),
+            "recommend_notify": bool(self._recommend_cfg.get("notify", True)),
+            "recommend_temp_ttl_days": float(self._recommend_cfg.get("temp_ttl_days", 7.0)),
+            "recommend_disk_min_free_gb": float(self._recommend_cfg.get("disk_min_free_gb", 50.0)),
             "defaults": dict(getattr(self, "_defaults", {}) or {}),
             "tasks": [task.to_dict() for task in self._task_configs.values()],
         }
@@ -1246,6 +1362,48 @@ class MagicFlow(_PluginBase):
         except Exception as e:
             self._log(f"获取下载器失败: {e}", "error")
             return None
+
+    def _media_asset_hashes(self, torrents: List[Any], task: Optional["MagicFlowTaskConfig"] = None) -> Set[str]:
+        """媒体资产价值闸门：返回「删种时永不删除」的种子 hash 集合。
+
+        两层判据（并集）：
+          1. 标签命中 ``MEDIA_ASSET_TAGS``（已整理 / 辅种）——最直接；
+          2. 命中 MoviePilot「下载历史」（覆盖手动下的、尚未整理入库的资源）。
+        下载历史集合按任务托管种**批量**查询并短缓存（``MEDIA_ASSET_HISTORY_TTL``），
+        避免每轮都打 DB。任何查询失败都只记 debug、不阻断删种流程。
+        """
+        hashes: Set[str] = set()
+        cand: List[str] = []
+        for t in torrents or []:
+            h = _torrent_hash(t)
+            if not h:
+                continue
+            cand.append(h)
+            if _has_media_asset_tag(t):
+                hashes.add(h)
+        if not cand:
+            return hashes
+        now = time.time()
+        cache = getattr(self, "_asset_hist_cache", None)
+        if cache is None:
+            cache = self._asset_hist_cache = {}
+        uniq = sorted(set(cand))
+        key = str(len(uniq)) + ":" + ":".join(uniq[:200])
+        hit = cache.get("__data__")
+        if not (hit and (now - float(hit.get("ts", 0))) < MEDIA_ASSET_HISTORY_TTL and hit.get("key") == key):
+            hist: Set[str] = set()
+            try:
+                from app.db.oper.downloadhistory import DownloadHistoryOper  # noqa: WPS433
+                recs = DownloadHistoryOper().get_by_hashes(uniq) or {}
+                for h in recs:
+                    if h:
+                        hist.add(str(h).lower())
+            except Exception as err:
+                self._dbg(f"下载历史查询失败（忽略）: {err}")
+            hit = cache["__data__"] = {"ts": time.time(), "key": key, "hist": hist}
+        hashes |= set(hit.get("hist") or set())
+        # 只统计「本任务托管范围内」的资产（避免把无关 hash 也算进去）
+        return {h for h in hashes if h in set(uniq)}
 
     def _tag_snapshot(self, downloader_name: str = "qbittorrent") -> Dict[str, List[Any]]:
         """下载器「全部种子按标签分组」快照（tag -> [TorrentInfo]），带短 TTL 缓存。
@@ -1653,6 +1811,327 @@ class MagicFlow(_PluginBase):
             self._log(f"魔流 [{task.name}] 辅种慢扫异常：{e}", "warning")
         finally:
             self._end_run(task_id)
+
+    # ---------------------------------------------------------
+    # 推荐甄别（刷流种价值生命周期）
+    # ---------------------------------------------------------
+
+    def _get_recommend_engine(self) -> RecommendEngine:
+        engine = getattr(self, "_recommend_engine", None)
+        if engine is None:
+            engine = self._recommend_engine = RecommendEngine(self)
+        return engine
+
+    @staticmethod
+    def _recommend_worth(info: Dict[str, Any], cfg: Dict[str, Any]) -> bool:
+        """是否够格推荐：评分 > 门槛 且（按需）叠加 榜单/热映/订阅。"""
+        if not info.get("recognized"):
+            return False
+        try:
+            min_rating = float(cfg.get("min_rating", 7.5) or 0)
+        except (TypeError, ValueError):
+            min_rating = 7.5
+        try:
+            rating = float(info.get("rating") or 0)
+        except (TypeError, ValueError):
+            rating = 0.0
+        if rating <= min_rating:
+            return False
+        if bool(cfg.get("require_chart", True)) and not (
+            info.get("in_chart") or info.get("in_subscribe")
+        ):
+            return False
+        return True
+
+    def _recommend_low_disk(self, torrents: List[Any]) -> bool:
+        """当前任务保存卷是否「磁盘不足」（低于阈值即视为过期）。"""
+        try:
+            min_free_gb = float(self._recommend_cfg.get("disk_min_free_gb", 50.0) or 0)
+        except (TypeError, ValueError):
+            min_free_gb = 50.0
+        if min_free_gb <= 0:
+            return False
+        path = ""
+        for t in torrents:
+            p = str(getattr(t, "save_path", "") or getattr(t, "content_path", "") or "")
+            if p:
+                path = p
+                break
+        if not path:
+            return False
+        try:
+            import shutil
+            return (shutil.disk_usage(path).free / (1024 ** 3)) < min_free_gb
+        except Exception:  # noqa: BLE001
+            return False
+
+    def recommend_scan(self) -> None:
+        """推荐甄别（插件级**单 worker**，低频）。每轮只处理一个任务（round-robin）。"""
+        cfg = getattr(self, "_recommend_cfg", {}) or {}
+        if not cfg.get("enabled", True):
+            return
+        eligible = [t for t in self._task_configs.values() if getattr(t, "enabled", False)]
+        if not eligible:
+            return
+        eligible.sort(key=lambda t: str(t.id))
+        ids = [str(t.id) for t in eligible]
+        last = str(getattr(self, "_recommend_cursor", "") or "")
+        start = (ids.index(last) + 1) % len(eligible) if last in ids else 0
+        task = eligible[start]
+        self._recommend_cursor = str(task.id)
+        if not self._acquire_worker_slot("推荐甄别"):
+            return
+        try:
+            try:
+                self._recommend_scan_task(task)
+            except Exception as e:  # noqa: BLE001
+                import traceback
+                logger.error(f"魔流 推荐甄别 调度异常: {e}\n{traceback.format_exc()}")
+        finally:
+            self._release_worker_slot()
+
+    def _recommend_scan_task(self, task: MagicFlowTaskConfig) -> None:
+        """对单个任务做一轮推荐甄别（识别 + 推荐/临时判定 + 生命周期清理）。"""
+        task_id = str(task.id)
+        cfg = getattr(self, "_recommend_cfg", {}) or {}
+        if not cfg.get("enabled", True) or not getattr(task, "enabled", False):
+            return
+        store = getattr(self._store, "recommend", None) if self._store else None
+        if store is None:
+            return
+        downloader = self._get_downloader(task.downloader)
+        if not downloader or not downloader.is_available:
+            return
+        if not self._try_begin_run(task_id):
+            self._log(f"魔流 [{task.name}] 推荐甄别：上一轮仍在执行，跳过")
+            return
+        try:
+            tag = task.brush_tag
+            groups = self._tag_snapshot(getattr(task, "downloader", None) or "qbittorrent")
+            torrents = list(groups.get(tag, []) or [])
+            if not torrents:
+                return
+            asset = self._media_asset_hashes(torrents, task)
+            protected = self._store.get_protected_torrents(task_id) if self._store else set()
+            rec_tag = str(cfg.get("tag") or "魔流-推荐")
+            engine = self._get_recommend_engine()
+            now = time.time()
+            try:
+                expire_sec = float(cfg.get("expire_days", 7.0) or 0) * 86400
+            except (TypeError, ValueError):
+                expire_sec = 7 * 86400
+            try:
+                temp_sec = float(cfg.get("temp_ttl_days", 7.0) or 0) * 86400
+            except (TypeError, ValueError):
+                temp_sec = 7 * 86400
+            low_disk = self._recommend_low_disk(torrents)
+
+            scanned = recommended = expired = evaluated = 0
+            to_delete: List[str] = []
+            budget = max(int(RECOMMEND_SCAN_MAX), 1)
+            for t in torrents:
+                h = str(getattr(t, "hash", "") or "").lower()
+                if not h or h in asset:
+                    continue
+                rec = store.get(h) or {}
+                status = rec.get("status")
+                if status in ("confirmed", "dismissed", "deleted"):
+                    continue
+                # 手动保护的种子（无推荐记录）跳过；推荐/待确认由本 worker 管理（才能走到过期删）
+                if h in protected and status not in ("recommended", "pending"):
+                    continue
+                first_seen = float(rec.get("first_seen") or 0) or now
+                scanned += 1
+                if status == "recommended":
+                    if low_disk or (expire_sec > 0 and now - first_seen > expire_sec):
+                        store.set_status(
+                            h, "expired", note="磁盘不足" if low_disk else "过期未确认"
+                        )
+                        to_delete.append(h)
+                        expired += 1
+                    continue
+                if status == "pending" and rec.get("evaluated_at"):
+                    # 已评估过：仅复查 TTL，不重复识别（廉价、幂等）
+                    if temp_sec > 0 and now - first_seen > temp_sec:
+                        store.set_status(h, "expired", note="临时种到期")
+                        to_delete.append(h)
+                        expired += 1
+                    continue
+                # 首次见到 → 甄别（每轮封顶，分摊识别开销）
+                if budget <= 0:
+                    continue
+                budget -= 1
+                evaluated += 1
+                info = engine.evaluate(str(getattr(t, "title", "") or ""))
+                media = None
+                if info.get("recognized"):
+                    media = {
+                        "source": info.get("media_source"),
+                        "id": info.get("media_id"),
+                        "type": info.get("type"),
+                        "title": info.get("title"),
+                        "year": info.get("year"),
+                    }
+                base: Dict[str, Any] = {
+                    "title": getattr(t, "title", ""),
+                    "size_gb": float(getattr(t, "size_gb", 0) or 0),
+                    "first_seen": first_seen,
+                    "media": media,
+                    "rating": info.get("rating"),
+                    "in_chart": bool(info.get("in_chart")),
+                    "in_subscribe": bool(info.get("in_subscribe")),
+                    "evaluated_at": now,
+                }
+                if self._recommend_worth(info, cfg):
+                    store.upsert(
+                        h, status="recommended", **base,
+                        reason=("评分 %.1f" % float(info.get("rating") or 0))
+                        + ("·在榜" if info.get("in_chart") else "")
+                        + ("·订阅" if info.get("in_subscribe") else ""),
+                    )
+                    self._recommend_tag(downloader, task_id, rec_tag, h)
+                    if self._store:
+                        try:
+                            self._store.protect_torrent(task_id, h)
+                        except Exception as _pe:  # noqa: BLE001
+                            self._log(f"推荐保护失败 {h}: {_pe}", "warning")
+                    recommended += 1
+                    self._recommend_notify(task, t, info)
+                else:
+                    store.upsert(
+                        h, status="pending", **base,
+                        reason=(f"评分 {info.get('rating')}" if info.get("recognized") else "未识别"),
+                    )
+                    if temp_sec > 0 and now - first_seen > temp_sec:
+                        store.set_status(h, "expired", note="临时种到期")
+                        to_delete.append(h)
+                        expired += 1
+            # 执行删除（过期未确认 / 临时种到期）
+            if to_delete:
+                success, error = downloader.delete_torrents(hashes=to_delete, delete_file=True)
+                if error:
+                    self._log(f"魔流 [{task.name}] 推荐甄别：删除失败 {error}", "warning")
+                items = []
+                for h in to_delete:
+                    rec2 = store.get(h) or {}
+                    items.append(OperationItem(
+                        hash=h, title=str(rec2.get("title") or ""),
+                        size_gb=float(rec2.get("size_gb") or 0),
+                        reason=str(rec2.get("note") or "过期未确认"), source="recommend",
+                    ))
+                    if success:
+                        store.set_status(h, "deleted")
+                self._store.journal.record(task_id=task_id, kind="recommend", items=items)
+            if scanned or to_delete:
+                _prot = len(self._store.get_protected_torrents(task_id)) if self._store else 0
+                self._log(
+                    f"魔流 [{task.name}] 推荐甄别：扫 {scanned} · 新评估 {evaluated} · "
+                    f"新推荐 {recommended} · 过期清理 {expired} · 保护集合 {_prot}"
+                    + ("（磁盘不足）" if low_disk else "")
+                )
+        except Exception as e:  # noqa: BLE001
+            import traceback
+            logger.error(f"魔流 推荐甄别异常: {e}\n{traceback.format_exc()}")
+            self._log(f"魔流 [{task.name}] 推荐甄别异常：{e}", "warning")
+        finally:
+            self._end_run(task_id)
+
+    def _recommend_tag(self, downloader: DownloaderAdapter, task_id: str,
+                       rec_tag: str, h: str) -> bool:
+        """给推荐种子补上「推荐」标签（append 语义，不动其它标签）。"""
+        try:
+            ok = bool(downloader.set_torrent_tags(h, [rec_tag]))
+        except Exception as err:  # noqa: BLE001
+            self._log(f"推荐标签失败 {h}: {err}", "warning")
+            ok = False
+        if ok and self._store:
+            self._store.journal.record(
+                task_id=task_id, kind="tag",
+                items=[OperationItem(hash=h, title="",
+                                     reason=f"推荐纳管·补标签 {rec_tag}", source="recommend")],
+            )
+        return ok
+
+    def _recommend_notify(self, task: MagicFlowTaskConfig, torrent: Any, info: Dict[str, Any]) -> None:
+        """命中推荐时推送通知（可关）。"""
+        if not bool(self._recommend_cfg.get("notify", True)):
+            return
+        try:
+            title = str(info.get("title") or getattr(torrent, "title", "") or "")
+            year = info.get("year") or ""
+            rating = info.get("rating") or 0
+            mark = "在榜" if info.get("in_chart") else ("订阅" if info.get("in_subscribe") else "")
+            self.post_message(
+                title="魔流·推荐",
+                text=(
+                    f"发现值得收藏的资源：{title} {year}\n"
+                    f"评分 {rating} · {mark}\n"
+                    f"体积 {float(getattr(torrent, 'size_gb', 0) or 0):.2f} GB · 任务「{task.name}」\n"
+                    f"已打「{self._recommend_cfg.get('tag')}」标签并保护；过期未确认将自动清理。\n"
+                    f"在工作台 →「推荐」确认入库，或按需忽略。"
+                ),
+            )
+        except Exception as err:  # noqa: BLE001
+            self._log(f"推荐通知发送失败：{err}", "warning")
+
+    def _recommend_import(self, h: str, rec: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
+        """确认后自动整理入库：识别 → 用 TransferChain 手动整理该资源。"""
+        try:
+            from app.chain.transfer import TransferChain  # type: ignore  # noqa: WPS433
+            from app.schemas.file import FileItem  # type: ignore  # noqa: WPS433
+        except Exception as err:  # noqa: BLE001
+            return False, f"MoviePilot 整理接口不可用：{err}"
+        title = str((rec or {}).get("title") or "")
+        torrent = None
+        try:
+            downloader = self._get_downloader("qbittorrent")
+            if downloader and downloader.is_available:
+                tl, _err = downloader.get_torrents()
+                for t in tl:
+                    if str(getattr(t, "hash", "")).lower() == str(h).lower():
+                        torrent = t
+                        break
+        except Exception:  # noqa: BLE001
+            torrent = None
+        if torrent is not None and not title:
+            title = str(getattr(torrent, "title", "") or "")
+        if not title:
+            return False, "缺少资源标题，无法识别"
+        try:
+            from .recommend import recognize  # noqa: WPS433
+            mi = recognize(title)
+        except Exception:  # noqa: BLE001
+            mi = None
+        if not mi:
+            return False, "未能识别媒体信息，无法自动整理"
+        save_path = ""
+        if torrent is not None:
+            save_path = str(
+                getattr(torrent, "content_path", "") or getattr(torrent, "save_path", "") or ""
+            )
+        if not save_path:
+            return False, "缺少保存路径，无法自动整理"
+        try:
+            import os as _os
+            clean = save_path.rstrip("/")
+            fileitem = FileItem(
+                path=save_path, storage="local", type="dir",
+                name=_os.path.basename(clean) or _os.path.basename(save_path),
+            )
+            ok, msg = TransferChain().manual_transfer(
+                fileitem=fileitem,
+                media_source=getattr(mi, "media_source", None),
+                media_id=getattr(mi, "media_id", None),
+                mtype=getattr(mi, "type", None),
+                downloader="qbittorrent",
+                download_hash=str(h).lower(),
+            )
+            self._log(f"推荐整理「{title}」→ ok={ok} msg={msg}")
+            return bool(ok), str(msg)
+        except Exception as err:  # noqa: BLE001
+            import traceback
+            logger.error(f"魔流 推荐整理异常: {err}\n{traceback.format_exc()}")
+            return False, f"整理异常：{err}"
 
     def _run_items(self, summary: Dict[str, Any], duration: float) -> List[OperationItem]:
         """一轮刷流的操作明细：首行摘要 + 逐条「新增 / 复用 / 失败」明细。"""
@@ -2727,6 +3206,19 @@ class MagicFlow(_PluginBase):
             all_tagged, _tag_err = downloader.get_torrents(tags=[task.brush_tag])
         except Exception as _tag_exc:
             all_tagged, _tag_err = [], str(_tag_exc)
+
+        # ★ 媒体资产价值闸门：把「已整理 / 辅种 / 下载历史命中」的种子并入保护集合，
+        #   本轮所有清理（无进度 / 过慢 / 非免费 / 无上传 / 到期 / 低效）都跳过它们。
+        try:
+            _asset_hashes = self._media_asset_hashes(list(all_tagged or []), task)
+            if _asset_hashes:
+                protected = set(protected) | set(_asset_hashes)
+                self._dbg(
+                    f"[{task.name}] 媒体资产保护 {len(_asset_hashes)} 个"
+                    f"（标签 {'/'.join(MEDIA_ASSET_TAGS)} 或命中下载历史）"
+                )
+        except Exception as _asset_err:
+            self._log(f"魔流 [{task.name}] 媒体资产保护计算失败: {_asset_err}", "warning")
 
         # 看门狗：与上一轮对比，检测「种子还在、标签却被抹掉」（托管骤降但本轮无删种）
         if not _tag_err:
@@ -4701,9 +5193,33 @@ class MagicFlow(_PluginBase):
             "brush_upload_limit_kbps": float(getattr(self, "_brush_upload_limit_kbps", 10240.0) or 0),
             "iyuu_token": str(getattr(self, "_iyuu_token", "") or ""),
             "iyuu_sites": dict(getattr(self, "_iyuu_sites", {}) or {}),
+            "recommend": dict(getattr(self, "_recommend_cfg", {}) or {}),
             "defaults": dict(getattr(self, "_defaults", {}) or {}),
         })
         return Response(success=True, data=data)
+
+    def debug_recognize(self, name: str = "") -> Response:
+        """诊断：识别一个种子名并返回评分/榜单/订阅命中（只读）。"""
+        try:
+            return Response(success=True, data=self._get_recommend_engine().evaluate(name or ""))
+        except Exception as e:  # noqa: BLE001
+            return Response(success=False, message=str(e))
+
+    def debug_recommend_run(self, task_id: str = "") -> Response:
+        """诊断：立即对一个任务跑一轮推荐甄别（不指定则 round-robin 一个）。"""
+        try:
+            if task_id:
+                task = self._get_task_config(task_id)
+                if not task:
+                    return Response(success=False, message="任务不存在")
+                self._recommend_scan_task(task)
+            else:
+                self.recommend_scan()
+            store = getattr(self._store, "recommend", None)
+            items = store.list() if store else []
+            return Response(success=True, data={"total": len(items), "items": items})
+        except Exception as e:  # noqa: BLE001
+            return Response(success=False, message=str(e))
 
     def debug_qb_torrents(self, downloader: str = "qbittorrent") -> Response:
         """诊断：列出指定下载器的全部种子并按标签分组（只读）。"""
@@ -4881,6 +5397,24 @@ class MagicFlow(_PluginBase):
             self._iyuu_client = self._build_iyuu_client(self._iyuu_token)
         else:
             self._iyuu_client.set_token(self._iyuu_token)
+        # 刷流种甄别与推荐（价值生命周期）
+        def _rf(v: Any, d: float) -> float:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return d
+
+        self._recommend_cfg = {
+            "enabled": bool(getattr(payload, "recommend_enabled", True)),
+            "min_rating": _rf(getattr(payload, "recommend_min_rating", 7.5), 7.5),
+            "require_chart": bool(getattr(payload, "recommend_require_chart", True)),
+            "expire_days": _rf(getattr(payload, "recommend_expire_days", 7.0), 7.0),
+            "tag": str(getattr(payload, "recommend_tag", "") or "魔流-推荐").strip() or "魔流-推荐",
+            "auto_import": bool(getattr(payload, "recommend_auto_import", True)),
+            "notify": bool(getattr(payload, "recommend_notify", True)),
+            "temp_ttl_days": _rf(getattr(payload, "recommend_temp_ttl_days", 7.0), 7.0),
+            "disk_min_free_gb": _rf(getattr(payload, "recommend_disk_min_free_gb", 50.0), 50.0),
+        }
         self._save_config()
         self._apply_runtime_settings()
         self._refresh_scheduler()
@@ -5574,6 +6108,13 @@ class MagicFlow(_PluginBase):
             task_torrents = [t for t in seeding_torrents if task.brush_tag in t.tags]
             torrent_bonus_list = self._convert_to_bonus_list(task_torrents, self._build_formula_params(task), self._task_pub_dates(task), getattr(task, "ti_source", "publish"), self._site_ni_map(task.site_id, task_torrents), self._site_official_titles(task.site_id))
             protected_hashes = self._store.get_protected_torrents(task_id) if self._store else set()
+            # 媒体资产价值闸门：预览也排除已整理/辅种/历史命中的种子
+            try:
+                _asset = self._media_asset_hashes(list(task_torrents or []), task)
+                if _asset:
+                    protected_hashes = set(protected_hashes) | set(_asset)
+            except Exception:
+                pass
 
             # 刷流模式：预览「无上传将被清理」的种子（只读，不删）
             if str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush":
@@ -5615,6 +6156,97 @@ class MagicFlow(_PluginBase):
 
         except Exception as e:
             self._log(f"预览删种失败: {e}", "error")
+            return Response(success=False, message=str(e))
+
+    # ---------------------------------------------------------
+    # API：推荐（刷流种价值生命周期）
+    # ---------------------------------------------------------
+
+    def get_recommend_list(self) -> Response:
+        """列出推荐甄别结果（供工作台「推荐」标签页）。"""
+        store = getattr(self._store, "recommend", None) if self._store else None
+        items = store.list() if store else []
+        cfg = getattr(self, "_recommend_cfg", {}) or {}
+        return Response(success=True, data={
+            "enabled": bool(cfg.get("enabled", True)),
+            "min_rating": float(cfg.get("min_rating", 7.5) or 0),
+            "require_chart": bool(cfg.get("require_chart", True)),
+            "expire_days": float(cfg.get("expire_days", 7.0) or 0),
+            "temp_ttl_days": float(cfg.get("temp_ttl_days", 7.0) or 0),
+            "tag": str(cfg.get("tag") or "魔流-推荐"),
+            "auto_import": bool(cfg.get("auto_import", True)),
+            "notify": bool(cfg.get("notify", True)),
+            "disk_min_free_gb": float(cfg.get("disk_min_free_gb", 50.0) or 0),
+            "items": items,
+            "total": len(items),
+            "recommended": len([i for i in items if i.get("status") == "recommended"]),
+        })
+
+    def confirm_recommend(self, hash: str) -> Response:
+        """确认推荐：标记 confirmed；开启自动入库时尝试整理入库。"""
+        store = getattr(self._store, "recommend", None) if self._store else None
+        if store is None:
+            return Response(success=False, message="推荐存储不可用")
+        rec = store.get(hash)
+        if not rec:
+            return Response(success=False, message="未找到该推荐记录")
+        store.set_status(hash, "confirmed", confirmed_at=time.time())
+        msg = "已确认"
+        if bool(self._recommend_cfg.get("auto_import", True)):
+            ok, imsg = self._recommend_import(hash, rec)
+            msg = "已确认并提交整理入库" if ok else f"已确认；自动整理未成功：{imsg}"
+            if ok:
+                store.upsert(hash, import_result=str(imsg)[:200])
+        return Response(success=True, message=msg, data=store.get(hash))
+
+    def dismiss_recommend(self, hash: str) -> Response:
+        """忽略推荐：删除该资源（不入影视库）。"""
+        store = getattr(self._store, "recommend", None) if self._store else None
+        if store is None:
+            return Response(success=False, message="推荐存储不可用")
+        rec = store.get(hash)
+        if not rec:
+            return Response(success=False, message="未找到该推荐记录")
+        ok, err = True, None
+        try:
+            downloader = self._get_downloader("qbittorrent")
+            if downloader and downloader.is_available:
+                n, err = downloader.delete_torrents(hashes=[hash], delete_file=True)
+                ok = bool(n)
+        except Exception as e:  # noqa: BLE001
+            ok, err = False, str(e)
+        store.set_status(hash, "dismissed", note="手动忽略")
+        if self._store:
+            self._store.journal.record(
+                task_id="", kind="recommend",
+                items=[OperationItem(hash=hash, title=str(rec.get("title") or ""),
+                                     reason="忽略并删除", source="recommend")],
+            )
+        return Response(success=bool(ok),
+                        message="已忽略并删除" if ok else f"已忽略；删除失败：{err}")
+
+    def import_recommend(self, hash: str) -> Response:
+        """手动触发整理入库。"""
+        store = getattr(self._store, "recommend", None) if self._store else None
+        if store is None:
+            return Response(success=False, message="推荐存储不可用")
+        rec = store.get(hash)
+        if not rec:
+            return Response(success=False, message="未找到该推荐记录")
+        ok, msg = self._recommend_import(hash, rec)
+        if ok:
+            store.upsert(hash, status="confirmed", confirmed_at=time.time(),
+                         import_result=str(msg)[:200])
+        return Response(success=ok, message=msg)
+
+    def debug_recommend_reset(self) -> Response:
+        """诊断：清空推荐甄别结果（仅测试/重置用）。"""
+        store = getattr(self._store, "recommend", None) if self._store else None
+        if store is None:
+            return Response(success=False, message="推荐存储不可用")
+        try:
+            return Response(success=True, data={"cleared": store.clear()})
+        except Exception as e:  # noqa: BLE001
             return Response(success=False, message=str(e))
 
     def get_operations(self, task_id: str) -> Response:

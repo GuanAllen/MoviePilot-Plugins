@@ -230,6 +230,20 @@ class MagicFlowSettingsPayload(BaseModel):
         description="站点密钥表：domain -> {passkey/uid/downhash...}（用户手填，优先于自动获取）",
     )
 
+    # ── 刷流种甄别与推荐（价值生命周期）────────────────────────────────────
+    #  影视管理类插件：下了的资源除了刷流，还有「看/收藏」价值。
+    #  刷流/魔力任务会把「同 hash 的库内资源」复用进来；对**非资产**的刷流种：
+    #  识别→豆瓣评分+榜单/订阅→值得则打「推荐」tag、保护并通知；过期未确认则删。
+    recommend_enabled: bool = Field(True, description="启用「刷流种甄别与推荐」")
+    recommend_min_rating: float = Field(7.5, ge=0, le=10, description="推荐门槛：豆瓣评分需大于该值")
+    recommend_require_chart: bool = Field(True, description="推荐需叠加「在榜/热映/命中订阅」（任一）")
+    recommend_expire_days: float = Field(7.0, ge=0, le=3650, description="推荐待确认窗口（天）；磁盘不足则立即视为过期")
+    recommend_tag: str = Field("魔流-推荐", max_length=60, description="推荐资源单独 tag（同时受价值闸门保护）")
+    recommend_auto_import: bool = Field(True, description="确认后自动整理入库")
+    recommend_notify: bool = Field(True, description="命中推荐时推送通知")
+    recommend_temp_ttl_days: float = Field(7.0, ge=0, le=3650, description="识别不出/不推荐的纯刷流临时种 TTL（天），0=不按此清")
+    recommend_disk_min_free_gb: float = Field(50.0, ge=0, description="磁盘剩余低于该值(GB)即视为「磁盘不足」：推荐种立即按过期处理")
+
 
 class MagicFlowDownloaderPrefsPayload(BaseModel):
     """魔流「下载器全局参数」请求模型

@@ -14,6 +14,7 @@ import {
   normalizeIyuuSites,
   normalizeSettings,
   normalizeTask,
+  recommendStatusMeta,
   RUN_MODES,
   runModeMeta,
   runStatusText,
@@ -52,6 +53,8 @@ const bonusCache = {}
 const candidateData = ref({ candidates: [], total: 0, reason_counts: {} })
 const candidateLoadedAt = ref(0)
 const operationData = ref({ operations: [], total: 0 })
+const recommendData = ref({ items: [], total: 0, recommended: 0, enabled: true })
+const recommendActing = ref('')
 const selectedTaskId = ref('')
 const activeTab = ref(props.initialTab || 'overview')
 const torrentFilter = ref('all')
@@ -213,6 +216,7 @@ const MF_TABS = [
   { value: 'overview', label: '任务概览' },
   { value: 'diagnostics', label: '运行诊断' },
   { value: 'pool', label: '种子池' },
+  { value: 'recommend', label: '推荐' },
   { value: 'config', label: '任务配置' },
 ]
 const flowNodes = computed(() => {
@@ -559,6 +563,48 @@ async function loadOperations(taskId) {
   } catch (err) {
     error.value = err?.message || String(err)
   }
+}
+
+// ---- 推荐甄别（价值生命周期） ----
+const recommendItems = computed(() => {
+  const order = { recommended: 0, pending: 1, confirmed: 2, dismissed: 3, deleted: 4 }
+  const items = [...(recommendData.value.items || [])]
+  items.sort((a, b) => {
+    const oa = order[a.status] ?? 9
+    const ob = order[b.status] ?? 9
+    if (oa !== ob) return oa - ob
+    return (b.updated_at || 0) - (a.updated_at || 0)
+  })
+  return items
+})
+const confirmedCount = computed(() => (recommendData.value.items || []).filter(i => i.status === 'confirmed').length)
+
+async function loadRecommend() {
+  try {
+    recommendData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/recommend`)) || { items: [], total: 0 }
+  } catch (err) {
+    error.value = err?.message || String(err)
+  }
+}
+
+async function actRecommend(hash, action, label) {
+  if (!hash || recommendActing.value) return
+  recommendActing.value = hash + action
+  try {
+    const data = unwrapResponse(await props.api.post(`${pluginBase.value}/recommend/${hash}/${action}`, {})) || {}
+    notify(data.message || `${label}完成`)
+    await loadRecommend()
+  } catch (err) {
+    notify(err?.response?.data?.message || err?.message || `${label}失败`, 'error')
+  } finally {
+    recommendActing.value = ''
+  }
+}
+function confirmRecommend(hash) {
+  return actRecommend(hash, 'confirm', '确认')
+}
+function dismissRecommend(hash) {
+  return actRecommend(hash, 'dismiss', '忽略')
 }
 
 // 选择任务并刷新其详情数据。
@@ -1075,6 +1121,7 @@ watch(activeTab, tab => {
     loadOperations(selectedTaskId.value)
     loadDetail(selectedTaskId.value)
   }
+  if (tab === 'recommend') loadRecommend()
 })
 
 watch(poolView, view => {
@@ -1107,6 +1154,7 @@ watch(
 
 onMounted(() => {
   loadStatus()
+  if (activeTab.value === 'recommend') loadRecommend()
   refreshTimer = window.setInterval(loadStatus, 30000)
   // 运行诊断页每秒多刷新一次任务阶段，驱动流程链转圈
   phaseTimer = window.setInterval(() => {
@@ -1916,6 +1964,89 @@ onUnmounted(() => {
                 </VSheet>
               </div>
             </VWindowItem>
+
+            <VWindowItem value="recommend">
+              <VSheet tag="section" class="magicflow-panel app-surface-static">
+                <header class="magicflow-panel__head">
+                  <div>
+                    <div class="text-subtitle-1 font-weight-medium">推荐甄别</div>
+                    <div class="text-body-2 text-medium-emphasis">
+                      刷流中发现的「值得收藏 / 观看」资源 · 评分 &gt; {{ recommendData.min_rating ?? 7.5 }}<template v-if="recommendData.require_chart !== false"> 且在榜 / 热映 / 订阅</template>
+                      · 过期 {{ recommendData.expire_days ?? 7 }} 天 · 磁盘余量下限 {{ recommendData.disk_min_free_gb ?? 50 }}G
+                    </div>
+                  </div>
+                  <VBtn variant="text" color="primary" prepend-icon="mdi-refresh" @click="loadRecommend">刷新</VBtn>
+                </header>
+                <div class="magicflow-stat-grid">
+                  <VSheet class="magicflow-stat magicflow-stat--accent app-surface-static">
+                    <strong>{{ recommendData.recommended || 0 }}</strong>
+                    <span>待确认 · 共 {{ recommendData.total || 0 }} 条甄别记录</span>
+                  </VSheet>
+                  <VSheet class="magicflow-stat app-surface-static">
+                    <strong>{{ confirmedCount }}</strong>
+                    <span>已确认入库</span>
+                  </VSheet>
+                  <VSheet class="magicflow-stat app-surface-static">
+                    <strong>{{ recommendData.tag || '魔流-推荐' }}</strong>
+                    <span>推荐标签 · 受价值闸门保护</span>
+                  </VSheet>
+                </div>
+                <VAlert v-if="recommendData.enabled === false" type="info" variant="tonal" density="compact" class="mt-3">
+                  推荐甄别已关闭（可在「插件设置 → 推荐」开启）
+                </VAlert>
+              </VSheet>
+
+              <VSheet tag="section" class="magicflow-panel app-surface-static mt-4">
+                <header class="magicflow-panel__head">
+                  <div>
+                    <div class="text-subtitle-1 font-weight-medium">甄别结果</div>
+                    <div class="text-body-2 text-medium-emphasis">确认 = 自动整理入库；忽略 = 删除该临时种</div>
+                  </div>
+                </header>
+                <div class="magicflow-recs">
+                  <article v-for="rec in recommendItems" :key="rec.hash" class="magicflow-rec">
+                    <div class="magicflow-rec__main">
+                      <strong :title="rec.title || rec.hash">{{ rec.title || rec.hash }}</strong>
+                      <span class="magicflow-rec__meta">
+                        <VChip size="x-small" variant="tonal" :color="recommendStatusMeta(rec.status).color">{{ recommendStatusMeta(rec.status).text }}</VChip>
+                        <template v-if="rec.rating"> · 评分 {{ Number(rec.rating).toFixed(1) }}</template>
+                        <template v-if="rec.size_gb"> · {{ Number(rec.size_gb).toFixed(2) }}G</template>
+                        <template v-if="rec.in_chart"> · 在榜</template>
+                        <template v-if="rec.in_subscribe"> · 已订阅</template>
+                      </span>
+                      <span class="magicflow-rec__sub">
+                        首次发现 {{ formatDateTime(rec.first_seen) }}
+                        <template v-if="rec.import_result"> · {{ rec.import_result }}</template>
+                        <template v-if="rec.note"> · {{ rec.note }}</template>
+                      </span>
+                    </div>
+                    <div v-if="rec.status === 'recommended'" class="magicflow-rec__actions">
+                      <VBtn
+                        size="small"
+                        color="primary"
+                        variant="tonal"
+                        prepend-icon="mdi-check"
+                        :loading="recommendActing === rec.hash + 'confirm'"
+                        @click="confirmRecommend(rec.hash)"
+                      >
+                        确认入库
+                      </VBtn>
+                      <VBtn
+                        size="small"
+                        color="error"
+                        variant="text"
+                        prepend-icon="mdi-delete-outline"
+                        :loading="recommendActing === rec.hash + 'dismiss'"
+                        @click="dismissRecommend(rec.hash)"
+                      >
+                        忽略删除
+                      </VBtn>
+                    </div>
+                  </article>
+                  <div v-if="!recommendItems.length" class="magicflow-table-empty">暂无甄别记录（刷流运行时会自动发现优质资源）</div>
+                </div>
+              </VSheet>
+            </VWindowItem>
           </VWindow>
         </main>
       </div>
@@ -1944,6 +2075,7 @@ onUnmounted(() => {
           <VTab value="paths" class="magicflow-settings-tab">下载目录</VTab>
           <VTab value="template" class="magicflow-settings-tab">默认任务模板</VTab>
           <VTab value="iyuu" class="magicflow-settings-tab">IYUU 辅种</VTab>
+          <VTab value="recommend" class="magicflow-settings-tab">推荐</VTab>
         </VTabs>
         <VDivider />
 
@@ -2234,7 +2366,7 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <div v-else class="magicflow-settings-form">
+          <div v-else-if="settingsTab === 'template'" class="magicflow-settings-form">
             <p class="magicflow-settings-hint">
               仅用于新建任务时预填，不影响已有任务。
             </p>
@@ -2266,6 +2398,73 @@ onUnmounted(() => {
               <VSwitch v-model="defaultsDraft.purge_unfree_incomplete" label="清理「已非免费」未下完种子" color="primary" hide-details inset />
               <VSwitch v-model="defaultsDraft.auto_resume_paused" label="自动恢复被暂停种子" color="primary" hide-details inset />
               <VSwitch v-model="defaultsDraft.delete_files" label="删种同时删除文件" color="primary" hide-details inset />
+            </div>
+          </div>
+
+          <div v-else-if="settingsTab === 'recommend'" class="magicflow-settings-form">
+            <p class="magicflow-settings-hint">
+              刷流时顺带甄别「值得收藏 / 观看」的资源：命中的种子会打上推荐标签（受「媒体资产价值闸门」保护、不会被当临时种删掉）并通知你确认；错过确认窗口（过期 / 磁盘不足）则按临时种回收。
+            </p>
+            <VSwitch v-model="settingsDraft.recommend_enabled" label="启用推荐甄别" color="primary" hide-details inset />
+            <div class="magicflow-settings-grid">
+              <VTextField
+                v-model.number="settingsDraft.recommend_min_rating"
+                type="number"
+                min="0"
+                max="10"
+                step="0.1"
+                label="评分门槛（高于）"
+                hint="豆瓣 / TMDB 评分高于该值才推荐，默认 7.5"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="settingsDraft.recommend_expire_days"
+                type="number"
+                min="0"
+                step="1"
+                label="推荐过期天数"
+                hint="超过该天数仍未确认则视为过期（0 = 不过期）"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="settingsDraft.recommend_temp_ttl_days"
+                type="number"
+                min="0"
+                step="1"
+                label="临时种 TTL（天）"
+                hint="未入选推荐的普通刷流临时种，超过该天数回收"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="settingsDraft.recommend_disk_min_free_gb"
+                type="number"
+                min="0"
+                step="1"
+                label="磁盘余量下限（GB）"
+                hint="剩余空间低于该值时，推荐立即视为过期"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model="settingsDraft.recommend_tag"
+                label="推荐标签"
+                hint="推荐资源单独打的标签，默认「魔流-推荐」"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+            </div>
+            <div class="magicflow-settings-switches">
+              <VSwitch v-model="settingsDraft.recommend_require_chart" label="需在榜 / 热映 / 订阅（叠加豆瓣评分）" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.recommend_auto_import" label="确认后自动整理入库" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.recommend_notify" label="发现推荐时通知" color="primary" hide-details inset />
             </div>
           </div>
         </div>
@@ -3260,6 +3459,49 @@ onUnmounted(() => {
   block-size: 100%;
   border-radius: inherit;
   background: rgb(var(--v-theme-warning));
+}
+
+.magicflow-rec {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding-block: 8px;
+}
+
+.magicflow-rec__main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-inline-size: 0;
+}
+
+.magicflow-rec__main > strong {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.magicflow-rec__meta,
+.magicflow-rec__sub {
+  color: rgb(var(--v-theme-on-surface-variant));
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.magicflow-rec__actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+@media (max-width: 699px) {
+  .magicflow-rec {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .magicflow-rec__actions {
+    justify-content: flex-start;
+  }
 }
 
 .magicflow-events {

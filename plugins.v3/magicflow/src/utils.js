@@ -183,7 +183,28 @@ export function normalizeSettings(settings = {}) {
     brush_upload_limit_kbps: Math.max(0, num(settings.brush_upload_limit_kbps, 10240)),
     iyuu_token: String(settings.iyuu_token || ''),
     iyuu_sites: normalizeIyuuSites(settings.iyuu_sites),
+    recommend_enabled: settings.recommend_enabled === undefined ? true : Boolean(settings.recommend_enabled),
+    recommend_min_rating: Math.min(10, Math.max(0, num(settings.recommend_min_rating, 7.5))),
+    recommend_require_chart: settings.recommend_require_chart === undefined ? true : Boolean(settings.recommend_require_chart),
+    recommend_expire_days: Math.max(0, num(settings.recommend_expire_days, 7)),
+    recommend_tag: String(settings.recommend_tag == null ? '魔流-推荐' : settings.recommend_tag).trim() || '魔流-推荐',
+    recommend_auto_import: settings.recommend_auto_import === undefined ? true : Boolean(settings.recommend_auto_import),
+    recommend_notify: settings.recommend_notify === undefined ? true : Boolean(settings.recommend_notify),
+    recommend_temp_ttl_days: Math.max(0, num(settings.recommend_temp_ttl_days, 7)),
+    recommend_disk_min_free_gb: Math.max(0, num(settings.recommend_disk_min_free_gb, 50)),
   }
+}
+
+/** 推荐状态元信息（标签文案 + 颜色）。 */
+export function recommendStatusMeta(status) {
+  const map = {
+    pending: { text: '待核实', color: 'grey' },
+    recommended: { text: '待确认', color: 'amber' },
+    confirmed: { text: '已入库', color: 'success' },
+    dismissed: { text: '已忽略', color: 'grey-darken-2' },
+    deleted: { text: '已过期删除', color: 'error' },
+  }
+  return map[String(status || '').toLowerCase()] || { text: status || '未知', color: 'grey' }
 }
 
 /** 标准化「IYUU 站点密钥表」：domain -> { passkey/uid/downhash }。 */
