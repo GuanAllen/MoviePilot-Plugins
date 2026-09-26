@@ -96,7 +96,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.0.8"
+__version__ = "3.0.9"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -1982,8 +1982,14 @@ class MagicFlow(_PluginBase):
                 pass
         return result
 
-    def _recommend_dup(self, store: Any, media_key: str, exclude_hash: str) -> Optional[str]:
-        """同一部作品是否已有「推荐/已确认」记录；返回命中的 hash（用于跨 hash 去重）。"""
+    def _recommend_dup(
+        self,
+        store: Any,
+        media_key: str,
+        exclude_hash: str,
+        statuses: tuple = ("recommended", "confirmed"),
+    ) -> Optional[str]:
+        """同一部作品是否已有指定状态的记录；返回命中的 hash（用于跨 hash 去重）。"""
         if not media_key:
             return None
         try:
@@ -1993,7 +1999,7 @@ class MagicFlow(_PluginBase):
         for h, rec in items.items():
             if h == exclude_hash:
                 continue
-            if str(rec.get("status")) not in ("recommended", "confirmed"):
+            if str(rec.get("status")) not in statuses:
                 continue
             if str(rec.get("media_key") or "") == media_key:
                 return str(h)
@@ -2163,23 +2169,18 @@ class MagicFlow(_PluginBase):
                 }
                 media_key = self._recommend_media_key(media, info)
                 base["media_key"] = media_key
-                in_library = self._recommend_in_library(info)
-                dup_hash = "" if in_library else (self._recommend_dup(store, media_key, h) or "")
-                if in_library:
-                    skip_reason = "已在影视库"
-                elif dup_hash:
-                    skip_reason = "重复推荐（同片已有）"
-                else:
-                    skip_reason = ""
-                if skip_reason:
-                    # 已在库 / 同片重复 → 不作为推荐，当普通临时种（按 TTL 回收）
-                    store.upsert(h, status="pending", **base, reason=skip_reason)
-                    if temp_sec > 0 and now - first_seen > temp_sec:
-                        store.set_status(h, "expired", note="临时种到期")
-                        to_delete.append(h)
-                        expired += 1
+                # 未识别（非影视/识别不出）→ 不入推荐库
+                if not info.get("recognized"):
                     continue
-                if self._recommend_worth(info, cfg):
+                # 已在影视库 → 不入推荐库（资源已在库，无需跟踪/推荐）
+                if self._recommend_in_library(info):
+                    continue
+                worth = self._recommend_worth(info, cfg)
+                # 同片已有同类记录 → 不重复建档（避免同名多条）
+                _dup_statuses = ("recommended", "confirmed") if worth else ("pending",)
+                if self._recommend_dup(store, media_key, h, _dup_statuses):
+                    continue
+                if worth:
                     store.upsert(
                         h, status="recommended", **base,
                         reason=("评分 %.1f" % float(info.get("rating") or 0))
@@ -2195,9 +2196,10 @@ class MagicFlow(_PluginBase):
                     recommended += 1
                     self._recommend_notify(task, t, info)
                 else:
+                    # 识别出但未达门槛 → 记为临时种（仅供 TTL 回收 + 去重记忆，列表默认不展示）
                     store.upsert(
                         h, status="pending", **base,
-                        reason=(f"评分 {info.get('rating')}" if info.get("recognized") else "未识别"),
+                        reason=(f"评分 {info.get('rating')}" if info.get("rating") else "未达门槛"),
                     )
                     if temp_sec > 0 and now - first_seen > temp_sec:
                         store.set_status(h, "expired", note="临时种到期")

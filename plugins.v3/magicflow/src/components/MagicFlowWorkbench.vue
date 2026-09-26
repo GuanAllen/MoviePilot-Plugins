@@ -568,14 +568,11 @@ async function loadOperations(taskId) {
 
 // ---- 推荐甄别（价值生命周期） ----
 const showAllRecs = ref(false)
-const REC_LIST_MIN_RATING = 6.0
-// 列表默认只显示「值得看」的：推荐/已确认恒显示；「待核实」需识别出且评分达标（或在榜/订阅）。
+// 列表默认只显示「真·命中推荐」的生命周期项；未达门槛/未识别的临时种默认隐藏（「显示全部」才展开）。
 function recWorthShowing(rec) {
   if (!rec) return false
   const st = String(rec.status || '').toLowerCase()
-  if (st === 'recommended' || st === 'confirmed' || st === 'dismissed' || st === 'deleted') return true
-  const r = Number(rec.rating || 0)
-  return !!(rec.media && (r >= REC_LIST_MIN_RATING || rec.in_chart || rec.in_subscribe))
+  return st === 'recommended' || st === 'confirmed' || st === 'dismissed' || st === 'deleted'
 }
 // 展示名：优先「媒体标题 (年份)」；不显示原始下载文件名（文件名只进 tooltip 属性）。
 function recName(rec) {
@@ -595,7 +592,16 @@ const recommendItems = computed(() => {
     if (oa !== ob) return oa - ob
     return (b.updated_at || 0) - (a.updated_at || 0)
   })
-  return items
+  // 同一部作品（media_key）只保留最靠前的一条（去重：同片多发布/多版本）
+  const seen = new Set()
+  const out = []
+  for (const it of items) {
+    const k = it.media_key || it.hash
+    if (k && seen.has(k)) continue
+    if (k) seen.add(k)
+    out.push(it)
+  }
+  return out
 })
 const hiddenRecCount = computed(() => (recommendData.value.items || []).filter(i => !recWorthShowing(i)).length)
 const confirmedCount = computed(() => (recommendData.value.items || []).filter(i => i.status === 'confirmed').length)
@@ -2616,7 +2622,7 @@ onUnmounted(() => {
                 color="primary"
                 :prepend-icon="showAllRecs ? 'mdi-eye-off-outline' : 'mdi-eye-outline'"
                 @click="showAllRecs = !showAllRecs"
-              >{{ showAllRecs ? '仅看值得看' : (hiddenRecCount ? `显示全部 (+${hiddenRecCount})` : '显示全部') }}</VBtn>
+              >{{ showAllRecs ? '仅看推荐' : (hiddenRecCount ? `显示全部候选 (+${hiddenRecCount})` : '显示全部候选') }}</VBtn>
             </header>
             <div class="magicflow-recs">
               <article v-for="rec in recommendItems" :key="rec.hash" class="magicflow-rec">
@@ -2663,7 +2669,10 @@ onUnmounted(() => {
                   </VBtn>
                 </div>
               </article>
-              <div v-if="!recommendItems.length" class="magicflow-table-empty">暂无甄别记录（刷流运行时会自动发现优质资源）</div>
+              <div v-if="!recommendItems.length" class="magicflow-table-empty">
+                暂无推荐{{ showAllRecs ? '' : '（当前没有同时满足「评分 > ' + (recommendData.min_rating ?? 7.5) + ' 且在榜 / 热映 / 订阅」的资源）' }}。
+                <template v-if="!showAllRecs && hiddenRecCount">可点右上「显示全部候选 (+{{ hiddenRecCount }})」看全部评估（含未达门槛的临时种）。</template>
+              </div>
             </div>
           </VSheet>
         </VCardText>
