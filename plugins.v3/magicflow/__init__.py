@@ -100,7 +100,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.4.1"
+__version__ = "3.5.0"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -343,6 +343,12 @@ class MagicFlowTaskConfig:
     # 任务目标：达到后任务自动停止（bonus=站点魔力值；brush=站点上传量 GB；None=未设）
     goal_value: Optional[float] = None
 
+    # 考核下载模式（新手考核的「下载增量」项）：本站下载量新增目标（GB）。
+    # >0 且 allow_unfree_download=True 时，刷流会**允许下载非免费种**（优先大体积），
+    # 直到站点下载增量凑够 download_target_gb 就自动转「做种中」（停下载、保种）。
+    download_target_gb: Optional[float] = None
+    allow_unfree_download: bool = False
+
     # Ti 口径：publish（默认，= 自发布时间，站点文档口径；配合站点真实 Ni 与站点 A 吻合）
     #          seed_time（= qB 做种时长；无发布时间时的回落值）
     ti_source: str = "publish"
@@ -428,6 +434,8 @@ class MagicFlowTaskConfig:
             "perfect_max_seeders": self.perfect_max_seeders,
             "perfect_min_weeks": self.perfect_min_weeks,
             "goal_value": self.goal_value,
+            "download_target_gb": self.download_target_gb,
+            "allow_unfree_download": self.allow_unfree_download,
             "ti_source": self.ti_source,
             "seen_cooldown_hours": self.seen_cooldown_hours,
             "bonus_t0": self.bonus_t0,
@@ -624,9 +632,12 @@ class MagicFlow(_PluginBase):
             "kill_unfree": bool(raw_config.get("live_kill_unfree", True)),
             "kill_delete_files": bool(raw_config.get("live_kill_delete_files", True)),
             "notify": bool(raw_config.get("live_notify", True)),
+            "exam_enabled": bool(raw_config.get("exam_enabled", False)),
+            "exam_include_pass": bool(raw_config.get("exam_include_pass", False)),
         }
         if getattr(self, "_live", None) is None:
             self._live = LiveStats(self, ttl=LIVE_DEFAULT_TTL)
+        self._live.exam_enabled = bool(self._live_cfg.get("exam_enabled", False))
         # 缓存 TTL 跟随采样周期（Master 定调：60s 太频繁，240s）
         self._live.ttl = max(60.0, float(self._live_cfg.get("interval") or LIVE_INTERVAL_MINUTES) * 60.0)
 
@@ -821,6 +832,20 @@ class MagicFlow(_PluginBase):
                 "methods": ["GET"],
                 "auth": "bear",
                 "summary": "站点实时数据 + 流量监控（直连站点，非 MP 6h 快照）",
+            },
+            {
+                "path": "/exam",
+                "endpoint": self.get_exam_state,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "新手考核汇总 + 一键起任务预演（已通过的默认不返回）",
+            },
+            {
+                "path": "/exam/act",
+                "endpoint": self.exam_act,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "新手考核：一键起任务（需 confirm=true）",
             },
             {
                 "path": "/cloud",
@@ -1276,6 +1301,8 @@ class MagicFlow(_PluginBase):
             "live_kill_unfree": bool(getattr(self, "_live_cfg", {}).get("kill_unfree", True)),
             "live_kill_delete_files": bool(getattr(self, "_live_cfg", {}).get("kill_delete_files", True)),
             "live_notify": bool(getattr(self, "_live_cfg", {}).get("notify", True)),
+            "exam_enabled": bool(self._live_cfg.get("exam_enabled", False)),
+            "exam_include_pass": bool(self._live_cfg.get("exam_include_pass", False)),
             # 云盘归档（token 不写回配置，单独存插件数据，避免明文进主配置）
             "cloud_enabled": bool(self._cloud_cfg.get("enabled", False)),
             "cloud_openlist_url": str(self._cloud_cfg.get("url") or ""),
@@ -3148,6 +3175,34 @@ class MagicFlow(_PluginBase):
         if not downloader or not downloader.is_available:
             self._log(f"下载器不可用: {task.downloader}", "error")
             return {"status": "failed", "reason": "下载器不可用"}
+
+        # ---------- ⓪c 考核下载模式：目标达成 → 转「做种中」（停下载、保种） ----------
+        try:
+            ex = self._exam_download_state(task)
+            if ex.get("on"):
+                if ex.get("done"):
+                    note = (
+                        f"考核下载目标已达（本站下载增量 {ex['delta_gb']:.2f}/{ex['target_gb']:.2f}GB）"
+                        "→ 转「做种中」保种（不再下载、不删种）"
+                    )
+                    self._log(f"魔流 [{task.name}] {note}")
+                    task.run_mode = "seeding"
+                    task.enabled = False
+                    try:
+                        self._save_config()
+                        self._refresh_scheduler()
+                        self._invalidate_summary()
+                        self._spawn_run_mode_apply(task, "seeding")
+                    except Exception as err:  # noqa: BLE001
+                        self._log(f"魔流 [{task.name}] 考核下载达标后切换失败：{err}", "warning")
+                    return {"status": "noop", "reason": note, "added": 0, "reused": 0, "deleted": 0, "kept": 0}
+                self._log(
+                    f"魔流 [{task.name}] 考核下载模式：本站下载增量 {ex['delta_gb']:.2f}/"
+                    f"{ex['target_gb']:.2f}GB（还差 {ex['remain_gb']:.2f}GB）→ 本轮允许非免费种",
+                    "warning",
+                )
+        except Exception as _exe:  # noqa: BLE001
+            self._log(f"魔流 [{task.name}] 考核下载模式检查异常：{_exe}", "warning")
 
         # ---------- ⓪a 保存目录守卫 ----------
         # 保存目录为空时若继续加种，下载器会回落到「默认目录」（历史上是 /vol3 下载盘），
@@ -5859,6 +5914,13 @@ class MagicFlow(_PluginBase):
         # 「排除 H&R」选项（hr=yes → 过滤掉 H&R 种子）
         if str(getattr(task, "hr", "") or "").strip().lower() in ("yes", "y", "1", "true", "是"):
             policy.exclude_hnr = True
+        # 考核下载模式：目的就是凑「下载增量」→ 放开免费限制（只在该模式下）
+        try:
+            if self._exam_download_active(task):
+                policy.free_only = False
+                policy.double_free_only = False
+        except Exception:  # noqa: BLE001
+            pass
         return policy
 
     # ---------------------------------------------------------
@@ -6287,6 +6349,7 @@ class MagicFlow(_PluginBase):
                     "kill_unfree": bool(self._live_cfg.get("kill_unfree", True)),
                     "kill_delete_files": bool(self._live_cfg.get("kill_delete_files", True)),
                     "notify": bool(self._live_cfg.get("notify", True)),
+                    "exam_enabled": bool(self._live_cfg.get("exam_enabled", False)),
                 },
                 "sites": rows,
                 "ts": time.time(),
@@ -6308,6 +6371,360 @@ class MagicFlow(_PluginBase):
             return ""
         return time.strftime("%m-%d %H:%M", time.localtime(until))
 
+    # ---------------------------------------------------------------- 新手考核
+    def _exam_download_state(self, task: MagicFlowTaskConfig) -> Dict[str, Any]:
+        """考核下载模式状态：{on, base, cur, delta_gb, target_gb, remain_gb, done}。
+
+        首次进入该模式（baseline 为空）时，用站点当前下载量作为基线并落盘。
+        """
+        out: Dict[str, Any] = {
+            "on": False, "base": None, "cur": None,
+            "delta_gb": 0.0, "target_gb": 0.0, "remain_gb": 0.0, "done": False,
+        }
+        try:
+            target = float(getattr(task, "download_target_gb", None) or 0.0)
+        except (TypeError, ValueError):
+            target = 0.0
+        if target <= 0 or not bool(getattr(task, "allow_unfree_download", False)):
+            return out
+        out["on"] = True
+        out["target_gb"] = target
+        sid = int(getattr(task, "site_id", 0) or 0)
+        cur: Optional[float] = None
+        try:
+            if getattr(self, "_live", None) is not None and sid:
+                live = self._live.get(sid)
+                if isinstance(live, dict) and live.get("ok") and live.get("download") is not None:
+                    cur = float(live.get("download") or 0.0)
+        except Exception:  # noqa: BLE001
+            cur = None
+        base: Optional[float] = None
+        if self._store is not None:
+            try:
+                saved = self._store.get_exam_download(task.id).get("base")
+            except Exception:  # noqa: BLE001
+                saved = None
+            if saved is None and cur is not None:
+                saved = cur
+                try:
+                    self._store.set_exam_download(task.id, cur, f"基线取自 {time.strftime('%Y-%m-%d %H:%M')}")
+                except Exception:  # noqa: BLE001
+                    pass
+            base = saved
+        out["base"], out["cur"] = base, cur
+        if base is not None and cur is not None:
+            delta = max(0.0, (cur - base) / (1024 ** 3))
+            out["delta_gb"] = round(delta, 3)
+            out["remain_gb"] = round(max(0.0, target - delta), 3)
+            out["done"] = delta >= target - 1e-9
+        else:
+            out["remain_gb"] = target
+        return out
+
+    def _exam_download_active(self, task: MagicFlowTaskConfig) -> bool:
+        st = self._exam_download_state(task)
+        return bool(st.get("on")) and not bool(st.get("done"))
+
+    def _exam_action_plan(
+        self, site_id: int, live: Dict[str, Any], tasks: Optional[List[Dict[str, Any]]] = None
+    ) -> List[Dict[str, Any]]:
+        """把考核未通过项翻译成可执行动作（**只读**，不创建任何东西）。"""
+        exam = (live or {}).get("exam") or {}
+        items = exam.get("items") or []
+        if not items:
+            return []
+        site_name = self._live_site_name(int(site_id or 0))
+        up = float((live or {}).get("upload") or 0.0)
+        dn = float((live or {}).get("download") or 0.0)
+        bonus = float((live or {}).get("bonus") or 0.0)
+        free = exam.get("site_free") or {}
+        free_on = bool(free and free.get("on"))
+        left = exam.get("days_left")
+        plan: List[Dict[str, Any]] = []
+        for it in items:
+            if it.get("pass"):
+                continue
+            label = str(it.get("label") or "")
+            short_gb = it.get("short_gb")
+            short_num = it.get("short_num")
+            notes: List[str] = []
+            entry: Dict[str, Any] = {"label": label, "kind": "hold", "notes": [], "blocked": False}
+            if "下载" in label and short_gb is not None:
+                short = float(short_gb)
+                entry.update({
+                    "kind": "download",
+                    "short_gb": short,
+                    "task_name": f"{site_name}-考核下载",
+                    "params": {
+                        "task_type": "brush",
+                        "download_target_gb": short,
+                        "allow_unfree_download": True,
+                        "purge_unfree_incomplete": False,
+                        "brush_interval": 5,
+                        "check_interval": 1,
+                    },
+                })
+                if free_on:
+                    notes.append(
+                        f"⚠️ 全站 Free 生效中（至 {str(free.get('end') or '')[:16]}）：免费期间下载不计入下载量，"
+                        "建议等结束再开，否则白拉"
+                    )
+                if dn + short * (1024 ** 3) > 0:
+                    ra = up / (dn + short * (1024 ** 3))
+                    notes.append(f"下载 {short:.1f}GB 后分享率约 {ra:.2f}" + ("（会低于 1，建议先补上传）" if ra < 1 else ""))
+                notes.append("下载完成会自动转「做种中」保种（不删种）")
+            elif "上传" in label and short_gb is not None:
+                short = float(short_gb)
+                target = round(up / (1024 ** 3) + short, 2)
+                entry.update({
+                    "kind": "upload",
+                    "short_gb": short,
+                    "task_name": f"{site_name}-考核刷流",
+                    "params": {
+                        "task_type": "brush",
+                        "goal_value": target,
+                        "brush_interval": 5,
+                        "check_interval": 1,
+                    },
+                })
+                notes.append(f"目标：本站上传 {target:.2f}GB（当前 {up / (1024 ** 3):.2f}GB，还差 {short:.2f}GB）达到后自动停")
+            elif ("魔力" in label or "积分" in label) and short_num is not None:
+                short = float(short_num)
+                target = round(bonus + short, 1)
+                entry.update({
+                    "kind": "bonus",
+                    "short_num": short,
+                    "task_name": f"{site_name}-考核魔力",
+                    "params": {"task_type": "bonus", "goal_value": target, "brush_interval": 5, "check_interval": 1},
+                })
+                notes.append(f"目标：本站魔力 {target:.0f}（当前 {bonus:.0f}，还差 {short:.0f}）达到后自动停；魔力靠多挂种 / 挂老种")
+            else:
+                entry["kind"] = "hold"
+                notes.append("靠「保持做种 + 增加做种数（多辅种）」改善，不需要新任务；别停该站任务、别删种")
+            if left is not None and float(left) <= 3:
+                notes.append(f"⏰ 考核只剩 {float(left):.1f} 天，尽快处理")
+            entry["notes"] = notes
+            plan.append(entry)
+        return plan
+
+    def _site_has_cookie(self, site_id: int) -> bool:
+        """站点是否已配置 cookie（未配置的站点不抓考核，省 PV）。"""
+        try:
+            site = self._get_site(int(site_id or 0))
+            return bool(str(getattr(site, "cookie", "") or "").strip())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _exam_sites(self, only_site_id: int = 0) -> Dict[int, Dict[str, Any]]:
+        """考核要看的站点集合：**所有已配置 cookie 的站点**（不只任务站点）+ 任务站点兜底。"""
+        only = int(only_site_id or 0)
+        if only:
+            meta = (self._live_sites(only_site_id=only) or {}).get(only)
+            if meta:
+                return {only: meta}
+            return {only: {"site_id": only, "site_name": self._live_site_name(only), "local_managed": 0, "tasks": []}}
+        sites: Dict[int, Dict[str, Any]] = {}
+        for item in self._list_sites() or []:
+            try:
+                sid = int(item.get("id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if not sid or not self._site_has_cookie(sid):
+                continue
+            sites[sid] = {
+                "site_id": sid,
+                "site_name": item.get("name") or self._live_site_name(sid),
+                "local_managed": 0,
+                "tasks": [],
+            }
+        for sid, meta in (self._live_sites() or {}).items():
+            sites.setdefault(sid, meta)
+        return sites
+
+    def get_exam_state(
+        self, force: bool = False, site_id: int = 0, include_pass: bool = False
+    ) -> Response:
+        """新手考核汇总（只读）。**已全部通过的考核默认不返回**（include_pass=true 才带）。
+
+        ★ 总开关 `exam_enabled` 关闭时**不解析也不返回**（跟云盘归档一个路子）。
+        """
+        if not bool(getattr(self, "_live_cfg", {}).get("exam_enabled", False)):
+            return Response(
+                success=True,
+                message="「新手考核」未开启（设置 → 考核）",
+                data={"sites": [], "count": 0, "enabled": False, "ts": time.time()},
+            )
+        if not bool(include_pass):
+            include_pass = bool(self._live_cfg.get("exam_include_pass", False))
+        sites = self._exam_sites(only_site_id=int(site_id or 0))
+        rows: List[Dict[str, Any]] = []
+        for sid, meta in sites.items():
+            snap = self._live_snapshot(sid, local_managed=meta.get("local_managed"), force=bool(force))
+            live = snap.get("live") or {}
+            exam = live.get("exam") or None
+            if not exam:
+                continue
+            failed = exam.get("failed") or []
+            if not failed and not bool(include_pass):
+                continue
+            rows.append(
+                {
+                    "site_id": sid,
+                    "site_name": meta.get("site_name"),
+                    "exam": exam,
+                    "plan": self._exam_action_plan(sid, live, meta.get("tasks") or []),
+                    "tasks": meta.get("tasks") or [],
+                    "live_ok": bool(live.get("ok")),
+                    "upload": live.get("upload"),
+                    "download": live.get("download"),
+                    "bonus": live.get("bonus"),
+                    "ratio": live.get("ratio"),
+                    "seeding": live.get("seeding"),
+                }
+            )
+        rows.sort(key=lambda r: (float((r.get("exam") or {}).get("days_left") or 9999.0)))
+        return Response(success=True, data={"sites": rows, "count": len(rows), "ts": time.time(), "enabled": True})
+
+    def _exam_payload_kwargs(
+        self, name: str, site_id: int, site_name: str, params: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """用「默认任务模板」做底、叠考核参数 → MagicFlowTaskPayload 构造参数。"""
+        try:
+            fields = set(MagicFlowTaskPayload.model_fields.keys())
+        except Exception:  # noqa: BLE001
+            fields = set()
+        kw: Dict[str, Any] = {}
+        for k, v in (getattr(self, "_defaults", {}) or {}).items():
+            if k in fields and v not in (None, ""):
+                kw[k] = v
+        kw.pop("id", None)
+        kw.update({
+            "name": name,
+            "site_id": int(site_id),
+            "site_name": site_name,
+            "brush_tag": f"魔流-{name}",
+            "task_type": str(params.get("task_type") or "bonus"),
+            "brush_interval": int(params.get("brush_interval") or 5),
+            "check_interval": int(params.get("check_interval") or 1),
+            "goal_value": params.get("goal_value"),
+            "download_target_gb": params.get("download_target_gb"),
+            "allow_unfree_download": bool(params.get("allow_unfree_download", False)),
+            "run_mode": "running",
+            "enabled": True,
+        })
+        for extra in ("purge_unfree_incomplete",):
+            if extra in params:
+                kw[extra] = bool(params.get(extra))
+        return kw
+
+    def exam_act(self, site_id: int = 0, kind: str = "", confirm: bool = False) -> Response:
+        """一键起任务（**必须 confirm=true**）：按考核未通过项创建/启用一个任务。"""
+        if not bool(confirm):
+            return Response(success=False, message="未确认：不会创建任务（需 confirm=true）")
+        if not bool(getattr(self, "_live_cfg", {}).get("exam_enabled", False)):
+            return Response(success=False, message="「新手考核」未开启（设置 → 考核）")
+        sid = int(site_id or 0)
+        if not sid:
+            return Response(success=False, message="缺少 site_id")
+        kind = str(kind or "").strip().lower()
+        if kind not in ("upload", "download", "bonus", "hold"):
+            return Response(success=False, message="kind 只能是 upload/download/bonus/hold")
+        live = (self._live_snapshot(sid) or {}).get("live") or {}
+        plan = self._exam_action_plan(sid, live, [])
+        item = next((p for p in plan if p.get("kind") == kind), None)
+        if item is None:
+            return Response(success=False, message="该考核项当前无需处理（已通过 / 未识别）")
+        if kind == "hold":
+            return Response(
+                success=True,
+                message="该项不需要创建任务：保持做种 + 多辅种即可",
+                data={"noop": True, "notes": item.get("notes") or []},
+            )
+        name = str(item.get("task_name") or "")
+        params = dict(item.get("params") or {})
+        if not name:
+            return Response(success=False, message="未生成任务名，已中止")
+        dl = str((getattr(self, "_defaults", {}) or {}).get("downloader") or "").strip()
+        if not dl:
+            try:
+                dl = "qbittorrent"
+            except Exception:  # noqa: BLE001
+                dl = "qbittorrent"
+        sp = str((getattr(self, "_defaults", {}) or {}).get("save_path") or "").strip()
+        site_name = self._live_site_name(sid)
+        existing = next(
+            (
+                t
+                for t in self._task_configs.values()
+                if int(getattr(t, "site_id", 0) or 0) == sid and str(getattr(t, "name", "")) == name
+            ),
+            None,
+        )
+        try:
+            if existing is not None:
+                for key, val in params.items():
+                    setattr(existing, key, val)
+                existing.run_mode = "running"
+                existing.enabled = True
+                self._save_config()
+                self._refresh_scheduler()
+                self._invalidate_summary()
+                if kind == "download":
+                    try:
+                        self._store.set_exam_download(existing.id, None, "重置基线（重新开始考核下载）")
+                    except Exception:  # noqa: BLE001
+                        pass
+                try:
+                    self._apply_task_traffic_limit()
+                except Exception:  # noqa: BLE001
+                    pass
+                return Response(
+                    success=True,
+                    message=f"已更新并启用任务「{name}」",
+                    data={"task_id": existing.id, "name": name, "updated": True, "notes": item.get("notes") or []},
+                )
+            payload = MagicFlowTaskPayload(**self._exam_payload_kwargs(name, sid, site_name, params))
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=f"参数构建失败：{err}")
+        res = self.create_task(payload)
+        data = getattr(res, "data", None) or {}
+        tid = ""
+        if isinstance(data, dict):
+            tid = str((data.get("task") or {}).get("id") or data.get("id") or "")
+        if not tid:
+            tid = next(
+                (
+                    t.id
+                    for t in self._task_configs.values()
+                    if int(getattr(t, "site_id", 0) or 0) == sid and str(getattr(t, "name", "")) == name
+                ),
+                "",
+            )
+        if tid:
+            try:
+                self._store.set_exam_download(tid, None, "新建（基线下轮自动记录）")
+            except Exception:  # noqa: BLE001
+                pass
+            if not sp:
+                self._task_configs[tid].run_mode = "seeding"
+                self._task_configs[tid].enabled = False
+                self._save_config()
+                self._refresh_scheduler()
+                self._invalidate_summary()
+                return Response(
+                    success=False,
+                    message=(
+                        f"已创建任务「{name}」（暂设「做种中」）：**未配置默认保存目录**，"
+                        "请先到「设置 → 下载目录」填任务保存目录，再启用任务"
+                    ),
+                    data={"task_id": tid, "name": name, "need_save_path": True, "notes": item.get("notes") or []},
+                )
+        return Response(
+            success=bool(getattr(res, "success", False)),
+            message=str(getattr(res, "message", "") or f"已创建任务「{name}」"),
+            data={"task_id": tid, "name": name, "notes": item.get("notes") or []},
+        )
+
     def _live_kill_unfree(self, site_id: int, site_name: str) -> Dict[str, Any]:
         """★ 下载量异常增长时：去站点「正在下载」列表，把**非免费**的种子从下载器干掉。
 
@@ -6315,6 +6732,17 @@ class MagicFlow(_PluginBase):
         ② 名称必须完全匹配；③ 体积必须对得上（±2%）——避免误删同名资源。
         """
         out: Dict[str, Any] = {"checked": 0, "killed": [], "errors": []}
+        # 豁免：该站存在「考核下载模式」任务 → 下非免费种是**有意为之**，绝不清理
+        try:
+            for _t in self._task_configs.values():
+                if int(getattr(_t, "site_id", 0) or 0) == int(site_id) and self._exam_download_active(_t):
+                    out["skipped"] = f"考核下载任务「{_t.name}」进行中，豁免"
+                    self._log(
+                        f"魔流：[站点监控] {site_name} 有考核下载任务进行中 → 跳过「清非免费下载种」", "info"
+                    )
+                    return out
+        except Exception:  # noqa: BLE001
+            pass
         try:
             leech = self._live.leeching(int(site_id), force=True)
         except Exception as err:  # noqa: BLE001
@@ -6804,9 +7232,12 @@ class MagicFlow(_PluginBase):
             "kill_unfree": bool(getattr(payload, "live_kill_unfree", True)),
             "kill_delete_files": bool(getattr(payload, "live_kill_delete_files", True)),
             "notify": bool(getattr(payload, "live_notify", True)),
+            "exam_enabled": bool(getattr(payload, "exam_enabled", False)),
+            "exam_include_pass": bool(getattr(payload, "exam_include_pass", False)),
         }
         if getattr(self, "_live", None) is not None:
             self._live.ttl = max(60.0, float(self._live_cfg.get("interval") or LIVE_INTERVAL_MINUTES) * 60.0)
+            self._live.exam_enabled = bool(self._live_cfg.get("exam_enabled", False))
         # 云盘归档（token 空 = 保持原值；避免前端未带该字段时把 token 抹掉）
         _new_token = str(getattr(payload, "cloud_openlist_token", "") or "").strip()
         if _new_token:
@@ -7075,6 +7506,12 @@ class MagicFlow(_PluginBase):
             perfect_max_seeders=int(getattr(payload, "perfect_max_seeders", 3) or 0),
             perfect_min_weeks=float(getattr(payload, "perfect_min_weeks", 4.0) or 0.0),
             goal_value=float(payload.goal_value) if getattr(payload, "goal_value", None) not in (None, "") else None,
+            download_target_gb=(
+                float(payload.download_target_gb)
+                if getattr(payload, "download_target_gb", None) not in (None, "")
+                else None
+            ),
+            allow_unfree_download=bool(getattr(payload, "allow_unfree_download", False)),
             brush_interval=payload.brush_interval,
             check_interval=payload.check_interval,
             cron_expression=payload.cron_expression or "",
@@ -7176,6 +7613,12 @@ class MagicFlow(_PluginBase):
         task.perfect_max_seeders = int(getattr(payload, "perfect_max_seeders", 3) or 0)
         task.perfect_min_weeks = float(getattr(payload, "perfect_min_weeks", 4.0) or 0.0)
         task.goal_value = float(payload.goal_value) if getattr(payload, "goal_value", None) not in (None, "") else None
+        task.download_target_gb = (
+            float(payload.download_target_gb)
+            if getattr(payload, "download_target_gb", None) not in (None, "")
+            else None
+        )
+        task.allow_unfree_download = bool(getattr(payload, "allow_unfree_download", False))
         task.brush_interval = payload.brush_interval
         task.check_interval = payload.check_interval
         task.cron_expression = payload.cron_expression or ""

@@ -118,6 +118,10 @@ class TaskState:
     manual_paused: Set[str] = field(default_factory=set)
     enabled: bool = True
     revision: int = 0  # 配置版本号，用于 optimistic locking
+    # 「考核下载」模式：进入该模式时记录「站点下载量基线」（byte），用于计算本站下载增量。
+    # 任务目标达成（增量 ≥ download_target_gb）或任务重开时会重置。
+    exam_download_base: Optional[float] = None
+    exam_download_note: str = ""
     # 运行阶段（供前端「运行诊断」流程链转圈用）
     last_phase: str = ""            # entry|fetch|wash|classify|process|done|error
     last_phase_label: str = ""      # 阶段中文名
@@ -175,6 +179,8 @@ class TaskState:
             "torrent_free_until": {str(k).lower(): float(v) for k, v in self.torrent_free_until.items()},
             "brush_upload": {str(k).lower(): dict(v) for k, v in self.brush_upload.items()},
             "last_tagged_count": self.last_tagged_count,
+            "exam_download_base": self.exam_download_base,
+            "exam_download_note": self.exam_download_note,
         }
 
     @staticmethod
@@ -208,6 +214,10 @@ class TaskState:
             manual_paused=set(d.get("manual_paused", []) or []),
             enabled=d.get("enabled", True),
             revision=d.get("revision", 0),
+            exam_download_base=(
+                None if d.get("exam_download_base") in (None, "") else float(d.get("exam_download_base"))
+            ),
+            exam_download_note=str(d.get("exam_download_note") or ""),
             last_phase=d.get("last_phase", ""),
             last_phase_label=d.get("last_phase_label", ""),
             last_phase_detail=d.get("last_phase_detail", ""),
@@ -1117,6 +1127,26 @@ class MagicFlowStore:
         if not state:
             state = self.task_states.create(task_id)
         state.page_cursor = max(int(cursor or 0), 0)
+        self.task_states.save(state)
+
+    # -------------------- 考核下载模式（基线） --------------------
+
+    def get_exam_download(self, task_id: str) -> Dict[str, Any]:
+        """读取「考核下载」基线：{base, note}。"""
+        state = self.task_states.get(task_id)
+        base = getattr(state, "exam_download_base", None) if state else None
+        return {
+            "base": (None if base in (None, "") else float(base)),
+            "note": str(getattr(state, "exam_download_note", "") or "") if state else "",
+        }
+
+    def set_exam_download(self, task_id: str, base: Optional[float], note: str = "") -> None:
+        """写入「考核下载」基线（base=None 表示清空）。"""
+        state = self.task_states.get(task_id)
+        if not state:
+            state = self.task_states.create(task_id)
+        state.exam_download_base = None if base is None else float(base)
+        state.exam_download_note = str(note or "")
         self.task_states.save(state)
 
     # -------------------- 种子详情页映射（hash→details URL） --------------------
