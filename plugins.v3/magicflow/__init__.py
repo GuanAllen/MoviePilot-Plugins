@@ -97,7 +97,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.0.11"
+__version__ = "3.0.12"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -2347,16 +2347,27 @@ class MagicFlow(_PluginBase):
             return False, "未能识别媒体信息，无法自动整理"
         save_path = ""
         if torrent is not None:
+            # 优先「内容路径」（单种文件 / 多种目录），回退 save_path；
+            # 绝不能直接拿共享下载根目录（如 /movie/刷流）去整理。
             save_path = str(
-                getattr(torrent, "content_path", "") or getattr(torrent, "save_path", "") or ""
+                getattr(torrent, "content_path", "")
+                or getattr(torrent, "path", "")
+                or getattr(torrent, "save_path", "")
+                or ""
             )
         if not save_path:
             return False, "缺少保存路径，无法自动整理"
         try:
+            # 下载器给的是宿主机路径，需映射成 MoviePilot（容器）可访问的路径
+            save_path = downloader.normalize_path(save_path)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             import os as _os
             clean = save_path.rstrip("/")
+            _is_dir = _os.path.isdir(save_path)
             fileitem = FileItem(
-                path=save_path, storage="local", type="dir",
+                path=save_path, storage="local", type="dir" if _is_dir else "file",
                 name=_os.path.basename(clean) or _os.path.basename(save_path),
             )
             ok, msg = TransferChain().manual_transfer(
