@@ -40,11 +40,33 @@ SOURCE_LABELS = {
 VIDEO_EXTS = {".mkv", ".mp4", ".ts", ".m2ts", ".avi", ".mov", ".wmv", ".flv", ".rmvb", ".iso", ".mpg", ".mpeg"}
 SIDECAR_EXTS = {".ass", ".srt", ".ssa", ".sub", ".idx", ".sup", ".vtt"}
 
+# 中文季号（用于「第N季」变体搜索）
+_CN_NUM = {
+    1: "一", 2: "二", 3: "三", 4: "四", 5: "五", 6: "六",
+    7: "七", 8: "八", 9: "九", 10: "十", 11: "十一", 12: "十二",
+}
+
 # 库根下这些目录不是「剧集」（下载区 / 刷流区 / 临时区），扫描时直接跳过
 EXCLUDE_DIR_NAMES = {
     "下载", "刷流", "下载区", "临时", "临时下载", "未整理", "回收站",
     "download", "downloads", "temp", "tmp", "incomplete", "trash",
 }
+
+# 「原始发行名」目录（下载残留，不是整理后的库目录）——带清晰度/压制组/容器后缀
+_RELEASE_DIR_RE = re.compile(
+    r"(?i)(\b\d{3,4}p\b|\b\d{3,4}i\b|\b4k\b|web-?dl|webrip|bluray|blu-ray|remux|hdtv|"
+    r"x26[45]|h\.?26[45]|hevc|avc|ddp\d?|\bdts\b|truehd|atmos|aac\d?|\bflac\b|"
+    r"\bhdr\b|\bdv\b|\bcomplete\b|\brepack\b|\bproper\b|diy@|"
+    r"\.torrent$|\.!qb$|\.mkv$|\.mp4$|\.ts$|\.ass$|\.srt$)"
+)
+
+
+def looks_like_release_dir(name: str) -> bool:
+    """目录名看着像「未整理的发行目录」→ 不当作库内剧集。"""
+    text = (name or "").strip()
+    if not text:
+        return False
+    return bool(_RELEASE_DIR_RE.search(text))
 
 _SE_RE = re.compile(r"[Ss](\d{1,3})[Ee](\d{1,4})")
 _SEASON_DIR_RE = re.compile(r"^(?:season|s)\s*(\d{1,3})$", re.IGNORECASE)
@@ -128,6 +150,8 @@ class FallbackEngine:
         self._lock = threading.Lock()
         self._cache: Dict[str, Tuple[float, Optional[Dict[str, Any]]]] = {}
         self._last_report: Optional[Dict[str, Any]] = None
+        # 游标：库很大时每轮只扫 scan_max 部，下轮从上次结束处继续（跑完一圈归零）
+        self._cursor: int = 0
 
     # ------------------------------------------------------------------
     # 基础
@@ -272,6 +296,7 @@ class FallbackEngine:
                 "media_id": str(getattr(src_item, "media_id", "") or getattr(item, "media_id", "") or ""),
                 "title": str(getattr(src_item, "title", "") or getattr(item, "title", "") or title),
                 "year": str(getattr(src_item, "year", "") or year or ""),
+                "overview": str(getattr(src_item, "overview", "") or ""),
                 "seasons": seasons,
             }
             break
@@ -279,6 +304,105 @@ class FallbackEngine:
             self._cache[key] = (now, out)
         if out is None:
             self._log(f"多源识别：『{title}』在 {len(self.sources())} 个来源里都没命中", "warning")
+        return out
+
+    def _season_entry(self, title: str, season: int) -> Tuple[Set[int], str]:
+        """该季可能被拆成**独立条目**（TMDB / 豆瓣常这么干）——按「第N季」再搜一轮。
+
+        例：库里 `时光代理人 (2021)` 里的 `S03E07`，TMDB 的 2026 条目另开一页。
+        """
+        base = _norm(title)
+        if not base or season <= 0:
+            return set(), ""
+        cn = _CN_NUM.get(season)
+        variants = [f"{title} Season {season}", f"{title} S{season:02d}", f"{title} {season}"]
+        if cn:
+            variants.insert(0, f"{title} 第{cn}季")
+        for src in self.sources():
+            for variant in variants:
+                for item in self._search_source(variant, src):
+                    iname = _norm(str(getattr(item, "title", "") or ""))
+                    if not iname.startswith(base):
+                        continue
+                    detail = self._detail_source(
+                        src, str(getattr(item, "media_id", "") or ""), getattr(item, "type", None),
+                    )
+                    raw = getattr(detail if detail is not None else item, "seasons", None) or {}
+                    if not raw:
+                        continue
+                    got: Set[int] = set()
+                    try:
+                        keys = list(raw.keys())
+                        if len(keys) == 1:
+                            for e in (raw.get(keys[0]) or []):
+                                try:
+                                    got.add(int(e))
+                                except (TypeError, ValueError):
+                                    continue
+                        elif season in [int(k) for k in keys if str(k).lstrip("-").isdigit()]:
+                            for e in (raw.get(season) or raw.get(str(season)) or []):
+                                try:
+                                    got.add(int(e))
+                                except (TypeError, ValueError):
+                                    continue
+                    except Exception:  # noqa: BLE001
+                        got = set()
+                    if got:
+                        self._log(
+                            f"多源兜底：『{title}』第 {season} 季按独立条目匹配到 {SOURCE_LABELS.get(src, src)}（{len(got)} 集）",
+                            "info",
+                        )
+                        return got, src
+        return set(), ""
+
+    def extra_seasons(self, title: str, year: str, exclude: str = "",
+                      season: Optional[int] = None) -> Dict[str, Any]:
+        """主源没覆盖某集时，再用**其余来源**补一遍（结果缓存 6h）。
+
+        返回 ``{"seasons": {季: {集}}, "source": "bangumi"}``。
+        """
+        key = f"x|{_norm(title)}|{year}|{exclude}|{season}"
+        now = time.time()
+        with self._lock:
+            hit = self._cache.get(key)
+            if hit and (now - float(hit[0])) < 6 * 3600.0:
+                return hit[1] or {"seasons": {}, "source": ""}
+        merged: Dict[int, Set[int]] = {}
+        hit_src = ""
+        for src in self.sources():
+            if src == exclude:
+                continue
+            item = self._pick(self._search_source(title, src), title, year)
+            if not item:
+                continue
+            detail = self._detail_source(src, str(getattr(item, "media_id", "") or ""), getattr(item, "type", None))
+            raw = getattr(detail if detail is not None else item, "seasons", None) or {}
+            got = False
+            try:
+                for k, v in dict(raw).items():
+                    try:
+                        skey = int(k)
+                    except (TypeError, ValueError):
+                        continue
+                    for e in (v or []):
+                        try:
+                            merged.setdefault(skey, set()).add(int(e))
+                            got = True
+                        except (TypeError, ValueError):
+                            continue
+            except Exception:  # noqa: BLE001
+                continue
+            if got and not hit_src:
+                hit_src = src
+        # 该季被拆成独立条目？
+        if season is not None and season not in merged:
+            got, got_src = self._season_entry(title, season)
+            if got:
+                merged.setdefault(int(season), set()).update(got)
+                hit_src = hit_src or got_src
+        out = {"seasons": merged, "source": hit_src}
+        with self._lock:
+            self._cache[key] = (now, out)
         return out
 
     # ------------------------------------------------------------------
@@ -368,6 +492,10 @@ class FallbackEngine:
         result["resolved"] = src_label or None
         seasons = (info or {}).get("seasons") or {}
         show_title = (info or {}).get("title") or title
+        overview = (info or {}).get("overview") or ""
+        # 主源没覆盖的集→再用其他源兜一次（惰性，命中才查）
+        extra_checked = False
+        extra: Dict[str, Any] = {"seasons": {}, "source": ""}
 
         # 剧集级 NFO（缺才写）
         show_nfo = show_dir / "tvshow.nfo"
@@ -376,7 +504,7 @@ class FallbackEngine:
                 ok = self._write_new(
                     show_nfo,
                     self._show_nfo_text(show_title, (info or {}).get("year") or year,
-                                        source=src_label or "本地"),
+                                        overview=overview, source=src_label or "本地"),
                 )
             else:
                 ok = True
@@ -399,15 +527,28 @@ class FallbackEngine:
                 season_num = season if season is not None else ep_season
                 known = bool(seasons.get(season_num) and ep_num in seasons[season_num])
                 has_data = bool(seasons)
+                via = ""
+                if not known:
+                    # 主源没盖住→问问其他来源（同一个剧只查一次）
+                    if not extra_checked and info:
+                        extra_checked = True
+                        extra = self.extra_seasons(
+                            title, year, exclude=str((info or {}).get("source") or ""),
+                            season=season_num,
+                        )
+                    ex_seasons = extra.get("seasons") or {}
+                    if ex_seasons.get(season_num) and ep_num in ex_seasons[season_num]:
+                        known = True
+                        via = str(extra.get("source") or "")
+                        if not has_data:
+                            has_data = True
                 missing_anywhere = has_data and not known and not any(
                     ep_num in (seasons.get(s) or set()) for s in seasons
                 )
                 ep_nfo = path.with_suffix(".nfo")
                 wrote = False
                 if not ep_nfo.exists():
-                    plot = ""
-                    if info and not known:
-                        plot = f"数据源（{src_label or 'TMDB'}）中不存在该集，由魔流按本地文件兜底生成。"
+                    plot = overview
                     if apply:
                         wrote = self._write_new(
                             ep_nfo,
@@ -426,6 +567,8 @@ class FallbackEngine:
                     "status": status,
                     "nfo": wrote,
                 }
+                if via:
+                    record["via"] = SOURCE_LABELS.get(via, via)
                 result["episodes"].append(record)
 
                 # 可选：源里不存在的集 → 归到 Season 0 特别篇
@@ -490,6 +633,8 @@ class FallbackEngine:
         for child in level1:
             if child.name.startswith((".", "@")) or child.name.strip().lower() in EXCLUDE_DIR_NAMES:
                 continue
+            if looks_like_release_dir(child.name):
+                continue
             if _show_is_candidate(child):
                 out.append(child)
                 continue
@@ -499,6 +644,8 @@ class FallbackEngine:
                 continue
             for sub in level2:
                 if sub.name.startswith((".", "@")) or sub.name.strip().lower() in EXCLUDE_DIR_NAMES:
+                    continue
+                if looks_like_release_dir(sub.name):
                     continue
                 if _show_is_candidate(sub):
                     out.append(sub)
@@ -515,10 +662,13 @@ class FallbackEngine:
             "applied": bool(apply),
             "paths": [],
             "shows": [],
+            "scanned": [],
             "stats": {
                 "shows": 0, "resolved": 0, "show_nfo": 0, "episodes": 0,
-                "ep_nfo": 0, "missing": 0, "nodata": 0, "renumbered": 0, "skipped": 0,
+                "ep_nfo": 0, "missing": 0, "nodata": 0, "renumbered": 0,
+                "skipped": 0, "total_shows": 0, "via_extra": 0,
             },
+            "cursor": 0,
             "duration": 0.0,
         }
         for root in self.library_paths():
@@ -527,10 +677,22 @@ class FallbackEngine:
                 continue
             report["paths"].append(root)
             entries = self._collect_show_dirs(root_path)
-            for show_dir in entries:
-                if report["stats"]["shows"] >= max_shows:
-                    report["stats"]["skipped"] += 1
-                    continue
+            total = len(entries)
+            report["stats"]["total_shows"] += total
+            if not total:
+                continue
+            with self._lock:
+                start = int(self._cursor) % total
+            if max_shows and total > max_shows:
+                seq = [entries[(start + i) % total] for i in range(max_shows)]
+                with self._lock:
+                    self._cursor = (start + max_shows) % total
+                report["stats"]["skipped"] += total - max_shows
+            else:
+                seq = entries
+                with self._lock:
+                    self._cursor = 0
+            for show_dir in seq:
                 item = self._scan_show(show_dir, apply)
                 report["stats"]["shows"] += 1
                 if item["resolved"]:
@@ -546,16 +708,47 @@ class FallbackEngine:
                         report["stats"]["nodata"] += 1
                     if ep["nfo"]:
                         report["stats"]["ep_nfo"] += 1
+                    if ep.get("via"):
+                        report["stats"]["via_extra"] += 1
                 if item["show_nfo"] or any(e["nfo"] for e in item["episodes"]) or item["renumbered"]:
                     report["shows"].append(item)
+                report["scanned"].append({
+                    "show": item["show"],
+                    "resolved": item["resolved"],
+                    "episodes": len(item["episodes"]),
+                    "ep_nfo": sum(1 for e in item["episodes"] if e["nfo"]),
+                    "missing": sum(1 for e in item["episodes"] if e["status"] == "missing"),
+                    "nodata": sum(1 for e in item["episodes"] if e["status"] == "nodata"),
+                    "renumbered": len(item["renumbered"]),
+                    "problems": [
+                        {"season": e["season"], "episode": e["episode"], "file": e["file"], "status": e["status"]}
+                        for e in item["episodes"] if e["status"] == "missing"
+                    ][:20],
+                })
+        report["cursor"] = self._cursor
         report["duration"] = round(time.time() - started, 2)
         with self._lock:
             self._last_report = report
+        try:
+            self.plugin.save_data("fallback_report", report)
+        except Exception:  # noqa: BLE001
+            pass
         return report
 
     # ------------------------------------------------------------------
     # 对外
     # ------------------------------------------------------------------
     def last_report(self) -> Optional[Dict[str, Any]]:
+        """最近一次扫描报告；**内存没了就从插件数据里读**（热重载不丢）。"""
         with self._lock:
-            return self._last_report
+            if self._last_report is not None:
+                return self._last_report
+        try:
+            data = self.plugin.get_data("fallback_report")
+            if isinstance(data, dict):
+                with self._lock:
+                    self._last_report = data
+                return data
+        except Exception:  # noqa: BLE001
+            pass
+        return self._last_report
