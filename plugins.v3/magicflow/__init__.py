@@ -14,6 +14,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from urllib.parse import urlparse
 
@@ -96,7 +97,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.0.10"
+__version__ = "3.0.11"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -2018,13 +2019,14 @@ class MagicFlow(_PluginBase):
             rating = float(info.get("rating") or 0)
         except (TypeError, ValueError):
             rating = 0.0
-        if rating <= min_rating:
-            return False
-        if bool(cfg.get("require_chart", True)) and not (
+        if rating > min_rating:
+            return True
+        # 或关系：命中「榜单 / 热映 / 订阅」也算达标（叠加豆瓣评分）
+        if bool(cfg.get("require_chart", True)) and (
             info.get("in_chart") or info.get("in_subscribe")
         ):
-            return False
-        return True
+            return True
+        return False
 
     def _recommend_low_disk(self, torrents: List[Any]) -> bool:
         """当前任务保存卷是否「磁盘不足」（低于阈值即视为过期）。"""
@@ -2134,7 +2136,47 @@ class MagicFlow(_PluginBase):
                         expired += 1
                     continue
                 if status == "pending" and rec.get("evaluated_at"):
-                    # 已评估过：仅复查 TTL，不重复识别（廉价、幂等）
+                    # 已评估过：① 口径变化后可能升级为推荐（用已存字段，免重复识别）② 复查 TTL
+                    _like = {
+                        "recognized": bool(rec.get("media")),
+                        "rating": rec.get("rating"),
+                        "in_chart": rec.get("in_chart"),
+                        "in_subscribe": rec.get("in_subscribe"),
+                    }
+                    if self._recommend_worth(_like, cfg) and not self._recommend_dup(
+                        store, str(rec.get("media_key") or ""), h, ("recommended", "confirmed")
+                    ):
+                        store.upsert(
+                            h, status="recommended",
+                            reason=("评分 %s" % (rec.get("rating") or 0))
+                            + ("·在榜" if rec.get("in_chart") else "")
+                            + ("·订阅" if rec.get("in_subscribe") else ""),
+                        )
+                        self._recommend_tag(downloader, task_id, rec_tag, h)
+                        if self._store:
+                            try:
+                                self._store.protect_torrent(task_id, h)
+                            except Exception as _pe:  # noqa: BLE001
+                                self._log(f"推荐保护失败 {h}: {_pe}", "warning")
+                        recommended += 1
+                        try:
+                            self._recommend_notify(
+                                task,
+                                SimpleNamespace(
+                                    size_gb=rec.get("size_gb"), title=rec.get("title")
+                                ),
+                                {
+                                    "title": (rec.get("media") or {}).get("title")
+                                    or rec.get("title"),
+                                    "year": (rec.get("media") or {}).get("year"),
+                                    "rating": rec.get("rating"),
+                                    "in_chart": rec.get("in_chart"),
+                                    "in_subscribe": rec.get("in_subscribe"),
+                                },
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                        continue
                     if temp_sec > 0 and now - first_seen > temp_sec:
                         store.set_status(h, "expired", note="临时种到期")
                         to_delete.append(h)

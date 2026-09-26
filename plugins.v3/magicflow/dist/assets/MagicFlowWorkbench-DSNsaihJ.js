@@ -5983,7 +5983,7 @@ return (_ctx, _cache) => {
                                 _createVNode(_component_VSwitch, {
                                   modelValue: settingsDraft.value.recommend_require_chart,
                                   "onUpdate:modelValue": _cache[69] || (_cache[69] = $event => ((settingsDraft.value.recommend_require_chart) = $event)),
-                                  label: "需在榜 / 热映 / 订阅（叠加豆瓣评分）",
+                                  label: "榜单 / 热映 / 订阅命中也算达标（与评分为「或」关系）",
                                   color: "primary",
                                   "hide-details": "",
                                   inset: ""
@@ -6443,7 +6443,7 @@ return (_ctx, _cache) => {
                   _createTextVNode(" 评分 > " + _toDisplayString(recommendData.value.min_rating ?? 7.5), 1),
                   (recommendData.value.require_chart !== false)
                     ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
-                        _createTextVNode(" 且在榜 / 热映 / 订阅")
+                        _createTextVNode(" 或在榜 / 热映 / 订阅")
                       ], 64))
                     : _createCommentVNode("", true),
                   _createTextVNode(" · 过期 " + _toDisplayString(recommendData.value.expire_days ?? 7) + " 天 · 磁盘余量下限 " + _toDisplayString(recommendData.value.disk_min_free_gb ?? 50) + "G ", 1)
@@ -6621,6 +6621,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-13569846"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-d7c078e6"]]);
 
 export { MagicFlowWorkbench as M };

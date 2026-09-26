@@ -2449,7 +2449,7 @@ onUnmounted(() => {
               />
             </div>
             <div class="magicflow-settings-switches">
-              <VSwitch v-model="settingsDraft.recommend_require_chart" label="需在榜 / 热映 / 订阅（叠加豆瓣评分）" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.recommend_require_chart" label="榜单 / 热映 / 订阅命中也算达标（与评分为「或」关系）" color="primary" hide-details inset />
               <VSwitch v-model="settingsDraft.recommend_auto_import" label="确认后自动整理入库" color="primary" hide-details inset />
               <VSwitch v-model="settingsDraft.recommend_notify" label="发现推荐时通知" color="primary" hide-details inset />
             </div>
@@ -2604,7 +2604,7 @@ onUnmounted(() => {
             <span>标签 {{ recommendData.tag || '魔流-推荐' }}</span>
           </div>
           <div class="magicflow-recommend-dialog__note">
-            评分 &gt; {{ recommendData.min_rating ?? 7.5 }}<template v-if="recommendData.require_chart !== false"> 且在榜 / 热映 / 订阅</template>
+            评分 &gt; {{ recommendData.min_rating ?? 7.5 }}<template v-if="recommendData.require_chart !== false"> 或在榜 / 热映 / 订阅</template>
             · 过期 {{ recommendData.expire_days ?? 7 }} 天 · 磁盘余量下限 {{ recommendData.disk_min_free_gb ?? 50 }}G
           </div>
           <VAlert v-if="recommendData.enabled === false" type="info" variant="tonal" density="compact" class="my-2">
