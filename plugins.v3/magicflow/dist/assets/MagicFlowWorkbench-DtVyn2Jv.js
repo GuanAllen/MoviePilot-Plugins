@@ -6460,6 +6460,15 @@ return (_ctx, _cache) => {
                                 _createElementVNode("strong", null, "「下载量在涨」"),
                                 _createTextVNode("——免费种不吃下载，下载量增长说明吃到促销尾巴了。 站点级缓存 + 单飞，抓不到自动回退 MP 数据。 ")
                               ], -1)),
+                              _cache[291] || (_cache[291] = _createElementVNode("p", { class: "magicflow-settings-hint magicflow-settings-hint--warn" }, [
+                                _createTextVNode(" ⚠️ 多数站点有"),
+                                _createElementVNode("strong", null, "每日访问次数上限"),
+                                _createTextVNode("（实测 PTT：用户等级 300 PV/天，含刷流浏览）。 采样太频会把配额打光 → 站点当天拒绝访问（连刷流也取不到种）。命中后魔流会自动"),
+                                _createElementVNode("strong", null, "停抓到次日凌晨"),
+                                _createTextVNode("并告警， 但配额是共享的："),
+                                _createElementVNode("strong", null, "建议按站点把采样周期放长"),
+                                _createTextVNode("（比如 15–30 分钟），给选种浏览留余量。 ")
+                              ], -1)),
                               _createElementVNode("div", _hoisted_114, [
                                 _createVNode(_component_VSwitch, {
                                   modelValue: settingsDraft.value.live_enabled,
@@ -6555,7 +6564,7 @@ return (_ctx, _cache) => {
                             ]))
                           : (settingsTab.value === 'recommend')
                             ? (_openBlock(), _createElementBlock("div", _hoisted_118, [
-                                _cache[291] || (_cache[291] = _createElementVNode("p", { class: "magicflow-settings-hint" }, " 刷流时顺带甄别「值得收藏 / 观看」的资源：命中的种子会打上推荐标签（受「媒体资产价值闸门」保护、不会被当临时种删掉）并通知你确认；错过确认窗口（过期 / 磁盘不足）则按临时种回收。 ", -1)),
+                                _cache[292] || (_cache[292] = _createElementVNode("p", { class: "magicflow-settings-hint" }, " 刷流时顺带甄别「值得收藏 / 观看」的资源：命中的种子会打上推荐标签（受「媒体资产价值闸门」保护、不会被当临时种删掉）并通知你确认；错过确认窗口（过期 / 磁盘不足）则按临时种回收。 ", -1)),
                                 _createVNode(_component_VSwitch, {
                                   modelValue: settingsDraft.value.recommend_enabled,
                                   "onUpdate:modelValue": _cache[73] || (_cache[73] = $event => ((settingsDraft.value.recommend_enabled) = $event)),
@@ -6657,7 +6666,7 @@ return (_ctx, _cache) => {
                               ]))
                             : (settingsTab.value === 'fallback')
                               ? (_openBlock(), _createElementBlock("div", _hoisted_121, [
-                                  _cache[297] || (_cache[297] = _createElementVNode("p", { class: "magicflow-settings-hint" }, [
+                                  _cache[298] || (_cache[298] = _createElementVNode("p", { class: "magicflow-settings-hint" }, [
                                     _createTextVNode(" TMDB 对"),
                                     _createElementVNode("strong", null, "番剧特别篇/前传、国漫、B站特供"),
                                     _createTextVNode("常常「根本没有」，离了 TMDB 就没元数据可用。 这里做"),
@@ -6694,7 +6703,7 @@ return (_ctx, _cache) => {
                                     }, null, 8, ["modelValue"])
                                   ]),
                                   _createElementVNode("div", _hoisted_123, [
-                                    _cache[293] || (_cache[293] = _createElementVNode("div", { class: "magicflow-settings-label" }, "识别来源顺序（自上而下依次尝试）", -1)),
+                                    _cache[294] || (_cache[294] = _createElementVNode("div", { class: "magicflow-settings-label" }, "识别来源顺序（自上而下依次尝试）", -1)),
                                     _createElementVNode("ol", _hoisted_124, [
                                       (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(usedFallbackSources.value, (src, idx) => {
                                         return (_openBlock(), _createElementBlock("li", {
@@ -6748,7 +6757,7 @@ return (_ctx, _cache) => {
                                         disabled: !fallbackSourceDraft.value,
                                         onClick: addFallbackSource
                                       }, {
-                                        default: _withCtx(() => [...(_cache[292] || (_cache[292] = [
+                                        default: _withCtx(() => [...(_cache[293] || (_cache[293] = [
                                           _createTextVNode("添加", -1)
                                         ]))]),
                                         _: 1
@@ -6812,7 +6821,7 @@ return (_ctx, _cache) => {
                                       disabled: fallbackRunning.value,
                                       onClick: _cache[90] || (_cache[90] = $event => (runFallback(true)))
                                     }, {
-                                      default: _withCtx(() => [...(_cache[294] || (_cache[294] = [
+                                      default: _withCtx(() => [...(_cache[295] || (_cache[295] = [
                                         _createTextVNode("演练扫描", -1)
                                       ]))]),
                                       _: 1
@@ -6825,7 +6834,7 @@ return (_ctx, _cache) => {
                                       disabled: fallbackRunning.value,
                                       onClick: _cache[91] || (_cache[91] = $event => (runFallback(false)))
                                     }, {
-                                      default: _withCtx(() => [...(_cache[295] || (_cache[295] = [
+                                      default: _withCtx(() => [...(_cache[296] || (_cache[296] = [
                                         _createTextVNode("立即执行", -1)
                                       ]))]),
                                       _: 1
@@ -6836,7 +6845,7 @@ return (_ctx, _cache) => {
                                       loading: fallbackLoading.value,
                                       onClick: loadFallback
                                     }, {
-                                      default: _withCtx(() => [...(_cache[296] || (_cache[296] = [
+                                      default: _withCtx(() => [...(_cache[297] || (_cache[297] = [
                                         _createTextVNode("刷新结果", -1)
                                       ]))]),
                                       _: 1
@@ -6891,7 +6900,7 @@ return (_ctx, _cache) => {
                                 ]))
                               : (settingsTab.value === 'cloud')
                                 ? (_openBlock(), _createElementBlock("div", _hoisted_140, [
-                                    _cache[301] || (_cache[301] = _createElementVNode("p", { class: "magicflow-settings-hint" }, [
+                                    _cache[302] || (_cache[302] = _createElementVNode("p", { class: "magicflow-settings-hint" }, [
                                       _createElementVNode("strong", null, "本地当热区，夸克当冷库。"),
                                       _createTextVNode(" 把库里的成品大文件上传到 OpenList 的可写存储（夸克 cookie 驱动）， 同一夸克目录会被 OpenList 的 Strm 视图自动生成 "),
                                       _createElementVNode("code", null, ".strm"),
@@ -6928,7 +6937,7 @@ return (_ctx, _cache) => {
                                       }, null, 8, ["modelValue"])
                                     ]),
                                     _createElementVNode("div", _hoisted_142, [
-                                      _cache[299] || (_cache[299] = _createElementVNode("div", { class: "magicflow-settings-label" }, "OpenList 连接", -1)),
+                                      _cache[300] || (_cache[300] = _createElementVNode("div", { class: "magicflow-settings-label" }, "OpenList 连接", -1)),
                                       _createElementVNode("div", _hoisted_143, [
                                         _createVNode(_component_VTextField, {
                                           modelValue: settingsDraft.value.cloud_openlist_url,
@@ -6962,7 +6971,7 @@ return (_ctx, _cache) => {
                                           loading: cloudTesting.value,
                                           onClick: testCloud
                                         }, {
-                                          default: _withCtx(() => [...(_cache[298] || (_cache[298] = [
+                                          default: _withCtx(() => [...(_cache[299] || (_cache[299] = [
                                             _createTextVNode("测试", -1)
                                           ]))]),
                                           _: 1
@@ -7128,7 +7137,7 @@ return (_ctx, _cache) => {
                                       variant: "tonal",
                                       density: "compact"
                                     }, {
-                                      default: _withCtx(() => [...(_cache[300] || (_cache[300] = [
+                                      default: _withCtx(() => [...(_cache[301] || (_cache[301] = [
                                         _createTextVNode(" 安全默认：", -1),
                                         _createElementVNode("strong", null, "不删本地、不停种", -1),
                                         _createTextVNode("。删本地需要逐条上传校验通过后手动确认，绝不会自动执行。 ", -1)
@@ -7147,7 +7156,7 @@ return (_ctx, _cache) => {
                     disabled: !downloaderPrefsRecommended.value,
                     onClick: applyRecommendedPrefs
                   }, {
-                    default: _withCtx(() => [...(_cache[302] || (_cache[302] = [
+                    default: _withCtx(() => [...(_cache[303] || (_cache[303] = [
                       _createTextVNode(" 恢复推荐值 ", -1)
                     ]))]),
                     _: 1
@@ -7158,7 +7167,7 @@ return (_ctx, _cache) => {
                 variant: "text",
                 onClick: _cache[111] || (_cache[111] = $event => (settingsDialog.value = false))
               }, {
-                default: _withCtx(() => [...(_cache[303] || (_cache[303] = [
+                default: _withCtx(() => [...(_cache[304] || (_cache[304] = [
                   _createTextVNode("取消", -1)
                 ]))]),
                 _: 1
@@ -7169,7 +7178,7 @@ return (_ctx, _cache) => {
                 loading: saving.value,
                 onClick: saveActiveSettings
               }, {
-                default: _withCtx(() => [...(_cache[304] || (_cache[304] = [
+                default: _withCtx(() => [...(_cache[305] || (_cache[305] = [
                   _createTextVNode("保存", -1)
                 ]))]),
                 _: 1
@@ -7213,7 +7222,7 @@ return (_ctx, _cache) => {
                           variant: "tonal",
                           "prepend-icon": "mdi-shield-check-outline"
                         }, {
-                          default: _withCtx(() => [...(_cache[305] || (_cache[305] = [
+                          default: _withCtx(() => [...(_cache[306] || (_cache[306] = [
                             _createTextVNode("已保留", -1)
                           ]))]),
                           _: 1
@@ -7249,24 +7258,24 @@ return (_ctx, _cache) => {
                 ]),
                 _createElementVNode("dl", _hoisted_154, [
                   _createElementVNode("div", null, [
-                    _cache[306] || (_cache[306] = _createElementVNode("dt", null, "大小", -1)),
+                    _cache[307] || (_cache[307] = _createElementVNode("dt", null, "大小", -1)),
                     _createElementVNode("dd", null, _toDisplayString(Number(activeTorrent.value.size_gb || 0).toFixed(2)) + " GB", 1)
                   ]),
                   _createElementVNode("div", null, [
-                    _cache[307] || (_cache[307] = _createElementVNode("dt", null, "上传量", -1)),
+                    _cache[308] || (_cache[308] = _createElementVNode("dt", null, "上传量", -1)),
                     _createElementVNode("dd", null, _toDisplayString(_unref(formatBytes)(activeTorrent.value.uploaded)), 1)
                   ]),
                   _createElementVNode("div", null, [
-                    _cache[308] || (_cache[308] = _createElementVNode("dt", null, "分享率", -1)),
+                    _cache[309] || (_cache[309] = _createElementVNode("dt", null, "分享率", -1)),
                     _createElementVNode("dd", null, _toDisplayString(Number(activeTorrent.value.ratio || 0).toFixed(2)), 1)
                   ]),
                   _createElementVNode("div", null, [
-                    _cache[309] || (_cache[309] = _createElementVNode("dt", null, "当前状态", -1)),
+                    _cache[310] || (_cache[310] = _createElementVNode("dt", null, "当前状态", -1)),
                     _createElementVNode("dd", null, _toDisplayString(stateLabel(activeTorrent.value.state)), 1)
                   ])
                 ]),
                 _createElementVNode("div", _hoisted_155, [
-                  _cache[310] || (_cache[310] = _createElementVNode("span", { class: "magicflow-torrent-dialog__hash-label" }, "infohash", -1)),
+                  _cache[311] || (_cache[311] = _createElementVNode("span", { class: "magicflow-torrent-dialog__hash-label" }, "infohash", -1)),
                   _createElementVNode("code", null, _toDisplayString(activeTorrent.value.hash), 1),
                   _createVNode(_component_VBtn, {
                     size: "x-small",
@@ -7325,7 +7334,7 @@ return (_ctx, _cache) => {
                       loading: saving.value,
                       onClick: _cache[118] || (_cache[118] = $event => (detailTorrentAction('recheck')))
                     }, {
-                      default: _withCtx(() => [...(_cache[311] || (_cache[311] = [
+                      default: _withCtx(() => [...(_cache[312] || (_cache[312] = [
                         _createTextVNode("校验", -1)
                       ]))]),
                       _: 1
@@ -7339,7 +7348,7 @@ return (_ctx, _cache) => {
                       loading: saving.value,
                       onClick: _cache[119] || (_cache[119] = $event => (requestTorrentDelete(activeTorrent.value)))
                     }, {
-                      default: _withCtx(() => [...(_cache[312] || (_cache[312] = [
+                      default: _withCtx(() => [...(_cache[313] || (_cache[313] = [
                         _createTextVNode("删除", -1)
                       ]))]),
                       _: 1
@@ -7363,17 +7372,17 @@ return (_ctx, _cache) => {
         _createVNode(_component_VCard, { class: "magicflow-dialog" }, {
           default: _withCtx(() => [
             _createVNode(_component_VCardTitle, null, {
-              default: _withCtx(() => [...(_cache[313] || (_cache[313] = [
+              default: _withCtx(() => [...(_cache[314] || (_cache[314] = [
                 _createTextVNode("批量删除托管种子", -1)
               ]))]),
               _: 1
             }),
             _createVNode(_component_VCardText, { class: "text-body-2" }, {
               default: _withCtx(() => [
-                _cache[314] || (_cache[314] = _createTextVNode(" 确认删除选中的 ", -1)),
+                _cache[315] || (_cache[315] = _createTextVNode(" 确认删除选中的 ", -1)),
                 _createElementVNode("b", null, _toDisplayString(selectedHashes.value.length), 1),
-                _cache[315] || (_cache[315] = _createTextVNode(" 个种子？ ", -1)),
-                _cache[316] || (_cache[316] = _createElementVNode("br", null, null, -1)),
+                _cache[316] || (_cache[316] = _createTextVNode(" 个种子？ ", -1)),
+                _cache[317] || (_cache[317] = _createElementVNode("br", null, null, -1)),
                 _createElementVNode("span", _hoisted_156, " 将按任务设置" + _toDisplayString(selectedTask.value.delete_files ? '连同文件' : '保留文件') + "从下载器删除，不可撤销。 ", 1)
               ]),
               _: 1
@@ -7385,7 +7394,7 @@ return (_ctx, _cache) => {
                   variant: "text",
                   onClick: _cache[121] || (_cache[121] = $event => (batchDeleteDialog.value = false))
                 }, {
-                  default: _withCtx(() => [...(_cache[317] || (_cache[317] = [
+                  default: _withCtx(() => [...(_cache[318] || (_cache[318] = [
                     _createTextVNode("取消", -1)
                   ]))]),
                   _: 1
@@ -7396,7 +7405,7 @@ return (_ctx, _cache) => {
                   loading: batchBusy.value,
                   onClick: _cache[122] || (_cache[122] = $event => (batchAction('delete')))
                 }, {
-                  default: _withCtx(() => [...(_cache[318] || (_cache[318] = [
+                  default: _withCtx(() => [...(_cache[319] || (_cache[319] = [
                     _createTextVNode("删除", -1)
                   ]))]),
                   _: 1
@@ -7419,7 +7428,7 @@ return (_ctx, _cache) => {
         _createVNode(_component_VCard, { class: "magicflow-dialog" }, {
           default: _withCtx(() => [
             _createVNode(_component_VCardTitle, { class: "text-wrap" }, {
-              default: _withCtx(() => [...(_cache[319] || (_cache[319] = [
+              default: _withCtx(() => [...(_cache[320] || (_cache[320] = [
                 _createTextVNode("删除托管种子", -1)
               ]))]),
               _: 1
@@ -7427,7 +7436,7 @@ return (_ctx, _cache) => {
             _createVNode(_component_VCardText, { class: "text-body-2" }, {
               default: _withCtx(() => [
                 _createTextVNode(" 确认删除「" + _toDisplayString(pendingTorrentDelete.value?.title || '该种子') + "」？ ", 1),
-                _cache[320] || (_cache[320] = _createElementVNode("br", null, null, -1)),
+                _cache[321] || (_cache[321] = _createElementVNode("br", null, null, -1)),
                 _createElementVNode("span", _hoisted_157, " 将按任务设置" + _toDisplayString(selectedTask.value.delete_files ? '连同文件' : '保留文件') + "从下载器删除，不可撤销。 ", 1)
               ]),
               _: 1
@@ -7439,7 +7448,7 @@ return (_ctx, _cache) => {
                   variant: "text",
                   onClick: _cache[124] || (_cache[124] = $event => (torrentDeleteDialog.value = false))
                 }, {
-                  default: _withCtx(() => [...(_cache[321] || (_cache[321] = [
+                  default: _withCtx(() => [...(_cache[322] || (_cache[322] = [
                     _createTextVNode("取消", -1)
                   ]))]),
                   _: 1
@@ -7450,7 +7459,7 @@ return (_ctx, _cache) => {
                   loading: saving.value,
                   onClick: confirmTorrentDelete
                 }, {
-                  default: _withCtx(() => [...(_cache[322] || (_cache[322] = [
+                  default: _withCtx(() => [...(_cache[323] || (_cache[323] = [
                     _createTextVNode("删除", -1)
                   ]))]),
                   _: 1
@@ -7488,7 +7497,7 @@ return (_ctx, _cache) => {
                   variant: "text",
                   onClick: _cache[126] || (_cache[126] = $event => (deleteDialog.value = false))
                 }, {
-                  default: _withCtx(() => [...(_cache[323] || (_cache[323] = [
+                  default: _withCtx(() => [...(_cache[324] || (_cache[324] = [
                     _createTextVNode("取消", -1)
                   ]))]),
                   _: 1
@@ -7499,7 +7508,7 @@ return (_ctx, _cache) => {
                   loading: saving.value,
                   onClick: confirmDeleteTask
                 }, {
-                  default: _withCtx(() => [...(_cache[324] || (_cache[324] = [
+                  default: _withCtx(() => [...(_cache[325] || (_cache[325] = [
                     _createTextVNode("删除", -1)
                   ]))]),
                   _: 1
@@ -7523,7 +7532,7 @@ return (_ctx, _cache) => {
         _createVNode(_component_VCard, { class: "magicflow-dialog magicflow-cloud-dialog" }, {
           default: _withCtx(() => [
             _createElementVNode("header", _hoisted_158, [
-              _cache[326] || (_cache[326] = _createElementVNode("span", { class: "magicflow-settings-dialog__title" }, "云盘归档", -1)),
+              _cache[327] || (_cache[327] = _createElementVNode("span", { class: "magicflow-settings-dialog__title" }, "云盘归档", -1)),
               _createElementVNode("div", _hoisted_159, [
                 _createVNode(_component_VBtn, {
                   variant: "text",
@@ -7533,7 +7542,7 @@ return (_ctx, _cache) => {
                   loading: cloudLoading.value,
                   onClick: loadCloud
                 }, {
-                  default: _withCtx(() => [...(_cache[325] || (_cache[325] = [
+                  default: _withCtx(() => [...(_cache[326] || (_cache[326] = [
                     _createTextVNode("刷新", -1)
                   ]))]),
                   _: 1
@@ -7558,7 +7567,7 @@ return (_ctx, _cache) => {
                       density: "compact",
                       class: "mb-2"
                     }, {
-                      default: _withCtx(() => [...(_cache[327] || (_cache[327] = [
+                      default: _withCtx(() => [...(_cache[328] || (_cache[328] = [
                         _createTextVNode(" 云盘归档未启用（「插件设置 → 云盘归档」里开启并填 OpenList 地址 / Token）。 ", -1)
                       ]))]),
                       _: 1
@@ -7567,27 +7576,27 @@ return (_ctx, _cache) => {
                 _createElementVNode("div", _hoisted_160, [
                   _createElementVNode("span", null, [
                     _createElementVNode("strong", null, _toDisplayString(cloudPlanStats.value?.pending ?? 0), 1),
-                    _cache[328] || (_cache[328] = _createTextVNode(" 待上传", -1))
-                  ]),
-                  _cache[332] || (_cache[332] = _createElementVNode("i", null, "·", -1)),
-                  _createElementVNode("span", null, [
-                    _createElementVNode("strong", null, _toDisplayString(cloudPlanStats.value?.remote_exists ?? 0), 1),
-                    _cache[329] || (_cache[329] = _createTextVNode(" 远端已有", -1))
+                    _cache[329] || (_cache[329] = _createTextVNode(" 待上传", -1))
                   ]),
                   _cache[333] || (_cache[333] = _createElementVNode("i", null, "·", -1)),
                   _createElementVNode("span", null, [
-                    _createElementVNode("strong", null, _toDisplayString(cloudPlanStats.value?.done ?? 0), 1),
-                    _cache[330] || (_cache[330] = _createTextVNode(" 已归档", -1))
+                    _createElementVNode("strong", null, _toDisplayString(cloudPlanStats.value?.remote_exists ?? 0), 1),
+                    _cache[330] || (_cache[330] = _createTextVNode(" 远端已有", -1))
                   ]),
                   _cache[334] || (_cache[334] = _createElementVNode("i", null, "·", -1)),
-                  _createElementVNode("span", null, _toDisplayString(cloudPlanStats.value?.pending_gb ?? 0) + " GB", 1),
+                  _createElementVNode("span", null, [
+                    _createElementVNode("strong", null, _toDisplayString(cloudPlanStats.value?.done ?? 0), 1),
+                    _cache[331] || (_cache[331] = _createTextVNode(" 已归档", -1))
+                  ]),
                   _cache[335] || (_cache[335] = _createElementVNode("i", null, "·", -1)),
+                  _createElementVNode("span", null, _toDisplayString(cloudPlanStats.value?.pending_gb ?? 0) + " GB", 1),
+                  _cache[336] || (_cache[336] = _createElementVNode("i", null, "·", -1)),
                   _createElementVNode("span", null, [
                     _createElementVNode("strong", null, _toDisplayString(cloudState.value?.record_count ?? 0), 1),
-                    _cache[331] || (_cache[331] = _createTextVNode(" 条记录", -1))
+                    _cache[332] || (_cache[332] = _createTextVNode(" 条记录", -1))
                   ])
                 ]),
-                _cache[343] || (_cache[343] = _createElementVNode("div", { class: "magicflow-cloud-dialog__note" }, [
+                _cache[344] || (_cache[344] = _createElementVNode("div", { class: "magicflow-cloud-dialog__note" }, [
                   _createTextVNode(" 上传到 OpenList 可写存储 → 同一夸克目录 → Strm 视图自动生成播放指针 → 影视直接能看。 默认"),
                   _createElementVNode("strong", null, "只上传不删除"),
                   _createTextVNode("；本地删除需单独确认。 ")
@@ -7601,7 +7610,7 @@ return (_ctx, _cache) => {
                     loading: cloudTesting.value,
                     onClick: testCloud
                   }, {
-                    default: _withCtx(() => [...(_cache[336] || (_cache[336] = [
+                    default: _withCtx(() => [...(_cache[337] || (_cache[337] = [
                       _createTextVNode("测试连接", -1)
                     ]))]),
                     _: 1
@@ -7613,7 +7622,7 @@ return (_ctx, _cache) => {
                     loading: cloudPlanning.value,
                     onClick: planCloud
                   }, {
-                    default: _withCtx(() => [...(_cache[337] || (_cache[337] = [
+                    default: _withCtx(() => [...(_cache[338] || (_cache[338] = [
                       _createTextVNode("扫描候选", -1)
                     ]))]),
                     _: 1
@@ -7625,7 +7634,7 @@ return (_ctx, _cache) => {
                     loading: cloudRunning.value,
                     onClick: _cache[129] || (_cache[129] = $event => (runCloud(true)))
                   }, {
-                    default: _withCtx(() => [...(_cache[338] || (_cache[338] = [
+                    default: _withCtx(() => [...(_cache[339] || (_cache[339] = [
                       _createTextVNode("演练归档", -1)
                     ]))]),
                     _: 1
@@ -7638,7 +7647,7 @@ return (_ctx, _cache) => {
                     loading: cloudRunning.value,
                     onClick: _cache[130] || (_cache[130] = $event => (runCloud(false)))
                   }, {
-                    default: _withCtx(() => [...(_cache[339] || (_cache[339] = [
+                    default: _withCtx(() => [...(_cache[340] || (_cache[340] = [
                       _createTextVNode("开始归档", -1)
                     ]))]),
                     _: 1
@@ -7677,7 +7686,7 @@ return (_ctx, _cache) => {
                       density: "compact",
                       class: "my-2"
                     }, {
-                      default: _withCtx(() => [...(_cache[340] || (_cache[340] = [
+                      default: _withCtx(() => [...(_cache[341] || (_cache[341] = [
                         _createTextVNode(" 归档任务正在后台执行（可关闭本窗口，进度看下方列表与「操作记录」）。 ", -1)
                       ]))]),
                       _: 1
@@ -7688,7 +7697,7 @@ return (_ctx, _cache) => {
                   class: "magicflow-panel app-surface-static mt-2"
                 }, {
                   default: _withCtx(() => [
-                    _cache[342] || (_cache[342] = _createElementVNode("header", { class: "magicflow-panel__head" }, [
+                    _cache[343] || (_cache[343] = _createElementVNode("header", { class: "magicflow-panel__head" }, [
                       _createElementVNode("div", null, [
                         _createElementVNode("div", { class: "text-subtitle-2 font-weight-medium" }, "归档候选"),
                         _createElementVNode("div", { class: "text-body-2 text-medium-emphasis" }, "点「扫描候选」列出可上传文件；逐条点「上传」立即传该文件（后台执行）")
@@ -7729,7 +7738,7 @@ return (_ctx, _cache) => {
                             loading: cloudUploadingPath.value === it.path,
                             onClick: $event => (uploadCloudOne(it))
                           }, {
-                            default: _withCtx(() => [...(_cache[341] || (_cache[341] = [
+                            default: _withCtx(() => [...(_cache[342] || (_cache[342] = [
                               _createTextVNode("上传", -1)
                             ]))]),
                             _: 1
@@ -7759,7 +7768,7 @@ return (_ctx, _cache) => {
         _createVNode(_component_VCard, { class: "magicflow-dialog magicflow-recommend-dialog" }, {
           default: _withCtx(() => [
             _createElementVNode("header", _hoisted_169, [
-              _cache[345] || (_cache[345] = _createElementVNode("span", { class: "magicflow-settings-dialog__title" }, "推荐甄别", -1)),
+              _cache[346] || (_cache[346] = _createElementVNode("span", { class: "magicflow-settings-dialog__title" }, "推荐甄别", -1)),
               _createElementVNode("div", _hoisted_170, [
                 _createVNode(_component_VBtn, {
                   variant: "text",
@@ -7768,7 +7777,7 @@ return (_ctx, _cache) => {
                   "prepend-icon": "mdi-refresh",
                   onClick: loadRecommend
                 }, {
-                  default: _withCtx(() => [...(_cache[344] || (_cache[344] = [
+                  default: _withCtx(() => [...(_cache[345] || (_cache[345] = [
                     _createTextVNode("刷新", -1)
                   ]))]),
                   _: 1
@@ -7788,21 +7797,21 @@ return (_ctx, _cache) => {
                 _createElementVNode("div", _hoisted_171, [
                   _createElementVNode("span", null, [
                     _createElementVNode("strong", null, _toDisplayString(recommendData.value.recommended || 0), 1),
-                    _cache[346] || (_cache[346] = _createTextVNode(" 待确认", -1))
-                  ]),
-                  _cache[349] || (_cache[349] = _createElementVNode("i", null, "·", -1)),
-                  _createElementVNode("span", null, [
-                    _createElementVNode("strong", null, _toDisplayString(confirmedCount.value), 1),
-                    _cache[347] || (_cache[347] = _createTextVNode(" 已入库", -1))
+                    _cache[347] || (_cache[347] = _createTextVNode(" 待确认", -1))
                   ]),
                   _cache[350] || (_cache[350] = _createElementVNode("i", null, "·", -1)),
                   _createElementVNode("span", null, [
-                    _createElementVNode("strong", null, _toDisplayString(pendingCount.value), 1),
-                    _cache[348] || (_cache[348] = _createTextVNode(" 未达门槛", -1))
+                    _createElementVNode("strong", null, _toDisplayString(confirmedCount.value), 1),
+                    _cache[348] || (_cache[348] = _createTextVNode(" 已入库", -1))
                   ]),
                   _cache[351] || (_cache[351] = _createElementVNode("i", null, "·", -1)),
-                  _createElementVNode("span", null, "共 " + _toDisplayString(recommendData.value.total || 0) + " 条", 1),
+                  _createElementVNode("span", null, [
+                    _createElementVNode("strong", null, _toDisplayString(pendingCount.value), 1),
+                    _cache[349] || (_cache[349] = _createTextVNode(" 未达门槛", -1))
+                  ]),
                   _cache[352] || (_cache[352] = _createElementVNode("i", null, "·", -1)),
+                  _createElementVNode("span", null, "共 " + _toDisplayString(recommendData.value.total || 0) + " 条", 1),
+                  _cache[353] || (_cache[353] = _createElementVNode("i", null, "·", -1)),
                   _createElementVNode("span", null, "标签 " + _toDisplayString(recommendData.value.tag || '魔流-推荐'), 1)
                 ]),
                 _createElementVNode("div", _hoisted_172, [
@@ -7822,7 +7831,7 @@ return (_ctx, _cache) => {
                       density: "compact",
                       class: "my-2"
                     }, {
-                      default: _withCtx(() => [...(_cache[353] || (_cache[353] = [
+                      default: _withCtx(() => [...(_cache[354] || (_cache[354] = [
                         _createTextVNode(" 推荐甄别已关闭（可在「插件设置 → 推荐」开启） ", -1)
                       ]))]),
                       _: 1
@@ -7834,7 +7843,7 @@ return (_ctx, _cache) => {
                 }, {
                   default: _withCtx(() => [
                     _createElementVNode("header", _hoisted_173, [
-                      _cache[354] || (_cache[354] = _createElementVNode("div", null, [
+                      _cache[355] || (_cache[355] = _createElementVNode("div", null, [
                         _createElementVNode("div", { class: "text-subtitle-2 font-weight-medium" }, "甄别结果"),
                         _createElementVNode("div", { class: "text-body-2 text-medium-emphasis" }, "全部任务汇总 · 确认 = 自动整理入库；忽略 = 删除该临时种（«待核实»也可手动确认）")
                       ], -1)),
@@ -7937,7 +7946,7 @@ return (_ctx, _cache) => {
                                   loading: recommendActing.value === rec.hash + 'confirm',
                                   onClick: $event => (confirmRecommend(rec.hash))
                                 }, {
-                                  default: _withCtx(() => [...(_cache[355] || (_cache[355] = [
+                                  default: _withCtx(() => [...(_cache[356] || (_cache[356] = [
                                     _createTextVNode(" 确认入库 ", -1)
                                   ]))]),
                                   _: 1
@@ -7950,7 +7959,7 @@ return (_ctx, _cache) => {
                                   loading: recommendActing.value === rec.hash + 'dismiss',
                                   onClick: $event => (dismissRecommend(rec.hash))
                                 }, {
-                                  default: _withCtx(() => [...(_cache[356] || (_cache[356] = [
+                                  default: _withCtx(() => [...(_cache[357] || (_cache[357] = [
                                     _createTextVNode(" 忽略删除 ", -1)
                                   ]))]),
                                   _: 1
@@ -7987,6 +7996,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-f69e9926"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-63d03091"]]);
 
 export { MagicFlowWorkbench as M };

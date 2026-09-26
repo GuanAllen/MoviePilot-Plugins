@@ -33,6 +33,10 @@ DEFAULT_TTL = 240.0
 FAIL_COOLDOWN = 180.0
 # 站点用户栏页（NexusPHP 通用）
 DEFAULT_PAGE = "/index.php"
+# ★ 站点「每日访问次数已达上限」页面特征（实测 PTT：用户等级控制量 300PV/天）
+PV_LIMIT_MARKERS = ("访问次数已达上限", "访问次数已达", "今日访问次数", "PV")
+# 命中访问上限后的封禁时长：到次日凌晨 + 这个宽限（秒）
+PV_BLOCK_GRACE = 600.0
 # 「正在下载」列表页（NexusPHP 通用，带促销标记）
 LEECH_PAGE = "/getusertorrentlist.php?type=leeching&userid={uid}"
 # 回退页：站点没getusertorrentlist 时用 userdetails 的「当前下载」表
@@ -215,6 +219,24 @@ def parse_user_bar(raw: str) -> Dict[str, Any]:
     return out
 
 
+def is_pv_limited(text: Any) -> bool:
+    """页面是否就是「今日访问次数已达上限」的拦截页。"""
+    t = str(text or "")
+    if not t or len(t) > 2000:
+        return False
+    return ("访问次数已达上限" in t) or ("访问次数已达" in t and "上限" in t)
+
+
+def next_day_ts(now: Optional[float] = None) -> float:
+    """下一个本地整点凌晨（+宽限）的时间戳。"""
+    t = float(now if now is not None else time.time())
+    local = time.localtime(t)
+    nxt = time.mktime(
+        (local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, local.tm_wday, local.tm_yday, -1)
+    ) + 86400.0
+    return nxt + PV_BLOCK_GRACE
+
+
 def _norm_title(text: Any) -> frozenset:
     """标题归一化：小写、去 [组名]、非字母数字/汉字都当分隔符、去年代 → 词集合。"""
     s = str(text or "").lower()
@@ -255,6 +277,8 @@ class LiveStats:
         self._samples: Dict[str, List[List[float]]] = {}
         self._loaded = False
         self._leech: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+        self._pv_block: Dict[str, float] = {}
+        self._pv_loaded = False
 
     # ---------------------------------------------------------------- 抓取
     def _log(self, msg: str, level: str = "info") -> None:
@@ -310,6 +334,8 @@ class LiveStats:
             text = raw.decode("gbk", "ignore")
         if status >= 400 or not text:
             return "", f"HTTP {status}", status
+        if is_pv_limited(text):
+            return "", "站点每日访问次数已达上限", status
         return text, None, status
 
     def _fetch_once(self, site_id: int, page: str = DEFAULT_PAGE) -> Dict[str, Any]:
@@ -320,6 +346,8 @@ class LiveStats:
         base = (getattr(site, "url", "") or f"https://{getattr(site, 'domain', '')}").rstrip("/")
         text, err, status = self._get_text(site_id, page)
         if err:
+            if "访问次数已达上限" in str(err):
+                return {"ok": False, "pv_limited": True, "error": err, "status": status}
             return {"ok": False, "error": err, "status": status}
         url = f"{base}/{str(page or DEFAULT_PAGE).lstrip('/')}"
         parsed = parse_user_bar(text)
@@ -366,7 +394,9 @@ class LiveStats:
                 if rows:
                     page = alt
         if err and not rows:
-            res = {"ok": False, "error": err, "uid": int(uid)}
+            if "访问次数已达上限" in str(err):
+                self._pv_block_site(int(site_id), str(err))
+            res = {"ok": False, "error": err, "uid": int(uid), "pv_limited": "访问次数已达上限" in str(err)}
             self._leech[key] = (now, res)
             return dict(res)
         res = {
@@ -379,12 +409,69 @@ class LiveStats:
         self._leech[key] = (now, res)
         return dict(res)
 
+    # ---------------------------------------------------------------- 访问上限
+    def _load_pv(self) -> None:
+        if self._pv_loaded:
+            return
+        self._pv_loaded = True
+        try:
+            data = self._plugin.get_data("live_pv_block")
+        except Exception:  # noqa: BLE001
+            data = None
+        if isinstance(data, dict):
+            now = time.time()
+            for k, v in data.items():
+                try:
+                    ts = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if ts > now:
+                    self._pv_block[str(k)] = ts
+
+    def pv_blocked_until(self, site_id: int) -> float:
+        """该站点因「每日访问上限」被封到的绝对时间戳（0 = 未封）。"""
+        self._load_pv()
+        return float(self._pv_block.get(str(int(site_id)), 0.0) or 0.0)
+
+    def _pv_block_site(self, site_id: int, reason: str = "访问次数已达上限") -> float:
+        self._load_pv()
+        until = next_day_ts()
+        self._pv_block[str(int(site_id))] = until
+        try:
+            self._plugin.save_data("live_pv_block", dict(self._pv_block))
+        except Exception:  # noqa: BLE001
+            pass
+        self._log(
+            f"站点 {site_id} {reason}（今日已用完配额）→ 暂停抓取至 "
+            f"{time.strftime('%m-%d %H:%M', time.localtime(until))}",
+            "warning",
+        )
+        return until
+
     def get(self, site_id: int, force: bool = False, page: str = DEFAULT_PAGE) -> Dict[str, Any]:
         """带缓存 + single-flight 的实时数据。抓不到时**返回上次成功值并标记 stale**。"""
         if not site_id:
             return {"ok": False, "error": "缺少 site_id"}
         key = str(int(site_id))
         now = time.time()
+        until = self.pv_blocked_until(int(site_id))
+        if until > now:
+            hit0 = self._cache.get(key)
+            if hit0:
+                out = dict(hit0)
+                out.update({
+                    "cached": True,
+                    "stale": True,
+                    "pv_limited": True,
+                    "error": "站点每日访问次数已达上限",
+                })
+                return out
+            return {
+                "ok": False,
+                "pv_limited": True,
+                "error": "站点每日访问次数已达上限",
+                "until": until,
+            }
         hit = self._cache.get(key)
         if hit and not force and (now - float(hit.get("_at", 0))) < self.ttl:
             out = dict(hit)
@@ -412,7 +499,10 @@ class LiveStats:
                 self._save_samples()
             else:
                 self._cooldown[key] = time.time() + FAIL_COOLDOWN
-                self._log(f"站点 {site_id} 实时数据抓取失败：{res.get('error')}", "warning")
+                if res.get("pv_limited"):
+                    self._pv_block_site(int(site_id), str(res.get("error") or "访问次数已达上限"))
+                else:
+                    self._log(f"站点 {site_id} 实时数据抓取失败：{res.get('error')}", "warning")
                 if hit:  # 回退上次成功值（标记 stale）
                     out = dict(hit)
                     out.update({"cached": True, "stale": True, "error": res.get("error")})
@@ -516,6 +606,16 @@ class LiveStats:
         rates = self.rates(site_id)
         alerts: List[Dict[str, Any]] = []
         if not live.get("ok"):
+            if live.get("pv_limited"):
+                alerts0 = [{
+                    "kind": "pv_limit",
+                    "level": "warn",
+                    "text": (
+                        "站点「每日访问次数已达上限」→ 已暂停抓取（含刷流浏览）至明日凌晨；"
+                        "说明抓得太频，建议拉长选种/采样间隔"
+                    ),
+                }]
+                return {"ok": False, "alerts": alerts0, "level": "warn", "rates": rates, "live": live}
             return {"ok": False, "alerts": [], "rates": rates, "live": live}
 
         # ① 下载量增长（唯一真危险信号：免费种不吃下载）

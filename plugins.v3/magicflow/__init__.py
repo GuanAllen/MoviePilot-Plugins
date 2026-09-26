@@ -100,7 +100,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.4.0"
+__version__ = "3.4.1"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -1796,6 +1796,13 @@ class MagicFlow(_PluginBase):
                 self._log(
                     f"魔流 [{task.name}] 站点 {site_key} 冷却中"
                     f"（剩余 {int(until - time.time())}s），本轮跳过抓取"
+                )
+                return []
+            # ★ 站点「每日访问次数已达上限」→ 今日内不再抓（避免继续空打；实测 PTT 300PV/天）
+            _pv_until = self._pv_block_reason(int(getattr(task, "site_id", 0) or 0))
+            if _pv_until:
+                self._log(
+                    f"魔流 [{task.name}] 站点 {site_key} 今日访问次数已达上限，暂停抓取至 {_pv_until}"
                 )
                 return []
             fetcher = SiteFetcher()
@@ -6285,6 +6292,21 @@ class MagicFlow(_PluginBase):
                 "ts": time.time(),
             },
         )
+
+    def _site_pv_blocked(self, site_id: int) -> float:
+        """站点是否因「每日访问次数已达上限」被封（返回封到的时间戳，0=未封）。"""
+        try:
+            if getattr(self, "_live", None) is None:
+                return 0.0
+            return float(self._live.pv_blocked_until(int(site_id)))
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    def _pv_block_reason(self, site_id: int) -> str:
+        until = self._site_pv_blocked(site_id)
+        if until <= time.time():
+            return ""
+        return time.strftime("%m-%d %H:%M", time.localtime(until))
 
     def _live_kill_unfree(self, site_id: int, site_name: str) -> Dict[str, Any]:
         """★ 下载量异常增长时：去站点「正在下载」列表，把**非免费**的种子从下载器干掉。
