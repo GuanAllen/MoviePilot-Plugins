@@ -567,9 +567,28 @@ async function loadOperations(taskId) {
 }
 
 // ---- 推荐甄别（价值生命周期） ----
+const showAllRecs = ref(false)
+const REC_LIST_MIN_RATING = 6.0
+// 列表默认只显示「值得看」的：推荐/已确认恒显示；「待核实」需识别出且评分达标（或在榜/订阅）。
+function recWorthShowing(rec) {
+  if (!rec) return false
+  const st = String(rec.status || '').toLowerCase()
+  if (st === 'recommended' || st === 'confirmed' || st === 'dismissed' || st === 'deleted') return true
+  const r = Number(rec.rating || 0)
+  return !!(rec.media && (r >= REC_LIST_MIN_RATING || rec.in_chart || rec.in_subscribe))
+}
+// 展示名：优先「媒体标题 (年份)」；不显示原始下载文件名（文件名只进 tooltip 属性）。
+function recName(rec) {
+  if (!rec) return ''
+  const m = rec.media || {}
+  const t = m.title || ''
+  if (t) return m.year ? `${t} (${m.year})` : t
+  return rec.title || rec.hash || ''
+}
 const recommendItems = computed(() => {
   const order = { recommended: 0, pending: 1, confirmed: 2, dismissed: 3, deleted: 4 }
-  const items = [...(recommendData.value.items || [])]
+  let items = [...(recommendData.value.items || [])]
+  if (!showAllRecs.value) items = items.filter(recWorthShowing)
   items.sort((a, b) => {
     const oa = order[a.status] ?? 9
     const ob = order[b.status] ?? 9
@@ -578,6 +597,7 @@ const recommendItems = computed(() => {
   })
   return items
 })
+const hiddenRecCount = computed(() => (recommendData.value.items || []).filter(i => !recWorthShowing(i)).length)
 const confirmedCount = computed(() => (recommendData.value.items || []).filter(i => i.status === 'confirmed').length)
 // 可手动确认的行：命中推荐（待确认），或「待核实」里非「已在库 / 重复」的临时种。
 function recommendActionable(rec) {
@@ -2590,13 +2610,25 @@ onUnmounted(() => {
                 <div class="text-subtitle-2 font-weight-medium">甄别结果</div>
                 <div class="text-body-2 text-medium-emphasis">全部任务汇总 · 确认 = 自动整理入库；忽略 = 删除该临时种（«待核实»也可手动确认）</div>
               </div>
+              <VBtn
+                size="small"
+                variant="text"
+                color="primary"
+                :prepend-icon="showAllRecs ? 'mdi-eye-off-outline' : 'mdi-eye-outline'"
+                @click="showAllRecs = !showAllRecs"
+              >{{ showAllRecs ? '仅看值得看' : (hiddenRecCount ? `显示全部 (+${hiddenRecCount})` : '显示全部') }}</VBtn>
             </header>
             <div class="magicflow-recs">
               <article v-for="rec in recommendItems" :key="rec.hash" class="magicflow-rec">
+                <div class="magicflow-rec__poster">
+                  <img v-if="rec.poster" :src="rec.poster" :alt="recName(rec)" loading="lazy" referrerpolicy="no-referrer" />
+                  <VIcon v-else icon="mdi-movie-open-outline" size="22" />
+                </div>
                 <div class="magicflow-rec__main">
-                  <strong :title="rec.title || rec.hash">{{ rec.title || rec.hash }}</strong>
+                  <strong :title="rec.title || rec.hash">{{ recName(rec) }}</strong>
                   <span class="magicflow-rec__meta">
                     <VChip size="x-small" variant="tonal" :color="recommendStatusMeta(rec.status).color">{{ recommendStatusMeta(rec.status).text }}</VChip>
+                    <template v-if="rec.media && rec.media.type"> · {{ rec.media.type }}</template>
                     <template v-if="rec.rating"> · 评分 {{ Number(rec.rating).toFixed(1) }}</template>
                     <template v-if="rec.size_gb"> · {{ Number(rec.size_gb).toFixed(2) }}G</template>
                     <template v-if="rec.in_chart"> · 在榜</template>
@@ -3545,10 +3577,30 @@ onUnmounted(() => {
 
 .magicflow-rec {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   padding-block: 8px;
+}
+
+.magicflow-rec__poster {
+  inline-size: 40px;
+  block-size: 60px;
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  color: rgb(var(--v-theme-on-surface-variant));
+}
+
+.magicflow-rec__poster img {
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .magicflow-rec__main {
@@ -3579,9 +3631,10 @@ onUnmounted(() => {
 
 @media (max-width: 699px) {
   .magicflow-rec {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 1fr);
   }
   .magicflow-rec__actions {
+    grid-column: 1 / -1;
     justify-content: flex-start;
   }
 }
