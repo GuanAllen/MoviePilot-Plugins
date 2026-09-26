@@ -219,6 +219,155 @@ def parse_user_bar(raw: str) -> Dict[str, Any]:
     return out
 
 
+# ---------------------------------------------------------------- 新手考核（考核/任务）
+EXAM_WINDOW_RE = re.compile(
+    r"名称\s*[:：]\s*(.{2,40}?)\s*[\|｜]?\s*时间\s*[:：]\s*"
+    r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*~\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"
+)
+EXAM_ITEM_RE = re.compile(
+    r"指标\s*(\d)\s*[:：]\s*(.+?)\s*[,，]\s*要求\s*[:：]\s*(.+?)\s*[,，]\s*"
+    r"当前\s*[:：]\s*(.+?)\s*[,，]\s*结果\s*[:：]\s*(通过|未通过)"
+)
+EXAM_LEFT_RE = re.compile(r"离新人考核结束还有\s*(\d+)\s*天\s*(\d+)\s*时")
+EXAM_SIMPLE_RE = re.compile(r"(上传量|下载量|魔力值|魔力|分享率)\s*[:：]\s*(已通过|未通过)")
+SITE_FREE_RE = re.compile(
+    r"全站\s*\[?\s*Free\s*\]?[^0-9]{0,40}?"
+    r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*~\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})",
+    re.IGNORECASE,
+)
+
+
+def _amount(text: Any) -> Tuple[Optional[float], str]:
+    """把 '30 GB' / '3000' / '30 Hour' / '7,890.60 Hour' 拆成 (数值, 单位)。取不到返回 (None, '')。"""
+    s = _to_text(text)
+    m = re.search(r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*([A-Za-z%]{0,6})", s)
+    if not m:
+        return None, ""
+    try:
+        return float(m.group(1).replace(",", "")), (m.group(2) or "").strip()
+    except (TypeError, ValueError):
+        return None, ""
+
+
+def to_gb(value: Any, unit: str = "") -> Optional[float]:
+    """把带单位的大小换算成 GB（只认字节单位；其他单位原值返回）。"""
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    u = (unit or "").strip().upper()
+    if u in ("", "GB", "G", "GIB", "GBYTES"):
+        return v
+    if u in ("KB", "K"):
+        return v / (1024 ** 2)
+    if u in ("MB", "M"):
+        return v / 1024.0
+    if u in ("TB", "T"):
+        return v * 1024.0
+    if u in ("PB", "P"):
+        return v * 1024.0 * 1024.0
+    if u in ("B",):
+        return v / (1024 ** 3)
+    return v
+
+
+def parse_site_free(raw: Any) -> Optional[Dict[str, Any]]:
+    """解析「全站 Free 生效中！时间：A ~ B」→ {on, start, end, days_left}。"""
+    text = _to_text(raw)
+    if "全站" not in text or "Free" not in text:
+        return None
+    m = SITE_FREE_RE.search(text)
+    if not m:
+        return None
+    start, end = m.group(1), m.group(2)
+    days = None
+    try:
+        e = time.mktime(time.strptime(end, "%Y-%m-%d %H:%M:%S"))
+        days = round((e - time.time()) / 86400.0, 2)
+    except (ValueError, OverflowError):
+        pass
+    return {"on": bool(days is None or days > 0), "start": start, "end": end, "days_left": days}
+
+
+def parse_exam(raw: Any) -> Optional[Dict[str, Any]]:
+    """解析 NexusPHP「新手考核 / 新人进站考核」区块。
+
+    两种版式都吃：
+    1) 4 指标表：`名称：X | 时间：A ~ B` + `指标N：标签, 要求：R, 当前：C, 结果：通过/未通过`；
+    2) 简版：`离新人考核结束还有 X天Y时` + `上传量：已通过` 这类逐项。
+    解析不出返回 None（不猜）。
+    """
+    text = _to_text(raw)
+    if "考核" not in text:
+        return None
+    flat = re.sub(r"\s*\n\s*", " ", text)
+    out: Dict[str, Any] = {
+        "name": "",
+        "start": "",
+        "end": "",
+        "days_left": None,
+        "items": [],
+    }
+    m = EXAM_WINDOW_RE.search(flat)
+    if m:
+        out["name"] = m.group(1).strip(" |｜")
+        out["start"], out["end"] = m.group(2), m.group(3)
+    for mm in EXAM_ITEM_RE.finditer(flat):
+        req_v, req_u = _amount(mm.group(3))
+        cur_v, cur_u = _amount(mm.group(4))
+        unit = req_u or cur_u
+        item: Dict[str, Any] = {
+            "idx": mm.group(1),
+            "label": mm.group(2).strip(),
+            "req": mm.group(3).strip(),
+            "cur": mm.group(4).strip(),
+            "pass": mm.group(5) == "通过",
+            "req_num": req_v,
+            "cur_num": cur_v,
+            "unit": unit,
+        }
+        if unit and unit.upper() in ("KB", "K", "MB", "M", "GB", "G", "GIB", "TB", "T", "PB", "P", "B"):
+            item["req_gb"] = to_gb(req_v, unit)
+            item["cur_gb"] = to_gb(cur_v, unit)
+            item["short_gb"] = max(
+                0.0, round((item["req_gb"] or 0.0) - (item["cur_gb"] or 0.0), 3)
+            )
+        elif req_v is not None:
+            item["short_num"] = max(0.0, req_v - (cur_v or 0.0))
+        out["items"].append(item)
+    left = EXAM_LEFT_RE.search(flat)
+    if left:
+        out["days_left"] = round(int(left.group(1)) + int(left.group(2)) / 24.0, 2)
+        for mm in EXAM_SIMPLE_RE.finditer(flat):
+            out["items"].append(
+                {
+                    "idx": "",
+                    "label": mm.group(1),
+                    "req": "",
+                    "cur": "",
+                    "pass": mm.group(2) == "已通过",
+                }
+            )
+    if out["end"] and out["days_left"] is None:
+        try:
+            e = time.mktime(time.strptime(out["end"], "%Y-%m-%d %H:%M:%S"))
+            out["days_left"] = round((e - time.time()) / 86400.0, 2)
+        except (ValueError, OverflowError):
+            pass
+    if not out["items"] and not out["end"] and out["days_left"] is None:
+        return None
+    out["failed"] = [i["label"] for i in out["items"] if not i.get("pass")]
+    out["all_pass"] = bool(out["items"]) and not out["failed"]
+    out["active"] = bool(out["all_pass"] is False and out["items"])
+    if out["days_left"] is not None and out["days_left"] <= 0:
+        out["ended"] = True
+        out["active"] = False
+    out["site_free"] = parse_site_free(text)
+    return out
+
+
 def is_pv_limited(text: Any) -> bool:
     """页面是否就是「今日访问次数已达上限」的拦截页。"""
     t = str(text or "")
@@ -279,6 +428,8 @@ class LiveStats:
         self._leech: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         self._pv_block: Dict[str, float] = {}
         self._pv_loaded = False
+        # 「新手考核」总开关（由 插件设置 → 考核 控制；关则不解析考核块）
+        self.exam_enabled = False
 
     # ---------------------------------------------------------------- 抓取
     def _log(self, msg: str, level: str = "info") -> None:
@@ -357,6 +508,15 @@ class LiveStats:
         out = {"ok": True, "site_id": int(site_id), "url": url, "status": status, "ts": time.time()}
         out.update(parsed)
         out["fields"] = got
+        try:
+            if bool(getattr(self, "exam_enabled", False)):
+                exam = parse_exam(text)
+            else:
+                exam = None
+        except Exception:  # noqa: BLE001
+            exam = None
+        if exam:
+            out["exam"] = exam
         return out
 
     def leeching(self, site_id: int, force: bool = False) -> Dict[str, Any]:
@@ -671,6 +831,23 @@ class LiveStats:
                     "level": "warn",
                     "text": f"站内只认 {site_seed} 个做种，本地托管 {local_seed} 个 → 可能有种子未 announce/被暂停",
                 })
+        # ⑤ 新手考核：有未通过项（临期 → warn，否则 info）
+        exam = live.get("exam") or {}
+        if exam.get("items"):
+            failed = [i for i in exam.get("items") or [] if not i.get("pass")]
+            if failed:
+                left = exam.get("days_left")
+                detail = "、".join(
+                    f"{i.get('label')}({i.get('cur') or '?'}→{i.get('req') or '?'})" for i in failed
+                )
+                alerts.append(
+                    {
+                        "kind": "exam_fail",
+                        "level": "warn" if (left is not None and float(left) <= 5) else "info",
+                        "text": f"新手考核有 {len(failed)} 项未通过：{detail}"
+                        + (f"（剩 {float(left):.1f} 天）" if left is not None else ""),
+                    }
+                )
         level = "info"
         for a in alerts:
             if a.get("level") == "warn":

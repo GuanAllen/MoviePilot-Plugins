@@ -97,6 +97,8 @@ class MagicFlowTaskPayload(BaseModel):
 
     # 任务目标：达到后任务自动停止（bonus=站点魔力值；brush=站点上传量 GB）
     goal_value: Optional[float] = Field(None, ge=0, description="任务目标：bonus=站点魔力值达到多少；brush=站点上传量（GB）。达到后任务自动停止；留空=未设目标（前端会提醒）")
+    download_target_gb: Optional[float] = Field(None, ge=0, description="考核下载模式：本站「下载增量」目标（GB）。>0 且允许非免费时，刷流会下非免费种凑够该增量后自动转「做种中」")
+    allow_unfree_download: bool = Field(False, description="考核下载模式：允许下载非免费种（默认关；仅在有下载目标时生效）")
 
     # 已处理去重：站点列表页每次都返回同一批最新种子，记录已处理候选避免重复拉取
     seen_cooldown_hours: float = Field(24.0, ge=0, le=8760, description="同一候选在多少小时内不重复拉取（0=不跳过）")
@@ -289,6 +291,12 @@ class MagicFlowSettingsPayload(BaseModel):
     live_kill_unfree: bool = Field(True, description="下载量异常增长时：取站点「正在下载」列表，把非免费的种从下载器干掉")
     live_kill_delete_files: bool = Field(True, description="干掉非免费下载种时是否连文件一起删（只对「下载中」且名称+体积匹配的种生效）")
     live_notify: bool = Field(True, description="站点监控命中时推送通知")
+
+    # ── 新手考核（各站 index.php 首页的考核块；魔流本就抓 index.php → 零额外 PV）────
+    #  开启后：解析各站考核进度（上传/下载增量、平均做种时间、魔力/做种积分增量），
+    #  支持「一键起任务」；**关闭则不解析、不展示**（默认关）。
+    exam_enabled: bool = Field(False, description="启用「新手考核」：抓取考核进度 + 一键起任务（关闭则不解析、不显示）")
+    exam_include_pass: bool = Field(False, description="显示「已通过」的考核（默认只显示未通过的）")
 
     # ── 云盘归档（夸克冷库）────────────────────────────────────────────
     #  本地当热区、夸克当冷库：把库内成品大文件上传到夸克（经 OpenList HTTP API），
