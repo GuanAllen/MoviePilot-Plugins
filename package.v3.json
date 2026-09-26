@@ -157,5 +157,9 @@
       "3.0.2": "3.0.2：推荐去重加固——① 识别后查影视库（MediaServerOper.exists，按 tmdb/豆瓣 id，回退标题+年份），已在库则不再推荐、按临时种回收；② 跨 hash 同片去重（按数据源_原生ID，回退标题+年份），同部作品只推荐一条；③ /debug/recognize 增加 in_library/media_key 诊断字段。",
       "3.0.3": "3.0.3：已在库检查改以 MoviePilot 媒体库 DB（MediaServerOper.exists）为主路——与官方 /mediaserver/exists 同口径；实时媒体服务器链查询改为可开关（默认关，因 trimemedia/FileManager 实现会报错刷日志）。实测「千与千寻」命中 in_library。"
     }
+  },
+  "version": "3.0.4",
+  "history": {
+    "3.0.4": "限时免费（促销到期）闸门：候选抓取解析促销到期时间（Pttime 等站的免费/2X免费是限时的），剩余免费时间不够下完（体积÷20MB/s+30min 余量）的候选在洗池/下载前直接跳过，并把免费定向视图的到期信息回填进同站共享候选列表；修「限时免费到期后仍下载→白烧流量/分享率」。"
   }
 }
