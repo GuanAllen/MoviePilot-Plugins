@@ -2778,6 +2778,11 @@ onUnmounted(() => {
               并监控<strong>「下载量在涨」</strong>——免费种不吃下载，下载量增长说明吃到促销尾巴了。
               站点级缓存 + 单飞，抓不到自动回退 MP 数据。
             </p>
+            <p class="magicflow-settings-hint magicflow-settings-hint--warn">
+              ⚠️ 多数站点有<strong>每日访问次数上限</strong>（实测 PTT：用户等级 300 PV/天，含刷流浏览）。
+              采样太频会把配额打光 → 站点当天拒绝访问（连刷流也取不到种）。命中后魔流会自动<strong>停抓到次日凌晨</strong>并告警，
+              但配额是共享的：<strong>建议按站点把采样周期放长</strong>（比如 15–30 分钟），给选种浏览留余量。
+            </p>
             <div class="magicflow-settings-switches">
               <VSwitch v-model="settingsDraft.live_enabled" label="启用站点实时数据 + 流量监控" color="primary" hide-details inset />
               <VSwitch v-model="settingsDraft.live_notify" label="命中告警时推送通知" color="primary" hide-details inset />
@@ -4108,6 +4113,13 @@ onUnmounted(() => {
   display: grid;
   gap: 11px;
   margin: 18px 0 0;
+}
+
+.magicflow-settings-hint--warn {
+  background: rgba(255, 152, 0, 0.10);
+  border-inline-start: 3px solid #ff9800;
+  padding: 8px 10px;
+  border-radius: 8px;
 }
 
 .magicflow-live-alerts {
