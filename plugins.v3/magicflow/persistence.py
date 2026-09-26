@@ -88,10 +88,14 @@ class TaskState:
     cumulative_deleted: int = 0
     cumulative_kept: int = 0
     cumulative_reused: int = 0
+    # 慢扫（辅种慢扫 worker）独立命名空间计数：与刷流/检查分开，避免并发 worker 互相覆盖
+    cumulative_slow_reused: int = 0
     last_added: int = 0
     last_deleted: int = 0
     last_kept: int = 0
     last_reused: int = 0
+    last_slow_reused: int = 0
+    last_slow_scanned: int = 0
     last_run_status: str = ""
     last_run_reason: str = ""
     last_run_duration: float = 0.0
@@ -139,10 +143,13 @@ class TaskState:
             "cumulative_deleted": self.cumulative_deleted,
             "cumulative_kept": self.cumulative_kept,
             "cumulative_reused": self.cumulative_reused,
+            "cumulative_slow_reused": self.cumulative_slow_reused,
             "last_added": self.last_added,
             "last_deleted": self.last_deleted,
             "last_kept": self.last_kept,
             "last_reused": self.last_reused,
+            "last_slow_reused": self.last_slow_reused,
+            "last_slow_scanned": self.last_slow_scanned,
             "last_run_status": self.last_run_status,
             "last_run_reason": self.last_run_reason,
             "last_run_duration": self.last_run_duration,
@@ -177,10 +184,13 @@ class TaskState:
             cumulative_deleted=d.get("cumulative_deleted", 0),
             cumulative_kept=d.get("cumulative_kept", 0),
             cumulative_reused=d.get("cumulative_reused", 0),
+            cumulative_slow_reused=d.get("cumulative_slow_reused", 0),
             last_added=d.get("last_added", 0),
             last_deleted=d.get("last_deleted", 0),
             last_kept=d.get("last_kept", 0),
             last_reused=d.get("last_reused", 0),
+            last_slow_reused=d.get("last_slow_reused", 0),
+            last_slow_scanned=d.get("last_slow_scanned", 0),
             last_run_status=d.get("last_run_status", ""),
             last_run_reason=d.get("last_run_reason", ""),
             last_run_duration=d.get("last_run_duration", 0.0),
@@ -203,6 +213,31 @@ class TaskState:
             brush_upload={str(k).lower(): dict(v) for k, v in (d.get("brush_upload") or {}).items() if k and isinstance(v, dict)},
             last_tagged_count=int(d.get("last_tagged_count", 0) or 0),
         )
+
+
+# ============================================================
+# 工作报告（分账）
+# ============================================================
+
+@dataclass
+class WorkReport:
+    """一个 worker（刷流/检查/慢扫）一轮工作的「工作报告」。
+
+    设计：worker **只回报告**，由核心 ``_settle`` 统一分账到 TaskState —— 不同 source
+    走不同命名空间，避免并发 worker 互相覆盖（尤其：慢扫不能覆盖刷流/检查的 last_* 字段）。
+    计数器默认 ``None`` = 「本报告不涉及该计数」（不覆盖旧值），避免把字段清零。
+    """
+    task_id: str
+    source: str = "brush"          # brush|check|reuse
+    status: str = ""               # done|noop|skipped|failed
+    reason: str = ""
+    duration: Optional[float] = None
+    added: Optional[int] = None
+    deleted: Optional[int] = None
+    kept: Optional[int] = None
+    reused: Optional[int] = None
+    slow_reused: Optional[int] = None
+    scanned: Optional[int] = None
 
 
 # ============================================================
@@ -561,6 +596,8 @@ class TaskStateStore:
         self.data_dir = data_dir
         self.state_file = data_dir / "task_states.json"
         self._states: Dict[str, TaskState] = {}
+        # 并发 worker（刷流/检查/慢扫）会并发 settle → 加锁串行化内存变更与落盘
+        self._lock = threading.RLock()
         self._load()
 
     def _load(self) -> None:
@@ -578,13 +615,14 @@ class TaskStateStore:
 
     def _save(self) -> None:
         """保存任务状态到磁盘。"""
-        try:
-            self.data_dir.mkdir(parents=True, exist_ok=True)
-            data = {task_id: state.to_dict() for task_id, state in self._states.items()}
-            with open(self.state_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        with self._lock:
+            try:
+                self.data_dir.mkdir(parents=True, exist_ok=True)
+                data = {task_id: state.to_dict() for task_id, state in self._states.items()}
+                with open(self.state_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
 
     def get(self, task_id: str) -> Optional[TaskState]:
         """获取任务状态。"""
@@ -598,7 +636,8 @@ class TaskStateStore:
             state: 任务状态对象
         """
         state.revision += 1  # 乐观锁版本号递增
-        self._states[state.task_id] = state
+        with self._lock:
+            self._states[state.task_id] = state
         self._save()
 
     def delete(self, task_id: str) -> bool:
@@ -1176,6 +1215,58 @@ class MagicFlowStore:
         state.last_kept = kept
         self.task_states.save(state)
 
+    def settle(self, report: "WorkReport") -> None:
+        """核心分账：把一个 worker 的 WorkReport 归入对应命名空间的 TaskState。
+
+        - ``source == "reuse"``（辅种慢扫）：只动 ``cumulative_slow_reused`` / ``last_slow_*``，
+          **绝不**覆盖刷流/检查的 last_* 字段；
+        - ``source in {brush, check}``：更新本轮字段（二者通过 ``_try_begin_run`` 互斥，不并发）。
+        计数器为 ``None`` 时跳过（不清零），所以「失败/无计数」的报告只更新状态/原因。
+        """
+        if report is None or not report.task_id:
+            return
+        state = self.task_states.get(report.task_id)
+        if not state:
+            state = self.task_states.create(report.task_id)
+        src = (report.source or "brush").strip().lower()
+        if src == "reuse":
+            sr = int(report.slow_reused or 0)
+            state.cumulative_slow_reused += sr
+            state.last_slow_reused = sr
+            state.last_slow_scanned = int(report.scanned or 0)
+            self.task_states.save(state)
+            return
+        has_counts = any(
+            v is not None for v in (report.added, report.deleted, report.kept, report.reused)
+        )
+        if report.added is not None:
+            state.cumulative_added += int(report.added)
+            state.last_added = int(report.added)
+        if report.deleted is not None:
+            state.cumulative_deleted += int(report.deleted)
+            state.last_deleted = int(report.deleted)
+        if report.reused is not None:
+            state.cumulative_reused += int(report.reused)
+            state.last_reused = int(report.reused)
+        if report.kept is not None:
+            # 语义是「当前托管快照」，不累加
+            state.cumulative_kept = int(report.kept)
+            state.last_kept = int(report.kept)
+        if has_counts:
+            state.last_success_at = time.time()
+            state.last_error = None
+        if report.status:
+            state.last_run_status = report.status
+        if report.reason is not None:
+            state.last_run_reason = report.reason or ""
+        if report.duration is not None:
+            state.last_run_duration = round(float(report.duration or 0.0), 2)
+        self.task_states.save(state)
+
+    def record_slow_reuse(self, task_id: str, reused: int = 0, scanned: int = 0) -> None:
+        """兼容入口：记录一轮辅种慢扫命中（独立命名空间，不碰刷流/检查字段）。"""
+        self.settle(WorkReport(task_id=task_id, source="reuse", slow_reused=reused, scanned=scanned))
+
     def record_filter_stats(
         self,
         task_id: str,
@@ -1232,10 +1323,13 @@ class MagicFlowStore:
                 "cumulative_deleted": 0,
                 "cumulative_kept": 0,
                 "cumulative_reused": 0,
+                "cumulative_slow_reused": 0,
                 "last_added": 0,
                 "last_deleted": 0,
                 "last_kept": 0,
                 "last_reused": 0,
+                "last_slow_reused": 0,
+                "last_slow_scanned": 0,
                 "last_run_status": "",
                 "last_run_reason": "",
                 "last_run_duration": 0.0,
@@ -1259,10 +1353,13 @@ class MagicFlowStore:
             "cumulative_deleted": state.cumulative_deleted,
             "cumulative_kept": state.cumulative_kept,
             "cumulative_reused": state.cumulative_reused,
+            "cumulative_slow_reused": getattr(state, "cumulative_slow_reused", 0),
             "last_added": state.last_added,
             "last_deleted": state.last_deleted,
             "last_kept": state.last_kept,
             "last_reused": state.last_reused,
+            "last_slow_reused": getattr(state, "last_slow_reused", 0),
+            "last_slow_scanned": getattr(state, "last_slow_scanned", 0),
             "last_run_status": state.last_run_status,
             "last_run_reason": state.last_run_reason,
             "last_run_duration": state.last_run_duration,
