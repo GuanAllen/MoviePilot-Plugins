@@ -416,13 +416,71 @@ def title_match(a: Any, b: Any) -> bool:
     return j >= 0.8 or (inter >= 3 and j >= 0.5)
 
 
+# 实时数据缓存上限 TTL：只是给冷层一个上限，真正的新鲜度由 LiveStats.ttl 自判。
+LIVE_CACHE_TTL = 7200.0
+
+
+class _LiveCache:
+    """LiveStats 的实时数据缓存：优先走插件的 TierCache（分层、跨热重载存活）。
+
+    旧版是纯内存 dict → 每次插件热重载都清空 → 下次看门狗/页面刷新又真抓一遍
+    （实测一天 120 次重载，把每站的实时抓取放大了几十倍）。
+    拿不到分层缓存时自动退化为本地 dict，行为与旧版一致。
+    """
+
+    def __init__(self, tier: Any = None) -> None:
+        self._tc = tier
+        self._mem: Dict[str, Dict[str, Any]] = {}
+
+    def get(self, key: str) -> Optional[Dict[str, Any]]:
+        key = str(key)
+        if self._tc is not None:
+            try:
+                val = self._tc.get(key, LIVE_CACHE_TTL)
+                if isinstance(val, dict):
+                    return dict(val)
+            except Exception:  # noqa: BLE001
+                pass
+        v = self._mem.get(key)
+        return dict(v) if isinstance(v, dict) else None
+
+    def __setitem__(self, key: str, value: Dict[str, Any]) -> None:
+        if not isinstance(value, dict):
+            return
+        key = str(key)
+        self._mem[key] = dict(value)
+        if self._tc is not None:
+            try:
+                self._tc.set(key, dict(value), LIVE_CACHE_TTL)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def pop(self, key: str, default: Any = None) -> Any:
+        key = str(key)
+        val = self._mem.pop(key, None)
+        if self._tc is not None:
+            try:
+                self._tc.delete(key)
+            except Exception:  # noqa: BLE001
+                pass
+        return (dict(val) if isinstance(val, dict) else default)
+
+
 class LiveStats:
     """站点实时数据 + 采样历史（速率/净增/告警判定）。"""
 
     def __init__(self, plugin: Any, ttl: float = DEFAULT_TTL) -> None:
         self._plugin = plugin
         self.ttl = float(ttl or DEFAULT_TTL)
-        self._cache: Dict[str, Dict[str, Any]] = {}
+        # ★ 3.7.1：实时数据缓存改为分层（内存热层 + FileCache 冷层），跨热重载存活。
+        _tier = None
+        try:
+            _factory = getattr(plugin, "live_cache", None)
+            if callable(_factory):
+                _tier = _factory()
+        except Exception:  # noqa: BLE001
+            _tier = None
+        self._cache: Any = _LiveCache(_tier)
         self._locks: Dict[str, threading.Lock] = {}
         self._cooldown: Dict[str, float] = {}
         self._samples: Dict[str, List[List[float]]] = {}

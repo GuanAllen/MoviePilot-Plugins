@@ -1730,6 +1730,13 @@ class MagicFlow(_PluginBase):
             )
         return cache
 
+    def live_cache(self) -> TierCache:
+        """站点实时数据缓存(内存热层 + FileCache 冷层；LiveStats 自动取用)。"""
+        cache = getattr(self, "_tier_live_obj", None)
+        if cache is None:
+            cache = self._tier_live_obj = TierCache("live", base=self._cache_base())
+        return cache
+
     def _cache_formula(self) -> TierCache:
         """站点公式缓存(内存热层 + FileCache 冷层)。编解码 = FormulaCapture ↔ dict。"""
         cache = getattr(self, "_tier_formula_obj", None)
@@ -1772,9 +1779,14 @@ class MagicFlow(_PluginBase):
     def cache_status(self) -> Dict[str, Any]:
         """缓存层健康度:冷层是不是真的可用（FileCache/Redis），还是退化成了纯内存。"""
         out: Dict[str, Any] = {}
-        for name in ("cand", "formula"):
+        for name in ("cand", "formula", "live"):
             try:
-                tc = self._cache_cands() if name == "cand" else self._cache_formula()
+                if name == "cand":
+                    tc = self._cache_cands()
+                elif name == "formula":
+                    tc = self._cache_formula()
+                else:
+                    tc = self.live_cache()
                 be = getattr(tc, "_backend", None)
                 out[name] = {
                     "persistent": be is not None,
