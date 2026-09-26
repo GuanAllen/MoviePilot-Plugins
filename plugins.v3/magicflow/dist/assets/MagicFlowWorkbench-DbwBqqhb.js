@@ -2182,8 +2182,6 @@ const _hoisted_137 = {
 
 const {computed,inject,onMounted,onUnmounted,ref,watch} = await importShared('vue');
 
-const REC_LIST_MIN_RATING = 6.0;
-// 列表默认只显示「值得看」的：推荐/已确认恒显示；「待核实」需识别出且评分达标（或在榜/订阅）。
 
 const _sfc_main = {
   __name: 'MagicFlowWorkbench',
@@ -2737,12 +2735,11 @@ async function loadOperations(taskId) {
 
 // ---- 推荐甄别（价值生命周期） ----
 const showAllRecs = ref(false);
+// 列表默认只显示「真·命中推荐」的生命周期项；未达门槛/未识别的临时种默认隐藏（「显示全部」才展开）。
 function recWorthShowing(rec) {
   if (!rec) return false
   const st = String(rec.status || '').toLowerCase();
-  if (st === 'recommended' || st === 'confirmed' || st === 'dismissed' || st === 'deleted') return true
-  const r = Number(rec.rating || 0);
-  return !!(rec.media && (r >= REC_LIST_MIN_RATING || rec.in_chart || rec.in_subscribe))
+  return st === 'recommended' || st === 'confirmed' || st === 'dismissed' || st === 'deleted'
 }
 // 展示名：优先「媒体标题 (年份)」；不显示原始下载文件名（文件名只进 tooltip 属性）。
 function recName(rec) {
@@ -2762,7 +2759,16 @@ const recommendItems = computed(() => {
     if (oa !== ob) return oa - ob
     return (b.updated_at || 0) - (a.updated_at || 0)
   });
-  return items
+  // 同一部作品（media_key）只保留最靠前的一条（去重：同片多发布/多版本）
+  const seen = new Set();
+  const out = [];
+  for (const it of items) {
+    const k = it.media_key || it.hash;
+    if (k && seen.has(k)) continue
+    if (k) seen.add(k);
+    out.push(it);
+  }
+  return out
 });
 const hiddenRecCount = computed(() => (recommendData.value.items || []).filter(i => !recWorthShowing(i)).length);
 const confirmedCount = computed(() => (recommendData.value.items || []).filter(i => i.status === 'confirmed').length);
@@ -6474,7 +6480,7 @@ return (_ctx, _cache) => {
                         onClick: _cache[90] || (_cache[90] = $event => (showAllRecs.value = !showAllRecs.value))
                       }, {
                         default: _withCtx(() => [
-                          _createTextVNode(_toDisplayString(showAllRecs.value ? '仅看值得看' : (hiddenRecCount.value ? `显示全部 (+${hiddenRecCount.value})` : '显示全部')), 1)
+                          _createTextVNode(_toDisplayString(showAllRecs.value ? '仅看推荐' : (hiddenRecCount.value ? `显示全部候选 (+${hiddenRecCount.value})` : '显示全部候选')), 1)
                         ]),
                         _: 1
                       }, 8, ["prepend-icon"])
@@ -6588,7 +6594,14 @@ return (_ctx, _cache) => {
                         ]))
                       }), 128)),
                       (!recommendItems.value.length)
-                        ? (_openBlock(), _createElementBlock("div", _hoisted_137, "暂无甄别记录（刷流运行时会自动发现优质资源）"))
+                        ? (_openBlock(), _createElementBlock("div", _hoisted_137, [
+                            _createTextVNode(" 暂无推荐" + _toDisplayString(showAllRecs.value ? '' : '（当前没有同时满足「评分 > ' + (recommendData.value.min_rating ?? 7.5) + ' 且在榜 / 热映 / 订阅」的资源）') + "。 ", 1),
+                            (!showAllRecs.value && hiddenRecCount.value)
+                              ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
+                                  _createTextVNode("可点右上「显示全部候选 (+" + _toDisplayString(hiddenRecCount.value) + ")」看全部评估（含未达门槛的临时种）。", 1)
+                                ], 64))
+                              : _createCommentVNode("", true)
+                          ]))
                         : _createCommentVNode("", true)
                     ])
                   ]),
@@ -6608,6 +6621,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-65f34c10"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-797bef74"]]);
 
 export { MagicFlowWorkbench as M };
