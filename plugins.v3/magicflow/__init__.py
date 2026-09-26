@@ -1196,6 +1196,11 @@ class MagicFlow(_PluginBase):
 
         ``np_free`` 保留仅为兼容：现在统一抓**完整列表**，刷流侧自行筛免费
         （见 _brush_impl），以保证魔力任务也能用同一份数据。
+
+        注意：站点「最新 N 页」是**按发布时间的窗口**，会**漏掉较早的免费种**
+        （实测 Pttime：最新 150 条只有 5 个免费，而免费种散落在前 400 条里共 15 个）。
+        故本函数在最新页之外**额外并上 NexusPHP 免费定向视图**（spstate=2/4，一页即全），
+        去重后作为同站唯一一份候选——这样刷流筛免费能拿全、魔力也能吃到这批免费种。
         """
         site_key = (
             str(getattr(task, "site_domain", "") or "") or f"site:{getattr(task, 'site_id', '')}"
@@ -1238,6 +1243,35 @@ class MagicFlow(_PluginBase):
                 self._log(f"魔流 [{task.name}] 站点抓取失败：{err}", "warning")
                 cands = []
             cands = list(cands)
+            # 补充：NexusPHP 免费定向视图（最新页窗口天生漏免费种，见上）。
+            # 失败/非 NexusPHP 站点返回空，静默忽略，不影响最新页结果。
+            try:
+                site = self._get_site(int(getattr(task, "site_id", 0) or 0))
+                if site and getattr(site, "cookie", None):
+                    np_free = fetcher.browse_site_np_free(site, pages=1) or []
+                    if np_free:
+                        seen_keys = {
+                            (getattr(c, "page_url", "") or getattr(c, "hash", "") or getattr(c, "title", ""))
+                            for c in cands
+                        }
+                        added = 0
+                        for c in np_free:
+                            k = (
+                                getattr(c, "page_url", "")
+                                or getattr(c, "hash", "")
+                                or getattr(c, "title", "")
+                            )
+                            if k and k not in seen_keys:
+                                seen_keys.add(k)
+                                cands.append(c)
+                                added += 1
+                        if added:
+                            self._log(
+                                f"魔流 [{task.name}] 站点共享列表补充免费定向 {added} 个"
+                                f"（最新页窗口漏掉的免费种）"
+                            )
+            except Exception as err:  # noqa: BLE001
+                self._log(f"魔流 [{task.name}] 免费定向补充失败（忽略）：{err}", "warning")
             cache[cache_key] = (time.time(), cands)
             return [copy.copy(c) for c in cands]
 
