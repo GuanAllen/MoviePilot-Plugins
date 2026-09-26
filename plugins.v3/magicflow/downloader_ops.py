@@ -697,6 +697,8 @@ class DownloaderAdapter:
         """
         if not self._downloader:
             return None, "下载器不可用"
+        if not str(save_path or "").strip():
+            return None, "未配置保存目录，已跳过（避免落到下载器默认目录）"
         if not torrent_bytes:
             return None, "种子内容为空"
 
@@ -949,6 +951,8 @@ class DownloaderAdapter:
         """
         if not self._downloader:
             return None, "下载器不可用"
+        if not str(download_dir or "").strip():
+            return None, "未配置保存目录，已跳过（避免落到下载器默认目录）"
 
         try:
             if self.downloader_name == "qbittorrent":
