@@ -10,7 +10,7 @@ import inspect
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
@@ -79,6 +79,17 @@ def set_request_interval(seconds: float) -> None:
         _REQUEST_INTERVAL = 0.0
 
 
+# 翻页调试日志：默认关。之前这四条 logger.warning 是**无条件**打的，
+# 每次抓取 × 每页都刷一遍 → 日志被淹、真问题看不见。
+_BROWSE_DEBUG = False
+
+
+def set_browse_debug(flag: Any) -> None:
+    """开关 browse 翻页的调试日志（由插件全局 debug_log 注入）。"""
+    global _BROWSE_DEBUG
+    _BROWSE_DEBUG = bool(flag)
+
+
 def get_request_interval() -> float:
     """读取当前站点请求最小间隔（秒）。"""
     return _REQUEST_INTERVAL
@@ -141,6 +152,22 @@ class SiteCandidateTorrent:
     def __post_init__(self):
         if self.size_gb <= 0:
             self.size_gb = self.size / (1024 ** 3) if self.size else 0.0
+
+    # ---- 序列化（供缓存层持久化：候选列表落 FileCache，跨重载/重启不丢）----
+    def to_dict(self) -> Dict[str, Any]:
+        """转为可 JSON 序列化的普通字典。"""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Any) -> Optional["SiteCandidateTorrent"]:
+        """从字典还原；字段缺失/多余均容错，非法输入返回 None。"""
+        if not isinstance(data, dict):
+            return None
+        names = {f.name for f in fields(cls)}
+        try:
+            return cls(**{k: v for k, v in data.items() if k in names})
+        except Exception:  # noqa: BLE001
+            return None
 
 
 @dataclass
@@ -214,6 +241,7 @@ class SiteFetcher:
     def browse_site(
         self,
         site_domain: str,
+        site_obj: Any = None,
         rss_support: bool = False,
         pages: int = 1,
         cat: Optional[str] = None,
@@ -225,6 +253,7 @@ class SiteFetcher:
 
         Args:
             site_domain: 站点域名（如 "hdfans.org"）
+            site_obj: 站点对象（用于传递 cookie 给 TorrentsChain）
             rss_support: 是否使用 RSS 模式
             pages: 列表页翻页数（>1 时尽量向后翻，拿更多更老的种子）
             cat: 站点分类（若 SDK 支持）
@@ -302,6 +331,8 @@ class SiteFetcher:
         total = max(1, int(pages or 1))
         base_page = max(int(start_page or 0), 0)
         collected: List[Any] = []
+        if _BROWSE_DEBUG:
+            logger.warning(f"[DEBUG] _browse_paged called: site_domain={site_domain!r} pages={pages} start_page={start_page}")
         for p in range(total):
             # 站点请求节流：翻页之间按全局设置休眠，降低被站点限速/封禁的风险
             if p and _REQUEST_INTERVAL > 0:
@@ -311,6 +342,8 @@ class SiteFetcher:
                 logger.warning("[探测] browse 不支持 page 参数，无法翻页（仅取首页）")
                 break
             kwargs: Dict[str, Any] = {"domain": site_domain}
+            if _BROWSE_DEBUG:
+                logger.warning(f"[DEBUG] browse call page={p} kwargs={kwargs}")
             if page_no and can_page:
                 kwargs["page"] = page_no
             if cat and ("cat" in param_names or var_kw):
@@ -329,10 +362,13 @@ class SiteFetcher:
             except Exception as err:
                 logger.warning(f"browse 第 {p} 页异常：{err}")
                 break
-            logger.info(f"[探测] browse page={p} 返回 {len(batch)} 条")
+            if _BROWSE_DEBUG:
+                logger.warning(f"[DEBUG] browse page={p} kwargs={kwargs} raw result={len(batch)} items, first={batch[0] if batch else None}")
             collected.extend(batch)
             if not batch:
                 break
+        if _BROWSE_DEBUG:
+            logger.warning(f"[DEBUG] _browse_paged total collected={len(collected)}")
         return collected
 
     def _parse_np_rows(
