@@ -297,6 +297,19 @@ class MagicFlowSettingsPayload(BaseModel):
     #  支持「一键起任务」；**关闭则不解析、不展示**（默认关）。
     exam_enabled: bool = Field(False, description="启用「新手考核」：抓取考核进度 + 一键起任务（关闭则不解析、不显示）")
     exam_include_pass: bool = Field(False, description="显示「已通过」的考核（默认只显示未通过的）")
+    exam_sites: List[str] = Field(default_factory=list, description="只监控这些站点的考核（留空 = 全部已配置 Cookie 的站点）")
+
+    # ── 站点签到 / 模拟登录（借鉴 MoviePilot「站点自动签到」插件）────────────
+    #  通用签到 = 带 Cookie GET attendance.php；想签几个签几个（多选站点）。
+    signin_enabled: bool = Field(False, description="启用「站点签到 / 模拟登录」")
+    signin_sites: List[str] = Field(default_factory=list, description="签到站点（多选，选多少有多少）")
+    signin_login_sites: List[str] = Field(default_factory=list, description="模拟登录站点（多选，保活 Cookie 并刷新站点数据）")
+    signin_retry_keyword: str = Field("错误|失败", description="失败文案命中该正则则重试一次（留空 = 不重试）")
+    signin_queue: int = Field(5, description="并发数（同时处理几个站点）")
+    signin_notify: bool = Field(True, description="签到/登录结果推送通知")
+    signin_interval_minutes: float = Field(360, description="签到 worker 间隔（分钟；同站当天已成功则自动跳过，故一天只需跑几次）")
+    signin_window_start: int = Field(9, description="只在几点之后跑（默认 9 点）")
+    signin_window_end: int = Field(23, description="几点之后不再跑（默认 23 点）")
 
     # ── 云盘归档（夸克冷库）────────────────────────────────────────────
     #  本地当热区、夸克当冷库：把库内成品大文件上传到夸克（经 OpenList HTTP API），

@@ -87,6 +87,7 @@ from .fallback import FallbackEngine, DEFAULT_SOURCES as FALLBACK_SOURCES
 from .live_stats import LiveStats, title_match
 from .cloud_archive import ArchiveEngine, DEFAULT_TARGET_TEMPLATE as CLOUD_TARGET_TEMPLATE
 from .persistence import MagicFlowStore, OperationItem, WorkReport
+from .signin import SigninEngine
 from .recommend import RecommendEngine
 from .sites import BonusCalculator, get_calculator, get_formula_params
 from .sites.formula_fetch import (
@@ -100,7 +101,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.5.0"
+__version__ = "3.6.0"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -183,6 +184,10 @@ CLOUD_SCAN_MAX = 50
 #  这里直连站点用户栏页拿实时值，站点级缓存 + single-flight；抓不到自动回退 MP 数据。
 LIVE_DEFAULT_TTL = 240.0            # 抓取缓存 TTL（秒）——Master 定调：60s 太频繁，用 240
 LIVE_INTERVAL_MINUTES = 4           # 看门狗轮询周期（分钟，与缓存 TTL 对齐）
+# 站点签到 / 模拟登录（借鉴「站点自动签到」插件）
+SIGNIN_INTERVAL_MINUTES = 360       # 签到 worker 轮询周期（分钟）——同站当天已成功自动跳过
+SIGNIN_RETRY_KEYWORD = "错误|失败"   # 失败文案命中则重试一次
+SIGNIN_QUEUE = 5                    # 并发站点数
 LIVE_DOWNLOAD_ALERT_MB = 50.0       # 下载量增长告警阈值（MB/分钟）
 LIVE_RATIO_TARGET = 0.5             # 分享率目标线（低于则告警）
 LIVE_ALERT_COOLDOWN_MIN = 30        # 同类告警去重窗口（分钟），避免刷屏
@@ -634,12 +639,31 @@ class MagicFlow(_PluginBase):
             "notify": bool(raw_config.get("live_notify", True)),
             "exam_enabled": bool(raw_config.get("exam_enabled", False)),
             "exam_include_pass": bool(raw_config.get("exam_include_pass", False)),
+            "exam_sites": [str(x) for x in (raw_config.get("exam_sites") or []) if str(x or "").strip()]
+            if isinstance(raw_config.get("exam_sites"), (list, tuple)) else [],
         }
         if getattr(self, "_live", None) is None:
             self._live = LiveStats(self, ttl=LIVE_DEFAULT_TTL)
         self._live.exam_enabled = bool(self._live_cfg.get("exam_enabled", False))
         # 缓存 TTL 跟随采样周期（Master 定调：60s 太频繁，240s）
         self._live.ttl = max(60.0, float(self._live_cfg.get("interval") or LIVE_INTERVAL_MINUTES) * 60.0)
+
+        # 站点签到 / 模拟登录（借鉴「站点自动签到」插件：多选站点 + GET attendance.php）
+        self._signin_cfg = {
+            "enabled": bool(raw_config.get("signin_enabled", False)),
+            "sites": [str(x) for x in (raw_config.get("signin_sites") or []) if str(x or "").strip()]
+            if isinstance(raw_config.get("signin_sites"), (list, tuple)) else [],
+            "login_sites": [str(x) for x in (raw_config.get("signin_login_sites") or []) if str(x or "").strip()]
+            if isinstance(raw_config.get("signin_login_sites"), (list, tuple)) else [],
+            "retry_keyword": str(raw_config.get("signin_retry_keyword") or SIGNIN_RETRY_KEYWORD),
+            "queue": int(raw_config.get("signin_queue") or SIGNIN_QUEUE),
+            "notify": bool(raw_config.get("signin_notify", True)),
+            "interval": _rf(raw_config.get("signin_interval_minutes"), float(SIGNIN_INTERVAL_MINUTES)),
+            "window_start": int(raw_config.get("signin_window_start") if raw_config.get("signin_window_start") is not None else 9),
+            "window_end": int(raw_config.get("signin_window_end") if raw_config.get("signin_window_end") is not None else 23),
+        }
+        if getattr(self, "_signin", None) is None:
+            self._signin = SigninEngine(self)
 
         # 云盘归档（夸克冷库）：本地当热区、夸克当冷库
         #  Token 优先用配置；配置为空时回落插件数据（前端/手滑增删设置也不会丢密）
@@ -846,6 +870,20 @@ class MagicFlow(_PluginBase):
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "新手考核：一键起任务（需 confirm=true）",
+            },
+            {
+                "path": "/signin",
+                "endpoint": self.get_signin_state,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "站点签到/登录：今日状态 + 近 7 天记录（借鉴「站点自动签到」插件）",
+            },
+            {
+                "path": "/signin/run",
+                "endpoint": self.run_signin,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "站点签到/登录：立即执行一次（kind=sign|login）",
             },
             {
                 "path": "/cloud",
@@ -1245,6 +1283,23 @@ class MagicFlow(_PluginBase):
                     },
                 }
             )
+        # ★ 站点签到 / 模拟登录：插件级单 worker（借鉴「站点自动签到」插件，多选站点）。
+        if bool(getattr(self, "_signin_cfg", {}).get("enabled", False)) and (
+            (getattr(self, "_signin_cfg", {}) or {}).get("sites") or (getattr(self, "_signin_cfg", {}) or {}).get("login_sites")
+        ):
+            _si_min = float(getattr(self, "_signin_cfg", {}).get("interval") or SIGNIN_INTERVAL_MINUTES)
+            services.append(
+                {
+                    "id": "Signin",
+                    "name": "站点签到",
+                    "trigger": "interval",
+                    "func": self.signin_watch,
+                    "kwargs": {
+                        "minutes": _si_min,
+                        "jitter": self._jitter_seconds(_si_min),
+                    },
+                }
+            )
         return services
 
     def stop_service(self) -> None:
@@ -1303,6 +1358,17 @@ class MagicFlow(_PluginBase):
             "live_notify": bool(getattr(self, "_live_cfg", {}).get("notify", True)),
             "exam_enabled": bool(self._live_cfg.get("exam_enabled", False)),
             "exam_include_pass": bool(self._live_cfg.get("exam_include_pass", False)),
+            "exam_sites": list(self._live_cfg.get("exam_sites") or []),
+            # 站点签到 / 模拟登录（借鉴「站点自动签到」插件：多选站点 + GET attendance.php）
+            "signin_enabled": bool(getattr(self, "_signin_cfg", {}).get("enabled", False)),
+            "signin_sites": list(getattr(self, "_signin_cfg", {}).get("sites") or []),
+            "signin_login_sites": list(getattr(self, "_signin_cfg", {}).get("login_sites") or []),
+            "signin_retry_keyword": str(getattr(self, "_signin_cfg", {}).get("retry_keyword") or SIGNIN_RETRY_KEYWORD),
+            "signin_queue": int(getattr(self, "_signin_cfg", {}).get("queue") or SIGNIN_QUEUE),
+            "signin_notify": bool(getattr(self, "_signin_cfg", {}).get("notify", True)),
+            "signin_interval_minutes": float(getattr(self, "_signin_cfg", {}).get("interval") or SIGNIN_INTERVAL_MINUTES),
+            "signin_window_start": int(getattr(self, "_signin_cfg", {}).get("window_start", 9)),
+            "signin_window_end": int(getattr(self, "_signin_cfg", {}).get("window_end", 23)),
             # 云盘归档（token 不写回配置，单独存插件数据，避免明文进主配置）
             "cloud_enabled": bool(self._cloud_cfg.get("enabled", False)),
             "cloud_openlist_url": str(self._cloud_cfg.get("url") or ""),
@@ -6515,10 +6581,89 @@ class MagicFlow(_PluginBase):
         except Exception:  # noqa: BLE001
             return False
 
+    # ------------------------------------------------------------- 站点签到 / 登录
+    def _signin_cfg_view(self) -> Dict[str, Any]:
+        """签到配置视图（/status 用；不含逐站状态，轻）。"""
+        cfg = dict(getattr(self, "_signin_cfg", {}) or {})
+        today: Dict[str, Any] = {}
+        try:
+            today = (self._signin.records().get(datetime.now().strftime("%Y-%m-%d")) or {}) if getattr(self, "_signin", None) else {}
+        except Exception:  # noqa: BLE001
+            today = {}
+        cfg["today"] = today
+        return cfg
+
+    def get_signin_state(self, days: int = 7) -> Response:
+        """站点签到/登录状态（今日 + 近 N 天记录）。"""
+        try:
+            engine = getattr(self, "_signin", None)
+            if engine is None:
+                return Response(success=True, data={"enabled": False, "sites": [], "records": []})
+            return Response(success=True, data=engine.state(days=int(days or 7)))
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=f"签到状态读取失败：{err}")
+
+    def run_signin(self, kind: str = "sign", site_ids: str = "", force: bool = False) -> Response:
+        """立即签到/登录一次。site_ids 逗号分隔；force=true 忽略「今日已成功」跳过。"""
+        cfg = getattr(self, "_signin_cfg", {}) or {}
+        if not cfg.get("enabled") and not bool(force):
+            return Response(success=False, message="「站点签到」未开启（设置 → 签到）")
+        engine = getattr(self, "_signin", None)
+        if engine is None:
+            return Response(success=False, message="签到组件未初始化")
+        lock = getattr(self, "_signin_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._signin_lock = lock
+        if not lock.acquire(blocking=False):
+            return Response(success=False, message="已有签到任务在跑，稍后再试")
+        try:
+            ids = [x.strip() for x in str(site_ids or "").split(",") if x.strip()]
+            out = engine.run(kind=str(kind or "sign"), site_ids=ids or None, force=bool(force))
+            return Response(success=bool(out.get("ok")), message=str(out.get("message") or "已执行"), data=out)
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=f"签到执行失败：{err}")
+        finally:
+            try:
+                lock.release()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def signin_watch(self) -> None:
+        """签到 worker：只在配置时段内跑；同站当天已成功自动跳过（一天最多 1 请求/站）。"""
+        cfg = getattr(self, "_signin_cfg", {}) or {}
+        engine = getattr(self, "_signin", None)
+        if not cfg.get("enabled") or engine is None:
+            return
+        try:
+            if not engine.should_run_now():
+                return
+            lock = getattr(self, "_signin_lock", None)
+            if lock is None:
+                lock = threading.Lock()
+                self._signin_lock = lock
+            if not lock.acquire(blocking=False):
+                return
+            try:
+                if cfg.get("sites"):
+                    engine.run(kind="sign")
+                if cfg.get("login_sites"):
+                    engine.run(kind="login")
+            finally:
+                lock.release()
+        except Exception as err:  # noqa: BLE001
+            self._log(f"签到 worker 失败：{err}", "warning")
+
     def _exam_sites(self, only_site_id: int = 0) -> Dict[int, Dict[str, Any]]:
-        """考核要看的站点集合：**所有已配置 cookie 的站点**（不只任务站点）+ 任务站点兜底。"""
+        """考核要看的站点集合：**所有已配置 cookie 的站点**（不只任务站点）+ 任务站点兜底。
+
+        若设置里选了「考核站点」（`exam_sites`）→ 只看这些站（**选多少有多少**）。
+        """
         only = int(only_site_id or 0)
+        picked: List[str] = [str(x) for x in (self._live_cfg.get("exam_sites") or [])]
         if only:
+            if picked and str(only) not in picked:
+                return {}
             meta = (self._live_sites(only_site_id=only) or {}).get(only)
             if meta:
                 return {only: meta}
@@ -6531,6 +6676,8 @@ class MagicFlow(_PluginBase):
                 continue
             if not sid or not self._site_has_cookie(sid):
                 continue
+            if picked and str(sid) not in picked:
+                continue
             sites[sid] = {
                 "site_id": sid,
                 "site_name": item.get("name") or self._live_site_name(sid),
@@ -6538,6 +6685,8 @@ class MagicFlow(_PluginBase):
                 "tasks": [],
             }
         for sid, meta in (self._live_sites() or {}).items():
+            if picked and str(sid) not in picked:
+                continue
             sites.setdefault(sid, meta)
         return sites
 
@@ -6976,6 +7125,7 @@ class MagicFlow(_PluginBase):
             "recommend": dict(getattr(self, "_recommend_cfg", {}) or {}),
             "fallback": dict(getattr(self, "_fallback_cfg", {}) or {}),
             "live": dict(getattr(self, "_live_cfg", {}) or {}),
+            "signin": self._signin_cfg_view(),
             "cloud": self._cloud_cfg_view(),
             "defaults": dict(getattr(self, "_defaults", {}) or {}),
         })
@@ -7234,10 +7384,25 @@ class MagicFlow(_PluginBase):
             "notify": bool(getattr(payload, "live_notify", True)),
             "exam_enabled": bool(getattr(payload, "exam_enabled", False)),
             "exam_include_pass": bool(getattr(payload, "exam_include_pass", False)),
+            "exam_sites": [str(x) for x in (getattr(payload, "exam_sites", None) or []) if str(x or "").strip()],
         }
         if getattr(self, "_live", None) is not None:
             self._live.ttl = max(60.0, float(self._live_cfg.get("interval") or LIVE_INTERVAL_MINUTES) * 60.0)
             self._live.exam_enabled = bool(self._live_cfg.get("exam_enabled", False))
+        # 站点签到 / 模拟登录（借鉴「站点自动签到」插件：多选站点 + GET attendance.php）
+        self._signin_cfg = {
+            "enabled": bool(getattr(payload, "signin_enabled", False)),
+            "sites": [str(x) for x in (getattr(payload, "signin_sites", None) or []) if str(x or "").strip()],
+            "login_sites": [str(x) for x in (getattr(payload, "signin_login_sites", None) or []) if str(x or "").strip()],
+            "retry_keyword": str(getattr(payload, "signin_retry_keyword", "") or SIGNIN_RETRY_KEYWORD),
+            "queue": max(1, int(_rf(getattr(payload, "signin_queue", SIGNIN_QUEUE), SIGNIN_QUEUE))),
+            "notify": bool(getattr(payload, "signin_notify", True)),
+            "interval": max(10.0, _rf(getattr(payload, "signin_interval_minutes", SIGNIN_INTERVAL_MINUTES), float(SIGNIN_INTERVAL_MINUTES))),
+            "window_start": int(_rf(getattr(payload, "signin_window_start", 9), 9)),
+            "window_end": int(_rf(getattr(payload, "signin_window_end", 23), 23)),
+        }
+        if getattr(self, "_signin", None) is None:
+            self._signin = SigninEngine(self)
         # 云盘归档（token 空 = 保持原值；避免前端未带该字段时把 token 抹掉）
         _new_token = str(getattr(payload, "cloud_openlist_token", "") or "").strip()
         if _new_token:
