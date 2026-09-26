@@ -2069,8 +2069,8 @@ const _hoisted_122 = { class: "text-medium-emphasis" };
 const _hoisted_123 = { class: "text-medium-emphasis" };
 const _hoisted_124 = { class: "magicflow-settings-dialog__head" };
 const _hoisted_125 = { class: "magicflow-recommend-dialog__head-actions" };
-const _hoisted_126 = { class: "text-body-2 text-medium-emphasis mb-3" };
-const _hoisted_127 = { class: "magicflow-stat-grid" };
+const _hoisted_126 = { class: "magicflow-recommend-dialog__summary" };
+const _hoisted_127 = { class: "magicflow-recommend-dialog__note" };
 const _hoisted_128 = { class: "magicflow-recs" };
 const _hoisted_129 = { class: "magicflow-rec__main" };
 const _hoisted_130 = ["title"];
@@ -6287,7 +6287,22 @@ return (_ctx, _cache) => {
             _createVNode(_component_VCardText, { class: "magicflow-recommend-dialog__body" }, {
               default: _withCtx(() => [
                 _createElementVNode("div", _hoisted_126, [
-                  _createTextVNode(" 刷流中发现的「值得收藏 / 观看」资源 · 评分 > " + _toDisplayString(recommendData.value.min_rating ?? 7.5), 1),
+                  _createElementVNode("span", null, [
+                    _createElementVNode("strong", null, _toDisplayString(recommendData.value.recommended || 0), 1),
+                    _cache[265] || (_cache[265] = _createTextVNode(" 待确认", -1))
+                  ]),
+                  _cache[267] || (_cache[267] = _createElementVNode("i", null, "·", -1)),
+                  _createElementVNode("span", null, [
+                    _createElementVNode("strong", null, _toDisplayString(confirmedCount.value), 1),
+                    _cache[266] || (_cache[266] = _createTextVNode(" 已入库", -1))
+                  ]),
+                  _cache[268] || (_cache[268] = _createElementVNode("i", null, "·", -1)),
+                  _createElementVNode("span", null, "共 " + _toDisplayString(recommendData.value.total || 0) + " 条", 1),
+                  _cache[269] || (_cache[269] = _createElementVNode("i", null, "·", -1)),
+                  _createElementVNode("span", null, "标签 " + _toDisplayString(recommendData.value.tag || '魔流-推荐'), 1)
+                ]),
+                _createElementVNode("div", _hoisted_127, [
+                  _createTextVNode(" 评分 > " + _toDisplayString(recommendData.value.min_rating ?? 7.5), 1),
                   (recommendData.value.require_chart !== false)
                     ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
                         _createTextVNode(" 且在榜 / 热映 / 订阅")
@@ -6295,38 +6310,15 @@ return (_ctx, _cache) => {
                     : _createCommentVNode("", true),
                   _createTextVNode(" · 过期 " + _toDisplayString(recommendData.value.expire_days ?? 7) + " 天 · 磁盘余量下限 " + _toDisplayString(recommendData.value.disk_min_free_gb ?? 50) + "G ", 1)
                 ]),
-                _createElementVNode("div", _hoisted_127, [
-                  _createVNode(_component_VSheet, { class: "magicflow-stat magicflow-stat--accent app-surface-static" }, {
-                    default: _withCtx(() => [
-                      _createElementVNode("strong", null, _toDisplayString(recommendData.value.recommended || 0), 1),
-                      _createElementVNode("span", null, "待确认 · 共 " + _toDisplayString(recommendData.value.total || 0) + " 条甄别记录", 1)
-                    ]),
-                    _: 1
-                  }),
-                  _createVNode(_component_VSheet, { class: "magicflow-stat app-surface-static" }, {
-                    default: _withCtx(() => [
-                      _createElementVNode("strong", null, _toDisplayString(confirmedCount.value), 1),
-                      _cache[265] || (_cache[265] = _createElementVNode("span", null, "已确认入库", -1))
-                    ]),
-                    _: 1
-                  }),
-                  _createVNode(_component_VSheet, { class: "magicflow-stat app-surface-static" }, {
-                    default: _withCtx(() => [
-                      _createElementVNode("strong", null, _toDisplayString(recommendData.value.tag || '魔流-推荐'), 1),
-                      _cache[266] || (_cache[266] = _createElementVNode("span", null, "推荐标签 · 受价值闸门保护", -1))
-                    ]),
-                    _: 1
-                  })
-                ]),
                 (recommendData.value.enabled === false)
                   ? (_openBlock(), _createBlock(_component_VAlert, {
                       key: 0,
                       type: "info",
                       variant: "tonal",
                       density: "compact",
-                      class: "my-3"
+                      class: "my-2"
                     }, {
-                      default: _withCtx(() => [...(_cache[267] || (_cache[267] = [
+                      default: _withCtx(() => [...(_cache[270] || (_cache[270] = [
                         _createTextVNode(" 推荐甄别已关闭（可在「插件设置 → 推荐」开启） ", -1)
                       ]))]),
                       _: 1
@@ -6337,9 +6329,9 @@ return (_ctx, _cache) => {
                   class: "magicflow-panel app-surface-static mt-2"
                 }, {
                   default: _withCtx(() => [
-                    _cache[270] || (_cache[270] = _createElementVNode("header", { class: "magicflow-panel__head" }, [
+                    _cache[273] || (_cache[273] = _createElementVNode("header", { class: "magicflow-panel__head" }, [
                       _createElementVNode("div", null, [
-                        _createElementVNode("div", { class: "text-subtitle-1 font-weight-medium" }, "甄别结果"),
+                        _createElementVNode("div", { class: "text-subtitle-2 font-weight-medium" }, "甄别结果"),
                         _createElementVNode("div", { class: "text-body-2 text-medium-emphasis" }, "全部任务汇总 · 确认 = 自动整理入库；忽略 = 删除该临时种")
                       ])
                     ], -1)),
@@ -6409,7 +6401,7 @@ return (_ctx, _cache) => {
                                   loading: recommendActing.value === rec.hash + 'confirm',
                                   onClick: $event => (confirmRecommend(rec.hash))
                                 }, {
-                                  default: _withCtx(() => [...(_cache[268] || (_cache[268] = [
+                                  default: _withCtx(() => [...(_cache[271] || (_cache[271] = [
                                     _createTextVNode(" 确认入库 ", -1)
                                   ]))]),
                                   _: 1
@@ -6422,7 +6414,7 @@ return (_ctx, _cache) => {
                                   loading: recommendActing.value === rec.hash + 'dismiss',
                                   onClick: $event => (dismissRecommend(rec.hash))
                                 }, {
-                                  default: _withCtx(() => [...(_cache[269] || (_cache[269] = [
+                                  default: _withCtx(() => [...(_cache[272] || (_cache[272] = [
                                     _createTextVNode(" 忽略删除 ", -1)
                                   ]))]),
                                   _: 1
@@ -6452,6 +6444,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-bd4d2086"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-73fd94bd"]]);
 
 export { MagicFlowWorkbench as M };
