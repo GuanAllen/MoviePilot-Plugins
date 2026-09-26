@@ -94,7 +94,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "2.12.0"
+__version__ = "2.13.0"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -137,6 +137,11 @@ SITE_FORMULA_RETRY = 30 * 60
 # /status 实时统计（每任务一次下载器查询）缓存 TTL（秒）：
 # 同一请求内「总览」与「任务列表」会各算一次，缓存可去重；也令 30s 轮询与二次进入更廉价。
 STATS_TTL = 6
+# 下载器「全部种子按标签分组」快照 TTL（秒）：一次拉取全部种子（qB 一次 torrents_info），
+# 供所有任务共用（替代「每任务各拉一次全量」）。冷启动 /status 由 N 次全量 → 1 次。
+TAG_SNAPSHOT_TTL = 6.0
+# 站点/下载器「下拉选项」缓存 TTL（秒）：站点表/下载器表几乎不变，随 /status 重复拉取很浪费。
+OPTIONS_TTL = 300.0
 # /status 整包重数据缓存 TTL（秒）——stale-while-revalidate：命中秒回，过期后台静默刷新。
 STATUS_TTL = 15
 # 官种（official）列表抓取：缓存 TTL 与翻页数。
@@ -513,6 +518,12 @@ class MagicFlow(_PluginBase):
 
         # 回写规范化配置
         self._save_config()
+
+        # 预热总览重数据（后台）：让用户首次打开工作台时缓存已就绪、秒显。
+        try:
+            self._refresh_status_async()
+        except Exception:
+            pass
 
     # ---------------------------------------------------------
     # 插件契约
@@ -1062,12 +1073,17 @@ class MagicFlow(_PluginBase):
         except Exception as err:
             logger.error(f"更新魔流调度失败：{str(err)}")
 
-    def _invalidate_summary(self) -> None:
+    def _invalidate_summary(self, drop: bool = False) -> None:
         self._summary_cache = None
         self._summary_cache_at = 0.0
         self._stats_cache = {}
-        self._status_heavy = None
+        # 默认保留旧快照（_status_heavy），仅标记过期：下次 /status 秒回旧值
+        # 并后台刷新（stale-while-revalidate），避免每轮任务结束后首屏退化为轻量壳。
         self._status_heavy_at = 0.0
+        if drop:
+            # 结构性变更（增/删/改任务、切换状态）：丢弃旧快照 → 下次请求先返回
+            # 轻量壳（由最新任务配置构建，立即含新增/删除的任务）再后台补统计。
+            self._status_heavy = None
 
     # ---------------------------------------------------------
     # 站点 / 下载器辅助
@@ -1230,6 +1246,49 @@ class MagicFlow(_PluginBase):
         except Exception as e:
             self._log(f"获取下载器失败: {e}", "error")
             return None
+
+    def _tag_snapshot(self, downloader_name: str = "qbittorrent") -> Dict[str, List[Any]]:
+        """下载器「全部种子按标签分组」快照（tag -> [TorrentInfo]），带短 TTL 缓存。
+
+        **一次拉取全部种子**（qB 一次 torrents_info）供所有任务共用，替代旧的
+        「每任务各调 get_torrents(tags=[tag])（= 各自全量拉取）」。总览、任务列表、
+        做种明细都读这一份，冷启动 /status 的下载器查询由 N 次 → 1 次。
+        """
+        now = time.time()
+        cache = getattr(self, "_tag_snapshot_cache", None)
+        lock = getattr(self, "_tag_snapshot_lock", None)
+        if cache is None or lock is None:
+            cache = self._tag_snapshot_cache = {}
+            lock = self._tag_snapshot_lock = threading.Lock()
+        hit = cache.get(downloader_name)
+        if hit and (now - float(hit.get("ts", 0))) < TAG_SNAPSHOT_TTL:
+            return hit.get("groups") or {}
+        with lock:
+            hit = cache.get(downloader_name)
+            if hit and (time.time() - float(hit.get("ts", 0))) < TAG_SNAPSHOT_TTL:
+                return hit.get("groups") or {}
+            groups: Dict[str, List[Any]] = {}
+            try:
+                dl = self._get_downloader(downloader_name)
+                if dl and dl.is_available:
+                    groups, _err = dl.get_torrents_by_tag()
+            except Exception as err:
+                self._log(f"标签快照获取失败: {err}", "warning")
+            cache[downloader_name] = {"ts": time.time(), "groups": groups}
+            return groups
+
+    def _cached_options(self) -> Dict[str, Any]:
+        """站点/下载器下拉选项（带 TTL 缓存）。几乎不变，无需随每次 /status 重拉。"""
+        now = time.time()
+        cache = getattr(self, "_options_cache", None)
+        if cache and (now - float(cache.get("ts", 0))) < OPTIONS_TTL:
+            return cache.get("data") or {"sites": [], "downloaders": []}
+        data = {
+            "sites": self._list_sites(),
+            "downloaders": self._list_downloaders(),
+        }
+        self._options_cache = {"ts": now, "data": data}
+        return data
 
     def _get_site_calculator(self, site_domain: str) -> Optional[BonusCalculator]:
         """获取站点魔力计算器。"""
@@ -4349,43 +4408,40 @@ class MagicFlow(_PluginBase):
         except Exception:
             pass
         try:
-            downloader = self._get_downloader(task.downloader)
-            if downloader and downloader.is_available:
-                all_tagged, _ = downloader.get_torrents(tags=[task.brush_tag])
-                managed = list(all_tagged or [])
-                from collections import Counter
-                state_dist = dict(Counter(str(getattr(t, "state", "") or "?") for t in managed))
-                self._log(
-                    f"统计任务 [{task.name}] tag=「{task.brush_tag}」→ 托管 {len(managed)} 个，状态分布 {state_dist}"
-                )
-                seeding = [
-                    t for t in managed
-                    if str(getattr(t, "state", "") or "").lower() in QB_SEEDING_STATES
-                ]
-                stats["seeding_count"] = len(managed)
-                stats["active_seeding_count"] = len(seeding)
-                # 本任务在下载器的累计上传量 / 有上传的种子数（刷流视角）
-                uploaded_sum = 0.0
-                upload_active = 0
-                for t in managed:
-                    up = float(getattr(t, "uploaded", 0) or 0)
-                    uploaded_sum += up
-                    if up > 0:
-                        upload_active += 1
-                stats["task_uploaded"] = round(uploaded_sum)
-                stats["task_upload_active"] = upload_active
-                stats["paused_count"] = sum(
-                    1 for t in managed
-                    if str(getattr(t, "state", "") or "").lower() in QB_PAUSED_STATES
-                )
-                stats["downloading_count"] = sum(
-                    1 for t in managed
-                    if str(getattr(t, "state", "") or "").lower() in QB_DOWNLOADING_STATES
-                )
-                if seeding:
-                    stats["state"] = "seeding"
-                elif managed:
-                    stats["state"] = "downloading"
+            managed = list(self._tag_snapshot(task.downloader).get(task.brush_tag, []))
+            from collections import Counter
+            state_dist = dict(Counter(str(getattr(t, "state", "") or "?") for t in managed))
+            self._log(
+                f"统计任务 [{task.name}] tag=「{task.brush_tag}」→ 托管 {len(managed)} 个，状态分布 {state_dist}"
+            )
+            seeding = [
+                t for t in managed
+                if str(getattr(t, "state", "") or "").lower() in QB_SEEDING_STATES
+            ]
+            stats["seeding_count"] = len(managed)
+            stats["active_seeding_count"] = len(seeding)
+            # 本任务在下载器的累计上传量 / 有上传的种子数（刷流视角）
+            uploaded_sum = 0.0
+            upload_active = 0
+            for t in managed:
+                up = float(getattr(t, "uploaded", 0) or 0)
+                uploaded_sum += up
+                if up > 0:
+                    upload_active += 1
+            stats["task_uploaded"] = round(uploaded_sum)
+            stats["task_upload_active"] = upload_active
+            stats["paused_count"] = sum(
+                1 for t in managed
+                if str(getattr(t, "state", "") or "").lower() in QB_PAUSED_STATES
+            )
+            stats["downloading_count"] = sum(
+                1 for t in managed
+                if str(getattr(t, "state", "") or "").lower() in QB_DOWNLOADING_STATES
+            )
+            if seeding:
+                stats["state"] = "seeding"
+            elif managed:
+                stats["state"] = "downloading"
         except Exception as err:
             self._log(f"统计任务 [{task.name}] 运行时数据失败: {err}", "warning")
 
@@ -4547,11 +4603,43 @@ class MagicFlow(_PluginBase):
         return {
             "summary": summary,
             "tasks": self._build_task_list(),
-            "options": {
-                "sites": self._list_sites(),
-                "downloaders": self._list_downloaders(),
-            },
+            "options": self._cached_options(),
         }
+
+    def _light_status(self) -> Dict[str, Any]:
+        """轻量壳：冷启动首屏用。任务配置/阶段/目标都算（本地快），**不算下载器实时统计**。
+
+        供后台构建重数据期间先返回，避免首屏卡 2~3s；前端见到 warming 会快速重拉。
+        """
+        try:
+            total = len(self._task_configs)
+            enabled = sum(1 for t in self._task_configs.values() if t.enabled)
+            tasks = []
+            for task in self._task_configs.values():
+                try:
+                    tasks.append({
+                        **task.to_dict(),
+                        **self._phase_info(task.id),
+                        **self._task_goal_status(task),
+                    })
+                except Exception:
+                    tasks.append(task.to_dict())
+        except Exception as err:
+            self._log(f"构建轻量总览失败：{err}", "warning")
+            total, enabled, tasks = 0, 0, []
+        summary = {
+            "total_tasks": total,
+            "enabled_tasks": enabled,
+            "seeding_count": 0,
+            "bonus_per_hour": 0.0,
+            "current_bonus": 0.0,
+            "ceiling": 0.0,
+            "ceiling_pct": 0.0,
+            "site_upload": 0,
+            "site_download": 0,
+            "site_ratio": 0.0,
+        }
+        return {"summary": summary, "tasks": tasks, "options": self._cached_options()}
 
     def _refresh_status_async(self) -> None:
         """后台异步刷新总览重数据（stale-while-revalidate，不阻塞请求）。"""
@@ -4564,7 +4652,9 @@ class MagicFlow(_PluginBase):
                 heavy = self._build_status_heavy()
                 self._status_heavy = heavy
                 self._status_heavy_at = time.time()
+                self._status_warm_fails = 0
             except Exception as err:
+                self._status_warm_fails = int(getattr(self, "_status_warm_fails", 0) or 0) + 1
                 self._log(f"后台刷新总览失败：{err}", "warning")
             finally:
                 self._status_refreshing = False
@@ -4575,19 +4665,33 @@ class MagicFlow(_PluginBase):
             pass
 
     def get_status(self) -> Response:
-        """获取插件总览状态（重数据带 STATUS_TTL 缓存 + 后台静默刷新）。"""
+        """获取插件总览状态（重数据带 STATUS_TTL 缓存 + 后台静默刷新）。
+
+        冷启动不再同步阻塞：首次调用立即返回**轻量壳**（配置/阶段/目标，不算下载器
+        实时统计）并后台构建重数据，前端见 `warming=true` 会快速重拉；后台连续失败
+        时才同步兜底（正确性优先）。
+        """
         now = time.time()
         heavy = getattr(self, "_status_heavy", None)
+        warming = False
         if heavy is None:
-            heavy = self._build_status_heavy()
-            self._status_heavy = heavy
-            self._status_heavy_at = now
+            if int(getattr(self, "_status_warm_fails", 0) or 0) >= 2:
+                # 后台反复失败：同步兜底，保证拿到真实数据
+                heavy = self._build_status_heavy()
+                self._status_heavy = heavy
+                self._status_heavy_at = now
+            else:
+                if not getattr(self, "_status_refreshing", False):
+                    self._refresh_status_async()
+                warming = True
+                heavy = self._light_status()
         elif (now - float(getattr(self, "_status_heavy_at", 0.0))) >= STATUS_TTL:
             self._refresh_status_async()
         data = dict(heavy)
         data.update({
             "enabled": self.get_state(),
             "version": __version__,
+            "warming": warming,
             "show_sidebar_nav": bool(getattr(self, "_show_sidebar_nav", True)),
             "debug_log": bool(getattr(self, "_debug_log", False)),
             "compact_mode": bool(getattr(self, "_compact_mode", False)),
@@ -5055,7 +5159,7 @@ class MagicFlow(_PluginBase):
         self._task_configs[task.id] = task
         self._save_config()
         self._refresh_scheduler()
-        self._invalidate_summary()
+        self._invalidate_summary(drop=True)
         self._apply_task_traffic_limit()
         return Response(success=True, message="任务创建成功", data=self._build_task_detail(task.id))
 
@@ -5150,7 +5254,7 @@ class MagicFlow(_PluginBase):
 
         self._save_config()
         self._refresh_scheduler()
-        self._invalidate_summary()
+        self._invalidate_summary(drop=True)
         self._apply_task_traffic_limit()
         if _run_mode != _prev_mode:
             self._spawn_run_mode_apply(task, _run_mode)
@@ -5175,7 +5279,7 @@ class MagicFlow(_PluginBase):
                 self._log(f"清理任务操作记录失败：{err}", "warning")
         self._save_config()
         self._refresh_scheduler()
-        self._invalidate_summary()
+        self._invalidate_summary(drop=True)
         self._apply_task_traffic_limit()
         return Response(success=True, message="任务已删除")
 
@@ -5191,7 +5295,7 @@ class MagicFlow(_PluginBase):
         task.enabled = (mode == "running")
         self._save_config()
         self._refresh_scheduler()
-        self._invalidate_summary()
+        self._invalidate_summary(drop=True)
         self._apply_task_traffic_limit()
         # 异步应用种子操作（暂停/恢复）；「运行中」时立即跑一轮 check，避免非免费偷下空窗
         self._spawn_run_mode_apply(task, mode)
@@ -5309,9 +5413,9 @@ class MagicFlow(_PluginBase):
                 self._log(f"API 做种明细：下载器不可用（{task.downloader}）", "warning")
                 return Response(success=False, message="下载器不可用")
 
-            # 一次拉取即得：按标签取全部托管种子（黑盒：不再额外查 seeding，避免多打一次 qB）
-            all_tagged, error = downloader.get_torrents(tags=[task.brush_tag])
-            task_torrents = list(all_tagged or [])
+            # 与总览共用同一份「全部种子按标签分组」快照（避免再单独全量拉一次 qB）
+            task_torrents = list(self._tag_snapshot(task.downloader).get(task.brush_tag, []))
+            error = None
             self._log(
                 f"API 做种明细：task={task_id} tag=「{task.brush_tag}」 tagged={len(task_torrents)} err={error}"
             )

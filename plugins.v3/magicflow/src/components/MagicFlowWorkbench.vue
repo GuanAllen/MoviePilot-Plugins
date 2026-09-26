@@ -101,6 +101,8 @@ const iyuuStatus = ref(null)
 const iyuuShowMore = ref({})
 let refreshTimer
 let phaseTimer
+let warmingTimer
+let warmingRetryCount = 0
 
 // 任务图标使用站点自身图标（走 MoviePilot /site/icon/{id}，服务端带 cookie 抓取，私有站也能取到）
 const siteIcons = ref({})
@@ -464,10 +466,28 @@ async function loadStatus() {
     } else if (selectedTaskId.value && !tasks.value.some(item => item.id === selectedTaskId.value)) {
       selectedTaskId.value = ''
     }
+    scheduleWarmingRetry()
   } catch (err) {
     error.value = err?.message || String(err)
   } finally {
     loading.value = false
+  }
+}
+
+// 冷启动时后端先返回轻量壳（warming=true）并后台构建重数据；这里快速重拉几次直到就绪。
+function scheduleWarmingRetry() {
+  if (status.value && status.value.warming) {
+    if (warmingRetryCount < 12) {
+      warmingRetryCount += 1
+      if (warmingTimer) window.clearTimeout(warmingTimer)
+      warmingTimer = window.setTimeout(() => loadStatus(), 1200)
+    }
+  } else {
+    warmingRetryCount = 0
+    if (warmingTimer) {
+      window.clearTimeout(warmingTimer)
+      warmingTimer = null
+    }
   }
 }
 
@@ -1097,6 +1117,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (refreshTimer) window.clearInterval(refreshTimer)
   if (phaseTimer) window.clearInterval(phaseTimer)
+  if (warmingTimer) window.clearTimeout(warmingTimer)
 })
 </script>
 
@@ -1445,6 +1466,7 @@ onUnmounted(() => {
                     <div><span>本次耗时</span><strong>{{ formatDurationSeconds(detailStats.last_run_duration) }}</strong></div>
                     <div><span>本次新增 / 复用</span><strong>{{ detailStats.last_added || 0 }} / {{ detailStats.last_reused || 0 }}</strong></div>
                     <div><span>本次删除</span><strong>{{ detailStats.last_deleted || 0 }}</strong></div>
+                    <div><span>慢扫辅种（累计 / 本次）</span><strong>{{ detailStats.cumulative_slow_reused || 0 }} / {{ detailStats.last_slow_reused || 0 }}</strong></div>
                     <div><span>当前托管 / 受保护</span><strong>{{ detailStats.last_kept || 0 }} / {{ detailStats.protected_count || 0 }}</strong></div>
                   </div>
                   <VAlert v-if="detailStats.last_run_reason" type="info" variant="tonal" density="compact" class="mb-2">

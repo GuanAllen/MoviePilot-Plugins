@@ -464,6 +464,27 @@ class DownloaderAdapter:
                 index[info.hash.lower()] = info
         return index
 
+    def get_torrents_by_tag(self) -> Tuple[Dict[str, List[TorrentInfo]], Optional[str]]:
+        """**一次**拉取全部种子，按标签分组返回：tag -> [TorrentInfo]。
+
+        性能：qBittorrent 的 ``torrents_info()``（无 tag 过滤）会一次返回**全部**种子，
+        再由客户端过滤标签。旧做法是「每个任务各调一次 get_torrents(tags=[tag])」→
+        N 个任务 = N 次全量拉取（N×数百条），是 /status 冷启动 2~3s 的主因。
+        这里一次拉取 + 内存分组，让总览/做种明细等共用同一份数据。
+        """
+        groups: Dict[str, List[TorrentInfo]] = {}
+        raw = self.get_raw_torrents()
+        for torrent in raw:
+            try:
+                info = self._parse_torrent_info(torrent)
+            except Exception:
+                continue
+            for tag in (getattr(info, "tags", None) or []):
+                tg = str(tag).strip()
+                if tg:
+                    groups.setdefault(tg, []).append(info)
+        return groups, None
+
     def get_file_entries(self, hash_string: str) -> List[Entry]:
         """获取指定种子的文件列表 [(相对路径, 大小)]。"""
         if not self._downloader or not hash_string:

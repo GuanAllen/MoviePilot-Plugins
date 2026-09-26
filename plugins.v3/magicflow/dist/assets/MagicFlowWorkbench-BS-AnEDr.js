@@ -2151,6 +2151,8 @@ const iyuuStatus = ref(null);
 const iyuuShowMore = ref({});
 let refreshTimer;
 let phaseTimer;
+let warmingTimer;
+let warmingRetryCount = 0;
 
 // 任务图标使用站点自身图标（走 MoviePilot /site/icon/{id}，服务端带 cookie 抓取，私有站也能取到）
 const siteIcons = ref({});
@@ -2514,10 +2516,28 @@ async function loadStatus() {
     } else if (selectedTaskId.value && !tasks.value.some(item => item.id === selectedTaskId.value)) {
       selectedTaskId.value = '';
     }
+    scheduleWarmingRetry();
   } catch (err) {
     error.value = err?.message || String(err);
   } finally {
     loading.value = false;
+  }
+}
+
+// 冷启动时后端先返回轻量壳（warming=true）并后台构建重数据；这里快速重拉几次直到就绪。
+function scheduleWarmingRetry() {
+  if (status.value && status.value.warming) {
+    if (warmingRetryCount < 12) {
+      warmingRetryCount += 1;
+      if (warmingTimer) window.clearTimeout(warmingTimer);
+      warmingTimer = window.setTimeout(() => loadStatus(), 1200);
+    }
+  } else {
+    warmingRetryCount = 0;
+    if (warmingTimer) {
+      window.clearTimeout(warmingTimer);
+      warmingTimer = null;
+    }
   }
 }
 
@@ -3127,6 +3147,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (refreshTimer) window.clearInterval(refreshTimer);
   if (phaseTimer) window.clearInterval(phaseTimer);
+  if (warmingTimer) window.clearTimeout(warmingTimer);
 });
 
 return (_ctx, _cache) => {
@@ -6015,6 +6036,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-f91190c2"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-7490ab82"]]);
 
 export { MagicFlowWorkbench as M };
