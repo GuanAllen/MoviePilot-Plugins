@@ -95,7 +95,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.0.2"
+__version__ = "3.0.3"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -127,6 +127,8 @@ REUSE_WORKER_BATCH = 5
 # ★ 推荐甄别（刷流种价值生命周期）：独立低频 worker，同样插件级单 worker + 轮转。
 RECOMMEND_INTERVAL_MINUTES = 60
 RECOMMEND_SCAN_MAX = 15
+# 推荐/已在库检查：是否额外实时查媒体服务器（链）；默认可关（trimemedia 实现会报错刷日志）
+RECOMMEND_LIVE_LIBRARY_CHECK = False
 # 站点级候选抓取共享缓存 TTL（秒）：同站点的多个任务在此时窗内只抓**一份**候选，
 # 避免 N 个任务重复打同一站点 → 触发流控（这正是「几十个任务」的主要压力来源）。
 SITE_FETCH_TTL = 240.0
@@ -1835,22 +1837,34 @@ class MagicFlow(_PluginBase):
         return f"t:{title}:{year}" if year else f"t:{title}"
 
     def _recommend_in_library(self, info: Dict[str, Any]) -> bool:
-        """识别结果是否**已在影视库**（MoviePilot 媒体服务器条目）。
+        """识别结果是否**已在影视库**中。
 
-        惰性调用 ``MediaServerOper().exists``；任何异常都视为「未知」返回 False（不阻断）。
+        主路：``MediaServerOper().exists``（MoviePilot 同步的媒体库 DB 表，也是官方
+        「/mediaserver/exists 查询本地是否存在」用的口径）。
+        可选：``MediaServerChain().media_exists`` 实时查媒体服务器（默认关，因
+        trimemedia/FileManagerModule 的实现会报错刷日志）。
+        任何异常都视为「未知」→ False（不阻断）。结果按 media_key 短缓存（600s）。
         """
         if not info.get("recognized"):
             return False
+        key = self._recommend_media_key(
+            {"source": info.get("media_source"), "id": info.get("media_id")}, info
+        ) or (str(info.get("title") or "").strip().lower())
+        if key:
+            cache = getattr(self, "_lib_cache", None)
+            if cache is None:
+                cache = self._lib_cache = {}
+            hit = cache.get(key)
+            if hit and (time.time() - float(hit[0])) < 600.0:
+                return bool(hit[1])
+        result = False
+        # 1) 主路：MoviePilot 同步的媒体库 DB 表（稳定、无副作用）
         try:
             from app.db.oper.mediaserver import MediaServerOper  # noqa: WPS433
-        except Exception as err:  # noqa: BLE001
-            self._dbg(f"影视库存在性模块不可用（忽略）: {err}")
-            return False
-        mtype = info.get("type") or None
-        year = str(info.get("year") or "") or None
-        title = info.get("title") or None
-        try:
             oper = MediaServerOper()
+            mtype = info.get("type") or None
+            year = str(info.get("year") or "") or None
+            title = info.get("title") or None
             item = None
             if info.get("media_source") and info.get("media_id"):
                 item = oper.exists(
@@ -1859,10 +1873,34 @@ class MagicFlow(_PluginBase):
                 )
             if not item and title:
                 item = oper.exists(title=title, mtype=mtype, year=year)
-            return bool(item)
+            result = bool(item)
         except Exception as err:  # noqa: BLE001
-            self._dbg(f"影视库存在性查询失败（忽略）: {err}")
-            return False
+            self._dbg(f"影视库DB查询失败（忽略）: {err}")
+        # 2) 可选：实时查媒体服务器（能发现尚未同步进 DB 的条目）
+        if not result and RECOMMEND_LIVE_LIBRARY_CHECK:
+            try:
+                from app.schemas.types import MediaSource  # noqa: WPS433
+                from app.schemas.context import MediaInfo  # noqa: WPS433
+                from app.chain.mediaserver import MediaServerChain  # noqa: WPS433
+                ms = info.get("media_source")
+                mid = info.get("media_id")
+                mi = MediaInfo(
+                    type=info.get("type"),
+                    title=info.get("title"),
+                    year=str(info.get("year") or "") or None,
+                    media_source=(MediaSource(ms) if ms else None),
+                    media_id=(str(mid) if mid else None),
+                )
+                if MediaServerChain().media_exists(mi):
+                    result = True
+            except Exception as err:  # noqa: BLE001
+                self._dbg(f"影视库实时查询失败（忽略）: {err}")
+        if key:
+            try:
+                self._lib_cache[key] = (time.time(), result)
+            except Exception:  # noqa: BLE001
+                pass
+        return result
 
     def _recommend_dup(self, store: Any, media_key: str, exclude_hash: str) -> Optional[str]:
         """同一部作品是否已有「推荐/已确认」记录；返回命中的 hash（用于跨 hash 去重）。"""
