@@ -1520,6 +1520,7 @@ onUnmounted(() => {
         </VBtn>
         <VBadge
           v-if="recommendData.enabled !== false && (recommendData.recommended || 0) > 0"
+          class="magicflow-recommend-wrap"
           :content="recommendData.recommended"
           color="error"
           location="top end"
@@ -1556,7 +1557,31 @@ onUnmounted(() => {
           aria-label="插件设置"
           @click="openSettings()"
         />
-        <VBtn v-if="showClose" icon="mdi-close" variant="text" aria-label="关闭" @click="emit('close')" />
+        <VBtn v-if="showClose" class="magicflow-close-btn" icon="mdi-close" variant="text" aria-label="关闭" @click="emit('close')" />
+        <!-- 窄屏：把上面那几个图标按钮收进「更多」菜单，给品牌腾出空间 -->
+        <VMenu location="bottom end" :close-on-content-click="true">
+          <template #activator="{ props: moreProps }">
+            <VBtn
+              v-bind="moreProps"
+              class="magicflow-more-btn"
+              icon="mdi-dots-vertical"
+              variant="text"
+              aria-label="更多"
+            />
+          </template>
+          <VList density="comfortable" class="magicflow-more-menu" min-width="210">
+            <VListItem
+              v-if="recommendData.enabled !== false"
+              prepend-icon="mdi-movie-star-outline"
+              title="推荐"
+              :subtitle="(recommendData.recommended || 0) > 0 ? `${recommendData.recommended} 个待确认` : '影视推荐甄别'"
+              @click="openRecommend"
+            />
+            <VListItem prepend-icon="mdi-cloud-upload-outline" title="云盘归档" @click="openCloud" />
+            <VListItem prepend-icon="mdi-tune-variant" title="插件设置" @click="openSettings()" />
+            <VListItem v-if="showClose" prepend-icon="mdi-close" title="关闭" @click="emit('close')" />
+          </VList>
+        </VMenu>
       </div>
     </header>
 
@@ -3463,6 +3488,15 @@ onUnmounted(() => {
   margin-inline-start: 2px;
 }
 
+/* 「更多」⋮ 只在窄屏出现（宽屏直接展开各图标按钮） */
+.magicflow-more-btn {
+  display: none;
+}
+
+.magicflow-more-menu .v-list-item {
+  min-block-size: 44px;
+}
+
 .magicflow-settings-dialog__head {
   display: flex;
   align-items: center;
@@ -5267,15 +5301,25 @@ onUnmounted(() => {
     white-space: nowrap;
   }
 
-  /* 操作区不再抢占品牌空间：只留图标按钮，状态胶囊窄屏收起（总览/任务卡里都有） */
+  /* 操作区不再抢占品牌空间：窄屏只留「更多」⋮，其余图标收进菜单，状态胶囊窄屏收起 */
   .magicflow-page__actions {
     flex: 0 0 auto;
     flex-wrap: nowrap;
     margin-inline-start: 0;
   }
 
-  .magicflow-page__actions > :deep(.v-chip) {
+  .magicflow-page__actions > :deep(.v-chip),
+  .magicflow-page__actions .magicflow-header-create,
+  .magicflow-page__actions .magicflow-recommend-wrap,
+  .magicflow-page__actions .magicflow-recommend-btn,
+  .magicflow-page__actions .magicflow-cloud-btn,
+  .magicflow-page__actions .magicflow-settings-btn,
+  .magicflow-page__actions .magicflow-close-btn {
     display: none;
+  }
+
+  .magicflow-page__actions .magicflow-more-btn {
+    display: inline-flex;
   }
 
   /* 移动工具栏沿用「方案 B」胶囊：站点图标 + 任务名·站点 + 状态点 + ⌄ */
