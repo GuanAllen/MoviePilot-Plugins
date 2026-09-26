@@ -255,6 +255,24 @@ class MagicFlowSettingsPayload(BaseModel):
     recommend_temp_ttl_days: float = Field(7.0, ge=0, le=3650, description="识别不出/不推荐的纯刷流临时种 TTL（天），0=不按此清")
     recommend_disk_min_free_gb: float = Field(50.0, ge=0, description="磁盘剩余低于该值(GB)即视为「磁盘不足」：推荐种立即按过期处理")
 
+    # ── 元数据兜底（多源识别 + 补 NFO）────────────────────────────────────
+    #  TMDB 对中日番剧的特别篇/前传/国漫经常「没有」，离了 TMDB 就无元数据可用。
+    #  这里做：多源识别（tmdb→bangumi→douban）→ 给库里缺 NFO 的集补最小 NFO；
+    #  可选把「所有源里都不存在」的集改归 Season 0 特别篇。只写 NFO，不动媒体文件。
+    fallback_enabled: bool = Field(True, description="启用「元数据兜底」（多源识别 + 补 NFO）")
+    fallback_sources: List[str] = Field(
+        default_factory=lambda: ["themoviedb", "bangumi", "douban"],
+        description="识别来源顺序（MP 内置源：themoviedb/bangumi/douban/anilist/tvdb/imdb）",
+    )
+    fallback_paths: List[str] = Field(
+        default_factory=list,
+        description="兜底扫描的库根目录；留空 = 自动取 MoviePilot 目录配置里的 library_path",
+    )
+    fallback_interval_minutes: float = Field(30.0, ge=5, le=1440, description="兜底扫描周期（分钟）")
+    fallback_scan_max: int = Field(30, ge=1, le=500, description="每轮最多处理的剧集目录数（其余下轮继续）")
+    fallback_sp_to_s00: bool = Field(False, description="把「所有源里都不存在」的集改归 Season 0 特别篇（S00EXX）")
+    fallback_after_import: bool = Field(True, description="整理入库后立即对该剧做一次兜底")
+    fallback_dry_run: bool = Field(False, description="演练模式：只报告不写 NFO")
 
 class MagicFlowDownloaderPrefsPayload(BaseModel):
     """魔流「下载器全局参数」请求模型

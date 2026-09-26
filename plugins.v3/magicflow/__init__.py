@@ -83,6 +83,7 @@ from .models import (
     MagicFlowTorrentBatchPayload,
     DOWNLOADER_PREF_RECOMMENDED,
 )
+from .fallback import FallbackEngine, DEFAULT_SOURCES as FALLBACK_SOURCES
 from .persistence import MagicFlowStore, OperationItem, WorkReport
 from .recommend import RecommendEngine
 from .sites import BonusCalculator, get_calculator, get_formula_params
@@ -97,7 +98,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.0.13"
+__version__ = "3.1.0"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -166,6 +167,9 @@ MEDIA_ASSET_HISTORY_TTL = 120.0
 #  被跳过的候选进 dead 冷却（沿用 `_dead_cooldown`，6h），避免反复评估同一颗。
 # /status 整包重数据缓存 TTL（秒）——stale-while-revalidate：命中秒回，过期后台静默刷新。
 STATUS_TTL = 15
+
+# 元数据兜底：每轮最多处理的剧集目录数（其余下轮继续）
+FALLBACK_SCAN_MAX = 30
 # 官种（official）列表抓取：缓存 TTL 与翻页数。
 # 官种加成是「单种自身」的加成，会影响选种/删种排序，值得缓存抓取；
 # 后宫加成依赖他人种子（用户级），与「选哪一颗」无关，不参与决策，故不抓取。
@@ -487,6 +491,9 @@ class MagicFlow(_PluginBase):
     _iyuu_token: str = ""
     _iyuu_sites: Dict[str, Dict[str, str]] = {}
     _iyuu_client: Optional[IyuuCloud] = None
+    # 元数据兜底（多源识别 + 补 NFO）
+    _fallback_cfg: Dict[str, Any] = {}
+    _fallback_engine: Optional[Any] = None
 
     def init_plugin(self, config: dict = None) -> None:
         """初始化全局开关、任务配置与持久化存储。"""
@@ -564,6 +571,32 @@ class MagicFlow(_PluginBase):
         }
         self._recommend_engine = RecommendEngine(self)
         self._recommend_cursor = ""
+
+        # 元数据兜底（多源识别 + 补 NFO）：TMDB 没有的（番剧特别篇/前传/国漫）自动兜底
+        def _fsources(v: Any) -> List[str]:
+            if isinstance(v, (list, tuple)) and v:
+                out = [str(x).strip().lower() for x in v if str(x or "").strip()]
+                if out:
+                    return out
+            return list(FALLBACK_SOURCES)
+
+        self._fallback_cfg = {
+            "enabled": bool(raw_config.get("fallback_enabled", True)),
+            "sources": _fsources(raw_config.get("fallback_sources")),
+            "paths": [
+                str(p).strip() for p in (raw_config.get("fallback_paths") or [])
+                if str(p or "").strip()
+            ] if isinstance(raw_config.get("fallback_paths"), (list, tuple)) else [],
+            "interval": _rf(raw_config.get("fallback_interval_minutes"), 30.0),
+            "scan_max": int(raw_config.get("fallback_scan_max") or FALLBACK_SCAN_MAX),
+            "sp_to_s00": bool(raw_config.get("fallback_sp_to_s00", False)),
+            "after_import": bool(raw_config.get("fallback_after_import", True)),
+            "dry_run": bool(raw_config.get("fallback_dry_run", False)),
+        }
+        if getattr(self, "_fallback_engine", None) is None:
+            self._fallback_engine = FallbackEngine(self, self._fallback_cfg)
+        else:
+            self._fallback_engine.set_cfg(self._fallback_cfg)
 
         self._store = MagicFlowStore(self.get_data_path())
         self._apply_runtime_settings()
@@ -679,6 +712,20 @@ class MagicFlow(_PluginBase):
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "更新魔流插件设置",
+            },
+            {
+                "path": "/fallback",
+                "endpoint": self.get_fallback_state,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "元数据兜底：配置 + 最近一次结果",
+            },
+            {
+                "path": "/fallback/run",
+                "endpoint": self.run_fallback,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "元数据兜底：立即扫描（dry_run=true 仅演练）",
             },
             {
                 "path": "/downloader/prefs",
@@ -1003,6 +1050,21 @@ class MagicFlow(_PluginBase):
                     },
                 }
             )
+        # ★ 元数据兜底：插件级单 worker（多源识别 + 给缺 NFO 的集补最小 NFO）。
+        if bool(getattr(self, "_fallback_cfg", {}).get("enabled", True)):
+            _fb_min = float(getattr(self, "_fallback_cfg", {}).get("interval", 30.0) or 30.0)
+            services.append(
+                {
+                    "id": "Fallback",
+                    "name": "元数据兜底",
+                    "trigger": "interval",
+                    "func": self.fallback_scan,
+                    "kwargs": {
+                        "minutes": _fb_min,
+                        "jitter": self._jitter_seconds(_fb_min),
+                    },
+                }
+            )
         return services
 
     def stop_service(self) -> None:
@@ -1043,6 +1105,14 @@ class MagicFlow(_PluginBase):
             "recommend_notify": bool(self._recommend_cfg.get("notify", True)),
             "recommend_temp_ttl_days": float(self._recommend_cfg.get("temp_ttl_days", 7.0)),
             "recommend_disk_min_free_gb": float(self._recommend_cfg.get("disk_min_free_gb", 50.0)),
+            "fallback_enabled": bool(self._fallback_cfg.get("enabled", True)),
+            "fallback_sources": list(self._fallback_cfg.get("sources") or FALLBACK_SOURCES),
+            "fallback_paths": list(self._fallback_cfg.get("paths") or []),
+            "fallback_interval_minutes": float(self._fallback_cfg.get("interval", 30.0) or 30.0),
+            "fallback_scan_max": int(self._fallback_cfg.get("scan_max", FALLBACK_SCAN_MAX) or FALLBACK_SCAN_MAX),
+            "fallback_sp_to_s00": bool(self._fallback_cfg.get("sp_to_s00", False)),
+            "fallback_after_import": bool(self._fallback_cfg.get("after_import", True)),
+            "fallback_dry_run": bool(self._fallback_cfg.get("dry_run", False)),
             "defaults": dict(getattr(self, "_defaults", {}) or {}),
             "tasks": [task.to_dict() for task in self._task_configs.values()],
         }
@@ -1881,6 +1951,155 @@ class MagicFlow(_PluginBase):
             engine = self._recommend_engine = RecommendEngine(self)
         return engine
 
+    def _get_fallback_engine(self) -> FallbackEngine:
+        """元数据兜底引擎（惰性创建 + 配置同步）。"""
+        engine = getattr(self, "_fallback_engine", None)
+        if engine is None:
+            engine = self._fallback_engine = FallbackEngine(self, dict(getattr(self, "_fallback_cfg", {}) or {}))
+        else:
+            engine.set_cfg(dict(getattr(self, "_fallback_cfg", {}) or {}))
+        return engine
+
+    # ------------------------------------------------------------------
+    # 元数据兜底：定时 worker 与「整理入库后」钩子
+    # ------------------------------------------------------------------
+    def fallback_scan(self) -> None:
+        """定时任务：多源识别 + 给库里缺 NFO 的集补最小 NFO。"""
+        cfg = dict(getattr(self, "_fallback_cfg", {}) or {})
+        if not bool(cfg.get("enabled", True)):
+            return
+        if not self._try_begin_run("fallback"):
+            self._log("魔流 元数据兜底：上一轮仍在执行，跳过")
+            return
+        if not self._acquire_worker_slot("元数据兜底"):
+            self._end_run("fallback")
+            return
+        try:
+            engine = self._get_fallback_engine()
+            report = engine.scan(apply=not bool(cfg.get("dry_run", False)))
+            st = report.get("stats") or {}
+            self._log(
+                f"元数据兜底完成：扫描 {st.get('shows', 0)} 剧 / 识别 {st.get('resolved', 0)} / "
+                f"补剧集 NFO {st.get('ep_nfo', 0)} / 补剧 NFO {st.get('show_nfo', 0)} / "
+                f"源中缺失 {st.get('missing', 0)} / 归位 {st.get('renumbered', 0)} "
+                f"（{'演练' if report.get('applied') is False else '已写入'} {report.get('duration')}s）"
+            )
+            if self._store and (st.get("ep_nfo") or st.get("show_nfo") or st.get("renumbered")):
+                items = [OperationItem(
+                    hash="", title=t.get("show", ""),
+                    reason=(
+                        f"识别自 {t.get('resolved') or '未命中'}｜补集 {sum(1 for e in t.get('episodes', []) if e.get('nfo'))}｜"
+                        f"归位 {len(t.get('renumbered') or [])}"
+                    ),
+                    source="fallback",
+                ) for t in (report.get("shows") or [])[:20]]
+                self._store.journal.record(
+                    task_id="", kind="fallback",
+                    items=[OperationItem(
+                        hash="", title="元数据兜底",
+                        reason=(
+                            f"扫描 {st.get('shows', 0)} 剧｜识别 {st.get('resolved', 0)}｜"
+                            f"补集 NFO {st.get('ep_nfo', 0)}｜补剧 NFO {st.get('show_nfo', 0)}"
+                        ),
+                        source="fallback",
+                    )] + items,
+                    duration=report.get("duration"),
+                )
+        except Exception as err:  # noqa: BLE001
+            import traceback
+            logger.error(f"魔流 元数据兜底异常: {err}\n{traceback.format_exc()}")
+            self._log(f"魔流 元数据兜底异常：{err}", "warning")
+        finally:
+            self._release_worker_slot()
+            self._end_run("fallback")
+
+    def _fallback_after_import(self, library_hint: str = "") -> None:
+        """整理入库后，对该剧做一次定向兜底（异步、去重、限频）。"""
+        cfg = dict(getattr(self, "_fallback_cfg", {}) or {})
+        if not bool(cfg.get("enabled", True)) or not bool(cfg.get("after_import", True)):
+            return
+        if not self._try_begin_run("fallback"):
+            return
+        if not self._acquire_worker_slot("元数据兜底(入库后)"):
+            self._end_run("fallback")
+            return
+
+        def _worker() -> None:
+            try:
+                engine = self._get_fallback_engine()
+                report = engine.scan(apply=not bool(cfg.get("dry_run", False)))
+                st = report.get("stats") or {}
+                self._dbg(
+                    f"整理入库后兜底（hint={library_hint}）：补集 NFO {st.get('ep_nfo', 0)} / "
+                    f"补剧 NFO {st.get('show_nfo', 0)}"
+                )
+            except Exception as err:  # noqa: BLE001
+                self._log(f"整理入库后兜底失败（忽略）：{err}", "warning")
+            finally:
+                self._release_worker_slot()
+                self._end_run("fallback")
+
+        threading.Thread(target=_worker, name="magicflow-fallback", daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # 元数据兜底：API
+    # ------------------------------------------------------------------
+    def get_fallback_state(self, resolve_paths: bool = False) -> Response:
+        """返回元数据兜底配置 + 最近一次结果（可选解析实际扫描目录）。"""
+        engine = self._get_fallback_engine()
+        cfg = dict(getattr(self, "_fallback_cfg", {}) or {})
+        paths: List[str] = list(cfg.get("paths") or [])
+        if not paths and resolve_paths:
+            try:
+                paths = engine.library_paths()
+            except Exception as err:  # noqa: BLE001
+                self._log(f"解析兜底库目录失败：{err}", "warning")
+                paths = []
+        running = bool(self._task_runs.get("fallback"))
+        return Response(success=True, data={
+            "enabled": bool(cfg.get("enabled", True)),
+            "sources": list(cfg.get("sources") or FALLBACK_SOURCES),
+            "paths": list(cfg.get("paths") or []),
+            "effective_paths": paths,
+            "interval_minutes": float(cfg.get("interval", 30.0) or 30.0),
+            "scan_max": int(cfg.get("scan_max", FALLBACK_SCAN_MAX) or FALLBACK_SCAN_MAX),
+            "sp_to_s00": bool(cfg.get("sp_to_s00", False)),
+            "after_import": bool(cfg.get("after_import", True)),
+            "dry_run": bool(cfg.get("dry_run", False)),
+            "running": running,
+            "report": engine.last_report(),
+        })
+
+    def run_fallback(self, dry_run: Optional[bool] = None) -> Response:
+        """立即跑一轮元数据兜底（后台线程；dry_run=true 仅演练不落盘）。"""
+        cfg = dict(getattr(self, "_fallback_cfg", {}) or {})
+        if not bool(cfg.get("enabled", True)):
+            return Response(success=False, message="元数据兜底已关闭，请先在设置里启用")
+        apply = not (bool(cfg.get("dry_run", False)) if dry_run is None else bool(dry_run))
+        if not self._try_begin_run("fallback"):
+            return Response(success=False, message="上一轮兜底仍在执行，请稍后再试")
+        if not self._acquire_worker_slot("元数据兜底(手动)"):
+            self._end_run("fallback")
+            return Response(success=False, message="全局并发已满，请稍后再试")
+
+        def _worker() -> None:
+            try:
+                engine = self._get_fallback_engine()
+                report = engine.scan(apply=apply)
+                st = report.get("stats") or {}
+                self._log(
+                    f"元数据兜底（手动）完成：扫描 {st.get('shows', 0)} 剧 / 补集 NFO {st.get('ep_nfo', 0)} / "
+                    f"补剧 NFO {st.get('show_nfo', 0)}（{'已写入' if apply else '演练'}）"
+                )
+            except Exception as err:  # noqa: BLE001
+                self._log(f"元数据兜底（手动）异常：{err}", "warning")
+            finally:
+                self._release_worker_slot()
+                self._end_run("fallback")
+
+        threading.Thread(target=_worker, name="magicflow-fallback-manual", daemon=True).start()
+        return Response(success=True, message="已开始扫描，稍后刷新查看结果", data={"dry_run": not apply})
+
     def _exclude_subscribed(self, candidates: List[Any]) -> List[Any]:
         """刷流选种：剔除命中「当前订阅标题」的候选。
 
@@ -2379,6 +2598,9 @@ class MagicFlow(_PluginBase):
                 download_hash=str(h).lower(),
             )
             self._log(f"推荐整理「{title}」→ ok={ok} msg={msg}")
+            if ok:
+                # 整理入库后顺带做一次元数据兜底（异步，不阻塞确认请求）
+                self._fallback_after_import(str(getattr(mi, "title", "") or title))
             return bool(ok), str(msg)
         except Exception as err:  # noqa: BLE001
             import traceback
@@ -5630,6 +5852,7 @@ class MagicFlow(_PluginBase):
             "iyuu_token": str(getattr(self, "_iyuu_token", "") or ""),
             "iyuu_sites": dict(getattr(self, "_iyuu_sites", {}) or {}),
             "recommend": dict(getattr(self, "_recommend_cfg", {}) or {}),
+            "fallback": dict(getattr(self, "_fallback_cfg", {}) or {}),
             "defaults": dict(getattr(self, "_defaults", {}) or {}),
         })
         return Response(success=True, data=data)
@@ -5859,6 +6082,22 @@ class MagicFlow(_PluginBase):
             "temp_ttl_days": _rf(getattr(payload, "recommend_temp_ttl_days", 7.0), 7.0),
             "disk_min_free_gb": _rf(getattr(payload, "recommend_disk_min_free_gb", 50.0), 50.0),
         }
+        # 元数据兜底（多源识别 + 补 NFO）
+        _fsrc = getattr(payload, "fallback_sources", None)
+        _fpaths = getattr(payload, "fallback_paths", None)
+        self._fallback_cfg = {
+            "enabled": bool(getattr(payload, "fallback_enabled", True)),
+            "sources": [str(s).strip().lower() for s in (_fsrc or FALLBACK_SOURCES) if str(s or "").strip()]
+            or list(FALLBACK_SOURCES),
+            "paths": [str(p).strip() for p in (_fpaths or []) if str(p or "").strip()],
+            "interval": max(5.0, _rf(getattr(payload, "fallback_interval_minutes", 30.0), 30.0)),
+            "scan_max": max(1, int(_rf(getattr(payload, "fallback_scan_max", FALLBACK_SCAN_MAX), FALLBACK_SCAN_MAX))),
+            "sp_to_s00": bool(getattr(payload, "fallback_sp_to_s00", False)),
+            "after_import": bool(getattr(payload, "fallback_after_import", True)),
+            "dry_run": bool(getattr(payload, "fallback_dry_run", False)),
+        }
+        if getattr(self, "_fallback_engine", None) is not None:
+            self._fallback_engine.set_cfg(dict(self._fallback_cfg))
         self._save_config()
         self._apply_runtime_settings()
         self._refresh_scheduler()
