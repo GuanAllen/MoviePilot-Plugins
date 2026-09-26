@@ -800,15 +800,35 @@ class MagicFlowStore:
     MagicFlow 统一数据存储。
 
     整合操作日志和任务状态管理。
+
+    ★ 进程内**按 data_dir 单例**：MoviePilot 热重载会 new 出新的插件实例，但上一实例
+    可能仍有在飞线程（如跨重载的 brush）。若各自持有独立的内存快照，落盘会「整表互相覆盖」
+    → 统计/状态被旧快照回滚（曾实际发生）。共用同一实例即可根治。
     """
+
+    _instances: Dict[str, "MagicFlowStore"] = {}
+    _instances_lock = threading.Lock()
+
+    def __new__(cls, data_dir: Path):
+        key = str(Path(data_dir))
+        with cls._instances_lock:
+            inst = cls._instances.get(key)
+            if inst is None:
+                inst = super().__new__(cls)
+                inst._initialized = False
+                cls._instances[key] = inst
+            return inst
 
     def __init__(self, data_dir: Path):
         """
-        初始化数据存储。
+        初始化数据存储（同一 data_dir 只真正初始化一次）。
 
         Args:
             data_dir: 插件数据目录
         """
+        if getattr(self, "_initialized", False):
+            return
+        self._initialized = True
         self.data_dir = data_dir
         self.journal = OperationJournal(data_dir)
         self.task_states = TaskStateStore(data_dir)
