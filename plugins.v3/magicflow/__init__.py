@@ -99,7 +99,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.2.8"
+__version__ = "3.2.9"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -5973,9 +5973,18 @@ class MagicFlow(_PluginBase):
         site_tasks: Dict[int, MagicFlowTaskConfig] = {}
         # 预热「全部任务」统计（含未启用）：任务列表随后直接命中缓存，避免串行补算。
         all_tasks = list(self._task_configs.values())
+        # 运行状态分布（唯一真源 run_mode；历史配置缺字段时按 enabled 回退）
+        mode_counts = {"running": 0, "seeding": 0, "stopped": 0}
+        for _t in all_tasks:
+            _m = str(getattr(_t, "run_mode", "") or "").strip().lower()
+            if _m not in mode_counts:
+                _m = "running" if _t.enabled else "stopped"
+            mode_counts[_m] += 1
+        active_tasks = total_tasks - mode_counts["stopped"]
         stats_by_id = self._runtime_stats_bulk(all_tasks)
         for task in all_tasks:
-            if not task.enabled:
+            # 运行中的任务 + 「做种中」的任务都在做种（后者只是不跑刷流流程）
+            if not task.enabled and str(getattr(task, "run_mode", "") or "").strip().lower() != "seeding":
                 continue
             seeding_count += int((stats_by_id.get(task.id) or {}).get("seeding_count", 0) or 0)
             site_tasks.setdefault(int(task.site_id or 0), task)
@@ -5994,6 +6003,10 @@ class MagicFlow(_PluginBase):
         summary = {
             "total_tasks": total_tasks,
             "enabled_tasks": enabled_tasks,
+            "running_tasks": mode_counts["running"],
+            "seeding_tasks": mode_counts["seeding"],
+            "stopped_tasks": mode_counts["stopped"],
+            "active_tasks": active_tasks,
             "seeding_count": seeding_count,
             "bonus_per_hour": round(bonus_per_hour, 4),
             "current_bonus": round(current_bonus, 2),

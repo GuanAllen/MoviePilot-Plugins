@@ -3796,13 +3796,14 @@ return (_ctx, _cache) => {
               key: 1,
               class: "magicflow-enabled-chip",
               size: "small",
-              variant: "tonal"
+              variant: "tonal",
+              title: `共 ${summary.value.total_tasks} 个任务：运行中 = 跑流程+做种；做种中 = 停调度只保做种；已停止 = 种子全暂停`
             }, {
               default: _withCtx(() => [
-                _createTextVNode(_toDisplayString(summary.value.enabled_tasks || 0) + " / " + _toDisplayString(summary.value.total_tasks) + " 启用 ", 1)
+                _createTextVNode(" 运行 " + _toDisplayString(summary.value.running_tasks || 0) + " · 做种 " + _toDisplayString(summary.value.seeding_tasks || 0) + " · 停 " + _toDisplayString(summary.value.stopped_tasks || 0), 1)
               ]),
               _: 1
-            }))
+            }, 8, ["title"]))
           : _createCommentVNode("", true),
         _createVNode(_component_VBtn, {
           class: "magicflow-header-create",
@@ -7730,6 +7731,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-48c5efba"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-56ad9369"]]);
 
 export { MagicFlowWorkbench as M };
