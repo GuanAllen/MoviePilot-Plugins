@@ -34,7 +34,9 @@ FAIL_COOLDOWN = 180.0
 # 站点用户栏页（NexusPHP 通用）
 DEFAULT_PAGE = "/index.php"
 # ★ 站点「每日访问次数已达上限」页面特征（实测 PTT：用户等级控制量 300PV/天）
-PV_LIMIT_MARKERS = ("访问次数已达上限", "访问次数已达", "今日访问次数", "PV")
+PV_LIMIT_MARKERS = ("访问次数已达上限", "访问次数已达", "今日访问次数")
+# 注:原标记里有一个裸 "PV",会误判普通页面（只要正文出现 PV 二字就当成封禁页）。
+# 已移除，只保留「访问次数已达上限」这类完整语义的标记。
 # 命中访问上限后的封禁时长：到次日凌晨 + 这个宽限（秒）
 PV_BLOCK_GRACE = 600.0
 # 「正在下载」列表页（NexusPHP 通用，带促销标记）
@@ -494,6 +496,19 @@ class LiveStats:
         site = self._site(site_id)
         if not site:
             return {"ok": False, "error": "站点不存在"}
+        # ★ 3.7.1 PV 账本 + 预算闸门:实时抓取也算 PV,接近预算时不再打站点。
+        try:
+            if not self._plugin._pv_allow(site_id, "live", want=1):
+                self._log(
+                    f"站点 {site_id} PV 预算将尽，跳过本轮实时抓取", "warning"
+                )
+                return {"ok": False, "error": "站点 PV 预算已用尽(今日)"}
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self._plugin._pv_spend(site_id, "live", 1)
+        except Exception:  # noqa: BLE001
+            pass
         base = (getattr(site, "url", "") or f"https://{getattr(site, 'domain', '')}").rstrip("/")
         text, err, status = self._get_text(site_id, page)
         if err:
