@@ -126,6 +126,9 @@ class TaskState:
     page_cursor: int = 0            # 站点列表页游标（游标深翻）
     # 种子详情页映射（hash→details 页 URL）。供「检查」时回站点核对促销/免费状态。
     torrent_pages: Dict[str, str] = field(default_factory=dict)
+    # ★ 限时免费到期时刻（hash→unix 秒）。入种时从列表页记下，到点直接清「未下完」的，
+    # 不必每轮回详情页核对（详情页可能抓不到 → 只能保守跳过）。
+    torrent_free_until: Dict[str, float] = field(default_factory=dict)
     # 刷流模式：每种子「上传快照」（hash→{up:上次上传字节, idle:连续无上传次数, ts:检查时间}）。
     # 每次检查比对 uploaded 增量；连续 N 次近乎零上传 → 判定「无上传」→ 清理。
     brush_upload: Dict[str, dict] = field(default_factory=dict)
@@ -169,6 +172,7 @@ class TaskState:
             "last_phase_at": self.last_phase_at,
             "page_cursor": self.page_cursor,
             "torrent_pages": dict(self.torrent_pages),
+            "torrent_free_until": {str(k).lower(): float(v) for k, v in self.torrent_free_until.items()},
             "brush_upload": {str(k).lower(): dict(v) for k, v in self.brush_upload.items()},
             "last_tagged_count": self.last_tagged_count,
         }
@@ -210,6 +214,7 @@ class TaskState:
             last_phase_at=d.get("last_phase_at", 0.0),
             page_cursor=d.get("page_cursor", 0),
             torrent_pages={str(k).lower(): str(v) for k, v in (d.get("torrent_pages") or {}).items() if k and v},
+            torrent_free_until={str(k).lower(): float(v) for k, v in (d.get("torrent_free_until") or {}).items() if k and v},
             brush_upload={str(k).lower(): dict(v) for k, v in (d.get("brush_upload") or {}).items() if k and isinstance(v, dict)},
             last_tagged_count=int(d.get("last_tagged_count", 0) or 0),
         )
@@ -1037,6 +1042,39 @@ class MagicFlowStore:
             state.torrent_pages = pages
             self.task_states.save(state)
 
+    # -------------------- 限时免费到期时刻（hash→unix） --------------------
+
+    def get_torrent_free_until(self, task_id: str) -> Dict[str, float]:
+        """读取本任务记录的「种子免费到期时刻」（hash→unix 秒）。"""
+        state = self.task_states.get(task_id)
+        if not state:
+            return {}
+        return dict(getattr(state, "torrent_free_until", {}) or {})
+
+    def note_torrent_free_until(self, task_id: str, mapping: Dict[str, float]) -> None:
+        """记录一批「hash→免费到期时刻(unix 秒)」（仅在有值时写入）。"""
+        if not task_id or not mapping:
+            return
+        state = self.task_states.get(task_id)
+        if not state:
+            state = self.task_states.create(task_id)
+        table = getattr(state, "torrent_free_until", None)
+        if table is None:
+            table = state.torrent_free_until = {}
+        changed = False
+        for h, ts in mapping.items():
+            hs = str(h or "").lower()
+            try:
+                t = float(ts)
+            except (TypeError, ValueError):
+                continue
+            if hs and t > 0 and table.get(hs) != t:
+                table[hs] = t
+                changed = True
+        if changed:
+            state.torrent_free_until = table
+            self.task_states.save(state)
+
     # -------------------- 刷流：上传快照（无上传清理用） --------------------
 
     def get_brush_upload(self, task_id: str) -> Dict[str, dict]:
@@ -1195,6 +1233,15 @@ class MagicFlowStore:
                 h for h in mp
                 if (h or "").strip().lower() not in keys
             }
+        fu = getattr(state, "torrent_free_until", None)
+        if fu:
+            fu2 = {
+                k: v for k, v in fu.items()
+                if (k or "").strip().lower() not in keys
+            }
+            if len(fu2) != len(fu):
+                state.torrent_free_until = fu2
+                before += 1  # 触发保存（免费到期表也有变动）
         after = len(state.protected_torrents) + len(getattr(state, "adopted_hashes", set()) or set())
         if before != after:
             self.task_states.save(state)
