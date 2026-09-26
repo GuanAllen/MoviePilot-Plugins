@@ -6,6 +6,7 @@ MagicFlow 持久化模块
 
 import json
 import os
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
@@ -227,6 +228,9 @@ class OperationJournal:
         self._operations: Dict[str, OperationRecord] = {}
         # 每任务保留的最大操作记录数（0 = 不限）。由插件全局设置注入。
         self.keep: int = 0
+        # 多个服务（刷流/检查/慢扫）会并发调用 journal；加锁避免
+        # 「dictionary changed size during iteration」（add→_prune_task 边遍历边被别的线程改）。
+        self._lock = threading.RLock()
         self._load()
 
     def set_keep(self, keep: int) -> None:
@@ -240,12 +244,13 @@ class OperationJournal:
         """裁剪某任务的历史记录，只保留最新的 keep 条。"""
         if not self.keep:
             return
-        rows = [op for op in self._operations.values() if op.task_id == task_id]
-        if len(rows) <= self.keep:
-            return
-        rows.sort(key=lambda x: x.created_at, reverse=True)
-        for op in rows[self.keep:]:
-            self._operations.pop(op.operation_id, None)
+        with self._lock:
+            rows = [op for op in list(self._operations.values()) if op.task_id == task_id]
+            if len(rows) <= self.keep:
+                return
+            rows.sort(key=lambda x: x.created_at, reverse=True)
+            for op in rows[self.keep:]:
+                self._operations.pop(op.operation_id, None)
 
     # 状态“完成度”排序：数字越大越接近终态。合并同一记录时保留更新的那份。
     _STATE_RANK = {"submitting": 0, "accepted": 1, "failed": 2, "completed": 2}
@@ -269,7 +274,7 @@ class OperationJournal:
         if not self.keep:
             return
         by_task: Dict[str, List[OperationRecord]] = {}
-        for op in self._operations.values():
+        for op in list(self._operations.values()):
             by_task.setdefault(op.task_id, []).append(op)
         for task_id, rows in by_task.items():
             if len(rows) <= self.keep:
@@ -356,9 +361,10 @@ class OperationJournal:
             items=items or [],
         )
 
-        self._operations[operation_id] = record
-        self._prune_task(task_id)
-        self._save()
+        with self._lock:
+            self._operations[operation_id] = record
+            self._prune_task(task_id)
+            self._save()
         return record
 
     def record(
@@ -390,19 +396,20 @@ class OperationJournal:
         error_message: Optional[str] = None,
     ) -> bool:
         """完成一条操作记录：写回状态、结果项、耗时。"""
-        record = self._operations.get(operation_id)
-        if not record:
-            return False
-        record.state = state
-        if items is not None:
-            record.items = items
-        if duration is not None:
-            record.duration = round(float(duration), 2)
-        if error_message:
-            record.error_message = error_message
-        record.resolved_at = time.time()
-        self._save()
-        return True
+        with self._lock:
+            record = self._operations.get(operation_id)
+            if not record:
+                return False
+            record.state = state
+            if items is not None:
+                record.items = items
+            if duration is not None:
+                record.duration = round(float(duration), 2)
+            if error_message:
+                record.error_message = error_message
+            record.resolved_at = time.time()
+            self._save()
+            return True
 
     def get(self, operation_id: str) -> Optional[OperationRecord]:
         """获取指定操作记录。"""
@@ -429,13 +436,14 @@ class OperationJournal:
         if not record:
             return False
 
-        record.state = state
-        if state in ("completed", "failed"):
-            record.resolved_at = time.time()
-        if error_message:
-            record.error_message = error_message
+        with self._lock:
+            record.state = state
+            if state in ("completed", "failed"):
+                record.resolved_at = time.time()
+            if error_message:
+                record.error_message = error_message
 
-        self._save()
+            self._save()
         return True
 
     def list_by_task(
@@ -456,7 +464,7 @@ class OperationJournal:
             操作记录列表（按时间降序）
         """
         records = [
-            op for op in self._operations.values()
+            op for op in list(self._operations.values())
             if op.task_id == task_id and (kind is None or op.kind == kind)
         ]
         records.sort(key=lambda x: x.created_at, reverse=True)
@@ -479,27 +487,27 @@ class OperationJournal:
             删除的记录数
         """
         cutoff = time.time() - days * 24 * 3600
-        old_ids = [
-            op_id for op_id, op in self._operations.items()
-            if op.created_at < cutoff
-        ]
-        for op_id in old_ids:
-            del self._operations[op_id]
-
-        if old_ids:
-            self._save()
-
+        with self._lock:
+            old_ids = [
+                op_id for op_id, op in list(self._operations.items())
+                if op.created_at < cutoff
+            ]
+            for op_id in old_ids:
+                del self._operations[op_id]
+            if old_ids:
+                self._save()
         return len(old_ids)
 
     def delete_task(self, task_id: str) -> int:
         """删除某任务的全部操作记录（任务被删除时调用，避免残留孤儿数据）。"""
         if not task_id:
             return 0
-        doomed = [op_id for op_id, op in self._operations.items() if op.task_id == task_id]
-        for op_id in doomed:
-            self._operations.pop(op_id, None)
-        if doomed:
-            self._save()
+        with self._lock:
+            doomed = [op_id for op_id, op in list(self._operations.items()) if op.task_id == task_id]
+            for op_id in doomed:
+                self._operations.pop(op_id, None)
+            if doomed:
+                self._save()
         return len(doomed)
 
 
