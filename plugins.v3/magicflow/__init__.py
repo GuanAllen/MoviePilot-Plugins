@@ -100,7 +100,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.3.1"
+__version__ = "3.3.2"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -6197,21 +6197,25 @@ class MagicFlow(_PluginBase):
             getattr(site, "name", "") or getattr(site, "domain", "") or f"站点 {site_id}"
         ).strip() or f"站点 {site_id}"
 
-    def _live_sites(self) -> Dict[int, Dict[str, Any]]:
-        """收集「运行中」任务涉及的站点（含各任务本地托管数）。"""
+    def _live_sites(self, enabled_only: bool = False, only_site_id: int = 0) -> Dict[int, Dict[str, Any]]:
+        """收集任务涉及的站点（含各任务本地托管数）。
+
+        - `enabled_only=True`：只取「运行中」任务（供监控 worker 用，避免打闲置站点）。
+        - `only_site_id`：只要指定站点（供前端只看当前任务站点）。
+        """
         out: Dict[int, Dict[str, Any]] = {}
         try:
             stats_by_id = self._runtime_stats_bulk(list(self._task_configs.values()))
         except Exception:  # noqa: BLE001
             stats_by_id = {}
         for task in self._task_configs.values():
-            if not getattr(task, "enabled", False):
+            if enabled_only and not getattr(task, "enabled", False):
                 continue
             try:
                 sid = int(getattr(task, "site_id", 0) or 0)
             except (TypeError, ValueError):
                 sid = 0
-            if not sid:
+            if not sid or (only_site_id and sid != int(only_site_id)):
                 continue
             item = out.setdefault(
                 sid,
@@ -6239,9 +6243,12 @@ class MagicFlow(_PluginBase):
             self._log(f"站点实时数据获取失败（站点 {site_id}）：{err}", "warning")
             return {"live": {"ok": False}, "rates": {}, "alerts": [], "level": "ok"}
 
-    def get_live_state(self, force: bool = False) -> Response:
-        """站点实时数据 + 流量监控快照（只读，不做任何写操作）。"""
-        sites = self._live_sites()
+    def get_live_state(self, force: bool = False, site_id: int = 0) -> Response:
+        """站点实时数据 + 流量监控快照（只读，不做任何写操作）。
+
+        `site_id` 给出时只返回该站点（前端只看当前任务的站点，少打站点）。
+        """
+        sites = self._live_sites(only_site_id=int(site_id or 0))
         rows: List[Dict[str, Any]] = []
         for sid, meta in sites.items():
             snap = self._live_snapshot(sid, local_managed=meta.get("local_managed"), force=bool(force))
@@ -6287,7 +6294,7 @@ class MagicFlow(_PluginBase):
             self._log(f"站点流量监控异常：{err}", "warning")
 
     def _live_watch_impl(self) -> None:
-        sites = self._live_sites()
+        sites = self._live_sites(enabled_only=True)
         if not sites:
             return
         try:

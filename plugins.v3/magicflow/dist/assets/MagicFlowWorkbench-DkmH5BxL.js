@@ -2967,9 +2967,10 @@ async function loadRecommend() {
 
 async function loadLive() {
   if (liveLoading.value) return
+  const sid = Number(selectedTask.value?.site_id || 0);
   liveLoading.value = true;
   try {
-    liveState.value = unwrapResponse(await props.api.get(`${pluginBase.value}/live`)) || liveState.value;
+    liveState.value = unwrapResponse(await props.api.get(`${pluginBase.value}/live${sid ? `?site_id=${sid}` : ''}`)) || liveState.value;
   } catch (err) {
     // 站点实时数据是增强信息，失败不打断界面
   } finally {
@@ -3725,6 +3726,7 @@ watch(
   () => selectedTask.value?.site_id,
   siteId => {
     if (siteId) loadSiteIcon(siteId);
+    loadLive();
   },
   { immediate: true },
 );
@@ -7965,6 +7967,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-371f5f73"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-a87988c3"]]);
 
 export { MagicFlowWorkbench as M };
