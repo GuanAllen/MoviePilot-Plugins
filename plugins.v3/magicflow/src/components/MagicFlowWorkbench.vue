@@ -1512,7 +1512,7 @@ onUnmounted(() => {
             </VListItem>
           </VList>
         </VMenu>
-        <VChip v-if="summary.total_tasks" size="small" variant="tonal">
+        <VChip v-if="summary.total_tasks" class="magicflow-enabled-chip" size="small" variant="tonal">
           {{ summary.enabled_tasks || 0 }} / {{ summary.total_tasks }} 启用
         </VChip>
         <VBtn class="magicflow-header-create" color="primary" variant="flat" prepend-icon="mdi-plus" @click="openCreateTask">
@@ -5308,7 +5308,12 @@ onUnmounted(() => {
     margin-inline-start: 0;
   }
 
-  .magicflow-page__actions > :deep(.v-chip),
+  /* 状态胶囊窄屏收起（总览/任务卡里都有） */
+  .magicflow-page__actions .magicflow-enabled-chip {
+    display: none;
+  }
+
+  /* 其余图标按钮收进「更多」⋮ 菜单 */
   .magicflow-page__actions .magicflow-header-create,
   .magicflow-page__actions .magicflow-recommend-wrap,
   .magicflow-page__actions .magicflow-recommend-btn,

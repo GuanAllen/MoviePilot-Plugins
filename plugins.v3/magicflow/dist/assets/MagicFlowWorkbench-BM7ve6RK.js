@@ -3798,6 +3798,7 @@ return (_ctx, _cache) => {
         (summary.value.total_tasks)
           ? (_openBlock(), _createBlock(_component_VChip, {
               key: 1,
+              class: "magicflow-enabled-chip",
               size: "small",
               variant: "tonal"
             }, {
@@ -7733,6 +7734,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-e9696689"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-42f3fc69"]]);
 
 export { MagicFlowWorkbench as M };
