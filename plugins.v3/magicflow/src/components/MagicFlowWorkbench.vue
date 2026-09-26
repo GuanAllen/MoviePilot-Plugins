@@ -2554,31 +2554,26 @@ onUnmounted(() => {
         </header>
         <VDivider />
         <VCardText class="magicflow-recommend-dialog__body">
-          <div class="text-body-2 text-medium-emphasis mb-3">
-            刷流中发现的「值得收藏 / 观看」资源 · 评分 &gt; {{ recommendData.min_rating ?? 7.5 }}<template v-if="recommendData.require_chart !== false"> 且在榜 / 热映 / 订阅</template>
+          <div class="magicflow-recommend-dialog__summary">
+            <span><strong>{{ recommendData.recommended || 0 }}</strong> 待确认</span>
+            <i>·</i>
+            <span><strong>{{ confirmedCount }}</strong> 已入库</span>
+            <i>·</i>
+            <span>共 {{ recommendData.total || 0 }} 条</span>
+            <i>·</i>
+            <span>标签 {{ recommendData.tag || '魔流-推荐' }}</span>
+          </div>
+          <div class="magicflow-recommend-dialog__note">
+            评分 &gt; {{ recommendData.min_rating ?? 7.5 }}<template v-if="recommendData.require_chart !== false"> 且在榜 / 热映 / 订阅</template>
             · 过期 {{ recommendData.expire_days ?? 7 }} 天 · 磁盘余量下限 {{ recommendData.disk_min_free_gb ?? 50 }}G
           </div>
-          <div class="magicflow-stat-grid">
-            <VSheet class="magicflow-stat magicflow-stat--accent app-surface-static">
-              <strong>{{ recommendData.recommended || 0 }}</strong>
-              <span>待确认 · 共 {{ recommendData.total || 0 }} 条甄别记录</span>
-            </VSheet>
-            <VSheet class="magicflow-stat app-surface-static">
-              <strong>{{ confirmedCount }}</strong>
-              <span>已确认入库</span>
-            </VSheet>
-            <VSheet class="magicflow-stat app-surface-static">
-              <strong>{{ recommendData.tag || '魔流-推荐' }}</strong>
-              <span>推荐标签 · 受价值闸门保护</span>
-            </VSheet>
-          </div>
-          <VAlert v-if="recommendData.enabled === false" type="info" variant="tonal" density="compact" class="my-3">
+          <VAlert v-if="recommendData.enabled === false" type="info" variant="tonal" density="compact" class="my-2">
             推荐甄别已关闭（可在「插件设置 → 推荐」开启）
           </VAlert>
           <VSheet tag="section" class="magicflow-panel app-surface-static mt-2">
             <header class="magicflow-panel__head">
               <div>
-                <div class="text-subtitle-1 font-weight-medium">甄别结果</div>
+                <div class="text-subtitle-2 font-weight-medium">甄别结果</div>
                 <div class="text-body-2 text-medium-emphasis">全部任务汇总 · 确认 = 自动整理入库；忽略 = 删除该临时种</div>
               </div>
             </header>
@@ -3500,6 +3495,32 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+.magicflow-recommend-dialog__summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: rgb(var(--v-theme-on-surface-variant));
+}
+
+.magicflow-recommend-dialog__summary strong {
+  font-size: 1.05rem;
+  color: rgb(var(--v-theme-primary));
+}
+
+.magicflow-recommend-dialog__summary i {
+  font-style: normal;
+  opacity: 0.4;
+}
+
+.magicflow-recommend-dialog__note {
+  margin-block: 2px 6px;
+  font-size: 0.78rem;
+  color: rgb(var(--v-theme-on-surface-variant));
+  opacity: 0.85;
 }
 
 .magicflow-recommend-dialog__body {
