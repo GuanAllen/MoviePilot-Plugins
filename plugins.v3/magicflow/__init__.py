@@ -94,7 +94,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "2.10.0"
+__version__ = "2.11.0"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -126,6 +126,11 @@ REUSE_WORKER_BATCH = 5
 # 站点级候选抓取共享缓存 TTL（秒）：同站点的多个任务在此时窗内只抓**一份**候选，
 # 避免 N 个任务重复打同一站点 → 触发流控（这正是「几十个任务」的主要压力来源）。
 SITE_FETCH_TTL = 240.0
+# ★ 全局并发闸门：插件级限制「同时在飞」的 worker 数（刷流/检查/辅种慢扫合计）。
+#   几十个任务若同刻开火，会一起抢线程池 + 集中打站点 → 撞流控；这里做全局封顶。
+GLOBAL_WORKER_LIMIT = 6
+# 站点抓取失败后的冷却（秒）：失败站点在此时窗内不再重试抓取（共享给同站所有任务）。
+SITE_FETCH_BACKOFF = 180.0
 # 站点魔力公式抓取缓存 TTL（秒）；抓取失败时只缓存 SHORT 秒后重试。
 SITE_FORMULA_TTL = 6 * 3600
 SITE_FORMULA_RETRY = 30 * 60
@@ -806,7 +811,10 @@ class MagicFlow(_PluginBase):
                     brush_kwargs = {"minutes": task.brush_interval}
             else:
                 brush_trigger = "interval"
-                brush_kwargs = {"minutes": task.brush_interval}
+                brush_kwargs = {
+                    "minutes": task.brush_interval,
+                    "jitter": self._jitter_seconds(task.brush_interval),
+                }
 
             services.append(
                 {
@@ -824,7 +832,10 @@ class MagicFlow(_PluginBase):
                     "name": f"魔力检查 - {task.name}",
                     "trigger": "interval",
                     "func": self.check,
-                    "kwargs": {"minutes": task.check_interval},
+                    "kwargs": {
+                        "minutes": task.check_interval,
+                        "jitter": self._jitter_seconds(task.check_interval),
+                    },
                     "func_kwargs": {"task_id": task.id},
                 }
             )
@@ -842,7 +853,10 @@ class MagicFlow(_PluginBase):
                     "name": "辅种慢扫",
                     "trigger": "interval",
                     "func": self.reuse_scan,
-                    "kwargs": {"minutes": REUSE_INTERVAL_MINUTES},
+                    "kwargs": {
+                        "minutes": REUSE_INTERVAL_MINUTES,
+                        "jitter": self._jitter_seconds(REUSE_INTERVAL_MINUTES),
+                    },
                 }
             )
         return services
@@ -1162,6 +1176,40 @@ class MagicFlow(_PluginBase):
         """结束一轮运行，释放运行槽。"""
         self._task_runs.pop(task_id, None)
 
+    # ---------------------------------------------------------
+    # 全局并发闸门（插件级）：限制同时在飞的 worker 数
+    # ---------------------------------------------------------
+
+    def _acquire_worker_slot(self, label: str = "") -> bool:
+        """非阻塞抢一个全局 worker 槽；抢不到就跳过本轮（不排队，避免堆积）。"""
+        sem = getattr(self, "_worker_sem", None)
+        if sem is None:
+            sem = self._worker_sem = threading.Semaphore(int(GLOBAL_WORKER_LIMIT))
+        if sem.acquire(blocking=False):
+            return True
+        self._log(
+            f"魔流 全局并发闸门已满（上限 {GLOBAL_WORKER_LIMIT}），[{label or 'worker'}] 本轮跳过"
+        )
+        return False
+
+    def _release_worker_slot(self) -> None:
+        """归还全局 worker 槽。"""
+        sem = getattr(self, "_worker_sem", None)
+        if sem is not None:
+            try:
+                sem.release()
+            except Exception:  # noqa: BLE001
+                pass
+
+    @staticmethod
+    def _jitter_seconds(minutes: Any) -> int:
+        """interval 抖动（秒）：取间隔的 ~15%，夹在 [3, 90]，错开几十个任务的同刻开火。"""
+        try:
+            sec = float(minutes) * 60.0 * 0.15
+        except (TypeError, ValueError):
+            sec = 10.0
+        return int(max(3.0, min(90.0, sec)))
+
     def _get_task_config(self, task_id: str) -> Optional[MagicFlowTaskConfig]:
         """获取任务配置。"""
         return self._task_configs.get(task_id)
@@ -1228,6 +1276,17 @@ class MagicFlow(_PluginBase):
             hit = cache.get(cache_key)
             if hit and (time.time() - float(hit[0])) < SITE_FETCH_TTL:
                 return [copy.copy(c) for c in hit[1]]
+            # 站点级失败冷却（共享给同站所有任务）：上次没抓到 → 冷却期内不再重试，避免反复空打
+            backoff = getattr(self, "_site_backoff", None)
+            if backoff is None:
+                backoff = self._site_backoff = {}
+            until = float(backoff.get(site_key, 0.0) or 0.0)
+            if time.time() < until:
+                self._log(
+                    f"魔流 [{task.name}] 站点 {site_key} 冷却中"
+                    f"（剩余 {int(until - time.time())}s），本轮跳过抓取"
+                )
+                return []
             fetcher = SiteFetcher()
             if not fetcher.is_available:
                 return []
@@ -1272,7 +1331,17 @@ class MagicFlow(_PluginBase):
                             )
             except Exception as err:  # noqa: BLE001
                 self._log(f"魔流 [{task.name}] 免费定向补充失败（忽略）：{err}", "warning")
-            cache[cache_key] = (time.time(), cands)
+            if cands:
+                cache[cache_key] = (time.time(), cands)
+                backoff.pop(site_key, None)
+            else:
+                # 没抓到（失败/空）：不缓存空表（免得把站点“冻”满 TTL），改用显式冷却
+                backoff[site_key] = time.time() + SITE_FETCH_BACKOFF
+                self._log(
+                    f"魔流 [{task.name}] 站点 {site_key} 未取到候选，冷却 "
+                    f"{int(SITE_FETCH_BACKOFF)}s 后重试",
+                    "warning",
+                )
             return [copy.copy(c) for c in cands]
 
     # ---------------------------------------------------------
@@ -1285,9 +1354,12 @@ class MagicFlow(_PluginBase):
         self._apply_task_traffic_limit()
         if task and self._maybe_autostop_for_goal(task):
             return
+        if not self._acquire_worker_slot(f"刷流·{task.name if task else task_id}"):
+            return
         if not self._try_begin_run(task_id):
             if task:
                 self._log(f"魔流 [{task.name}] 上一轮仍在执行，跳过本轮")
+            self._release_worker_slot()
             return
         started = time.time()
         record = None
@@ -1326,6 +1398,7 @@ class MagicFlow(_PluginBase):
                 self._store.record_run_summary(task_id, "failed", str(e), time.time() - started)
         finally:
             self._end_run(task_id)
+            self._release_worker_slot()
 
     def reuse_scan(self) -> None:
         """辅种慢扫（插件级**单 worker**，低频）。
@@ -1348,11 +1421,16 @@ class MagicFlow(_PluginBase):
         start = (ids.index(last) + 1) % len(eligible) if last in ids else 0
         task = eligible[start]
         self._reuse_cursor = str(task.id)
+        if not self._acquire_worker_slot("辅种慢扫"):
+            return
         try:
-            self._reuse_scan_task(task)
-        except Exception as e:  # noqa: BLE001
-            import traceback
-            logger.error(f"魔流 辅种慢扫 调度异常: {e}\n{traceback.format_exc()}")
+            try:
+                self._reuse_scan_task(task)
+            except Exception as e:  # noqa: BLE001
+                import traceback
+                logger.error(f"魔流 辅种慢扫 调度异常: {e}\n{traceback.format_exc()}")
+        finally:
+            self._release_worker_slot()
 
     def _reuse_scan_task(self, task: MagicFlowTaskConfig) -> None:
         """对单个任务做一轮辅种慢扫（内部实现）。"""
@@ -2508,12 +2586,16 @@ class MagicFlow(_PluginBase):
         task = self._get_task_config(task_id)
         if not task:
             return
+        if not self._acquire_worker_slot(f"检查·{task.name}"):
+            return
         if not self._try_begin_run(task_id):
+            self._release_worker_slot()
             return
         try:
             self._run_check_impl(task)
         finally:
             self._end_run(task_id)
+            self._release_worker_slot()
 
     def _run_check_impl(self, task: MagicFlowTaskConfig) -> None:
         """执行魔流核心流程（内部实现）。"""
