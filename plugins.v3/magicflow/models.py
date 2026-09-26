@@ -3,6 +3,9 @@ from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+# 云盘归档默认远端落点模板（{rel} = 库内相对路径，与本地库结构同构）
+DEFAULT_CLOUD_TEMPLATE = "/quark/movie/{rel}"
+
 
 def _normalize_optional_positive_number(value):
     """把历史配置中的空值和 0 统一转换为未设置。"""
@@ -273,6 +276,44 @@ class MagicFlowSettingsPayload(BaseModel):
     fallback_sp_to_s00: bool = Field(False, description="把「所有源里都不存在」的集改归 Season 0 特别篇（S00EXX）")
     fallback_after_import: bool = Field(True, description="整理入库后立即对该剧做一次兜底")
     fallback_dry_run: bool = Field(False, description="演练模式：只报告不写 NFO")
+
+    # ── 云盘归档（夸克冷库）────────────────────────────────────────────
+    #  本地当热区、夸克当冷库：把库内成品大文件上传到夸克（经 OpenList HTTP API），
+    #  本地腾空；OpenList 的 Strm 视图自动生成播放指针，影视照常能看。
+    #  安全默认：dry_run=True、delete_local=False、remove_torrent=False。
+    cloud_enabled: bool = Field(False, description="启用「云盘归档」（上传到夸克冷库）")
+    cloud_openlist_url: str = Field(
+        "http://192.168.0.61:12022", max_length=300, description="OpenList 地址"
+    )
+    cloud_openlist_token: str = Field(
+        "", max_length=400, description="OpenList API 令牌（留空 = 保持原值不变）"
+    )
+    cloud_source_mount: str = Field("/quark", max_length=200, description="写入用的挂载点（cookie 版夸克，可写）")
+    cloud_strm_mount: str = Field("/movie", max_length=200, description="Strm 视图挂载点（用于校验 strm 生成）")
+    cloud_paths: List[str] = Field(
+        default_factory=list, description="扫描的库根目录；留空 = /movie"
+    )
+    cloud_target_template: str = Field(
+        DEFAULT_CLOUD_TEMPLATE, max_length=400, description="远端落点模板（{rel} 为库内相对路径）"
+    )
+    cloud_interval_minutes: float = Field(360.0, ge=5, le=10080, description="归档轮询周期（分钟）")
+    cloud_scan_max: int = Field(50, ge=1, le=1000, description="每轮最多处理的文件数")
+    cloud_min_size_gb: float = Field(2.0, ge=0, description="体积门槛（GB），小于此值不归档")
+    cloud_max_size_gb: float = Field(200.0, ge=0, description="单文件上限（GB），0 = 不限")
+    cloud_min_age_days: float = Field(30.0, ge=0, description="最后修改距今需超过该天数才归档（0 = 不限）")
+    cloud_exclude_paths: List[str] = Field(
+        default_factory=lambda: ["/movie/刷流", "/movie/下载"],
+        description="排除路径（前缀匹配）",
+    )
+    cloud_exclude_tags: List[str] = Field(
+        default_factory=lambda: ["魔流-推荐"], description="排除标签（命中即不归档）"
+    )
+    cloud_upload_limit_mbps: float = Field(0.0, ge=0, description="上传限速 MB/s，0 = 不限")
+    cloud_verify: str = Field("size", max_length=20, description="校验方式：size / sha1")
+    cloud_dry_run: bool = Field(True, description="演练模式：只出计划，不上传")
+    cloud_delete_local: bool = Field(False, description="上传校验通过后删除本地文件（危险）")
+    cloud_remove_torrent: bool = Field(False, description="归档后同时删种（危险，会停种）")
+    cloud_notify: bool = Field(True, description="归档完成/失败推送通知")
 
 class MagicFlowDownloaderPrefsPayload(BaseModel):
     """魔流「下载器全局参数」请求模型

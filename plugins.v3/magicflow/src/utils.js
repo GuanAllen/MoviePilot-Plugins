@@ -208,6 +208,26 @@ export function normalizeSettings(settings = {}) {
     fallback_sp_to_s00: Boolean(settings.fallback_sp_to_s00),
     fallback_after_import: settings.fallback_after_import === undefined ? true : Boolean(settings.fallback_after_import),
     fallback_dry_run: Boolean(settings.fallback_dry_run),
+    cloud_enabled: Boolean(settings.cloud_enabled),
+    cloud_openlist_url: String(settings.cloud_openlist_url || ''),
+    cloud_openlist_token: String(settings.cloud_openlist_token || ''),
+    cloud_source_mount: String(settings.cloud_source_mount || '/quark'),
+    cloud_strm_mount: String(settings.cloud_strm_mount || '/movie'),
+    cloud_paths: normalizePathList(settings.cloud_paths),
+    cloud_target_template: String(settings.cloud_target_template || '/quark/movie/{rel}'),
+    cloud_interval_minutes: Math.max(10, num(settings.cloud_interval_minutes, 360)),
+    cloud_scan_max: Math.max(1, Math.round(num(settings.cloud_scan_max, 50))),
+    cloud_min_size_gb: Math.max(0, num(settings.cloud_min_size_gb, 0)),
+    cloud_max_size_gb: Math.max(0, num(settings.cloud_max_size_gb, 0)),
+    cloud_min_age_days: Math.max(0, num(settings.cloud_min_age_days, 0)),
+    cloud_exclude_paths: normalizePathList(settings.cloud_exclude_paths),
+    cloud_exclude_tags: normalizePathList(settings.cloud_exclude_tags),
+    cloud_upload_limit_mbps: Math.max(0, num(settings.cloud_upload_limit_mbps, 0)),
+    cloud_verify: String(settings.cloud_verify || 'size'),
+    cloud_dry_run: settings.cloud_dry_run === undefined ? true : Boolean(settings.cloud_dry_run),
+    cloud_delete_local: Boolean(settings.cloud_delete_local),
+    cloud_remove_torrent: Boolean(settings.cloud_remove_torrent),
+    cloud_notify: settings.cloud_notify === undefined ? true : Boolean(settings.cloud_notify),
   }
 }
 
@@ -231,6 +251,25 @@ export function normalizeFallbackSources(value) {
     if (key && known.includes(key) && !out.includes(key)) out.push(key)
   })
   return out.length ? out : ['themoviedb', 'bangumi', 'douban']
+}
+
+/** 归档条目状态元信息（标签文案 + 颜色）。 */
+export function cloudStatusMeta(status) {
+  const map = {
+    candidate: { text: '待上传', color: 'primary' },
+    pending: { text: '待上传', color: 'primary' },
+    remote_exists: { text: '远端已有', color: 'success' },
+    uploaded: { text: '已上传', color: 'success' },
+    done: { text: '已归档', color: 'success' },
+    uploading: { text: '上传中', color: 'info' },
+    dry_run: { text: '演练', color: 'grey' },
+    conflict: { text: '命名冲突', color: 'warning' },
+    verify_failed: { text: '校验失败', color: 'error' },
+    failed: { text: '失败', color: 'error' },
+    remote_error: { text: '远端异常', color: 'error' },
+    error: { text: '出错', color: 'error' },
+  }
+  return map[String(status || '')] || { text: String(status || '—'), color: 'grey' }
 }
 
 /** 标准化字符串列表（去空、去重、去首尾空白）。 */
