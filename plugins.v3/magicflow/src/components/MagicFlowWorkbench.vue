@@ -616,7 +616,7 @@ function recommendActionable(rec) {
   }
   return false
 }
-const actionableCount = computed(() => (recommendData.value.items || []).filter(recommendActionable).length)
+const pendingCount = computed(() => (recommendData.value.items || []).filter(i => i.status === 'pending').length)
 
 async function loadRecommend() {
   try {
@@ -2595,9 +2595,9 @@ onUnmounted(() => {
           <div class="magicflow-recommend-dialog__summary">
             <span><strong>{{ recommendData.recommended || 0 }}</strong> 待确认</span>
             <i>·</i>
-            <span><strong>{{ actionableCount }}</strong> 可确认</span>
-            <i>·</i>
             <span><strong>{{ confirmedCount }}</strong> 已入库</span>
+            <i>·</i>
+            <span><strong>{{ pendingCount }}</strong> 未达门槛</span>
             <i>·</i>
             <span>共 {{ recommendData.total || 0 }} 条</span>
             <i>·</i>

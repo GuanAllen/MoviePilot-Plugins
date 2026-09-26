@@ -2783,7 +2783,7 @@ function recommendActionable(rec) {
   }
   return false
 }
-const actionableCount = computed(() => (recommendData.value.items || []).filter(recommendActionable).length);
+const pendingCount = computed(() => (recommendData.value.items || []).filter(i => i.status === 'pending').length);
 
 async function loadRecommend() {
   try {
@@ -6426,13 +6426,13 @@ return (_ctx, _cache) => {
                   ]),
                   _cache[269] || (_cache[269] = _createElementVNode("i", null, "·", -1)),
                   _createElementVNode("span", null, [
-                    _createElementVNode("strong", null, _toDisplayString(actionableCount.value), 1),
-                    _cache[267] || (_cache[267] = _createTextVNode(" 可确认", -1))
+                    _createElementVNode("strong", null, _toDisplayString(confirmedCount.value), 1),
+                    _cache[267] || (_cache[267] = _createTextVNode(" 已入库", -1))
                   ]),
                   _cache[270] || (_cache[270] = _createElementVNode("i", null, "·", -1)),
                   _createElementVNode("span", null, [
-                    _createElementVNode("strong", null, _toDisplayString(confirmedCount.value), 1),
-                    _cache[268] || (_cache[268] = _createTextVNode(" 已入库", -1))
+                    _createElementVNode("strong", null, _toDisplayString(pendingCount.value), 1),
+                    _cache[268] || (_cache[268] = _createTextVNode(" 未达门槛", -1))
                   ]),
                   _cache[271] || (_cache[271] = _createElementVNode("i", null, "·", -1)),
                   _createElementVNode("span", null, "共 " + _toDisplayString(recommendData.value.total || 0) + " 条", 1),
@@ -6621,6 +6621,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-797bef74"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-13569846"]]);
 
 export { MagicFlowWorkbench as M };
