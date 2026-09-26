@@ -247,7 +247,7 @@ class MagicFlowSettingsPayload(BaseModel):
     #  识别→豆瓣评分+榜单/订阅→值得则打「推荐」tag、保护并通知；过期未确认则删。
     recommend_enabled: bool = Field(True, description="启用「刷流种甄别与推荐」")
     recommend_min_rating: float = Field(7.5, ge=0, le=10, description="推荐门槛：豆瓣评分需大于该值")
-    recommend_require_chart: bool = Field(True, description="推荐需叠加「在榜/热映/命中订阅」（任一）")
+    recommend_require_chart: bool = Field(True, description="榜单/热映/命中订阅时也算达标（与评分为「或」关系）")
     recommend_expire_days: float = Field(7.0, ge=0, le=3650, description="推荐待确认窗口（天）；磁盘不足则立即视为过期")
     recommend_tag: str = Field("魔流-推荐", max_length=60, description="推荐资源单独 tag（同时受价值闸门保护）")
     recommend_auto_import: bool = Field(True, description="确认后自动整理入库")
