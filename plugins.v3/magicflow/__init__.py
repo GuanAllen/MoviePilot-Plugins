@@ -95,7 +95,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.0.1"
+__version__ = "3.0.2"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -1823,6 +1823,64 @@ class MagicFlow(_PluginBase):
         return engine
 
     @staticmethod
+    @staticmethod
+    def _recommend_media_key(media: Optional[Dict[str, Any]], info: Dict[str, Any]) -> str:
+        """作品级去重 key：优先「数据源_原生ID」，否则回退「标题(+年份)」。"""
+        if media and media.get("source") and media.get("id"):
+            return f"{media.get('source')}_{media.get('id')}"
+        title = str(info.get("title") or "").strip().lower()
+        if not title:
+            return ""
+        year = info.get("year")
+        return f"t:{title}:{year}" if year else f"t:{title}"
+
+    def _recommend_in_library(self, info: Dict[str, Any]) -> bool:
+        """识别结果是否**已在影视库**（MoviePilot 媒体服务器条目）。
+
+        惰性调用 ``MediaServerOper().exists``；任何异常都视为「未知」返回 False（不阻断）。
+        """
+        if not info.get("recognized"):
+            return False
+        try:
+            from app.db.oper.mediaserver import MediaServerOper  # noqa: WPS433
+        except Exception as err:  # noqa: BLE001
+            self._dbg(f"影视库存在性模块不可用（忽略）: {err}")
+            return False
+        mtype = info.get("type") or None
+        year = str(info.get("year") or "") or None
+        title = info.get("title") or None
+        try:
+            oper = MediaServerOper()
+            item = None
+            if info.get("media_source") and info.get("media_id"):
+                item = oper.exists(
+                    media_source=info.get("media_source"), media_id=info.get("media_id"),
+                    mtype=mtype, title=title, year=year,
+                )
+            if not item and title:
+                item = oper.exists(title=title, mtype=mtype, year=year)
+            return bool(item)
+        except Exception as err:  # noqa: BLE001
+            self._dbg(f"影视库存在性查询失败（忽略）: {err}")
+            return False
+
+    def _recommend_dup(self, store: Any, media_key: str, exclude_hash: str) -> Optional[str]:
+        """同一部作品是否已有「推荐/已确认」记录；返回命中的 hash（用于跨 hash 去重）。"""
+        if not media_key:
+            return None
+        try:
+            items = store.all() or {}
+        except Exception:  # noqa: BLE001
+            return None
+        for h, rec in items.items():
+            if h == exclude_hash:
+                continue
+            if str(rec.get("status")) not in ("recommended", "confirmed"):
+                continue
+            if str(rec.get("media_key") or "") == media_key:
+                return str(h)
+        return None
+
     def _recommend_worth(info: Dict[str, Any], cfg: Dict[str, Any]) -> bool:
         """是否够格推荐：评分 > 门槛 且（按需）叠加 榜单/热映/订阅。"""
         if not info.get("recognized"):
@@ -1982,6 +2040,24 @@ class MagicFlow(_PluginBase):
                     "in_subscribe": bool(info.get("in_subscribe")),
                     "evaluated_at": now,
                 }
+                media_key = self._recommend_media_key(media, info)
+                base["media_key"] = media_key
+                in_library = self._recommend_in_library(info)
+                dup_hash = "" if in_library else (self._recommend_dup(store, media_key, h) or "")
+                if in_library:
+                    skip_reason = "已在影视库"
+                elif dup_hash:
+                    skip_reason = "重复推荐（同片已有）"
+                else:
+                    skip_reason = ""
+                if skip_reason:
+                    # 已在库 / 同片重复 → 不作为推荐，当普通临时种（按 TTL 回收）
+                    store.upsert(h, status="pending", **base, reason=skip_reason)
+                    if temp_sec > 0 and now - first_seen > temp_sec:
+                        store.set_status(h, "expired", note="临时种到期")
+                        to_delete.append(h)
+                        expired += 1
+                    continue
                 if self._recommend_worth(info, cfg):
                     store.upsert(
                         h, status="recommended", **base,
@@ -5199,9 +5275,17 @@ class MagicFlow(_PluginBase):
         return Response(success=True, data=data)
 
     def debug_recognize(self, name: str = "") -> Response:
-        """诊断：识别一个种子名并返回评分/榜单/订阅命中（只读）。"""
+        """诊断：识别一个种子名并返回评分/榜单/订阅命中 + 是否已在影视库（只读）。"""
         try:
-            return Response(success=True, data=self._get_recommend_engine().evaluate(name or ""))
+            info = self._get_recommend_engine().evaluate(name or "")
+            try:
+                info["in_library"] = self._recommend_in_library(info)
+                info["media_key"] = self._recommend_media_key(
+                    {"source": info.get("media_source"), "id": info.get("media_id")}, info
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            return Response(success=True, data=info)
         except Exception as e:  # noqa: BLE001
             return Response(success=False, message=str(e))
 
