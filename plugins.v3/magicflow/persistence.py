@@ -795,6 +795,138 @@ class DeadStore(SeenStore):
 # 插件数据存储（高层封装）
 # ============================================================
 
+class RecommendStore:
+    """推荐甄别结果存储（磁盘 JSON，读-合并-写 + 原子替换）。
+
+    记录每个候选刷流种的价值甄别结果与生命周期状态：
+    ``hash -> {first_seen, title, size_gb, media{source,id,type,year}, rating,
+               source, status, notified_at, confirmed_at, note, updated_at}``
+    status ∈ pending（临时种等待） / recommended（已打推荐 tag 待确认）
+             / confirmed（已确认，待入库/已入库） / dismissed / deleted。
+
+    单例由 ``MagicFlowStore`` 持有；_save 采用**读-合并-写**（按 updated_at），
+    避免热重载多实例互相覆盖（同 OperationJournal 的教训）。
+    """
+
+    def __init__(self, data_dir: Path):
+        self.data_dir = Path(data_dir)
+        self.file = self.data_dir / "recommend.json"
+        self._lock = threading.RLock()
+        self._items: Dict[str, Dict[str, Any]] = {}
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            if self.file.exists():
+                with open(self.file, "r", encoding="utf-8") as f:
+                    data = json.load(f) or {}
+                if isinstance(data, dict):
+                    self._items = {
+                        str(k).lower(): dict(v)
+                        for k, v in data.items()
+                        if isinstance(v, dict)
+                    }
+        except Exception:
+            self._items = {}
+
+    def _save(self) -> None:
+        with self._lock:
+            try:
+                self.data_dir.mkdir(parents=True, exist_ok=True)
+                disk: Dict[str, Dict[str, Any]] = {}
+                if self.file.exists():
+                    try:
+                        with open(self.file, "r", encoding="utf-8") as f:
+                            d = json.load(f) or {}
+                        if isinstance(d, dict):
+                            disk = {
+                                str(k).lower(): v
+                                for k, v in d.items()
+                                if isinstance(v, dict)
+                            }
+                    except Exception:
+                        disk = {}
+                merged = dict(disk)
+                for h, item in self._items.items():
+                    cur = merged.get(h)
+                    if cur is None or float(item.get("updated_at", 0) or 0) >= float(cur.get("updated_at", 0) or 0):
+                        merged[h] = item
+                self._items = merged
+                tmp = self.file.with_name(self.file.name + ".tmp")
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(merged, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, self.file)
+            except Exception:
+                pass
+
+    def get(self, h: str) -> Optional[Dict[str, Any]]:
+        h = str(h or "").lower()
+        if not h:
+            return None
+        with self._lock:
+            item = self._items.get(h)
+            return dict(item) if item else None
+
+    def get_many(self, hs: Any) -> Dict[str, Dict[str, Any]]:
+        with self._lock:
+            out: Dict[str, Dict[str, Any]] = {}
+            for h in hs or []:
+                k = str(h or "").lower()
+                if k and k in self._items:
+                    out[k] = dict(self._items[k])
+            return out
+
+    def upsert(self, h: str, **fields: Any) -> Dict[str, Any]:
+        h = str(h or "").lower()
+        if not h:
+            return {}
+        with self._lock:
+            cur = dict(self._items.get(h) or {})
+            cur.update({k: v for k, v in fields.items() if v is not None})
+            cur["updated_at"] = time.time()
+            self._items[h] = cur
+            self._save()
+            return dict(cur)
+
+    def set_status(self, h: str, status: str, **fields: Any) -> Dict[str, Any]:
+        return self.upsert(h, status=status, **fields)
+
+    def delete(self, h: str) -> bool:
+        h = str(h or "").lower()
+        with self._lock:
+            if h in self._items:
+                self._items.pop(h, None)
+                self._save()
+                return True
+        return False
+
+    def list(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        with self._lock:
+            items = [dict(v, hash=k) for k, v in self._items.items()]
+        if status:
+            items = [i for i in items if i.get("status") == status]
+        items.sort(key=lambda x: float(x.get("updated_at", 0) or 0), reverse=True)
+        return items
+
+    def all(self) -> Dict[str, Dict[str, Any]]:
+        with self._lock:
+            return {k: dict(v) for k, v in self._items.items()}
+
+    def clear(self) -> int:
+        """清空全部记录（诊断/重置用；直接覆盖写，不走合并）。"""
+        with self._lock:
+            n = len(self._items)
+            self._items = {}
+            try:
+                tmp = self.file.with_name(self.file.name + ".tmp")
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump({}, f, ensure_ascii=False)
+                os.replace(tmp, self.file)
+            except Exception:
+                pass
+            return n
+
+
 class MagicFlowStore:
     """
     MagicFlow 统一数据存储。
@@ -834,6 +966,7 @@ class MagicFlowStore:
         self.task_states = TaskStateStore(data_dir)
         self.seen = SeenStore(data_dir)
         self.dead = DeadStore(data_dir)
+        self.recommend = RecommendStore(data_dir)
 
     # -------------------- 运行阶段 / 游标 --------------------
 
