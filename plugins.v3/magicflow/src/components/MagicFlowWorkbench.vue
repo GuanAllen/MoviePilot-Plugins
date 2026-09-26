@@ -741,6 +741,27 @@ const siteLiveAlerts = computed(() => ((siteLive.value || {}).alerts || []))
 const siteLiveLevel = computed(() => (siteLive.value || {}).level || 'ok')
 const siteLiveInfo = computed(() => (siteLive.value || {}).live || {})
 const siteLiveRates = computed(() => (siteLive.value || {}).rates || {})
+// 站点账号数据：**实时优先**（魔流直连站点），拿不到才回退 MP 的 6h 快照 → 只展示一份，避免重复。
+const siteAccount = computed(() => {
+  const live = siteLiveInfo.value || {}
+  if (live.ok) {
+    return {
+      ok: true,
+      source: 'live',
+      upload: live.upload || 0,
+      download: live.download || 0,
+      ratio: live.ratio,
+      seeding: live.seeding,
+      leeching: live.leeching,
+      bonus: live.bonus,
+      bonus_per_hour: live.bonus_per_hour,
+      seeding_size: Number((siteUser.value || {}).seeding_size || 0),
+      sampledAt: live.ts ? new Date(Number(live.ts) * 1000).toLocaleTimeString() : '',
+    }
+  }
+  const mp = siteUser.value || {}
+  return { ...mp, source: mp.ok ? 'mp' : '', sampledAt: '' }
+})
 
 async function actRecommend(hash, action, label) {
   if (!hash || recommendActing.value) return
@@ -1824,8 +1845,8 @@ onUnmounted(() => {
                     <span>本任务上传量 · 下载器累计（{{ selectedTask.task_upload_active || 0 }} 个有上传）</span>
                   </VSheet>
                   <VSheet class="magicflow-stat app-surface-static">
-                    <strong>{{ siteUser.ok ? formatBytes(siteUser.upload || 0) : '—' }}</strong>
-                    <span>站点上传量 · 账号真实值{{ siteUser.ok ? ` · 下载 ${formatBytes(siteUser.download || 0)}` : '' }}</span>
+                    <strong>{{ siteAccount.ok ? formatBytes(siteAccount.upload || 0) : '—' }}</strong>
+                    <span>站点上传量 · {{ siteAccount.source === 'live' ? '实时（直连站点）' : 'MP 快照' }}{{ siteAccount.ok ? ` · 下载 ${formatBytes(siteAccount.download || 0)}` : '' }}</span>
                   </VSheet>
                 </template>
                 <template v-else>
@@ -1882,43 +1903,31 @@ onUnmounted(() => {
                 <VSheet tag="section" class="magicflow-panel app-surface-static">
                   <header class="magicflow-panel__head">
                     <div>
-                      <div class="text-subtitle-1 font-weight-medium">站点账号真实数据</div>
-                      <div class="text-body-2 text-medium-emphasis">取自站点用户页（非下载器本地统计）{{ siteUser.updated_at ? ` · 更新于 ${siteUser.updated_at}` : '' }}</div>
-                    </div>
-                    <VChip v-if="siteUser.ok" size="small" variant="tonal" color="success">已同步</VChip>
-                    <VChip v-else size="small" variant="tonal">暂无数据</VChip>
-                  </header>
-                  <dl class="magicflow-facts">
-                    <div><dt>上传量</dt><dd>{{ siteUser.ok ? formatBytes(siteUser.upload || 0) : '—' }}</dd></div>
-                    <div><dt>下载量</dt><dd>{{ siteUser.ok ? formatBytes(siteUser.download || 0) : '—' }}</dd></div>
-                    <div><dt>分享率</dt><dd>{{ siteUser.ok ? Number(siteUser.ratio || 0).toFixed(3) : '—' }}</dd></div>
-                    <div><dt>做种数 / 下载数</dt><dd>{{ siteUser.ok ? `${siteUser.seeding || 0} / ${siteUser.leeching || 0}` : '—' }}</dd></div>
-                    <div><dt>做种体积</dt><dd>{{ siteUser.ok ? formatBytes(siteUser.seeding_size || 0) : '—' }}</dd></div>
-                    <div><dt>站点魔力</dt><dd>{{ siteUser.ok ? Number(siteUser.bonus || 0).toFixed(2) : '—' }}</dd></div>
-                  </dl>
-                </VSheet>
-
-                <VSheet tag="section" class="magicflow-panel app-surface-static">
-                  <header class="magicflow-panel__head">
-                    <div>
-                      <div class="text-subtitle-1 font-weight-medium">站点实时数据</div>
+                      <div class="text-subtitle-1 font-weight-medium">站点数据</div>
                       <div class="text-body-2 text-medium-emphasis">
-                        魔流直连站点用户栏（不靠 MP 的 6 小时快照）{{ siteLiveInfo.ts ? ` · 采样于 ${new Date(Number(siteLiveInfo.ts) * 1000).toLocaleTimeString()}` : '' }}
+                        <template v-if="siteAccount.source === 'live'">魔流直连站点用户栏（实时）{{ siteAccount.sampledAt ? ` · 采样于 ${siteAccount.sampledAt}` : '' }}</template>
+                        <template v-else-if="siteAccount.source === 'mp'">MoviePilot 站点数据快照（默认 6 小时一轮）{{ siteUser.updated_at ? ` · 更新于 ${siteUser.updated_at}` : '' }}</template>
+                        <template v-else>暂无站点数据</template>
                       </div>
                     </div>
-                    <VChip v-if="siteLiveInfo.ok" size="small" variant="tonal" :color="siteLiveLevel === 'warn' ? 'warning' : 'success'">
-                      {{ siteLiveLevel === 'warn' ? '有告警' : '正常' }}
+                    <VChip v-if="siteAccount.source === 'live'" size="small" variant="tonal" :color="siteLiveLevel === 'warn' ? 'warning' : 'success'">
+                      {{ siteLiveLevel === 'warn' ? '实时 · 有告警' : '实时' }}
                     </VChip>
+                    <VChip v-else-if="siteAccount.source === 'mp'" size="small" variant="tonal">MP 快照</VChip>
                     <VChip v-else size="small" variant="tonal">暂无数据</VChip>
                   </header>
                   <dl class="magicflow-facts">
-                    <div><dt>上传 / 下载</dt><dd>{{ siteLiveInfo.ok ? `${formatBytes(siteLiveInfo.upload || 0)} / ${formatBytes(siteLiveInfo.download || 0)}` : '—' }}</dd></div>
-                    <div><dt>分享率</dt><dd>{{ siteLiveInfo.ok && siteLiveInfo.ratio != null ? Number(siteLiveInfo.ratio).toFixed(3) : '—' }}</dd></div>
-                    <div><dt>做种 / 下载数</dt><dd>{{ siteLiveInfo.ok ? `${siteLiveInfo.seeding ?? '—'} / ${siteLiveInfo.leeching ?? '—'}` : '—' }}</dd></div>
-                    <div><dt>站点魔力</dt><dd>{{ siteLiveInfo.ok && siteLiveInfo.bonus != null ? Number(siteLiveInfo.bonus).toFixed(1) : '—' }}{{ siteLiveInfo.ok && siteLiveInfo.bonus_per_hour != null ? ` · ${Number(siteLiveInfo.bonus_per_hour).toFixed(2)}/h` : '' }}</dd></div>
-                    <div><dt>上传速率</dt><dd>{{ siteLiveRates.ok ? `${Number(siteLiveRates.up_mb_min || 0).toFixed(1)} MB/分` : '采样中' }}</dd></div>
-                    <div><dt>下载速率</dt><dd :class="{ 'text-error': (siteLiveRates.down_mb_min || 0) >= (siteLiveCfg.download_alert_mb || 50) }">{{ siteLiveRates.ok ? `${Number(siteLiveRates.down_mb_min || 0).toFixed(1)} MB/分` : '采样中' }}</dd></div>
-                    <div><dt>近 1h 净增</dt><dd>{{ siteLiveRates.ok ? `⬆ ${formatBytes(Math.max(0, siteLiveRates.d_up || 0))} / ⬇ ${formatBytes(Math.max(0, siteLiveRates.d_down || 0))}` : '—' }}</dd></div>
+                    <div><dt>上传量</dt><dd>{{ siteAccount.ok ? formatBytes(siteAccount.upload || 0) : '—' }}</dd></div>
+                    <div><dt>下载量</dt><dd>{{ siteAccount.ok ? formatBytes(siteAccount.download || 0) : '—' }}</dd></div>
+                    <div><dt>分享率</dt><dd>{{ siteAccount.ok && siteAccount.ratio != null ? Number(siteAccount.ratio).toFixed(3) : '—' }}</dd></div>
+                    <div><dt>做种数 / 下载数</dt><dd>{{ siteAccount.ok ? `${siteAccount.seeding ?? '—'} / ${siteAccount.leeching ?? '—'}` : '—' }}</dd></div>
+                    <div v-if="siteAccount.seeding_size"><dt>做种体积</dt><dd>{{ formatBytes(siteAccount.seeding_size) }}</dd></div>
+                    <div><dt>站点魔力</dt><dd>{{ siteAccount.ok && siteAccount.bonus != null ? Number(siteAccount.bonus).toFixed(2) : '—' }}{{ siteAccount.bonus_per_hour != null ? ` · ${Number(siteAccount.bonus_per_hour).toFixed(2)}/h` : '' }}</dd></div>
+                    <template v-if="siteAccount.source === 'live'">
+                      <div><dt>上传速率</dt><dd>{{ siteLiveRates.ok ? `${Number(siteLiveRates.up_mb_min || 0).toFixed(1)} MB/分` : '采样中' }}</dd></div>
+                      <div><dt>下载速率</dt><dd :class="{ 'text-error': (siteLiveRates.down_mb_min || 0) >= (siteLiveCfg.download_alert_mb || 50) }">{{ siteLiveRates.ok ? `${Number(siteLiveRates.down_mb_min || 0).toFixed(1)} MB/分` : '采样中' }}</dd></div>
+                      <div><dt>近 1h 净增</dt><dd>{{ siteLiveRates.ok ? `⬆ ${formatBytes(Math.max(0, siteLiveRates.d_up || 0))} / ⬇ ${formatBytes(Math.max(0, siteLiveRates.d_down || 0))}` : '—' }}</dd></div>
+                    </template>
                   </dl>
                   <div v-if="siteLiveAlerts.length" class="magicflow-live-alerts">
                     <div v-for="(alert, idx) in siteLiveAlerts" :key="`${alert.kind}-${idx}`" class="magicflow-live-alert" :class="`magicflow-live-alert--${alert.level || 'info'}`">
