@@ -1558,7 +1558,7 @@ onUnmounted(() => {
           @click="openSettings()"
         />
         <VBtn v-if="showClose" class="magicflow-close-btn" icon="mdi-close" variant="text" aria-label="关闭" @click="emit('close')" />
-        <!-- 窄屏：把上面那几个图标按钮收进「更多」菜单，给品牌腾出空间 -->
+        <!-- 窄屏：把上面那几个图标按钮收进「更多」菜单（宽屏不显示本按钮） -->
         <VMenu location="bottom end" :close-on-content-click="true">
           <template #activator="{ props: moreProps }">
             <VBtn
@@ -4650,18 +4650,15 @@ onUnmounted(() => {
     padding-block-start: 0;
   }
 
-  /* ★ 窄屏：顶栏吸附在滚动容器顶部 —— 往下滑时品牌栏常驻，不再跟着滑走
-     背景用不透明的页面底色（#0b1226），内容从下面穿过时不会被“透”出来 */
-  .magicflow-page__header {
+  .magicflow-page--compact .magicflow-page__header {
     position: sticky;
-    top: var(--magicflow-sticky-top, 0px);
-    z-index: 6;
+    top: 0;
+    z-index: 4;
     margin-inline: -12px;
     padding: 12px;
     border-block-end: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
-    background-color: #0b1226;
-    background-image: none;
-    backdrop-filter: none;
+    backdrop-filter: blur(var(--transparent-blur, 0px));
+    background-color: rgba(var(--v-theme-surface), var(--transparent-opacity-heavy, 1));
   }
 
   .magicflow-page__header,
@@ -5280,43 +5277,8 @@ onUnmounted(() => {
     display: none;
   }
 
-  /* ★ 窄屏：品牌留在 top 栏左侧（信息层级自然），靠「隐藏副标题 + 隐藏状态胶囊」腾位置，
-     而不是把品牌挤成「魔..」；品牌名 + 版本徽标始终完整可见 */
-  .magicflow-page__header {
-    flex-wrap: nowrap;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .magicflow-page__identity {
-    flex: 1 1 auto;
-    overflow: hidden;
-  }
-
-  /* 副标题（PT 做种 · 魔力养护 / 刷流保种）窄屏不显示，避免占位与截断 */
-  .magicflow-page__identity p {
-    display: none;
-  }
-
-  .magicflow-page__identity h1 {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  /* 操作区不再抢占品牌空间：窄屏只留「更多」⋮，其余图标收进菜单，状态胶囊窄屏收起 */
-  .magicflow-page__actions {
-    flex: 0 0 auto;
-    flex-wrap: nowrap;
-    margin-inline-start: 0;
-  }
-
-  /* 状态胶囊窄屏收起（总览/任务卡里都有） */
-  .magicflow-page__actions .magicflow-enabled-chip {
-    display: none;
-  }
-
-  /* 其余图标按钮收进「更多」⋮ 菜单 */
+  /* ★ 窄屏：把「新建任务 / 推荐 / 云盘归档 / 插件设置 / 关闭」这几个按钮收进右上角「⋮ 更多」菜单，
+     腾出横向空间给品牌（其余版式与 3.2.0 保持一致） */
   .magicflow-page__actions .magicflow-header-create,
   .magicflow-page__actions .magicflow-recommend-wrap,
   .magicflow-page__actions .magicflow-recommend-btn,
