@@ -1512,8 +1512,14 @@ onUnmounted(() => {
             </VListItem>
           </VList>
         </VMenu>
-        <VChip v-if="summary.total_tasks" class="magicflow-enabled-chip" size="small" variant="tonal">
-          {{ summary.enabled_tasks || 0 }} / {{ summary.total_tasks }} 启用
+        <VChip
+          v-if="summary.total_tasks"
+          class="magicflow-enabled-chip"
+          size="small"
+          variant="tonal"
+          :title="`共 ${summary.total_tasks} 个任务：运行中 = 跑流程+做种；做种中 = 停调度只保做种；已停止 = 种子全暂停`"
+        >
+          运行 {{ summary.running_tasks || 0 }} · 做种 {{ summary.seeding_tasks || 0 }} · 停 {{ summary.stopped_tasks || 0 }}
         </VChip>
         <VBtn class="magicflow-header-create" color="primary" variant="flat" prepend-icon="mdi-plus" @click="openCreateTask">
           新建任务

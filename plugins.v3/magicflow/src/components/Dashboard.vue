@@ -45,7 +45,7 @@ onUnmounted(() => {
 <template>
   <div class="magicflow-dashboard">
     <div class="magicflow-dashboard__metrics">
-      <div><span>启用任务</span><strong>{{ status.summary.enabled_tasks || 0 }} / {{ status.summary.total_tasks || 0 }}</strong></div>
+      <div><span>运行中 / 共</span><strong>{{ status.summary.running_tasks || 0 }} / {{ status.summary.total_tasks || 0 }}</strong></div>
       <div><span>托管种子</span><strong>{{ status.summary.seeding_count || 0 }}</strong></div>
       <div><span>每小时魔力</span><strong>{{ formatBonus(status.summary.bonus_per_hour) }}</strong></div>
       <div><span>站点当前魔力</span><strong>{{ Number(status.summary.current_bonus || 0).toFixed(2) }}</strong></div>

@@ -67,8 +67,8 @@ return (_ctx, _cache) => {
   return (_openBlock(), _createElementBlock("div", _hoisted_1, [
     _createElementVNode("div", _hoisted_2, [
       _createElementVNode("div", null, [
-        _cache[0] || (_cache[0] = _createElementVNode("span", null, "启用任务", -1)),
-        _createElementVNode("strong", null, _toDisplayString(status.value.summary.enabled_tasks || 0) + " / " + _toDisplayString(status.value.summary.total_tasks || 0), 1)
+        _cache[0] || (_cache[0] = _createElementVNode("span", null, "运行中 / 共", -1)),
+        _createElementVNode("strong", null, _toDisplayString(status.value.summary.running_tasks || 0) + " / " + _toDisplayString(status.value.summary.total_tasks || 0), 1)
       ]),
       _createElementVNode("div", null, [
         _cache[1] || (_cache[1] = _createElementVNode("span", null, "托管种子", -1)),
@@ -121,6 +121,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Dashboard = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-b4f60304"]]);
+const Dashboard = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-e14fa69c"]]);
 
 export { Dashboard as default };
