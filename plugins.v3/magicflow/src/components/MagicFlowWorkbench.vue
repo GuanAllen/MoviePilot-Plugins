@@ -1472,7 +1472,7 @@ onUnmounted(() => {
       <div class="magicflow-page__identity">
         <span class="magicflow-logo"><VIcon icon="mdi-magnet" size="20" /></span>
         <div>
-          <h1>魔流</h1>
+          <h1>魔流<span class="magicflow-page__version">v{{ status.version || '—' }}</span></h1>
           <p>PT 做种 · 魔力养护 / 刷流保种</p>
         </div>
       </div>
@@ -5241,6 +5241,40 @@ onUnmounted(() => {
   /* 桌面品牌头里的切换胶囊隐藏；移动端由工具栏承担 */
   .magicflow-page__actions .magicflow-task-switch {
     display: none;
+  }
+
+  /* ★ 品牌独占一行：控件留在 top 栏，品牌（logo + 魔流 + 版本 + 副标题）挪到 top 栏下面另起一行，
+     避免窄屏被右侧按钮挤成「魔..」/「PT ...」 */
+  .magicflow-page__header {
+    flex-wrap: wrap;
+    row-gap: 6px;
+    align-items: center;
+  }
+
+  .magicflow-page__actions {
+    order: 1;
+    flex: 1 1 100%;
+    inline-size: 100%;
+    margin-inline-start: 0;
+  }
+
+  /* 控件行：状态胶囊靠左，图标按钮靠右 */
+  .magicflow-page__actions > :deep(.v-chip) {
+    margin-inline-end: auto;
+  }
+
+  .magicflow-page__identity {
+    order: 2;
+    flex: 1 1 100%;
+    inline-size: 100%;
+    overflow: visible;
+  }
+
+  .magicflow-page__identity h1,
+  .magicflow-page__identity p {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
   }
 
   /* 移动工具栏沿用「方案 B」胶囊：站点图标 + 任务名·站点 + 状态点 + ⌄ */
