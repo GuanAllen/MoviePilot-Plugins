@@ -1472,7 +1472,7 @@ onUnmounted(() => {
       <div class="magicflow-page__identity">
         <span class="magicflow-logo"><VIcon icon="mdi-magnet" size="20" /></span>
         <div>
-          <h1>魔流<span class="magicflow-page__version">v{{ status.version || '—' }}</span></h1>
+          <h1>魔流</h1>
           <p>PT 做种 · 魔力养护 / 刷流保种</p>
         </div>
       </div>
