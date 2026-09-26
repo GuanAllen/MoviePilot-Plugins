@@ -84,6 +84,7 @@ from .models import (
     DOWNLOADER_PREF_RECOMMENDED,
 )
 from .fallback import FallbackEngine, DEFAULT_SOURCES as FALLBACK_SOURCES
+from .cloud_archive import ArchiveEngine, DEFAULT_TARGET_TEMPLATE as CLOUD_TARGET_TEMPLATE
 from .persistence import MagicFlowStore, OperationItem, WorkReport
 from .recommend import RecommendEngine
 from .sites import BonusCalculator, get_calculator, get_formula_params
@@ -98,7 +99,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.1.1"
+__version__ = "3.2.0"
 
 # 候选扩充：站点列表页翻页数（拿更多、更老的种子）。
 # 注意：是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数（启动时会记日志探测）。
@@ -170,6 +171,10 @@ STATUS_TTL = 15
 
 # 元数据兜底：每轮最多处理的剧集目录数（其余下轮继续）
 FALLBACK_SCAN_MAX = 30
+
+# 云盘归档（夸克冷库）：默认轮询周期 / 每轮上限
+CLOUD_INTERVAL_MINUTES = 360
+CLOUD_SCAN_MAX = 50
 # 官种（official）列表抓取：缓存 TTL 与翻页数。
 # 官种加成是「单种自身」的加成，会影响选种/删种排序，值得缓存抓取；
 # 后宫加成依赖他人种子（用户级），与「选哪一颗」无关，不参与决策，故不抓取。
@@ -598,6 +603,48 @@ class MagicFlow(_PluginBase):
         else:
             self._fallback_engine.set_cfg(self._fallback_cfg)
 
+        # 云盘归档（夸克冷库）：本地当热区、夸克当冷库
+        #  Token 优先用配置；配置为空时回落插件数据（前端/手滑增删设置也不会丢密）
+        _cloud_token = str(raw_config.get("cloud_openlist_token") or "").strip()
+        if not _cloud_token:
+            try:
+                _cloud_token = str(self.get_data("cloud_token") or "").strip()
+            except Exception:  # noqa: BLE001
+                _cloud_token = ""
+        _cloud_paths = raw_config.get("cloud_paths")
+        _cloud_excl = raw_config.get("cloud_exclude_paths")
+        _cloud_tags = raw_config.get("cloud_exclude_tags")
+        self._cloud_cfg = {
+            "enabled": bool(raw_config.get("cloud_enabled", False)),
+            "url": str(raw_config.get("cloud_openlist_url") or "http://192.168.0.61:12022").strip(),
+            "token": _cloud_token,
+            "source_mount": str(raw_config.get("cloud_source_mount") or "/quark").strip() or "/quark",
+            "strm_mount": str(raw_config.get("cloud_strm_mount") or "/movie").strip() or "/movie",
+            "library_root": "/movie",
+            "paths": [str(p).strip() for p in (_cloud_paths or []) if str(p or "").strip()]
+            if isinstance(_cloud_paths, (list, tuple)) else [],
+            "target_template": str(raw_config.get("cloud_target_template") or CLOUD_TARGET_TEMPLATE).strip(),
+            "interval": _rf(raw_config.get("cloud_interval_minutes"), float(CLOUD_INTERVAL_MINUTES)),
+            "scan_max": int(_rf(raw_config.get("cloud_scan_max"), float(CLOUD_SCAN_MAX))),
+            "min_size_gb": _rf(raw_config.get("cloud_min_size_gb"), 2.0),
+            "max_size_gb": _rf(raw_config.get("cloud_max_size_gb"), 200.0),
+            "min_age_days": _rf(raw_config.get("cloud_min_age_days"), 30.0),
+            "exclude_paths": [str(p).strip() for p in (_cloud_excl or []) if str(p or "").strip()]
+            if isinstance(_cloud_excl, (list, tuple)) else ["/movie/刷流", "/movie/下载"],
+            "exclude_tags": [str(t).strip() for t in (_cloud_tags or []) if str(t or "").strip()]
+            if isinstance(_cloud_tags, (list, tuple)) else ["魔流-推荐"],
+            "upload_limit_mbps": _rf(raw_config.get("cloud_upload_limit_mbps"), 0.0),
+            "verify": str(raw_config.get("cloud_verify") or "size").strip() or "size",
+            "dry_run": bool(raw_config.get("cloud_dry_run", True)),
+            "delete_local": bool(raw_config.get("cloud_delete_local", False)),
+            "remove_torrent": bool(raw_config.get("cloud_remove_torrent", False)),
+            "notify": bool(raw_config.get("cloud_notify", True)),
+        }
+        if getattr(self, "_cloud_engine", None) is None:
+            self._cloud_engine = ArchiveEngine(self, self._cloud_cfg)
+        else:
+            self._cloud_engine.set_cfg(self._cloud_cfg)
+
         self._store = MagicFlowStore(self.get_data_path())
         self._apply_runtime_settings()
 
@@ -707,6 +754,20 @@ class MagicFlow(_PluginBase):
                 "summary": "诊断：清空推荐甄别结果",
             },
             {
+                "path": "/debug/cloud-get",
+                "endpoint": self.debug_cloud_get,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "诊断：OpenList /api/fs/get 原始响应",
+            },
+            {
+                "path": "/debug/cloud-put",
+                "endpoint": self.debug_cloud_put,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "诊断：尝试用 1KB 数据 PUT 到 OpenList（定位上传报错）",
+            },
+            {
                 "path": "/settings",
                 "endpoint": self.update_settings,
                 "methods": ["POST"],
@@ -726,6 +787,48 @@ class MagicFlow(_PluginBase):
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "元数据兜底：立即扫描（dry_run=true 仅演练）",
+            },
+            {
+                "path": "/cloud",
+                "endpoint": self.get_cloud_state,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "云盘归档：配置 + 最近计划/结果 + 归档记录",
+            },
+            {
+                "path": "/cloud/test",
+                "endpoint": self.test_cloud,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "云盘归档：连通性自检（OpenList 存储/挂载）",
+            },
+            {
+                "path": "/cloud/plan",
+                "endpoint": self.plan_cloud,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "云盘归档：生成归档计划（只读，不写不删）",
+            },
+            {
+                "path": "/cloud/upload",
+                "endpoint": self.upload_cloud,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "云盘归档：上传单个文件（dry_run=true 仅演练）",
+            },
+            {
+                "path": "/cloud/run",
+                "endpoint": self.run_cloud,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "云盘归档：跑一轮（默认 dry_run，不删本地）",
+            },
+            {
+                "path": "/cloud/clear",
+                "endpoint": self.clear_cloud,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "云盘归档：清空归档记录（不动文件）",
             },
             {
                 "path": "/downloader/prefs",
@@ -1113,6 +1216,27 @@ class MagicFlow(_PluginBase):
             "fallback_sp_to_s00": bool(self._fallback_cfg.get("sp_to_s00", False)),
             "fallback_after_import": bool(self._fallback_cfg.get("after_import", True)),
             "fallback_dry_run": bool(self._fallback_cfg.get("dry_run", False)),
+            # 云盘归档（token 不写回配置，单独存插件数据，避免明文进主配置）
+            "cloud_enabled": bool(self._cloud_cfg.get("enabled", False)),
+            "cloud_openlist_url": str(self._cloud_cfg.get("url") or ""),
+            "cloud_openlist_token": str(self._cloud_cfg.get("token") or ""),
+            "cloud_source_mount": str(self._cloud_cfg.get("source_mount") or "/quark"),
+            "cloud_strm_mount": str(self._cloud_cfg.get("strm_mount") or "/movie"),
+            "cloud_paths": list(self._cloud_cfg.get("paths") or []),
+            "cloud_target_template": str(self._cloud_cfg.get("target_template") or CLOUD_TARGET_TEMPLATE),
+            "cloud_interval_minutes": float(self._cloud_cfg.get("interval") or CLOUD_INTERVAL_MINUTES),
+            "cloud_scan_max": int(self._cloud_cfg.get("scan_max") or CLOUD_SCAN_MAX),
+            "cloud_min_size_gb": float(self._cloud_cfg.get("min_size_gb") or 0),
+            "cloud_max_size_gb": float(self._cloud_cfg.get("max_size_gb") or 0),
+            "cloud_min_age_days": float(self._cloud_cfg.get("min_age_days") or 0),
+            "cloud_exclude_paths": list(self._cloud_cfg.get("exclude_paths") or []),
+            "cloud_exclude_tags": list(self._cloud_cfg.get("exclude_tags") or []),
+            "cloud_upload_limit_mbps": float(self._cloud_cfg.get("upload_limit_mbps") or 0),
+            "cloud_verify": str(self._cloud_cfg.get("verify") or "size"),
+            "cloud_dry_run": bool(self._cloud_cfg.get("dry_run", True)),
+            "cloud_delete_local": bool(self._cloud_cfg.get("delete_local", False)),
+            "cloud_remove_torrent": bool(self._cloud_cfg.get("remove_torrent", False)),
+            "cloud_notify": bool(self._cloud_cfg.get("notify", True)),
             "defaults": dict(getattr(self, "_defaults", {}) or {}),
             "tasks": [task.to_dict() for task in self._task_configs.values()],
         }
@@ -2099,6 +2223,164 @@ class MagicFlow(_PluginBase):
 
         threading.Thread(target=_worker, name="magicflow-fallback-manual", daemon=True).start()
         return Response(success=True, message="已开始扫描，稍后刷新查看结果", data={"dry_run": not apply})
+
+    # ------------------------------------------------------------------
+    # 云盘归档（夸克冷库）：API
+    # ------------------------------------------------------------------
+    def debug_cloud_get(self, path: str = "") -> Response:
+        """诊断：`/api/fs/get` 原始响应 + stat 结果。"""
+        try:
+            return Response(success=True, data=self._get_cloud_engine().client().debug_get(path))
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=str(err))
+
+    def debug_cloud_put(self, path: str = "", size: int = 1024) -> Response:
+        """诊断：容器内直接 PUT 到 OpenList，返回各变体结果。"""
+        try:
+            return Response(success=True, data=self._get_cloud_engine().client().debug_put(path, size))
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=str(err))
+
+    def _get_cloud_engine(self) -> ArchiveEngine:
+        """取（并刷新配置）云盘归档引擎。"""
+        cfg = dict(getattr(self, "_cloud_cfg", {}) or {})
+        engine = getattr(self, "_cloud_engine", None)
+        if engine is None:
+            engine = ArchiveEngine(self, cfg)
+            self._cloud_engine = engine
+        else:
+            engine.set_cfg(cfg)
+        return engine
+
+    def _cloud_cfg_view(self) -> dict:
+        """给前端看的云盘配置：★ 绝不能带 token（等同密码），只告诉「有没有」。"""
+        cfg = dict(getattr(self, "_cloud_cfg", {}) or {})
+        cfg["has_token"] = bool(cfg.get("token"))
+        cfg.pop("token", None)
+        return cfg
+
+    def get_cloud_state(self) -> Response:
+        """云盘归档：配置 + 最近计划/结果 + 归档记录。"""
+        engine = self._get_cloud_engine()
+        cfg = dict(getattr(self, "_cloud_cfg", {}) or {})
+        data = engine.state()
+        # 配置里回显给前端时抹掉 token（只告诉「有没有」）
+        cfg_view = self._cloud_cfg_view()
+        # ★ engine.state() 里的 cfg 也带 token，必须一并抹掉（避免把它送回浏览器）
+        inner_cfg = data.get("cfg")
+        if isinstance(inner_cfg, dict):
+            inner_cfg = dict(inner_cfg)
+            inner_cfg["has_token"] = bool(inner_cfg.get("token"))
+            inner_cfg.pop("token", None)
+            data["cfg"] = inner_cfg
+        data.update({
+            "cfg": cfg_view,
+            "enabled": bool(cfg.get("enabled", False)),
+            "running": bool(self._task_runs.get("cloud")),
+        })
+        return Response(success=True, data=data)
+
+    def test_cloud(self) -> Response:
+        """云盘归档：连通性自检（看 OpenList 存储与两个挂载点）。"""
+        try:
+            return Response(success=True, data=self._get_cloud_engine().test())
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=str(err))
+
+    def plan_cloud(self, limit: Optional[int] = None) -> Response:
+        """云盘归档：生成计划（只读：扫本地 + 查远端，不写不删）。"""
+        try:
+            return Response(success=True, data=self._get_cloud_engine().plan(limit=limit))
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=str(err))
+
+    def upload_cloud(self, path: str = "", dry_run: bool = True, wait: bool = False) -> Response:
+        """云盘归档：上传单个文件（默认 dry_run）。
+
+        大文件上传耗时很长，**默认丢后台线程执行**（不阻塞 HTTP 请求）；
+        前端靠 `/cloud` 里的记录（status=uploading/uploaded/failed）看进度。
+        传 `wait=true` 或 `dry_run=true` 时同步返回（演练瞬间完成）。
+        """
+        engine = self._get_cloud_engine()
+        item = engine.make_item(path)
+        if not item:
+            return Response(success=False, message="文件不存在或不可读（需为容器内可见路径）")
+        if dry_run or wait:
+            res = engine.upload(item, dry_run=bool(dry_run))
+            return Response(success=bool(res.get("ok")) or bool(dry_run),
+                            message=str(res.get("message") or ""), data=res)
+        busy = getattr(self, "_cloud_uploads", None)
+        if busy is None:
+            busy = self._cloud_uploads = set()
+        key = str(item["path"])
+        if key in busy:
+            return Response(success=False, message="该文件正在上传中")
+        if len(busy) >= 2:
+            return Response(success=False, message="已有 2 个文件在上传，请稍后再试")
+        busy.add(key)
+
+        def _worker() -> None:
+            try:
+                res = engine.upload(item, dry_run=False)
+                self._log(f"单文件归档{('完成' if res.get('ok') else '失败')}：{item['rel']}"
+                          f"（{res.get('message') or ''}）")
+            except Exception as err:  # noqa: BLE001
+                self._log(f"单文件归档异常：{err}", "warning")
+            finally:
+                busy.discard(key)
+
+        threading.Thread(target=_worker, name="magicflow-cloud-put", daemon=True).start()
+        return Response(success=True, message=f"已开始上传：{item['name']}",
+                        data={**item, "status": "uploading", "ok": True, "message": "已开始上传"})
+
+    def run_cloud(self, limit: Optional[int] = None, dry_run: Optional[bool] = None,
+                  delete_local: Optional[bool] = None) -> Response:
+        """云盘归档：跑一轮（后台线程；默认按配置：dry_run 开、不删本地）。"""
+        cfg = dict(getattr(self, "_cloud_cfg", {}) or {})
+        if not bool(cfg.get("enabled", False)):
+            return Response(success=False, message="云盘归档未启用，请先在设置里打开")
+        dele = bool(cfg.get("delete_local", False)) if delete_local is None else bool(delete_local)
+        dry = bool(cfg.get("dry_run", True)) if dry_run is None else bool(dry_run)
+        if dele and not dry:
+            return Response(success=False, message="已开启「删本地」，为防止误删：请逐条用上传确认后再手动删")
+        if not self._try_begin_run("cloud"):
+            return Response(success=False, message="上一轮归档仍在执行，请稍后再试")
+        if not self._acquire_worker_slot("云盘归档"):
+            self._end_run("cloud")
+            return Response(success=False, message="全局并发已满，请稍后再试")
+
+        def _worker() -> None:
+            try:
+                engine = self._get_cloud_engine()
+                report = engine.run(limit=limit, dry_run=dry, delete_local=dele)
+                st = report.get("stats") or {}
+                try:
+                    self.save_data(key="cloud_report", value=report)
+                except Exception:  # noqa: BLE001
+                    pass
+                self._log(
+                    f"云盘归档完成：计划 {st.get('planned', 0)} / 上传 {st.get('uploaded', 0)} / "
+                    f"失败 {st.get('failed', 0)} / 删本地 {st.get('deleted', 0)}"
+                    f"（{'演练' if dry else '实传'}）"
+                )
+            except Exception as err:  # noqa: BLE001
+                self._log(f"云盘归档异常：{err}", "warning")
+            finally:
+                self._release_worker_slot()
+                self._end_run("cloud")
+
+        threading.Thread(target=_worker, name="magicflow-cloud", daemon=True).start()
+        return Response(success=True, message="已开始归档，稍后刷新查看结果", data={"dry_run": dry})
+
+    def clear_cloud(self) -> Response:
+        """云盘归档：清空归档记录（**不动任何文件**）。"""
+        try:
+            store = getattr(self._store, "cloud", None)
+            n = store.clear() if store is not None else 0
+            self.save_data(key="cloud_report", value={})
+            return Response(success=True, message=f"已清空 {n} 条归档记录", data={"cleared": n})
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=str(err))
 
     def _exclude_subscribed(self, candidates: List[Any]) -> List[Any]:
         """刷流选种：剔除命中「当前订阅标题」的候选。
@@ -5853,6 +6135,7 @@ class MagicFlow(_PluginBase):
             "iyuu_sites": dict(getattr(self, "_iyuu_sites", {}) or {}),
             "recommend": dict(getattr(self, "_recommend_cfg", {}) or {}),
             "fallback": dict(getattr(self, "_fallback_cfg", {}) or {}),
+            "cloud": self._cloud_cfg_view(),
             "defaults": dict(getattr(self, "_defaults", {}) or {}),
         })
         return Response(success=True, data=data)
@@ -6098,6 +6381,41 @@ class MagicFlow(_PluginBase):
         }
         if getattr(self, "_fallback_engine", None) is not None:
             self._fallback_engine.set_cfg(dict(self._fallback_cfg))
+        # 云盘归档（token 空 = 保持原值；避免前端未带该字段时把 token 抹掉）
+        _new_token = str(getattr(payload, "cloud_openlist_token", "") or "").strip()
+        if _new_token:
+            self.save_data(key="cloud_token", value=_new_token)
+        _c_paths = getattr(payload, "cloud_paths", None)
+        _c_excl = getattr(payload, "cloud_exclude_paths", None)
+        _c_tags = getattr(payload, "cloud_exclude_tags", None)
+        self._cloud_cfg = {
+            "enabled": bool(getattr(payload, "cloud_enabled", False)),
+            "url": str(getattr(payload, "cloud_openlist_url", "") or "http://192.168.0.61:12022").strip(),
+            "token": _new_token or str(self._cloud_cfg.get("token") or ""),
+            "source_mount": str(getattr(payload, "cloud_source_mount", "") or "/quark").strip() or "/quark",
+            "strm_mount": str(getattr(payload, "cloud_strm_mount", "") or "/movie").strip() or "/movie",
+            "library_root": "/movie",
+            "paths": [str(p).strip() for p in (_c_paths or []) if str(p or "").strip()]
+            if isinstance(_c_paths, (list, tuple)) else list(self._cloud_cfg.get("paths") or []),
+            "target_template": str(getattr(payload, "cloud_target_template", "") or CLOUD_TARGET_TEMPLATE).strip(),
+            "interval": max(5.0, _rf(getattr(payload, "cloud_interval_minutes", CLOUD_INTERVAL_MINUTES), float(CLOUD_INTERVAL_MINUTES))),
+            "scan_max": max(1, int(_rf(getattr(payload, "cloud_scan_max", CLOUD_SCAN_MAX), float(CLOUD_SCAN_MAX)))),
+            "min_size_gb": max(0.0, _rf(getattr(payload, "cloud_min_size_gb", 2.0), 2.0)),
+            "max_size_gb": max(0.0, _rf(getattr(payload, "cloud_max_size_gb", 200.0), 200.0)),
+            "min_age_days": max(0.0, _rf(getattr(payload, "cloud_min_age_days", 30.0), 30.0)),
+            "exclude_paths": [str(p).strip() for p in (_c_excl or []) if str(p or "").strip()]
+            if isinstance(_c_excl, (list, tuple)) else list(self._cloud_cfg.get("exclude_paths") or []),
+            "exclude_tags": [str(t).strip() for t in (_c_tags or []) if str(t or "").strip()]
+            if isinstance(_c_tags, (list, tuple)) else list(self._cloud_cfg.get("exclude_tags") or []),
+            "upload_limit_mbps": max(0.0, _rf(getattr(payload, "cloud_upload_limit_mbps", 0.0), 0.0)),
+            "verify": str(getattr(payload, "cloud_verify", "size") or "size").strip() or "size",
+            "dry_run": bool(getattr(payload, "cloud_dry_run", True)),
+            "delete_local": bool(getattr(payload, "cloud_delete_local", False)),
+            "remove_torrent": bool(getattr(payload, "cloud_remove_torrent", False)),
+            "notify": bool(getattr(payload, "cloud_notify", True)),
+        }
+        if getattr(self, "_cloud_engine", None) is not None:
+            self._cloud_engine.set_cfg(dict(self._cloud_cfg))
         self._save_config()
         self._apply_runtime_settings()
         self._refresh_scheduler()

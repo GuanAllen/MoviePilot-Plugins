@@ -15,6 +15,7 @@ import {
   normalizeIyuuSites,
   normalizeSettings,
   normalizeTask,
+  cloudStatusMeta,
   recommendStatusMeta,
   RUN_MODES,
   runModeMeta,
@@ -99,6 +100,26 @@ const settingsDraft = ref({
   fallback_sp_to_s00: false,
   fallback_after_import: true,
   fallback_dry_run: false,
+  cloud_enabled: false,
+  cloud_openlist_url: '',
+  cloud_openlist_token: '',
+  cloud_source_mount: '/quark',
+  cloud_strm_mount: '/movie',
+  cloud_paths: [],
+  cloud_target_template: '/quark/movie/{rel}',
+  cloud_interval_minutes: 360,
+  cloud_scan_max: 50,
+  cloud_min_size_gb: 0,
+  cloud_max_size_gb: 0,
+  cloud_min_age_days: 0,
+  cloud_exclude_paths: [],
+  cloud_exclude_tags: [],
+  cloud_upload_limit_mbps: 0,
+  cloud_verify: 'size',
+  cloud_dry_run: true,
+  cloud_delete_local: false,
+  cloud_remove_torrent: false,
+  cloud_notify: true,
 })
 const fallbackState = ref(null)
 const fallbackLoading = ref(false)
@@ -106,6 +127,20 @@ const fallbackRunning = ref(false)
 const fallbackSourceDraft = ref('')
 const fallbackProblemShows = computed(() => (((fallbackState.value || {}).report || {}).scanned || []).filter(s => (s.problems || []).length))
 const fallbackProblemCount = computed(() => fallbackProblemShows.value.reduce((acc, s) => acc + (s.problems || []).length, 0))
+// ---- 云盘归档 ----
+const cloudOpen = ref(false)
+const cloudState = ref(null)
+const cloudLoading = ref(false)
+const cloudPlanning = ref(false)
+const cloudRunning = ref(false)
+const cloudTesting = ref(false)
+const cloudTestMsg = ref('')
+const cloudTestOk = ref(false)
+const cloudLimit = ref(50)
+const cloudUploadingPath = ref('')
+const cloudPlanItems = ref([])
+const cloudPlanStats = ref(null)
+const cloudCfg = computed(() => (cloudState.value || {}).cfg || {})
 const downloaderPrefsDraft = ref(normalizeDownloaderPrefs({}))
 const downloaderPrefsRecommended = ref(null)
 const downloaderPrefsLoading = ref(false)
@@ -288,7 +323,7 @@ function notify(message, color = 'success') {
   }
 }
 
-const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reuse: '存量复用', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止', state: '运行状态', tag: '标签变更', fallback: '元数据兜底' }
+const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reuse: '存量复用', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止', state: '运行状态', tag: '标签变更', fallback: '元数据兜底', cloud: '云盘归档' }
 const STATE_TEXT = { submitting: '提交中', accepted: '已受理', completed: '已完成', failed: '失败' }
 const KIND_ICON = {
   run: 'mdi-play-circle-outline',
@@ -304,6 +339,7 @@ const KIND_ICON = {
   state: 'mdi-power',
   tag: 'mdi-tag-outline',
   fallback: 'mdi-file-xml-box',
+  cloud: 'mdi-cloud-upload-outline',
 }
 
 function operationKindText(kind) {
@@ -481,6 +517,28 @@ async function loadStatus() {
       iyuu_token: status.value.iyuu_token,
       iyuu_sites: status.value.iyuu_sites,
       ...(status.value.fallback || {}),
+      ...(status.value.cloud ? {
+        cloud_enabled: status.value.cloud.enabled,
+        cloud_openlist_url: status.value.cloud.url,
+        cloud_openlist_token: '',
+        cloud_source_mount: status.value.cloud.source_mount,
+        cloud_strm_mount: status.value.cloud.strm_mount,
+        cloud_paths: status.value.cloud.paths || [],
+        cloud_target_template: status.value.cloud.target_template,
+        cloud_interval_minutes: status.value.cloud.interval,
+        cloud_scan_max: status.value.cloud.scan_max,
+        cloud_min_size_gb: status.value.cloud.min_size_gb,
+        cloud_max_size_gb: status.value.cloud.max_size_gb,
+        cloud_min_age_days: status.value.cloud.min_age_days,
+        cloud_exclude_paths: status.value.cloud.exclude_paths || [],
+        cloud_exclude_tags: status.value.cloud.exclude_tags || [],
+        cloud_upload_limit_mbps: status.value.cloud.upload_limit_mbps,
+        cloud_verify: status.value.cloud.verify,
+        cloud_dry_run: status.value.cloud.dry_run,
+        cloud_delete_local: status.value.cloud.delete_local,
+        cloud_remove_torrent: status.value.cloud.remove_torrent,
+        cloud_notify: status.value.cloud.notify,
+      } : {}),
     })
     statusLoaded.value = true
     if (!selectedTaskId.value && tasks.value.length) {
@@ -958,6 +1016,109 @@ async function openSettings(tab = 'general') {
   settingsDialog.value = true
   await Promise.all([loadDownloaderPrefs(), loadDefaults(), loadIyuuSites()])
   if (tab === 'fallback') loadFallback()
+  if (tab === 'cloud') loadCloud()
+}
+
+// ── 云盘归档 ─────────────────────────────────────────────
+async function loadCloud() {
+  cloudLoading.value = true
+  try {
+    cloudState.value = unwrapResponse(await props.api.get(`${pluginBase.value}/cloud`))
+    if (!cloudPlanStats.value) cloudPlanStats.value = (cloudState.value?.plan_stats || null)
+  } catch (err) {
+    error.value = err?.message || String(err)
+  } finally {
+    cloudLoading.value = false
+  }
+}
+
+async function testCloud() {
+  cloudTesting.value = true
+  cloudTestMsg.value = ''
+  try {
+    const res = unwrapResponse(await props.api.get(`${pluginBase.value}/cloud/test`))
+    cloudTestOk.value = Boolean(res?.ok)
+    cloudTestMsg.value = res?.ok
+      ? `连通正常 · 源挂载 ${res.source_items ?? '?'} 项 · strm 视图 ${res.strm_items ?? '?'} 项`
+      : (res?.message || '连接失败')
+  } catch (err) {
+    cloudTestOk.value = false
+    cloudTestMsg.value = err?.message || String(err)
+  } finally {
+    cloudTesting.value = false
+  }
+}
+
+async function planCloud() {
+  cloudPlanning.value = true
+  try {
+    const res = unwrapResponse(await props.api.post(`${pluginBase.value}/cloud/plan?limit=${cloudLimit.value || 50}`))
+    cloudPlanItems.value = res?.items || []
+    cloudPlanStats.value = res?.stats || null
+  } catch (err) {
+    error.value = err?.message || String(err)
+  } finally {
+    cloudPlanning.value = false
+  }
+}
+
+async function uploadCloudOne(item) {
+  if (!item?.path) return
+  cloudUploadingPath.value = item.path
+  try {
+    const res = unwrapResponse(await props.api.post(
+      `${pluginBase.value}/cloud/upload?dry_run=false&path=${encodeURIComponent(item.path)}`,
+    ))
+    item.status = res?.status || 'uploading'
+    item.message = res?.message || ''
+    notify(item.message || '已开始上传')
+    scheduleCloudPoll()
+  } catch (err) {
+    error.value = err?.message || String(err)
+  } finally {
+    cloudUploadingPath.value = ''
+  }
+}
+
+// 上传/归档是后台跑的：轮询到没有 uploading / running 就自动停。
+let cloudPollTimer = null
+function scheduleCloudPoll() {
+  if (cloudPollTimer) return
+  cloudPollTimer = window.setInterval(async () => {
+    await loadCloud()
+    const records = (cloudState.value || {}).records || []
+    const uploading = records.some(r => r?.status === 'uploading')
+    if (!uploading && !(cloudState.value || {}).running) {
+      window.clearInterval(cloudPollTimer)
+      cloudPollTimer = null
+    }
+  }, 6000)
+}
+
+function cloudRecordFor(item) {
+  const key = String((item || {}).path || '')
+  const records = (cloudState.value || {}).records || []
+  return records.find(r => String(r?.path || '') === key) || null
+}
+
+async function runCloud(dryRun = true) {
+  cloudRunning.value = true
+  try {
+    const res = unwrapResponse(await props.api.post(
+      `${pluginBase.value}/cloud/run?dry_run=${dryRun ? 'true' : 'false'}&limit=${cloudLimit.value || 50}`,
+    ))
+    notify(res?.message || (dryRun ? '归档演练已开始' : '归档任务已开始'))
+    setTimeout(() => { loadCloud() }, 3000)
+  } catch (err) {
+    error.value = err?.message || String(err)
+  } finally {
+    cloudRunning.value = false
+  }
+}
+
+function openCloud() {
+  cloudOpen.value = true
+  loadCloud()
 }
 
 // ── 元数据兜底 ─────────────────────────────────────────────
@@ -1199,7 +1360,15 @@ function saveActiveSettings() {
   if (tab === 'template') return saveDefaults()
   if (tab === 'iyuu') return saveIyuu()
   if (tab === 'fallback') return saveSettings()
+  if (tab === 'cloud') return saveCloud()
   return saveSettings()
+}
+
+// 保存「云盘归档」设置：保存后立刻回读配置 + 自检一次，避免「存了但没生效」。
+async function saveCloud() {
+  await saveSettings()
+  await loadCloud()
+  await testCloud()
 }
 
 // 保存「下载目录」标签：qBittorrent 全局路径 + 任务保存目录（默认模板）。
@@ -1293,6 +1462,7 @@ onUnmounted(() => {
   if (phaseTimer) window.clearInterval(phaseTimer)
   if (recommendTimer) window.clearInterval(recommendTimer)
   if (warmingTimer) window.clearTimeout(warmingTimer)
+  if (cloudPollTimer) window.clearInterval(cloudPollTimer)
 })
 </script>
 
@@ -1371,6 +1541,13 @@ onUnmounted(() => {
           variant="text"
           aria-label="推荐"
           @click="openRecommend"
+        />
+        <VBtn
+          class="magicflow-cloud-btn"
+          icon="mdi-cloud-upload-outline"
+          variant="text"
+          aria-label="云盘归档"
+          @click="openCloud"
         />
         <VBtn
           class="magicflow-settings-btn"
@@ -2145,6 +2322,7 @@ onUnmounted(() => {
           <VTab value="template" class="magicflow-settings-tab">默认任务模板</VTab>
           <VTab value="iyuu" class="magicflow-settings-tab">IYUU 辅种</VTab>
           <VTab value="fallback" class="magicflow-settings-tab">元数据兜底</VTab>
+          <VTab value="cloud" class="magicflow-settings-tab">云盘归档</VTab>
           <VTab value="recommend" class="magicflow-settings-tab">推荐</VTab>
         </VTabs>
         <VDivider />
@@ -2656,6 +2834,197 @@ onUnmounted(() => {
               </details>
             </div>
           </div>
+
+          <div v-else-if="settingsTab === 'cloud'" class="magicflow-settings-form">
+            <p class="magicflow-settings-hint">
+              <strong>本地当热区，夸克当冷库。</strong>
+              把库里的成品大文件上传到 OpenList 的可写存储（夸克 cookie 驱动），
+              同一夸克目录会被 OpenList 的 Strm 视图自动生成 <code>.strm</code> 播放指针，
+              飞牛影视直接能看 —— <strong>无需改 OpenList 配置、也无需自己写 strm</strong>。
+              默认<strong>只上传、不删本地</strong>；删本地与停种必须单独确认。
+            </p>
+            <div class="magicflow-settings-switches">
+              <VSwitch v-model="settingsDraft.cloud_enabled" label="启用云盘归档" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.cloud_dry_run" label="演练模式（只列计划，不真传）" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.cloud_notify" label="完成后通知" color="primary" hide-details inset />
+            </div>
+
+            <div class="magicflow-settings-field">
+              <div class="magicflow-settings-label">OpenList 连接</div>
+              <div class="magicflow-iyuu-token">
+                <VTextField
+                  v-model="settingsDraft.cloud_openlist_url"
+                  label="OpenList 地址"
+                  placeholder="http://192.168.0.61:12022"
+                  variant="outlined"
+                  density="comfortable"
+                  hide-details
+                  autocomplete="off"
+                />
+              </div>
+              <div class="magicflow-iyuu-token mt-2">
+                <VTextField
+                  v-model="settingsDraft.cloud_openlist_token"
+                  label="OpenList Token"
+                  :placeholder="cloudCfg.has_token ? '已保存（留空则不修改）' : 'openlist-…'"
+                  variant="outlined"
+                  density="comfortable"
+                  hide-details
+                  autocomplete="off"
+                  persistent-hint
+                  hint="留空 = 保留已保存的 Token；Token 不会回显到浏览器"
+                />
+                <VBtn
+                  variant="tonal"
+                  color="primary"
+                  size="small"
+                  prepend-icon="mdi-connection"
+                  :loading="cloudTesting"
+                  @click="testCloud"
+                >测试</VBtn>
+              </div>
+              <p v-if="cloudTestMsg" class="magicflow-settings-hint" :class="cloudTestOk ? 'text-success' : 'text-error'">{{ cloudTestMsg }}</p>
+            </div>
+
+            <div class="magicflow-settings-grid">
+              <VTextField
+                v-model="settingsDraft.cloud_source_mount"
+                label="可写存储路径"
+                hint="OpenList 里可写的存储挂载点，默认 /quark"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model="settingsDraft.cloud_strm_mount"
+                label="Strm 视图路径"
+                hint="只读校验用（Strm 驱动），默认 /movie"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+            </div>
+
+            <VTextField
+              v-model="settingsDraft.cloud_target_template"
+              label="远端目标模板"
+              hint="{rel} = 相对库根的路径。默认 /quark/movie/{rel}（与本地库同构，影视侧自动对应）"
+              persistent-hint
+              variant="outlined"
+              density="comfortable"
+            />
+
+            <VCombobox
+              v-model="settingsDraft.cloud_paths"
+              label="扫描目录（容器内路径，留空 = /movie）"
+              hint="可多个；只扫这些库根下的媒体文件"
+              persistent-hint
+              variant="outlined"
+              density="comfortable"
+              chips
+              multiple
+              clearable
+              :items="['/movie']"
+            />
+
+            <VCombobox
+              v-model="settingsDraft.cloud_exclude_paths"
+              label="排除路径（子串匹配）"
+              hint="默认已排除下载区/刷流区/蓝光原盘结构；这里可再加"
+              persistent-hint
+              variant="outlined"
+              density="comfortable"
+              chips
+              multiple
+              clearable
+              :items="['/movie/刷流', '/movie/下载']"
+            />
+
+            <VCombobox
+              v-model="settingsDraft.cloud_exclude_tags"
+              label="排除标签（做种中的种子不打标上传策略，可留空）"
+              variant="outlined"
+              density="comfortable"
+              chips
+              multiple
+              clearable
+              :items="['魔流-推荐', '辅种', '已整理']"
+            />
+
+            <div class="magicflow-settings-grid">
+              <VTextField
+                v-model.number="settingsDraft.cloud_min_size_gb"
+                type="number"
+                label="最小体积（GB，0 = 不限）"
+                variant="outlined"
+                density="comfortable"
+                hide-details
+              />
+              <VTextField
+                v-model.number="settingsDraft.cloud_max_size_gb"
+                type="number"
+                label="最大体积（GB，0 = 不限）"
+                variant="outlined"
+                density="comfortable"
+                hide-details
+              />
+              <VTextField
+                v-model.number="settingsDraft.cloud_min_age_days"
+                type="number"
+                label="最小入库天数（0 = 不限）"
+                hint="只归档入库较久、已经稳定的资源"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="settingsDraft.cloud_upload_limit_mbps"
+                type="number"
+                label="上传限速（Mbps，0 = 不限）"
+                variant="outlined"
+                density="comfortable"
+                hide-details
+              />
+              <VTextField
+                v-model.number="settingsDraft.cloud_interval_minutes"
+                type="number"
+                label="后台归档周期（分钟）"
+                variant="outlined"
+                density="comfortable"
+                hide-details
+              />
+              <VTextField
+                v-model.number="settingsDraft.cloud_scan_max"
+                type="number"
+                label="每轮最多处理文件数"
+                variant="outlined"
+                density="comfortable"
+                hide-details
+              />
+            </div>
+
+            <VDivider class="magicflow-fb-divider" />
+
+            <div class="magicflow-settings-switches">
+              <VSwitch
+                v-model="settingsDraft.cloud_delete_local"
+                label="归档后删除本地文件（危险：会停种；插件会拒绝自动执行，只做记录）"
+                color="error"
+                hide-details
+                inset
+              />
+              <VSwitch
+                v-model="settingsDraft.cloud_remove_torrent"
+                label="同时移除下载器任务（危险，需人工确认）"
+                color="error"
+                hide-details
+                inset
+              />
+            </div>
+            <VAlert type="warning" variant="tonal" density="compact">
+              安全默认：<strong>不删本地、不停种</strong>。删本地需要逐条上传校验通过后手动确认，绝不会自动执行。
+            </VAlert>
+          </div>
         </div>
 
         <footer class="magicflow-settings-dialog__footer">
@@ -2780,6 +3149,93 @@ onUnmounted(() => {
           <VBtn variant="text" @click="deleteDialog = false">取消</VBtn>
           <VBtn color="error" variant="flat" :loading="saving" @click="confirmDeleteTask">删除</VBtn>
         </VCardActions>
+      </VCard>
+    </VDialog>
+
+    <VDialog v-model="cloudOpen" max-width="52rem" scrollable>
+      <VCard class="magicflow-dialog magicflow-cloud-dialog">
+        <header class="magicflow-settings-dialog__head">
+          <span class="magicflow-settings-dialog__title">云盘归档</span>
+          <div class="magicflow-recommend-dialog__head-actions">
+            <VBtn variant="text" color="primary" size="small" prepend-icon="mdi-refresh" :loading="cloudLoading" @click="loadCloud">刷新</VBtn>
+            <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="cloudOpen = false" />
+          </div>
+        </header>
+        <VDivider />
+        <VCardText class="magicflow-cloud-dialog__body">
+          <VAlert v-if="!cloudCfg.enabled" type="info" variant="tonal" density="compact" class="mb-2">
+            云盘归档未启用（「插件设置 → 云盘归档」里开启并填 OpenList 地址 / Token）。
+          </VAlert>
+          <div class="magicflow-cloud-dialog__summary">
+            <span><strong>{{ cloudPlanStats?.pending ?? 0 }}</strong> 待上传</span>
+            <i>·</i>
+            <span><strong>{{ cloudPlanStats?.remote_exists ?? 0 }}</strong> 远端已有</span>
+            <i>·</i>
+            <span><strong>{{ cloudPlanStats?.done ?? 0 }}</strong> 已归档</span>
+            <i>·</i>
+            <span>{{ cloudPlanStats?.pending_gb ?? 0 }} GB</span>
+            <i>·</i>
+            <span><strong>{{ cloudState?.record_count ?? 0 }}</strong> 条记录</span>
+          </div>
+          <div class="magicflow-cloud-dialog__note">
+            上传到 OpenList 可写存储 → 同一夸克目录 → Strm 视图自动生成播放指针 → 影视直接能看。
+            默认<strong>只上传不删除</strong>；本地删除需单独确认。
+          </div>
+          <div class="magicflow-cloud-dialog__actions">
+            <VBtn variant="tonal" color="primary" size="small" prepend-icon="mdi-connection" :loading="cloudTesting" @click="testCloud">测试连接</VBtn>
+            <VBtn variant="tonal" size="small" prepend-icon="mdi-clipboard-list-outline" :loading="cloudPlanning" @click="planCloud">扫描候选</VBtn>
+            <VBtn variant="tonal" size="small" prepend-icon="mdi-play-circle-outline" :loading="cloudRunning" @click="runCloud(true)">演练归档</VBtn>
+            <VBtn color="primary" variant="flat" size="small" prepend-icon="mdi-cloud-upload-outline" :loading="cloudRunning" @click="runCloud(false)">开始归档</VBtn>
+            <VTextField
+              v-model.number="cloudLimit"
+              label="本轮条数"
+              type="number"
+              variant="outlined"
+              density="compact"
+              hide-details
+              class="magicflow-cloud-dialog__limit"
+            />
+          </div>
+          <VAlert v-if="cloudTestMsg" :type="cloudTestOk ? 'success' : 'error'" variant="tonal" density="compact" class="my-2">
+            {{ cloudTestMsg }}
+          </VAlert>
+          <VAlert v-if="cloudState?.running" type="info" variant="tonal" density="compact" class="my-2">
+            归档任务正在后台执行（可关闭本窗口，进度看下方列表与「操作记录」）。
+          </VAlert>
+          <VSheet tag="section" class="magicflow-panel app-surface-static mt-2">
+            <header class="magicflow-panel__head">
+              <div>
+                <div class="text-subtitle-2 font-weight-medium">归档候选</div>
+                <div class="text-body-2 text-medium-emphasis">点「扫描候选」列出可上传文件；逐条点「上传」立即传该文件（后台执行）</div>
+              </div>
+            </header>
+            <p v-if="cloudLoading && !cloudPlanItems.length" class="magicflow-settings-hint">加载中…</p>
+            <p v-else-if="!cloudPlanItems.length" class="magicflow-settings-hint">
+              还没有候选。点上方「扫描候选」；若为 0，检查设置里的「扫描目录 / 体积范围 / 最小入库天数」。
+            </p>
+            <div v-for="it in cloudPlanItems" :key="it.path" class="magicflow-cloud-row">
+              <div class="magicflow-cloud-row__main">
+                <div class="magicflow-cloud-row__title">{{ it.name }}</div>
+                <div class="magicflow-cloud-row__sub">{{ it.rel }} · {{ it.size_gb }} GB</div>
+                <div v-if="it.message || (cloudRecordFor(it) || {}).error" class="magicflow-cloud-row__msg">
+                  {{ it.message || (cloudRecordFor(it) || {}).error }}
+                </div>
+              </div>
+              <div class="magicflow-cloud-row__side">
+                <VChip size="x-small" variant="tonal" :color="cloudStatusMeta(cloudRecordFor(it)?.status || it.status).color">
+                  {{ cloudStatusMeta(cloudRecordFor(it)?.status || it.status).text }}
+                </VChip>
+                <VBtn
+                  size="x-small"
+                  variant="tonal"
+                  color="primary"
+                  :loading="cloudUploadingPath === it.path"
+                  @click="uploadCloudOne(it)"
+                >上传</VBtn>
+              </div>
+            </div>
+          </VSheet>
+        </VCardText>
       </VCard>
     </VDialog>
 
@@ -3898,6 +4354,113 @@ onUnmounted(() => {
   max-block-size: min(68dvh, 42rem);
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+/* ── 云盘归档弹窗 ───────────────────────────────── */
+.magicflow-cloud-dialog__body {
+  max-block-size: min(70dvh, 44rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.magicflow-cloud-dialog__summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: rgb(var(--v-theme-on-surface-variant));
+}
+
+.magicflow-cloud-dialog__summary strong {
+  font-size: 1.05rem;
+  color: rgb(var(--v-theme-primary));
+}
+
+.magicflow-cloud-dialog__summary i {
+  font-style: normal;
+  opacity: 0.4;
+}
+
+.magicflow-cloud-dialog__note {
+  margin-block: 2px 6px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: rgb(var(--v-theme-on-surface-variant));
+  opacity: 0.85;
+}
+
+.magicflow-cloud-dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.magicflow-cloud-dialog__limit {
+  inline-size: 7.5rem;
+}
+
+.magicflow-cloud-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding-block: 8px;
+  border-block-end: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+
+.magicflow-cloud-row:last-child {
+  border-block-end: 0;
+}
+
+.magicflow-cloud-row__main {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.magicflow-cloud-row__title {
+  font-size: 0.88rem;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.magicflow-cloud-row__sub {
+  font-size: 0.76rem;
+  color: rgb(var(--v-theme-on-surface-variant));
+  overflow-wrap: anywhere;
+}
+
+.magicflow-cloud-row__msg {
+  margin-block-start: 2px;
+  font-size: 0.74rem;
+  color: rgb(var(--v-theme-warning));
+  overflow-wrap: anywhere;
+}
+
+.magicflow-cloud-row__side {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+@media (max-width: 699px) {
+  .magicflow-cloud-dialog__actions {
+    gap: 6px;
+  }
+
+  .magicflow-cloud-dialog__limit {
+    inline-size: 100%;
+  }
+
+  .magicflow-cloud-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .magicflow-cloud-row__side {
+    justify-content: space-between;
+  }
 }
 
 .magicflow-rec {

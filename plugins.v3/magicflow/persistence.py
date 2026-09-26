@@ -932,6 +932,110 @@ class RecommendStore:
             return n
 
 
+class ArchiveStore:
+    """云盘归档记录存储（磁盘 JSON，读-合并-写 + 原子替换）。
+
+    ``本地路径 -> {rel, remote, size, status, uploaded_at, verified, error,
+                    deleted_at, updated_at}``
+    status ∈ uploading / uploaded / failed / archived。
+
+    与 RecommendStore 同样的教训：**热重载多实例下必须读-合并-写**，
+    否则内存快照整表覆盖会丢记录。
+    """
+
+    def __init__(self, data_dir: Path):
+        self.data_dir = Path(data_dir)
+        self.file = self.data_dir / "cloud.json"
+        self._lock = threading.RLock()
+        self._items: Dict[str, Dict[str, Any]] = {}
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            if self.file.exists():
+                with open(self.file, "r", encoding="utf-8") as f:
+                    data = json.load(f) or {}
+                if isinstance(data, dict):
+                    self._items = {str(k): dict(v) for k, v in data.items() if isinstance(v, dict)}
+        except Exception:
+            self._items = {}
+
+    def _save(self) -> None:
+        with self._lock:
+            try:
+                self.data_dir.mkdir(parents=True, exist_ok=True)
+                disk: Dict[str, Dict[str, Any]] = {}
+                if self.file.exists():
+                    try:
+                        with open(self.file, "r", encoding="utf-8") as f:
+                            d = json.load(f) or {}
+                        if isinstance(d, dict):
+                            disk = {str(k): v for k, v in d.items() if isinstance(v, dict)}
+                    except Exception:
+                        disk = {}
+                merged = dict(disk)
+                for k, item in self._items.items():
+                    cur = merged.get(k)
+                    if cur is None or float(item.get("updated_at", 0) or 0) >= float(cur.get("updated_at", 0) or 0):
+                        merged[k] = item
+                self._items = merged
+                tmp = self.file.with_name(self.file.name + ".tmp")
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(merged, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, self.file)
+            except Exception:
+                pass
+
+    def get(self, path: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            item = self._items.get(str(path or ""))
+            return dict(item) if item else None
+
+    def upsert(self, path: str, **fields: Any) -> Dict[str, Any]:
+        path = str(path or "")
+        if not path:
+            return {}
+        with self._lock:
+            cur = dict(self._items.get(path) or {})
+            cur.update({k: v for k, v in fields.items() if v is not None})
+            cur["path"] = path
+            cur["updated_at"] = time.time()
+            self._items[path] = cur
+            self._save()
+            return dict(cur)
+
+    def delete(self, path: str) -> bool:
+        with self._lock:
+            if str(path) in self._items:
+                self._items.pop(str(path), None)
+                self._save()
+                return True
+        return False
+
+    def list(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            items = [dict(v, path=k) for k, v in self._items.items()]
+        items.sort(key=lambda x: float(x.get("updated_at", 0) or 0), reverse=True)
+        return items
+
+    def all(self) -> Dict[str, Dict[str, Any]]:
+        with self._lock:
+            return {k: dict(v) for k, v in self._items.items()}
+
+    def clear(self) -> int:
+        with self._lock:
+            n = len(self._items)
+            self._items = {}
+            try:
+                tmp = self.file.with_name(self.file.name + ".tmp")
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump({}, f, ensure_ascii=False)
+                os.replace(tmp, self.file)
+            except Exception:
+                pass
+            return n
+
+
 class MagicFlowStore:
     """
     MagicFlow 统一数据存储。
@@ -972,6 +1076,7 @@ class MagicFlowStore:
         self.seen = SeenStore(data_dir)
         self.dead = DeadStore(data_dir)
         self.recommend = RecommendStore(data_dir)
+        self.cloud = ArchiveStore(data_dir)
 
     # -------------------- 运行阶段 / 游标 --------------------
 

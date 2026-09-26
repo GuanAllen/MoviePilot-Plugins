@@ -1,4 +1,4 @@
-export const taskDefaults = {
+const taskDefaults = {
   id: '',
   name: '',
   enabled: true,
@@ -67,10 +67,10 @@ export const taskDefaults = {
   rss_support: false,
   up_speed: null,
   dl_speed: null,
-}
+};
 
 /** 统一提取宿主 API 客户端与标准响应模型中的业务数据。 */
-export function unwrapResponse(response) {
+function unwrapResponse(response) {
   if (response && Object.prototype.hasOwnProperty.call(response, 'success')) {
     if (response.success === false) throw new Error(response.message || '操作失败')
     return response.data
@@ -79,13 +79,13 @@ export function unwrapResponse(response) {
 }
 
 /** 基于完整默认值创建可安全编辑的任务深拷贝。 */
-export function cloneTask(task = {}) {
+function cloneTask(task = {}) {
   return JSON.parse(JSON.stringify({ ...taskDefaults, ...(task || {}) }))
 }
 
 /** 把表单空值和数字字段标准化为后端请求模型需要的类型。 */
-export function normalizeTask(task) {
-  const result = cloneTask(task)
+function normalizeTask(task) {
+  const result = cloneTask(task);
   const nullableNumbers = [
     'brush_interval',
     'check_interval',
@@ -107,7 +107,7 @@ export function normalizeTask(task) {
     'rotate_upload_gb',
     'rotate_ratio',
     'site_id',
-  ]
+  ];
   const optionalText = [
     'brush_tag',
     'save_path',
@@ -119,67 +119,67 @@ export function normalizeTask(task) {
     'include',
     'exclude',
     'hr',
-  ]
+  ];
   nullableNumbers.forEach(key => {
-    const raw = result[key]
+    const raw = result[key];
     if (raw === '' || raw === null || raw === undefined) {
-      result[key] = null
+      result[key] = null;
       return
     }
-    const value = Number(raw)
-    result[key] = Number.isFinite(value) ? value : null
-  })
+    const value = Number(raw);
+    result[key] = Number.isFinite(value) ? value : null;
+  });
   optionalText.forEach(key => {
-    result[key] = String(result[key] ?? '').trim() || null
-  })
-  result.name = String(result.name || '').trim()
-  result.downloader = String(result.downloader || '').trim()
-  result.site_id = Number(result.site_id)
-  result.brush_interval = Number(result.brush_interval || 5)
-  result.check_interval = Number(result.check_interval || 1)
-  result.protect_perfect = result.protect_perfect !== false
-  result.perfect_max_seeders = Number(result.perfect_max_seeders ?? 3)
-  result.perfect_min_weeks = Number(result.perfect_min_weeks ?? 4)
-  result.refill_when_empty = Boolean(result.refill_when_empty)
-  result.max_add_per_run = Number(result.max_add_per_run || 10)
-  result.max_download_concurrent = Number(result.max_download_concurrent || 10)
-  result.top_n = Number(result.top_n || 30)
-  result.browse_pages = Number(result.browse_pages || 3)
-  result.reuse_existing = Boolean(result.reuse_existing ?? true)
-  result.reuse_verify = Boolean(result.reuse_verify ?? true)
-  result.cleanup_no_progress = Boolean(result.cleanup_no_progress ?? true)
-  result.no_progress_minutes = Number(result.no_progress_minutes || 30)
-  result.cleanup_slow_progress = Boolean(result.cleanup_slow_progress ?? true)
-  result.slow_progress_grace_minutes = Number(result.slow_progress_grace_minutes || 60)
-  result.slow_progress_max_hours = Number(result.slow_progress_max_hours || 48)
-  result.purge_unfree_incomplete = Boolean(result.purge_unfree_incomplete ?? true)
-  result.auto_resume_paused = Boolean(result.auto_resume_paused ?? true)
-  result.ti_source = ['publish', 'seed_time'].includes(result.ti_source) ? result.ti_source : 'publish'
-  result.seen_cooldown_hours = Number(result.seen_cooldown_hours ?? 24)
-  result.freeleech = result.freeleech || ''
-  result.task_type = ['bonus', 'brush'].includes(result.task_type) ? result.task_type : 'bonus'
-  result.brush_grace_minutes = Number(result.brush_grace_minutes ?? 15)
-  result.upload_idle_minutes = Number(result.upload_idle_minutes ?? 10)
-  result.upload_min_kbps = Number(result.upload_min_kbps ?? 200)
-  result.brush_min_leechers = Number(result.brush_min_leechers ?? 1)
-  result.brush_seed_days = Number(result.brush_seed_days ?? 2)
-  result.except_subscribe = result.except_subscribe !== false
-  result.delete_except_tags = String(result.delete_except_tags || '').trim()
-  result.delete_files = Boolean(result.delete_files)
-  result.exclude_zero_bonus = Boolean(result.exclude_zero_bonus)
-  result.rss_support = Boolean(result.rss_support)
-  result.enabled = Boolean(result.enabled)
+    result[key] = String(result[key] ?? '').trim() || null;
+  });
+  result.name = String(result.name || '').trim();
+  result.downloader = String(result.downloader || '').trim();
+  result.site_id = Number(result.site_id);
+  result.brush_interval = Number(result.brush_interval || 5);
+  result.check_interval = Number(result.check_interval || 1);
+  result.protect_perfect = result.protect_perfect !== false;
+  result.perfect_max_seeders = Number(result.perfect_max_seeders ?? 3);
+  result.perfect_min_weeks = Number(result.perfect_min_weeks ?? 4);
+  result.refill_when_empty = Boolean(result.refill_when_empty);
+  result.max_add_per_run = Number(result.max_add_per_run || 10);
+  result.max_download_concurrent = Number(result.max_download_concurrent || 10);
+  result.top_n = Number(result.top_n || 30);
+  result.browse_pages = Number(result.browse_pages || 3);
+  result.reuse_existing = Boolean(result.reuse_existing ?? true);
+  result.reuse_verify = Boolean(result.reuse_verify ?? true);
+  result.cleanup_no_progress = Boolean(result.cleanup_no_progress ?? true);
+  result.no_progress_minutes = Number(result.no_progress_minutes || 30);
+  result.cleanup_slow_progress = Boolean(result.cleanup_slow_progress ?? true);
+  result.slow_progress_grace_minutes = Number(result.slow_progress_grace_minutes || 60);
+  result.slow_progress_max_hours = Number(result.slow_progress_max_hours || 48);
+  result.purge_unfree_incomplete = Boolean(result.purge_unfree_incomplete ?? true);
+  result.auto_resume_paused = Boolean(result.auto_resume_paused ?? true);
+  result.ti_source = ['publish', 'seed_time'].includes(result.ti_source) ? result.ti_source : 'publish';
+  result.seen_cooldown_hours = Number(result.seen_cooldown_hours ?? 24);
+  result.freeleech = result.freeleech || '';
+  result.task_type = ['bonus', 'brush'].includes(result.task_type) ? result.task_type : 'bonus';
+  result.brush_grace_minutes = Number(result.brush_grace_minutes ?? 15);
+  result.upload_idle_minutes = Number(result.upload_idle_minutes ?? 10);
+  result.upload_min_kbps = Number(result.upload_min_kbps ?? 200);
+  result.brush_min_leechers = Number(result.brush_min_leechers ?? 1);
+  result.brush_seed_days = Number(result.brush_seed_days ?? 2);
+  result.except_subscribe = result.except_subscribe !== false;
+  result.delete_except_tags = String(result.delete_except_tags || '').trim();
+  result.delete_files = Boolean(result.delete_files);
+  result.exclude_zero_bonus = Boolean(result.exclude_zero_bonus);
+  result.rss_support = Boolean(result.rss_support);
+  result.enabled = Boolean(result.enabled);
   return result
 }
 
 /** 标准化全局设置。 */
-export function normalizeSettings(settings = {}) {
-  const journalKeep = Number(settings.journal_keep)
-  const requestInterval = Number(settings.request_interval)
+function normalizeSettings(settings = {}) {
+  const journalKeep = Number(settings.journal_keep);
+  const requestInterval = Number(settings.request_interval);
   const num = (value, fallback) => {
-    const n = Number(value)
+    const n = Number(value);
     return Number.isFinite(n) ? n : fallback
-  }
+  };
   return {
     enabled: Boolean(settings.enabled),
     show_sidebar_nav: Boolean(settings.show_sidebar_nav),
@@ -232,29 +232,29 @@ export function normalizeSettings(settings = {}) {
 }
 
 /** 可选的识别来源（与 MoviePilot 内置 MediaSource 对齐）。 */
-export const FALLBACK_SOURCE_OPTIONS = [
+const FALLBACK_SOURCE_OPTIONS = [
   { value: 'themoviedb', title: 'TMDB', hint: 'TheMovieDB，影视主力数据源' },
   { value: 'bangumi', title: 'Bangumi', hint: '番组计划，中日番剧最全' },
   { value: 'douban', title: '豆瓣', hint: '豆瓣，国漫 / 国产剧补充' },
   { value: 'anilist', title: 'AniList', hint: 'AniList，番剧备选' },
   { value: 'tvdb', title: 'TVDB', hint: 'TheTVDB，剧集备选' },
   { value: 'imdb', title: 'IMDb', hint: 'IMDb，欧美影视备选' },
-]
+];
 
 /** 标准化「识别来源顺序」：去重 + 只留已知来源。 */
-export function normalizeFallbackSources(value) {
-  const known = FALLBACK_SOURCE_OPTIONS.map(o => o.value)
-  const list = Array.isArray(value) ? value : []
-  const out = []
+function normalizeFallbackSources(value) {
+  const known = FALLBACK_SOURCE_OPTIONS.map(o => o.value);
+  const list = Array.isArray(value) ? value : [];
+  const out = [];
   list.forEach(v => {
-    const key = String(v || '').trim().toLowerCase()
-    if (key && known.includes(key) && !out.includes(key)) out.push(key)
-  })
+    const key = String(v || '').trim().toLowerCase();
+    if (key && known.includes(key) && !out.includes(key)) out.push(key);
+  });
   return out.length ? out : ['themoviedb', 'bangumi', 'douban']
 }
 
 /** 归档条目状态元信息（标签文案 + 颜色）。 */
-export function cloudStatusMeta(status) {
+function cloudStatusMeta(status) {
   const map = {
     candidate: { text: '待上传', color: 'primary' },
     pending: { text: '待上传', color: 'primary' },
@@ -268,58 +268,58 @@ export function cloudStatusMeta(status) {
     failed: { text: '失败', color: 'error' },
     remote_error: { text: '远端异常', color: 'error' },
     error: { text: '出错', color: 'error' },
-  }
+  };
   return map[String(status || '')] || { text: String(status || '—'), color: 'grey' }
 }
 
 /** 标准化字符串列表（去空、去重、去首尾空白）。 */
-export function normalizePathList(value) {
-  const list = Array.isArray(value) ? value : []
-  const out = []
+function normalizePathList(value) {
+  const list = Array.isArray(value) ? value : [];
+  const out = [];
   list.forEach(v => {
-    const s = String(v == null ? '' : v).trim()
-    if (s && !out.includes(s)) out.push(s)
-  })
+    const s = String(v == null ? '' : v).trim();
+    if (s && !out.includes(s)) out.push(s);
+  });
   return out
 }
 
 /** 推荐状态元信息（标签文案 + 颜色）。 */
-export function recommendStatusMeta(status) {
+function recommendStatusMeta(status) {
   const map = {
     pending: { text: '待核实', color: 'grey' },
     recommended: { text: '待确认', color: 'amber' },
     confirmed: { text: '已入库', color: 'success' },
     dismissed: { text: '已忽略', color: 'grey-darken-2' },
     deleted: { text: '已过期删除', color: 'error' },
-  }
+  };
   return map[String(status || '').toLowerCase()] || { text: status || '未知', color: 'grey' }
 }
 
 /** 标准化「IYUU 站点密钥表」：domain -> { passkey/uid/downhash }。 */
-export function normalizeIyuuSites(sites = {}) {
-  const out = {}
+function normalizeIyuuSites(sites = {}) {
+  const out = {};
   if (!sites || typeof sites !== 'object') return out
-  const KEYS = ['passkey', 'uid', 'downhash', 'authkey', 'rsskey']
+  const KEYS = ['passkey', 'uid', 'downhash', 'authkey', 'rsskey'];
   Object.keys(sites).forEach(domain => {
-    const key = String(domain || '').trim().toLowerCase()
-    const row = sites[domain]
+    const key = String(domain || '').trim().toLowerCase();
+    const row = sites[domain];
     if (!key || !row || typeof row !== 'object') return
-    const clean = {}
+    const clean = {};
     KEYS.forEach(k => {
-      const val = String(row[k] == null ? '' : row[k]).trim()
-      if (val) clean[k] = val
-    })
-    if (Object.keys(clean).length) out[key] = clean
-  })
+      const val = String(row[k] == null ? '' : row[k]).trim();
+      if (val) clean[k] = val;
+    });
+    if (Object.keys(clean).length) out[key] = clean;
+  });
   return out
 }
 
 /** 标准化「下载器全局参数」（速度单位 KB/s）。 */
-export function normalizeDownloaderPrefs(prefs = {}) {
+function normalizeDownloaderPrefs(prefs = {}) {
   const num = (value, fallback) => {
-    const n = Number(value)
+    const n = Number(value);
     return Number.isFinite(n) ? n : fallback
-  }
+  };
   return {
     download_limit_kbps: Math.max(0, num(prefs.download_limit_kbps, 0)),
     upload_limit_kbps: Math.max(0, num(prefs.upload_limit_kbps, 0)),
@@ -334,7 +334,7 @@ export function normalizeDownloaderPrefs(prefs = {}) {
 }
 
 /** 标准化「下载目录」（qBittorrent 全局路径）。 */
-export function normalizeDownloaderPaths(paths = {}) {
+function normalizeDownloaderPaths(paths = {}) {
   return {
     save_path: String(paths.save_path || ''),
     temp_path: String(paths.temp_path || ''),
@@ -343,11 +343,11 @@ export function normalizeDownloaderPaths(paths = {}) {
 }
 
 /** 标准化「默认任务模板」。 */
-export function normalizeDefaults(raw = {}) {
+function normalizeDefaults(raw = {}) {
   const num = (value, fallback) => {
-    const n = Number(value)
+    const n = Number(value);
     return Number.isFinite(n) ? n : fallback
-  }
+  };
   return {
     downloader: String(raw.downloader || ''),
     save_path: String(raw.save_path || ''),
@@ -371,24 +371,24 @@ export function normalizeDefaults(raw = {}) {
 }
 
 /** 将字节数格式化为适合紧凑界面展示的容量文本。 */
-export function formatBytes(value) {
-  const bytes = Number(value || 0)
+function formatBytes(value) {
+  const bytes = Number(value || 0);
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
-  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
-  const number = bytes / 1024 ** index
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const number = bytes / 1024 ** index;
   return `${number >= 100 ? number.toFixed(0) : number.toFixed(1)} ${units[index]}`
 }
 
 /** 将秒 / 毫秒 / ISO 时间统一格式化为月日与时分。 */
-export function formatDateTime(value) {
+function formatDateTime(value) {
   if (value === null || value === undefined || value === '') return '暂无'
-  let input = value
+  let input = value;
   if (typeof input === 'number') {
     // 后端时间戳以秒为单位
-    input = input < 1e12 ? input * 1000 : input
+    input = input < 1e12 ? input * 1000 : input;
   }
-  const date = new Date(input)
+  const date = new Date(input);
   if (Number.isNaN(date.getTime())) return String(value)
   return new Intl.DateTimeFormat('zh-CN', {
     month: '2-digit',
@@ -399,50 +399,50 @@ export function formatDateTime(value) {
 }
 
 /** 计算一次运行记录的秒级耗时。 */
-export function formatDuration(startedAt, finishedAt) {
+function formatDuration(startedAt, finishedAt) {
   if (!startedAt || !finishedAt) return '-'
-  const toMs = value => (typeof value === 'number' ? (value < 1e12 ? value * 1000 : value) : new Date(value).getTime())
-  const seconds = Math.max(Math.round((toMs(finishedAt) - toMs(startedAt)) / 1000), 0)
+  const toMs = value => (typeof value === 'number' ? (value < 1e12 ? value * 1000 : value) : new Date(value).getTime());
+  const seconds = Math.max(Math.round((toMs(finishedAt) - toMs(startedAt)) / 1000), 0);
   return `${seconds} 秒`
 }
 
 /** 把秒数格式化成中文耗时文本。 */
-export function formatDurationSeconds(seconds) {
-  const value = Number(seconds || 0)
+function formatDurationSeconds(seconds) {
+  const value = Number(seconds || 0);
   if (!Number.isFinite(value) || value <= 0) return '-'
   if (value < 60) return `${value.toFixed(1)} 秒`
-  const minutes = Math.floor(value / 60)
-  const rest = Math.round(value - minutes * 60)
+  const minutes = Math.floor(value / 60);
+  const rest = Math.round(value - minutes * 60);
   return `${minutes} 分 ${rest} 秒`
 }
 
 /** 最近一次运行状态的中文文本。 */
-export function runStatusText(status) {
-  const map = { done: '完成', noop: '无需动作', skipped: '已跳过', failed: '失败' }
+function runStatusText(status) {
+  const map = { done: '完成', noop: '无需动作', skipped: '已跳过', failed: '失败' };
   return map[status] || '未执行'
 }
 
 /** 格式化每小时魔力产出。 */
-export function formatBonus(value) {
-  const number = Number(value || 0)
+function formatBonus(value) {
+  const number = Number(value || 0);
   return `${number.toFixed(2)} /h`
 }
 
 /** 运行状态（三态）可选值 + 元数据。 */
-export const RUN_MODES = [
+const RUN_MODES = [
   { value: 'running', text: '运行中', icon: 'mdi-play-circle-outline', color: 'success', hint: '正常下种做种' },
   { value: 'seeding', text: '做种中', icon: 'mdi-seed-outline', color: 'primary', hint: '只保做种' },
   { value: 'stopped', text: '已停止', icon: 'mdi-stop-circle-outline', color: 'secondary', hint: '全部暂停' },
-]
+];
 
 /** 返回运行状态对应的中文文本、主题色和图标。 */
-export function runModeMeta(mode) {
-  const fallback = RUN_MODES[0]
+function runModeMeta(mode) {
+  const fallback = RUN_MODES[0];
   return RUN_MODES.find(item => item.value === mode) || { ...fallback, value: mode || 'running' }
 }
 
 /** 返回任务状态对应的中文文本、主题色和图标。 */
-export function taskStateMeta(state, enabled = true) {
+function taskStateMeta(state, enabled = true) {
   const states = {
     running: { text: '运行中', color: 'success', icon: 'mdi-check-circle-outline' },
     idle: { text: '空闲', color: 'success', icon: 'mdi-check-circle-outline' },
@@ -451,14 +451,17 @@ export function taskStateMeta(state, enabled = true) {
     paused: { text: '已暂停', color: 'secondary', icon: 'mdi-pause-circle-outline' },
     error: { text: '运行异常', color: 'error', icon: 'mdi-alert-circle-outline' },
     disabled: { text: '插件停用', color: 'secondary', icon: 'mdi-stop-circle-outline' },
-  }
+  };
   if (state === 'disabled' || !enabled) return states.paused
   return states[state] || states.running
 }
 
-/** 计算魔力打分相对占比（用于简易进度展示）。 */
-export function bonusShare(value, max) {
-  const peak = Number(max || 0)
-  if (!peak) return 0
-  return Math.min(Math.round((Number(value || 0) * 100) / peak), 100)
-}
+const _export_sfc = (sfc, props) => {
+  const target = sfc.__vccOpts || sfc;
+  for (const [key, val] of props) {
+    target[key] = val;
+  }
+  return target;
+};
+
+export { FALLBACK_SOURCE_OPTIONS as F, RUN_MODES as R, _export_sfc as _, normalizeDownloaderPrefs as a, normalizeDownloaderPaths as b, cloneTask as c, normalizeDefaults as d, runStatusText as e, formatBonus as f, formatBytes as g, formatDateTime as h, formatDurationSeconds as i, cloudStatusMeta as j, recommendStatusMeta as k, normalizeSettings as l, formatDuration as m, normalizeTask as n, normalizeIyuuSites as o, runModeMeta as r, taskStateMeta as t, unwrapResponse as u };
