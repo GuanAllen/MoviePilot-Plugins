@@ -825,6 +825,24 @@ class MagicFlow(_PluginBase):
                 logger.info("站点规则:咖啡已标记为「无 H&R」（手填，不做保种保护）")
         except Exception:  # noqa: BLE001
             pass
+        # ★ 单种上传限速默认值迁移(3.12.0)：旧默认 100 KB/s 正好压在
+        #   咖啡「恶意限速判定：单人做种 6h 内稳定 <100Kb/s」线上 → 抬到 200。
+        #   只迁移「恰好等于旧默认值」的配置，且只跑一次（用户手填 100 不会被反复改回去）。
+        try:
+            _mig2 = dict(self.get_data("rules_migrations") or {})
+            if not _mig2.get("seed_up_200_v1"):
+                try:
+                    _cur_up = float(getattr(self, "_seed_up_limit_kbps", 0) or 0)
+                except (TypeError, ValueError):
+                    _cur_up = 0.0
+                if abs(_cur_up - 100.0) < 1e-6:
+                    self._seed_up_limit_kbps = SEED_UP_LIMIT_KBPS_DEFAULT
+                    threading.Thread(target=self._save_config, daemon=True).start()
+                    logger.info("挂种限速:单种上传限速旧默认 100 已迁移为 200 KB/s")
+                _mig2["seed_up_200_v1"] = True
+                self.save_data(key="rules_migrations", value=_mig2)
+        except Exception:  # noqa: BLE001
+            pass
         # ★ 站点规则库(H&R/保种/做种上限)：自动刷新开关(3.12.0)
         self._rules_cfg: Dict[str, Any] = {
             "auto_refresh": bool(raw_config.get("rules_auto_refresh", True)),
