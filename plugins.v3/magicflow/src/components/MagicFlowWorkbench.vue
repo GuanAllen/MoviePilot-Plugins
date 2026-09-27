@@ -3448,7 +3448,10 @@ onUnmounted(() => {
                   />
                 </span>
                 <span>{{ row.seed_cap || '-' }}</span>
-                <span class="magicflow-rules-row__src">{{ ruleSourceText(row) }}</span>
+                <span class="magicflow-rules-row__src" :title="row.evidence || ''">
+                  {{ ruleSourceText(row) }}
+                  <em v-if="row.seed_hours_seen != null">(看到{{ row.seed_hours_seen }}h)</em>
+                </span>
                 <span>
                   <VBtn size="x-small" variant="text" :disabled="rulesProbing" @click="probeRules(row.domain)">探测</VBtn>
                 </span>
