@@ -123,6 +123,7 @@ from .sites import BonusCalculator, get_calculator, get_formula_params, register
 from .sites.rules import BUILTIN_RULES, SiteRules, parse_hr_from_html
 from .tags import (
     DEFAULT_SORT_RULES,
+    STATES_WITH_SUB,
     FileGroupStore,
     asset_origin_sub,
     is_asset_tags,
@@ -1153,6 +1154,20 @@ class MagicFlow(_PluginBase):
                 "summary": "诊断:列出下载器全部种子并按标签分组(只读)",
             },
             {
+                "path": "/debug/seedlimit",
+                "endpoint": self.debug_seed_limit,
+                "methods": ["GET", "POST"],
+                "auth": "bear",
+                "summary": "诊断:立即套用单种上传限速(返回档位表)",
+            },
+            {
+                "path": "/debug/qb",
+                "endpoint": self.debug_qb_info,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "诊断:qBittorrent 可用信息一览(字段/属性/跟踪器/全局偏好,只读)",
+            },
+            {
                 "path": "/debug/fetch",
                 "endpoint": self.debug_fetch_page,
                 "methods": ["GET"],
@@ -1991,13 +2006,27 @@ class MagicFlow(_PluginBase):
         except Exception:  # noqa: BLE001
             tiers["魔流-推荐"] = seed_kbps
         for task in self._task_configs.values():
-            if not getattr(task, "enabled", False):
-                continue
+            # ★ 不再只看启用任务：停用任务名下的种子也要按状态限速
+            #   （否则「魔力档 200KB/s」只对在跑的任务生效，停用的一批全是不限速）
             tag = str(getattr(task, "brush_tag", "") or "").strip()
             if not tag:
                 continue
             is_brush = str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush"
             tiers[tag] = brush_kbps if is_brush else seed_kbps
+        # 按标签模型兜底：账本里出现过的 魔流-<站点>-<状态> 一律按状态归档
+        try:
+            for rec in self._tag_state().items().values():
+                site = str(rec.get("site") or "").strip()
+                state = str(rec.get("state") or "").strip()
+                if not site or not state:
+                    continue
+                _kbps = brush_kbps if state == STATE_BRUSH else seed_kbps
+                _sub = str(rec.get("sub") or "")
+                for tag in {tag_for(site, state), tag_for(site, state, _sub if state in STATES_WITH_SUB else "")}:
+                    if tag:
+                        tiers.setdefault(tag, _kbps)
+        except Exception:  # noqa: BLE001
+            pass
         return tiers
 
     def _apply_seed_upload_limit(self, force: bool = False) -> None:
@@ -5006,6 +5035,14 @@ class MagicFlow(_PluginBase):
                         new_pages[nh] = str(cand.page_url)
                     if nh:
                         self._tag_assign(task, [nh], reason="新增下载")
+                    # ★ 生产即带特征码：资源按特征码归并、跨站辅种直接配对（零额外请求，用候选 .torrent 字节算）
+                    if nh:
+                        try:
+                            _fp = fingerprint(getattr(cand, "raw", None)) if getattr(cand, "raw", None) else None
+                            if _fp:
+                                self._tag_state().put(nh, {"fp": _fp})
+                        except Exception as _ferr:  # noqa: BLE001
+                            self._dbg(f"特征码记录失败 {nh[:8]}:{_ferr}")
                     _fu2 = float(getattr(cand, "free_remaining_sec", -1.0) or -1.0)
                     if nh and _fu2 >= 0:
                         new_free[nh] = time.time() + _fu2
@@ -7497,6 +7534,9 @@ class MagicFlow(_PluginBase):
                 "count": len(groups.items()), "multi": groups.stats().get("multi_site_groups", 0),
                 "items": rows[: max(1, int(limit)) if str(limit).isdigit() and int(limit) > 0 else 50],
             })
+        if act in ("fp", "fingerprint"):
+            _lim = int(limit) if str(limit).isdigit() else 0
+            return Response(success=True, message="特征码补录完成", data=self.backfill_fingerprints(limit=_lim))
         if act in ("syncres", "resource_sync"):
             return Response(success=True, message="资源账本已刷新", data=self.sync_resources(apply=True))
         if act == "asset":
@@ -10599,6 +10639,139 @@ class MagicFlow(_PluginBase):
                 return True
         return False
 
+    def debug_seed_limit(self) -> Response:
+        """诊断：强制重套挂种限速（按标签档位表）。"""
+        tiers = self._seed_tag_tiers()
+        self._apply_seed_upload_limit(force=True)
+        return Response(success=True, message="已套用挂种限速", data={
+            "tiers": {k: v for k, v in sorted(tiers.items(), key=lambda x: -x[1])},
+            "count": len(tiers),
+        })
+
+    @staticmethod
+    def _jsonable(value: Any, depth: int = 0) -> Any:
+        """把 qB 客户端返回的自定义类型压成纯 JSON（TagList/CategoryDict 等）。"""
+        if depth > 6:
+            return str(value)
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return {str(k): MagicFlow._jsonable(v, depth + 1) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [MagicFlow._jsonable(v, depth + 1) for v in value]
+        for attr in ("to_list", "as_list"):
+            fn = getattr(value, attr, None)
+            if callable(fn):
+                try:
+                    return MagicFlow._jsonable(fn(), depth + 1)
+                except Exception:  # noqa: BLE001
+                    pass
+        return str(value)
+
+    def debug_qb_info(self, path: str = "", hash: str = "", limit: int = 1) -> Response:
+        """诊断：看看 qB 里还有哪些**可用信息**（只读）。
+
+        ``path`` 给定时直接透传 GET 该 qB API 路径（白名单前缀 ``/api/v2/``），
+        便于现场翻字段；不给则返回一份「能拿到什么」的概览。
+        """
+        downloader = self._get_downloader("qbittorrent")
+        qbc = getattr(downloader, "_qb_client", lambda: None)() if downloader else None
+        if qbc is None:
+            return Response(success=False, message=" qBittorrent 客户端不可用")
+        out: Dict[str, Any] = {}
+        if str(path or "").strip().startswith("/api/v2/"):
+            try:
+                fn = getattr(qbc, "_get", None)
+                data = fn(str(path)) if callable(fn) else qbc.app_version()
+                return Response(success=True, message="ok",
+                                data=self._jsonable({"path": path, "result": data}))
+            except Exception as err:  # noqa: BLE001
+                return Response(success=False, message=f"qB 查询失败:{err}")
+        for key, attr in (("version", "app_version"), ("webapi", "app_web_api_version")):
+            fn = getattr(qbc, attr, None)
+            try:
+                out[key] = str(fn() if callable(fn) else fn or "")
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            info = qbc.torrents_info() or []
+            out["torrents"] = len(info)
+            row = None
+            for t in info:
+                if hash and str(t.get("hash", "")).lower() == str(hash).lower():
+                    row = dict(t)
+                    break
+            if row is None and info:
+                row = dict(info[0])
+            if row:
+                out["sample_fields"] = sorted(row.keys())
+                out["sample"] = {k: row.get(k) for k in (
+                    "hash", "name", "size", "total_size", "progress", "ratio", "uploaded", "downloaded",
+                    "seeding_time", "time_active", "added_on", "completion_on", "last_activity",
+                    "num_seeds", "num_complete", "num_leechs", "num_incomplete", "dl_speed", "up_speed",
+                    "eta", "state", "category", "tags", "save_path", "content_path", "tracker",
+                    "trackers_count", "amount_left", "availability", "priority", "up_limit", "dl_limit",
+                    "ratio_limit", "seeding_time_limit", "inactive_seeding_time_limit", "auto_managed",
+                )}
+                try:
+                    out["sample_files"] = len(qbc.torrents_files(torrent_hash=row.get("hash")) or [])
+                    out["sample_trackers"] = [
+                        {"url": x.get("url"), "status": x.get("status"), "msg": x.get("msg")}
+                        for x in (qbc.torrents_trackers(torrent_hash=row.get("hash")) or [])[:6]
+                    ]
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception as err:  # noqa: BLE001
+            out["torrents_error"] = str(err)
+        # ★ 聚合视角：站点归属（按 tracker 域名）/ 目录分布 / 限速档 / 分享率限制
+        try:
+            rows = qbc.torrents_info() or []
+            _by_dom: Dict[str, int] = {}
+            _by_path: Dict[str, int] = {}
+            _lim: Dict[str, int] = {}
+            _seedlim: Dict[str, int] = {}
+            _nocomplete: Dict[str, int] = {}
+            for t in rows:
+                _tr = str(t.get("tracker") or "")
+                _m = re.search(r"https?://([^/]+)/", _tr)
+                _dom = (_m.group(1) if _m else "").lower()
+                _by_dom[_dom or "-"] = _by_dom.get(_dom or "-", 0) + 1
+                _sp = str(t.get("save_path") or "-")
+                _by_path[_sp] = _by_path.get(_sp, 0) + 1
+                _lim[str(t.get("up_limit") or 0)] = _lim.get(str(t.get("up_limit") or 0), 0) + 1
+                _seedlim[str(t.get("seeding_time_limit") or 0)] = _seedlim.get(str(t.get("seeding_time_limit") or 0), 0) + 1
+                _nc = int(t.get("num_complete") or 0)
+                _b = "0" if _nc <= 0 else ("1-5" if _nc <= 5 else ("6-20" if _nc <= 20 else ("21-50" if _nc <= 50 else "50+")))
+                _nocomplete[_b] = _nocomplete.get(_b, 0) + 1
+            out["by_tracker_domain"] = dict(sorted(_by_dom.items(), key=lambda x: -x[1])[:15])
+            out["by_save_path"] = dict(sorted(_by_path.items(), key=lambda x: -x[1])[:10])
+            out["by_up_limit"] = dict(sorted(_lim.items(), key=lambda x: -x[1])[:8])
+            out["by_seeding_time_limit"] = dict(sorted(_seedlim.items(), key=lambda x: -x[1])[:8])
+            out["num_complete_buckets"] = _nocomplete
+        except Exception as err:  # noqa: BLE001
+            out["aggregate_error"] = str(err)
+        try:
+            prefs = qbc.app_preferences() or {}
+            out["preferences_keys"] = sorted(prefs.keys())
+            out["preferences_subset"] = {k: prefs.get(k) for k in (
+                "save_path", "temp_path", "temp_path_enabled", "max_active_downloads", "max_active_torrents",
+                "max_active_uploads", "max_ratio", "max_ratio_enabled", "max_seeding_time",
+                "max_seeding_time_enabled", "queueing_enabled", "dht", "pex", "lsd", "upnp",
+                "listen_port", "proxy_type", "announce_to_all_trackers", "announce_ip",
+            )}
+        except Exception:  # noqa: BLE001
+            pass
+        for name, fn in (("categories", qbc.torrents_categories), ("tags", qbc.torrents_tags)):
+            try:
+                out[name] = fn()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            out["sync_maindata_keys"] = sorted((qbc.sync_maindata() or {}).keys())
+        except Exception:  # noqa: BLE001
+            pass
+        return Response(success=True, message="ok", data=self._jsonable(out))
+
     def debug_fetch_page(self, site_id: int = 0, url: str = "", limit: int = 8000) -> Response:
         """诊断:用站点 cookie 抓取**该站点域名下**的页面,返回文本片段(只读)。
 
@@ -10693,8 +10866,11 @@ class MagicFlow(_PluginBase):
         return {"ok": True, "applied": bool(apply), "asset": asset, "non_asset": non,
                 "changed": changed, "ledger": len(data)}
 
-    def _resource_gid(self, title: Any, size_gb: Any) -> str:
-        """资源 ID：同一个内容 = 同一个资源（关键词 + 体积档）。"""
+    def _resource_gid(self, title: Any, size_gb: Any, fp: Any = "") -> str:
+        """资源 ID：**优先用文件特征码**（同内容 = 同资源），没有特征码时退回「关键词|体积档」。"""
+        _fp = str(fp or "").strip()
+        if _fp:
+            return f"fp:{_fp}"
         t = search_key(title, 40).lower()
         try:
             sz = round(float(size_gb or 0.0), 1)
@@ -10730,12 +10906,15 @@ class MagicFlow(_PluginBase):
                 prog = float(getattr(t, "progress", 1.0) or 0.0)
             except (TypeError, ValueError):
                 prog = 1.0
-            gid = self._resource_gid(title, size)
+            _fp = str(rec.get("fp") or "").strip()
+            gid = self._resource_gid(title, size, _fp)
             stat["members"] = int(stat["members"]) + 1
+            if _fp:
+                stat["with_fp"] = int(stat.get("with_fp") or 0) + 1
             if apply:
                 store.add_member(gid, hh, site=rec.get("site") or "", size_gb=size,
                                  downloaded=prog >= 0.999, progress=prog,
-                                 state=rec.get("state") or "")
+                                 state=rec.get("state") or "", fp=_fp)
                 if is_asset_tags(tags) and store.set_library(gid, True):
                     stat["in_library"] = int(stat["in_library"]) + 1
         # 来源站 + H&R 账单：跨站来源份账本里的义务挂到「资源」上
@@ -10746,7 +10925,9 @@ class MagicFlow(_PluginBase):
         for sib, srec in (srcs or {}).items():
             if not isinstance(srec, dict):
                 continue
-            gid = self._resource_gid(srec.get("title"), srec.get("size_gb"))
+            _sib_fp = str((ledger.get(str(sib).lower()) or {}).get("fp") or "")
+            gid = self._resource_gid(srec.get("title"), srec.get("size_gb"), _sib_fp)
+            _site_group_site = str(srec.get("site_b") or srec.get("site_b_domain") or "")
             a_hash = str(srec.get("a_hash") or "").strip().lower()
             # 来源站优先级：来源份记录 → 种子标签/标题后缀 → 账本站点（账本可能被同站纳管改错）
             _site = str(srec.get("site_b") or srec.get("site_b_domain") or "")
@@ -10768,11 +10949,13 @@ class MagicFlow(_PluginBase):
             if not _site and a_hash:
                 _site = str((ledger.get(a_hash) or {}).get("site") or "")
             if apply:
-                store.add_member(gid, str(sib).lower(), site=str(srec.get("site_b") or srec.get("site_b_domain") or ""),
-                                 size_gb=float(srec.get("size_gb") or 0.0), downloaded=True)
+                store.add_member(gid, str(sib).lower(), site=_site_group_site,
+                                 size_gb=float(srec.get("size_gb") or 0.0), downloaded=True,
+                                 fp=str((ledger.get(str(sib).lower()) or {}).get("fp") or ""))
                 if a_hash:
                     store.add_member(gid, a_hash, site=str(srec.get("site_a") or ""),
-                                     size_gb=float(srec.get("size_gb") or 0.0), downloaded=True)
+                                     size_gb=float(srec.get("size_gb") or 0.0), downloaded=True,
+                                     fp=str((ledger.get(a_hash) or {}).get("fp") or ""))
                 store.set_hr(gid, site=_site,
                              required_hours=float(srec.get("hours") or 0.0),
                              need_hours=float(srec.get("need_hours") or 0.0),
@@ -10795,6 +10978,39 @@ class MagicFlow(_PluginBase):
             pass
         return stat
 
+    def backfill_fingerprints(self, *, limit: int = 0) -> Dict[str, Any]:
+        """给托管种补文件特征码（``branding``：资源按特征码归并、辅种配对直接用）。
+
+        ``limit=0`` = 全部补齐（一次 HTTP/种，本地 qB 很快）；否则只补前 N 个。
+        """
+        downloader = self._get_downloader()
+        if downloader is None or not getattr(downloader, "is_available", False):
+            return {"ok": False, "reason": "下载器不可用"}
+        store = self._tag_state()
+        ledger = store.items()
+        snap = self._tag_all_torrents()
+        todo = [h for h, t in snap.items()
+                if str(h).lower() in ledger
+                and not str((ledger.get(str(h).lower()) or {}).get("fp") or "").strip()]
+        if limit and limit > 0:
+            todo = todo[:int(limit)]
+        got = fail = 0
+        for h in todo:
+            try:
+                fp = downloader.get_torrent_fingerprint(str(h).lower())
+            except Exception:  # noqa: BLE001
+                fp = None
+            if fp:
+                store.put(str(h).lower(), {"fp": fp})
+                got += 1
+            else:
+                fail += 1
+        if got:
+            self.sync_resources(apply=True)
+        return {"ok": True, "checked": len(todo), "got": got, "failed": fail,
+                "remaining": max(0, len([h for h in snap if str(h).lower() in ledger]) - len(
+                    [h for h in ledger if str((ledger.get(h) or {}).get('fp') or "").strip()]) - got)}
+
     def tags_watch(self) -> None:
         """标签模型维护（worker）：① 静默-新超时归普通 ② 状态账本定时快照。"""
         try:
@@ -10809,6 +11025,12 @@ class MagicFlow(_PluginBase):
                               f"（资产 {info.get('asset')}）")
             except Exception as err:  # noqa: BLE001
                 self._log(f"标签维护:资产同步失败:{err}", "warning")
+            try:
+                finfo = self.backfill_fingerprints(limit=40)
+                if finfo.get("got"):
+                    self._dbg(f"标签维护:特征码补录 {finfo.get('got')} 个（余 {finfo.get('remaining')}）")
+            except Exception as err:  # noqa: BLE001
+                self._log(f"标签维护:特征码补录失败:{err}", "warning")
             try:
                 rinfo = self.sync_resources(apply=True)
                 if rinfo.get("resources"):
