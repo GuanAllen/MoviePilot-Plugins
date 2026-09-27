@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.15.0"
+__version__ = "3.16.0"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -220,6 +220,7 @@ REUSE_SCAN_MAX = 15
 #   - 间隔(分钟):比刷流间隔长很多,慢慢扫,避免短时间大量取种触发站点流控。
 #   - 每轮批量:一次只取这么多个候选的 .torrent 做辅种判定。
 REUSE_INTERVAL_MINUTES = 15
+SILENT_HOST_INTERVAL_MINUTES = 60  # ⭐「静默托管」常驻 worker 周期(分钟，低频)
 # 跨站免费取种的「回辅」轮询周期(分钟)：B/C/D… 站点下完后，尽快把它辅回目标站。
 CROSSSEED_INTERVAL_MINUTES = 5
 # 跨站检索结果的缓存 TTL(秒)：同一关键词 6 小时内不重复检索(省 PV)。
@@ -787,6 +788,7 @@ class MagicFlow(_PluginBase):
             "enabled": bool(raw_config.get("tag_model_enabled", True)),
             "new_timeout": max(0.0, float(raw_config.get("tag_silent_new_timeout_hours", 24.0) or 0)) * 3600.0,
             "snapshot_interval": max(0.0, float(raw_config.get("tag_snapshot_interval_hours", 6.0) or 0)) * 3600.0,
+            "host_interval": max(5.0, float(raw_config.get("silent_host_interval_minutes", 60.0) or 60.0)),
             "rules": _sr or [dict(r) for r in DEFAULT_SORT_RULES],
         }
         self._tag_last_snapshot = 0.0
@@ -1822,6 +1824,22 @@ class MagicFlow(_PluginBase):
                 "kwargs": {
                     "minutes": 60,
                     "jitter": self._jitter_seconds(60),
+                },
+            }
+        )
+        # ★ 静默托管（**常驻 worker**，Master 2026-09-28 06:30）：静默池的负责人——
+        #   清理未下完 / 保挂（恢复做种）/ H&R 统一管理 / 辅种校验 / 分拣 / 静默-新超时 / 资产刷新。
+        #   常驻（reload 即注册，不随任务增减开关），低频（默认 60min，可用 silent_host_interval_minutes 调）。
+        _sh_min = float(getattr(self, "_tags_cfg", {}).get("host_interval") or SILENT_HOST_INTERVAL_MINUTES)
+        services.append(
+            {
+                "id": "SilentHost",
+                "name": "静默托管",
+                "trigger": "interval",
+                "func": self.silent_host,
+                "kwargs": {
+                    "minutes": _sh_min,
+                    "jitter": self._jitter_seconds(_sh_min),
                 },
             }
         )
@@ -11701,80 +11719,102 @@ class MagicFlow(_PluginBase):
                 "remaining": max(0, len([h for h in snap if str(h).lower() in ledger]) - len(
                     [h for h in ledger if str((ledger.get(h) or {}).get('fp') or "").strip()]) - got)}
 
-    def tags_watch(self) -> None:
-        """标签模型维护（worker）：① 静默-新超时归普通 ② 状态账本定时快照。"""
+    def silent_host(self) -> None:
+        """★ 静默托管（**常驻 worker**，Master 2026-09-28 06:30：「常驻，不用每20分钟检查一次」）。
+
+        静默池的「负责人」——常驻（reload 即注册，不随任务增减开关）、低频（默认 60min）。职责：
+        ① 池清理：没下完的直接删（不计 H&R）；② 保挂：已完成却暂停/停止的种 → 恢复做种；
+        ③ H&R 统一管理（欠 H&R 打标 / 未到期被暂停强制拉起 / 结清摘标）；
+        ④ 辅种校验（停在 pausedDL 的 recheck 拉起）；⑤ 静默-普通 清理（站点魔力已达标时删低效）；
+        ⑥ 推荐过期待降级；⑦ 分拣（静默-新 → 推荐/普通）；⑧ 静默-新超时归普通；⑨ 库内资产标记刷新。
+        """
         try:
             store = self._tag_state()
-            # ★ 静默池清理：没下完的直接删（不计 H&R）——必须排在分拣之前
+            # ① 池清理：没下完的直接删（不计 H&R）——必须排在分拣之前
             try:
                 pinfo = self._silent_purge_incomplete(apply=True, limit=200)
                 if pinfo.get("deleted"):
-                    self._log(f"魔流:静默池清理:未下完直接删 {pinfo.get('deleted')} 个（不计 H&R）")
+                    self._log(f"魔流:静默托管:未下完直接删 {pinfo.get('deleted')} 个（不计 H&R）")
             except Exception as err:  # noqa: BLE001
-                self._log(f"标签维护:静默池清理失败:{err}", "warning")
-            # ★ 静默-普通 清理：魔力已达标 → 低效普通种直接删（Master 01:17）
-            try:
-                sinfo = self._silent_plain_sweep(apply=True, limit=0)
-                if sinfo.get("deleted"):
-                    self._log(f"魔流:静默普通清理:删除 {sinfo.get('deleted')} 个低效普通种")
-            except Exception as err:  # noqa: BLE001
-                self._log(f"标签维护:静默普通清理失败:{err}", "warning")
-            # ★ 推荐过期 → 转普通（不再删；覆盖静默池里的推荐记录）
-            try:
-                dinfo = self._recommend_downgrade_expired(apply=True, limit=0)
-                if dinfo.get("downgraded"):
-                    self._log(f"魔流:推荐过期:降级转普通 {dinfo.get('downgraded')} 个")
-            except Exception as err:  # noqa: BLE001
-                self._log(f"标签维护:推荐过期降级失败:{err}", "warning")
-            # ★ H&R 统一管理：欠 H&R 的打标 + 没到时间被暂停的强行拉起来（Master 01:37）
-            try:
-                hinfo = self._hr_guard_tick(apply=True, limit=0)
-                if hinfo.get("tagged") or hinfo.get("resumed"):
-                    self._log(f"魔流:H&R 统一管理:打标 {hinfo.get('tagged')} · 拉起 {hinfo.get('resumed')}")
-            except Exception as err:  # noqa: BLE001
-                self._log(f"标签维护:H&R 管理失败:{err}", "warning")
-            # ★ 静默保挂：暂停中的静默种恢复做种（静默≠白占盘；Master 静默托管 ①保挂）
+                self._log(f"静默托管:池清理失败:{err}", "warning")
+            # ② 保挂：已完成却暂停/停止的静默种 → 恢复做种（静默≠白占盘）
             try:
                 rinfo = self._silent_resume_tick(apply=True, limit=0)
                 if rinfo.get("resumed"):
-                    self._log(f"魔流:静默保挂:恢复做种 {rinfo.get('resumed')} 个")
+                    self._log(f"魔流:静默托管:保挂恢复做种 {rinfo.get('resumed')} 个")
             except Exception as err:  # noqa: BLE001
-                self._log(f"标签维护:静默保挂失败:{err}", "warning")
-            # ★ 静默池校验：辅种/复用种停在 pausedDL 是等校验 → recheck 拉起来
+                self._log(f"静默托管:保挂失败:{err}", "warning")
+            # ③ H&R 统一管理：欠 H&R 打标 + 未到期被暂停强制拉起 + 结清摘标
+            try:
+                hinfo = self._hr_guard_tick(apply=True, limit=0)
+                if hinfo.get("tagged") or hinfo.get("resumed") or hinfo.get("cleared"):
+                    self._log(f"魔流:静默托管:H&R 管理:打标 {hinfo.get('tagged')} · 拉起 {hinfo.get('resumed')} · 摘标 {hinfo.get('cleared')}")
+            except Exception as err:  # noqa: BLE001
+                self._log(f"静默托管:H&R 管理失败:{err}", "warning")
+            # ④ 辅种/复用种校验：停在 pausedDL 是等校验 → recheck 拉起来
             try:
                 vinfo = self._silent_verify_marks(apply=True, limit=60)
                 if vinfo.get("checked"):
-                    self._log(f"魔流:静默池校验:辅种 recheck {vinfo.get('checked')} 个")
+                    self._log(f"魔流:静默托管:辅种 recheck {vinfo.get('checked')} 个")
             except Exception as err:  # noqa: BLE001
-                self._log(f"标签维护:静默池校验失败:{err}", "warning")
-            # ★ 静默池分拣：挂满 H&R 的「静默-新」→ 推荐 / 普通
+                self._log(f"静默托管:辅种校验失败:{err}", "warning")
+            # ⑤ 静默-普通 清理：站点魔力已达标 → 低效普通种直接删
+            try:
+                sinfo = self._silent_plain_sweep(apply=True, limit=0)
+                if sinfo.get("deleted"):
+                    self._log(f"魔流:静默托管:删除低效普通种 {sinfo.get('deleted')} 个")
+            except Exception as err:  # noqa: BLE001
+                self._log(f"静默托管:普通清理失败:{err}", "warning")
+            # ⑥ 推荐过期 → 转普通（不删）
+            try:
+                dinfo = self._recommend_downgrade_expired(apply=True, limit=0)
+                if dinfo.get("downgraded"):
+                    self._log(f"魔流:静默托管:推荐过期降级转普通 {dinfo.get('downgraded')} 个")
+            except Exception as err:  # noqa: BLE001
+                self._log(f"静默托管:推荐降级失败:{err}", "warning")
+            # ⑦ 分拣：挂满 H&R 的「静默-新」→ 推荐 / 普通
             try:
                 self._silent_triage(apply=True, limit=60, budget=600.0)
             except Exception as err:  # noqa: BLE001
-                self._log(f"标签维护:静默池分拣失败:{err}", "warning")
-            _snap = self._tag_all_torrents()
+                self._log(f"静默托管:分拣失败:{err}", "warning")
+            # ⑧ 静默-新 超时归「静默-普通」（欠 H&R 的原地挂，不降级）
             try:
-                _hr_wait = self._silent_hr_pending(_snap)
-            except Exception:  # noqa: BLE001
-                _hr_wait = set()
-            moved = store.expire_new(
-                timeout=float(self._tags_cfg.get("new_timeout") or TAG_NEW_TIMEOUT),
-                skip=_hr_wait,
-            )
-            if moved:
-                self._log(f"魔流:标签维护:「静默-新」超时归「静默-普通」{len(moved)} 个")
-                for _h in moved:
-                    try:
-                        self._silent_to_plain(_h)
-                    except Exception:  # noqa: BLE001
-                        pass
-            try:
-                info = self.sync_tag_assets(apply=True)
-                if info.get("changed"):
-                    self._log(f"魔流:标签维护:库内资产标记刷新 {info.get('changed')} 个"
-                              f"（资产 {info.get('asset')}）")
+                _snap = self._tag_all_torrents()
+                try:
+                    _hr_wait = self._silent_hr_pending(_snap)
+                except Exception:  # noqa: BLE001
+                    _hr_wait = set()
+                moved = store.expire_new(
+                    timeout=float(self._tags_cfg.get("new_timeout") or TAG_NEW_TIMEOUT),
+                    skip=_hr_wait,
+                )
+                if moved:
+                    self._log(f"魔流:静默托管:「静默-新」超时归「静默-普通」{len(moved)} 个")
+                    for _h in moved:
+                        try:
+                            self._silent_to_plain(_h)
+                        except Exception:  # noqa: BLE001
+                            pass
             except Exception as err:  # noqa: BLE001
-                self._log(f"标签维护:资产同步失败:{err}", "warning")
+                self._log(f"静默托管:超时归位失败:{err}", "warning")
+            # ⑨ 库内资产标记刷新
+            try:
+                ainfo = self.sync_tag_assets(apply=True)
+                if ainfo.get("changed"):
+                    self._log(f"魔流:静默托管:库内资产标记刷新 {ainfo.get('changed')} 个"
+                              f"（资产 {ainfo.get('asset')}）")
+            except Exception as err:  # noqa: BLE001
+                self._log(f"静默托管:资产同步失败:{err}", "warning")
+        except Exception as err:  # noqa: BLE001
+            self._log(f"静默托管异常:{err}", "warning")
+
+    def tags_watch(self) -> None:
+        """标签账本维护（worker）：状态账本快照/对账 · 资源账本 · 特征码补录 · 停止任务退静默。
+
+        注：**静默池本身的托管**（清理/保挂/分拣/H&R/校验）已迁到常驻 worker「静默托管」``silent_host``。
+        """
+        try:
+            store = self._tag_state()
             try:
                 finfo = self.backfill_fingerprints(limit=40)
                 if finfo.get("got"):

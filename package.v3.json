@@ -3,7 +3,7 @@
     "name": "魔流",
     "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
     "labels": "站点,做种,魔力,刷流",
-    "version": "3.15.0",
+    "version": "3.16.0",
     "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
     "author": "IronOx",
     "level": 1,
@@ -200,7 +200,8 @@
       "3.14.6": "**3.14.6**：**辅种跟资源走 + 跨站收口**（Master「后面辅种都是我们自己辅了自己打tag跟资源走 跨站那些必须进hr池 然后接受推荐扫描不然最终跨站没法收口」）。静默-普通清理的**保护判定改为按「资源 + H&R」**：① MP 资产标（`已整理`/`辅种`）；② `魔流-推荐`（推荐中）；③ **该种所属资源已入库**（库记挂资源不挂种子 —— 补 P1-6 缺口）；④ 欠 H&R（实测做种时长不够）。**不再按 `魔流-跨站` / `魔流-辅种` 硬豁免** —— 它们跟资源走：资源在库里→保；不在库里→该考核就考核（否则跨站永远无法收口）；删种时一并清 `CrossSeedSources` 来源份账本（不留悬挂记录）。跨站来源份下完本就进静默池（3.14.2）并**照常参与推荐扫描**（3.14.4 分拣不排除 `魔流-跨站`），H&R 挂满后由分拣给出路。",
       "3.14.7": "**3.14.7**：**H&R 统一管理**（Master 01:37「tag 打上 h&r 统一管理 没到时间暂停强行拉起来」）。① 新增持久标记 **`魔流-H&R`**（进 `SPECIAL_TAGS`）；欠 H&R 的种**统一打标**（跨任务/跨站/静默池）；② `_hr_guard_tick`：没到时间却被暂停的 H&R 种 → **force_start（绕过队列）强制拉起**；结清/无 H&R → **摘标**；③ **修大 bug**：`SiteRules` 单例没做 isinstance 校验 → 热重载后仍是旧类实例（没有 `hr_of`）→ **站点规则库（H&R/保种时长）整块静默失效**，全部落到「未知保守 24h」；现已校验并重建（实测 src 从 `未知保守/...` 变为 `站点规则/...`，学校 20h 等生效）；④ **修 qB 批量 API**：`torrents_add_tags/set_force_start` 传 list 静默不生效（273 只落 1）→ 改 pipe 串 + **读回校验** + 逐个兜底，`_site_domain_by_name` 把中文站名解析成域名（MP 给的是 `https://csdn.top/` 这种带协议的完整 URL）。实测：269 个打标、20 个 pausedUP 全部强制拉起（forcedUP）。",
       "3.14.8": "**3.14.8**：**财神(cspt.top/cspt.cc) 站点规则：无 H&R**（Master 2026-09-28 06:08「其实没有」）。此前 probe(`myhr.php`/`rules.php`) 抓不到 H&R 条款 → 一直按「未知 → 保守 24h」处理（等效有 H&R）；今确认财神**没有 H&R** → `BUILTIN_RULES` 显式写 `hr=False, seed_hours=0`（含备用域名 `cspt.cc`）→ 不再打 `魔流-H&R`、不计欠 H&R；已打标的由 `_hr_guard_tick` 下轮自动摘标，静默池里被「欠 H&R」卡住的财神种随之进入正常分拣。",
-      "3.15.0": "**3.15.0**：**静默池保挂**（Master 2026-09-28 05:54「继续」；回应「静默≠白占盘」+ 静默托管①保挂）。背景：任务的 `run_mode` 非 running（stopped）时其名下种子在 qB 里被**暂停**，退回静默池后仍暂停 → 既不累计做种时长/魔力、也推进不了 H&R，纯占盘不产出。新增 `_silent_resume_tick`：把静默池里**已完成**却处于 paused/stopped/queued 的种 → `force_start` 恢复做种；跳过 ①账本 `manual_paused` ②未完成且非辅种/已整理。注：`seed_cap`（站点做种数**计入魔力**上限）**不**作为跳过理由（超上限后魔力 arctan 项仍增长，且利分享率/H&R）。新增 `SiteRules.seed_cap_of()`（备用）。端点 `GET /tags?action=resume|resume_apply`（默认预演）；`tags_watch` 每小时接（apply）。另修：财神 `cspt.top` 规则库内存在 `probe` 记录 `hr=True`（`myhr.php` 弱命中误判）会盖住内置「无 H&R」→ 已手填 `hr=False`（manual），H&R 标签下轮自动摘。"
+      "3.15.0": "**3.15.0**：**静默池保挂**（Master 2026-09-28 05:54「继续」；回应「静默≠白占盘」+ 静默托管①保挂）。背景：任务的 `run_mode` 非 running（stopped）时其名下种子在 qB 里被**暂停**，退回静默池后仍暂停 → 既不累计做种时长/魔力、也推进不了 H&R，纯占盘不产出。新增 `_silent_resume_tick`：把静默池里**已完成**却处于 paused/stopped/queued 的种 → `force_start` 恢复做种；跳过 ①账本 `manual_paused` ②未完成且非辅种/已整理。注：`seed_cap`（站点做种数**计入魔力**上限）**不**作为跳过理由（超上限后魔力 arctan 项仍增长，且利分享率/H&R）。新增 `SiteRules.seed_cap_of()`（备用）。端点 `GET /tags?action=resume|resume_apply`（默认预演）；`tags_watch` 每小时接（apply）。另修：财神 `cspt.top` 规则库内存在 `probe` 记录 `hr=True`（`myhr.php` 弱命中误判）会盖住内置「无 H&R」→ 已手填 `hr=False`（manual），H&R 标签下轮自动摘。",
+      "3.16.0": "**3.16.0**：**「静默托管」常驻 worker**（Master 2026-09-28 06:30：「常驻，不用每20分钟检查一次」）。把静默池的全部托管职责从 `tags_watch` 抽出成**插件级常驻 worker** `silent_host`（服务 id=`SilentHost`，名称「静默托管」，reload 即注册、**不随任务增减开关**），低频（默认 60min，`silent_host_interval_minutes` 可调）。职责 ①清理未下完 ②保挂恢复做种 ③H&R 统一管理 ④辅种校验 ⑤静默-普通清理 ⑥推荐过期降级 ⑦分拣 ⑧静默-新超时归普通 ⑨库内资产刷新。`tags_watch` 只保留 账本快照/对账/资源账本/特征码补录/停止任务退静默。"
     }
   },
   "version": "3.14.7",
