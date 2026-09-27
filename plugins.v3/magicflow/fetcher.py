@@ -202,6 +202,68 @@ _NP_PROMO_FACTORS: Dict[str, Tuple[float, float]] = {
 }
 
 _NP_ROW_RE = re.compile(r"<tr\s+data=(\d+)>", re.IGNORECASE)
+
+# ★ 皮肤差异：CHD / 新版 Tailwind 系（hdtime、cspt 等）不用 promotion class，
+#   而是 <img class="pro_free"> / <img class="pro_free2up"> 标促销 —— 映射到同一套系数。
+_NP_PRO_CLASSES: Dict[str, Tuple[float, float]] = {
+    "pro_free": (0.0, 1.0),       # 免费
+    "pro_free2up": (0.0, 2.0),    # 免费 + 2X 上传
+    "pro_2up": (1.0, 2.0),        # 2X 上传
+    "pro_2up50pct": (0.5, 2.0),   # 2X 上传 + 50% 下载
+    "pro_halfdown": (0.5, 1.0),
+    "pro_50pct": (0.5, 1.0),
+    "pro_75pct": (0.25, 1.0),
+    "pro_30pct": (0.7, 1.0),
+    "pro_25pct": (0.75, 1.0),
+    "pro_0up0down": (0.0, 0.0),
+}
+
+# 详情页链接（用作「行」的锚点；(?<![A-Za-z]) 排除 userdetails.php?id= 这种误命中）
+_NP_ID_RE = re.compile(r"(?<![A-Za-z])details\.php\?id=(\d+)", re.IGNORECASE)
+_NP_TR_RE = re.compile(r"<tr\b[^>]*>|</tr\s*>", re.IGNORECASE)
+
+
+def _np_row_chunks(html_text: str) -> List[Tuple[str, str]]:
+    """表格型皮肤：把 ``<tr>`` 按嵌套配对切块，只留「恰好一个详情 id」的块（= 一条种子行）。
+
+    嵌套的标题小表行只有一个 id 也会命中，但无大小/人数，由调用方的兜底校验刷掉。
+    包裹行/页头页脚含多个 id 或无 id，自然被排除。
+    """
+    stack: List[int] = []
+    out: List[Tuple[str, str]] = []
+    for m in _NP_TR_RE.finditer(html_text):
+        if m.group(0)[1] != "/":
+            stack.append(m.start())
+            continue
+        if not stack:
+            continue
+        s = stack.pop()
+        chunk = html_text[s:m.end()]
+        ids = {mm.group(1) for mm in _NP_ID_RE.finditer(chunk)}
+        if len(ids) == 1:
+            out.append((next(iter(ids)), chunk))
+    return out
+
+
+def _np_id_windows(html_text: str) -> List[Tuple[str, str]]:
+    """div 型皮肤（cspt 等）：按「详情 id 首现顺序」切窗口（同 id 连发归同一行）。
+
+    窗口起点回退到所在标签头（``<a`` 之前），否则会把锚点切断、标题取成同行的人数值。
+    """
+    spans: List[Tuple[int, str]] = []
+    seen: set = set()
+    for m in _NP_ID_RE.finditer(html_text):
+        tid = m.group(1)
+        if tid in seen:
+            continue
+        seen.add(tid)
+        spans.append((m.start(), tid))
+    out: List[Tuple[str, str]] = []
+    for i, (pos, tid) in enumerate(spans):
+        end = spans[i + 1][0] if i + 1 < len(spans) else len(html_text)
+        s = html_text.rfind("<", 0, pos)
+        out.append((tid, html_text[(s if s >= 0 else pos):end]))
+    return out
 _NP_SIZE_UNITS = {"B": 1, "KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3, "TB": 1024 ** 4}
 
 
@@ -383,17 +445,31 @@ class SiteFetcher:
 
         只依赖列表页可见字段：标题 / 促销 class / 添加时间 / 大小 / 做种人数 / 下载人数 /
         下载链接。行内无 infohash，故 hash 退化为详情页 URL（与 SDK 路径一致）。
+
+        ★ 皮肤自适应（2026-09-27）：NexusPHP 各站/各皮肤的行结构与 class 名差别很大，实测至少三套：
+          ① 官方经典：``<tr data="id">`` + ``class="torrentname_title"`` + ``class="promotion free"``
+          ② CHD/torrentname 系（hdtime/hdfans…）：无 ``<tr data=>``，标题在
+             ``<table class="torrentname">`` 里、促销是 ``<img class="pro_free">``、
+             人数/大小在 ``<td class="rowfollow">``
+          ③ 新版 Tailwind 系（cspt…）：标题带 ``torrent-info-text-name``、促销 ``<img class="pro_free">``、
+             字段用 ``torrent-info-text-{size,seeders,leechers,added}``
+        原先死认 ①，导致 ②③ 解析结果恒为 0 条（免费定向视图/直连免费索引长期空转）。
+        现改为**按「详情页 id 出现的先后」切行**（同一 id 的标题/评论/做种等多个链接必属同一行，
+        出现新 id 即下一行开始），再逐行做多皮肤字段提取。
         """
         out: List[SiteCandidateTorrent] = []
         if not html_text:
             return out
         base = base_url.rstrip("/")
-        starts = [m.start() for m in _NP_ROW_RE.finditer(html_text)]
-        for i, start in enumerate(starts):
-            end = starts[i + 1] if i + 1 < len(starts) else len(html_text)
-            chunk = html_text[start:end]
 
-            # 标题：优先 torrentname_title 锚点（属性顺序兼容两种）
+        # 行切分（多皮肤）：先试表格型（<tr> 配对且只含一个详情 id），没有则退到 div 型
+        _rows = _np_row_chunks(html_text)
+        if not _rows:
+            _rows = _np_id_windows(html_text)
+        for _tid, chunk in _rows:
+
+            # 标题：① 官方经典 ② 通用——本行首个指向 details.php?id=<本行 id> 的 <a>
+            #   优先 title 属性，否则取锚点内文本（兼容新版 torrent-info-text-name）
             tm = re.search(
                 r'class=["\']torrentname_title["\'][^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
                 chunk, re.DOTALL,
@@ -403,22 +479,44 @@ class SiteFetcher:
                     r'href=["\']([^"\']*details\.php\?id=[^"\']+)["\'][^>]*class=["\']torrentname_title["\'][^>]*>(.*?)</a>',
                     chunk, re.DOTALL,
                 )
-            if not tm:
-                continue
-            href, inner = tm.group(1), tm.group(2)
+            href = inner = ""
+            if tm:
+                href, inner = tm.group(1), tm.group(2)
+            else:
+                for _am in re.finditer(r"<a\b([^>]*)>(.*?)</a>", chunk, re.DOTALL | re.IGNORECASE):
+                    _attrs, _inner_raw = _am.group(1), _am.group(2)
+                    _hm = re.search(
+                        r'href=["\']([^"\']*details\.php\?id=%s[^"\']*)["\']' % re.escape(_tid), _attrs
+                    )
+                    if not _hm:
+                        continue
+                    _inner_txt = re.sub(r"<[^>]+>", "", _inner_raw).strip()
+                    _ttl = re.search(r'title=["\']([^"\']+)["\']', _attrs)
+                    if (_ttl and _ttl.group(1).strip()) or _inner_txt:
+                        href = _hm.group(1)
+                        inner = (_ttl.group(1).strip() if _ttl else "") or _inner_txt
+                        break
             title = re.sub(r"<[^>]+>", "", inner).strip()
-            if not title:
+            title = re.sub(r"\s*\[[^\]]{0,12}\]\s*$", "", title).strip()  # 去掉 [热门] 之类尾巴
+            if not title or not href:
                 continue
             page_url = urljoin(base + "/", href)
 
-            # 促销状态（跳过 promotion bb=字幕/附件 之类非促销标记）
+            # 促销状态：① 官方经典 class="promotion free" ② CHD/新版 <img class="pro_free">
+            #   （跳过 promotion bb=字幕/附件 之类非促销标记）
             promo = ""
             for pm in re.finditer(r"class=['\"]promotion\s+(\w+)['\"]", chunk):
                 cls = pm.group(1).lower()
                 if cls in _NP_PROMO_FACTORS:
                     promo = cls
                     break
-            dv, uv = _NP_PROMO_FACTORS.get(promo, (1.0, 1.0))
+            if not promo:
+                for pm in re.finditer(r"class=['\"]pro_(\w+)['\"]", chunk):
+                    cls = "pro_" + pm.group(1).lower()
+                    if cls in _NP_PRO_CLASSES:
+                        promo = cls
+                        break
+            dv, uv = _NP_PROMO_FACTORS.get(promo) or _NP_PRO_CLASSES.get(promo) or (1.0, 1.0)
 
             # ★ 促销到期（限时免费）：紧跟在促销标记后的 <span title="YYYY-MM-DD HH:MM:SS">
             free_until = ""
@@ -439,26 +537,64 @@ class SiteFetcher:
             if dm:
                 pubdate = dm.group(1)
 
-            # 大小（形如：<td class="rowfollow">83.28<br>GB</td>）
+            # 大小：① 经典/CHD <td class="rowfollow">83.28<br>GB</td>
+            #      ② 新版 <div class="torrent-info-text-size">1.01 GB</div>
+            #      ③ 兜底：本行最后一个「数字+单位」片段（标题里的分辨率/体积在前，真值在后）
             size = 0.0
-            sm = re.search(r'class="rowfollow">\s*([\d.,]+)\s*<br\s*/?>\s*([KMGT]?B)', chunk)
+            sm = re.search(r'class="rowfollow">\s*([\d.,]+)\s*<br\s*/?>\s*([KMGT]?i?B)', chunk)
             if sm:
-                size = _np_size_to_bytes(sm.group(1), sm.group(2))
+                size = _np_size_to_bytes(sm.group(1), sm.group(2).upper().replace("I", ""))
+            if not size:
+                sm = re.search(
+                    r'torrent-info-text-size["\'][^>]*>\s*([\d.,]+)\s*([KMGT]?i?B)', chunk
+                )
+                if sm:
+                    size = _np_size_to_bytes(sm.group(1), sm.group(2).upper().replace("I", ""))
+            if not size:
+                _all_sz = re.findall(r"([\d]+(?:[.,]\d+)?)\s*(?:<[^>]*>\s*)*([KMGT]i?B)\b", chunk)
+                if _all_sz:
+                    _n, _u = _all_sz[-1]
+                    size = _np_size_to_bytes(_n, _u.upper().replace("I", ""))
 
-            # 做种/下载人数（详情页的 dllist 锚点带 #seeders / #leechers）
+            # 做种/下载人数：① 官方/CHD 用 dllist 锚点的 #seeders / #leechers
+            #                ② 新版用 torrent-info-text-seeders/-leechers
+            #                ③ 兜底：大小单元格之后的第 1/2 个纯数字单元格
             seeders = leechers = 0
-            s1 = re.search(r'#seeders["\']>(\d+)<', chunk)
+            s1 = re.search(r'#seeders["\']>(\d+)<', chunk) or re.search(
+                r'torrent-info-text-seeders["\'][^>]*>\s*(?:<[^>]+>\s*)*(\d+)', chunk
+            )
             if s1:
                 seeders = int(s1.group(1))
-            s2 = re.search(r'#leechers["\']>(\d+)<', chunk)
+            s2 = re.search(r'#leechers["\']>(\d+)<', chunk) or re.search(
+                r'torrent-info-text-leechers["\'][^>]*>\s*(?:<[^>]+>\s*)*(\d+)', chunk
+            )
             if s2:
                 leechers = int(s2.group(1))
+            if not seeders and not leechers:
+                _cells = [
+                    re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", c)).strip()
+                    for c in re.findall(
+                        r'<td[^>]*class="[^"]*rowfollow[^"]*"[^>]*>(.*?)</td>', chunk, re.DOTALL
+                    )
+                ]
+                _sz_idx = next(
+                    (k for k, c in enumerate(_cells) if re.fullmatch(r"[\d.,]+\s*[KMGT]?i?B", c)), -1
+                )
+                if _sz_idx >= 0:
+                    _pure = [c for c in _cells[_sz_idx + 1:] if re.fullmatch(r"[\d,]+", c or "")]
+                    if len(_pure) >= 2:
+                        seeders = int(_pure[0].replace(",", "") or 0)
+                        leechers = int(_pure[1].replace(",", "") or 0)
 
             # 下载链接（enclosure）
             enclosure = ""
             em = re.search(r'href=["\']([^"\']*download\.php[^"\']*)["\']', chunk)
             if em:
                 enclosure = urljoin(base + "/", em.group(1))
+
+            # 至少要有「大小 / 人数 / 下载链接」之一，否则视为页头页脚噪声行
+            if not (size or seeders or leechers or enclosure):
+                continue
 
             out.append(SiteCandidateTorrent(
                 hash=page_url,
@@ -484,7 +620,19 @@ class SiteFetcher:
                 free_until=free_until,
                 free_remaining_sec=free_remaining_sec,
             ))
-        return out
+
+        # 去重：嵌套块（内层标题小表）也会命中一次但字段少，保留字段最全的那份
+        def _score(row: "SiteCandidateTorrent") -> int:
+            return sum(
+                1 for v in (row.size, row.seeders, row.leechers, row.pubdate, row.enclosure) if v
+            )
+
+        best: Dict[str, SiteCandidateTorrent] = {}
+        for row in out:
+            cur = best.get(row.page_url)
+            if cur is None or _score(row) > _score(cur):
+                best[row.page_url] = row
+        return list(best.values())
 
     def browse_site_np_free(
         self,
@@ -492,6 +640,7 @@ class SiteFetcher:
         pages: int = 1,
         spstates: Tuple[int, ...] = NP_FREE_SPSTATES,
         start_page: int = 0,
+        stats: Optional[Dict[int, int]] = None,
     ) -> List[SiteCandidateTorrent]:
         """NexusPHP 直连：用站点 cookie 按 spstate 直接抓「免费」列表页。
 
@@ -518,6 +667,7 @@ class SiteFetcher:
         req = RequestUtils(cookies=cookie, ua=ua, timeout=30, referer=f"{base}/")
         total_pages = max(int(pages or 1), 1)
         for sp in spstates:
+            _sp_before = len(out)
             for p in range(total_pages):
                 if out and _REQUEST_INTERVAL > 0:
                     time.sleep(_REQUEST_INTERVAL)
@@ -558,6 +708,11 @@ class SiteFetcher:
                 # 空页即到底：免费列表通常只有 1 页，提前止步，不浪费请求。
                 if not batch:
                     break
+            if stats is not None:
+                try:
+                    stats[int(sp)] = len(out) - _sp_before
+                except Exception:  # noqa: BLE001
+                    pass
         return out
 
     def browse_all_sites(

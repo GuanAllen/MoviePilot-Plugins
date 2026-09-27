@@ -92,6 +92,7 @@ from .persistence import MagicFlowStore, OperationItem, WorkReport
 from .signin import SigninEngine
 from .recommend import RecommendEngine
 from .dtier import PvLedger, TierCache
+from .sitecap import SiteCap, SiteCapRegistry, FW_NEXUS, FW_UNKNOWN, detect_framework, norm_domain
 from .sites import BonusCalculator, get_calculator, get_formula_params
 from .sites.formula_fetch import (
     FormulaCapture,
@@ -104,7 +105,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.7.2"
+__version__ = "3.8.0"
 
 # 候选扩充:站点列表页翻页数(拿更多、更老的种子)。
 # 注意:是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数(启动时会记日志探测)。
@@ -147,7 +148,11 @@ SITE_FETCH_TTL = 3600.0
 # 站点 PV 日预算(次/天):0=不限。抓取前查 dtier.PvLedger 今日已用;达到预算就不再打站点。
 #   默认 0(不限),按站点覆盖见 settings.pv_budget;对 PTT 这类「300PV/天」的站请设 300。
 PV_DEFAULT_DAILY_BUDGET = 0
-PV_BUDGET_RESERVE = 20          # 预算预留:接近上限时提前收手,给实时/签到留额度
+PV_BUDGET_RESERVE = 20
+
+# ★ 免费索引每轮翻页数：免费池很小且每小时只动几条，稳态 1 页就够。
+#   主列表的 browse_pages（任务配置）只用于「非 NexusPHP / 拿不到免费索引」的回退路径。
+FREE_INDEX_PAGES = 1          # 预算预留:接近上限时提前收手,给实时/签到留额度
 # ★ 全局并发闸门:插件级限制「同时在飞」的 worker 数(刷流/检查/辅种慢扫合计)。
 #   几十个任务若同刻开火,会一起抢线程池 + 集中打站点 → 撞流控;这里做全局封顶。
 GLOBAL_WORKER_LIMIT = 6
@@ -822,6 +827,13 @@ class MagicFlow(_PluginBase):
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "设置站点 PV 日预算(0=不限)",
+            },
+            {
+                "path": "/debug/sitecap",
+                "endpoint": self.debug_site_caps,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "站点类型/能力识别结果(probe=true 时联网探测)",
             },
             {
                 "path": "/debug/torrents",
@@ -2058,7 +2070,19 @@ class MagicFlow(_PluginBase):
         # 一份数据:同站(同翻页)共享同一 key;刷流/魔力只是用不同的排序/筛选消费它。
         # ★ 3.7.1:key 含 start_page(旧版漏了它 → 游标深翻永远命中第 0 页);
         #   缓存由 TierCache 托管(内存热层 + FileCache 冷层),热重载/重启不丢,不再烧 PV。
-        cache_key = f"{site_key}|{int(pages)}|{int(start_page)}"
+        # ★ 站点能力（sitecap）：只要免费的站（NexusPHP 有 spstate 免费索引）→ 只抓免费索引。
+        #   主列表「最新 N 页」天生漏老免费种、而且要把 3 页；免费索引 1~2 个请求就够。
+        try:
+            _policy = self._build_filter_policy(task)
+        except Exception:  # noqa: BLE001
+            _policy = None
+        _want_free = bool(
+            _policy is not None and (getattr(_policy, "free_only", False) or getattr(_policy, "double_free_only", False))
+        )
+        _cap = self.sitecaps().get(str(getattr(task, "site_domain", "") or ""))
+        _use_free = bool(_want_free and getattr(_cap, "free_index", False))
+        _free_tried = False
+        cache_key = f"{site_key}|{'free' if _use_free else 'main'}|{int(pages)}|{int(start_page)}"
         cache = self._cache_cands()
         hit = cache.get(cache_key, SITE_FETCH_TTL)
         if hit is not None:
@@ -2092,6 +2116,83 @@ class MagicFlow(_PluginBase):
                     f"魔流 [{task.name}] 站点 {site_key} 今日访问次数已达上限,暂停抓取至 {_pv_until}"
                 )
                 return []
+            # ★ 只抓免费：NexusPHP 免费索引（spstate）——两个任务类型需求相同，共用这一份
+            if _use_free:
+                _sp = tuple(getattr(_cap, "free_spstates", ()) or NP_FREE_SPSTATES)
+                # ★ 免费索引每轮只翻 FREE_INDEX_PAGES 页：免费池每小时才动几条，
+                #   深翻是用任务里的 browse_pages 那个量（主列表口径），对免费池是浪费 PV。
+                _fpages = max(int(FREE_INDEX_PAGES or 1), 1)
+                _fwant = max(len(_sp) * _fpages, 1)
+                _free_tried = True
+                if not self._pv_allow(_sid, "browse", want=_fwant):
+                    self._log(
+                        f"魔流 [{task.name}] 站点 {site_key} PV 预算将尽"
+                        f"(今日 {self._pv_ledger().today_total(_sid)}/{self._pv_budget(_sid)}),本轮跳过抓取",
+                        "warning",
+                    )
+                    return []
+                fetcher = SiteFetcher()
+                if not fetcher.is_available:
+                    return []
+                _site = self._get_site(_sid)
+                _fc: List[Any] = []
+                if _site is not None and getattr(_site, "cookie", None):
+                    self._pv_spend(_sid, "browse", _fwant)
+                    _sp_stats: Dict[int, int] = {}
+                    try:
+                        _fc = fetcher.browse_site_np_free(
+                            _site, spstates=_sp, pages=_fpages, stats=_sp_stats
+                        ) or []
+                    except Exception as err:  # noqa: BLE001
+                        self._log(f"魔流 [{task.name}] 站点 {site_key} 免费索引抓取失败:{err}", "warning")
+                        _fc = []
+                    # ★ 自适应：某个 spstate 一条新种都没带回（站点把 2/4 当同一视图）→
+                    #   记下有效集合，下轮少打一次，直接省 PV
+                    _dup_sp = [int(x) for x, n in _sp_stats.items() if not n]
+                    if _dup_sp and len(_sp) > 1:
+                        _keep = tuple(int(x) for x in _sp if int(x) not in _dup_sp)
+                        if _keep and len(_keep) < len(_sp):
+                            try:
+                                self.sitecaps().learn(
+                                    norm_domain(str(getattr(task, "site_domain", "") or "")),
+                                    getattr(_cap, "framework", FW_UNKNOWN) or FW_UNKNOWN,
+                                    f"free-spstate-dedup:{list(_keep)}",
+                                    source="probe",
+                                    free_index=True,
+                                    free_spstates=_keep,
+                                )
+                                self._log(
+                                    f"魔流 [{task.name}] 站点 {site_key} 免费索引 spstate={_dup_sp}"
+                                    f" 无新增（与 {list(_keep)} 同视图），后续只抓 {list(_keep)}"
+                                )
+                            except Exception:  # noqa: BLE001
+                                pass
+                _fc = list(_fc)
+                if _fc:
+                    self._log(
+                        f"魔流 [{task.name}] 站点 {site_key} 免费索引返回 {len(_fc)} 个候选"
+                        f"(spstate={'/'.join(str(x) for x in _sp)}, {_fpages} 页)"
+                    )
+                    cache.set(cache_key, _fc, SITE_FETCH_TTL)
+                    backoff.pop(site_key, None)
+                    return [copy.copy(c) for c in _fc]
+                # 免费索引拿不到（不是 NexusPHP / 无 Cookie / 被封）→ 学一次，本轮回退主列表
+                try:
+                    self.sitecaps().learn(
+                        norm_domain(str(getattr(task, "site_domain", "") or "")),
+                        getattr(_cap, "framework", FW_UNKNOWN) or FW_UNKNOWN,
+                        "free-index-empty",
+                        source="probe",
+                        free_index=False,
+                        free_spstates=(),
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                self._log(
+                    f"魔流 [{task.name}] 站点 {site_key} 免费索引为空，本轮回退主列表抓取",
+                    "warning",
+                )
+                cache_key = f"{site_key}|main|{int(pages)}|{int(start_page)}"
             # ★ 3.7.1 PV 预算闸门(主动):今日已用接近预算 → 提前收手,比「被封后才停」更靠前
             _want = max(int(pages), 1) + len(NP_FREE_SPSTATES)
             if not self._pv_allow(_sid, "browse", want=_want):
@@ -2125,7 +2226,8 @@ class MagicFlow(_PluginBase):
             # 补充：NexusPHP 免费定向视图（最新页窗口天生漏免费种，见上）。
             # 失败/非 NexusPHP 站点返回空，静默忽略，不影响最新页结果。
             try:
-                site = self._get_site(int(getattr(task, "site_id", 0) or 0))
+                _can_free = bool(getattr(_cap, "free_index", False)) and not _free_tried
+                site = self._get_site(int(getattr(task, "site_id", 0) or 0)) if _can_free else None
                 if site and getattr(site, "cookie", None):
                     self._pv_spend(_sid, "browse", len(NP_FREE_SPSTATES))  # PV 账本:免费定向视图
                     np_free = fetcher.browse_site_np_free(site, pages=1) or []
@@ -7348,6 +7450,72 @@ class MagicFlow(_PluginBase):
                 self.save_data("live_alerts", seen)
             except Exception:  # noqa: BLE001
                 pass
+
+    def sitecaps(self) -> SiteCapRegistry:
+        """站点类型/能力注册表(懒加载;识别结果持久化在 ``save_data("site_caps")``)。"""
+        reg = getattr(self, "_site_cap_reg", None)
+        if reg is None:
+            over: Dict[str, Any] = {}
+            try:
+                raw = self.get_data("sitecap_override")
+                if isinstance(raw, dict):
+                    over = raw
+            except Exception:  # noqa: BLE001
+                over = {}
+            reg = self._site_cap_reg = SiteCapRegistry(self, override=over)
+        return reg
+
+    def _site_cap(self, site_id: int, probe: bool = False) -> SiteCap:
+        """取某站的类型/能力(无站点对象时返回未知)。"""
+        try:
+            site = self._get_site(int(site_id))
+        except Exception:  # noqa: BLE001
+            site = None
+        if site is None:
+            return SiteCap(domain="")
+
+        def _gate() -> bool:
+            # 探针也要走 PV 闸门:被封/超预算就不打站点(否则又是一条绕过配额的路)
+            sid = int(site_id)
+            if self._pv_block_reason(sid):
+                return False
+            if not self._pv_allow(sid, "sitecap", want=1):
+                self._log(
+                    f"魔流 站点 {getattr(site, 'domain', sid)} 识别探针跳讨"
+                    f"(PV 预算将尽 {self._pv_ledger().today_total(sid)}/{self._pv_budget(sid)})",
+                    "warning",
+                )
+                return False
+            self._pv_spend(sid, "sitecap", 1)
+            return True
+
+        return self.sitecaps().ensure(site, probe=bool(probe), gate=_gate)
+
+    def debug_site_caps(self, probe: bool = False) -> Response:
+        """站点类型/能力识别结果;``probe=true`` 时对未识别/过期的站联网探测一次。"""
+        try:
+            caps = self.sitecaps()
+            rows: List[Dict[str, Any]] = []
+            for item in self._list_sites():
+                sid = item.get("id")
+                if sid is None:
+                    continue
+                try:
+                    site = self._get_site(int(sid))
+                except Exception:  # noqa: BLE001
+                    site = None
+                if site is None:
+                    continue
+                # 与探测路径保持同一套 key（都用 Site.domain 规范化），避免同一站存成两条
+                dom = norm_domain(getattr(site, "domain", "") or item.get("domain") or "")
+                cap = self._site_cap(int(sid), probe=bool(probe)) if probe else caps.get(dom)
+                row = cap.to_dict()
+                row["site_id"] = sid
+                row["site_name"] = item.get("name") or ""
+                rows.append(row)
+            return Response(success=True, data={"items": rows})
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=f"站点识别失败:{err}")
 
     def get_pv_ledger(self) -> Response:
         """站点 PV 账本:每站每天耗了多少配额(可按历史查询)。"""
