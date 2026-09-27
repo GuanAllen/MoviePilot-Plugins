@@ -9835,8 +9835,12 @@ class MagicFlow(_PluginBase):
         store = self._site_rules()
         manual = (getattr(self, "_cs_cfg", {}) or {}).get("site_hours") or {}
         seen: Set[str] = set()
+        names: Dict[str, str] = {}
         try:
-            names = {str(r.get("domain") or "").strip().lower(): str(r.get("name") or "") for r in (self._list_sites() or [])}
+            for r in (self._list_sites() or []):
+                _d = re.sub(r"^https?://", "", str(r.get("domain") or "").strip().lower()).strip("/")
+                if _d:
+                    names[_d] = str(r.get("name") or _d)
         except Exception:  # noqa: BLE001
             names = {}
         for dom, rec in sorted(store.items().items()):
