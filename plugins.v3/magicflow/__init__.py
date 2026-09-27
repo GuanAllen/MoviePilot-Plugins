@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.17.0"
+__version__ = "3.17.1"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -7743,7 +7743,8 @@ class MagicFlow(_PluginBase):
             info = self._silent_resume_tick(apply=_ap, limit=int(limit or 0))
             return Response(
                 success=True,
-                message=(f"静默保挂:待恢复 {info.get('pending')} 个 → 恢复做种 {info.get('resumed')} 个"
+                message=(f"H&R 保挂:静默 {info.get('silent')} · 欠H&R {info.get('hr_pending')}"
+                         f" → 强制挂种 {info.get('resumed')} 个（非H&R {info.get('nonhr')} 不动）"
                          + ("" if _ap else "（预演）")),
                 data=info,
             )
@@ -11734,7 +11735,7 @@ class MagicFlow(_PluginBase):
         """★ 静默托管（**常驻 worker**，Master 2026-09-28 06:30：「常驻，不用每20分钟检查一次」）。
 
         静默池的「负责人」——常驻（reload 即注册，不随任务增减开关）、低频（默认 60min）。职责：
-        ① 池清理：没下完的直接删（不计 H&R）；② 保挂：已完成却暂停/停止的种 → 恢复做种；
+        ① 池清理：没下完的直接删（不计 H&R）；② **H&R 保挂**：只对欠 H&R 的静默种强制挂种（其余不强制）；
         ③ H&R 统一管理（欠 H&R 打标 / 未到期被暂停强制拉起 / 结清摘标）；
         ④ 辅种校验（停在 pausedDL 的 recheck 拉起）；⑤ 静默-普通 清理（站点魔力已达标时删低效）；
         ⑥ 推荐过期待降级；⑦ 分拣（静默-新 → 推荐/普通）；⑧ 静默-新超时归普通；⑨ 库内资产标记刷新。
@@ -11748,13 +11749,13 @@ class MagicFlow(_PluginBase):
                     self._log(f"魔流:静默托管:未下完直接删 {pinfo.get('deleted')} 个（不计 H&R）")
             except Exception as err:  # noqa: BLE001
                 self._log(f"静默托管:池清理失败:{err}", "warning")
-            # ② 保挂：已完成却暂停/停止的静默种 → 恢复做种（静默≠白占盘）
+            # ② H&R 保挂：只对「欠 H&R」的静默种强制挂种（其余不强制，保持原状）
             try:
                 rinfo = self._silent_resume_tick(apply=True, limit=0)
                 if rinfo.get("resumed"):
-                    self._log(f"魔流:静默托管:保挂恢复做种 {rinfo.get('resumed')} 个")
+                    self._log(f"魔流:静默托管:H&R 保挂强制挂种 {rinfo.get('resumed')} 个")
             except Exception as err:  # noqa: BLE001
-                self._log(f"静默托管:保挂失败:{err}", "warning")
+                self._log(f"静默托管:H&R 保挂失败:{err}", "warning")
             # ③ H&R 统一管理：欠 H&R 打标 + 未到期被暂停强制拉起 + 结清摘标
             try:
                 hinfo = self._hr_guard_tick(apply=True, limit=0)
@@ -11822,11 +11823,23 @@ class MagicFlow(_PluginBase):
 
     def _silent_host_card(self) -> Dict[str, Any]:
         """★ 「静默托管」常驻任务在**任务列表**里的只读条目（Master 2026-09-28 06:33）。"""
+        n_sil = 0
+        n_hr = 0
         try:
-            led = self._tag_state().items() or {}
-            n_sil = sum(1 for r in led.values() if str(r.get("state") or "") == STATE_SILENT)
+            for _t in (self._tag_all_torrents() or {}).values():
+                _tg = [str(x) for x in (getattr(_t, "tags", None) or [])]
+                if not any(("静默" in x and is_magicflow_tag(x)) for x in _tg):
+                    continue
+                n_sil += 1
+                if MARK_HR in _tg:
+                    n_hr += 1
         except Exception:  # noqa: BLE001
-            n_sil = 0
+            try:
+                led = self._tag_state().items() or {}
+                n_sil = sum(1 for r in led.values() if str(r.get("state") or "") == STATE_SILENT)
+                n_hr = 0
+            except Exception:  # noqa: BLE001
+                n_sil, n_hr = 0, 0
         try:
             _min = float(getattr(self, "_tags_cfg", {}).get("host_interval") or SILENT_HOST_INTERVAL_MINUTES)
         except Exception:  # noqa: BLE001
@@ -11847,6 +11860,8 @@ class MagicFlow(_PluginBase):
             "brush_tag": "魔流-<站点>-静默[-子类]",
             "save_path": "",
             "seeding_count": n_sil,
+            "hr_count": n_hr,
+            "nonhr_count": max(0, n_sil - n_hr),
             "active_seeding_count": n_sil,
             "downloading_count": 0,
             "paused_count": 0,
@@ -13240,22 +13255,16 @@ class MagicFlow(_PluginBase):
         return out
 
     def _silent_resume_tick(self, apply: bool = True, limit: int = 0) -> Dict[str, Any]:
-        """★ 静默池「保挂」：把**暂停中**的静默种恢复做种（Master「静默≠白占盘」/ 静默托管 ①保挂）。
+        """★ **H&R 保挂**：只对**欠 H&R 的静默种**强制挂种（Master 2026-09-28 06:44：
 
-        背景：任务的 ``run_mode`` 非 running（stopped）时，其名下种子在 qB 里被**暂停**；
-        退回静默池后仍暂停 → 既不累计做种时长/魔力，也推进不了 H&R，纯占盘不产出。
-        本 tick 把静默池里**已完成**、却处于 paused/stopped/queued 的种 → ``force_start`` 恢复做种。
-
-        保守跳过：
-        - 账本 ``manual_paused``（主人手动暂停的）；
-        - 未完成且非 辅种/已整理（交给 ``_silent_purge_incomplete`` / 校验流程）。
-
-        注：``seed_cap``（站点「做种数**计入魔力**上限」）**不作为跳过理由** ——
-        它只影响魔力公式的平怪部分，超出后 arctan 项仍在增长，且做种对分享率/H&R 有益。
+        「你得拆出来啊，只有 h&r 要强制挂种」）——静默池必须"拆开"看：
+        - **欠 H&R** 的种 → ``force_start`` 强制挂种（义务，不能被暂停/清掉）；
+        - **其余**（静默-资源 / 静默-普通 / 静默-新 里不欠 H&R 的）→ **不强制**，保持原状，
+          由站点魔力产出 / 资源价值决定去留（可被清理/换种，不受此 tick 干预）。
         """
-        rep: Dict[str, Any] = {"apply": bool(apply), "checked": 0, "silent": 0, "pending": 0,
-                               "resumed": 0, "skipped_manual": 0, "skipped_incomplete": 0,
-                               "skipped_cap": 0, "failed": 0, "items": [], "sites": {}}
+        rep: Dict[str, Any] = {"apply": bool(apply), "checked": 0, "silent": 0, "hr_pending": 0,
+                               "nonhr": 0, "resumed": 0, "skipped_manual": 0,
+                               "skipped_incomplete": 0, "failed": 0, "items": [], "sites": {}}
         snap = self._tag_all_torrents() or {}
         if not snap:
             rep["reason"] = "无快照"
@@ -13288,9 +13297,16 @@ class MagicFlow(_PluginBase):
                 continue
             st = str(getattr(t, "state", "") or "").strip().lower()
             if not (st.startswith("paused") or st.startswith("stopped") or st.startswith("queued")):
-                continue  # 已在做种 / 校验中 → 不动
+                continue  # 已在做种/校验 → 不动
             site = str(rec.get("site") or "").strip() or self._torrent_site_name(tags, "")
-            rep["pending"] = int(rep["pending"]) + 1
+            try:
+                obl = bool(self._hr_obligation(site, t)[0])
+            except Exception:  # noqa: BLE001
+                obl = bool(MARK_HR in tags)
+            if not obl:
+                rep["nonhr"] = int(rep["nonhr"]) + 1  # 非 H&R → 不强制，保持原状
+                continue
+            rep["hr_pending"] = int(rep["hr_pending"]) + 1
             rep["sites"][site] = int(rep["sites"].get(site) or 0) + 1
             if len(rep["items"]) < 40:
                 rep["items"].append({"hash": hh[:12], "site": site, "state": st})
@@ -13307,15 +13323,13 @@ class MagicFlow(_PluginBase):
                     cnt, err = 0, "无下载器"
                 rep["resumed"] = int(cnt or 0)
                 if err:
-                    self._log(f"静默保挂:恢复失败 {err}", "warning")
+                    self._log(f"H&R 保挂:强制挂种失败 {err}", "warning")
             except Exception as err:  # noqa: BLE001
                 rep["failed"] = int(rep["failed"]) + 1
-                self._log(f"静默保挂:恢复异常:{err}", "warning")
+                self._log(f"H&R 保挂:强制挂种异常:{err}", "warning")
         if rep["resumed"]:
-            self._log(
-                f"魔流:静默保挂:恢复做种 {rep['resumed']} 个（扫描静默 {rep['silent']} · "
-                f"跳过 手动{rep['skipped_manual']} 未完成{rep['skipped_incomplete']} 上限站{rep['skipped_cap']}）"
-            )
+            self._log(f"魔流:H&R 保挂:强制挂种 {rep['resumed']} 个"
+                      f"（静默 {rep['silent']} · 欠H&R {rep['hr_pending']} · 非H&R{rep['nonhr']}不动）")
         return rep
 
     def _silent_verify_marks(self, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
