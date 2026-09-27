@@ -1,7 +1,9 @@
 import re
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+from .tags import DEFAULT_SORT_RULES
 
 # 云盘归档默认远端落点模板（{rel} = 库内相对路径，与本地库结构同构）
 DEFAULT_CLOUD_TEMPLATE = "/quark/movie/{rel}"
@@ -226,6 +228,21 @@ class MagicFlowTaskStatePayload(BaseModel):
     mode: Optional[Literal["running", "seeding", "stopped"]] = None
 
 
+class MagicFlowTagStatePayload(BaseModel):
+    """手动设置某个种子的状态（标签模型）。"""
+
+    hash: str = Field(..., max_length=64, description="种子 hash")
+    state: str = Field(..., max_length=12, description="刷流 / 魔力 / 静默 / 推荐")
+    sub: str = Field("", max_length=12, description="静默子类：新 / 资源 / 普通（非静默可空）")
+    site: str = Field("", max_length=60, description="站点短名（通常自动识别）")
+
+
+class MagicFlowTagMigratePayload(BaseModel):
+    """老标签 → 新命名（魔流-<站点>-<状态>）迁移。"""
+
+    apply: bool = Field(False, description="false = 只预演(dry-run)，true = 真正改标签")
+
+
 class MagicFlowSettingsPayload(BaseModel):
     """魔流插件全局设置请求模型"""
 
@@ -285,6 +302,17 @@ class MagicFlowSettingsPayload(BaseModel):
     crossseed_site_hours: List[str] = Field(default_factory=lambda: ["pt.btschool.club=10"], description="站点保种时长覆盖：格式 域名=小时（例：pt.btschool.club=10 学校要10h）")
     crossseed_reclaim: bool = Field(False, description="H&R 保种期满后自动回收来源份：只删种子不删文件（默认关，继续做种）")
     rules_auto_refresh: bool = Field(True, description="每周自动逐站探测站点规则（H&R/最短保种时长/做种上限）并入库")
+
+    # ── 标签模型（3.13.0）：种子状态=标签，账本=真值源 ─────────────────────
+    #  命名：魔流-<站点>-<状态>[-<子类>]；状态 刷流/魔力/静默(新|资源|普通)/推荐。
+    #  账本记 hash→状态/来源子类/占用者，标签可被改坏而账本自愈。
+    tag_model_enabled: bool = Field(True, description="启用标签模型（状态账本 + 魔流-<站点>-<状态> 标签）")
+    tag_silent_new_timeout_hours: float = Field(24.0, ge=0, le=720, description="「静默-新」超过该小时数未分拣自动归「静默-普通」，0 = 不超时")
+    tag_snapshot_interval_hours: float = Field(6.0, ge=0, le=168, description="状态账本快照间隔（小时），0 = 不快照")
+    sort_rules: List[Dict[str, Any]] = Field(
+        default_factory=lambda: [dict(r) for r in DEFAULT_SORT_RULES],
+        description="静默分拣规则（订阅/库内资产/豆瓣评分/年份/站点/分类），支持 dry-run 预演",
+    )
 
     # ── 元数据兜底（多源识别 + 补 NFO）────────────────────────────────────
     #  TMDB 对中日番剧的特别篇/前传/国漫经常「没有」，离了 TMDB 就无元数据可用。

@@ -14,6 +14,8 @@ import {
   normalizeDownloaderPrefs,
   normalizeIyuuSites,
   normalizeSettings,
+  normalizeSortRules,
+  SORT_RULE_TYPES,
   normalizeTask,
   cloudStatusMeta,
   recommendStatusMeta,
@@ -94,6 +96,10 @@ const settingsDraft = ref({
   brush_upload_limit_kbps: 10240,
   seed_up_limit_kbps: 200,
   brush_seed_up_limit_kbps: 5120,
+  tag_model_enabled: true,
+  tag_silent_new_timeout_hours: 24,
+  tag_snapshot_interval_hours: 6,
+  sort_rules: [],
   iyuu_token: '',
   iyuu_clear: false,
   iyuu_sites: {},
@@ -178,6 +184,12 @@ const defaultsLoading = ref(false)
 const iyuuSites = ref([])
 const siteRules = ref([])
 const rulesLoading = ref(false)
+// 标签模型（3.13.0）
+const tagInfo = ref(null)
+const tagMigratePlan = ref(null)
+const tagMigrating = ref(false)
+const newRuleType = ref('subscribe')
+const sortRuleTypeOptions = SORT_RULE_TYPES
 const rulesProbing = ref(false)
 const iyuuLoading = ref(false)
 const iyuuTesting = ref(false)
@@ -545,6 +557,10 @@ async function loadStatus() {
       brush_upload_limit_kbps: status.value.brush_upload_limit_kbps,
       seed_up_limit_kbps: status.value.seed_up_limit_kbps,
       brush_seed_up_limit_kbps: status.value.brush_seed_up_limit_kbps,
+      tag_model_enabled: status.value.tag_model_enabled !== false,
+      tag_silent_new_timeout_hours: status.value.tag_silent_new_timeout_hours ?? 24,
+      tag_snapshot_interval_hours: status.value.tag_snapshot_interval_hours ?? 6,
+      sort_rules: normalizeSortRules(status.value.sort_rules),
       iyuu_token: status.value.iyuu_token,
       iyuu_sites: status.value.iyuu_sites,
       ...(status.value.crossseed ? {
@@ -1348,6 +1364,74 @@ async function openSettings(tab = 'general') {
   if (tab === 'fallback') loadFallback()
   if (tab === 'cloud') loadCloud()
   if (tab === 'rules') loadRules()
+  if (tab === 'tags') loadTags()
+}
+
+// ── 标签模型 ─────────────────────────────────────────────
+async function loadTags() {
+  try {
+    const res = await props.api.get(`${pluginBase.value}/tags`)
+    tagInfo.value = res?.data || null
+  } catch (err) {
+    error.value = err?.message || String(err)
+  }
+}
+
+function sortRuleText(r) {
+  return (SORT_RULE_TYPES.find(t => t.value === r?.type)?.text) || r?.type || '-'
+}
+
+function sortRuleNeedsMin(type) {
+  return !!SORT_RULE_TYPES.find(t => t.value === type)?.min
+}
+
+function addSortRule() {
+  const t = newRuleType.value
+  if (!t) return
+  if (!Array.isArray(settingsDraft.value.sort_rules)) settingsDraft.value.sort_rules = []
+  if (settingsDraft.value.sort_rules.some(r => r.type === t)) {
+    notify('该规则已存在')
+    return
+  }
+  const meta = SORT_RULE_TYPES.find(x => x.value === t) || {}
+  const row = { type: t, weight: 50, enabled: true }
+  if (meta.min) row.min = meta.defaultMin ?? 0
+  settingsDraft.value.sort_rules.push(row)
+}
+
+function removeSortRule(i) {
+  if (Array.isArray(settingsDraft.value.sort_rules)) settingsDraft.value.sort_rules.splice(i, 1)
+}
+
+async function previewTagMigrate() {
+  tagMigrating.value = true
+  try {
+    const res = await props.api.get(`${pluginBase.value}/tags?action=migrate`)
+    tagMigratePlan.value = res?.data || null
+    await loadTags()
+  } catch (err) {
+    alert(`迁移预演失败: ${err?.message || err}`)
+  } finally {
+    tagMigrating.value = false
+  }
+}
+
+async function applyTagMigrate() {
+  const total = tagMigratePlan.value?.total || 0
+  if (!total) return
+  if (!confirm(`确认把 ${total} 个托管种子的老标签迁移到「魔流-站点-状态」新命名？\n（保留 已整理/辅种 等外来标签）`)) return
+  tagMigrating.value = true
+  try {
+    const res = await props.api.post(`${pluginBase.value}/tags/migrate`, { apply: true })
+    notify(res?.message || '迁移完成')
+    tagMigratePlan.value = null
+    await loadTags()
+    emit('action')
+  } catch (err) {
+    alert(`迁移失败: ${err?.message || err}`)
+  } finally {
+    tagMigrating.value = false
+  }
 }
 
 // ── 云盘归档 ─────────────────────────────────────────────
@@ -2845,6 +2929,7 @@ onUnmounted(() => {
           <VTab value="recommend" class="magicflow-settings-tab">推荐</VTab>
           <VTab value="crossseed" class="magicflow-settings-tab">跨站</VTab>
           <VTab value="rules" class="magicflow-settings-tab">站点规则</VTab>
+          <VTab value="tags" class="magicflow-settings-tab">标签管理</VTab>
         </VTabs>
         <VDivider />
 
@@ -3509,6 +3594,88 @@ onUnmounted(() => {
             </div>
             <p class="magicflow-settings-hint">
               「保种(h)」直接改 = 写入手填覆盖（等同于跨站页的「站点保种时长」）。
+            </p>
+          </div>
+
+          <div v-else-if="settingsTab === 'tags'" class="magicflow-settings-form">
+            <p class="magicflow-settings-hint">
+              标签模型：种子状态 = 标签 <code>魔流-&lt;站点&gt;-&lt;状态&gt;[-&lt;子类&gt;]</code>，
+              状态有 <strong>刷流 / 魔力 / 静默(新·资源·普通) / 推荐</strong>；
+              另有<strong>状态账本</strong>做真值源（标签被改坏也能自愈），以及
+              <strong>文件组账本</strong>按多站引用计数——<em>摘成员只删种，最后一个成员才连文件清</em>。
+            </p>
+            <div class="magicflow-settings-switches">
+              <VSwitch v-model="settingsDraft.tag_model_enabled" label="启用标签模型（状态账本 + 魔流-站点-状态 标签）" color="primary" hide-details inset />
+            </div>
+            <div class="magicflow-settings-grid">
+              <VTextField v-model.number="settingsDraft.tag_silent_new_timeout_hours" type="number" min="0" step="1"
+                label="「静默-新」超时(小时)" hint="超过该时长未分拣自动归「静默-普通」，0 = 不超时"
+                persistent-hint variant="outlined" density="comfortable" />
+              <VTextField v-model.number="settingsDraft.tag_snapshot_interval_hours" type="number" min="0" step="1"
+                label="账本快照间隔(小时)" hint="滚动保留最近 3 份，用于精确回滚；0 = 不快照"
+                persistent-hint variant="outlined" density="comfortable" />
+            </div>
+
+            <VDivider class="my-3" />
+            <p class="magicflow-settings-hint">
+              <strong>静默分拣规则</strong>：<code>静默-新</code> 命中任一启用规则 → 进 <code>静默-资源</code>，
+              否则进 <code>静默-普通</code>（受站点魔力产出考核）。
+            </p>
+            <div class="magicflow-sort-rules">
+              <div class="magicflow-sort-rules__row magicflow-sort-rules__row--head">
+                <span>规则</span><span>阈值</span><span>权重</span><span>启用</span><span></span>
+              </div>
+              <div v-for="(r, i) in settingsDraft.sort_rules" :key="i" class="magicflow-sort-rules__row">
+                <span>{{ sortRuleText(r) }}</span>
+                <span>
+                  <VTextField v-if="sortRuleNeedsMin(r.type)" v-model.number="r.min" type="number" step="0.5" density="compact" variant="outlined" hide-details style="max-width: 110px" />
+                  <em v-else>-</em>
+                </span>
+                <span>
+                  <VTextField v-model.number="r.weight" type="number" step="5" density="compact" variant="outlined" hide-details style="max-width: 90px" />
+                </span>
+                <span>
+                  <VSwitch v-model="r.enabled" color="primary" density="compact" hide-details inset />
+                </span>
+                <span>
+                  <VBtn size="x-small" variant="text" color="error" @click="removeSortRule(i)">删除</VBtn>
+                </span>
+              </div>
+            </div>
+            <div class="magicflow-sort-rules__add">
+              <VSelect v-model="newRuleType" :items="sortRuleTypeOptions" item-title="text" item-value="value"
+                density="compact" variant="outlined" hide-details style="max-width: 200px" label="新增规则" />
+              <VBtn size="small" variant="tonal" color="primary" @click="addSortRule">加上</VBtn>
+            </div>
+
+            <VDivider class="my-3" />
+            <div class="magicflow-rules-actions">
+              <VBtn size="small" variant="tonal" color="primary" :loading="tagMigrating" @click="previewTagMigrate">
+                <VIcon start size="small">mdi-tag-multiple</VIcon>迁移预演（老标签 → 新命名）
+              </VBtn>
+              <VBtn v-if="tagMigratePlan" size="small" color="error" variant="tonal" :loading="tagMigrating" @click="applyTagMigrate">
+                执行迁移（{{ tagMigratePlan.total }} 个）
+              </VBtn>
+              <VSpacer />
+              <span class="magicflow-settings-hint">账本 {{ tagInfo?.ledger_count ?? 0 }} 条 · 文件组 {{ tagInfo?.groups?.groups ?? 0 }}（多站 {{ tagInfo?.groups?.multi_site_groups ?? 0 }}）</span>
+            </div>
+            <div v-if="tagMigratePlan" class="magicflow-tag-migrate">
+              <p class="magicflow-settings-hint">
+                待迁移 <strong>{{ tagMigratePlan.total }}</strong> 个：
+                <em v-for="(n, k) in tagMigratePlan.by_state" :key="k">{{ k }} {{ n }} </em>
+              </p>
+              <div class="magicflow-tag-migrate__samples">
+                <div v-for="(row, i) in (tagMigratePlan.samples || [])" :key="i" class="magicflow-tag-migrate__row">
+                  <span class="magicflow-tag-migrate__title" :title="row.title">{{ row.title }}</span>
+                  <span class="magicflow-tag-migrate__tags">
+                    <em>{{ (row.remove || []).join(' ') }}</em> → <strong>{{ row.add }}</strong>
+                  </span>
+                </div>
+              </div>
+            </div>
+            <p class="magicflow-settings-hint">
+              迁移会把任务里手填的 <code>brush_tag</code>（如 <code>魔流-财神</code>）换成状态标签，
+              保留 <code>已整理 / 辅种</code> 等外来标签；预演不变更任何东西。
             </p>
           </div>
 
@@ -4528,6 +4695,72 @@ onUnmounted(() => {
   margin-top: 0.5rem;
   max-height: 46vh;
   overflow-y: auto;
+}
+
+.magicflow-sort-rules {
+  max-height: 34vh;
+  overflow-y: auto;
+  margin-bottom: 0.5rem;
+}
+
+.magicflow-sort-rules__row {
+  display: grid;
+  grid-template-columns: minmax(9rem, 1.6fr) 7rem 6rem 4rem 4rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  font-size: 0.875rem;
+}
+
+.magicflow-sort-rules__row:nth-child(even) {
+  background: rgba(var(--v-theme-on-surface), 0.03);
+}
+
+.magicflow-sort-rules__row--head {
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+.magicflow-sort-rules__add {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.magicflow-tag-migrate {
+  margin-top: 0.5rem;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+}
+
+.magicflow-tag-migrate__samples {
+  max-height: 26vh;
+  overflow-y: auto;
+}
+
+.magicflow-tag-migrate__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  padding: 0.125rem 0;
+}
+
+.magicflow-tag-migrate__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.magicflow-tag-migrate__tags em {
+  opacity: 0.6;
+  text-decoration: line-through;
+}
+
+.magicflow-tag-migrate__tags strong {
+  color: rgb(var(--v-theme-primary));
 }
 
 .magicflow-rules-row {

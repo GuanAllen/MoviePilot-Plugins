@@ -199,6 +199,10 @@ export function normalizeSettings(settings = {}) {
     brush_upload_limit_kbps: Math.max(0, num(settings.brush_upload_limit_kbps, 10240)),
     seed_up_limit_kbps: Math.max(0, num(settings.seed_up_limit_kbps, 200)),
     brush_seed_up_limit_kbps: Math.max(0, num(settings.brush_seed_up_limit_kbps, 5120)),
+    tag_model_enabled: settings.tag_model_enabled === undefined ? true : Boolean(settings.tag_model_enabled),
+    tag_silent_new_timeout_hours: Math.max(0, num(settings.tag_silent_new_timeout_hours, 24)),
+    tag_snapshot_interval_hours: Math.max(0, num(settings.tag_snapshot_interval_hours, 6)),
+    sort_rules: normalizeSortRules(settings.sort_rules),
     iyuu_token: String(settings.iyuu_token || ''),
     iyuu_clear: !!settings.iyuu_clear,
     iyuu_sites: normalizeIyuuSites(settings.iyuu_sites),
@@ -500,6 +504,43 @@ export function taskStateMeta(state, enabled = true) {
   }
   if (state === 'disabled' || !enabled) return states.paused
   return states[state] || states.running
+}
+
+/** 标签模型：静态分拣规则默认值（与后端 tags.DEFAULT_SORT_RULES 对齐）。 */
+export const SORT_RULE_TYPES = [
+  { value: 'subscribe', text: '命中订阅', min: false },
+  { value: 'library_asset', text: '库内资产(已整理/辅种)', min: false },
+  { value: 'douban_rating', text: '豆瓣评分', min: true, defaultMin: 7.5 },
+  { value: 'year', text: '年份', min: true, defaultMin: 2000 },
+  { value: 'site', text: '指定站点', min: false },
+  { value: 'category', text: '指定分类', min: false },
+]
+
+export const DEFAULT_SORT_RULES = [
+  { type: 'subscribe', weight: 100, enabled: true },
+  { type: 'library_asset', weight: 90, enabled: true },
+  { type: 'douban_rating', min: 7.5, weight: 70, enabled: true },
+  { type: 'year', min: 2000, weight: 20, enabled: false },
+  { type: 'site', sites: [], weight: 10, enabled: false },
+  { type: 'category', categories: [], weight: 10, enabled: false },
+]
+
+/** 归一化分拣规则（后端可能回空/脏数据）。 */
+export function normalizeSortRules(rules) {
+  const src = Array.isArray(rules) ? rules.filter(r => r && r.type) : []
+  const list = src.length ? src : DEFAULT_SORT_RULES
+  return list.map(r => {
+    const meta = SORT_RULE_TYPES.find(t => t.value === r.type) || { value: r.type, text: r.type, min: false }
+    const out = {
+      type: String(r.type),
+      weight: Number.isFinite(Number(r.weight)) ? Number(r.weight) : 10,
+      enabled: r.enabled === undefined ? true : !!r.enabled,
+    }
+    if (meta.min) out.min = Number.isFinite(Number(r.min)) ? Number(r.min) : (meta.defaultMin ?? 0)
+    if (Array.isArray(r.sites)) out.sites = r.sites
+    if (Array.isArray(r.categories)) out.categories = r.categories
+    return out
+  })
 }
 
 /** 计算魔力打分相对占比（用于简易进度展示）。 */

@@ -82,6 +82,8 @@ from .models import (
     MagicFlowDownloaderPathsPayload,
     MagicFlowDownloaderPrefsPayload,
     MagicFlowSettingsPayload,
+    MagicFlowTagMigratePayload,
+    MagicFlowTagStatePayload,
     MagicFlowTaskPayload,
     MagicFlowTaskStatePayload,
     MagicFlowTorrentBatchPayload,
@@ -118,6 +120,24 @@ from .sitecap import (
 )
 from .sites import BonusCalculator, get_calculator, get_formula_params, register_formula_preset
 from .sites.rules import BUILTIN_RULES, SiteRules, parse_hr_from_html
+from .tags import (
+    DEFAULT_SORT_RULES,
+    FileGroupStore,
+    STATE_BONUS,
+    STATE_BRUSH,
+    STATE_RECOMMEND,
+    STATE_SILENT,
+    SUB_NEW,
+    SUB_PLAIN,
+    SUB_RESOURCE,
+    TagStateStore,
+    is_magicflow_tag,
+    parse_tag,
+    retag,
+    set_site_names as _tags_set_site_names,
+    state_tier,
+    tag_for,
+)
 from .sites.formula_fetch import (
     FormulaCapture,
     fetch_site_formula,
@@ -216,6 +236,10 @@ RULES_PROBE_DELAY = (1.5, 3.5)           # 逐站探测之间的随机间隔(秒
 SEED_UP_LIMIT_KBPS_DEFAULT = 200.0
 BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT = 5120.0
 SEED_UP_LIMIT_APPLY_INTERVAL = 600.0      # 最快多久重扫一次（秒），避免频繁全量写
+
+# ★ 标签模型（3.13.0）：状态账本 + 文件组账本 + 快照
+TAG_SNAPSHOT_INTERVAL = 6 * 3600.0        # 账本快照间隔（秒）
+TAG_NEW_TIMEOUT = 24 * 3600.0             # 「静默-新」超时自动归「静默-普通」
 
 
 def _cs_parse_site_hours(raw: Any) -> Dict[str, float]:
@@ -661,6 +685,9 @@ class MagicFlow(_PluginBase):
     _brush_seed_up_limit_kbps: float = 5120.0  # 刷流单种上传限速(KB/s)，0=不限
     _seed_up_limit_last: Any = None         # (值签名, ts) 上次应用，值没变就跳过
     _last_up_limit_bps: Optional[int] = None
+    # 标签模型
+    _tags_cfg: Dict[str, Any] = {}
+    _tag_last_snapshot: float = 0.0
     # IYUU 云端辅种(可选)
     _iyuu_token: str = ""
     _iyuu_sites: Dict[str, Dict[str, str]] = {}
@@ -713,6 +740,18 @@ class MagicFlow(_PluginBase):
             self._brush_seed_up_limit_kbps = BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT
         self._seed_up_limit_last = None
         self._last_up_limit_bps = None
+        try:
+            _sr = raw_config.get("sort_rules")
+            _sr = [dict(r) for r in _sr if isinstance(r, dict)] if isinstance(_sr, list) else []
+        except Exception:  # noqa: BLE001
+            _sr = []
+        self._tags_cfg = {
+            "enabled": bool(raw_config.get("tag_model_enabled", True)),
+            "new_timeout": max(0.0, float(raw_config.get("tag_silent_new_timeout_hours", 24.0) or 0)) * 3600.0,
+            "snapshot_interval": max(0.0, float(raw_config.get("tag_snapshot_interval_hours", 6.0) or 0)) * 3600.0,
+            "rules": _sr or [dict(r) for r in DEFAULT_SORT_RULES],
+        }
+        self._tag_last_snapshot = 0.0
         # IYUU 云端辅种配置(Token 为空 = 不启用)
         self._iyuu_token = str(raw_config.get("iyuu_token") or "").strip()
         if not self._iyuu_token:
@@ -1458,6 +1497,27 @@ class MagicFlow(_PluginBase):
                 "summary": "站点规则库(H&R/保种时长/做种上限)",
             },
             {
+                "path": "/tags",
+                "endpoint": self.get_tag_model,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "标签模型：状态账本/文件组/分拣规则/迁移预演",
+            },
+            {
+                "path": "/tags/set",
+                "endpoint": self.set_tag_state,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "手动设置种子状态（改标签 + 写账本）",
+            },
+            {
+                "path": "/tags/migrate",
+                "endpoint": self.migrate_tags,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "老标签迁移到新命名（默认 dry-run）",
+            },
+            {
                 "path": "/rules/probe",
                 "endpoint": self.probe_site_rules,
                 "methods": ["POST"],
@@ -1650,6 +1710,19 @@ class MagicFlow(_PluginBase):
                     },
                 }
             )
+        # ★ 标签模型维护（低频 hourly）：静默-新超时归位 + 状态账本快照。
+        services.append(
+            {
+                "id": "Tags",
+                "name": "标签账本维护",
+                "trigger": "interval",
+                "func": self.tags_watch,
+                "kwargs": {
+                    "minutes": 60,
+                    "jitter": self._jitter_seconds(60),
+                },
+            }
+        )
         # ★ 站点签到 / 模拟登录:插件级单 worker(借鉴「站点自动签到」插件,多选站点)。
         if bool(getattr(self, "_signin_cfg", {}).get("enabled", False)) and (
             (getattr(self, "_signin_cfg", {}) or {}).get("sites") or (getattr(self, "_signin_cfg", {}) or {}).get("login_sites")
@@ -1724,6 +1797,10 @@ class MagicFlow(_PluginBase):
             "brush_upload_limit_kbps": float(getattr(self, "_brush_upload_limit_kbps", 10240.0) or 0),
             "seed_up_limit_kbps": float(getattr(self, "_seed_up_limit_kbps", SEED_UP_LIMIT_KBPS_DEFAULT) or 0),
             "brush_seed_up_limit_kbps": float(getattr(self, "_brush_seed_up_limit_kbps", BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT) or 0),
+            "tag_model_enabled": bool(self._tags_cfg.get("enabled", True)),
+            "tag_silent_new_timeout_hours": round(float(self._tags_cfg.get("new_timeout") or 0) / 3600.0, 3),
+            "tag_snapshot_interval_hours": round(float(self._tags_cfg.get("snapshot_interval") or 0) / 3600.0, 3),
+            "sort_rules": [dict(r) for r in (self._tags_cfg.get("rules") or [])],
             "iyuu_token": str(getattr(self, "_iyuu_token", "") or ""),
             "iyuu_sites": dict(getattr(self, "_iyuu_sites", {}) or {}),
             "recommend_enabled": bool(self._recommend_cfg.get("enabled", True)),
@@ -6973,6 +7050,322 @@ class MagicFlow(_PluginBase):
         except Exception:  # noqa: BLE001
             return max(0.0, default), "default"
 
+    # ---------------------------------------------------------
+    # 标签模型（3.13.0）
+    # ---------------------------------------------------------
+
+    def _tag_state(self) -> TagStateStore:
+        """状态账本（真值源）。★ 进程级单例，与 ``_site_rules`` 同款防热重载整表覆盖。"""
+        obj = getattr(self, "_tag_state_obj", None)
+        if obj is not None:
+            return obj
+        try:
+            import sys as _sys
+            import types as _types
+
+            _key = "__magicflow_shared__"
+            mod = _sys.modules.get(_key)
+            if mod is None or not hasattr(mod, "instances"):
+                mod = _types.ModuleType(_key)
+                mod.instances = {}
+                mod.counters = {}
+                _sys.modules[_key] = mod
+            obj = mod.instances.get("tag_state")
+            if obj is None:
+                obj = TagStateStore(get_data=self.get_data, save_data=self.save_data, log=self._log)
+                mod.instances["tag_state"] = obj
+        except Exception:  # noqa: BLE001
+            obj = TagStateStore(get_data=self.get_data, save_data=self.save_data, log=self._log)
+        self._tag_state_obj = obj
+        return obj
+
+    def _tag_groups(self) -> FileGroupStore:
+        """文件组账本（多站引用计数）。进程级单例，同上。"""
+        obj = getattr(self, "_tag_groups_obj", None)
+        if obj is not None:
+            return obj
+        try:
+            import sys as _sys
+            import types as _types
+
+            _key = "__magicflow_shared__"
+            mod = _sys.modules.get(_key)
+            if mod is None or not hasattr(mod, "instances"):
+                mod = _types.ModuleType(_key)
+                mod.instances = {}
+                mod.counters = {}
+                _sys.modules[_key] = mod
+            obj = mod.instances.get("tag_groups")
+            if obj is None:
+                obj = FileGroupStore(get_data=self.get_data, save_data=self.save_data, log=self._log)
+                mod.instances["tag_groups"] = obj
+        except Exception:  # noqa: BLE001
+            obj = FileGroupStore(get_data=self.get_data, save_data=self.save_data, log=self._log)
+        self._tag_groups_obj = obj
+        return obj
+
+    def _tag_site_names(self) -> List[str]:
+        """已知站点短名（用于解析 ``魔流-<站点>-<状态>`` 里带连字符的站点）。"""
+        names: List[str] = []
+        try:
+            for it in self._list_sites() or []:
+                nm = str((it or {}).get("name") or "").strip()
+                if nm and nm not in names:
+                    names.append(nm)
+        except Exception:  # noqa: BLE001
+            pass
+        for task in self._task_configs.values():
+            nm = str(getattr(task, "site_name", "") or "").strip()
+            if nm and nm not in names:
+                names.append(nm)
+        return names
+
+    def _tag_sync_names(self) -> None:
+        try:
+            _tags_set_site_names(self._tag_site_names())
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _torrent_site_name(self, tags: Any, fallback: str = "") -> str:
+        """从种子标签里找站点短名（qB 里通常带一个裸站点标签，如 ``财神``）。"""
+        known = self._tag_site_names()
+        tagset = [str(t).strip() for t in (tags or [])]
+        for t in tagset:
+            if t in known:
+                return t
+        for t in tagset:
+            parsed = parse_tag(t)
+            if parsed and parsed.get("site"):
+                return parsed["site"]
+        return str(fallback or "").strip()
+
+    def _tag_all_torrents(self) -> Dict[str, Any]:
+        """一次快照：hash -> TorrentInfo（托管相关标签的并集）。"""
+        downloader = self._get_downloader()
+        if downloader is None or not getattr(downloader, "is_available", False):
+            return {}
+        try:
+            groups, _err = downloader.get_torrents_by_tag()
+        except Exception:  # noqa: BLE001
+            return {}
+        out: Dict[str, Any] = {}
+        for rows in (groups or {}).values():
+            for t in rows or []:
+                h = str(getattr(t, "hash", "") or "").lower()
+                if h:
+                    out[h] = t
+        return out
+
+    def _tag_migration_plan(self) -> Dict[str, Any]:
+        """算出「老标签 → 新标签」的迁移计划（不落盘）。"""
+        self._tag_sync_names()
+        torrents = self._tag_all_torrents()
+        task_tag_map: Dict[str, Dict[str, str]] = {}
+        for task in self._task_configs.values():
+            tag = str(getattr(task, "brush_tag", "") or "").strip()
+            if not tag:
+                continue
+            tier = "brush" if str(getattr(task, "task_type", "bonus") or "bonus").lower() == "brush" else "bonus"
+            task_tag_map[tag] = {
+                "site": str(getattr(task, "site_name", "") or "").strip(),
+                "state": STATE_BRUSH if tier == "brush" else STATE_BONUS,
+                "task": str(getattr(task, "name", "") or ""),
+            }
+        rec_tag = str(self._recommend_cfg.get("tag", "魔流-推荐") or "魔流-推荐")
+        plan: List[Dict[str, Any]] = []
+        for h, t in torrents.items():
+            tags = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
+            mf_tags = [x for x in tags if is_magicflow_tag(x)]
+            if not mf_tags:
+                continue
+            site = self._torrent_site_name(tags)
+            state, sub, src = "", "", ""
+            for x in mf_tags:
+                hit = task_tag_map.get(x)
+                if hit:
+                    state, src = hit["state"], f"任务「{hit['task']}」"
+                    site = site or hit["site"]
+                    break
+            if not state and rec_tag in mf_tags:
+                state, src = STATE_RECOMMEND, "推荐标签"
+            if not state and CROSSSEED_TAG in mf_tags:
+                state, sub, src = STATE_SILENT, SUB_RESOURCE, "跨站来源份"
+            if not state:
+                parsed = None
+                for x in mf_tags:
+                    parsed = parse_tag(x)
+                    if parsed and parsed.get("state"):
+                        break
+                if parsed and parsed.get("state"):
+                    state, sub, src = parsed["state"], parsed.get("sub", ""), "已是新标签"
+                else:
+                    state, sub, src = STATE_BONUS, "", "老魔力标签"
+            if not site:
+                state, src = (state, src)
+            new_tag = tag_for(site, state, sub)
+            old_new = [x for x in mf_tags if x != new_tag]
+            if not old_new and new_tag in tags:
+                continue
+            plan.append({
+                "hash": h,
+                "title": str(getattr(t, "title", "") or "")[:120],
+                "site": site,
+                "state": state,
+                "sub": sub,
+                "source": src,
+                "remove": old_new,
+                "add": new_tag,
+                "tags": tags,
+            })
+        by_state: Dict[str, int] = {}
+        for p in plan:
+            key = p["state"] + (f"-{p['sub']}" if p["sub"] else "")
+            by_state[key] = by_state.get(key, 0) + 1
+        return {"total": len(plan), "by_state": by_state, "samples": plan[:20], "plan": plan}
+
+    def _tag_migrate_apply(self, plan: Any, *, limit: int = 0) -> Dict[str, Any]:
+        """执行迁移：改标签 + 写状态账本。"""
+        downloader = self._get_downloader()
+        if downloader is None or not getattr(downloader, "is_available", False):
+            return {"ok": False, "error": "下载器不可用"}
+        store = self._tag_state()
+        done = 0
+        failed = 0
+        for item in plan or []:
+            if limit and done >= limit:
+                break
+            h = str(item.get("hash") or "").lower()
+            if not h:
+                continue
+            tags = [str(x).strip() for x in (item.get("tags") or [])]
+            new_tags = [x for x in tags if x not in set(item.get("remove") or [])]
+            add = str(item.get("add") or "")
+            if add and add not in new_tags:
+                new_tags.append(add)
+            try:
+                if not downloader.set_torrent_tags(h, new_tags):
+                    failed += 1
+                    continue
+            except Exception:  # noqa: BLE001
+                failed += 1
+                continue
+            store.put(h, {
+                "site": item.get("site") or "",
+                "state": item.get("state") or STATE_SILENT,
+                "sub": item.get("sub") or "",
+                "origin_state": item.get("state") or STATE_SILENT,
+                "origin_sub": item.get("sub") or "",
+                "title": item.get("title") or "",
+                "migrated": True,
+            })
+            done += 1
+        return {"ok": True, "migrated": done, "failed": failed}
+
+    def get_tag_model(
+        self,
+        action: str = "status",
+        hash: str = "",
+        state: str = "",
+        site: str = "",
+        limit: int = 20,
+    ) -> Response:
+        """标签模型：状态账本 / 文件组 / 分拣规则 / 迁移计划。"""
+        self._tag_sync_names()
+        store = self._tag_state()
+        groups = self._tag_groups()
+        act = str(action or "status").strip().lower()
+        if act == "state":
+            h = str(hash or "").strip().lower()
+            if not h:
+                return Response(success=False, message="缺少 hash")
+            live = self._tag_all_torrents().get(h)
+            return Response(success=True, message="ok", data={
+                "ledger": store.get(h),
+                "tags": list(getattr(live, "tags", []) or []) if live else [],
+                "group_id": groups.group_of(h),
+            })
+        if act == "list":
+            hs = store.hashes_by_state(state=state, site=site)
+            items = store.items()
+            return Response(success=True, message="ok", data={
+                "total": len(hs),
+                "items": [{ "hash": h, **{k: items[h].get(k) for k in ("site", "state", "sub", "taken_by", "origin_sub", "title", "size_gb")}} for h in hs[:max(1, int(limit or 20))]],
+            })
+        if act == "expire":
+            moved = store.expire_new(timeout=float(self._tags_cfg.get("new_timeout") or TAG_NEW_TIMEOUT))
+            return Response(success=True, message=f"静默-新超时归普通 {len(moved)} 个", data={"moved": moved})
+        if act == "snapshot":
+            info = store.snapshot()
+            return Response(success=True, message="已落快照", data=info)
+        if act == "migrate":
+            plan = self._tag_migration_plan()
+            return Response(success=True, message=f"待迁移 {plan['total']} 个", data={
+                "total": plan["total"], "by_state": plan["by_state"],
+                "samples": [{k: s.get(k) for k in ("title", "site", "state", "sub", "source", "remove", "add")} for s in plan["samples"]],
+            })
+        # default: status
+        items = store.items()
+        snap = store.snapshots()
+        return Response(success=True, message="ok", data={
+            "enabled": bool(self._tags_cfg.get("enabled", True)),
+            "new_timeout_hours": round(float(self._tags_cfg.get("new_timeout") or 0) / 3600.0, 2),
+            "snapshot_interval_hours": round(float(self._tags_cfg.get("snapshot_interval") or 0) / 3600.0, 2),
+            "ledger_count": len(items),
+            "by_state": store.stats(),
+            "groups": groups.stats(),
+            "snapshots": [{"ts": s.get("ts"), "count": s.get("count")} for s in snap],
+            "site_names": self._tag_site_names(),
+            "sort_rules": [dict(r) for r in (self._tags_cfg.get("rules") or [])],
+            "states": [STATE_BRUSH, STATE_BONUS, STATE_SILENT, STATE_RECOMMEND],
+            "subs": [SUB_NEW, SUB_RESOURCE, SUB_PLAIN],
+        })
+
+    def set_tag_state(self, payload: MagicFlowTagStatePayload) -> Response:
+        """手动设置种子状态：改标签 + 写账本（两处一起，失败回滚标签）。"""
+        h = str(getattr(payload, "hash", "") or "").strip().lower()
+        state = str(getattr(payload, "state", "") or "").strip()
+        sub = str(getattr(payload, "sub", "") or "").strip()
+        if not h or not state:
+            return Response(success=False, message="需要 hash 与 state")
+        if state not in (STATE_BRUSH, STATE_BONUS, STATE_SILENT, STATE_RECOMMEND):
+            return Response(success=False, message=f"非法状态：{state}")
+        if state != STATE_SILENT:
+            sub = ""
+        elif not sub:
+            sub = SUB_PLAIN
+        store = self._tag_state()
+        live = self._tag_all_torrents().get(h)
+        if live is None:
+            return Response(success=False, message="下载器里找不到该种子")
+        site = self._torrent_site_name(getattr(live, "tags", None)) or str(getattr(payload, "site", "") or "")
+        old_tags = [str(x).strip() for x in (getattr(live, "tags", None) or [])]
+        new_tags = retag(old_tags, site=site, state=state, sub=sub)
+        downloader = self._get_downloader()
+        if downloader is None or not getattr(downloader, "is_available", False):
+            return Response(success=False, message="下载器不可用")
+        if not downloader.set_torrent_tags(h, new_tags):
+            return Response(success=False, message="标签写入失败")
+        store.put(h, {
+            "site": site, "state": state, "sub": sub,
+            "origin_state": state, "origin_sub": sub,
+            "manual": True, "title": str(getattr(live, "title", "") or ""),
+            "size_gb": float(getattr(live, "size_gb", 0) or 0),
+        })
+        return Response(success=True, message=f"已设为 {tag_for(site, state, sub)}", data={
+            "hash": h, "site": site, "state": state, "sub": sub, "tags": new_tags,
+        })
+
+    def migrate_tags(self, payload: MagicFlowTagMigratePayload) -> Response:
+        """老标签迁移到新命名（默认 dry-run，``apply=true`` 才落盘）。"""
+        plan = self._tag_migration_plan()
+        if not bool(getattr(payload, "apply", False)):
+            return Response(success=True, message=f"预演：待迁移 {plan['total']} 个（未执行）", data={
+                "dry_run": True, "total": plan["total"], "by_state": plan["by_state"],
+                "samples": [{k: s.get(k) for k in ("title", "site", "state", "sub", "source", "remove", "add")} for s in plan["samples"]],
+            })
+        res = self._tag_migrate_apply(plan["plan"])
+        return Response(success=bool(res.get("ok")), message=f"迁移完成：{res.get('migrated')} 个（失败 {res.get('failed')}）", data=res)
+
     def _site_rules(self) -> SiteRules:
         """站点规则账本(H&R / 保种时长 / 做种上限)，save_data 持久化。
 
@@ -9824,6 +10217,10 @@ class MagicFlow(_PluginBase):
             "brush_upload_limit_kbps": float(getattr(self, "_brush_upload_limit_kbps", 10240.0) or 0),
             "seed_up_limit_kbps": float(getattr(self, "_seed_up_limit_kbps", SEED_UP_LIMIT_KBPS_DEFAULT) or 0),
             "brush_seed_up_limit_kbps": float(getattr(self, "_brush_seed_up_limit_kbps", BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT) or 0),
+            "tag_model_enabled": bool(self._tags_cfg.get("enabled", True)),
+            "tag_silent_new_timeout_hours": round(float(self._tags_cfg.get("new_timeout") or 0) / 3600.0, 3),
+            "tag_snapshot_interval_hours": round(float(self._tags_cfg.get("snapshot_interval") or 0) / 3600.0, 3),
+            "sort_rules": [dict(r) for r in (self._tags_cfg.get("rules") or [])],
             "iyuu_token": str(getattr(self, "_iyuu_token", "") or ""),
             "iyuu_sites": dict(getattr(self, "_iyuu_sites", {}) or {}),
             "store": self.store_stats(),
@@ -10010,6 +10407,22 @@ class MagicFlow(_PluginBase):
             self._log(f"站点规则刷新异常:{err}", "warning")
         finally:
             self._release_worker_slot()
+
+    def tags_watch(self) -> None:
+        """标签模型维护（worker）：① 静默-新超时归普通 ② 状态账本定时快照。"""
+        try:
+            store = self._tag_state()
+            moved = store.expire_new(timeout=float(self._tags_cfg.get("new_timeout") or TAG_NEW_TIMEOUT))
+            if moved:
+                self._log(f"魔流:标签维护:「静默-新」超时归「静默-普通」{len(moved)} 个")
+            interval = float(self._tags_cfg.get("snapshot_interval") or TAG_SNAPSHOT_INTERVAL)
+            now = time.time()
+            if interval > 0 and (now - float(getattr(self, "_tag_last_snapshot", 0) or 0)) >= interval:
+                info = store.snapshot()
+                self._tag_last_snapshot = now
+                self._dbg(f"魔流:标签维护:状态账本快照完成（{info.get('count')} 条）")
+        except Exception as err:  # noqa: BLE001
+            self._log(f"标签维护异常:{err}", "warning")
 
     # ------------------------------------------------------- 站点规则库(H&R/保种)
     def _rules_fetch(self, site: Any, path: str) -> str:
@@ -10486,6 +10899,14 @@ class MagicFlow(_PluginBase):
         }
         self._rules_cfg = {
             "auto_refresh": bool(getattr(payload, "rules_auto_refresh", True)),
+        }
+        # 标签模型（3.13.0）
+        _sr = getattr(payload, "sort_rules", None)
+        self._tags_cfg = {
+            "enabled": bool(getattr(payload, "tag_model_enabled", True)),
+            "new_timeout": max(0.0, _rf(getattr(payload, "tag_silent_new_timeout_hours", 24.0), 24.0)) * 3600.0,
+            "snapshot_interval": max(0.0, _rf(getattr(payload, "tag_snapshot_interval_hours", 6.0), 6.0)) * 3600.0,
+            "rules": [dict(r) for r in _sr if isinstance(r, dict)] if isinstance(_sr, list) and _sr else [dict(r) for r in DEFAULT_SORT_RULES],
         }
         self._sync_free_rules()
         # 元数据兜底(多源识别 + 补 NFO)
