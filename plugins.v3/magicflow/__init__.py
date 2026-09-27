@@ -157,7 +157,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.14.5"
+__version__ = "3.14.6"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -13495,8 +13495,34 @@ class MagicFlow(_PluginBase):
                         done_keys.setdefault(_k, str(_h).lower())
             except Exception:  # noqa: BLE001
                 continue
+        try:
+            files = self._tag_groups()
+        except Exception:  # noqa: BLE001
+            files = None
+        _lib_cache: Dict[str, bool] = {}
+
+        def _in_lib(_h: str) -> bool:
+            """该种所属**资源**是否已入库（★ 库记挂资源，不挂种子 —— P1-6）。"""
+            if files is None:
+                return False
+            try:
+                _g = files.group_of(_h)
+            except Exception:  # noqa: BLE001
+                return False
+            if not _g:
+                return False
+            if _g in _lib_cache:
+                return _lib_cache[_g]
+            try:
+                _v = bool((files.items().get(_g) or {}).get("library", {}).get("in_library"))
+            except Exception:  # noqa: BLE001
+                _v = False
+            _lib_cache[_g] = _v
+            return _v
+
         by_site: Dict[str, List[Tuple[str, Any, float, Dict[str, Any]]]] = {}
         protected = 0
+        _pwhy = {"asset": 0, "recommend": 0, "in_library": 0, "hr": 0}
         for h, rec in list(ledger.items()):
             hh = str(h or "").lower()
             if (str(rec.get("state") or "") != STATE_SILENT
@@ -13506,19 +13532,32 @@ class MagicFlow(_PluginBase):
             if t is None:
                 continue
             tags = [str(x) for x in (getattr(t, "tags", None) or [])]
-            if (MARK_REUSE in tags or "魔流-推荐" in tags or "魔流-跨站" in tags
-                    or is_asset_tags(tags)):
+            # 保护 = MP 资产标 / 推荐中 / **资源已入库** / 欠 H&R
+            # ★ 不再按「魔流-跨站」「魔流-辅种」硬豁免 —— 它们「跟资源走」：
+            #   资源在库里 → 上面 in_library 保护；不在库里 → 该考核就考核（否则跨站没法收口）
+            if is_asset_tags(tags):
                 protected += 1
+                _pwhy["asset"] = int(_pwhy.get("asset") or 0) + 1
+                continue
+            if "魔流-推荐" in tags:
+                protected += 1
+                _pwhy["recommend"] = int(_pwhy.get("recommend") or 0) + 1
+                continue
+            if _in_lib(hh):
+                protected += 1
+                _pwhy["in_library"] = int(_pwhy.get("in_library") or 0) + 1
                 continue
             site = str(rec.get("site") or "").strip() or self._torrent_site_name(tags, "")
             done_hr, _why = self._silent_hr_done(site, t)
             if not done_hr:
                 protected += 1
+                _pwhy["hr"] = int(_pwhy.get("hr") or 0) + 1
                 continue
             by_site.setdefault(site or "-", []).append(
                 (hh, t, self._magic_out_per_hour(t, int(ni_map.get(hh, 0) or 0)), rec)
             )
         rep["protected"] = protected
+        rep["protected_why"] = _pwhy
         cap = int(limit or 0)
         for site, rows in by_site.items():
             enough, why = self._site_magic_enough(site)
@@ -13557,6 +13596,12 @@ class MagicFlow(_PluginBase):
                             rep["torrent_only"] = int(rep["torrent_only"]) + 1
                         try:
                             self._tag_state().drop(hh)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        # ★ 跨站来源份：既然删了种，来源份账本也一起收口（不留悬挂记录）
+                        try:
+                            if hh in (self._crossseed_sources().items() or {}):
+                                self._crossseed_sources().drop(hh)
                         except Exception:  # noqa: BLE001
                             pass
                     else:
