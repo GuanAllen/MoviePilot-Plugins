@@ -204,7 +204,7 @@ CROSSSEED_POOL_MAX = 12
 CROSSSEED_SEED_HOURS_DEFAULT = 24.0
 # ★ 已知站点 H&R 保种时长默认值（可在设置面板「跨站」页改）。
 #   学校 BTSchool 要求挂种 10h（用户实测告知）。
-CROSSSEED_SITE_HOURS_DEFAULT = ["pt.btschool.club=20"]
+CROSSSEED_SITE_HOURS_DEFAULT = ["pt.btschool.club=240"]
 # ★ 站点规则库(3.12.0)：用户不填「域名=小时」也能自动按站保种
 RULES_INTERVAL_MINUTES = 7 * 24 * 60     # 站点规则自动刷新周期(分钟) -- 每周一次(低频探测)
 RULES_PROBE_DELAY = (1.5, 3.5)           # 逐站探测之间的随机间隔(秒，礼貌限速)
@@ -773,19 +773,21 @@ class MagicFlow(_PluginBase):
             "reclaim": bool(raw_config.get("crossseed_reclaim", False)),
         }
         self._cs_guard_at: Dict[str, float] = {}
-        # ★ 迁移：学校早期的 10h 是误读（把「平均每天做种10小时」当成了 H&R）。
-        #    rules.php 原文：下载完成后 **10 天内做种≥20 小时**。旧存值 10.0 → 改成 20.0。
+        # ★ 迁移：学校历史上的 10h（把「平均每天做种10小时」当成 H&R）/ 20h（只取达到线）
+        #   都是保守不足的。rules.php 原文：**10 天内做种≥20 小时**（窗口 10 天）。
+        #   保守做法 = 保护期取满**窗口**（240h）——我们的账本按墙钟计时，
+        #   暂停 / 无 peer 时墙钟 ≠ 实际做种时长，取窗口才不出事。
         try:
             _sh = self._cs_cfg.get("site_hours") or {}
             if isinstance(_sh, dict):
                 _changed = False
                 for _k in ("pt.btschool.club", "btschool.club"):
-                    if _k in _sh and float(_sh.get(_k) or 0) == 10.0:
-                        _sh[_k] = 20.0
+                    if _k in _sh and float(_sh.get(_k) or 0) in (10.0, 20.0):
+                        _sh[_k] = 240.0
                         _changed = True
                 if _changed:
                     self.save_data(key="crossseed_cfg", value=dict(self._cs_cfg))
-                    logger.info("跨站:学校保种时长迁移 10h→20h（rules.php:10天内做种≥20小时）")
+                    logger.info("跨站:学校保种时长迁移 →240h（保守：取满 10 天窗口）")
         except Exception:  # noqa: BLE001
             pass
         # ★ 站点规则库(H&R/保种/做种上限)：自动刷新开关(3.12.0)
