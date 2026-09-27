@@ -1161,6 +1161,13 @@ class MagicFlow(_PluginBase):
                 "summary": "诊断:立即套用单种上传限速(返回档位表)",
             },
             {
+                "path": "/debug/fs",
+                "endpoint": self.debug_fs,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "诊断:查看路径是否在库/是否硬链接(只读元数据)",
+            },
+            {
                 "path": "/debug/qb",
                 "endpoint": self.debug_qb_info,
                 "methods": ["GET"],
@@ -10639,6 +10646,46 @@ class MagicFlow(_PluginBase):
                 return True
         return False
 
+    def debug_fs(self, path: str = "", list: int = 0, path2: str = "") -> Response:
+        """诊断：路径元数据（是否硬链接/在不在库）。只读。"""
+        import os as _os
+
+        def _one(pp: str) -> Dict[str, Any]:
+            p2 = str(pp or "")
+            if not p2:
+                return {}
+            info: Dict[str, Any] = {"path": p2}
+            try:
+                st = _os.stat(p2)
+                info.update({
+                    "exists": True, "is_dir": _os.path.isdir(p2),
+                    "size": st.st_size, "dev": st.st_dev, "ino": st.st_ino, "nlink": st.st_nlink,
+                    "mtime": st.st_mtime,
+                })
+                if _os.path.islink(p2):
+                    info["symlink_to"] = _os.readlink(p2)
+            except FileNotFoundError:
+                info["exists"] = False
+            except Exception as err:  # noqa: BLE001
+                info["error"] = str(err)
+            return info
+
+        out: Dict[str, Any] = {"a": _one(path)}
+        if path2:
+            out["b"] = _one(path2)
+            try:
+                out["same_inode"] = (_os.stat(str(path)).st_ino == _os.stat(str(path2)).st_ino) if out["a"].get("exists") and out["b"].get("exists") else None
+            except Exception:  # noqa: BLE001
+                out["same_inode"] = None
+        if list and out["a"].get("exists"):
+            try:
+                names = sorted(_os.listdir(str(path)))[: int(list)]
+                out["entries"] = [{"name": n, "is_dir": _os.path.isdir(_os.path.join(str(path), n))} for n in names]
+                out["total_entries"] = len(_os.listdir(str(path)))
+            except Exception as err:  # noqa: BLE001
+                out["list_error"] = str(err)
+        return Response(success=True, message="ok", data=self._jsonable(out))
+
     def debug_seed_limit(self) -> Response:
         """诊断：强制重套挂种限速（按标签档位表）。"""
         tiers = self._seed_tag_tiers()
@@ -10722,10 +10769,22 @@ class MagicFlow(_PluginBase):
             }))
         if str(path or "").strip().startswith("/api/v2/"):
             try:
+                _p = str(path).strip()
+                if _p.startswith("/api/v2/"):
+                    _p = _p[len("/api/v2/"):]
+                if hash:
+                    _p = f"{_p}{'&' if '?' in _p else '?'}hash={hash}"
                 fn = getattr(qbc, "_get", None)
-                data = fn(str(path)) if callable(fn) else qbc.app_version()
+                data = fn(_p) if callable(fn) else None
+                if hasattr(data, "json"):
+                    try:
+                        data = data.json()
+                    except Exception:  # noqa: BLE001
+                        data = None
+                if data is None:
+                    return Response(success=False, message=f"qB 返回空(path={_p})")
                 return Response(success=True, message="ok",
-                                data=self._jsonable({"path": path, "result": data}))
+                                data=self._jsonable({"path": _p, "result": data}))
             except Exception as err:  # noqa: BLE001
                 return Response(success=False, message=f"qB 查询失败:{err}")
         for key, attr in (("version", "app_version"), ("webapi", "app_web_api_version")):
@@ -10836,6 +10895,11 @@ class MagicFlow(_PluginBase):
             out["by_up_limit"] = dict(sorted(_lim.items(), key=lambda x: -x[1])[:8])
             out["by_seeding_time_limit"] = dict(sorted(_seedlim.items(), key=lambda x: -x[1])[:8])
             out["num_complete_buckets"] = _nocomplete
+            _st: Dict[str, int] = {}
+            for t in rows:
+                _s = str(t.get("state") or "-")
+                _st[_s] = _st.get(_s, 0) + 1
+            out["by_state"] = dict(sorted(_st.items(), key=lambda x: -x[1])[:12])
         except Exception as err:  # noqa: BLE001
             out["aggregate_error"] = str(err)
         try:
