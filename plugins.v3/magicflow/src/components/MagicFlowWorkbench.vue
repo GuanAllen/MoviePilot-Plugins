@@ -2306,6 +2306,7 @@ onUnmounted(() => {
             >
               <span class="magicflow-task-item__title">
                 <strong>{{ task.name }}</strong>
+                <VChip v-if="task.builtin" size="x-small" variant="tonal" color="primary">常驻</VChip>
                 <span class="magicflow-status-dot" :class="`magicflow-status-dot--${taskBadge(task).color}`" />
               </span>
               <span>{{ task.site_name }} · {{ task.downloader }}</span>
@@ -2331,7 +2332,8 @@ onUnmounted(() => {
               <div class="magicflow-task-head__body">
                 <div class="magicflow-task-head__title">
                   <h2>{{ selectedTask.name }}</h2>
-                  <VChip size="small" variant="tonal" :color="selectedTask.task_type === 'brush' ? 'info' : 'primary'" :prepend-icon="selectedTask.task_type === 'brush' ? 'mdi-upload-network-outline' : 'mdi-star-four-points-outline'">
+                  <VChip v-if="selectedTask.builtin" size="small" variant="tonal" color="primary" prepend-icon="mdi-access-point">常驻</VChip>
+                  <VChip v-else size="small" variant="tonal" :color="selectedTask.task_type === 'brush' ? 'info' : 'primary'" :prepend-icon="selectedTask.task_type === 'brush' ? 'mdi-upload-network-outline' : 'mdi-star-four-points-outline'">
                     {{ selectedTask.task_type === 'brush' ? '刷流' : '刷魔力' }}
                   </VChip>
                   <VChip :color="selectedState.color" size="small" variant="tonal" :prepend-icon="selectedState.icon">
@@ -2352,7 +2354,7 @@ onUnmounted(() => {
                   <VBtn v-bind="tipProps" icon="mdi-refresh" variant="text" @click="reloadSelected()" />
                 </template>
               </VTooltip>
-              <VMenu location="bottom end">
+              <VMenu v-if="!selectedTask.builtin" location="bottom end">
                 <template #activator="{ props: menuProps }">
                   <VBtn
                     v-bind="menuProps"
@@ -2373,12 +2375,12 @@ onUnmounted(() => {
                   />
                 </VList>
               </VMenu>
-              <VTooltip text="编辑任务">
+              <VTooltip v-if="!selectedTask.builtin" text="编辑任务">
                 <template #activator="{ props: tipProps }">
                   <VBtn v-bind="tipProps" icon="mdi-pencil-outline" variant="text" @click="openEditTask" />
                 </template>
               </VTooltip>
-              <VTooltip text="删除任务">
+              <VTooltip v-if="!selectedTask.builtin" text="删除任务">
                 <template #activator="{ props: tipProps }">
                   <VBtn v-bind="tipProps" icon="mdi-delete-outline" variant="text" color="error" @click="deleteDialog = true" />
                 </template>
@@ -2386,6 +2388,7 @@ onUnmounted(() => {
             </div>
           </section>
 
+          <template v-if="!selectedTask.builtin">
           <div class="magicflow-tabs" role="tablist">
             <button
               v-for="tab in MF_TABS"
@@ -2978,6 +2981,42 @@ onUnmounted(() => {
             </VWindowItem>
 
           </VWindow>
+          </template>
+          <template v-else>
+            <VSheet class="magicflow-panel app-surface-static" style="margin-top:16px;">
+              <header class="magicflow-panel__head">
+                <div>
+                  <div class="text-subtitle-1 font-weight-medium">静默托管 · 常驻 worker</div>
+                  <div class="text-body-2 text-medium-emphasis">静默池的负责人：清理未下完 / 保挂（恢复做种）/ H&R 统一管理 / 辅种校验 / 分拣，低频自动运行</div>
+                </div>
+                <VChip color="primary" size="small" variant="tonal" prepend-icon="mdi-access-point">常驻</VChip>
+              </header>
+              <div class="magicflow-stat-grid">
+                <VSheet class="magicflow-stat app-surface-static">
+                  <strong>{{ selectedTask.seeding_count || 0 }}</strong>
+                  <span>静默池种子（托管中）</span>
+                </VSheet>
+                <VSheet class="magicflow-stat app-surface-static">
+                  <strong>{{ selectedTask.host_interval_minutes || 60 }} 分钟</strong>
+                  <span>托管周期 · silent_host_interval_minutes 可调</span>
+                </VSheet>
+                <VSheet class="magicflow-stat app-surface-static">
+                  <strong>{{ selectedTask.host_last_run || '—' }}</strong>
+                  <span>上次运行</span>
+                </VSheet>
+              </div>
+              <ul class="text-body-2 text-medium-emphasis" style="margin-top:14px;padding-left:18px;line-height:1.9;">
+                <li>① 清理未下完的种（不计 H&R）　② 保挂：已完成却暂停/停止的种恢复做种（静默≠白占盘）</li>
+                <li>③ H&R 统一管理：欠 H&R 打标 · 未到期被暂停强制拉起 · 结清摘标</li>
+                <li>④ 辅种校验（pausedDL recheck 拉起）　⑤ 静默-普通清理（站点魔力已达标时删低效）</li>
+                <li>⑥ 推荐过期待降级　⑦ 分拣：静默-新 → 推荐/普通　⑧ 静默-新超时归普通　⑨ 库内资产刷新</li>
+              </ul>
+              <div style="margin-top:14px;display:flex;gap:8px;">
+                <VBtn size="small" color="primary" variant="tonal" prepend-icon="mdi-sync" :loading="saving" @click="runOperation">立即执行</VBtn>
+                <VBtn size="small" variant="text" prepend-icon="mdi-refresh" @click="reloadSelected()">刷新</VBtn>
+              </div>
+            </VSheet>
+          </template>
         </main>
       </div>
     </template>
