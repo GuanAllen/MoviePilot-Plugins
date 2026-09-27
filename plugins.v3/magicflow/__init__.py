@@ -7487,6 +7487,18 @@ class MagicFlow(_PluginBase):
                 "total": len(hs),
                 "items": [{ "hash": h, **{k: items[h].get(k) for k in ("site", "state", "sub", "taken_by", "origin_sub", "title", "size_gb", "asset")}} for h in hs[:max(1, int(limit or 20))]],
             })
+        if act == "resource":
+            if str(hash or "").strip():
+                gid = str(hash).strip()
+                rec = groups.items().get(gid) or {}
+                return Response(success=True, message="ok", data={"group_id": gid, "resource": rec})
+            rows = groups.resources(limit=int(limit or 0) if str(limit).isdigit() else 0)
+            return Response(success=True, message=f"资源 {len(rows)} 个", data={
+                "count": len(groups.items()), "multi": groups.stats().get("multi_site_groups", 0),
+                "items": rows[: max(1, int(limit)) if str(limit).isdigit() and int(limit) > 0 else 50],
+            })
+        if act in ("syncres", "resource_sync"):
+            return Response(success=True, message="资源账本已刷新", data=self.sync_resources(apply=True))
         if act == "asset":
             info = self.sync_tag_assets(apply=True)
             return Response(success=True, message=f"库内资产 {info.get('asset')} 个（更新 {info.get('changed')}）", data=info)
@@ -8278,10 +8290,25 @@ class MagicFlow(_PluginBase):
             if seeded > float(rec.get("seeded_sec") or 0.0) + 1.0 or (need and not done):
                 store.put(h, {"seeded_sec": seeded})
                 rec["seeded_sec"] = seeded
+                try:
+                    self._tag_groups().note_hr_progress(
+                        self._resource_gid(rec.get("title"), rec.get("size_gb")), seeded_seconds=seeded
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             if need > 0 and seeded >= need * 3600.0 and not done:
                 store.put(h, {"done": True, "done_ts": now, "seeded_sec": seeded})
                 rec["done"] = True
                 res["completed"] = int(res.get("completed") or 0) + 1
+                # ★ 挂够时长 = 来源站种子的义务还完 → 给「资源」结清 H&R 账单
+                try:
+                    _gid = self._resource_gid(rec.get("title"), rec.get("size_gb"))
+                    hr = self._tag_groups().note_hr_progress(_gid, seeded_seconds=seeded)
+                    if hr.get("settled"):
+                        self._log(f"资源:H&R 账单已结清 —— 资源「{str(rec.get('title') or '')[:50]}」"
+                                  f"（来源站 {hr.get('site') or rec.get('site_b', '')} 已挂 {seeded / 3600.0:.1f}h）")
+                except Exception as err:  # noqa: BLE001
+                    self._log(f"资源:H&R 结清记录失败:{err}", "warning")
                 self._log(
                     f"跨站:H&R 义务完成 —— {rec.get('site_b', '') or rec.get('site_b_domain', '')} "
                     f"「{str(rec.get('title') or '')[:50]}」已实际做种 {seeded / 3600.0:.1f}h ≥ {need:g}h，可撤种"
@@ -8337,6 +8364,27 @@ class MagicFlow(_PluginBase):
         res["protected"] = len(store.items())
         return res
 
+    def _guess_site_of_torrent(self, tags: Any, title: Any = "") -> Tuple[str, str]:
+        """从种子的标签 / 标题后缀（``@HDFans``、``-WGXC@HDFans``）猜它的站点（名, 域名）。"""
+        try:
+            sites = self._list_sites() or []
+        except Exception:  # noqa: BLE001
+            sites = []
+        site = self._torrent_site_name(tags) or ""
+        if site:
+            for it in sites:
+                if str(it.get("name") or "") == site:
+                    return site, str(it.get("domain") or "")
+            return site, ""
+        m = re.search(r"@\s*([A-Za-z0-9_.-]{2,30})\s*$", str(title or "").strip())
+        tail = m.group(1).lower() if m else ""
+        for it in sites:
+            nm = str(it.get("name") or "")
+            dom = str(it.get("domain") or "")
+            if tail and (tail in dom.lower() or tail in nm.lower().replace(" ", "")):
+                return nm, dom
+        return (tail, "") if tail else ("", "")
+
     def _crossseed_sources_backfill(self) -> int:
         """把「下载器里有 魔流-跨站 标签、账本里没有」的种回填进 H&R 保护账本。"""
         downloader = self._get_downloader()
@@ -8357,11 +8405,15 @@ class MagicFlow(_PluginBase):
             h = str(getattr(t, "hash", "") or "").lower()
             if not h or h in known:
                 continue
+            _tags = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
+            _title = str(getattr(t, "title", "") or getattr(t, "name", "") or "")
+            # ★ 来源站：老记录可能是空的 → 用种子标签/标题里的站点信息补上（H&R 账单要记在资源上）
+            _site, _dom = self._guess_site_of_torrent(_tags, _title)
             store.add({
                 "sib_hash": h,
-                "title": str(getattr(t, "title", "") or getattr(t, "name", "") or ""),
+                "title": _title,
                 "size_gb": float(getattr(t, "size", 0) or 0) / (1024 ** 3),
-                "site_a": "", "site_b": "", "site_b_domain": "",
+                "site_a": "", "site_b": _site, "site_b_domain": _dom,
                 "a_hash": "", "hit_and_run": False,
                 "hours": hours,
                 "created": now,
@@ -10641,6 +10693,108 @@ class MagicFlow(_PluginBase):
         return {"ok": True, "applied": bool(apply), "asset": asset, "non_asset": non,
                 "changed": changed, "ledger": len(data)}
 
+    def _resource_gid(self, title: Any, size_gb: Any) -> str:
+        """资源 ID：同一个内容 = 同一个资源（关键词 + 体积档）。"""
+        t = search_key(title, 40).lower()
+        try:
+            sz = round(float(size_gb or 0.0), 1)
+        except (TypeError, ValueError):
+            sz = 0.0
+        return f"{t}|{sz}"
+
+    def sync_resources(self, *, apply: bool = False) -> Dict[str, Any]:
+        """★ 建/刷 资源账本（Master 20:38 模型）：资源 1 : N 种子。
+
+        - 资源有 **来源站**（真下回来的那个站）与 **H&R 账单**（靠来源站的种子挂种结清）
+        - 资源有 **库记**（命中 ``已整理``/``辅种`` → 该资源已入库）
+        - **只有下完的才有资源**（``progress >= 1``）；没下完的只有种子
+        """
+        if not bool(self._tags_cfg.get("enabled", True)):
+            return {"ok": False, "reason": "标签模型未启用"}
+        store = self._tag_groups()
+        ledger = self._tag_state().items()
+        snap = self._tag_all_torrents()
+        stat: Dict[str, Any] = {"ok": True, "applied": bool(apply), "resources": 0,
+                                "members": 0, "multi": 0, "in_library": 0, "hr_bills": 0}
+        for h, t in snap.items():
+            hh = str(h or "").strip().lower()
+            rec = ledger.get(hh)
+            if not rec:
+                continue
+            tags = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
+            if not any(is_magicflow_tag(x) for x in tags):
+                continue
+            title = getattr(t, "name", "") or rec.get("title") or ""
+            size = float(getattr(t, "size_gb", 0) or rec.get("size_gb") or 0.0)
+            try:
+                prog = float(getattr(t, "progress", 1.0) or 0.0)
+            except (TypeError, ValueError):
+                prog = 1.0
+            gid = self._resource_gid(title, size)
+            stat["members"] = int(stat["members"]) + 1
+            if apply:
+                store.add_member(gid, hh, site=rec.get("site") or "", size_gb=size,
+                                 downloaded=prog >= 0.999, progress=prog,
+                                 state=rec.get("state") or "")
+                if is_asset_tags(tags) and store.set_library(gid, True):
+                    stat["in_library"] = int(stat["in_library"]) + 1
+        # 来源站 + H&R 账单：跨站来源份账本里的义务挂到「资源」上
+        try:
+            srcs = self._crossseed_sources().items()
+        except Exception:  # noqa: BLE001
+            srcs = {}
+        for sib, srec in (srcs or {}).items():
+            if not isinstance(srec, dict):
+                continue
+            gid = self._resource_gid(srec.get("title"), srec.get("size_gb"))
+            a_hash = str(srec.get("a_hash") or "").strip().lower()
+            # 来源站优先级：来源份记录 → 种子标签/标题后缀 → 账本站点（账本可能被同站纳管改错）
+            _site = str(srec.get("site_b") or srec.get("site_b_domain") or "")
+            if not _site:
+                # 兜底：按种子标签 / 标题后缀（@HDFans 之类）猜
+                _live = snap.get(str(sib).lower())
+                _site, _dom = self._guess_site_of_torrent(
+                    getattr(_live, "tags", None), srec.get("title")
+                )
+                if _site and not srec.get("site_b"):
+                    srec["site_b"] = _site
+                    try:
+                        self._crossseed_sources().put(str(sib).lower(), {"site_b": _site, "site_b_domain": _dom})
+                    except Exception:  # noqa: BLE001
+                        pass
+                    stat["hr_site_fixed"] = int(stat.get("hr_site_fixed") or 0) + 1
+            if not _site:
+                _site = str((ledger.get(str(sib).lower()) or {}).get("site") or "")
+            if not _site and a_hash:
+                _site = str((ledger.get(a_hash) or {}).get("site") or "")
+            if apply:
+                store.add_member(gid, str(sib).lower(), site=str(srec.get("site_b") or srec.get("site_b_domain") or ""),
+                                 size_gb=float(srec.get("size_gb") or 0.0), downloaded=True)
+                if a_hash:
+                    store.add_member(gid, a_hash, site=str(srec.get("site_a") or ""),
+                                     size_gb=float(srec.get("size_gb") or 0.0), downloaded=True)
+                store.set_hr(gid, site=_site,
+                             required_hours=float(srec.get("hours") or 0.0),
+                             need_hours=float(srec.get("need_hours") or 0.0),
+                             by_hash=str(sib).lower())
+            stat["hr_bills"] = int(stat["hr_bills"]) + 1
+        info = store.stats()
+        stat["resources"] = info.get("groups") or 0
+        stat["multi"] = info.get("multi_site_groups") or 0
+        try:
+            stat["in_library"] = sum(
+                1 for r in store.items().values() if (r.get("library") or {}).get("in_library")
+            )
+            stat["hr_bills"] = sum(
+                1 for r in store.items().values() if (r.get("hr") or {}).get("by_hash")
+            )
+            stat["hr_settled"] = sum(
+                1 for r in store.items().values() if (r.get("hr") or {}).get("settled")
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return stat
+
     def tags_watch(self) -> None:
         """标签模型维护（worker）：① 静默-新超时归普通 ② 状态账本定时快照。"""
         try:
@@ -10655,6 +10809,13 @@ class MagicFlow(_PluginBase):
                               f"（资产 {info.get('asset')}）")
             except Exception as err:  # noqa: BLE001
                 self._log(f"标签维护:资产同步失败:{err}", "warning")
+            try:
+                rinfo = self.sync_resources(apply=True)
+                if rinfo.get("resources"):
+                    self._log(f"魔流:标签维护:资源账本 {rinfo.get('resources')} 个"
+                              f"（多样 {rinfo.get('multi')} · 入库 {rinfo.get('in_library')} · H&R 账单 {rinfo.get('hr_bills')}）")
+            except Exception as err:  # noqa: BLE001
+                self._log(f"标签维护:资源同步失败:{err}", "warning")
             interval = float(self._tags_cfg.get("snapshot_interval") or TAG_SNAPSHOT_INTERVAL)
             now = time.time()
             if interval > 0 and (now - float(getattr(self, "_tag_last_snapshot", 0) or 0)) >= interval:
