@@ -3450,8 +3450,11 @@ onUnmounted(() => {
                   <VChip v-if="row.hr === true" size="x-small" color="error" variant="tonal">有</VChip>
                   <VChip v-else-if="row.hr === false" size="x-small" color="success" variant="tonal">无</VChip>
                   <VChip v-else size="x-small" variant="tonal">未知</VChip>
-                  <VBtn v-if="row.hr !== false" size="x-small" variant="text" :disabled="rulesProbing" title="该站没有 H&R：直接标无，不做保种保护" @click="setRuleHr(row, '0')">标无</VBtn>
-                  <VBtn v-else size="x-small" variant="text" :disabled="rulesProbing" title="恢复为探测/内置判定" @click="setRuleHr(row, 'unknown')">恢复</VBtn>
+                  <VBtn v-if="row.hr === false" size="x-small" variant="text" :disabled="rulesProbing" title="恢复为探测/内置判定" @click="setRuleHr(row, 'unknown')">恢复</VBtn>
+                  <template v-else>
+                    <VBtn size="x-small" variant="text" :disabled="rulesProbing" title="该站有 H&R：手动确认为「有」并按当前时长保护" @click="setRuleHr(row, '1')">标有</VBtn>
+                    <VBtn size="x-small" variant="text" :disabled="rulesProbing" title="该站没有 H&R：直接标无，不做保种保护" @click="setRuleHr(row, '0')">标无</VBtn>
+                  </template>
                 </span>
                 <span>
                   <VTextField
