@@ -1537,6 +1537,20 @@ async function probeRules(site) {
   }
 }
 
+async function setRuleHr(row, hr) {
+  if (!row?.domain) return
+  try {
+    const res = await props.api.get(
+      `rules?action=hr&site=${encodeURIComponent(row.domain)}&hr=${encodeURIComponent(hr)}`,
+    )
+    if (res?.success === false) throw new Error(res?.message || '失败')
+    siteRules.value = res?.data?.rules || siteRules.value
+    await loadRules()
+  } catch (e) {
+    alert(`标记失败: ${e?.message || e}`)
+  }
+}
+
 async function setRuleHours(row, hours) {
   const dom = row?.domain
   if (!dom) return
@@ -3432,10 +3446,12 @@ onUnmounted(() => {
                   <em v-if="row.free_original" title="站点促销规则：原盘自动免费">原盘免</em>
                   <em v-if="row.free_ep1" title="站点促销规则：每季第一集自动免费">首集免</em>
                 </span>
-                <span>
+                <span class="magicflow-rules-row__hr">
                   <VChip v-if="row.hr === true" size="x-small" color="error" variant="tonal">有</VChip>
                   <VChip v-else-if="row.hr === false" size="x-small" color="success" variant="tonal">无</VChip>
                   <VChip v-else size="x-small" variant="tonal">未知</VChip>
+                  <VBtn v-if="row.hr !== false" size="x-small" variant="text" :disabled="rulesProbing" title="该站没有 H&R：直接标无，不做保种保护" @click="setRuleHr(row, '0')">标无</VBtn>
+                  <VBtn v-else size="x-small" variant="text" :disabled="rulesProbing" title="恢复为探测/内置判定" @click="setRuleHr(row, 'unknown')">恢复</VBtn>
                 </span>
                 <span>
                   <VTextField

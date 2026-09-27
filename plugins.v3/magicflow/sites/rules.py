@@ -45,6 +45,12 @@ BUILTIN_RULES: Dict[str, Dict[str, Any]] = {
         "seed_cap": None,
         "note": "学校：10 天内做种≥20 小时（rules.php 原文）；保护期取满窗口 10 天（保守）",
     },
+    "ptcafe.club": {
+        "hr": False,
+        "seed_hours": 0.0,
+        "seed_cap": None,
+        "note": "咖啡：**无 H&R**（rules.php 无 H&R 条款，主人确认）。另有「撤种规定」(≤10集 10 天 / 10-50集 15 天 / >50集 1 个月) 与随机促销 90% FREE、>20GB 自动免费。",
+    },
     "hdfans.org": {
         "hr": True,
         "seed_hours": 24.0,

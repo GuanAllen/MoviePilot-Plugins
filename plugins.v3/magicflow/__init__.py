@@ -790,6 +790,21 @@ class MagicFlow(_PluginBase):
                     logger.info("跨站:学校保种时长迁移 →240h（保守：取满 10 天窗口）")
         except Exception:  # noqa: BLE001
             pass
+        # ★ 咖啡(ptcafe.club)：rules.php **没有 H&R 条款**（主人确认）→ 手填「无 H&R」，
+        #   免得被 myhr.php 页面里的 H&R 字样探测成「有」。一次性写入，之后可手动恢复。
+        try:
+            _mig = dict(self.get_data("rules_migrations") or {})
+            if not _mig.get("ptcafe_nohr_v1"):
+                _st = self._site_rules()
+                _st.put("ptcafe.club", {
+                    "hr": False, "seed_hours": 0.0, "source": "manual", "confidence": "high",
+                    "evidence": "手填：咖啡无 H&R 条款（rules.php 原文无），不做 H&R 保护",
+                })
+                _mig["ptcafe_nohr_v1"] = True
+                self.save_data(key="rules_migrations", value=_mig)
+                logger.info("站点规则:咖啡已标记为「无 H&R」（手填，不做保种保护）")
+        except Exception:  # noqa: BLE001
+            pass
         # ★ 站点规则库(H&R/保种/做种上限)：自动刷新开关(3.12.0)
         self._rules_cfg: Dict[str, Any] = {
             "auto_refresh": bool(raw_config.get("rules_auto_refresh", True)),
@@ -9993,7 +10008,7 @@ class MagicFlow(_PluginBase):
             logger.warning(f"促销规则同步失败: {e}")
             return 0
 
-    def get_site_rules(self, action: str = "", site: str = "", hours: str = "") -> Response:
+    def get_site_rules(self, action: str = "", site: str = "", hours: str = "", hr: str = "") -> Response:
         """站点规则库读写。
 
         - ``GET /rules``：列表（含生效保种时长与来源）；
@@ -10018,6 +10033,23 @@ class MagicFlow(_PluginBase):
                 self.save_data(key="crossseed_cfg", value=dict(self._cs_cfg))
                 self._sync_free_rules()
                 return Response(success=True, message=f"{dom} 保种时长已设为 {hv:g}h", data={"rules": self._rules_view()})
+            if act in ("hr", "nohr"):
+                dom = str(site or "").strip().lower().replace("https://", "").replace("http://", "").strip("/")
+                if not dom:
+                    return Response(success=False, message="缺少 site(域名)")
+                val = str(hr or "").strip().lower()
+                if val in ("0", "false", "no", "none", "off"):
+                    store.put(dom, {
+                        "hr": False, "seed_hours": 0.0, "source": "manual", "confidence": "high",
+                        "evidence": "手填：该站无 H&R，不做 H&R 保种保护",
+                    })
+                    self._sync_free_rules()
+                    return Response(success=True, message=f"{dom} 已标记为「无 H&R」(不做保护)", data={"rules": self._rules_view()})
+                # 其余（1/true/unknown/空）= 取消手填，交还探测
+                store.clear(dom)
+                store.ensure_builtin(dom)
+                self._sync_free_rules()
+                return Response(success=True, message=f"{dom} 已恢复为探测/内置判定", data={"rules": self._rules_view()})
             if act in ("refresh", "sync"):
                 for dom, nm in (({str(r.get("domain") or "").strip().lower(): str(r.get("name") or "") for r in (self._list_sites() or [])})).items():
                     if dom:
