@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.19.1"
+__version__ = "3.19.2"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -14228,6 +14228,8 @@ class MagicFlow(_PluginBase):
                     media = {
                         "source": like.get("media_source"), "id": like.get("media_id"),
                         "type": like.get("type"), "year": like.get("year"),
+                        # ★ 必须带「资源名」（Master 2026-09-28 07:08：列表要显示资源名，不是种子名）
+                        "title": like.get("title") or like.get("name") or "",
                     }
             _mkey = self._recommend_media_key(media, like)
             if like.get("recognized"):
@@ -14813,10 +14815,69 @@ class MagicFlow(_PluginBase):
     # API:推荐(刷流种价值生命周期)
     # ---------------------------------------------------------
 
+    def _recommend_backfill_titles(self, limit: int = 200) -> int:
+        """★ 补录「资源名」：早期记录里 media 只有 source/id/type/year（没 title），
+
+        列表只能退回显示**种子名**（Master 2026-09-28 07:08 报的问题）。
+        这里用推荐引擎（带缓存）重新识别这些条目，把 media.title 补上（后台跑，不阻塞接口）。
+        """
+        store = getattr(self._store, "recommend", None) if self._store else None
+        if store is None:
+            return 0
+        n = 0
+        try:
+            for it in (store.list() or []):
+                if n >= int(limit or 0):
+                    break
+                media = it.get("media") or {}
+                if not media.get("id") or media.get("title"):
+                    continue
+                name = str(it.get("title") or "")
+                if not name:
+                    continue
+                try:
+                    info = self._get_recommend_engine().evaluate(name, with_poster=False)
+                except Exception:  # noqa: BLE001
+                    continue
+                if not info.get("title"):
+                    continue
+                m2 = dict(media)
+                m2["title"] = info.get("title")
+                m2["year"] = m2.get("year") or info.get("year") or ""
+                try:
+                    store.upsert(str(it.get("hash") or ""), media=m2)
+                except Exception:  # noqa: BLE001
+                    continue
+                n += 1
+        except Exception as err:  # noqa: BLE001
+            self._log(f"推荐资源名补录异常:{err}", "warning")
+        if n:
+            self._log(f"推荐资源名补录 {n} 条")
+        return n
+
     def get_recommend_list(self) -> Response:
         """列出推荐甄别结果(供工作台「推荐」标签页)。"""
         store = getattr(self._store, "recommend", None) if self._store else None
         items = store.list() if store else []
+        # 有「缺资源名」的旧记录 → 起后台线程补录（列表接口不阻塞）
+        try:
+            _miss = sum(1 for i in items
+                        if (i.get("media") or {}).get("id") and not (i.get("media") or {}).get("title"))
+        except Exception:  # noqa: BLE001
+            _miss = 0
+        if _miss and not getattr(self, "_rec_backfill_busy", False):
+            self._rec_backfill_busy = True
+
+            def _bg() -> None:
+                try:
+                    self._recommend_backfill_titles(limit=300)
+                finally:
+                    self._rec_backfill_busy = False
+
+            try:
+                threading.Thread(target=_bg, daemon=True).start()
+            except Exception:  # noqa: BLE001
+                self._rec_backfill_busy = False
         cfg = getattr(self, "_recommend_cfg", {}) or {}
         return Response(success=True, data={
             "enabled": bool(cfg.get("enabled", True)),

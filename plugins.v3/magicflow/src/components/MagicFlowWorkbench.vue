@@ -4737,7 +4737,7 @@ onUnmounted(() => {
                 <div class="text-subtitle-2 font-weight-medium">甄别结果</div>
                 <div class="text-body-2 text-medium-emphasis">全部任务汇总 · 确认 = 自动整理入库；忽略 = 删除该临时种（«待核实»也可手动确认）</div>
               </div>
-              <div class="d-flex align-center ga-2">
+              <div class="d-flex align-center flex-wrap ga-2 justify-end">
                 <VBtn
                   v-if="recSelectable.length"
                   size="small"
@@ -4771,7 +4771,7 @@ onUnmounted(() => {
               </div>
             </header>
             <div class="magicflow-recs">
-              <article v-for="rec in recommendItems" :key="rec.hash" class="magicflow-rec">
+              <article v-for="rec in recommendItems" :key="rec.hash" class="magicflow-rec" :class="{ 'magicflow-rec--sel': recommendActionable(rec) }">
                 <VCheckbox
                   v-if="recommendActionable(rec)"
                   :model-value="!!recSelected[rec.hash]"
@@ -6412,6 +6412,16 @@ onUnmounted(() => {
   padding-block: 8px;
 }
 
+/* 可勾选的行多一列「复选框」（无勾选的行保持三列，避免整体错位） */
+.magicflow-rec--sel {
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+}
+
+.magicflow-rec__check {
+  flex: 0 0 auto;
+  margin-inline: -6px -2px;
+}
+
 .magicflow-rec__poster {
   inline-size: 40px;
   block-size: 60px;
@@ -6461,6 +6471,9 @@ onUnmounted(() => {
 @media (max-width: 699px) {
   .magicflow-rec {
     grid-template-columns: auto minmax(0, 1fr);
+  }
+  .magicflow-rec--sel {
+    grid-template-columns: auto auto minmax(0, 1fr);
   }
   .magicflow-rec__actions {
     grid-column: 1 / -1;

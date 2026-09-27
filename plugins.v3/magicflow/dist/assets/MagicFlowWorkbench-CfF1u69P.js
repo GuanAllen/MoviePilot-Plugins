@@ -2476,7 +2476,7 @@ const _hoisted_253 = { class: "magicflow-recommend-dialog__head-actions" };
 const _hoisted_254 = { class: "magicflow-recommend-dialog__summary" };
 const _hoisted_255 = { class: "magicflow-recommend-dialog__note" };
 const _hoisted_256 = { class: "magicflow-panel__head" };
-const _hoisted_257 = { class: "d-flex align-center ga-2" };
+const _hoisted_257 = { class: "d-flex align-center flex-wrap ga-2 justify-end" };
 const _hoisted_258 = { class: "magicflow-recs" };
 const _hoisted_259 = { class: "magicflow-rec__poster" };
 const _hoisted_260 = ["src", "alt"];
@@ -10480,7 +10480,7 @@ return (_ctx, _cache) => {
                       (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(recommendItems.value, (rec) => {
                         return (_openBlock(), _createElementBlock("article", {
                           key: rec.hash,
-                          class: "magicflow-rec"
+                          class: _normalizeClass(["magicflow-rec", { 'magicflow-rec--sel': recommendActionable(rec) }])
                         }, [
                           (recommendActionable(rec))
                             ? (_openBlock(), _createBlock(_component_VCheckbox, {
@@ -10593,7 +10593,7 @@ return (_ctx, _cache) => {
                                 }, 8, ["loading", "onClick"])
                               ]))
                             : _createCommentVNode("", true)
-                        ]))
+                        ], 2))
                       }), 128)),
                       (!recommendItems.value.length)
                         ? (_openBlock(), _createElementBlock("div", _hoisted_266, [
@@ -10854,6 +10854,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-df60d14e"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-134e1377"]]);
 
 export { MagicFlowWorkbench as M };
