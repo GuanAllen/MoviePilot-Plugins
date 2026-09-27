@@ -203,9 +203,12 @@ def is_magicflow_tag(tag: str) -> bool:
 #   它表示「这颗种是指向已有文件的复用种，可能停在 pausedDL 等校验」，不是「没下完的下载」，
 #   因此**任何自动清理都不能删它**（Master 2026-09-28：「所有跨站辅种都是 pausedDL」）。
 MARK_REUSE = "魔流-辅种"
+# ★ H&R 统一管理标记（Master 2026-09-28 01:37：「tag 打上 h&r 统一管理
+#   没到时间暂停强行拉起来」）：欠 H&R 的种统一打这个标 → 由插件统一保挂/结清。
+MARK_HR = "魔流-H&R"
 
 # ★ 「全局特殊标签」：不属于某站点某状态，重贴标签时必须保留（否则会打断其它子系统）
-SPECIAL_TAGS = ("魔流-推荐", "魔流-跨站", MARK_REUSE)
+SPECIAL_TAGS = ("魔流-推荐", "魔流-跨站", MARK_REUSE, MARK_HR)
 
 
 def retag(

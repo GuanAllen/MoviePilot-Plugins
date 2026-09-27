@@ -1405,6 +1405,96 @@ class DownloaderAdapter:
             logger.error(f"[标签审计] SET-ERR hash={hash_string}: {e}")
             return False
 
+    def _tags_of(self, hash_string: str) -> List[str]:
+        """读单个种子当前标签（qB 返回可能是逗号串）。"""
+        raw = None
+        try:
+            raw = self._find_raw_torrent(hash_string)
+        except Exception:  # noqa: BLE001
+            raw = None
+        if raw is None:
+            return []
+        raw_tags = getattr(raw, "tags", None)
+        if raw_tags is None:
+            try:
+                raw_tags = raw.get("tags")  # type: ignore[union-attr]
+            except Exception:  # noqa: BLE001
+                raw_tags = None
+        if isinstance(raw_tags, str):
+            return [x.strip() for x in raw_tags.split(",") if x.strip()]
+        if isinstance(raw_tags, (list, tuple)):
+            return [str(x).strip() for x in raw_tags if str(x).strip()]
+        return []
+
+    def add_torrents_tag(self, hashes: List[str], tag: str) -> Tuple[int, Optional[str]]:
+        """批量**追加**一个标签（只加不减），**带校验**。
+
+        ★ 用于给一票种统一打「魔流-H&R」这类**管理标记**。
+        ⚠ 踩过：``torrents_add_tags(hashes=[...])`` 传 list 时 qB 侧静默不生效
+        （273 个只落了 1 个）→ 这里先试「pipe 串」批量，**读回校验**，不行再逐个补。
+        """
+        tg = str(tag or "").strip()
+        hs = [str(h).strip().lower() for h in (hashes or []) if str(h).strip()]
+        if not tg or not hs:
+            return 0, None
+        qbc = getattr(self, "_qb_client", None)
+        qbc = qbc() if callable(qbc) else None
+        if qbc is not None:
+            try:
+                qbc.torrents_add_tags(tags=tg, hashes="|".join(hs))
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"批量打标签(pipe)失败: {e}")
+        # 校验前若干个；不够就逐个补
+        sample = hs[:5]
+        hit = sum(1 for h in sample if tg in self._tags_of(h))
+        if sample and hit == 0:
+            logger.info("批量打标签未生效 → 回退逐个补")
+        ok = 0
+        for h in hs:
+            try:
+                if tg in self._tags_of(h) or self.set_torrent_tags(h, [tg]):
+                    ok += 1
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"打标签失败 {h}: {e}")
+        # 最终校验（抽样）
+        miss = [h for h in hs[:5] if tg not in self._tags_of(h)]
+        err = None if not miss else f"校验未过({len(miss)}/{len(sample)})"
+        return ok, err
+
+    def force_start_torrents(self, hashes: List[str]) -> Tuple[int, Optional[str]]:
+        """★ **强制开始**做种/下载（qB ``torrents_set_force_start``）。
+
+        与 ``resume_torrents`` 的区别：force start **绕过队列/排队**，
+        「没到时间却被暂停」的 H&R 种必须能立刻挂起来（Master 2026-09-28 01:37）。
+        """
+        hs = [str(h).strip().lower() for h in (hashes or []) if str(h).strip()]
+        if not hs:
+            return 0, None
+        qbc_fn = getattr(self, "_qb_client", None)
+        qbc = qbc_fn() if callable(qbc_fn) else None
+        if qbc is not None:
+            ok = 0
+            for h in hs:  # ★ 逐个（批量传 list 在 qB 侧同样不生效）
+                try:
+                    qbc.torrents_set_force_start(hashes=h)
+                    ok += 1
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"强制开始失败 {h}: {e}")
+            if ok:
+                # 校验：读回状态，仍是 paused/stopped 的再用 resume 兜一层
+                stuck: List[str] = []
+                for h in hs:
+                    try:
+                        st = str(getattr(self.get_torrent_info(h), "state", "") or "").lower()
+                    except Exception:  # noqa: BLE001
+                        st = ""
+                    if st.startswith("paused") or st.startswith("stopped"):
+                        stuck.append(h)
+                if stuck:
+                    self.resume_torrents(stuck)
+                return ok, (None if not stuck else f"另有 {len(stuck)} 个已改 resume")
+        return self.resume_torrents(hs)
+
     def replace_torrent_tags(self, hash_string: str, tags: List[str]) -> bool:
         """★ 真正「替换」标签：先删差集、再补新增。
 

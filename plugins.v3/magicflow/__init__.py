@@ -134,6 +134,7 @@ from .tags import (
     STATE_RECOMMEND,
     MARK_REUSE,
     SPECIAL_TAGS,
+    MARK_HR,
     STATE_SILENT,
     SUB_NEW,
     SUB_PLAIN,
@@ -157,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.14.6"
+__version__ = "3.14.7"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -7681,6 +7682,16 @@ class MagicFlow(_PluginBase):
                          + ("" if _ap else "（预演，未删）")),
                 data=info,
             )
+        if act in ("hr", "hr_guard", "hr_apply"):
+            _ap = act == "hr_apply"
+            info = self._hr_guard_tick(apply=_ap, limit=int(limit or 0))
+            return Response(
+                success=True,
+                message=(f"H&R 统一管理:欠 {info.get('obligated')} 个 → 打标 {info.get('tagged')} · "
+                         f"强拉起 {info.get('resumed')} · 结清摘标 {info.get('cleared')}"
+                         + ("" if _ap else "（预演）")),
+                data=info,
+            )
         if act in ("plain", "plain_sweep", "plain_apply"):
             _ap = act == "plain_apply"
             info = self._silent_plain_sweep(apply=_ap, limit=int(limit or 0))
@@ -7824,6 +7835,10 @@ class MagicFlow(_PluginBase):
                 mod.counters = {}
                 _sys.modules[_key] = mod
             obj = mod.instances.get("site_rules")
+            # ★ 热重载后模块里是「新的类」，但单例可能还是「旧类的实例」→ 新方法会 AttributeError。
+            #   踩过：旧 SiteRules 没有 hr_of → H&R 判定全落到「未知保守」，规则库整块失效。
+            if obj is not None and not isinstance(obj, SiteRules):
+                obj = None
             if obj is None:
                 obj = SiteRules(
                     get_data=self.get_data,
@@ -11702,6 +11717,13 @@ class MagicFlow(_PluginBase):
                     self._log(f"魔流:推荐过期:降级转普通 {dinfo.get('downgraded')} 个")
             except Exception as err:  # noqa: BLE001
                 self._log(f"标签维护:推荐过期降级失败:{err}", "warning")
+            # ★ H&R 统一管理：欠 H&R 的打标 + 没到时间被暂停的强行拉起来（Master 01:37）
+            try:
+                hinfo = self._hr_guard_tick(apply=True, limit=0)
+                if hinfo.get("tagged") or hinfo.get("resumed"):
+                    self._log(f"魔流:H&R 统一管理:打标 {hinfo.get('tagged')} · 拉起 {hinfo.get('resumed')}")
+            except Exception as err:  # noqa: BLE001
+                self._log(f"标签维护:H&R 管理失败:{err}", "warning")
             # ★ 静默池校验：辅种/复用种停在 pausedDL 是等校验 → recheck 拉起来
             try:
                 vinfo = self._silent_verify_marks(apply=True, limit=60)
@@ -13451,6 +13473,198 @@ class MagicFlow(_PluginBase):
             except Exception:  # noqa: BLE001
                 continue
         return False, "未达标/未设目标"
+
+    def _site_domain_by_name(self, name: str) -> str:
+        """站点短名/全名 → 域名（带 300s 缓存）。
+
+        ★ 规则库（``sites/rules.py``）的键是**域名**，而标签/账本里存的是**中文短名**
+        （如「红豆饭」「学校」）—— 不转换就会出现「所有站点都按未知保守 24h」的假象。
+        """
+        nm = str(name or "").strip()
+        if not nm:
+            return ""
+        if "." in nm and " " not in nm:
+            return nm.lower()
+        cache = getattr(self, "_site_name2dom", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._site_name2dom = cache
+        now = time.time()
+        ts = float(getattr(self, "_site_name2dom_at", 0) or 0)
+        if not cache or (now - ts) > 300:
+            # ★ ① 规则库自带「中文站名 ↔ 域名」映射（最准，优先）
+            try:
+                for _dom, _rec in (self._site_rules().items() or {}).items():
+                    _n = str((_rec or {}).get("site_name") or "").strip()
+                    _d = str(_dom or "").strip().lower()
+                    if _n and _d:
+                        cache.setdefault(_n, _d)
+            except Exception as err:  # noqa: BLE001
+                self._log(f"H&R:规则库站名映射失败:{err}", "warning")
+            # ② MoviePilot 站点表兜底（同名的**不覆盖**规则库结果）
+            try:
+                for it in self._list_sites() or []:
+                    _n = str((it or {}).get("name") or "").strip()
+                    _d = str((it or {}).get("domain") or "").strip().lower()
+                    if _n and not cache.get(_n):
+                        cache[_n] = _d or _n.lower()
+            except Exception as err:  # noqa: BLE001
+                self._log(f"H&R:站点名解析失败:{err}", "warning")
+            self._site_name2dom_at = now
+        return str(cache.get(nm) or "").lower()
+
+    def _hr_obligation(self, site: str, torrent: Any) -> Tuple[bool, float, float, str]:
+        """该种是否**欠 H&R**：``(欠?, 要求小时, 已挂小时, 来源)``。
+
+        站点名先解析成域名再查规则库（manual > probe > builtin > 默认）；义务按**实测做种时长**判。
+        """
+        dom = self._site_domain_by_name(site) or str(site or "")
+        try:
+            thr = True if bool(getattr(torrent, "hit_and_run", False)) else None
+        except Exception:  # noqa: BLE001
+            thr = None
+        try:
+            protect, hours, src = self._crossseed_hr_decision(dom, thr)
+        except Exception:  # noqa: BLE001
+            protect, hours, src = False, 0.0, "err"
+        if not protect:
+            return False, 0.0, 0.0, src
+        need = 0.0
+        try:
+            need = float(self._crossseed_seed_need_hours(dom) or 0.0)
+        except Exception:  # noqa: BLE001
+            need = 0.0
+        if need <= 0:
+            need = float(hours or 0.0)
+        try:
+            seeded = float(getattr(torrent, "seed_time", 0) or 0.0) / 3600.0
+        except (TypeError, ValueError):
+            seeded = 0.0
+        if need <= 0:
+            return False, 0.0, seeded, f"无时长要求({src})"
+        return (seeded + 1e-6 < need), float(need), seeded, src
+
+    def _hr_guard_tick(self, apply: bool = True, limit: int = 0) -> Dict[str, Any]:
+        """★ H&R **统一管理**（Master 2026-09-28 01:37）：
+
+        「tag 打上 h&r 统一管理，没到时间暂停强行拉起来」
+
+        ① 欠 H&R 的种统一打 ``魔流-H&R`` 标（管理入口，跨任务/跨站/静默池都管）；
+        ② 没到时间却被暂停/排队 → **强制开始**（``force_start``，绕过队列）拉起来继续挂；
+        ③ 结清（实测做种时长够 / 站点无 H&R）→ **摘掉** ``魔流-H&R``（收口）。
+
+        只处理**已完成**的种：没下完的没有 H&R 义务（未完成删除不计 H&R），
+        未下完的跨站来源份归「跨站池」/辅种归校验流程管。
+        """
+        rep: Dict[str, Any] = {"apply": bool(apply), "checked": 0, "completed": 0,
+                               "obligated": 0, "tagged": 0, "resumed": 0,
+                               "cleared": 0, "failed": 0, "items": []}
+        snap = self._tag_all_torrents() or {}
+        if not snap:
+            rep["reason"] = "无快照"
+            return rep
+        try:
+            ledger = dict(self._tag_state().items() or {})
+        except Exception:  # noqa: BLE001
+            ledger = {}
+        try:
+            cssrc = dict(self._crossseed_sources().items() or {})
+        except Exception:  # noqa: BLE001
+            cssrc = {}
+        scope = set(ledger) | set(cssrc)
+        for _h, _t in snap.items():
+            if MARK_HR in [str(x) for x in (getattr(_t, "tags", None) or [])]:
+                scope.add(_h)
+        cap = int(limit or 0)
+        to_tag: List[str] = []
+        to_start: List[str] = []
+        to_clear: List[str] = []
+        for hh in sorted(scope):
+            if cap and rep["checked"] >= cap:
+                break
+            hh = str(hh or "").strip().lower()
+            t = snap.get(hh)
+            if t is None:
+                continue
+            rep["checked"] = int(rep["checked"]) + 1
+            tags = [str(x) for x in (getattr(t, "tags", None) or [])]
+            has_tag = MARK_HR in tags
+            try:
+                done = float(getattr(t, "progress", 0) or 0) >= 0.999
+            except (TypeError, ValueError):
+                done = False
+            if not done:
+                continue  # 未完成：无 H&R 义务（另由跨站池/校验流程管）
+            rep["completed"] = int(rep["completed"]) + 1
+            rec = ledger.get(hh) or {}
+            site = str(rec.get("site") or "").strip() or self._torrent_site_name(tags, "")
+            obl, need, seeded, src = self._hr_obligation(site, t)
+            if not obl:
+                if has_tag:
+                    to_clear.append(hh)
+                continue
+            rep["obligated"] = int(rep["obligated"]) + 1
+            rep["items"].append({
+                "hash": hh[:12], "site": site, "need_h": round(need, 1),
+                "seeded_h": round(seeded, 1), "src": src,
+                "state": str(getattr(t, "state", "") or ""), "tagged": has_tag,
+            })
+            if not has_tag:
+                to_tag.append(hh)
+            st = str(getattr(t, "state", "") or "").strip().lower()
+            # 「没到时间」但被暂停/排队/停止 → 强行拉起来（checking* 是校验中，别动）
+            if st in ("paused", "pausedup", "pauseddl", "stopped", "stoppedup", "stoppeddl",
+                      "queued", "queuedup", "queueddl") or st.startswith("paused") \
+                    or st.startswith("queued") or st.startswith("stopped"):
+                if not (MARK_REUSE in tags and not done):
+                    to_start.append(hh)
+        if apply and to_tag:
+            try:
+                dl = self._get_downloader("qbittorrent")
+                cnt, err = (dl.add_torrents_tag(to_tag, MARK_HR)
+                            if dl is not None and hasattr(dl, "add_torrents_tag")
+                            else (0, "no api"))
+                rep["tagged"] = int(cnt or 0)
+                if err:
+                    self._log(f"H&R:打标失败 {err}", "warning")
+            except Exception as err:  # noqa: BLE001
+                rep["failed"] = int(rep["failed"]) + 1
+                self._log(f"H&R:打标异常:{err}", "warning")
+        if apply and to_start:
+            try:
+                dl = self._get_downloader("qbittorrent")
+                fn = getattr(dl, "force_start_torrents", None) if dl is not None else None
+                if callable(fn):
+                    cnt, err = fn(to_start)
+                elif dl is not None:
+                    cnt, err = dl.resume_torrents(to_start)
+                else:
+                    cnt, err = 0, "无下载器"
+                rep["resumed"] = int(cnt or 0)
+                if err:
+                    self._log(f"H&R:强拉失败 {err}", "warning")
+            except Exception as err:  # noqa: BLE001
+                rep["failed"] = int(rep["failed"]) + 1
+                self._log(f"H&R:强拉异常:{err}", "warning")
+        if apply and to_clear:
+            dl = None
+            for hh in to_clear:
+                try:
+                    if dl is None:
+                        dl = self._get_downloader("qbittorrent")
+                    t = snap.get(hh)
+                    cur = [str(x) for x in (getattr(t, "tags", None) or [])]
+                    if dl is not None and dl.replace_torrent_tags(hh, [x for x in cur if x != MARK_HR]):
+                        rep["cleared"] = int(rep["cleared"]) + 1
+                except Exception as err:  # noqa: BLE001
+                    rep["failed"] = int(rep["failed"]) + 1
+                    self._log(f"H&R:摘标失败 {hh[:12]}:{err}", "warning")
+        if apply and (rep["tagged"] or rep["resumed"] or rep["cleared"]):
+            self._log(
+                f"魔流:H&R 统一管理:欠 H&R {rep['obligated']} 个 → 打标 {rep['tagged']} · "
+                f"强拉起 {rep['resumed']} · 结清摘标 {rep['cleared']}"
+            )
+        return rep
 
     def _silent_plain_sweep(self, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
         """★ 静默-普通 清理：**考核魔力产出**，站点魔力够了就把「没用的」直接删。
