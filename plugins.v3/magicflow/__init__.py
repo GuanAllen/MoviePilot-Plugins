@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.20.0"
+__version__ = "3.20.1"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -7775,6 +7775,16 @@ class MagicFlow(_PluginBase):
             return Response(success=True, message="特征码补录完成", data=self.backfill_fingerprints(limit=_lim))
         if act in ("syncres", "resource_sync"):
             return Response(success=True, message="资源账本已刷新", data=self.sync_resources(apply=True))
+        if act in ("asset_untag", "asset_untag_apply"):
+            _ap = act == "asset_untag_apply"
+            info = self._asset_untag(apply=_ap, limit=int(limit or 0))
+            return Response(
+                success=True,
+                message=(f"假「已整理/辅种」:带标 {info.get('scanned')} · 已在库(留) {info.get('kept_inlib')}"
+                         f" · 待摘 {info.get('fake')} · 已摘 {info.get('removed')}"
+                         + ("" if _ap else "（预演，未动 qB）")),
+                data=info,
+            )
         if act == "asset":
             info = self.sync_tag_assets(apply=True)
             return Response(success=True, message=f"库内资产 {info.get('asset')} 个（更新 {info.get('changed')}）", data=info)
@@ -11568,6 +11578,63 @@ class MagicFlow(_PluginBase):
             self._log(f"站点规则刷新异常:{err}", "warning")
         finally:
             self._release_worker_slot()
+
+    def _asset_untag(self, *, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
+        """★ 摘掉**假**「已整理 / 辅种」标（Master 2026-09-28「你整理下」）。
+
+        现状（实测）：qB 里 326 个种子带「已整理」且**必然成对带「辅种」**；这两个标
+        **不是本插件写的**（我们只读，见 ``tags.py``），抽查在影视库里**根本没有对应文件**
+        → 不是可靠的入库证据，却让一批种永久豁免删除、还干扰 ``sync_tag_assets`` 的证据链。
+
+        安全的摘法：**只摘「账本里该资源没有库记」的**（有库记的留着无害）；
+        不动账本 ``asset`` 标记（保持现状保护口径），只清 qB 标签，可回滚（保留快照）。
+        """
+        groups = self._tag_groups()
+        gdata = groups.items() or {}
+        snap = self._tag_all_torrents() or {}
+        rep: Dict[str, Any] = {"ok": True, "applied": bool(apply), "scanned": 0, "managed": 0,
+                               "kept_inlib": 0, "fake": 0, "removed": 0, "failed": 0, "samples": []}
+        _limit = int(limit or 0)
+        _dl_cache: Dict[str, Any] = {}
+        for h, t in snap.items():
+            hh = str(h or "").strip().lower()
+            tags = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
+            if not any(x in MEDIA_ASSET_TAGS for x in tags):
+                continue
+            rep["scanned"] += 1
+            try:
+                gid = groups.group_of(hh)
+            except Exception:  # noqa: BLE001
+                gid = ""
+            if not gid:
+                continue
+            rep["managed"] += 1
+            inlib = bool(((gdata.get(gid) or {}).get("library") or {}).get("in_library"))
+            if inlib:
+                rep["kept_inlib"] += 1
+                continue
+            rep["fake"] += 1
+            if len(rep["samples"]) < 20:
+                rep["samples"].append({"hash": hh[:12], "group": gid[:40], "tags": tags})
+            if not apply:
+                continue
+            if _limit and rep["removed"] >= _limit:
+                continue
+            try:
+                _dn = str((self._tag_state().get(hh) or {}).get("downloader") or "qbittorrent")
+                if _dn not in _dl_cache:
+                    _dl_cache[_dn] = self._get_downloader(_dn)
+                _dl = _dl_cache.get(_dn)
+                _fn = getattr(_dl, "replace_torrent_tags", None) if _dl is not None else None
+                _new = [x for x in tags if x not in MEDIA_ASSET_TAGS]
+                if callable(_fn) and _fn(hh, _new):
+                    rep["removed"] += 1
+                else:
+                    rep["failed"] += 1
+            except Exception as err:  # noqa: BLE001
+                rep["failed"] += 1
+                self._log(f"资产摘标失败 {hh[:12]}:{err}", "warning")
+        return rep
 
     def sync_tag_assets(self, *, apply: bool = False) -> Dict[str, Any]:
         """★ 建立/刷新「库内资产」记录（真·库记）。
