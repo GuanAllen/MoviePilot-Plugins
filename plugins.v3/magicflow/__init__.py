@@ -91,7 +91,9 @@ from .cloud_archive import ArchiveEngine, DEFAULT_TARGET_TEMPLATE as CLOUD_TARGE
 from .persistence import MagicFlowStore, OperationItem, WorkReport, KV_FILE_FLUSH_SEC
 from .crossseed import (
     CROSSSEED_TAG,
+    SOURCES_KEY,
     CrossSeedPending,
+    CrossSeedSources,
     pick_source,
     search_key,
     size_close,
@@ -124,7 +126,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.11.0"
+__version__ = "3.11.1"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -195,6 +197,45 @@ CROSSSEED_CACHE_TTL = 6 * 3600
 CROSSSEED_EXTRA_SCAN = 5
 # 跨站候选池的构建上限(池子本身可以大一点，实际探测由 CROSSSEED_EXTRA_SCAN 封顶)。
 CROSSSEED_POOL_MAX = 12
+# ★ 来源份 H&R 保护：来源站未单独指定时的最短保种时长(小时)。
+CROSSSEED_SEED_HOURS_DEFAULT = 24.0
+# ★ 已知站点 H&R 保种时长默认值（可在设置面板「跨站」页改）。
+#   学校 BTSchool 要求挂种 10h（用户实测告知）。
+CROSSSEED_SITE_HOURS_DEFAULT = ["pt.btschool.club=10"]
+
+
+def _cs_parse_site_hours(raw: Any) -> Dict[str, float]:
+    """解析「站点保种时长」配置 → {域名: 小时}。
+
+    接受两种形式：
+      - list[str]：``["pt.btschool.club=10", "hdfans.org=24"]``（设置面板用）
+      - dict：``{"pt.btschool.club": 10}``（兼容旧/直接写配置）
+    域名统一去协议、去路径、转小写；小时钳在 0~720。
+    """
+    out: Dict[str, float] = {}
+    items: List[Any] = []
+    if isinstance(raw, dict):
+        items = [f"{k}={v}" for k, v in raw.items()]
+    elif isinstance(raw, (list, tuple, set)):
+        items = list(raw)
+    elif isinstance(raw, str):
+        items = raw.replace("\n", ",").split(",")
+    for it in items:
+        s = str(it or "").strip()
+        if not s or "=" not in s:
+            continue
+        dom, _, hrs = s.partition("=")
+        dom = dom.strip().lower()
+        dom = re.sub(r"^https?://", "", dom).split("/")[0].strip()
+        if not dom:
+            continue
+        try:
+            val = float(str(hrs).strip())
+        except (TypeError, ValueError):
+            continue
+        out[dom] = max(0.0, min(720.0, val))
+    return out
+
 REUSE_WORKER_BATCH = 5
 # ★ 推荐甄别(刷流种价值生命周期):独立低频 worker,同样插件级单 worker + 轮转。
 RECOMMEND_INTERVAL_MINUTES = 60
@@ -718,6 +759,12 @@ class MagicFlow(_PluginBase):
             "guard_pct": _rf(raw_config.get("crossseed_guard_pct"), 5.0),
             "guard_min_mb": _rf(raw_config.get("crossseed_guard_min_mb"), 50.0),
             "guard_interval_min": _rf(raw_config.get("crossseed_guard_interval_min"), 15.0),
+            "keep_seed": bool(raw_config.get("crossseed_guard_keep_seed", True)),
+            "seed_hours_default": _rf(raw_config.get("crossseed_seed_hours_default"), CROSSSEED_SEED_HOURS_DEFAULT),
+            "site_hours": _cs_parse_site_hours(
+                raw_config.get("crossseed_site_hours") or CROSSSEED_SITE_HOURS_DEFAULT
+            ),
+            "reclaim": bool(raw_config.get("crossseed_reclaim", False)),
         }
         self._cs_guard_at: Dict[str, float] = {}
 
@@ -1577,6 +1624,10 @@ class MagicFlow(_PluginBase):
             "crossseed_guard_pct": float(getattr(self, "_cs_cfg", {}).get("guard_pct") or 5.0),
             "crossseed_guard_min_mb": float(getattr(self, "_cs_cfg", {}).get("guard_min_mb") or 50.0),
             "crossseed_guard_interval_min": float(getattr(self, "_cs_cfg", {}).get("guard_interval_min") or 15.0),
+            "crossseed_guard_keep_seed": bool(getattr(self, "_cs_cfg", {}).get("keep_seed", True)),
+            "crossseed_seed_hours_default": float(getattr(self, "_cs_cfg", {}).get("seed_hours_default") or CROSSSEED_SEED_HOURS_DEFAULT),
+            "crossseed_site_hours": [f"{d}={h:g}" for d, h in sorted((getattr(self, "_cs_cfg", {}).get("site_hours") or {}).items())],
+            "crossseed_reclaim": bool(getattr(self, "_cs_cfg", {}).get("reclaim", False)),
             "fallback_enabled": bool(self._fallback_cfg.get("enabled", True)),
             "fallback_sources": list(self._fallback_cfg.get("sources") or FALLBACK_SOURCES),
             "fallback_paths": list(self._fallback_cfg.get("paths") or []),
@@ -3664,6 +3715,11 @@ class MagicFlow(_PluginBase):
         matched = adopted = already = 0
         to_tag: List[str] = []
         to_adopt: List[str] = []
+        # ★ 跨站来源份（H&R 保种期内）不属于任何任务：不纳管、不改标签、不保护
+        try:
+            _cs_src_hashes = self._crossseed_source_hashes()
+        except Exception:  # noqa: BLE001
+            _cs_src_hashes = set()
         for t in downloader.get_raw_torrents():
             tr = str(_kv(t, "tracker", "") or "").strip()
             if not tr:
@@ -3681,6 +3737,9 @@ class MagicFlow(_PluginBase):
             tags = _kv(t, "tags", "") or []
             if isinstance(tags, str):
                 tags = [x.strip() for x in tags.split(",") if x.strip()]
+            # ★ 跨站来源份（H&R 保种期内）不属于任何任务：不纳管、不改标签
+            if h in _cs_src_hashes:
+                continue
             if task.brush_tag not in list(tags):
                 to_tag.append(h)
 
@@ -4890,6 +4949,16 @@ class MagicFlow(_PluginBase):
                 )
         except Exception as _asset_err:
             self._log(f"魔流 [{task.name}] 媒体资产保护计算失败: {_asset_err}", "warning")
+
+        # ★ 跨站来源份（H&R 保种期内）：它们是**别的站点**的保种责任种，
+        #   不是本任务的资产，但绝不能被本任务（或任何任务）删掉。
+        try:
+            _cs_src = self._crossseed_source_hashes()
+            if _cs_src:
+                protected = set(protected) | set(_cs_src)
+                self._dbg(f"[{task.name}] 跨站来源份 H&R 保护 {len(_cs_src)} 个")
+        except Exception as _cs_err:  # noqa: BLE001
+            self._log(f"魔流 [{task.name}] 跨站来源份保护计算失败: {_cs_err}", "warning")
 
         # 看门狗:与上一轮对比,检测「种子还在、标签却被抹掉」(托管骤降但本轮无删种)
         if not _tag_err:
@@ -6607,6 +6676,43 @@ class MagicFlow(_PluginBase):
     #  红线：① 同一 Release（fingerprint 完整特征码，含根目录名）才算命中；
     #        ② 免费是硬门槛（只从他站的**免费视图**取候选）；③ 每次取种都过 PV 闸门。
 
+    def _crossseed_sources(self) -> CrossSeedSources:
+        """来源站份的保护账本（H&R 保种期内不得被任何任务删除/改标签）。"""
+        obj = getattr(self, "_crossseed_src_obj", None)
+        if obj is None:
+            obj = self._crossseed_src_obj = CrossSeedSources(
+                get_data=self.get_data,
+                save_data=self.save_data,
+                log=self._log,
+            )
+        return obj
+
+    def _crossseed_source_hashes(self) -> Set[str]:
+        """当前受 H&R 保护的来源份 hash 集合（并入清理保护集合）。"""
+        try:
+            return self._crossseed_sources().hashes()
+        except Exception:  # noqa: BLE001
+            return set()
+
+    def _crossseed_seed_hours(self, domain: str) -> float:
+        """该来源站要求的 H&R 最短保种时长(小时)：站点覆盖 > 全局默认。
+
+        优先采信本站「正在下载」列表 / MP 搜索给出的信号（若有），否则用配置。
+        """
+        dom = str(domain or "").strip().lower()
+        dom = re.sub(r"^https?://", "", dom).split("/")[0].strip()
+        cfg = getattr(self, "_cs_cfg", {}) or {}
+        site_hours = cfg.get("site_hours") or {}
+        if isinstance(site_hours, dict) and dom and dom in site_hours:
+            try:
+                return max(0.0, float(site_hours[dom]))
+            except (TypeError, ValueError):
+                pass
+        try:
+            return max(0.0, float(cfg.get("seed_hours_default") or CROSSSEED_SEED_HOURS_DEFAULT))
+        except (TypeError, ValueError):
+            return CROSSSEED_SEED_HOURS_DEFAULT
+
     def _crossseed_pending(self) -> CrossSeedPending:
         """待回辅账本（PluginData 持久化 + 目标站 .torrent 落盘）。"""
         obj = getattr(self, "_crossseed_obj", None)
@@ -6751,6 +6857,7 @@ class MagicFlow(_PluginBase):
                     "downloadvolumefactor": dv,
                     "uploadvolumefactor": float(getattr(ti, "uploadvolumefactor", 1.0) or 1.0),
                     "freedate": str(getattr(ti, "freedate", "") or ""),
+                    "hit_and_run": bool(getattr(ti, "hit_and_run", False)),
                 })
             if rows:
                 cache.set(ckey, rows, CROSSSEED_CACHE_TTL)
@@ -7027,6 +7134,47 @@ class MagicFlow(_PluginBase):
             self._log(f"跨站:黑名单清理失败:{err}", "error")
         return n
 
+    def _crossseed_protect_source(self, sib_hash: str, rec: Dict[str, Any], a_hash: str = "") -> None:
+        """把来源份移交到「H&R 保护」账本。
+
+        它已经**不归任何任务管**——若放任不管，来源站的同站纳管逻辑会抢走它的标签（实测
+        ``SET tags=['魔流-财神']``），任务清理再把它带上文件一起删 → 既踩来源站 H&R，
+        又可能连累目标站正在做种的同一批文件。
+        """
+        h = str(sib_hash or "").lower()
+        if not h:
+            return
+        dom = str(rec.get("site_b_domain") or "").strip().lower()
+        try:
+            hours = float(rec.get("seed_hours") or 0.0) or self._crossseed_seed_hours(dom)
+        except (TypeError, ValueError):
+            hours = self._crossseed_seed_hours(dom)
+        try:
+            until = float(rec.get("seed_until") or 0.0) or (time.time() + hours * 3600.0)
+        except (TypeError, ValueError):
+            until = time.time() + hours * 3600.0
+        self._crossseed_sources().add({
+            "sib_hash": h,
+            "title": str(rec.get("title") or ""),
+            "size_gb": float(rec.get("size_gb") or 0.0),
+            "site_a": str(rec.get("site_a") or ""),
+            "site_b": str(rec.get("site_b") or ""),
+            "site_b_domain": dom,
+            "a_hash": str(a_hash or rec.get("a_hash") or "").lower(),
+            "hit_and_run": bool(rec.get("hit_and_run")),
+            "hours": hours,
+            "created": float(rec.get("created") or time.time()),
+            "seed_until": until,
+            "downloader": str(rec.get("downloader") or "qbittorrent"),
+            "files_shared": bool(a_hash),
+            "task_id": str(rec.get("task_id") or ""),
+            "task_name": str(rec.get("task_name") or ""),
+        })
+        self._log(
+            f"跨站:H&R 保护 {rec.get('site_b', '') or dom} 「{str(rec.get('title') or '')[:50]}」"
+            f" → 保种至 {time.strftime('%m-%d %H:%M', time.localtime(until))}（{hours:g}h，期内任何任务不得删/改）"
+        )
+
     def _crossseed_guard(self) -> Dict[str, Any]:
         """★ 兄弟站流量兜底：跨站取种期间核对来源站「是否真免费」。
 
@@ -7166,7 +7314,119 @@ class MagicFlow(_PluginBase):
                 )
             except Exception:  # noqa: BLE001
                 pass
+        # ★ H&R：来源份的保种监督（重新确权标签 / 清无效 / 到期可回收）
+        try:
+            out.update(self._crossseed_sources_tick())
+        except Exception as err:  # noqa: BLE001
+            out["errors"].append(f"H&R 保护核对异常:{err}")
         return out
+
+    def _crossseed_sources_tick(self) -> Dict[str, Any]:
+        """来源份保种监督：① 标签确权 ② 清掉已消失的 ③ 到期回收(可选)。
+
+        来源份不归任何任务管——不理它，来源站的同站纳管就会抢走它的标签，
+        任务清理再把它连文件一起删 → 既踩来源站 H&R，又可能连累目标站正在做种的同一批文件。
+        """
+        store = self._crossseed_sources()
+        items = store.items()
+        res: Dict[str, Any] = {"protected": len(items), "retagged": 0, "reclaimed": 0}
+        if not items:
+            return res
+        dl_cache: Dict[str, Any] = {}
+        now = time.time()
+        live: Set[str] = set()
+        reclaim = bool((getattr(self, "_cs_cfg", {}) or {}).get("reclaim", False))
+        for h, rec in list(items.items()):
+            dl_name = str(rec.get("downloader") or "qbittorrent")
+            downloader = dl_cache.get(dl_name)
+            if downloader is None:
+                downloader = self._get_downloader(dl_name)
+                dl_cache[dl_name] = downloader
+            if downloader is None or not getattr(downloader, "is_available", False):
+                live.add(h)
+                continue
+            info = downloader.get_torrent_info(h)
+            if info is None:
+                continue  # 已不在下载器（手动删了？）→ 交给 prune
+            live.add(h)
+            # ① 标签确权：来源份只属于「魔流-跨站」，被任务抢走就改回来
+            tags = list(getattr(info, "tags", None) or [])
+            if isinstance(tags, str):
+                tags = [t.strip() for t in tags.split(",") if t.strip()]
+            if CROSSSEED_TAG not in tags:
+                try:
+                    if downloader.set_torrent_tags(h, [CROSSSEED_TAG]):
+                        res["retagged"] += 1
+                        self._dbg(f"跨站:来源份标签确权 {h[:12]} → {CROSSSEED_TAG}")
+                except Exception:  # noqa: BLE001
+                    pass
+            # ③ 到期回收（默认关）：只删种子、不删文件（A 端还在用同一批文件）
+            try:
+                until = float(rec.get("seed_until") or 0.0)
+            except (TypeError, ValueError):
+                until = 0.0
+            if until and now >= until and reclaim and not bool(rec.get("files_shared")):
+                try:
+                    _n, err = downloader.delete_torrents(hashes=[h], delete_file=False)
+                    if not err:
+                        store.drop(h)
+                        res["reclaimed"] += 1
+                        self._log(
+                            "跨站:H&R 保种期满，回收来源份（只删种子不删文件）:"
+                            f"{str(rec.get('title') or '')[:50]}"
+                        )
+                except Exception as rerr:  # noqa: BLE001
+                    res.setdefault("errors", []).append(f"回收失败:{rerr}")
+        dead = store.prune(live)
+        if dead:
+            self._dbg(f"跨站:清理已消失的来源份保护记录 {len(dead)} 条")
+        # ★ 自愈回填：下载器里带「魔流-跨站」标签、但账本里没有的种（升级前的遗留 / 账本丢了）
+        #   → 按默认保种时长登记保护，避免被来源站的任务顺手删掉。
+        try:
+            res["backfilled"] = self._crossseed_sources_backfill()
+        except Exception:  # noqa: BLE001
+            pass
+        res["protected"] = len(store.items())
+        return res
+
+    def _crossseed_sources_backfill(self) -> int:
+        """把「下载器里有 魔流-跨站 标签、账本里没有」的种回填进 H&R 保护账本。"""
+        downloader = self._get_downloader()
+        if downloader is None or not getattr(downloader, "is_available", False):
+            return 0
+        groups, err = downloader.get_torrents_by_tag()
+        if err and not groups:
+            return 0
+        tagged = list((groups or {}).get(CROSSSEED_TAG, []) or [])
+        if not tagged:
+            return 0
+        store = self._crossseed_sources()
+        known = store.hashes() | set(self._crossseed_pending().items().keys())
+        hours = self._crossseed_seed_hours("")
+        now = time.time()
+        added = 0
+        for t in tagged:
+            h = str(getattr(t, "hash", "") or "").lower()
+            if not h or h in known:
+                continue
+            store.add({
+                "sib_hash": h,
+                "title": str(getattr(t, "title", "") or getattr(t, "name", "") or ""),
+                "size_gb": float(getattr(t, "size", 0) or 0) / (1024 ** 3),
+                "site_a": "", "site_b": "", "site_b_domain": "",
+                "a_hash": "", "hit_and_run": False,
+                "hours": hours,
+                "created": now,
+                "seed_until": now + hours * 3600.0,
+                "downloader": "qbittorrent",
+                "files_shared": True,   # 来源份文件常与目标站共用 → 回收一律不删文件
+                "task_id": "", "task_name": "",
+                "backfilled": True,
+            })
+            added += 1
+        if added:
+            self._log(f"跨站:H&R 保护回填 {added} 个历史来源份（{hours:g}h）")
+        return added
 
     def _crossseed_start(
         self,
@@ -7217,6 +7477,10 @@ class MagicFlow(_PluginBase):
             "site_b_domain": _b_dom,
             "base_dl": _b_dl,
             "base_ts": time.time(),
+            # ★ H&R：来源站保种义务（例：学校 10h）。取种时就把「保种到什么时候」算好。
+            "hit_and_run": bool(getattr(src.get("row"), "hit_and_run", False)),
+            "seed_hours": self._crossseed_seed_hours(_b_dom),
+            "seed_until": time.time() + self._crossseed_seed_hours(_b_dom) * 3600.0,
             "task_id": str(getattr(task, "id", "") or ""),
             "task_name": str(getattr(task, "name", "") or ""),
             "downloader": str(getattr(task, "downloader", "") or "qbittorrent"),
@@ -7292,6 +7556,34 @@ class MagicFlow(_PluginBase):
             }
             pending.append(rec)
         pending.sort(key=lambda x: float(x.get("age_min") or 0))
+        # ★ 来源份（H&R 保种中）：距保种期满还剩多久
+        sources: List[Dict[str, Any]] = []
+        try:
+            for h, rec in self._crossseed_sources().items().items():
+                try:
+                    until = float(rec.get("seed_until") or 0.0)
+                except (TypeError, ValueError):
+                    until = 0.0
+                age_min = round(max(0.0, (now - float(rec.get("created") or 0)) / 60.0), 1)
+                sources.append({
+                    "sib_hash": h,
+                    "title": rec.get("title", ""),
+                    "site_a": rec.get("site_a", ""),
+                    "site_b": rec.get("site_b", ""),
+                    "site_b_domain": rec.get("site_b_domain", ""),
+                    "size_gb": round(float(rec.get("size_gb") or 0.0), 3),
+                    "hours": float(rec.get("hours") or 0.0),
+                    "hit_and_run": bool(rec.get("hit_and_run")),
+                    "seed_until": until,
+                    "remain_min": round(max(0.0, (until - now) / 60.0), 1),
+                    "done": bool(until and now >= until),
+                    "files_shared": bool(rec.get("files_shared")),
+                    "age_min": age_min,
+                    "task_name": rec.get("task_name", ""),
+                })
+        except Exception:  # noqa: BLE001
+            sources = []
+        sources.sort(key=lambda x: float(x.get("remain_min") or 0), reverse=True)
         return {
             "enabled_tasks": [
                 {"id": t.id, "name": t.name,
@@ -7304,12 +7596,21 @@ class MagicFlow(_PluginBase):
             "pending": pending,
             "count": len(items),
             "tag": CROSSSEED_TAG,
+            # ★ 已回辅完成 / 回辅失败的「来源份」：正在来源站履行 H&R 保种义务
+            "sources": sources,
+            "sources_count": len(sources),
             # ★ 流量兜底状态（前端「跨站」页展示 / 一键解除拉黑）
             "guard": {
                 "enabled": bool(cfg.get("guard", True)),
                 "pct": float(cfg.get("guard_pct") or 5.0),
                 "min_mb": float(cfg.get("guard_min_mb") or 50.0),
                 "interval_min": float(cfg.get("guard_interval_min") or 15.0),
+                "keep_seed": bool(cfg.get("keep_seed", True)),
+                "seed_hours_default": float(cfg.get("seed_hours_default") or CROSSSEED_SEED_HOURS_DEFAULT),
+                "site_hours": [
+                    f"{d}={h:g}" for d, h in sorted((cfg.get("site_hours") or {}).items())
+                ],
+                "reclaim": bool(cfg.get("reclaim", False)),
                 "banned": [
                     {"domain": d, "reason": v.get("reason", ""),
                      "age_min": round(max(0.0, (now - float(v.get("ts") or 0)) / 60.0), 1)}
@@ -7397,6 +7698,7 @@ class MagicFlow(_PluginBase):
                     done += 1
                     pend.drop(sib_hash)
                     pend.cleanup_torrent(str(rec.get("a_torrent") or ""))
+                    self._crossseed_protect_source(sib_hash, rec, a_hash=str(hs).lower())
                     if self._store:
                         self._store.journal.record(
                             task_id=str(rec.get("task_id") or ""),
@@ -7416,8 +7718,11 @@ class MagicFlow(_PluginBase):
                 else:
                     failed += 1
                     pend.drop(sib_hash)
+                    # ★ 回辅失败也要保护：数据已从来源站下下来了，H&R 义务照样存在。
+                    self._crossseed_protect_source(sib_hash, rec, a_hash="")
                     self._log(
-                        f"跨站回辅失败:{rec.get('title', '')}({err or '校验不通过/未匹配'})",
+                        f"跨站回辅失败:{rec.get('title', '')}({err or '校验不通过/未匹配'})"
+                        f" → 来源份转入 H&R 保种保护({rec.get('site_b', '')})",
                         "warning",
                     )
             if done or failed:
@@ -8430,6 +8735,12 @@ class MagicFlow(_PluginBase):
         if err:
             out["errors"].append(f"读下载器失败:{err}")
             return out
+        # ★ 豁免「跨站取种的种」：它们是**故意**下载的（免费，有专门兜底在管），
+        #   别让通用「清非免费下载种」按名字误伤（站点那条促销标记偶尔读不到）。
+        try:
+            _cs_skip = set(self._crossseed_pending().items().keys()) | self._crossseed_source_hashes()
+        except Exception:  # noqa: BLE001
+            _cs_skip = set()
         # 名称匹配(站上标题常见「点 vs 空格」「带年代」差异 → 走归一化模糊匹配)+ 体积校对
         victims: List[str] = []
         name_by_hash: Dict[str, Any] = {}
@@ -8449,6 +8760,8 @@ class MagicFlow(_PluginBase):
                 if row_size > 0 and t_size > 0 and abs(t_size - row_size) / max(row_size, 1.0) > 0.02:
                     continue
                 h = str(getattr(t, "hash", "") or "").strip().lower()
+                if h and h in _cs_skip:
+                    continue
                 if h and h not in victims:
                     victims.append(h)
                     name_by_hash[h] = {"hash": h, "name": t_title, "size": t_size}
@@ -9134,6 +9447,10 @@ class MagicFlow(_PluginBase):
                 "guard_pct": float(getattr(self, "_cs_cfg", {}).get("guard_pct") or 5.0),
                 "guard_min_mb": float(getattr(self, "_cs_cfg", {}).get("guard_min_mb") or 50.0),
                 "guard_interval_min": float(getattr(self, "_cs_cfg", {}).get("guard_interval_min") or 15.0),
+                "keep_seed": bool(getattr(self, "_cs_cfg", {}).get("keep_seed", True)),
+                "seed_hours_default": float(getattr(self, "_cs_cfg", {}).get("seed_hours_default") or CROSSSEED_SEED_HOURS_DEFAULT),
+                "site_hours": [f"{d}={h:g}" for d, h in sorted((getattr(self, "_cs_cfg", {}).get("site_hours") or {}).items())],
+                "reclaim": bool(getattr(self, "_cs_cfg", {}).get("reclaim", False)),
             },
             "fallback": dict(getattr(self, "_fallback_cfg", {}) or {}),
             "live": dict(getattr(self, "_live_cfg", {}) or {}),
@@ -9387,6 +9704,12 @@ class MagicFlow(_PluginBase):
             "guard_pct": _rf(getattr(payload, "crossseed_guard_pct", 5.0), 5.0),
             "guard_min_mb": _rf(getattr(payload, "crossseed_guard_min_mb", 50.0), 50.0),
             "guard_interval_min": _rf(getattr(payload, "crossseed_guard_interval_min", 15.0), 15.0),
+            "keep_seed": bool(getattr(payload, "crossseed_guard_keep_seed", True)),
+            "seed_hours_default": _rf(getattr(payload, "crossseed_seed_hours_default", CROSSSEED_SEED_HOURS_DEFAULT), CROSSSEED_SEED_HOURS_DEFAULT),
+            "site_hours": _cs_parse_site_hours(
+                getattr(payload, "crossseed_site_hours", None) or CROSSSEED_SITE_HOURS_DEFAULT
+            ),
+            "reclaim": bool(getattr(payload, "crossseed_reclaim", False)),
         }
         # 元数据兜底(多源识别 + 补 NFO)
         _fsrc = getattr(payload, "fallback_sources", None)
