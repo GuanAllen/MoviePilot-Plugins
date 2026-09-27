@@ -560,9 +560,20 @@ class TagStateStore:
 # ---------------------------------------------------------------- 文件组（多站引用计数）
 
 class FileGroupStore:
-    """文件组账本：同一批文件在多站各有一个种。
+    """★ 资源账本（Resource）：一份内容 = 一条资源，多站各挂一个种。
 
-    ``group_id -> {members: {hash: {site, downloader, added}}, size_gb, files_shared}``
+    Master 的模型（2026-09-27 20:38）：
+
+    - **资源 : 种子 = 1 : N**，同一个资源可以有多个种子（多站/多版本）
+    - 资源有 **来源站**（谁把它下回来的）—— 资源的 **H&R 账单挂在资源上**，不是种子上
+    - 资源要**靠来源站的那个种子挂种**来结清 H&R（挂够时长 → 给资源结清账单）
+    - 资源有 **库记**（是否已整理入库）
+    - **只有「下完」的才有资源**；没下完的只有种子
+
+    存储：``group_id -> {size_gb, files_shared, members:{hash:{site,downloader,added,
+    downloaded,progress,state}}, source_site, source_hash,
+    hr:{site,required_hours,need_hours,seeded_seconds,settled,settled_at,checked_at,by_hash},
+    library:{in_library,first_at,media_id,path}, created, updated}``
 
     删除纪律（Master 18:54）：
     - 摘掉一个成员 → **只删该站的种**（``delete_files=False``）
@@ -621,6 +632,9 @@ class FileGroupStore:
         downloader: str = "",
         size_gb: float = 0.0,
         files_shared: Optional[bool] = None,
+        downloaded: bool = True,
+        progress: float = 1.0,
+        state: str = "",
         now: Optional[float] = None,
     ) -> Dict[str, Any]:
         gid = _clean(group_id)
@@ -631,7 +645,17 @@ class FileGroupStore:
         data = self.items()
         rec = dict(data.get(gid) or {"members": {}})
         members = dict(rec.get("members") or {})
-        members[h] = {"site": _clean(site), "downloader": _clean(downloader), "added": ts}
+        # ★ 只有「下完」的种才建立资源/成为资源成员（没下完的只有种子，没有资源）
+        if not downloaded and not members:
+            return {"group_id": gid, "members": 0, "skipped": "not_downloaded"}
+        members[h] = {"site": _clean(site), "downloader": _clean(downloader), "added": ts,
+                      "downloaded": bool(downloaded), "progress": round(float(progress or 0), 4)}
+        if state:
+            members[h]["state"] = _clean(state)
+        # 资源级的「来源站」= 真正把它下回来的那个站（H&R 义务所在）
+        if downloaded and not _clean(rec.get("source_site")):
+            rec["source_site"] = _clean(site)
+            rec["source_hash"] = h
         rec["members"] = members
         if size_gb:
             rec["size_gb"] = float(size_gb)
@@ -641,6 +665,130 @@ class FileGroupStore:
         data[gid] = rec
         self._write(data)
         return {"group_id": gid, "members": len(members)}
+
+    # ---------------------------------------------------------------- 资源级：来源站 / H&R / 库记
+    def set_hr(
+        self,
+        group_id: str,
+        *,
+        site: str = "",
+        required_hours: float = 0.0,
+        need_hours: float = 0.0,
+        by_hash: str = "",
+        now: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """挂/更新资源上的 H&R 账单（义务靠来源站那个种子挂种结清）。"""
+        gid = _clean(group_id)
+        data = self.items()
+        rec = dict(data.get(gid) or {})
+        if not gid or not rec:
+            return {}
+        ts = float(now if now is not None else time.time())
+        hr = dict(rec.get("hr") or {})
+        hr.update({
+            "site": _clean(site) or hr.get("site", ""),
+            "required_hours": float(required_hours or hr.get("required_hours") or 0.0),
+            "need_hours": float(need_hours or hr.get("need_hours") or 0.0),
+            "by_hash": _clean(by_hash) or hr.get("by_hash", ""),
+            "checked_at": ts,
+        })
+        hr.setdefault("settled", False)
+        rec["hr"] = hr
+        rec["updated"] = ts
+        data[gid] = rec
+        self._write(data)
+        return hr
+
+    def note_hr_progress(
+        self,
+        group_id: str,
+        *,
+        seeded_seconds: float = 0.0,
+        now: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """记录来源种挂种进度；挂够要求 → **给资源结清 H&R 账单**。"""
+        gid = _clean(group_id)
+        data = self.items()
+        rec = dict(data.get(gid) or {})
+        hr = dict(rec.get("hr") or {})
+        if not gid or not rec or not hr:
+            return {}
+        ts = float(now if now is not None else time.time())
+        seeded = float(seeded_seconds or 0.0)
+        hr["seeded_seconds"] = round(seeded, 1)
+        hr["checked_at"] = ts
+        need = max(float(hr.get("required_hours") or 0.0), float(hr.get("need_hours") or 0.0))
+        if not hr.get("settled") and need > 0 and seeded >= need * 3600.0:
+            hr["settled"] = True
+            hr["settled_at"] = ts
+        rec["hr"] = hr
+        rec["updated"] = ts
+        data[gid] = rec
+        self._write(data)
+        return hr
+
+    def set_library(
+        self,
+        group_id: str,
+        in_library: bool,
+        *,
+        media_id: str = "",
+        path: str = "",
+        now: Optional[float] = None,
+    ) -> bool:
+        """资源级「库记」：这份内容是否已整理入库。"""
+        gid = _clean(group_id)
+        data = self.items()
+        rec = dict(data.get(gid) or {})
+        if not gid or not rec:
+            return False
+        ts = float(now if now is not None else time.time())
+        lib = dict(rec.get("library") or {})
+        if bool(lib.get("in_library")) == bool(in_library) and not media_id and not path:
+            return False
+        lib["in_library"] = bool(in_library)
+        if in_library:
+            lib.setdefault("first_at", ts)
+        if media_id:
+            lib["media_id"] = str(media_id)
+        if path:
+            lib["path"] = str(path)
+        lib["updated"] = ts
+        rec["library"] = lib
+        rec["updated"] = ts
+        data[gid] = rec
+        self._write(data)
+        return True
+
+    def due_hr(self, *, now: Optional[float] = None) -> List[Tuple[str, Dict[str, Any]]]:
+        """还没结清、且记了来源种 hash 的 H&R 账单（交给来源站挂种去还）。"""
+        out: List[Tuple[str, Dict[str, Any]]] = []
+        for gid, rec in self.items().items():
+            hr = rec.get("hr") or {}
+            if not hr or hr.get("settled"):
+                continue
+            if not _clean(hr.get("by_hash")):
+                continue
+            out.append((gid, hr))
+        return out
+
+    def resources(self, *, limit: int = 0) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for gid, rec in self.items().items():
+            members = rec.get("members") or {}
+            hr = dict(rec.get("hr") or {})
+            lib = dict(rec.get("library") or {})
+            out.append({
+                "group_id": gid,
+                "size_gb": round(float(rec.get("size_gb") or 0), 2),
+                "members": len(members),
+                "sites": sorted({str((m or {}).get("site") or "") for m in members.values() if (m or {}).get("site")}),
+                "source_site": rec.get("source_site") or "",
+                "hr": hr,
+                "library": lib,
+            })
+        out.sort(key=lambda x: x["members"], reverse=True)
+        return out[: max(1, int(limit))] if limit else out
 
     def remove_member(self, hash_string: str, *, now: Optional[float] = None) -> Dict[str, Any]:
         """摘掉一个成员；返回 ``{found, group_id, remaining, delete_files}``。
