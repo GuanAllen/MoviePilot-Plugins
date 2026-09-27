@@ -154,7 +154,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.13.2"
+__version__ = "3.13.3"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -7378,10 +7378,13 @@ class MagicFlow(_PluginBase):
                 o_sub = SUB_RESOURCE if any(x in ("已整理", "辅种") for x in cur) else SUB_NEW
             target = tag_for(site, o_state, o_sub)
             new_tags = retag(cur, site=site, state=o_state, sub=o_sub) if cur else [target]
-            try:
-                done = fn(hh, new_tags) if callable(fn) else downloader.set_torrent_tags(hh, new_tags)
-            except Exception:  # noqa: BLE001
-                done = False
+            if cur and sorted(new_tags) == sorted(cur):
+                done = True  # 标签已就位：只账本销账，不再打 qB
+            else:
+                try:
+                    done = fn(hh, new_tags) if callable(fn) else downloader.set_torrent_tags(hh, new_tags)
+                except Exception:  # noqa: BLE001
+                    done = False
             if done:
                 try:
                     # 先把归一化后的 origin 写回，release 才会退回正确的静默子类
@@ -7620,6 +7623,9 @@ class MagicFlow(_PluginBase):
                 "count": len(groups.items()), "multi": groups.stats().get("multi_site_groups", 0),
                 "items": rows[: max(1, int(limit)) if str(limit).isdigit() and int(limit) > 0 else 50],
             })
+        if act in ("settle", "settle_idle"):
+            info = self._settle_disabled_tasks(apply=True)
+            return Response(success=True, message=f"停止任务退回静默 {info.get('settled')} 个", data=info)
         if act in ("fp", "fingerprint"):
             _lim = int(limit) if str(limit).isdigit() else 0
             return Response(success=True, message="特征码补录完成", data=self.backfill_fingerprints(limit=_lim))
@@ -11514,6 +11520,13 @@ class MagicFlow(_PluginBase):
             except Exception as err:  # noqa: BLE001
                 self._log(f"标签维护:特征码补录失败:{err}", "warning")
             try:
+                sinfo = self._settle_disabled_tasks(apply=True)
+                if sinfo.get("settled"):
+                    self._log(f"魔流:标签维护:停止任务退回静默 {sinfo.get('settled')} 个"
+                              f"（{len([x for x in sinfo.get('tasks') or [] if x.get('settled')])} 个任务）")
+            except Exception as err:  # noqa: BLE001
+                self._log(f"标签维护:停止任务退静默失败:{err}", "warning")
+            try:
                 _live = list(self._tag_all_torrents().keys())
                 rinfo2 = store.reconcile(_live)
                 if rinfo2.get("dropped"):
@@ -12513,6 +12526,11 @@ class MagicFlow(_PluginBase):
         self._apply_seed_upload_limit()
         if _run_mode != _prev_mode:
             self._spawn_run_mode_apply(task, _run_mode)
+            if _run_mode != "running":
+                # ★ 停止＝退回静默（保文件、可逆；重新启用会被同站纳管再接管回来）
+                threading.Thread(
+                    target=self._settle_task_idle_safe, args=(task.id,), daemon=True
+                ).start()
         return Response(success=True, message="任务已更新", data=self._build_task_detail(task_id))
 
     # ---------------------------------------------------------
@@ -12723,6 +12741,72 @@ class MagicFlow(_PluginBase):
         _targets = (list(hashes) if hashes else self._task_managed_hashes(task))
         n = self._tag_release(task, _targets, reason="退回静默")
         return {"ok": True, "settled": n}
+
+    def _same_site_state_live(self, task: Any) -> str:
+        """同站同状态是否有**启用中**的任务（有则那批种归它，停止的任务不用退静默）。"""
+        try:
+            pair = self._task_site_state(task)
+        except Exception:  # noqa: BLE001
+            return ""
+        tid = str(getattr(task, "id", "") or "")
+        for other in self._task_configs.values():
+            if str(getattr(other, "id", "") or "") == tid:
+                continue
+            if not bool(getattr(other, "enabled", False)):
+                continue
+            try:
+                if self._task_site_state(other) == pair:
+                    return str(getattr(other, "name", "") or "")
+            except Exception:  # noqa: BLE001
+                continue
+        return ""
+
+    def _settle_task_idle_safe(self, task_id: str) -> None:
+        """任务被**停止**（未启用）→ 名下种子退回静默（保文件、可逆）。"""
+        try:
+            task = self._get_task_config(task_id)
+            if not task or bool(getattr(task, "enabled", False)):
+                return
+            _keeper = self._same_site_state_live(task)
+            if _keeper:
+                self._log(f"魔流 [{task.name}] 已停止：同站同状态任务「{_keeper}」在跑 → 种子归它，不退静默")
+                return
+            res = self._tag_settle_idle(task)
+            if res.get("settled"):
+                self._log(f"魔流 [{task.name}] 任务已停止 → 名下 {res.get('settled')} 个种子退回静默")
+        except Exception as err:  # noqa: BLE001
+            self._log(f"停止任务退回静默失败:{err}", "warning")
+
+    def _settle_disabled_tasks(self, apply: bool = False) -> Dict[str, Any]:
+        """★ 停止（未启用）的任务：名下种子一律退回「静默」。
+
+        静默＝不刷流、不做魔力优化，只是挂着保种/攒魔力，限速走静默档 200KB/s。
+        同站同状态若有**启用中**的任务，则不动（那批种归它）。
+        """
+        report: Dict[str, Any] = {"tasks": [], "settled": 0, "skipped_live": 0, "pending": 0}
+        for t in list(self._task_configs.values()):
+            if bool(getattr(t, "enabled", False)):
+                continue
+            try:
+                hs = list(self._task_managed_hashes(t))
+            except Exception:  # noqa: BLE001
+                hs = []
+            if not hs:
+                continue
+            _keeper = self._same_site_state_live(t)
+            if _keeper:
+                report["skipped_live"] += 1
+                report["tasks"].append({"task": str(getattr(t, "name", "") or ""),
+                                        "hashes": len(hs), "keeper": _keeper})
+                continue
+            if not apply:
+                report["pending"] += len(hs)
+                report["tasks"].append({"task": str(getattr(t, "name", "") or ""), "hashes": len(hs)})
+                continue
+            n = self._tag_release(t, hs, reason="任务已停止→退回静默")
+            report["settled"] += n
+            report["tasks"].append({"task": str(getattr(t, "name", "") or ""), "settled": n})
+        return report
 
     def get_task_handover(self, task_id: str) -> Response:
         """预览：删掉该任务时名下种子能交给谁 / 有多少要处理。"""
