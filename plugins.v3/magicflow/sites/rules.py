@@ -434,6 +434,27 @@ class SiteRules:
         hours, _src = self.resolve(domain, manual_map, default)
         return hours
 
+    def hr_of(self, domain: str) -> Optional[bool]:
+        """该站 H&R 判定：``True`` 有 / ``False`` 无 / ``None`` 未知（未探明）。"""
+        d = _norm_domain(domain)
+        rec = dict(self.items().get(d) or {})
+        if not rec:
+            for k, v in self.items().items():
+                if _same_domain(k, d):
+                    rec = dict(v or {})
+                    break
+        if rec.get("hr") is not None:
+            return bool(rec.get("hr"))
+        b = BUILTIN_RULES.get(d) or {}
+        if not b:
+            for k, v in BUILTIN_RULES.items():
+                if _same_domain(k, d):
+                    b = v or {}
+                    break
+        if b.get("hr") is not None:
+            return bool(b.get("hr"))
+        return None
+
     def resolve(
         self,
         domain: str,

@@ -6778,6 +6778,38 @@ class MagicFlow(_PluginBase):
         hours, _src = self._crossseed_seed_hours_detail(domain)
         return hours
 
+    def _site_hr_flag(self, domain: str) -> Optional[bool]:
+        """站点规则库里的 H&R 判定：``True`` 有 / ``False`` 无 / ``None`` 未知。"""
+        try:
+            return self._site_rules().hr_of(domain)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _crossseed_hr_decision(
+        self, domain: str, torrent_hr: Any = None
+    ) -> Tuple[bool, float, str]:
+        """★ H&R 判定优先级：**种子里有 H&R 信息 → 以种子为准；没有 → 兜底站点规则库**。
+
+        - ``torrent_hr is True``：种子自带 H&R 标记 → 一定保护（时长取站点库/默认）。
+        - ``torrent_hr is False``：**只有当站点库也明确说「无 H&R」时才采信**（因为 MP 侧
+          字段默认 False，站点适配器没配 ``hr`` 选择器时全是 False，不能当「无 H&R」用）。
+        - 其余（无种子级信息 / 站点库未知）：按站点库 → 未知则保守保护 24h。
+
+        Returns: ``(是否保护, 保种小时数, 来源说明)``
+        """
+        hours, hsrc = self._crossseed_seed_hours_detail(domain)
+        site_hr = self._site_hr_flag(domain)
+        if torrent_hr is True:
+            use = float(hours) if float(hours or 0.0) > 0 else float(CROSSSEED_SEED_HOURS_DEFAULT)
+            return True, use, f"种子标记/{hsrc}"
+        if torrent_hr is False and site_hr is False:
+            return False, 0.0, "种子未标H&R+站点无H&R"
+        if site_hr is False:
+            return False, 0.0, f"站点规则({hsrc})无H&R"
+        if site_hr is None:
+            return True, float(hours or 0.0), f"未知保守/{hsrc}"
+        return True, float(hours or 0.0), f"站点规则/{hsrc}"
+
     def _crossseed_seed_hours_detail(self, domain: str) -> Tuple[float, str]:
         """返回 ``(保种小时数, 来源)``。来源: manual > 规则库(probe/builtin) > 全局默认。"""
         dom = str(domain or "").strip().lower()
@@ -7265,6 +7297,14 @@ class MagicFlow(_PluginBase):
         if not h:
             return
         dom = str(rec.get("site_b_domain") or "").strip().lower()
+        # ★ 该种无 H&R 义务（种子未标 + 站点库说无 H&R）→ 不登记保护账本，免费做种随便清
+        if rec.get("hit_and_run") is False and self._site_hr_flag(dom) is False:
+            self._log(
+                f"跨站:{rec.get('site_b', '') or dom} 该种无 H&R 义务 → 不登记保种账本",
+                "info",
+            )
+            self._crossseed_sources().drop(h)
+            return
         try:
             hours = float(rec.get("seed_hours") or 0.0)
         except (TypeError, ValueError):
@@ -7590,7 +7630,15 @@ class MagicFlow(_PluginBase):
         a_path = self._crossseed_pending().put_torrent(a_key, getattr(cand, "raw", b"") or b"")
         # ★ 流量兜底基线：记下来源站此刻的下载量（后结增量超阈值 = 其实不免费）
         _b_dom = str(src.get("site_domain") or "").strip().lower()
-        _hr_hours, _hr_src = self._crossseed_seed_hours_detail(_b_dom)
+        # ★ 种子里有 H&R 信息 → 以种子为准；没有 → 兜底站点规则库（见 _crossseed_hr_decision）
+        _t_hr = getattr(src.get("row"), "hit_and_run", None)
+        _hr_flag, _hr_use, _hr_origin = self._crossseed_hr_decision(_b_dom, _t_hr)
+        _hr_hours, _hr_src = _hr_use, _hr_origin
+        if not _hr_flag:
+            self._log(
+                f"跨站:{sname or _b_dom} 该种无 H&R 义务（{_hr_origin}）→ 不做 H&R 保种保护",
+                "info",
+            )
         _b_dl = 0.0
         try:
             _b_sid = self._site_id_by_domain(_b_dom)
@@ -7610,8 +7658,8 @@ class MagicFlow(_PluginBase):
             "site_b_domain": _b_dom,
             "base_dl": _b_dl,
             "base_ts": time.time(),
-            # ★ H&R：来源站保种义务（例：学校 10h）。取种时就把「保种到什么时候」算好。
-            "hit_and_run": bool(getattr(src.get("row"), "hit_and_run", False)),
+            # ★ H&R：来源站保种义务（种子级标记 > 站点规则库）。取种时就把「保种到什么时候」算好。
+            "hit_and_run": bool(_hr_flag),
             "seed_hours": _hr_hours,
             "seed_hours_src": _hr_src,
             "seed_until": time.time() + _hr_hours * 3600.0,
@@ -7707,6 +7755,7 @@ class MagicFlow(_PluginBase):
                     "site_b_domain": rec.get("site_b_domain", ""),
                     "size_gb": round(float(rec.get("size_gb") or 0.0), 3),
                     "hours": float(rec.get("hours") or 0.0),
+                    "hours_src": str(rec.get("hours_src") or ""),
                     "hit_and_run": bool(rec.get("hit_and_run")),
                     "seed_until": until,
                     "remain_min": round(max(0.0, (until - now) / 60.0), 1),

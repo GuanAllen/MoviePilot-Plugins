@@ -4179,6 +4179,7 @@ onUnmounted(() => {
                     <VChip size="x-small" variant="tonal" color="warning">{{ it.site_b }}</VChip>
                     <template v-if="it.size_gb"> · {{ Number(it.size_gb).toFixed(2) }}G</template>
                     · 要求 {{ it.hours }}h
+                    <template v-if="it.hours_src"> <span class="text-medium-emphasis">（{{ String(it.hours_src).startsWith('种子标记') ? '种子自带 H&R 标记' : '站点规则库' }}）</span></template>
                     · {{ it.done ? '保种期已满（可回收）' : `还剩 ${formatRemain(it.remain_min)}` }}
                     <template v-if="it.files_shared"> · 文件与目标站共用</template>
                   </span>
