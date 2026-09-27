@@ -1020,7 +1020,17 @@ class MagicFlow(_PluginBase):
             task = MagicFlowTaskConfig.from_dict(row)
             if not task.id:
                 task.id = uuid.uuid4().hex[:12]
-            if not task.brush_tag:
+            # ★ 标签模型（3.13.0）：任务的标签改为「站点级状态标签」自动派生
+            #   brush 任务 → 魔流-<站点>-刷流；其余 → 魔流-<站点>-魔力
+            #   仅当为空 / 看起来是自动生成的魔流标签时才改写；用户自定义的标签保持不动。
+            try:
+                _derived = self._task_tag(task)
+            except Exception:  # noqa: BLE001
+                _derived = ""
+            _cur = str(task.brush_tag or "").strip()
+            if _derived and (not _cur or is_magicflow_tag(_cur) or _cur.startswith("刷流-")):
+                task.brush_tag = _derived
+            elif not _cur:
                 task.brush_tag = f"魔流-{task.name or task.id}"
             self._task_configs[task.id] = task
 
@@ -4032,8 +4042,8 @@ class MagicFlow(_PluginBase):
             self._log(
                 f"[标签审计] 纳管同站种子 {len(to_tag)} 个 → 标签「{task.brush_tag}」"
             )
-        for h in to_tag:
-            downloader.set_torrent_tags(h, [task.brush_tag])
+        if to_tag:
+            self._tag_assign(task, to_tag, reason="同站纳管")
         if to_tag and self._store:
             try:
                 self._store.journal.record(
@@ -4843,7 +4853,7 @@ class MagicFlow(_PluginBase):
                     ok = False
                     _rerr = ""
                     if mode == "hash":
-                        ok = downloader.set_torrent_tags(h, [task.brush_tag])
+                        ok = self._tag_assign(task, [h], reason="同 hash 复用") > 0
                         st = str(getattr(linfo, "state", "") or "").lower()
                         if st in (QB_PAUSED_STATES | {"error", "missingfiles"}):
                             downloader.resume_torrent(h)
@@ -4853,12 +4863,13 @@ class MagicFlow(_PluginBase):
                         hs, err = downloader.add_torrent_reuse(
                             torrent_bytes=cand.raw,
                             save_path=(getattr(linfo, "save_path", "") or task.save_path or ""),
-                            tag=task.brush_tag,
+                            tag=self._task_tag(task),
                             verify=task.reuse_verify,
                         )
                         ok = bool(hs)
                         if ok and hs:
                             h = hs.lower()
+                            self._tag_assign(task, [h], reason="跨站辅种")
                         if not ok and err:
                             _rerr = str(err)
                             self._log(f"辅种失败:{cand.title}({err})", "warning")
@@ -4957,7 +4968,7 @@ class MagicFlow(_PluginBase):
                 hash_string, error = downloader.add_torrent(
                     content=cand.raw,
                     download_dir=task.save_path or "",
-                    tag=task.brush_tag,
+                    tag=self._task_tag(task),
                     cookie=cand.site_cookie,
                     user_agent=cand.site_ua,
                     upload_limit=task.up_speed,
@@ -4976,6 +4987,8 @@ class MagicFlow(_PluginBase):
                         new_pub[nh] = pub_ts
                     if nh and getattr(cand, "page_url", ""):
                         new_pages[nh] = str(cand.page_url)
+                    if nh:
+                        self._tag_assign(task, [nh], reason="新增下载")
                     _fu2 = float(getattr(cand, "free_remaining_sec", -1.0) or -1.0)
                     if nh and _fu2 >= 0:
                         new_free[nh] = time.time() + _fu2
@@ -7104,6 +7117,128 @@ class MagicFlow(_PluginBase):
         self._tag_groups_obj = obj
         return obj
 
+    def _task_site_state(self, task: Any) -> Tuple[str, str]:
+        """任务对应的「站点 + 状态」：刷流任务 → 刷流，其余 → 魔力。"""
+        site = str(getattr(task, "site_name", "") or "").strip()
+        state = STATE_BRUSH if str(getattr(task, "task_type", "bonus") or "bonus").lower() == "brush" else STATE_BONUS
+        return site, state
+
+    def _task_tag(self, task: Any) -> str:
+        """任务对应的新命名标签（站点级）。"""
+        site, state = self._task_site_state(task)
+        return tag_for(site, state)
+
+    def _task_tags(self, task: Any) -> List[str]:
+        """任务查找用的标签集合（新命名 + 兼容旧 brush_tag）。"""
+        out: List[str] = []
+        try:
+            nt = self._task_tag(task)
+        except Exception:  # noqa: BLE001
+            nt = ""
+        if nt:
+            out.append(nt)
+        old = str(getattr(task, "brush_tag", "") or "").strip()
+        if old and old not in out:
+            out.append(old)
+        return out
+
+    def _tag_assign(
+        self,
+        task: Any,
+        hashes: Any,
+        *,
+        sub: str = "",
+        origin_sub: str = SUB_NEW,
+        reason: str = "",
+    ) -> int:
+        """★ 把种子归到任务名下：真替换标签 + 写状态账本（claim）。返回成功数。"""
+        downloader = self._get_downloader()
+        if downloader is None or not getattr(downloader, "is_available", False):
+            return 0
+        site, state = self._task_site_state(task)
+        if state == STATE_SILENT:
+            pass
+        target = tag_for(site, state, sub)
+        store = self._tag_state()
+        hs = [hashes] if isinstance(hashes, str) else list(hashes or [])
+        ok_n = 0
+        fn = getattr(downloader, "replace_torrent_tags", None)
+        snap = self._tag_all_torrents()
+        for h in hs:
+            hh = str(h or "").strip().lower()
+            if not hh:
+                continue
+            live = snap.get(hh)
+            cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
+            new_tags = retag(cur, site=site, state=state, sub=sub) if cur else [target]
+            try:
+                done = fn(hh, new_tags) if callable(fn) else downloader.set_torrent_tags(hh, new_tags)
+            except Exception:  # noqa: BLE001
+                done = False
+            if not done:
+                continue
+            rec = {
+                "site": site, "state": state, "sub": sub,
+                "taken_by": str(getattr(task, "id", "") or ""),
+                "task": str(getattr(task, "name", "") or ""),
+                "origin_state": STATE_SILENT, "origin_sub": origin_sub or SUB_NEW,
+                "title": str(getattr(live, "title", "") or "") if live is not None else "",
+                "size_gb": float(getattr(live, "size_gb", 0) or 0) if live is not None else 0.0,
+            }
+            try:
+                store.claim(hh, str(getattr(task, "id", "") or ""), state=state, site=site, sub=sub)
+                store.put(hh, rec)
+            except Exception:  # noqa: BLE001
+                try:
+                    store.put(hh, rec)
+                except Exception:  # noqa: BLE001
+                    pass
+            ok_n += 1
+        if ok_n and reason:
+            self._dbg(f"标签模型:任务「{getattr(task, 'name', '')}」接管 {ok_n} 个 → {target}（{reason}）")
+        return ok_n
+
+    def _tag_release(self, task: Any, hashes: Any, *, reason: str = "") -> int:
+        """★ 任务退出：按账本 origin 退回（刷流→静默-新/资源等），返回成功数。"""
+        downloader = self._get_downloader()
+        if downloader is None or not getattr(downloader, "is_available", False):
+            return 0
+        store = self._tag_state()
+        hs = [hashes] if isinstance(hashes, str) else list(hashes or [])
+        tid = str(getattr(task, "id", "") or "")
+        fn = getattr(downloader, "replace_torrent_tags", None)
+        n = 0
+        snap = self._tag_all_torrents()
+        for h in hs:
+            hh = str(h or "").strip().lower()
+            if not hh:
+                continue
+            rec = store.get(hh) or {}
+            if str(rec.get("taken_by") or "") not in ("", tid):
+                continue  # 被别人占着，不抢
+            site = str(rec.get("site") or "") or self._torrent_site_name(
+                getattr(snap.get(hh), "tags", None)
+            )
+            o_state = str(rec.get("origin_state") or STATE_SILENT)
+            o_sub = str(rec.get("origin_sub") or (SUB_NEW if o_state == STATE_SILENT else ""))
+            target = tag_for(site, o_state, o_sub)
+            live = snap.get(hh)
+            cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
+            new_tags = retag(cur, site=site, state=o_state, sub=o_sub) if cur else [target]
+            try:
+                done = fn(hh, new_tags) if callable(fn) else downloader.set_torrent_tags(hh, new_tags)
+            except Exception:  # noqa: BLE001
+                done = False
+            if done:
+                try:
+                    store.release(hh, tid)
+                except Exception:  # noqa: BLE001
+                    pass
+                n += 1
+        if n and reason:
+            self._dbg(f"标签模型:任务「{getattr(task, 'name', '')}」退回 {n} 个（{reason}）")
+        return n
+
     def _tag_site_names(self) -> List[str]:
         """已知站点短名（用于解析 ``魔流-<站点>-<状态>`` 里带连字符的站点）。"""
         names: List[str] = []
@@ -7140,12 +7275,13 @@ class MagicFlow(_PluginBase):
         return str(fallback or "").strip()
 
     def _tag_all_torrents(self) -> Dict[str, Any]:
-        """一次快照：hash -> TorrentInfo（托管相关标签的并集）。"""
-        downloader = self._get_downloader()
-        if downloader is None or not getattr(downloader, "is_available", False):
-            return {}
+        """一次快照：hash -> TorrentInfo。
+
+        ★ 复用插件级 ``_tag_snapshot``（带 TTL 缓存 + 单飞），避免批量改标签时
+        每个 hash 都全量拉一次 qB（迁移 600+ 种子时曾是分钟级耗时主因）。
+        """
         try:
-            groups, _err = downloader.get_torrents_by_tag()
+            groups = self._tag_snapshot()
         except Exception:  # noqa: BLE001
             return {}
         out: Dict[str, Any] = {}
