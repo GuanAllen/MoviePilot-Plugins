@@ -10668,7 +10668,7 @@ class MagicFlow(_PluginBase):
                     pass
         return str(value)
 
-    def debug_qb_info(self, path: str = "", hash: str = "", limit: int = 1) -> Response:
+    def debug_qb_info(self, path: str = "", hash: str = "", limit: int = 1, audit: str = "") -> Response:
         """诊断：看看 qB 里还有哪些**可用信息**（只读）。
 
         ``path`` 给定时直接透传 GET 该 qB API 路径（白名单前缀 ``/api/v2/``），
@@ -10679,6 +10679,47 @@ class MagicFlow(_PluginBase):
         if qbc is None:
             return Response(success=False, message=" qBittorrent 客户端不可用")
         out: Dict[str, Any] = {}
+        if str(audit or "").strip().lower() in ("trackers", "empty", "1", "true"):
+            limit_n = int(limit or 0) or 60
+            rows: List[Dict[str, Any]] = []
+            try:
+                for t in qbc.torrents_info() or []:
+                    if str(t.get("tracker") or ""):
+                        continue
+                    if len(rows) >= limit_n:
+                        break
+                    h = str(t.get("hash") or "")
+                    doms: List[str] = []
+                    try:
+                        for x in qbc.torrents_trackers(torrent_hash=h) or []:
+                            u = str(x.get("url") or "")
+                            if u.startswith("**"):
+                                continue
+                            m2 = re.search(r"https?://([^/]+)/", u)
+                            if m2:
+                                doms.append(m2.group(1).lower())
+                    except Exception:  # noqa: BLE001
+                        pass
+                    rows.append({
+                        "hash": h, "name": str(t.get("name") or "")[:60],
+                        "tags": str(t.get("tags") or ""), "category": str(t.get("category") or ""),
+                        "save_path": str(t.get("save_path") or ""),
+                        "size_gb": round(float(t.get("size") or 0) / 1024 ** 3, 2),
+                        "progress": t.get("progress"), "state": t.get("state"),
+                        "magnet": str(t.get("magnet_uri") or "")[:80],
+                        "announce_domains": doms,
+                    })
+            except Exception as err:  # noqa: BLE001
+                return Response(success=False, message=f"审计失败:{err}")
+            agg: Dict[str, int] = {}
+            for r in rows:
+                key = ",".join(sorted(set(r["announce_domains"]))) or "(也无公告)"
+                agg[key] = agg.get(key, 0) + 1
+            return Response(success=True, message="ok", data=self._jsonable({
+                "empty_tracker_total_inspected": len(rows),
+                "by_announce_domain": dict(sorted(agg.items(), key=lambda x: -x[1])[:12]),
+                "samples": rows[:15],
+            }))
         if str(path or "").strip().startswith("/api/v2/"):
             try:
                 fn = getattr(qbc, "_get", None)
@@ -10726,6 +10767,30 @@ class MagicFlow(_PluginBase):
         # ★ 聚合视角：站点归属（按 tracker 域名）/ 目录分布 / 限速档 / 分享率限制
         try:
             rows = qbc.torrents_info() or []
+            # ★ qB 的 `tracker` 字段会为空（实测 138/922），但 `torrents_trackers`
+            #   能解析出站点 → audit=site 时按需逐种兜底（默认走便宜路径）
+            _want_site = str(audit or "").strip().lower() == "site"
+            _fix_n = 0
+
+            def _norm_dom(url: str) -> str:
+                _u = str(url or "")
+                _m2 = re.search(r"https?://([^/]+)/", _u)
+                _d = (_m2.group(1) if _m2 else _u).lower().split(":")[0]
+                for _pre in ("tracker.", "www."):
+                    if _d.startswith(_pre) and len(_d) > len(_pre) + 3:
+                        _d = _d[len(_pre):]
+                return _d
+
+            _dom_name: Dict[str, str] = {}
+            try:
+                for _si in self._list_sites():
+                    _dd = _norm_dom(_si.get("domain") or "")
+                    _nm = str(_si.get("name") or "").strip()
+                    if _dd and _nm:
+                        _dom_name[_dd] = _nm
+            except Exception:  # noqa: BLE001
+                pass
+            _by_site: Dict[str, int] = {}
             _by_dom: Dict[str, int] = {}
             _by_path: Dict[str, int] = {}
             _lim: Dict[str, int] = {}
@@ -10735,7 +10800,28 @@ class MagicFlow(_PluginBase):
                 _tr = str(t.get("tracker") or "")
                 _m = re.search(r"https?://([^/]+)/", _tr)
                 _dom = (_m.group(1) if _m else "").lower()
+                if not _dom and _want_site:
+                    try:
+                        for _x in qbc.torrents_trackers(torrent_hash=str(t.get("hash") or "")) or []:
+                            _u = str(_x.get("url") or "")
+                            if _u.startswith("**"):
+                                continue
+                            _dom = _norm_dom(_u)
+                            if _dom:
+                                _fix_n += 1
+                                break
+                    except Exception:  # noqa: BLE001
+                        pass
                 _by_dom[_dom or "-"] = _by_dom.get(_dom or "-", 0) + 1
+                _nd = _norm_dom(_dom) if _dom else ""
+                _key = _dom_name.get(_nd, "")
+                if not _key and _nd:
+                    for _kd, _nm in _dom_name.items():
+                        if _kd.endswith(_nd) or _nd.endswith(_kd):
+                            _key = _nm
+                            break
+                _label = _key or _dom or "-"
+                _by_site[_label] = _by_site.get(_label, 0) + 1
                 _sp = str(t.get("save_path") or "-")
                 _by_path[_sp] = _by_path.get(_sp, 0) + 1
                 _lim[str(t.get("up_limit") or 0)] = _lim.get(str(t.get("up_limit") or 0), 0) + 1
@@ -10744,6 +10830,8 @@ class MagicFlow(_PluginBase):
                 _b = "0" if _nc <= 0 else ("1-5" if _nc <= 5 else ("6-20" if _nc <= 20 else ("21-50" if _nc <= 50 else "50+")))
                 _nocomplete[_b] = _nocomplete.get(_b, 0) + 1
             out["by_tracker_domain"] = dict(sorted(_by_dom.items(), key=lambda x: -x[1])[:15])
+            out["by_site_name"] = dict(sorted(_by_site.items(), key=lambda x: -x[1])[:15])
+            out["site_resolved_by_trackers_list"] = _fix_n
             out["by_save_path"] = dict(sorted(_by_path.items(), key=lambda x: -x[1])[:10])
             out["by_up_limit"] = dict(sorted(_lim.items(), key=lambda x: -x[1])[:8])
             out["by_seeding_time_limit"] = dict(sorted(_seedlim.items(), key=lambda x: -x[1])[:8])
