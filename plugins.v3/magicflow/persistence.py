@@ -22,7 +22,28 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 # JSON 冷备份落盘间隔（秒）：Redis 热层负责在线读写，文件只作重载恢复
-KV_FILE_FLUSH_SEC = 60.0
+# 冷备份落盘间隔（秒）。热层才是在线权威；JSON 只用于「Redis 丢了/没装」时恢复。
+# 60s 太密（活跃时 5~6 张表每分钟都脏 → 每分钟 5~6 次全量表 dump，反而比增量写便宜不了多少，
+# 实测 63MB/h）。改成 5 分钟：丢掉最多 5 分钟的 seen/dead 记忆，无副作用。
+KV_FILE_FLUSH_SEC = 300.0
+
+# ★ 跨热重载共享的进程级容器（放独立模块，MP 不会清它）
+_SHARED_KEY = "__magicflow_shared__"
+
+
+def _shared():
+    """取/建跨热重载共享容器：单例注册表 + 计数器。"""
+    import sys as _sys
+    import types as _types
+
+    mod = _sys.modules.get(_SHARED_KEY)
+    if mod is None or not hasattr(mod, "instances"):
+        mod = _types.ModuleType(_SHARED_KEY)
+        mod.instances = {}
+        mod.counters = {}
+        mod.lock = threading.Lock()
+        _sys.modules[_SHARED_KEY] = mod
+    return mod
 
 
 class KvBridge:
@@ -1416,6 +1437,11 @@ class MagicFlowStore:
     ★ 进程内**按 data_dir 单例**：MoviePilot 热重载会 new 出新的插件实例，但上一实例
     可能仍有在飞线程（如跨重载的 brush）。若各自持有独立的内存快照，落盘会「整表互相覆盖」
     → 统计/状态被旧快照回滚（曾实际发生）。共用同一实例即可根治。
+
+    ★★ 单例注册表放在**独立模块**（`sys.modules[_SHARED_KEY]`）里，不能放类属性：
+    MP 热重载会清掉 `app.plugins.magicflow.*` 模块缓存，类属性会跟着重置
+    → 每次重载都新建 store + **再起一个后台落盘线程（线程泄漏）**，
+    旧线程还继续用旧常量、旧内存快照落盘。实测现象：文件被 20~36s 间隔乱写。
     """
 
     _instances: Dict[str, "MagicFlowStore"] = {}
@@ -1424,12 +1450,13 @@ class MagicFlowStore:
     def __new__(cls, data_dir: Path, kv: Any = None):
         del kv  # 单例只看 data_dir；热层在 __init__ / bind_hot 里绑定
         key = str(Path(data_dir))
-        with cls._instances_lock:
-            inst = cls._instances.get(key)
+        sh = _shared()
+        with sh.lock:
+            inst = sh.instances.get(key)
             if inst is None:
                 inst = super().__new__(cls)
                 inst._initialized = False
-                cls._instances[key] = inst
+                sh.instances[key] = inst
             return inst
 
     def __init__(self, data_dir: Path, kv: Any = None):
@@ -1452,7 +1479,9 @@ class MagicFlowStore:
         self.dead = DeadStore(data_dir, kv=kv)
         self.recommend = RecommendStore(data_dir, kv=kv)
         self.cloud = ArchiveStore(data_dir, kv=kv)
-        self._flusher_started = False
+        self.flush_sec = float(KV_FILE_FLUSH_SEC)
+        self._flusher_stop = False
+        self._flusher_thread = None
         self._start_flusher()
 
     # -------------------- 热层 / 冷备份 --------------------
@@ -1480,20 +1509,45 @@ class MagicFlowStore:
         return written
 
     def _start_flusher(self) -> None:
-        """后台每 KV_FILE_FLUSH_SEC 把脏快照落一次 JSON（Redis 丢了以后的恢复源）。"""
-        if getattr(self, "_flusher_started", False):
+        """后台按 ``flush_sec`` 把脏快照落一次 JSON（Redis 丢了以后的恢复源）。
+
+        单例 + 跨重载不泄漏：线程只起一个（`_flusher_thread` 存活判断），
+        间隔每次循环重读 ``self.flush_sec``（重载时由插件实例调 `set_flush_sec` 更新）。
+        """
+        th = getattr(self, "_flusher_thread", None)
+        if th is not None and th.is_alive() and not getattr(self, "_flusher_stop", False):
             return
-        self._flusher_started = True
+        self._flusher_stop = False
 
         def _loop() -> None:
-            while True:
-                time.sleep(KV_FILE_FLUSH_SEC)
+            while not getattr(self, "_flusher_stop", False):
+                try:
+                    sec = float(getattr(self, "flush_sec", KV_FILE_FLUSH_SEC) or KV_FILE_FLUSH_SEC)
+                except Exception:  # noqa: BLE001
+                    sec = KV_FILE_FLUSH_SEC
+                for _ in range(int(max(sec, 5.0))):
+                    if getattr(self, "_flusher_stop", False):
+                        return
+                    time.sleep(1.0)
                 try:
                     self.flush_all()
                 except Exception:  # noqa: BLE001
                     continue
 
-        threading.Thread(target=_loop, daemon=True, name="MagicFlow-KvFlush").start()
+        self._flusher_thread = threading.Thread(target=_loop, daemon=True, name="MagicFlow-KvFlush")
+        self._flusher_thread.start()
+
+    def set_flush_sec(self, sec: Any) -> None:
+        """更新冷备份落盘间隔（热重载后新代码里的常量可以生效）。"""
+        try:
+            self.flush_sec = float(sec)
+        except Exception:  # noqa: BLE001
+            return
+        self._start_flusher()
+
+    def stop_flusher(self) -> None:
+        """停后台落盘线程（插件停止时调；避免旧模块线程一直活着）。"""
+        self._flusher_stop = True
 
     def hot_stats(self) -> Dict[str, Any]:
         """热层健康度（给 /debug/store 用）。"""
