@@ -38,9 +38,9 @@ RULES_KEY = "site_rules"
 BUILTIN_RULES: Dict[str, Dict[str, Any]] = {
     "pt.btschool.club": {
         "hr": True,
-        "seed_hours": 10.0,
+        "seed_hours": 20.0,
         "seed_cap": None,
-        "note": "学校：H&R 需挂种 10 小时（主人确认）",
+        "note": "学校：下载完成后 10 天内做种≥20 小时（rules.php 原文），上传量>下载量可直接免除",
     },
     "hdfans.org": {
         "hr": True,
@@ -117,7 +117,9 @@ _FREE_EP1_RE = re.compile(r"每季的第?一集|第1集[^。\n]{0,20}免费|第�
 # 不是 H&R 规则，必须分开存（否则会把考核要求误当成保种义务）。
 _EXAM_RE = re.compile(r"指标|平均做种时间|考核|达标线|要求\s*[:：]", re.I)
 # 明确的规则句式（最可信）：必须/需/要求/至少 ...
-_RULE_NEED_RE = re.compile(r"必须|需|要求|不得少于|不少于|至少|at least|must|minimum", re.I)
+_RULE_NEED_RE = re.compile(
+    r"必须|需|要求|不得少于|不少于|至少|达到|以内|之内|at least|must|minimum", re.I
+)
 
 
 def _parse_hours_in(seg: str):
@@ -182,7 +184,7 @@ def parse_hr_from_html(html_text: str) -> Dict[str, Any]:
             continue
         excluded = bool(_EXCLUDE_RE.search(seg))
         strong = bool(_RULE_NEED_RE.search(seg))
-        if _EXAM_RE.search(seg):
+        if _EXAM_RE.search(seg) and not re.search(r"认领|达标标准", seg):
             # 考核达标线（例：指标2：平均做种时间，要求 30 Hour）→ 单独存，不当 H&R
             ev = (out.get("exam_evidence") or "")
             if not ev:
