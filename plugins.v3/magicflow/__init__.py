@@ -7172,6 +7172,11 @@ class MagicFlow(_PluginBase):
                 "task": str(getattr(task, "name", "") or ""),
             }
         rec_tag = str(self._recommend_cfg.get("tag", "魔流-推荐") or "魔流-推荐")
+        # ★ 特殊标签不动：跨站来源份沿用 CROSSSEED_TAG（H&R 保护账本认它），推荐沿用 recommend 的 tag。
+        try:
+            cs_hashes = set(self._crossseed_source_hashes() or set())
+        except Exception:  # noqa: BLE001
+            cs_hashes = set()
         plan: List[Dict[str, Any]] = []
         for h, t in torrents.items():
             tags = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
@@ -7186,8 +7191,25 @@ class MagicFlow(_PluginBase):
                     state, src = hit["state"], f"任务「{hit['task']}」"
                     site = site or hit["site"]
                     break
-            if not state and rec_tag in mf_tags:
-                state, src = STATE_RECOMMEND, "推荐标签"
+            if h in cs_hashes:
+                state, sub, src = STATE_SILENT, SUB_RESOURCE, "跨站来源份"
+                remove = [x for x in mf_tags if x != CROSSSEED_TAG]
+                if CROSSSEED_TAG in tags and not remove:
+                    continue
+                plan.append({
+                    "hash": h,
+                    "title": str(getattr(t, "title", "") or "")[:120],
+                    "site": site,
+                    "state": state,
+                    "sub": sub,
+                    "source": src,
+                    "special": "crossseed",
+                    "remove": remove,
+                    "add": CROSSSEED_TAG,
+                    "tags": tags,
+                })
+                continue
+            keep_extra = [rec_tag] if rec_tag in mf_tags else []
             if not state and CROSSSEED_TAG in mf_tags:
                 state, sub, src = STATE_SILENT, SUB_RESOURCE, "跨站来源份"
             if not state:
@@ -7203,7 +7225,7 @@ class MagicFlow(_PluginBase):
             if not site:
                 state, src = (state, src)
             new_tag = tag_for(site, state, sub)
-            old_new = [x for x in mf_tags if x != new_tag]
+            old_new = [x for x in mf_tags if x != new_tag and x not in keep_extra]
             if not old_new and new_tag in tags:
                 continue
             plan.append({
@@ -7243,7 +7265,9 @@ class MagicFlow(_PluginBase):
             if add and add not in new_tags:
                 new_tags.append(add)
             try:
-                if not downloader.set_torrent_tags(h, new_tags):
+                fn = getattr(downloader, "replace_torrent_tags", None)
+                ok = fn(h, new_tags) if callable(fn) else downloader.set_torrent_tags(h, new_tags)
+                if not ok:
                     failed += 1
                     continue
             except Exception:  # noqa: BLE001
@@ -7343,7 +7367,9 @@ class MagicFlow(_PluginBase):
         downloader = self._get_downloader()
         if downloader is None or not getattr(downloader, "is_available", False):
             return Response(success=False, message="下载器不可用")
-        if not downloader.set_torrent_tags(h, new_tags):
+        fn = getattr(downloader, "replace_torrent_tags", None)
+        ok = fn(h, new_tags) if callable(fn) else downloader.set_torrent_tags(h, new_tags)
+        if not ok:
             return Response(success=False, message="标签写入失败")
         store.put(h, {
             "site": site, "state": state, "sub": sub,
