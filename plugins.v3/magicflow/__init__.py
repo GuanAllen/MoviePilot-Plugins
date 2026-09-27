@@ -8744,6 +8744,10 @@ class MagicFlow(_PluginBase):
             browse_pages=getattr(payload, "browse_pages", 3) or 3,
             reuse_existing=payload.reuse_existing,
             reuse_verify=payload.reuse_verify,
+            crossseed_enabled=bool(getattr(payload, "crossseed_enabled", False)),
+            crossseed_max_per_round=int(getattr(payload, "crossseed_max_per_round", 3) or 3),
+            crossseed_max_size_gb=float(getattr(payload, "crossseed_max_size_gb", 20.0) or 20.0),
+            crossseed_max_sites=int(getattr(payload, "crossseed_max_sites", 6) or 6),
             cleanup_no_progress=payload.cleanup_no_progress,
             no_progress_minutes=payload.no_progress_minutes,
             cleanup_slow_progress=getattr(payload, "cleanup_slow_progress", True) is not False,
@@ -8851,6 +8855,11 @@ class MagicFlow(_PluginBase):
         task.browse_pages = getattr(payload, "browse_pages", 3) or 3
         task.reuse_existing = payload.reuse_existing
         task.reuse_verify = payload.reuse_verify
+        # ★ 3.9.0 跨站免费取种（EditForm 显式赋值；漏一个就等于前端开关不生效）
+        task.crossseed_enabled = bool(getattr(payload, "crossseed_enabled", False))
+        task.crossseed_max_per_round = max(int(getattr(payload, "crossseed_max_per_round", 3) or 3), 1)
+        task.crossseed_max_size_gb = float(getattr(payload, "crossseed_max_size_gb", 20.0) or 20.0)
+        task.crossseed_max_sites = max(int(getattr(payload, "crossseed_max_sites", 6) or 6), 1)
         task.cleanup_no_progress = payload.cleanup_no_progress
         task.no_progress_minutes = payload.no_progress_minutes
         task.cleanup_slow_progress = getattr(payload, "cleanup_slow_progress", True) is not False
