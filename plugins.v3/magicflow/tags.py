@@ -75,6 +75,7 @@ STATE_KEY = "tag_state"
 GROUPS_KEY = "tag_groups"
 SNAPSHOT_KEY = "tag_state_snapshot"
 SORT_RULES_KEY = "sort_rules"
+LIB_PENDING_KEY = "tag_lib_pending"
 
 SILENT_NEW_TIMEOUT = 24 * 3600.0    # 静默-新 超时自动归 静默-普通
 LEASE_TTL = 600.0                   # 占用租约（秒），超时视为可抢占
@@ -798,6 +799,75 @@ class FileGroupStore:
         data[gid] = rec
         self._write(data)
         return True
+
+    def queue_library(
+        self,
+        hash_string: str,
+        *,
+        path: str = "",
+        media_id: str = "",
+        now: Optional[float] = None,
+    ) -> str:
+        """整理完成事件到达时登记「库记」。
+
+        - 该 hash 已在账本里 → 直接写所属资源的 ``library``，返回 group_id；
+        - 还没纳管（事件早于我们的扫描）→ 记进**待办**，等 ``sync_resources`` 补齐。
+
+        事件是进程内广播、只能往后接，所以「先到事件、后到成员」是常态。
+        """
+        h = _clean(hash_string).lower()
+        gid = _clean(self.group_of(h)) if h else ""
+        if gid:
+            self.set_library(gid, True, media_id=media_id, path=path, now=now)
+            return gid
+        if not h:
+            return ""
+        try:
+            pend = dict(self._get_data(LIB_PENDING_KEY) or {})
+        except Exception:  # noqa: BLE001
+            pend = {}
+        ts = float(now if now is not None else time.time())
+        rec = dict(pend.get(h) or {})
+        rec["path"] = _clean(path) or rec.get("path") or ""
+        if media_id:
+            rec["media_id"] = str(media_id)
+        rec.setdefault("first_at", ts)
+        rec["updated"] = ts
+        pend[h] = rec
+        try:
+            self._save_data(LIB_PENDING_KEY, pend)
+        except Exception as err:  # noqa: BLE001
+            self._log and self._log(f"标签:库记待办写入失败:{err}", "error")
+        return ""
+
+    def pending_library(self) -> Dict[str, Dict[str, Any]]:
+        try:
+            data = self._get_data(LIB_PENDING_KEY) or {}
+        except Exception:  # noqa: BLE001
+            return {}
+        return {str(k): dict(v) for k, v in data.items() if isinstance(v, dict)}
+
+    def flush_pending_library(self, *, now: Optional[float] = None) -> int:
+        """把「已纳管」的库记待办落到资源上；返回落地条数。"""
+        pend = self.pending_library()
+        if not pend:
+            return 0
+        done = 0
+        left: Dict[str, Dict[str, Any]] = {}
+        for h, rec in pend.items():
+            gid = self.group_of(h)
+            if gid:
+                if self.set_library(gid, True, media_id=str(rec.get("media_id") or ""),
+                                    path=str(rec.get("path") or ""), now=now):
+                    done += 1
+                continue
+            left[h] = rec
+        if done or len(left) != len(pend):
+            try:
+                self._save_data(LIB_PENDING_KEY, left)
+            except Exception:  # noqa: BLE001
+                pass
+        return done
 
     def due_hr(self, *, now: Optional[float] = None) -> List[Tuple[str, Dict[str, Any]]]:
         """还没结清、且记了来源种 hash 的 H&R 账单（交给来源站挂种去还）。"""

@@ -153,7 +153,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.12.0"
+__version__ = "3.13.0"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -655,6 +655,33 @@ class MagicFlowTaskConfig:
 # 插件主类
 # ============================================================
 
+# ★ 整理完成事件订阅（「库记」的权威来源）：直接抄本机在用的写法（episodegroupmeta/personmeta）
+try:
+    from app.sdk.events import eventmanager as _mf_eventmanager
+    from app.schemas.types import EventType as _MFEventType
+    _MF_EVENTS_READY = True
+except Exception:  # noqa: BLE001
+    _mf_eventmanager = None
+    _MFEventType = None
+    _MF_EVENTS_READY = False
+
+# 热重载会产生新实例：只让「当前活跃实例」处理事件，避免旧实例重复写账本
+_MF_ACTIVE: Optional["MagicFlow"] = None
+
+
+def _mf_on_event(event_name: str):
+    """安全注册事件处理器；没有事件总线时退化成普通方法。"""
+    def _deco(fn):
+        if _MF_EVENTS_READY and _MFEventType is not None:
+            try:
+                _etype = getattr(_MFEventType, event_name)
+                return _mf_eventmanager.register(_etype)(fn)
+            except Exception:  # noqa: BLE001
+                return fn
+        return fn
+    return _deco
+
+
 class MagicFlow(_PluginBase):
     """魔流插件主类。"""
 
@@ -702,6 +729,8 @@ class MagicFlow(_PluginBase):
 
     def init_plugin(self, config: dict = None) -> None:
         """初始化全局开关、任务配置与持久化存储。"""
+        global _MF_ACTIVE
+        _MF_ACTIVE = self
         raw_config = config or {}
         self._task_locks: Dict[str, threading.Lock] = {}
         self._task_runs: Dict[str, float] = {}
@@ -1159,6 +1188,13 @@ class MagicFlow(_PluginBase):
                 "methods": ["GET", "POST"],
                 "auth": "bear",
                 "summary": "诊断:立即套用单种上传限速(返回档位表)",
+            },
+            {
+                "path": "/debug/emit-transfer",
+                "endpoint": self.debug_emit_transfer,
+                "methods": ["GET", "POST"],
+                "auth": "bear",
+                "summary": "诊断:手工投递 TransferComplete 事件(验证库记链路)",
             },
             {
                 "path": "/debug/file",
@@ -10653,7 +10689,170 @@ class MagicFlow(_PluginBase):
                 return True
         return False
 
-    def debug_read_file(self, path: str = "", grep: str = "", limit: int = 200000) -> Response:
+    @_mf_on_event("TransferComplete")
+    def _on_transfer_complete(self, event: Any = None) -> None:
+        """★ 整理完成 → 写「库记」。
+
+        权威来源：MP 广播的 ``transfer.complete``（payload 带 ``download_hash`` 与
+        ``transferinfo`` 最终路径/整理方式），**不靠路径猜目录**。
+        """
+        try:
+            _ev0 = getattr(self, "_lib_events", None)
+            if not isinstance(_ev0, dict):
+                _ev0 = {}
+            _ev0["received"] = int(_ev0.get("received") or 0) + 1
+            _ev0["last_hash"] = str((getattr(event, "event_data", None) or {}).get("download_hash") or "")[:16]
+            _ev0["last_ts"] = time.time()
+            self._lib_events = _ev0
+        except Exception:  # noqa: BLE001
+            pass
+        if _MF_ACTIVE is not self:
+            try:
+                self._log("库记:忽略整理完成事件(非活跃实例)")
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        if not getattr(self, "_enabled", False):
+            return
+        try:
+            data = getattr(event, "event_data", None) or {}
+            h = str((data or {}).get("download_hash") or "").strip().lower()
+            if not h:
+                return
+            ti = (data or {}).get("transferinfo")
+            if ti is not None and not bool(getattr(ti, "success", True)):
+                return
+            item = getattr(ti, "target_diritem", None) or getattr(ti, "target_item", None)
+            path = str(getattr(item, "path", "") or "")
+            if not path:
+                path = str(getattr((data or {}).get("fileitem"), "path", "") or "")
+            mi = (data or {}).get("mediainfo")
+            media_id = str(getattr(mi, "tmdb_id", "") or getattr(mi, "media_id", "") or "")
+            ttype = str(getattr(ti, "transfer_type", "") or "")
+            groups = self._tag_groups()
+            gid = groups.queue_library(h, path=path, media_id=media_id)
+            try:
+                self._tag_state().set_asset(h, True, origin_sub="资源")
+            except Exception:  # noqa: BLE001
+                pass
+            if gid:
+                self._log(f"库记:整理完成 {h[:12]} → 资源 {gid[:46]} 路径 {path or '-'} 方式 {ttype or '-'}")
+            else:
+                self._log(f"库记:整理完成 {h[:12]} 尚未纳管,已记待办(路径 {path or '-'})")
+        except Exception as err:  # noqa: BLE001
+            self._log(f"库记:处理整理完成事件失败:{err}", "warning")
+
+    def debug_emit_transfer(self, hash: str = "", path: str = "", media_id: str = "", ok: int = 1,
+                            clear: int = 0, via: str = "bus") -> Response:
+        """诊断：投递/直调 TransferComplete（验证事件订阅 + 库记落地）。
+
+        - ``via=bus``（默认）经事件总线投递；``via=direct`` 直接调用处理器
+        - ``clear=1`` 清掉该 hash 所属资源的库记（测试还原用）
+        - ``media_id=__inspect__`` 查看订阅状态（处理器、活跃实例、收到次数）
+        """
+        if not _MF_EVENTS_READY or _mf_eventmanager is None or _MFEventType is None:
+            return Response(success=False, message="事件总线不可用")
+        _h = str(hash or "").strip().lower()
+        if str(media_id or "").strip() == "__inspect__":
+            try:
+                _ids = [str(hid) for hid, _ in self._event_handlers(_MFEventType.TransferComplete)]
+            except Exception:  # noqa: BLE001
+                _ids = []
+            return Response(success=True, message="ok", data=self._jsonable({
+                "handlers": _ids,
+                "registered": "app.plugins.magicflow.MagicFlow._on_transfer_complete" in _ids,
+                "active_is_self": _MF_ACTIVE is self,
+                "enabled": bool(getattr(self, "_enabled", False)),
+                "lib_events": dict(getattr(self, "_lib_events", {}) or {}),
+            }))
+        if clear:
+            _g0 = self._tag_groups()
+            _gid0 = _g0.group_of(_h)
+            _ok0 = _g0.set_library(_gid0, False) if _gid0 else False
+            return Response(success=True, message="已清库记",
+                            data=self._jsonable({"group_of_hash": _gid0, "cleared": _ok0}))
+        from types import SimpleNamespace as _NS
+        from app.runtime.events import Event as _Ev
+        _p = str(path or "")
+        ti = _NS(success=bool(ok), transfer_type="hardlink", need_scrape=False,
+                 target_diritem=_NS(path=_p, name="", storage="local"),
+                 target_item=_NS(path=_p, name="", storage="local"),
+                 file_count=1, total_size=0, file_list=[], file_list_new=[])
+        mi = _NS(tmdb_id=str(media_id or ""), media_id=str(media_id or ""), title="debug")
+        payload = {
+            "fileitem": _NS(path=_p, name="", storage="local"),
+            "meta": None,
+            "mediainfo": mi,
+            "transferinfo": ti,
+            "downloader": str(getattr(self, "_downloader_name", "") or ""),
+            "download_hash": _h,
+            "transfer_history_id": None,
+        }
+        mode = str(via or "bus").strip().lower()
+        if mode == "cleanup":
+            import os as _os2
+            _dir = "/config/plugins/MagicFlow"
+            _names = ("event_probe.log", "dispatch_trace.log", "put_trace.log", "q_trace.log")
+            _out: Dict[str, Any] = {}
+            for _n in _names:
+                try:
+                    _os2.remove(_os2.path.join(_dir, _n))
+                    _out[_n] = "removed"
+                except FileNotFoundError:
+                    _out[_n] = "absent"
+                except Exception as err:  # noqa: BLE001
+                    _out[_n] = f"err:{err}"
+            return Response(success=True, message="cleanup", data=self._jsonable(_out))
+        report: Dict[str, Any] = {"hash": _h, "path": _p, "via": mode}
+        # send_event 的第一个参数是**事件类型**（不是 Event 实例）
+        if mode == "direct":
+            try:
+                self._on_transfer_complete(_Ev(_MFEventType.TransferComplete, payload))
+                report["direct"] = "ok"
+            except Exception as err:  # noqa: BLE001
+                report["direct"] = f"err:{err}"
+        else:
+            try:
+                _mf_eventmanager.send_event(_MFEventType.TransferComplete, payload)
+                report["bus"] = "sent"
+            except Exception as err:  # noqa: BLE001
+                report["bus"] = f"err:{err}"
+            time.sleep(2.5)
+        _g = self._tag_groups()
+        _gid = _g.group_of(_h)
+        _lib = ((_g.items().get(_gid) or {}).get("library") or {}) if _gid else {}
+        report.update({"group_of_hash": _gid, "library": _lib,
+                       "pending_has_hash": _h in _g.pending_library()})
+        return Response(success=True, message="已投递", data=self._jsonable(report))
+
+    @staticmethod
+    def _event_handlers(etype: Any) -> List[Any]:
+        """从事件总线内部取出某事件的订阅列表（诊断用，尽力而为）。"""
+        em = _mf_eventmanager
+        if em is None:
+            return []
+        cands = []
+        for attr in ("_EventManager__dispatcher", "_dispatcher"):
+            obj = getattr(em, attr, None)
+            if obj is not None:
+                cands.append(obj)
+        cands.append(em)
+        for obj in cands:
+            for rattr in ("_registry", "registry", "_EventRegistry__registry"):
+                reg = getattr(obj, rattr, None)
+                if reg is None:
+                    continue
+                for m in ("broadcast_snapshot", "snapshot"):
+                    fn = getattr(reg, m, None)
+                    if callable(fn):
+                        try:
+                            return list(fn(etype))
+                        except Exception:  # noqa: BLE001
+                            continue
+        return []
+
+    def debug_read_file(self, path: str = "", grep: str = "", limit: int = 200000,
+                        offset: int = 0) -> Response:
         """诊断：只读读取容器内文本文件（白名单前缀），可选按行 grep。"""
         import os as _os
 
@@ -10677,9 +10876,10 @@ class MagicFlow(_PluginBase):
                     "path": p2, "size": size, "total_lines": len(lines),
                     "grep": kw, "hits": [{"line": i, "text": t[:400]} for i, t in hits[:60]],
                 }))
+            _off = max(0, int(offset or 0))
             return Response(success=True, message="ok", data=self._jsonable({
-                "path": p2, "size": size, "total_lines": len(lines),
-                "content": "\n".join(lines[:400]),
+                "path": p2, "size": size, "total_lines": len(lines), "offset": _off,
+                "content": "\n".join(lines[_off:_off + 400]),
             }))
         except Exception as err:  # noqa: BLE001
             return Response(success=False, message=f"读取失败:{err}")
@@ -11151,6 +11351,17 @@ class MagicFlow(_PluginBase):
                              need_hours=float(srec.get("need_hours") or 0.0),
                              by_hash=str(sib).lower())
             stat["hr_bills"] = int(stat["hr_bills"]) + 1
+        if apply:
+            try:
+                _pend_n = len(store.pending_library())
+                _flushed = store.flush_pending_library()
+                if _pend_n:
+                    stat["lib_pending"] = _pend_n
+                if _flushed:
+                    stat["lib_pending_applied"] = _flushed
+                    self._log(f"库记:补齐待办 {_flushed} 条")
+            except Exception:  # noqa: BLE001
+                pass
         info = store.stats()
         stat["resources"] = info.get("groups") or 0
         stat["multi"] = info.get("multi_site_groups") or 0
