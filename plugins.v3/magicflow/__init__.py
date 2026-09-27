@@ -7727,6 +7727,21 @@ class MagicFlow(_PluginBase):
                     pend.drop(sib_hash)
                     # ★ 回辅失败也要保护：数据已从来源站下下来了，H&R 义务照样存在。
                     self._crossseed_protect_source(sib_hash, rec, a_hash="")
+                    # 诊断：打印两边文件清单摘要，下次遇到「特征码不同/校验 0%」能直接定位
+                    try:
+                        _da = _torrent_entries_digest(a_bytes)
+                        _ent = downloader.get_file_entries(sib_hash) or []
+                        _dbg_root = str(_ent[0][0] if _ent else "").replace("\\", "/").split("/")[0]
+                        _dbg_fp = downloader.get_torrent_fingerprint(sib_hash) or ""
+                        self._log(
+                            f"跨站回辅失败诊断:{rec.get('title', '')[:40]}"
+                            f" A端 n={_da.get('n')} root={str(_da.get('root'))[:40]} fp={str(_da.get('fp'))[:12]}"
+                            f" | B端 n={len(_ent)} root={_dbg_root[:40]} fp={str(_dbg_fp)[:12]}"
+                            f" | 完整特征码相同={_dbg_fp == str(_da.get('fp') or '')}",
+                            "warning",
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
                     self._log(
                         f"跨站回辅失败:{rec.get('title', '')}({err or '校验不通过/未匹配'})"
                         f" → 来源份转入 H&R 保种保护({rec.get('site_b', '')})",
