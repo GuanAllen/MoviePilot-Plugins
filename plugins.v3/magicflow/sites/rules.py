@@ -320,6 +320,9 @@ class SiteRules:
         bh = b.get("seed_hours")
         if bh is not None:
             return float(bh), "builtin"
+        if b.get("hr") is False:
+            # 内置明确「无 H&R」→ 没有保种义务，不用保护（例：馒头）
+            return 0.0, "builtin"
         return float(default), "default"
 
 
