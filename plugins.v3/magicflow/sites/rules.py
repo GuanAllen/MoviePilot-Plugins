@@ -102,6 +102,17 @@ _EXCLUDE_RE = re.compile(
 _HR_TOKENS = re.compile(r"H\s*&\s*R|hit\s*[&a]nd\s*run|hit and run", re.I)
 # 「同一句里」的保种动作词
 _SEED_TOKENS = re.compile(r"做种|保种|挂种|seeding|seed", re.I)
+# 促销规则：「文件总体积大于20GB的种子将自动成为免费」/「原盘免费」/「每季第一集免费」
+_FREE_SIZE_RE = re.compile(
+    r"(?:总体积|文件体积|体积|大小)[^。\n]{0,12}?大于\s*([\d.]+)\s*(?:G|GB|GiB)[^。\n]{0,30}免费",
+    re.I,
+)
+_FREE_SIZE_RE2 = re.compile(r"大于\s*([\d.]+)\s*(?:G|GB|GiB)[^。\n]{0,20}自动[^。\n]{0,10}免费", re.I)
+_FREE_ORIG_RE = re.compile(
+    r"(?:Blu-?ray\s*Disk|HD\s*DVD|原盘)[^。\n]{0,40}(?:免费|free)", re.I
+)
+_FREE_EP1_RE = re.compile(r"每季的第?一集|第1集[^。\n]{0,20}免费|第一集[^。\n]{0,20}免费", re.I)
+
 # 「考核指标」句式：指标N：平均做种时间, 要求：30 Hour —— 这是**新人考核的达标线**，
 # 不是 H&R 规则，必须分开存（否则会把考核要求误当成保种义务）。
 _EXAM_RE = re.compile(r"指标|平均做种时间|考核|达标线|要求\s*[:：]", re.I)
@@ -145,6 +156,7 @@ def parse_hr_from_html(html_text: str) -> Dict[str, Any]:
         "hr": None, "seed_hours": None, "confidence": "low",
         "seed_cap": None, "evidence": "", "hits": 0,
         "exam_avg_hours": None,
+        "free_over_gb": None, "free_original": None, "free_ep1": None,
     }
     if not html_text:
         return out
@@ -201,6 +213,20 @@ def parse_hr_from_html(html_text: str) -> Dict[str, Any]:
         out["evidence"] = ev_low[:300]
     elif ev_low or ev_high:
         out["evidence"] = (ev_high or ev_low)[:300]
+    # 促销规则（整页散文，不按句切）
+    for rx in (_FREE_SIZE_RE, _FREE_SIZE_RE2):
+        m = rx.search(text)
+        if m:
+            try:
+                out["free_over_gb"] = float(m.group(1))
+                break
+            except (TypeError, ValueError):
+                pass
+    if _FREE_ORIG_RE.search(text):
+        out["free_original"] = True
+    if _FREE_EP1_RE.search(text):
+        out["free_ep1"] = True
+
     cap = None
     for m in _CAP_RE.finditer(text):
         try:
@@ -298,6 +324,10 @@ class SiteRules:
             if val is not None:
                 out[key] = val
         out["confidence"] = conf
+        for key in ("free_over_gb", "free_original", "free_ep1"):
+            val = (probed or {}).get(key)
+            if val is not None:
+                out[key] = val
         if (probed or {}).get("exam_avg_hours") is not None:
             out["exam_avg_hours"] = (probed or {}).get("exam_avg_hours")
             if (probed or {}).get("exam_evidence"):
@@ -329,6 +359,28 @@ class SiteRules:
         if not b:
             return {}
         return self.put(d, dict(b, name=name or ""), source="builtin")
+
+    def free_rules(self, domain: str) -> Dict[str, Any]:
+        """取该站的「促销规则」（体积自动免费阈值/原盘免费/第一集免费）。"""
+        d = _norm_domain(domain)
+        rec: Dict[str, Any] = {}
+        for k, v in (self.items() or {}).items():
+            if _same_domain(k, d):
+                rec = dict(v or {})
+                break
+        b: Dict[str, Any] = {}
+        for k, v in BUILTIN_RULES.items():
+            if _same_domain(k, d):
+                b = dict(v or {})
+                break
+        out: Dict[str, Any] = {}
+        for key in ("free_over_gb", "free_original", "free_ep1"):
+            val = rec.get(key)
+            if val is None:
+                val = b.get(key)
+            if val is not None:
+                out[key] = val
+        return out
 
     def clear(self, domain: str = "") -> int:
         d = _norm_domain(domain)

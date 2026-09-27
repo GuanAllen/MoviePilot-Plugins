@@ -68,6 +68,7 @@ from .fetcher import (
     SiteCandidateTorrent,
     SiteFetcher,
     filter_candidates,
+    set_site_free_rules,
     free_time_ok,
     get_default_brush_filter_policy,
     get_default_filter_policy,
@@ -776,6 +777,8 @@ class MagicFlow(_PluginBase):
         self._rules_cfg: Dict[str, Any] = {
             "auto_refresh": bool(raw_config.get("rules_auto_refresh", True)),
         }
+        # 把规则库里的「促销规则」注入选种器（体积自动免费等），启动即生效
+        self._sync_free_rules()
 
         # 元数据兜底(多源识别 + 补 NFO):TMDB 没有的(番剧特别篇/前传/国漫)自动兜底
         def _fsources(v: Any) -> List[str]:
@@ -1561,6 +1564,7 @@ class MagicFlow(_PluginBase):
                 }
             )
         # ★ 站点规则库:插件级单 worker。低频(默认每周)逐站探测 H&R/保种规则并入库。
+        #    启动即把已有规则（含手填/内置）同步给选种器，供促销补判。
         #   规则只影响「来源份要保种多久」——多挂几小时不花钱，少挂是实打实惩罚，
         #   所以这里**宁慢勿缺**，一周一次足够。
         if bool(getattr(self, "_rules_cfg", {}).get("auto_refresh", True)) and (self._list_sites() or []):
@@ -9704,6 +9708,7 @@ class MagicFlow(_PluginBase):
             resp = self.probe_site_rules(site_id=0, persist=True)
             data = getattr(resp, "data", None) or {}
             n = len(data.get("results") or [])
+            self._sync_free_rules()
             self._log(f"魔流:站点规则自动刷新完成（{n} 站）")
         except Exception as err:  # noqa: BLE001
             self._log(f"站点规则刷新异常:{err}", "warning")
@@ -9829,6 +9834,7 @@ class MagicFlow(_PluginBase):
                 if idx + 1 < len(sites):
                     time.sleep(random.uniform(*RULES_PROBE_DELAY))
             ok_n = sum(1 for r in results if r.get("stored") or r.get("parsed"))
+            self._sync_free_rules()
             self._log(f"站点规则:探测完成 {ok_n}/{len(results)} 站有结果（{','.join(want)}）")
             return Response(success=True, message=f"已探测 {len(results)} 个站点，{ok_n} 个有结果并入库", data={
                 "results": results,
@@ -9914,11 +9920,53 @@ class MagicFlow(_PluginBase):
             if g.get("manual") is not None:
                 row["manual_hours"] = g["manual"]
             row["in_library"] = bool(g["rec"])
+            try:
+                fr = self._site_rules().free_rules(disp)
+                if fr:
+                    row.update(fr)
+            except Exception:  # noqa: BLE001
+                pass
             if row.get("seed_hours") is None and row.get("seed_hours_seen") is not None:
                 row["evidence_hours"] = row.get("seed_hours_seen")
             out.append(row)
         out.sort(key=lambda r: (str(r.get("site_name") or r.get("domain") or "")))
         return out
+
+    def _sync_free_rules(self) -> int:
+        """把规则库里的「促销规则」注入选种器（体积自动免费等）。
+
+        列表页不显示促销标记的免费种（例：体积 >20GB 自动免费）如果只按 promo 判定，
+        会被当成收费种 → 免费任务挡掉 / 跨站任务误判。这里把站点规则同步过去。
+        """
+        try:
+            rules = self._site_rules()
+            doms = set()
+            try:
+                doms |= {str(k) for k in (rules.items() or {}).keys()}
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                doms |= {str(r.get("domain") or "") for r in (self._list_sites() or [])}
+            except Exception:  # noqa: BLE001
+                pass
+            doms |= {str(k) for k in BUILTIN_RULES.keys()}
+            manual = (getattr(self, "_cs_cfg", {}) or {}).get("site_hours") or {}
+            if isinstance(manual, dict):
+                doms |= {str(k) for k in manual.keys()}
+            mapping: Dict[str, Dict[str, Any]] = {}
+            for d in doms:
+                if not d:
+                    continue
+                fr = rules.free_rules(d)
+                if fr:
+                    mapping[d] = fr
+            set_site_free_rules(mapping)
+            if mapping:
+                logger.info(f"促销规则同步: {len(mapping)} 站可补判免费 {list(mapping.items())[:3]}")
+            return len(mapping)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"促销规则同步失败: {e}")
+            return 0
 
     def get_site_rules(self, action: str = "", site: str = "", hours: str = "") -> Response:
         """站点规则库读写。
@@ -9943,11 +9991,13 @@ class MagicFlow(_PluginBase):
                 manual[dom] = max(0.0, hv)
                 self._cs_cfg["site_hours"] = manual
                 self.save_data(key="crossseed_cfg", value=dict(self._cs_cfg))
+                self._sync_free_rules()
                 return Response(success=True, message=f"{dom} 保种时长已设为 {hv:g}h", data={"rules": self._rules_view()})
             if act in ("refresh", "sync"):
                 for dom, nm in (({str(r.get("domain") or "").strip().lower(): str(r.get("name") or "") for r in (self._list_sites() or [])})).items():
                     if dom:
                         store.ensure_builtin(dom, nm)
+                self._sync_free_rules()
                 return Response(success=True, message="已按 MP 配置 + 内置表补全规则库", data={"rules": self._rules_view()})
             if act in ("probe", "fetch"):
                 sid = 0
@@ -9962,6 +10012,7 @@ class MagicFlow(_PluginBase):
                 return self.probe_site_rules(site_id=sid, persist=True)
             if act == "clear":
                 n = store.clear(str(site or ""))
+                self._sync_free_rules()
                 return Response(success=True, message=f"已清空规则库 {n} 条", data={"rules": self._rules_view()})
             return Response(success=True, message="OK", data={"rules": self._rules_view()})
         except Exception as err:  # noqa: BLE001
@@ -10074,6 +10125,7 @@ class MagicFlow(_PluginBase):
         self._rules_cfg = {
             "auto_refresh": bool(getattr(payload, "rules_auto_refresh", True)),
         }
+        self._sync_free_rules()
         # 元数据兜底(多源识别 + 补 NFO)
         _fsrc = getattr(payload, "fallback_sources", None)
         _fpaths = getattr(payload, "fallback_paths", None)
