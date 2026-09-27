@@ -197,6 +197,7 @@ export function normalizeSettings(settings = {}) {
     request_interval: Number.isFinite(requestInterval) ? Math.max(0, requestInterval) : 0,
     bonus_upload_limit_kbps: Math.max(0, num(settings.bonus_upload_limit_kbps, 200)),
     brush_upload_limit_kbps: Math.max(0, num(settings.brush_upload_limit_kbps, 10240)),
+    seed_up_limit_kbps: Math.max(0, num(settings.seed_up_limit_kbps, 100)),
     iyuu_token: String(settings.iyuu_token || ''),
     iyuu_clear: !!settings.iyuu_clear,
     iyuu_sites: normalizeIyuuSites(settings.iyuu_sites),
