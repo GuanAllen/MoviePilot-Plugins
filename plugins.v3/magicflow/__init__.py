@@ -104,7 +104,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.7.1"
+__version__ = "3.7.2"
 
 # 候选扩充:站点列表页翻页数(拿更多、更老的种子)。
 # 注意:是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数(启动时会记日志探测)。
@@ -205,6 +205,7 @@ LIVE_ALERT_COOLDOWN_MIN = 30        # 同类告警去重窗口(分钟),避免刷
 # 官种加成是「单种自身」的加成,会影响选种/删种排序,值得缓存抓取;
 # 后宫加成依赖他人种子(用户级),与「选哪一颗」无关,不参与决策,故不抓取。
 SITE_OFFICIAL_TTL = 12 * 3600
+SITE_OFFICIAL_STALE_TTL = 7 * 86400   # 封禁/超预算时允许使用的「过期但可用」官种列表上限
 OFFICIAL_PAGES = 2
 
 # 下载限速:已下沉到 downloader_ops 的「自适应限速闸门」(_dl_gate / _dl_note_flow_control)。
@@ -1730,6 +1731,17 @@ class MagicFlow(_PluginBase):
             )
         return cache
 
+    def _cache_official(self) -> TierCache:
+        """站点官种标题缓存(内存热层 + FileCache 冷层)。
+
+        旧版是纯内存 dict → 每次热重载清空 → 又真抓 2 页(实测站点已被 PV 封禁后
+        仍在 07:57 抓了一次);且不走 PV 闸门。
+        """
+        cache = getattr(self, "_tier_official_obj", None)
+        if cache is None:
+            cache = self._tier_official_obj = TierCache("official", base=self._cache_base())
+        return cache
+
     def live_cache(self) -> TierCache:
         """站点实时数据缓存(内存热层 + FileCache 冷层；LiveStats 自动取用)。"""
         cache = getattr(self, "_tier_live_obj", None)
@@ -1783,14 +1795,16 @@ class MagicFlow(_PluginBase):
     def cache_status(self) -> Dict[str, Any]:
         """缓存层健康度:冷层是不是真的可用（FileCache/Redis），还是退化成了纯内存。"""
         out: Dict[str, Any] = {}
-        for name in ("cand", "formula", "live"):
+        for name in ("cand", "formula", "live", "official"):
             try:
                 if name == "cand":
                     tc = self._cache_cands()
                 elif name == "formula":
                     tc = self._cache_formula()
-                else:
+                elif name == "live":
                     tc = self.live_cache()
+                else:
+                    tc = self._cache_official()
                 be = getattr(tc, "_backend", None)
                 out[name] = {
                     "persistent": be is not None,
@@ -4671,19 +4685,23 @@ class MagicFlow(_PluginBase):
         domain = (getattr(site, "domain", "") or "").strip().lower() if site else ""
         if not domain:
             return set()
-        cache = getattr(self, "_site_official_cache", None)
-        if cache is None:
-            cache = self._site_official_cache = {}
-        now = time.time()
-        hit = cache.get(domain)
-        if hit and (now - hit[0]) < SITE_OFFICIAL_TTL:
-            return hit[1]
+        tc = self._cache_official()
+        fresh = tc.get(domain, SITE_OFFICIAL_TTL)
+        if isinstance(fresh, list):
+            return set(fresh)
+        # ★ PV 闸门:官种列表 = OFFICIAL_PAGES 页真实请求。被封/超预算时不打站点,
+        #   但绝不能返回空集 —— 它参与打分与删种,空集会低估魔力 → 误删。
+        if self._pv_block_reason(site_id) or not self._pv_allow(site_id, "official", want=OFFICIAL_PAGES):
+            stale = tc.get(domain, SITE_OFFICIAL_STALE_TTL)
+            return set(stale) if isinstance(stale, list) else set()
         try:
             titles = set(fetch_official_titles(site, pages=OFFICIAL_PAGES))
         except Exception as err:
             self._log(f"抓取官种列表失败 [{domain}]: {err}", "warning")
-            return hit[1] if hit else set()
-        cache[domain] = (now, titles)
+            stale = tc.get(domain, SITE_OFFICIAL_STALE_TTL)
+            return set(stale) if isinstance(stale, list) else set()
+        self._pv_spend(site_id, "official", OFFICIAL_PAGES)
+        tc.set(domain, sorted(titles), SITE_OFFICIAL_TTL)
         self._log(f"官种列表 [{domain}]:{len(titles)} 个官种")
         return titles
 
