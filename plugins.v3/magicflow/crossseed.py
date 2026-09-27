@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from .fingerprint import fingerprint
 
@@ -30,6 +30,8 @@ from .fingerprint import fingerprint
 CROSSSEED_TAG = "魔流-跨站"
 # 待回辅记录（PluginData 持久化；重启/重装不丢）
 PENDING_KEY = "crossseed_pending"
+# ★ 来源站份(他站那份)的保护名单:H&R 保种期内任何任务不得删除/改标签
+SOURCES_KEY = "crossseed_sources"
 # 超时未完成的记录直接丢弃（避免无限等待）
 PENDING_TTL = 24 * 3600.0
 # 标题相似度门槛（特征码才是最终判据，这里只用来少取几个 .torrent）
@@ -308,3 +310,92 @@ class CrossSeedPending:
                 p.unlink()
         except Exception:  # noqa: BLE001
             pass
+
+
+class CrossSeedSources:
+    """★ 来源站份（他站那份）的「H&R 保护」账本。
+
+    他站免费下载 → 数据到手后，那份**来源种**在来源站的 H&R 保种要求还没结束
+    （例：学校 BTSchool 要求挂种 10h）。它**不属于任何任务**，因此之前会被来源站
+    同站纳管逻辑抢走标签、被任务清理顺手删掉（还带删文件）→ 既踩来源站 H&R，
+    又可能连累目标站正在做种的同一批文件。
+
+    这里持久化它：``{sib_hash: {title, site_b_domain, site_a, a_hash, created,
+    seed_until, hours, hit_and_run, downloader, files_shared, ...}}``，
+    清理逻辑（``_media_asset_hashes`` 闸门同一处）会并入保护集合。
+    """
+
+    def __init__(
+        self,
+        get_data: Callable[[str], Any],
+        save_data: Callable[..., Any],
+        log: Optional[Callable[..., Any]] = None,
+    ) -> None:
+        self._get_data = get_data
+        self._save_data = save_data
+        self._log = log
+
+    def items(self) -> Dict[str, Dict[str, Any]]:
+        try:
+            data = self._get_data(SOURCES_KEY) or {}
+        except Exception:  # noqa: BLE001
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {str(k).lower(): v for k, v in data.items() if isinstance(v, dict)}
+
+    def _write(self, data: Dict[str, Any]) -> None:
+        try:
+            self._save_data(SOURCES_KEY, data)
+        except Exception as err:  # noqa: BLE001
+            _log(self._log, f"跨站:来源份保护账本写入失败:{err}", "error")
+
+    def add(self, rec: Dict[str, Any]) -> None:
+        sib = str(rec.get("sib_hash") or "").lower()
+        if not sib:
+            return
+        data = self.items()
+        data[sib] = rec
+        self._write(data)
+
+    def drop(self, sib_hash: str) -> None:
+        sib = str(sib_hash or "").lower()
+        data = self.items()
+        if sib in data:
+            data.pop(sib, None)
+            self._write(data)
+
+    def clear(self) -> int:
+        data = self.items()
+        n = len(data)
+        if n:
+            self._write({})
+        return n
+
+    def hashes(self) -> Set[str]:
+        return set(self.items().keys())
+
+    def due(self, now: Optional[float] = None) -> List[Tuple[str, Dict[str, Any]]]:
+        """已过 H&R 保种期的条目（可回收）。"""
+        ts = float(now if now is not None else time.time())
+        out: List[Tuple[str, Dict[str, Any]]] = []
+        for h, rec in self.items().items():
+            try:
+                until = float(rec.get("seed_until") or 0.0)
+            except (TypeError, ValueError):
+                until = 0.0
+            if not until or ts >= until:
+                out.append((h, rec))
+        return out
+
+    def prune(self, live_hashes: Optional[Set[str]] = None) -> List[str]:
+        """清掉「下载器里已不存在」的条目（手动删了/被别处删了），返回被清列表。"""
+        if live_hashes is None:
+            return []
+        data = self.items()
+        dead = [h for h in list(data.keys()) if h not in live_hashes]
+        for h in dead:
+            data.pop(h, None)
+        if dead:
+            self._write(data)
+        return dead

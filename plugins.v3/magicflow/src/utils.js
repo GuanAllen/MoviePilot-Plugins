@@ -209,6 +209,16 @@ export function normalizeSettings(settings = {}) {
     recommend_notify: settings.recommend_notify === undefined ? true : Boolean(settings.recommend_notify),
     recommend_temp_ttl_days: Math.max(0, num(settings.recommend_temp_ttl_days, 7)),
     recommend_disk_min_free_gb: Math.max(0, num(settings.recommend_disk_min_free_gb, 50)),
+    crossseed_guard: settings.crossseed_guard === undefined ? true : Boolean(settings.crossseed_guard),
+    crossseed_guard_pct: Math.min(100, Math.max(0, num(settings.crossseed_guard_pct, 5))),
+    crossseed_guard_min_mb: Math.max(0, num(settings.crossseed_guard_min_mb, 50)),
+    crossseed_guard_interval_min: Math.min(1440, Math.max(1, num(settings.crossseed_guard_interval_min, 15))),
+    crossseed_guard_keep_seed: settings.crossseed_guard_keep_seed === undefined ? true : Boolean(settings.crossseed_guard_keep_seed),
+    crossseed_seed_hours_default: Math.min(720, Math.max(0, num(settings.crossseed_seed_hours_default, 24))),
+    crossseed_site_hours: Array.isArray(settings.crossseed_site_hours)
+      ? settings.crossseed_site_hours.map(v => String(v || '').trim()).filter(Boolean)
+      : normalizePathList(settings.crossseed_site_hours),
+    crossseed_reclaim: Boolean(settings.crossseed_reclaim),
     fallback_enabled: settings.fallback_enabled === undefined ? true : Boolean(settings.fallback_enabled),
     fallback_sources: normalizeFallbackSources(settings.fallback_sources),
     fallback_paths: normalizePathList(settings.fallback_paths),

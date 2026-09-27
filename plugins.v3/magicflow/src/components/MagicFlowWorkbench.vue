@@ -131,6 +131,14 @@ const settingsDraft = ref({
   live_kill_unfree: true,
   live_kill_delete_files: true,
   live_notify: true,
+  crossseed_guard: true,
+  crossseed_guard_pct: 5,
+  crossseed_guard_min_mb: 50,
+  crossseed_guard_interval_min: 15,
+  crossseed_guard_keep_seed: true,
+  crossseed_seed_hours_default: 24,
+  crossseed_site_hours: ['pt.btschool.club=10'],
+  crossseed_reclaim: false,
 })
 // ---- 站点实时数据 + 流量监控（直连站点，非 MP 6h 快照）----
 const liveState = ref(null)
@@ -531,6 +539,16 @@ async function loadStatus() {
       brush_upload_limit_kbps: status.value.brush_upload_limit_kbps,
       iyuu_token: status.value.iyuu_token,
       iyuu_sites: status.value.iyuu_sites,
+      ...(status.value.crossseed ? {
+        crossseed_guard: status.value.crossseed.guard,
+        crossseed_guard_pct: status.value.crossseed.guard_pct,
+        crossseed_guard_min_mb: status.value.crossseed.guard_min_mb,
+        crossseed_guard_interval_min: status.value.crossseed.guard_interval_min,
+        crossseed_guard_keep_seed: status.value.crossseed.keep_seed,
+        crossseed_seed_hours_default: status.value.crossseed.seed_hours_default,
+        crossseed_site_hours: status.value.crossseed.site_hours || [],
+        crossseed_reclaim: status.value.crossseed.reclaim,
+      } : {}),
       ...(status.value.fallback || {}),
       ...(status.value.live ? {
         live_enabled: status.value.live.enabled,
@@ -750,13 +768,97 @@ async function loadCrossseed() {
 }
 
 function showCrossseed() {
-  const list = Array.isArray(crossseedData.value?.pending) ? crossseedData.value.pending : []
-  if (!list.length) {
-    notify('暂无待回辅的跨站种子', 'info')
-    return
+  crossseedOpen.value = true
+  loadCrossseed()
+}
+
+// ── 跨站辅种：队列 / 流量兜底（3.11.0）────────────────────────────────
+const crossseedOpen = ref(false)
+const crossseedActing = ref('')
+const crossseedPending = computed(() =>
+  (Array.isArray(crossseedData.value?.pending) ? crossseedData.value.pending : [])
+)
+const crossseedGuard = computed(() => (crossseedData.value || {}).guard || { enabled: true, banned: [] })
+const crossseedBanned = computed(() =>
+  (Array.isArray(crossseedGuard.value?.banned) ? crossseedGuard.value.banned : [])
+)
+const crossseedSources = computed(() =>
+  (Array.isArray(crossseedData.value?.sources) ? crossseedData.value.sources : [])
+)
+
+function formatRemain(min) {
+  const m = Number(min)
+  if (!Number.isFinite(m) || m <= 0) return '0 分钟'
+  if (m < 60) return `${Math.round(m)} 分钟`
+  const hrs = m / 60
+  if (hrs < 24) return `${hrs.toFixed(hrs < 10 ? 1 : 0)} 小时`
+  return `${(hrs / 24).toFixed(1)} 天`
+}
+
+function crossseedStateText(it) {
+  const st = String(it?.state || '')
+  const p = it?.progress
+  if (st && /paused|stopped|暂停/i.test(st)) return '已暂停'
+  if (Number.isFinite(Number(p)) && Number(p) >= 0.999) return '已下载完（回辅中）'
+  if (Number.isFinite(Number(p)) && Number(p) > 0) return `下载中 ${(Number(p) * 100).toFixed(1)}%`
+  if (p === null || p === undefined) return '下载器中无此种'
+  return '等待下载'
+}
+
+async function dropCrossseed(h) {
+  if (!h) return
+  crossseedActing.value = `drop:${h}`
+  try {
+    const res = unwrapResponse(await props.api.post(
+      `${pluginBase.value}/crossseed?action=drop&hash=${encodeURIComponent(h)}`, {}
+    )) || {}
+    notify(res.message || '已删除跨站种', 'success')
+    await loadCrossseed()
+  } catch (err) {
+    notify(err?.message || '删除失败', 'error')
+  } finally {
+    crossseedActing.value = ''
   }
-  const head = list.slice(0, 6).map(it => `${it.title || it.sib_hash}（${it.site_b} → ${it.site_a}，${it.age_min}分前）`).join('\n')
-  notify(`待回辅 ${list.length} 个：\n${head}${list.length > 6 ? `\n…共 ${list.length} 个` : ''}`, 'info')
+}
+
+async function unbanCrossseed(domain = '') {
+  crossseedActing.value = `unban:${domain}`
+  try {
+    const q = domain ? `?action=unban&site=${encodeURIComponent(domain)}` : '?action=unban'
+    const res = unwrapResponse(await props.api.post(`${pluginBase.value}/crossseed${q}`, {})) || {}
+    notify(res.message || '已解除来源站黑名单', 'success')
+    await loadCrossseed()
+  } catch (err) {
+    notify(err?.message || '解除失败', 'error')
+  } finally {
+    crossseedActing.value = ''
+  }
+}
+
+async function runCrossseedGuard() {
+  crossseedActing.value = 'guard'
+  try {
+    const res = unwrapResponse(await props.api.post(`${pluginBase.value}/crossseed?action=guard`, {})) || {}
+    if (res) crossseedData.value = res
+    notify(res.message || '流量兜底核对完成', 'success')
+  } catch (err) {
+    notify(err?.message || '核对失败', 'error')
+  } finally {
+    crossseedActing.value = ''
+  }
+}
+
+async function clearCrossseed() {
+  crossseedActing.value = 'clear'
+  try {
+    const res = unwrapResponse(await props.api.post(`${pluginBase.value}/crossseed?action=clear`, {})) || {}
+    notify(res.message || '已清空待回辅队列', 'success')
+    await loadCrossseed()
+  } catch (err) {
+    notify(err?.message || '清空失败', 'error')
+  } finally {
+    crossseedActing.value = ''
+  }
 }
 
 async function loadLive() {
@@ -2673,6 +2775,7 @@ onUnmounted(() => {
           <VTab value="signin" class="magicflow-settings-tab">签到</VTab>
           <VTab value="live" class="magicflow-settings-tab">站点监控</VTab>
           <VTab value="recommend" class="magicflow-settings-tab">推荐</VTab>
+          <VTab value="crossseed" class="magicflow-settings-tab">跨站</VTab>
         </VTabs>
         <VDivider />
 
@@ -3246,6 +3349,85 @@ onUnmounted(() => {
             </div>
           </div>
 
+          <div v-else-if="settingsTab === 'crossseed'" class="magicflow-settings-form">
+            <p class="magicflow-settings-hint">
+              跨站免费取种：本站<strong>非免费</strong>的候选（或本地没有的免费种）→ 去<strong>兄弟站免费下</strong>，
+              下完再把目标站的种子指向同一批文件回辅（校验通过才保留）。
+              <br />
+              <strong>兄弟站流量兜底</strong>：判「免费」可能出错（解析错 / 促销变了），一旦错了就是白烧兄弟站流量。
+              启用后会在取种期间核对来源站<strong>免费状态</strong>与<strong>下载量增量</strong>，
+              发现其实不免费<strong>立即删种并拉黑该站</strong>（需到工作台「跨站」页人工解除）。
+            </p>
+            <div class="magicflow-settings-switches">
+              <VSwitch v-model="settingsDraft.crossseed_guard" label="启用兄弟站流量兜底（强烈建议）" color="primary" hide-details inset />
+            </div>
+            <div class="magicflow-settings-switches">
+              <VSwitch v-model="settingsDraft.crossseed_guard_keep_seed" label="来源份 H&R 保护（保种期内任何任务不得删/改标签）" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.crossseed_reclaim" label="H&R 期满后回收来源份（只删种子不删文件）" color="warning" hide-details inset />
+            </div>
+            <div class="magicflow-settings-grid">
+              <VTextField
+                v-model.number="settingsDraft.crossseed_guard_pct"
+                type="number"
+                min="0"
+                max="100"
+                step="0.5"
+                label="下载增量阈值（体积的 %）"
+                hint="来源站下载增量 > 目标体积 × 该值 即判定「不免费」，默认 5%"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="settingsDraft.crossseed_guard_min_mb"
+                type="number"
+                min="0"
+                step="10"
+                label="最小判定增量（MB）"
+                hint="避免统计抖动误判，默认 50MB"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="settingsDraft.crossseed_guard_interval_min"
+                type="number"
+                min="1"
+                max="1440"
+                step="1"
+                label="兜底核对间隔（分钟）"
+                hint="同一来源站两次核对的间隔，默认 15 分钟（会各花 1 次站点请求）"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="settingsDraft.crossseed_seed_hours_default"
+                type="number"
+                min="0"
+                max="720"
+                step="1"
+                label="默认最短保种时长（小时）"
+                hint="来源站未单独指定时的 H&R 保种时长，默认 24h"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VCombobox
+                v-model="settingsDraft.crossseed_site_hours"
+                label="站点保种时长（域名=小时）"
+                hint="按站点覆盖，例：pt.btschool.club=10（学校要挂 10h）。回车可加多个"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+                chips
+                multiple
+                clearable
+                :items="['pt.btschool.club=10', 'hdfans.org=24', 'cspt.top=0']"
+              />
+            </div>
+          </div>
+
           <div v-else-if="settingsTab === 'fallback'" class="magicflow-settings-form">
             <p class="magicflow-settings-hint">
               TMDB 对<strong>番剧特别篇/前传、国漫、B站特供</strong>常常「根本没有」，离了 TMDB 就没元数据可用。
@@ -3769,6 +3951,159 @@ onUnmounted(() => {
       </VCard>
     </VDialog>
 
+    <!-- 跨站辅种：队列 + 流量兜底（3.11.0） -->
+    <VDialog v-model="crossseedOpen" max-width="52rem" scrollable>
+      <VCard class="magicflow-dialog magicflow-crossseed-dialog">
+        <header class="magicflow-settings-dialog__head">
+          <span class="magicflow-settings-dialog__title">跨站免费取种</span>
+          <div class="magicflow-recommend-dialog__head-actions">
+            <VBtn variant="text" color="primary" size="small" prepend-icon="mdi-refresh" @click="loadCrossseed">刷新</VBtn>
+            <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="crossseedOpen = false" />
+          </div>
+        </header>
+        <VDivider />
+        <VCardText class="magicflow-crossseed-dialog__body">
+          <div class="magicflow-recommend-dialog__summary">
+            <span><strong>{{ crossseedData.count || 0 }}</strong> 待回辅</span>
+            <i>·</i>
+            <span><strong>{{ (crossseedData.enabled_tasks || []).length }}</strong> 个任务开了跨站</span>
+            <i>·</i>
+            <span>标签 {{ crossseedData.tag || '魔流-跨站' }}</span>
+            <i>·</i>
+            <span><strong>{{ crossseedData.sources_count || 0 }}</strong> 来源份 H&R 保种中</span>
+          </div>
+          <div class="magicflow-recommend-dialog__note">
+            在他站**免费**下 → 下完把目标站种子指向同一批文件回辅（校验通过才保留）。
+            本站判断「非免费」的候选只走跨站，**绝不在本站下载**。
+          </div>
+
+          <!-- ★ 流量兜底 -->
+          <VSheet tag="section" class="magicflow-panel app-surface-static mt-2">
+            <header class="magicflow-panel__head">
+              <div>
+                <div class="text-subtitle-2 font-weight-medium">兄弟站流量兜底</div>
+                <div class="text-body-2 text-medium-emphasis">
+                  判「免费」可能出错 → 取种期间核对来源站免费状态 + 下载量增量：
+                  发现其实不免费立即**删种 + 拉黑该站**（需人工确认后解除）
+                </div>
+              </div>
+              <VBtn
+                size="small"
+                variant="tonal"
+                color="primary"
+                prepend-icon="mdi-shield-search"
+                :loading="crossseedActing === 'guard'"
+                @click="runCrossseedGuard"
+              >立即核对</VBtn>
+            </header>
+            <div class="magicflow-crossseed-guard">
+              <VChip size="small" :color="crossseedGuard.enabled === false ? 'error' : 'success'" variant="tonal">
+                {{ crossseedGuard.enabled === false ? '兜底已关闭' : '兜底已启用' }}
+              </VChip>
+              <span class="text-body-2 text-medium-emphasis">
+                阈值：下载增量 &gt; 体积 × {{ crossseedGuard.pct ?? 5 }}%（且 ≥ {{ crossseedGuard.min_mb ?? 50 }}MB）
+                · 核对间隔 {{ crossseedGuard.interval_min ?? 15 }} 分钟
+              </span>
+            </div>
+            <div v-if="crossseedBanned.length" class="magicflow-crossseed-bans">
+              <article v-for="b in crossseedBanned" :key="b.domain" class="magicflow-crossseed-ban">
+                <div class="magicflow-crossseed-ban__main">
+                  <strong>{{ b.domain }}</strong>
+                  <span class="text-body-2 text-medium-emphasis">{{ b.reason }} · {{ b.age_min }} 分钟前</span>
+                </div>
+                <VBtn
+                  size="x-small"
+                  variant="text"
+                  color="primary"
+                  :loading="crossseedActing === 'unban:' + b.domain"
+                  @click="unbanCrossseed(b.domain)"
+                >解除拉黑</VBtn>
+              </article>
+              <VBtn size="x-small" variant="text" color="warning" @click="unbanCrossseed('')">全部解除</VBtn>
+            </div>
+            <div v-else class="magicflow-table-empty">暂无被拉黑的来源站（出现「判免费实际不免费」时才会拉黑）。</div>
+          </VSheet>
+
+          <!-- ★ 来源份 H&R 保种（他站那份，正在履行保种义务） -->
+          <VSheet v-if="(crossseedSources || []).length" tag="section" class="magicflow-panel app-surface-static mt-3">
+            <header class="magicflow-panel__head">
+              <div>
+                <div class="text-subtitle-2 font-weight-medium">来源份 H&R 保种中</div>
+                <div class="text-body-2 text-medium-emphasis">
+                  他站那份已下完（回辅成功/失败都要留在来源站挂种，否则算 H&R）—— 保种期内任何任务都不会删它、也不会改它的标签
+                </div>
+              </div>
+            </header>
+            <div class="magicflow-crossseed-list">
+              <article v-for="it in crossseedSources" :key="it.sib_hash" class="magicflow-crossseed-item">
+                <div class="magicflow-crossseed-item__main">
+                  <strong :title="it.title">{{ it.title || it.sib_hash }}</strong>
+                  <span class="magicflow-crossseed-item__meta">
+                    <VChip size="x-small" variant="tonal" color="warning">{{ it.site_b }}</VChip>
+                    <template v-if="it.size_gb"> · {{ Number(it.size_gb).toFixed(2) }}G</template>
+                    · 要求 {{ it.hours }}h
+                    · {{ it.done ? '保种期已满（可回收）' : `还剩 ${formatRemain(it.remain_min)}` }}
+                    <template v-if="it.files_shared"> · 文件与目标站共用</template>
+                  </span>
+                </div>
+              </article>
+            </div>
+          </VSheet>
+
+          <!-- 待回辅队列 -->
+          <VSheet tag="section" class="magicflow-panel app-surface-static mt-3">
+            <header class="magicflow-panel__head">
+              <div>
+                <div class="text-subtitle-2 font-weight-medium">待回辅队列</div>
+                <div class="text-body-2 text-medium-emphasis">他站下完 → 自动回辅目标站；超过 6 小时未完成会放弃</div>
+              </div>
+              <VBtn
+                v-if="crossseedPending.length"
+                size="small"
+                variant="text"
+                color="error"
+                :loading="crossseedActing === 'clear'"
+                @click="clearCrossseed"
+              >清空队列</VBtn>
+            </header>
+            <div class="magicflow-crossseed-list">
+              <article v-for="it in crossseedPending" :key="it.sib_hash" class="magicflow-crossseed-item">
+                <div class="magicflow-crossseed-item__main">
+                  <strong :title="it.title || it.sib_hash">{{ it.title || it.sib_hash }}</strong>
+                  <span class="magicflow-crossseed-item__meta">
+                    <VChip size="x-small" variant="tonal" color="info">{{ it.site_b }} → {{ it.site_a }}</VChip>
+                    <template v-if="it.size_gb"> · {{ Number(it.size_gb).toFixed(2) }}G</template>
+                    · {{ crossseedStateText(it) }}
+                    · {{ it.age_min }} 分钟前
+                    <template v-if="it.task_name"> · {{ it.task_name }}</template>
+                  </span>
+                  <VProgressLinear
+                    v-if="Number.isFinite(Number(it.progress))"
+                    :model-value="Math.round(Number(it.progress) * 100)"
+                    height="4"
+                    rounded
+                    color="primary"
+                    class="mt-1"
+                  />
+                </div>
+                <VBtn
+                  size="x-small"
+                  variant="text"
+                  color="error"
+                  prepend-icon="mdi-delete-outline"
+                  :loading="crossseedActing === 'drop:' + it.sib_hash"
+                  @click="dropCrossseed(it.sib_hash)"
+                >删除</VBtn>
+              </article>
+              <div v-if="!crossseedPending.length" class="magicflow-table-empty">
+                暂无待回辅的跨站种子。任务配置里开启「跨站免费取种」后，本站非免费的候选会自动去他站找免费源。
+              </div>
+            </div>
+          </VSheet>
+        </VCardText>
+      </VCard>
+    </VDialog>
+
     <VDialog v-model="recommendOpen" max-width="46rem" scrollable>
       <VCard class="magicflow-dialog magicflow-recommend-dialog">
         <header class="magicflow-settings-dialog__head">
@@ -3972,6 +4307,69 @@ onUnmounted(() => {
   </div>
 </template>
 <style scoped>
+/* ── 跨站辅种：队列 / 流量兜底（3.11.0）────────────────────────────── */
+.magicflow-crossseed-dialog__body {
+  padding-block: 12px;
+}
+.magicflow-crossseed-guard {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-block: 6px;
+}
+.magicflow-crossseed-bans {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+}
+.magicflow-crossseed-ban {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid rgba(var(--v-border-color), 0.18);
+  border-radius: 8px;
+  background: rgba(var(--v-theme-error), 0.06);
+}
+.magicflow-crossseed-ban__main {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+}
+.magicflow-crossseed-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 6px;
+}
+.magicflow-crossseed-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(var(--v-border-color), 0.18);
+  border-radius: 8px;
+}
+.magicflow-crossseed-item__main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-inline-size: 0;
+  flex: 1 1 auto;
+}
+.magicflow-crossseed-item__main strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.magicflow-crossseed-item__meta {
+  font-size: 0.78rem;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+}
 .magicflow-page {
   /* ===== 深色磨砂主题（仅限本插件工作台作用域）===== */
   --v-theme-background: 7, 11, 24;

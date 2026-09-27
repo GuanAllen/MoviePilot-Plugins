@@ -276,6 +276,12 @@ class MagicFlowSettingsPayload(BaseModel):
     crossseed_guard_pct: float = Field(5.0, ge=0, le=100, description="流量兜底阈值：来源站下载增量 > 目标体积 × 该百分比 即视为「不免费」")
     crossseed_guard_min_mb: float = Field(50.0, ge=0, description="流量兜底最小判定增量(MB)，避免统计抖动误判")
     crossseed_guard_interval_min: float = Field(15.0, ge=0, le=1440, description="同一来源站的兜底核对间隔(分钟)")
+    #  ★ H&R 保护：他站免费下载到的数据，那份来源种在来源站的保种义务还没结束
+    #  （例：学校 BTSchool 要求挂种 10h）。保种期内任何任务不得删它/改它的标签。
+    crossseed_guard_keep_seed: bool = Field(True, description="来源站着 H&R 保种要求：来源份在保种期内永久保护、不回收（默认开）")
+    crossseed_seed_hours_default: float = Field(24.0, ge=0, le=720, description="来源站未单独指定时的最短保种时长(小时)")
+    crossseed_site_hours: List[str] = Field(default_factory=lambda: ["pt.btschool.club=10"], description="站点保种时长覆盖：格式 域名=小时（例：pt.btschool.club=10 学校要10h）")
+    crossseed_reclaim: bool = Field(False, description="H&R 保种期满后自动回收来源份：只删种子不删文件（默认关，继续做种）")
 
     # ── 元数据兜底（多源识别 + 补 NFO）────────────────────────────────────
     #  TMDB 对中日番剧的特别篇/前传/国漫经常「没有」，离了 TMDB 就无元数据可用。
