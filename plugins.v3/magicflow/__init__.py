@@ -154,7 +154,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.14.0"
+__version__ = "3.14.1"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -7634,6 +7634,15 @@ class MagicFlow(_PluginBase):
                 ),
                 data=info,
             )
+        if act in ("purge", "purge_incomplete", "purge_apply"):
+            _ap = act == "purge_apply"
+            info = self._silent_purge_incomplete(apply=_ap, limit=int(limit or 0))
+            return Response(
+                success=True,
+                message=(f"静默池未下完 {info.get('pending')} 个 → 删除 {info.get('deleted')} 个"
+                         + ("" if _ap else "（预演，未删）")),
+                data=info,
+            )
         if act in ("settle", "settle_idle"):
             info = self._settle_disabled_tasks(apply=True)
             return Response(success=True, message=f"停止任务退回静默 {info.get('settled')} 个", data=info)
@@ -11514,6 +11523,13 @@ class MagicFlow(_PluginBase):
         """标签模型维护（worker）：① 静默-新超时归普通 ② 状态账本定时快照。"""
         try:
             store = self._tag_state()
+            # ★ 静默池清理：没下完的直接删（不计 H&R）——必须排在分拣之前
+            try:
+                pinfo = self._silent_purge_incomplete(apply=True, limit=200)
+                if pinfo.get("deleted"):
+                    self._log(f"魔流:静默池清理:未下完直接删 {pinfo.get('deleted')} 个（不计 H&R）")
+            except Exception as err:  # noqa: BLE001
+                self._log(f"标签维护:静默池清理失败:{err}", "warning")
             # ★ 静默池分拣：挂满 H&R 的「静默-新」→ 推荐 / 普通
             try:
                 self._silent_triage(apply=True, limit=60, budget=600.0)
@@ -12875,6 +12891,91 @@ class MagicFlow(_PluginBase):
                 out.add(str(h).lower())
         return out
 
+    def _silent_purge_incomplete(self, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
+        """★ 静默池「未下完」清理：没下完的直接删，**不计 H&R**（Master 2026-09-28 00:16）。
+
+        - 只扫静默池（``魔流-<站点>-静默[-子类]``）
+        - 排除：跨站来源份（``魔流-跨站``：数据已下、正在校验）、推荐待确认（``魔流-推荐``）、
+          库内资产（已整理/辅种）—— 这些都不是「没下完的半成品」
+        - 删文件策略：同目录还有别的**已完成**种子在用 → 只删种子；否则连文件一起删
+        """
+        rep: Dict[str, Any] = {"apply": bool(apply), "pending": 0, "deleted": 0,
+                               "torrent_only": 0, "failed": 0, "items": []}
+        try:
+            store = self._tag_state()
+            data = dict(store.items() or {})
+        except Exception:  # noqa: BLE001
+            return rep
+        snap = self._tag_all_torrents() or {}
+        cap = int(limit or 0)
+        # ★ 同「Release 目录」保护：另一个**已完成**种子占着同一个
+        #   `save_path/name`（典型：跨站辅种同一发布）→ 只删种子、不删文件。
+        #   注意 qB 的 save_path 是**根目录**（几百个种共用），不能拿它当判据。
+        def _rkey(_t: Any) -> str:
+            _sp = str(getattr(_t, "save_path", "") or "").rstrip("/")
+            _nm = str(getattr(_t, "name", "") or "").strip()
+            return (_sp + "/" + _nm) if (_sp and _nm) else ""
+
+        done_keys: Dict[str, str] = {}
+        for _h, _t in (snap or {}).items():
+            try:
+                if float(getattr(_t, "progress", 0) or 0) >= 0.999:
+                    _k = _rkey(_t)
+                    if _k:
+                        done_keys.setdefault(_k, str(_h).lower())
+            except Exception:  # noqa: BLE001
+                continue
+        for h, rec in list(data.items()):
+            h = str(h or "").lower()
+            if str(rec.get("state") or "") != STATE_SILENT:
+                continue
+            t = snap.get(h)
+            if t is None:
+                continue
+            tags = [str(x) for x in (getattr(t, "tags", None) or [])]
+            if "魔流-跨站" in tags or "魔流-推荐" in tags or is_asset_tags(tags):
+                continue
+            try:
+                prog = float(getattr(t, "progress", 1.0) or 0.0)
+            except Exception:  # noqa: BLE001
+                prog = 1.0
+            state_name = str(getattr(t, "state", "") or "")
+            if not (prog < 0.999 or state_name.endswith("DL")):
+                continue
+            rep["pending"] += 1
+            rep["items"].append({"hash": h[:12], "title": str(getattr(t, "title", "") or "")[:60],
+                                 "progress": round(prog * 100.0, 1), "state": state_name})
+            if not apply or (cap and rep["deleted"] >= cap):
+                continue
+            _k = _rkey(t)
+            shared = bool(_k and done_keys.get(_k) and done_keys.get(_k) != h)
+            try:
+                dl = self._get_downloader(str(rec.get("downloader") or "qbittorrent"))
+                if dl is None:
+                    rep["failed"] += 1
+                    continue
+                cnt, err = dl.delete_torrents(hashes=[h], delete_file=not shared)
+                if cnt:
+                    rep["deleted"] += 1
+                    if shared:
+                        rep["torrent_only"] += 1
+                    try:
+                        store.drop(h)
+                    except Exception:  # noqa: BLE001
+                        pass
+                else:
+                    rep["failed"] += 1
+                    self._log(f"静默池清理:删除失败 {h[:12]}:{err}", "warning")
+            except Exception as err:  # noqa: BLE001
+                rep["failed"] += 1
+                self._log(f"静默池清理:删除异常 {h[:12]}:{err}", "warning")
+        if apply and rep["deleted"]:
+            self._log(
+                f"魔流:静默池清理:未下完直接删 {rep['deleted']} 个（不计 H&R；"
+                f"其中只删种 {rep['torrent_only']} 个）"
+            )
+        return rep
+
     def _silent_triage(self, apply: bool = False, limit: int = 0, budget: float = 900.0) -> Dict[str, Any]:
         """★ 静默池分拣：静默-新 →（挂种完成 H&R 后）→ 推荐甄别。
 
@@ -13049,6 +13150,14 @@ class MagicFlow(_PluginBase):
             res = self._tag_settle_idle(task)
             if res.get("settled"):
                 self._log(f"魔流 [{task.name}] 任务已停止 → 名下 {res.get('settled')} 个种子退回静默")
+            # ★ 停止时顺手清掉「没下完」的半成品（不计 H&R，Master 2026-09-28）：
+            #   不删的话它们既不产上传、也永远结不清 H&R，还白占盘。
+            try:
+                pinfo = self._silent_purge_incomplete(apply=True, limit=200)
+                if pinfo.get("deleted"):
+                    self._log(f"魔流 [{task.name}] 停止清理:未下完直接删 {pinfo.get('deleted')} 个（不计 H&R）")
+            except Exception as err:  # noqa: BLE001
+                self._log(f"停止清理半成品失败:{err}", "warning")
         except Exception as err:  # noqa: BLE001
             self._log(f"停止任务退回静默失败:{err}", "warning")
 
