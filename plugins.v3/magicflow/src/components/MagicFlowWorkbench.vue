@@ -3427,6 +3427,7 @@ onUnmounted(() => {
                 <span class="magicflow-rules-row__name" :title="row.domain">
                   {{ row.site_name || row.domain }}
                   <em v-if="!row.in_library">未入库</em>
+                  <em v-if="row.exam_avg_hours" :title="row.exam_evidence || '站点考核的平均做种要求（不是 H&R）'">考核均值{{ row.exam_avg_hours }}h</em>
                 </span>
                 <span>
                   <VChip v-if="row.hr === true" size="x-small" color="error" variant="tonal">有</VChip>
