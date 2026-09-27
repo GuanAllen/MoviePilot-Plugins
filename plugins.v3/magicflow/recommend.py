@@ -48,6 +48,8 @@ class RecommendEngine:
         self._lock = threading.Lock()
         self._chart: Dict[str, Any] = {"ts": 0.0, "keys": set()}
         self._subs: Dict[str, Any] = {"ts": 0.0, "keys": set()}
+        # ★ 识别结果缓存：同一部作品（多集/多版）只识别一次，避免每个种都打一遍识别插件
+        self._recog: Dict[str, Any] = {}
 
     def _log(self, msg: str, level: str = "info") -> None:
         try:
@@ -121,22 +123,41 @@ class RecommendEngine:
                 titles.add(k[2:])
         return titles
 
-    def evaluate(self, name: str) -> Dict[str, Any]:
+    def _recognize_cached(self, name: str) -> Any:
+        """识别（带 TTL 缓存）：同一作品名只走一次识别插件链。"""
+        key = _norm(name)
+        if not key:
+            return None
+        now = time.time()
+        with self._lock:
+            hit = self._recog.get(key)
+        if hit and (now - float(hit[0])) < CHART_TTL:
+            return hit[1]
+        info = recognize(name)
+        with self._lock:
+            if len(self._recog) > 2000:
+                self._recog.clear()
+            self._recog[key] = (now, info)
+        return info
+
+    def evaluate(self, name: str, with_poster: bool = True) -> Dict[str, Any]:
         """甄别一个种子名。始终不抛异常；``recognized=False`` 表示识别不出/非影视。"""
         out: Dict[str, Any] = {"recognized": False}
-        info = recognize(name)
+        info = self._recognize_cached(name)
         if not info:
             return out
         try:
             rating = float(getattr(info, "vote_average", 0) or 0)
         except Exception:  # noqa: BLE001
             rating = 0.0
-        try:
-            poster = info.get_poster_image() or ""
-        except Exception:  # noqa: BLE001
-            poster = ""
-        if not poster:
-            poster = str(getattr(info, "poster_path", "") or "")
+        poster = ""
+        if with_poster:
+            try:
+                poster = info.get_poster_image() or ""
+            except Exception:  # noqa: BLE001
+                poster = ""
+            if not poster:
+                poster = str(getattr(info, "poster_path", "") or "")
         keys = self._keys_of(info)
         mtype = getattr(getattr(info, "type", None), "value", None) or str(
             getattr(info, "type", "") or ""
