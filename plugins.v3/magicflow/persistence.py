@@ -2,6 +2,13 @@
 MagicFlow 持久化模块
 
 负责操作日志和任务状态的持久化存储。
+
+★ 存储分层（Master 2026-09-27 09:11 定的方案）：
+  · **Redis = 在线热存储**（增量写，快）；
+  · **JSON 文件 = 冷备份**，只用于「Redis 数据丢了以后重载恢复」，后台每 60s 落一次；
+  · **Redis 不可用 → 完全退回文件模式**（默认装机不装 Redis 也照跑）。
+实现方式：各 Store 的 `_save()` 变成「先写 Redis（增量），失败/不可用才写文件」，
+文件写入由 `MagicFlowStore` 的后台 flusher（或 stop 时）统一触发。
 """
 
 import json
@@ -13,6 +20,65 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
+
+# JSON 冷备份落盘间隔（秒）：Redis 热层负责在线读写，文件只作重载恢复
+KV_FILE_FLUSH_SEC = 60.0
+
+
+class KvBridge:
+    """JSON 文件 + 热层（走 MP 缓存适配器）的桥接。
+
+    子类只需：① 在 `__init__` 里 `self.kv_bind(kv)`；② 把原来的 `_save()` 改名
+    `_write_file()`，并按模板新增 kv 感知的 `_save()` / `_kv_apply()` / `_kv_load()`。
+    """
+
+    kv: Any = None
+    kv_region: str = ""
+
+    def kv_bind(self, kv: Any) -> None:
+        """绑定热层（None / 非 Redis 后端 = 纯文件模式）。"""
+        self.kv = kv
+        self.dirty = True  # 冷备份待写（保证首次 flusher 会落一次盘）
+
+    def kv_ready(self) -> bool:
+        """热层是否真的可用（未启用 Redis / 连不上 → False → 走文件）。"""
+        kv = getattr(self, "kv", None)
+        if kv is None:
+            return False
+        try:
+            return bool(kv.available())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def kv_key(self, suffix: str = "") -> str:
+        """逻辑键名（`区域:后缀`；region 由热层内部处理）。"""
+        return f"{self.kv_region}:{suffix}" if suffix else self.kv_region
+
+    def kv_items(self, prefix: str = "") -> Dict[str, Any]:
+        """列出本 Store 的所有键值对（键已去掉 region 前缀）。"""
+        if not self.kv_ready():
+            return {}
+        want = f"{self.kv_region}:{prefix}" if prefix else f"{self.kv_region}:"
+        try:
+            rows = self.kv.items(want)
+        except Exception:  # noqa: BLE001
+            return {}
+        out: Dict[str, Any] = {}
+        for key, value in (rows or {}).items():
+            if key.startswith(want):
+                out[key[len(f"{self.kv_region}:"):]] = value
+        return out
+
+    def flush_if_dirty(self) -> bool:
+        """把内存快照写进 JSON 冷备份（仅在标脏时）。"""
+        if not getattr(self, "dirty", False):
+            return False
+        try:
+            self._write_file()
+            self.dirty = False
+            return True
+        except Exception:  # noqa: BLE001
+            return False
 
 
 # ============================================================
@@ -259,19 +325,25 @@ class WorkReport:
 # 操作日志
 # ============================================================
 
-class OperationJournal:
+class OperationJournal(KvBridge):
     """
     操作日志持久化。
 
     记录每次刷流操作（选种、删种、保护），支持进程重启后恢复。
+
+    ★ 热层 = Redis 每任务一个 hash（`mf:ops:{task_id}`，field = operation_id）；
+      JSON 文件 `operations.json` 降为冷备份。
     """
 
-    def __init__(self, data_dir: Path):
+    kv_region = "ops"
+
+    def __init__(self, data_dir: Path, kv: Any = None):
         """
         初始化操作日志。
 
         Args:
             data_dir: 插件数据目录
+            kv: Redis 热层（None = 纯文件模式）
         """
         self.data_dir = data_dir
         self.operations_file = data_dir / "operations.json"
@@ -281,6 +353,9 @@ class OperationJournal:
         # 多个服务（刷流/检查/慢扫）会并发调用 journal；加锁避免
         # 「dictionary changed size during iteration」（add→_prune_task 边遍历边被别的线程改）。
         self._lock = threading.RLock()
+        # 热层已写入内容的指纹（operation_id -> JSON），用于增量写
+        self._kv_written: Dict[str, str] = {}
+        self.kv_bind(kv)
         self._load()
 
     def set_keep(self, keep: int) -> None:
@@ -334,7 +409,13 @@ class OperationJournal:
                 self._operations.pop(op.operation_id, None)
 
     def _load(self) -> None:
-        """从磁盘加载操作日志。"""
+        """加载操作日志：Redis 热层优先；热层无数据 → 读文件并回灌。"""
+        if self._kv_load():
+            try:
+                self._heal_stale_submitting()
+            except Exception:  # noqa: BLE001
+                pass
+            return
         if not self.operations_file.exists():
             return
 
@@ -347,11 +428,66 @@ class OperationJournal:
             # 如果加载失败，初始化为空
             self._operations = {}
 
+        # 文件里有历史（Redis 空/丢过）→ 回灌热层
+        if self._operations:
+            try:
+                self._kv_apply()
+            except Exception:  # noqa: BLE001
+                pass
+
         # 载入时自愈：进程中断/重载遗留的「卡在 submitting」孤儿记录 → 标记为中断
         try:
             self._heal_stale_submitting()
         except Exception:
             pass
+
+    # ---------------------------------------------------------- 热层（MP 缓存/Redis）
+    def _kv_load(self) -> bool:
+        """从热层载入（有数据返回 True）。"""
+        rows = self.kv_items()
+        if not rows:
+            return False
+        loaded = 0
+        for _op_id, body in rows.items():
+            try:
+                data = body if isinstance(body, dict) else json.loads(body)
+                op_id = str(data.get("operation_id") or _op_id)
+                self._operations[op_id] = OperationRecord.from_dict(data)
+                self._kv_written[op_id] = json.dumps(data, ensure_ascii=False, sort_keys=True, default=str)
+                loaded += 1
+            except Exception:  # noqa: BLE001
+                continue
+        return loaded > 0
+
+    def _kv_apply(self, delta: Optional[Set[str]] = None) -> bool:
+        """把内存快照增量写进热层（一个 op 一个键：`ops:{operation_id}`）。"""
+        if not self.kv_ready():
+            return False
+        with self._lock:
+            ops = list(self._operations.values())
+        written = dict(self._kv_written)
+        alive: Set[str] = set()
+        ok = True
+        for op in ops:
+            op_id = str(getattr(op, "operation_id", "") or "")
+            if not op_id:
+                continue
+            alive.add(op_id)
+            body = op.to_dict()
+            fingerprint = json.dumps(body, ensure_ascii=False, sort_keys=True, default=str)
+            if written.get(op_id) == fingerprint:
+                continue
+            if self.kv.set(self.kv_key(op_id), body):
+                written[op_id] = fingerprint
+            else:
+                ok = False
+        # 被裁掉/删除的记录 → 删对应键
+        for op_id in [x for x in self._kv_written if x not in alive]:
+            ok = self.kv.delete(self.kv_key(op_id)) and ok
+            written.pop(op_id, None)
+        if ok:
+            self._kv_written = written
+        return ok
 
     # 超过该秒数仍 submitting 视为孤儿（正常运行 < _task_run_timeout=600s）
     _STALE_SUBMITTING_SEC = 900.0
@@ -376,7 +512,14 @@ class OperationJournal:
                 self._save()
         return healed
 
-    def _save(self) -> None:
+    def _save(self, delta: Optional[Set[str]] = None) -> None:
+        """保存（热层增量写 Redis；不可用/失败 → 直接写文件）。"""
+        if self.kv_ready() and self._kv_apply(delta):
+            self.dirty = True
+            return
+        self._write_file()
+
+    def _write_file(self) -> None:
         """保存操作日志到磁盘。
 
         采用「与磁盘并集合并」再写回：热重载会同时存在多个插件实例，
@@ -594,29 +737,37 @@ class OperationJournal:
 # 任务状态
 # ============================================================
 
-class TaskStateStore:
+class TaskStateStore(KvBridge):
     """
     任务状态持久化。
 
     保存每个任务的运行状态、受保护种子列表等。
+
+    ★ 热层 = Redis 每任务一个 JSON 值（`mf:state:{task_id}`）；`task_states.json` 降为冷备份。
     """
 
-    def __init__(self, data_dir: Path):
+    kv_region = "state"
+
+    def __init__(self, data_dir: Path, kv: Any = None):
         """
         初始化任务状态存储。
 
         Args:
             data_dir: 插件数据目录
+            kv: Redis 热层（None = 纯文件模式）
         """
         self.data_dir = data_dir
         self.state_file = data_dir / "task_states.json"
         self._states: Dict[str, TaskState] = {}
         # 并发 worker（刷流/检查/慢扫）会并发 settle → 加锁串行化内存变更与落盘
         self._lock = threading.RLock()
+        self.kv_bind(kv)
         self._load()
 
     def _load(self) -> None:
-        """从磁盘加载任务状态。"""
+        """加载任务状态：Redis 热层优先；热层无数据 → 读文件并回灌。"""
+        if self._kv_load():
+            return
         if not self.state_file.exists():
             return
 
@@ -627,8 +778,53 @@ class TaskStateStore:
                     self._states[task_id] = TaskState.from_dict(state_dict)
         except Exception:
             self._states = {}
+        if self._states:  # 文件有历史（Redis 空/丢过）→ 回灌热层
+            try:
+                self._kv_apply()
+            except Exception:  # noqa: BLE001
+                pass
 
-    def _save(self) -> None:
+    # ---------------------------------------------------------- 热层（MP 缓存/Redis）
+    def _kv_load(self) -> bool:
+        rows = self.kv_items()
+        if not rows:
+            return False
+        loaded = 0
+        for name, body in rows.items():
+            try:
+                data = body if isinstance(body, dict) else json.loads(body)
+                state = TaskState.from_dict(data)
+                if state and state.task_id:
+                    self._states[state.task_id] = state
+                    loaded += 1
+            except Exception:  # noqa: BLE001
+                continue
+        return loaded > 0
+
+    def _kv_apply(self, task_id: Optional[str] = None) -> bool:
+        """把任务状态写进热层（task_id 为空 = 全部）。"""
+        if not self.kv_ready():
+            return False
+        with self._lock:
+            states = dict(self._states)
+        ok = True
+        targets = [task_id] if task_id else list(states)
+        for tid in targets:
+            state = states.get(tid)
+            if state is None:
+                ok = self.kv.delete(self.kv_key(tid)) and ok
+            else:
+                ok = self.kv.set(self.kv_key(tid), state.to_dict()) and ok
+        return ok
+
+    def _save(self, task_id: Optional[str] = None) -> None:
+        """保存（热层增量写 Redis；不可用/失败 → 直接写文件）。"""
+        if self.kv_ready() and self._kv_apply(task_id):
+            self.dirty = True
+            return
+        self._write_file()
+
+    def _write_file(self) -> None:
         """保存任务状态到磁盘。"""
         with self._lock:
             try:
@@ -653,13 +849,13 @@ class TaskStateStore:
         state.revision += 1  # 乐观锁版本号递增
         with self._lock:
             self._states[state.task_id] = state
-        self._save()
+        self._save(state.task_id)
 
     def delete(self, task_id: str) -> bool:
         """删除任务状态。"""
         if task_id in self._states:
             del self._states[task_id]
-            self._save()
+            self._save(task_id)
             return True
         return False
 
@@ -687,21 +883,37 @@ class TaskStateStore:
 # 已处理候选记录（避免重复拉取同一批种子）
 # ============================================================
 
-class SeenStore:
+class SeenStore(KvBridge):
     """
     已处理候选记录。
 
     站点列表页每次返回的都是同一批最新种子，为避免反复下载/重复添加，
     把处理过的候选（按页面链接 / infohash）记录到磁盘，在窗口期内直接跳过。
+
+    ★ 热层 = 每任务一个键（`seen:{task_id}` = {key: ts}）；`seen.json` 降为冷备份。
+
     """
 
-    def __init__(self, data_dir: Path):
+    kv_region = "seen"
+
+    def __init__(self, data_dir: Path, kv: Any = None):
+        """
+        初始化。
+
+        Args:
+            data_dir: 插件数据目录
+            kv: 热层（None / 非 Redis 后端 = 纯文件模式）
+        """
         self.data_dir = data_dir
         self.file = data_dir / "seen.json"
         self._data: Dict[str, Dict[str, float]] = {}
+        self.kv_bind(kv)
         self._load()
 
     def _load(self) -> None:
+        """载入：热层优先；热层无数据 → 读文件并回灌。"""
+        if self._kv_load():
+            return
         if not self.file.exists():
             return
         try:
@@ -711,8 +923,47 @@ class SeenStore:
                 self._data = loaded
         except Exception:
             self._data = {}
+        if self._data:  # 文件有历史（热层空/丢过）→ 回灌
+            try:
+                self._kv_apply()
+            except Exception:  # noqa: BLE001
+                pass
 
-    def _save(self) -> None:
+    # ---------------------------------------------------------- 热层（MP 缓存/Redis）
+    def _kv_load(self) -> bool:
+        rows = self.kv_items()
+        if not rows:
+            return False
+        loaded = 0
+        for task_id, bucket in rows.items():
+            if isinstance(bucket, dict) and bucket:
+                self._data[str(task_id)] = {str(k): float(v) for k, v in bucket.items()}
+                loaded += 1
+        return loaded > 0
+
+    def _kv_apply(self, task_id: Optional[str] = None) -> bool:
+        """把某任务的 bucket（或全部）写进热层。"""
+        if not self.kv_ready():
+            return False
+        ok = True
+        targets = [task_id] if task_id else list(self._data)
+        for tid in targets:
+            bucket = self._data.get(tid)
+            if bucket:
+                ok = self.kv.set(self.kv_key(tid), bucket) and ok
+            else:
+                ok = self.kv.delete(self.kv_key(tid)) and ok
+        return ok
+
+    def _save(self, task_id: Optional[str] = None) -> None:
+        """保存（热层增量写；不可用/失败 → 直接写文件）。"""
+        if self.kv_ready() and self._kv_apply(task_id):
+            self.dirty = True
+            return
+        self._write_file()
+
+    def _write_file(self) -> None:
+        """写 JSON 冷备份。"""
         try:
             self.data_dir.mkdir(parents=True, exist_ok=True)
             tmp = self.file.with_name(self.file.name + ".tmp")
@@ -752,7 +1003,7 @@ class SeenStore:
                 bucket[key] = ts
                 changed = True
         if changed:
-            self._save()
+            self._save(task_id)
 
     def prune(self, max_age_seconds: float) -> None:
         """清掉超过 max_age_seconds 的记录。"""
@@ -760,6 +1011,7 @@ class SeenStore:
             return
         cutoff = time.time() - max_age_seconds
         changed = False
+        touched: List[str] = []
         for task_id in list(self._data.keys()):
             bucket = self._data.get(task_id) or {}
             for key in [k for k, v in bucket.items() if v < cutoff]:
@@ -768,8 +1020,10 @@ class SeenStore:
             if not bucket:
                 del self._data[task_id]
                 changed = True
+            touched.append(task_id)
         if changed:
-            self._save()
+            for task_id in touched:
+                self._save(task_id)
 
     def count(self, task_id: str) -> int:
         return len(self._data.get(task_id) or {})
@@ -779,7 +1033,7 @@ class SeenStore:
         if not task_id:
             return False
         if self._data.pop(task_id, None) is not None:
-            self._save()
+            self._save(task_id)
             return True
         return False
 
@@ -795,10 +1049,13 @@ class DeadStore(SeenStore):
       - 下载器「无进度」被清理的种子 → 按 infohash
     """
 
-    def __init__(self, data_dir: Path):
+    kv_region = "dead"
+
+    def __init__(self, data_dir: Path, kv: Any = None):
         self.data_dir = data_dir
         self.file = data_dir / "dead.json"
         self._data: Dict[str, Dict[str, float]] = {}
+        self.kv_bind(kv)
         self._load()
 
     def is_dead(self, task_id: str, key: str, cooldown_seconds: float = 0.0) -> bool:
@@ -810,8 +1067,8 @@ class DeadStore(SeenStore):
 # 插件数据存储（高层封装）
 # ============================================================
 
-class RecommendStore:
-    """推荐甄别结果存储（磁盘 JSON，读-合并-写 + 原子替换）。
+class RecommendStore(KvBridge):
+    """推荐甄别结果存储（JSON 冷备份 + 热层）。
 
     记录每个候选刷流种的价值甄别结果与生命周期状态：
     ``hash -> {first_seen, title, size_gb, media{source,id,type,year}, rating,
@@ -819,18 +1076,31 @@ class RecommendStore:
     status ∈ pending（临时种等待） / recommended（已打推荐 tag 待确认）
              / confirmed（已确认，待入库/已入库） / dismissed / deleted。
 
-    单例由 ``MagicFlowStore`` 持有；_save 采用**读-合并-写**（按 updated_at），
+    单例由 ``MagicFlowStore`` 持有；_write_file 采用**读-合并-写**（按 updated_at），
     避免热重载多实例互相覆盖（同 OperationJournal 的教训）。
+    热层 = 每项一个键（`rec:{hash}`）；JSON 降为冷备份。
     """
 
-    def __init__(self, data_dir: Path):
+    kv_region = "rec"
+
+    def __init__(self, data_dir: Path, kv: Any = None):
         self.data_dir = Path(data_dir)
         self.file = self.data_dir / "recommend.json"
         self._lock = threading.RLock()
         self._items: Dict[str, Dict[str, Any]] = {}
+        self._kv_written: Dict[str, str] = {}
+        self.kv_bind(kv)
         self._load()
 
     def _load(self) -> None:
+        """载入：热层优先；热层无数据 → 读文件并回灌。"""
+        rows = self.kv_items()
+        if rows:
+            for key, item in rows.items():
+                if isinstance(item, dict):
+                    self._items[str(key).lower()] = dict(item)
+            if self._items:
+                return
         try:
             if self.file.exists():
                 with open(self.file, "r", encoding="utf-8") as f:
@@ -843,8 +1113,49 @@ class RecommendStore:
                     }
         except Exception:
             self._items = {}
+        if self._items:  # 文件有历史（热层空/丢过）→ 回灌
+            try:
+                self._kv_apply()
+            except Exception:  # noqa: BLE001
+                pass
 
-    def _save(self) -> None:
+    # ---------------------------------------------------------- 热层（MP 缓存/Redis）
+    def _kv_apply(self, key: Optional[str] = None) -> bool:
+        """增量写热层（key 为空 = 全量对比）。"""
+        if not self.kv_ready():
+            return False
+        with self._lock:
+            items = dict(self._items)
+        targets = [str(key).lower()] if key else list(items)
+        ok = True
+        for k in targets:
+            item = items.get(k)
+            if item is None:
+                ok = self.kv.delete(self.kv_key(k)) and ok
+                self._kv_written.pop(k, None)
+                continue
+            fingerprint = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+            if self._kv_written.get(k) == fingerprint:
+                continue
+            if self.kv.set(self.kv_key(k), item):
+                self._kv_written[k] = fingerprint
+            else:
+                ok = False
+        # 内存里已没有的项 → 删键（全量模式才做）
+        if not key:
+            for k in [x for x in self._kv_written if x not in items]:
+                ok = self.kv.delete(self.kv_key(k)) and ok
+                self._kv_written.pop(k, None)
+        return ok
+
+    def _save(self, key: Optional[str] = None) -> None:
+        """保存（热层增量写；不可用/失败 → 直接写文件）。"""
+        if self.kv_ready() and self._kv_apply(key):
+            self.dirty = True
+            return
+        self._write_file()
+
+    def _write_file(self) -> None:
         with self._lock:
             try:
                 self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -942,8 +1253,8 @@ class RecommendStore:
             return n
 
 
-class ArchiveStore:
-    """云盘归档记录存储（磁盘 JSON，读-合并-写 + 原子替换）。
+class ArchiveStore(KvBridge):
+    """云盘归档记录存储（JSON 冷备份 + 热层）。
 
     ``本地路径 -> {rel, remote, size, status, uploaded_at, verified, error,
                     deleted_at, updated_at}``
@@ -951,16 +1262,27 @@ class ArchiveStore:
 
     与 RecommendStore 同样的教训：**热重载多实例下必须读-合并-写**，
     否则内存快照整表覆盖会丢记录。
+    热层 = 每项一个键（`cloud:{路径}`）；JSON 降为冷备份。
     """
 
-    def __init__(self, data_dir: Path):
+    kv_region = "cloud"
+
+    def __init__(self, data_dir: Path, kv: Any = None):
         self.data_dir = Path(data_dir)
         self.file = self.data_dir / "cloud.json"
         self._lock = threading.RLock()
         self._items: Dict[str, Dict[str, Any]] = {}
+        self._kv_written: Dict[str, str] = {}
+        self.kv_bind(kv)
         self._load()
 
     def _load(self) -> None:
+        """载入：热层优先；热层无数据 → 读文件并回灌。"""
+        rows = self.kv_items()
+        if rows:
+            self._items = {str(k): dict(v) for k, v in rows.items() if isinstance(v, dict)}
+            if self._items:
+                return
         try:
             if self.file.exists():
                 with open(self.file, "r", encoding="utf-8") as f:
@@ -969,8 +1291,47 @@ class ArchiveStore:
                     self._items = {str(k): dict(v) for k, v in data.items() if isinstance(v, dict)}
         except Exception:
             self._items = {}
+        if self._items:  # 文件有历史（热层空/丢过）→ 回灌
+            try:
+                self._kv_apply()
+            except Exception:  # noqa: BLE001
+                pass
 
-    def _save(self) -> None:
+    # ---------------------------------------------------------- 热层（MP 缓存/Redis）
+    def _kv_apply(self, key: Optional[str] = None) -> bool:
+        if not self.kv_ready():
+            return False
+        with self._lock:
+            items = dict(self._items)
+        targets = [str(key)] if key else list(items)
+        ok = True
+        for k in targets:
+            item = items.get(k)
+            if item is None:
+                ok = self.kv.delete(self.kv_key(k)) and ok
+                self._kv_written.pop(k, None)
+                continue
+            fingerprint = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+            if self._kv_written.get(k) == fingerprint:
+                continue
+            if self.kv.set(self.kv_key(k), item):
+                self._kv_written[k] = fingerprint
+            else:
+                ok = False
+        if not key:
+            for k in [x for x in self._kv_written if x not in items]:
+                ok = self.kv.delete(self.kv_key(k)) and ok
+                self._kv_written.pop(k, None)
+        return ok
+
+    def _save(self, key: Optional[str] = None) -> None:
+        """保存（热层增量写；不可用/失败 → 直接写文件）。"""
+        if self.kv_ready() and self._kv_apply(key):
+            self.dirty = True
+            return
+        self._write_file()
+
+    def _write_file(self) -> None:
         with self._lock:
             try:
                 self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -1060,7 +1421,8 @@ class MagicFlowStore:
     _instances: Dict[str, "MagicFlowStore"] = {}
     _instances_lock = threading.Lock()
 
-    def __new__(cls, data_dir: Path):
+    def __new__(cls, data_dir: Path, kv: Any = None):
+        del kv  # 单例只看 data_dir；热层在 __init__ / bind_hot 里绑定
         key = str(Path(data_dir))
         with cls._instances_lock:
             inst = cls._instances.get(key)
@@ -1070,23 +1432,93 @@ class MagicFlowStore:
                 cls._instances[key] = inst
             return inst
 
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, kv: Any = None):
         """
         初始化数据存储（同一 data_dir 只真正初始化一次）。
 
         Args:
             data_dir: 插件数据目录
+            kv: 在线热层（走 MP 缓存；未启用 Redis 时自动退化为纯文件）
         """
         if getattr(self, "_initialized", False):
+            if kv is not None:
+                self.bind_hot(kv)
             return
         self._initialized = True
         self.data_dir = data_dir
-        self.journal = OperationJournal(data_dir)
-        self.task_states = TaskStateStore(data_dir)
-        self.seen = SeenStore(data_dir)
-        self.dead = DeadStore(data_dir)
-        self.recommend = RecommendStore(data_dir)
-        self.cloud = ArchiveStore(data_dir)
+        self.journal = OperationJournal(data_dir, kv=kv)
+        self.task_states = TaskStateStore(data_dir, kv=kv)
+        self.seen = SeenStore(data_dir, kv=kv)
+        self.dead = DeadStore(data_dir, kv=kv)
+        self.recommend = RecommendStore(data_dir, kv=kv)
+        self.cloud = ArchiveStore(data_dir, kv=kv)
+        self._flusher_started = False
+        self._start_flusher()
+
+    # -------------------- 热层 / 冷备份 --------------------
+    def stores(self) -> List[Any]:
+        """全部 Store（顺序 = journal / task_states / seen / dead / recommend / cloud）。"""
+        return [self.journal, self.task_states, self.seen, self.dead, self.recommend, self.cloud]
+
+    def bind_hot(self, kv: Any) -> None:
+        """把热层绑到已存在的单例上（热重载后 config 变化时重新绑定）。"""
+        for store in self.stores():
+            try:
+                store.kv_bind(kv)
+            except Exception:  # noqa: BLE001
+                continue
+
+    def flush_all(self) -> List[str]:
+        """把标脏的 Store 快照写进 JSON 冷备份（供 stop / 定时器调用）。"""
+        written: List[str] = []
+        for store in self.stores():
+            try:
+                if store.flush_if_dirty():
+                    written.append(type(store).__name__)
+            except Exception:  # noqa: BLE001
+                continue
+        return written
+
+    def _start_flusher(self) -> None:
+        """后台每 KV_FILE_FLUSH_SEC 把脏快照落一次 JSON（Redis 丢了以后的恢复源）。"""
+        if getattr(self, "_flusher_started", False):
+            return
+        self._flusher_started = True
+
+        def _loop() -> None:
+            while True:
+                time.sleep(KV_FILE_FLUSH_SEC)
+                try:
+                    self.flush_all()
+                except Exception:  # noqa: BLE001
+                    continue
+
+        threading.Thread(target=_loop, daemon=True, name="MagicFlow-KvFlush").start()
+
+    def hot_stats(self) -> Dict[str, Any]:
+        """热层健康度（给 /debug/store 用）。"""
+        out: Dict[str, Any] = {}
+        for store in self.stores():
+            name = getattr(store, "kv_region", type(store).__name__)
+            out[name] = {
+                "hot": bool(getattr(store, "kv", None) is not None and store.kv_ready()),
+                "dirty": bool(getattr(store, "dirty", False)),
+            }
+        return out
+
+    def flush_to_disk_and_hot(self) -> Dict[str, int]:
+        """把内存快照写入热层 + 冷备份（供手动对齐用）。"""
+        counts: Dict[str, int] = {}
+        for store in self.stores():
+            name = getattr(store, "kv_region", type(store).__name__)
+            try:
+                applied = store._kv_apply() if store.kv_ready() else False  # noqa: SLF001
+                store._write_file()  # noqa: SLF001
+                store.dirty = False
+                counts[name] = 1 if applied else 0
+            except Exception:  # noqa: BLE001
+                counts[name] = 0
+        return counts
 
     # -------------------- 运行阶段 / 游标 --------------------
 
