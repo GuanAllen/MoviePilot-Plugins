@@ -102,6 +102,9 @@ _EXCLUDE_RE = re.compile(
 _HR_TOKENS = re.compile(r"H\s*&\s*R|hit\s*[&a]nd\s*run|hit and run", re.I)
 # 「同一句里」的保种动作词
 _SEED_TOKENS = re.compile(r"做种|保种|挂种|seeding|seed", re.I)
+# 「考核指标」句式：指标N：平均做种时间, 要求：30 Hour —— 这是**新人考核的达标线**，
+# 不是 H&R 规则，必须分开存（否则会把考核要求误当成保种义务）。
+_EXAM_RE = re.compile(r"指标|平均做种时间|考核|达标线|要求\s*[:：]", re.I)
 # 明确的规则句式（最可信）：必须/需/要求/至少 ...
 _RULE_NEED_RE = re.compile(r"必须|需|要求|不得少于|不少于|至少|at least|must|minimum", re.I)
 
@@ -141,6 +144,7 @@ def parse_hr_from_html(html_text: str) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "hr": None, "seed_hours": None, "confidence": "low",
         "seed_cap": None, "evidence": "", "hits": 0,
+        "exam_avg_hours": None,
     }
     if not html_text:
         return out
@@ -166,6 +170,16 @@ def parse_hr_from_html(html_text: str) -> Dict[str, Any]:
             continue
         excluded = bool(_EXCLUDE_RE.search(seg))
         strong = bool(_RULE_NEED_RE.search(seg))
+        if _EXAM_RE.search(seg):
+            # 考核达标线（例：指标2：平均做种时间，要求 30 Hour）→ 单独存，不当 H&R
+            ev = (out.get("exam_evidence") or "")
+            if not ev:
+                out["exam_evidence"] = seg[:300]
+            if out["exam_avg_hours"] is None or hours > float(out["exam_avg_hours"]):
+                out["exam_avg_hours"] = hours
+            if has_hr:
+                hits += 0
+            continue
         if strong and not excluded and hours <= 336.0:
             if best_high is None or hours > best_high:
                 best_high = hours
@@ -284,6 +298,10 @@ class SiteRules:
             if val is not None:
                 out[key] = val
         out["confidence"] = conf
+        if (probed or {}).get("exam_avg_hours") is not None:
+            out["exam_avg_hours"] = (probed or {}).get("exam_avg_hours")
+            if (probed or {}).get("exam_evidence"):
+                out["exam_evidence"] = (probed or {}).get("exam_evidence")
         val = (probed or {}).get("seed_hours")
         if val is not None and conf == "high":
             out["seed_hours"] = val
