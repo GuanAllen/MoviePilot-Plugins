@@ -91,6 +91,7 @@ const settingsDraft = ref({
   bonus_upload_limit_kbps: 200,
   brush_upload_limit_kbps: 10240,
   iyuu_token: '',
+  iyuu_clear: false,
   iyuu_sites: {},
   fallback_enabled: true,
   fallback_sources: ['themoviedb', 'bangumi', 'douban'],
@@ -538,6 +539,20 @@ async function loadStatus() {
         live_kill_unfree: status.value.live.kill_unfree,
         live_kill_delete_files: status.value.live.kill_delete_files,
         live_notify: status.value.live.notify,
+        exam_enabled: status.value.live.exam_enabled,
+        exam_include_pass: status.value.live.exam_include_pass,
+        exam_sites: status.value.live.exam_sites || [],
+      } : {}),
+      ...(status.value.signin ? {
+        signin_enabled: status.value.signin.enabled,
+        signin_sites: status.value.signin.sites || [],
+        signin_login_sites: status.value.signin.login_sites || [],
+        signin_retry_keyword: status.value.signin.retry_keyword,
+        signin_queue: status.value.signin.queue,
+        signin_notify: status.value.signin.notify,
+        signin_interval_minutes: status.value.signin.interval,
+        signin_window_start: status.value.signin.window_start,
+        signin_window_end: status.value.signin.window_end,
       } : {}),
       ...(status.value.cloud ? {
         cloud_enabled: status.value.cloud.enabled,
@@ -743,6 +758,57 @@ const siteLive = computed(() => {
 })
 const siteLiveCfg = computed(() => (liveState.value || {}).cfg || {})
 const siteLiveAlerts = computed(() => ((siteLive.value || {}).alerts || []))
+
+// ── 签到 / 模拟登录（借鉴 MoviePilot「站点自动签到」插件）──────────────────
+// 站点多选：想签几个签几个（siteSelectItems 直接来自 /status.options.sites）
+const siteSelectItems = computed(() =>
+  (status.value.options?.sites || []).map(s => ({
+    title: s.name || s.domain || String(s.id),
+    value: String(s.id),
+  }))
+)
+const signinCfg = computed(() => status.value.signin || {})
+const signinToday = computed(() => signinCfg.value.today || {})
+const signinTodayRows = computed(() => {
+  const cfg = signinCfg.value || {}
+  const signIds = (cfg.sites || []).map(String)
+  const loginIds = (cfg.login_sites || []).map(String)
+  const rows = []
+  const seen = new Set()
+  ;[...signIds, ...loginIds].forEach(key => {
+    if (seen.has(key)) return
+    seen.add(key)
+    const info = siteSelectItems.value.find(s => s.value === key) || {}
+    const rec = signinToday.value[key] || {}
+    rows.push({
+      site_id: key,
+      site_name: rec.site_name || info.title || key,
+      sign: signIds.includes(key),
+      login: loginIds.includes(key),
+      signin: rec.sign || null,
+      loginResult: rec.login || null,
+    })
+  })
+  return rows
+})
+const signinRunning = ref(false)
+async function runSigninNow(kind = 'sign') {
+  if (signinRunning.value) return
+  signinRunning.value = true
+  try {
+    // ★ 插件 API 的 POST 参数只从 query 绑定（body 不生效）→ 参数拼在 URL 上
+    const query = new URLSearchParams({ kind: String(kind) }).toString()
+    const res = unwrapResponse(await props.api.post(`${pluginBase.value}/signin/run?${query}`, {})) || {}
+    const s = res.summary || {}
+    notify(`${kind === 'sign' ? '签到' : '登录'}完成：成功 ${s.ok || 0} / 失败 ${s.fail || 0}`)
+    // 只刷新 status（不重载 settingsDraft，避免把正在编辑的设置冲掉）
+    status.value = unwrapResponse(await props.api.get(`${pluginBase.value}/status`)) || status.value
+  } catch (err) {
+    notify(`执行失败：${err?.message || err}`, 'error')
+  } finally {
+    signinRunning.value = false
+  }
+}
 const siteLiveLevel = computed(() => (siteLive.value || {}).level || 'ok')
 const siteLiveInfo = computed(() => (siteLive.value || {}).live || {})
 const siteLiveRates = computed(() => (siteLive.value || {}).rates || {})
@@ -790,6 +856,71 @@ function dismissRecommend(hash) {
 function openRecommend() {
   recommendOpen.value = true
   loadRecommend()
+}
+
+// ── 新手考核（顶栏入口 + 汇总弹窗 + 一键起任务）────────────────────────
+const examData = ref({ sites: [], count: 0, enabled: true })
+const examOpen = ref(false)
+const examActing = ref('')
+const examConfirm = ref(null)
+let examTimer = null
+const examSites = computed(() => examData.value.sites || [])
+const examBadge = computed(() => (examData.value.enabled === false ? 0 : Number(examData.value.count || 0)))
+const examUrgent = computed(() => examSites.value.filter(s => Number((s.exam || {}).days_left ?? 999) <= 3).length)
+async function loadExam() {
+  try {
+    examData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/exam`)) || examData.value
+  } catch (err) {
+    // 考核是增强信息，失败不打断界面
+  }
+}
+function openExam() {
+  examOpen.value = true
+  loadExam()
+}
+function examFailedText(row) {
+  return ((row.exam || {}).failed || []).join(' / ') || '—'
+}
+function examDaysText(row) {
+  const d = (row.exam || {}).days_left
+  if (d === null || d === undefined) return '截止未知'
+  const v = Number(d)
+  return v <= 3 ? `⚠️ 剩 ${v.toFixed(1)} 天` : `剩 ${v.toFixed(1)} 天`
+}
+function examGb(v) {
+  const n = Number(v || 0) / (1024 ** 3)
+  if (!n) return '0'
+  return n >= 1024 ? `${(n / 1024).toFixed(2)}T` : `${n.toFixed(2)}G`
+}
+function examPlan(row, kind) {
+  return (row.plan || []).find(p => p.kind === kind) || null
+}
+function examAct(row, kind) {
+  const item = examPlan(row, kind)
+  if (!item) return
+  if (item.noop || kind === 'hold' || item.kind === 'hold') {
+    notify('该考核项目前无需建任务：保持做种 + 多辅种即可')
+    return
+  }
+  examConfirm.value = { row, item, kind }
+}
+async function examConfirmRun() {
+  const ctx = examConfirm.value
+  if (!ctx || examActing.value) return
+  examActing.value = `${ctx.kind}:${ctx.row.site_id}`
+  try {
+    // ★ 插件 API 的 POST 参数只在 query 绑定
+    const q = new URLSearchParams({ site_id: String(ctx.row.site_id), kind: String(ctx.kind), confirm: 'true' }).toString()
+    const res = unwrapResponse(await props.api.post(`${pluginBase.value}/exam/act?${q}`, {})) || {}
+    notify(res.message || '已执行')
+    examConfirm.value = null
+    await loadExam()
+    status.value = unwrapResponse(await props.api.get(`${pluginBase.value}/status`)) || status.value
+  } catch (err) {
+    notify(`执行失败：${err?.message || err}`, 'error')
+  } finally {
+    examActing.value = ''
+  }
 }
 
 // 选择任务并刷新其详情数据。
@@ -1308,6 +1439,17 @@ async function testIyuu() {
   }
 }
 
+// 清空已存的 IYUU Token（后端「空值=保持原值」，所以清空要显式带 iyuu_clear）。
+async function clearIyuuToken() {
+  settingsDraft.value.iyuu_token = ''
+  settingsDraft.value.iyuu_clear = true
+  try {
+    await saveIyuu()
+  } finally {
+    settingsDraft.value.iyuu_clear = false
+  }
+}
+
 // 保存 IYUU 设置（Token + 站点密钥表）。
 async function saveIyuu() {
   saving.value = true
@@ -1457,8 +1599,7 @@ async function savePathsTab() {
 }
 
 // 保存全局设置。
-async function saveSettings() {
-  saving.value = true
+async function saveSettings() {  saving.value = true
   try {
     unwrapResponse(await props.api.post(`${pluginBase.value}/settings`, normalizeSettings(settingsDraft.value)))
     notify('设置已保存')
@@ -1519,6 +1660,9 @@ onMounted(() => {
   refreshTimer = window.setInterval(loadStatus, 30000)
   // 推荐列表是全局的，低频刷新一下角标计数
   recommendTimer = window.setInterval(loadRecommend, 60000)
+  // 新手考核也是全局的（低频刷新角标；关闭时服务端立即返回，零开销）
+  loadExam()
+  examTimer = window.setInterval(loadExam, 300000)
   // 站点实时数据：采样周期 240s，这里 120s 轮询（服务端有缓存，不会重复打站点）
   loadLive()
   liveTimer = window.setInterval(loadLive, 120000)
@@ -1532,6 +1676,7 @@ onUnmounted(() => {
   if (refreshTimer) window.clearInterval(refreshTimer)
   if (phaseTimer) window.clearInterval(phaseTimer)
   if (recommendTimer) window.clearInterval(recommendTimer)
+  if (examTimer) window.clearInterval(examTimer)
   if (liveTimer) window.clearInterval(liveTimer)
   if (warmingTimer) window.clearTimeout(warmingTimer)
   if (cloudPollTimer) window.clearInterval(cloudPollTimer)
@@ -1628,6 +1773,31 @@ onUnmounted(() => {
           aria-label="云盘归档"
           @click="openCloud"
         />
+        <VBadge
+          v-if="examData.enabled !== false && examBadge > 0"
+          class="magicflow-exam-wrap"
+          :content="examBadge"
+          :color="examUrgent ? 'error' : 'warning'"
+          location="top end"
+          offset-x="6"
+          offset-y="4"
+        >
+          <VBtn
+            class="magicflow-exam-btn"
+            icon="mdi-school-outline"
+            variant="text"
+            aria-label="新手考核"
+            @click="openExam"
+          />
+        </VBadge>
+        <VBtn
+          v-else-if="examData.enabled !== false"
+          class="magicflow-exam-btn"
+          icon="mdi-school-outline"
+          variant="text"
+          aria-label="新手考核"
+          @click="openExam"
+        />
         <VBtn
           class="magicflow-settings-btn"
           icon="mdi-tune-variant"
@@ -1655,8 +1825,14 @@ onUnmounted(() => {
               :subtitle="(recommendData.recommended || 0) > 0 ? `${recommendData.recommended} 个待确认` : '影视推荐甄别'"
               @click="openRecommend"
             />
-            <VListItem prepend-icon="mdi-cloud-upload-outline" title="云盘归档" @click="openCloud" />
-            <VListItem prepend-icon="mdi-tune-variant" title="插件设置" @click="openSettings()" />
+            <VListItem
+              v-if="examData.enabled !== false"
+              prepend-icon="mdi-school-outline"
+              title="新手考核"
+              :subtitle="examBadge > 0 ? `${examBadge} 个未通过` : '考核进度与一键起任务'"
+              @click="openExam"
+            />
+            <VListItem prepend-icon="mdi-cloud-upload-outline" title="云盘归档" @click="openCloud" />            <VListItem prepend-icon="mdi-tune-variant" title="插件设置" @click="openSettings()" />
             <VListItem v-if="showClose" prepend-icon="mdi-close" title="关闭" @click="emit('close')" />
           </VList>
         </VMenu>
@@ -2443,6 +2619,8 @@ onUnmounted(() => {
           <VTab value="iyuu" class="magicflow-settings-tab">IYUU 辅种</VTab>
           <VTab value="fallback" class="magicflow-settings-tab">元数据兜底</VTab>
           <VTab value="cloud" class="magicflow-settings-tab">云盘归档</VTab>
+          <VTab value="exam" class="magicflow-settings-tab">考核</VTab>
+          <VTab value="signin" class="magicflow-settings-tab">签到</VTab>
           <VTab value="live" class="magicflow-settings-tab">站点监控</VTab>
           <VTab value="recommend" class="magicflow-settings-tab">推荐</VTab>
         </VTabs>
@@ -2674,6 +2852,14 @@ onUnmounted(() => {
                 :disabled="!settingsDraft.iyuu_token"
                 @click="testIyuu"
               >测试</VBtn>
+              <VBtn
+                v-if="settingsDraft.iyuu_token"
+                variant="text"
+                color="error"
+                size="small"
+                prepend-icon="mdi-close-circle-outline"
+                @click="clearIyuuToken"
+              >清空</VBtn>
             </div>
             <div class="magicflow-iyuu-sites">
               <div class="magicflow-iyuu-sites__head">
@@ -2768,6 +2954,119 @@ onUnmounted(() => {
               <VSwitch v-model="defaultsDraft.auto_resume_paused" label="自动恢复被暂停种子" color="primary" hide-details inset />
               <VSwitch v-model="defaultsDraft.delete_files" label="删种同时删除文件" color="primary" hide-details inset />
             </div>
+          </div>
+
+          <div v-else-if="settingsTab === 'exam'" class="magicflow-settings-form">
+            <p class="magicflow-settings-hint">
+              把各站<strong>新手考核</strong>进度抓出来（上传/下载增量、平均做种时间、魔力/做种积分增量），
+              并支持<strong>一键起任务</strong>去补未通过项。
+              数据来源就是各站首页 <code>index.php</code> 的考核块 —— 魔流本来就抓这个页面拿实时数据，
+              所以<strong>不额外消耗站点访问次数（PV）</strong>。
+            </p>
+            <p class="magicflow-settings-hint">
+              <strong>已通过的考核默认不显示</strong>（过掉的就不占地方了）；想看全部就打开下面的「显示已通过」。
+              考不过的站会算好缺口并给出建议：上传差多少 → 刷流任务；下载差多少 → 专门下载任务；
+              魔力/积分差多少 → 魔力任务；平均做种时间不够 → 保持做种 + 多辅种（不用建任务）。
+            </p>
+            <p class="magicflow-settings-hint magicflow-settings-hint--warn">
+              ⚠️ 「考核下载」任务会<strong>真的下载非免费种</strong>（下载增量只能在有下载时增长），
+              会拉低分享率。魔流会在它跑的时候<strong>豁免「清除非免费下载种」</strong>（否则会互相打架），
+              并在<strong>全站免费期间</strong>提示你「免费期下载不计入下载量」。
+            </p>
+            <div class="magicflow-settings-switches">
+              <VSwitch v-model="settingsDraft.exam_enabled" label="启用「新手考核」（关闭则不抓取、不解析、不显示）" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.exam_include_pass" label="显示「已通过」的考核（默认只显示未通过的）" color="primary" hide-details inset />
+            </div>
+            <div class="magicflow-settings-field">
+              <VSelect
+                v-model="settingsDraft.exam_sites"
+                :items="siteSelectItems"
+                label="考核站点（不选 = 全部已配置 Cookie 的站点）"
+                multiple
+                chips
+                closable-chips
+                variant="outlined"
+                density="comfortable"
+                hide-details
+              />
+              <p class="magicflow-settings-hint">选多少有多少：只盯你关心的站，不选就是全都盯。</p>
+            </div>
+            <p v-if="!settingsDraft.exam_enabled" class="magicflow-settings-hint magicflow-settings-hint--warn">
+              当前处于<strong>关闭</strong>状态：不会去抓考核，也不会做任何额外请求。
+            </p>
+          </div>
+
+          <div v-else-if="settingsTab === 'signin'" class="magicflow-settings-form">
+            <p class="magicflow-settings-hint">
+              站点<strong>每日签到</strong> + <strong>模拟登录</strong>保活（借鉴 MoviePilot「站点自动签到」插件）：
+              通用签到就是带站点 Cookie 访问 <code>attendance.php</code>（NexusPHP 访问即签到）；
+              登录就是访问站点首页做一次「模拟登录」，顺带刷新站点数据。
+            </p>
+            <p class="magicflow-settings-hint">
+              <strong>站点多选，选多少有多少：</strong>签到站点、登录站点分别勾。
+              同一站点当天已成功就<strong>自动跳过</strong>（一天最多 1 次请求/站，不浪费站点访问次数）；
+              命中「每日访问上限（PV）」则该站当日不再尝试。
+            </p>
+            <div class="magicflow-settings-switches">
+              <VSwitch v-model="settingsDraft.signin_enabled" label="启用「站点签到 / 模拟登录」" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.signin_notify" label="结果推送通知" color="primary" hide-details inset />
+            </div>
+            <div class="magicflow-settings-field">
+              <VSelect
+                v-model="settingsDraft.signin_sites"
+                :items="siteSelectItems"
+                label="签到站点（多选）"
+                multiple
+                chips
+                closable-chips
+                variant="outlined"
+                density="comfortable"
+                hide-details
+              />
+            </div>
+            <div class="magicflow-settings-field">
+              <VSelect
+                v-model="settingsDraft.signin_login_sites"
+                :items="siteSelectItems"
+                label="模拟登录站点（多选，保活 Cookie + 刷新站点数据）"
+                multiple
+                chips
+                closable-chips
+                variant="outlined"
+                density="comfortable"
+                hide-details
+              />
+            </div>
+            <div class="magicflow-settings-row">
+              <VTextField v-model="settingsDraft.signin_retry_keyword" label="重试关键词（正则，留空不重试）" variant="outlined" density="comfortable" hide-details />
+              <VTextField v-model.number="settingsDraft.signin_queue" type="number" min="1" label="并发数" variant="outlined" density="comfortable" hide-details />
+            </div>
+            <div class="magicflow-settings-row">
+              <VTextField v-model.number="settingsDraft.signin_interval_minutes" type="number" min="10" label="间隔（分钟）" variant="outlined" density="comfortable" hide-details />
+              <VTextField v-model.number="settingsDraft.signin_window_start" type="number" min="0" max="23" label="几点开始" variant="outlined" density="comfortable" hide-details />
+              <VTextField v-model.number="settingsDraft.signin_window_end" type="number" min="1" max="24" label="几点停" variant="outlined" density="comfortable" hide-details />
+            </div>
+            <p class="magicflow-settings-hint">
+              执行时段默认 <strong>9:00–23:00</strong>；同站当天已成功会自动跳过，所以间隔设长一点也没关系。
+            </p>
+            <div class="magicflow-signin-actions">
+              <VBtn size="small" color="primary" variant="tonal" prepend-icon="mdi-calendar-check" :loading="signinRunning" @click="runSigninNow('sign')">立即签到</VBtn>
+              <VBtn size="small" color="primary" variant="text" prepend-icon="mdi-login-variant" :loading="signinRunning" @click="runSigninNow('login')">立即登录</VBtn>
+              <span class="magicflow-settings-hint">（立即执行会直接发请求；需先保存设置并启用）</span>
+            </div>
+            <div v-if="signinTodayRows.length" class="magicflow-signin-list">
+              <div class="magicflow-signin-list__title">今日结果</div>
+              <div v-for="row in signinTodayRows" :key="row.site_id" class="magicflow-signin-list__row">
+                <span class="magicflow-signin-list__name">{{ row.site_name }}</span>
+                <span class="magicflow-signin-list__tags">
+                  <span v-if="row.sign" class="magicflow-signin-tag" :class="row.signin ? (row.signin.ok ? 'is-ok' : 'is-fail') : ''">签到：{{ row.signin ? row.signin.message : '待执行' }}</span>
+                  <span v-if="row.login" class="magicflow-signin-tag" :class="row.loginResult ? (row.loginResult.ok ? 'is-ok' : 'is-fail') : ''">登录：{{ row.loginResult ? row.loginResult.message : '待执行' }}</span>
+                </span>
+              </div>
+            </div>
+            <p v-if="!settingsDraft.signin_enabled" class="magicflow-settings-hint magicflow-settings-hint--warn">
+              当前处于<strong>关闭</strong>状态：不会签到、不会模拟登录，也不发任何请求。
+            </p>
           </div>
 
           <div v-else-if="settingsTab === 'live'" class="magicflow-settings-form">
@@ -3517,6 +3816,109 @@ onUnmounted(() => {
         </VCardText>
       </VCard>
     </VDialog>
+
+    <!-- 新手考核：汇总弹窗（Layout A，同「推荐」范式） -->
+    <VDialog v-model="examOpen" max-width="46rem" scrollable>
+      <VCard class="magicflow-dialog magicflow-exam-dialog">
+        <header class="magicflow-settings-dialog__head">
+          <span class="magicflow-settings-dialog__title">新手考核</span>
+          <div class="magicflow-recommend-dialog__head-actions">
+            <VBtn variant="text" color="primary" size="small" prepend-icon="mdi-refresh" @click="loadExam">刷新</VBtn>
+            <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="examOpen = false" />
+          </div>
+        </header>
+        <VDivider />
+        <VCardText class="magicflow-recommend-dialog__body">
+          <div class="magicflow-recommend-dialog__summary">
+            <span><strong>{{ examBadge }}</strong> 个未通过</span>
+            <i>·</i>
+            <span><strong>{{ examUrgent }}</strong> 个 3 天内截止</span>
+          </div>
+          <div class="magicflow-recommend-dialog__note">
+            只统计「有 Cookie」的站点；已通过的默认不显示（可在「插件设置 → 考核」里改为显示）
+          </div>
+          <VAlert v-if="examData.enabled === false" type="info" variant="tonal" density="compact" class="my-2">
+            新手考核模块已关闭（可在「插件设置 → 考核」开启；开启后零额外 PV）
+          </VAlert>
+          <div v-else-if="!examSites.length" class="magicflow-table-empty">
+            没有未通过的考核（或站点数据暂时取不到）。
+          </div>
+          <VSheet v-for="row in examSites" :key="row.site_id" tag="section" class="magicflow-panel app-surface-static mt-2">
+            <header class="magicflow-panel__head">
+              <div>
+                <div class="text-subtitle-2 font-weight-medium">{{ row.site_name || ('站点 ' + row.site_id) }}</div>
+                <div class="text-body-2 text-medium-emphasis">
+                  {{ examDaysText(row) }} · 未通过：{{ examFailedText(row) }}
+                </div>
+              </div>
+            </header>
+            <div class="magicflow-exam-stats">
+              <span>上传 {{ examGb(row.upload) }}</span>
+              <i>·</i>
+              <span>下载 {{ examGb(row.download) }}</span>
+              <i>·</i>
+              <span>魔力 {{ Math.round(Number(row.bonus || 0)) }}</span>
+              <i>·</i>
+              <span>做种 {{ row.seeding ?? 0 }}</span>
+            </div>
+            <div class="magicflow-exam-plan">
+              <article v-for="(p, idx) in (row.plan || [])" :key="idx" class="magicflow-exam-plan__item">
+                <div class="magicflow-exam-plan__main">
+                  <strong>{{ p.label || '考核项' }}</strong>
+                  <VChip size="x-small" variant="tonal" :color="p.kind === 'hold' ? 'grey' : 'primary'">
+                    {{ p.kind === 'upload' ? '刷上传' : p.kind === 'download' ? '补下载' : p.kind === 'bonus' ? '攒魔力' : '保持做种' }}
+                  </VChip>
+                </div>
+                <ul v-if="(p.notes || []).length" class="magicflow-exam-plan__notes">
+                  <li v-for="(n, ni) in p.notes" :key="ni">{{ n }}</li>
+                </ul>
+                <VBtn
+                  v-if="p.kind !== 'hold'"
+                  size="small"
+                  color="primary"
+                  variant="tonal"
+                  prepend-icon="mdi-play-circle-outline"
+                  :loading="examActing === `${p.kind}:${row.site_id}`"
+                  @click="examAct(row, p.kind)"
+                >一键起任务（{{ p.task_name || p.kind }}）</VBtn>
+              </article>
+              <div v-if="!(row.plan || []).length" class="magicflow-table-empty">
+                未识别到可执行动作（可能考核不要求下载量 / 或解析不出；可在「做种明细」里看站点实时数据）。
+              </div>
+            </div>
+          </VSheet>
+        </VCardText>
+      </VCard>
+    </VDialog>
+
+    <!-- 一键起任务确认（先展示要干什么，再动手） -->
+    <VDialog :model-value="!!examConfirm" max-width="32rem" @update:model-value="v => { if (!v) examConfirm = null }">
+      <VCard v-if="examConfirm" class="magicflow-dialog">
+        <header class="magicflow-settings-dialog__head">
+          <span class="magicflow-settings-dialog__title">确认执行</span>
+        </header>
+        <VDivider />
+        <VCardText class="d-flex flex-column ga-2">
+          <div>
+            将在 <strong>{{ examConfirm.row.site_name }}</strong> 上
+            <strong>{{ examConfirm.item.kind === 'download' ? '创建 / 启用「考核下载」任务' : examConfirm.item.kind === 'upload' ? '创建 / 启用「考核刷流」任务' : '创建 / 启用「考核魔力」任务' }}</strong>：
+          </div>
+          <div class="text-body-2">任务名：<code>{{ examConfirm.item.task_name }}</code></div>
+          <ul v-if="(examConfirm.item.notes || []).length" class="magicflow-exam-plan__notes">
+            <li v-for="(n, ni) in examConfirm.item.notes" :key="ni">{{ n }}</li>
+          </ul>
+          <VAlert type="warning" variant="tonal" density="compact">
+            考核下载会真下非免费种（下载量才算数），且执行期间不会被「3.4.0 下载异常自动清种」误杀。
+          </VAlert>
+        </VCardText>
+        <VDivider />
+        <VCardActions>
+          <VSpacer />
+          <VBtn variant="text" :disabled="!!examActing" @click="examConfirm = null">取消</VBtn>
+          <VBtn color="primary" variant="flat" :loading="!!examActing" @click="examConfirmRun">确认创建 / 启用</VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
   </div>
 </template>
 <style scoped>
@@ -3725,6 +4127,117 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 4px 16px;
+}
+
+/* 考核 / 签到 设置（借鉴「站点自动签到」插件的站点多选） */
+.magicflow-settings-field {
+  display: block;
+  margin-block: 8px 4px;
+}
+
+.magicflow-settings-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 8px 12px;
+  margin-block-start: 8px;
+}
+
+.magicflow-signin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-block-start: 8px;
+}
+
+/* 新手考核弹窗 */
+.magicflow-exam-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 0.82rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  padding-block: 2px 6px;
+}
+
+.magicflow-exam-plan {
+  display: grid;
+  gap: 8px;
+}
+
+.magicflow-exam-plan__item {
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  min-inline-size: 0;
+}
+
+.magicflow-exam-plan__main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  overflow-wrap: anywhere;
+}
+
+.magicflow-exam-plan__notes {
+  margin: 0;
+  padding-inline-start: 1.1em;
+  font-size: 0.8rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  overflow-wrap: anywhere;
+}
+
+.magicflow-signin-list {
+  margin-block-start: 10px;
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.magicflow-signin-list__title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.magicflow-signin-list__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+  font-size: 0.82rem;
+  min-inline-size: 0;
+}
+
+.magicflow-signin-list__name {
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+
+.magicflow-signin-list__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-inline-size: 0;
+}
+
+.magicflow-signin-tag {
+  overflow-wrap: anywhere;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.magicflow-signin-tag.is-ok {
+  color: rgb(var(--v-theme-success));
+}
+
+.magicflow-signin-tag.is-fail {
+  color: rgb(var(--v-theme-error));
 }
 
 .magicflow-settings-actions {
@@ -5476,6 +5989,8 @@ onUnmounted(() => {
   .magicflow-page__actions .magicflow-header-create,
   .magicflow-page__actions .magicflow-recommend-wrap,
   .magicflow-page__actions .magicflow-recommend-btn,
+  .magicflow-page__actions .magicflow-exam-wrap,
+  .magicflow-page__actions .magicflow-exam-btn,
   .magicflow-page__actions .magicflow-cloud-btn,
   .magicflow-page__actions .magicflow-settings-btn,
   .magicflow-page__actions .magicflow-close-btn {

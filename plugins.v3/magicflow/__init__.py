@@ -105,7 +105,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.8.0"
+__version__ = "3.8.1"
 
 # 候选扩充:站点列表页翻页数(拿更多、更老的种子)。
 # 注意:是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数(启动时会记日志探测)。
@@ -577,6 +577,12 @@ class MagicFlow(_PluginBase):
         self._last_up_limit_bps = None
         # IYUU 云端辅种配置(Token 为空 = 不启用)
         self._iyuu_token = str(raw_config.get("iyuu_token") or "").strip()
+        if not self._iyuu_token:
+            # 配置里没有 → 回落插件数据(前端/手滑增删设置也不会丢密)
+            try:
+                self._iyuu_token = str(self.get_data("iyuu_token") or "").strip()
+            except Exception:  # noqa: BLE001
+                self._iyuu_token = ""
         _iyuu_sites = raw_config.get("iyuu_sites")
         if not isinstance(_iyuu_sites, dict):
             _iyuu_sites = self.get_data("iyuu_sites") or {}
@@ -7791,7 +7797,17 @@ class MagicFlow(_PluginBase):
         except (TypeError, ValueError):
             self._brush_upload_limit_kbps = 10240.0
         # IYUU 云端辅种配置
-        self._iyuu_token = str(getattr(payload, "iyuu_token", "") or "").strip()
+        # ★ Token 空 = 保持原值（+ 落 save_data 备份、init 时回落）：
+        #   旧前端 chunk / 别的标签页保存设置时 payload 可能不带 iyuu_token，
+        #   之前无条件赋值会把已填好的 Token 抹掉（「填完后来没了」的真凶）。
+        #   真要清空 → 前端传 iyuu_clear=true。
+        _new_iyuu = str(getattr(payload, "iyuu_token", "") or "").strip()
+        if bool(getattr(payload, "iyuu_clear", False)):
+            self._iyuu_token = ""
+            self.save_data(key="iyuu_token", value="")
+        elif _new_iyuu:
+            self._iyuu_token = _new_iyuu
+            self.save_data(key="iyuu_token", value=_new_iyuu)
         raw_sites = getattr(payload, "iyuu_sites", None)
         if isinstance(raw_sites, dict):
             self._iyuu_sites = {

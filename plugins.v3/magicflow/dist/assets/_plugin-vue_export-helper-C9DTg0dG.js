@@ -190,6 +190,7 @@ function normalizeSettings(settings = {}) {
     bonus_upload_limit_kbps: Math.max(0, num(settings.bonus_upload_limit_kbps, 200)),
     brush_upload_limit_kbps: Math.max(0, num(settings.brush_upload_limit_kbps, 10240)),
     iyuu_token: String(settings.iyuu_token || ''),
+    iyuu_clear: !!settings.iyuu_clear,
     iyuu_sites: normalizeIyuuSites(settings.iyuu_sites),
     recommend_enabled: settings.recommend_enabled === undefined ? true : Boolean(settings.recommend_enabled),
     recommend_min_rating: Math.min(10, Math.max(0, num(settings.recommend_min_rating, 7.5))),
