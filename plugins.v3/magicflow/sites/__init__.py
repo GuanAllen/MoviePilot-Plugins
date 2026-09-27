@@ -8,6 +8,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+# 顶层导入（不在函数体内懒导入）：worker 运行时不再触发 import 机制，
+# 避免热重载期间与 loader 形成「循环导入死锁」。
+from ..bonus import BonusParams
+
 
 @dataclass
 class TorrentBonusInfo:
@@ -326,8 +330,7 @@ def get_calculator(site_domain: str = "", site_schema: str = "") -> Optional[Bon
     Returns:
         BonusCalculator 实例，或 None
     """
-    # 延迟导入，避免循环依赖
-    from . import hdfans
+    # 已提到模块顶层导入（避免运行时进入 import 机制 → 热重载死锁）
 
     # 如果已注册，直接返回
     if site_domain and site_domain in _CALCULATORS:
@@ -368,8 +371,6 @@ def get_formula_params(domain: Optional[str] = None, schema: Optional[str] = Non
     命中顺序：域名关键字 → 站点类型 → NexusPHP 标准默认。
     返回对象可继续用 .merged(**overrides) 叠加任务级覆盖。
     """
-    from ..bonus import BonusParams
-
     for key in (domain, schema):
         if not key:
             continue
@@ -381,11 +382,13 @@ def get_formula_params(domain: Optional[str] = None, schema: Optional[str] = Non
 
 def register_default_calculators():
     """注册默认的计算器。"""
-    from . import hdfans
     _CALCULATORS['hdfans'] = hdfans.HDFansBonusCalculator
     _CALCULATORS['NexusPHP'] = hdfans.HDFansBonusCalculator
     _CALCULATORS['Nexus'] = hdfans.HDFansBonusCalculator
 
+
+# 顶层导入（在 BonusCalculator 等定义之后，避免循环）；运行时不再懒导入
+from . import hdfans  # noqa: E402
 
 # 注册默认计算器
 register_default_calculators()
