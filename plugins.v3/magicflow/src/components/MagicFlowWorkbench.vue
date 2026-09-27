@@ -3428,6 +3428,9 @@ onUnmounted(() => {
                   {{ row.site_name || row.domain }}
                   <em v-if="!row.in_library">未入库</em>
                   <em v-if="row.exam_avg_hours" :title="row.exam_evidence || '站点考核的平均做种要求（不是 H&R）'">考核均值{{ row.exam_avg_hours }}h</em>
+                  <em v-if="row.free_over_gb" title="站点促销规则：达到该体积自动免费（列表页可能不标促销，插件按规则补判）">&gt;{{ row.free_over_gb }}G免</em>
+                  <em v-if="row.free_original" title="站点促销规则：原盘自动免费">原盘免</em>
+                  <em v-if="row.free_ep1" title="站点促销规则：每季第一集自动免费">首集免</em>
                 </span>
                 <span>
                   <VChip v-if="row.hr === true" size="x-small" color="error" variant="tonal">有</VChip>

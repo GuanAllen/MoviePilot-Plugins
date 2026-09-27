@@ -117,6 +117,56 @@ def _ensure_sdk():
 
 
 # ============================================================
+# 站点促销规则（由插件在规则库更新时注入）
+# 例：某些站「总体积 > 20GB 的种子自动免费」「原盘免费」「每季第一集免费」——
+#     这些种在列表页可能压根不显示促销标记，光看 promo 会把**免费种当收费种**，
+#     于是要么误下（烧流量）要么被免费门槛挡掉（漏种）。这里按站点规则补判。
+# ============================================================
+_SITE_FREE_RULES: Dict[str, Dict[str, Any]] = {}
+
+
+def set_site_free_rules(mapping: Optional[Dict[str, Dict[str, Any]]]) -> None:
+    """由插件注入「域名 → 促销规则」映射（进程内，重载后由插件重新注入）。"""
+    _SITE_FREE_RULES.clear()
+    for k, v in (mapping or {}).items():
+        d = str(k or "").strip().lower().replace("https://", "").replace("http://", "").strip("/")
+        if d and isinstance(v, dict):
+            _SITE_FREE_RULES[d] = dict(v)
+
+
+def _site_free_rules_for(domain: str) -> Dict[str, Any]:
+    d = str(domain or "").strip().lower().replace("https://", "").replace("http://", "").strip("/")
+    if not d:
+        return {}
+    if d in _SITE_FREE_RULES:
+        return _SITE_FREE_RULES[d]
+    for k, v in _SITE_FREE_RULES.items():
+        if k and (d.endswith("." + k) or k.endswith("." + d)):
+            return v
+    return {}
+
+
+def promo_rule_verdict(domain: str, size_gb: float, title: str = "") -> Optional[str]:
+    """按站点促销规则判断「规则上是否免费」，返回原因字符串或 None。"""
+    rules = _site_free_rules_for(domain)
+    if not rules:
+        return None
+    try:
+        thr = float(rules.get("free_over_gb") or 0)
+    except (TypeError, ValueError):
+        thr = 0.0
+    if thr > 0 and float(size_gb or 0) >= thr:
+        return f"体积≥{thr:g}GB按站点规则免费"
+    if rules.get("free_original") and re.search(
+        r"原盘|Blu-?ray\s*Disk|HD\s*DVD|BDMV|UHD\s*原盘|remux", str(title or ""), re.I
+    ):
+        return "原盘按站点规则免费"
+    if rules.get("free_ep1") and re.search(r"\bS\d{1,2}E01\b|第0?1集|\bEP0?1\b", str(title or ""), re.I):
+        return "每季第一集按站点规则免费"
+    return None
+
+
+# ============================================================
 # 数据模型
 # ============================================================
 
@@ -596,6 +646,14 @@ class SiteFetcher:
             if not (size or seeders or leechers or enclosure):
                 continue
 
+            # ★ 站点促销规则补判（列表未标促销但规则上免费，如 >20GB 自动免费）
+            _rule_free = False
+            if dv != 0:
+                _why = promo_rule_verdict(site_domain, (size / (1024 ** 3)) if size else 0.0, title)
+                if _why:
+                    _rule_free = True
+                    dv = 0.0
+
             out.append(SiteCandidateTorrent(
                 hash=page_url,
                 title=title,
@@ -609,10 +667,10 @@ class SiteFetcher:
                 enclosure=enclosure,
                 site_name=site_domain,
                 site_domain=site_domain,
-                is_free=(dv == 0),
+                is_free=(dv == 0 or _rule_free),
                 is_double_free=(dv == 0 and uv == 2),
                 hit_and_run=False,
-                volume_factor=dv,
+                volume_factor=(0.0 if _rule_free else dv),
                 site_cookie=cookie,
                 site_ua=ua,
                 downloadvolumefactor=dv,
@@ -817,6 +875,16 @@ class SiteFetcher:
             is_free = downloadvolumefactor == 0
             is_double_free = downloadvolumefactor == 0 and uploadvolumefactor == 2
             is_zero_bonus = getattr(torrent, "is_zero_bonus", False)
+
+            # ★ 站点促销规则补判：列表页没标促销，但规则上就是免费（如 >20GB 自动免费）
+            if not is_free:
+                _size_gb = (size / (1024 ** 3)) if size else 0.0
+                _why = promo_rule_verdict(site_domain, _size_gb, title)
+                if _why:
+                    is_free = True
+                    downloadvolumefactor = 0.0
+                    volume_factor = 0.0
+                    logger.info(f"促销规则补判免费: {str(title)[:40]} ({_why})")
 
             # H&R 检测
             hit_and_run = getattr(torrent, "hit_and_run", False)
