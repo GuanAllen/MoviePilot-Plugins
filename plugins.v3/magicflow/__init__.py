@@ -153,7 +153,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.13.0"
+__version__ = "3.13.1"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -10953,7 +10953,8 @@ class MagicFlow(_PluginBase):
                     pass
         return str(value)
 
-    def debug_qb_info(self, path: str = "", hash: str = "", limit: int = 1, audit: str = "") -> Response:
+    def debug_qb_info(self, path: str = "", hash: str = "", limit: int = 1, audit: str = "",
+                      tag: str = "", filt: str = "") -> Response:
         """诊断：看看 qB 里还有哪些**可用信息**（只读）。
 
         ``path`` 给定时直接透传 GET 该 qB API 路径（白名单前缀 ``/api/v2/``），
@@ -11005,15 +11006,45 @@ class MagicFlow(_PluginBase):
                 "by_announce_domain": dict(sorted(agg.items(), key=lambda x: -x[1])[:12]),
                 "samples": rows[:15],
             }))
-        if str(path or "").strip().startswith("/api/v2/"):
+        _pt = str(path or "").strip()
+        if _pt.startswith("/api/v2/") or _pt == "introspect":
             try:
-                _p = str(path).strip()
+                if _pt == "introspect":
+                    import inspect as _ins
+                    _t = type(qbc)
+                    try:
+                        _sig = str(_ins.signature(_t._get))
+                    except Exception as _ie:  # noqa: BLE001
+                        _sig = f"sig_err:{_ie}"
+                    return Response(success=True, message="ok", data=self._jsonable({
+                        "mro": [c.__name__ for c in _t.__mro__],
+                        "get_sig": _sig,
+                        "attrs": [a for a in dir(qbc) if any(x in a.lower() for x in (
+                            "session", "url", "host", "port", "request"))],
+                        "version": str(getattr(qbc, "app_version", "")),
+                    }))
+                _p = _pt
                 if _p.startswith("/api/v2/"):
                     _p = _p[len("/api/v2/"):]
+                _qs: Dict[str, Any] = {}
+                if "?" in _p:
+                    _p, _raw = _p.split("?", 1)
+                    for _kv in _raw.split("&"):
+                        if "=" in _kv:
+                            _k, _v = _kv.split("=", 1)
+                            _qs[_k] = _v
                 if hash:
-                    _p = f"{_p}{'&' if '?' in _p else '?'}hash={hash}"
-                fn = getattr(qbc, "_get", None)
-                data = fn(_p) if callable(fn) else None
+                    _qs["hash"] = str(hash)
+                if tag:
+                    _qs["tag"] = str(tag)
+                if filt:
+                    _qs["filter"] = str(filt)
+                _ps = _p.strip("/")
+                if _ps == "torrents/info":
+                    data = qbc.torrents_info(**_qs)
+                else:
+                    fn = getattr(qbc, "_get", None)
+                    data = fn(_p) if callable(fn) else None
                 if hasattr(data, "json"):
                     try:
                         data = data.json()
@@ -11021,8 +11052,17 @@ class MagicFlow(_PluginBase):
                         data = None
                 if data is None:
                     return Response(success=False, message=f"qB 返回空(path={_p})")
-                return Response(success=True, message="ok",
-                                data=self._jsonable({"path": _p, "result": data}))
+                # qbittorrentapi 返回的是自定义容器（TorrentDictionaryList 等），
+                # 直接交给 _jsonable 会被 str() 化 → 这里先规整成纯 dict/list
+                if not isinstance(data, (dict, str, int, float, bool)) and hasattr(data, "__iter__"):
+                    try:
+                        data = [dict(x) if hasattr(x, "keys") else x for x in data]
+                    except Exception:  # noqa: BLE001
+                        pass
+                return Response(success=True, message="ok", data=self._jsonable({
+                    "path": _p, "query": _qs,
+                    "count": len(data) if hasattr(data, "__len__") else None,
+                    "result": data}))
             except Exception as err:  # noqa: BLE001
                 return Response(success=False, message=f"qB 查询失败:{err}")
         for key, attr in (("version", "app_version"), ("webapi", "app_web_api_version")):
