@@ -165,7 +165,7 @@ class RecommendEngine:
         out.update(
             {
                 "recognized": True,
-                "title": getattr(info, "title", None),
+                "title": getattr(info, "title", None) or getattr(info, "name", None),
                 "year": getattr(info, "year", None),
                 "type": mtype,
                 "media_source": getattr(info, "media_source", None),
