@@ -917,7 +917,9 @@ class DownloaderAdapter:
             return None
 
         try:
-            torrent = self._downloader.get_torrent(hash_string)
+            torrent = self._find_raw_torrent(hash_string)
+            if torrent is None and hasattr(self._downloader, "get_torrent"):
+                torrent = self._downloader.get_torrent(hash_string)
             if not torrent:
                 return None
             return self._parse_torrent_info(torrent)
