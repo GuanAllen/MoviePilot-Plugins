@@ -7332,6 +7332,12 @@ class MagicFlow(_PluginBase):
         items = store.items()
         res: Dict[str, Any] = {"protected": len(items), "retagged": 0, "reclaimed": 0}
         if not items:
+            # 账本为空时也要跑「历史回填」（升级前的遗留来源份），否则它们永远没人保护
+            try:
+                res["backfilled"] = self._crossseed_sources_backfill()
+            except Exception:  # noqa: BLE001
+                pass
+            res["protected"] = len(store.items())
             return res
         dl_cache: Dict[str, Any] = {}
         now = time.time()
