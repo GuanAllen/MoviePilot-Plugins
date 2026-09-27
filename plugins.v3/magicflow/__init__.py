@@ -9835,9 +9835,17 @@ class MagicFlow(_PluginBase):
                         parsed["exam_evidence"] = f"{path}: {got.get('exam_evidence', '')}"
                     if got.get("seed_cap") is not None and parsed.get("seed_cap") is None:
                         parsed["seed_cap"] = got["seed_cap"]
+                    # 促销规则（体积自动免费/原盘/首集）：与 H&R 无关，独立采集
+                    for _pk in ("free_over_gb", "free_original", "free_ep1"):
+                        if got.get(_pk) is not None and parsed.get(_pk) is None:
+                            parsed[_pk] = got[_pk]
                 item["pages"] = pages
                 item["parsed"] = parsed
-                if persist and (parsed.get("hr") is not None or parsed.get("seed_cap") is not None):
+                if persist and (
+                    parsed.get("hr") is not None
+                    or parsed.get("seed_cap") is not None
+                    or parsed.get("free_over_gb") is not None
+                ):
                     rec = store.merge_probe(dom, dict(parsed, name=name, site_id=sid))
                     item["stored"] = {k: rec.get(k) for k in ("hr", "seed_hours", "seed_cap", "source")}
                 elif persist:
