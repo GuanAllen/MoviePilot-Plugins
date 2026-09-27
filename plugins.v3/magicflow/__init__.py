@@ -7186,6 +7186,12 @@ class MagicFlow(_PluginBase):
         """
         out: Dict[str, Any] = {"enabled": False, "checked_sites": [], "violations": [], "errors": []}
         cfg = getattr(self, "_cs_cfg", {}) or {}
+        # ★ H&R：来源份的保种监督（标签确权 / 清无效 / 到期回收 / 历史回填）
+        #   必须**先**跑：它跟「有没有待回辅」无关，guard 关闭时也要维护。
+        try:
+            out.update(self._crossseed_sources_tick())
+        except Exception as err:  # noqa: BLE001
+            out["errors"].append(f"H&R 保护核对异常:{err}")
         if not bool(cfg.get("guard", True)):
             return out
         out["enabled"] = True
@@ -7314,11 +7320,6 @@ class MagicFlow(_PluginBase):
                 )
             except Exception:  # noqa: BLE001
                 pass
-        # ★ H&R：来源份的保种监督（重新确权标签 / 清无效 / 到期可回收）
-        try:
-            out.update(self._crossseed_sources_tick())
-        except Exception as err:  # noqa: BLE001
-            out["errors"].append(f"H&R 保护核对异常:{err}")
         return out
 
     def _crossseed_sources_tick(self) -> Dict[str, Any]:
