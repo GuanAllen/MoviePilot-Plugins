@@ -446,11 +446,18 @@ class TagStateStore:
             out[key] = out.get(key, 0) + 1
         return out
 
-    def expire_new(self, *, now: Optional[float] = None, timeout: float = SILENT_NEW_TIMEOUT) -> List[str]:
-        """``静默-新`` 超时未分拣 → 归 ``静默-普通``；返回被改动的 hash。"""
+    def expire_new(self, *, now: Optional[float] = None, timeout: float = SILENT_NEW_TIMEOUT,
+                   skip: Optional[Any] = None) -> List[str]:
+        """``静默-新`` 超时未分拣 → 归 ``静默-普通``；返回被改动的 hash。
+
+        ``skip``：这些 hash 不参与超时降级（例如 H&R 义务还没挂满，仍要留在「新」等分拣）。
+        """
         ts = float(now if now is not None else time.time())
+        _skip = {str(x).strip().lower() for x in (skip or [])}
         moved: List[str] = []
         for h, rec in self.items().items():
+            if _skip and str(h).strip().lower() in _skip:
+                continue
             if _clean(rec.get("state")) == STATE_SILENT and _clean(rec.get("sub")) == SUB_NEW:
                 born = float(rec.get("created") or 0)
                 if born and (ts - born) >= timeout:
