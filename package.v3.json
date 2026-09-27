@@ -3,7 +3,7 @@
     "name": "魔流",
     "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
     "labels": "站点,做种,魔力,刷流",
-    "version": "3.9.0",
+    "version": "3.10.0",
     "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
     "author": "IronOx",
     "level": 1,
@@ -181,10 +181,11 @@
       "3.8.1": "修「IYUU Token 填完后来没了」：保存设置时 Token 空值 = 保持原值（旧前端 chunk / 其它标签页保存不再抹掉已填 Token），并同时落 save_data 备份 + 加载时回落；IYUU 页新增「清空」按钮（显式 iyuu_clear=true 才清）。",
       "3.8.2": "3.8.2 冷热双层状态存储：热层走 MoviePilot 自带缓存(配了 Redis 才启用)，JSON 作为权威冷备份每 60s 落盘；热层丢失自动从 JSON 回灌；未配 Redis 的用户行为与原来完全一致",
       "3.8.3": "3.8.3 状态存储收尾修：① 冷备份落盘间隔 60s→300s（实测 60s 太密，活跃时 5~6 张表每分钟全量 dump，63MB/h）；② 修「每次热重载泄漏一个落盘线程 + 旧线程用旧参数/旧快照」的真 bug —— 单例注册表移到独立模块（MP 清模块缓存不再重置），落盘线程改为可停 + 每轮重读间隔；③ /status.store 增加热层键分布与热层写次数",
-      "3.8.4": "3.8.4 修「热重载偶发循环导入死锁」：把 8 处函数体内的懒相对导入全部提到模块顶层（__init__/cloud_archive/signin/sites），worker 运行时不再触发 import 机制 → 不再与 MP 重载线程形成父包↔子模块锁环（_DeadlockError）"
+      "3.8.4": "3.8.4 修「热重载偶发循环导入死锁」：把 8 处函数体内的懒相对导入全部提到模块顶层（__init__/cloud_archive/signin/sites），worker 运行时不再触发 import 机制 → 不再与 MP 重载线程形成父包↔子模块锁环（_DeadlockError）",
+      "3.10.0": "跨站免费取种改用 MoviePilot 自带搜索选源：SearchChain.search_by_title 一次查多站，结果自带 downloadvolumefactor / seeders / freedate / enclosure / cookie —— 免不免费不用再单独查；传 rule_groups=[] 不套用用户的搜索过滤规则；只留「免费且在做种」的行，再按标题+体积预筛、取他站 .torrent 用完整特征码定论。新增「免费任务跨站候选池」：任务选了免费时，本站非免费的候选以前在洗池阶段就被丢掉、根本进不了跨站逻辑，现在把「仅因非免费被洗掉、其他条件都合格」的候选收进独立池（每轮最多探 CROSSSEED_EXTRA_SCAN=5 个，只走跨站、绝不从本站下，没命中进 6h dead 冷却）。IYUU 降为可选：只用它把候选站范围缩到「确实有这资源」的几家，省 PV。PV 成本：MP 搜索按站计（6h 缓存）+ 跨站池每个候选在本站取 1 次 .torrent 拿特征码。"
     }
   },
-  "version": "3.9.0",
+  "version": "3.10.0",
   "history": {
     "3.0.4": "限时免费（促销到期）闸门：候选抓取解析促销到期时间（Pttime 等站的免费/2X免费是限时的），剩余免费时间不够下完（体积÷20MB/s+30min 余量）的候选在洗池/下载前直接跳过，并把免费定向视图的到期信息回填进同站共享候选列表；修「限时免费到期后仍下载→白烧流量/分享率」。",
     "3.0.5": "限时免费「到期即清」：入种/复用时记下该种的促销到期时刻（列表页解析），检查时对未下完的种子优先按记录到期直接清理（免回详情页核对、也不怕详情页抓不到）；未到期的按记录确认仍有效、同样跳过 HTTP 核对。",
