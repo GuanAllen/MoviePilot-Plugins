@@ -9,6 +9,7 @@ MagicFlow 下载器操作模块
 
 import math
 import base64
+import json
 import logging
 import re
 import threading
@@ -107,6 +108,90 @@ def _looks_like_torrent(data: Any) -> bool:
     if raw.lstrip()[:1] != b"d":
         return False
     return b"4:info" in raw[:65536]
+
+
+# ---------------------------------------------------------------- 换票地址解析
+# 部分站点（馒头 / HDH / 肉丝 / 红叶 / 时光 … 这类「API 站」）的 enclosure 不是直链，
+# 而是 `[base64(json)]url`：先请求 url（换票接口）拿到返回里的临时下载地址，再下真正的种子。
+# MoviePilot 本体在下载链里会解这个格式（app/chain/download/submission.py
+# `_resolve_indirect_download_url`），但我们自己取种字节时也要解，
+# 否则只会去 GET 那个 API 地址 → 永远「无法打开链接」。
+_INDIRECT_URL_RE = re.compile(r"^\[(.*?)](.*)$", re.S)
+
+
+def _resolve_indirect_download_url(
+    url: str,
+    cookie: Optional[str] = None,
+    user_agent: Optional[str] = None,
+    proxies: Optional[str] = None,
+    referer: Optional[str] = None,
+) -> Tuple[str, Optional[str]]:
+    """把换票地址解析成真实下载地址，返回 ``(直接可用地址, 错误信息)``。
+
+    非换票地址原样返回（``err=None``）；解析失败返回 ``("", 原因)``。
+    参数语义与 MoviePilot 下载链保持一致（`params` 走查询串、`header` 整包替换）。
+    """
+    raw = str(url or "").strip()
+    match = _INDIRECT_URL_RE.match(raw)
+    if not match:
+        return raw, None
+    encoded, request_url = match.group(1), match.group(2)
+    if not encoded:
+        return request_url, None
+    try:
+        spec = json.loads(base64.b64decode(encoded.encode("utf-8")).decode("utf-8"))
+    except Exception as e:  # noqa: BLE001
+        return "", f"换票请求解析失败:{e}"
+    if not isinstance(spec, dict):
+        return "", "换票请求格式错误"
+    _headers = spec.get("header") if isinstance(spec.get("header"), dict) else None
+    _params = spec.get("params") if isinstance(spec.get("params"), dict) else None
+    _cookie = cookie if spec.get("cookie") else None
+    try:
+        from app.sdk.network import RequestUtils
+
+        req = RequestUtils(
+            headers=_headers or None,
+            cookies=_cookie,
+            proxies=proxies,
+            ua=user_agent,
+            referer=referer,
+            timeout=30,
+        )
+        _dl_gate()
+        if str(spec.get("method") or "post").lower() == "get":
+            resp = req.get_res(url=request_url, params=_params)
+        else:
+            resp = req.post_res(url=request_url, params=_params)
+    except Exception as e:  # noqa: BLE001
+        return "", f"换票请求异常:{e}"
+    if resp is None:
+        return "", "换票请求无响应"
+    if not getattr(resp, "ok", False):
+        _code = getattr(resp, "status_code", "?")
+        if _code in (429, 503):
+            _dl_note_flow_control()
+        return "", f"换票请求失败:{_code}"
+    result_path = spec.get("result")
+    if not result_path:
+        return str(resp.text or "").strip(), None
+    try:
+        data: Any = resp.json()
+    except Exception as e:  # noqa: BLE001
+        return "", f"换票响应非 JSON:{e}"
+    success_key = spec.get("success")
+    if success_key and isinstance(data, dict) and not data.get(success_key):
+        return "", "换票接口返回失败标记"
+    for key in str(result_path).split("."):
+        if not isinstance(data, dict):
+            data = None
+            break
+        data = data.get(key)
+        if not data:
+            break
+    if not data:
+        return "", "换票响应缺少下载地址"
+    return str(data).strip(), None
 
 
 def _dl_gate() -> None:
@@ -563,6 +648,24 @@ class DownloaderAdapter:
             return _cached
         _ensure_sdk()
 
+        # 0.5) 换票地址（API 站）：先解出真实下载地址，再走原来的下载逻辑。
+        _raw_url = url
+        if str(url).lstrip().startswith("["):
+            _direct, _err = _resolve_indirect_download_url(
+                url, cookie=cookie, user_agent=user_agent, proxies=proxies, referer=referer
+            )
+            if not _direct:
+                logger.warning(f"换票地址解析失败 {str(url)[:60]}: {_err}")
+                return None
+            if str(_direct).startswith("magnet:"):
+                logger.info(f"换票地址返回磁力链接，跳过字节下载：{str(_direct)[:60]}")
+                return None
+            _hit = _torrent_cache_get(_direct)
+            if _hit is not None:
+                _torrent_cache_put(_raw_url, _hit)
+                return _hit
+            url = _direct
+
         # 1) 全局自适应限速闸门（流控时自动降速）
         _dl_gate()
 
@@ -590,6 +693,8 @@ class DownloaderAdapter:
                         raise TorrentFetchFlowControl("返回内容非有效种子（疑似站点流控/登录页）")
                     _dl_note_success()
                     _torrent_cache_put(url, _bytes)
+                    if _raw_url != url:
+                        _torrent_cache_put(_raw_url, _bytes)
                     return _bytes
                 if err:
                     logger.warning(f"TorrentHelper 下载种子未成功 {url}: {err}")

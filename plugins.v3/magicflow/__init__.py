@@ -58,7 +58,7 @@ from .downloader_ops import (
     QB_DOWNLOADING_STATES,
     QB_PAUSED_STATES,
 )
-from .fingerprint import fingerprint, info_hash
+from .fingerprint import fingerprint, info_hash, inner_fingerprint, load_torrent_entries, total_size
 from .iyuu_cloud import IyuuCloud, build_download_url, resolve_link_vars
 from .fetcher import (
     SITE_TZ_OFFSET_HOURS,
@@ -89,12 +89,29 @@ from .fallback import FallbackEngine, DEFAULT_SOURCES as FALLBACK_SOURCES
 from .live_stats import LiveStats, title_match
 from .cloud_archive import ArchiveEngine, DEFAULT_TARGET_TEMPLATE as CLOUD_TARGET_TEMPLATE
 from .persistence import MagicFlowStore, OperationItem, WorkReport, KV_FILE_FLUSH_SEC
-from .crossseed import CROSSSEED_TAG, CrossSeedPending, pick_source, search_key
+from .crossseed import (
+    CROSSSEED_TAG,
+    CrossSeedPending,
+    pick_source,
+    search_key,
+    size_close,
+    title_like,
+)
 from .kvstore import MpHotStore
 from .signin import SigninEngine
 from .recommend import RecommendEngine, _norm, recognize
 from .dtier import PvLedger, TierCache
-from .sitecap import SiteCap, SiteCapRegistry, FW_NEXUS, FW_UNKNOWN, detect_framework, norm_domain
+from .sitecap import (
+    SiteCap,
+    SiteCapRegistry,
+    FW_NEXUS,
+    FW_UNKNOWN,
+    FW_MTEAM,
+    FW_GAZELLE,
+    FW_UNIT3D,
+    detect_framework,
+    norm_domain,
+)
 from .sites import BonusCalculator, get_calculator, get_formula_params, register_formula_preset
 from .sites.formula_fetch import (
     FormulaCapture,
@@ -108,6 +125,40 @@ from .sites.formula_fetch import (
 )
 
 __version__ = "3.10.0"
+
+
+def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
+    """把一个 .torrent 拆成易读摘要（诊断用）：文件数 / 根目录名 / 内外特征码。
+
+    `fp` = 完整特征码（含根目录名）；`inner_fp` = 去掉根目录名后的特征码。
+    两者相等说明「同一个 Release、且根目录名也一样」；仅 `inner_fp` 相等
+    说明「同一 Release 只是根目录名不同」。
+    """
+    out: Dict[str, Any] = {"n": 0, "root": "", "fp": None, "inner_fp": None, "size_gb": 0.0}
+    try:
+        entries = load_torrent_entries(raw)
+    except Exception as e:  # noqa: BLE001
+        out["err"] = f"解析失败:{e}"
+        return out
+    if not entries:
+        out["err"] = "空文件列表"
+        return out
+    out["n"] = len(entries)
+    try:
+        out["fp"] = fingerprint(entries)
+        out["inner_fp"] = inner_fingerprint(entries)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        out["size_gb"] = round(float(total_size(entries)) / (1024 ** 3), 2)
+    except Exception:  # noqa: BLE001
+        pass
+    _ps = [str(p or "").replace("\\", "/").split("/", 1)[0] for p, _ in entries]
+    if _ps and len(set(_ps)) == 1:
+        out["root"] = _ps[0]
+    out["sample"] = [str(p or "") for p, _ in entries[:4]]
+    return out
+
 
 # 候选扩充:站点列表页翻页数(拿更多、更老的种子)。
 # 注意:是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数(启动时会记日志探测)。
@@ -2326,8 +2377,15 @@ class MagicFlow(_PluginBase):
             #   downloadvolumefactor 恒为 0.0（**所有种都被当成免费**）→ 魔力/跨站判定全错。
             #   自解析 `_parse_np_rows` 读的是页面真实促销标记（pro_free / promotion free）。
             _m_site = self._get_site(_sid)
-            if _m_site is not None and getattr(_m_site, "cookie", None) and (
-                force_main or bool(getattr(_cap, "free_index", False))
+            _m_fw = str(getattr(_cap, "framework", FW_UNKNOWN) or FW_UNKNOWN)
+            # 非 NexusPHP 家族（馒头 / Gazelle / UNIT3D 等）的列表页不是 NexusPHP 皮肤，
+            # 硬套自解析只会白跑一次请求；这类站（如馒头走官方 API）SDK 反而能拿到真实促销列。
+            _m_try_np = _m_fw not in (FW_MTEAM, FW_GAZELLE, FW_UNIT3D)
+            if (
+                _m_try_np
+                and _m_site is not None
+                and getattr(_m_site, "cookie", None)
+                and (force_main or bool(getattr(_cap, "free_index", False)))
             ):
                 try:
                     _mc = fetcher.browse_site_np_free(
@@ -8415,7 +8473,8 @@ class MagicFlow(_PluginBase):
         return Response(success=True, message=f"热层 {len(keys)} 个 key", data={"keys": keys})
 
     def debug_crossseed(
-        self, task: str = "", n: int = 3, add: bool = False, force_main: bool = True
+        self, task: str = "", n: int = 3, add: bool = False, force_main: bool = True,
+        dump: bool = False,
     ) -> Response:
         """诊断:拿某任务的候选**当成「本站非免费」**跑一遍跨站选源链路(dry-run)。
 
@@ -8444,11 +8503,12 @@ class MagicFlow(_PluginBase):
         out["candidates"] = len(cands)
         if not cands:
             return Response(success=False, message="没抓到候选(站点不可达/封/PV 尽)", data=out)
-        # 挑「上传潜力」大的：下载人数多、体积从小到大
+        # 挑「上传潜力」大的：优先本站**非免费**（跨站才有意义）、下载人数多、体积从小到大
         try:
             cands = sorted(
                 cands,
                 key=lambda c: (
+                    0 if not bool(getattr(c, "is_free", False)) else 1,
                     -int(getattr(c, "leechers", 0) or 0),
                     float(getattr(c, "size_gb", 0.0) or 0.0),
                 ),
@@ -8519,6 +8579,43 @@ class MagicFlow(_PluginBase):
                 fp = fingerprint(raw)
             except Exception:  # noqa: BLE001
                 fp = None
+            # ★ dump=1：把「同名同体积但特征码不同」拆开看 —— 是「根目录名不同」（文件清单一致，
+            #   理论上可辅种，需软链/改名）还是「真的是另一个 Release」。只对首个候选做，避免多花 PV。
+            if dump and not out.get("dump"):
+                out["dump"] = {"a": _torrent_entries_digest(raw), "rows": []}
+                _matched = 0
+                for _r in rows:
+                    if _matched >= 3:
+                        break
+                    if not title_like(
+                        str(getattr(_r, "title", "") or ""), str(getattr(cand, "title", "") or "")
+                    ):
+                        continue
+                    if not size_close(
+                        getattr(_r, "size", 0), int(getattr(cand, "size", 0) or 0)
+                    ):
+                        continue
+                    _matched += 1
+                    try:
+                        _tb = self._crossseed_torrent_bytes(_r)
+                    except Exception as _e:  # noqa: BLE001
+                        out["dump"]["rows"].append({"err": str(_e)})
+                        continue
+                    if not _tb:
+                        out["dump"]["rows"].append({"err": "取种失败"})
+                        continue
+                    _d2 = _torrent_entries_digest(_tb)
+                    _d2["site"] = str(getattr(_r, "site_name", "") or "")
+                    _d2["title"] = str(getattr(_r, "title", "") or "")[:90]
+                    _d2["full_match"] = bool(_d2.get("fp") and _d2.get("fp") == fp)
+                    _d2["inner_match"] = bool(
+                        _d2.get("inner_fp") and _d2.get("inner_fp") == out["dump"]["a"].get("inner_fp")
+                    )
+                    out["dump"]["rows"].append(_d2)
+                items.append(item)
+                out["items"] = items
+                out["dump"]["a"]["title"] = str(getattr(cand, "title", "") or "")[:90]
+                return Response(success=True, data=out)
             self._crossseed_downloader = str(getattr(cfg, "downloader", "") or "qbittorrent")
             hit = pick_source(
                 title=getattr(cand, "title", ""),
