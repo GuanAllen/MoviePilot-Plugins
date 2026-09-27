@@ -64,6 +64,25 @@ B = B0 × 2/π × arctan(A/L)
 
 ## 开发
 
+### 铁律：不要在函数体内写相对的懒导入（热重载死锁）
+
+MoviePilot 热重载会先 `clear_modules()` 把 `app.plugins.magicflow*` 从 `sys.modules` 里全部清掉，
+再单线程重新导入。如果此时你还有在飞的 worker 线程在函数体内执行 `from .x import y`，
+两个线程就会形成**环形导入等待**：
+
+```
+重载线程 A：持有 app.plugins.magicflow（父包）→ 等 .sites
+worker 线程 B：持有 app.plugins.magicflow.sites → 等父包（sites 里 from ..bonus import ...）
+```
+
+CPython 的 `_ModuleLock.has_deadlock()` 会检测到这个环并抛 `_DeadlockError`
+（`deadlock detected by _ModuleLock('app.plugins.magicflow.sites')`）——**进程不会挂死**，
+但那一次重载会失败：`sync.py` 报「同步本地插件失败」，MP 会把插件的全部服务摘掉
+（`移除插件服务(None)`）直到下一次成功加载，期间定时任务不跑、插件 API 路由 404。
+
+**做法**：所有相对的模块导入一律放**模块顶层**（必要时放在文件末尾、相关名字定义之后再导入）；
+`import traceback` / `import base64` 这类**标准库**的懒导入无所谓（不涉及插件模块锁）。
+
 ### 添加新站点支持
 
 1. 在 `sites/` 目录下创建新的计算器类
