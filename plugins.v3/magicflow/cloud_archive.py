@@ -18,6 +18,8 @@ MagicFlow 云盘归档（cloud_archive.py）
 """
 import json
 import os
+
+from .persistence import OperationItem
 import re
 import threading
 import time
@@ -766,8 +768,6 @@ class ArchiveEngine:
     def _journal(self, report: Dict[str, Any]) -> None:
         """写一条操作流水（全局归档：task_id 用固定占位）。"""
         try:
-            from .persistence import OperationItem
-
             items = []
             for r in report.get("items") or []:
                 items.append(OperationItem(

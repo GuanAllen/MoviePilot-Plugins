@@ -91,10 +91,10 @@ from .cloud_archive import ArchiveEngine, DEFAULT_TARGET_TEMPLATE as CLOUD_TARGE
 from .persistence import MagicFlowStore, OperationItem, WorkReport, KV_FILE_FLUSH_SEC
 from .kvstore import MpHotStore
 from .signin import SigninEngine
-from .recommend import RecommendEngine
+from .recommend import RecommendEngine, _norm, recognize
 from .dtier import PvLedger, TierCache
 from .sitecap import SiteCap, SiteCapRegistry, FW_NEXUS, FW_UNKNOWN, detect_framework, norm_domain
-from .sites import BonusCalculator, get_calculator, get_formula_params
+from .sites import BonusCalculator, get_calculator, get_formula_params, register_formula_preset
 from .sites.formula_fetch import (
     FormulaCapture,
     fetch_site_formula,
@@ -106,7 +106,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.8.3"
+__version__ = "3.8.4"
 
 # 候选扩充:站点列表页翻页数(拿更多、更老的种子)。
 # 注意:是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数(启动时会记日志探测)。
@@ -2919,7 +2919,8 @@ class MagicFlow(_PluginBase):
         subs = {s for s in subs if len(s) >= 2}
         if not subs:
             return candidates
-        from .recommend import _norm  # noqa: WPS433
+        # "_norm/recognize" 已提到模块顶层导入：worker 运行时不再碰 import 机制，
+        # 避免热重载期间与 loader 形成「循环导入死锁」（详见 README 存储/重载章节）。
         out: List[Any] = []
         for c in candidates:
             nt = _norm(getattr(c, "title", ""))
@@ -3361,7 +3362,6 @@ class MagicFlow(_PluginBase):
         if not title:
             return False, "缺少资源标题,无法识别"
         try:
-            from .recommend import recognize  # noqa: WPS433
             mi = recognize(title)
         except Exception:  # noqa: BLE001
             mi = None
@@ -4956,10 +4956,6 @@ class MagicFlow(_PluginBase):
         旧版叫 refresh_site_preset，它会**再 fetch 一次**（双倍站点请求）；这里改成只
         消费已经拿到的 cap，不再触网。
         """
-        try:
-            from .sites import register_formula_preset
-        except Exception:  # noqa: BLE001
-            return
         overrides = {
             k: cap.params[k]
             for k in ("t0", "n0", "b0", "l", "zero_weight", "normal_weight")

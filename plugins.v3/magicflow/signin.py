@@ -23,6 +23,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
+from .persistence import OperationItem
+
 SIGNIN_PAGE = "attendance.php"
 HOME_PAGE = "index.php"
 KEEP_DAYS = 7
@@ -260,9 +262,25 @@ class SigninEngine:
         if todo:
             queue = max(1, int(cfg.get("queue") or DEFAULT_QUEUE))
             kw = str(cfg.get("retry_keyword") or "")
+            # ★ 站间随机间隔：**错峰提交**（3~6s），避免一次性 burst 打爆站点或触发 PV 限制。
+            #   （旧实现「先全部 submit 再 sleep」既没防住 burst，又会因结果无 site_id 报 KeyError）
+            import random as _r
+            _delay_range = (3.0, 6.0)
+            _pending: List[Tuple[Any, Any]] = []
             with ThreadPoolExecutor(max_workers=min(len(todo), queue)) as pool:
-                for res in pool.map(lambda s: self._do(kind, s, kw), todo):
-                    results.append(res)
+                for _i, _sid in enumerate(todo):
+                    _pending.append((_sid, pool.submit(self._do, kind, _sid, kw)))
+                    if _i < len(todo) - 1:
+                        time.sleep(_r.uniform(*_delay_range))
+                for _sid, _fut in _pending:
+                    try:
+                        _res = _fut.result()
+                    except Exception as _err:  # noqa: BLE001
+                        _res = {"ok": False, "message": f"执行异常：{_err}"}
+                    if not isinstance(_res, dict):
+                        _res = {"ok": False, "message": str(_res)}
+                    _res.setdefault("site_id", _sid)
+                    results.append(_res)
         done = [r for r in results if not r.get("skipped")]
         ok_n = sum(1 for r in done if r.get("ok"))
         fail_n = len(done) - ok_n
@@ -273,8 +291,6 @@ class SigninEngine:
         summary = {"total": len(results), "ok": ok_n, "fail": fail_n, "skipped": len(results) - len(done)}
         if lines:
             try:
-                from .persistence import OperationItem  # noqa: WPS433
-
                 self._plugin._store.journal.record(
                     task_id="signin",
                     kind="signin",
