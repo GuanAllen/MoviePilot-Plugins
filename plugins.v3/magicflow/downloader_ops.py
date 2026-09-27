@@ -1399,6 +1399,40 @@ class DownloaderAdapter:
             logger.error(f"[标签审计] SET-ERR hash={hash_string}: {e}")
             return False
 
+    def replace_torrent_tags(self, hash_string: str, tags: List[str]) -> bool:
+        """★ 真正「替换」标签：先删差集、再补新增。
+
+        MP 适配器的 ``set_torrents_tag`` 实际是 ``torrents_add_tags``（只加不删），
+        迁移/改状态时必须用本方法，否则老标签会一直堆着。
+        """
+        if not self._downloader or not hash_string:
+            return False
+        target = [str(t).strip() for t in (tags or []) if str(t).strip()]
+        cur: List[str] = []
+        raw = self._find_raw_torrent(hash_string)
+        if raw is not None:
+            raw_tags = getattr(raw, "tags", None)
+            if isinstance(raw_tags, str):
+                cur = [x.strip() for x in raw_tags.split(",") if x.strip()]
+            elif isinstance(raw_tags, (list, tuple)):
+                cur = [str(x).strip() for x in raw_tags if str(x).strip()]
+        drop = [t for t in cur if t not in target]
+        add = [t for t in target if t not in cur]
+        if not drop and not add:
+            return True
+        ok = True
+        try:
+            if drop and hasattr(self._downloader, "remove_torrents_tag"):
+                if not self._downloader.remove_torrents_tag(hash_string, drop):
+                    ok = False
+            if add and hasattr(self._downloader, "set_torrents_tag"):
+                self._downloader.set_torrents_tag(ids=hash_string, tags=add)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[标签审计] REPLACE-ERR hash={hash_string}: {e}")
+            return False
+        logger.info(f"[标签审计] REPLACE hash={hash_string} del={drop} add={add}")
+        return ok
+
     def resume_torrent(self, hash_string: str) -> bool:
         """恢复/启动一个种子（暂停或错误状态 -> 开始做种）。"""
         if not self._downloader or not hash_string:
