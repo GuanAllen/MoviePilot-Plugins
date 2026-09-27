@@ -66,6 +66,11 @@ SUBS = (SUB_NEW, SUB_RESOURCE, SUB_PLAIN)
 # 只有「静默」有子类
 STATES_WITH_SUB = (STATE_SILENT,)
 
+# ★ 「库内资产」标记：MP 整理完会给种子打 已整理/辅种（transfer 链写的，不是我们写的），
+#   同时文件已移到媒体库目录。这两个标签是**唯一可靠的库内证据**（本部署 MP 的
+#   downloadhistory / transferhistory / downloadfiles 三张表都是 0 行，不能依赖）。
+ASSET_TAGS = ("已整理", "辅种")
+
 STATE_KEY = "tag_state"
 GROUPS_KEY = "tag_groups"
 SNAPSHOT_KEY = "tag_state_snapshot"
@@ -82,6 +87,16 @@ _TIER = {
     STATE_SILENT: "seed",
     STATE_RECOMMEND: "seed",
 }
+
+
+def is_asset_tags(tags: Any) -> bool:
+    """种子上是否有 MP 写的「已整理 / 辅种」标记。"""
+    return any(str(x).strip() in ASSET_TAGS for x in (tags or []))
+
+
+def asset_origin_sub(tags: Any) -> str:
+    """库内资产 → 静默-资源；否则 静默-新。"""
+    return SUB_RESOURCE if is_asset_tags(tags) else SUB_NEW
 
 
 def state_tier(state: str) -> str:
@@ -255,6 +270,28 @@ class TagStateStore:
             self._save_data(STATE_KEY, data)
         except Exception as err:  # noqa: BLE001
             self._log and self._log(f"标签:状态账本写入失败:{err}", "error")
+
+    def set_asset(self, hash_string: str, asset: bool, *, origin_sub: str = "") -> bool:
+        """固化「库内资产」标记（清理闸门读它，而不是每次去看标签）。"""
+        h = _clean(hash_string).lower()
+        if not h:
+            return False
+        data = self.items()
+        rec = dict(data.get(h) or {})
+        if not rec:
+            return False
+        if bool(rec.get("asset")) == bool(asset) and not origin_sub:
+            return False
+        rec["asset"] = bool(asset)
+        if origin_sub:
+            rec["origin_sub"] = origin_sub
+        rec["updated"] = time.time()
+        data[h] = rec
+        self._write(data)
+        return True
+
+    def assets(self) -> List[str]:
+        return [h for h, r in self.items().items() if r.get("asset")]
 
     def get(self, hash_string: str) -> Dict[str, Any]:
         return dict(self.items().get(_clean(hash_string).lower()) or {})
