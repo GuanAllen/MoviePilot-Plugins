@@ -56,9 +56,11 @@ const candidateData = ref({ candidates: [], total: 0, reason_counts: {} })
 const candidateLoadedAt = ref(0)
 const operationData = ref({ operations: [], total: 0 })
 const recommendData = ref({ items: [], total: 0, recommended: 0, enabled: true })
+const crossseedData = ref({ count: 0, pending: [], enabled_tasks: [] })
 const recommendOpen = ref(false)
 const recommendActing = ref('')
 let recommendTimer = null
+let crossseedTimer = null
 const selectedTaskId = ref('')
 const activeTab = ref(props.initialTab || 'overview')
 const torrentFilter = ref('all')
@@ -336,7 +338,7 @@ function notify(message, color = 'success') {
   }
 }
 
-const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reuse: '存量复用', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止', state: '运行状态', tag: '标签变更', fallback: '元数据兜底', cloud: '云盘归档' }
+const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reuse: '存量复用', crossseed: '跨站取种', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止', state: '运行状态', tag: '标签变更', fallback: '元数据兜底', cloud: '云盘归档' }
 const STATE_TEXT = { submitting: '提交中', accepted: '已受理', completed: '已完成', failed: '失败' }
 const KIND_ICON = {
   run: 'mdi-play-circle-outline',
@@ -736,6 +738,25 @@ async function loadRecommend() {
   } catch (err) {
     error.value = err?.message || String(err)
   }
+}
+
+async function loadCrossseed() {
+  try {
+    crossseedData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/crossseed`))
+      || { count: 0, pending: [], enabled_tasks: [] }
+  } catch (err) {
+    // 跨站取种是增强信息，失败不打断界面
+  }
+}
+
+function showCrossseed() {
+  const list = Array.isArray(crossseedData.value?.pending) ? crossseedData.value.pending : []
+  if (!list.length) {
+    notify('暂无待回辅的跨站种子', 'info')
+    return
+  }
+  const head = list.slice(0, 6).map(it => `${it.title || it.sib_hash}（${it.site_b} → ${it.site_a}，${it.age_min}分前）`).join('\n')
+  notify(`待回辅 ${list.length} 个：\n${head}${list.length > 6 ? `\n…共 ${list.length} 个` : ''}`, 'info')
 }
 
 async function loadLive() {
@@ -1660,6 +1681,9 @@ onMounted(() => {
   refreshTimer = window.setInterval(loadStatus, 30000)
   // 推荐列表是全局的，低频刷新一下角标计数
   recommendTimer = window.setInterval(loadRecommend, 60000)
+  // 跨站免费取种待回辅队列（低频刷角标）
+  loadCrossseed()
+  crossseedTimer = window.setInterval(loadCrossseed, 120000)
   // 新手考核也是全局的（低频刷新角标；关闭时服务端立即返回，零开销）
   loadExam()
   examTimer = window.setInterval(loadExam, 300000)
@@ -1676,6 +1700,7 @@ onUnmounted(() => {
   if (refreshTimer) window.clearInterval(refreshTimer)
   if (phaseTimer) window.clearInterval(phaseTimer)
   if (recommendTimer) window.clearInterval(recommendTimer)
+  if (crossseedTimer) window.clearInterval(crossseedTimer)
   if (examTimer) window.clearInterval(examTimer)
   if (liveTimer) window.clearInterval(liveTimer)
   if (warmingTimer) window.clearTimeout(warmingTimer)
@@ -1772,6 +1797,31 @@ onUnmounted(() => {
           variant="text"
           aria-label="云盘归档"
           @click="openCloud"
+        />
+        <VBadge
+          v-if="Number(crossseedData.count || 0) > 0"
+          class="magicflow-crossseed-wrap"
+          :content="crossseedData.count"
+          color="info"
+          location="top end"
+          offset-x="6"
+          offset-y="4"
+        >
+          <VBtn
+            class="magicflow-crossseed-btn"
+            icon="mdi-swap-horizontal-bold"
+            variant="text"
+            aria-label="跨站免费取种"
+            @click="showCrossseed"
+          />
+        </VBadge>
+        <VBtn
+          v-else
+          class="magicflow-crossseed-btn"
+          icon="mdi-swap-horizontal-bold"
+          variant="text"
+          aria-label="跨站免费取种"
+          @click="showCrossseed"
         />
         <VBadge
           v-if="examData.enabled !== false && examBadge > 0"

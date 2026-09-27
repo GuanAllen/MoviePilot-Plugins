@@ -909,6 +909,52 @@ function confirmSaveWithoutGoal() {
               <section class="editor-section">
                 <header class="editor-section__head">
                   <div>
+                    <div class="text-subtitle-1 font-weight-medium">跨站免费取种</div>
+                    <div class="text-body-2 text-medium-emphasis">
+                      本站这颗不免费（下了就烧流量、拉低分享率）→ 去任意他站找「免费且同一 Release」的副本下回来，下完自动辅回本站（零下载纯做种）
+                    </div>
+                  </div>
+                </header>
+                <div class="editor-switches">
+                  <VSwitch v-model="localTask.crossseed_enabled" label="启用跨站免费取种" color="primary" hide-details inset />
+                </div>
+                <VRow v-if="localTask.crossseed_enabled">
+                  <VCol cols="12" sm="4">
+                    <VTextField
+                      v-model.number="localTask.crossseed_max_per_round"
+                      type="number"
+                      min="1"
+                      label="每轮跨站名额"
+                      hint="每一轮刷流最多发起几个跨站取种"
+                      persistent-hint
+                    />
+                  </VCol>
+                  <VCol cols="12" sm="4">
+                    <VTextField
+                      v-model.number="localTask.crossseed_max_size_gb"
+                      type="number"
+                      min="0.1"
+                      step="0.1"
+                      label="单种大小上限（GB）"
+                      hint="超过此体积的种子不做跨站取种"
+                      persistent-hint
+                    />
+                  </VCol>
+                  <VCol cols="12" sm="4">
+                    <VTextField
+                      v-model.number="localTask.crossseed_max_sites"
+                      type="number"
+                      min="1"
+                      label="最多探测站点数"
+                      hint="每个候选最多查几个他站（越大越慢/越耗 PV）"
+                      persistent-hint
+                    />
+                  </VCol>
+                </VRow>
+              </section>
+              <section class="editor-section">
+                <header class="editor-section__head">
+                  <div>
                     <div class="text-subtitle-1 font-weight-medium">单种限速</div>
                     <div class="text-body-2 text-medium-emphasis">只作用于当前任务新添加的种子</div>
                   </div>

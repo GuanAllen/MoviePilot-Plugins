@@ -57,6 +57,12 @@ class MagicFlowTaskPayload(BaseModel):
     reuse_existing: bool = Field(True, description="复用本机已有资源（辅种）：同 hash 直接打标签、同文件列表直接做种，不重复下载")
     reuse_verify: bool = Field(True, description="辅种前先校验已有文件；校验不通过自动撤销（避免误下载）")
 
+    # 跨站免费取种（3.9.0）：目标站的种子若不免费（下载要烧流量），去任意他站找「免费且同一 Release」的副本下回来，再回辅目标站——对目标站是零下载纯做种
+    crossseed_enabled: bool = Field(False, description="跨站免费取种：目标站不免费的种子，改从他站免费副本下载后回辅（默认关）")
+    crossseed_max_per_round: int = Field(3, ge=1, le=50, description="每轮最多发起几个跨站取种")
+    crossseed_max_size_gb: float = Field(20.0, gt=0, le=2000, description="跨站取种的单个种子大小上限（GB）")
+    crossseed_max_sites: int = Field(6, ge=1, le=50, description="每个候选最多探测几个站（PV 上限）")
+
     # 无进度清理：每次运行清掉「没进度」的种子（进度为 0 且停滞/出错），避免占位却不产魔力
     cleanup_no_progress: bool = Field(True, description="每次运行清理「没进度」的种子（下载进度为 0 且停滞/出错）")
     no_progress_minutes: int = Field(30, ge=1, le=1440, description="加入下载器超过该分钟数仍无进度才判定为可清理")
@@ -406,6 +412,10 @@ class MagicFlowDefaultsPayload(BaseModel):
     refill_when_empty: bool = True
     reuse_existing: bool = True
     reuse_verify: bool = True
+    crossseed_enabled: bool = False
+    crossseed_max_per_round: int = 3
+    crossseed_max_size_gb: float = 20.0
+    crossseed_max_sites: int = 6
     cleanup_no_progress: bool = True
     cleanup_slow_progress: bool = True
     purge_unfree_incomplete: bool = True

@@ -13,7 +13,7 @@ import time
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 # 站点页面上的「发布时间」是站点本地时间（国内 PT 站均为 UTC+8）。
 # MoviePilot 容器时区同为 Asia/Shanghai，解析出的 naive 时间即本地时间，
@@ -641,6 +641,8 @@ class SiteFetcher:
         spstates: Tuple[int, ...] = NP_FREE_SPSTATES,
         start_page: int = 0,
         stats: Optional[Dict[int, int]] = None,
+        search: str = "",
+        search_area: int = 0,
     ) -> List[SiteCandidateTorrent]:
         """NexusPHP 直连：用站点 cookie 按 spstate 直接抓「免费」列表页。
 
@@ -665,13 +667,19 @@ class SiteFetcher:
             return out
 
         req = RequestUtils(cookies=cookie, ua=ua, timeout=30, referer=f"{base}/")
+        # 站内检索（可选）：`?search=<kw>&search_area=0` 与 spstate 叠加 → 只搜免费种。
+        _kw = str(search or "").strip()
+        _q = f"&search={quote(_kw)}&search_area={int(search_area or 0)}" if _kw else ""
         total_pages = max(int(pages or 1), 1)
         for sp in spstates:
             _sp_before = len(out)
             for p in range(total_pages):
                 if out and _REQUEST_INTERVAL > 0:
                     time.sleep(_REQUEST_INTERVAL)
-                url = f"{base}/torrents.php?incldead=1&spstate={sp}&page={int(start_page) + p}"
+                url = (
+                    f"{base}/torrents.php?incldead=1&spstate={sp}"
+                    f"&page={int(start_page) + p}{_q}"
+                )
                 try:
                     resp = req.get_res(url)
                 except Exception as err:  # noqa: BLE001

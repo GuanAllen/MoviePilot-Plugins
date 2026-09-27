@@ -89,6 +89,7 @@ from .fallback import FallbackEngine, DEFAULT_SOURCES as FALLBACK_SOURCES
 from .live_stats import LiveStats, title_match
 from .cloud_archive import ArchiveEngine, DEFAULT_TARGET_TEMPLATE as CLOUD_TARGET_TEMPLATE
 from .persistence import MagicFlowStore, OperationItem, WorkReport, KV_FILE_FLUSH_SEC
+from .crossseed import CROSSSEED_TAG, CrossSeedPending, pick_source
 from .kvstore import MpHotStore
 from .signin import SigninEngine
 from .recommend import RecommendEngine, _norm, recognize
@@ -106,7 +107,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.8.4"
+__version__ = "3.9.0"
 
 # 候选扩充:站点列表页翻页数(拿更多、更老的种子)。
 # 注意:是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数(启动时会记日志探测)。
@@ -134,6 +135,10 @@ REUSE_SCAN_MAX = 15
 #   - 间隔(分钟):比刷流间隔长很多,慢慢扫,避免短时间大量取种触发站点流控。
 #   - 每轮批量:一次只取这么多个候选的 .torrent 做辅种判定。
 REUSE_INTERVAL_MINUTES = 15
+# 跨站免费取种的「回辅」轮询周期(分钟)：B/C/D… 站点下完后，尽快把它辅回目标站。
+CROSSSEED_INTERVAL_MINUTES = 5
+# 跨站站内检索结果的缓存 TTL(秒)：同一关键词 6 小时内不重复检索(省 PV)。
+CROSSSEED_CACHE_TTL = 6 * 3600
 REUSE_WORKER_BATCH = 5
 # ★ 推荐甄别(刷流种价值生命周期):独立低频 worker,同样插件级单 worker + 轮转。
 RECOMMEND_INTERVAL_MINUTES = 60
@@ -329,6 +334,11 @@ class MagicFlowTaskConfig:
     # 存量复用(辅种)
     reuse_existing: bool = True                  # 复用本机已有资源,避免重复下载
     reuse_verify: bool = True                    # 辅种前先校验,不匹配自动撤销
+    # 跨站免费取种（3.9.0）：目标站的种子若不免费，去他站找免费同一 Release 下回来，再回辅目标站
+    crossseed_enabled: bool = False              # 开关（默认关，开了才会走跨站）
+    crossseed_max_per_round: int = 3             # 每轮最多发起几个跨站取种
+    crossseed_max_size_gb: float = 20.0          # 单个种子大小上限（GB）
+    crossseed_max_sites: int = 6                 # 每个候选最多探测几个站（PV 上限）
 
     # 无进度清理
     cleanup_no_progress: bool = True             # 每次运行清理「没进度」的种子
@@ -437,6 +447,10 @@ class MagicFlowTaskConfig:
             "browse_pages": self.browse_pages,
             "reuse_existing": self.reuse_existing,
             "reuse_verify": self.reuse_verify,
+            "crossseed_enabled": self.crossseed_enabled,
+            "crossseed_max_per_round": self.crossseed_max_per_round,
+            "crossseed_max_size_gb": self.crossseed_max_size_gb,
+            "crossseed_max_sites": self.crossseed_max_sites,
             "cleanup_no_progress": self.cleanup_no_progress,
             "no_progress_minutes": self.no_progress_minutes,
             "cleanup_slow_progress": self.cleanup_slow_progress,
@@ -849,6 +863,13 @@ class MagicFlow(_PluginBase):
                 "methods": ["GET"],
                 "auth": "bear",
                 "summary": "站点类型/能力识别结果(probe=true 时联网探测)",
+            },
+            {
+                "path": "/crossseed",
+                "endpoint": self.get_crossseed,
+                "methods": ["GET", "POST"],
+                "auth": "bear",
+                "summary": "跨站免费取种:待回辅队列 + 启用任务(action=clear 清空队列)",
             },
             {
                 "path": "/debug/store",
@@ -1329,6 +1350,24 @@ class MagicFlow(_PluginBase):
                     "kwargs": {
                         "minutes": RECOMMEND_INTERVAL_MINUTES,
                         "jitter": self._jitter_seconds(RECOMMEND_INTERVAL_MINUTES),
+                    },
+                }
+            )
+        # ★ 3.9.0 跨站回辅:插件级单 worker。他站下完的种子 → 指向同一批文件辅回目标站。
+        #   只需有一个任务开了跨站取种就跑(一个服务,遍历全部待回辅记录)。
+        if any(
+            getattr(t, "enabled", False) and getattr(t, "crossseed_enabled", False)
+            for t in self._task_configs.values()
+        ) or self._crossseed_pending().items():
+            services.append(
+                {
+                    "id": "CrossSeed",
+                    "name": "跨站回辅",
+                    "trigger": "interval",
+                    "func": self.crossseed_scan,
+                    "kwargs": {
+                        "minutes": CROSSSEED_INTERVAL_MINUTES,
+                        "jitter": self._jitter_seconds(CROSSSEED_INTERVAL_MINUTES),
                     },
                 }
             )
@@ -4205,6 +4244,9 @@ class MagicFlow(_PluginBase):
             skipped_reuse_limit = 0
             skipped_rate = 0
             tagged_reuse = 0
+            crossseed_started = 0  # ★ 3.9.0 跨站免费取种发起数
+            _cs_max = max(int(getattr(task, "crossseed_max_per_round", 3) or 3), 1)
+            _cs_max_size = float(getattr(task, "crossseed_max_size_gb", 20.0) or 20.0)
             detail_items: List[OperationItem] = []  # 逐条明细(供操作流水展开)
             for item in ordered:
                 is_reuse = len(item) == 4
@@ -4363,6 +4405,38 @@ class MagicFlow(_PluginBase):
                     if self._store and ckey:
                         self._store.dead.mark(task.id, [f"cand:{ckey}"])
                     continue
+                # ★ 3.9.0 跨站免费取种：A 站这颗**不免费**（下了就烧流量/拉低分享率）
+                #   → 先去任意他站（B/C/D…）找「免费且同一 Release」的副本下回来，
+                #   下完由「跨站回辅」worker 把它辅回 A（零下载纯做种）。
+                if (
+                    getattr(task, "crossseed_enabled", False)
+                    and not bool(getattr(cand, "is_free", False))
+                    and crossseed_started < _cs_max
+                    and size_gb <= _cs_max_size
+                ):
+                    _sib = None
+                    try:
+                        _sib = self._crossseed_start(task, cand, downloader)
+                    except Exception as _cse:  # noqa: BLE001
+                        self._log(f"跨站取种异常:{cand.title}({_cse})", "warning")
+                    if _sib:
+                        crossseed_started += 1
+                        add_cnt += 1
+                        add_size += size_gb
+                        dl_budget -= 1
+                        dl_concurrent += 1
+                        managed_hashes.add(_sib)
+                        if self._store:
+                            keys = [f"hash:{_sib}"]
+                            if ckey:
+                                keys.append(f"cand:{ckey}")
+                            self._store.seen.mark(task.id, keys)
+                        detail_items.append(OperationItem(
+                            hash=_sib, title=cand.title,
+                            reason="跨站免费取种（他站下→回辅 A）",
+                            size_gb=size_gb, source="crossseed",
+                        ))
+                        continue
                 hash_string, error = downloader.add_torrent(
                     content=cand.raw,
                     download_dir=task.save_path or "",
@@ -4459,7 +4533,7 @@ class MagicFlow(_PluginBase):
             self._invalidate_summary()
             self._set_phase(task.id, "done")
             detail = (
-                f"(复用 {reused} / 新增 {added} / 去重 {skipped_dup}"
+                f"(复用 {reused} / 新增 {added} / 跨站 {crossseed_started} / 去重 {skipped_dup}"
                 f" / 配额满 {skipped_quota} / 复用限并发 {skipped_reuse_limit} / 流控 {skipped_rate}"
                 f" / 免费到期 {skipped_expiring} / 失败 {add_failed})"
             )
@@ -6324,6 +6398,392 @@ class MagicFlow(_PluginBase):
                 return "cross", local
         return "", None
 
+    # ---------------------------------------------------------- 跨站免费取种（3.9.0）
+    #  目标站 A 上「下载量大」的种子若在 A **不免费**（下载要烧流量/拉低分享率），
+    #  就去**任意他站**（B/C/D/E…）找「免费且同一 Release」的副本下回来，再回辅到 A：
+    #  对 A 是「零下载纯做种」→ 白赚 A 站上传与魔力。
+    #  红线：① 同一 Release（fingerprint 完整特征码，含根目录名）才算命中；
+    #        ② 免费是硬门槛（只从他站的**免费视图**取候选）；③ 每次取种都过 PV 闸门。
+
+    def _crossseed_pending(self) -> CrossSeedPending:
+        """待回辅账本（PluginData 持久化 + 目标站 .torrent 落盘）。"""
+        obj = getattr(self, "_crossseed_obj", None)
+        if obj is None:
+            try:
+                base = self.get_data_path() / "crossseed"
+            except Exception:  # noqa: BLE001
+                base = None
+            obj = self._crossseed_obj = CrossSeedPending(
+                get_data=self.get_data,
+                save_data=self.save_data,
+                dir_path=base if base is not None else "crossseed",
+                log=self._log,
+            )
+        return obj
+
+    def _crossseed_lock(self) -> threading.Lock:
+        """跨站取种专用锁（低频率，一把全局锁即可，避免同刻重复打同一站）。"""
+        lock = getattr(self, "_crossseed_lock_obj", None)
+        if lock is None:
+            lock = self._crossseed_lock_obj = threading.Lock()
+        return lock
+
+    def _crossseed_cache(self) -> TierCache:
+        """他站免费检索结果缓存（内存热层 + FileCache 冷层，跨热重载不丢）。"""
+        cache = getattr(self, "_tier_cross_obj", None)
+        if cache is None:
+            cache = self._tier_cross_obj = TierCache(
+                "cross",
+                base=self._cache_base(),
+                encode=lambda lst: [x.to_dict() for x in (lst or []) if hasattr(x, "to_dict")],
+                decode=lambda rows: [
+                    c for c in (SiteCandidateTorrent.from_dict(r) for r in (rows or []))
+                    if c is not None
+                ],
+            )
+        return cache
+
+    def _crossseed_free_rows(self, site: Any, keyword: str) -> List[Any]:
+        """在某站的**免费视图**里按关键词检索（带 PV 闸门 + 6h 缓存）。
+
+        只从免费视图取 —— 这同时保证了「拿到的必是免费种」，无需再查促销。
+        """
+        sid = int(getattr(site, "id", 0) or 0)
+        dom = str(getattr(site, "domain", "") or "").lower()
+        kw = str(keyword or "").strip()
+        cache = self._crossseed_cache()
+        ckey = f"cross|{dom}|{kw}"
+        hit = cache.get(ckey, CROSSSEED_CACHE_TTL)
+        if hit is not None:
+            return list(hit)
+        with self._crossseed_lock():
+            hit = cache.get(ckey, CROSSSEED_CACHE_TTL)
+            if hit is not None:
+                return list(hit)
+            if self._pv_block_reason(sid) or not self._pv_allow(sid, "crossseed", want=1):
+                self._log(
+                    f"跨站:{dom} PV 预算不足/已封,跳过检索"
+                    f"({self._pv_ledger().today_total(sid)}/{self._pv_budget(sid)})",
+                    "warning",
+                )
+                return []
+            cap = self.sitecaps().get(dom)
+            if not getattr(cap, "free_index", False):
+                self._log(f"跨站:{dom} 无免费索引能力,跳过")
+                return []
+            sps = tuple(getattr(cap, "free_spstates", ()) or NP_FREE_SPSTATES)
+            rows: List[Any] = []
+            try:
+                fetcher = SiteFetcher()
+                rows = fetcher.browse_site_np_free(
+                    site, pages=1, spstates=sps, search=kw
+                ) or []
+            except Exception as err:  # noqa: BLE001
+                self._log(f"跨站:{dom} 免费检索异常:{err}", "warning")
+                rows = []
+            finally:
+                self._pv_spend(sid, "crossseed", 1)
+            if rows:
+                cache.set(ckey, rows, CROSSSEED_CACHE_TTL)
+            return rows
+
+    def _crossseed_torrent_bytes(self, site: Any, row: Any) -> Optional[bytes]:
+        """取某候选行的 .torrent 字节（用于特征码校验）——走 PV 闸门与原子记账。"""
+        sid = int(getattr(site, "id", 0) or 0)
+        url = str(getattr(row, "enclosure", "") or "")
+        if not url:
+            return None
+        if self._pv_block_reason(sid) or not self._pv_allow(sid, "crossseed", want=1):
+            self._log(f"跨站:取种时 PV 预算不足/已封,放弃 {url[:80]}", "warning")
+            return None
+        downloader = self._get_downloader(getattr(self, "_crossseed_downloader", "") or "qbittorrent")
+        if downloader is None or not downloader.is_available:
+            return None
+        try:
+            return downloader.fetch_torrent_bytes(
+                url,
+                cookie=getattr(row, "site_cookie", None),
+                user_agent=getattr(row, "site_ua", None),
+                referer=getattr(row, "page_url", "") or None,
+            )
+        finally:
+            self._pv_spend(sid, "crossseed", 1)
+
+    def _crossseed_order(self, task: MagicFlowTaskConfig, cand_hash: str) -> List[str]:
+        """优先域名列表：IYUU 反查「该资源确实存在的站」（省 PV）；没有就返回空。"""
+        if not (self._iyuu_enabled() and cand_hash):
+            return []
+        try:
+            table = self._iyuu_client.sites() or {}
+            sid2base: Dict[str, str] = {}
+            for meta in table.values():
+                base = str((meta or {}).get("base_url") or "").strip().lower()
+                sid = str((meta or {}).get("id") or "")
+                if base and sid:
+                    sid2base[sid] = base
+            rows = (self._iyuu_client.query([cand_hash]) or {}).get(str(cand_hash).lower()) or []
+            out: List[str] = []
+            for row in rows:
+                base = sid2base.get(str((row or {}).get("sid") or ""))
+                if base and base not in out:
+                    out.append(base)
+            return out
+        except Exception as err:  # noqa: BLE001
+            self._log(f"跨站:IYUU 反查失败:{err}", "warning")
+        return []
+
+    def _crossseed_sites(self, task: MagicFlowTaskConfig, cand_hash: str = "") -> List[Any]:
+        """候选源站（**不含目标站自己**），IYUU 命中的站排在最前、且优先只用它们。"""
+        try:
+            from app.db.oper.site import SiteOper  # noqa: WPS433
+
+            sites = list(SiteOper().list() or [])
+        except Exception as err:  # noqa: BLE001
+            self._log(f"跨站:列出站点失败:{err}", "warning")
+            return []
+        a_dom = str(getattr(task, "site_domain", "") or "").strip().lower()
+        a_id = int(getattr(task, "site_id", 0) or 0)
+        pool: List[Any] = []
+        seen: Set[str] = set()
+        for site in sites:
+            dom = str(getattr(site, "domain", "") or "").strip().lower()
+            if not dom or dom in seen:
+                continue
+            if int(getattr(site, "id", 0) or 0) == a_id or (a_dom and dom == a_dom):
+                continue          # 目标站自己不能当源（不然还是在 A 下）
+            seen.add(dom)
+            pool.append(site)
+        if not pool:
+            return []
+        pref = [d for d in self._crossseed_order(task, cand_hash) if d]
+        if not pref:
+            return pool
+        def _rank(site: Any) -> int:
+            dom = str(getattr(site, "domain", "") or "").strip().lower()
+            for i, base in enumerate(pref):
+                if base == dom or base.endswith("." + dom) or dom.endswith("." + base):
+                    return i
+            return len(pref) + 1
+        hit = [s for s in pool if _rank(s) <= len(pref)]
+        return sorted(hit, key=_rank) if hit else pool
+
+    def _crossseed_find(
+        self, task: MagicFlowTaskConfig, cand: Any, downloader: DownloaderAdapter
+    ) -> Optional[Dict[str, Any]]:
+        """为「A 站不免费的候选」找一个他站的免费同 Release 源。"""
+        raw = getattr(cand, "raw", None)
+        if not raw:
+            return None
+        try:
+            fp = fingerprint(raw)
+        except Exception:  # noqa: BLE001
+            fp = None
+        if not fp:
+            return None
+        limit_sites = max(int(getattr(task, "crossseed_max_sites", 6) or 6), 1)
+        self._crossseed_downloader = str(getattr(task, "downloader", "") or "qbittorrent")
+        return pick_source(
+            title=getattr(cand, "title", ""),
+            size_bytes=int(getattr(cand, "size", 0) or 0),
+            fp=fp,
+            sites=self._crossseed_sites(task, str(getattr(cand, "real_hash", "") or "")),
+            free_search=self._crossseed_free_rows,
+            torrent_bytes=self._crossseed_torrent_bytes,
+            limit_sites=limit_sites,
+            log=self._log,
+        )
+
+    def _crossseed_start(
+        self,
+        task: MagicFlowTaskConfig,
+        cand: Any,
+        downloader: DownloaderAdapter,
+    ) -> Optional[str]:
+        """发起一次跨站免费取种：在他站下（免费）→ 记账 → 等下载完回辅 A。
+
+        Returns: 成功时返回他站种子 hash。
+        """
+        src = self._crossseed_find(task, cand, downloader)
+        if not src:
+            return None
+        sib_bytes = src.get("torrent")
+        sname = str(src.get("site_name") or src.get("site_domain") or "")
+        if not sib_bytes:
+            return None
+        hs, err = downloader.add_torrent(
+            content=sib_bytes,
+            download_dir=task.save_path or "",
+            tag=CROSSSEED_TAG,
+        )
+        if not hs:
+            self._log(f"跨站:在他站 {sname} 添加失败:{cand.title}({err or '未知'})", "warning")
+            return None
+        sib_hash = str(hs).lower()
+        a_key = str(getattr(cand, "real_hash", "") or "").lower() or f"sib-{sib_hash}"
+        a_path = self._crossseed_pending().put_torrent(a_key, getattr(cand, "raw", b"") or b"")
+        self._crossseed_pending().add({
+            "sib_hash": sib_hash,
+            "a_hash": str(getattr(cand, "real_hash", "") or "").lower(),
+            "title": str(getattr(cand, "title", "") or ""),
+            "size_gb": float(getattr(cand, "size_gb", 0.0) or 0.0),
+            "site_a": str(getattr(task, "site_name", "") or getattr(task, "site_domain", "") or ""),
+            "site_b": sname,
+            "task_id": str(getattr(task, "id", "") or ""),
+            "task_name": str(getattr(task, "name", "") or ""),
+            "downloader": str(getattr(task, "downloader", "") or "qbittorrent"),
+            "tag": str(getattr(task, "brush_tag", "") or ""),
+            "verify": bool(getattr(task, "reuse_verify", True)),
+            "save_path": str(task.save_path or ""),
+            "a_torrent": a_path,
+            "created": time.time(),
+        })
+        if self._store:
+            self._store.journal.record(
+                task_id=str(getattr(task, "id", "") or ""),
+                kind="crossseed",
+                items=[OperationItem(
+                    hash=sib_hash,
+                    title=str(getattr(cand, "title", "") or ""),
+                    reason=f"跨站取种:{sname}（免费）→ 待回辅 {task.site_name or task.site_domain}",
+                    size_gb=float(getattr(cand, "size_gb", 0.0) or 0.0),
+                    source="crossseed",
+                )],
+            )
+        self._log(
+            f"跨站取种 [{task.name}] {cand.title} → 从他站 {sname} 免费下载(待下载完回辅)"
+        )
+        return sib_hash
+
+    def _crossseed_info(self) -> Dict[str, Any]:
+        """给接口/日志用的快照。"""
+        pend = self._crossseed_pending()
+        items = pend.items()
+        return {
+            "enabled_tasks": [
+                {"id": t.id, "name": t.name,
+                 "max_per_round": getattr(t, "crossseed_max_per_round", 3),
+                 "max_size_gb": getattr(t, "crossseed_max_size_gb", 20.0),
+                 "max_sites": getattr(t, "crossseed_max_sites", 6)}
+                for t in self._task_configs.values()
+                if getattr(t, "enabled", False) and getattr(t, "crossseed_enabled", False)
+            ],
+            "pending": [
+                {
+                    "sib_hash": k,
+                    "title": v.get("title", ""),
+                    "site_a": v.get("site_a", ""),
+                    "site_b": v.get("site_b", ""),
+                    "size_gb": v.get("size_gb", 0),
+                    "task_name": v.get("task_name", ""),
+                    "age_min": round(max(0.0, (time.time() - float(v.get("created") or 0)) / 60.0), 1),
+                }
+                for k, v in items.items()
+            ],
+            "count": len(items),
+            "tag": CROSSSEED_TAG,
+        }
+
+    # ---------------------------------------------------------- 回辅轮询(插件级单 worker)
+
+    def crossseed_scan(self) -> None:
+        """跨站回辅轮询：他站下完 → 把目标站的种子指向同一批文件辅种（校验通过才保留）。"""
+        pend = self._crossseed_pending()
+        dead = pend.prune()
+        if dead:
+            self._log(f"跨站回辅:清理超时/失效记录 {len(dead)} 条")
+        items = pend.items()
+        if not items:
+            return
+        if not self._acquire_worker_slot("跨站回辅"):
+            return
+        done = failed = waiting = 0
+        try:
+            dl_cache: Dict[str, Any] = {}
+            for sib_hash, rec in list(items.items()):
+                dl_name = str(rec.get("downloader") or "qbittorrent")
+                downloader = dl_cache.get(dl_name)
+                if downloader is None:
+                    downloader = self._get_downloader(dl_name)
+                    dl_cache[dl_name] = downloader
+                if downloader is None or not downloader.is_available:
+                    self._log(f"跨站回辅:下载器 {dl_name} 不可用,本轮跳过", "warning")
+                    continue
+                info = downloader.get_torrent_info(sib_hash)
+                if info is None:
+                    # 他站种子没了：超过 6h 视为放弃，删记录（避免无限等）
+                    age = time.time() - float(rec.get("created") or 0)
+                    if age > 6 * 3600:
+                        pend.drop(sib_hash)
+                        self._log(f"跨站回辅:他站种子已不存在,删除待回辅记录:{rec.get('title', '')}")
+                    else:
+                        waiting += 1
+                    continue
+                state = str(getattr(info, "state", "") or "").lower()
+                progress = float(getattr(info, "progress", 0) or 0)
+                if state in QB_DOWNLOADING_STATES and progress < 0.999:
+                    waiting += 1
+                    continue
+                if state in (QB_PAUSED_STATES | {"error", "missingfiles"}):
+                    if time.time() - float(rec.get("created") or 0) > 6 * 3600:
+                        pend.drop(sib_hash)
+                        self._log(
+                            f"跨站回辅:他站种子停滞/出错({state}),放弃:{rec.get('title', '')}",
+                            "warning",
+                        )
+                    else:
+                        waiting += 1
+                    continue
+                # 已下完 → 回辅目标站
+                a_bytes = pend.read_torrent(str(rec.get("a_torrent") or ""))
+                if not a_bytes:
+                    pend.drop(sib_hash)
+                    self._log(f"跨站回辅:目标站种子文件缺失,放弃:{rec.get('title', '')}", "warning")
+                    continue
+                save_path = str(getattr(info, "save_path", "") or rec.get("save_path") or "")
+                hs, err = downloader.add_torrent_reuse(
+                    torrent_bytes=a_bytes,
+                    save_path=save_path,
+                    tag=str(rec.get("tag") or ""),
+                    verify=bool(rec.get("verify", True)),
+                )
+                if hs:
+                    done += 1
+                    pend.drop(sib_hash)
+                    pend.cleanup_torrent(str(rec.get("a_torrent") or ""))
+                    if self._store:
+                        self._store.journal.record(
+                            task_id=str(rec.get("task_id") or ""),
+                            kind="crossseed",
+                            items=[OperationItem(
+                                hash=str(hs).lower(),
+                                title=str(rec.get("title") or ""),
+                                reason=f"跨站回辅完成：{rec.get('site_b', '')} → {rec.get('site_a', '')}（零下载做种）",
+                                size_gb=float(rec.get("size_gb") or 0.0),
+                                source="crossseed",
+                            )],
+                        )
+                    self._log(
+                        f"跨站回辅完成:{rec.get('title', '')}"
+                        f"({rec.get('site_b', '')} 下载 → {rec.get('site_a', '')} 做种)"
+                    )
+                else:
+                    failed += 1
+                    pend.drop(sib_hash)
+                    self._log(
+                        f"跨站回辅失败:{rec.get('title', '')}({err or '校验不通过/未匹配'})",
+                        "warning",
+                    )
+            if done or failed:
+                self._invalidate_summary()
+            self._log(
+                f"跨站回辅:完成 {done} / 失败 {failed} / 等待下载 {waiting}"
+            )
+        except Exception as e:  # noqa: BLE001
+            import traceback
+            logger.error(f"跨站回辅 异常: {e}\n{traceback.format_exc()}")
+        finally:
+            self._release_worker_slot()
+
     def _build_filter_policy(self, task: MagicFlowTaskConfig) -> FilterPolicy:
         """从任务配置构建过滤策略。"""
         _is_brush = str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush"
@@ -7651,6 +8111,16 @@ class MagicFlow(_PluginBase):
             out = hot.drop_all_own_keys()
             return Response(success=bool(out.get("success")), message=f"已清热层键 {out.get('deleted', 0)} 个（JSON 仍在）", data=self.store_stats())
         return Response(success=True, message="OK", data=self.store_stats())
+
+    def get_crossseed(self, action: str = "") -> Response:
+        """跨站免费取种：待回辅队列 + 启用该功能的任务。``action=clear`` 清空队列。"""
+        try:
+            if str(action or "").strip().lower() in ("clear", "flush"):
+                n = self._crossseed_pending().clear()
+                return Response(success=True, message=f"已清空待回辅队列 {n} 条", data=self._crossseed_info())
+            return Response(success=True, message="OK", data=self._crossseed_info())
+        except Exception as e:  # noqa: BLE001
+            return Response(success=False, message=str(e), data={})
 
     def get_status(self) -> Response:
         """获取插件总览状态(重数据带 STATUS_TTL 缓存 + 后台静默刷新)。

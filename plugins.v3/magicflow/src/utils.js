@@ -39,6 +39,10 @@ export const taskDefaults = {
   browse_pages: 3,
   reuse_existing: true,
   reuse_verify: true,
+  crossseed_enabled: false,
+  crossseed_max_per_round: 3,
+  crossseed_max_size_gb: 20,
+  crossseed_max_sites: 6,
   cleanup_no_progress: true,
   no_progress_minutes: 30,
   cleanup_slow_progress: true,
@@ -147,6 +151,10 @@ export function normalizeTask(task) {
   result.browse_pages = Number(result.browse_pages || 3)
   result.reuse_existing = Boolean(result.reuse_existing ?? true)
   result.reuse_verify = Boolean(result.reuse_verify ?? true)
+  result.crossseed_enabled = Boolean(result.crossseed_enabled ?? false)
+  result.crossseed_max_per_round = Number(result.crossseed_max_per_round || 3)
+  result.crossseed_max_size_gb = Number(result.crossseed_max_size_gb || 20)
+  result.crossseed_max_sites = Number(result.crossseed_max_sites || 6)
   result.cleanup_no_progress = Boolean(result.cleanup_no_progress ?? true)
   result.no_progress_minutes = Number(result.no_progress_minutes || 30)
   result.cleanup_slow_progress = Boolean(result.cleanup_slow_progress ?? true)
@@ -383,6 +391,10 @@ export function normalizeDefaults(raw = {}) {
     refill_when_empty: raw.refill_when_empty !== false,
     reuse_existing: raw.reuse_existing !== false,
     reuse_verify: raw.reuse_verify !== false,
+    crossseed_enabled: raw.crossseed_enabled === true,
+    crossseed_max_per_round: Math.max(1, Math.round(num(raw.crossseed_max_per_round, 3))),
+    crossseed_max_size_gb: Math.max(0.1, num(raw.crossseed_max_size_gb, 20)),
+    crossseed_max_sites: Math.max(1, Math.round(num(raw.crossseed_max_sites, 6))),
     cleanup_no_progress: raw.cleanup_no_progress !== false,
     cleanup_slow_progress: raw.cleanup_slow_progress !== false,
     purge_unfree_incomplete: raw.purge_unfree_incomplete !== false,
