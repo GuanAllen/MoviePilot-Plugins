@@ -7201,7 +7201,7 @@ class MagicFlow(_PluginBase):
                 "size_gb": float(getattr(live, "size_gb", 0) or 0) if live is not None else 0.0,
             }
             try:
-                store.claim(hh, str(getattr(task, "id", "") or ""), state=state, site=site, sub=sub)
+                store.claim(hh, str(getattr(task, "id", "") or ""), state=state, site=site)
                 store.put(hh, rec)
             except Exception:  # noqa: BLE001
                 try:
@@ -7236,9 +7236,16 @@ class MagicFlow(_PluginBase):
             )
             o_state = str(rec.get("origin_state") or STATE_SILENT)
             o_sub = str(rec.get("origin_sub") or (SUB_NEW if o_state == STATE_SILENT else ""))
-            target = tag_for(site, o_state, o_sub)
             live = snap.get(hh)
             cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
+            # 老记录（迁移期写入）origin 直接等于任务态 → 退回时按静默处理（库内资产→资源，其余→新）
+            if o_state in (STATE_BRUSH, STATE_BONUS):
+                o_state = STATE_SILENT
+                _is_asset = any(x in ("已整理", "辅种") for x in cur)
+                o_sub = SUB_RESOURCE if _is_asset else (o_sub if o_sub in (SUB_NEW, SUB_PLAIN) else SUB_NEW)
+            elif o_state == STATE_SILENT and o_sub not in (SUB_NEW, SUB_RESOURCE, SUB_PLAIN):
+                o_sub = SUB_RESOURCE if any(x in ("已整理", "辅种") for x in cur) else SUB_NEW
+            target = tag_for(site, o_state, o_sub)
             new_tags = retag(cur, site=site, state=o_state, sub=o_sub) if cur else [target]
             try:
                 done = fn(hh, new_tags) if callable(fn) else downloader.set_torrent_tags(hh, new_tags)
@@ -7246,9 +7253,11 @@ class MagicFlow(_PluginBase):
                 done = False
             if done:
                 try:
-                    store.release(hh, tid)
-                except Exception:  # noqa: BLE001
-                    pass
+                    # 先把归一化后的 origin 写回，release 才会退回正确的静默子类
+                    store.put(hh, {"origin_state": o_state, "origin_sub": o_sub})
+                    store.release(hh, task_id=tid)
+                except Exception as _rerr:  # noqa: BLE001
+                    self._log(f"标签账本释放失败 {hh[:8]}:{_rerr}", "warning")
                 n += 1
         if n and reason:
             self._dbg(f"标签模型:任务「{getattr(task, 'name', '')}」退回 {n} 个（{reason}）")
@@ -7424,12 +7433,15 @@ class MagicFlow(_PluginBase):
             except Exception:  # noqa: BLE001
                 failed += 1
                 continue
+            _tags_now = [str(x).strip() for x in (item.get("tags") or [])]
+            _is_asset = any(x in ("已整理", "辅种") for x in _tags_now)
             store.put(h, {
                 "site": item.get("site") or "",
                 "state": item.get("state") or STATE_SILENT,
                 "sub": item.get("sub") or "",
-                "origin_state": item.get("state") or STATE_SILENT,
-                "origin_sub": item.get("sub") or "",
+                # ★ origin = 真正的「静默态」：退回时才知道该回哪儿（别写任务态，否则退回是空操作）
+                "origin_state": STATE_SILENT,
+                "origin_sub": SUB_RESOURCE if _is_asset else SUB_NEW,
                 "title": item.get("title") or "",
                 "migrated": True,
             })
