@@ -9831,40 +9831,86 @@ class MagicFlow(_PluginBase):
             return Response(success=False, message=f"探测失败: {err}")
 
     def _rules_view(self) -> List[Dict[str, Any]]:
-        """规则库视图（每个已配置站点一行，含内置兜底与生效值）。"""
-        out: List[Dict[str, Any]] = []
+        """规则库视图：**每个站点一行**（按域名别名合并，如 ``btschool.club`` ≡ ``pt.btschool.club``）。
+
+        行内含：有无 H&R、生效保种时长与来源、做种上限、证据片段、是否已入库。
+        """
+        def _norm(d: str) -> str:
+            return re.sub(r"^https?://", "", str(d or "").strip().lower()).strip("/")
+
         store = self._site_rules()
         manual = (getattr(self, "_cs_cfg", {}) or {}).get("site_hours") or {}
-        seen: Set[str] = set()
-        names: Dict[str, str] = {}
+        if not isinstance(manual, dict):
+            manual = {}
+        # 站点列表（MP 配置）→ 展示用域名/站点名
+        site_rows: List[Dict[str, Any]] = []
         try:
             for r in (self._list_sites() or []):
-                _d = re.sub(r"^https?://", "", str(r.get("domain") or "").strip().lower()).strip("/")
-                if _d:
-                    names[_d] = str(r.get("name") or _d)
+                d = _norm(r.get("domain"))
+                if d:
+                    site_rows.append({"domain": d, "name": str(r.get("name") or "")})
         except Exception:  # noqa: BLE001
-            names = {}
-        for dom, rec in sorted(store.items().items()):
-            eff, src = self._crossseed_seed_hours_detail(dom)
-            out.append(dict(rec, site_name=rec.get("name") or names.get(dom, ""),
-                            effective_hours=eff, hours_src=src, in_library=True))
-            seen.add(dom)
-        for dom, nm in sorted(names.items()):
-            if not dom or dom in seen:
-                continue
-            b = dict(BUILTIN_RULES.get(dom) or {})
-            eff, src = self._crossseed_seed_hours_detail(dom)
-            out.append(dict(b, domain=dom, site_name=nm, site_id=self._site_id_by_domain(dom),
-                            effective_hours=eff, hours_src=src, in_library=False))
-        for dom, hrs in sorted((manual or {}).items()):
-            if not dom:
-                continue
-            hit = next((o for o in out if o.get("domain") == dom), None)
-            if hit is not None:
-                hit["manual_hours"] = hrs
-            else:
-                out.append({"domain": dom, "site_name": names.get(dom, ""), "manual_hours": hrs,
-                            "effective_hours": hrs, "hours_src": "manual", "in_library": False})
+            pass
+
+        def _alias(a: str, b: str) -> bool:
+            a, b = _norm(a), _norm(b)
+            if not a or not b:
+                return False
+            return a == b or a.endswith("." + b) or b.endswith("." + a)
+
+        groups: List[Dict[str, Any]] = []
+
+        def _group_for(dom: str) -> Dict[str, Any]:
+            for g in groups:
+                if _alias(g["domain"], dom):
+                    return g
+            g = {"domain": _norm(dom), "aliases": [], "rec": {}, "site_name": "", "manual": None}
+            groups.append(g)
+            return g
+
+        # 1) 规则库（探测/内置已入库的）
+        for dom, rec in store.items().items():
+            g = _group_for(dom)
+            g["aliases"].append(_norm(dom))
+            if (rec.get("seed_hours") is not None) or (not g["rec"]):
+                g["rec"] = dict(rec)
+            if rec.get("name"):
+                g["site_name"] = str(rec.get("name"))
+        # 2) MP 站点列表（未入库的也展示，方便一眼看出缺哪站）
+        for row in site_rows:
+            g = _group_for(row["domain"])
+            g["aliases"].append(row["domain"])
+            g["display_domain"] = row["domain"]
+            if row["name"]:
+                g["site_name"] = row["name"]
+        # 3) 手填覆盖
+        for dom, hrs in (manual or {}).items():
+            g = _group_for(dom)
+            g["aliases"].append(_norm(dom))
+            g["manual"] = hrs
+        # 4) 内置已知（不在列表也不在库里的也展示）
+        for dom, b in BUILTIN_RULES.items():
+            if not any(_alias(g["domain"], dom) for g in groups):
+                g = _group_for(dom)
+                g["aliases"].append(dom)
+                g["rec"] = dict(b or {})
+
+        out: List[Dict[str, Any]] = []
+        for g in groups:
+            disp = str(g.get("display_domain") or g["domain"])
+            eff, src = self._crossseed_seed_hours_detail(disp)
+            row = dict(g["rec"] or {})
+            row["domain"] = disp
+            row["site_name"] = g["site_name"] or row.get("name") or disp
+            row["effective_hours"] = eff
+            row["hours_src"] = src
+            if g.get("manual") is not None:
+                row["manual_hours"] = g["manual"]
+            row["in_library"] = bool(g["rec"])
+            if row.get("seed_hours") is None and row.get("seed_hours_seen") is not None:
+                row["evidence_hours"] = row.get("seed_hours_seen")
+            out.append(row)
+        out.sort(key=lambda r: (str(r.get("site_name") or r.get("domain") or "")))
         return out
 
     def get_site_rules(self, action: str = "", site: str = "", hours: str = "") -> Response:
