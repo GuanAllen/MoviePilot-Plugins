@@ -870,6 +870,13 @@ class MagicFlow(_PluginBase):
                 "summary": "站点类型/能力识别结果(probe=true 时联网探测)",
             },
             {
+                "path": "/debug/mpsearch",
+                "endpoint": self.debug_mp_search,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "诊断:调 MP 自带搜索看签名兼容性/免费且有源命中(1 PV/站)",
+            },
+            {
                 "path": "/crossseed",
                 "endpoint": self.get_crossseed,
                 "methods": ["GET", "POST"],
@@ -8213,6 +8220,70 @@ class MagicFlow(_PluginBase):
             return True
 
         return self.sitecaps().ensure(site, probe=bool(probe), gate=_gate)
+
+    def debug_mp_search(self, keyword: str = "", sites: str = "") -> Response:
+        """诊断:直接调 MoviePilot 自带搜索,看签名兼容性与免费/有源命中。
+
+        ``GET /debug/mpsearch?keyword=xxx&sites=8,9``——**会消耗 1 PV/站**，只在排查时手动调。
+        """
+        kw = str(keyword or "").strip()
+        if not kw:
+            return Response(success=False, message="keyword 必填")
+        ids: List[int] = []
+        for part in str(sites or "").split(","):
+            part = part.strip()
+            if part.isdigit() and int(part) not in ids:
+                ids.append(int(part))
+        if not ids:
+            return Response(success=False, message="sites 必填(逗号分隔站点 id)")
+        info: Dict[str, Any] = {"keyword": kw, "sites": ids}
+        try:
+            from app.chain.search import SearchChain  # noqa: WPS433
+            import inspect  # noqa: WPS433
+
+            fn = getattr(SearchChain(), "search_by_title", None)
+            if fn is None:
+                return Response(success=False, message="当前 MP 无 SearchChain.search_by_title")
+            params = list(inspect.signature(fn).parameters.keys())
+            info["params"] = params
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=f"签名探测失败:{err}")
+        if "sites" not in params:
+            return Response(success=False, message=f"该版本 search_by_title 不支持 sites:{params}")
+        try:
+            hits = self._mp_search_title(kw, ids)
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=f"搜索失败:{err}")
+        finally:
+            for i in ids:
+                self._pv_spend(i, "crossseed", 1)
+        info["hits"] = len(hits)
+        rows: List[Dict[str, Any]] = []
+        for ti in hits:
+            _dv = getattr(ti, "downloadvolumefactor", None)
+            try:
+                dv = None if _dv is None else float(_dv)
+            except Exception:  # noqa: BLE001
+                dv = None
+            try:
+                sd = int(getattr(ti, "seeders", 0) or 0)
+            except Exception:  # noqa: BLE001
+                sd = 0
+            rows.append({
+                "title": str(getattr(ti, "title", "") or "")[:80],
+                "site": getattr(ti, "site", None),
+                "site_name": getattr(ti, "site_name", None),
+                "dv": dv,
+                "seeders": sd,
+                "size": getattr(ti, "size", None),
+                "enclosure": str(getattr(ti, "enclosure", "") or "")[:100],
+            })
+        info["free_count"] = sum(1 for r in rows if r["dv"] is not None and r["dv"] <= 0.0)
+        info["free_with_seeders"] = sum(
+            1 for r in rows if r["dv"] is not None and r["dv"] <= 0.0 and r["seeders"] >= 1
+        )
+        info["sample"] = rows[:10]
+        return Response(success=True, message="OK", data=info)
 
     def debug_site_caps(self, probe: bool = False) -> Response:
         """站点类型/能力识别结果;``probe=true`` 时对未识别/过期的站联网探测一次。"""
