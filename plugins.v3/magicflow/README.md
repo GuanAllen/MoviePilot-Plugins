@@ -49,6 +49,24 @@
 
 查看队列：`GET /crossseed`（`POST /crossseed?action=clear` 清空）。
 
+**诊断端点**（排查用，都要超管 JWT）：
+
+| 端点 | 作用 |
+| --- | --- |
+| `GET /debug/mpsearch?keyword=&sites=8,9` | 直调 MP 搜索，看签名兼容/免费且有源命中（**1 PV/站**） |
+| `GET /debug/crossseed?task=<id>&n=3[&add=true]` | 把该站候选**当成本站非免费**跑一遍跨站选源链路（dry-run；`add=true` 才真下） |
+| `GET /debug/cache[?dump=<key>/drop=<key>/prefix=<str>]` | 看/丢站点抓取缓存（丢过之后下一轮强制重抓） |
+
+### ⚠️ 站点「免不免费」：别信 SDK 列表解析（3.10.0 修）
+
+实测多套 NexusPHP 皮肤下，MoviePilot 自带 `TorrentsChain.browse` 经常**拿不到促销列**，
+`downloadvolumefactor` 恒为 `0.0` —— 于是**所有种子都被当成「免费」**，魔力/双免/跨站判定全部失真。
+
+因此主列表抓取改为：**NexusPHP 站优先走插件自己的直连解析**
+（`browse_site_np_free(..., main=True)` → `_parse_np_rows` 读页面真实 `pro_free` / `promotion free`），
+SDK `browse` 只作兜底（非 NexusPHP / 无 cookie 时）。抓取缓存 key 同步换成 `|<站>|main2|` 以作废旧缓存。
+
+
 ## 支持的站点
 
 - [HDFans](https://hdfans.org) - NexusPHP 架构

@@ -643,6 +643,7 @@ class SiteFetcher:
         stats: Optional[Dict[int, int]] = None,
         search: str = "",
         search_area: int = 0,
+        main: bool = False,
     ) -> List[SiteCandidateTorrent]:
         """NexusPHP 直连：用站点 cookie 按 spstate 直接抓「免费」列表页。
 
@@ -671,13 +672,19 @@ class SiteFetcher:
         _kw = str(search or "").strip()
         _q = f"&search={quote(_kw)}&search_area={int(search_area or 0)}" if _kw else ""
         total_pages = max(int(pages or 1), 1)
-        for sp in spstates:
+        # ``main=True``：不带 spstate → 抓 NexusPHP **主列表**（全部促销状态）。
+        # 用途：跨站取种要的是「本站**不**免费」的候选，而免费索引里全是免费种。
+        # 注意：必须用**本函数的自解析**（_parse_np_rows 读真实促销列），
+        # SDK 的 browse 常拿不到促销 → downloadvolumefactor 恒为 0.0（全被当成免费）。
+        _sps: Tuple[Optional[int], ...] = (None,) if main else tuple(spstates)
+        for sp in _sps:
             _sp_before = len(out)
             for p in range(total_pages):
                 if out and _REQUEST_INTERVAL > 0:
                     time.sleep(_REQUEST_INTERVAL)
+                _sfx = "" if sp is None else f"&spstate={int(sp)}"
                 url = (
-                    f"{base}/torrents.php?incldead=1&spstate={sp}"
+                    f"{base}/torrents.php?incldead=1{_sfx}"
                     f"&page={int(start_page) + p}{_q}"
                 )
                 try:
@@ -718,7 +725,8 @@ class SiteFetcher:
                     break
             if stats is not None:
                 try:
-                    stats[int(sp)] = len(out) - _sp_before
+                    if sp is not None:
+                        stats[int(sp)] = len(out) - _sp_before
                 except Exception:  # noqa: BLE001
                     pass
         return out
