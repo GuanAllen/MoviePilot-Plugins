@@ -6764,9 +6764,12 @@ class MagicFlow(_PluginBase):
         return obj
 
     def _crossseed_source_hashes(self) -> Set[str]:
-        """当前受 H&R 保护的来源份 hash 集合（并入清理保护集合）。"""
+        """当前受 H&R 保护的来源份 hash 集合（并入清理保护集合）。
+
+        ★ 排除「义务已履行」（实测做种时长达标）的条目 —— 挂够就能撤，不必再占位。
+        """
         try:
-            return self._crossseed_sources().hashes()
+            return self._crossseed_sources().active()
         except Exception:  # noqa: BLE001
             return set()
 
@@ -6777,6 +6780,27 @@ class MagicFlow(_PluginBase):
         """
         hours, _src = self._crossseed_seed_hours_detail(domain)
         return hours
+
+    def _crossseed_seed_need_hours(self, domain: str) -> float:
+        """站点要求的「**实际做种**达标小时数」（如学校 20h）；没有则 0（只看窗口）。"""
+        dom = str(domain or "").strip().lower()
+        dom = re.sub(r"^https?://", "", dom).split("/")[0].strip()
+        try:
+            rec = dict(self._site_rules().get(dom) or {})
+        except Exception:  # noqa: BLE001
+            rec = {}
+        for key in ("seed_need_hours",):
+            try:
+                val = float(rec.get(key) or 0.0)
+            except (TypeError, ValueError):
+                val = 0.0
+            if val > 0:
+                return val
+        try:
+            builtin = dict(BUILTIN_RULES.get(dom) or {})
+            return float(builtin.get("seed_need_hours") or 0.0)
+        except Exception:  # noqa: BLE001
+            return 0.0
 
     def _site_hr_flag(self, domain: str) -> Optional[bool]:
         """站点规则库里的 H&R 判定：``True`` 有 / ``False`` 无 / ``None`` 未知。"""
@@ -7328,6 +7352,7 @@ class MagicFlow(_PluginBase):
             "hit_and_run": bool(rec.get("hit_and_run")),
             "hours": hours,
             "hours_src": _src,
+            "need_hours": float(rec.get("need_hours") or 0.0),
             "created": float(rec.get("created") or time.time()),
             "seed_until": until,
             "downloader": str(rec.get("downloader") or "qbittorrent"),
@@ -7521,6 +7546,39 @@ class MagicFlow(_PluginBase):
             if info is None:
                 continue  # 已不在下载器（手动删了？）→ 交给 prune
             live.add(h)
+            # ★ ② 实际做种时长（qB seeding_time）：达标线一到 = H&R 义务完成 → 可撤种
+            #   （Master：连挂挂满就行 —— 用真实做种秒数判，不看墙钟）
+            try:
+                seeded = float(getattr(info, "seed_time", 0) or 0.0)
+            except (TypeError, ValueError):
+                seeded = 0.0
+            try:
+                need = float(rec.get("need_hours") or 0.0)
+            except (TypeError, ValueError):
+                need = 0.0
+            done = bool(rec.get("done"))
+            if seeded > float(rec.get("seeded_sec") or 0.0) + 1.0 or (need and not done):
+                store.put(h, {"seeded_sec": seeded})
+                rec["seeded_sec"] = seeded
+            if need > 0 and seeded >= need * 3600.0 and not done:
+                store.put(h, {"done": True, "done_ts": now, "seeded_sec": seeded})
+                rec["done"] = True
+                res["completed"] = int(res.get("completed") or 0) + 1
+                self._log(
+                    f"跨站:H&R 义务完成 —— {rec.get('site_b', '') or rec.get('site_b_domain', '')} "
+                    f"「{str(rec.get('title') or '')[:50]}」已实际做种 {seeded / 3600.0:.1f}h ≥ {need:g}h，可撤种"
+                )
+                if reclaim:
+                    try:
+                        _n, err = downloader.delete_torrents(hashes=[h], delete_file=False)
+                        if not err:
+                            store.drop(h)
+                            res["reclaimed"] = int(res.get("reclaimed") or 0) + 1
+                    except Exception as rerr:  # noqa: BLE001
+                        res.setdefault("errors", []).append(f"回收失败:{rerr}")
+                    continue
+            if rec.get("done"):
+                continue  # 已履行义务 → 不再保护、不再强制标签
             # ① 标签确权：来源份只属于「魔流-跨站」，被任务抢走就改回来
             tags = list(getattr(info, "tags", None) or [])
             if isinstance(tags, str):
@@ -7662,6 +7720,8 @@ class MagicFlow(_PluginBase):
             "hit_and_run": bool(_hr_flag),
             "seed_hours": _hr_hours,
             "seed_hours_src": _hr_src,
+            # ★ 实际做种达标线（学校 20h）：qB seeding_time 挂够 → 义务完成，可撤种
+            "need_hours": self._crossseed_seed_need_hours(_b_dom),
             "seed_until": time.time() + _hr_hours * 3600.0,
             "task_id": str(getattr(task, "id", "") or ""),
             "task_name": str(getattr(task, "name", "") or ""),
@@ -7756,6 +7816,9 @@ class MagicFlow(_PluginBase):
                     "size_gb": round(float(rec.get("size_gb") or 0.0), 3),
                     "hours": float(rec.get("hours") or 0.0),
                     "hours_src": str(rec.get("hours_src") or ""),
+                    "need_hours": float(rec.get("need_hours") or 0.0),
+                    "seeded_h": round(float(rec.get("seeded_sec") or 0.0) / 3600.0, 2),
+                    "fulfilled": bool(rec.get("done")),
                     "hit_and_run": bool(rec.get("hit_and_run")),
                     "seed_until": until,
                     "remain_min": round(max(0.0, (until - now) / 60.0), 1),
@@ -9923,6 +9986,11 @@ class MagicFlow(_PluginBase):
                             parsed["seed_hours"] = got["seed_hours"]
                             parsed["confidence"] = "high"
                             parsed["evidence"] = f"{path}: {got.get('evidence', '')}"
+                            # ★ 达标线/窗口（例：10天窗口内实际做种 20h）也要落库：
+                            #   need_hours 用来按「实测做种时长」判定义务是否完成
+                            for _nk in ("seed_need_hours", "seed_window_hours"):
+                                if got.get(_nk) is not None:
+                                    parsed[_nk] = got[_nk]
                             if got.get("seed_cap") is not None:
                                 parsed["seed_cap"] = got["seed_cap"]
                             break
@@ -9940,7 +10008,10 @@ class MagicFlow(_PluginBase):
                     or parsed.get("free_over_gb") is not None
                 ):
                     rec = store.merge_probe(dom, dict(parsed, name=name, site_id=sid))
-                    item["stored"] = {k: rec.get(k) for k in ("hr", "seed_hours", "seed_cap", "source")}
+                    item["stored"] = {
+                        k: rec.get(k)
+                        for k in ("hr", "seed_hours", "seed_need_hours", "seed_cap", "source")
+                    }
                 elif persist:
                     store.ensure_builtin(dom, name)
                 eff, src = self._crossseed_seed_hours_detail(dom)
