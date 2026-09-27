@@ -219,6 +219,7 @@ export function normalizeSettings(settings = {}) {
       ? settings.crossseed_site_hours.map(v => String(v || '').trim()).filter(Boolean)
       : normalizePathList(settings.crossseed_site_hours),
     crossseed_reclaim: Boolean(settings.crossseed_reclaim),
+    rules_auto_refresh: settings.rules_auto_refresh === undefined ? true : Boolean(settings.rules_auto_refresh),
     fallback_enabled: settings.fallback_enabled === undefined ? true : Boolean(settings.fallback_enabled),
     fallback_sources: normalizeFallbackSources(settings.fallback_sources),
     fallback_paths: normalizePathList(settings.fallback_paths),

@@ -115,6 +115,7 @@ from .sitecap import (
     norm_domain,
 )
 from .sites import BonusCalculator, get_calculator, get_formula_params, register_formula_preset
+from .sites.rules import BUILTIN_RULES, SiteRules, parse_hr_from_html
 from .sites.formula_fetch import (
     FormulaCapture,
     fetch_site_formula,
@@ -126,7 +127,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.11.1"
+__version__ = "3.12.0"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -202,6 +203,9 @@ CROSSSEED_SEED_HOURS_DEFAULT = 24.0
 # ★ 已知站点 H&R 保种时长默认值（可在设置面板「跨站」页改）。
 #   学校 BTSchool 要求挂种 10h（用户实测告知）。
 CROSSSEED_SITE_HOURS_DEFAULT = ["pt.btschool.club=10"]
+# ★ 站点规则库(3.12.0)：用户不填「域名=小时」也能自动按站保种
+RULES_INTERVAL_MINUTES = 7 * 24 * 60     # 站点规则自动刷新周期(分钟) -- 每周一次(低频探测)
+RULES_PROBE_DELAY = (1.5, 3.5)           # 逐站探测之间的随机间隔(秒，礼貌限速)
 
 
 def _cs_parse_site_hours(raw: Any) -> Dict[str, float]:
@@ -767,6 +771,10 @@ class MagicFlow(_PluginBase):
             "reclaim": bool(raw_config.get("crossseed_reclaim", False)),
         }
         self._cs_guard_at: Dict[str, float] = {}
+        # ★ 站点规则库(H&R/保种/做种上限)：自动刷新开关(3.12.0)
+        self._rules_cfg: Dict[str, Any] = {
+            "auto_refresh": bool(raw_config.get("rules_auto_refresh", True)),
+        }
 
         # 元数据兜底(多源识别 + 补 NFO):TMDB 没有的(番剧特别篇/前传/国漫)自动兜底
         def _fsources(v: Any) -> List[str]:
@@ -1369,6 +1377,20 @@ class MagicFlow(_PluginBase):
                 "summary": "批量操作托管种子",
             },
             {
+                "path": "/rules",
+                "endpoint": self.get_site_rules,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "站点规则库(H&R/保种时长/做种上限)",
+            },
+            {
+                "path": "/rules/probe",
+                "endpoint": self.probe_site_rules,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "逐站拉取站点规则并入库",
+            },
+            {
                 "path": "/sites/{site_id}/bonus-formula",
                 "endpoint": self.probe_site_formula,
                 "methods": ["GET"],
@@ -1537,6 +1559,22 @@ class MagicFlow(_PluginBase):
                     },
                 }
             )
+        # ★ 站点规则库:插件级单 worker。低频(默认每周)逐站探测 H&R/保种规则并入库。
+        #   规则只影响「来源份要保种多久」——多挂几小时不花钱，少挂是实打实惩罚，
+        #   所以这里**宁慢勿缺**，一周一次足够。
+        if bool(getattr(self, "_rules_cfg", {}).get("auto_refresh", True)) and (self._list_sites() or []):
+            services.append(
+                {
+                    "id": "Rules",
+                    "name": "站点规则刷新",
+                    "trigger": "interval",
+                    "func": self.rules_watch,
+                    "kwargs": {
+                        "minutes": RULES_INTERVAL_MINUTES,
+                        "jitter": self._jitter_seconds(RULES_INTERVAL_MINUTES),
+                    },
+                }
+            )
         # ★ 站点签到 / 模拟登录:插件级单 worker(借鉴「站点自动签到」插件,多选站点)。
         if bool(getattr(self, "_signin_cfg", {}).get("enabled", False)) and (
             (getattr(self, "_signin_cfg", {}) or {}).get("sites") or (getattr(self, "_signin_cfg", {}) or {}).get("login_sites")
@@ -1628,6 +1666,7 @@ class MagicFlow(_PluginBase):
             "crossseed_seed_hours_default": float(getattr(self, "_cs_cfg", {}).get("seed_hours_default") or CROSSSEED_SEED_HOURS_DEFAULT),
             "crossseed_site_hours": [f"{d}={h:g}" for d, h in sorted((getattr(self, "_cs_cfg", {}).get("site_hours") or {}).items())],
             "crossseed_reclaim": bool(getattr(self, "_cs_cfg", {}).get("reclaim", False)),
+            "rules_auto_refresh": bool(getattr(self, "_rules_cfg", {}).get("auto_refresh", True)),
             "fallback_enabled": bool(self._fallback_cfg.get("enabled", True)),
             "fallback_sources": list(self._fallback_cfg.get("sources") or FALLBACK_SOURCES),
             "fallback_paths": list(self._fallback_cfg.get("paths") or []),
@@ -6699,19 +6738,36 @@ class MagicFlow(_PluginBase):
 
         优先采信本站「正在下载」列表 / MP 搜索给出的信号（若有），否则用配置。
         """
+        hours, _src = self._crossseed_seed_hours_detail(domain)
+        return hours
+
+    def _crossseed_seed_hours_detail(self, domain: str) -> Tuple[float, str]:
+        """返回 ``(保种小时数, 来源)``。来源: manual > 规则库(probe/builtin) > 全局默认。"""
         dom = str(domain or "").strip().lower()
         dom = re.sub(r"^https?://", "", dom).split("/")[0].strip()
         cfg = getattr(self, "_cs_cfg", {}) or {}
-        site_hours = cfg.get("site_hours") or {}
-        if isinstance(site_hours, dict) and dom and dom in site_hours:
-            try:
-                return max(0.0, float(site_hours[dom]))
-            except (TypeError, ValueError):
-                pass
+        manual = cfg.get("site_hours") or {}
+        if not isinstance(manual, dict):
+            manual = {}
         try:
-            return max(0.0, float(cfg.get("seed_hours_default") or CROSSSEED_SEED_HOURS_DEFAULT))
+            default = float(cfg.get("seed_hours_default") or CROSSSEED_SEED_HOURS_DEFAULT)
         except (TypeError, ValueError):
-            return CROSSSEED_SEED_HOURS_DEFAULT
+            default = CROSSSEED_SEED_HOURS_DEFAULT
+        try:
+            return self._site_rules().resolve(dom, manual, default)
+        except Exception:  # noqa: BLE001
+            return max(0.0, default), "default"
+
+    def _site_rules(self) -> SiteRules:
+        """站点规则账本(H&R / 保种时长 / 做种上限)，save_data 持久化。"""
+        obj = getattr(self, "_site_rules_obj", None)
+        if obj is None:
+            obj = self._site_rules_obj = SiteRules(
+                get_data=self.get_data,
+                save_data=self.save_data,
+                log=self._log,
+            )
+        return obj
 
     def _crossseed_pending(self) -> CrossSeedPending:
         """待回辅账本（PluginData 持久化 + 目标站 .torrent 落盘）。"""
@@ -7146,9 +7202,13 @@ class MagicFlow(_PluginBase):
             return
         dom = str(rec.get("site_b_domain") or "").strip().lower()
         try:
-            hours = float(rec.get("seed_hours") or 0.0) or self._crossseed_seed_hours(dom)
+            hours = float(rec.get("seed_hours") or 0.0)
         except (TypeError, ValueError):
-            hours = self._crossseed_seed_hours(dom)
+            hours = 0.0
+        if hours <= 0:
+            hours, _src = self._crossseed_seed_hours_detail(dom)
+        else:
+            _src = str(rec.get("seed_hours_src") or "")
         try:
             until = float(rec.get("seed_until") or 0.0) or (time.time() + hours * 3600.0)
         except (TypeError, ValueError):
@@ -7163,6 +7223,7 @@ class MagicFlow(_PluginBase):
             "a_hash": str(a_hash or rec.get("a_hash") or "").lower(),
             "hit_and_run": bool(rec.get("hit_and_run")),
             "hours": hours,
+            "hours_src": _src,
             "created": float(rec.get("created") or time.time()),
             "seed_until": until,
             "downloader": str(rec.get("downloader") or "qbittorrent"),
@@ -7465,6 +7526,7 @@ class MagicFlow(_PluginBase):
         a_path = self._crossseed_pending().put_torrent(a_key, getattr(cand, "raw", b"") or b"")
         # ★ 流量兜底基线：记下来源站此刻的下载量（后结增量超阈值 = 其实不免费）
         _b_dom = str(src.get("site_domain") or "").strip().lower()
+        _hr_hours, _hr_src = self._crossseed_seed_hours_detail(_b_dom)
         _b_dl = 0.0
         try:
             _b_sid = self._site_id_by_domain(_b_dom)
@@ -7486,8 +7548,9 @@ class MagicFlow(_PluginBase):
             "base_ts": time.time(),
             # ★ H&R：来源站保种义务（例：学校 10h）。取种时就把「保种到什么时候」算好。
             "hit_and_run": bool(getattr(src.get("row"), "hit_and_run", False)),
-            "seed_hours": self._crossseed_seed_hours(_b_dom),
-            "seed_until": time.time() + self._crossseed_seed_hours(_b_dom) * 3600.0,
+            "seed_hours": _hr_hours,
+            "seed_hours_src": _hr_src,
+            "seed_until": time.time() + _hr_hours * 3600.0,
             "task_id": str(getattr(task, "id", "") or ""),
             "task_name": str(getattr(task, "name", "") or ""),
             "downloader": str(getattr(task, "downloader", "") or "qbittorrent"),
@@ -9473,6 +9536,7 @@ class MagicFlow(_PluginBase):
                 "seed_hours_default": float(getattr(self, "_cs_cfg", {}).get("seed_hours_default") or CROSSSEED_SEED_HOURS_DEFAULT),
                 "site_hours": [f"{d}={h:g}" for d, h in sorted((getattr(self, "_cs_cfg", {}).get("site_hours") or {}).items())],
                 "reclaim": bool(getattr(self, "_cs_cfg", {}).get("reclaim", False)),
+                "rules_auto_refresh": bool(getattr(self, "_rules_cfg", {}).get("auto_refresh", True)),
             },
             "fallback": dict(getattr(self, "_fallback_cfg", {}) or {}),
             "live": dict(getattr(self, "_live_cfg", {}) or {}),
@@ -9629,6 +9693,222 @@ class MagicFlow(_PluginBase):
             "text": text[: max(0, int(limit))],
         })
 
+    def rules_watch(self) -> None:
+        """站点规则库刷新(worker)：逐站探测并入库。"""
+        if not bool(getattr(self, "_rules_cfg", {}).get("auto_refresh", True)):
+            return
+        if not self._acquire_worker_slot("站点规则"):
+            return
+        try:
+            resp = self.probe_site_rules(site_id=0, persist=True)
+            data = getattr(resp, "data", None) or {}
+            n = len(data.get("results") or [])
+            self._log(f"魔流:站点规则自动刷新完成（{n} 站）")
+        except Exception as err:  # noqa: BLE001
+            self._log(f"站点规则刷新异常:{err}", "warning")
+        finally:
+            self._release_worker_slot()
+
+    # ------------------------------------------------------- 站点规则库(H&R/保种)
+    def _rules_fetch(self, site: Any, path: str) -> str:
+        """用站点 cookie 抓该站自己域名下的一个页面（只读，失败返回 ""）。"""
+        base = (getattr(site, "url", "") or f"https://{getattr(site, 'domain', '')}").rstrip("/")
+        url = f"{base}/{str(path or '').lstrip('/')}"
+        if not self._url_allowed_for_site(url, site):
+            return ""
+        try:
+            from app.sdk.network import RequestUtils  # noqa: WPS433
+            req = RequestUtils(
+                cookies=getattr(site, "cookie", None),
+                ua=getattr(site, "ua", None),
+                timeout=25,
+                referer=f"{base}/",
+            )
+            resp = req.get_res(url)
+        except Exception:  # noqa: BLE001
+            return ""
+        if resp is None:
+            return ""
+        try:
+            raw = resp.content or b""
+            try:
+                return raw.decode("utf-8")
+            except UnicodeDecodeError:
+                return raw.decode("gbk", "ignore")
+        except Exception:  # noqa: BLE001
+            return ""
+        finally:
+            try:
+                resp.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def probe_site_rules(self, site_id: int = 0, persist: bool = True, paths: str = "") -> Response:
+        """★ 逐站拉取站点规则并入库（H&R / 最短保种时长 / 做种上限）。
+
+        ``site_id=0`` = **所有已配置站点**依次探测（每站之间随机歇 1.5~3.5s，礼貌限速；
+        受该站 PV 预算约束，预算不够的直接跳过）。
+        ``paths`` 可覆盖默认的探测页（逗号分隔，默认 ``myhr.php,rules.php``）。
+
+        只读：抓页面 → 解析 → 写 `site_rules`（ProbeData 持久化）。抓不到的**保持原样**，
+        绝不把「没解析到」写成「没有 H&R」。
+        """
+        try:
+            want = [p.strip() for p in str(paths or "").split(",") if p.strip()] or ["myhr.php", "rules.php"]
+            if site_id:
+                site = self._get_site(int(site_id))
+                sites = [site] if site else []
+            else:
+                sites = []
+                for row in (self._list_sites() or []):
+                    _s = self._get_site(int(row.get("id") or 0))
+                    if _s is not None:
+                        sites.append(_s)
+            if not sites:
+                return Response(success=False, message="没有可探测的站点")
+            store = self._site_rules()
+            results: List[Dict[str, Any]] = []
+            for idx, site in enumerate(sites):
+                sid = int(getattr(site, "id", 0) or 0)
+                dom = str(getattr(site, "domain", "") or "").strip().lower()
+                name = str(getattr(site, "name", "") or dom)
+                item: Dict[str, Any] = {"site_id": sid, "name": name, "domain": dom}
+                if not dom:
+                    item["skipped"] = "无域名"
+                    results.append(item)
+                    continue
+                if not getattr(site, "cookie", None):
+                    item["skipped"] = "未配置 cookie"
+                    store.ensure_builtin(dom, name)
+                    results.append(item)
+                    continue
+                if not self._pv_allow(sid, "rules", 1):
+                    item["skipped"] = "PV 预算不足"
+                    results.append(item)
+                    continue
+                parsed: Dict[str, Any] = {}
+                pages: List[str] = []
+                for path in want:
+                    if not self._pv_allow(sid, "rules", 1):
+                        break
+                    html = self._rules_fetch(site, path)
+                    self._pv_spend(sid, "rules", 1)
+                    if not html:
+                        continue
+                    pages.append(path)
+                    got = parse_hr_from_html(html)
+                    if got.get("hr") is True:
+                        if got.get("seed_hours") is not None:
+                            parsed["hr"] = True
+                            parsed["seed_hours"] = got["seed_hours"]
+                            parsed["evidence"] = f"{path}: {got.get('evidence', '')}"
+                            break
+                        parsed.setdefault("hr", True)
+                        parsed.setdefault("evidence", f"{path}: {got.get('evidence', '')}")
+                    if got.get("seed_cap") is not None and parsed.get("seed_cap") is None:
+                        parsed["seed_cap"] = got["seed_cap"]
+                item["pages"] = pages
+                item["parsed"] = parsed
+                if persist and (parsed.get("hr") is not None or parsed.get("seed_cap") is not None):
+                    rec = store.merge_probe(dom, dict(parsed, name=name, site_id=sid))
+                    item["stored"] = {k: rec.get(k) for k in ("hr", "seed_hours", "seed_cap", "source")}
+                elif persist:
+                    store.ensure_builtin(dom, name)
+                eff, src = self._crossseed_seed_hours_detail(dom)
+                item["effective_hours"] = eff
+                item["hours_src"] = src
+                results.append(item)
+                if idx + 1 < len(sites):
+                    time.sleep(random.uniform(*RULES_PROBE_DELAY))
+            ok_n = sum(1 for r in results if r.get("stored") or r.get("parsed"))
+            self._log(f"站点规则:探测完成 {ok_n}/{len(results)} 站有结果（{','.join(want)}）")
+            return Response(success=True, message=f"已探测 {len(results)} 个站点，{ok_n} 个有结果并入库", data={
+                "results": results,
+                "rules": self._rules_view(),
+            })
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=f"探测失败: {err}")
+
+    def _rules_view(self) -> List[Dict[str, Any]]:
+        """规则库视图（每个已配置站点一行，含内置兜底与生效值）。"""
+        out: List[Dict[str, Any]] = []
+        store = self._site_rules()
+        manual = (getattr(self, "_cs_cfg", {}) or {}).get("site_hours") or {}
+        seen: Set[str] = set()
+        try:
+            names = {str(r.get("domain") or "").strip().lower(): str(r.get("name") or "") for r in (self._list_sites() or [])}
+        except Exception:  # noqa: BLE001
+            names = {}
+        for dom, rec in sorted(store.items().items()):
+            eff, src = self._crossseed_seed_hours_detail(dom)
+            out.append(dict(rec, site_name=rec.get("name") or names.get(dom, ""),
+                            effective_hours=eff, hours_src=src, in_library=True))
+            seen.add(dom)
+        for dom, nm in sorted(names.items()):
+            if not dom or dom in seen:
+                continue
+            b = dict(BUILTIN_RULES.get(dom) or {})
+            eff, src = self._crossseed_seed_hours_detail(dom)
+            out.append(dict(b, domain=dom, site_name=nm, site_id=self._site_id_by_domain(dom),
+                            effective_hours=eff, hours_src=src, in_library=False))
+        for dom, hrs in sorted((manual or {}).items()):
+            if not dom:
+                continue
+            hit = next((o for o in out if o.get("domain") == dom), None)
+            if hit is not None:
+                hit["manual_hours"] = hrs
+            else:
+                out.append({"domain": dom, "site_name": names.get(dom, ""), "manual_hours": hrs,
+                            "effective_hours": hrs, "hours_src": "manual", "in_library": False})
+        return out
+
+    def get_site_rules(self, action: str = "", site: str = "", hours: str = "") -> Response:
+        """站点规则库读写。
+
+        - ``GET /rules``：列表（含生效保种时长与来源）；
+        - ``GET /rules?action=refresh``：按 MP 配置 + 内置表补全（**不触网**）；
+        - ``GET /rules?action=probe&site=<id|domain>``：抓页面探测（1~2 请求/站）；
+        - ``GET /rules?action=set&site=<domain>&hours=<n>``：手填覆盖（写进「站点保种时长」）。
+        """
+        try:
+            act = str(action or "").strip().lower()
+            store = self._site_rules()
+            if act == "set":
+                dom = str(site or "").strip().lower().replace("https://", "").replace("http://", "").strip("/")
+                if not dom:
+                    return Response(success=False, message="缺少 site(域名)")
+                try:
+                    hv = float(hours)
+                except (TypeError, ValueError):
+                    return Response(success=False, message="hours 必须是数字")
+                manual = dict((getattr(self, "_cs_cfg", {}) or {}).get("site_hours") or {})
+                manual[dom] = max(0.0, hv)
+                self._cs_cfg["site_hours"] = manual
+                self.save_data(key="crossseed_cfg", value=dict(self._cs_cfg))
+                return Response(success=True, message=f"{dom} 保种时长已设为 {hv:g}h", data={"rules": self._rules_view()})
+            if act in ("refresh", "sync"):
+                for dom, nm in (({str(r.get("domain") or "").strip().lower(): str(r.get("name") or "") for r in (self._list_sites() or [])})).items():
+                    if dom:
+                        store.ensure_builtin(dom, nm)
+                return Response(success=True, message="已按 MP 配置 + 内置表补全规则库", data={"rules": self._rules_view()})
+            if act in ("probe", "fetch"):
+                sid = 0
+                dom = str(site or "").strip()
+                if dom:
+                    if dom.isdigit():
+                        sid = int(dom)
+                    else:
+                        sid = self._site_id_by_domain(dom)
+                        if not sid:
+                            return Response(success=False, message=f"未找到站点 {dom}")
+                return self.probe_site_rules(site_id=sid, persist=True)
+            if act == "clear":
+                n = store.clear(str(site or ""))
+                return Response(success=True, message=f"已清空规则库 {n} 条", data={"rules": self._rules_view()})
+            return Response(success=True, message="OK", data={"rules": self._rules_view()})
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=str(err))
+
     def probe_site_formula(self, site_id: int, persist: bool = False) -> Response:
         """诊断:抓取站点 mybonus.php 并解析魔力公式与参数。
 
@@ -9732,6 +10012,9 @@ class MagicFlow(_PluginBase):
                 getattr(payload, "crossseed_site_hours", None) or CROSSSEED_SITE_HOURS_DEFAULT
             ),
             "reclaim": bool(getattr(payload, "crossseed_reclaim", False)),
+        }
+        self._rules_cfg = {
+            "auto_refresh": bool(getattr(payload, "rules_auto_refresh", True)),
         }
         # 元数据兜底(多源识别 + 补 NFO)
         _fsrc = getattr(payload, "fallback_sources", None)
