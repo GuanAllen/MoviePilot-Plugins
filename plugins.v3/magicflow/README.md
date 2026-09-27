@@ -54,8 +54,18 @@
 | 端点 | 作用 |
 | --- | --- |
 | `GET /debug/mpsearch?keyword=&sites=8,9` | 直调 MP 搜索，看签名兼容/免费且有源命中（**1 PV/站**） |
-| `GET /debug/crossseed?task=<id>&n=3[&add=true]` | 把该站候选**当成本站非免费**跑一遍跨站选源链路（dry-run；`add=true` 才真下） |
+| `GET /debug/crossseed?task=<id>&n=3[&add=true][&dump=1]` | 把该站候选**当成本站非免费**跑一遍跨站选源链路（dry-run；`add=true` 才真下；`dump=1` 打印两边文件清单，用于判断「特征码不同」是真不同还是仅根目录名不同） |
 | `GET /debug/cache[?dump=<key>/drop=<key>/prefix=<str>]` | 看/丢站点抓取缓存（丢过之后下一轮强制重抓） |
+
+### ⚠️ API 站的种子是「换票」地址，不能直接 GET（3.10.0 修）
+
+馒头 / HDH / 肉丝 / 红叶 这类 **API 站**的 `enclosure` 不是直链，而是
+`[base64(json)]url`：**先请求 url 换一张临时下载票，再从返回里取真实地址**。
+MoviePilot 本体在下载链里会解这种格式，但插件自己取种字节时如果不解，
+就只会去 GET 那个 API 地址 → 表现为「无法打开链接 / 本站取种失败」，
+跨站选源（需要本站种子特征码）直接失效。
+现 `downloader_ops.fetch_torrent_bytes` 已支持该格式（`method/params/header/proxy/result`
+全按 MP 语义解析，返回磁力则跳过），命中的字节同时按「原始换票地址」缓存一份。
 
 ### ⚠️ 站点「免不免费」：别信 SDK 列表解析（3.10.0 修）
 
