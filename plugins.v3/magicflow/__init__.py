@@ -877,6 +877,20 @@ class MagicFlow(_PluginBase):
                 "summary": "诊断:调 MP 自带搜索看签名兼容性/免费且有源命中(1 PV/站)",
             },
             {
+                "path": "/debug/cache",
+                "endpoint": self.debug_cache,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "诊断:查看/丢弃站点抓取缓存(drop=<key> 强制下轮重抓)",
+            },
+            {
+                "path": "/debug/crossseed",
+                "endpoint": self.debug_crossseed,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "诊断:拿本任务候选当「本站非免费」跑一遍跨站选源(dry-run,add=true 才真下)",
+            },
+            {
                 "path": "/crossseed",
                 "endpoint": self.get_crossseed,
                 "methods": ["GET", "POST"],
@@ -2145,6 +2159,7 @@ class MagicFlow(_PluginBase):
         pages: int = 1,
         start_page: int = 0,
         np_free: bool = False,
+        force_main: bool = False,
     ) -> List[Any]:
         """站点级共享抓取(single-flight + 短 TTL)。
 
@@ -2179,9 +2194,9 @@ class MagicFlow(_PluginBase):
             _policy is not None and (getattr(_policy, "free_only", False) or getattr(_policy, "double_free_only", False))
         )
         _cap = self.sitecaps().get(str(getattr(task, "site_domain", "") or ""))
-        _use_free = bool(_want_free and getattr(_cap, "free_index", False))
+        _use_free = bool((not force_main) and _want_free and getattr(_cap, "free_index", False))
         _free_tried = False
-        cache_key = f"{site_key}|{'free' if _use_free else 'main'}|{int(pages)}|{int(start_page)}"
+        cache_key = f"{site_key}|{'free' if _use_free else 'main2'}|{int(pages)}|{int(start_page)}"
         cache = self._cache_cands()
         hit = cache.get(cache_key, SITE_FETCH_TTL)
         if hit is not None:
@@ -2291,7 +2306,7 @@ class MagicFlow(_PluginBase):
                     f"魔流 [{task.name}] 站点 {site_key} 免费索引为空，本轮回退主列表抓取",
                     "warning",
                 )
-                cache_key = f"{site_key}|main|{int(pages)}|{int(start_page)}"
+                cache_key = f"{site_key}|main2|{int(pages)}|{int(start_page)}"
             # ★ 3.7.1 PV 预算闸门(主动):今日已用接近预算 → 提前收手,比「被封后才停」更靠前
             _want = max(int(pages), 1) + len(NP_FREE_SPSTATES)
             if not self._pv_allow(_sid, "browse", want=_want):
@@ -2306,16 +2321,46 @@ class MagicFlow(_PluginBase):
                 return []
             cands: List[Any] = []
             self._pv_spend(_sid, "browse", max(int(pages), 1))  # PV 账本:主列表翻 pages 页
-            try:
-                cands = fetcher.browse_site(
-                    task.site_domain,
-                    rss_support=getattr(task, "rss_support", False),
-                    pages=pages,
-                    start_page=start_page,
-                ) or []
-            except Exception as err:  # noqa: BLE001
-                self._log(f"魔流 [{task.name}] 站点抓取失败:{err}", "warning")
-                cands = []
+            _np_main = False
+            # ★ 主列表优先走「NexusPHP 直连 + 自解析」：SDK browse 经常拿不到促销列，
+            #   downloadvolumefactor 恒为 0.0（**所有种都被当成免费**）→ 魔力/跨站判定全错。
+            #   自解析 `_parse_np_rows` 读的是页面真实促销标记（pro_free / promotion free）。
+            _m_site = self._get_site(_sid)
+            if _m_site is not None and getattr(_m_site, "cookie", None) and (
+                force_main or bool(getattr(_cap, "free_index", False))
+            ):
+                try:
+                    _mc = fetcher.browse_site_np_free(
+                        _m_site,
+                        pages=(1 if force_main else max(int(pages), 1)),
+                        start_page=start_page,
+                        main=True,
+                    ) or []
+                except Exception as _merr:  # noqa: BLE001
+                    self._log(
+                        f"魔流 [{task.name}] 站点 {site_key} 主列表直连抓取失败:{_merr}",
+                        "warning",
+                    )
+                    _mc = []
+                if _mc:
+                    cands = list(_mc)
+                    _np_main = True
+                    _nf_mc = sum(1 for _c in cands if not getattr(_c, "is_free", False))
+                    self._log(
+                        f"魔流 [{task.name}] 站点 {site_key} 主列表(自解析)返回 {len(cands)} 个候选"
+                        f"(非免费 {_nf_mc})"
+                    )
+            if not _np_main:
+                try:
+                    cands = fetcher.browse_site(
+                        task.site_domain,
+                        rss_support=getattr(task, "rss_support", False),
+                        pages=pages,
+                        start_page=start_page,
+                    ) or []
+                except Exception as err:  # noqa: BLE001
+                    self._log(f"魔流 [{task.name}] 站点抓取失败:{err}", "warning")
+                    cands = []
             cands = list(cands)
             self._log(
                 f"魔流 [{task.name}] 站点 {site_key} browse_site 返回 {len(cands)} 个候选"
@@ -2325,7 +2370,7 @@ class MagicFlow(_PluginBase):
             # 补充：NexusPHP 免费定向视图（最新页窗口天生漏免费种，见上）。
             # 失败/非 NexusPHP 站点返回空，静默忽略，不影响最新页结果。
             try:
-                _can_free = bool(getattr(_cap, "free_index", False)) and not _free_tried
+                _can_free = bool(getattr(_cap, "free_index", False)) and not _free_tried and not force_main
                 site = self._get_site(int(getattr(task, "site_id", 0) or 0)) if _can_free else None
                 if site and getattr(site, "cookie", None):
                     self._pv_spend(_sid, "browse", len(NP_FREE_SPSTATES))  # PV 账本:免费定向视图
@@ -3831,6 +3876,10 @@ class MagicFlow(_PluginBase):
             # ---------- 3 洗池(尚无 infohash,仅用列表字段)----------
             self._set_phase(task.id, "wash")
             filter_policy = self._build_filter_policy(task)
+            _want_free_now = bool(
+                getattr(filter_policy, "free_only", False)
+                or getattr(filter_policy, "double_free_only", False)
+            )
             filtered, reason_counts = filter_candidates(candidates, filter_policy)
             wash_reasons: Dict[str, int] = dict(reason_counts)
             # ★ 限时免费闸门(洗池级):促销剩的免费时间不够下完 → 直接洗掉。
@@ -3872,23 +3921,61 @@ class MagicFlow(_PluginBase):
             # ★ 3.10.0 跨站候选池：刷流任务「免费」是硬要求 → 仅因非免费被洗掉的候选不能在本站下，
             #   但它们可以去他站免费下再回辅本站。把这类候选收进独立池（本相位不碰主流程）。
             _cs_pool: List[Any] = []
-            if getattr(task, "crossseed_enabled", False) and candidates:
+            if getattr(task, "crossseed_enabled", False):
                 try:
+                    # ★ 免费任务抓的是**免费索引**（全是免费种），跨站池要的是「本站不免费」的候选
+                    #   → 单独拿一份**主列表**（1 页，按小时缓存，约 1 PV/小时），池子里挑。
+                    _cs_source = list(candidates)
+                    _cap_now = self.sitecaps().get(str(getattr(task, "site_domain", "") or ""))
+                    if _want_free_now and getattr(_cap_now, "free_index", False):
+                        _main_c = self._fetch_site_candidates(
+                            task, pages=1, start_page=0, force_main=True
+                        ) or []
+                        if _main_c:
+                            _cs_source = list(_main_c)
                     _relaxed = copy.copy(filter_policy)
                     _relaxed.free_only = False
                     _relaxed.double_free_only = False
-                    _relaxed_list, _ = filter_candidates(candidates, _relaxed)
+                    _relaxed_list, _ = filter_candidates(_cs_source, _relaxed)
                     _kept_keys = {
                         (self._candidate_key(c) or getattr(c, "hash", "") or getattr(c, "title", ""))
                         for c in filtered
                     }
+                    _cand_keys = {
+                        (self._candidate_key(c) or getattr(c, "hash", "") or getattr(c, "title", ""))
+                        for c in candidates
+                    }
+                    _nf_n = sum(1 for c in _relaxed_list if not bool(getattr(c, "is_free", False)))
+                    _new_n = 0
+                    for c in _relaxed_list:
+                        if bool(getattr(c, "is_free", False)):
+                            continue
+                        kk = self._candidate_key(c) or getattr(c, "hash", "") or getattr(c, "title", "")
+                        if kk not in _cand_keys:
+                            _new_n += 1
+                    self._log(
+                        f"魔流 [{task.name}] 跨站池源 {len(_cs_source)} 个"
+                        f"(主列表{'是' if _cs_source is not candidates else '否'})"
+                        f" → 放宽后 {len(_relaxed_list)} 个（非免费 {_nf_n} / 其中新增 {_new_n}）"
+                    )
+                    # 优先挑「上传潜力」大的（下载人数多、体积大）
+                    try:
+                        _relaxed_list.sort(
+                            key=lambda c: (
+                                int(getattr(c, "leechers", 0) or 0),
+                                float(getattr(c, "size_gb", 0.0) or 0.0),
+                            ),
+                            reverse=True,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
                     for _c in _relaxed_list:
                         if len(_cs_pool) >= CROSSSEED_POOL_MAX:
                             break
                         if bool(getattr(_c, "is_free", False)):
                             continue          # 本站免费的走主流程，不用跨站
                         _k = self._candidate_key(_c) or getattr(_c, "hash", "") or getattr(_c, "title", "")
-                        if _k in _kept_keys:
+                        if _k in _kept_keys or _k in _cand_keys:
                             continue
                         _c.crossseed_only = True
                         _cs_pool.append(_c)
@@ -8284,6 +8371,186 @@ class MagicFlow(_PluginBase):
         )
         info["sample"] = rows[:10]
         return Response(success=True, message="OK", data=info)
+
+    def debug_cache(self, drop: str = "", prefix: str = "", dump: str = "") -> Response:
+        """诊断/维护:查看或丢弃**站点抓取缓存**(TierCache region=cands)。
+
+        - ``GET /debug/cache``               → 列出当前热层里的 key
+        - ``GET /debug/cache?drop=<key>``    → 丢弃该 key(下一轮强制重抓)
+        - ``GET /debug/cache?prefix=hdfans.org|`` → 丢弃同前缀的 key
+        - ``GET /debug/cache?dump=<key>``    → 看该 key 命中的条数 + 前 5 条摘要
+        """
+        cache = self._cache_cands()
+        hot = getattr(cache, "_hot", {}) or {}
+        keys = sorted(str(k) for k in list(hot.keys()))
+        if drop:
+            cache.delete(str(drop))
+            return Response(success=True, message=f"已丢弃缓存 {drop}", data={"dropped": drop})
+        if prefix:
+            hit = [k for k in keys if k.startswith(str(prefix))]
+            for k in hit:
+                cache.delete(k)
+            return Response(
+                success=True, message=f"已丢弃 {len(hit)} 个同前缀缓存", data={"dropped": hit}
+            )
+        if dump:
+            val = cache.get(str(dump), SITE_FETCH_TTL)
+            items = list(val or [])
+            rows: List[Dict[str, Any]] = []
+            for c in items[:5]:
+                rows.append({
+                    "title": str(getattr(c, "title", "") or "")[:70],
+                    "is_free": bool(getattr(c, "is_free", False)),
+                    "dv": getattr(c, "downloadvolumefactor", None),
+                    "seeders": getattr(c, "seeders", None),
+                    "leechers": getattr(c, "leechers", None),
+                    "size_gb": round(float(getattr(c, "size_gb", 0) or 0), 2),
+                })
+            _nf = sum(1 for c in items if not bool(getattr(c, "is_free", False)))
+            return Response(
+                success=True,
+                message=f"命中 {len(items)} 条(非免费 {_nf})",
+                data={"count": len(items), "non_free": _nf, "sample": rows},
+            )
+        return Response(success=True, message=f"热层 {len(keys)} 个 key", data={"keys": keys})
+
+    def debug_crossseed(
+        self, task: str = "", n: int = 3, add: bool = False, force_main: bool = True
+    ) -> Response:
+        """诊断:拿某任务的候选**当成「本站非免费」**跑一遍跨站选源链路(dry-run)。
+
+        ``GET /debug/crossseed?task=<id>&n=3[&add=true]``
+
+        站点全免费时也能验（把免费候选假设为非免费）：
+          - 每个候选在本站取 1 次 .torrent（1 PV）→ 算特征码
+          - 调 MP 搜索到各候选源站 → 免费且有源的行
+          - 算「同一 Release」→ 命中哪站、特征码对不对
+        ``add=true`` 才真的发起他站下载（默认只报告，不动下载器）。
+        """
+        tid = str(task or "").strip()
+        if not tid:
+            return Response(success=False, message="task 必填(任务 id)")
+        cfg = self._task_configs.get(tid)
+        if cfg is None:
+            return Response(success=False, message=f"任务不存在:{tid}")
+        n = max(1, min(int(n or 3), CROSSSEED_EXTRA_SCAN))
+        out: Dict[str, Any] = {"task": tid, "name": getattr(cfg, "name", ""), "add": bool(add)}
+        downloader = self._get_downloader(str(getattr(cfg, "downloader", "") or "qbittorrent"))
+        if downloader is None or not downloader.is_available:
+            return Response(success=False, message="下载器不可用", data=out)
+        cands = self._fetch_site_candidates(
+            cfg, pages=1, start_page=0, force_main=bool(force_main)
+        ) or []
+        out["candidates"] = len(cands)
+        if not cands:
+            return Response(success=False, message="没抓到候选(站点不可达/封/PV 尽)", data=out)
+        # 挑「上传潜力」大的：下载人数多、体积从小到大
+        try:
+            cands = sorted(
+                cands,
+                key=lambda c: (
+                    -int(getattr(c, "leechers", 0) or 0),
+                    float(getattr(c, "size_gb", 0.0) or 0.0),
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        sid = int(getattr(cfg, "site_id", 0) or 0)
+        ids = self._crossseed_site_ids(cfg)[: max(int(getattr(cfg, "crossseed_max_sites", 6) or 6), 1)]
+        out["source_sites"] = ids
+        items: List[Dict[str, Any]] = []
+        for cand in cands[: max(n * 3, n)]:
+            if len(items) >= n:
+                break
+            url = str(getattr(cand, "enclosure", "") or "")
+            if not url:
+                continue
+            item: Dict[str, Any] = {
+                "title": str(getattr(cand, "title", "") or "")[:90],
+                "size_gb": round(float(getattr(cand, "size_gb", 0.0) or 0.0), 2),
+                "leechers": int(getattr(cand, "leechers", 0) or 0),
+                "is_free_on_a": bool(getattr(cand, "is_free", False)),
+                "a_hash": "",
+                "mp_search": None,
+                "source": None,
+                "note": "",
+            }
+            if sid and (self._pv_block_reason(sid) or not self._pv_allow(sid, "crossseed", want=1)):
+                item["note"] = "本站 PV 预算不足/已封,停"
+                items.append(item)
+                break
+            raw = None
+            try:
+                raw = downloader.fetch_torrent_bytes(
+                    url,
+                    cookie=getattr(cand, "site_cookie", None),
+                    user_agent=getattr(cand, "site_ua", None),
+                    referer=str(getattr(cand, "page_url", "") or "") or None,
+                )
+            except Exception as err:  # noqa: BLE001
+                item["note"] = f"本站取种异常:{err}"
+            finally:
+                if sid:
+                    self._pv_spend(sid, "crossseed", 1)
+            if not raw:
+                item["note"] = item["note"] or "本站取种失败"
+                items.append(item)
+                continue
+            try:
+                cand.raw = raw
+                cand.real_hash = (info_hash(raw) or "").lower()
+            except Exception:  # noqa: BLE001
+                cand.real_hash = ""
+            item["a_hash"] = cand.real_hash
+            kw = search_key(str(getattr(cand, "title", "") or ""))
+            item["keyword"] = kw
+            rows = self._crossseed_search_rows(kw, ids) if (kw and ids) else []
+            item["mp_search"] = len(rows)
+            if not rows:
+                item["note"] = item["note"] or "MP 搜索:他站无免费且有源的同名种"
+                items.append(item)
+                continue
+            src_count: Dict[str, int] = {}
+            for r in rows:
+                k = str(getattr(r, "site_name", "") or getattr(r, "site", ""))
+                src_count[k] = src_count.get(k, 0) + 1
+            item["rows_by_site"] = src_count
+            try:
+                fp = fingerprint(raw)
+            except Exception:  # noqa: BLE001
+                fp = None
+            self._crossseed_downloader = str(getattr(cfg, "downloader", "") or "qbittorrent")
+            hit = pick_source(
+                title=getattr(cand, "title", ""),
+                size_bytes=int(getattr(cand, "size", 0) or 0),
+                fp=fp,
+                rows_provider=lambda _kw: rows,
+                torrent_bytes=self._crossseed_torrent_bytes,
+                log=self._log,
+            )
+            if not hit:
+                item["note"] = item["note"] or "有免费同名种但特征码不同(非同一 Release)"
+                items.append(item)
+                continue
+            item["source"] = {
+                "site": hit.get("site"),
+                "site_name": hit.get("site_name"),
+                "title": str(getattr(hit.get("row"), "title", "") or "")[:90],
+                "size": getattr(hit.get("row"), "size", None),
+                "seeders": getattr(hit.get("row"), "seeders", None),
+            }
+            if add:
+                try:
+                    sib = self._crossseed_start(cfg, cand, downloader)
+                    item["started"] = sib or ""
+                    item["note"] = "已发起他站下载" if sib else "发起失败"
+                except Exception as err:  # noqa: BLE001
+                    item["note"] = f"发起异常:{err}"
+            else:
+                item["note"] = "dry-run:命中可跨站(未发起)"
+            items.append(item)
+        out["items"] = items
+        return Response(success=True, message="OK", data=out)
 
     def debug_site_caps(self, probe: bool = False) -> Response:
         """站点类型/能力识别结果;``probe=true`` 时对未识别/过期的站联网探测一次。"""
