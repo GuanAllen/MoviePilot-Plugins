@@ -620,6 +620,28 @@ class FileGroupStore:
                 return gid
         return ""
 
+    def group_with_fp(self, fp: str) -> str:
+        """按特征码找资源组（辅种配对用）。"""
+        _fp = _clean(fp)
+        if not _fp:
+            return ""
+        for gid, rec in self.items().items():
+            for m in (rec.get("members") or {}).values():
+                if _clean((m or {}).get("fp")) == _fp:
+                    return gid
+        return ""
+
+    def fp_index(self) -> Dict[str, Dict[str, Any]]:
+        """``fp -> {hash, site, group_id}``（多站辅种速查表）。"""
+        out: Dict[str, Dict[str, Any]] = {}
+        for gid, rec in self.items().items():
+            for h, m in (rec.get("members") or {}).items():
+                fp = _clean((m or {}).get("fp"))
+                if fp and fp not in out:
+                    out[fp] = {"hash": h, "site": (m or {}).get("site") or "",
+                               "group_id": gid, "members": len(rec.get("members") or {})}
+        return out
+
     def members(self, group_id: str) -> Dict[str, Dict[str, Any]]:
         return dict((self.items().get(_clean(group_id)) or {}).get("members") or {})
 
@@ -635,6 +657,7 @@ class FileGroupStore:
         downloaded: bool = True,
         progress: float = 1.0,
         state: str = "",
+        fp: str = "",
         now: Optional[float] = None,
     ) -> Dict[str, Any]:
         gid = _clean(group_id)
@@ -648,15 +671,31 @@ class FileGroupStore:
         # ★ 只有「下完」的种才建立资源/成为资源成员（没下完的只有种子，没有资源）
         if not downloaded and not members:
             return {"group_id": gid, "members": 0, "skipped": "not_downloaded"}
-        members[h] = {"site": _clean(site), "downloader": _clean(downloader), "added": ts,
+        prev = dict(members.get(h) or {})
+        members[h] = {"site": _clean(site), "downloader": _clean(downloader), "added": prev.get("added") or ts,
                       "downloaded": bool(downloaded), "progress": round(float(progress or 0), 4)}
         if state:
             members[h]["state"] = _clean(state)
+        _fp = _clean(fp) or _clean(prev.get("fp"))
+        if _fp:
+            members[h]["fp"] = _fp
         # 资源级的「来源站」= 真正把它下回来的那个站（H&R 义务所在）
         if downloaded and not _clean(rec.get("source_site")):
             rec["source_site"] = _clean(site)
             rec["source_hash"] = h
         rec["members"] = members
+        # ★ 同一 hash 只能属于一个资源：从其它组里摘掉（fp 计算出来后从「关键词组」搬进「特征码组」）
+        for other_gid in [k for k in data if k != gid and h in (data[k].get("members") or {})]:
+            orec = dict(data.get(other_gid) or {})
+            omembers = dict(orec.get("members") or {})
+            omembers.pop(h, None)
+            if omembers:
+                orec["members"] = omembers
+                orec["files_shared"] = True
+                orec["updated"] = ts
+                data[other_gid] = orec
+            else:
+                data.pop(other_gid, None)
         if size_gb:
             rec["size_gb"] = float(size_gb)
         rec["files_shared"] = bool(len(members) > 1 if files_shared is None else files_shared)
@@ -778,8 +817,10 @@ class FileGroupStore:
             members = rec.get("members") or {}
             hr = dict(rec.get("hr") or {})
             lib = dict(rec.get("library") or {})
+            _fps = sorted({_clean((m or {}).get("fp")) for m in members.values() if _clean((m or {}).get("fp"))})
             out.append({
                 "group_id": gid,
+                "fp": _fps[0] if _fps else "",
                 "size_gb": round(float(rec.get("size_gb") or 0), 2),
                 "members": len(members),
                 "sites": sorted({str((m or {}).get("site") or "") for m in members.values() if (m or {}).get("site")}),
@@ -822,7 +863,9 @@ class FileGroupStore:
     def stats(self) -> Dict[str, int]:
         items = self.items()
         multi = sum(1 for rec in items.values() if len(rec.get("members") or {}) > 1)
-        return {"groups": len(items), "multi_site_groups": multi}
+        with_fp = sum(1 for rec in items.values()
+                      if any(_clean((m or {}).get("fp")) for m in (rec.get("members") or {}).values()))
+        return {"groups": len(items), "multi_site_groups": multi, "groups_with_fp": with_fp}
 
 
 # ---------------------------------------------------------------- 分拣规则（默认值）
