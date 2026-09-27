@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.16.0"
+__version__ = "3.17.0"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -221,6 +221,7 @@ REUSE_SCAN_MAX = 15
 #   - 每轮批量:一次只取这么多个候选的 .torrent 做辅种判定。
 REUSE_INTERVAL_MINUTES = 15
 SILENT_HOST_INTERVAL_MINUTES = 60  # ⭐「静默托管」常驻 worker 周期(分钟，低频)
+SILENT_HOST_TASK_ID = "__silent_host__"  # ⭐「静默托管」常驻任务在任务列表里的只读条目 id
 # 跨站免费取种的「回辅」轮询周期(分钟)：B/C/D… 站点下完后，尽快把它辅回目标站。
 CROSSSEED_INTERVAL_MINUTES = 5
 # 跨站检索结果的缓存 TTL(秒)：同一关键词 6 小时内不重复检索(省 PV)。
@@ -9354,6 +9355,8 @@ class MagicFlow(_PluginBase):
 
     def _build_task_detail(self, task_id: str) -> Optional[Dict[str, Any]]:
         """构建任务详情(含统计信息)。"""
+        if str(task_id or "") == SILENT_HOST_TASK_ID:
+            return self._silent_host_card()
         task = self._get_task_config(task_id)
         if not task:
             return None
@@ -9443,6 +9446,10 @@ class MagicFlow(_PluginBase):
                 **self._phase_info(task.id),
                 **self._task_goal_status(task),
             })
+        try:
+            tasks.append(self._silent_host_card())
+        except Exception:  # noqa: BLE001
+            pass
         return tasks
 
     # ---------------------------------------------------------
@@ -9483,6 +9490,10 @@ class MagicFlow(_PluginBase):
         except Exception as err:
             self._log(f"构建轻量总览失败:{err}", "warning")
             total, enabled, tasks = 0, 0, []
+        try:
+            tasks.append(self._silent_host_card())
+        except Exception:  # noqa: BLE001
+            pass
         summary = {
             "total_tasks": total,
             "enabled_tasks": enabled,
@@ -11805,8 +11816,43 @@ class MagicFlow(_PluginBase):
                               f"（资产 {ainfo.get('asset')}）")
             except Exception as err:  # noqa: BLE001
                 self._log(f"静默托管:资产同步失败:{err}", "warning")
+            self._silent_host_last = time.time()
         except Exception as err:  # noqa: BLE001
             self._log(f"静默托管异常:{err}", "warning")
+
+    def _silent_host_card(self) -> Dict[str, Any]:
+        """★ 「静默托管」常驻任务在**任务列表**里的只读条目（Master 2026-09-28 06:33）。"""
+        try:
+            led = self._tag_state().items() or {}
+            n_sil = sum(1 for r in led.values() if str(r.get("state") or "") == STATE_SILENT)
+        except Exception:  # noqa: BLE001
+            n_sil = 0
+        try:
+            _min = float(getattr(self, "_tags_cfg", {}).get("host_interval") or SILENT_HOST_INTERVAL_MINUTES)
+        except Exception:  # noqa: BLE001
+            _min = float(SILENT_HOST_INTERVAL_MINUTES)
+        last = float(getattr(self, "_silent_host_last", 0) or 0)
+        return {
+            "id": SILENT_HOST_TASK_ID,
+            "name": "静默托管",
+            "builtin": True,
+            "enabled": True,
+            "run_mode": "running",
+            "task_type": "host",
+            "state": "running",
+            "site_id": 0,
+            "site_domain": "",
+            "site_name": "全部站点（静默池）",
+            "downloader": "所有下载器",
+            "brush_tag": "魔流-<站点>-静默[-子类]",
+            "save_path": "",
+            "seeding_count": n_sil,
+            "active_seeding_count": n_sil,
+            "downloading_count": 0,
+            "paused_count": 0,
+            "host_interval_minutes": round(_min, 1),
+            "host_last_run": (time.strftime("%m-%d %H:%M", time.localtime(last)) if last else "—"),
+        }
 
     def tags_watch(self) -> None:
         """标签账本维护（worker）：状态账本快照/对账 · 资源账本 · 特征码补录 · 停止任务退静默。
@@ -14331,6 +14377,9 @@ class MagicFlow(_PluginBase):
 
     def run_task(self, task_id: str) -> Response:
         """异步执行一轮魔力优化(清理低效种子并补充优质种子)。"""
+        if str(task_id or "") == SILENT_HOST_TASK_ID:
+            threading.Thread(target=self.silent_host, daemon=True).start()
+            return Response(success=True, message="静默托管已启动")
         task = self._get_task_config(task_id)
         if not task:
             return Response(success=False, message="任务不存在")
@@ -14431,6 +14480,9 @@ class MagicFlow(_PluginBase):
 
     def get_task_bonus(self, task_id: str) -> Response:
         """获取任务魔力统计及种子列表。"""
+        if str(task_id or "") == SILENT_HOST_TASK_ID:
+            return Response(success=True, message="ok", data={
+                "torrents": [], "total_bonus": 0.0, "torrent_count": 0, "protected_count": 0})
         task = self._get_task_config(task_id)
         if not task:
             return Response(success=False, message="任务不存在")
@@ -14500,6 +14552,9 @@ class MagicFlow(_PluginBase):
 
     def get_task_candidates(self, task_id: str) -> Response:
         """获取候选种子(黑盒:不对外暴露自算魔力评分,仅返回名次与基础属性)。"""
+        if str(task_id or "") == SILENT_HOST_TASK_ID:
+            return Response(success=True, message="ok", data={
+                "candidates": [], "total": 0, "reason_counts": {}})
         task = self._get_task_config(task_id)
         if not task:
             return Response(success=False, message="任务不存在")

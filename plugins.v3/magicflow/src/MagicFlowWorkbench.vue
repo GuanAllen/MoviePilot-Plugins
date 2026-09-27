@@ -14,8 +14,6 @@ import {
   normalizeDownloaderPrefs,
   normalizeIyuuSites,
   normalizeSettings,
-  normalizeSortRules,
-  SORT_RULE_TYPES,
   normalizeTask,
   cloudStatusMeta,
   recommendStatusMeta,
@@ -80,52 +78,6 @@ const pendingTorrentDelete = ref(null)
 const selectedRows = ref([])
 const batchBusy = ref(false)
 const batchDeleteDialog = ref(false)
-// 批量转移（托管页）
-const transferDialog = ref(false)
-const transferTarget = ref('idle')
-const transferChoices = computed(() => {
-  const out = [{ value: 'idle', text: '静默池（退回，保文件）' }]
-  const me = selectedTask.value
-  const mySite = String(me?.site_name || '')
-  const rest = (status.value?.tasks || []).filter(t => String(t.id) !== String(me?.id))
-  rest.sort((a, b) => Number(String(b.site_name) === mySite) - Number(String(a.site_name) === mySite))
-  for (const t of rest) {
-    const sameSite = String(t.site_name) === mySite
-    out.push({
-      value: String(t.id),
-      text: `${t.name}${t.enabled ? '' : '（已停用）'} — ${t.site_name}·${t.task_type === 'brush' ? '刷流' : '魔力'}${sameSite ? ' · 同站' : ' · 跨站(会改站点标签)'}`,
-    })
-  }
-  return out
-})
-
-function openTransfer() {
-  if (!selectedHashes.value.length) return
-  transferTarget.value = 'idle'
-  transferDialog.value = true
-}
-
-async function confirmTransfer() {
-  const hashes = selectedHashes.value
-  if (!hashes.length || !selectedTask.value) return
-  batchBusy.value = true
-  try {
-    const body = transferTarget.value === 'idle'
-      ? { mode: 'idle', hashes }
-      : { mode: 'handover', target_task_id: transferTarget.value, hashes }
-    const res = await props.api.post(`${pluginBase.value}/tasks/${selectedTask.value.id}/handover`, body)
-    if (res?.success === false) throw new Error(res?.message || '转移失败')
-    notify(res?.message || '已转移')
-    transferDialog.value = false
-    selectedRows.value = []
-    await Promise.all([loadBonus(selectedTask.value.id), loadDetail(selectedTask.value.id)])
-    emit('action')
-  } catch (err) {
-    error.value = err?.message || String(err)
-  } finally {
-    batchBusy.value = false
-  }
-}
 const selectedHashes = computed(() =>
   (selectedRows.value || []).map(row => row?.hash).filter(Boolean),
 )
@@ -140,12 +92,6 @@ const settingsDraft = ref({
   request_interval: 0,
   bonus_upload_limit_kbps: 200,
   brush_upload_limit_kbps: 10240,
-  seed_up_limit_kbps: 200,
-  brush_seed_up_limit_kbps: 5120,
-  tag_model_enabled: true,
-  tag_silent_new_timeout_hours: 24,
-  tag_snapshot_interval_hours: 6,
-  sort_rules: [],
   iyuu_token: '',
   iyuu_clear: false,
   iyuu_sites: {},
@@ -230,12 +176,6 @@ const defaultsLoading = ref(false)
 const iyuuSites = ref([])
 const siteRules = ref([])
 const rulesLoading = ref(false)
-// 标签模型（3.13.0）
-const tagInfo = ref(null)
-const tagMigratePlan = ref(null)
-const tagMigrating = ref(false)
-const newRuleType = ref('subscribe')
-const sortRuleTypeOptions = SORT_RULE_TYPES
 const rulesProbing = ref(false)
 const iyuuLoading = ref(false)
 const iyuuTesting = ref(false)
@@ -601,12 +541,6 @@ async function loadStatus() {
       request_interval: status.value.request_interval,
       bonus_upload_limit_kbps: status.value.bonus_upload_limit_kbps,
       brush_upload_limit_kbps: status.value.brush_upload_limit_kbps,
-      seed_up_limit_kbps: status.value.seed_up_limit_kbps,
-      brush_seed_up_limit_kbps: status.value.brush_seed_up_limit_kbps,
-      tag_model_enabled: status.value.tag_model_enabled !== false,
-      tag_silent_new_timeout_hours: status.value.tag_silent_new_timeout_hours ?? 24,
-      tag_snapshot_interval_hours: status.value.tag_snapshot_interval_hours ?? 6,
-      sort_rules: normalizeSortRules(status.value.sort_rules),
       iyuu_token: status.value.iyuu_token,
       iyuu_sites: status.value.iyuu_sites,
       ...(status.value.crossseed ? {
@@ -1230,52 +1164,15 @@ async function saveTask(payload) {
   }
 }
 
-// ── 删除任务：名下种子交棒 / 退回静默 ─────────────────────
-const handover = ref(null)
-const handoverLoading = ref(false)
-const handoverTarget = ref('idle')
-
-const handoverChoices = computed(() => {
-  const h = handover.value
-  const out = [{ value: 'idle', text: '退回静默池（保文件，交给全局规则管）' }]
-  for (const c of h?.candidates || []) {
-    const mark = c.same_tag ? '同标签·自动接管' : (c.same_site ? '同站·需重贴标签' : '跨站·会改站点标签')
-    const off = c.enabled ? '' : '（已停用）'
-    out.push({ value: c.id, text: `${c.name}${off} — ${c.site}·${c.state}（${mark}）` })
-  }
-  return out
-})
-
-async function onDeleteDialog(open) {
-  if (!open) return
-  handover.value = null
-  handoverTarget.value = 'idle'
-  if (!selectedTask.value) return
-  handoverLoading.value = true
-  try {
-    handover.value = unwrapResponse(await props.api.get(`${pluginBase.value}/tasks/${selectedTask.value.id}/handover`)) || null
-    // ★ 默认退回静默池（正常就该这样）；要指定交棒得自己选 —— 同标签任务本来就会自动接管，无需交棒
-    handoverTarget.value = 'idle'
-  } catch (err) {
-    error.value = err?.message || String(err)
-  } finally {
-    handoverLoading.value = false
-  }
-}
-
 // 确认删除当前任务。
 async function confirmDeleteTask() {
   if (!selectedTask.value) return
   saving.value = true
   try {
-    const q = handoverTarget.value === 'idle'
-      ? '?settle=idle'
-      : `?handover_to=${encodeURIComponent(handoverTarget.value)}`
-    const res = await props.api.delete(`${pluginBase.value}/tasks/${selectedTask.value.id}${q}`)
-    if (res?.success === false) throw new Error(res?.message || '删除失败')
-    notify(res?.message || '任务已删除')
+    unwrapResponse(await props.api.delete(`${pluginBase.value}/tasks/${selectedTask.value.id}`))
     deleteDialog.value = false
     selectedTaskId.value = ''
+    notify('任务已删除')
     await loadStatus()
     emit('action')
   } catch (err) {
@@ -1447,74 +1344,6 @@ async function openSettings(tab = 'general') {
   if (tab === 'fallback') loadFallback()
   if (tab === 'cloud') loadCloud()
   if (tab === 'rules') loadRules()
-  if (tab === 'tags') loadTags()
-}
-
-// ── 标签模型 ─────────────────────────────────────────────
-async function loadTags() {
-  try {
-    const res = await props.api.get(`${pluginBase.value}/tags`)
-    tagInfo.value = res?.data || null
-  } catch (err) {
-    error.value = err?.message || String(err)
-  }
-}
-
-function sortRuleText(r) {
-  return (SORT_RULE_TYPES.find(t => t.value === r?.type)?.text) || r?.type || '-'
-}
-
-function sortRuleNeedsMin(type) {
-  return !!SORT_RULE_TYPES.find(t => t.value === type)?.min
-}
-
-function addSortRule() {
-  const t = newRuleType.value
-  if (!t) return
-  if (!Array.isArray(settingsDraft.value.sort_rules)) settingsDraft.value.sort_rules = []
-  if (settingsDraft.value.sort_rules.some(r => r.type === t)) {
-    notify('该规则已存在')
-    return
-  }
-  const meta = SORT_RULE_TYPES.find(x => x.value === t) || {}
-  const row = { type: t, weight: 50, enabled: true }
-  if (meta.min) row.min = meta.defaultMin ?? 0
-  settingsDraft.value.sort_rules.push(row)
-}
-
-function removeSortRule(i) {
-  if (Array.isArray(settingsDraft.value.sort_rules)) settingsDraft.value.sort_rules.splice(i, 1)
-}
-
-async function previewTagMigrate() {
-  tagMigrating.value = true
-  try {
-    const res = await props.api.get(`${pluginBase.value}/tags?action=migrate`)
-    tagMigratePlan.value = res?.data || null
-    await loadTags()
-  } catch (err) {
-    alert(`迁移预演失败: ${err?.message || err}`)
-  } finally {
-    tagMigrating.value = false
-  }
-}
-
-async function applyTagMigrate() {
-  const total = tagMigratePlan.value?.total || 0
-  if (!total) return
-  if (!confirm(`确认把 ${total} 个托管种子的老标签迁移到「魔流-站点-状态」新命名？\n（保留 已整理/辅种 等外来标签）`)) return
-  tagMigrating.value = true
-  try {
-    const res = await props.api.post(`${pluginBase.value}/tags/migrate`, { apply: true })
-    notify(res?.message || '迁移完成')
-    tagMigratePlan.value = null
-    await loadTags()
-    emit('action')
-  } catch (err) {
-    alert(`迁移失败: ${err?.message || err}`)
-  } finally {
-    tagMigrating.value = false
-  }
 }
 
 // ── 云盘归档 ─────────────────────────────────────────────
@@ -1708,20 +1537,6 @@ async function probeRules(site) {
   }
 }
 
-async function setRuleHr(row, hr) {
-  if (!row?.domain) return
-  try {
-    const res = await props.api.get(
-      `rules?action=hr&site=${encodeURIComponent(row.domain)}&hr=${encodeURIComponent(hr)}`,
-    )
-    if (res?.success === false) throw new Error(res?.message || '失败')
-    siteRules.value = res?.data?.rules || siteRules.value
-    await loadRules()
-  } catch (e) {
-    alert(`标记失败: ${e?.message || e}`)
-  }
-}
-
 async function setRuleHours(row, hours) {
   const dom = row?.domain
   if (!dom) return
@@ -1734,11 +1549,8 @@ async function refreshRules() {
   siteRules.value = res?.data?.rules || []
 }
 
-function ruleSourceText(row) {
-  const src = row?.hours_src
-  const base = ({ manual: '手填', probe: '页面探测', builtin: '内置', default: '全局默认' })[src] || src || '-'
-  if (src === 'probe' && row?.confidence && row.confidence !== 'high') return `${base}(低可信)`
-  return base
+function ruleSourceText(src) {
+  return ({ manual: '手填', probe: '页面探测', builtin: '内置', default: '全局默认' })[src] || src || '-'
 }
 
 async function loadIyuuSites() {
@@ -2306,7 +2118,6 @@ onUnmounted(() => {
             >
               <span class="magicflow-task-item__title">
                 <strong>{{ task.name }}</strong>
-                <VChip v-if="task.builtin" size="x-small" variant="tonal" color="primary">常驻</VChip>
                 <span class="magicflow-status-dot" :class="`magicflow-status-dot--${taskBadge(task).color}`" />
               </span>
               <span>{{ task.site_name }} · {{ task.downloader }}</span>
@@ -2332,8 +2143,7 @@ onUnmounted(() => {
               <div class="magicflow-task-head__body">
                 <div class="magicflow-task-head__title">
                   <h2>{{ selectedTask.name }}</h2>
-                  <VChip v-if="selectedTask.builtin" size="small" variant="tonal" color="primary" prepend-icon="mdi-access-point">常驻</VChip>
-                  <VChip v-else size="small" variant="tonal" :color="selectedTask.task_type === 'brush' ? 'info' : 'primary'" :prepend-icon="selectedTask.task_type === 'brush' ? 'mdi-upload-network-outline' : 'mdi-star-four-points-outline'">
+                  <VChip size="small" variant="tonal" :color="selectedTask.task_type === 'brush' ? 'info' : 'primary'" :prepend-icon="selectedTask.task_type === 'brush' ? 'mdi-upload-network-outline' : 'mdi-star-four-points-outline'">
                     {{ selectedTask.task_type === 'brush' ? '刷流' : '刷魔力' }}
                   </VChip>
                   <VChip :color="selectedState.color" size="small" variant="tonal" :prepend-icon="selectedState.icon">
@@ -2354,7 +2164,7 @@ onUnmounted(() => {
                   <VBtn v-bind="tipProps" icon="mdi-refresh" variant="text" @click="reloadSelected()" />
                 </template>
               </VTooltip>
-              <VMenu v-if="!selectedTask.builtin" location="bottom end">
+              <VMenu location="bottom end">
                 <template #activator="{ props: menuProps }">
                   <VBtn
                     v-bind="menuProps"
@@ -2375,12 +2185,12 @@ onUnmounted(() => {
                   />
                 </VList>
               </VMenu>
-              <VTooltip v-if="!selectedTask.builtin" text="编辑任务">
+              <VTooltip text="编辑任务">
                 <template #activator="{ props: tipProps }">
                   <VBtn v-bind="tipProps" icon="mdi-pencil-outline" variant="text" @click="openEditTask" />
                 </template>
               </VTooltip>
-              <VTooltip v-if="!selectedTask.builtin" text="删除任务">
+              <VTooltip text="删除任务">
                 <template #activator="{ props: tipProps }">
                   <VBtn v-bind="tipProps" icon="mdi-delete-outline" variant="text" color="error" @click="deleteDialog = true" />
                 </template>
@@ -2388,7 +2198,6 @@ onUnmounted(() => {
             </div>
           </section>
 
-          <template v-if="!selectedTask.builtin">
           <div class="magicflow-tabs" role="tablist">
             <button
               v-for="tab in MF_TABS"
@@ -2738,7 +2547,6 @@ onUnmounted(() => {
                   <VBtn size="small" variant="tonal" :disabled="batchBusy" @click="batchAction('pause')">暂停</VBtn>
                   <VBtn size="small" variant="tonal" :disabled="batchBusy" @click="batchAction('resume')">恢复</VBtn>
                   <VBtn size="small" variant="tonal" :disabled="batchBusy" @click="batchAction('recheck')">校验</VBtn>
-                  <VBtn size="small" variant="tonal" color="primary" :disabled="batchBusy" @click="openTransfer">批量转移</VBtn>
                   <VBtn size="small" variant="tonal" color="error" :disabled="batchBusy" @click="batchDeleteDialog = true">删除</VBtn>
                   <VSpacer />
                   <VBtn size="small" variant="text" :disabled="batchBusy" @click="selectAllFiltered">全选筛选（{{ sortedTorrents.length }}）</VBtn>
@@ -2981,42 +2789,6 @@ onUnmounted(() => {
             </VWindowItem>
 
           </VWindow>
-          </template>
-          <template v-else>
-            <VSheet class="magicflow-panel app-surface-static" style="margin-top:16px;">
-              <header class="magicflow-panel__head">
-                <div>
-                  <div class="text-subtitle-1 font-weight-medium">静默托管 · 常驻 worker</div>
-                  <div class="text-body-2 text-medium-emphasis">静默池的负责人：清理未下完 / 保挂（恢复做种）/ H&R 统一管理 / 辅种校验 / 分拣，低频自动运行</div>
-                </div>
-                <VChip color="primary" size="small" variant="tonal" prepend-icon="mdi-access-point">常驻</VChip>
-              </header>
-              <div class="magicflow-stat-grid">
-                <VSheet class="magicflow-stat app-surface-static">
-                  <strong>{{ selectedTask.seeding_count || 0 }}</strong>
-                  <span>静默池种子（托管中）</span>
-                </VSheet>
-                <VSheet class="magicflow-stat app-surface-static">
-                  <strong>{{ selectedTask.host_interval_minutes || 60 }} 分钟</strong>
-                  <span>托管周期 · silent_host_interval_minutes 可调</span>
-                </VSheet>
-                <VSheet class="magicflow-stat app-surface-static">
-                  <strong>{{ selectedTask.host_last_run || '—' }}</strong>
-                  <span>上次运行</span>
-                </VSheet>
-              </div>
-              <ul class="text-body-2 text-medium-emphasis" style="margin-top:14px;padding-left:18px;line-height:1.9;">
-                <li>① 清理未下完的种（不计 H&R）　② 保挂：已完成却暂停/停止的种恢复做种（静默≠白占盘）</li>
-                <li>③ H&R 统一管理：欠 H&R 打标 · 未到期被暂停强制拉起 · 结清摘标</li>
-                <li>④ 辅种校验（pausedDL recheck 拉起）　⑤ 静默-普通清理（站点魔力已达标时删低效）</li>
-                <li>⑥ 推荐过期待降级　⑦ 分拣：静默-新 → 推荐/普通　⑧ 静默-新超时归普通　⑨ 库内资产刷新</li>
-              </ul>
-              <div style="margin-top:14px;display:flex;gap:8px;">
-                <VBtn size="small" color="primary" variant="tonal" prepend-icon="mdi-sync" :loading="saving" @click="runOperation">立即执行</VBtn>
-                <VBtn size="small" variant="text" prepend-icon="mdi-refresh" @click="reloadSelected()">刷新</VBtn>
-              </div>
-            </VSheet>
-          </template>
         </main>
       </div>
     </template>
@@ -3052,7 +2824,6 @@ onUnmounted(() => {
           <VTab value="recommend" class="magicflow-settings-tab">推荐</VTab>
           <VTab value="crossseed" class="magicflow-settings-tab">跨站</VTab>
           <VTab value="rules" class="magicflow-settings-tab">站点规则</VTab>
-          <VTab value="tags" class="magicflow-settings-tab">标签管理</VTab>
         </VTabs>
         <VDivider />
 
@@ -3109,28 +2880,6 @@ onUnmounted(() => {
                 step="10"
                 label="刷流任务上传限速（KB/s）"
                 hint="有刷流任务在跑时生效（优先），0 = 不限"
-                persistent-hint
-                variant="outlined"
-                density="comfortable"
-              />
-              <VTextField
-                v-model.number="settingsDraft.seed_up_limit_kbps"
-                type="number"
-                min="0"
-                step="50"
-                label="挂种单种上传限速（KB/s）"
-                hint="魔力 / 来源份 / 推荐的种子：单种单独限速，默认 200（低于 100 可能被站点判「恶意限速」）；0 = 不限"
-                persistent-hint
-                variant="outlined"
-                density="comfortable"
-              />
-              <VTextField
-                v-model.number="settingsDraft.brush_seed_up_limit_kbps"
-                type="number"
-                min="0"
-                step="256"
-                label="刷流单种上传限速（KB/s）"
-                hint="刷流任务的种子：要冲量，默认 5120（=5 MB/s）；0 = 不限"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
@@ -3675,20 +3424,11 @@ onUnmounted(() => {
                 <span class="magicflow-rules-row__name" :title="row.domain">
                   {{ row.site_name || row.domain }}
                   <em v-if="!row.in_library">未入库</em>
-                  <em v-if="row.exam_avg_hours" :title="row.exam_evidence || '站点考核的平均做种要求（不是 H&R）'">考核均值{{ row.exam_avg_hours }}h</em>
-                  <em v-if="row.free_over_gb" title="站点促销规则：达到该体积自动免费（列表页可能不标促销，插件按规则补判）">&gt;{{ row.free_over_gb }}G免</em>
-                  <em v-if="row.free_original" title="站点促销规则：原盘自动免费">原盘免</em>
-                  <em v-if="row.free_ep1" title="站点促销规则：每季第一集自动免费">首集免</em>
                 </span>
-                <span class="magicflow-rules-row__hr">
+                <span>
                   <VChip v-if="row.hr === true" size="x-small" color="error" variant="tonal">有</VChip>
                   <VChip v-else-if="row.hr === false" size="x-small" color="success" variant="tonal">无</VChip>
                   <VChip v-else size="x-small" variant="tonal">未知</VChip>
-                  <VBtn v-if="row.hr === false" size="x-small" variant="text" :disabled="rulesProbing" title="恢复为探测/内置判定" @click="setRuleHr(row, 'unknown')">恢复</VBtn>
-                  <template v-else>
-                    <VBtn size="x-small" variant="text" :disabled="rulesProbing" title="该站有 H&R：手动确认为「有」并按当前时长保护" @click="setRuleHr(row, '1')">标有</VBtn>
-                    <VBtn size="x-small" variant="text" :disabled="rulesProbing" title="该站没有 H&R：直接标无，不做保种保护" @click="setRuleHr(row, '0')">标无</VBtn>
-                  </template>
                 </span>
                 <span>
                   <VTextField
@@ -3705,11 +3445,7 @@ onUnmounted(() => {
                   />
                 </span>
                 <span>{{ row.seed_cap || '-' }}</span>
-                <span class="magicflow-rules-row__src" :title="row.evidence || ''">
-                  {{ ruleSourceText(row) }}
-                  <em v-if="row.seed_need_hours" :title="'规则窗口 ' + (row.seed_window_hours || row.seed_hours || 0) + 'h，达到线 ' + row.seed_need_hours + 'h；保护期取窗口(保守)'">需{{ row.seed_need_hours }}h</em>
-                  <em v-if="row.seed_hours_seen != null">(看到{{ row.seed_hours_seen }}h)</em>
-                </span>
+                <span class="magicflow-rules-row__src">{{ ruleSourceText(row.hours_src) }}</span>
                 <span>
                   <VBtn size="x-small" variant="text" :disabled="rulesProbing" @click="probeRules(row.domain)">探测</VBtn>
                 </span>
@@ -3717,88 +3453,6 @@ onUnmounted(() => {
             </div>
             <p class="magicflow-settings-hint">
               「保种(h)」直接改 = 写入手填覆盖（等同于跨站页的「站点保种时长」）。
-            </p>
-          </div>
-
-          <div v-else-if="settingsTab === 'tags'" class="magicflow-settings-form">
-            <p class="magicflow-settings-hint">
-              标签模型：种子状态 = 标签 <code>魔流-&lt;站点&gt;-&lt;状态&gt;[-&lt;子类&gt;]</code>，
-              状态有 <strong>刷流 / 魔力 / 静默(新·资源·普通) / 推荐</strong>；
-              另有<strong>状态账本</strong>做真值源（标签被改坏也能自愈），以及
-              <strong>文件组账本</strong>按多站引用计数——<em>摘成员只删种，最后一个成员才连文件清</em>。
-            </p>
-            <div class="magicflow-settings-switches">
-              <VSwitch v-model="settingsDraft.tag_model_enabled" label="启用标签模型（状态账本 + 魔流-站点-状态 标签）" color="primary" hide-details inset />
-            </div>
-            <div class="magicflow-settings-grid">
-              <VTextField v-model.number="settingsDraft.tag_silent_new_timeout_hours" type="number" min="0" step="1"
-                label="「静默-新」超时(小时)" hint="超过该时长未分拣自动归「静默-普通」，0 = 不超时"
-                persistent-hint variant="outlined" density="comfortable" />
-              <VTextField v-model.number="settingsDraft.tag_snapshot_interval_hours" type="number" min="0" step="1"
-                label="账本快照间隔(小时)" hint="滚动保留最近 3 份，用于精确回滚；0 = 不快照"
-                persistent-hint variant="outlined" density="comfortable" />
-            </div>
-
-            <VDivider class="my-3" />
-            <p class="magicflow-settings-hint">
-              <strong>静默分拣规则</strong>：<code>静默-新</code> 命中任一启用规则 → 进 <code>静默-资源</code>，
-              否则进 <code>静默-普通</code>（受站点魔力产出考核）。
-            </p>
-            <div class="magicflow-sort-rules">
-              <div class="magicflow-sort-rules__row magicflow-sort-rules__row--head">
-                <span>规则</span><span>阈值</span><span>权重</span><span>启用</span><span></span>
-              </div>
-              <div v-for="(r, i) in settingsDraft.sort_rules" :key="i" class="magicflow-sort-rules__row">
-                <span>{{ sortRuleText(r) }}</span>
-                <span>
-                  <VTextField v-if="sortRuleNeedsMin(r.type)" v-model.number="r.min" type="number" step="0.5" density="compact" variant="outlined" hide-details style="max-width: 110px" />
-                  <em v-else>-</em>
-                </span>
-                <span>
-                  <VTextField v-model.number="r.weight" type="number" step="5" density="compact" variant="outlined" hide-details style="max-width: 90px" />
-                </span>
-                <span>
-                  <VSwitch v-model="r.enabled" color="primary" density="compact" hide-details inset />
-                </span>
-                <span>
-                  <VBtn size="x-small" variant="text" color="error" @click="removeSortRule(i)">删除</VBtn>
-                </span>
-              </div>
-            </div>
-            <div class="magicflow-sort-rules__add">
-              <VSelect v-model="newRuleType" :items="sortRuleTypeOptions" item-title="text" item-value="value"
-                density="compact" variant="outlined" hide-details style="max-width: 200px" label="新增规则" />
-              <VBtn size="small" variant="tonal" color="primary" @click="addSortRule">加上</VBtn>
-            </div>
-
-            <VDivider class="my-3" />
-            <div class="magicflow-rules-actions">
-              <VBtn size="small" variant="tonal" color="primary" :loading="tagMigrating" @click="previewTagMigrate">
-                <VIcon start size="small">mdi-tag-multiple</VIcon>迁移预演（老标签 → 新命名）
-              </VBtn>
-              <VBtn v-if="tagMigratePlan" size="small" color="error" variant="tonal" :loading="tagMigrating" @click="applyTagMigrate">
-                执行迁移（{{ tagMigratePlan.total }} 个）
-              </VBtn>
-              <VSpacer />
-              <span class="magicflow-settings-hint">账本 {{ tagInfo?.ledger_count ?? 0 }} 条 · 文件组 {{ tagInfo?.groups?.groups ?? 0 }}（多站 {{ tagInfo?.groups?.multi_site_groups ?? 0 }}）</span>
-            </div>
-            <div v-if="tagMigratePlan" class="magicflow-tag-migrate">
-              <p class="magicflow-settings-hint">
-                待迁移 <strong>{{ tagMigratePlan.total }}</strong> 个：
-                <em v-for="(n, k) in tagMigratePlan.by_state" :key="k">{{ k }} {{ n }} </em>
-              </p>
-              <div class="magicflow-tag-migrate__samples">
-                <div v-for="(row, i) in (tagMigratePlan.samples || [])" :key="i" class="magicflow-tag-migrate__row">
-                  <span class="magicflow-tag-migrate__title" :title="row.title">{{ row.title }}</span>
-                  <span class="magicflow-tag-migrate__tags">
-                    <em>{{ (row.remove || []).join(' ') }}</em> → <strong>{{ row.add }}</strong>
-                  </span>
-                </div>
-              </div>
-            </div>
-            <p class="magicflow-settings-hint">
-              迁移会把任务里手填的 <code>brush_tag</code>（如 <code>魔流-财神</code>）换成状态标签，
-              保留 <code>已整理 / 辅种</code> 等外来标签；预演不变更任何东西。
             </p>
           </div>
 
@@ -4270,24 +3924,6 @@ onUnmounted(() => {
       </VCard>
     </VDialog>
 
-    <VDialog v-model="transferDialog" max-width="34rem">
-      <VCard title="批量转移种子" class="magicflow-dialog">
-        <VCardText class="magicflow-settings-hint">
-          把选中的 <strong>{{ selectedHashes.length }}</strong> 个种子交给别的任务，或退回静默池（保文件）。
-          跨站转移会改掉站点标签 —— 一般只转给<strong>同站</strong>任务。
-        </VCardText>
-        <VCardText>
-          <VSelect v-model="transferTarget" :items="transferChoices" item-title="text" item-value="value"
-            density="compact" variant="outlined" hide-details label="转移到" />
-        </VCardText>
-        <VCardActions>
-          <VSpacer />
-          <VBtn variant="text" :disabled="batchBusy" @click="transferDialog = false">取消</VBtn>
-          <VBtn color="primary" variant="flat" :loading="batchBusy" @click="confirmTransfer">转移</VBtn>
-        </VCardActions>
-      </VCard>
-    </VDialog>
-
     <VDialog v-model="batchDeleteDialog" max-width="28rem">
       <VCard class="magicflow-dialog">
         <VCardTitle>批量删除托管种子</VCardTitle>
@@ -4324,37 +3960,13 @@ onUnmounted(() => {
       </VCard>
     </VDialog>
 
-    <VDialog v-model="deleteDialog" max-width="34rem" @update:model-value="onDeleteDialog">
+    <VDialog v-model="deleteDialog" max-width="28rem">
       <VCard title="删除魔力任务" class="magicflow-dialog">
-        <VCardText>
-          确认删除「{{ selectedTask?.name }}」？
-        </VCardText>
-        <VCardText v-if="handoverLoading" class="magicflow-settings-hint">正在统计名下种子…</VCardText>
-        <VCardText v-else-if="handover" class="magicflow-settings-hint">
-          名下 <strong>{{ handover.managed }}</strong> 个种子 · {{ handover.size_gb }} GB
-          <template v-if="handover.auto_handover?.length">
-            <br />
-            <VAlert density="compact" variant="tonal" color="info" class="mt-2">
-              另有同站同状态任务「<strong>{{ handover.auto_handover[0].name }}</strong>」用同一批标签
-              （{{ handover.tag }}），<strong>不交棒它也会接着管</strong>。<br />
-              <strong>默认退回静默池</strong>（保文件）—— 想指定交给谁再在下面选。
-            </VAlert>
-          </template>
-          <template v-else>
-            <br />
-            <VAlert density="compact" variant="tonal" color="info" class="mt-2">
-              <strong>默认退回静默池</strong>（保文件）—— 想指定交给谁再在下面选。
-            </VAlert>
-          </template>
-        </VCardText>
-        <VCardText v-if="handover">
-          <VSelect v-model="handoverTarget" :items="handoverChoices" item-title="text" item-value="value"
-            density="compact" variant="outlined" hide-details label="名下种子怎么处理" />
-        </VCardText>
+        <VCardText>确认删除「{{ selectedTask?.name }}」？存在活跃种子时不会执行删除。</VCardText>
         <VCardActions>
           <VSpacer />
           <VBtn variant="text" @click="deleteDialog = false">取消</VBtn>
-          <VBtn color="error" variant="flat" :loading="saving" @click="confirmDeleteTask">确认删除</VBtn>
+          <VBtn color="error" variant="flat" :loading="saving" @click="confirmDeleteTask">删除</VBtn>
         </VCardActions>
       </VCard>
     </VDialog>
@@ -4536,20 +4148,8 @@ onUnmounted(() => {
                   <span class="magicflow-crossseed-item__meta">
                     <VChip size="x-small" variant="tonal" color="warning">{{ it.site_b }}</VChip>
                     <template v-if="it.size_gb"> · {{ Number(it.size_gb).toFixed(2) }}G</template>
-                    <template v-if="it.fulfilled">
-                      <VChip size="x-small" variant="tonal" color="success">义务已完成</VChip>
-                      · 已挂 {{ it.seeded_h }}h
-                      <template v-if="it.need_hours">（需 {{ it.need_hours }}h）</template>
-                    </template>
-                    <template v-else-if="it.need_hours">
-                      · 已挂 {{ it.seeded_h }}h / 需 {{ it.need_hours }}h
-                      · 窗口还剩 {{ formatRemain(it.remain_min) }}
-                    </template>
-                    <template v-else>
-                      · 要求 {{ it.hours }}h
-                      · {{ it.done ? '保种期已满（可回收）' : `还剩 ${formatRemain(it.remain_min)}` }}
-                    </template>
-                    <template v-if="it.hours_src"> <span class="text-medium-emphasis">（{{ String(it.hours_src).startsWith('种子标记') ? '种子自带 H&R 标记' : '站点规则库' }}）</span></template>
+                    · 要求 {{ it.hours }}h
+                    · {{ it.done ? '保种期已满（可回收）' : `还剩 ${formatRemain(it.remain_min)}` }}
                     <template v-if="it.files_shared"> · 文件与目标站共用</template>
                   </span>
                 </div>
@@ -4860,72 +4460,6 @@ onUnmounted(() => {
   margin-top: 0.5rem;
   max-height: 46vh;
   overflow-y: auto;
-}
-
-.magicflow-sort-rules {
-  max-height: 34vh;
-  overflow-y: auto;
-  margin-bottom: 0.5rem;
-}
-
-.magicflow-sort-rules__row {
-  display: grid;
-  grid-template-columns: minmax(9rem, 1.6fr) 7rem 6rem 4rem 4rem;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.25rem 0.5rem;
-  border-radius: 6px;
-  font-size: 0.875rem;
-}
-
-.magicflow-sort-rules__row:nth-child(even) {
-  background: rgba(var(--v-theme-on-surface), 0.03);
-}
-
-.magicflow-sort-rules__row--head {
-  font-weight: 600;
-  opacity: 0.7;
-}
-
-.magicflow-sort-rules__add {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.magicflow-tag-migrate {
-  margin-top: 0.5rem;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
-  border-radius: 8px;
-  padding: 0.5rem 0.75rem;
-}
-
-.magicflow-tag-migrate__samples {
-  max-height: 26vh;
-  overflow-y: auto;
-}
-
-.magicflow-tag-migrate__row {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
-  gap: 0.5rem;
-  font-size: 0.8125rem;
-  padding: 0.125rem 0;
-}
-
-.magicflow-tag-migrate__title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.magicflow-tag-migrate__tags em {
-  opacity: 0.6;
-  text-decoration: line-through;
-}
-
-.magicflow-tag-migrate__tags strong {
-  color: rgb(var(--v-theme-primary));
 }
 
 .magicflow-rules-row {
