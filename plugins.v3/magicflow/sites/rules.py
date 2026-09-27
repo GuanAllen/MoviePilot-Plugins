@@ -86,16 +86,27 @@ _CAP_RE = re.compile(
 )
 
 
-def _clip(text: str, start: int, end: int, pad: int = 60) -> str:
-    a = max(0, start - pad)
-    b = min(len(text), end + pad)
-    return re.sub(r"\s+", " ", text[a:b]).strip()
+def _segments(text: str) -> List[str]:
+    """把正文切成「句子/行」——解析规则必须**同句**命中，不然满页数字全中。"""
+    parts = re.split(r"[\n\r。！？；;!?]+", text)
+    return [p.strip() for p in parts if p.strip()]
 
 
-def _hours_near(text: str, idx: int, window: int = 120) -> Optional[float]:
-    """在 idx 附近 window 字符内找「X 小时 / X 天」。"""
-    lo = max(0, idx - window)
-    seg = text[lo: idx + window]
+# 明确**不属于** H&R 的上下文（考核/达标/魔力/上传者规则/发布者/捐赠 等）
+_EXCLUDE_RE = re.compile(
+    r"考核|达标|魔力|奖励|捐赠|申诉|免罪|警告|相册|邀请|邮箱|注册|每月|月做种|新人|"
+    r"上传者|发布者|发种|候选|认领",
+    re.I,
+)
+# 「同一句里」的 H&R 关键词
+_HR_TOKENS = re.compile(r"H\s*&\s*R|hit\s*[&a]nd\s*run|hit and run", re.I)
+# 「同一句里」的保种动作词
+_SEED_TOKENS = re.compile(r"做种|保种|挂种|seeding|seed", re.I)
+# 明确的规则句式（最可信）：必须/需/要求/至少 ...
+_RULE_NEED_RE = re.compile(r"必须|需|要求|不得少于|不少于|至少|at least|must|minimum", re.I)
+
+
+def _parse_hours_in(seg: str):
     m = _HOURS_RE.search(seg)
     if m:
         try:
@@ -112,47 +123,70 @@ def _hours_near(text: str, idx: int, window: int = 120) -> Optional[float]:
 
 
 def parse_hr_from_html(html_text: str) -> Dict[str, Any]:
-    """从站点页面文本里尽力解析 H&R 规则。
+    """从站点页面文本里尽力解析 H&R 规则（**保守 + 分级可信度**）。
 
     Returns:
-        ``{"hr": bool|None, "seed_hours": float|None, "seed_cap": int|None,
-           "evidence": str, "hits": int}``
+        ``{"hr": bool|None, "seed_hours": float|None, "confidence": "high"|"low",
+           "seed_cap": int|None, "evidence": str, "hits": int}``
 
-    保守：只有「H&R 关键词 + 上下文里的小时数」同时命中，才认为 ``hr=True``。
-        只命中 H&R 关键词（没解析出小时数）→ ``hr=True, seed_hours=None``。
-        完全没命中 → ``hr=None``（未知），由上层用内置/默认值兜底。
+    规则：
+      * ``hr``：出现 H&R 关键词 → True（站点有 H&R 制度）；否则看「做种…小时」句式 → True；都没有 → None。
+      * ``seed_hours`` **只在 ``confidence="high"`` 时可信**：
+        - 同一句里既有 H&R/做种 关键词，又有明确的「必须/至少/需」+ 小时数；
+        - 且该句**不含**考核/达标/魔力/上传者/发布者/每月 等排除词（那些是别处的数字）。
+        - 解析到的值 > 336h（14 天）一律降级为 low（H&R 极少要求挂两周以上，
+          多半是「考核时长/月度达标」被误读）。
+      * ``confidence="low"`` 的值**只作展示证据**，不参与生效时长计算。
     """
-    out: Dict[str, Any] = {"hr": None, "seed_hours": None, "seed_cap": None, "evidence": "", "hits": 0}
+    out: Dict[str, Any] = {
+        "hr": None, "seed_hours": None, "confidence": "low",
+        "seed_cap": None, "evidence": "", "hits": 0,
+    }
     if not html_text:
         return out
     text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", html_text, flags=re.S | re.I)
+    text = re.sub(r"<br\s*/?>|</p>|</div>|</tr>|</li>|</td>", "\n", text, flags=re.I)
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"&nbsp;?", " ", text)
-    text = re.sub(r"\s+", " ", text)
+    text = text.replace("&#x2022;", " ")
 
-    best: Optional[float] = None
-    ev = ""
+    best_high = None
+    best_low = None
+    ev_high = ev_low = ""
     hits = 0
-    for m in _HR_WORD_RE.finditer(text):
-        hits += 1
-        h = _hours_near(text, m.start())
-        if h and (best is None or h > best):
-            best = h
-            ev = _clip(text, m.start(), m.end())
-    # 没有 H&R 关键词时，退一步看「做种 … 小时」这种表述（很多站规则页这么写）
-    if hits == 0:
-        for m in _SEED_CTX_RE.finditer(text):
+    for seg in _segments(text):
+        has_hr = bool(_HR_TOKENS.search(seg))
+        has_seed = bool(_SEED_TOKENS.search(seg))
+        if has_hr:
             hits += 1
-            h = _hours_near(text, m.start(), window=60)
-            if h and (best is None or h > best):
-                best = h
-                ev = _clip(text, m.start(), m.end())
-    out["hits"] = hits
-    if hits:
+        if not (has_hr or has_seed):
+            continue
+        hours = _parse_hours_in(seg)
+        if hours is None:
+            continue
+        excluded = bool(_EXCLUDE_RE.search(seg))
+        strong = bool(_RULE_NEED_RE.search(seg))
+        if strong and not excluded and hours <= 336.0:
+            if best_high is None or hours > best_high:
+                best_high = hours
+                ev_high = seg
+        elif not excluded:
+            if best_low is None or hours > best_low:
+                best_low = hours
+                ev_low = seg
+    if hits or best_high is not None or best_low is not None:
         out["hr"] = True
-    if best is not None:
-        out["seed_hours"] = float(best)
-    # 做种数上限：只在「上限/最多」这类词附近取，且限制在合理区间
+    out["hits"] = hits
+    if best_high is not None:
+        out["seed_hours"] = float(best_high)
+        out["confidence"] = "high"
+        out["evidence"] = ev_high[:300]
+    elif best_low is not None:
+        out["seed_hours"] = float(best_low)
+        out["confidence"] = "low"
+        out["evidence"] = ev_low[:300]
+    elif ev_low or ev_high:
+        out["evidence"] = (ev_high or ev_low)[:300]
     cap = None
     for m in _CAP_RE.finditer(text):
         try:
@@ -163,7 +197,6 @@ def parse_hr_from_html(html_text: str) -> Dict[str, Any]:
             cap = v
     if cap is not None:
         out["seed_cap"] = cap
-    out["evidence"] = ev[:300]
     return out
 
 
@@ -245,10 +278,19 @@ class SiteRules:
             self._write()
             return cur
         out = dict(cur)
-        for key in ("hr", "seed_hours", "seed_cap", "evidence"):
+        conf = str((probed or {}).get("confidence") or "low")
+        for key in ("hr", "seed_cap", "evidence"):
             val = (probed or {}).get(key)
             if val is not None:
                 out[key] = val
+        out["confidence"] = conf
+        val = (probed or {}).get("seed_hours")
+        if val is not None and conf == "high":
+            out["seed_hours"] = val
+        elif val is not None:
+            # 低可信：只留证据，不参与生效时长（宁保守勿乐观）
+            out["seed_hours_seen"] = val
+            out.pop("seed_hours", None)
         out["source"] = "probe"
         out["probed_at"] = float(time.time())
         out["domain"] = d
@@ -300,7 +342,7 @@ class SiteRules:
         d = _norm_domain(domain)
         if d and manual_map:
             for key, val in (manual_map or {}).items():
-                if _norm_domain(key) == d:
+                if _same_domain(key, d):
                     try:
                         h = float(val)
                     except (TypeError, ValueError):
@@ -308,7 +350,14 @@ class SiteRules:
                     if h >= 0:
                         return h, "manual"
         rec = dict(self.items().get(d) or {})
+        if not rec:
+            for k, v in self.items().items():
+                if _same_domain(k, d):
+                    rec = dict(v or {})
+                    break
         h = rec.get("seed_hours")
+        if h is not None and str(rec.get("source") or "") == "probe" and str(rec.get("confidence") or "") != "high":
+            h = None
         if h is not None:
             try:
                 hv = float(h)
@@ -317,6 +366,11 @@ class SiteRules:
             except (TypeError, ValueError):
                 pass
         b = BUILTIN_RULES.get(d) or {}
+        if not b:
+            for k, v in BUILTIN_RULES.items():
+                if _same_domain(k, d):
+                    b = v or {}
+                    break
         bh = b.get("seed_hours")
         if bh is not None:
             return float(bh), "builtin"
@@ -328,3 +382,14 @@ class SiteRules:
 
 def _norm_domain(domain: str) -> str:
     return str(domain or "").strip().lower().replace("https://", "").replace("http://", "").strip("/")
+
+
+def _same_domain(a: str, b: str) -> bool:
+    """域名等价：相等，或一个是另一个的后缀（``btschool.club`` ≡ ``pt.btschool.club``）。"""
+    a = _norm_domain(a)
+    b = _norm_domain(b)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    return a.endswith("." + b) or b.endswith("." + a)

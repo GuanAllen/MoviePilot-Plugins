@@ -1549,8 +1549,11 @@ async function refreshRules() {
   siteRules.value = res?.data?.rules || []
 }
 
-function ruleSourceText(src) {
-  return ({ manual: '手填', probe: '页面探测', builtin: '内置', default: '全局默认' })[src] || src || '-'
+function ruleSourceText(row) {
+  const src = row?.hours_src
+  const base = ({ manual: '手填', probe: '页面探测', builtin: '内置', default: '全局默认' })[src] || src || '-'
+  if (src === 'probe' && row?.confidence && row.confidence !== 'high') return `${base}(低可信)`
+  return base
 }
 
 async function loadIyuuSites() {
@@ -3445,7 +3448,7 @@ onUnmounted(() => {
                   />
                 </span>
                 <span>{{ row.seed_cap || '-' }}</span>
-                <span class="magicflow-rules-row__src">{{ ruleSourceText(row.hours_src) }}</span>
+                <span class="magicflow-rules-row__src">{{ ruleSourceText(row) }}</span>
                 <span>
                   <VBtn size="x-small" variant="text" :disabled="rulesProbing" @click="probeRules(row.domain)">探测</VBtn>
                 </span>
