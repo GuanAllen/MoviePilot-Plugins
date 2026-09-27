@@ -38,9 +38,12 @@ RULES_KEY = "site_rules"
 BUILTIN_RULES: Dict[str, Dict[str, Any]] = {
     "pt.btschool.club": {
         "hr": True,
-        "seed_hours": 20.0,
+        # 保守：按**规则窗口**保护（10 天），而不是最低做种线（20h）。
+        # 因为我们的账本按「墙钟」计时，暂停/无 peer 时墙钟≠实际做种时长。
+        "seed_hours": 240.0,
+        "seed_need_hours": 20.0,
         "seed_cap": None,
-        "note": "学校：下载完成后 10 天内做种≥20 小时（rules.php 原文），上传量>下载量可直接免除",
+        "note": "学校：10 天内做种≥20 小时（rules.php 原文）；保护期取满窗口 10 天（保守）",
     },
     "hdfans.org": {
         "hr": True,
@@ -159,6 +162,7 @@ def parse_hr_from_html(html_text: str) -> Dict[str, Any]:
         "seed_cap": None, "evidence": "", "hits": 0,
         "exam_avg_hours": None,
         "free_over_gb": None, "free_original": None, "free_ep1": None,
+        "seed_need_hours": None, "seed_window_hours": None,
     }
     if not html_text:
         return out
@@ -182,6 +186,19 @@ def parse_hr_from_html(html_text: str) -> Dict[str, Any]:
         hours = _parse_hours_in(seg)
         if hours is None:
             continue
+        # 「10天内做种达到20小时」= 窗口10天 + 达到线20h → **保守取窗口**
+        _dm = _DAYS_RE.search(seg)
+        _hm = _HOURS_RE.search(seg)
+        if _dm and _hm:
+            try:
+                _win = float(_dm.group(1)) * 24.0
+                _need = float(_hm.group(1))
+                if _win > _need >= 0:
+                    out["seed_need_hours"] = _need
+                    out["seed_window_hours"] = _win
+                    hours = _win
+            except (TypeError, ValueError):
+                pass
         excluded = bool(_EXCLUDE_RE.search(seg))
         strong = bool(_RULE_NEED_RE.search(seg))
         if _EXAM_RE.search(seg) and not re.search(r"认领|达标标准", seg):
@@ -326,7 +343,7 @@ class SiteRules:
             if val is not None:
                 out[key] = val
         out["confidence"] = conf
-        for key in ("free_over_gb", "free_original", "free_ep1"):
+        for key in ("free_over_gb", "free_original", "free_ep1", "seed_need_hours", "seed_window_hours"):
             val = (probed or {}).get(key)
             if val is not None:
                 out[key] = val

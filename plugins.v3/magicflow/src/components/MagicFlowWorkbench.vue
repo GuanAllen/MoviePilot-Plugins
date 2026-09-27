@@ -3454,6 +3454,7 @@ onUnmounted(() => {
                 <span>{{ row.seed_cap || '-' }}</span>
                 <span class="magicflow-rules-row__src" :title="row.evidence || ''">
                   {{ ruleSourceText(row) }}
+                  <em v-if="row.seed_need_hours" :title="'规则窗口 ' + (row.seed_window_hours || row.seed_hours || 0) + 'h，达到线 ' + row.seed_need_hours + 'h；保护期取窗口(保守)'">需{{ row.seed_need_hours }}h</em>
                   <em v-if="row.seed_hours_seen != null">(看到{{ row.seed_hours_seen }}h)</em>
                 </span>
                 <span>
