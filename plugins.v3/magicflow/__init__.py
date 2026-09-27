@@ -10076,7 +10076,7 @@ class MagicFlow(_PluginBase):
                     prev = dict(store.items().get(dom) or {})
                     hours = prev.get("seed_hours")
                     if not hours:
-                        hours = self._crossseed_seed_hours(dom)[0] or 24.0
+                        hours = self._crossseed_seed_hours(dom) or 24.0
                     store.put(dom, {
                         "hr": True, "seed_hours": float(hours), "source": "manual", "confidence": "high",
                         "evidence": "手填：该站有 H&R（按此保护）",
