@@ -92,7 +92,8 @@ const settingsDraft = ref({
   request_interval: 0,
   bonus_upload_limit_kbps: 200,
   brush_upload_limit_kbps: 10240,
-  seed_up_limit_kbps: 100,
+  seed_up_limit_kbps: 200,
+  brush_seed_up_limit_kbps: 5120,
   iyuu_token: '',
   iyuu_clear: false,
   iyuu_sites: {},
@@ -543,6 +544,7 @@ async function loadStatus() {
       bonus_upload_limit_kbps: status.value.bonus_upload_limit_kbps,
       brush_upload_limit_kbps: status.value.brush_upload_limit_kbps,
       seed_up_limit_kbps: status.value.seed_up_limit_kbps,
+      brush_seed_up_limit_kbps: status.value.brush_seed_up_limit_kbps,
       iyuu_token: status.value.iyuu_token,
       iyuu_sites: status.value.iyuu_sites,
       ...(status.value.crossseed ? {
@@ -2907,9 +2909,20 @@ onUnmounted(() => {
                 v-model.number="settingsDraft.seed_up_limit_kbps"
                 type="number"
                 min="0"
-                step="10"
+                step="50"
                 label="挂种单种上传限速（KB/s）"
-                hint="对每个「挂种」种子单独限速（魔力任务 / 跨站来源份 / 推荐，不含刷流）；0 = 不限"
+                hint="魔力 / 来源份 / 推荐的种子：单种单独限速，默认 200（低于 100 可能被站点判「恶意限速」）；0 = 不限"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="settingsDraft.brush_seed_up_limit_kbps"
+                type="number"
+                min="0"
+                step="256"
+                label="刷流单种上传限速（KB/s）"
+                hint="刷流任务的种子：要冲量，默认 5120（=5 MB/s）；0 = 不限"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"

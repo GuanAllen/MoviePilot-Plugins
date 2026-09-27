@@ -209,9 +209,12 @@ CROSSSEED_SITE_HOURS_DEFAULT = ["pt.btschool.club=240"]
 RULES_INTERVAL_MINUTES = 7 * 24 * 60     # 站点规则自动刷新周期(分钟) -- 每周一次(低频探测)
 RULES_PROBE_DELAY = (1.5, 3.5)           # 逐站探测之间的随机间隔(秒，礼貌限速)
 
-# ★ 挂种「单种上传限速」(KB/s)：对魔流托管的每个种子单独限速（0 = 不限）。
-#   用途：一批免费种/来源份同时做种时，避免个别热种吃满上行。
-SEED_UP_LIMIT_KBPS_DEFAULT = 100.0
+# ★ 单种上传限速(KB/s)：按「种子当前状态」分档，对每个托管种子单独限速（0 = 不限）。
+#   刷流档：正在刷流的种子（要冲量，给足速度，默认 5 MB/s）；
+#   挂种档：魔力养护 / 跨站来源份 / 推荐（长期挂着，压低速度，默认 200 KB/s）。
+#   注：咖啡等站有「恶意限速判定：单人做种 6h 内稳定 <100Kb/s」→ 挂种档不要低于 200。
+SEED_UP_LIMIT_KBPS_DEFAULT = 200.0
+BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT = 5120.0
 SEED_UP_LIMIT_APPLY_INTERVAL = 600.0      # 最快多久重扫一次（秒），避免频繁全量写
 
 
@@ -654,8 +657,9 @@ class MagicFlow(_PluginBase):
     # 任务流量(qB 全局上传限速,按在跑任务类型自动切档)
     _bonus_upload_limit_kbps: float = 200.0
     _brush_upload_limit_kbps: float = 10240.0
-    _seed_up_limit_kbps: float = 100.0      # 挂种单种上传限速(KB/s)，0=不限
-    _seed_up_limit_last: Any = None         # (kbps, ts) 上次应用，值没变就跳过
+    _seed_up_limit_kbps: float = 200.0      # 挂种(魔力/来源份/推荐)单种上传限速(KB/s)，0=不限
+    _brush_seed_up_limit_kbps: float = 5120.0  # 刷流单种上传限速(KB/s)，0=不限
+    _seed_up_limit_last: Any = None         # (值签名, ts) 上次应用，值没变就跳过
     _last_up_limit_bps: Optional[int] = None
     # IYUU 云端辅种(可选)
     _iyuu_token: str = ""
@@ -703,6 +707,10 @@ class MagicFlow(_PluginBase):
             self._seed_up_limit_kbps = max(0.0, float(raw_config.get("seed_up_limit_kbps", SEED_UP_LIMIT_KBPS_DEFAULT) or 0))
         except (TypeError, ValueError):
             self._seed_up_limit_kbps = SEED_UP_LIMIT_KBPS_DEFAULT
+        try:
+            self._brush_seed_up_limit_kbps = max(0.0, float(raw_config.get("brush_seed_up_limit_kbps", BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT) or 0))
+        except (TypeError, ValueError):
+            self._brush_seed_up_limit_kbps = BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT
         self._seed_up_limit_last = None
         self._last_up_limit_bps = None
         # IYUU 云端辅种配置(Token 为空 = 不启用)
@@ -1697,6 +1705,7 @@ class MagicFlow(_PluginBase):
             "bonus_upload_limit_kbps": float(getattr(self, "_bonus_upload_limit_kbps", 200.0) or 0),
             "brush_upload_limit_kbps": float(getattr(self, "_brush_upload_limit_kbps", 10240.0) or 0),
             "seed_up_limit_kbps": float(getattr(self, "_seed_up_limit_kbps", SEED_UP_LIMIT_KBPS_DEFAULT) or 0),
+            "brush_seed_up_limit_kbps": float(getattr(self, "_brush_seed_up_limit_kbps", BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT) or 0),
             "iyuu_token": str(getattr(self, "_iyuu_token", "") or ""),
             "iyuu_sites": dict(getattr(self, "_iyuu_sites", {}) or {}),
             "recommend_enabled": bool(self._recommend_cfg.get("enabled", True)),
@@ -1844,26 +1853,30 @@ class MagicFlow(_PluginBase):
         else:
             self._log(f"任务流量:设置全局上传限速失败:{err}", "warning")
 
-    def _seed_managed_tags(self) -> set:
-        """魔流"挂种"范围：魔力任务标签 + 跨站来源份 + 推荐，**排除刷流任务**。
-
-        ★ 刷流是主动刷上传（要的就是速度），给它套单种限速等于自废武功；
-        「挂种」指的是魔力养护 / 跨站来源份这类挂着做种的。
-        """
-        tags = {CROSSSEED_TAG}
+    def _seed_tag_tiers(self) -> Dict[str, float]:
+        """返回 {标签: 单种上传限速 KB/s}：刷流标签走刷流档，其余(魔力/来源份/推荐)走挂种档。"""
         try:
-            tags.add(str(self._recommend_cfg.get("tag", "魔流-推荐") or "魔流-推荐"))
+            brush_kbps = float(getattr(self, "_brush_seed_up_limit_kbps", BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT) or 0)
+        except (TypeError, ValueError):
+            brush_kbps = BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT
+        try:
+            seed_kbps = float(getattr(self, "_seed_up_limit_kbps", SEED_UP_LIMIT_KBPS_DEFAULT) or 0)
+        except (TypeError, ValueError):
+            seed_kbps = SEED_UP_LIMIT_KBPS_DEFAULT
+        tiers: Dict[str, float] = {CROSSSEED_TAG: seed_kbps}
+        try:
+            tiers[str(self._recommend_cfg.get("tag", "魔流-推荐") or "魔流-推荐")] = seed_kbps
         except Exception:  # noqa: BLE001
-            tags.add("魔流-推荐")
+            tiers["魔流-推荐"] = seed_kbps
         for task in self._task_configs.values():
             if not getattr(task, "enabled", False):
                 continue
-            if str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush":
-                continue
             tag = str(getattr(task, "brush_tag", "") or "").strip()
-            if tag:
-                tags.add(tag)
-        return tags
+            if not tag:
+                continue
+            is_brush = str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush"
+            tiers[tag] = brush_kbps if is_brush else seed_kbps
+        return tiers
 
     def _apply_seed_upload_limit(self, force: bool = False) -> None:
         """★ 给托管的每个种子套「单种上传限速」(默认 100 KB/s)。
@@ -1873,22 +1886,19 @@ class MagicFlow(_PluginBase):
         - 值没变且 10 分钟内扫过 → 跳过（避免频繁写）；
         - 0 = 不限（显式清除）。
         """
-        try:
-            kbps = float(getattr(self, "_seed_up_limit_kbps", SEED_UP_LIMIT_KBPS_DEFAULT) or 0)
-        except (TypeError, ValueError):
-            kbps = SEED_UP_LIMIT_KBPS_DEFAULT
+        tiers = self._seed_tag_tiers()
+        sig = tuple(sorted((t, round(k, 3)) for t, k in tiers.items()))
         last = getattr(self, "_seed_up_limit_last", None)
         if not force and last is not None:
             try:
-                lk, lts = float(last[0]), float(last[1])
+                lsig, lts = last[0], float(last[1])
             except Exception:  # noqa: BLE001
-                lk, lts = -1.0, 0.0
-            if lk == kbps and (time.time() - lts) < SEED_UP_LIMIT_APPLY_INTERVAL:
+                lsig, lts = None, 0.0
+            if lsig == sig and (time.time() - lts) < SEED_UP_LIMIT_APPLY_INTERVAL:
                 return
         downloader = self._get_downloader()
         if downloader is None or not getattr(downloader, "is_available", False):
             return
-        tags = self._seed_managed_tags()
         try:
             groups, err = downloader.get_torrents_by_tag()
         except Exception as exc:  # noqa: BLE001
@@ -1896,26 +1906,31 @@ class MagicFlow(_PluginBase):
             return
         if err and not groups:
             return
-        hashes = set()
-        for tag in tags:
+        by_kbps: Dict[float, set] = {}
+        for tag, kbps in tiers.items():
             for t in (groups or {}).get(tag, []) or []:
                 h = str(getattr(t, "hash", "") or "").lower()
                 if h:
-                    hashes.add(h)
-        if not hashes:
-            self._seed_up_limit_last = (kbps, time.time())
+                    by_kbps.setdefault(kbps, set()).add(h)
+        if not by_kbps:
+            self._seed_up_limit_last = (sig, time.time())
             return
-        try:
-            n, serr = downloader.set_upload_limit(sorted(hashes), kbps)
-        except Exception as exc:  # noqa: BLE001
-            n, serr = 0, str(exc)
-        self._seed_up_limit_last = (kbps, time.time())
-        if serr:
-            self._log(f"挂种限速:单种上传限速写入部分失败:{serr}", "warning")
-        elif n:
+        self._seed_up_limit_last = (sig, time.time())
+        parts = []
+        for kbps, hashes in sorted(by_kbps.items()):
+            try:
+                n, serr = downloader.set_upload_limit(sorted(hashes), kbps)
+            except Exception as exc:  # noqa: BLE001
+                n, serr = 0, str(exc)
             label = f"{kbps:g} KB/s" if kbps > 0 else "不限速"
-            self._dbg(f"挂种限速:已对 {n} 个托管种子设置单种上传 {label}")
-            self._log(f"挂种限速:已对 {n} 个托管种子设置单种上传 {label}")
+            if serr:
+                self._log(f"挂种限速:单种上传限速写入部分失败({label}):{serr}", "warning")
+            elif n:
+                parts.append(f"{label}×{n}")
+        if parts:
+            msg = f"挂种限速:已设置单种上传 {' / '.join(parts)}"
+            self._dbg(msg)
+            self._log(msg)
 
     def _spawn_run_mode_apply(self, task: MagicFlowTaskConfig, mode: str) -> None:
         """异步应用运行状态对应的种子操作(暂停/恢复),并在「运行中」时立即跑一轮 check。"""
@@ -9790,6 +9805,7 @@ class MagicFlow(_PluginBase):
             "bonus_upload_limit_kbps": float(getattr(self, "_bonus_upload_limit_kbps", 200.0) or 0),
             "brush_upload_limit_kbps": float(getattr(self, "_brush_upload_limit_kbps", 10240.0) or 0),
             "seed_up_limit_kbps": float(getattr(self, "_seed_up_limit_kbps", SEED_UP_LIMIT_KBPS_DEFAULT) or 0),
+            "brush_seed_up_limit_kbps": float(getattr(self, "_brush_seed_up_limit_kbps", BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT) or 0),
             "iyuu_token": str(getattr(self, "_iyuu_token", "") or ""),
             "iyuu_sites": dict(getattr(self, "_iyuu_sites", {}) or {}),
             "store": self.store_stats(),
@@ -10391,6 +10407,10 @@ class MagicFlow(_PluginBase):
             self._seed_up_limit_kbps = max(0.0, float(payload.seed_up_limit_kbps or 0))
         except (TypeError, ValueError):
             self._seed_up_limit_kbps = SEED_UP_LIMIT_KBPS_DEFAULT
+        try:
+            self._brush_seed_up_limit_kbps = max(0.0, float(payload.brush_seed_up_limit_kbps or 0))
+        except (TypeError, ValueError):
+            self._brush_seed_up_limit_kbps = BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT
         # IYUU 云端辅种配置
         # ★ Token 空 = 保持原值（+ 落 save_data 备份、init 时回落）：
         #   旧前端 chunk / 别的标签页保存设置时 payload 可能不带 iyuu_token，
