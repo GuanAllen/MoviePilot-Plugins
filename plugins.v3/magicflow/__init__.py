@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.19.2"
+__version__ = "3.20.0"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -4077,6 +4077,18 @@ class MagicFlow(_PluginBase):
             )
             self._log(f"推荐整理「{title}」→ ok={ok} msg={msg}")
             if ok:
+                # ★ 入库即转「静默-资源」（不等下一轮分拣）
+                try:
+                    _gid1 = ""
+                    try:
+                        _gid1 = str((rec or {}).get("group_id") or "")
+                    except Exception:  # noqa: BLE001
+                        _gid1 = ""
+                    if not _gid1:
+                        _gid1 = self._tag_groups().group_of(h)
+                    self._promote_resource(_gid1)
+                except Exception as err:  # noqa: BLE001
+                    self._log(f"推荐整理:入库即转失败 {h[:12]}:{err}", "warning")
                 # 整理入库后顺带做一次元数据兜底(异步,不阻塞确认请求)
                 self._fallback_after_import(str(getattr(mi, "title", "") or title))
             return bool(ok), str(msg)
@@ -11023,6 +11035,11 @@ class MagicFlow(_PluginBase):
                 pass
             if gid:
                 self._log(f"库记:整理完成 {h[:12]} → 资源 {gid[:46]} 路径 {path or '-'} 方式 {ttype or '-'}")
+                # ★ 入库即转「静默-资源」（不等下一轮分拣）
+                try:
+                    self._promote_resource(gid)
+                except Exception as err:  # noqa: BLE001
+                    self._log(f"库记:入库即转失败 {h[:12]}:{err}", "warning")
             else:
                 self._log(f"库记:整理完成 {h[:12]} 尚未纳管,已记待办(路径 {path or '-'})")
         except Exception as err:  # noqa: BLE001
@@ -13262,6 +13279,38 @@ class MagicFlow(_PluginBase):
             except Exception:  # noqa: BLE001
                 pass
         return ok
+
+    def _promote_resource(self, gid: str) -> int:
+        """★ 资源已入库 → **立刻**把该资源的「静默」成员转「静默-资源」。
+
+        Master 2026-09-28 07:23：入库后应该**当场**变「静默-资源」，而不是等静默托管那轮
+        分拣（现在每小时一轮 → 最多滞后 1 小时）。入库事件（TransferComplete）/ 推荐确认
+        入库成功后直接调用本方法。
+        """
+        _gid = str(gid or "").strip()
+        if not _gid:
+            return 0
+        try:
+            rec = (self._tag_groups().items() or {}).get(_gid) or {}
+            members = [str(h).lower() for h in (rec.get("members") or {}) if h]
+        except Exception:  # noqa: BLE001
+            return 0
+        st = self._tag_state()
+        n = 0
+        for _h in members:
+            try:
+                cur = st.get(_h) or {}
+                if str(cur.get("state") or "") != STATE_SILENT:
+                    continue
+                if str(cur.get("sub") or "") == SUB_RESOURCE:
+                    continue
+                if self._silent_to_resource(_h):
+                    n += 1
+            except Exception:  # noqa: BLE001
+                continue
+        if n:
+            self._log(f"入库即转:资源 {_gid[:40]} → 静默-资源 {n} 个")
+        return n
 
     def _silent_to_resource(self, h: str) -> bool:
         """静默-新 → 静默-资源（该**资源**已在影视库；库内资产永不删）。
