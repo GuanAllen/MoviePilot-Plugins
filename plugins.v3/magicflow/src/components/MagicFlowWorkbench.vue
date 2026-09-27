@@ -1060,6 +1060,40 @@ function openRecommend() {
   loadRecommend()
 }
 
+// ── 批量入库（Master 2026-09-28 07:00）────────────────────────────
+const recSelected = ref({})        // hash -> true
+const recBatchActing = ref(false)
+// 可勾选/入库的行 = 可手动确认的那些
+const recSelectable = computed(() => recommendItems.value.filter(r => recommendActionable(r)))
+const recSelectedList = computed(() => recSelectable.value.filter(r => recSelected.value[r.hash]).map(r => r.hash))
+const recAllChecked = computed(() => recSelectable.value.length > 0 && recSelectedList.value.length === recSelectable.value.length)
+function toggleRec(hash) {
+  recSelected.value = { ...recSelected.value, [hash]: !recSelected.value[hash] }
+}
+function toggleAllRecs() {
+  const flag = !recAllChecked.value
+  const m = { ...recSelected.value }
+  recSelectable.value.forEach(r => { m[r.hash] = flag })
+  recSelected.value = m
+}
+async function batchImportRecommend(useAll) {
+  if (recBatchActing.value) return
+  const list = useAll ? [] : recSelectedList.value
+  if (!useAll && !list.length) return
+  recBatchActing.value = true
+  try {
+    const qs = useAll ? 'all=1' : `hashes=${encodeURIComponent(list.join(','))}`
+    const data = unwrapResponse(await props.api.post(`${pluginBase.value}/recommend/batch_import?${qs}`, {})) || {}
+    notify(data.message || '批量入库完成')
+    recSelected.value = {}
+    await loadRecommend()
+  } catch (err) {
+    notify(err?.response?.data?.message || err?.message || '批量入库失败', 'error')
+  } finally {
+    recBatchActing.value = false
+  }
+}
+
 // ── 新手考核（顶栏入口 + 汇总弹窗 + 一键起任务）────────────────────────
 const examData = ref({ sites: [], count: 0, enabled: true })
 const examOpen = ref(false)
@@ -4703,16 +4737,50 @@ onUnmounted(() => {
                 <div class="text-subtitle-2 font-weight-medium">甄别结果</div>
                 <div class="text-body-2 text-medium-emphasis">全部任务汇总 · 确认 = 自动整理入库；忽略 = 删除该临时种（«待核实»也可手动确认）</div>
               </div>
-              <VBtn
-                size="small"
-                variant="text"
-                color="primary"
-                :prepend-icon="showAllRecs ? 'mdi-eye-off-outline' : 'mdi-eye-outline'"
-                @click="showAllRecs = !showAllRecs"
-              >{{ showAllRecs ? '仅看推荐' : (hiddenRecCount ? `显示全部候选 (+${hiddenRecCount})` : '显示全部候选') }}</VBtn>
+              <div class="d-flex align-center ga-2">
+                <VBtn
+                  v-if="recSelectable.length"
+                  size="small"
+                  variant="text"
+                  :prepend-icon="recAllChecked ? 'mdi-checkbox-multiple-marked-outline' : 'mdi-checkbox-multiple-blank-outline'"
+                  @click="toggleAllRecs"
+                >{{ recAllChecked ? '取消全选' : `全选 (${recSelectable.length})` }}</VBtn>
+                <VBtn
+                  size="small"
+                  color="primary"
+                  variant="tonal"
+                  prepend-icon="mdi-tray-arrow-down"
+                  :disabled="!recSelectedList.length"
+                  :loading="recBatchActing"
+                  @click="batchImportRecommend(false)"
+                >批量入库 ({{ recSelectedList.length }})</VBtn>
+                <VBtn
+                  v-if="recSelectable.length"
+                  size="small"
+                  variant="text"
+                  :loading="recBatchActing"
+                  @click="batchImportRecommend(true)"
+                >全部入库</VBtn>
+                <VBtn
+                  size="small"
+                  variant="text"
+                  color="primary"
+                  :prepend-icon="showAllRecs ? 'mdi-eye-off-outline' : 'mdi-eye-outline'"
+                  @click="showAllRecs = !showAllRecs"
+                >{{ showAllRecs ? '仅看推荐' : (hiddenRecCount ? `显示全部候选 (+${hiddenRecCount})` : '显示全部候选') }}</VBtn>
+              </div>
             </header>
             <div class="magicflow-recs">
               <article v-for="rec in recommendItems" :key="rec.hash" class="magicflow-rec">
+                <VCheckbox
+                  v-if="recommendActionable(rec)"
+                  :model-value="!!recSelected[rec.hash]"
+                  density="compact"
+                  hide-details
+                  class="magicflow-rec__check"
+                  :aria-label="`选择 ${recName(rec)}`"
+                  @update:model-value="toggleRec(rec.hash)"
+                />
                 <div class="magicflow-rec__poster">
                   <img v-if="rec.poster" :src="rec.poster" :alt="recName(rec)" loading="lazy" referrerpolicy="no-referrer" />
                   <VIcon v-else icon="mdi-movie-open-outline" size="22" />
