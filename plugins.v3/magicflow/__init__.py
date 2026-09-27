@@ -44,6 +44,7 @@ from .bonus import (
     CandidateScore,
     select_optimal,
     calc_torrent_bonus,
+    calc_bonus_per_hour,
     decide_deletions,
     preview_deletions,
     rank_candidates,
@@ -156,7 +157,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.14.4"
+__version__ = "3.14.5"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -850,6 +851,11 @@ class MagicFlow(_PluginBase):
             "notify": bool(raw_config.get("recommend_notify", True)),
             "temp_ttl_days": _rf(raw_config.get("recommend_temp_ttl_days"), 7.0),
             "disk_min_free_gb": _rf(raw_config.get("recommend_disk_min_free_gb"), 50.0),
+        }
+        # 静默-普通清理（Master 01:17：「普通考核魔力产出…在魔力产出够的情况下普通的直接干」）
+        self._silent_cfg = {
+            "sweep": bool(raw_config.get("silent_sweep_enabled", True)),
+            "ratio": _rf(raw_config.get("silent_plain_ratio"), 0.5),
         }
         self._recommend_engine = RecommendEngine(self)
         self._recommend_cursor = ""
@@ -3775,7 +3781,7 @@ class MagicFlow(_PluginBase):
             low_disk = self._recommend_low_disk(torrents)
 
             scanned = recommended = expired = evaluated = 0
-            to_delete: List[str] = []
+            to_downgrade: List[str] = []
             budget = max(int(RECOMMEND_SCAN_MAX), 1)
             for t in torrents:
                 h = str(getattr(t, "hash", "") or "").lower()
@@ -3792,10 +3798,13 @@ class MagicFlow(_PluginBase):
                 scanned += 1
                 if status == "recommended":
                     if low_disk or (expire_sec > 0 and now - first_seen > expire_sec):
+                        # ★ Master 01:17：推荐过期**不删** → **转普通**
                         store.set_status(
-                            h, "expired", note="磁盘不足" if low_disk else "过期未确认"
+                            h, "downgraded",
+                            note="磁盘不足→转普通" if low_disk else "过期未确认→转普通",
+                            downgraded_at=now,
                         )
-                        to_delete.append(h)
+                        to_downgrade.append(h)
                         expired += 1
                     continue
                 if status == "pending" and rec.get("evaluated_at"):
@@ -3841,8 +3850,9 @@ class MagicFlow(_PluginBase):
                             pass
                         continue
                     if temp_sec > 0 and now - first_seen > temp_sec:
-                        store.set_status(h, "expired", note="临时种到期")
-                        to_delete.append(h)
+                        store.set_status(h, "downgraded", note="临时种到期→转普通",
+                                         downgraded_at=now)
+                        to_downgrade.append(h)
                         expired += 1
                     continue
                 # 首次见到 → 甄别(每轮封顶,分摊识别开销)
@@ -3907,26 +3917,24 @@ class MagicFlow(_PluginBase):
                         reason=(f"评分 {info.get('rating')}" if info.get("rating") else "未达门槛"),
                     )
                     if temp_sec > 0 and now - first_seen > temp_sec:
-                        store.set_status(h, "expired", note="临时种到期")
-                        to_delete.append(h)
+                        store.set_status(h, "downgraded", note="临时种到期→转普通",
+                                         downgraded_at=now)
+                        to_downgrade.append(h)
                         expired += 1
-            # 执行删除(过期未确认 / 临时种到期)
-            if to_delete:
-                success, error = downloader.delete_torrents(hashes=to_delete, delete_file=True)
-                if error:
-                    self._log(f"魔流 [{task.name}] 推荐甄别:删除失败 {error}", "warning")
+            # ★ 过期/临时种到期 → **降级转普通**（不再删；Master 01:17）
+            if to_downgrade:
                 items = []
-                for h in to_delete:
+                for h in to_downgrade:
                     rec2 = store.get(h) or {}
+                    _ok = self._recommend_downgrade_one(downloader, h)
                     items.append(OperationItem(
                         hash=h, title=str(rec2.get("title") or ""),
                         size_gb=float(rec2.get("size_gb") or 0),
-                        reason=str(rec2.get("note") or "过期未确认"), source="recommend",
+                        reason=f"推荐过期→静默-普通{'✓' if _ok else '(非静默池:仅摘推荐标签)'}",
+                        source="recommend",
                     ))
-                    if success:
-                        store.set_status(h, "deleted")
                 self._store.journal.record(task_id=task_id, kind="recommend", items=items)
-            if scanned or to_delete:
+            if scanned or to_downgrade:
                 _prot = len(self._store.get_protected_torrents(task_id)) if self._store else 0
                 self._log(
                     f"魔流 [{task.name}] 推荐甄别:扫 {scanned} · 新评估 {evaluated} · "
@@ -7671,6 +7679,24 @@ class MagicFlow(_PluginBase):
                 success=True,
                 message=(f"静默池未下完 {info.get('pending')} 个 → 删除 {info.get('deleted')} 个"
                          + ("" if _ap else "（预演，未删）")),
+                data=info,
+            )
+        if act in ("plain", "plain_sweep", "plain_apply"):
+            _ap = act == "plain_apply"
+            info = self._silent_plain_sweep(apply=_ap, limit=int(limit or 0))
+            return Response(
+                success=True,
+                message=(f"静默-普通 待清 {info.get('pending')} 个（保护 {info.get('protected')}）→ "
+                         f"删除 {info.get('deleted')} 个" + ("" if _ap else "（预演）")),
+                data=info,
+            )
+        if act in ("expire_downgrade", "expire_apply"):
+            _ap = act == "expire_apply"
+            info = self._recommend_downgrade_expired(apply=_ap, limit=int(limit or 0))
+            return Response(
+                success=True,
+                message=(f"推荐过期待降级 {info.get('downgraded')} 个"
+                         + ("" if _ap else "（预演）")),
                 data=info,
             )
         if act in ("verify", "verify_marks", "verify_apply"):
@@ -11662,6 +11688,20 @@ class MagicFlow(_PluginBase):
                     self._log(f"魔流:静默池清理:未下完直接删 {pinfo.get('deleted')} 个（不计 H&R）")
             except Exception as err:  # noqa: BLE001
                 self._log(f"标签维护:静默池清理失败:{err}", "warning")
+            # ★ 静默-普通 清理：魔力已达标 → 低效普通种直接删（Master 01:17）
+            try:
+                sinfo = self._silent_plain_sweep(apply=True, limit=0)
+                if sinfo.get("deleted"):
+                    self._log(f"魔流:静默普通清理:删除 {sinfo.get('deleted')} 个低效普通种")
+            except Exception as err:  # noqa: BLE001
+                self._log(f"标签维护:静默普通清理失败:{err}", "warning")
+            # ★ 推荐过期 → 转普通（不再删；覆盖静默池里的推荐记录）
+            try:
+                dinfo = self._recommend_downgrade_expired(apply=True, limit=0)
+                if dinfo.get("downgraded"):
+                    self._log(f"魔流:推荐过期:降级转普通 {dinfo.get('downgraded')} 个")
+            except Exception as err:  # noqa: BLE001
+                self._log(f"标签维护:推荐过期降级失败:{err}", "warning")
             # ★ 静默池校验：辅种/复用种停在 pausedDL 是等校验 → recheck 拉起来
             try:
                 vinfo = self._silent_verify_marks(apply=True, limit=60)
@@ -12975,8 +13015,10 @@ class MagicFlow(_PluginBase):
             cur = []
         if not site:
             site = self._torrent_site_name(cur, "")
+        # ★ 降级要**摘掉**「魔流-推荐」（它是推荐生命周期的标记，不走状态模型保留）
+        _keep = tuple(x for x in SPECIAL_TAGS if x != "魔流-推荐")
         new_tags = (
-            retag(cur, site=site, state=STATE_SILENT, sub=SUB_PLAIN)
+            retag(cur, site=site, state=STATE_SILENT, sub=SUB_PLAIN, keep=_keep)
             if cur
             else [tag_for(site, STATE_SILENT, SUB_PLAIN)]
         )
@@ -13016,8 +13058,9 @@ class MagicFlow(_PluginBase):
             cur = []
         if not site:
             site = self._torrent_site_name(cur, "")
+        _keep = tuple(x for x in SPECIAL_TAGS if x != "魔流-推荐")
         new_tags = (
-            retag(cur, site=site, state=STATE_SILENT, sub=SUB_RESOURCE)
+            retag(cur, site=site, state=STATE_SILENT, sub=SUB_RESOURCE, keep=_keep)
             if cur
             else [tag_for(site, STATE_SILENT, SUB_RESOURCE)]
         )
@@ -13235,6 +13278,297 @@ class MagicFlow(_PluginBase):
             self._log(
                 f"魔流:静默池清理:未下完直接删 {rep['deleted']} 个（不计 H&R；"
                 f"其中只删种 {rep['torrent_only']} 个）"
+            )
+        return rep
+
+    def _recommend_downgrade_expired(self, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
+        """★ 推荐「过期 → 转普通」，覆盖**静默池**里的推荐记录。
+
+        （任务范围那条路在 ``recommend_scan`` 里；静默池的推荐没有活跃任务归属，
+        以前既不过期也不清理 → 这里补上。Master 01:17：推荐过期**不删，转普通**。）
+        """
+        rep: Dict[str, Any] = {"apply": bool(apply), "scanned": 0, "downgraded": 0,
+                               "not_yet": 0, "items": []}
+        store = getattr(self._store, "recommend", None) if self._store else None
+        if store is None:
+            rep["reason"] = "推荐库不可用"
+            return rep
+        cfg = getattr(self, "_recommend_cfg", {}) or {}
+        try:
+            expire_sec = float(cfg.get("expire_days", 7.0) or 0) * 86400.0
+        except (TypeError, ValueError):
+            expire_sec = 7 * 86400.0
+        if expire_sec <= 0:
+            rep["reason"] = "未设过期"
+            return rep
+        dl = None
+        try:
+            all_items = dict(store.all() or {})
+        except Exception:  # noqa: BLE001
+            return rep
+        now = time.time()
+        cap = int(limit or 0)
+        for h, rec in list(all_items.items()):
+            if str(rec.get("status") or "") not in ("recommended", "pending"):
+                continue
+            try:
+                first = float(rec.get("first_seen") or rec.get("evaluated_at") or 0) or now
+            except (TypeError, ValueError):
+                first = now
+            if now - first <= expire_sec:
+                rep["not_yet"] = int(rep.get("not_yet") or 0) + 1
+                continue
+            rep["scanned"] = int(rep.get("scanned") or 0) + 1
+            members = [str(x or "").lower() for x in (rec.get("members") or [])] or [str(h).lower()]
+            rep["items"].append({"hash": str(h)[:12], "title": str(rec.get("title") or "")[:50],
+                                 "members": len(members)})
+            if not apply or (cap and rep["downgraded"] >= cap):
+                continue
+            if dl is None:
+                try:
+                    dl = self._get_downloader("qbittorrent")
+                except Exception:  # noqa: BLE001
+                    dl = None
+            for m in members:
+                try:
+                    self._recommend_downgrade_one(dl, m)
+                except Exception as err:  # noqa: BLE001
+                    self._log(f"推荐过期降级失败 {m[:12]}:{err}", "warning")
+            try:
+                store.set_status(str(h), "downgraded", note="过期→转普通", downgraded_at=now)
+            except Exception:  # noqa: BLE001
+                pass
+            rep["downgraded"] = int(rep.get("downgraded") or 0) + 1
+        return rep
+
+    def _recommend_downgrade_one(self, downloader: Any, h: str) -> bool:
+        """推荐「过期 → 转普通」（Master 01:17）：
+
+        - 静默池成员（``静默-新``）→ 降级成 ``静默-普通``（会摘掉「魔流-推荐」）
+        - 其它（任务名下的种）→ **只摘掉「魔流-推荐」标签**，其余标签/归属不动
+        """
+        hh = str(h or "").strip().lower()
+        if not hh:
+            return False
+        try:
+            rec = self._tag_state().get(hh) or {}
+        except Exception:  # noqa: BLE001
+            rec = {}
+        if (str(rec.get("state") or "") == STATE_SILENT
+                and str(rec.get("sub") or "") == SUB_NEW):
+            return self._silent_to_plain(hh)
+        try:
+            t = (self._tag_all_torrents() or {}).get(hh)
+            cur = [str(x).strip() for x in (getattr(t, "tags", None) or [])] if t is not None else []
+            if cur and "魔流-推荐" in cur:
+                new_tags = [x for x in cur if x != "魔流-推荐"]
+                fn = getattr(downloader, "replace_torrent_tags", None)
+                if callable(fn):
+                    return bool(fn(hh, new_tags))
+        except Exception as err:  # noqa: BLE001
+            self._log(f"推荐降级:摘标签失败 {hh[:12]}:{err}", "warning")
+        return False
+
+    def _qb_num_complete(self) -> Dict[str, int]:
+        """qB 真实做种人数（``num_complete``）→ ``{hash: n}``。
+
+        ★ 魔力公式里的 Ni 用**做种人数**；站点页面上的 seeders 是抓来的快照，
+        用 qB 的实时值更准（Master 2026-09-27 提过）。
+        """
+        out: Dict[str, int] = {}
+        try:
+            dl = self._get_downloader("qbittorrent")
+            qbc = getattr(dl, "_qb_client", lambda: None)() if dl is not None else None
+            if qbc is None:
+                return out
+            for x in (qbc.torrents_info() or []):
+                try:
+                    _h = str(x.get("hash") or "").lower()
+                except Exception:  # noqa: BLE001
+                    _h = ""
+                if _h:
+                    try:
+                        out[_h] = int(x.get("num_complete") or 0)
+                    except (TypeError, ValueError):
+                        out[_h] = 0
+        except Exception as err:  # noqa: BLE001
+            self._log(f"魔力考核:读取 qB num_complete 失败:{err}", "warning")
+        return out
+
+    def _magic_out_per_hour(self, t: Any, ni: int = 0) -> float:
+        """单个种子的每小时魔力产出（估计）。Ni 优先取 qB ``num_complete``。"""
+        try:
+            sz = float(getattr(t, "size_gb", 0) or 0)
+        except (TypeError, ValueError):
+            sz = 0.0
+        try:
+            _ni = int(ni or 0)
+        except (TypeError, ValueError):
+            _ni = 0
+        if _ni <= 0:
+            try:
+                _ni = int(getattr(t, "seeder", 0) or 0)
+            except (TypeError, ValueError):
+                _ni = 0
+        age_w = 0.0
+        try:
+            _added = float(getattr(t, "added_on", 0) or 0)
+            if _added > 0:
+                age_w = max(0.0, (time.time() - _added) / (7.0 * 86400.0))
+        except (TypeError, ValueError):
+            age_w = 0.0
+        try:
+            return float(calc_bonus_per_hour(
+                size_gb=sz, seeders=max(_ni, 1), age_weeks=age_w,
+                is_zero_bonus=bool(getattr(t, "is_zero_bonus", False)),
+            ))
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    def _site_magic_enough(self, site: str) -> Tuple[bool, str]:
+        """该站「魔力产出够了」吗？= 有配了目标的 bonus 任务且**目标已达成**。
+
+        没配目标 → **视为没够**（不清理）。
+        """
+        s = str(site or "").strip()
+        if not s:
+            return False, "无站点"
+        try:
+            tasks = list(self._task_configs.values())
+        except Exception:  # noqa: BLE001
+            return False, "任务不可读"
+        for t in tasks:
+            try:
+                if str(getattr(t, "task_type", "bonus") or "bonus").lower() != "bonus":
+                    continue
+                if not getattr(t, "goal_value", None):
+                    continue
+                if str(getattr(t, "site_name", "") or "").strip() != s:
+                    continue
+                st = self._task_goal_status(t) or {}
+                if st.get("goal_reached"):
+                    return True, f"{getattr(t, 'name', '')} 目标已达成"
+            except Exception:  # noqa: BLE001
+                continue
+        return False, "未达标/未设目标"
+
+    def _silent_plain_sweep(self, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
+        """★ 静默-普通 清理：**考核魔力产出**，站点魔力够了就把「没用的」直接删。
+
+        Master 2026-09-28 01:17：「推荐不过过期转普通 普通考核魔力产出没用，
+        在魔力产出够的情况下普通的直接干」
+
+        - 「够」= 该站有配目标的 bonus 任务且**目标已达成**（没配 → 不清理）
+        - 「没用」= 本种每小时魔力产出 ≤ 池内中位数 × ratio（默认 0.5）
+        - 永不删：库内资产 / 推荐中 / 跨站来源份 / 辅种复用种 / 欠 H&R / 手动保护
+        - 删文件按「Release 目录」共用判断（同 3.14.1）：有别的已完成种子在用 → 只删种子
+        """
+        rep: Dict[str, Any] = {"apply": bool(apply), "pending": 0, "deleted": 0,
+                               "torrent_only": 0, "failed": 0, "sites": {},
+                               "skipped_site": 0, "items": []}
+        cfg = getattr(self, "_silent_cfg", {}) or {}
+        if not cfg.get("sweep", True):
+            rep["reason"] = "未启用"
+            return rep
+        try:
+            ratio = float(cfg.get("ratio", 0.5) or 0.5)
+        except (TypeError, ValueError):
+            ratio = 0.5
+        try:
+            ledger = dict(self._tag_state().items() or {})
+        except Exception:  # noqa: BLE001
+            return rep
+        snap = self._tag_all_torrents() or {}
+        ni_map = self._qb_num_complete()
+
+        def _rkey(_t: Any) -> str:
+            _sp = str(getattr(_t, "save_path", "") or "").rstrip("/")
+            _nm = str(getattr(_t, "name", "") or "").strip()
+            return (_sp + "/" + _nm) if (_sp and _nm) else ""
+
+        done_keys: Dict[str, str] = {}
+        for _h, _t in (snap or {}).items():
+            try:
+                if float(getattr(_t, "progress", 0) or 0) >= 0.999:
+                    _k = _rkey(_t)
+                    if _k:
+                        done_keys.setdefault(_k, str(_h).lower())
+            except Exception:  # noqa: BLE001
+                continue
+        by_site: Dict[str, List[Tuple[str, Any, float, Dict[str, Any]]]] = {}
+        protected = 0
+        for h, rec in list(ledger.items()):
+            hh = str(h or "").lower()
+            if (str(rec.get("state") or "") != STATE_SILENT
+                    or str(rec.get("sub") or "") != SUB_PLAIN):
+                continue
+            t = snap.get(hh)
+            if t is None:
+                continue
+            tags = [str(x) for x in (getattr(t, "tags", None) or [])]
+            if (MARK_REUSE in tags or "魔流-推荐" in tags or "魔流-跨站" in tags
+                    or is_asset_tags(tags)):
+                protected += 1
+                continue
+            site = str(rec.get("site") or "").strip() or self._torrent_site_name(tags, "")
+            done_hr, _why = self._silent_hr_done(site, t)
+            if not done_hr:
+                protected += 1
+                continue
+            by_site.setdefault(site or "-", []).append(
+                (hh, t, self._magic_out_per_hour(t, int(ni_map.get(hh, 0) or 0)), rec)
+            )
+        rep["protected"] = protected
+        cap = int(limit or 0)
+        for site, rows in by_site.items():
+            enough, why = self._site_magic_enough(site)
+            outs = sorted(x[2] for x in rows)
+            med = outs[len(outs) // 2] if outs else 0.0
+            rep["sites"][str(site)] = {
+                "members": len(rows), "enough": bool(enough), "why": why,
+                "median_per_hour": round(med, 2),
+                "total_per_hour": round(sum(outs), 2),
+            }
+            if not enough:
+                rep["skipped_site"] = int(rep.get("skipped_site") or 0) + 1
+                continue
+            thr = med * ratio
+            for hh, t, out_h, rec in sorted(rows, key=lambda x: x[2]):
+                if out_h > thr:
+                    break
+                rep["pending"] += 1
+                rep["items"].append({
+                    "hash": hh[:12], "site": site, "title": str(getattr(t, "title", "") or "")[:50],
+                    "per_hour": round(out_h, 2), "median": round(med, 2),
+                })
+                if not apply or (cap and rep["deleted"] >= cap):
+                    continue
+                _k = _rkey(t)
+                shared = bool(_k and done_keys.get(_k) and done_keys.get(_k) != hh)
+                try:
+                    dl = self._get_downloader(str(rec.get("downloader") or "qbittorrent"))
+                    if dl is None:
+                        rep["failed"] = int(rep["failed"]) + 1
+                        continue
+                    cnt, err = dl.delete_torrents(hashes=[hh], delete_file=not shared)
+                    if cnt:
+                        rep["deleted"] = int(rep["deleted"]) + 1
+                        if shared:
+                            rep["torrent_only"] = int(rep["torrent_only"]) + 1
+                        try:
+                            self._tag_state().drop(hh)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    else:
+                        rep["failed"] = int(rep["failed"]) + 1
+                        self._log(f"静默普通清理:删除失败 {hh[:12]}:{err}", "warning")
+                except Exception as err:  # noqa: BLE001
+                    rep["failed"] = int(rep["failed"]) + 1
+                    self._log(f"静默普通清理:删除异常 {hh[:12]}:{err}", "warning")
+        if apply and rep["deleted"]:
+            self._log(
+                f"魔流:静默普通清理:魔力已达标站点删掉 {rep['deleted']} 个低效普通种"
+                f"（只删种 {rep['torrent_only']} 个；共查 {len(by_site)} 站）"
             )
         return rep
 
