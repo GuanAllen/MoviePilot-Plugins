@@ -1161,6 +1161,13 @@ class MagicFlow(_PluginBase):
                 "summary": "诊断:立即套用单种上传限速(返回档位表)",
             },
             {
+                "path": "/debug/file",
+                "endpoint": self.debug_read_file,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "诊断:读取容器内文本文件片段(白名单 /app /config /core,只读)",
+            },
+            {
                 "path": "/debug/fs",
                 "endpoint": self.debug_fs,
                 "methods": ["GET"],
@@ -10645,6 +10652,37 @@ class MagicFlow(_PluginBase):
             if host == sh or host.endswith("." + sh) or sh.endswith("." + host):
                 return True
         return False
+
+    def debug_read_file(self, path: str = "", grep: str = "", limit: int = 200000) -> Response:
+        """诊断：只读读取容器内文本文件（白名单前缀），可选按行 grep。"""
+        import os as _os
+
+        p2 = str(path or "").strip()
+        if not p2:
+            return Response(success=False, message="缺少 path")
+        if not any(p2.startswith(x) for x in ("/app/", "/config/", "/core/")):
+            return Response(success=False, message="路径不在白名单(/app /config /core)")
+        try:
+            if not _os.path.isfile(p2):
+                return Response(success=False, message="不是文件或不存在")
+            size = _os.path.getsize(p2)
+            cap = max(1000, min(int(limit or 200000), 500000))
+            with open(p2, "r", encoding="utf-8", errors="replace") as fh:
+                text = fh.read(cap)
+            lines = text.splitlines()
+            if grep:
+                kw = str(grep)
+                hits = [(i + 1, ln) for i, ln in enumerate(lines) if kw in ln]
+                return Response(success=True, message="ok", data=self._jsonable({
+                    "path": p2, "size": size, "total_lines": len(lines),
+                    "grep": kw, "hits": [{"line": i, "text": t[:400]} for i, t in hits[:60]],
+                }))
+            return Response(success=True, message="ok", data=self._jsonable({
+                "path": p2, "size": size, "total_lines": len(lines),
+                "content": "\n".join(lines[:400]),
+            }))
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=f"读取失败:{err}")
 
     def debug_fs(self, path: str = "", list: int = 0, path2: str = "") -> Response:
         """诊断：路径元数据（是否硬链接/在不在库）。只读。"""
