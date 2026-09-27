@@ -6796,14 +6796,41 @@ class MagicFlow(_PluginBase):
             return max(0.0, default), "default"
 
     def _site_rules(self) -> SiteRules:
-        """站点规则账本(H&R / 保种时长 / 做种上限)，save_data 持久化。"""
+        """站点规则账本(H&R / 保种时长 / 做种上限)，save_data 持久化。
+
+        ★ 进程级单例（放 ``__magicflow_shared__``）：热重载会换掉插件实例，
+        若新旧实例各持一份内存账本，旧实例的整表写入会把新实例的改动**盖回去**
+        （踩过：探测写进去的促销规则被旧实例的旧快照覆盖）。
+        """
         obj = getattr(self, "_site_rules_obj", None)
-        if obj is None:
-            obj = self._site_rules_obj = SiteRules(
+        if obj is not None:
+            return obj
+        try:
+            import sys as _sys
+            import types as _types
+
+            _key = "__magicflow_shared__"
+            mod = _sys.modules.get(_key)
+            if mod is None or not hasattr(mod, "instances"):
+                mod = _types.ModuleType(_key)
+                mod.instances = {}
+                mod.counters = {}
+                _sys.modules[_key] = mod
+            obj = mod.instances.get("site_rules")
+            if obj is None:
+                obj = SiteRules(
+                    get_data=self.get_data,
+                    save_data=self.save_data,
+                    log=self._log,
+                )
+                mod.instances["site_rules"] = obj
+        except Exception:  # noqa: BLE001
+            obj = SiteRules(
                 get_data=self.get_data,
                 save_data=self.save_data,
                 log=self._log,
             )
+        self._site_rules_obj = obj
         return obj
 
     def _crossseed_pending(self) -> CrossSeedPending:
