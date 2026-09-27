@@ -81,6 +81,7 @@ from .models import (
     MagicFlowDefaultsPayload,
     MagicFlowDownloaderPathsPayload,
     MagicFlowDownloaderPrefsPayload,
+    MagicFlowHandoverPayload,
     MagicFlowSettingsPayload,
     MagicFlowTagMigratePayload,
     MagicFlowTagStatePayload,
@@ -1505,6 +1506,20 @@ class MagicFlow(_PluginBase):
                 "methods": ["GET"],
                 "auth": "bear",
                 "summary": "站点规则库(H&R/保种时长/做种上限)",
+            },
+            {
+                "path": "/tasks/{task_id}/handover",
+                "endpoint": self.get_task_handover,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "删除任务前：预览名下种子可交棒给谁 / 有多少",
+            },
+            {
+                "path": "/tasks/{task_id}/handover",
+                "endpoint": self.post_task_handover,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "把任务名下种子交棒给其它任务 / 退回静默池",
             },
             {
                 "path": "/tags",
@@ -11564,10 +11579,181 @@ class MagicFlow(_PluginBase):
             self._spawn_run_mode_apply(task, _run_mode)
         return Response(success=True, message="任务已更新", data=self._build_task_detail(task_id))
 
-    def delete_task(self, task_id: str) -> Response:
-        """删除魔流任务。"""
+    # ---------------------------------------------------------
+    # 任务删除前的「种子交棒 / 退回静默」
+    # ---------------------------------------------------------
+
+    def _task_managed_hashes(self, task: Any) -> List[str]:
+        """任务名下种子 hash：标签命中 ∪ 账本里显式占用（taken_by）。"""
+        out: List[str] = []
+        seen: Set[str] = set()
+        tags = set(self._task_tags(task))
+        try:
+            snap = self._tag_all_torrents()
+        except Exception:  # noqa: BLE001
+            snap = {}
+        for h, t in (snap or {}).items():
+            tt = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
+            if any(x in tags for x in tt) and h not in seen:
+                out.append(h)
+                seen.add(h)
+        try:
+            tid = str(getattr(task, "id", "") or "")
+            for h, rec in (self._tag_state().items() or {}).items():
+                if str((rec or {}).get("taken_by") or "") == tid and h not in seen:
+                    out.append(h)
+                    seen.add(h)
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+
+    def _task_handover_plan(self, task: Any) -> Dict[str, Any]:
+        """算出「删掉这个任务，名下种子能交给谁」：同站其它任务 + 各自会接管多少。"""
+        hashes = self._task_managed_hashes(task)
+        size_gb = 0.0
+        try:
+            snap = self._tag_all_torrents()
+            for h in hashes:
+                size_gb += float(getattr(snap.get(h), "size_gb", 0) or 0)
+        except Exception:  # noqa: BLE001
+            pass
+        same_tag = self._task_tag(task)
+        cs_tag = CROSSSEED_TAG
+        try:
+            rec_tag = str(self._recommend_cfg.get("tag", "魔流-推荐") or "魔流-推荐")
+        except Exception:  # noqa: BLE001
+            rec_tag = "魔流-推荐"
+        protected = 0
+        try:
+            cs_hashes = set(self._crossseed_source_hashes() or set())
+        except Exception:  # noqa: BLE001
+            cs_hashes = set()
+        for h in hashes:
+            if h in cs_hashes:
+                protected += 1
+        cands: List[Dict[str, Any]] = []
+        for other in self._task_configs.values():
+            if str(getattr(other, "id", "")) == str(getattr(task, "id", "")):
+                continue
+            site_o, state_o = self._task_site_state(other)
+            cands.append({
+                "id": str(getattr(other, "id", "") or ""),
+                "name": str(getattr(other, "name", "") or ""),
+                "site": site_o,
+                "state": state_o,
+                "enabled": bool(getattr(other, "enabled", False)),
+                "tag": tag_for(site_o, state_o),
+                "same_tag": tag_for(site_o, state_o) == same_tag,
+                "same_site": site_o == str(getattr(task, "site_name", "") or ""),
+            })
+        cands.sort(key=lambda c: (not c["same_tag"], not c["same_site"], not c["enabled"], c["name"]))
+        return {
+            "task": {"id": str(getattr(task, "id", "") or ""), "name": str(getattr(task, "name", "") or "")},
+            "managed": len(hashes),
+            "size_gb": round(size_gb, 2),
+            "protected": protected,
+            "tag": same_tag,
+            "auto_handover": [c for c in cands if c["same_tag"]],
+            "candidates": cands,
+            "recommend_tag": rec_tag,
+        }
+
+    def _tag_handover(self, src: Any, dst: Any) -> Dict[str, Any]:
+        """把 src 名下种子整体交给 dst：重贴标签（按 dst 的站点/状态）+ 改账本占用。"""
+        downloader = self._get_downloader()
+        if downloader is None or not getattr(downloader, "is_available", False):
+            return {"ok": False, "error": "下载器不可用"}
+        store = self._tag_state()
+        site, state = self._task_site_state(dst)
+        sub = ""
+        target = tag_for(site, state, sub)
+        dst_id = str(getattr(dst, "id", "") or "")
+        dn = str(getattr(dst, "name", "") or "")
+        fn = getattr(downloader, "replace_torrent_tags", None)
+        snap = self._tag_all_torrents()
+        moved = failed = 0
+        for h in self._task_managed_hashes(src):
+            live = snap.get(h)
+            cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
+            new_tags = retag(cur, site=site, state=state, sub=sub) if cur else [target]
+            try:
+                done = fn(h, new_tags) if callable(fn) else downloader.set_torrent_tags(h, new_tags)
+            except Exception:  # noqa: BLE001
+                done = False
+            if not done:
+                failed += 1
+                continue
+            rec = dict(store.get(h) or {})
+            rec.update({
+                "site": site, "state": state, "sub": sub,
+                "taken_by": dst_id, "task": dn,
+                "origin_state": rec.get("origin_state") or STATE_SILENT,
+                "origin_sub": rec.get("origin_sub") or SUB_NEW,
+            })
+            if live is not None:
+                rec.setdefault("title", str(getattr(live, "title", "") or "")[:200])
+                rec.setdefault("size_gb", float(getattr(live, "size_gb", 0) or 0))
+            try:
+                store.put(h, rec)
+            except Exception:  # noqa: BLE001
+                pass
+            moved += 1
+        try:
+            self._apply_seed_upload_limit(force=True)
+        except Exception:  # noqa: BLE001
+            pass
+        if moved:
+            self._log(f"标签模型:任务「{getattr(src, 'name', '')}」名下 {moved} 个种子交棒给「{dn}」（{target}）")
+        return {"ok": True, "moved": moved, "failed": failed, "target_tag": target}
+
+    def _tag_settle_idle(self, task: Any) -> Dict[str, Any]:
+        """把任务名下种子退回静默池（保文件、可逆），并清掉账本占用。"""
+        n = self._tag_release(task, self._task_managed_hashes(task), reason="删除任务→退回静默")
+        return {"ok": True, "settled": n}
+
+    def get_task_handover(self, task_id: str) -> Response:
+        """预览：删掉该任务时名下种子能交给谁 / 有多少要处理。"""
+        task = self._get_task_config(task_id)
+        if not task:
+            return Response(success=False, message="任务不存在")
+        return Response(success=True, message="ok", data=self._task_handover_plan(task))
+
+    def post_task_handover(self, task_id: str, payload: MagicFlowHandoverPayload) -> Response:
+        """执行：交棒给目标任务 或 退回静默池。"""
+        task = self._get_task_config(task_id)
+        if not task:
+            return Response(success=False, message="任务不存在")
+        mode = str(getattr(payload, "mode", "") or "handover").strip().lower()
+        tid = str(getattr(payload, "target_task_id", "") or "").strip()
+        if mode == "idle" or not tid:
+            res = self._tag_settle_idle(task)
+            return Response(success=True, message=f"已退回静默池 {res.get('settled')} 个", data=res)
+        dst = self._get_task_config(tid)
+        if not dst:
+            return Response(success=False, message="目标任务不存在")
+        res = self._tag_handover(task, dst)
+        if not res.get("ok"):
+            return Response(success=False, message=str(res.get("error") or "交棒失败"), data=res)
+        return Response(success=True, message=f"已交棒 {res.get('moved')} 个给「{getattr(dst, 'name', '')}」", data=res)
+
+    def delete_task(self, task_id: str, handover_to: str = "", settle: str = "") -> Response:
+        """删除魔流任务。
+
+        - ``handover_to=<任务id>``：先把名下种子整体交棒给该任务，再删任务；
+        - ``settle=idle``：名下种子退回静默池（保文件），再删任务；
+        - 都不传：只删配置（种子会变孤儿，不推荐）。
+        """
         if task_id not in self._task_configs:
             return Response(success=False, message="任务不存在")
+
+        _handled: Dict[str, Any] = {}
+        if str(handover_to or "").strip():
+            dst = self._get_task_config(str(handover_to).strip())
+            if not dst:
+                return Response(success=False, message="目标任务不存在，未删除")
+            _handled = self._tag_handover(self._task_configs[task_id], dst)
+        elif str(settle or "").strip().lower() == "idle":
+            _handled = self._tag_settle_idle(self._task_configs[task_id])
 
         del self._task_configs[task_id]
         if self._store:
@@ -11586,7 +11772,13 @@ class MagicFlow(_PluginBase):
         self._invalidate_summary(drop=True)
         self._apply_task_traffic_limit()
         self._apply_seed_upload_limit()
-        return Response(success=True, message="任务已删除")
+        _msg = "任务已删除"
+        if _handled:
+            if "moved" in _handled:
+                _msg = f"任务已删除（种子交棒 {_handled.get('moved')} 个）"
+            elif "settled" in _handled:
+                _msg = f"任务已删除（退回静默 {_handled.get('settled')} 个）"
+        return Response(success=True, message=_msg, data=_handled or None)
 
     def update_task_state(self, task_id: str, payload: MagicFlowTaskStatePayload) -> Response:
         """切换任务运行状态(running / seeding / stopped)。"""
