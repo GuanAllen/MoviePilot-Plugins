@@ -10023,6 +10023,16 @@ class MagicFlow(_PluginBase):
                     else:
                         sid = self._site_id_by_domain(dom)
                         if not sid:
+                            # 别名兜底：MP 里存 btschool.club，用户可能写 pt.btschool.club
+                            _d = re.sub(r"^https?://", "", dom.strip().lower()).strip("/")
+                            for _row in (self._list_sites() or []):
+                                _rd = re.sub(r"^https?://", "", str(_row.get("domain") or "").strip().lower()).strip("/")
+                                if _rd and (
+                                    _rd == _d or _rd.endswith("." + _d) or _d.endswith("." + _rd)
+                                ):
+                                    sid = int(_row.get("id") or 0)
+                                    break
+                        if not sid:
                             return Response(success=False, message=f"未找到站点 {dom}")
                 return self.probe_site_rules(site_id=sid, persist=True)
             if act == "clear":
