@@ -57,6 +57,20 @@ BUILTIN_RULES: Dict[str, Dict[str, Any]] = {
         "seed_cap": None,
         "note": "红豆饭：有 H&R（默认按 24h 保守保种，待探测核实）",
     },
+    "cspt.top": {
+        "hr": False,
+        # ★ 主人 2026-09-28 06:08 确认：财神 **没有 H&R**。
+        #   （之前 probe(myhr.php/rules.php) 抓不到条款 → 一直按未知保守 24h，现改为明确「无 H&R」。）
+        "seed_hours": 0.0,
+        "seed_cap": None,
+        "note": "财神：**无 H&R**（主人确认）→ 不做 H&R 保种保护、不计欠 H&R。",
+    },
+    "cspt.cc": {
+        "hr": False,
+        "seed_hours": 0.0,
+        "seed_cap": None,
+        "note": "财神（备用域名 cspt.cc）：同 cspt.top，**无 H&R**。",
+    },
     "kp.m-team.cc": {
         "hr": False,
         "seed_hours": None,
