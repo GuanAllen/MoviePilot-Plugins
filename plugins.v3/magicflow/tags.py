@@ -328,6 +328,78 @@ class TagStateStore:
         self._write(data)
         return rec
 
+    def put_many(self, patches: Dict[str, Dict[str, Any]], *, now: Optional[float] = None) -> int:
+        """批量写入（一次落盘）。语义与 :meth:`put` 一致。"""
+        ts = float(now if now is not None else time.time())
+        data = self.items()
+        n = 0
+        for h, patch in (patches or {}).items():
+            hh = _clean(h).lower()
+            if not hh or not isinstance(patch, dict):
+                continue
+            rec = dict(data.get(hh) or {})
+            new_state = _clean(patch.get("state", rec.get("state")))
+            new_sub = _clean(patch.get("sub", rec.get("sub")))
+            if new_state in (STATE_SILENT, STATE_RECOMMEND) and new_state != rec.get("state"):
+                rec["origin_state"] = new_state
+                rec["origin_sub"] = new_sub
+            rec.update({k: v for k, v in patch.items() if v is not None})
+            if new_state:
+                rec["state"] = new_state
+            if new_state in STATES_WITH_SUB:
+                rec["sub"] = new_sub
+            elif "sub" in patch and not patch.get("sub"):
+                rec.pop("sub", None)
+            rec.setdefault("created", ts)
+            rec["updated"] = ts
+            data[hh] = rec
+            n += 1
+        if n:
+            self._write(data)
+        return n
+
+    def reconcile(self, live_hashes: Any, *, keep_miss: int = 3, min_live: int = 50) -> Dict[str, int]:
+        """账本对账：连续 ``keep_miss`` 轮不在下载器里 → 销账（防僵尸记录）。
+
+        ★ 安全阀：``live`` 少于 ``min_live`` 视为「快照异常」直接跳过，
+        绝不因为一次抓取失败把账本清空。
+        """
+        try:
+            live = {_clean(h).lower() for h in (live_hashes or []) if _clean(h)}
+        except Exception:  # noqa: BLE001
+            live = set()
+        if len(live) < int(min_live):
+            return {"skipped": 1, "live": len(live), "dropped": 0, "pending": 0}
+        data = self.items()
+        dropped = 0
+        pending = 0
+        for h, rec in list(data.items()):
+            if h in live:
+                if rec.get("miss"):
+                    rec.pop("miss", None)
+                continue
+            miss = int(rec.get("miss") or 0) + 1
+            if miss >= int(keep_miss):
+                data.pop(h, None)
+                dropped += 1
+                try:
+                    self._log and self._log(f"账本:销账僵尸记录 {h[:8]}（{miss} 轮未见）")
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                rec["miss"] = miss
+                pending += 1
+        if dropped or pending:
+            self._write(data)
+        return {"live": len(live), "dropped": dropped, "pending": pending}
+
+    def stale_count(self) -> int:
+        """账本里「本轮未见」的待销账记录数（看板用）。"""
+        try:
+            return sum(1 for r in self.items().values() if r.get("miss"))
+        except Exception:  # noqa: BLE001
+            return 0
+
     def drop(self, hash_string: str) -> bool:
         h = _clean(hash_string).lower()
         data = self.items()
