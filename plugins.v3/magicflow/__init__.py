@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.19.0"
+__version__ = "3.19.1"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -14894,7 +14894,7 @@ class MagicFlow(_PluginBase):
         """★ **批量整理入库**（Master 2026-09-28 07:00：「批量入库的功能加一下」）。
 
         - ``hashes``：逗号分隔的种子 hash（工作台勾选的）；
-        - ``all=1``：把当前所有「待确认」记录一起入库（``recommended`` + 可达的 ``pending``）；
+        - ``all=1``：把当前所有**待确认**（``recommended``）记录一起入库；``status=pending`` 可把「待核实」也带上；
         - 逐个走 ``_recommend_import``（识别 → TransferChain 手动整理），单个失败不影响其余。
         Python 侧参数从 **query string** 取（MP 插件 API 的 POST 不吃 JSON body）。
         """
@@ -14902,10 +14902,12 @@ class MagicFlow(_PluginBase):
         if store is None:
             return Response(success=False, message="推荐存储不可用")
         want: List[str] = [h.strip().lower() for h in str(hashes or "").replace(" ", "").split(",") if h.strip()]
+        # `all=1` 默认只收「真·待确认(recommended)」；要连「待核实(pending)」一起，显式传 status=pending
+        _want_status = {x.strip().lower() for x in str(status or "").split(",") if x.strip()} or {"recommended"}
         if not want and str(all or "").strip().lower() in ("1", "true", "yes", "on"):
             for it in (store.list() or []):
                 _st = str(it.get("status") or "").lower()
-                if _st in ("recommended", "pending"):
+                if _st in _want_status:
                     _h = str(it.get("hash") or "").strip().lower()
                     if _h:
                         want.append(_h)
