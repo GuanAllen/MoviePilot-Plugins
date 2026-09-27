@@ -4,16 +4,16 @@
 改去**任意他站**（B / C / D / E …）找**同一 Release 且免费**的副本下下来，
 再把这批文件**辅种回 A** —— 对 A 来说是「零下载纯做种」，白赚 A 站上传与魔力。
 
-**选源顺序**（同一资源多个站都有时挑一个最优的）::
-
-    免费（硬门槛，查各站免费视图）→ 有源（列表 row 带种子数）→ PV 便宜（已在缓存里）
-    → 站点可用（未被 PV 封 / cookie 有效）
+**选源**：用 **MoviePilot 自带搜索**（`SearchChain.search_by_title`）一次搜多个站 ——
+返回的 `torrent_info` 天然带 `downloadvolumefactor`（免不免费）、`seeders`（有没有源）、
+`freedate`（促销到期）、`enclosure`（下载链）、站点 cookie，**免不免费不用再单独查**。
+调用方负责把结果过滤成「免费且在做种」的行再交进来（`rows_provider`）。
 
 **判同 Release 的硬标准**：`fingerprint()` 完整特征码（文件列表 + 根目录名）一致；
 根目录名不同一律不自动辅种（在 qB 里会变成两个目录/对不上）。
 
 **为什么不用「.torrent 里的免费标记」**：免费状态不在种子文件里，是站点侧促销；
-所以必须从**站点的免费视图**（`spstate`）拿候选 —— 这同时也保证了「拿到的必是免费种」。
+所以免费只能来自站点侧数据（MP 搜索的列表解析 / 免费视图 `spstate`）。
 
 本模块只依赖 stdlib + `.fingerprint`，不反向依赖插件主模块（避免热重载循环导入）。
 """
@@ -127,25 +127,24 @@ def pick_source(
     title: Any,
     size_bytes: int = 0,
     fp: Optional[str] = None,
-    sites: Optional[List[Any]] = None,
-    free_search: Callable[[Any, str], List[Any]],
-    torrent_bytes: Callable[[Any, Any], Optional[bytes]],
-    limit_sites: int = 6,
+    rows_provider: Callable[[str], List[Any]],
+    torrent_bytes: Callable[[Any], Optional[bytes]],
+    max_torrents: int = MAX_TORRENT_PER_SITE * 2,
     log: Optional[Callable[..., Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """在候选站点里挑一个「免费且同一 Release」的源。
+    """在「跨站搜索」结果里挑一个「免费且同一 Release」的源。
 
     Args:
         title: 目标站候选标题（用于站点内检索与标题比对）
         size_bytes: 目标站候选体积（字节，用于体积邻近过滤）
         fp: 目标站候选的**完整特征码**（`fingerprint(A.raw)`）
-        sites: 候选站点对象列表（**已按优先级排好序**，且不含目标站自己）
-        free_search: ``(site, keyword) -> List[row]``，站点免费视图检索（走 PV 闸门+缓存）
-        torrent_bytes: ``(site, row) -> Optional[bytes]``，取该行 .torrent 字节（走 PV 记帐）
-        limit_sites: 最多探测几个站点（PV 上限）
+        rows_provider: ``(keyword) -> List[row]``；调用方内部用 **MP 搜索**一次查多站，
+            并已过滤为「免费（`downloadvolumefactor<=0`）且在做种（`seeders>=1`）」
+        torrent_bytes: ``(row) -> Optional[bytes]``，取该行 .torrent 字节（走 PV 记帐）
+        max_torrents: 最多取几个 .torrent 做特征码定论（PV 上限）
 
     Returns:
-        ``{"site", "row", "torrent", "site_name", "site_domain"}`` 或 ``None``
+        ``{"row", "torrent", "site_name", "site_domain", "site"}`` 或 ``None``
     """
     if not fp:
         _log(log, "跨站:目标种特征码为空,放弃", "warning")
@@ -154,55 +153,50 @@ def pick_source(
     if not kw:
         _log(log, "跨站:标题无法生成检索词,放弃", "warning")
         return None
-    cap = max(int(limit_sites or 0), 0)
-    probed = 0
-    for site in sites or []:
-        if probed >= cap:
+    try:
+        rows = rows_provider(kw) or []
+    except Exception as err:  # noqa: BLE001
+        _log(log, f"跨站:跨站检索失败:{err}", "warning")
+        rows = []
+    if not rows:
+        _log(log, f"跨站:多站搜索「{kw}」无「免费且有源」结果")
+        return None
+    # 体积最接近的优先试（同 Release 体积必然一致）
+    try:
+        rows = sorted(rows, key=lambda r: abs(float(getattr(r, "size", 0) or 0) - float(size_bytes or 0)))
+    except Exception:  # noqa: BLE001
+        pass
+    tried = 0
+    for row in rows[:MAX_ROWS_SCAN]:
+        if tried >= max(int(max_torrents or 0), 1):
             break
-        probed += 1
-        sname = site_name(site)
+        sname = str(getattr(row, "site_name", "") or getattr(row, "site", "") or "?")
+        if not title_like(getattr(row, "title", ""), title):
+            continue
+        if not size_close(getattr(row, "size", 0), size_bytes):
+            continue
+        tried += 1
         try:
-            rows = free_search(site, kw) or []
+            tb = torrent_bytes(row)
         except Exception as err:  # noqa: BLE001
-            _log(log, f"跨站:{sname} 免费检索失败:{err}", "warning")
+            _log(log, f"跨站:{sname} 取种失败:{err}", "warning")
             continue
-        if not rows:
-            _log(log, f"跨站:{sname} 免费视图无「{kw}」")
+        if not tb:
             continue
-        tried = 0
-        for row in rows[:MAX_ROWS_SCAN]:
-            if not title_like(getattr(row, "title", ""), title):
-                continue
-            if not size_close(getattr(row, "size", 0), size_bytes):
-                continue
-            if tried >= MAX_TORRENT_PER_SITE:
-                break
-            tried += 1
-            try:
-                tb = torrent_bytes(site, row)
-            except Exception as err:  # noqa: BLE001
-                _log(log, f"跨站:{sname} 取种失败:{err}", "warning")
-                continue
-            if not tb:
-                continue
-            try:
-                f2 = fingerprint(tb)
-            except Exception:  # noqa: BLE001
-                f2 = None
-            if f2 and f2 == fp:
-                _log(
-                    log,
-                    f"跨站:命中免费源 {sname} <{getattr(row, 'title', '')}>",
-                )
-                return {
-                    "site": site,
-                    "row": row,
-                    "torrent": tb,
-                    "site_name": sname,
-                    "site_domain": site_domain(site),
-                }
-            _log(log, f"跨站:{sname} 标题相符但特征码不同(非同一 Release),跳过")
-        _log(log, f"跨站:{sname} 免费列表 {len(rows)} 条,无可用同 Release")
+        try:
+            f2 = fingerprint(tb)
+        except Exception:  # noqa: BLE001
+            f2 = None
+        if f2 and f2 == fp:
+            _log(log, f"跨站:命中免费源 {sname} <{getattr(row, 'title', '')}>")
+            return {
+                "site": int(getattr(row, "site", 0) or 0),
+                "row": row,
+                "torrent": tb,
+                "site_name": sname,
+                "site_domain": str(getattr(row, "site_name", "") or ""),
+            }
+        _log(log, f"跨站:{sname} 标题/体积相符但特征码不同(非同一 Release),跳过")
     return None
 
 
