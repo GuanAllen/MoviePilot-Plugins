@@ -139,6 +139,7 @@ const settingsDraft = ref({
   crossseed_seed_hours_default: 24,
   crossseed_site_hours: ['pt.btschool.club=10'],
   crossseed_reclaim: false,
+  rules_auto_refresh: true,
 })
 // ---- 站点实时数据 + 流量监控（直连站点，非 MP 6h 快照）----
 const liveState = ref(null)
@@ -173,6 +174,9 @@ const defaultsDraft = ref(normalizeDefaults({}))
 const defaultsLoading = ref(false)
 // IYUU 云端辅种（可选）：站点表按 MoviePilot 已配置站点生成
 const iyuuSites = ref([])
+const siteRules = ref([])
+const rulesLoading = ref(false)
+const rulesProbing = ref(false)
 const iyuuLoading = ref(false)
 const iyuuTesting = ref(false)
 const iyuuStatus = ref(null)
@@ -548,6 +552,7 @@ async function loadStatus() {
         crossseed_seed_hours_default: status.value.crossseed.seed_hours_default,
         crossseed_site_hours: status.value.crossseed.site_hours || [],
         crossseed_reclaim: status.value.crossseed.reclaim,
+        rules_auto_refresh: status.value.crossseed.rules_auto_refresh,
       } : {}),
       ...(status.value.fallback || {}),
       ...(status.value.live ? {
@@ -1338,6 +1343,7 @@ async function openSettings(tab = 'general') {
   await Promise.all([loadDownloaderPrefs(), loadDefaults(), loadIyuuSites()])
   if (tab === 'fallback') loadFallback()
   if (tab === 'cloud') loadCloud()
+  if (tab === 'rules') loadRules()
 }
 
 // ── 云盘归档 ─────────────────────────────────────────────
@@ -1506,6 +1512,47 @@ async function runFallback(dryRun = false) {
 }
 
 // 加载 IYUU 站点表（按 MoviePilot 已配置站点生成）。
+async function loadRules() {
+  rulesLoading.value = true
+  try {
+    const res = await props.api.get('rules')
+    siteRules.value = res?.data?.rules || []
+  } catch (e) {
+    siteRules.value = []
+  } finally {
+    rulesLoading.value = false
+  }
+}
+
+async function probeRules(site) {
+  rulesProbing.value = true
+  try {
+    const q = site ? `&site=${encodeURIComponent(site)}` : ''
+    const res = await props.api.get(`rules?action=probe${q}`)
+    if (res?.success === false) throw new Error(res?.message || '探测失败')
+    siteRules.value = res?.data?.rules || siteRules.value
+    return res
+  } finally {
+    rulesProbing.value = false
+  }
+}
+
+async function setRuleHours(row, hours) {
+  const dom = row?.domain
+  if (!dom) return
+  await props.api.get(`rules?action=set&site=${encodeURIComponent(dom)}&hours=${encodeURIComponent(hours)}`)
+  await loadRules()
+}
+
+async function refreshRules() {
+  const res = await props.api.get('rules?action=refresh')
+  siteRules.value = res?.data?.rules || []
+}
+
+function ruleSourceText(src) {
+  return ({ manual: '手填', probe: '页面探测', builtin: '内置', default: '全局默认' })[src] || src || '-'
+}
+
 async function loadIyuuSites() {
   iyuuLoading.value = true
   try {
@@ -2776,6 +2823,7 @@ onUnmounted(() => {
           <VTab value="live" class="magicflow-settings-tab">站点监控</VTab>
           <VTab value="recommend" class="magicflow-settings-tab">推荐</VTab>
           <VTab value="crossseed" class="magicflow-settings-tab">跨站</VTab>
+          <VTab value="rules" class="magicflow-settings-tab">站点规则</VTab>
         </VTabs>
         <VDivider />
 
@@ -3347,6 +3395,65 @@ onUnmounted(() => {
               <VSwitch v-model="settingsDraft.recommend_auto_import" label="确认后自动整理入库" color="primary" hide-details inset />
               <VSwitch v-model="settingsDraft.recommend_notify" label="发现推荐时通知" color="primary" hide-details inset />
             </div>
+          </div>
+
+          <div v-else-if="settingsTab === 'rules'" class="magicflow-settings-form">
+            <p class="magicflow-settings-hint">
+              站点规则库：<strong>H&amp;R / 最短保种时长 / 做种上限</strong>。
+              跨站取种的「来源份」在兄弟站仍背 H&amp;R 义务（例：学校 BTSchool 要挂种 10 小时），
+              这张表决定保种多久。优先级：<strong>手填 &gt; 页面探测 &gt; 内置 &gt; 全局默认</strong>；
+              探测遵循「宁保守勿乐观」—— 抓不到就保持原值，绝不假设「没有 H&amp;R」。
+            </p>
+            <div class="magicflow-settings-switches">
+              <VSwitch v-model="settingsDraft.rules_auto_refresh" label="每周自动逐站探测规则并入库" color="primary" hide-details inset />
+            </div>
+            <div class="magicflow-rules-actions">
+              <VBtn size="small" color="primary" variant="tonal" :loading="rulesProbing" @click="probeRules()">
+                <VIcon start size="small">mdi-download-network-outline</VIcon>逐站拉取（探测页面）
+              </VBtn>
+              <VBtn size="small" variant="text" :disabled="rulesLoading" @click="refreshRules">按 MP 配置补全</VBtn>
+              <VSpacer />
+              <span class="magicflow-settings-hint">共 {{ siteRules.length }} 条</span>
+            </div>
+            <p v-if="rulesProbing" class="magicflow-settings-hint">正在逐站抓取规则页（每站 1~2 个请求，站间随机歇 1.5~3.5 秒）…</p>
+            <div class="magicflow-rules-table">
+              <div class="magicflow-rules-row magicflow-rules-row--head">
+                <span>站点</span><span>H&amp;R</span><span>保种(h)</span><span>做种上限</span><span>来源</span><span>操作</span>
+              </div>
+              <div v-for="row in siteRules" :key="row.domain" class="magicflow-rules-row">
+                <span class="magicflow-rules-row__name" :title="row.domain">
+                  {{ row.site_name || row.domain }}
+                  <em v-if="!row.in_library">未入库</em>
+                </span>
+                <span>
+                  <VChip v-if="row.hr === true" size="x-small" color="error" variant="tonal">有</VChip>
+                  <VChip v-else-if="row.hr === false" size="x-small" color="success" variant="tonal">无</VChip>
+                  <VChip v-else size="x-small" variant="tonal">未知</VChip>
+                </span>
+                <span>
+                  <VTextField
+                    :model-value="row.effective_hours"
+                    type="number"
+                    min="0"
+                    max="720"
+                    step="1"
+                    density="compact"
+                    variant="outlined"
+                    hide-details
+                    style="max-width: 6.5rem"
+                    @change="setRuleHours(row, $event.target.value)"
+                  />
+                </span>
+                <span>{{ row.seed_cap || '-' }}</span>
+                <span class="magicflow-rules-row__src">{{ ruleSourceText(row.hours_src) }}</span>
+                <span>
+                  <VBtn size="x-small" variant="text" :disabled="rulesProbing" @click="probeRules(row.domain)">探测</VBtn>
+                </span>
+              </div>
+            </div>
+            <p class="magicflow-settings-hint">
+              「保种(h)」直接改 = 写入手填覆盖（等同于跨站页的「站点保种时长」）。
+            </p>
           </div>
 
           <div v-else-if="settingsTab === 'crossseed'" class="magicflow-settings-form">
@@ -4339,6 +4446,60 @@ onUnmounted(() => {
   flex-direction: column;
   min-inline-size: 0;
 }
+.magicflow-rules-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0.25rem;
+}
+
+.magicflow-rules-table {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.5rem;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.magicflow-rules-row {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1.6fr) 5rem 7rem 6rem 6rem 4.5rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  font-size: 0.875rem;
+}
+
+.magicflow-rules-row:nth-child(even) {
+  background: rgba(var(--v-theme-on-surface), 0.03);
+}
+
+.magicflow-rules-row--head {
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+.magicflow-rules-row__name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.magicflow-rules-row__name em {
+  font-style: normal;
+  font-size: 0.7rem;
+  opacity: 0.6;
+}
+
+.magicflow-rules-row__src {
+  opacity: 0.75;
+}
+
 .magicflow-crossseed-list {
   display: flex;
   flex-direction: column;
