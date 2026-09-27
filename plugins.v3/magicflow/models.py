@@ -267,6 +267,16 @@ class MagicFlowSettingsPayload(BaseModel):
     recommend_temp_ttl_days: float = Field(7.0, ge=0, le=3650, description="识别不出/不推荐的纯刷流临时种 TTL（天），0=不按此清")
     recommend_disk_min_free_gb: float = Field(50.0, ge=0, description="磁盘剩余低于该值(GB)即视为「磁盘不足」：推荐种立即按过期处理")
 
+    # ── 跨站辅种（兄弟站取种 → 回辅，3.11.0 流量兜底）──────────────────────
+    #  跨站取种依赖「他站这个种免费」的判断。判断可能错（程序解析错 / 站点促销变了），
+    #  一旦误判就会白烧兄弟站的下载流量。这里做**双重兜底**：
+    #   ① 核对来源站「正在下载」列表里的免费标记（不免费 → 立即删种 + 拉黑该站）；
+    #   ② 对比取种前后来源站的下载量增量（超阈值 → 同样删种 + 拉黑）。
+    crossseed_guard: bool = Field(True, description="启用兄弟站「流量兜底」：跨站取种期间核对来源站免费状态与下载量增量，发现其实不免费立即删种并拉黑该站")
+    crossseed_guard_pct: float = Field(5.0, ge=0, le=100, description="流量兜底阈值：来源站下载增量 > 目标体积 × 该百分比 即视为「不免费」")
+    crossseed_guard_min_mb: float = Field(50.0, ge=0, description="流量兜底最小判定增量(MB)，避免统计抖动误判")
+    crossseed_guard_interval_min: float = Field(15.0, ge=0, le=1440, description="同一来源站的兜底核对间隔(分钟)")
+
     # ── 元数据兜底（多源识别 + 补 NFO）────────────────────────────────────
     #  TMDB 对中日番剧的特别篇/前传/国漫经常「没有」，离了 TMDB 就无元数据可用。
     #  这里做：多源识别（tmdb→bangumi→douban）→ 给库里缺 NFO 的集补最小 NFO；

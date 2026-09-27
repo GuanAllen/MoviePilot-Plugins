@@ -124,7 +124,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.10.1"
+__version__ = "3.11.0"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -711,6 +711,15 @@ class MagicFlow(_PluginBase):
         }
         self._recommend_engine = RecommendEngine(self)
         self._recommend_cursor = ""
+
+        # 跨站辅种：兄弟站「流量兜底」（判「免费」可能错 → 必须实时核对，错了立刻止损）
+        self._cs_cfg = {
+            "guard": bool(raw_config.get("crossseed_guard", True)),
+            "guard_pct": _rf(raw_config.get("crossseed_guard_pct"), 5.0),
+            "guard_min_mb": _rf(raw_config.get("crossseed_guard_min_mb"), 50.0),
+            "guard_interval_min": _rf(raw_config.get("crossseed_guard_interval_min"), 15.0),
+        }
+        self._cs_guard_at: Dict[str, float] = {}
 
         # 元数据兜底(多源识别 + 补 NFO):TMDB 没有的(番剧特别篇/前传/国漫)自动兜底
         def _fsources(v: Any) -> List[str]:
@@ -1564,6 +1573,10 @@ class MagicFlow(_PluginBase):
             "recommend_notify": bool(self._recommend_cfg.get("notify", True)),
             "recommend_temp_ttl_days": float(self._recommend_cfg.get("temp_ttl_days", 7.0)),
             "recommend_disk_min_free_gb": float(self._recommend_cfg.get("disk_min_free_gb", 50.0)),
+            "crossseed_guard": bool(getattr(self, "_cs_cfg", {}).get("guard", True)),
+            "crossseed_guard_pct": float(getattr(self, "_cs_cfg", {}).get("guard_pct") or 5.0),
+            "crossseed_guard_min_mb": float(getattr(self, "_cs_cfg", {}).get("guard_min_mb") or 50.0),
+            "crossseed_guard_interval_min": float(getattr(self, "_cs_cfg", {}).get("guard_interval_min") or 15.0),
             "fallback_enabled": bool(self._fallback_cfg.get("enabled", True)),
             "fallback_sources": list(self._fallback_cfg.get("sources") or FALLBACK_SOURCES),
             "fallback_paths": list(self._fallback_cfg.get("paths") or []),
@@ -6803,6 +6816,7 @@ class MagicFlow(_PluginBase):
             return []
         a_id = int(getattr(task, "site_id", 0) or 0)
         a_dom = str(getattr(task, "site_domain", "") or "").strip().lower()
+        _banned = set(self._cs_ban_map().keys())        # ★ 被流量兜底拉黑的站不再作为来源
         pool: List[int] = []
         dom_by_id: Dict[int, str] = {}
         for site in sites:
@@ -6810,6 +6824,8 @@ class MagicFlow(_PluginBase):
             dom = str(getattr(site, "domain", "") or "").strip().lower()
             if not sid or sid == a_id or (a_dom and dom == a_dom):
                 continue          # 目标站自己不能当源（不然还是在 A 下）
+            if dom and dom in _banned:
+                continue          # 已被流量兜底拉黑
             if getattr(site, "is_active", True) is False:
                 continue
             pool.append(sid)
@@ -6949,6 +6965,209 @@ class MagicFlow(_PluginBase):
             )
         return started
 
+    # ---------------------------------------------------------- 跨站:流量兜底 / 黑名单
+
+    def _site_id_by_domain(self, domain: str) -> int:
+        """域名 → MoviePilot 站点 id（用于取该站实时数据 / 正在下载列表）。"""
+        dom = str(domain or "").strip().lower()
+        if not dom:
+            return 0
+        cache = getattr(self, "_dom2sid", None)
+        if cache is None:
+            cache = self._dom2sid = {}
+        if dom in cache:
+            return int(cache[dom] or 0)
+        sid = 0
+        try:
+            from app.db.oper.site import SiteOper  # noqa: WPS433
+
+            for site in (SiteOper().list() or []):
+                d = str(getattr(site, "domain", "") or "").strip().lower()
+                if not d:
+                    continue
+                cache[d] = int(getattr(site, "id", 0) or 0)
+                if d == dom:
+                    sid = int(getattr(site, "id", 0) or 0)
+        except Exception as err:  # noqa: BLE001
+            self._log(f"跨站:站点域名表构建失败:{err}", "warning")
+            return 0
+        return sid
+
+    def _cs_ban_map(self) -> Dict[str, Dict[str, Any]]:
+        try:
+            data = self.get_data("crossseed_ban") or {}
+        except Exception:  # noqa: BLE001
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {str(k): v for k, v in data.items() if isinstance(v, dict)}
+
+    def _cs_ban_add(self, domain: str, reason: str) -> None:
+        dom = str(domain or "").strip().lower()
+        if not dom:
+            return
+        data = self._cs_ban_map()
+        data[dom] = {"ts": time.time(), "reason": str(reason or "")[:200]}
+        try:
+            self.save_data(key="crossseed_ban", value=data)
+        except Exception as err:  # noqa: BLE001
+            self._log(f"跨站:黑名单写入失败:{err}", "error")
+
+    def _cs_ban_clear(self, domain: str = "") -> int:
+        dom = str(domain or "").strip().lower()
+        data = self._cs_ban_map()
+        if dom:
+            n = 1 if data.pop(dom, None) is not None else 0
+        else:
+            n = len(data)
+            data = {}
+        try:
+            self.save_data(key="crossseed_ban", value=data)
+        except Exception as err:  # noqa: BLE001
+            self._log(f"跨站:黑名单清理失败:{err}", "error")
+        return n
+
+    def _crossseed_guard(self) -> Dict[str, Any]:
+        """★ 兄弟站流量兜底：跨站取种期间核对来源站「是否真免费」。
+
+        判「免费」可能错（解析错 / 促销变了）→ 一旦错了就是白烧兄弟站流量。
+        两重核对（任一命中即止损）：
+          ① 来源站「正在下载」列表里，我们这个种子**不免费**；
+          ② 来源站**下载量增量** > 目标体积 × 阈值百分比。
+        止损：立即从下载器删除该跨站种（含文件）+ 拉黑来源站 + 通知。
+        """
+        out: Dict[str, Any] = {"enabled": False, "checked_sites": [], "violations": [], "errors": []}
+        cfg = getattr(self, "_cs_cfg", {}) or {}
+        if not bool(cfg.get("guard", True)):
+            return out
+        out["enabled"] = True
+        pend = self._crossseed_pending()
+        items = pend.items()
+        if not items:
+            return out
+        by_site: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
+        for h, rec in items.items():
+            dom = str(rec.get("site_b_domain") or "").strip().lower()
+            by_site.setdefault(dom, []).append((h, rec))
+        interval = max(60.0, float(cfg.get("guard_interval_min") or 15.0) * 60.0)
+        now = time.time()
+        guard_at = getattr(self, "_cs_guard_at", None)
+        if guard_at is None:
+            guard_at = self._cs_guard_at = {}
+        dl_cache: Dict[str, Any] = {}
+        for dom, group in by_site.items():
+            if dom and now - float(guard_at.get(dom, 0) or 0) < interval:
+                continue
+            if dom:
+                guard_at[dom] = now
+            sid = self._site_id_by_domain(dom) if dom else 0
+            site_name = str(group[0][1].get("site_b") or dom or "")
+            entry: Dict[str, Any] = {
+                "site": site_name, "domain": dom, "site_id": sid, "inflight": len(group),
+                "delta_gb": None, "threshold_gb": None, "status": "",
+            }
+            out["checked_sites"].append(entry)
+            if not sid:
+                entry["status"] = "无法核对(MP 里未配置该站)"
+                continue
+            # ② 下载量增量（取种时记的基线）
+            cur_dl: Optional[float] = None
+            try:
+                if getattr(self, "_live", None) is not None:
+                    live = self._live.get(int(sid))
+                    if isinstance(live, dict) and live.get("ok") and live.get("download") is not None:
+                        cur_dl = float(live.get("download") or 0.0)
+            except Exception:  # noqa: BLE001
+                cur_dl = None
+            # ① 来源站「正在下载」列表里的免费标记
+            leech: Dict[str, Any] = {}
+            try:
+                if getattr(self, "_live", None) is not None:
+                    leech = self._live.leeching(int(sid)) or {}
+            except Exception as err:  # noqa: BLE001
+                out["errors"].append(f"{site_name}:取正在下载列表失败:{err}")
+                leech = {}
+            rows = list((leech or {}).get("rows") or [])
+            victims: List[Tuple[str, Dict[str, Any], str]] = []
+            for h, rec in group:
+                title = str(rec.get("title") or "")
+                try:
+                    size_gb = float(rec.get("size_gb") or 0.0)
+                except (TypeError, ValueError):
+                    size_gb = 0.0
+                reason = ""
+                for row in rows:
+                    rn = str(row.get("name") or "")
+                    if not rn or not title or not title_match(rn, title):
+                        continue
+                    try:
+                        rs = float(row.get("size") or 0) / (1024 ** 3)
+                    except (TypeError, ValueError):
+                        rs = 0.0
+                    if size_gb > 0 and rs > 0 and abs(rs - size_gb) / max(rs, 0.001) > 0.05:
+                        continue
+                    if not bool(row.get("free")):
+                        reason = "来源站列表显示该种其实**不免费**（会烧下载量）"
+                    break
+                if not reason and cur_dl is not None:
+                    try:
+                        base = float(rec.get("base_dl") or 0.0)
+                    except (TypeError, ValueError):
+                        base = 0.0
+                    delta_gb = cur_dl - base
+                    thr = max(
+                        size_gb * float(cfg.get("guard_pct") or 5.0) / 100.0,
+                        float(cfg.get("guard_min_mb") or 50.0) / 1024.0,
+                    )
+                    entry["delta_gb"] = round(delta_gb, 4)
+                    entry["threshold_gb"] = round(thr, 4)
+                    if base > 0 and delta_gb > thr:
+                        reason = f"来源站下载量增长 {delta_gb:.2f}GB（超阈值 {thr:.2f}GB）"
+                if reason:
+                    victims.append((h, rec, reason))
+            if not victims:
+                entry["status"] = "正常(免费)"
+                continue
+            entry["status"] = f"异常 → 已止损 {len(victims)} 个"
+            dl_name = str(victims[0][1].get("downloader") or "qbittorrent")
+            downloader = dl_cache.get(dl_name)
+            if downloader is None:
+                downloader = self._get_downloader(dl_name)
+                dl_cache[dl_name] = downloader
+            for h, rec, reason in victims:
+                if downloader is not None and getattr(downloader, "is_available", False):
+                    try:
+                        _no, err = downloader.delete_torrents(hashes=[h], delete_file=True)
+                        if err:
+                            out["errors"].append(f"{site_name}:删种失败:{err}")
+                    except Exception as err:  # noqa: BLE001
+                        out["errors"].append(f"{site_name}:删种异常:{err}")
+                pend.drop(h)
+                pend.cleanup_torrent(str(rec.get("a_torrent") or ""))
+                if dom:
+                    self._cs_ban_add(dom, reason)
+                out["violations"].append({
+                    "hash": h, "title": rec.get("title", ""), "site_b": rec.get("site_b", ""),
+                    "domain": dom, "size_gb": rec.get("size_gb", 0), "reason": reason,
+                })
+                self._log(
+                    f"跨站兜底 [{site_name}] 「{str(rec.get('title') or '')[:60]}」{reason}"
+                    f" → 已删除跨站种并拉黑该站（需人工确认后解除）",
+                    "error",
+                )
+            try:
+                names = "、".join(str(v.get("site_b") or "") for v in out["violations"][:3])
+                self.post_message(
+                    title="【魔流】跨站取种被流量兜底拦截",
+                    text=(
+                        f"判定「免费」但实际产生了下载流量：{names}\n"
+                        "已删除跨站种并拉黑该来源站，请到工作台「跨站」页确认后解除。"
+                    ),
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return out
+
     def _crossseed_start(
         self,
         task: MagicFlowTaskConfig,
@@ -6977,6 +7196,17 @@ class MagicFlow(_PluginBase):
         sib_hash = str(hs).lower()
         a_key = str(getattr(cand, "real_hash", "") or "").lower() or f"sib-{sib_hash}"
         a_path = self._crossseed_pending().put_torrent(a_key, getattr(cand, "raw", b"") or b"")
+        # ★ 流量兜底基线：记下来源站此刻的下载量（后结增量超阈值 = 其实不免费）
+        _b_dom = str(src.get("site_domain") or "").strip().lower()
+        _b_dl = 0.0
+        try:
+            _b_sid = self._site_id_by_domain(_b_dom)
+            if _b_sid and getattr(self, "_live", None) is not None:
+                _b_live = self._live.get(int(_b_sid))
+                if isinstance(_b_live, dict) and _b_live.get("ok") and _b_live.get("download") is not None:
+                    _b_dl = float(_b_live.get("download") or 0.0)
+        except Exception:  # noqa: BLE001
+            _b_dl = 0.0
         self._crossseed_pending().add({
             "sib_hash": sib_hash,
             "a_hash": str(getattr(cand, "real_hash", "") or "").lower(),
@@ -6984,6 +7214,9 @@ class MagicFlow(_PluginBase):
             "size_gb": float(getattr(cand, "size_gb", 0.0) or 0.0),
             "site_a": str(getattr(task, "site_name", "") or getattr(task, "site_domain", "") or ""),
             "site_b": sname,
+            "site_b_domain": _b_dom,
+            "base_dl": _b_dl,
+            "base_ts": time.time(),
             "task_id": str(getattr(task, "id", "") or ""),
             "task_name": str(getattr(task, "name", "") or ""),
             "downloader": str(getattr(task, "downloader", "") or "qbittorrent"),
@@ -7014,6 +7247,51 @@ class MagicFlow(_PluginBase):
         """给接口/日志用的快照。"""
         pend = self._crossseed_pending()
         items = pend.items()
+        cfg = getattr(self, "_cs_cfg", {}) or {}
+        # 每条：补上「下载器里的实时进度/状态」（前端表格要用）
+        dl_cache: Dict[str, Any] = {}
+        pending: List[Dict[str, Any]] = []
+        now = time.time()
+        for k, v in items.items():
+            dl_name = str(v.get("downloader") or "qbittorrent")
+            progress = None
+            state = ""
+            try:
+                downloader = dl_cache.get(dl_name)
+                if downloader is None:
+                    downloader = self._get_downloader(dl_name)
+                    dl_cache[dl_name] = downloader
+                if downloader is not None and getattr(downloader, "is_available", False):
+                    info = downloader.get_torrent_info(k)
+                    if info is not None:
+                        progress = round(float(getattr(info, "progress", 0) or 0), 4)
+                        state = str(getattr(info, "state", "") or "")
+                        if not v.get("size_gb"):
+                            try:
+                                v["size_gb"] = float(getattr(info, "size", 0) or 0) / (1024 ** 3)
+                            except Exception:  # noqa: BLE001
+                                pass
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                base = float(v.get("base_dl") or 0.0)
+            except (TypeError, ValueError):
+                base = 0.0
+            rec = {
+                "sib_hash": k,
+                "title": v.get("title", ""),
+                "site_a": v.get("site_a", ""),
+                "site_b": v.get("site_b", ""),
+                "site_b_domain": v.get("site_b_domain", ""),
+                "size_gb": round(float(v.get("size_gb") or 0.0), 3),
+                "task_name": v.get("task_name", ""),
+                "progress": progress,
+                "state": state,
+                "base_dl": base,
+                "age_min": round(max(0.0, (now - float(v.get("created") or 0)) / 60.0), 1),
+            }
+            pending.append(rec)
+        pending.sort(key=lambda x: float(x.get("age_min") or 0))
         return {
             "enabled_tasks": [
                 {"id": t.id, "name": t.name,
@@ -7023,20 +7301,21 @@ class MagicFlow(_PluginBase):
                 for t in self._task_configs.values()
                 if getattr(t, "enabled", False) and getattr(t, "crossseed_enabled", False)
             ],
-            "pending": [
-                {
-                    "sib_hash": k,
-                    "title": v.get("title", ""),
-                    "site_a": v.get("site_a", ""),
-                    "site_b": v.get("site_b", ""),
-                    "size_gb": v.get("size_gb", 0),
-                    "task_name": v.get("task_name", ""),
-                    "age_min": round(max(0.0, (time.time() - float(v.get("created") or 0)) / 60.0), 1),
-                }
-                for k, v in items.items()
-            ],
+            "pending": pending,
             "count": len(items),
             "tag": CROSSSEED_TAG,
+            # ★ 流量兜底状态（前端「跨站」页展示 / 一键解除拉黑）
+            "guard": {
+                "enabled": bool(cfg.get("guard", True)),
+                "pct": float(cfg.get("guard_pct") or 5.0),
+                "min_mb": float(cfg.get("guard_min_mb") or 50.0),
+                "interval_min": float(cfg.get("guard_interval_min") or 15.0),
+                "banned": [
+                    {"domain": d, "reason": v.get("reason", ""),
+                     "age_min": round(max(0.0, (now - float(v.get("ts") or 0)) / 60.0), 1)}
+                    for d, v in self._cs_ban_map().items()
+                ],
+            },
         }
 
     # ---------------------------------------------------------- 回辅轮询(插件级单 worker)
@@ -7047,6 +7326,18 @@ class MagicFlow(_PluginBase):
         dead = pend.prune()
         if dead:
             self._log(f"跨站回辅:清理超时/失效记录 {len(dead)} 条")
+        # ★ 流量兜底（先于回辅）：核对来源站「是否真免费」，错了立即止损（删种+拉黑）
+        try:
+            gres = self._crossseed_guard()
+            if gres.get("violations"):
+                self._log(
+                    f"跨站兜底:本轮拦截 {len(gres['violations'])} 个（来源站判「免费」实际不免费）",
+                    "error",
+                )
+            elif gres.get("enabled") and gres.get("checked_sites"):
+                self._dbg(f"跨站兜底:核对 {len(gres['checked_sites'])} 个来源站，均正常")
+        except Exception as err:  # noqa: BLE001
+            self._log(f"跨站兜底异常:{err}", "warning")
         items = pend.items()
         if not items:
             return
@@ -8751,12 +9042,50 @@ class MagicFlow(_PluginBase):
             return Response(success=bool(out.get("success")), message=f"已清热层键 {out.get('deleted', 0)} 个（JSON 仍在）", data=self.store_stats())
         return Response(success=True, message="OK", data=self.store_stats())
 
-    def get_crossseed(self, action: str = "") -> Response:
-        """跨站免费取种：待回辅队列 + 启用该功能的任务。``action=clear`` 清空队列。"""
+    def get_crossseed(self, action: str = "", hash: str = "", site: str = "") -> Response:
+        """跨站免费取种：待回辅队列 + 启用该功能的任务。
+
+        - ``action=clear``：清空待回辅队列；
+        - ``action=drop&hash=<sib_hash>``：删除单个跨站种（下载器 + 记录）；
+        - ``action=unban&site=<domain>``：解除来源站黑名单（``site`` 空 = 全部解除）；
+        - ``action=guard``：立即跑一次流量兜底核对。
+        """
         try:
-            if str(action or "").strip().lower() in ("clear", "flush"):
+            act = str(action or "").strip().lower()
+            if act in ("clear", "flush"):
                 n = self._crossseed_pending().clear()
                 return Response(success=True, message=f"已清空待回辅队列 {n} 条", data=self._crossseed_info())
+            if act == "drop":
+                h = str(hash or "").strip().lower()
+                if not h:
+                    return Response(success=False, message="缺少 hash", data=self._crossseed_info())
+                pend = self._crossseed_pending()
+                rec = (pend.items() or {}).get(h) or {}
+                dl_name = str(rec.get("downloader") or "qbittorrent")
+                msg = "已删除跨站种"
+                try:
+                    downloader = self._get_downloader(dl_name)
+                    if downloader is not None and getattr(downloader, "is_available", False):
+                        _n, err = downloader.delete_torrents(hashes=[h], delete_file=True)
+                        if err:
+                            msg = f"记录已删，但下载器删除失败:{err}"
+                except Exception as err:  # noqa: BLE001
+                    msg = f"记录已删，但下载器删除异常:{err}"
+                pend.drop(h)
+                pend.cleanup_torrent(str(rec.get("a_torrent") or ""))
+                return Response(success=True, message=msg, data=self._crossseed_info())
+            if act == "unban":
+                n = self._cs_ban_clear(str(site or ""))
+                return Response(success=True, message=f"已解除来源站黑名单 {n} 个", data=self._crossseed_info())
+            if act == "guard":
+                g = self._crossseed_guard()
+                v = len(g.get("violations") or [])
+                return Response(
+                    success=True,
+                    message=(f"流量兜底核对完成：检查 {len(g.get('checked_sites') or [])} 个来源站" + (
+                        f"，拦截 {v} 个" if v else "，均正常")),
+                    data=self._crossseed_info(),
+                )
             return Response(success=True, message="OK", data=self._crossseed_info())
         except Exception as e:  # noqa: BLE001
             return Response(success=False, message=str(e), data={})
@@ -9045,6 +9374,13 @@ class MagicFlow(_PluginBase):
             "notify": bool(getattr(payload, "recommend_notify", True)),
             "temp_ttl_days": _rf(getattr(payload, "recommend_temp_ttl_days", 7.0), 7.0),
             "disk_min_free_gb": _rf(getattr(payload, "recommend_disk_min_free_gb", 50.0), 50.0),
+        }
+        # 跨站辅种：兄弟站流量兜底
+        self._cs_cfg = {
+            "guard": bool(getattr(payload, "crossseed_guard", True)),
+            "guard_pct": _rf(getattr(payload, "crossseed_guard_pct", 5.0), 5.0),
+            "guard_min_mb": _rf(getattr(payload, "crossseed_guard_min_mb", 50.0), 50.0),
+            "guard_interval_min": _rf(getattr(payload, "crossseed_guard_interval_min", 15.0), 15.0),
         }
         # 元数据兜底(多源识别 + 补 NFO)
         _fsrc = getattr(payload, "fallback_sources", None)
