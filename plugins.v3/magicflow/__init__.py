@@ -156,7 +156,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.14.3"
+__version__ = "3.14.4"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -3640,6 +3640,34 @@ class MagicFlow(_PluginBase):
             if str(rec.get("media_key") or "") == media_key:
                 return str(h)
         return None
+
+    @staticmethod
+    def _recommend_dup_group(store: Any, group_id: str,
+                             hashes: Any) -> str:
+        """★ 资源级去重：同一**资源**（文件组）是否已有推荐记录 → 返回命中的 hash。
+
+        Master 2026-09-28：「推荐推的是资源，不是种」——所以判重按资源（组）来，
+        同组的任何成员命中推荐，整组都不再重复推荐。
+        """
+        if store is None:
+            return ""
+        try:
+            items = store.all() or {}
+        except Exception:  # noqa: BLE001
+            return ""
+        gid = str(group_id or "").strip()
+        hs = {str(x or "").lower() for x in (hashes or [])}
+        for h, rec in items.items():
+            if str(rec.get("status") or "") not in ("recommended", "pending", "confirmed"):
+                continue
+            if gid and str(rec.get("group_id") or "") == gid:
+                return str(h)
+            if str(h).lower() in hs:
+                return str(h)
+            for m in (rec.get("members") or []):
+                if str(m or "").lower() in hs:
+                    return str(h)
+        return ""
 
     @staticmethod
     def _recommend_worth(info: Dict[str, Any], cfg: Dict[str, Any]) -> bool:
@@ -12967,6 +12995,48 @@ class MagicFlow(_PluginBase):
                 pass
         return ok
 
+    def _silent_to_resource(self, h: str) -> bool:
+        """静默-新 → 静默-资源（该**资源**已在影视库；库内资产永不删）。
+
+        与 ``_silent_to_plain`` 同构，仅状态子类与账本标记不同。
+        """
+        hh = str(h or "").strip().lower()
+        if not hh:
+            return False
+        try:
+            rec = self._tag_state().get(hh) or {}
+        except Exception:  # noqa: BLE001
+            rec = {}
+        site = str(rec.get("site") or "").strip()
+        dl_name = str(rec.get("downloader") or "qbittorrent")
+        try:
+            t = (self._tag_all_torrents() or {}).get(hh)
+            cur = [str(x).strip() for x in (getattr(t, "tags", None) or [])] if t is not None else []
+        except Exception:  # noqa: BLE001
+            cur = []
+        if not site:
+            site = self._torrent_site_name(cur, "")
+        new_tags = (
+            retag(cur, site=site, state=STATE_SILENT, sub=SUB_RESOURCE)
+            if cur
+            else [tag_for(site, STATE_SILENT, SUB_RESOURCE)]
+        )
+        ok = False
+        try:
+            dl = self._get_downloader(dl_name)
+            fn = getattr(dl, "replace_torrent_tags", None) if dl is not None else None
+            ok = bool(fn(hh, new_tags)) if callable(fn) else False
+        except Exception as err:  # noqa: BLE001
+            self._log(f"静默分拣:归资源失败 {hh[:12]}:{err}", "warning")
+            ok = False
+        if ok:
+            try:
+                self._tag_state().put(hh, {"sub": SUB_RESOURCE, "asset": True,
+                                           "reason": "静默分拣:资源已入库→静默-资源"})
+            except Exception:  # noqa: BLE001
+                pass
+        return ok
+
     def _silent_hr_pending(self, snap: Optional[Dict[str, Any]] = None) -> Set[str]:
         """仍欠 H&R（没挂满）的「静默-新」hash：不许被超时降级成「普通」。"""
         out: Set[str] = set()
@@ -13169,61 +13239,109 @@ class MagicFlow(_PluginBase):
         return rep
 
     def _silent_triage(self, apply: bool = False, limit: int = 0, budget: float = 900.0) -> Dict[str, Any]:
-        """★ 静默池分拣：静默-新 →（挂种完成 H&R 后）→ 推荐甄别。
+        """★ 静默池分拣（**以「资源」为单位**，不是以「种」为单位）。
 
-        - 达标（评分 > 门槛，或 榜单/热映/订阅）→ 进「推荐」待确认 → 整理入库后自动变
-          「静默-资源」（库内资产闸门保护）
-        - 其余（未识别 / 不够格）→ 「静默-普通」
-        - H&R 还没挂满 → 原地不动（继续挂种）
+        Master 2026-09-28：「推荐推的是资源，不是种」→
+        - 同一资源（文件特征码/文件组）下的静默成员**一起判定、一起打标**：
+          达标 → 全部成员都打 ``魔流-推荐``（入库后由库记统一转 ``静默-资源``）；
+          不达标 → 全部成员一起转 ``静默-普通``；
+        - 该资源**已入库**（库记 ``in_library``）→ 全部成员转 ``静默-资源``（资产永不删）；
+        - 该资源**已有推荐记录**（推荐中/待确认/已确认）→ 整组不重复甄别、不重复通知；
+        - 资源内**代表种**（优先已完成、其次体积大）欠 H&R → 整组原地挂种等待。
         """
         tag_state = self._tag_state()
         cfg = getattr(self, "_recommend_cfg", {}) or {}
         rec_tag = str(cfg.get("tag") or "魔流-推荐")
         rstore = getattr(self._store, "recommend", None)
+        try:
+            files = self._tag_groups()
+        except Exception:  # noqa: BLE001
+            files = None
         snap = self._tag_all_torrents()
-        cand: List[Tuple[str, Dict[str, Any], Any]] = []
+        # ---- 1) 候选（静默-新）按「资源」归组（没有文件组 → 单种成组）
+        buckets: Dict[str, List[Tuple[str, Dict[str, Any], Any]]] = {}
         for h, rec in list((tag_state.items() or {}).items()):
             if str(rec.get("state") or "") != STATE_SILENT or str(rec.get("sub") or "") != SUB_NEW:
                 continue
-            t = (snap or {}).get(str(h or "").lower())
+            hh = str(h or "").lower()
+            t = (snap or {}).get(hh)
             if t is None:
                 continue  # 已不在下载器 → 交给对账
-            cand.append((str(h).lower(), rec, t))
+            gid = ""
+            try:
+                gid = files.group_of(hh) if files is not None else ""
+            except Exception:  # noqa: BLE001
+                gid = ""
+            buckets.setdefault(str(gid) or ("h:" + hh), []).append((hh, rec, t))
+
+        def _pick(items: List[Tuple[str, Dict[str, Any], Any]]) -> Tuple[str, Dict[str, Any], Any]:
+            """代表种：优先「已完成」，其次体积大（导入要用它）。"""
+
+            def _k(x: Tuple[str, Dict[str, Any], Any]) -> Tuple[int, float]:
+                _t = x[2]
+                try:
+                    _done = 1 if float(getattr(_t, "progress", 0) or 0) >= 0.999 else 0
+                except (TypeError, ValueError):
+                    _done = 0
+                try:
+                    _sz = float(getattr(_t, "size_gb", 0) or 0)
+                except (TypeError, ValueError):
+                    _sz = 0.0
+                return (_done, _sz)
+
+            return sorted(items, key=_k, reverse=True)[0]
+
         cap = int(limit or 0) or max(int(RECOMMEND_SCAN_MAX), 1)
         rep: Dict[str, Any] = {
-            "apply": bool(apply), "pending": len(cand), "scanned": 0,
-            "waiting_hr": 0, "promoted": 0, "plain": 0, "recognized": 0, "limited": False,
-            "evaluated": 0, "kept": 0,
-            "items": [],
+            "apply": bool(apply), "pending": len(buckets),
+            "torrents": sum(len(v) for v in buckets.values()),
+            "scanned": 0, "waiting_hr": 0, "promoted": 0, "plain": 0,
+            "recognized": 0, "limited": False, "evaluated": 0, "kept": 0,
+            "asset": 0, "items": [],
         }
         _deadline = time.time() + float(budget or 0)
-        # ★ 配额只算「真正评估」的（欠 H&R 的只是看一眼 H&R 进展、不占配额），
-        #   否则前面卡着一批等 H&R 的种，后面的永远轮不到（饿死）。
         _used = 0
-        for h, rec, t in cand:
+        for gid, members in buckets.items():
             if budget and time.time() > _deadline:
                 rep["limited"] = True
                 break
             if cap and _used >= cap:
                 break
             rep["scanned"] += 1
-            site = str(rec.get("site") or "").strip() or self._torrent_site_name(
-                getattr(t, "tags", None), ""
+            h_list = [x[0] for x in members]
+            r_h, r_rec, r_t = _pick(members)
+            # ---- 2) 资源已入库 → 整组转「静默-资源」（库内资产永不删），不参与推荐
+            in_lib = False
+            if files is not None and not str(gid).startswith("h:"):
+                try:
+                    in_lib = bool((files.items().get(gid) or {}).get("library", {}).get("in_library"))
+                except Exception:  # noqa: BLE001
+                    in_lib = False
+            if in_lib:
+                rep["asset"] = int(rep.get("asset") or 0) + 1
+                if apply:
+                    for _h, _r, _t in members:
+                        try:
+                            self._silent_to_resource(_h)
+                        except Exception as err:  # noqa: BLE001
+                            self._log(f"静默分拣:归资源失败 {_h[:12]}:{err}", "warning")
+                continue
+            # ---- 3) 该资源已有推荐记录 → 整组不重复
+            _dup = self._recommend_dup_group(rstore, gid, h_list)
+            if _dup:
+                rep["kept"] = int(rep.get("kept") or 0) + 1
+                continue
+            # ---- 4) H&R 门槛（看代表种）
+            site = str(r_rec.get("site") or "").strip() or self._torrent_site_name(
+                getattr(r_t, "tags", None), ""
             )
-            done, _why = self._silent_hr_done(site, t)
+            done, _why = self._silent_hr_done(site, r_t)
             if not done:
                 rep["waiting_hr"] += 1
                 continue
             _used += 1
-            # 已在推荐生命周期里（待确认/推荐中）→ 不重复甄别、不重复通知
-            try:
-                _pst = str((rstore.get(h) or {}).get("status") or "") if rstore is not None else ""
-            except Exception:  # noqa: BLE001
-                _pst = ""
-            if _pst in ("recommended", "pending"):
-                rep["kept"] = int(rep.get("kept") or 0) + 1
-                continue
-            title = str(getattr(t, "title", "") or "")
+            # ---- 5) 识别 + 评分（每个**资源**只评一次）
+            title = str(getattr(r_t, "title", "") or "")
             like: Dict[str, Any] = {"recognized": False}
             media: Optional[Dict[str, Any]] = None
             if title:
@@ -13240,47 +13358,57 @@ class MagicFlow(_PluginBase):
             if like.get("recognized"):
                 rep["recognized"] += 1
             worth = bool(self._recommend_worth(like, cfg)) and not self._recommend_dup(
-                rstore, _mkey, h, ("recommended", "confirmed")
+                rstore, _mkey, r_h, ("recommended", "confirmed")
             )
+            _sz = sum(float(getattr(x[2], "size_gb", 0) or 0) for x in members)
             if worth:
                 rep["promoted"] += 1
-                rep["items"].append({"hash": h[:12], "title": title, "verdict": "推荐",
-                                     "rating": like.get("rating")})
+                rep["items"].append({"hash": r_h[:12], "title": title, "verdict": "推荐",
+                                     "rating": like.get("rating"), "members": len(members)})
                 if apply and rstore is not None:
                     now = time.time()
                     try:
                         rstore.upsert(
-                            h, status="recommended", title=title,
-                            size_gb=float(getattr(t, "size_gb", 0) or 0),
+                            r_h, status="recommended", title=title, size_gb=_sz,
                             media=media, media_key=_mkey, rating=like.get("rating"),
                             in_chart=bool(like.get("in_chart")),
                             in_subscribe=bool(like.get("in_subscribe")),
+                            group_id=("" if str(gid).startswith("h:") else str(gid)),
+                            members=h_list,
                             source="silent_triage", first_seen=now, evaluated_at=now,
                             reason=("评分 %.1f" % float(like.get("rating") or 0))
                             + ("·在榜" if like.get("in_chart") else "")
                             + ("·订阅" if like.get("in_subscribe") else ""),
                         )
                     except Exception as err:  # noqa: BLE001
-                        self._log(f"静默分拣:推荐建档失败 {h[:12]}:{err}", "warning")
+                        self._log(f"静默分拣:推荐建档失败 {r_h[:12]}:{err}", "warning")
+                    # ★ 资源级打标：**整组静默成员**都打「魔流-推荐」
                     try:
-                        dl = self._get_downloader(str(rec.get("downloader") or "qbittorrent"))
+                        dl = self._get_downloader(str(r_rec.get("downloader") or "qbittorrent"))
                         if dl is not None:
-                            self._recommend_tag(dl, f"silent:{site}", rec_tag, h)
+                            for _h, _r, _t in members:
+                                try:
+                                    self._recommend_tag(dl, f"silent:{site}", rec_tag, _h)
+                                except Exception as err:  # noqa: BLE001
+                                    self._log(f"静默分拣:推荐打标失败 {_h[:12]}:{err}", "warning")
                     except Exception as err:  # noqa: BLE001
-                        self._log(f"静默分拣:推荐打标失败 {h[:12]}:{err}", "warning")
-                    except Exception as err:  # noqa: BLE001
-                        self._dbg(f"静默分拣:推荐记录:{err}")
+                        self._log(f"静默分拣:推荐打标失败 {r_h[:12]}:{err}", "warning")
             else:
                 rep["plain"] += 1
-                rep["items"].append({"hash": h[:12], "title": title, "verdict": "普通",
-                                     "rating": like.get("rating")})
+                rep["items"].append({"hash": r_h[:12], "title": title, "verdict": "普通",
+                                     "rating": like.get("rating"), "members": len(members)})
                 if apply:
-                    self._silent_to_plain(h)
+                    for _h, _r, _t in members:
+                        try:
+                            self._silent_to_plain(_h)
+                        except Exception as err:  # noqa: BLE001
+                            self._log(f"静默分拣:归普通失败 {_h[:12]}:{err}", "warning")
         rep["evaluated"] = _used
-        if apply and (rep["promoted"] or rep["plain"]):
+        if apply and (rep["promoted"] or rep["plain"] or rep["asset"]):
             self._log(
-                f"魔流:静默池分拣:{rep['scanned']} 个（欠H&R {rep['waiting_hr']}）"
-                f"→ 推荐 {rep['promoted']} · 普通 {rep['plain']}"
+                f"魔流:静默池分拣(按资源):{rep['scanned']} 组/{rep['torrents']} 种"
+                f"（欠H&R {rep['waiting_hr']} 组，已推荐 {rep['kept']} 组）"
+                f"→ 推荐 {rep['promoted']} 组 · 普通 {rep['plain']} 组 · 资源 {rep['asset']} 组"
             )
         if apply and rep["promoted"]:
             self._silent_promote_notify(rep)
