@@ -131,6 +131,7 @@ from .tags import (
     STATE_BONUS,
     STATE_BRUSH,
     STATE_RECOMMEND,
+    SPECIAL_TAGS,
     STATE_SILENT,
     SUB_NEW,
     SUB_PLAIN,
@@ -154,7 +155,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.14.1"
+__version__ = "3.14.2"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -8398,6 +8399,86 @@ class MagicFlow(_PluginBase):
                 pass
         return out
 
+    def _crossseed_to_silent(self, h: str, rec: Dict[str, Any], info: Any,
+                             downloader: Any) -> bool:
+        """★ 跨站来源份**下完** → 转入静默池（Master 2026-09-28）。
+
+        Master：「跨站来的下完直接静默池挂 h&r，跨站下载进跨站池」。
+        即：**未下完的**留在跨站池（跨站面板/队列）；**下完的**进静默池，由静默池负责
+        继续挂种、结 H&R 义务、期满后走静默分拣（推荐 / 普通 / 资源）。
+        """
+        hh = str(h or "").strip().lower()
+        if not hh or downloader is None:
+            return False
+        try:
+            ts = self._tag_state()
+            cur = ts.get(hh) or {}
+        except Exception:  # noqa: BLE001
+            cur = {}
+        # 已有「资源」身份（库内资产/辅种）→ 保留资源子类，只做「入静默池」这件事
+        _sub = SUB_RESOURCE if (str(cur.get("sub") or "") == SUB_RESOURCE
+                                or bool(cur.get("asset"))) else SUB_NEW
+        #（已在静默池的判定见下方：账本 + 标签双就位才算）
+        tags = getattr(info, "tags", None) or []
+        if isinstance(tags, str):
+            tags = [x.strip() for x in tags.split(",") if x.strip()]
+        cur_tags = [str(x).strip() for x in tags]
+        site = str(rec.get("site_b") or "").strip()
+        if not site:
+            site, _dom = self._guess_site_of_torrent(cur_tags, rec.get("title"))
+        if (str(cur.get("state") or "") == STATE_SILENT
+                and str(cur.get("sub") or "") == _sub
+                and tag_for(site, STATE_SILENT, _sub) in cur_tags):
+            return False  # 已在静默池（账本 + 标签都对）
+        # 保留非魔流标签（站点名/已整理/辅种/其它插件），去掉旧的任务态标签
+        keep = [t for t in cur_tags
+                if t and t not in SPECIAL_TAGS and not is_magicflow_tag(t)]
+        want = keep + [CROSSSEED_TAG]
+        if site:
+            want.append(tag_for(site, STATE_SILENT, _sub))
+        final: List[str] = []
+        for t in want:
+            if t not in final:
+                final.append(t)
+        ok = False
+        try:
+            fn = getattr(downloader, "replace_torrent_tags", None)
+            ok = bool(fn(hh, final)) if callable(fn) else False
+        except Exception as err:  # noqa: BLE001
+            self._log(f"跨站:来源份入静默池打标失败 {hh[:12]}:{err}", "warning")
+            ok = False
+        if not ok:
+            return False
+        now = time.time()
+        try:
+            ts.put(hh, {
+                "site": site, "state": STATE_SILENT, "sub": _sub,
+                "title": str(rec.get("title") or getattr(info, "title", "") or ""),
+                "size_gb": float(rec.get("size_gb") or getattr(info, "size_gb", 0) or 0.0),
+                "downloader": str(rec.get("downloader") or "qbittorrent"),
+                "taken_by": "", "lease_until": 0,
+                "origin_state": STATE_SILENT, "origin_sub": _sub,
+                "crossseed": True, "ts": now,
+                "reason": "跨站来源份下完→静默池挂H&R",
+            })
+            try:
+                self._crossseed_sources().put(hh, {"pool": "silent"})
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception as err:  # noqa: BLE001
+            self._dbg(f"跨站:来源份入静默池记账失败:{err}")
+        # 必须在挂种（静默池要它继续挂满 H&R）
+        try:
+            if "pause" in str(getattr(info, "state", "") or "").lower():
+                downloader.resume_torrents([hh])
+        except Exception as err:  # noqa: BLE001
+            self._dbg(f"跨站:来源份恢复做种失败:{err}")
+        self._log(
+            f"跨站:来源份已下完 → 进静默池挂 H&R（{site or '未知站'}）"
+            f"「{str(rec.get('title') or '')[:40]}」"
+        )
+        return True
+
     def _crossseed_sources_tick(self) -> Dict[str, Any]:
         """来源份保种监督：① 标签确权 ② 清掉已消失的 ③ 到期回收(可选)。
 
@@ -8432,6 +8513,17 @@ class MagicFlow(_PluginBase):
             if info is None:
                 continue  # 已不在下载器（手动删了？）→ 交给 prune
             live.add(h)
+            # ★ 下完 → 转静默池（未下完的留在跨站池）
+            try:
+                _prog = float(getattr(info, "progress", 0) or 0)
+            except (TypeError, ValueError):
+                _prog = 0.0
+            if _prog >= 0.999:
+                try:
+                    if self._crossseed_to_silent(h, rec, info, downloader):
+                        res["to_silent"] = int(res.get("to_silent") or 0) + 1
+                except Exception as err:  # noqa: BLE001
+                    res.setdefault("errors", []).append(f"跨站来源份入静默池失败:{err}")
             # ★ ② 实际做种时长（qB seeding_time）：达标线一到 = H&R 义务完成 → 可撤种
             #   （Master：连挂挂满就行 —— 用真实做种秒数判，不看墙钟）
             try:
@@ -8469,7 +8561,7 @@ class MagicFlow(_PluginBase):
                     f"跨站:H&R 义务完成 —— {rec.get('site_b', '') or rec.get('site_b_domain', '')} "
                     f"「{str(rec.get('title') or '')[:50]}」已实际做种 {seeded / 3600.0:.1f}h ≥ {need:g}h，可撤种"
                 )
-                if reclaim:
+                if reclaim and str(rec.get("pool") or "") != "silent":
                     try:
                         _n, err = downloader.delete_torrents(hashes=[h], delete_file=False)
                         if not err:
@@ -8496,7 +8588,9 @@ class MagicFlow(_PluginBase):
                 until = float(rec.get("seed_until") or 0.0)
             except (TypeError, ValueError):
                 until = 0.0
-            if until and now >= until and reclaim and not bool(rec.get("files_shared")):
+            if (until and now >= until and reclaim
+                    and str(rec.get("pool") or "") != "silent"
+                    and not bool(rec.get("files_shared"))):
                 try:
                     _n, err = downloader.delete_torrents(hashes=[h], delete_file=False)
                     if not err:
