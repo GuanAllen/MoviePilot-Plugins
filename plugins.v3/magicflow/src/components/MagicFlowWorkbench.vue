@@ -268,6 +268,14 @@ const pluginBase = computed(() => `plugin/${props.pluginId || 'MagicFlow'}`)
 const tasks = computed(() => status.value.tasks || [])
 const defaultSavePath = computed(() => (status.value.defaults || {}).save_path || '')
 const selectedTask = computed(() => tasks.value.find(item => item.id === selectedTaskId.value) || null)
+/** 静默托管：静默池按站点分类（分类卡片用）。 */
+const silentHostSites = computed(() => {
+  const src = (selectedTask.value && selectedTask.value.classify && selectedTask.value.classify.by_site) || null
+  if (!src) return []
+  return Object.entries(src)
+    .map(([name, v]) => ({ name, total: (v && v.total) || 0, hr: (v && v.hr) || 0 }))
+    .sort((a, b) => b.total - a.total)
+})
 const summary = computed(() => status.value.summary || {})
 const selectedState = computed(() => {
   const t = selectedTask.value
@@ -3005,12 +3013,61 @@ onUnmounted(() => {
                   <span>上次运行</span>
                 </VSheet>
               </div>
-              <ul class="text-body-2 text-medium-emphasis" style="margin-top:14px;padding-left:18px;line-height:1.9;">
-                <li>① 清理未下完的种（不计 H&R）　② 保挂：已完成却暂停/停止的种恢复做种（静默≠白占盘）</li>
-                <li>③ H&R 统一管理：欠 H&R 打标 · 未到期被暂停强制拉起 · 结清摘标</li>
-                <li>④ 辅种校验（pausedDL recheck 拉起）　⑤ 静默-普通清理（站点魔力已达标时删低效）</li>
-                <li>⑥ 推荐过期待降级　⑦ 分拣：静默-新 → 推荐/普通　⑧ 静默-新超时归普通　⑨ 库内资产刷新</li>
-              </ul>
+              <VSheet tag="section" class="magicflow-panel app-surface-static mt-4">
+                <header class="magicflow-panel__head">
+                  <div>
+                    <div class="text-subtitle-1 font-weight-medium">分类</div>
+                    <div class="text-body-2 text-medium-emphasis">静默池按子类 / 义务 / 站点拆分（职责说明见仓库 docs/静默托管.md）</div>
+                  </div>
+                </header>
+                <div class="d-flex flex-wrap ga-2 mb-2">
+                  <VChip size="small" variant="tonal" color="info">静默-新 {{ (selectedTask.classify && selectedTask.classify.by_state && selectedTask.classify.by_state['新']) || 0 }}</VChip>
+                  <VChip size="small" variant="tonal" color="success">静默-资源 {{ (selectedTask.classify && selectedTask.classify.by_state && selectedTask.classify.by_state['资源']) || 0 }}</VChip>
+                  <VChip size="small" variant="tonal">静默-普通 {{ (selectedTask.classify && selectedTask.classify.by_state && selectedTask.classify.by_state['普通']) || 0 }}</VChip>
+                  <VChip size="small" variant="tonal" color="error">H&R 强制挂种 {{ selectedTask.hr_count || 0 }}</VChip>
+                  <VChip size="small" variant="tonal">其他（不强制）{{ selectedTask.nonhr_count || 0 }}</VChip>
+                </div>
+                <div v-if="silentHostSites.length" class="text-body-2 text-medium-emphasis">
+                  <span v-for="(row, i) in silentHostSites" :key="row.name">{{ i ? '  ·  ' : '' }}{{ row.name }} {{ row.total }}<template v-if="row.hr">（H&R {{ row.hr }}）</template></span>
+                </div>
+              </VSheet>
+
+              <VSheet tag="section" class="magicflow-panel app-surface-static mt-4">
+                <header class="magicflow-panel__head">
+                  <div>
+                    <div class="text-subtitle-1 font-weight-medium">操作记录</div>
+                    <div class="text-body-2 text-medium-emphasis">每次运行一条流水（展开看九步结果）</div>
+                  </div>
+                  <VBtn variant="text" color="primary" prepend-icon="mdi-refresh" @click="loadOperations(selectedTaskId)">刷新</VBtn>
+                </header>
+                <div class="magicflow-events">
+                  <article v-for="record in operationData.operations || []" :key="record.operation_id">
+                    <VIcon :icon="operationIcon(record.kind)" :color="operationColor(record)" />
+                    <div>
+                      <strong>
+                        {{ operationKindText(record.kind) }}
+                        <VChip size="x-small" variant="tonal" :color="operationColor(record)" class="ml-2">{{ operationStateText(record.state) }}</VChip>
+                      </strong>
+                      <span>{{ operationSummary(record) }}</span>
+                      <span>{{ formatDateTime(record.created_at) }} · 耗时 {{ operationDuration(record) }}<template v-if="hasOpDetail(record)"> · {{ opDetailItems(record).length }} 条明细</template></span>
+                      <span v-if="record.error_message" class="text-error">{{ record.error_message }}</span>
+                      <button v-if="hasOpDetail(record)" type="button" class="magicflow-events__toggle" @click="toggleOpDetail(record.operation_id)">
+                        {{ isOpDetailOpen(record.operation_id) ? '收起明细' : '展开明细' }}
+                        <VIcon :icon="isOpDetailOpen(record.operation_id) ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="14" />
+                      </button>
+                      <ul v-if="isOpDetailOpen(record.operation_id)" class="magicflow-events__detail">
+                        <li v-for="(it, idx) in opDetailItems(record)" :key="idx">
+                          <span class="magicflow-events__detail-line">
+                            <em v-if="itemSourceText(it.source)" class="magicflow-events__detail-src">{{ itemSourceText(it.source) }}</em>
+                            <span class="magicflow-events__detail-title" :title="it.title || it.hash">{{ it.title || it.hash || '—' }}</span>
+                          </span>
+                        </li>
+                      </ul>
+                    </div>
+                  </article>
+                  <div v-if="!(operationData.operations || []).length" class="magicflow-table-empty">暂无操作记录</div>
+                </div>
+              </VSheet>
               <div style="margin-top:14px;display:flex;gap:8px;">
                 <VBtn size="small" color="primary" variant="tonal" prepend-icon="mdi-sync" :loading="saving" @click="runOperation">立即执行</VBtn>
                 <VBtn size="small" variant="text" prepend-icon="mdi-refresh" @click="reloadSelected()">刷新</VBtn>
