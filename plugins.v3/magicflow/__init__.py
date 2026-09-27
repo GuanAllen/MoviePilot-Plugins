@@ -131,6 +131,7 @@ from .tags import (
     STATE_BONUS,
     STATE_BRUSH,
     STATE_RECOMMEND,
+    MARK_REUSE,
     SPECIAL_TAGS,
     STATE_SILENT,
     SUB_NEW,
@@ -155,7 +156,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.14.2"
+__version__ = "3.14.3"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -7644,6 +7645,15 @@ class MagicFlow(_PluginBase):
                          + ("" if _ap else "（预演，未删）")),
                 data=info,
             )
+        if act in ("verify", "verify_marks", "verify_apply"):
+            _ap = act == "verify_apply"
+            info = self._silent_verify_marks(apply=_ap, limit=int(limit or 0))
+            return Response(
+                success=True,
+                message=(f"静默池辅种待校验 {info.get('pending')} 个 → recheck {info.get('checked')} 个"
+                         + ("" if _ap else "（预演）")),
+                data=info,
+            )
         if act in ("settle", "settle_idle"):
             info = self._settle_disabled_tasks(apply=True)
             return Response(success=True, message=f"停止任务退回静默 {info.get('settled')} 个", data=info)
@@ -11624,6 +11634,13 @@ class MagicFlow(_PluginBase):
                     self._log(f"魔流:静默池清理:未下完直接删 {pinfo.get('deleted')} 个（不计 H&R）")
             except Exception as err:  # noqa: BLE001
                 self._log(f"标签维护:静默池清理失败:{err}", "warning")
+            # ★ 静默池校验：辅种/复用种停在 pausedDL 是等校验 → recheck 拉起来
+            try:
+                vinfo = self._silent_verify_marks(apply=True, limit=60)
+                if vinfo.get("checked"):
+                    self._log(f"魔流:静默池校验:辅种 recheck {vinfo.get('checked')} 个")
+            except Exception as err:  # noqa: BLE001
+                self._log(f"标签维护:静默池校验失败:{err}", "warning")
             # ★ 静默池分拣：挂满 H&R 的「静默-新」→ 推荐 / 普通
             try:
                 self._silent_triage(apply=True, limit=60, budget=600.0)
@@ -12985,6 +13002,84 @@ class MagicFlow(_PluginBase):
                 out.add(str(h).lower())
         return out
 
+    def _silent_verify_marks(self, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
+        """★ 静默池「辅种/复用种」校验：停在 pausedDL 是**等校验**，不是没下完。
+
+        （Master 2026-09-28：「所有跨站辅种都是 pausedDL吧」）
+        对带 ``魔流-辅种`` / ``辅种`` / ``已整理`` 标记、且未到 100% 的静默种 → recheck + 恢复做种。
+        校验完若文件对得上 → 自动 100% 继续做种；对不上 → 由后续流程按「坏辅种」处理（只删种）。
+        """
+        rep: Dict[str, Any] = {"apply": bool(apply), "pending": 0, "checked": 0,
+                               "failed": 0, "items": []}
+        try:
+            data = dict(self._tag_state().items() or {})
+        except Exception:  # noqa: BLE001
+            return rep
+        snap = self._tag_all_torrents() or {}
+        cap = int(limit or 0)
+        for h, rec in list(data.items()):
+            hh = str(h or "").lower()
+            if str(rec.get("state") or "") != STATE_SILENT:
+                continue
+            t = snap.get(hh)
+            if t is None:
+                continue
+            tags = [str(x) for x in (getattr(t, "tags", None) or [])]
+            if not (MARK_REUSE in tags or is_asset_tags(tags)):
+                continue
+            try:
+                prog = float(getattr(t, "progress", 1.0) or 0.0)
+            except (TypeError, ValueError):
+                prog = 1.0
+            if prog >= 0.999:
+                continue
+            rep["pending"] += 1
+            rep["items"].append({
+                "hash": hh[:12], "title": str(getattr(t, "title", "") or "")[:50],
+                "progress": round(prog * 100.0, 1), "state": str(getattr(t, "state", "") or ""),
+                "tries": int(rec.get("verify_n") or 0),
+            })
+            if not apply or (cap and rep["checked"] >= cap):
+                continue
+            # ★ 别每小时反复 recheck 同一颗（磁盘 IO 浪费）：同一颗 6h 内只校验一次
+            now = time.time()
+            try:
+                last = float(rec.get("verify_at") or 0.0)
+            except (TypeError, ValueError):
+                last = 0.0
+            if now - last < 6 * 3600.0:
+                rep["skipped"] = int(rep.get("skipped") or 0) + 1
+                continue
+            try:
+                dl = self._get_downloader(str(rec.get("downloader") or "qbittorrent"))
+                if dl is None:
+                    rep["failed"] += 1
+                    continue
+                dl.recheck_torrents([hh])
+                dl.resume_torrents([hh])
+                rep["checked"] += 1
+                _tries = int(rec.get("verify_n") or 0) + 1
+                try:
+                    self._tag_state().put(hh, {"verify_at": now, "verify_n": _tries})
+                except Exception:  # noqa: BLE001
+                    pass
+                if _tries >= 3:
+                    rep["stuck"] = int(rep.get("stuck") or 0) + 1
+            except Exception as err:  # noqa: BLE001
+                rep["failed"] += 1
+                self._log(f"静默池校验:辅种 recheck 失败 {hh[:12]}:{err}", "warning")
+        if apply and rep["checked"]:
+            self._log(
+                f"魔流:静默池校验:辅种复用种 recheck {rep['checked']} 个"
+                f"（停在 pausedDL 是等校验，不是没下完）"
+            )
+        if apply and rep.get("stuck"):
+            self._log(
+                f"静默池校验:{rep['stuck']} 个辅种反复校验仍不完整（疑似文件已移走/坏种），"
+                f"已不自动删——请人工确认", "warning"
+            )
+        return rep
+
     def _silent_purge_incomplete(self, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
         """★ 静默池「未下完」清理：没下完的直接删，**不计 H&R**（Master 2026-09-28 00:16）。
 
@@ -13027,7 +13122,10 @@ class MagicFlow(_PluginBase):
             if t is None:
                 continue
             tags = [str(x) for x in (getattr(t, "tags", None) or [])]
-            if "魔流-跨站" in tags or "魔流-推荐" in tags or is_asset_tags(tags):
+            # 跨站来源份 / 推荐中 / 库内资产 / **辅种复用种**（它们停在 pausedDL 是等校验，
+            # 不是「没下完的下载」Master 2026-09-28）→ 都不在「未下完直接删」范围内
+            if ("魔流-跨站" in tags or "魔流-推荐" in tags
+                    or MARK_REUSE in tags or is_asset_tags(tags)):
                 continue
             try:
                 prog = float(getattr(t, "progress", 1.0) or 0.0)

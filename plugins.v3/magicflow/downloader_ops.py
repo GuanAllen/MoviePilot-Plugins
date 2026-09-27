@@ -20,6 +20,9 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .fingerprint import Entry, entries_fingerprint, info_hash, load_torrent_entries
 
+# ★ 辅种/复用标记（与 tags.MARK_REUSE 保持一致；此模块不反向依赖 tags，避免循环导入）
+REUSE_MARK = "魔流-辅种"
+
 # 运行时导入（在 MoviePilot 环境才导入）
 logger = logging.getLogger("magicflow")
 DownloaderHelper = None
@@ -807,7 +810,10 @@ class DownloaderAdapter:
         if not torrent_bytes:
             return None, "种子内容为空"
 
+        # ★ 一律带上「辅种」标记：它是复用种（不是下载种），自动清理/清理机制必须放过它
         tag_list = [tag] if tag else []
+        if REUSE_MARK not in tag_list:
+            tag_list.append(REUSE_MARK)
 
         # 添加前记录该标签下的 hash，用于可靠定位「刚添加的这颗」（不靠猜）
         before_hashes: set = set()
