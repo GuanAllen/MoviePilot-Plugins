@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 __all__ = [
     "PREFIX",
@@ -183,12 +183,32 @@ def is_magicflow_tag(tag: str) -> bool:
     return _clean(tag).startswith(PREFIX)
 
 
-def retag(tags: Any, *, site: str = "", state: str = "", sub: str = "", keep_foreign: bool = True) -> List[str]:
-    """按新状态重算标签集合：去掉旧的魔流标签，加上新的；外来标签保留。"""
+# ★ 「全局特殊标签」：不属于某站点某状态，重贴标签时必须保留（否则会打断其它子系统）
+SPECIAL_TAGS = ("魔流-推荐", "魔流-跨站")
+
+
+def retag(
+    tags: Any,
+    *,
+    site: str = "",
+    state: str = "",
+    sub: str = "",
+    keep_foreign: bool = True,
+    keep: Sequence[str] = SPECIAL_TAGS,
+) -> List[str]:
+    """按新状态重算标签集合：去掉旧的魔流标签，加上新的；外来标签保留。
+
+    ``keep`` 里的特殊标签（推荐/跨站）即便带 ``魔流-`` 前缀也**保留**。
+    """
+    keep_set = {_clean(x) for x in (keep or ())}
     out: List[str] = []
     for t in tags or []:
         s = _clean(t)
         if not s:
+            continue
+        if s in keep_set:
+            if s not in out:
+                out.append(s)
             continue
         if is_magicflow_tag(s):
             continue

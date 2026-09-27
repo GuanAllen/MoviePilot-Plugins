@@ -228,6 +228,13 @@ class MagicFlowTaskStatePayload(BaseModel):
     mode: Optional[Literal["running", "seeding", "stopped"]] = None
 
 
+class MagicFlowHandoverPayload(BaseModel):
+    """任务删除前处理名下种子：交棒给其它任务 / 退回静默池。"""
+
+    target_task_id: str = Field("", max_length=32, description="交棒目标任务 id（留空 = 退回静默池）")
+    mode: str = Field("handover", max_length=12, description="handover=交棒 / idle=退回静默池")
+
+
 class MagicFlowTagStatePayload(BaseModel):
     """手动设置某个种子的状态（标签模型）。"""
 

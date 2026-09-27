@@ -1184,15 +1184,52 @@ async function saveTask(payload) {
   }
 }
 
+// ── 删除任务：名下种子交棒 / 退回静默 ─────────────────────
+const handover = ref(null)
+const handoverLoading = ref(false)
+const handoverTarget = ref('idle')
+
+const handoverChoices = computed(() => {
+  const h = handover.value
+  const out = [{ value: 'idle', text: '退回静默池（保文件，交给全局规则管）' }]
+  for (const c of h?.candidates || []) {
+    const mark = c.same_tag ? '同标签·自动接管' : (c.same_site ? '同站·需重贴标签' : '跨站·会改站点标签')
+    const off = c.enabled ? '' : '（已停用）'
+    out.push({ value: c.id, text: `${c.name}${off} — ${c.site}·${c.state}（${mark}）` })
+  }
+  return out
+})
+
+async function onDeleteDialog(open) {
+  if (!open) return
+  handover.value = null
+  handoverTarget.value = 'idle'
+  if (!selectedTask.value) return
+  handoverLoading.value = true
+  try {
+    handover.value = unwrapResponse(await props.api.get(`${pluginBase.value}/tasks/${selectedTask.value.id}/handover`)) || null
+    const auto = handover.value?.auto_handover?.[0]
+    handoverTarget.value = auto ? auto.id : 'idle'
+  } catch (err) {
+    error.value = err?.message || String(err)
+  } finally {
+    handoverLoading.value = false
+  }
+}
+
 // 确认删除当前任务。
 async function confirmDeleteTask() {
   if (!selectedTask.value) return
   saving.value = true
   try {
-    unwrapResponse(await props.api.delete(`${pluginBase.value}/tasks/${selectedTask.value.id}`))
+    const q = handoverTarget.value === 'idle'
+      ? '?settle=idle'
+      : `?handover_to=${encodeURIComponent(handoverTarget.value)}`
+    const res = await props.api.delete(`${pluginBase.value}/tasks/${selectedTask.value.id}${q}`)
+    if (res?.success === false) throw new Error(res?.message || '删除失败')
+    notify(res?.message || '任务已删除')
     deleteDialog.value = false
     selectedTaskId.value = ''
-    notify('任务已删除')
     await loadStatus()
     emit('action')
   } catch (err) {
@@ -4183,13 +4220,30 @@ onUnmounted(() => {
       </VCard>
     </VDialog>
 
-    <VDialog v-model="deleteDialog" max-width="28rem">
+    <VDialog v-model="deleteDialog" max-width="34rem" @update:model-value="onDeleteDialog">
       <VCard title="删除魔力任务" class="magicflow-dialog">
-        <VCardText>确认删除「{{ selectedTask?.name }}」？存在活跃种子时不会执行删除。</VCardText>
+        <VCardText>
+          确认删除「{{ selectedTask?.name }}」？
+        </VCardText>
+        <VCardText v-if="handoverLoading" class="magicflow-settings-hint">正在统计名下种子…</VCardText>
+        <VCardText v-else-if="handover" class="magicflow-settings-hint">
+          名下 <strong>{{ handover.managed }}</strong> 个种子 · {{ handover.size_gb }} GB
+          <template v-if="handover.auto_handover?.length">
+            <br />
+            <VAlert density="compact" variant="tonal" color="success" class="mt-2">
+              同站同状态任务「<strong>{{ handover.auto_handover[0].name }}</strong>」用的是同一批标签
+              （{{ handover.tag }}），<strong>不交棒它本来就会接着管</strong>。
+            </VAlert>
+          </template>
+        </VCardText>
+        <VCardText v-if="handover">
+          <VSelect v-model="handoverTarget" :items="handoverChoices" item-title="text" item-value="value"
+            density="compact" variant="outlined" hide-details label="名下种子怎么处理" />
+        </VCardText>
         <VCardActions>
           <VSpacer />
           <VBtn variant="text" @click="deleteDialog = false">取消</VBtn>
-          <VBtn color="error" variant="flat" :loading="saving" @click="confirmDeleteTask">删除</VBtn>
+          <VBtn color="error" variant="flat" :loading="saving" @click="confirmDeleteTask">确认删除</VBtn>
         </VCardActions>
       </VCard>
     </VDialog>
