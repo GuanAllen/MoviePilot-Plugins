@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.14.8"
+__version__ = "3.15.0"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -7719,6 +7719,15 @@ class MagicFlow(_PluginBase):
                          + ("" if _ap else "（预演）")),
                 data=info,
             )
+        if act in ("resume", "keep_seed", "resume_apply"):
+            _ap = act == "resume_apply"
+            info = self._silent_resume_tick(apply=_ap, limit=int(limit or 0))
+            return Response(
+                success=True,
+                message=(f"静默保挂:待恢复 {info.get('pending')} 个 → 恢复做种 {info.get('resumed')} 个"
+                         + ("" if _ap else "（预演）")),
+                data=info,
+            )
         if act in ("settle", "settle_idle"):
             info = self._settle_disabled_tasks(apply=True)
             return Response(success=True, message=f"停止任务退回静默 {info.get('settled')} 个", data=info)
@@ -11724,6 +11733,13 @@ class MagicFlow(_PluginBase):
                     self._log(f"魔流:H&R 统一管理:打标 {hinfo.get('tagged')} · 拉起 {hinfo.get('resumed')}")
             except Exception as err:  # noqa: BLE001
                 self._log(f"标签维护:H&R 管理失败:{err}", "warning")
+            # ★ 静默保挂：暂停中的静默种恢复做种（静默≠白占盘；Master 静默托管 ①保挂）
+            try:
+                rinfo = self._silent_resume_tick(apply=True, limit=0)
+                if rinfo.get("resumed"):
+                    self._log(f"魔流:静默保挂:恢复做种 {rinfo.get('resumed')} 个")
+            except Exception as err:  # noqa: BLE001
+                self._log(f"标签维护:静默保挂失败:{err}", "warning")
             # ★ 静默池校验：辅种/复用种停在 pausedDL 是等校验 → recheck 拉起来
             try:
                 vinfo = self._silent_verify_marks(apply=True, limit=60)
@@ -13136,6 +13152,85 @@ class MagicFlow(_PluginBase):
             if not done:
                 out.add(str(h).lower())
         return out
+
+    def _silent_resume_tick(self, apply: bool = True, limit: int = 0) -> Dict[str, Any]:
+        """★ 静默池「保挂」：把**暂停中**的静默种恢复做种（Master「静默≠白占盘」/ 静默托管 ①保挂）。
+
+        背景：任务的 ``run_mode`` 非 running（stopped）时，其名下种子在 qB 里被**暂停**；
+        退回静默池后仍暂停 → 既不累计做种时长/魔力，也推进不了 H&R，纯占盘不产出。
+        本 tick 把静默池里**已完成**、却处于 paused/stopped/queued 的种 → ``force_start`` 恢复做种。
+
+        保守跳过：
+        - 账本 ``manual_paused``（主人手动暂停的）；
+        - 未完成且非 辅种/已整理（交给 ``_silent_purge_incomplete`` / 校验流程）。
+
+        注：``seed_cap``（站点「做种数**计入魔力**上限」）**不作为跳过理由** ——
+        它只影响魔力公式的平怪部分，超出后 arctan 项仍在增长，且做种对分享率/H&R 有益。
+        """
+        rep: Dict[str, Any] = {"apply": bool(apply), "checked": 0, "silent": 0, "pending": 0,
+                               "resumed": 0, "skipped_manual": 0, "skipped_incomplete": 0,
+                               "skipped_cap": 0, "failed": 0, "items": [], "sites": {}}
+        snap = self._tag_all_torrents() or {}
+        if not snap:
+            rep["reason"] = "无快照"
+            return rep
+        try:
+            ledger = dict(self._tag_state().items() or {})
+        except Exception:  # noqa: BLE001
+            ledger = {}
+        cap = int(limit or 0)
+        to_resume: List[str] = []
+        for hh, t in snap.items():
+            tags = [str(x) for x in (getattr(t, "tags", None) or [])]
+            if not any(("静默" in x and is_magicflow_tag(x)) for x in tags):
+                continue
+            rep["silent"] = int(rep["silent"]) + 1
+            if cap and rep["checked"] >= cap:
+                continue
+            rep["checked"] = int(rep["checked"]) + 1
+            rec = ledger.get(hh) or {}
+            if rec.get("manual_paused"):
+                rep["skipped_manual"] = int(rep["skipped_manual"]) + 1
+                continue
+            try:
+                done = float(getattr(t, "progress", 0) or 0) >= 0.999
+            except (TypeError, ValueError):
+                done = False
+            reuse = (MARK_REUSE in tags) or is_asset_tags(tags)
+            if not done and not reuse:
+                rep["skipped_incomplete"] = int(rep["skipped_incomplete"]) + 1
+                continue
+            st = str(getattr(t, "state", "") or "").strip().lower()
+            if not (st.startswith("paused") or st.startswith("stopped") or st.startswith("queued")):
+                continue  # 已在做种 / 校验中 → 不动
+            site = str(rec.get("site") or "").strip() or self._torrent_site_name(tags, "")
+            rep["pending"] = int(rep["pending"]) + 1
+            rep["sites"][site] = int(rep["sites"].get(site) or 0) + 1
+            if len(rep["items"]) < 40:
+                rep["items"].append({"hash": hh[:12], "site": site, "state": st})
+            to_resume.append(hh)
+        if apply and to_resume:
+            try:
+                dl = self._get_downloader("qbittorrent")
+                fn = getattr(dl, "force_start_torrents", None) if dl is not None else None
+                if callable(fn):
+                    cnt, err = fn(to_resume)
+                elif dl is not None:
+                    cnt, err = dl.resume_torrents(to_resume)
+                else:
+                    cnt, err = 0, "无下载器"
+                rep["resumed"] = int(cnt or 0)
+                if err:
+                    self._log(f"静默保挂:恢复失败 {err}", "warning")
+            except Exception as err:  # noqa: BLE001
+                rep["failed"] = int(rep["failed"]) + 1
+                self._log(f"静默保挂:恢复异常:{err}", "warning")
+        if rep["resumed"]:
+            self._log(
+                f"魔流:静默保挂:恢复做种 {rep['resumed']} 个（扫描静默 {rep['silent']} · "
+                f"跳过 手动{rep['skipped_manual']} 未完成{rep['skipped_incomplete']} 上限站{rep['skipped_cap']}）"
+            )
+        return rep
 
     def _silent_verify_marks(self, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
         """★ 静默池「辅种/复用种」校验：停在 pausedDL 是**等校验**，不是没下完。

@@ -469,6 +469,33 @@ class SiteRules:
             return bool(b.get("hr"))
         return None
 
+    def seed_cap_of(self, domain: str) -> Optional[int]:
+        """该站「同时在册做种数上限」（``None`` = 未知 / 不限）。
+
+        None 时调用方会按「不限制」处理；已知有上限的站（如 馒头/m-team）返回具体值，
+        供「静默保挂」等逻辑**保守跳过**，避免超过站点上限被罚。
+        """
+        d = _norm_domain(domain)
+        rec = dict(self.items().get(d) or {})
+        if not rec:
+            for k, v in self.items().items():
+                if _same_domain(k, d):
+                    rec = dict(v or {})
+                    break
+        cap = rec.get("seed_cap")
+        if cap is None:
+            b = BUILTIN_RULES.get(d) or {}
+            if not b:
+                for k, v in BUILTIN_RULES.items():
+                    if _same_domain(k, d):
+                        b = v or {}
+                        break
+            cap = b.get("seed_cap")
+        try:
+            return int(cap) if cap is not None else None
+        except (TypeError, ValueError):
+            return None
+
     def resolve(
         self,
         domain: str,
