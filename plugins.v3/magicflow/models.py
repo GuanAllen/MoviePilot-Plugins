@@ -241,6 +241,7 @@ class MagicFlowSettingsPayload(BaseModel):
 
     # IYUU 云端辅种（可选）：Token 留空 = 不启用，退回内置跨站复用
     iyuu_token: str = Field("", max_length=200, description="IYUU 云端 Token，留空 = 不启用 IYUU 辅种")
+    iyuu_clear: bool = Field(False, description="置 true 则清空已存的 IYUU Token（否则空值=保持原值）")
     iyuu_sites: Dict[str, Dict[str, str]] = Field(
         default_factory=dict,
         description="站点密钥表：domain -> {passkey/uid/downhash...}（用户手填，优先于自动获取）",
