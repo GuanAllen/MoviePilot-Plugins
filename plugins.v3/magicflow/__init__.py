@@ -124,6 +124,8 @@ from .sites.rules import BUILTIN_RULES, SiteRules, parse_hr_from_html
 from .tags import (
     DEFAULT_SORT_RULES,
     FileGroupStore,
+    asset_origin_sub,
+    is_asset_tags,
     STATE_BONUS,
     STATE_BRUSH,
     STATE_RECOMMEND,
@@ -7099,6 +7101,10 @@ class MagicFlow(_PluginBase):
                 mod.counters = {}
                 _sys.modules[_key] = mod
             obj = mod.instances.get("tag_state")
+            # ★ 热重载后模块里是「新的类」，但单例还是「旧类的实例」→ 方法可能缺失。
+            #   校验过类型，不匹配就重建（否则新加的方法永远 AttributeError）。
+            if obj is not None and not isinstance(obj, TagStateStore):
+                obj = None
             if obj is None:
                 obj = TagStateStore(get_data=self.get_data, save_data=self.save_data, log=self._log)
                 mod.instances["tag_state"] = obj
@@ -7124,6 +7130,8 @@ class MagicFlow(_PluginBase):
                 mod.counters = {}
                 _sys.modules[_key] = mod
             obj = mod.instances.get("tag_groups")
+            if obj is not None and not isinstance(obj, FileGroupStore):
+                obj = None
             if obj is None:
                 obj = FileGroupStore(get_data=self.get_data, save_data=self.save_data, log=self._log)
                 mod.instances["tag_groups"] = obj
@@ -7434,14 +7442,15 @@ class MagicFlow(_PluginBase):
                 failed += 1
                 continue
             _tags_now = [str(x).strip() for x in (item.get("tags") or [])]
-            _is_asset = any(x in ("已整理", "辅种") for x in _tags_now)
+            _is_asset = is_asset_tags(_tags_now)
             store.put(h, {
                 "site": item.get("site") or "",
                 "state": item.get("state") or STATE_SILENT,
                 "sub": item.get("sub") or "",
                 # ★ origin = 真正的「静默态」：退回时才知道该回哪儿（别写任务态，否则退回是空操作）
                 "origin_state": STATE_SILENT,
-                "origin_sub": SUB_RESOURCE if _is_asset else SUB_NEW,
+                "origin_sub": asset_origin_sub(_tags_now),
+                "asset": _is_asset,
                 "title": item.get("title") or "",
                 "migrated": True,
             })
@@ -7476,8 +7485,11 @@ class MagicFlow(_PluginBase):
             items = store.items()
             return Response(success=True, message="ok", data={
                 "total": len(hs),
-                "items": [{ "hash": h, **{k: items[h].get(k) for k in ("site", "state", "sub", "taken_by", "origin_sub", "title", "size_gb")}} for h in hs[:max(1, int(limit or 20))]],
+                "items": [{ "hash": h, **{k: items[h].get(k) for k in ("site", "state", "sub", "taken_by", "origin_sub", "title", "size_gb", "asset")}} for h in hs[:max(1, int(limit or 20))]],
             })
+        if act == "asset":
+            info = self.sync_tag_assets(apply=True)
+            return Response(success=True, message=f"库内资产 {info.get('asset')} 个（更新 {info.get('changed')}）", data=info)
         if act == "expire":
             moved = store.expire_new(timeout=float(self._tags_cfg.get("new_timeout") or TAG_NEW_TIMEOUT))
             return Response(success=True, message=f"静默-新超时归普通 {len(moved)} 个", data={"moved": moved})
@@ -7499,6 +7511,8 @@ class MagicFlow(_PluginBase):
             "snapshot_interval_hours": round(float(self._tags_cfg.get("snapshot_interval") or 0) / 3600.0, 2),
             "ledger_count": len(items),
             "by_state": store.stats(),
+            "assets": {"count": sum(1 for r in items.values() if r.get("asset")),
+                       "size_gb": round(sum(float(r.get("size_gb") or 0) for r in items.values() if r.get("asset")), 2)},
             "groups": groups.stats(),
             "snapshots": [{"ts": s.get("ts"), "count": s.get("count")} for s in snap],
             "site_names": self._tag_site_names(),
@@ -10597,6 +10611,36 @@ class MagicFlow(_PluginBase):
         finally:
             self._release_worker_slot()
 
+    def sync_tag_assets(self, *, apply: bool = False) -> Dict[str, Any]:
+        """★ 建立/刷新「库内资产」记录（真·库记）。
+
+        证据 = 种子上 MP 写的 ``已整理`` / ``辅种`` 标签（本部署 MP 的
+        downloadhistory / transferhistory / downloadfiles 三张表都是 0 行，不可依赖）。
+        资产 → 账本 ``asset=True`` 且 ``origin_sub=资源``；非资产 → ``asset=False``。
+        """
+        store = self._tag_state()
+        snap = self._tag_all_torrents()
+        data = store.items()
+        asset = non = changed = 0
+        for h, t in snap.items():
+            hh = str(h or "").strip().lower()
+            tags = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
+            if not any(is_magicflow_tag(x) for x in tags) or hh not in data:
+                continue
+            is_a = is_asset_tags(tags)
+            if is_a:
+                asset += 1
+            else:
+                non += 1
+            rec = data.get(hh) or {}
+            if bool(rec.get("asset")) == is_a:
+                continue
+            changed += 1
+            if apply:
+                store.set_asset(hh, is_a, origin_sub=(SUB_RESOURCE if is_a else SUB_NEW))
+        return {"ok": True, "applied": bool(apply), "asset": asset, "non_asset": non,
+                "changed": changed, "ledger": len(data)}
+
     def tags_watch(self) -> None:
         """标签模型维护（worker）：① 静默-新超时归普通 ② 状态账本定时快照。"""
         try:
@@ -10604,6 +10648,13 @@ class MagicFlow(_PluginBase):
             moved = store.expire_new(timeout=float(self._tags_cfg.get("new_timeout") or TAG_NEW_TIMEOUT))
             if moved:
                 self._log(f"魔流:标签维护:「静默-新」超时归「静默-普通」{len(moved)} 个")
+            try:
+                info = self.sync_tag_assets(apply=True)
+                if info.get("changed"):
+                    self._log(f"魔流:标签维护:库内资产标记刷新 {info.get('changed')} 个"
+                              f"（资产 {info.get('asset')}）")
+            except Exception as err:  # noqa: BLE001
+                self._log(f"标签维护:资产同步失败:{err}", "warning")
             interval = float(self._tags_cfg.get("snapshot_interval") or TAG_SNAPSHOT_INTERVAL)
             now = time.time()
             if interval > 0 and (now - float(getattr(self, "_tag_last_snapshot", 0) or 0)) >= interval:
