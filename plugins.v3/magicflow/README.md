@@ -250,3 +250,8 @@ class NewSiteBonusCalculator(BonusCalculator):
 ## 协议
 
 GPL-3.0
+
+## 文档 / Wiki
+
+- [静默托管（Silent Host）](docs/静默托管.md) —— 常驻托管 worker：分类（静默-新/资源/普通 + H&R）、九步职责、强制挂种规则、操作记录、端点速查。
+- [标签模型与检索](docs/PLAN-tags.md) · [API 速查](docs/PLAN-3.0.6.md)

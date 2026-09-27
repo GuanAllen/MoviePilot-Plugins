@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.17.1"
+__version__ = "3.18.2"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -11734,63 +11734,95 @@ class MagicFlow(_PluginBase):
     def silent_host(self) -> None:
         """★ 静默托管（**常驻 worker**，Master 2026-09-28 06:30：「常驻，不用每20分钟检查一次」）。
 
-        静默池的「负责人」——常驻（reload 即注册，不随任务增减开关）、低频（默认 60min）。职责：
-        ① 池清理：没下完的直接删（不计 H&R）；② **H&R 保挂**：只对欠 H&R 的静默种强制挂种（其余不强制）；
-        ③ H&R 统一管理（欠 H&R 打标 / 未到期被暂停强制拉起 / 结清摘标）；
-        ④ 辅种校验（停在 pausedDL 的 recheck 拉起）；⑤ 静默-普通 清理（站点魔力已达标时删低效）；
-        ⑥ 推荐过期待降级；⑦ 分拣（静默-新 → 推荐/普通）；⑧ 静默-新超时归普通；⑨ 库内资产标记刷新。
+        静默池的「负责人」——常驻（reload 即注册，不随任务增减开关）、低频（默认 60min）。
+        九步职责（每次运行在**操作记录**里留一条流水，明细即各步结果；职责说明见 docs/静默托管.md）：
+        ① 池清理 ② **H&R 保挂**（只对欠 H&R 的种强制挂种）③ H&R 统一管理 ④ 辅种校验
+        ⑤ 静默-普通 清理 ⑥ 推荐过期降级 ⑦ 分拣 ⑧ 静默-新 超时归普通 ⑨ 库内资产刷新
         """
+        summary: List[tuple] = []
+
+        def _step(key: str, label: str, fn) -> None:
+            """跑一步：成功记结果文本，失败记失败原因（不中断后续步骤）。"""
+            try:
+                txt = fn() or ""
+            except Exception as err:  # noqa: BLE001
+                self._log(f"静默托管:{label}失败:{err}", "warning")
+                summary.append((key, f"{label} 失败：{err}"))
+                return
+            summary.append((key, f"{label}：{txt}" if txt else f"{label}：无需处理"))
+
         try:
             store = self._tag_state()
-            # ① 池清理：没下完的直接删（不计 H&R）——必须排在分拣之前
+            _started = time.time()
+            # 上一轮若被 reload/重启打断，会留下一条「运行中」记录 → 先收尾（>10min 才算异常）
             try:
-                pinfo = self._silent_purge_incomplete(apply=True, limit=200)
-                if pinfo.get("deleted"):
-                    self._log(f"魔流:静默托管:未下完直接删 {pinfo.get('deleted')} 个（不计 H&R）")
+                for _r in self._store.journal.list_by_task(SILENT_HOST_TASK_ID, limit=5):
+                    if str(getattr(_r, "state", "")) in ("submitting", "accepted") \
+                            and (time.time() - float(getattr(_r, "created_at", 0) or 0)) > 600:
+                        self._store.journal.finalize(
+                            _r.operation_id, "failed",
+                            items=[OperationItem(hash="", title="上一轮被中断（reload/重启）", source="run")],
+                            error_message="上一轮被中断",
+                        )
+            except Exception:  # noqa: BLE001
+                pass
+            # ★ 操作记录：开始时先登记一条「运行中」，结束时落明细（前台「操作记录」可展开）
+            _rec = None
+            try:
+                _rec = self._store.journal.add(
+                    task_id=SILENT_HOST_TASK_ID, kind="run",
+                    items=[OperationItem(hash="", title="静默托管运行中…", source="run")],
+                )
             except Exception as err:  # noqa: BLE001
-                self._log(f"静默托管:池清理失败:{err}", "warning")
-            # ② H&R 保挂：只对「欠 H&R」的静默种强制挂种（其余不强制，保持原状）
-            try:
-                rinfo = self._silent_resume_tick(apply=True, limit=0)
-                if rinfo.get("resumed"):
-                    self._log(f"魔流:静默托管:H&R 保挂强制挂种 {rinfo.get('resumed')} 个")
-            except Exception as err:  # noqa: BLE001
-                self._log(f"静默托管:H&R 保挂失败:{err}", "warning")
-            # ③ H&R 统一管理：欠 H&R 打标 + 未到期被暂停强制拉起 + 结清摘标
-            try:
-                hinfo = self._hr_guard_tick(apply=True, limit=0)
-                if hinfo.get("tagged") or hinfo.get("resumed") or hinfo.get("cleared"):
-                    self._log(f"魔流:静默托管:H&R 管理:打标 {hinfo.get('tagged')} · 拉起 {hinfo.get('resumed')} · 摘标 {hinfo.get('cleared')}")
-            except Exception as err:  # noqa: BLE001
-                self._log(f"静默托管:H&R 管理失败:{err}", "warning")
-            # ④ 辅种/复用种校验：停在 pausedDL 是等校验 → recheck 拉起来
-            try:
-                vinfo = self._silent_verify_marks(apply=True, limit=60)
-                if vinfo.get("checked"):
-                    self._log(f"魔流:静默托管:辅种 recheck {vinfo.get('checked')} 个")
-            except Exception as err:  # noqa: BLE001
-                self._log(f"静默托管:辅种校验失败:{err}", "warning")
-            # ⑤ 静默-普通 清理：站点魔力已达标 → 低效普通种直接删
-            try:
-                sinfo = self._silent_plain_sweep(apply=True, limit=0)
-                if sinfo.get("deleted"):
-                    self._log(f"魔流:静默托管:删除低效普通种 {sinfo.get('deleted')} 个")
-            except Exception as err:  # noqa: BLE001
-                self._log(f"静默托管:普通清理失败:{err}", "warning")
-            # ⑥ 推荐过期 → 转普通（不删）
-            try:
-                dinfo = self._recommend_downgrade_expired(apply=True, limit=0)
-                if dinfo.get("downgraded"):
-                    self._log(f"魔流:静默托管:推荐过期降级转普通 {dinfo.get('downgraded')} 个")
-            except Exception as err:  # noqa: BLE001
-                self._log(f"静默托管:推荐降级失败:{err}", "warning")
-            # ⑦ 分拣：挂满 H&R 的「静默-新」→ 推荐 / 普通
-            try:
+                self._log(f"静默托管:操作记录登记失败:{err}", "warning")
+
+            def _s1() -> str:
+                i = self._silent_purge_incomplete(apply=True, limit=200)
+                if i.get("deleted"):
+                    self._log(f"魔流:静默托管:未下完直接删 {i.get('deleted')} 个（不计 H&R）")
+                    return f"删未下完 {i.get('deleted')} 个（不计 H&R）"
+                return ""
+
+            def _s2() -> str:
+                i = self._silent_resume_tick(apply=True, limit=0)
+                if i.get("resumed"):
+                    self._log(f"魔流:静默托管:H&R 保挂强制挂种 {i.get('resumed')} 个")
+                    return f"强制挂种 {i.get('resumed')} 个（欠H&R {i.get('hr_pending')} / 非H&R {i.get('nonhr')} 不动）"
+                return f"欠H&R {i.get('hr_pending')} 个均已挂种"
+
+            def _s3() -> str:
+                i = self._hr_guard_tick(apply=True, limit=0)
+                if i.get("tagged") or i.get("resumed") or i.get("cleared"):
+                    self._log(f"魔流:静默托管:H&R 管理:打标 {i.get('tagged')} · 拉起 {i.get('resumed')} · 摘标 {i.get('cleared')}")
+                    return f"打标 {i.get('tagged')} · 拉起 {i.get('resumed')} · 摘标 {i.get('cleared')}"
+                return ""
+
+            def _s4() -> str:
+                i = self._silent_verify_marks(apply=True, limit=60)
+                if i.get("checked"):
+                    self._log(f"魔流:静默托管:辅种 recheck {i.get('checked')} 个")
+                    return f"recheck {i.get('checked')} 个"
+                return ""
+
+            def _s5() -> str:
+                i = self._silent_plain_sweep(apply=True, limit=0)
+                if i.get("deleted"):
+                    self._log(f"魔流:静默托管:删除低效普通种 {i.get('deleted')} 个")
+                    return f"删低效普通种 {i.get('deleted')} 个"
+                return ""
+
+            def _s6() -> str:
+                i = self._recommend_downgrade_expired(apply=True, limit=0)
+                if i.get("downgraded"):
+                    self._log(f"魔流:静默托管:推荐过期降级转普通 {i.get('downgraded')} 个")
+                    return f"推荐过期降级 {i.get('downgraded')} 个"
+                return ""
+
+            def _s7() -> str:
                 self._silent_triage(apply=True, limit=60, budget=600.0)
-            except Exception as err:  # noqa: BLE001
-                self._log(f"静默托管:分拣失败:{err}", "warning")
-            # ⑧ 静默-新 超时归「静默-普通」（欠 H&R 的原地挂，不降级）
-            try:
+                return ""
+
+            def _s8() -> str:
                 _snap = self._tag_all_torrents()
                 try:
                     _hr_wait = self._silent_hr_pending(_snap)
@@ -11807,17 +11839,39 @@ class MagicFlow(_PluginBase):
                             self._silent_to_plain(_h)
                         except Exception:  # noqa: BLE001
                             pass
-            except Exception as err:  # noqa: BLE001
-                self._log(f"静默托管:超时归位失败:{err}", "warning")
-            # ⑨ 库内资产标记刷新
-            try:
-                ainfo = self.sync_tag_assets(apply=True)
-                if ainfo.get("changed"):
-                    self._log(f"魔流:静默托管:库内资产标记刷新 {ainfo.get('changed')} 个"
-                              f"（资产 {ainfo.get('asset')}）")
-            except Exception as err:  # noqa: BLE001
-                self._log(f"静默托管:资产同步失败:{err}", "warning")
+                    return f"超时归普通 {len(moved)} 个"
+                return ""
+
+            def _s9() -> str:
+                i = self.sync_tag_assets(apply=True)
+                if i.get("changed"):
+                    self._log(f"魔流:静默托管:库内资产标记刷新 {i.get('changed')} 个（资产 {i.get('asset')}）")
+                    return f"资产标记刷新 {i.get('changed')} 个（资产 {i.get('asset')}）"
+                return ""
+
+            _step("purge", "①池清理", _s1)
+            _step("hr_keep", "②H&R保挂", _s2)
+            _step("hr_guard", "③H&R管理", _s3)
+            _step("verify", "④辅种校验", _s4)
+            _step("plain", "⑤普通清理", _s5)
+            _step("downgrade", "⑥推荐降级", _s6)
+            _step("triage", "⑦分拣", _s7)
+            _step("expire", "⑧超时归位", _s8)
+            _step("assets", "⑨资产刷新", _s9)
+
             self._silent_host_last = time.time()
+            # ★ 操作记录：落明细 = 九步结果（前台「操作记录」可展开）
+            try:
+                _items = [OperationItem(hash="", title="静默托管运行完成", source="run")]
+                for _k, _t in summary:
+                    _items.append(OperationItem(hash="", title=str(_t), source=str(_k)))
+                _dur = round(time.time() - _started, 2)
+                if _rec is not None:
+                    self._store.journal.finalize(_rec.operation_id, "completed", items=_items, duration=_dur)
+                else:
+                    self._store.journal.record(task_id=SILENT_HOST_TASK_ID, kind="run", items=_items, duration=_dur)
+            except Exception as err:  # noqa: BLE001
+                self._log(f"静默托管:操作记录写入失败:{err}", "warning")
         except Exception as err:  # noqa: BLE001
             self._log(f"静默托管异常:{err}", "warning")
 
@@ -11825,14 +11879,28 @@ class MagicFlow(_PluginBase):
         """★ 「静默托管」常驻任务在**任务列表**里的只读条目（Master 2026-09-28 06:33）。"""
         n_sil = 0
         n_hr = 0
+        by_state: Dict[str, int] = {}
+        by_site: Dict[str, Dict[str, int]] = {}
         try:
             for _t in (self._tag_all_torrents() or {}).values():
                 _tg = [str(x) for x in (getattr(_t, "tags", None) or [])]
-                if not any(("静默" in x and is_magicflow_tag(x)) for x in _tg):
+                _st = next((x for x in _tg if "静默" in x and is_magicflow_tag(x)), "")
+                if not _st:
                     continue
                 n_sil += 1
-                if MARK_HR in _tg:
+                _ishr = bool(MARK_HR in _tg)
+                if _ishr:
                     n_hr += 1
+                _sub = "新"
+                for _s in ("新", "资源", "普通"):
+                    if _st.endswith(_s):
+                        _sub = _s
+                by_state[_sub] = int(by_state.get(_sub) or 0) + 1
+                _site = self._torrent_site_name(_tg, "") or "未知"
+                _d = by_site.setdefault(_site, {"total": 0, "hr": 0})
+                _d["total"] += 1
+                if _ishr:
+                    _d["hr"] += 1
         except Exception:  # noqa: BLE001
             try:
                 led = self._tag_state().items() or {}
@@ -11845,6 +11913,14 @@ class MagicFlow(_PluginBase):
         except Exception:  # noqa: BLE001
             _min = float(SILENT_HOST_INTERVAL_MINUTES)
         last = float(getattr(self, "_silent_host_last", 0) or 0)
+        try:
+            _rows = self._store.journal.list_by_task(SILENT_HOST_TASK_ID, limit=1)
+            if _rows:
+                _t = float(getattr(_rows[0], "resolved_at", None) or getattr(_rows[0], "created_at", 0) or 0)
+                if _t > last:
+                    last = _t
+        except Exception:  # noqa: BLE001
+            pass
         return {
             "id": SILENT_HOST_TASK_ID,
             "name": "静默托管",
@@ -11865,6 +11941,10 @@ class MagicFlow(_PluginBase):
             "active_seeding_count": n_sil,
             "downloading_count": 0,
             "paused_count": 0,
+            "classify": {
+                "by_state": by_state,
+                "by_site": by_site,
+            },
             "host_interval_minutes": round(_min, 1),
             "host_last_run": (time.strftime("%m-%d %H:%M", time.localtime(last)) if last else "—"),
         }
