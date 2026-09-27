@@ -80,6 +80,52 @@ const pendingTorrentDelete = ref(null)
 const selectedRows = ref([])
 const batchBusy = ref(false)
 const batchDeleteDialog = ref(false)
+// 批量转移（托管页）
+const transferDialog = ref(false)
+const transferTarget = ref('idle')
+const transferChoices = computed(() => {
+  const out = [{ value: 'idle', text: '静默池（退回，保文件）' }]
+  const me = selectedTask.value
+  const mySite = String(me?.site_name || '')
+  const rest = (status.value?.tasks || []).filter(t => String(t.id) !== String(me?.id))
+  rest.sort((a, b) => Number(String(b.site_name) === mySite) - Number(String(a.site_name) === mySite))
+  for (const t of rest) {
+    const sameSite = String(t.site_name) === mySite
+    out.push({
+      value: String(t.id),
+      text: `${t.name}${t.enabled ? '' : '（已停用）'} — ${t.site_name}·${t.task_type === 'brush' ? '刷流' : '魔力'}${sameSite ? ' · 同站' : ' · 跨站(会改站点标签)'}`,
+    })
+  }
+  return out
+})
+
+function openTransfer() {
+  if (!selectedHashes.value.length) return
+  transferTarget.value = 'idle'
+  transferDialog.value = true
+}
+
+async function confirmTransfer() {
+  const hashes = selectedHashes.value
+  if (!hashes.length || !selectedTask.value) return
+  batchBusy.value = true
+  try {
+    const body = transferTarget.value === 'idle'
+      ? { mode: 'idle', hashes }
+      : { mode: 'handover', target_task_id: transferTarget.value, hashes }
+    const res = await props.api.post(`${pluginBase.value}/tasks/${selectedTask.value.id}/handover`, body)
+    if (res?.success === false) throw new Error(res?.message || '转移失败')
+    notify(res?.message || '已转移')
+    transferDialog.value = false
+    selectedRows.value = []
+    await Promise.all([loadBonus(selectedTask.value.id), loadDetail(selectedTask.value.id)])
+    emit('action')
+  } catch (err) {
+    error.value = err?.message || String(err)
+  } finally {
+    batchBusy.value = false
+  }
+}
 const selectedHashes = computed(() =>
   (selectedRows.value || []).map(row => row?.hash).filter(Boolean),
 )
@@ -1208,8 +1254,8 @@ async function onDeleteDialog(open) {
   handoverLoading.value = true
   try {
     handover.value = unwrapResponse(await props.api.get(`${pluginBase.value}/tasks/${selectedTask.value.id}/handover`)) || null
-    const auto = handover.value?.auto_handover?.[0]
-    handoverTarget.value = auto ? auto.id : 'idle'
+    // ★ 默认退回静默池（正常就该这样）；要指定交棒得自己选 —— 同标签任务本来就会自动接管，无需交棒
+    handoverTarget.value = 'idle'
   } catch (err) {
     error.value = err?.message || String(err)
   } finally {
@@ -2689,6 +2735,7 @@ onUnmounted(() => {
                   <VBtn size="small" variant="tonal" :disabled="batchBusy" @click="batchAction('pause')">暂停</VBtn>
                   <VBtn size="small" variant="tonal" :disabled="batchBusy" @click="batchAction('resume')">恢复</VBtn>
                   <VBtn size="small" variant="tonal" :disabled="batchBusy" @click="batchAction('recheck')">校验</VBtn>
+                  <VBtn size="small" variant="tonal" color="primary" :disabled="batchBusy" @click="openTransfer">批量转移</VBtn>
                   <VBtn size="small" variant="tonal" color="error" :disabled="batchBusy" @click="batchDeleteDialog = true">删除</VBtn>
                   <VSpacer />
                   <VBtn size="small" variant="text" :disabled="batchBusy" @click="selectAllFiltered">全选筛选（{{ sortedTorrents.length }}）</VBtn>
@@ -4184,6 +4231,24 @@ onUnmounted(() => {
       </VCard>
     </VDialog>
 
+    <VDialog v-model="transferDialog" max-width="34rem">
+      <VCard title="批量转移种子" class="magicflow-dialog">
+        <VCardText class="magicflow-settings-hint">
+          把选中的 <strong>{{ selectedHashes.length }}</strong> 个种子交给别的任务，或退回静默池（保文件）。
+          跨站转移会改掉站点标签 —— 一般只转给<strong>同站</strong>任务。
+        </VCardText>
+        <VCardText>
+          <VSelect v-model="transferTarget" :items="transferChoices" item-title="text" item-value="value"
+            density="compact" variant="outlined" hide-details label="转移到" />
+        </VCardText>
+        <VCardActions>
+          <VSpacer />
+          <VBtn variant="text" :disabled="batchBusy" @click="transferDialog = false">取消</VBtn>
+          <VBtn color="primary" variant="flat" :loading="batchBusy" @click="confirmTransfer">转移</VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
+
     <VDialog v-model="batchDeleteDialog" max-width="28rem">
       <VCard class="magicflow-dialog">
         <VCardTitle>批量删除托管种子</VCardTitle>
@@ -4230,9 +4295,16 @@ onUnmounted(() => {
           名下 <strong>{{ handover.managed }}</strong> 个种子 · {{ handover.size_gb }} GB
           <template v-if="handover.auto_handover?.length">
             <br />
-            <VAlert density="compact" variant="tonal" color="success" class="mt-2">
-              同站同状态任务「<strong>{{ handover.auto_handover[0].name }}</strong>」用的是同一批标签
-              （{{ handover.tag }}），<strong>不交棒它本来就会接着管</strong>。
+            <VAlert density="compact" variant="tonal" color="info" class="mt-2">
+              另有同站同状态任务「<strong>{{ handover.auto_handover[0].name }}</strong>」用同一批标签
+              （{{ handover.tag }}），<strong>不交棒它也会接着管</strong>。<br />
+              <strong>默认退回静默池</strong>（保文件）—— 想指定交给谁再在下面选。
+            </VAlert>
+          </template>
+          <template v-else>
+            <br />
+            <VAlert density="compact" variant="tonal" color="info" class="mt-2">
+              <strong>默认退回静默池</strong>（保文件）—— 想指定交给谁再在下面选。
             </VAlert>
           </template>
         </VCardText>

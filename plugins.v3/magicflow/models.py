@@ -233,6 +233,7 @@ class MagicFlowHandoverPayload(BaseModel):
 
     target_task_id: str = Field("", max_length=32, description="交棒目标任务 id（留空 = 退回静默池）")
     mode: str = Field("handover", max_length=12, description="handover=交棒 / idle=退回静默池")
+    hashes: List[str] = Field(default_factory=list, description="只转移这些 hash（留空 = 该任务名下全部）")
 
 
 class MagicFlowTagStatePayload(BaseModel):
