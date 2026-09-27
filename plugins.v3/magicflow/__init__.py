@@ -7,6 +7,7 @@ MagicFlow 魔流插件
 
 import bisect
 import copy
+import random
 import re
 import threading
 import time
