@@ -89,6 +89,7 @@ from .fallback import FallbackEngine, DEFAULT_SOURCES as FALLBACK_SOURCES
 from .live_stats import LiveStats, title_match
 from .cloud_archive import ArchiveEngine, DEFAULT_TARGET_TEMPLATE as CLOUD_TARGET_TEMPLATE
 from .persistence import MagicFlowStore, OperationItem, WorkReport
+from .kvstore import MpHotStore
 from .signin import SigninEngine
 from .recommend import RecommendEngine
 from .dtier import PvLedger, TierCache
@@ -105,7 +106,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.8.1"
+__version__ = "3.8.2"
 
 # 候选扩充:站点列表页翻页数(拿更多、更老的种子)。
 # 注意:是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数(启动时会记日志探测)。
@@ -747,7 +748,10 @@ class MagicFlow(_PluginBase):
         else:
             self._cloud_engine.set_cfg(self._cloud_cfg)
 
-        self._store = MagicFlowStore(self.get_data_path())
+        # 在线热层：走 MoviePilot 自己的缓存配置（配了 Redis 就用，没配就纯文件）
+        # 开源插件不能假设用户装了 Redis / 会单独建库（Master 2026-09-27 定）。
+        self._hot = self._build_hot()
+        self._store = MagicFlowStore(self.get_data_path(), kv=self._hot)
         self._apply_runtime_settings()
 
         # 任务配置:优先从 config 读取,兼容旧版 plugindata
@@ -840,6 +844,13 @@ class MagicFlow(_PluginBase):
                 "methods": ["GET"],
                 "auth": "bear",
                 "summary": "站点类型/能力识别结果(probe=true 时联网探测)",
+            },
+            {
+                "path": "/debug/store",
+                "endpoint": self.debug_store,
+                "methods": ["GET", "POST"],
+                "auth": "bear",
+                "summary": "状态存储健康度(action=flush 落盘 / drop-hot 清热层键验证回灌)",
             },
             {
                 "path": "/debug/torrents",
@@ -1368,8 +1379,33 @@ class MagicFlow(_PluginBase):
             )
         return services
 
+    def _build_hot(self):
+        """构建在线热层（走 MP 缓存适配器；非 Redis 后端自动退化为纯文件）。"""
+        try:
+            base = None
+            try:
+                base = self.get_data_path() / "hotcache"
+            except Exception:  # noqa: BLE001
+                base = None
+            hot = MpHotStore(base=base, log=self._log)
+            if hot.is_redis():
+                self._log("状态热层已启用:" + hot.describe())
+            else:
+                self._log("状态热层未启用(MP 未配 Redis)，状态全部走 JSON 文件", "debug")
+            return hot
+        except Exception as err:  # noqa: BLE001
+            self._log(f"状态热层构建失败，退回 JSON 文件:{err}", "debug")
+            return None
+
     def stop_service(self) -> None:
-        """插件不维护私有调度器,公共服务由宿主统一停止"""
+        """插件卸载/停止：把状态快照落盘（热层只是加速，JSON 才是权威）。"""
+        try:
+            if getattr(self, "_store", None) is not None:
+                written = self._store.flush_all()
+                if written:
+                    self._log("状态已落盘:" + ",".join(written), "debug")
+        except Exception as err:  # noqa: BLE001
+            self._log(f"状态落盘失败:{err}", "debug")
         return None
 
     @eventmanager.register(EventType.PluginReload)
@@ -7554,6 +7590,64 @@ class MagicFlow(_PluginBase):
         except Exception as err:  # noqa: BLE001
             return Response(success=False, message=f"设置 PV 预算失败:{err}")
 
+    def store_stats(self) -> Dict[str, Any]:
+        """状态存储概况（热层是否启用 + 冷备份文件），供 /status 与设置面板展示。"""
+        hot = getattr(self, "_hot", None)
+        out: Dict[str, Any] = {
+            "hot": bool(hot is not None and hot.available()),
+            "backend": "none",
+            "region": "",
+            "dirty": {},
+            "files": {},
+        }
+        try:
+            if hot is not None:
+                st = hot.stats()
+                out["backend"] = st.get("backend", "none")
+                out["region"] = st.get("region", "")
+                out["hot_keys"] = int(st.get("keys") or 0)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            store = getattr(self, "_store", None)
+            if store is not None:
+                out["dirty"] = store.hot_stats()
+                base = self.get_data_path()
+                for name in ("seen", "dead", "task_states", "operations", "recommend", "cloud"):
+                    f = base / f"{name}.json"
+                    out["files"][name] = {
+                        "exists": f.exists(),
+                        "bytes": f.stat().st_size if f.exists() else 0,
+                        "mtime": f.stat().st_mtime if f.exists() else 0,
+                    }
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+
+    def debug_store(self, action: str = "") -> Response:
+        """诊断/维护状态存储。
+
+        action:
+          · 空        → 热层 + 冷备份健康度
+          · flush     → 把内存快照写进热层 + JSON 冷备份
+          · drop-hot  → **只清我们自己的热层键**（用于验证「热层丢 → 从 JSON 回灌」）
+        """
+        action = str(action or "").strip().lower()
+        store = getattr(self, "_store", None)
+        hot = getattr(self, "_hot", None)
+        if action == "flush":
+            counts = store.flush_to_disk_and_hot() if store is not None else {}
+            return Response(success=True, message="已落盘", data={"stores": counts, "store": self.store_stats()})
+        if action in ("selftest", "test"):
+            data = hot.selftest() if hot is not None else {"ok": False, "error": "no hot layer"}
+            return Response(success=bool(data.get("ok")), message="热层自检", data=data)
+        if action in ("drop-hot", "drop", "clear-hot"):
+            if hot is None or not hot.available():
+                return Response(success=False, message="热层未启用（MP 未配 Redis），状态本来就只在 JSON", data=self.store_stats())
+            out = hot.drop_all_own_keys()
+            return Response(success=bool(out.get("success")), message=f"已清热层键 {out.get('deleted', 0)} 个（JSON 仍在）", data=self.store_stats())
+        return Response(success=True, message="OK", data=self.store_stats())
+
     def get_status(self) -> Response:
         """获取插件总览状态(重数据带 STATUS_TTL 缓存 + 后台静默刷新)。
 
@@ -7591,6 +7685,7 @@ class MagicFlow(_PluginBase):
             "brush_upload_limit_kbps": float(getattr(self, "_brush_upload_limit_kbps", 10240.0) or 0),
             "iyuu_token": str(getattr(self, "_iyuu_token", "") or ""),
             "iyuu_sites": dict(getattr(self, "_iyuu_sites", {}) or {}),
+            "store": self.store_stats(),
             "recommend": dict(getattr(self, "_recommend_cfg", {}) or {}),
             "fallback": dict(getattr(self, "_fallback_cfg", {}) or {}),
             "live": dict(getattr(self, "_live_cfg", {}) or {}),
