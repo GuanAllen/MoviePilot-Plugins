@@ -375,6 +375,28 @@ class CrossSeedSources:
     def hashes(self) -> Set[str]:
         return set(self.items().keys())
 
+    def put(self, sib_hash: str, patch: Dict[str, Any]) -> None:
+        """局部更新一条来源份记录（不改其它字段）。"""
+        sib = str(sib_hash or "").lower()
+        data = self.items()
+        rec = dict(data.get(sib) or {})
+        rec.update(patch or {})
+        data[sib] = rec
+        self._write(data)
+
+    def active(self, now: Optional[float] = None, live: bool = True) -> Set[str]:
+        """**仍需要保护**的来源份 hash。
+
+        义务已履行（实测做种时长 ≥ 要求，``done``）的条目不再保护 —— 免费做种挂够就行，
+        挂着不动也是占位（Master：连挂挂满就能撤）。
+        """
+        out: Set[str] = set()
+        for h, rec in self.items().items():
+            if rec.get("done"):
+                continue
+            out.add(h)
+        return out
+
     def due(self, now: Optional[float] = None) -> List[Tuple[str, Dict[str, Any]]]:
         """已过 H&R 保种期的条目（可回收）。"""
         ts = float(now if now is not None else time.time())

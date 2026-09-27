@@ -4178,9 +4178,20 @@ onUnmounted(() => {
                   <span class="magicflow-crossseed-item__meta">
                     <VChip size="x-small" variant="tonal" color="warning">{{ it.site_b }}</VChip>
                     <template v-if="it.size_gb"> · {{ Number(it.size_gb).toFixed(2) }}G</template>
-                    · 要求 {{ it.hours }}h
+                    <template v-if="it.fulfilled">
+                      <VChip size="x-small" variant="tonal" color="success">义务已完成</VChip>
+                      · 已挂 {{ it.seeded_h }}h
+                      <template v-if="it.need_hours">（需 {{ it.need_hours }}h）</template>
+                    </template>
+                    <template v-else-if="it.need_hours">
+                      · 已挂 {{ it.seeded_h }}h / 需 {{ it.need_hours }}h
+                      · 窗口还剩 {{ formatRemain(it.remain_min) }}
+                    </template>
+                    <template v-else>
+                      · 要求 {{ it.hours }}h
+                      · {{ it.done ? '保种期已满（可回收）' : `还剩 ${formatRemain(it.remain_min)}` }}
+                    </template>
                     <template v-if="it.hours_src"> <span class="text-medium-emphasis">（{{ String(it.hours_src).startsWith('种子标记') ? '种子自带 H&R 标记' : '站点规则库' }}）</span></template>
-                    · {{ it.done ? '保种期已满（可回收）' : `还剩 ${formatRemain(it.remain_min)}` }}
                     <template v-if="it.files_shared"> · 文件与目标站共用</template>
                   </span>
                 </div>
