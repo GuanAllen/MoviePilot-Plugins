@@ -88,7 +88,7 @@ from .models import (
 from .fallback import FallbackEngine, DEFAULT_SOURCES as FALLBACK_SOURCES
 from .live_stats import LiveStats, title_match
 from .cloud_archive import ArchiveEngine, DEFAULT_TARGET_TEMPLATE as CLOUD_TARGET_TEMPLATE
-from .persistence import MagicFlowStore, OperationItem, WorkReport
+from .persistence import MagicFlowStore, OperationItem, WorkReport, KV_FILE_FLUSH_SEC
 from .kvstore import MpHotStore
 from .signin import SigninEngine
 from .recommend import RecommendEngine
@@ -106,7 +106,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.8.2"
+__version__ = "3.8.3"
 
 # 候选扩充:站点列表页翻页数(拿更多、更老的种子)。
 # 注意:是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数(启动时会记日志探测)。
@@ -752,6 +752,11 @@ class MagicFlow(_PluginBase):
         # 开源插件不能假设用户装了 Redis / 会单独建库（Master 2026-09-27 定）。
         self._hot = self._build_hot()
         self._store = MagicFlowStore(self.get_data_path(), kv=self._hot)
+        try:
+            # 重载后让落盘间隔/热层跟上新代码（单例跨重载存在）
+            self._store.set_flush_sec(KV_FILE_FLUSH_SEC)
+        except Exception as err:  # noqa: BLE001
+            self._log(f"状态落盘间隔设置失败:{err}", "debug")
         self._apply_runtime_settings()
 
         # 任务配置:优先从 config 读取,兼容旧版 plugindata
@@ -1398,10 +1403,11 @@ class MagicFlow(_PluginBase):
             return None
 
     def stop_service(self) -> None:
-        """插件卸载/停止：把状态快照落盘（热层只是加速，JSON 才是权威）。"""
+        """插件卸载/停止：停后台落盘线程 + 落一次盘（JSON 才是权威）。"""
         try:
             if getattr(self, "_store", None) is not None:
                 written = self._store.flush_all()
+                self._store.stop_flusher()
                 if written:
                     self._log("状态已落盘:" + ",".join(written), "debug")
         except Exception as err:  # noqa: BLE001
@@ -7606,6 +7612,8 @@ class MagicFlow(_PluginBase):
                 out["backend"] = st.get("backend", "none")
                 out["region"] = st.get("region", "")
                 out["hot_keys"] = int(st.get("keys") or 0)
+                out["hot_groups"] = dict(st.get("groups") or {})
+                out["hot_writes"] = int(st.get("hot_writes") or 0)
         except Exception:  # noqa: BLE001
             pass
         try:

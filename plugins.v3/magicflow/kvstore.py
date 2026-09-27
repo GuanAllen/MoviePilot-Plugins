@@ -27,6 +27,23 @@ REGION = "magicflow"
 KEY_TTL = 365 * 24 * 60 * 60
 # 逻辑名前缀（用于从 items() 里挑出属于某个 Store 的键）
 _PREFIX = "mf:"
+# ★ 跨热重载共享计数器（放独立模块，MP 清模块缓存时不会丢）
+_SHARED_KEY = "__magicflow_shared__"
+
+
+def _counters() -> Dict[str, Any]:
+    """取跨热重载的共享计数器容器。"""
+    import sys as _sys
+    import types as _types
+
+    mod = _sys.modules.get(_SHARED_KEY)
+    if mod is None or not hasattr(mod, "counters"):
+        mod = _types.ModuleType(_SHARED_KEY)
+        mod.instances = {}
+        mod.counters = {}
+        mod.lock = threading.Lock()
+        _sys.modules[_SHARED_KEY] = mod
+    return mod.counters
 
 
 class MpHotStore:
@@ -108,6 +125,8 @@ class MpHotStore:
             return False
         try:
             self.backend().set(self.key(name), value, ttl=KEY_TTL, region=self.region)
+            self._writes = int(getattr(self, "_writes", 0)) + 1
+            self._bump_writes()
             return True
         except Exception as err:  # noqa: BLE001
             self._info(f"热层写失败({err})，回退 JSON", "debug")
@@ -118,10 +137,26 @@ class MpHotStore:
             return False
         try:
             self.backend().delete(self.key(name), region=self.region)
+            self._writes = int(getattr(self, "_writes", 0)) + 1
+            self._bump_writes()
             return True
         except Exception as err:  # noqa: BLE001
             self._info(f"热层删失败({err})，回退 JSON", "debug")
             return False
+
+    def _bump_writes(self) -> None:
+        try:
+            c = _counters()
+            c["hot_writes"] = int(c.get("hot_writes", 0)) + 1
+        except Exception:  # noqa: BLE001
+            pass
+
+    def writes(self) -> int:
+        """累计热层写次数（即「老逻辑会落盘多少次」的等价量）。"""
+        try:
+            return int(_counters().get("hot_writes", 0) or 0)
+        except Exception:  # noqa: BLE001
+            return int(getattr(self, "_writes", 0) or 0)
 
     def items(self, prefix: str = "") -> Dict[str, Any]:
         """列出热层里我们自己的键值对：{逻辑名（不含 mf:）: 值}。"""
@@ -149,14 +184,37 @@ class MpHotStore:
     def count(self) -> int:
         return len(self.items())
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self, groups_ttl: float = 30.0) -> Dict[str, Any]:
+        """热层概况。**键分布枚举开销大（每键一次 GET）→ 30s 缓存**，/status 高频轮询不会打 Redis。"""
         backend = self.backend()
-        return {
+        out: Dict[str, Any] = {
             "enabled": self.is_redis(),
             "backend": type(backend).__name__ if backend is not None else "none",
             "region": self.region,
-            "keys": self.count() if self.is_redis() else 0,
+            "keys": 0,
         }
+        if not out["enabled"]:
+            return out
+        now = time.time()
+        with self._lock:
+            cached = getattr(self, "_stats_cache", None)
+            cached_at = float(getattr(self, "_stats_at", 0.0) or 0.0)
+            if cached and (now - cached_at) < max(groups_ttl, 1.0):
+                return dict(cached)
+        groups: Dict[str, int] = {}
+        try:
+            for name in self.items():
+                head = str(name).split(":", 1)[0] or "other"
+                groups[head] = groups.get(head, 0) + 1
+        except Exception:  # noqa: BLE001
+            pass
+        out["groups"] = dict(sorted(groups.items(), key=lambda kv: -kv[1]))
+        out["keys"] = sum(groups.values())
+        out["hot_writes"] = self.writes()
+        with self._lock:
+            self._stats_cache = dict(out)
+            self._stats_at = now
+        return out
 
     def selftest(self) -> Dict[str, Any]:
         """自检：写/读/删一个临时键，把真实异常原样报出（诊断用）。"""
