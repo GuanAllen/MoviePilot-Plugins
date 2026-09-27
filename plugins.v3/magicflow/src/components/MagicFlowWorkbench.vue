@@ -2994,7 +2994,7 @@ onUnmounted(() => {
               <div class="magicflow-stat-grid">
                 <VSheet class="magicflow-stat app-surface-static">
                   <strong>{{ selectedTask.seeding_count || 0 }}</strong>
-                  <span>静默池种子（托管中）</span>
+                  <span>静默池种子 · 其中 H&R 强制挂种 {{ selectedTask.hr_count || 0 }} / 其他 {{ selectedTask.nonhr_count || 0 }}（不强制）</span>
                 </VSheet>
                 <VSheet class="magicflow-stat app-surface-static">
                   <strong>{{ selectedTask.host_interval_minutes || 60 }} 分钟</strong>
