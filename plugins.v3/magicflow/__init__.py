@@ -9799,13 +9799,13 @@ class MagicFlow(_PluginBase):
                     pages.append(path)
                     got = parse_hr_from_html(html)
                     if got.get("hr") is True:
-                        if got.get("seed_hours") is not None:
-                            parsed["hr"] = True
-                            parsed["seed_hours"] = got["seed_hours"]
-                            parsed["evidence"] = f"{path}: {got.get('evidence', '')}"
-                            break
-                        parsed.setdefault("hr", True)
+                        parsed["hr"] = True
                         parsed.setdefault("evidence", f"{path}: {got.get('evidence', '')}")
+                        if got.get("seed_hours") is not None and str(got.get("confidence")) == "high":
+                            parsed["seed_hours"] = got["seed_hours"]
+                            parsed["confidence"] = "high"
+                            break
+                        parsed.setdefault("confidence", str(got.get("confidence") or "low"))
                     if got.get("seed_cap") is not None and parsed.get("seed_cap") is None:
                         parsed["seed_cap"] = got["seed_cap"]
                 item["pages"] = pages
