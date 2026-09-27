@@ -125,6 +125,7 @@ from .tags import (
     DEFAULT_SORT_RULES,
     STATES_WITH_SUB,
     FileGroupStore,
+    LEASE_TTL,
     asset_origin_sub,
     is_asset_tags,
     STATE_BONUS,
@@ -153,7 +154,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.13.1"
+__version__ = "3.13.2"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -2163,7 +2164,7 @@ class MagicFlow(_PluginBase):
         except Exception as exc:
             self._log(f"魔流 [{task.name}] 读取托管种子失败:{exc}", "warning")
             all_tagged = []
-        managed = list(all_tagged or [])
+        managed = self._task_owned_torrents(task, all_tagged)
         manual_paused = self._store.get_manual_paused(task.id) if self._store else set()
         pause_hashes: List[str] = []
         resume_hashes: List[str] = []
@@ -3725,7 +3726,7 @@ class MagicFlow(_PluginBase):
         try:
             tag = task.brush_tag
             groups = self._tag_snapshot(getattr(task, "downloader", None) or "qbittorrent")
-            torrents = list(groups.get(tag, []) or [])
+            torrents = self._task_owned_torrents(task, groups.get(tag, []) or [])
             if not torrents:
                 return
             asset = self._media_asset_hashes(torrents, task)
@@ -4184,6 +4185,26 @@ class MagicFlow(_PluginBase):
             return
         prev = self._store.get_last_tagged_count(task.id)
         if prev >= 3 and c < prev * 0.5:
+            # ★ 先排除「同站其它任务的标签接手」这种**正常归属转移**（不是标签被抹）
+            _moved = 0
+            try:
+                _site = str(getattr(task, "site_name", "") or "")
+                _groups = self._tag_snapshot(getattr(task, "downloader", "qbittorrent") or "qbittorrent")
+                for _tg, _rows in (_groups or {}).items():
+                    if str(_tg) == str(getattr(task, "brush_tag", "")):
+                        continue
+                    _p = parse_tag(str(_tg))
+                    if _p and str(_p.get("site") or "") == _site:
+                        _moved += len(_rows or [])
+            except Exception:  # noqa: BLE001
+                _moved = 0
+            if _moved + c >= prev * 0.8:
+                self._log(
+                    f"魔流 [{task.name}] 托管归属转移 {prev} → {c}"
+                    f"（同站其它标签现持 {_moved} 个，非异常）"
+                )
+                self._store.set_last_tagged_count(task.id, max(prev, c))
+                return
             self._log(
                 f"魔流 [{task.name}] ⚠️ 托管数骤降 {prev} → {c}(本轮未见删种,疑似标签被外部清除)",
                 "warning",
@@ -4294,7 +4315,8 @@ class MagicFlow(_PluginBase):
                 _groups, _gerr = {}, "exception"
             _tag = task.brush_tag
             all_tagged: List[Any] = _groups.get(_tag, []) if isinstance(_groups, dict) else []
-            managed = list(all_tagged)
+            # ★ 归属唯一：标签命中的种里剔除「别人租约未过期」的；无主的顺手认领（一次落盘）
+            managed = self._task_owned_torrents(task, all_tagged, claim=True)
             managed_hashes = {(t.hash or "").lower() for t in managed if t.hash}
             base_cnt = len(managed)
             base_size = round(sum(float(getattr(t, "size_gb", 0) or 0) for t in managed), 3)
@@ -5326,6 +5348,8 @@ class MagicFlow(_PluginBase):
         except Exception:
             _groups, _gerr = {}, "exception"
         all_tagged: List[Any] = _groups.get(_tag, []) if isinstance(_groups, dict) else []
+        # ★ 归属唯一：只清理「归本任务」的种（同站其它任务的种不动）
+        all_tagged = self._task_owned_torrents(task, all_tagged)
         _tag_err = _gerr if _gerr != "n/a" else None
 
         # ★ 媒体资产价值闸门:把「已整理 / 辅种 / 下载历史命中」的种子并入保护集合,
@@ -7272,11 +7296,20 @@ class MagicFlow(_PluginBase):
         store = self._tag_state()
         hs = [hashes] if isinstance(hashes, str) else list(hashes or [])
         ok_n = 0
+        skipped = 0
+        _tid = str(getattr(task, "id", "") or "")
+        _now = time.time()
         fn = getattr(downloader, "replace_torrent_tags", None)
         snap = self._tag_all_torrents()
         for h in hs:
             hh = str(h or "").strip().lower()
             if not hh:
+                continue
+            # ★ 归属唯一：别人持有**未过期**租约的种不抢（显式「交棒/批量转移」走另一条路）
+            _rec0 = store.get(hh) or {}
+            _own0 = str(_rec0.get("taken_by") or "")
+            if _own0 and _own0 != _tid and float(_rec0.get("lease_until") or 0) > _now:
+                skipped += 1
                 continue
             live = snap.get(hh)
             cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
@@ -7289,8 +7322,9 @@ class MagicFlow(_PluginBase):
                 continue
             rec = {
                 "site": site, "state": state, "sub": sub,
-                "taken_by": str(getattr(task, "id", "") or ""),
+                "taken_by": _tid,
                 "task": str(getattr(task, "name", "") or ""),
+                "taken_at": _now, "lease_until": _now + float(LEASE_TTL),
                 "origin_state": STATE_SILENT, "origin_sub": origin_sub or SUB_NEW,
                 "title": str(getattr(live, "title", "") or "") if live is not None else "",
                 "size_gb": float(getattr(live, "size_gb", 0) or 0) if live is not None else 0.0,
@@ -7306,6 +7340,8 @@ class MagicFlow(_PluginBase):
             ok_n += 1
         if ok_n and reason:
             self._dbg(f"标签模型:任务「{getattr(task, 'name', '')}」接管 {ok_n} 个 → {target}（{reason}）")
+        if skipped:
+            self._dbg(f"标签模型:任务「{getattr(task, 'name', '')}」跳过 {skipped} 个（归别人）")
         return ok_n
 
     def _tag_release(self, task: Any, hashes: Any, *, reason: str = "") -> int:
@@ -7613,6 +7649,10 @@ class MagicFlow(_PluginBase):
             "snapshot_interval_hours": round(float(self._tags_cfg.get("snapshot_interval") or 0) / 3600.0, 2),
             "ledger_count": len(items),
             "by_state": store.stats(),
+            "stale": store.stale_count(),
+            "unowned": sum(1 for r in items.values()
+                           if not str(r.get("taken_by") or "")
+                           and str(r.get("state") or "") in (STATE_BRUSH, STATE_BONUS)),
             "assets": {"count": sum(1 for r in items.values() if r.get("asset")),
                        "size_gb": round(sum(float(r.get("size_gb") or 0) for r in items.values() if r.get("asset")), 2)},
             "groups": groups.stats(),
@@ -8984,7 +9024,8 @@ class MagicFlow(_PluginBase):
         except Exception:
             pass
         try:
-            managed = list(self._tag_snapshot(task.downloader).get(task.brush_tag, []))
+            managed = self._task_owned_torrents(
+                task, self._tag_snapshot(task.downloader).get(task.brush_tag, []))
             from collections import Counter
             state_dist = dict(Counter(str(getattr(t, "state", "") or "?") for t in managed))
             self._log(
@@ -11473,6 +11514,14 @@ class MagicFlow(_PluginBase):
             except Exception as err:  # noqa: BLE001
                 self._log(f"标签维护:特征码补录失败:{err}", "warning")
             try:
+                _live = list(self._tag_all_torrents().keys())
+                rinfo2 = store.reconcile(_live)
+                if rinfo2.get("dropped"):
+                    self._log(f"魔流:标签维护:账本对账销账 {rinfo2.get('dropped')} 条僵尸记录"
+                              f"（待销账 {rinfo2.get('pending')}）")
+            except Exception as err:  # noqa: BLE001
+                self._log(f"标签维护:账本对账失败:{err}", "warning")
+            try:
                 rinfo = self.sync_resources(apply=True)
                 if rinfo.get("resources"):
                     self._log(f"魔流:标签维护:资源账本 {rinfo.get('resources')} 个"
@@ -12470,8 +12519,73 @@ class MagicFlow(_PluginBase):
     # 任务删除前的「种子交棒 / 退回静默」
     # ---------------------------------------------------------
 
+    def _task_owns(self, task: Any, h: str, *, now: Optional[float] = None) -> bool:
+        """★ 归属判定：账本占用优先于标签命中（同站标签会被多个任务共享）。
+
+        - 账本 ``taken_by`` 是**别人**且租约**未过期** → 不归我（即使标签一样）
+        - 归我 / 没人占用 / 占用者租约已过期 → 归我
+        """
+        hh = str(h or "").strip().lower()
+        if not hh:
+            return False
+        tid = str(getattr(task, "id", "") or "")
+        try:
+            rec = self._tag_state().get(hh) or {}
+        except Exception:  # noqa: BLE001
+            return True
+        owner = str(rec.get("taken_by") or "")
+        if not owner or owner == tid:
+            return True
+        ts = float(now if now is not None else time.time())
+        return float(rec.get("lease_until") or 0) <= ts
+
+    def _task_owned_torrents(self, task: Any, torrents: Any, *, claim: bool = False) -> List[Any]:
+        """按**归属**过滤任务名下的种（标签命中的种里剔除「别人租约未过期」的）。
+
+        ``claim=True`` 时顺手把「标签命中但账本无主」的种占为己有并续租（一次落盘），
+        两个同站同状态任务因此会在第一轮就分出唯一归属，不再互相重复计入。
+        """
+        tid = str(getattr(task, "id", "") or "")
+        name = str(getattr(task, "name", "") or "")
+        try:
+            site, state = self._task_site_state(task)
+        except Exception:  # noqa: BLE001
+            site, state = str(getattr(task, "site_name", "") or ""), STATE_BONUS
+        store = self._tag_state()
+        now = time.time()
+        out: List[Any] = []
+        patches: Dict[str, Dict[str, Any]] = {}
+        for t in list(torrents or []):
+            h = str(getattr(t, "hash", "") or "").strip().lower()
+            if not h:
+                continue
+            rec = store.get(h) or {}
+            owner = str(rec.get("taken_by") or "")
+            lease = float(rec.get("lease_until") or 0)
+            if owner and owner != tid and lease > now:
+                continue  # 归别人（租约未过期）
+            out.append(t)
+            if claim and (owner != tid or lease <= now):
+                patches[h] = {
+                    "site": site, "state": state,
+                    "sub": str(rec.get("sub") or ""),
+                    "taken_by": tid, "task": name,
+                    "taken_at": now, "lease_until": now + float(LEASE_TTL),
+                    "origin_state": str(rec.get("origin_state") or STATE_SILENT),
+                    "origin_sub": str(rec.get("origin_sub") or SUB_NEW),
+                    "title": str(getattr(t, "title", "") or "")[:200],
+                    "size_gb": float(getattr(t, "size_gb", 0) or 0),
+                }
+        if patches:
+            try:
+                n = store.put_many(patches, now=now)
+                self._dbg(f"归属:「{name}」认领/续租 {n} 个")
+            except Exception as err:  # noqa: BLE001
+                self._log(f"归属:占用写入失败:{err}", "warning")
+        return out
+
     def _task_managed_hashes(self, task: Any) -> List[str]:
-        """任务名下种子 hash：标签命中 ∪ 账本里显式占用（taken_by）。"""
+        """任务名下种子 hash：标签命中（剔除别人占用的）∪ 账本里显式占用（taken_by）。"""
         out: List[str] = []
         seen: Set[str] = set()
         tags = set(self._task_tags(task))
@@ -12479,9 +12593,10 @@ class MagicFlow(_PluginBase):
             snap = self._tag_all_torrents()
         except Exception:  # noqa: BLE001
             snap = {}
+        _now = time.time()
         for h, t in (snap or {}).items():
             tt = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
-            if any(x in tags for x in tt) and h not in seen:
+            if any(x in tags for x in tt) and h not in seen and self._task_owns(task, h, now=_now):
                 out.append(h)
                 seen.add(h)
         try:
@@ -12811,7 +12926,8 @@ class MagicFlow(_PluginBase):
                 return Response(success=False, message="下载器不可用")
 
             # 与总览共用同一份「全部种子按标签分组」快照(避免再单独全量拉一次 qB)
-            task_torrents = list(self._tag_snapshot(task.downloader).get(task.brush_tag, []))
+            task_torrents = self._task_owned_torrents(
+                task, self._tag_snapshot(task.downloader).get(task.brush_tag, []))
             error = None
             self._log(
                 f"API 做种明细:task={task_id} tag=「{task.brush_tag}」 tagged={len(task_torrents)} err={error}"
