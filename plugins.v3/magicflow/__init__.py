@@ -124,7 +124,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.10.0"
+__version__ = "3.10.1"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -2245,7 +2245,19 @@ class MagicFlow(_PluginBase):
             _policy is not None and (getattr(_policy, "free_only", False) or getattr(_policy, "double_free_only", False))
         )
         _cap = self.sitecaps().get(str(getattr(task, "site_domain", "") or ""))
-        _use_free = bool((not force_main) and _want_free and getattr(_cap, "free_index", False))
+        # ★ 3.10.0 统一选种路由：开了跨站且**主列表能读到促销列**（promo_in_list）时，
+        #   不再抓「免费索引」——一份主列表就够：免费的直接下、非免费的走跨站，
+        #   既省掉一次抓取（1 PV/站/轮），也省掉「免费索引 + 主列表」两套数据的分歧。
+        _cs_route = bool(
+            getattr(task, "crossseed_enabled", False)
+            and getattr(_cap, "promo_in_list", False)
+        )
+        _use_free = bool(
+            (not force_main)
+            and _want_free
+            and (not _cs_route)
+            and getattr(_cap, "free_index", False)
+        )
         _free_tried = False
         cache_key = f"{site_key}|{'free' if _use_free else 'main2'}|{int(pages)}|{int(start_page)}"
         cache = self._cache_cands()
@@ -3938,7 +3950,21 @@ class MagicFlow(_PluginBase):
                 getattr(filter_policy, "free_only", False)
                 or getattr(filter_policy, "double_free_only", False)
             )
-            filtered, reason_counts = filter_candidates(candidates, filter_policy)
+            # ★ 3.10.0 统一路由：开了跨站 + 任务只要免费（且不是「双倍免费」这种更严口径）时，
+            #   洗池**不再因非免费丢种** —— 非免费候选改走跨站（本站绝不下），
+            #   免费与否只决定「走哪条路」，不决定「要不要」。排序/优先级仍由后面的
+            #   目标因子（魔力/上传潜力）统一决定。
+            _cs_on = bool(getattr(task, "crossseed_enabled", False))
+            _cs_split = bool(
+                _cs_on
+                and getattr(filter_policy, "free_only", False)
+                and not getattr(filter_policy, "double_free_only", False)
+            )
+            _wash_policy = filter_policy
+            if _cs_split:
+                _wash_policy = copy.copy(filter_policy)
+                _wash_policy.free_only = False
+            filtered, reason_counts = filter_candidates(candidates, _wash_policy)
             wash_reasons: Dict[str, int] = dict(reason_counts)
             # ★ 限时免费闸门(洗池级):促销剩的免费时间不够下完 → 直接洗掉。
             # 常见于 Pttime 这类「12 分钟~6 天」的限时免费;到期后下载按原价计流量。
@@ -3976,49 +4002,18 @@ class MagicFlow(_PluginBase):
                         self._log(f"魔流 [{task.name}] 排除订阅命中 {_excl} 个")
                 except Exception as _sub_err:
                     self._dbg(f"订阅排除失败(忽略): {_sub_err}")
-            # ★ 3.10.0 跨站候选池：刷流任务「免费」是硬要求 → 仅因非免费被洗掉的候选不能在本站下，
-            #   但它们可以去他站免费下再回辅本站。把这类候选收进独立池（本相位不碰主流程）。
+            # ★ 3.10.0 跨站路由：把「本站不免费」的候选从主流程分出去（只跨站，绝不在本站下）。
+            #   数据来源就是刚抓的这份列表（开了跨站时 task 抓的已是主列表，带真实促销列）。
             _cs_pool: List[Any] = []
-            if getattr(task, "crossseed_enabled", False):
-                try:
-                    # ★ 免费任务抓的是**免费索引**（全是免费种），跨站池要的是「本站不免费」的候选
-                    #   → 单独拿一份**主列表**（1 页，按小时缓存，约 1 PV/小时），池子里挑。
-                    _cs_source = list(candidates)
-                    _cap_now = self.sitecaps().get(str(getattr(task, "site_domain", "") or ""))
-                    if _want_free_now and getattr(_cap_now, "free_index", False):
-                        _main_c = self._fetch_site_candidates(
-                            task, pages=1, start_page=0, force_main=True
-                        ) or []
-                        if _main_c:
-                            _cs_source = list(_main_c)
-                    _relaxed = copy.copy(filter_policy)
-                    _relaxed.free_only = False
-                    _relaxed.double_free_only = False
-                    _relaxed_list, _ = filter_candidates(_cs_source, _relaxed)
-                    _kept_keys = {
-                        (self._candidate_key(c) or getattr(c, "hash", "") or getattr(c, "title", ""))
-                        for c in filtered
-                    }
-                    _cand_keys = {
-                        (self._candidate_key(c) or getattr(c, "hash", "") or getattr(c, "title", ""))
-                        for c in candidates
-                    }
-                    _nf_n = sum(1 for c in _relaxed_list if not bool(getattr(c, "is_free", False)))
-                    _new_n = 0
-                    for c in _relaxed_list:
-                        if bool(getattr(c, "is_free", False)):
-                            continue
-                        kk = self._candidate_key(c) or getattr(c, "hash", "") or getattr(c, "title", "")
-                        if kk not in _cand_keys:
-                            _new_n += 1
-                    self._log(
-                        f"魔流 [{task.name}] 跨站池源 {len(_cs_source)} 个"
-                        f"(主列表{'是' if _cs_source is not candidates else '否'})"
-                        f" → 放宽后 {len(_relaxed_list)} 个（非免费 {_nf_n} / 其中新增 {_new_n}）"
-                    )
-                    # 优先挑「上传潜力」大的（下载人数多、体积大）
+            if _cs_split and filtered:
+                _free_keep: List[Any] = []
+                _nf_keep: List[Any] = []
+                for _c in filtered:
+                    (_free_keep if bool(getattr(_c, "is_free", False)) else _nf_keep).append(_c)
+                filtered = _free_keep
+                if _nf_keep:
                     try:
-                        _relaxed_list.sort(
+                        _nf_keep.sort(
                             key=lambda c: (
                                 int(getattr(c, "leechers", 0) or 0),
                                 float(getattr(c, "size_gb", 0.0) or 0.0),
@@ -4027,23 +4022,13 @@ class MagicFlow(_PluginBase):
                         )
                     except Exception:  # noqa: BLE001
                         pass
-                    for _c in _relaxed_list:
-                        if len(_cs_pool) >= CROSSSEED_POOL_MAX:
-                            break
-                        if bool(getattr(_c, "is_free", False)):
-                            continue          # 本站免费的走主流程，不用跨站
-                        _k = self._candidate_key(_c) or getattr(_c, "hash", "") or getattr(_c, "title", "")
-                        if _k in _kept_keys or _k in _cand_keys:
-                            continue
+                    for _c in _nf_keep[:CROSSSEED_POOL_MAX]:
                         _c.crossseed_only = True
                         _cs_pool.append(_c)
-                    if _cs_pool:
-                        self._log(
-                            f"魔流 [{task.name}] 跨站候选池 {len(_cs_pool)} 个"
-                            f"(本站不免费但其他条件合格)"
-                        )
-                except Exception as _cs_err:  # noqa: BLE001
-                    self._log(f"跨站:构建候选池失败:{_cs_err}", "warning")
+                    self._log(
+                        f"魔流 [{task.name}] 跨站候选池 {len(_cs_pool)} 个"
+                        f"(本站非免费 {len(_nf_keep)} 个 → 只跨站取种，不在本站下载)"
+                    )
             # ★ 最优解算法(做种人数 Ni × 体积 Si):真实边际时魔。
             # a_current = 现有池子合计 A;边际增益 B(A+a)-B(A) 才能反映「再加一颗」的真实收益。
             a_current = 0.0
