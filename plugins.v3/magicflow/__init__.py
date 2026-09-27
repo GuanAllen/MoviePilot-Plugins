@@ -10072,7 +10072,22 @@ class MagicFlow(_PluginBase):
                     })
                     self._sync_free_rules()
                     return Response(success=True, message=f"{dom} 已标记为「无 H&R」(不做保护)", data={"rules": self._rules_view()})
-                # 其余（1/true/unknown/空）= 取消手填，交还探测
+                if val in ("1", "true", "yes", "on"):
+                    prev = dict(store.items().get(dom) or {})
+                    hours = prev.get("seed_hours")
+                    if not hours:
+                        hours = self._crossseed_seed_hours(dom)[0] or 24.0
+                    store.put(dom, {
+                        "hr": True, "seed_hours": float(hours), "source": "manual", "confidence": "high",
+                        "evidence": "手填：该站有 H&R（按此保护）",
+                    })
+                    self._sync_free_rules()
+                    return Response(
+                        success=True,
+                        message=f"{dom} 已标记为「有 H&R」（手动，按 {float(hours):g}h 保护；如需改时长直接编辑「保种(h)」）",
+                        data={"rules": self._rules_view()},
+                    )
+                # 其余（unknown/空/其它）= 取消手填，交还探测
                 store.clear(dom)
                 store.ensure_builtin(dom)
                 self._sync_free_rules()
