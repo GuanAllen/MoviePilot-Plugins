@@ -9129,6 +9129,12 @@ class MagicFlow(_PluginBase):
             "iyuu_sites": dict(getattr(self, "_iyuu_sites", {}) or {}),
             "store": self.store_stats(),
             "recommend": dict(getattr(self, "_recommend_cfg", {}) or {}),
+            "crossseed": {
+                "guard": bool(getattr(self, "_cs_cfg", {}).get("guard", True)),
+                "guard_pct": float(getattr(self, "_cs_cfg", {}).get("guard_pct") or 5.0),
+                "guard_min_mb": float(getattr(self, "_cs_cfg", {}).get("guard_min_mb") or 50.0),
+                "guard_interval_min": float(getattr(self, "_cs_cfg", {}).get("guard_interval_min") or 15.0),
+            },
             "fallback": dict(getattr(self, "_fallback_cfg", {}) or {}),
             "live": dict(getattr(self, "_live_cfg", {}) or {}),
             "signin": self._signin_cfg_view(),
