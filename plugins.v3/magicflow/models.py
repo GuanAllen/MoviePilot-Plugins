@@ -241,6 +241,7 @@ class MagicFlowSettingsPayload(BaseModel):
     # 任务流量（qB 全局上传限速，按「在跑的任务类型」自动切档；只限上传）
     bonus_upload_limit_kbps: float = Field(200.0, ge=0, le=1048576, description="魔力任务在跑时的 qB 全局上传限速 KB/s（无刷流任务时生效），0 = 不限")
     brush_upload_limit_kbps: float = Field(10240.0, ge=0, le=1048576, description="刷流任务在跑时的 qB 全局上传限速 KB/s（刷流优先），0 = 不限")
+    seed_up_limit_kbps: float = Field(100.0, ge=0, le=1048576, description="挂种「单种上传限速」KB/s（对每个托管种子单独限速），0 = 不限")
 
     # 界面
     compact_mode: bool = False

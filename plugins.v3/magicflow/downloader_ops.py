@@ -1482,6 +1482,33 @@ class DownloaderAdapter:
             return None
         return getattr(self._downloader, "qbc", None)
 
+    def set_upload_limit(self, hashes: Any, kbps: float) -> Tuple[int, Optional[str]]:
+        """**单种**上传限速（KB/s；0 = 不限）。返回 (成功条数, 错误信息)。
+
+        只支持 qBittorrent（``torrents/setUploadLimit``）；一次最多 200 个 hash，
+        避免 URL 过长。
+        """
+        qbc = self._qb_client()
+        if qbc is None:
+            return 0, f"下载器 {self.downloader_name} 不支持单种限速"
+        hs = [str(h).strip().lower() for h in (hashes or []) if str(h or "").strip()]
+        if not hs:
+            return 0, None
+        try:
+            limit = int(max(0.0, float(kbps or 0.0)) * 1024)
+        except (TypeError, ValueError):
+            limit = 0
+        done = 0
+        err: Optional[str] = None
+        for i in range(0, len(hs), 200):
+            chunk = hs[i:i + 200]
+            try:
+                qbc.torrents_set_upload_limit(limit=limit, torrent_hashes="|".join(chunk))
+                done += len(chunk)
+            except Exception as exc:  # noqa: BLE001
+                err = str(exc)
+        return done, err
+
     def get_app_preferences(self) -> Tuple[Dict[str, Any], Optional[str]]:
         """读取 qBittorrent 应用级偏好（本插件关心的子集）。
 

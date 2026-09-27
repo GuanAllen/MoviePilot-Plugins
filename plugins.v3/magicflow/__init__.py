@@ -209,6 +209,11 @@ CROSSSEED_SITE_HOURS_DEFAULT = ["pt.btschool.club=240"]
 RULES_INTERVAL_MINUTES = 7 * 24 * 60     # 站点规则自动刷新周期(分钟) -- 每周一次(低频探测)
 RULES_PROBE_DELAY = (1.5, 3.5)           # 逐站探测之间的随机间隔(秒，礼貌限速)
 
+# ★ 挂种「单种上传限速」(KB/s)：对魔流托管的每个种子单独限速（0 = 不限）。
+#   用途：一批免费种/来源份同时做种时，避免个别热种吃满上行。
+SEED_UP_LIMIT_KBPS_DEFAULT = 100.0
+SEED_UP_LIMIT_APPLY_INTERVAL = 600.0      # 最快多久重扫一次（秒），避免频繁全量写
+
 
 def _cs_parse_site_hours(raw: Any) -> Dict[str, float]:
     """解析「站点保种时长」配置 → {域名: 小时}。
@@ -649,6 +654,8 @@ class MagicFlow(_PluginBase):
     # 任务流量(qB 全局上传限速,按在跑任务类型自动切档)
     _bonus_upload_limit_kbps: float = 200.0
     _brush_upload_limit_kbps: float = 10240.0
+    _seed_up_limit_kbps: float = 100.0      # 挂种单种上传限速(KB/s)，0=不限
+    _seed_up_limit_last: Any = None         # (kbps, ts) 上次应用，值没变就跳过
     _last_up_limit_bps: Optional[int] = None
     # IYUU 云端辅种(可选)
     _iyuu_token: str = ""
@@ -692,6 +699,11 @@ class MagicFlow(_PluginBase):
             self._brush_upload_limit_kbps = max(0.0, float(raw_config.get("brush_upload_limit_kbps", 10240.0) or 0))
         except (TypeError, ValueError):
             self._brush_upload_limit_kbps = 10240.0
+        try:
+            self._seed_up_limit_kbps = max(0.0, float(raw_config.get("seed_up_limit_kbps", SEED_UP_LIMIT_KBPS_DEFAULT) or 0))
+        except (TypeError, ValueError):
+            self._seed_up_limit_kbps = SEED_UP_LIMIT_KBPS_DEFAULT
+        self._seed_up_limit_last = None
         self._last_up_limit_bps = None
         # IYUU 云端辅种配置(Token 为空 = 不启用)
         self._iyuu_token = str(raw_config.get("iyuu_token") or "").strip()
@@ -1684,6 +1696,7 @@ class MagicFlow(_PluginBase):
             "request_interval": float(getattr(self, "_request_interval", 0) or 0),
             "bonus_upload_limit_kbps": float(getattr(self, "_bonus_upload_limit_kbps", 200.0) or 0),
             "brush_upload_limit_kbps": float(getattr(self, "_brush_upload_limit_kbps", 10240.0) or 0),
+            "seed_up_limit_kbps": float(getattr(self, "_seed_up_limit_kbps", SEED_UP_LIMIT_KBPS_DEFAULT) or 0),
             "iyuu_token": str(getattr(self, "_iyuu_token", "") or ""),
             "iyuu_sites": dict(getattr(self, "_iyuu_sites", {}) or {}),
             "recommend_enabled": bool(self._recommend_cfg.get("enabled", True)),
@@ -1830,6 +1843,79 @@ class MagicFlow(_PluginBase):
             self._log(f"任务流量:qB 全局上传限速 → {kbps:g} KB/s(按{label})")
         else:
             self._log(f"任务流量:设置全局上传限速失败:{err}", "warning")
+
+    def _seed_managed_tags(self) -> set:
+        """魔流"挂种"范围：魔力任务标签 + 跨站来源份 + 推荐，**排除刷流任务**。
+
+        ★ 刷流是主动刷上传（要的就是速度），给它套单种限速等于自废武功；
+        「挂种」指的是魔力养护 / 跨站来源份这类挂着做种的。
+        """
+        tags = {CROSSSEED_TAG}
+        try:
+            tags.add(str(self._recommend_cfg.get("tag", "魔流-推荐") or "魔流-推荐"))
+        except Exception:  # noqa: BLE001
+            tags.add("魔流-推荐")
+        for task in self._task_configs.values():
+            if not getattr(task, "enabled", False):
+                continue
+            if str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush":
+                continue
+            tag = str(getattr(task, "brush_tag", "") or "").strip()
+            if tag:
+                tags.add(tag)
+        return tags
+
+    def _apply_seed_upload_limit(self, force: bool = False) -> None:
+        """★ 给托管的每个种子套「单种上传限速」(默认 100 KB/s)。
+
+        - 只动上传（``torrents/setUploadLimit``），不动下载；
+        - 目标 = 所有启用任务的标签 ∪ 跨站标签下的种子（一次快照分组，不逐任务拉）；
+        - 值没变且 10 分钟内扫过 → 跳过（避免频繁写）；
+        - 0 = 不限（显式清除）。
+        """
+        try:
+            kbps = float(getattr(self, "_seed_up_limit_kbps", SEED_UP_LIMIT_KBPS_DEFAULT) or 0)
+        except (TypeError, ValueError):
+            kbps = SEED_UP_LIMIT_KBPS_DEFAULT
+        last = getattr(self, "_seed_up_limit_last", None)
+        if not force and last is not None:
+            try:
+                lk, lts = float(last[0]), float(last[1])
+            except Exception:  # noqa: BLE001
+                lk, lts = -1.0, 0.0
+            if lk == kbps and (time.time() - lts) < SEED_UP_LIMIT_APPLY_INTERVAL:
+                return
+        downloader = self._get_downloader()
+        if downloader is None or not getattr(downloader, "is_available", False):
+            return
+        tags = self._seed_managed_tags()
+        try:
+            groups, err = downloader.get_torrents_by_tag()
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"挂种限速:读取种子列表失败:{exc}", "warning")
+            return
+        if err and not groups:
+            return
+        hashes = set()
+        for tag in tags:
+            for t in (groups or {}).get(tag, []) or []:
+                h = str(getattr(t, "hash", "") or "").lower()
+                if h:
+                    hashes.add(h)
+        if not hashes:
+            self._seed_up_limit_last = (kbps, time.time())
+            return
+        try:
+            n, serr = downloader.set_upload_limit(sorted(hashes), kbps)
+        except Exception as exc:  # noqa: BLE001
+            n, serr = 0, str(exc)
+        self._seed_up_limit_last = (kbps, time.time())
+        if serr:
+            self._log(f"挂种限速:单种上传限速写入部分失败:{serr}", "warning")
+        elif n:
+            label = f"{kbps:g} KB/s" if kbps > 0 else "不限速"
+            self._dbg(f"挂种限速:已对 {n} 个托管种子设置单种上传 {label}")
+            self._log(f"挂种限速:已对 {n} 个托管种子设置单种上传 {label}")
 
     def _spawn_run_mode_apply(self, task: MagicFlowTaskConfig, mode: str) -> None:
         """异步应用运行状态对应的种子操作(暂停/恢复),并在「运行中」时立即跑一轮 check。"""
@@ -2657,6 +2743,7 @@ class MagicFlow(_PluginBase):
         """抓取站点候选并补充优质魔力种子(刷流,带并发保护)。"""
         task = self._get_task_config(task_id)
         self._apply_task_traffic_limit()
+        self._apply_seed_upload_limit()
         if task and self._maybe_autostop_for_goal(task):
             return
         if not self._acquire_worker_slot(f"刷流·{task.name if task else task_id}"):
@@ -4899,6 +4986,7 @@ class MagicFlow(_PluginBase):
     def check(self, task_id: str) -> None:
         """执行魔力优化一轮(评估并删除低魔力产出种子)。"""
         self._apply_task_traffic_limit()
+        self._apply_seed_upload_limit()
         task = self._get_task_config(task_id)
         if task and self._maybe_autostop_for_goal(task):
             return
@@ -5875,6 +5963,7 @@ class MagicFlow(_PluginBase):
         self._refresh_scheduler()
         self._invalidate_summary()
         self._apply_task_traffic_limit()
+        self._apply_seed_upload_limit()
         self._log(
             f"魔流 [{task.name}] 已达任务目标({st['goal_current']:.4g}/{st['goal_target']:.4g} "
             f"{st['goal_unit']})→ 自动停止任务"
@@ -8908,6 +8997,7 @@ class MagicFlow(_PluginBase):
                         pass
                 try:
                     self._apply_task_traffic_limit()
+                    self._apply_seed_upload_limit()
                 except Exception:  # noqa: BLE001
                     pass
                 return Response(
@@ -9699,6 +9789,7 @@ class MagicFlow(_PluginBase):
             "request_interval": float(getattr(self, "_request_interval", 0) or 0),
             "bonus_upload_limit_kbps": float(getattr(self, "_bonus_upload_limit_kbps", 200.0) or 0),
             "brush_upload_limit_kbps": float(getattr(self, "_brush_upload_limit_kbps", 10240.0) or 0),
+            "seed_up_limit_kbps": float(getattr(self, "_seed_up_limit_kbps", SEED_UP_LIMIT_KBPS_DEFAULT) or 0),
             "iyuu_token": str(getattr(self, "_iyuu_token", "") or ""),
             "iyuu_sites": dict(getattr(self, "_iyuu_sites", {}) or {}),
             "store": self.store_stats(),
@@ -10296,6 +10387,10 @@ class MagicFlow(_PluginBase):
             self._brush_upload_limit_kbps = max(0.0, float(payload.brush_upload_limit_kbps or 0))
         except (TypeError, ValueError):
             self._brush_upload_limit_kbps = 10240.0
+        try:
+            self._seed_up_limit_kbps = max(0.0, float(payload.seed_up_limit_kbps or 0))
+        except (TypeError, ValueError):
+            self._seed_up_limit_kbps = SEED_UP_LIMIT_KBPS_DEFAULT
         # IYUU 云端辅种配置
         # ★ Token 空 = 保持原值（+ 落 save_data 备份、init 时回落）：
         #   旧前端 chunk / 别的标签页保存设置时 payload 可能不带 iyuu_token，
@@ -10441,6 +10536,7 @@ class MagicFlow(_PluginBase):
         self._apply_runtime_settings()
         self._refresh_scheduler()
         self._apply_task_traffic_limit(force=True)
+        self._apply_seed_upload_limit(True)
         self._dbg(
             f"全局设置已更新:enabled={self._enabled} sidebar={self._show_sidebar_nav} "
             f"debug={self._debug_log} compact={self._compact_mode} "
@@ -10731,6 +10827,7 @@ class MagicFlow(_PluginBase):
         self._refresh_scheduler()
         self._invalidate_summary(drop=True)
         self._apply_task_traffic_limit()
+        self._apply_seed_upload_limit()
         return Response(success=True, message="任务创建成功", data=self._build_task_detail(task.id))
 
     def get_task_detail(self, task_id: str) -> Response:
@@ -10841,6 +10938,7 @@ class MagicFlow(_PluginBase):
         self._refresh_scheduler()
         self._invalidate_summary(drop=True)
         self._apply_task_traffic_limit()
+        self._apply_seed_upload_limit()
         if _run_mode != _prev_mode:
             self._spawn_run_mode_apply(task, _run_mode)
         return Response(success=True, message="任务已更新", data=self._build_task_detail(task_id))
@@ -10866,6 +10964,7 @@ class MagicFlow(_PluginBase):
         self._refresh_scheduler()
         self._invalidate_summary(drop=True)
         self._apply_task_traffic_limit()
+        self._apply_seed_upload_limit()
         return Response(success=True, message="任务已删除")
 
     def update_task_state(self, task_id: str, payload: MagicFlowTaskStatePayload) -> Response:
@@ -10882,6 +10981,7 @@ class MagicFlow(_PluginBase):
         self._refresh_scheduler()
         self._invalidate_summary(drop=True)
         self._apply_task_traffic_limit()
+        self._apply_seed_upload_limit()
         # 异步应用种子操作(暂停/恢复);「运行中」时立即跑一轮 check,避免非免费偷下空窗
         self._spawn_run_mode_apply(task, mode)
         return Response(success=True, data=self._build_task_detail(task_id))
