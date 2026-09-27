@@ -11658,8 +11658,11 @@ class MagicFlow(_PluginBase):
             "recommend_tag": rec_tag,
         }
 
-    def _tag_handover(self, src: Any, dst: Any) -> Dict[str, Any]:
-        """把 src 名下种子整体交给 dst：重贴标签（按 dst 的站点/状态）+ 改账本占用。"""
+    def _tag_handover(self, src: Any, dst: Any, hashes: Any = None) -> Dict[str, Any]:
+        """把 src 名下的种子交给 dst：重贴标签（按 dst 的站点/状态）+ 改账本占用。
+
+        ``hashes`` 给定时只处理这些（批量转移用），否则处理 src 名下全部。
+        """
         downloader = self._get_downloader()
         if downloader is None or not getattr(downloader, "is_available", False):
             return {"ok": False, "error": "下载器不可用"}
@@ -11671,10 +11674,17 @@ class MagicFlow(_PluginBase):
         dn = str(getattr(dst, "name", "") or "")
         fn = getattr(downloader, "replace_torrent_tags", None)
         snap = self._tag_all_torrents()
-        moved = failed = 0
-        for h in self._task_managed_hashes(src):
+        moved = failed = skipped = 0
+        _targets = (list(hashes) if hashes else self._task_managed_hashes(src))
+        for h in [str(x or "").strip().lower() for x in _targets]:
+            if not h:
+                continue
             live = snap.get(h)
             cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
+            # 跨站来源份 / 不归任务管的：跳过
+            if CROSSSEED_TAG in cur:
+                skipped += 1
+                continue
             new_tags = retag(cur, site=site, state=state, sub=sub) if cur else [target]
             try:
                 done = fn(h, new_tags) if callable(fn) else downloader.set_torrent_tags(h, new_tags)
@@ -11704,11 +11714,12 @@ class MagicFlow(_PluginBase):
             pass
         if moved:
             self._log(f"标签模型:任务「{getattr(src, 'name', '')}」名下 {moved} 个种子交棒给「{dn}」（{target}）")
-        return {"ok": True, "moved": moved, "failed": failed, "target_tag": target}
+        return {"ok": True, "moved": moved, "failed": failed, "skipped": skipped, "target_tag": target}
 
-    def _tag_settle_idle(self, task: Any) -> Dict[str, Any]:
+    def _tag_settle_idle(self, task: Any, hashes: Any = None) -> Dict[str, Any]:
         """把任务名下种子退回静默池（保文件、可逆），并清掉账本占用。"""
-        n = self._tag_release(task, self._task_managed_hashes(task), reason="删除任务→退回静默")
+        _targets = (list(hashes) if hashes else self._task_managed_hashes(task))
+        n = self._tag_release(task, _targets, reason="退回静默")
         return {"ok": True, "settled": n}
 
     def get_task_handover(self, task_id: str) -> Response:
@@ -11725,13 +11736,14 @@ class MagicFlow(_PluginBase):
             return Response(success=False, message="任务不存在")
         mode = str(getattr(payload, "mode", "") or "handover").strip().lower()
         tid = str(getattr(payload, "target_task_id", "") or "").strip()
+        _hs = [str(x).strip().lower() for x in (getattr(payload, "hashes", None) or []) if str(x).strip()]
         if mode == "idle" or not tid:
-            res = self._tag_settle_idle(task)
+            res = self._tag_settle_idle(task, _hs or None)
             return Response(success=True, message=f"已退回静默池 {res.get('settled')} 个", data=res)
         dst = self._get_task_config(tid)
         if not dst:
             return Response(success=False, message="目标任务不存在")
-        res = self._tag_handover(task, dst)
+        res = self._tag_handover(task, dst, _hs or None)
         if not res.get("ok"):
             return Response(success=False, message=str(res.get("error") or "交棒失败"), data=res)
         return Response(success=True, message=f"已交棒 {res.get('moved')} 个给「{getattr(dst, 'name', '')}」", data=res)
