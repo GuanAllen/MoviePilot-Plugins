@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.18.2"
+__version__ = "3.19.0"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -1446,6 +1446,13 @@ class MagicFlow(_PluginBase):
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "手动整理入库",
+            },
+            {
+                "path": "/recommend/batch_import",
+                "endpoint": self.import_recommend_batch,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "批量整理入库(hashes=… 或 all=1)",
             },
             {
                 "path": "/tasks",
@@ -14882,6 +14889,67 @@ class MagicFlow(_PluginBase):
             store.upsert(hash, status="confirmed", confirmed_at=time.time(),
                          import_result=str(msg)[:200])
         return Response(success=ok, message=msg)
+
+    def import_recommend_batch(self, hashes: str = "", all: str = "", status: str = "") -> Response:
+        """★ **批量整理入库**（Master 2026-09-28 07:00：「批量入库的功能加一下」）。
+
+        - ``hashes``：逗号分隔的种子 hash（工作台勾选的）；
+        - ``all=1``：把当前所有「待确认」记录一起入库（``recommended`` + 可达的 ``pending``）；
+        - 逐个走 ``_recommend_import``（识别 → TransferChain 手动整理），单个失败不影响其余。
+        Python 侧参数从 **query string** 取（MP 插件 API 的 POST 不吃 JSON body）。
+        """
+        store = getattr(self._store, "recommend", None) if self._store else None
+        if store is None:
+            return Response(success=False, message="推荐存储不可用")
+        want: List[str] = [h.strip().lower() for h in str(hashes or "").replace(" ", "").split(",") if h.strip()]
+        if not want and str(all or "").strip().lower() in ("1", "true", "yes", "on"):
+            for it in (store.list() or []):
+                _st = str(it.get("status") or "").lower()
+                if _st in ("recommended", "pending"):
+                    _h = str(it.get("hash") or "").strip().lower()
+                    if _h:
+                        want.append(_h)
+        # 去重保序
+        _seen: set = set()
+        want = [h for h in want if not (h in _seen or _seen.add(h))]
+        if not want:
+            return Response(success=False, message="没有可入库的推荐（未勾选，或没有待确认项）")
+        ok_n, fail_n = 0, 0
+        details: List[Dict[str, Any]] = []
+        for h in want:
+            rec = store.get(h)
+            if not rec:
+                fail_n += 1
+                details.append({"hash": h, "ok": False, "message": "未找到推荐记录"})
+                continue
+            try:
+                ok, msg = self._recommend_import(h, rec)
+            except Exception as err:  # noqa: BLE001
+                ok, msg = False, f"整理异常:{err}"
+            if ok:
+                ok_n += 1
+                store.upsert(h, status="confirmed", confirmed_at=time.time(), import_result=str(msg)[:200])
+            else:
+                fail_n += 1
+                store.upsert(h, import_result=str(msg)[:200])
+            details.append({"hash": h, "ok": bool(ok), "title": str(rec.get("title") or ""), "message": str(msg)[:200]})
+        # 操作记录（推荐类，task_id 空 = 全局）
+        try:
+            self._store.journal.record(
+                task_id="", kind="recommend",
+                items=[OperationItem(hash=d["hash"], title=str(d.get("title") or d["hash"]),
+                                     reason=("批量入库：" + str(d.get("message") or "")),
+                                     source="recommend", tags=("ok" if d["ok"] else "fail"))
+                       for d in details],
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        self._log(f"批量入库：成功 {ok_n} · 失败 {fail_n}（共 {len(want)}）")
+        return Response(
+            success=ok_n > 0,
+            message=f"批量入库：成功 {ok_n} · 失败 {fail_n}（共 {len(want)}）",
+            data={"ok": ok_n, "failed": fail_n, "total": len(want), "details": details},
+        )
 
     def debug_recommend_reset(self) -> Response:
         """诊断:清空推荐甄别结果(仅测试/重置用)。"""
