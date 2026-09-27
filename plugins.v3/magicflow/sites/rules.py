@@ -334,37 +334,44 @@ class SiteRules:
         return cur
 
     def merge_probe(self, domain: str, probed: Dict[str, Any]) -> Dict[str, Any]:
-        """把探测结果并入（**不覆盖**手填 source=manual 的字段）。"""
+        """把探测结果并入。
+
+        * 手填记录（``source=manual``）：**H&R / 保种时长 / 证据** 一律不动（手填为准），
+          但**促销规则**（与 H&R 无关）照常并入 —— 不能因为手填了「无 H&R」就丢掉体积自动免费。
+        """
         d = _norm_domain(domain)
         cur = dict(self.items().get(d) or {})
-        if str(cur.get("source") or "") == "manual":
-            cur["probed_at"] = float(time.time())
-            self.items()[d] = cur
-            self._write()
-            return cur
         out = dict(cur)
+        manual = str(cur.get("source") or "") == "manual"
         conf = str((probed or {}).get("confidence") or "low")
-        for key in ("hr", "seed_cap", "evidence"):
-            val = (probed or {}).get(key)
-            if val is not None:
-                out[key] = val
-        out["confidence"] = conf
+        if not manual:
+            for key in ("hr", "seed_cap", "evidence"):
+                val = (probed or {}).get(key)
+                if val is not None:
+                    out[key] = val
+            out["confidence"] = conf
+        else:
+            if (probed or {}).get("seed_cap") is not None and out.get("seed_cap") is None:
+                out["seed_cap"] = (probed or {}).get("seed_cap")
+        # 促销规则：与 H&R 无关，总是并入
         for key in ("free_over_gb", "free_original", "free_ep1", "seed_need_hours", "seed_window_hours"):
             val = (probed or {}).get(key)
             if val is not None:
                 out[key] = val
-        if (probed or {}).get("exam_avg_hours") is not None:
-            out["exam_avg_hours"] = (probed or {}).get("exam_avg_hours")
-            if (probed or {}).get("exam_evidence"):
-                out["exam_evidence"] = (probed or {}).get("exam_evidence")
-        val = (probed or {}).get("seed_hours")
-        if val is not None and conf == "high":
-            out["seed_hours"] = val
-        elif val is not None:
-            # 低可信：只留证据，不参与生效时长（宁保守勿乐观）
-            out["seed_hours_seen"] = val
-            out.pop("seed_hours", None)
-        out["source"] = "probe"
+        if not manual:
+            if (probed or {}).get("exam_avg_hours") is not None:
+                out["exam_avg_hours"] = (probed or {}).get("exam_avg_hours")
+                if (probed or {}).get("exam_evidence"):
+                    out["exam_evidence"] = (probed or {}).get("exam_evidence")
+            val = (probed or {}).get("seed_hours")
+            if val is not None and conf == "high":
+                out["seed_hours"] = val
+            elif val is not None:
+                # 低可信：只留证据，不参与生效时长（宁保守勿乐观）
+                out["seed_hours_seen"] = val
+                out.pop("seed_hours", None)
+        if not manual:
+            out["source"] = "probe"
         out["probed_at"] = float(time.time())
         out["domain"] = d
         out["updated"] = float(time.time())
