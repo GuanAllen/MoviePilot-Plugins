@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.24.2"
+__version__ = "3.24.3"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -14565,7 +14565,9 @@ class MagicFlow(_PluginBase):
         - 同一资源（文件特征码/文件组）下的静默成员**一起判定、一起打标**：
           达标 → 全部成员都打 ``魔流-推荐``（入库后由库记统一转 ``静默-资源``）；
           不达标 → 全部成员一起转 ``静默-普通``；
-        - 该资源**已入库**（库记 ``in_library``）→ 全部成员转 ``静默-资源``（资产永不删）；
+        - ★ 资源身份 = ``is_asset_tags`` + 推荐过（Master 2026-09-28 14:47）：
+          - 库内 + 推荐过 → ``静默-资源``（资产永不删）
+          - 库内但推荐没过 → ``静默-普通``（即使已入库，没过推荐也不算合格资源）
         - 该资源**已有推荐记录**（推荐中/待确认/已确认）→ 整组不重复甄别、不重复通知；
         - 资源内**代表种**（优先已完成、其次体积大）欠 H&R → 整组原地挂种等待。
         """
@@ -14578,6 +14580,12 @@ class MagicFlow(_PluginBase):
         except Exception:  # noqa: BLE001
             files = None
         snap = self._tag_all_torrents()
+        # ★ 豆瓣评分源：本轮预算（防风控，超了就回退 TMDB）。3.24.3 加上，原逻辑 step 5 evaluate
+        # 一直没设预算,现在闸门也要 evaluate,一并补上。
+        try:
+            self._get_recommend_engine().begin_round(int(cfg.get("douban_max_per_run") or 0))
+        except Exception:  # noqa: BLE001
+            pass
         # ---- 1) 候选（静默-新）按「资源」归组（没有文件组 → 单种成组）
         buckets: Dict[str, List[Tuple[str, Dict[str, Any], Any]]] = {}
         for h, rec in list((tag_state.items() or {}).items()):
@@ -14630,7 +14638,8 @@ class MagicFlow(_PluginBase):
             rep["scanned"] += 1
             h_list = [x[0] for x in members]
             r_h, r_rec, r_t = _pick(members)
-            # ---- 2) 资源已入库 → 整组转「静默-资源」（库内资产永不删），不参与推荐
+            # ---- 2) 资源身份 = is_asset_tags + 推荐过（Master 2026-09-28 14:47）。
+            # 库内 + 推荐过 → 静默-资源；库内但推荐没过 → 静默-普通。
             in_lib = False
             if files is not None and not str(gid).startswith("h:"):
                 try:
@@ -14650,13 +14659,40 @@ class MagicFlow(_PluginBase):
                 if _rcf:
                     rep["recheck_fail"] = int(rep.get("recheck_fail") or 0) + 1
                     continue
-                rep["asset"] = int(rep.get("asset") or 0) + 1
+                # ★ 补闸门：库内 + 推荐过 = 资源。仅 ``is_asset_tags`` 不够，必须过推荐（Master 2026-09-28 14:47）。
+                _in_lib_like: Dict[str, Any] = {"recognized": False}
+                _in_lib_title: str = str(getattr(r_t, "title", "") or "")
+                if _in_lib_title:
+                    try:
+                        _in_lib_like = self._get_recommend_engine().evaluate(_in_lib_title, with_poster=False)
+                    except Exception:  # noqa: BLE001
+                        _in_lib_like = {"recognized": False}
+                _in_lib_worth = bool(self._recommend_worth(_in_lib_like, cfg))
+                if _in_lib_worth:
+                    rep["asset"] = int(rep.get("asset") or 0) + 1
+                    if apply:
+                        for _h, _r, _t in members:
+                            try:
+                                self._silent_to_resource(_h)
+                            except Exception as err:  # noqa: BLE001
+                                self._log(f"静默分拣:归资源失败 {_h[:12]}:{err}", "warning")
+                    continue
+                # 库内但推荐没过 → 普通（不算合格资源）。
+                rep["plain"] = int(rep.get("plain") or 0) + 1
                 if apply:
                     for _h, _r, _t in members:
                         try:
-                            self._silent_to_resource(_h)
+                            self._silent_to_plain(_h)
                         except Exception as err:  # noqa: BLE001
-                            self._log(f"静默分拣:归资源失败 {_h[:12]}:{err}", "warning")
+                            self._log(f"静默分拣:库内但推荐不过→归普通失败 {_h[:12]}:{err}", "warning")
+                    try:
+                        rep["items"].append({
+                            "hash": r_h[:12], "title": _in_lib_title,
+                            "verdict": "普通(库内但推荐不过)",
+                            "rating": _in_lib_like.get("rating"), "members": len(members),
+                        })
+                    except Exception:  # noqa: BLE001
+                        pass
                 continue
             # ---- 3) 该资源已有推荐记录 → 整组不重复
             _dup = self._recommend_dup_group(rstore, gid, h_list)
