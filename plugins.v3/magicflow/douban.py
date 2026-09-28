@@ -25,6 +25,7 @@ import re
 import threading
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -38,9 +39,11 @@ _UA = (
     "model/Mate 40 brand/HUAWEI rom/android network/wifi platform/AndroidPad"
 )
 
+COOLDOWN_403 = 1800.0           # 被豆瓣风控（403/429）后，静默多久不再请求（实测 8 分钟 ~130 次就被封 IP）
+COOLDOWN_ERR = 60.0             # 其它网络错误后的短冷却
 HIT_TTL = 30 * 24 * 3600.0      # 有评分：30 天
 MISS_TTL = 3 * 24 * 3600.0      # 没搜到 / 没开分：3 天
-MIN_INTERVAL = 1.5              # 两次真实请求之间的最小间隔（秒）
+MIN_INTERVAL = 20.0             # 两次真实请求之间的最小间隔（秒）——豆瓣限流很凶，宁可慢
 CACHE_KEY = "douban_rating_cache"
 CACHE_MAX = 6000                # 持久化条数上限
 
@@ -62,6 +65,7 @@ class DoubanRating:
         self._budget = 0            # 本轮剩余可查次数（0 = 不限）
         self._round_new = 0
         self._budget_skipped = 0
+        self._blocked_until = 0.0
         self._loaded = False
 
     # ---------- 基础设施 ----------
@@ -116,11 +120,22 @@ class DoubanRating:
             req = urllib.request.Request(url, headers={"User-Agent": _UA})
             with urllib.request.urlopen(req, timeout=12) as resp:
                 if int(getattr(resp, "status", 200)) != 200:
+                    self._cool(int(getattr(resp, "status", 0)))
                     return None
                 return json.loads(resp.read().decode("utf-8", "ignore"))
+        except urllib.error.HTTPError as err:  # noqa: PERF203
+            self._cool(int(getattr(err, "code", 0)))
+            self._log(f"魔流:豆瓣查询被拒({err}) → 冷却 {int(self._blocked_until - time.time())}s", "warning")
+            return None
         except Exception as err:  # noqa: BLE001
+            self._blocked_until = max(self._blocked_until, time.time() + COOLDOWN_ERR)
             self._log(f"魔流:豆瓣查询失败({type(err).__name__}:{err})", "warning")
             return None
+
+    def _cool(self, code: int = 0) -> None:
+        """被风控就静默一段时间（403/429 长冷却，其它短冷却）。"""
+        _sec = COOLDOWN_403 if code in (403, 429) else COOLDOWN_ERR
+        self._blocked_until = max(self._blocked_until, time.time() + _sec)
 
     # ---------- 对外 ----------
     def begin_round(self, max_new: int = 0) -> None:
@@ -131,14 +146,31 @@ class DoubanRating:
             self._round_new = 0
             self._budget_skipped = 0
 
+    def purge_negatives(self) -> int:
+        """清掉缓存里的「未命中 / 未开分」条目（修复前被 403 污染的那些）。返回清掉的条数。"""
+        with self._lock:
+            self._load()
+            bad = [k for k, v in self._cache.items() if not v[1]]
+            for k in bad:
+                self._cache.pop(k, None)
+            if bad:
+                self._save()
+            return len(bad)
+
     def stats(self) -> Dict[str, Any]:
         with self._lock:
             return {"cache": len(self._cache), "round_new": self._round_new,
                     "budget": self._budget, "budget_skipped": self._budget_skipped}
 
-    def search(self, keyword: str, count: int = 6) -> List[Dict[str, Any]]:
-        """按关键字搜豆瓣 → 规范化候选列表。"""
+    def search(self, keyword: str, count: int = 6) -> Optional[List[Dict[str, Any]]]:
+        """按关键字搜豆瓣 → 规范化候选列表。
+
+        ★ 返回 ``None`` = **请求失败**（风控/网络），与 ``[]``（真的没结果）区分开——
+        失败不能进缓存，否则一次 403 会污染 3 天。
+        """
         data = self._http(_SEARCH_PATH, {"q": keyword, "start": 0, "count": count})
+        if data is None:
+            return None
         out: List[Dict[str, Any]] = []
         for it in ((data or {}).get("items") or []):
             tgt = it.get("target") or {}
@@ -163,6 +195,7 @@ class DoubanRating:
     @staticmethod
     def _pick(cands: List[Dict[str, Any]], title: str, year: str = "") -> Optional[Dict[str, Any]]:
         """从候选里挑最像的那个（标题 + 年份）。"""
+        cands = cands or []
         want = _norm(title)
         if not want:
             return None
@@ -217,6 +250,10 @@ class DoubanRating:
                     ttl = HIT_TTL if (val and float(val.get("rating") or 0) > 0) else MISS_TTL
                     if time.time() - ts < ttl:
                         return val
+            # 风控冷却中 → 直接回退（不查、不写缓存）
+            if time.time() < self._blocked_until:
+                self._budget_skipped += 1
+                return None
             # 预算（按「缓存未命中」的真实请求计数）
             if self._budget and self._round_new >= self._budget:
                 self._budget_skipped += 1
@@ -226,6 +263,11 @@ class DoubanRating:
             time.sleep(min(wait, MIN_INTERVAL))
         q = f"{title} {year}".strip() if year else str(title)
         cands = self.search(q)
+        if cands is None:  # 请求失败（风控/网络）→ 不写缓存，直接回退 TMDB
+            with self._lock:
+                self._last_at = time.time()
+                self._round_new += 1
+            return None
         best = self._pick(cands, title, str(year or ""))
         val: Optional[Dict[str, Any]] = None
         if best:
