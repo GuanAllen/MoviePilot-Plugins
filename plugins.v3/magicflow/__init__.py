@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.23.0"
+__version__ = "3.24.0"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -1265,7 +1265,14 @@ class MagicFlow(_PluginBase):
                 "endpoint": self.debug_douban,
                 "methods": ["GET"],
                 "auth": "bear",
-                "summary": "诊断:查豆瓣评分源(自带 frodo 客户端,带缓存/限速)",
+                "summary": "诊断:查豆瓣评分源(独立服务 magicflow-douban,HTTP 客户端)",
+            },
+            {
+                "path": "/douban_service",
+                "endpoint": self.douban_service_status,
+                "methods": ["GET", "POST"],
+                "auth": "bear",
+                "summary": "豆瓣评分服务:库容量 + 后台慢爬进度(可 action=start|stop|reset)",
             },
             {
                 "path": "/debug/recommend-run",
@@ -11010,6 +11017,32 @@ class MagicFlow(_PluginBase):
             return Response(success=True, data=info)
         except Exception as e:  # noqa: BLE001
             return Response(success=False, message=str(e))
+
+    def douban_service_status(self, action: str = "") -> Response:
+        """豆瓣评分服务（magicflow-douban）状态：库容量 + 爬虫进度。"""
+        try:
+            from .douban import get_client  # noqa: WPS433
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=f"豆瓣模块不可用:{err}")
+        cli = get_client(self)
+        try:
+            st = cli.snapshot_stats()
+            crawl = cli.crawl_status()
+            if str(action or "").strip().lower() in ("start", "stop", "reset"):
+                crawl = cli.crawl_control(action)
+            data = {
+                "ok": bool(st.get("ok")),
+                "service": st.get("service"),
+                "records": int(st.get("total") or 0),
+                "cache": st.get("cache") or {},
+                "errors": st.get("errors") or 0,
+                "last_error": st.get("last_error") or "",
+                "crawl": crawl,
+            }
+            return Response(success=True, data=data,
+                            message=("豆瓣服务不可用" if not data["ok"] else f"库 {data['records']} 条"))
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=str(err))
 
     def debug_douban(self, name: str = "", year: str = "", keyword: str = "", count: int = 6,
                      action: str = "", flush_snapshot: bool = False) -> Response:

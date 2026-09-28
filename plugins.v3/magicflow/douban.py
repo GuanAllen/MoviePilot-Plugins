@@ -130,6 +130,30 @@ class DoubanRating:
         return {"total": int(payload.get("records") or 0), "cache": payload.get("cache") or {},
                 "service": self._base, "ok": bool(payload)}
 
+    # ---------- 后台慢爬（服务端）----------
+    def crawl_status(self) -> Dict[str, Any]:
+        """服务端爬虫进度（不可用时 ok=False）。"""
+        payload = self._req("/crawl")
+        if not payload:
+            return {"ok": False, "service": self._base}
+        st = payload.get("status") or {}
+        st["ok"] = bool(payload.get("ok"))
+        st["service"] = self._base
+        return st
+
+    def crawl_control(self, action: str) -> Dict[str, Any]:
+        """start / stop / reset。"""
+        act = str(action or "").strip().lower()
+        if act not in ("start", "stop", "reset"):
+            return {"ok": False, "error": f"未知动作:{action}"}
+        payload = self._req(f"/crawl/{act}", method="POST")
+        if not payload:
+            return {"ok": False, "service": self._base, "error": "服务不可用"}
+        st = payload.get("status") or {}
+        st["ok"] = bool(payload.get("ok"))
+        st["service"] = self._base
+        return st
+
     def _snapshot_lookup(self, title: str, year: Any = "") -> Optional[Dict[str, Any]]:
         return self.lookup(title, year)
 
