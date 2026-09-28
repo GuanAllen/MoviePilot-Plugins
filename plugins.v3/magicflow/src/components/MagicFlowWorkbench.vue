@@ -436,6 +436,18 @@ const mobileLiveCount = computed(() => {
   }
   return set.size
 })
+// 今日魔力增量（按站点去重后求和；各站增量可累加）
+const mobileTodayGain = computed(() => {
+  const by = new Map()
+  for (const t of tasks.value) {
+    if (t.bonus_day_delta == null) continue
+    const k = t.site_name || t.id
+    if (!by.has(k)) by.set(k, Number(t.bonus_day_delta) || 0)
+  }
+  let sum = 0
+  for (const v of by.values()) sum += v
+  return sum
+})
 // 站点折叠：多任务行可展开
 const mhSiteOpen = ref({})
 function siteMulti(s) { return s.tasks.length > 1 }
@@ -496,6 +508,8 @@ const mobileStrategyText = computed(() => {
     parts.push(c.protect_perfect === false ? '完美种保护关' : '完美种保护开')
     if (t.protected_count) parts.push(`接管保护 ${t.protected_count}`)
   }
+  const hr = Number(detailStats.value?.hr_owed ?? t.hr_owed ?? 0)
+  if (hr > 0) parts.push(`H&R 欠 ${hr}`)
   return parts.join(' · ')
 })
 const mobileDetailHint = computed(() => {
@@ -2616,7 +2630,7 @@ onUnmounted(() => {
       <div class="magicflow-mobile-home">
         <div class="mh-hero">
           <div class="mh-hero__v">{{ mobileBonus }}<small>/h</small></div>
-          <div class="mh-hero__s">{{ mobileLiveCount }} 个站在跑<template v-if="mobileSilentCount"> · 静默托管 {{ mobileSilentCount }} 种</template></div>
+          <div class="mh-hero__s">{{ mobileLiveCount }} 个站在跑<template v-if="mobileTodayGain > 0"> · 今日 +{{ mobileTodayGain.toFixed(1) }}</template><template v-else-if="mobileSilentCount"> · 静默托管 {{ mobileSilentCount }} 种</template></div>
         </div>
         <div v-for="g in mobileHomeGroups" :key="g.key" class="mh-group">
           <button type="button" class="mh-group__head" @click="toggleGroup(g.key)">
