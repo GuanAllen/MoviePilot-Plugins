@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.24.1"
+__version__ = "3.24.2"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -3797,6 +3797,11 @@ class MagicFlow(_PluginBase):
             return
         eligible = [t for t in self._task_configs.values() if getattr(t, "enabled", False)]
         if not eligible:
+            # ★ 观测：不再静默空跑——无启用任务时每 6h 记一条（不刷屏）
+            _now = time.time()
+            if _now - float(getattr(self, "_recommend_idle_log_at", 0) or 0) >= 6 * 3600:
+                self._recommend_idle_log_at = _now
+                self._log("推荐甄别:无启用任务 → 本轮跳过（静默池分拣与推荐渲染不受影响）")
             return
         eligible.sort(key=lambda t: str(t.id))
         ids = [str(t.id) for t in eligible]
@@ -11072,9 +11077,9 @@ class MagicFlow(_PluginBase):
                 return Response(success=True, message=f"snap_test: norm={repr(_norm(name))} snapshot_total={_ss['total']} hit={'Y' if _hit else 'N'}",
                                 data={"norm": _norm(name or ""), "hit": _hit, "stats": _ss})
             if keyword:
-                _c = cli.search(keyword, count=count)
-                return Response(success=True, message=("请求失败(风控/网络,已冷却)" if _c is None else "候选"),
-                                data={"candidates": _c or [], "stats": cli.stats()})
+                # ★ 评分源已拆为独立服务（只做「标题/年份」精确匹配），不再支持关键词模糊搜索
+                return Response(success=True, message="本地评分服务不支持关键词模糊搜索（请用 name/year 精确查）",
+                                data={"candidates": [], "stats": cli.stats()})
             hit = cli.lookup(name or "", year or "")
             if not hit:
                 return Response(success=True, message="未命中/未开分（已进缓存，不重复查）",
