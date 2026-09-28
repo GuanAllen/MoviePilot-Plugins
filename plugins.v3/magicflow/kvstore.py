@@ -37,12 +37,12 @@ def _counters() -> Dict[str, Any]:
     import types as _types
 
     mod = _sys.modules.get(_SHARED_KEY)
-    if mod is None or not hasattr(mod, "counters"):
+    if mod is None:
         mod = _types.ModuleType(_SHARED_KEY)
-        mod.instances = {}
-        mod.counters = {}
-        mod.lock = threading.Lock()
         _sys.modules[_SHARED_KEY] = mod
+    for _attr, _factory in (("instances", dict), ("counters", dict), ("lock", threading.Lock)):
+        if not hasattr(mod, _attr):
+            setattr(mod, _attr, _factory())
     return mod.counters
 
 

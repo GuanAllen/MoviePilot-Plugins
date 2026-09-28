@@ -3,7 +3,7 @@
     "name": "魔流",
     "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
     "labels": "站点,做种,魔力,刷流",
-    "version": "3.21.3",
+    "version": "3.22.1",
     "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
     "author": "IronOx",
     "level": 1,
@@ -215,7 +215,9 @@
       "3.21.0": "**3.21.0**：**已入库资源过推荐流程**（Master 07:57「把这些已经整理的过下推荐流程」）：新增 `_assets_recheck()` + `GET /tags?action=assets_recheck[_apply]` —— 给带「已整理/辅种」标的资源逐组走推荐评分（评分>门槛 或 在榜/订阅）：**达标保持「静默-资源」**（记 `asset_recheck=keep`）、**不达标降为「静默-普通」**（记 `asset_recheck=fail`）且此后**不再享受库内资产保护**（`_media_asset_hashes` / `_silent_plain_sweep` 已接；分拣②不再把它归资源）；识别不出→不动。默认预演。",
       "3.21.1": "**3.21.1**：修「MP 整理返回『已整理过』被当成失败」（Master 08:19 报「首次发现…已整理过…等39个文件错误！」）：MP 的 `manual_transfer` 对**已整理过**的文件返回 `ok=False`（消息形如「<文件> 已整理过（成功记录 #N）…，等N个文件错误！」），但文件早已在库 → 现在识别为**成功**：新增 `_transfer_already_done()`；并自己补写库记（MP 这条路径不广播 `TransferComplete`）→ 正常转「静默-资源」。",
       "3.21.2": "**3.21.2**：「已入库资源过推荐流程」补两条（Master 08:33 同意）：① 无评分（TMDB rating=0，没数据≠差）**豁免不动**（新增 `unrated` 计数 + `samples_unrated`）；② 接口 `limit` 默认 20 会截断（我踩的坑）→ 全量复核用 `&limit=0`。",
-      "3.21.3": "**3.21.3**：`/debug/recognize` 支持 `&source=douban|themoviedb|bangumi` 强制识别源（`recognize()`/`evaluate()` 加 `source` 参数、缓存键带源）——用于查清「评分到底走哪个源」（本机 MP 全局 `RECOGNIZE_SOURCE=themoviedb` → 默认拿 TMDB 分；榜单/热映仍是豆瓣 `DoubanChain`）。"
+      "3.21.3": "**3.21.3**：`/debug/recognize` 支持 `&source=douban|themoviedb|bangumi` 强制识别源（`recognize()`/`evaluate()` 加 `source` 参数、缓存键带源）——用于查清「评分到底走哪个源」（本机 MP 全局 `RECOGNIZE_SOURCE=themoviedb` → 默认拿 TMDB 分；榜单/热映仍是豆瓣 `DoubanChain`）。",
+      "3.22.0": "**3.22.0**：**自带豆瓣评分源（豆瓣优先 → 回退 TMDB）**（Master 09:06 选 A）。背景：本部署 MP 全局 `RECOGNIZE_SOURCE=themoviedb`、豆瓣模块按名搜索返回空 → 评分一直是 TMDB；而豆瓣 frodo 接口是通的。新增 `douban.py`（frodo `/search/weixin` + HMAC 签名 + 标题/年份匹配 + 30天/3天缓存 + 1.5s 限速 + 每轮 60 次预算，异常一律回退 TMDB）；`evaluate()` 增加 `rating_source`/`rating_tmdb`/`rating_douban`/`douban_votes`；设置「推荐」页新增**评分来源**与**每轮豆瓣查询上限**；新增 `GET /debug/douban`；`_assets_recheck` 改**双向**（本轮达标→放回「静默-资源」，`restored` 计数）；文档 `docs/评分源.md`。",
+      "3.22.1": "**3.22.1**：修插件**加载失败** `module '__magicflow_shared__' has no attribute 'lock'` —— `__init__.py` 三处建共享模块时只写 `instances/counters`（没写 `lock`），若它们先于 `persistence._shared()` 执行，后面 `with sh.lock` 直接 AttributeError，插件整个加载不起来。三处 + `persistence._shared` + `kvstore._counters` 统一改成**幂等补齐**（缺哪个补哪个）。"
     }
   },
   "version": "3.14.7",

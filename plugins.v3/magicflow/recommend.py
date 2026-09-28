@@ -145,6 +145,29 @@ class RecommendEngine:
                 titles.add(k[2:])
         return titles
 
+    def _douban_client(self) -> Any:
+        """豆瓣评分客户端（惰性 import；拿不到返回 None）。"""
+        try:
+            from .douban import get_client  # type: ignore  # noqa: WPS433
+        except Exception:  # noqa: BLE001
+            try:
+                from douban import get_client  # type: ignore  # noqa: WPS433
+            except Exception:  # noqa: BLE001
+                return None
+        try:
+            return get_client(self.plugin)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def begin_round(self, max_new: int = 0) -> None:
+        """给豆瓣客户端开一轮预算（防風控）。"""
+        cli = self._douban_client()
+        if cli is not None:
+            try:
+                cli.begin_round(max_new)
+            except Exception:  # noqa: BLE001
+                pass
+
     def _recognize_cached(self, name: str, source: str = "") -> Any:
         """识别（带 TTL 缓存）：同一作品名只走一次识别插件链。"""
         key = (_norm(name) + (("|" + str(source).lower()) if source else ""))
@@ -204,4 +227,30 @@ class RecommendEngine:
                 "in_subscribe": bool(keys & self._subscribe_keys()),
             }
         )
+        # ★ 评分源：豆瓣优先（Master 2026-09-28 09:06 选 A）→ 拿不到回退 TMDB
+        #   本部署 MP 全局 RECOGNIZE_SOURCE=themoviedb、豆瓣模块按名搜索返回空，
+        #   所以「评分」默认走自带豆瓣源；榜单/热映仍是 MP 的 DoubanChain。
+        _cfg = getattr(self.plugin, "_recommend_cfg", {}) or {}
+        out["rating_tmdb"] = rating
+        out["rating_source"] = "tmdb"
+        if str(_cfg.get("rating_source", "douban") or "douban").lower() == "douban":
+            _cli = self._douban_client()
+            _db = None
+            if _cli is not None:
+                try:
+                    _db = _cli.lookup(out.get("title") or "", out.get("year") or "")
+                except Exception:  # noqa: BLE001
+                    _db = None
+            if _db:
+                if _db.get("id"):
+                    out["douban_id"] = str(_db.get("id"))
+                try:
+                    _dr = float(_db.get("rating") or 0)
+                except (TypeError, ValueError):
+                    _dr = 0.0
+                out["rating_douban"] = _dr
+                out["douban_votes"] = int(_db.get("votes") or 0)
+                if _dr > 0:
+                    out["rating"] = _dr
+                    out["rating_source"] = "douban"
         return out
