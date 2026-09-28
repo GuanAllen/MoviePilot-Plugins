@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.22.3"
+__version__ = "3.22.5"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -856,9 +856,21 @@ class MagicFlow(_PluginBase):
             "temp_ttl_days": _rf(raw_config.get("recommend_temp_ttl_days"), 7.0),
             "disk_min_free_gb": _rf(raw_config.get("recommend_disk_min_free_gb"), 50.0),
             # ★ 评分源：douban=豆瓣优先(取不到回退 TMDB) / tmdb（Master 2026-09-28 09:06 选 A）
-            "rating_source": str(raw_config.get("recommend_rating_source") or "douban").strip().lower(),
+            "rating_source": str(raw_config.get("recommend_rating_source") or "tmdb").strip().lower(),
             "douban_max_per_run": int(_rf(raw_config.get("recommend_douban_max_per_run"), 30.0)),
         }
+        # ★ 3.22.4 一次性迁移：Master 2026-09-28 09:42「还是别走豆瓣了吧」→ 默认回到 TMDB。
+        #   存量配置里若还写着 douban（旧默认被自动落盘的），只在这一版强制改回 tmdb 并落盘；
+        #   之后 Master 在设置里手动选「豆瓣优先」不会再被覆盖（标记已置位）。
+        try:
+            if not self.get_data("rating_source_migrated_3224"):
+                if str(self._recommend_cfg.get("rating_source") or "").strip().lower() == "douban":
+                    self._recommend_cfg["rating_source"] = "tmdb"
+                    self._log("设置迁移:评分源 douban → tmdb（默认不走豆瓣）")
+                    threading.Thread(target=self._save_config, daemon=True).start()
+                self.save_data(key="rating_source_migrated_3224", value=True)
+        except Exception as err:  # noqa: BLE001
+            self._log(f"评分源迁移失败:{err}", "warning")
         # 静默-普通清理（Master 01:17：「普通考核魔力产出…在魔力产出够的情况下普通的直接干」）
         self._silent_cfg = {
             "sweep": bool(raw_config.get("silent_sweep_enabled", True)),
@@ -1950,7 +1962,7 @@ class MagicFlow(_PluginBase):
             "recommend_notify": bool(self._recommend_cfg.get("notify", True)),
             "recommend_temp_ttl_days": float(self._recommend_cfg.get("temp_ttl_days", 7.0)),
             "recommend_disk_min_free_gb": float(self._recommend_cfg.get("disk_min_free_gb", 50.0)),
-            "recommend_rating_source": str(self._recommend_cfg.get("rating_source", "douban")),
+            "recommend_rating_source": str(self._recommend_cfg.get("rating_source", "tmdb")),
             "recommend_douban_max_per_run": int(self._recommend_cfg.get("douban_max_per_run", 30) or 0),
             "crossseed_guard": bool(getattr(self, "_cs_cfg", {}).get("guard", True)),
             "crossseed_guard_pct": float(getattr(self, "_cs_cfg", {}).get("guard_pct") or 5.0),

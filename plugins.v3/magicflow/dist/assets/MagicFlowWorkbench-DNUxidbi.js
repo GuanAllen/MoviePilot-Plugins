@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { _ as _export_sfc, c as cloneTask, n as normalizeTask, a as normalizeDownloaderPrefs, b as normalizeDownloaderPaths, d as normalizeDefaults, t as taskStateMeta, r as runModeMeta, e as runStatusText, F as FALLBACK_SOURCE_OPTIONS, g as formatBytes, f as formatBonus, R as RUN_MODES, h as formatDateTime, i as formatDurationSeconds, S as SORT_RULE_TYPES, j as cloudStatusMeta, k as recommendStatusMeta, u as unwrapResponse, l as normalizeSettings, m as normalizeSortRules, o as formatDuration, p as normalizeIyuuSites } from './_plugin-vue_export-helper-DEfu6vR_.js';
+import { _ as _export_sfc, c as cloneTask, n as normalizeTask, a as normalizeDownloaderPrefs, b as normalizeDownloaderPaths, d as normalizeDefaults, t as taskStateMeta, r as runModeMeta, e as runStatusText, F as FALLBACK_SOURCE_OPTIONS, g as formatBytes, f as formatBonus, R as RUN_MODES, h as formatDateTime, i as formatDurationSeconds, S as SORT_RULE_TYPES, j as cloudStatusMeta, k as recommendStatusMeta, u as unwrapResponse, l as normalizeSettings, m as normalizeSortRules, o as formatDuration, p as normalizeIyuuSites } from './_plugin-vue_export-helper-BHYbEPds.js';
 
 const {unref:_unref$1,toDisplayString:_toDisplayString$1,createTextVNode:_createTextVNode$1,resolveComponent:_resolveComponent$1,withCtx:_withCtx$1,createVNode:_createVNode$1,openBlock:_openBlock$1,createBlock:_createBlock$1,createCommentVNode:_createCommentVNode$1,renderList:_renderList$1,Fragment:_Fragment$1,createElementBlock:_createElementBlock$1,createElementVNode:_createElementVNode$1,withModifiers:_withModifiers$1} = await importShared('vue');
 
@@ -2633,8 +2633,8 @@ const selectedHashes = computed(() =>
   (selectedRows.value || []).map(row => row?.hash).filter(Boolean),
 );
 const ratingSourceItems = [
-  { title: '豆瓣优先（拿不到回退 TMDB）', value: 'douban' },
-  { title: '只用 TMDB', value: 'tmdb' },
+  { title: '只用 TMDB（默认）', value: 'tmdb' },
+  { title: '豆瓣优先（拿不到回退 TMDB · 易被豆瓣限流）', value: 'douban' },
 ];
 const settingsDialog = ref(false);
 const settingsTab = ref('general');
@@ -8192,7 +8192,7 @@ return (_ctx, _cache) => {
                                         "item-title": "title",
                                         "item-value": "value",
                                         label: "评分来源",
-                                        hint: "豆瓣优先：拿不到豆瓣分自动回退 TMDB",
+                                        hint: "默认只用 TMDB；豆瓣优先需自备网络与限流容忍度（20s/次）",
                                         "persistent-hint": "",
                                         variant: "outlined",
                                         density: "comfortable"
@@ -10886,6 +10886,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-e028fe3f"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-ca15f956"]]);
 
 export { MagicFlowWorkbench as M };

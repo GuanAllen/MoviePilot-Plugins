@@ -130,8 +130,8 @@ const selectedHashes = computed(() =>
   (selectedRows.value || []).map(row => row?.hash).filter(Boolean),
 )
 const ratingSourceItems = [
-  { title: '豆瓣优先（拿不到回退 TMDB）', value: 'douban' },
-  { title: '只用 TMDB', value: 'tmdb' },
+  { title: '只用 TMDB（默认）', value: 'tmdb' },
+  { title: '豆瓣优先（拿不到回退 TMDB · 易被豆瓣限流）', value: 'douban' },
 ]
 const settingsDialog = ref(false)
 const settingsTab = ref('general')
@@ -3754,7 +3754,7 @@ onUnmounted(() => {
                 item-title="title"
                 item-value="value"
                 label="评分来源"
-                hint="豆瓣优先：拿不到豆瓣分自动回退 TMDB"
+                hint="默认只用 TMDB；豆瓣优先需自备网络与限流容忍度（20s/次）"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
