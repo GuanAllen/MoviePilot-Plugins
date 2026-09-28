@@ -334,6 +334,7 @@ const MF_PAGES = [
   { key: 'cloud', label: '云盘归档', icon: 'mdi-cloud-upload-outline' },
   { key: 'douban', label: '豆瓣评分', icon: 'mdi-database-search-outline' },
   { key: 'crossseed', label: '跨站取种', icon: 'mdi-swap-horizontal-bold' },
+  { key: 'ceiling', label: '站点容量', icon: 'mdi-gauge' },
   { key: 'ops', label: '操作记录', icon: 'mdi-history' },
   { key: 'settings', label: '插件设置', icon: 'mdi-tune-variant' },
 ]
@@ -346,6 +347,7 @@ function mfOpenPage(page) {
     case 'cloud': return openCloud()
     case 'douban': return openDoubanService()
     case 'crossseed': return showCrossseed()
+    case 'ceiling': return openCeiling()
     case 'ops': return openOperations()
     case 'settings': return openSettings()
   }
@@ -448,6 +450,28 @@ const mobileTodayGain = computed(() => {
   for (const v of by.values()) sum += v
   return sum
 })
+// 站点容量：每站时魔 / 上限 / 占用（按站点去重，占用高的排前）
+const siteCeilingRows = computed(() => {
+  const by = new Map()
+  for (const t of tasks.value) {
+    if (t.builtin) continue
+    const k = t.site_name || t.id
+    const pct = Number(t.ceiling_pct || 0)
+    const prev = by.get(k)
+    if (!prev || pct > prev.pct) {
+      by.set(k, {
+        site: k,
+        bonus: Number(t.site_bonus_per_hour || 0),
+        ceiling: Number(t.site_ceiling || 0),
+        pct,
+        seeds: Number(t.seeding_count || 0),
+      })
+    }
+  }
+  return [...by.values()].sort((a, b) => b.pct - a.pct)
+})
+const ceilingOpen = ref(false)
+function openCeiling() { ceilingOpen.value = true }
 // 站点折叠：多任务行可展开
 const mhSiteOpen = ref({})
 function siteMulti(s) { return s.tasks.length > 1 }
@@ -2629,9 +2653,12 @@ onUnmounted(() => {
 
       <!-- ★ 手机端首页：任务列表（列表优先；详情是第二层）。桌面端由 CSS 隐藏。 -->
       <div class="magicflow-mobile-home">
-        <div class="mh-hero">
-          <div class="mh-hero__v">{{ mobileBonus }}<small>/h</small></div>
-          <div class="mh-hero__s">{{ mobileLiveCount }} 个站在跑<template v-if="mobileCeilingPct > 0"> · 上限占用 {{ mobileCeilingPct }}%</template><template v-if="mobileTodayGain > 0"> · 今日 +{{ mobileTodayGain.toFixed(1) }}</template></div>
+        <div class="mh-hero" role="button" tabindex="0" @click="openCeiling()">
+          <div class="mh-hero__main">
+            <div class="mh-hero__v">{{ mobileBonus }}<small>/h</small></div>
+            <div class="mh-hero__s">{{ mobileLiveCount }} 个站在跑<template v-if="mobileCeilingPct > 0"> · 上限占用 {{ mobileCeilingPct }}%</template><template v-if="mobileTodayGain > 0"> · 今日 +{{ mobileTodayGain.toFixed(1) }}</template></div>
+          </div>
+          <VIcon icon="mdi-chevron-right" size="22" class="mh-hero__chev" />
         </div>
         <div v-for="g in mobileHomeGroups" :key="g.key" class="mh-group">
           <button type="button" class="mh-group__head" @click="toggleGroup(g.key)">
@@ -3518,6 +3545,40 @@ onUnmounted(() => {
         </main>
       </div>
     </template>
+
+    <VDialog v-model="ceilingOpen" max-width="34rem" scrollable :fullscreen="isNarrow">
+      <VCard class="magicflow-dialog magicflow-ceiling-dialog">
+        <header class="magicflow-settings-dialog__head">
+          <span class="magicflow-settings-dialog__title">站点容量</span>
+          <span class="magicflow-ops-dialog__spacer" />
+          <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="ceilingOpen = false" />
+        </header>
+        <div class="magicflow-ops-dialog__sub">
+          时魔 ÷ 站点上限。占用高 = 快满，占用低 = 还有空间加种
+        </div>
+        <div class="magicflow-ops-dialog__body">
+          <div class="magicflow-ceiling-list">
+            <div v-for="r in siteCeilingRows" :key="r.site" class="magicflow-ceiling-row">
+              <div class="magicflow-ceiling-row__head">
+                <span class="magicflow-ceiling-row__nm">{{ r.site }}</span>
+                <span class="magicflow-ceiling-row__val">
+                  {{ r.bonus ? r.bonus.toFixed(1) : '—' }}<small>/h</small>
+                  <template v-if="r.ceiling"> · 上限 {{ r.ceiling.toFixed(0) }}</template>
+                </span>
+              </div>
+              <div class="magicflow-ceiling-bar">
+                <i :style="{ width: Math.min(r.pct, 100) + '%' }" :class="{ 'is-full': r.pct >= 85 }" />
+              </div>
+              <div class="magicflow-ceiling-row__foot">
+                <span>占用 {{ r.pct }}%</span>
+                <span>{{ r.seeds }} 种</span>
+              </div>
+            </div>
+            <div v-if="!siteCeilingRows.length" class="magicflow-ceiling-empty">暂无数据（任务尚未产出统计）</div>
+          </div>
+        </div>
+      </VCard>
+    </VDialog>
 
     <VDialog v-model="opsOpen" max-width="46rem" scrollable :fullscreen="isNarrow">
       <VCard class="magicflow-dialog magicflow-ops-dialog">
@@ -8125,11 +8186,14 @@ onUnmounted(() => {
 .magicflow-page .magicflow-mobile-back { display: none; }
 
 .magicflow-page .mh-hero {
+  display: flex; align-items: center; gap: 10px; cursor: pointer;
   padding: 18px 18px 16px;
   border-radius: 18px;
   background: linear-gradient(140deg, rgba(139, 123, 240, 0.20), rgba(139, 123, 240, 0.05));
   border: 1px solid rgba(139, 123, 240, 0.30);
 }
+.magicflow-page .mh-hero__main { min-inline-size: 0; flex: 1 1 auto; }
+.magicflow-page .mh-hero__chev { color: rgba(231, 234, 246, 0.4); flex: 0 0 auto; }
 .magicflow-page .mh-hero__v { font-size: 34px; font-weight: 800; letter-spacing: 0.5px; line-height: 1; }
 .magicflow-page .mh-hero__v small { font-size: 14px; font-weight: 600; color: rgba(231, 234, 246, 0.6); margin-inline-start: 4px; }
 .magicflow-page .mh-hero__s { margin-block-start: 8px; font-size: 12.5px; color: rgba(231, 234, 246, 0.62); }
@@ -8272,6 +8336,17 @@ onUnmounted(() => {
 .magicflow-ops-dialog__spacer { flex: 1 1 auto; }
 .magicflow-ops-dialog__sub { padding: 6px 18px 4px; font-size: 12px; color: rgba(231, 234, 246, 0.55); }
 .magicflow-ops-dialog__body { padding: 6px 18px 20px; overflow: auto; }
+.magicflow-ceiling-dialog { display: flex; flex-direction: column; }
+.magicflow-ceiling-list { display: flex; flex-direction: column; gap: 15px; }
+.magicflow-ceiling-row__head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.magicflow-ceiling-row__nm { font-size: 14px; font-weight: 650; }
+.magicflow-ceiling-row__val { font-size: 13px; font-weight: 700; color: #cfc7ff; flex: 0 0 auto; }
+.magicflow-ceiling-row__val small { font-size: 10px; color: rgba(231, 234, 246, 0.5); margin-inline-start: 1px; }
+.magicflow-ceiling-bar { margin-block-start: 7px; height: 7px; border-radius: 4px; background: rgba(140, 150, 220, 0.16); overflow: hidden; }
+.magicflow-ceiling-bar i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, #8b7bf0, #b6a9ff); }
+.magicflow-ceiling-bar i.is-full { background: linear-gradient(90deg, #e8b24d, #f2726d); }
+.magicflow-ceiling-row__foot { display: flex; justify-content: space-between; margin-block-start: 5px; font-size: 11px; color: rgba(231, 234, 246, 0.5); }
+.magicflow-ceiling-empty { font-size: 12.5px; color: rgba(231, 234, 246, 0.5); text-align: center; padding: 20px 0; }
 @media (max-width: 959px) {
   .magicflow-ops-dialog__body { padding: 4px 14px 18px; }
 }
