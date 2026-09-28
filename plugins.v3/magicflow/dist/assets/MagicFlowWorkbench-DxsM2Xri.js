@@ -3027,6 +3027,18 @@ const mobileLiveCount = computed(() => {
   }
   return set.size
 });
+// 今日魔力增量（按站点去重后求和；各站增量可累加）
+const mobileTodayGain = computed(() => {
+  const by = new Map();
+  for (const t of tasks.value) {
+    if (t.bonus_day_delta == null) continue
+    const k = t.site_name || t.id;
+    if (!by.has(k)) by.set(k, Number(t.bonus_day_delta) || 0);
+  }
+  let sum = 0;
+  for (const v of by.values()) sum += v;
+  return sum
+});
 // 站点折叠：多任务行可展开
 const mhSiteOpen = ref({});
 function siteMulti(s) { return s.tasks.length > 1 }
@@ -3087,6 +3099,8 @@ const mobileStrategyText = computed(() => {
     parts.push(c.protect_perfect === false ? '完美种保护关' : '完美种保护开');
     if (t.protected_count) parts.push(`接管保护 ${t.protected_count}`);
   }
+  const hr = Number(detailStats.value?.hr_owed ?? t.hr_owed ?? 0);
+  if (hr > 0) parts.push(`H&R 欠 ${hr}`);
   return parts.join(' · ')
 });
 const mobileDetailHint = computed(() => {
@@ -5408,11 +5422,15 @@ return (_ctx, _cache) => {
                 ]),
                 _createElementVNode("div", _hoisted_22, [
                   _createTextVNode(_toDisplayString(mobileLiveCount.value) + " 个站在跑", 1),
-                  (mobileSilentCount.value)
+                  (mobileTodayGain.value > 0)
                     ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
-                        _createTextVNode(" · 静默托管 " + _toDisplayString(mobileSilentCount.value) + " 种", 1)
+                        _createTextVNode(" · 今日 +" + _toDisplayString(mobileTodayGain.value.toFixed(1)), 1)
                       ], 64))
-                    : _createCommentVNode("", true)
+                    : (mobileSilentCount.value)
+                      ? (_openBlock(), _createElementBlock(_Fragment, { key: 1 }, [
+                          _createTextVNode(" · 静默托管 " + _toDisplayString(mobileSilentCount.value) + " 种", 1)
+                        ], 64))
+                      : _createCommentVNode("", true)
                 ])
               ]),
               (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(mobileHomeGroups.value, (g) => {
@@ -11795,6 +11813,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-f7ccefb6"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-7e1dc28c"]]);
 
 export { MagicFlowWorkbench as M };

@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.30.0"
+__version__ = "3.31.0"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -9443,6 +9443,9 @@ class MagicFlow(_PluginBase):
             "site_user": {},
             "task_uploaded": 0,
             "task_upload_active": 0,
+            "hr_owed": 0,
+            "hr_need_hours": 0.0,
+            "bonus_day_delta": None,
             "attention": None,
         }
         # 站点上报(黑盒:不再自算模型值)
@@ -9500,6 +9503,13 @@ class MagicFlow(_PluginBase):
                 1 for t in managed
                 if str(getattr(t, "state", "") or "").lower() in QB_DOWNLOADING_STATES
             )
+            # ★ H&R 欠账（站点级口径，含静默池 / 跨站来源份）
+            try:
+                _hr = (self._hr_owed_by_site() or {}).get(str(task.site_name or "").strip()) or {}
+                stats["hr_owed"] = int(_hr.get("n") or 0)
+                stats["hr_need_hours"] = float(_hr.get("h") or 0.0)
+            except Exception:
+                pass
             if seeding:
                 stats["state"] = "seeding"
             elif managed:
@@ -9527,6 +9537,11 @@ class MagicFlow(_PluginBase):
             elif ttype == "bonus" and mode in ("running", "seeding") and not stats.get("site_bonus_ok"):
                 att = {"level": "warning", "text": "站点魔力读不到",
                        "detail": "站点账号/实时页抓取异常，魔力数字不可信", "action": "诊断"}
+            elif stats.get("hr_owed"):
+                att = {"level": "warning",
+                       "text": "%d 个种子欠 H&R" % int(stats.get("hr_owed") or 0),
+                       "detail": "还需约 %gh 做种才能结清" % float(stats.get("hr_need_hours") or 0.0),
+                       "action": "诊断"}
             elif (bool(getattr(task, "enabled", False)) and mode != "stopped"
                   and self._store and not store_stats.get("last_success_at")):
                 att = {"level": "warning", "text": "尚未成功运行过",
@@ -9534,6 +9549,24 @@ class MagicFlow(_PluginBase):
             stats["attention"] = att
         except Exception:
             stats["attention"] = None
+
+        # ★ 今日魔力增量（按站点记当日基线；不跨站相加，仅取增量）
+        try:
+            cb = float(stats.get("site_current_bonus") or 0.0)
+            if cb > 0:
+                today = time.strftime("%Y-%m-%d")
+                base = getattr(self, "_bonus_day_base", None)
+                if base is None:
+                    base = self._bonus_day_base = {}
+                skey = str(task.site_domain or task.site_id or "").lower()
+                rec = base.get(skey)
+                if not isinstance(rec, dict) or rec.get("d") != today:
+                    rec = {"d": today, "v": cb, "ts": time.time()}
+                    base[skey] = rec
+                if (time.time() - float(rec.get("ts") or 0.0)) > 300:
+                    stats["bonus_day_delta"] = round(cb - float(rec.get("v") or cb), 2)
+        except Exception:
+            pass
 
         started = self._task_runs.get(task.id)
         if started is not None and (time.time() - started) < self._task_run_timeout:
@@ -14387,6 +14420,54 @@ class MagicFlow(_PluginBase):
         if need <= 0:
             return False, 0.0, seeded, f"无时长要求({src})"
         return (seeded + 1e-6 < need), float(need), seeded, src
+
+    def _hr_owed_by_site(self) -> Dict[str, Dict[str, float]]:
+        """各站点「欠 H&R」的已完成种子数 / 还需小时数（300s 缓存）。
+
+        站点级口径（H&R 是**账号级**风险，不按任务切分）：同一站点所有种子
+        （含静默池 / 跨站来源份）一起统计。
+        """
+        now = time.time()
+        cache = getattr(self, "_hr_owed_cache", None)
+        if isinstance(cache, dict) and (now - float(cache.get("ts", 0) or 0)) < 300:
+            return cache.get("data") or {}
+        out: Dict[str, Dict[str, float]] = {}
+        try:
+            snap = self._tag_all_torrents() or {}
+            ledger = dict(self._tag_state().items() or {})
+        except Exception:
+            snap, ledger = {}, {}
+        try:
+            cssrc = dict(self._crossseed_sources().items() or {})
+        except Exception:
+            cssrc = {}
+        # 只算「魔流相关」的种（账本 / 跨站来源份 / 带魔流-标），与 H&R 巡检同口径
+        scope = {str(x).strip().lower() for x in set(ledger) | set(cssrc)}
+        for h, t in snap.items():
+            if any(str(x).startswith("魔流-") for x in (getattr(t, "tags", None) or [])):
+                scope.add(str(h).lower())
+        for h, t in snap.items():
+            try:
+                if float(getattr(t, "progress", 0) or 0) < 0.999:
+                    continue
+                if str(h).lower() not in scope:
+                    continue
+                rec = ledger.get(str(h).lower()) or {}
+                tags = [str(x) for x in (getattr(t, "tags", None) or [])]
+                site = str(rec.get("site") or "").strip() or self._torrent_site_name(tags, "")
+                if not site:
+                    continue
+                obl, need, seeded, _src = self._hr_obligation(site, t)
+                if not obl:
+                    continue
+                slot = out.setdefault(site, {"n": 0, "h": 0.0})
+                slot["n"] = int(slot["n"]) + 1
+                slot["h"] = float(slot["h"]) + max(0.0, float(need or 0.0) - float(seeded or 0.0))
+            except Exception:
+                continue
+        data = {k: {"n": int(v["n"]), "h": round(float(v["h"]), 1)} for k, v in out.items()}
+        self._hr_owed_cache = {"ts": now, "data": data}
+        return data
 
     def _hr_guard_tick(self, apply: bool = True, limit: int = 0) -> Dict[str, Any]:
         """★ H&R **统一管理**（Master 2026-09-28 01:37）：
