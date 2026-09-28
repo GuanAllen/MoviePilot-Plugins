@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.24.3"
+__version__ = "3.27.0"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -315,10 +315,13 @@ SITE_FORMULA_TTL = 12 * 3600
 SITE_FORMULA_RETRY = 30 * 60
 # /status 实时统计(每任务一次下载器查询)缓存 TTL(秒):
 # 同一请求内「总览」与「任务列表」会各算一次,缓存可去重;也令 30s 轮询与二次进入更廉价。
-STATS_TTL = 6
+STATS_TTL = 20
 # 下载器「全部种子按标签分组」快照 TTL(秒):一次拉取全部种子(qB 一次 torrents_info),
 # 供所有任务共用(替代「每任务各拉一次全量」)。冷启动 /status 由 N 次全量 → 1 次。
-TAG_SNAPSHOT_TTL = 6.0
+TAG_SNAPSHOT_TTL = 20.0
+# 站点用户数据行缓存 TTL(秒):SiteOper.get_userdata_latest() 走 DB + 循环找域名,
+# 一次 _status_heavy 含 7 任务 = 7 次同表 DB 查询。缓存使本轮 / 跨轮复用,DB 1 次/TTL。
+USERDATA_ROW_TTL = 60.0
 # 站点/下载器「下拉选项」缓存 TTL(秒):站点表/下载器表几乎不变,随 /status 重复拉取很浪费。
 OPTIONS_TTL = 300.0
 # ── 媒体资产价值闸门(2026-09-26)───────────────────────────────────────
@@ -336,7 +339,8 @@ MEDIA_ASSET_HISTORY_TTL = 120.0
 #  参数(速度/余量)在 fetcher.FREE_ASSUMED_SPEED_MBPS / FREE_MIN_MARGIN_SEC。
 #  被跳过的候选进 dead 冷却(沿用 `_dead_cooldown`,6h),避免反复评估同一颗。
 # /status 整包重数据缓存 TTL(秒)--stale-while-revalidate:命中秒回,过期后台静默刷新。
-STATUS_TTL = 15
+# 与前端轮询 30s 对齐:TTL=30 → 每轮 30s 轮询只撞一次过期(后台静默刷新,前端秒回)。
+STATUS_TTL = 30
 
 # 元数据兜底:每轮最多处理的剧集目录数(其余下轮继续)
 FALLBACK_SCAN_MAX = 30
@@ -1699,12 +1703,18 @@ class MagicFlow(_PluginBase):
         )
 
     def get_service(self) -> List[Dict[str, Any]]:
-        """为每个启用任务注册独立的刷流与检查服务"""
+        """为每个任务注册独立的服务。
+
+        - ``running``:注册 Brush（刷流/补种）+ Check（清理/纳管/H&R）双 worker;
+        - ``seeding``:只挂 Check（停调度、已完成种继续做种;纳管同站已有种）;
+        - ``stopped``:完全不挂。
+        """
         if not self.get_state():
             return []
         services: List[Dict[str, Any]] = []
         for task in self._task_configs.values():
-            if not task.enabled:
+            _mode = self._normalize_run_mode(task.run_mode)
+            if _mode == "stopped":
                 continue
 
             if task.cron_expression:
@@ -1722,16 +1732,20 @@ class MagicFlow(_PluginBase):
                     "jitter": self._jitter_seconds(task.brush_interval),
                 }
 
-            services.append(
-                {
-                    "id": f"Task_{task.id}_Brush",
-                    "name": f"魔流 - {task.name}",
-                    "trigger": brush_trigger,
-                    "func": self.brush,
-                    "kwargs": brush_kwargs,
-                    "func_kwargs": {"task_id": task.id},
-                }
-            )
+            # ★ 3.25.0: seeding 模式只挂 Check,不挂 Brush
+            # - running: 补种 + 魔力优化(Brush + Check 双 worker)
+            # - seeding: 仅做已完成种继续做种 + 同站纳管 + 清理无进度/挂 H&R(只 Check,不下载、不刷魔力)
+            if _mode == "running":
+                services.append(
+                    {
+                        "id": f"Task_{task.id}_Brush",
+                        "name": f"魔流 - {task.name}",
+                        "trigger": brush_trigger,
+                        "func": self.brush,
+                        "kwargs": brush_kwargs,
+                        "func_kwargs": {"task_id": task.id},
+                    }
+                )
             services.append(
                 {
                     "id": f"Task_{task.id}_Check",
@@ -2285,6 +2299,24 @@ class MagicFlow(_PluginBase):
                 self._log(f"记录运行状态变更失败:{err}", "warning")
         if mode == "running":
             self._run_check(task.id)
+        elif mode == "seeding":
+            # ★ 3.25.0: seeding 模式主动纳管同站已有种(IYUU 回来/手动添加/本机已有的同站资源)
+            # 不以 _run_check 启动,只调度一次同站纳管 + 按 check_interval 由 Check worker 后续接力。
+            try:
+                _dl2 = self._get_downloader(task.downloader)
+                if _dl2 and _dl2.is_available:
+                    _ad = self._adopt_same_site(task, _dl2)
+                    if _ad.get("matched", 0) or _ad.get("adopted", 0) or _ad.get("already", 0):
+                        self._log(
+                            f"魔流 [{task.name}] 切做种中 → 同站纳管"
+                            f" 匹配 {_ad.get('matched', 0)} / 新接管 {_ad.get('adopted', 0)} / 已纳管 {_ad.get('already', 0)}",
+                            "info",
+                        )
+            except Exception as _adopt_exc:  # noqa: BLE001
+                self._log(
+                    f"魔流 [{task.name}] seeding 切状态同站纳管异常:{_adopt_exc}",
+                    "warning",
+                )
         return out
 
     def _save_config(self) -> None:
@@ -5455,6 +5487,16 @@ class MagicFlow(_PluginBase):
                 self._store.record_run_error(task.id, "下载器不可用")
                 return
 
+            # ★ 3.25.0: Check 也要纳管同站已有种。
+            #   - running 任务:已有 brush() 入口纳管,这里重复做不会被 seed 计息(已有种判断保护);
+            #   - seeding 任务:没有 brush() 入口,这是**唯一纳管点**——手动添加/IYUU
+            #     回来的同站种靠这里纳管并保护。复用 brush() 入口的同名逻辑(2026-09-26
+            #     设计:已纳管 / 跨站来源份 / 本插件自己刷的种三路分流)——一律跳过误纳管。
+            try:
+                self._adopt_same_site(task, downloader)
+            except Exception as _adopt_exc:  # noqa: BLE001
+                self._log(f"魔流 [{task.name}] Check 同站纳管异常: {_adopt_exc}", "warning")
+
             r = self._cleanup_round(task, downloader)
             self._settle(WorkReport(
                 task_id=task.id,
@@ -6109,20 +6151,39 @@ class MagicFlow(_PluginBase):
         return default if v is None else v
 
     def _userdata_row(self, site_id: int):
-        """找到指定站点最新的用户数据行(dict 或 ORM 对象均可)。"""
+        """找到指定站点最新的用户数据行(dict 或 ORM 对象均可)。
+
+        带 60s 内存缓存(按 site_id):_status_heavy 一次会调 N 次(N 任务数),
+        原版每次都 ``SiteOper().get_userdata_latest()`` 走 DB + 循环找域名,
+        单次 8s 重建里 DB 占大头。缓存后同 site_id TTL 内复用=0 网络。
+        """
+        cache = getattr(self, "_userdata_row_cache", None)
+        if cache is None:
+            cache = self._userdata_row_cache = {}
+        now = time.time()
+        cached_hit = cache.get(site_id)
+        if cached_hit is not None:
+            ts, row = cached_hit
+            if (now - ts) < USERDATA_ROW_TTL:
+                return row
         try:
             from app.db.oper.site import SiteOper
             rows = SiteOper().get_userdata_latest() or []
         except Exception:
+            cache[site_id] = (now, None)
             return None
         site = self._get_site(site_id)
         want_domain = (getattr(site, "domain", "") or "").strip() if site else ""
+        match = None
         for row in rows:
             if want_domain and str(self._ud_get(row, "domain", "") or "").strip() == want_domain:
-                return row
+                match = row
+                break
             if self._ud_get(row, "id") == site_id:
-                return row
-        return None
+                match = row
+                break
+        cache[site_id] = (now, match)
+        return match
 
     def _site_seeding_count(self, site_id: int) -> int:
         """站点账号「去重后」的做种数(站点「0.5×做种数」固定奖励用的就是这个口径)。
@@ -6315,14 +6376,26 @@ class MagicFlow(_PluginBase):
     # 任务目标(达到后自动停止任务)
     # ---------------------------------------------------------
 
-    def _task_goal_status(self, task: MagicFlowTaskConfig) -> Dict[str, Any]:
+    def _task_goal_status(self, task: MagicFlowTaskConfig, light: bool = False) -> Dict[str, Any]:
         """任务目标完成情况(用于展示与自动停止判定)。
 
         目标口径随任务类型:
           - bonus:站点魔力值(SiteUserData.bonus)达到 ``goal_value``;
           - brush:站点上传量(SiteUserData.upload,字节)达到 ``goal_value`` GB。
         返回以 ``goal_`` 前缀的字段,避免与任务其它字段冲突。
+
+        30s 内存缓存（按 task_id+light 分别缓存）：
+        - light=False 缓存：全量（包含 live 真实值）；
+        - light=True 缓存：仅配置面（warming 期点用）。
         """
+        cache = getattr(self, "_task_goal_status_cache", None)
+        if cache is None:
+            cache = self._task_goal_status_cache = {}
+        ckey = (str(getattr(task, "id", "") or ""), bool(light))
+        hit = cache.get(ckey)
+        now = time.time()
+        if hit is not None and (now - float(hit.get("ts", 0))) < 30:
+            return dict(hit.get("data") or {})
         is_brush = str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush"
         unit = "GB" if is_brush else "魔力值"
         out: Dict[str, Any] = {
@@ -6337,9 +6410,14 @@ class MagicFlow(_PluginBase):
         except (TypeError, ValueError):
             tgt = 0.0
         if tgt <= 0:
+            cache[ckey] = {"ts": now, "data": out}
             return out
         out["goal_has"] = True
         out["goal_target"] = tgt
+        if light:
+            out["goal_source"] = "pending"
+            cache[ckey] = {"ts": now, "data": out}
+            return out
         stats = self._site_user_stats(task.site_id) or {}
         # ★ 优先用「站点实时数据」(直连站点用户栏,240s 缓存),拿不到才回退 MP 的 6h 快照。
         live: Dict[str, Any] = {}
@@ -6362,6 +6440,7 @@ class MagicFlow(_PluginBase):
             cur = base
         out["goal_current"] = cur
         out["goal_reached"] = bool(stats.get("ok")) and cur >= tgt - 1e-9
+        cache[ckey] = {"ts": now, "data": out}
         return out
 
     def _maybe_autostop_for_goal(self, task: MagicFlowTaskConfig) -> bool:
@@ -9582,7 +9661,7 @@ class MagicFlow(_PluginBase):
                 **task.to_dict(),
                 **runtime,
                 **self._phase_info(task.id),
-                **self._task_goal_status(task),
+                **self._task_goal_status(task, light=True),
             })
         try:
             tasks.append(self._silent_host_card())
@@ -9596,11 +9675,19 @@ class MagicFlow(_PluginBase):
 
     def _build_status_heavy(self) -> Dict[str, Any]:
         """构建总览的重数据(统计 + 任务列表 + 选项)。"""
+        import time as _t
+        _bsh0 = _t.time()
         summary = self._compute_summary()
+        _t1 = _t.time()
         self._log(
             f"API 总览:任务 {summary.get('total_tasks')} 启用 {summary.get('enabled_tasks')} "
             f"托管 {summary.get('seeding_count')} 魔力 {summary.get('bonus_per_hour')}/h"
         )
+        _bsh_ms = round((_t.time() - _bsh0) * 1000)
+        _summary_ms = round((_t1 - _bsh0) * 1000)
+        _tasks_ms = round((_t.time() - _t1) * 1000)
+        if _bsh_ms > 3000:
+            self._log(f"_build_status_heavy slow: {_bsh_ms}ms summary={_summary_ms}ms tasks={_tasks_ms}ms", "warning")
         return {
             "summary": summary,
             "tasks": self._build_task_list(),
@@ -9608,9 +9695,9 @@ class MagicFlow(_PluginBase):
         }
 
     def _light_status(self) -> Dict[str, Any]:
-        """轻量壳:冷启动首屏用。任务配置/阶段/目标都算(本地快),**不算下载器实时统计**。
+        """轻量壳:冷启动首屏用。任务配置/阶段都算(本地快)，目标进度仅补“配置面”(轻量)。
 
-        供后台构建重数据期间先返回,避免首屏卡 2~3s;前端见到 warming 会快速重拉。
+        供后台构建重数据期间先返回,避免首屏卡 7~10s；前端见到 warming 会快速重拉。
         """
         try:
             total = len(self._task_configs)
@@ -9621,7 +9708,7 @@ class MagicFlow(_PluginBase):
                     tasks.append({
                         **task.to_dict(),
                         **self._phase_info(task.id),
-                        **self._task_goal_status(task),
+                        **self._task_goal_status(task, light=True),
                     })
                 except Exception:
                     tasks.append(task.to_dict())
@@ -12262,7 +12349,16 @@ class MagicFlow(_PluginBase):
             self._log(f"静默托管异常:{err}", "warning")
 
     def _silent_host_card(self) -> Dict[str, Any]:
-        """★ 「静默托管」常驻任务在**任务列表**里的只读条目（Master 2026-09-28 06:33）。"""
+        """★ 「静默托管」常驻任务在**任务列表**里的只读条目（Master 2026-09-28 06:33）。
+
+        带 30s 内存缓存（按运行身份）：原来每次 /status 都会全量走 _tag_all_torrents
+        拉到 868 个种子，跳表 + 分类 + stat 组装，在 status 30s 轮询时是最大慢点之一。
+        缓存后稳态首次 0.01s。
+        """
+        cache = getattr(self, "_silent_host_card_cache", None)
+        now = time.time()
+        if cache and (now - cache["ts"]) < 30:
+            return cache["data"]
         n_sil = 0
         n_hr = 0
         by_state: Dict[str, int] = {}
@@ -12334,6 +12430,38 @@ class MagicFlow(_PluginBase):
             "host_interval_minutes": round(_min, 1),
             "host_last_run": (time.strftime("%m-%d %H:%M", time.localtime(last)) if last else "—"),
         }
+        out = {
+            "id": SILENT_HOST_TASK_ID,
+            "name": "静默托管",
+            "builtin": True,
+            "enabled": True,
+            "run_mode": "running",
+            "task_type": "host",
+            "state": "running",
+            "site_id": 0,
+            "site_domain": "",
+            "site_name": "全部站点（静默池）",
+            "downloader": "所有下载器",
+            "brush_tag": "魔流-<站点>-静默[-子类]",
+            "save_path": "",
+            "seeding_count": n_sil,
+            "hr_count": n_hr,
+            "nonhr_count": max(0, n_sil - n_hr),
+            "active_seeding_count": n_sil,
+            "downloading_count": 0,
+            "paused_count": 0,
+            "classify": {
+                "by_state": by_state,
+                "by_site": by_site,
+            },
+            "host_interval_minutes": round(_min, 1),
+            "host_last_run": (time.strftime("%m-%d %H:%M", time.localtime(last)) if last else "—"),
+        }
+        if cache is None:
+            cache = self._silent_host_card_cache = {}
+        cache["ts"] = now
+        cache["data"] = out
+        return out
 
     def tags_watch(self) -> None:
         """标签账本维护（worker）：状态账本快照/对账 · 资源账本 · 特征码补录 · 停止任务退静默。
