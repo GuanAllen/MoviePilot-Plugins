@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.22.1"
+__version__ = "3.22.3"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -857,7 +857,7 @@ class MagicFlow(_PluginBase):
             "disk_min_free_gb": _rf(raw_config.get("recommend_disk_min_free_gb"), 50.0),
             # ★ 评分源：douban=豆瓣优先(取不到回退 TMDB) / tmdb（Master 2026-09-28 09:06 选 A）
             "rating_source": str(raw_config.get("recommend_rating_source") or "douban").strip().lower(),
-            "douban_max_per_run": int(_rf(raw_config.get("recommend_douban_max_per_run"), 60.0)),
+            "douban_max_per_run": int(_rf(raw_config.get("recommend_douban_max_per_run"), 30.0)),
         }
         # 静默-普通清理（Master 01:17：「普通考核魔力产出…在魔力产出够的情况下普通的直接干」）
         self._silent_cfg = {
@@ -1951,7 +1951,7 @@ class MagicFlow(_PluginBase):
             "recommend_temp_ttl_days": float(self._recommend_cfg.get("temp_ttl_days", 7.0)),
             "recommend_disk_min_free_gb": float(self._recommend_cfg.get("disk_min_free_gb", 50.0)),
             "recommend_rating_source": str(self._recommend_cfg.get("rating_source", "douban")),
-            "recommend_douban_max_per_run": int(self._recommend_cfg.get("douban_max_per_run", 60) or 0),
+            "recommend_douban_max_per_run": int(self._recommend_cfg.get("douban_max_per_run", 30) or 0),
             "crossseed_guard": bool(getattr(self, "_cs_cfg", {}).get("guard", True)),
             "crossseed_guard_pct": float(getattr(self, "_cs_cfg", {}).get("guard_pct") or 5.0),
             "crossseed_guard_min_mb": float(getattr(self, "_cs_cfg", {}).get("guard_min_mb") or 50.0),
@@ -10997,7 +10997,8 @@ class MagicFlow(_PluginBase):
         except Exception as e:  # noqa: BLE001
             return Response(success=False, message=str(e))
 
-    def debug_douban(self, name: str = "", year: str = "", keyword: str = "", count: int = 6) -> Response:
+    def debug_douban(self, name: str = "", year: str = "", keyword: str = "", count: int = 6,
+                     action: str = "") -> Response:
         """诊断:直接查豆瓣评分源（自带 frodo 客户端）。
 
         - ``name``+``year``：走正式查询（带缓存/限速/匹配），返回命中结果；
@@ -11009,8 +11010,13 @@ class MagicFlow(_PluginBase):
             return Response(success=False, message=f"豆瓣模块不可用:{err}")
         cli = get_client(self)
         try:
+            if str(action or "") == "purge_neg":
+                n = cli.purge_negatives()
+                return Response(success=True, message=f"已清掉 {n} 条「未命中/未开分」缓存", data=cli.stats())
             if keyword:
-                return Response(success=True, message="候选", data={"candidates": cli.search(keyword, count=count)})
+                _c = cli.search(keyword, count=count)
+                return Response(success=True, message=("请求失败(风控/网络,已冷却)" if _c is None else "候选"),
+                                data={"candidates": _c or [], "stats": cli.stats()})
             hit = cli.lookup(name or "", year or "")
             if not hit:
                 return Response(success=True, message="未命中/未开分（已进缓存，不重复查）",

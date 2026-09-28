@@ -3733,7 +3733,7 @@ onUnmounted(() => {
                 min="0"
                 step="10"
                 label="每轮豆瓣查询上限"
-                hint="超过就本轮回退 TMDB（防豆瓣风控），默认 60；0 = 不限"
+                hint="超过就本轮回退 TMDB（防豆瓣限流），默认 30；0 = 不限"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
