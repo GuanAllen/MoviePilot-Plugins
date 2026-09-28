@@ -31,6 +31,10 @@ RATE_WINDOW_SEC = 3600.0
 DEFAULT_TTL = 240.0
 # 抓取失败后的站点级冷却（秒）
 FAIL_COOLDOWN = 180.0
+# 连续失败时的指数退避上限（秒）——避免对长期无响应的站点无限重试
+FAIL_COOLDOWN_MAX = 3600.0
+# 同一站点连续失败超过此次数后，日志由 warning 降为 debug（防刷屏）
+FAIL_LOG_AFTER = 3
 # 站点用户栏页（NexusPHP 通用）
 DEFAULT_PAGE = "/index.php"
 # ★ 站点「每日访问次数已达上限」页面特征（实测 PTT：用户等级控制量 300PV/天）
@@ -483,6 +487,7 @@ class LiveStats:
         self._cache: Any = _LiveCache(_tier)
         self._locks: Dict[str, threading.Lock] = {}
         self._cooldown: Dict[str, float] = {}
+        self._fail_count: Dict[str, int] = {}
         self._samples: Dict[str, List[List[float]]] = {}
         self._loaded = False
         self._leech: Dict[str, Tuple[float, Dict[str, Any]]] = {}
@@ -727,15 +732,20 @@ class LiveStats:
             res["_at"] = time.time()
             if res.get("ok"):
                 self._cooldown.pop(key, None)
+                self._fail_count.pop(key, None)
                 self._cache[key] = res
                 self._push_sample(key, res)
                 self._save_samples()
             else:
-                self._cooldown[key] = time.time() + FAIL_COOLDOWN
+                _n = self._fail_count.get(key, 0) + 1
+                self._fail_count[key] = _n
+                _delay = min(FAIL_COOLDOWN * (2 ** (_n - 1)), FAIL_COOLDOWN_MAX)
+                self._cooldown[key] = time.time() + _delay
                 if res.get("pv_limited"):
                     self._pv_block_site(int(site_id), str(res.get("error") or "访问次数已达上限"))
                 else:
-                    self._log(f"站点 {site_id} 实时数据抓取失败：{res.get('error')}", "warning")
+                    _msg = f"站点 {site_id} 实时数据抓取失败：{res.get('error')}（第 {_n} 次，退避 {int(_delay)}s）"
+                    self._log(_msg, "warning" if _n <= FAIL_LOG_AFTER else "debug")
                 if hit:  # 回退上次成功值（标记 stale）
                     out = dict(hit)
                     out.update({"cached": True, "stale": True, "error": res.get("error")})
