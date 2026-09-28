@@ -3,7 +3,7 @@
     "name": "魔流",
     "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
     "labels": "站点,做种,魔力,刷流",
-    "version": "3.22.5",
+    "version": "3.22.6",
     "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
     "author": "IronOx",
     "level": 1,
@@ -221,7 +221,8 @@
       "3.22.2": "**3.22.2**：豆瓣源抗风控 —— 实测被拒 `HTTP 403`；现在请求失败（风控/网络）**不进缓存**（与「真的没结果」区分，避免一次 403 污染 3 天），403/429 触发 **300s 冷却**、其它错误 60s，冷却中直接回退 TMDB。",
       "3.22.3": "**3.22.3**：豆瓣源**降速**——实测 8 分钟 ~130 次请求就被豆瓣按 IP 封（`HTTP 403`，宿主/容器都封）。请求间隔 **1.5s → 20s**、403 冷却 **300s → 1800s**、每轮预算默认 **60 → 30**（缓存命中不受影响）。首次暖缓存会慢（~130 个标题要跑 40 分钟以上，分几轮），之后 30 天命中不查。",
       "3.22.4": "**3.22.4**：**默认评分源改回 TMDB**（`recommend_rating_source` 默认 `tmdb`）—— 豆瓣源实测被按 IP 限流（403），Master 09:42 决定不走豆瓣；豆瓣代码保留，需在设置里手动切「豆瓣优先」才启用。",
-      "3.22.5": "**3.22.5**：加**一次性迁移**把存量配置里的 `recommend_rating_source=douban` 强制改回 `tmdb`（旧默认被自动落盘，光改代码默认值不生效）；迁移标记 `rating_source_migrated_3224` 落 `save_data`，之后手动选「豆瓣优先」不会再被覆盖。"
+      "3.22.5": "**3.22.5**：加**一次性迁移**把存量配置里的 `recommend_rating_source=douban` 强制改回 `tmdb`（旧默认被自动落盘，光改代码默认值不生效）；迁移标记 `rating_source_migrated_3224` 落 `save_data`，之后手动选「豆瓣优先」不会再被覆盖。",
+      "3.22.6": "**3.22.6**：**本地快照（离线兜底）** —— 豆瓣 web（`movie.douban.com`）可访问而 frodo API 被限，于是爬了两份种子快照：`data/snapshots/douban_top250.json`（250 部电影）+ `douban_movie_chart.json`（本周热门 ~30 部）。`douban.py` 加 `_load_snapshot` / `_snapshot_lookup`：在缓存之前先查本地快照，命中**不计预算、不触发风控**。`/debug/douban` stats 加 `snapshot / snapshot_sources` 字段。增量成长继续靠现有 30 天命中缓存。覆盖典型种池 ~25-30%。"
     }
   },
   "version": "3.14.7",

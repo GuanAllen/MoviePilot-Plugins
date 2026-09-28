@@ -21,6 +21,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import re
 import threading
 import time
@@ -41,6 +42,8 @@ _UA = (
 
 COOLDOWN_403 = 1800.0           # 被豆瓣风控（403/429）后，静默多久不再请求（实测 8 分钟 ~130 次就被封 IP）
 COOLDOWN_ERR = 60.0             # 其它网络错误后的短冷却
+SNAPSHOT_KEY = "douban_snapshot_meta"  # 持久化：快照元数据（来源、条目数、抓取时间）
+SNAPSHOT_FILES = ("douban_top250.json", "douban_movie_chart.json")  # data/snapshots/ 下找
 HIT_TTL = 30 * 24 * 3600.0      # 有评分：30 天
 MISS_TTL = 3 * 24 * 3600.0      # 没搜到 / 没开分：3 天
 MIN_INTERVAL = 20.0             # 两次真实请求之间的最小间隔（秒）——豆瓣限流很凶，宁可慢
@@ -67,6 +70,9 @@ class DoubanRating:
         self._budget_skipped = 0
         self._blocked_until = 0.0
         self._loaded = False
+        self._snapshot: Dict[str, Dict[str, Any]] = {}  # 标题_norm → {id,title,year,rating,source}
+        self._snapshot_loaded = False
+        self._snapshot_source: Dict[str, str] = {}     # 标题_norm → 来自哪个 snapshot 文件
 
     # ---------- 基础设施 ----------
     def _log(self, msg: str, level: str = "info") -> None:
@@ -102,6 +108,140 @@ class DoubanRating:
             self.plugin.save_data(key=CACHE_KEY, value={k: [v[0], v[1]] for k, v in items})  # type: ignore[union-attr]
         except Exception:  # noqa: BLE001
             pass
+
+    # ---------- 本地快照（离线兜底，绕开豆瓣限流） ----------
+    def _snapshot_paths(self) -> List[str]:
+        """找 data/snapshots/ 下的所有快照 JSON。
+
+        优先查 plugin 自己挂载的「数据目录」下的 snapshots/，
+        否则用本 douban.py 所在插件根目录的 data/snapshots/。
+        """
+        paths: List[str] = []
+        candidates: List[str] = []
+        # plugin 数据目录（MoviePilot: config/plugins/MagicFlow/）下的 snapshots/
+        data_dir = ""
+        try:
+            data_dir = str(getattr(self.plugin, "data_dir", None) or "")
+        except Exception:  # noqa: BLE001
+            data_dir = ""
+        if data_dir:
+            candidates.append(os.path.join(data_dir, "snapshots"))
+        # 插件代码目录（与 douban.py 同级的 data/snapshots/）
+        try:
+            here = os.path.dirname(os.path.abspath(__file__))
+            candidates.append(os.path.join(here, "data", "snapshots"))
+        except Exception:  # noqa: BLE001
+            pass
+        for base in candidates:
+            for name in SNAPSHOT_FILES:
+                p = os.path.join(base, name)
+                if os.path.isfile(p):
+                    paths.append(p)
+        return paths
+
+    def _load_snapshot(self) -> None:
+        """加载本地快照到内存索引（每进程一次）。"""
+        if self._snapshot_loaded:
+            return
+        self._snapshot_loaded = True
+        for path in self._snapshot_paths():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    blob = json.load(f)
+                src = os.path.basename(path)
+                items = blob.get("items") if isinstance(blob, dict) else blob
+                if not isinstance(items, list):
+                    continue
+                for it in items:
+                    if not isinstance(it, dict):
+                        continue
+                    title = it.get("title") or it.get("name") or ""
+                    if not title:
+                        continue
+                    norm = _norm(title)
+                    if not norm:
+                        continue
+                    self._snapshot[norm] = {
+                        "id": str(it.get("id") or it.get("subject_id") or ""),
+                        "title": str(title),
+                        "year": str(it.get("year") or ""),
+                        "rating": float(it.get("rating") or 0),
+                        "votes": int(it.get("votes") or 0),
+                        "source": src,
+                    }
+                    self._snapshot_source[norm] = src
+            except Exception as err:  # noqa: BLE001
+                self._log(f"魔流:加载豆瓣快照 {path} 失败:{err}", "warning")
+        # 也试试 plugin 持久化（如果存过 snapshot 索引到 save_data）
+        try:
+            raw = self.plugin.get_data(SNAPSHOT_KEY)  # type: ignore[union-attr]
+            if isinstance(raw, str):
+                raw = json.loads(raw)
+            if isinstance(raw, dict) and raw.get("items"):
+                for it in raw.get("items", []):
+                    title = it.get("title") or ""
+                    norm = _norm(title)
+                    if norm and norm not in self._snapshot:
+                        self._snapshot[norm] = {
+                            "id": str(it.get("id") or ""),
+                            "title": title, "year": str(it.get("year") or ""),
+                            "rating": float(it.get("rating") or 0),
+                            "votes": int(it.get("votes") or 0),
+                            "source": "saved",
+                        }
+        except Exception:  # noqa: BLE001
+            pass
+
+    def refresh_snapshot(self) -> int:
+        """重读快照文件（重新加载磁盘文件）。返回当前快照条目数。"""
+        with self._lock:
+            self._snapshot = {}
+            self._snapshot_source = {}
+            self._snapshot_loaded = False
+        self._load_snapshot()
+        return len(self._snapshot)
+
+    def snapshot_stats(self) -> Dict[str, Any]:
+        """快照统计：总条目 + 来源分布。"""
+        with self._lock:
+            self._load_snapshot()
+            src_dist: Dict[str, int] = {}
+            for s in self._snapshot_source.values():
+                src_dist[s] = src_dist.get(s, 0) + 1
+            return {"total": len(self._snapshot), "sources": src_dist}
+
+    def _snapshot_lookup(self, title: str, year: Any = "") -> Optional[Dict[str, Any]]:
+        """从本地快照查标题 → 评分。匹配规则：精确 > 含 year/含 year差1 > 含单字。
+
+        返回与 frodo 一致的字段结构，``ts`` 用快照抓取时间。
+        """
+        self._load_snapshot()
+        key = _norm(title)
+        if not key:
+            return None
+        # 精确
+        hit = self._snapshot.get(key)
+        # 兜底：标题完全相同（带原标题字符串）的 key 可能因 norm 差异漏掉，遍历一次
+        if not hit:
+            for k, v in self._snapshot.items():
+                if k == key or k in key or key in k:
+                    hit = v; break
+        if not hit:
+            return None
+        # year 校验（不强制，年份对不上时仍返回，但优先级降）
+        year_clean = str(year or "").strip()
+        if year_clean and hit.get("year") and hit["year"] != year_clean:
+            try:
+                if abs(int(hit["year"]) - int(year_clean)) > 1:
+                    return None
+            except (TypeError, ValueError):
+                return None
+        if float(hit.get("rating") or 0) <= 0:
+            return None
+        out = dict(hit)
+        out["ts"] = time.time()
+        out["snapshot"] = True
+        return out
 
     # ---------- 豆瓣 frodo ----------
     @staticmethod
@@ -159,8 +299,15 @@ class DoubanRating:
 
     def stats(self) -> Dict[str, Any]:
         with self._lock:
-            return {"cache": len(self._cache), "round_new": self._round_new,
-                    "budget": self._budget, "budget_skipped": self._budget_skipped}
+            self._load_snapshot()
+            return {
+                "cache": len(self._cache),
+                "snapshot": len(self._snapshot),
+                "snapshot_sources": dict(self._snapshot_source),
+                "round_new": self._round_new,
+                "budget": self._budget,
+                "budget_skipped": self._budget_skipped,
+            }
 
     def search(self, keyword: str, count: int = 6) -> Optional[List[Dict[str, Any]]]:
         """按关键字搜豆瓣 → 规范化候选列表。
@@ -243,6 +390,11 @@ class DoubanRating:
             return None
         with self._lock:
             self._load()
+            self._load_snapshot()
+            # ★ 本地快照先查（命中不消耗预算、不受风控影响）
+            snap = self._snapshot_lookup(title, year)
+            if snap is not None:
+                return snap
             if use_cache:
                 hit = self._cache.get(key)
                 if hit:
