@@ -1495,6 +1495,28 @@ class DownloaderAdapter:
                 return ok, (None if not stuck else f"另有 {len(stuck)} 个已改 resume")
         return self.resume_torrents(hs)
 
+    def release_force_start_torrents(self, hashes: List[str]) -> Tuple[int, Optional[str]]:
+        """★ **取消强挂**：把 ``forcedUP`` 的种降回普通做种（qB ``torrents_set_force_start(enable=False)``）。
+
+        与 ``force_start_torrents`` 相反。**不暂停、不删、不动文件** —— 只撤掉「强制绕过队列」这层，
+        种继续正常做种（Master 2026-09-28 13:21「到时间摘标签就不挂了」）。
+        """
+        hs = [str(h).strip().lower() for h in (hashes or []) if str(h).strip()]
+        if not hs:
+            return 0, None
+        qbc_fn = getattr(self, "_qb_client", None)
+        qbc = qbc_fn() if callable(qbc_fn) else None
+        if qbc is None:
+            return 0, "无 qB 客户端"
+        ok = 0
+        for h in hs:  # ★ 逐个（与 force_start 同理：批量传 list 在 qB 侧不生效）
+            try:
+                qbc.torrents_set_force_start(enable=False, torrent_hashes=h)
+                ok += 1
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"取消强挂失败 {h}: {e}")
+        return ok, None
+
     def replace_torrent_tags(self, hash_string: str, tags: List[str]) -> bool:
         """★ 真正「替换」标签：先删差集、再补新增。
 
