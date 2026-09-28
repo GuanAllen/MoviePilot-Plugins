@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.29.0"
+__version__ = "3.30.0"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -9443,6 +9443,7 @@ class MagicFlow(_PluginBase):
             "site_user": {},
             "task_uploaded": 0,
             "task_upload_active": 0,
+            "attention": None,
         }
         # 站点上报(黑盒:不再自算模型值)
         try:
@@ -9506,11 +9507,33 @@ class MagicFlow(_PluginBase):
         except Exception as err:
             self._log(f"统计任务 [{task.name}] 运行时数据失败: {err}", "warning")
 
+        store_stats: Dict[str, Any] = {}
         if self._store:
             store_stats = self._store.get_task_stats(task.id) or {}
             stats["protected_count"] = store_stats.get("protected_count", 0)
             if store_stats.get("last_error"):
                 stats["state"] = "error"
+
+        # ★ 「需要你管」：真实可操作信号（不是只看颜色）
+        try:
+            store_stats = store_stats if isinstance(store_stats, dict) else {}
+            mode = str(getattr(task, "run_mode", "running") or "running")
+            ttype = str(getattr(task, "task_type", "bonus") or "bonus").strip().lower()
+            lerr = str(store_stats.get("last_error") or "").strip()
+            att = None
+            if lerr:
+                att = {"level": "error", "text": "上次运行出错",
+                       "detail": lerr[:160], "action": "诊断"}
+            elif ttype == "bonus" and mode in ("running", "seeding") and not stats.get("site_bonus_ok"):
+                att = {"level": "warning", "text": "站点魔力读不到",
+                       "detail": "站点账号/实时页抓取异常，魔力数字不可信", "action": "诊断"}
+            elif (bool(getattr(task, "enabled", False)) and mode != "stopped"
+                  and self._store and not store_stats.get("last_success_at")):
+                att = {"level": "warning", "text": "尚未成功运行过",
+                       "detail": "等待首轮执行完成", "action": "诊断"}
+            stats["attention"] = att
+        except Exception:
+            stats["attention"] = None
 
         started = self._task_runs.get(task.id)
         if started is not None and (time.time() - started) < self._task_run_timeout:
