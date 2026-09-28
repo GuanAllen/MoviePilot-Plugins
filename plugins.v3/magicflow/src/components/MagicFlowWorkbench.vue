@@ -456,6 +456,7 @@ function toggleSite(key) { mhSiteOpen.value = { ...mhSiteOpen.value, [key]: !mhS
 function openSiteRow(s) { if (siteMulti(s)) toggleSite(s.key); else openTaskMobile(s.tasks[0].id) }
 const mobileBonus = computed(() => (Number(summary.value.bonus_per_hour) || 0).toFixed(1))
 const mobileSilentCount = computed(() => tasks.value.find(t => t.builtin)?.seeding_count || 0)
+const mobileCeilingPct = computed(() => Number(summary.value.ceiling_pct || 0))
 // 列表行副标题：状态词 + 关键数
 function mobileRowLine(t) {
   const parts = []
@@ -2630,7 +2631,7 @@ onUnmounted(() => {
       <div class="magicflow-mobile-home">
         <div class="mh-hero">
           <div class="mh-hero__v">{{ mobileBonus }}<small>/h</small></div>
-          <div class="mh-hero__s">{{ mobileLiveCount }} 个站在跑<template v-if="mobileTodayGain > 0"> · 今日 +{{ mobileTodayGain.toFixed(1) }}</template><template v-else-if="mobileSilentCount"> · 静默托管 {{ mobileSilentCount }} 种</template></div>
+          <div class="mh-hero__s">{{ mobileLiveCount }} 个站在跑<template v-if="mobileCeilingPct > 0"> · 上限占用 {{ mobileCeilingPct }}%</template><template v-if="mobileTodayGain > 0"> · 今日 +{{ mobileTodayGain.toFixed(1) }}</template></div>
         </div>
         <div v-for="g in mobileHomeGroups" :key="g.key" class="mh-group">
           <button type="button" class="mh-group__head" @click="toggleGroup(g.key)">

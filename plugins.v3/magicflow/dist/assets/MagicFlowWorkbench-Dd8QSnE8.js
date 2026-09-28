@@ -3046,7 +3046,8 @@ function siteOpen(key) { return !!mhSiteOpen.value[key] }
 function toggleSite(key) { mhSiteOpen.value = { ...mhSiteOpen.value, [key]: !mhSiteOpen.value[key] }; }
 function openSiteRow(s) { if (siteMulti(s)) toggleSite(s.key); else openTaskMobile(s.tasks[0].id); }
 const mobileBonus = computed(() => (Number(summary.value.bonus_per_hour) || 0).toFixed(1));
-const mobileSilentCount = computed(() => tasks.value.find(t => t.builtin)?.seeding_count || 0);
+computed(() => tasks.value.find(t => t.builtin)?.seeding_count || 0);
+const mobileCeilingPct = computed(() => Number(summary.value.ceiling_pct || 0));
 // 列表行副标题：状态词 + 关键数
 function mobileRowLine(t) {
   const parts = [];
@@ -5422,15 +5423,16 @@ return (_ctx, _cache) => {
                 ]),
                 _createElementVNode("div", _hoisted_22, [
                   _createTextVNode(_toDisplayString(mobileLiveCount.value) + " 个站在跑", 1),
-                  (mobileTodayGain.value > 0)
+                  (mobileCeilingPct.value > 0)
                     ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
+                        _createTextVNode(" · 上限占用 " + _toDisplayString(mobileCeilingPct.value) + "%", 1)
+                      ], 64))
+                    : _createCommentVNode("", true),
+                  (mobileTodayGain.value > 0)
+                    ? (_openBlock(), _createElementBlock(_Fragment, { key: 1 }, [
                         _createTextVNode(" · 今日 +" + _toDisplayString(mobileTodayGain.value.toFixed(1)), 1)
                       ], 64))
-                    : (mobileSilentCount.value)
-                      ? (_openBlock(), _createElementBlock(_Fragment, { key: 1 }, [
-                          _createTextVNode(" · 静默托管 " + _toDisplayString(mobileSilentCount.value) + " 种", 1)
-                        ], 64))
-                      : _createCommentVNode("", true)
+                    : _createCommentVNode("", true)
                 ])
               ]),
               (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(mobileHomeGroups.value, (g) => {
@@ -11813,6 +11815,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-7e1dc28c"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-f940ba96"]]);
 
 export { MagicFlowWorkbench as M };
