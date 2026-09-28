@@ -391,26 +391,55 @@ function toggleGroup(key) { mhOpen.value = { ...mhOpen.value, [key]: !mhOpen.val
 function openTaskMobile(id) { selectTask(id); mobileView.value = 'detail' }
 function backToMobileList() { mobileView.value = 'list' }
 
-// 首页分组：需要你管（有问题/待决策）> 在跑 > 不用管（已停用 / 静默托管）
+// 首页分组：**按站点聚合**（同站多任务折叠为一行，时魔只算一次）→ 再按优先级分组
+// 需要你管（有问题/待决策）> 在跑 > 不用管（已停用 / 静默托管）
+function mhTaskRank(t) {
+  if (t.builtin) return 3
+  const c = taskBadge(t).color
+  if (c === 'error' || c === 'warning') return 0
+  const m = t.run_mode || 'running'
+  return (m === 'seeding' || m === 'running') ? 1 : 2
+}
 const mobileHomeGroups = computed(() => {
-  const need = [], live = [], rest = []
+  const sites = new Map()
   for (const t of tasks.value) {
-    if (t.builtin) { rest.push(t); continue }
-    const mode = t.run_mode || 'running'
-    const color = taskBadge(t).color
-    if (color === 'error' || color === 'warning') need.push(t)
-    else if (mode === 'seeding' || mode === 'running') live.push(t)
-    else rest.push(t)
+    const key = t.builtin ? `#${t.id}` : (t.site_name || t.id)
+    if (!sites.has(key)) sites.set(key, { key, site: t.site_name || t.name, builtin: !!t.builtin, tasks: [] })
+    sites.get(key).tasks.push(t)
   }
-  const byBonus = (a, b) => Number(b.site_bonus_per_hour || 0) - Number(a.site_bonus_per_hour || 0)
-  need.sort(byBonus); live.sort(byBonus); rest.sort(byBonus)
-  return [
-    { key: 'need', label: '需要你管', hint: '有问题或待决策', tasks: need },
-    { key: 'live', label: '在跑', hint: '正常养护中', tasks: live },
-    { key: 'rest', label: '不用管', hint: '已停用 / 静默托管', tasks: rest },
-  ].filter(g => g.tasks.length)
+  const list = [...sites.values()].map((s) => {
+    s.tasks.sort((a, b) => mhTaskRank(a) - mhTaskRank(b))
+    s.rank = Math.min(...s.tasks.map(mhTaskRank))
+    const head = s.tasks[0]
+    s.bonus = head.site_bonus_ok ? Number(head.site_bonus_per_hour || 0) : 0
+    s.num = mobileRowNum(head)
+    return s
+  })
+  const byBonus = (a, b) => b.bonus - a.bonus
+  const mk = (key, label, hint, pred) => ({ key, label, hint, sites: list.filter(pred).sort(byBonus) })
+  const groups = [
+    mk('need', '需要你管', '有问题或待决策', s => s.rank === 0),
+    mk('live', '在跑', '正常养护中', s => s.rank === 1),
+    mk('rest', '不用管', '已停用 / 静默托管', s => s.rank >= 2),
+  ].filter(g => g.sites.length)
+  groups.forEach(g => { g.count = g.sites.reduce((n, s) => n + s.tasks.length, 0) })
+  return groups
 })
-const mobileLiveCount = computed(() => (mobileHomeGroups.value.find(g => g.key === 'live')?.tasks.length) || 0)
+const mobileLiveCount = computed(() => {
+  const set = new Set()
+  for (const t of tasks.value) {
+    if (t.builtin) continue
+    const m = t.run_mode || 'running'
+    if (m === 'seeding' || m === 'running') set.add(t.site_name || t.id)
+  }
+  return set.size
+})
+// 站点折叠：多任务行可展开
+const mhSiteOpen = ref({})
+function siteMulti(s) { return s.tasks.length > 1 }
+function siteOpen(key) { return !!mhSiteOpen.value[key] }
+function toggleSite(key) { mhSiteOpen.value = { ...mhSiteOpen.value, [key]: !mhSiteOpen.value[key] } }
+function openSiteRow(s) { if (siteMulti(s)) toggleSite(s.key); else openTaskMobile(s.tasks[0].id) }
 const mobileBonus = computed(() => (Number(summary.value.bonus_per_hour) || 0).toFixed(1))
 const mobileSilentCount = computed(() => tasks.value.find(t => t.builtin)?.seeding_count || 0)
 // 列表行副标题：状态词 + 关键数
@@ -2588,25 +2617,45 @@ onUnmounted(() => {
         <div v-for="g in mobileHomeGroups" :key="g.key" class="mh-group">
           <button type="button" class="mh-group__head" @click="toggleGroup(g.key)">
             <span>{{ g.label }}</span>
-            <span class="mh-count">{{ g.tasks.length }}</span>
+            <span class="mh-count">{{ g.count }}</span>
             <VIcon :icon="isGroupOpen(g.key) ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="18" />
           </button>
           <div v-show="isGroupOpen(g.key)" class="mh-list">
-            <button
-              v-for="t in g.tasks"
-              :key="t.id"
-              type="button"
-              class="mh-row"
-              @click="openTaskMobile(t.id)"
-            >
-              <span class="mh-dot" :class="`is-${taskBadge(t).color}`" />
-              <span class="mh-row__main">
-                <span class="mh-row__nm">{{ t.site_name || t.name }}</span>
-                <span class="mh-row__st">{{ mobileRowLine(t) }}</span>
-              </span>
-              <span v-if="mobileRowNum(t)" class="mh-row__num">{{ mobileRowNum(t) }}</span>
-              <VIcon icon="mdi-chevron-right" size="18" class="mh-row__chev" />
-            </button>
+            <template v-for="s in g.sites" :key="s.key">
+              <button
+                type="button"
+                class="mh-row"
+                @click="openSiteRow(s)"
+              >
+                <span class="mh-dot" :class="`is-${taskBadge(s.tasks[0]).color}`" />
+                <span class="mh-row__main">
+                  <span class="mh-row__nm">
+                    {{ s.site }}
+                    <span v-if="siteMulti(s)" class="mh-row__tag">{{ s.tasks.length }} 任务</span>
+                  </span>
+                  <span class="mh-row__st">{{ mobileRowLine(s.tasks[0]) }}</span>
+                </span>
+                <span v-if="s.num" class="mh-row__num">{{ s.num }}</span>
+                <VIcon
+                  :icon="siteMulti(s) ? (siteOpen(s.key) ? 'mdi-chevron-up' : 'mdi-chevron-down') : 'mdi-chevron-right'"
+                  size="18"
+                  class="mh-row__chev"
+                />
+              </button>
+              <div v-if="siteMulti(s)" v-show="siteOpen(s.key)" class="mh-sublist">
+                <button
+                  v-for="t in s.tasks"
+                  :key="t.id"
+                  type="button"
+                  class="mh-subrow"
+                  @click="openTaskMobile(t.id)"
+                >
+                  <span class="mh-dot" :class="`is-${taskBadge(t).color}`" />
+                  <span class="mh-row__main"><span class="mh-row__nm">{{ t.name }}</span></span>
+                  <span v-if="mobileRowNum(t)" class="mh-row__num">{{ mobileRowNum(t) }}</span>
+                </button>
+              </div>
+            </template>
           </div>
         </div>
         <div class="mh-sect">功能</div>
@@ -8090,6 +8139,18 @@ onUnmounted(() => {
 .magicflow-page .mh-dot.is-warning { background: #e8b24d; box-shadow: 0 0 8px rgba(232, 178, 77, 0.7); }
 .magicflow-page .mh-row__main { min-inline-size: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 3px; }
 .magicflow-page .mh-row__nm { font-size: 14.5px; font-weight: 650; }
+.magicflow-page .mh-row__tag {
+  margin-inline-start: 7px; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 7px;
+  color: #cfc7ff; background: rgba(139, 123, 240, 0.18); vertical-align: 1.5px;
+}
+.magicflow-page .mh-sublist { margin: 2px 0 6px 14px; border-inline-start: 1px solid rgba(140, 150, 220, 0.18); padding-inline-start: 10px; }
+.magicflow-page .mh-subrow {
+  display: flex; align-items: center; gap: 9px; inline-size: 100%; text-align: start; padding: 9px 6px;
+  background: none; border: 0; color: inherit; font: inherit; cursor: pointer; border-radius: 10px;
+}
+.magicflow-page .mh-subrow:active { background: rgba(139, 123, 240, 0.12); }
+.magicflow-page .mh-subrow .mh-row__nm { font-size: 13px; font-weight: 600; color: rgba(231, 234, 246, 0.82); }
+.magicflow-page .mh-subrow .mh-row__num { font-size: 14px; font-weight: 700; color: rgba(231, 234, 246, 0.7); }
 .magicflow-page .mh-row__st { font-size: 11.5px; color: rgba(231, 234, 246, 0.55); }
 .magicflow-page .mh-row__num { font-size: 16px; font-weight: 800; flex: 0 0 auto; }
 .magicflow-page .mh-row__chev { color: rgba(231, 234, 246, 0.32); flex: 0 0 auto; }

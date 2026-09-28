@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { _ as _export_sfc, c as cloneTask, n as normalizeTask, a as normalizeDownloaderPrefs, b as normalizeDownloaderPaths, d as normalizeDefaults, t as taskStateMeta, r as runModeMeta, e as formatBytes, g as formatDateTime, h as runStatusText, F as FALLBACK_SOURCE_OPTIONS, f as formatBonus, R as RUN_MODES, i as formatDurationSeconds, S as SORT_RULE_TYPES, j as cloudStatusMeta, k as recommendStatusMeta, u as unwrapResponse, l as normalizeSettings, m as normalizeSortRules, o as formatDuration, p as normalizeIyuuSites } from './_plugin-vue_export-helper-b7fh4Zgs.js';
+import { _ as _export_sfc, c as cloneTask, n as normalizeTask, a as normalizeDownloaderPrefs, b as normalizeDownloaderPaths, d as normalizeDefaults, t as taskStateMeta, r as runModeMeta, e as formatBytes, f as formatBonus, g as formatDateTime, h as runStatusText, F as FALLBACK_SOURCE_OPTIONS, R as RUN_MODES, i as formatDurationSeconds, S as SORT_RULE_TYPES, j as cloudStatusMeta, k as recommendStatusMeta, u as unwrapResponse, l as normalizeSettings, m as normalizeSortRules, o as formatDuration, p as normalizeIyuuSites } from './_plugin-vue_export-helper-b7fh4Zgs.js';
 
 const {unref:_unref$1,toDisplayString:_toDisplayString$1,createTextVNode:_createTextVNode$1,resolveComponent:_resolveComponent$1,withCtx:_withCtx$1,createVNode:_createVNode$1,openBlock:_openBlock$1,createBlock:_createBlock$1,createCommentVNode:_createCommentVNode$1,renderList:_renderList$1,Fragment:_Fragment$1,createElementBlock:_createElementBlock$1,createElementVNode:_createElementVNode$1,withModifiers:_withModifiers$1} = await importShared('vue');
 
@@ -2092,504 +2092,519 @@ const _hoisted_25 = { class: "mh-list" };
 const _hoisted_26 = ["onClick"];
 const _hoisted_27 = { class: "mh-row__main" };
 const _hoisted_28 = { class: "mh-row__nm" };
-const _hoisted_29 = { class: "mh-row__st" };
-const _hoisted_30 = {
+const _hoisted_29 = {
+  key: 0,
+  class: "mh-row__tag"
+};
+const _hoisted_30 = { class: "mh-row__st" };
+const _hoisted_31 = {
   key: 0,
   class: "mh-row__num"
 };
-const _hoisted_31 = { class: "mh-tools" };
-const _hoisted_32 = ["onClick"];
-const _hoisted_33 = { class: "mh-foot" };
-const _hoisted_34 = { class: "magicflow-layout" };
-const _hoisted_35 = { class: "magicflow-task-rail__head" };
-const _hoisted_36 = { class: "magicflow-task-list" };
-const _hoisted_37 = ["aria-pressed", "onClick"];
-const _hoisted_38 = { class: "magicflow-task-item__title" };
-const _hoisted_39 = { class: "magicflow-task-item__meta" };
-const _hoisted_40 = { key: 0 };
-const _hoisted_41 = { key: 1 };
-const _hoisted_42 = {
+const _hoisted_32 = {
+  key: 0,
+  class: "mh-sublist"
+};
+const _hoisted_33 = ["onClick"];
+const _hoisted_34 = { class: "mh-row__main" };
+const _hoisted_35 = { class: "mh-row__nm" };
+const _hoisted_36 = {
+  key: 0,
+  class: "mh-row__num"
+};
+const _hoisted_37 = { class: "mh-tools" };
+const _hoisted_38 = ["onClick"];
+const _hoisted_39 = { class: "mh-foot" };
+const _hoisted_40 = { class: "magicflow-layout" };
+const _hoisted_41 = { class: "magicflow-task-rail__head" };
+const _hoisted_42 = { class: "magicflow-task-list" };
+const _hoisted_43 = ["aria-pressed", "onClick"];
+const _hoisted_44 = { class: "magicflow-task-item__title" };
+const _hoisted_45 = { class: "magicflow-task-item__meta" };
+const _hoisted_46 = { key: 0 };
+const _hoisted_47 = { key: 1 };
+const _hoisted_48 = {
   key: 0,
   class: "magicflow-workspace"
 };
-const _hoisted_43 = { class: "magicflow-task-head" };
-const _hoisted_44 = { class: "magicflow-task-head__identity" };
-const _hoisted_45 = ["src"];
-const _hoisted_46 = { class: "magicflow-task-head__body" };
-const _hoisted_47 = { class: "magicflow-task-head__title" };
-const _hoisted_48 = { class: "magicflow-task-head__actions" };
-const _hoisted_49 = { class: "magicflow-mobile-detail" };
-const _hoisted_50 = { class: "md-verdict__body" };
-const _hoisted_51 = { class: "md-v" };
-const _hoisted_52 = { class: "md-s" };
-const _hoisted_53 = { class: "md-cards" };
-const _hoisted_54 = { class: "md-strategy" };
-const _hoisted_55 = { class: "md-entries" };
-const _hoisted_56 = ["onClick"];
-const _hoisted_57 = {
+const _hoisted_49 = { class: "magicflow-task-head" };
+const _hoisted_50 = { class: "magicflow-task-head__identity" };
+const _hoisted_51 = ["src"];
+const _hoisted_52 = { class: "magicflow-task-head__body" };
+const _hoisted_53 = { class: "magicflow-task-head__title" };
+const _hoisted_54 = { class: "magicflow-task-head__actions" };
+const _hoisted_55 = { class: "magicflow-mobile-detail" };
+const _hoisted_56 = { class: "md-verdict__body" };
+const _hoisted_57 = { class: "md-v" };
+const _hoisted_58 = { class: "md-s" };
+const _hoisted_59 = { class: "md-cards" };
+const _hoisted_60 = { class: "md-strategy" };
+const _hoisted_61 = { class: "md-entries" };
+const _hoisted_62 = ["onClick"];
+const _hoisted_63 = {
   class: "magicflow-tabs",
   role: "tablist"
 };
-const _hoisted_58 = ["aria-selected", "onClick"];
-const _hoisted_59 = { class: "magicflow-stat-grid" };
-const _hoisted_60 = {
+const _hoisted_64 = ["aria-selected", "onClick"];
+const _hoisted_65 = { class: "magicflow-stat-grid" };
+const _hoisted_66 = {
   key: 0,
   class: "magicflow-stat-grid magicflow-stat-grid--single"
 };
-const _hoisted_61 = { class: "magicflow-overview-grid" };
-const _hoisted_62 = { class: "magicflow-panel__head" };
-const _hoisted_63 = { class: "magicflow-facts" };
-const _hoisted_64 = { class: "magicflow-panel__head" };
-const _hoisted_65 = { class: "text-body-2 text-medium-emphasis" };
-const _hoisted_66 = { class: "magicflow-facts" };
-const _hoisted_67 = { key: 0 };
-const _hoisted_68 = {
+const _hoisted_67 = { class: "magicflow-overview-grid" };
+const _hoisted_68 = { class: "magicflow-panel__head" };
+const _hoisted_69 = { class: "magicflow-facts" };
+const _hoisted_70 = { class: "magicflow-panel__head" };
+const _hoisted_71 = { class: "text-body-2 text-medium-emphasis" };
+const _hoisted_72 = { class: "magicflow-facts" };
+const _hoisted_73 = { key: 0 };
+const _hoisted_74 = {
   key: 0,
   class: "magicflow-live-alerts"
 };
-const _hoisted_69 = { class: "magicflow-panel__head" };
-const _hoisted_70 = { class: "text-body-2 text-medium-emphasis" };
-const _hoisted_71 = { class: "magicflow-run-summary" };
-const _hoisted_72 = { class: "magicflow-panel__head" };
-const _hoisted_73 = { class: "text-body-2 text-medium-emphasis" };
-const _hoisted_74 = { class: "magicflow-flow__chain" };
-const _hoisted_75 = { class: "magicflow-flow__dot" };
-const _hoisted_76 = { class: "magicflow-flow__label" };
-const _hoisted_77 = { class: "magicflow-panel__head" };
-const _hoisted_78 = { class: "text-body-2 text-medium-emphasis" };
-const _hoisted_79 = {
+const _hoisted_75 = { class: "magicflow-panel__head" };
+const _hoisted_76 = { class: "text-body-2 text-medium-emphasis" };
+const _hoisted_77 = { class: "magicflow-run-summary" };
+const _hoisted_78 = { class: "magicflow-panel__head" };
+const _hoisted_79 = { class: "text-body-2 text-medium-emphasis" };
+const _hoisted_80 = { class: "magicflow-flow__chain" };
+const _hoisted_81 = { class: "magicflow-flow__dot" };
+const _hoisted_82 = { class: "magicflow-flow__label" };
+const _hoisted_83 = { class: "magicflow-panel__head" };
+const _hoisted_84 = { class: "text-body-2 text-medium-emphasis" };
+const _hoisted_85 = {
   key: 0,
   class: "magicflow-reasons"
 };
-const _hoisted_80 = { class: "magicflow-reason__track" };
-const _hoisted_81 = {
+const _hoisted_86 = { class: "magicflow-reason__track" };
+const _hoisted_87 = {
   key: 1,
   class: "magicflow-table-empty"
 };
-const _hoisted_82 = { class: "magicflow-panel__head" };
-const _hoisted_83 = { class: "magicflow-events" };
-const _hoisted_84 = {
+const _hoisted_88 = { class: "magicflow-panel__head" };
+const _hoisted_89 = { class: "magicflow-events" };
+const _hoisted_90 = {
   key: 0,
   class: "text-error"
 };
-const _hoisted_85 = ["onClick"];
-const _hoisted_86 = {
+const _hoisted_91 = ["onClick"];
+const _hoisted_92 = {
   key: 2,
   class: "magicflow-events__detail"
 };
-const _hoisted_87 = { class: "magicflow-events__detail-line" };
-const _hoisted_88 = {
+const _hoisted_93 = { class: "magicflow-events__detail-line" };
+const _hoisted_94 = {
   key: 0,
   class: "magicflow-events__detail-src"
 };
-const _hoisted_89 = ["title"];
-const _hoisted_90 = { class: "magicflow-events__detail-sub" };
-const _hoisted_91 = {
+const _hoisted_95 = ["title"];
+const _hoisted_96 = { class: "magicflow-events__detail-sub" };
+const _hoisted_97 = {
   key: 0,
   class: "magicflow-table-empty"
 };
-const _hoisted_92 = { class: "magicflow-diagnostic-head" };
-const _hoisted_93 = { class: "text-body-2 text-medium-emphasis" };
-const _hoisted_94 = { class: "magicflow-torrent-filters" };
-const _hoisted_95 = { class: "magicflow-panel__head" };
-const _hoisted_96 = { class: "text-body-2 text-medium-emphasis" };
-const _hoisted_97 = { class: "magicflow-pipeline" };
-const _hoisted_98 = { class: "magicflow-pipeline__index" };
-const _hoisted_99 = { key: 0 };
-const _hoisted_100 = { class: "magicflow-panel__head" };
-const _hoisted_101 = { class: "magicflow-torrent-filters" };
-const _hoisted_102 = {
+const _hoisted_98 = { class: "magicflow-diagnostic-head" };
+const _hoisted_99 = { class: "text-body-2 text-medium-emphasis" };
+const _hoisted_100 = { class: "magicflow-torrent-filters" };
+const _hoisted_101 = { class: "magicflow-panel__head" };
+const _hoisted_102 = { class: "text-body-2 text-medium-emphasis" };
+const _hoisted_103 = { class: "magicflow-pipeline" };
+const _hoisted_104 = { class: "magicflow-pipeline__index" };
+const _hoisted_105 = { key: 0 };
+const _hoisted_106 = { class: "magicflow-panel__head" };
+const _hoisted_107 = { class: "magicflow-torrent-filters" };
+const _hoisted_108 = {
   key: 0,
   class: "magicflow-bulk-bar"
 };
-const _hoisted_103 = { class: "magicflow-bulk-bar__count" };
-const _hoisted_104 = { class: "torrent-title-cell" };
-const _hoisted_105 = { class: "magicflow-mobile-torrents" };
-const _hoisted_106 = ["onClick"];
-const _hoisted_107 = { class: "magicflow-mobile-torrent__head" };
-const _hoisted_108 = { class: "magicflow-mobile-torrent__title" };
-const _hoisted_109 = { class: "magicflow-mobile-torrent__grid" };
-const _hoisted_110 = { class: "magicflow-mobile-torrent__actions" };
-const _hoisted_111 = {
+const _hoisted_109 = { class: "magicflow-bulk-bar__count" };
+const _hoisted_110 = { class: "torrent-title-cell" };
+const _hoisted_111 = { class: "magicflow-mobile-torrents" };
+const _hoisted_112 = ["onClick"];
+const _hoisted_113 = { class: "magicflow-mobile-torrent__head" };
+const _hoisted_114 = { class: "magicflow-mobile-torrent__title" };
+const _hoisted_115 = { class: "magicflow-mobile-torrent__grid" };
+const _hoisted_116 = { class: "magicflow-mobile-torrent__actions" };
+const _hoisted_117 = {
   key: 0,
   class: "magicflow-table-empty"
 };
-const _hoisted_112 = { class: "magicflow-config-grid" };
-const _hoisted_113 = { class: "magicflow-panel__head" };
-const _hoisted_114 = { class: "text-subtitle-1 font-weight-medium" };
-const _hoisted_115 = { class: "text-body-2 text-medium-emphasis" };
-const _hoisted_116 = { class: "magicflow-facts magicflow-facts--two" };
-const _hoisted_117 = { class: "magicflow-config-actions" };
-const _hoisted_118 = { class: "magicflow-panel__head" };
-const _hoisted_119 = { class: "magicflow-stat-grid" };
-const _hoisted_120 = { class: "d-flex flex-wrap ga-2 mb-2" };
-const _hoisted_121 = {
+const _hoisted_118 = { class: "magicflow-config-grid" };
+const _hoisted_119 = { class: "magicflow-panel__head" };
+const _hoisted_120 = { class: "text-subtitle-1 font-weight-medium" };
+const _hoisted_121 = { class: "text-body-2 text-medium-emphasis" };
+const _hoisted_122 = { class: "magicflow-facts magicflow-facts--two" };
+const _hoisted_123 = { class: "magicflow-config-actions" };
+const _hoisted_124 = { class: "magicflow-panel__head" };
+const _hoisted_125 = { class: "magicflow-stat-grid" };
+const _hoisted_126 = { class: "d-flex flex-wrap ga-2 mb-2" };
+const _hoisted_127 = {
   key: 0,
   class: "text-body-2 text-medium-emphasis"
 };
-const _hoisted_122 = { class: "magicflow-panel__head" };
-const _hoisted_123 = { class: "magicflow-events" };
-const _hoisted_124 = {
-  key: 0,
-  class: "text-error"
-};
-const _hoisted_125 = ["onClick"];
-const _hoisted_126 = {
-  key: 2,
-  class: "magicflow-events__detail"
-};
-const _hoisted_127 = { class: "magicflow-events__detail-line" };
-const _hoisted_128 = {
-  key: 0,
-  class: "magicflow-events__detail-src"
-};
-const _hoisted_129 = ["title"];
+const _hoisted_128 = { class: "magicflow-panel__head" };
+const _hoisted_129 = { class: "magicflow-events" };
 const _hoisted_130 = {
   key: 0,
-  class: "magicflow-table-empty"
-};
-const _hoisted_131 = { style: {"margin-top":"14px","display":"flex","gap":"8px"} };
-const _hoisted_132 = { class: "magicflow-settings-dialog__head" };
-const _hoisted_133 = { class: "magicflow-ops-dialog__sub" };
-const _hoisted_134 = { class: "magicflow-ops-dialog__body" };
-const _hoisted_135 = { class: "magicflow-events" };
-const _hoisted_136 = {
-  key: 0,
   class: "text-error"
 };
-const _hoisted_137 = ["onClick"];
-const _hoisted_138 = {
+const _hoisted_131 = ["onClick"];
+const _hoisted_132 = {
   key: 2,
   class: "magicflow-events__detail"
 };
-const _hoisted_139 = { class: "magicflow-events__detail-line" };
-const _hoisted_140 = {
+const _hoisted_133 = { class: "magicflow-events__detail-line" };
+const _hoisted_134 = {
   key: 0,
   class: "magicflow-events__detail-src"
 };
-const _hoisted_141 = ["title"];
-const _hoisted_142 = { class: "magicflow-events__detail-sub" };
-const _hoisted_143 = {
+const _hoisted_135 = ["title"];
+const _hoisted_136 = {
   key: 0,
   class: "magicflow-table-empty"
 };
-const _hoisted_144 = { class: "magicflow-settings-dialog__head" };
-const _hoisted_145 = { class: "magicflow-settings-nav" };
-const _hoisted_146 = ["onClick"];
-const _hoisted_147 = { class: "magicflow-settings-dialog__body" };
-const _hoisted_148 = {
+const _hoisted_137 = { style: {"margin-top":"14px","display":"flex","gap":"8px"} };
+const _hoisted_138 = { class: "magicflow-settings-dialog__head" };
+const _hoisted_139 = { class: "magicflow-ops-dialog__sub" };
+const _hoisted_140 = { class: "magicflow-ops-dialog__body" };
+const _hoisted_141 = { class: "magicflow-events" };
+const _hoisted_142 = {
+  key: 0,
+  class: "text-error"
+};
+const _hoisted_143 = ["onClick"];
+const _hoisted_144 = {
+  key: 2,
+  class: "magicflow-events__detail"
+};
+const _hoisted_145 = { class: "magicflow-events__detail-line" };
+const _hoisted_146 = {
+  key: 0,
+  class: "magicflow-events__detail-src"
+};
+const _hoisted_147 = ["title"];
+const _hoisted_148 = { class: "magicflow-events__detail-sub" };
+const _hoisted_149 = {
+  key: 0,
+  class: "magicflow-table-empty"
+};
+const _hoisted_150 = { class: "magicflow-settings-dialog__head" };
+const _hoisted_151 = { class: "magicflow-settings-nav" };
+const _hoisted_152 = ["onClick"];
+const _hoisted_153 = { class: "magicflow-settings-dialog__body" };
+const _hoisted_154 = {
   key: 0,
   class: "magicflow-settings-form"
 };
-const _hoisted_149 = { class: "magicflow-settings-grid" };
-const _hoisted_150 = {
+const _hoisted_155 = { class: "magicflow-settings-grid" };
+const _hoisted_156 = {
   key: 1,
   class: "magicflow-settings-form"
 };
-const _hoisted_151 = { class: "magicflow-settings-grid" };
-const _hoisted_152 = {
+const _hoisted_157 = { class: "magicflow-settings-grid" };
+const _hoisted_158 = {
   key: 2,
   class: "magicflow-settings-form"
 };
-const _hoisted_153 = {
+const _hoisted_159 = {
   key: 3,
   class: "magicflow-settings-form"
 };
-const _hoisted_154 = { class: "magicflow-iyuu-token" };
-const _hoisted_155 = { class: "magicflow-iyuu-sites" };
-const _hoisted_156 = { class: "magicflow-iyuu-sites__head" };
-const _hoisted_157 = {
+const _hoisted_160 = { class: "magicflow-iyuu-token" };
+const _hoisted_161 = { class: "magicflow-iyuu-sites" };
+const _hoisted_162 = { class: "magicflow-iyuu-sites__head" };
+const _hoisted_163 = {
   key: 0,
   class: "magicflow-settings-hint"
 };
-const _hoisted_158 = {
+const _hoisted_164 = {
   key: 1,
   class: "magicflow-settings-hint"
 };
-const _hoisted_159 = { class: "magicflow-iyuu-row__head" };
-const _hoisted_160 = { class: "magicflow-iyuu-row__name" };
-const _hoisted_161 = { class: "magicflow-iyuu-row__fields" };
-const _hoisted_162 = {
+const _hoisted_165 = { class: "magicflow-iyuu-row__head" };
+const _hoisted_166 = { class: "magicflow-iyuu-row__name" };
+const _hoisted_167 = { class: "magicflow-iyuu-row__fields" };
+const _hoisted_168 = {
   key: 4,
   class: "magicflow-settings-form"
 };
-const _hoisted_163 = { class: "magicflow-settings-grid" };
-const _hoisted_164 = { class: "magicflow-settings-switches" };
-const _hoisted_165 = {
+const _hoisted_169 = { class: "magicflow-settings-grid" };
+const _hoisted_170 = { class: "magicflow-settings-switches" };
+const _hoisted_171 = {
   key: 5,
   class: "magicflow-settings-form"
 };
-const _hoisted_166 = { class: "magicflow-settings-switches" };
-const _hoisted_167 = { class: "magicflow-settings-field" };
-const _hoisted_168 = {
+const _hoisted_172 = { class: "magicflow-settings-switches" };
+const _hoisted_173 = { class: "magicflow-settings-field" };
+const _hoisted_174 = {
   key: 0,
   class: "magicflow-settings-hint magicflow-settings-hint--warn"
 };
-const _hoisted_169 = {
+const _hoisted_175 = {
   key: 6,
   class: "magicflow-settings-form"
 };
-const _hoisted_170 = { class: "magicflow-settings-switches" };
-const _hoisted_171 = { class: "magicflow-settings-field" };
-const _hoisted_172 = { class: "magicflow-settings-field" };
-const _hoisted_173 = { class: "magicflow-settings-row" };
-const _hoisted_174 = { class: "magicflow-settings-row" };
-const _hoisted_175 = { class: "magicflow-signin-actions" };
-const _hoisted_176 = {
+const _hoisted_176 = { class: "magicflow-settings-switches" };
+const _hoisted_177 = { class: "magicflow-settings-field" };
+const _hoisted_178 = { class: "magicflow-settings-field" };
+const _hoisted_179 = { class: "magicflow-settings-row" };
+const _hoisted_180 = { class: "magicflow-settings-row" };
+const _hoisted_181 = { class: "magicflow-signin-actions" };
+const _hoisted_182 = {
   key: 0,
   class: "magicflow-signin-list"
 };
-const _hoisted_177 = { class: "magicflow-signin-list__name" };
-const _hoisted_178 = { class: "magicflow-signin-list__tags" };
-const _hoisted_179 = {
+const _hoisted_183 = { class: "magicflow-signin-list__name" };
+const _hoisted_184 = { class: "magicflow-signin-list__tags" };
+const _hoisted_185 = {
   key: 1,
   class: "magicflow-settings-hint magicflow-settings-hint--warn"
 };
-const _hoisted_180 = {
+const _hoisted_186 = {
   key: 7,
   class: "magicflow-settings-form"
 };
-const _hoisted_181 = { class: "magicflow-settings-switches" };
-const _hoisted_182 = { class: "magicflow-settings-grid" };
-const _hoisted_183 = {
+const _hoisted_187 = { class: "magicflow-settings-switches" };
+const _hoisted_188 = { class: "magicflow-settings-grid" };
+const _hoisted_189 = {
   key: 0,
   class: "magicflow-live-alerts"
 };
-const _hoisted_184 = { class: "magicflow-live-alerts__head" };
-const _hoisted_185 = {
+const _hoisted_190 = { class: "magicflow-live-alerts__head" };
+const _hoisted_191 = {
   key: 8,
   class: "magicflow-settings-form"
 };
-const _hoisted_186 = { class: "magicflow-settings-grid" };
-const _hoisted_187 = { class: "magicflow-settings-grid" };
-const _hoisted_188 = { class: "magicflow-settings-switches" };
-const _hoisted_189 = {
+const _hoisted_192 = { class: "magicflow-settings-grid" };
+const _hoisted_193 = { class: "magicflow-settings-grid" };
+const _hoisted_194 = { class: "magicflow-settings-switches" };
+const _hoisted_195 = {
   key: 9,
   class: "magicflow-settings-form"
 };
-const _hoisted_190 = { class: "magicflow-settings-switches" };
-const _hoisted_191 = { class: "magicflow-rules-actions" };
-const _hoisted_192 = { class: "magicflow-settings-hint" };
-const _hoisted_193 = {
+const _hoisted_196 = { class: "magicflow-settings-switches" };
+const _hoisted_197 = { class: "magicflow-rules-actions" };
+const _hoisted_198 = { class: "magicflow-settings-hint" };
+const _hoisted_199 = {
   key: 0,
   class: "magicflow-settings-hint"
 };
-const _hoisted_194 = { class: "magicflow-rules-table" };
-const _hoisted_195 = ["title"];
-const _hoisted_196 = { key: 0 };
-const _hoisted_197 = ["title"];
-const _hoisted_198 = {
+const _hoisted_200 = { class: "magicflow-rules-table" };
+const _hoisted_201 = ["title"];
+const _hoisted_202 = { key: 0 };
+const _hoisted_203 = ["title"];
+const _hoisted_204 = {
   key: 2,
   title: "站点促销规则：达到该体积自动免费（列表页可能不标促销，插件按规则补判）"
 };
-const _hoisted_199 = {
+const _hoisted_205 = {
   key: 3,
   title: "站点促销规则：原盘自动免费"
 };
-const _hoisted_200 = {
+const _hoisted_206 = {
   key: 4,
   title: "站点促销规则：每季第一集自动免费"
 };
-const _hoisted_201 = { class: "magicflow-rules-row__hr" };
-const _hoisted_202 = ["title"];
-const _hoisted_203 = ["title"];
-const _hoisted_204 = { key: 1 };
-const _hoisted_205 = {
+const _hoisted_207 = { class: "magicflow-rules-row__hr" };
+const _hoisted_208 = ["title"];
+const _hoisted_209 = ["title"];
+const _hoisted_210 = { key: 1 };
+const _hoisted_211 = {
   key: 10,
   class: "magicflow-settings-form"
 };
-const _hoisted_206 = { class: "magicflow-settings-switches" };
-const _hoisted_207 = { class: "magicflow-settings-grid" };
-const _hoisted_208 = { class: "magicflow-sort-rules" };
-const _hoisted_209 = { key: 1 };
-const _hoisted_210 = { class: "magicflow-sort-rules__add" };
-const _hoisted_211 = { class: "magicflow-rules-actions" };
-const _hoisted_212 = { class: "magicflow-settings-hint" };
-const _hoisted_213 = {
+const _hoisted_212 = { class: "magicflow-settings-switches" };
+const _hoisted_213 = { class: "magicflow-settings-grid" };
+const _hoisted_214 = { class: "magicflow-sort-rules" };
+const _hoisted_215 = { key: 1 };
+const _hoisted_216 = { class: "magicflow-sort-rules__add" };
+const _hoisted_217 = { class: "magicflow-rules-actions" };
+const _hoisted_218 = { class: "magicflow-settings-hint" };
+const _hoisted_219 = {
   key: 0,
   class: "magicflow-tag-migrate"
 };
-const _hoisted_214 = { class: "magicflow-settings-hint" };
-const _hoisted_215 = { class: "magicflow-tag-migrate__samples" };
-const _hoisted_216 = ["title"];
-const _hoisted_217 = { class: "magicflow-tag-migrate__tags" };
-const _hoisted_218 = {
+const _hoisted_220 = { class: "magicflow-settings-hint" };
+const _hoisted_221 = { class: "magicflow-tag-migrate__samples" };
+const _hoisted_222 = ["title"];
+const _hoisted_223 = { class: "magicflow-tag-migrate__tags" };
+const _hoisted_224 = {
   key: 11,
   class: "magicflow-settings-form"
 };
-const _hoisted_219 = { class: "magicflow-settings-switches" };
-const _hoisted_220 = { class: "magicflow-settings-switches" };
-const _hoisted_221 = { class: "magicflow-settings-grid" };
-const _hoisted_222 = {
+const _hoisted_225 = { class: "magicflow-settings-switches" };
+const _hoisted_226 = { class: "magicflow-settings-switches" };
+const _hoisted_227 = { class: "magicflow-settings-grid" };
+const _hoisted_228 = {
   key: 12,
   class: "magicflow-settings-form"
 };
-const _hoisted_223 = { class: "magicflow-settings-switches" };
-const _hoisted_224 = { class: "magicflow-settings-field" };
-const _hoisted_225 = { class: "magicflow-fb-sources" };
-const _hoisted_226 = { class: "magicflow-fb-source__idx" };
-const _hoisted_227 = { class: "magicflow-fb-source__name" };
-const _hoisted_228 = { class: "magicflow-fb-source-add" };
-const _hoisted_229 = { class: "magicflow-settings-grid" };
-const _hoisted_230 = { class: "magicflow-settings-switches" };
-const _hoisted_231 = { class: "magicflow-fb-actions" };
-const _hoisted_232 = {
+const _hoisted_229 = { class: "magicflow-settings-switches" };
+const _hoisted_230 = { class: "magicflow-settings-field" };
+const _hoisted_231 = { class: "magicflow-fb-sources" };
+const _hoisted_232 = { class: "magicflow-fb-source__idx" };
+const _hoisted_233 = { class: "magicflow-fb-source__name" };
+const _hoisted_234 = { class: "magicflow-fb-source-add" };
+const _hoisted_235 = { class: "magicflow-settings-grid" };
+const _hoisted_236 = { class: "magicflow-settings-switches" };
+const _hoisted_237 = { class: "magicflow-fb-actions" };
+const _hoisted_238 = {
   key: 0,
   class: "magicflow-fb-running"
 };
-const _hoisted_233 = {
+const _hoisted_239 = {
   key: 0,
   class: "magicflow-fb-report"
 };
-const _hoisted_234 = { class: "magicflow-fb-report__line" };
-const _hoisted_235 = {
+const _hoisted_240 = { class: "magicflow-fb-report__line" };
+const _hoisted_241 = {
   key: 0,
   class: "magicflow-fb-report__details"
 };
-const _hoisted_236 = { class: "magicflow-fb-report__list" };
-const _hoisted_237 = { class: "magicflow-fb-report__meta" };
-const _hoisted_238 = {
+const _hoisted_242 = { class: "magicflow-fb-report__list" };
+const _hoisted_243 = { class: "magicflow-fb-report__meta" };
+const _hoisted_244 = {
   key: 1,
   class: "magicflow-fb-report__details"
 };
-const _hoisted_239 = { class: "magicflow-fb-report__list" };
-const _hoisted_240 = { class: "magicflow-fb-report__meta" };
-const _hoisted_241 = {
+const _hoisted_245 = { class: "magicflow-fb-report__list" };
+const _hoisted_246 = { class: "magicflow-fb-report__meta" };
+const _hoisted_247 = {
   key: 13,
   class: "magicflow-settings-form"
 };
-const _hoisted_242 = { class: "magicflow-settings-switches" };
-const _hoisted_243 = { class: "magicflow-settings-field" };
-const _hoisted_244 = { class: "magicflow-iyuu-token" };
-const _hoisted_245 = { class: "magicflow-iyuu-token mt-2" };
-const _hoisted_246 = { class: "magicflow-settings-grid" };
-const _hoisted_247 = { class: "magicflow-settings-grid" };
 const _hoisted_248 = { class: "magicflow-settings-switches" };
-const _hoisted_249 = { class: "magicflow-settings-dialog__footer" };
-const _hoisted_250 = { class: "magicflow-torrent-dialog__head" };
-const _hoisted_251 = { class: "magicflow-torrent-dialog__tags" };
-const _hoisted_252 = { class: "magicflow-torrent-dialog__title" };
-const _hoisted_253 = { class: "magicflow-torrent-dialog__progress" };
-const _hoisted_254 = { class: "magicflow-torrent-dialog__pct" };
-const _hoisted_255 = { class: "magicflow-torrent-dialog__grid" };
-const _hoisted_256 = { class: "magicflow-torrent-dialog__hash" };
-const _hoisted_257 = { class: "text-medium-emphasis" };
-const _hoisted_258 = { class: "text-medium-emphasis" };
-const _hoisted_259 = { class: "magicflow-settings-dialog__head" };
-const _hoisted_260 = { class: "magicflow-recommend-dialog__head-actions" };
-const _hoisted_261 = { class: "magicflow-cloud-dialog__summary" };
-const _hoisted_262 = { class: "magicflow-cloud-dialog__actions" };
-const _hoisted_263 = {
+const _hoisted_249 = { class: "magicflow-settings-field" };
+const _hoisted_250 = { class: "magicflow-iyuu-token" };
+const _hoisted_251 = { class: "magicflow-iyuu-token mt-2" };
+const _hoisted_252 = { class: "magicflow-settings-grid" };
+const _hoisted_253 = { class: "magicflow-settings-grid" };
+const _hoisted_254 = { class: "magicflow-settings-switches" };
+const _hoisted_255 = { class: "magicflow-settings-dialog__footer" };
+const _hoisted_256 = { class: "magicflow-torrent-dialog__head" };
+const _hoisted_257 = { class: "magicflow-torrent-dialog__tags" };
+const _hoisted_258 = { class: "magicflow-torrent-dialog__title" };
+const _hoisted_259 = { class: "magicflow-torrent-dialog__progress" };
+const _hoisted_260 = { class: "magicflow-torrent-dialog__pct" };
+const _hoisted_261 = { class: "magicflow-torrent-dialog__grid" };
+const _hoisted_262 = { class: "magicflow-torrent-dialog__hash" };
+const _hoisted_263 = { class: "text-medium-emphasis" };
+const _hoisted_264 = { class: "text-medium-emphasis" };
+const _hoisted_265 = { class: "magicflow-settings-dialog__head" };
+const _hoisted_266 = { class: "magicflow-recommend-dialog__head-actions" };
+const _hoisted_267 = { class: "magicflow-cloud-dialog__summary" };
+const _hoisted_268 = { class: "magicflow-cloud-dialog__actions" };
+const _hoisted_269 = {
   key: 0,
   class: "magicflow-settings-hint"
 };
-const _hoisted_264 = {
+const _hoisted_270 = {
   key: 1,
   class: "magicflow-settings-hint"
 };
-const _hoisted_265 = { class: "magicflow-cloud-row__main" };
-const _hoisted_266 = { class: "magicflow-cloud-row__title" };
-const _hoisted_267 = { class: "magicflow-cloud-row__sub" };
-const _hoisted_268 = {
+const _hoisted_271 = { class: "magicflow-cloud-row__main" };
+const _hoisted_272 = { class: "magicflow-cloud-row__title" };
+const _hoisted_273 = { class: "magicflow-cloud-row__sub" };
+const _hoisted_274 = {
   key: 0,
   class: "magicflow-cloud-row__msg"
 };
-const _hoisted_269 = { class: "magicflow-cloud-row__side" };
-const _hoisted_270 = { class: "magicflow-settings-dialog__head" };
-const _hoisted_271 = { class: "magicflow-recommend-dialog__head-actions" };
-const _hoisted_272 = { class: "magicflow-recommend-dialog__summary" };
-const _hoisted_273 = { class: "magicflow-recommend-dialog__note" };
-const _hoisted_274 = { class: "magicflow-panel__head" };
-const _hoisted_275 = { class: "magicflow-douban-crawl" };
-const _hoisted_276 = { class: "magicflow-douban-crawl__row" };
-const _hoisted_277 = { class: "text-medium-emphasis" };
-const _hoisted_278 = { class: "magicflow-douban-crawl__grid" };
-const _hoisted_279 = {
+const _hoisted_275 = { class: "magicflow-cloud-row__side" };
+const _hoisted_276 = { class: "magicflow-settings-dialog__head" };
+const _hoisted_277 = { class: "magicflow-recommend-dialog__head-actions" };
+const _hoisted_278 = { class: "magicflow-recommend-dialog__summary" };
+const _hoisted_279 = { class: "magicflow-recommend-dialog__note" };
+const _hoisted_280 = { class: "magicflow-panel__head" };
+const _hoisted_281 = { class: "magicflow-douban-crawl" };
+const _hoisted_282 = { class: "magicflow-douban-crawl__row" };
+const _hoisted_283 = { class: "text-medium-emphasis" };
+const _hoisted_284 = { class: "magicflow-douban-crawl__grid" };
+const _hoisted_285 = {
   key: 0,
   class: "magicflow-douban-crawl__warn"
 };
-const _hoisted_280 = {
+const _hoisted_286 = {
   key: 1,
   class: "magicflow-douban-crawl__warn"
 };
-const _hoisted_281 = { class: "magicflow-douban-crawl__actions" };
-const _hoisted_282 = { class: "magicflow-settings-dialog__head" };
-const _hoisted_283 = { class: "magicflow-recommend-dialog__head-actions" };
-const _hoisted_284 = { class: "magicflow-recommend-dialog__summary" };
-const _hoisted_285 = { class: "magicflow-panel__head" };
-const _hoisted_286 = { class: "magicflow-crossseed-guard" };
-const _hoisted_287 = { class: "text-body-2 text-medium-emphasis" };
-const _hoisted_288 = {
+const _hoisted_287 = { class: "magicflow-douban-crawl__actions" };
+const _hoisted_288 = { class: "magicflow-settings-dialog__head" };
+const _hoisted_289 = { class: "magicflow-recommend-dialog__head-actions" };
+const _hoisted_290 = { class: "magicflow-recommend-dialog__summary" };
+const _hoisted_291 = { class: "magicflow-panel__head" };
+const _hoisted_292 = { class: "magicflow-crossseed-guard" };
+const _hoisted_293 = { class: "text-body-2 text-medium-emphasis" };
+const _hoisted_294 = {
   key: 0,
   class: "magicflow-crossseed-bans"
 };
-const _hoisted_289 = { class: "magicflow-crossseed-ban__main" };
-const _hoisted_290 = { class: "text-body-2 text-medium-emphasis" };
-const _hoisted_291 = {
+const _hoisted_295 = { class: "magicflow-crossseed-ban__main" };
+const _hoisted_296 = { class: "text-body-2 text-medium-emphasis" };
+const _hoisted_297 = {
   key: 1,
   class: "magicflow-table-empty"
 };
-const _hoisted_292 = { class: "magicflow-crossseed-list" };
-const _hoisted_293 = { class: "magicflow-crossseed-item__main" };
-const _hoisted_294 = ["title"];
-const _hoisted_295 = { class: "magicflow-crossseed-item__meta" };
-const _hoisted_296 = {
-  key: 4,
-  class: "text-medium-emphasis"
-};
-const _hoisted_297 = { class: "magicflow-panel__head" };
 const _hoisted_298 = { class: "magicflow-crossseed-list" };
 const _hoisted_299 = { class: "magicflow-crossseed-item__main" };
 const _hoisted_300 = ["title"];
 const _hoisted_301 = { class: "magicflow-crossseed-item__meta" };
 const _hoisted_302 = {
+  key: 4,
+  class: "text-medium-emphasis"
+};
+const _hoisted_303 = { class: "magicflow-panel__head" };
+const _hoisted_304 = { class: "magicflow-crossseed-list" };
+const _hoisted_305 = { class: "magicflow-crossseed-item__main" };
+const _hoisted_306 = ["title"];
+const _hoisted_307 = { class: "magicflow-crossseed-item__meta" };
+const _hoisted_308 = {
   key: 0,
   class: "magicflow-table-empty"
 };
-const _hoisted_303 = { class: "magicflow-settings-dialog__head" };
-const _hoisted_304 = { class: "magicflow-recommend-dialog__head-actions" };
-const _hoisted_305 = { class: "magicflow-recommend-dialog__summary" };
-const _hoisted_306 = { class: "magicflow-recommend-dialog__note" };
-const _hoisted_307 = { class: "magicflow-panel__head" };
-const _hoisted_308 = { class: "d-flex align-center flex-wrap ga-2 justify-end" };
-const _hoisted_309 = { class: "magicflow-recs" };
-const _hoisted_310 = { class: "magicflow-rec__poster" };
-const _hoisted_311 = ["src", "alt"];
-const _hoisted_312 = { class: "magicflow-rec__main" };
-const _hoisted_313 = ["title"];
-const _hoisted_314 = { class: "magicflow-rec__meta" };
-const _hoisted_315 = { class: "magicflow-rec__sub" };
-const _hoisted_316 = {
+const _hoisted_309 = { class: "magicflow-settings-dialog__head" };
+const _hoisted_310 = { class: "magicflow-recommend-dialog__head-actions" };
+const _hoisted_311 = { class: "magicflow-recommend-dialog__summary" };
+const _hoisted_312 = { class: "magicflow-recommend-dialog__note" };
+const _hoisted_313 = { class: "magicflow-panel__head" };
+const _hoisted_314 = { class: "d-flex align-center flex-wrap ga-2 justify-end" };
+const _hoisted_315 = { class: "magicflow-recs" };
+const _hoisted_316 = { class: "magicflow-rec__poster" };
+const _hoisted_317 = ["src", "alt"];
+const _hoisted_318 = { class: "magicflow-rec__main" };
+const _hoisted_319 = ["title"];
+const _hoisted_320 = { class: "magicflow-rec__meta" };
+const _hoisted_321 = { class: "magicflow-rec__sub" };
+const _hoisted_322 = {
   key: 1,
   class: "magicflow-rec__actions"
 };
-const _hoisted_317 = {
+const _hoisted_323 = {
   key: 0,
   class: "magicflow-table-empty"
 };
-const _hoisted_318 = { class: "magicflow-settings-dialog__head" };
-const _hoisted_319 = { class: "magicflow-recommend-dialog__head-actions" };
-const _hoisted_320 = { class: "magicflow-recommend-dialog__summary" };
-const _hoisted_321 = {
+const _hoisted_324 = { class: "magicflow-settings-dialog__head" };
+const _hoisted_325 = { class: "magicflow-recommend-dialog__head-actions" };
+const _hoisted_326 = { class: "magicflow-recommend-dialog__summary" };
+const _hoisted_327 = {
   key: 1,
   class: "magicflow-table-empty"
 };
-const _hoisted_322 = { class: "magicflow-panel__head" };
-const _hoisted_323 = { class: "text-subtitle-2 font-weight-medium" };
-const _hoisted_324 = { class: "text-body-2 text-medium-emphasis" };
-const _hoisted_325 = { class: "magicflow-exam-stats" };
-const _hoisted_326 = { class: "magicflow-exam-plan" };
-const _hoisted_327 = { class: "magicflow-exam-plan__main" };
-const _hoisted_328 = {
+const _hoisted_328 = { class: "magicflow-panel__head" };
+const _hoisted_329 = { class: "text-subtitle-2 font-weight-medium" };
+const _hoisted_330 = { class: "text-body-2 text-medium-emphasis" };
+const _hoisted_331 = { class: "magicflow-exam-stats" };
+const _hoisted_332 = { class: "magicflow-exam-plan" };
+const _hoisted_333 = { class: "magicflow-exam-plan__main" };
+const _hoisted_334 = {
   key: 0,
   class: "magicflow-exam-plan__notes"
 };
-const _hoisted_329 = {
+const _hoisted_335 = {
   key: 0,
   class: "magicflow-table-empty"
 };
-const _hoisted_330 = { class: "text-body-2" };
-const _hoisted_331 = {
+const _hoisted_336 = { class: "text-body-2" };
+const _hoisted_337 = {
   key: 0,
   class: "magicflow-exam-plan__notes"
 };
@@ -2968,26 +2983,55 @@ function toggleGroup(key) { mhOpen.value = { ...mhOpen.value, [key]: !mhOpen.val
 function openTaskMobile(id) { selectTask(id); mobileView.value = 'detail'; }
 function backToMobileList() { mobileView.value = 'list'; }
 
-// 首页分组：需要你管（有问题/待决策）> 在跑 > 不用管（已停用 / 静默托管）
+// 首页分组：**按站点聚合**（同站多任务折叠为一行，时魔只算一次）→ 再按优先级分组
+// 需要你管（有问题/待决策）> 在跑 > 不用管（已停用 / 静默托管）
+function mhTaskRank(t) {
+  if (t.builtin) return 3
+  const c = taskBadge(t).color;
+  if (c === 'error' || c === 'warning') return 0
+  const m = t.run_mode || 'running';
+  return (m === 'seeding' || m === 'running') ? 1 : 2
+}
 const mobileHomeGroups = computed(() => {
-  const need = [], live = [], rest = [];
+  const sites = new Map();
   for (const t of tasks.value) {
-    if (t.builtin) { rest.push(t); continue }
-    const mode = t.run_mode || 'running';
-    const color = taskBadge(t).color;
-    if (color === 'error' || color === 'warning') need.push(t);
-    else if (mode === 'seeding' || mode === 'running') live.push(t);
-    else rest.push(t);
+    const key = t.builtin ? `#${t.id}` : (t.site_name || t.id);
+    if (!sites.has(key)) sites.set(key, { key, site: t.site_name || t.name, builtin: !!t.builtin, tasks: [] });
+    sites.get(key).tasks.push(t);
   }
-  const byBonus = (a, b) => Number(b.site_bonus_per_hour || 0) - Number(a.site_bonus_per_hour || 0);
-  need.sort(byBonus); live.sort(byBonus); rest.sort(byBonus);
-  return [
-    { key: 'need', label: '需要你管', hint: '有问题或待决策', tasks: need },
-    { key: 'live', label: '在跑', hint: '正常养护中', tasks: live },
-    { key: 'rest', label: '不用管', hint: '已停用 / 静默托管', tasks: rest },
-  ].filter(g => g.tasks.length)
+  const list = [...sites.values()].map((s) => {
+    s.tasks.sort((a, b) => mhTaskRank(a) - mhTaskRank(b));
+    s.rank = Math.min(...s.tasks.map(mhTaskRank));
+    const head = s.tasks[0];
+    s.bonus = head.site_bonus_ok ? Number(head.site_bonus_per_hour || 0) : 0;
+    s.num = mobileRowNum(head);
+    return s
+  });
+  const byBonus = (a, b) => b.bonus - a.bonus;
+  const mk = (key, label, hint, pred) => ({ key, label, hint, sites: list.filter(pred).sort(byBonus) });
+  const groups = [
+    mk('need', '需要你管', '有问题或待决策', s => s.rank === 0),
+    mk('live', '在跑', '正常养护中', s => s.rank === 1),
+    mk('rest', '不用管', '已停用 / 静默托管', s => s.rank >= 2),
+  ].filter(g => g.sites.length);
+  groups.forEach(g => { g.count = g.sites.reduce((n, s) => n + s.tasks.length, 0); });
+  return groups
 });
-const mobileLiveCount = computed(() => (mobileHomeGroups.value.find(g => g.key === 'live')?.tasks.length) || 0);
+const mobileLiveCount = computed(() => {
+  const set = new Set();
+  for (const t of tasks.value) {
+    if (t.builtin) continue
+    const m = t.run_mode || 'running';
+    if (m === 'seeding' || m === 'running') set.add(t.site_name || t.id);
+  }
+  return set.size
+});
+// 站点折叠：多任务行可展开
+const mhSiteOpen = ref({});
+function siteMulti(s) { return s.tasks.length > 1 }
+function siteOpen(key) { return !!mhSiteOpen.value[key] }
+function toggleSite(key) { mhSiteOpen.value = { ...mhSiteOpen.value, [key]: !mhSiteOpen.value[key] }; }
+function openSiteRow(s) { if (siteMulti(s)) toggleSite(s.key); else openTaskMobile(s.tasks[0].id); }
 const mobileBonus = computed(() => (Number(summary.value.bonus_per_hour) || 0).toFixed(1));
 const mobileSilentCount = computed(() => tasks.value.find(t => t.builtin)?.seeding_count || 0);
 // 列表行副标题：状态词 + 关键数
@@ -5379,36 +5423,68 @@ return (_ctx, _cache) => {
                     onClick: $event => (toggleGroup(g.key))
                   }, [
                     _createElementVNode("span", null, _toDisplayString(g.label), 1),
-                    _createElementVNode("span", _hoisted_24, _toDisplayString(g.tasks.length), 1),
+                    _createElementVNode("span", _hoisted_24, _toDisplayString(g.count), 1),
                     _createVNode(_component_VIcon, {
                       icon: isGroupOpen(g.key) ? 'mdi-chevron-up' : 'mdi-chevron-down',
                       size: "18"
                     }, null, 8, ["icon"])
                   ], 8, _hoisted_23),
                   _withDirectives(_createElementVNode("div", _hoisted_25, [
-                    (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(g.tasks, (t) => {
-                      return (_openBlock(), _createElementBlock("button", {
-                        key: t.id,
-                        type: "button",
-                        class: "mh-row",
-                        onClick: $event => (openTaskMobile(t.id))
+                    (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(g.sites, (s) => {
+                      return (_openBlock(), _createElementBlock(_Fragment, {
+                        key: s.key
                       }, [
-                        _createElementVNode("span", {
-                          class: _normalizeClass(["mh-dot", `is-${taskBadge(t).color}`])
-                        }, null, 2),
-                        _createElementVNode("span", _hoisted_27, [
-                          _createElementVNode("span", _hoisted_28, _toDisplayString(t.site_name || t.name), 1),
-                          _createElementVNode("span", _hoisted_29, _toDisplayString(mobileRowLine(t)), 1)
-                        ]),
-                        (mobileRowNum(t))
-                          ? (_openBlock(), _createElementBlock("span", _hoisted_30, _toDisplayString(mobileRowNum(t)), 1))
-                          : _createCommentVNode("", true),
-                        _createVNode(_component_VIcon, {
-                          icon: "mdi-chevron-right",
-                          size: "18",
-                          class: "mh-row__chev"
-                        })
-                      ], 8, _hoisted_26))
+                        _createElementVNode("button", {
+                          type: "button",
+                          class: "mh-row",
+                          onClick: $event => (openSiteRow(s))
+                        }, [
+                          _createElementVNode("span", {
+                            class: _normalizeClass(["mh-dot", `is-${taskBadge(s.tasks[0]).color}`])
+                          }, null, 2),
+                          _createElementVNode("span", _hoisted_27, [
+                            _createElementVNode("span", _hoisted_28, [
+                              _createTextVNode(_toDisplayString(s.site) + " ", 1),
+                              (siteMulti(s))
+                                ? (_openBlock(), _createElementBlock("span", _hoisted_29, _toDisplayString(s.tasks.length) + " 任务", 1))
+                                : _createCommentVNode("", true)
+                            ]),
+                            _createElementVNode("span", _hoisted_30, _toDisplayString(mobileRowLine(s.tasks[0])), 1)
+                          ]),
+                          (s.num)
+                            ? (_openBlock(), _createElementBlock("span", _hoisted_31, _toDisplayString(s.num), 1))
+                            : _createCommentVNode("", true),
+                          _createVNode(_component_VIcon, {
+                            icon: siteMulti(s) ? (siteOpen(s.key) ? 'mdi-chevron-up' : 'mdi-chevron-down') : 'mdi-chevron-right',
+                            size: "18",
+                            class: "mh-row__chev"
+                          }, null, 8, ["icon"])
+                        ], 8, _hoisted_26),
+                        (siteMulti(s))
+                          ? _withDirectives((_openBlock(), _createElementBlock("div", _hoisted_32, [
+                              (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(s.tasks, (t) => {
+                                return (_openBlock(), _createElementBlock("button", {
+                                  key: t.id,
+                                  type: "button",
+                                  class: "mh-subrow",
+                                  onClick: $event => (openTaskMobile(t.id))
+                                }, [
+                                  _createElementVNode("span", {
+                                    class: _normalizeClass(["mh-dot", `is-${taskBadge(t).color}`])
+                                  }, null, 2),
+                                  _createElementVNode("span", _hoisted_34, [
+                                    _createElementVNode("span", _hoisted_35, _toDisplayString(t.name), 1)
+                                  ]),
+                                  (mobileRowNum(t))
+                                    ? (_openBlock(), _createElementBlock("span", _hoisted_36, _toDisplayString(mobileRowNum(t)), 1))
+                                    : _createCommentVNode("", true)
+                                ], 8, _hoisted_33))
+                              }), 128))
+                            ], 512)), [
+                              [_vShow, siteOpen(s.key)]
+                            ])
+                          : _createCommentVNode("", true)
+                      ], 64))
                     }), 128))
                   ], 512), [
                     [_vShow, isGroupOpen(g.key)]
@@ -5416,7 +5492,7 @@ return (_ctx, _cache) => {
                 ]))
               }), 128)),
               _cache[206] || (_cache[206] = _createElementVNode("div", { class: "mh-sect" }, "功能", -1)),
-              _createElementVNode("div", _hoisted_31, [
+              _createElementVNode("div", _hoisted_37, [
                 (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(MF_PAGES.filter(item => item.key !== 'settings'), (p) => {
                   return (_openBlock(), _createElementBlock("button", {
                     key: p.key,
@@ -5429,10 +5505,10 @@ return (_ctx, _cache) => {
                       size: "20"
                     }, null, 8, ["icon"]),
                     _createElementVNode("span", null, _toDisplayString(p.label), 1)
-                  ], 8, _hoisted_32))
+                  ], 8, _hoisted_38))
                 }), 128))
               ]),
-              _createElementVNode("div", _hoisted_33, [
+              _createElementVNode("div", _hoisted_39, [
                 _createElementVNode("button", {
                   type: "button",
                   class: "mh-btn",
@@ -5457,13 +5533,13 @@ return (_ctx, _cache) => {
                 ])
               ])
             ]),
-            _createElementVNode("div", _hoisted_34, [
+            _createElementVNode("div", _hoisted_40, [
               _createVNode(_component_VSheet, {
                 tag: "aside",
                 class: "magicflow-task-rail app-surface-static"
               }, {
                 default: _withCtx(() => [
-                  _createElementVNode("div", _hoisted_35, [
+                  _createElementVNode("div", _hoisted_41, [
                     _cache[207] || (_cache[207] = _createElementVNode("span", { class: "text-subtitle-2" }, "任务", -1)),
                     _createVNode(_component_VChip, {
                       size: "x-small",
@@ -5475,7 +5551,7 @@ return (_ctx, _cache) => {
                       _: 1
                     })
                   ]),
-                  _createElementVNode("div", _hoisted_36, [
+                  _createElementVNode("div", _hoisted_42, [
                     (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(tasks.value, (task) => {
                       return (_openBlock(), _createElementBlock("button", {
                         key: task.id,
@@ -5484,7 +5560,7 @@ return (_ctx, _cache) => {
                         "aria-pressed": task.id === selectedTaskId.value,
                         onClick: $event => (selectTask(task.id))
                       }, [
-                        _createElementVNode("span", _hoisted_38, [
+                        _createElementVNode("span", _hoisted_44, [
                           _createElementVNode("strong", null, _toDisplayString(task.name), 1),
                           (task.builtin)
                             ? (_openBlock(), _createBlock(_component_VChip, {
@@ -5504,13 +5580,13 @@ return (_ctx, _cache) => {
                           }, null, 2)
                         ]),
                         _createElementVNode("span", null, _toDisplayString(task.site_name) + " · " + _toDisplayString(task.downloader), 1),
-                        _createElementVNode("span", _hoisted_39, [
+                        _createElementVNode("span", _hoisted_45, [
                           _createElementVNode("span", null, _toDisplayString(task.seeding_count || 0) + " 个种子", 1),
                           (task.task_type === 'brush')
-                            ? (_openBlock(), _createElementBlock("span", _hoisted_40, _toDisplayString(_unref(formatBytes)(task.task_uploaded || 0)) + " 上传", 1))
-                            : (_openBlock(), _createElementBlock("span", _hoisted_41, _toDisplayString(task.site_bonus_ok ? _unref(formatBonus)(task.site_bonus_per_hour) : '—'), 1))
+                            ? (_openBlock(), _createElementBlock("span", _hoisted_46, _toDisplayString(_unref(formatBytes)(task.task_uploaded || 0)) + " 上传", 1))
+                            : (_openBlock(), _createElementBlock("span", _hoisted_47, _toDisplayString(task.site_bonus_ok ? _unref(formatBonus)(task.site_bonus_per_hour) : '—'), 1))
                         ])
-                      ], 10, _hoisted_37))
+                      ], 10, _hoisted_43))
                     }), 128))
                   ]),
                   _createVNode(_component_VBtn, {
@@ -5529,9 +5605,9 @@ return (_ctx, _cache) => {
                 _: 1
               }),
               (selectedTask.value)
-                ? (_openBlock(), _createElementBlock("main", _hoisted_42, [
-                    _createElementVNode("section", _hoisted_43, [
-                      _createElementVNode("div", _hoisted_44, [
+                ? (_openBlock(), _createElementBlock("main", _hoisted_48, [
+                    _createElementVNode("section", _hoisted_49, [
+                      _createElementVNode("div", _hoisted_50, [
                         _createVNode(_component_VAvatar, {
                           color: "primary",
                           variant: "tonal",
@@ -5546,7 +5622,7 @@ return (_ctx, _cache) => {
                                   class: "magicflow-task-head__site-icon",
                                   src: taskSiteIcon.value,
                                   alt: ""
-                                }, null, 8, _hoisted_45))
+                                }, null, 8, _hoisted_51))
                               : (_openBlock(), _createBlock(_component_VIcon, {
                                   key: 1,
                                   icon: "mdi-web"
@@ -5554,8 +5630,8 @@ return (_ctx, _cache) => {
                           ]),
                           _: 1
                         }),
-                        _createElementVNode("div", _hoisted_46, [
-                          _createElementVNode("div", _hoisted_47, [
+                        _createElementVNode("div", _hoisted_52, [
+                          _createElementVNode("div", _hoisted_53, [
                             _createElementVNode("h2", null, _toDisplayString(selectedTask.value.name), 1),
                             (selectedTask.value.builtin)
                               ? (_openBlock(), _createBlock(_component_VChip, {
@@ -5597,7 +5673,7 @@ return (_ctx, _cache) => {
                           _createElementVNode("p", null, _toDisplayString(selectedTask.value.site_name) + " · 标签「" + _toDisplayString(selectedTask.value.brush_tag || '未设置') + "」", 1)
                         ])
                       ]),
-                      _createElementVNode("div", _hoisted_48, [
+                      _createElementVNode("div", _hoisted_54, [
                         _createVNode(_component_VTooltip, { text: "立即执行" }, {
                           activator: _withCtx(({ props: tipProps }) => [
                             _createVNode(_component_VBtn, _mergeProps(tipProps, {
@@ -5689,15 +5765,15 @@ return (_ctx, _cache) => {
                     ]),
                     (!selectedTask.value.builtin)
                       ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
-                          _createElementVNode("div", _hoisted_49, [
+                          _createElementVNode("div", _hoisted_55, [
                             _createElementVNode("div", {
                               class: _normalizeClass(["md-verdict", { 'is-warn': !!detailStats.value.last_error }])
                             }, [
                               _createElementVNode("span", {
                                 class: _normalizeClass(["md-dot", `is-${selectedState.value.color}`])
                               }, null, 2),
-                              _createElementVNode("div", _hoisted_50, [
-                                _createElementVNode("div", _hoisted_51, [
+                              _createElementVNode("div", _hoisted_56, [
+                                _createElementVNode("div", _hoisted_57, [
                                   _createTextVNode(_toDisplayString(selectedState.value.text), 1),
                                   (!detailStats.value.last_error)
                                     ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
@@ -5705,10 +5781,10 @@ return (_ctx, _cache) => {
                                       ], 64))
                                     : _createCommentVNode("", true)
                                 ]),
-                                _createElementVNode("div", _hoisted_52, _toDisplayString(mobileDetailHint.value), 1)
+                                _createElementVNode("div", _hoisted_58, _toDisplayString(mobileDetailHint.value), 1)
                               ])
                             ], 2),
-                            _createElementVNode("div", _hoisted_53, [
+                            _createElementVNode("div", _hoisted_59, [
                               (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(mobileDetailCards.value, (c) => {
                                 return (_openBlock(), _createElementBlock("div", {
                                   key: c.k,
@@ -5719,8 +5795,8 @@ return (_ctx, _cache) => {
                                 ]))
                               }), 128))
                             ]),
-                            _createElementVNode("div", _hoisted_54, _toDisplayString(mobileStrategyText.value), 1),
-                            _createElementVNode("div", _hoisted_55, [
+                            _createElementVNode("div", _hoisted_60, _toDisplayString(mobileStrategyText.value), 1),
+                            _createElementVNode("div", _hoisted_61, [
                               (_openBlock(), _createElementBlock(_Fragment, null, _renderList(MF_DETAIL_ENTRIES, (e) => {
                                 return _createElementVNode("button", {
                                   key: e.key,
@@ -5733,11 +5809,11 @@ return (_ctx, _cache) => {
                                     size: "20"
                                   }, null, 8, ["icon"]),
                                   _createElementVNode("span", null, _toDisplayString(e.label), 1)
-                                ], 10, _hoisted_56)
+                                ], 10, _hoisted_62)
                               }), 64))
                             ])
                           ]),
-                          _createElementVNode("div", _hoisted_57, [
+                          _createElementVNode("div", _hoisted_63, [
                             (_openBlock(), _createElementBlock(_Fragment, null, _renderList(MF_TABS, (tab) => {
                               return _createElementVNode("button", {
                                 key: tab.value,
@@ -5746,7 +5822,7 @@ return (_ctx, _cache) => {
                                 class: _normalizeClass(["magicflow-tab", { 'is-active': activeTab.value === tab.value }]),
                                 "aria-selected": activeTab.value === tab.value,
                                 onClick: $event => (activeTab.value = tab.value)
-                              }, _toDisplayString(tab.label), 11, _hoisted_58)
+                              }, _toDisplayString(tab.label), 11, _hoisted_64)
                             }), 64))
                           ]),
                           _createVNode(_component_VWindow, {
@@ -5761,7 +5837,7 @@ return (_ctx, _cache) => {
                                 class: "magicflow-window-ov"
                               }, {
                                 default: _withCtx(() => [
-                                  _createElementVNode("div", _hoisted_59, [
+                                  _createElementVNode("div", _hoisted_65, [
                                     _createVNode(_component_VSheet, { class: "magicflow-stat magicflow-stat--accent app-surface-static" }, {
                                       default: _withCtx(() => [
                                         _createElementVNode("strong", null, _toDisplayString(selectedTask.value.seeding_count || 0), 1),
@@ -5811,7 +5887,7 @@ return (_ctx, _cache) => {
                                     })
                                   ]),
                                   ((selectedTask.value.run_mode || 'running') === 'seeding')
-                                    ? (_openBlock(), _createElementBlock("div", _hoisted_60, [
+                                    ? (_openBlock(), _createElementBlock("div", _hoisted_66, [
                                         _createVNode(_component_VSheet, { class: "magicflow-stat magicflow-stat--accent app-surface-static" }, {
                                           default: _withCtx(() => [
                                             _createElementVNode("strong", null, _toDisplayString(selectedTask.value.protected_count || 0), 1),
@@ -5821,13 +5897,13 @@ return (_ctx, _cache) => {
                                         })
                                       ]))
                                     : _createCommentVNode("", true),
-                                  _createElementVNode("div", _hoisted_61, [
+                                  _createElementVNode("div", _hoisted_67, [
                                     _createVNode(_component_VSheet, {
                                       tag: "section",
                                       class: "magicflow-panel app-surface-static"
                                     }, {
                                       default: _withCtx(() => [
-                                        _createElementVNode("header", _hoisted_62, [
+                                        _createElementVNode("header", _hoisted_68, [
                                           _cache[214] || (_cache[214] = _createElementVNode("div", null, [
                                             _createElementVNode("div", { class: "text-subtitle-1 font-weight-medium" }, "运行状态"),
                                             _createElementVNode("div", { class: "text-body-2 text-medium-emphasis" }, "当前任务调度与魔力策略")
@@ -5843,7 +5919,7 @@ return (_ctx, _cache) => {
                                             _: 1
                                           }, 8, ["color"])
                                         ]),
-                                        _createElementVNode("dl", _hoisted_63, [
+                                        _createElementVNode("dl", _hoisted_69, [
                                           _createElementVNode("div", null, [
                                             _cache[215] || (_cache[215] = _createElementVNode("dt", null, "任务目标", -1)),
                                             _createElementVNode("dd", null, _toDisplayString(goalFactText.value), 1)
@@ -5930,10 +6006,10 @@ return (_ctx, _cache) => {
                                       class: "magicflow-panel app-surface-static"
                                     }, {
                                       default: _withCtx(() => [
-                                        _createElementVNode("header", _hoisted_64, [
+                                        _createElementVNode("header", _hoisted_70, [
                                           _createElementVNode("div", null, [
                                             _cache[233] || (_cache[233] = _createElementVNode("div", { class: "text-subtitle-1 font-weight-medium" }, "站点数据", -1)),
-                                            _createElementVNode("div", _hoisted_65, [
+                                            _createElementVNode("div", _hoisted_71, [
                                               (siteAccount.value.source === 'live')
                                                 ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
                                                     _createTextVNode("魔流直连站点用户栏（实时）" + _toDisplayString(siteAccount.value.sampledAt ? ` · 采样于 ${siteAccount.value.sampledAt}` : ''), 1)
@@ -5981,7 +6057,7 @@ return (_ctx, _cache) => {
                                                   _: 1
                                                 }))
                                         ]),
-                                        _createElementVNode("dl", _hoisted_66, [
+                                        _createElementVNode("dl", _hoisted_72, [
                                           _createElementVNode("div", null, [
                                             _cache[236] || (_cache[236] = _createElementVNode("dt", null, "上传量", -1)),
                                             _createElementVNode("dd", null, _toDisplayString(siteAccount.value.ok ? _unref(formatBytes)(siteAccount.value.upload || 0) : '—'), 1)
@@ -5999,7 +6075,7 @@ return (_ctx, _cache) => {
                                             _createElementVNode("dd", null, _toDisplayString(siteAccount.value.ok ? `${siteAccount.value.seeding ?? '—'} / ${siteAccount.value.leeching ?? '—'}` : '—'), 1)
                                           ]),
                                           (siteAccount.value.seeding_size)
-                                            ? (_openBlock(), _createElementBlock("div", _hoisted_67, [
+                                            ? (_openBlock(), _createElementBlock("div", _hoisted_73, [
                                                 _cache[240] || (_cache[240] = _createElementVNode("dt", null, "做种体积", -1)),
                                                 _createElementVNode("dd", null, _toDisplayString(_unref(formatBytes)(siteAccount.value.seeding_size)), 1)
                                               ]))
@@ -6028,7 +6104,7 @@ return (_ctx, _cache) => {
                                             : _createCommentVNode("", true)
                                         ]),
                                         (siteLiveAlerts.value.length)
-                                          ? (_openBlock(), _createElementBlock("div", _hoisted_68, [
+                                          ? (_openBlock(), _createElementBlock("div", _hoisted_74, [
                                               (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(siteLiveAlerts.value, (alert, idx) => {
                                                 return (_openBlock(), _createElementBlock("div", {
                                                   key: `${alert.kind}-${idx}`,
@@ -6045,10 +6121,10 @@ return (_ctx, _cache) => {
                                       class: "magicflow-panel app-surface-static"
                                     }, {
                                       default: _withCtx(() => [
-                                        _createElementVNode("header", _hoisted_69, [
+                                        _createElementVNode("header", _hoisted_75, [
                                           _createElementVNode("div", null, [
                                             _cache[245] || (_cache[245] = _createElementVNode("div", { class: "text-subtitle-1 font-weight-medium" }, "最近一次运行", -1)),
-                                            _createElementVNode("div", _hoisted_70, _toDisplayString(detailStats.value.last_run_at ? _unref(formatDateTime)(detailStats.value.last_run_at) : '暂无运行记录'), 1)
+                                            _createElementVNode("div", _hoisted_76, _toDisplayString(detailStats.value.last_run_at ? _unref(formatDateTime)(detailStats.value.last_run_at) : '暂无运行记录'), 1)
                                           ]),
                                           (detailStats.value.last_error)
                                             ? (_openBlock(), _createBlock(_component_VChip, {
@@ -6088,7 +6164,7 @@ return (_ctx, _cache) => {
                                                   }))
                                                 : _createCommentVNode("", true)
                                         ]),
-                                        _createElementVNode("div", _hoisted_71, [
+                                        _createElementVNode("div", _hoisted_77, [
                                           _createElementVNode("div", null, [
                                             _cache[248] || (_cache[248] = _createElementVNode("span", null, "上次成功", -1)),
                                             _createElementVNode("strong", null, _toDisplayString(detailStats.value.last_success_at ? _unref(formatDateTime)(detailStats.value.last_success_at) : '-'), 1)
@@ -6170,10 +6246,10 @@ return (_ctx, _cache) => {
                                     class: "magicflow-panel magicflow-flow app-surface-static"
                                   }, {
                                     default: _withCtx(() => [
-                                      _createElementVNode("header", _hoisted_72, [
+                                      _createElementVNode("header", _hoisted_78, [
                                         _createElementVNode("div", null, [
                                           _cache[256] || (_cache[256] = _createElementVNode("div", { class: "text-subtitle-1 font-weight-medium" }, "运行流程", -1)),
-                                          _createElementVNode("div", _hoisted_73, [
+                                          _createElementVNode("div", _hoisted_79, [
                                             _createTextVNode(_toDisplayString(detailStats.value.run_active ? (taskIsBrush.value ? '正在执行本轮刷流…' : '正在执行本轮养护…') : (detailStats.value.last_run_at ? `最近执行 ${_unref(formatDateTime)(detailStats.value.last_run_at)}` : '尚未运行')) + " · 翻页游标 " + _toDisplayString(detailStats.value.page_cursor ?? 0), 1),
                                             (detailStats.value.last_phase_detail)
                                               ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
@@ -6189,13 +6265,13 @@ return (_ctx, _cache) => {
                                           _createTextVNode(" " + _toDisplayString(flowPhaseText.value), 1)
                                         ], 2)
                                       ]),
-                                      _createElementVNode("ol", _hoisted_74, [
+                                      _createElementVNode("ol", _hoisted_80, [
                                         (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(flowNodes.value, (node, i) => {
                                           return (_openBlock(), _createElementBlock("li", {
                                             key: node.key,
                                             class: _normalizeClass(["magicflow-flow__node", `is-${node.state}`])
                                           }, [
-                                            _createElementVNode("span", _hoisted_75, [
+                                            _createElementVNode("span", _hoisted_81, [
                                               (node.state === 'done' || node.state === 'running')
                                                 ? (_openBlock(), _createBlock(_component_VIcon, {
                                                     key: 0,
@@ -6210,7 +6286,7 @@ return (_ctx, _cache) => {
                                                     }))
                                                   : _createCommentVNode("", true)
                                             ]),
-                                            _createElementVNode("span", _hoisted_76, _toDisplayString(node.label), 1),
+                                            _createElementVNode("span", _hoisted_82, _toDisplayString(node.label), 1),
                                             (i < flowNodes.value.length - 1)
                                               ? (_openBlock(), _createElementBlock("span", {
                                                   key: 0,
@@ -6242,10 +6318,10 @@ return (_ctx, _cache) => {
                                     class: "magicflow-panel app-surface-static mt-4"
                                   }, {
                                     default: _withCtx(() => [
-                                      _createElementVNode("header", _hoisted_77, [
+                                      _createElementVNode("header", _hoisted_83, [
                                         _createElementVNode("div", null, [
                                           _cache[258] || (_cache[258] = _createElementVNode("div", { class: "text-subtitle-1 font-weight-medium" }, "过滤原因", -1)),
-                                          _createElementVNode("div", _hoisted_78, [
+                                          _createElementVNode("div", _hoisted_84, [
                                             _createTextVNode(" 被规则拦截的候选分布 · 共抓取 " + _toDisplayString(candidateRawTotal.value) + " 个，通过 " + _toDisplayString((candidateData.value.candidates || []).length) + " ", 1),
                                             (candidateLoadedAt.value)
                                               ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
@@ -6256,7 +6332,7 @@ return (_ctx, _cache) => {
                                         ])
                                       ]),
                                       (reasonEntries.value.length)
-                                        ? (_openBlock(), _createElementBlock("div", _hoisted_79, [
+                                        ? (_openBlock(), _createElementBlock("div", _hoisted_85, [
                                             (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(reasonEntries.value, (item) => {
                                               return (_openBlock(), _createElementBlock("div", {
                                                 key: item.label,
@@ -6266,7 +6342,7 @@ return (_ctx, _cache) => {
                                                   _createElementVNode("span", null, _toDisplayString(item.label), 1),
                                                   _createElementVNode("strong", null, _toDisplayString(item.count), 1)
                                                 ]),
-                                                _createElementVNode("span", _hoisted_80, [
+                                                _createElementVNode("span", _hoisted_86, [
                                                   _createElementVNode("i", {
                                                     style: _normalizeStyle({ width: `${(item.count / maxReasonCount.value) * 100}%` })
                                                   }, null, 4)
@@ -6274,7 +6350,7 @@ return (_ctx, _cache) => {
                                               ]))
                                             }), 128))
                                           ]))
-                                        : (_openBlock(), _createElementBlock("div", _hoisted_81, "本轮没有记录过滤原因（候选全部通过或列表为空）")),
+                                        : (_openBlock(), _createElementBlock("div", _hoisted_87, "本轮没有记录过滤原因（候选全部通过或列表为空）")),
                                       (detailStats.value.last_run_status === 'noop' && detailStats.value.last_run_reason)
                                         ? (_openBlock(), _createBlock(_component_VAlert, {
                                             key: 2,
@@ -6297,7 +6373,7 @@ return (_ctx, _cache) => {
                                     class: "magicflow-panel app-surface-static mt-4"
                                   }, {
                                     default: _withCtx(() => [
-                                      _createElementVNode("header", _hoisted_82, [
+                                      _createElementVNode("header", _hoisted_88, [
                                         _cache[260] || (_cache[260] = _createElementVNode("div", null, [
                                           _createElementVNode("div", { class: "text-subtitle-1 font-weight-medium" }, "操作记录"),
                                           _createElementVNode("div", { class: "text-body-2 text-medium-emphasis" }, "每次执行 / 选种 / 删种 / 保护 / 标签 的流水（可展开明细）")
@@ -6314,7 +6390,7 @@ return (_ctx, _cache) => {
                                           _: 1
                                         })
                                       ]),
-                                      _createElementVNode("div", _hoisted_83, [
+                                      _createElementVNode("div", _hoisted_89, [
                                         (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(operationData.value.operations || [], (record) => {
                                           return (_openBlock(), _createElementBlock("article", {
                                             key: record.operation_id
@@ -6348,7 +6424,7 @@ return (_ctx, _cache) => {
                                                   : _createCommentVNode("", true)
                                               ]),
                                               (record.error_message)
-                                                ? (_openBlock(), _createElementBlock("span", _hoisted_84, _toDisplayString(record.error_message), 1))
+                                                ? (_openBlock(), _createElementBlock("span", _hoisted_90, _toDisplayString(record.error_message), 1))
                                                 : _createCommentVNode("", true),
                                               (hasOpDetail(record))
                                                 ? (_openBlock(), _createElementBlock("button", {
@@ -6362,22 +6438,22 @@ return (_ctx, _cache) => {
                                                       icon: isOpDetailOpen(record.operation_id) ? 'mdi-chevron-up' : 'mdi-chevron-down',
                                                       size: "14"
                                                     }, null, 8, ["icon"])
-                                                  ], 8, _hoisted_85))
+                                                  ], 8, _hoisted_91))
                                                 : _createCommentVNode("", true),
                                               (isOpDetailOpen(record.operation_id))
-                                                ? (_openBlock(), _createElementBlock("ul", _hoisted_86, [
+                                                ? (_openBlock(), _createElementBlock("ul", _hoisted_92, [
                                                     (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(opDetailItems(record), (it, idx) => {
                                                       return (_openBlock(), _createElementBlock("li", { key: idx }, [
-                                                        _createElementVNode("span", _hoisted_87, [
+                                                        _createElementVNode("span", _hoisted_93, [
                                                           (itemSourceText(it.source))
-                                                            ? (_openBlock(), _createElementBlock("em", _hoisted_88, _toDisplayString(itemSourceText(it.source)), 1))
+                                                            ? (_openBlock(), _createElementBlock("em", _hoisted_94, _toDisplayString(itemSourceText(it.source)), 1))
                                                             : _createCommentVNode("", true),
                                                           _createElementVNode("span", {
                                                             class: "magicflow-events__detail-title",
                                                             title: it.title || it.hash
-                                                          }, _toDisplayString(it.title || it.hash || '—'), 9, _hoisted_89)
+                                                          }, _toDisplayString(it.title || it.hash || '—'), 9, _hoisted_95)
                                                         ]),
-                                                        _createElementVNode("span", _hoisted_90, [
+                                                        _createElementVNode("span", _hoisted_96, [
                                                           (it.reason)
                                                             ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
                                                                 _createTextVNode(_toDisplayString(it.reason), 1)
@@ -6402,7 +6478,7 @@ return (_ctx, _cache) => {
                                           ]))
                                         }), 128)),
                                         (!(operationData.value.operations || []).length)
-                                          ? (_openBlock(), _createElementBlock("div", _hoisted_91, "暂无操作记录"))
+                                          ? (_openBlock(), _createElementBlock("div", _hoisted_97, "暂无操作记录"))
                                           : _createCommentVNode("", true)
                                       ])
                                     ]),
@@ -6413,10 +6489,10 @@ return (_ctx, _cache) => {
                               }),
                               _createVNode(_component_VWindowItem, { value: "pool" }, {
                                 default: _withCtx(() => [
-                                  _createElementVNode("div", _hoisted_92, [
+                                  _createElementVNode("div", _hoisted_98, [
                                     _createElementVNode("div", null, [
                                       _cache[261] || (_cache[261] = _createElementVNode("div", { class: "text-subtitle-1 font-weight-medium" }, "种子池", -1)),
-                                      _createElementVNode("div", _hoisted_93, [
+                                      _createElementVNode("div", _hoisted_99, [
                                         (poolView.value === 'candidates')
                                           ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
                                               _createTextVNode(" 待办队列 · 共 " + _toDisplayString(candidateData.value.total || 0) + " 个通过过滤 ", 1)
@@ -6426,7 +6502,7 @@ return (_ctx, _cache) => {
                                             ], 64))
                                       ])
                                     ]),
-                                    _createElementVNode("div", _hoisted_94, [
+                                    _createElementVNode("div", _hoisted_100, [
                                       _createVNode(_component_VBtnToggle, {
                                         "model-value": poolView.value,
                                         mandatory: "",
@@ -6481,18 +6557,18 @@ return (_ctx, _cache) => {
                                         class: "magicflow-panel app-surface-static"
                                       }, {
                                         default: _withCtx(() => [
-                                          _createElementVNode("header", _hoisted_95, [
+                                          _createElementVNode("header", _hoisted_101, [
                                             _createElementVNode("div", null, [
                                               _cache[264] || (_cache[264] = _createElementVNode("div", { class: "text-subtitle-1 font-weight-medium" }, "候选排行", -1)),
-                                              _createElementVNode("div", _hoisted_96, _toDisplayString(taskIsBrush.value ? '按上传潜力（下载人数）排序 · 仅供选种参考' : '待办名次由站点魔力效率内部排序 · 仅供选种参考'), 1)
+                                              _createElementVNode("div", _hoisted_102, _toDisplayString(taskIsBrush.value ? '按上传潜力（下载人数）排序 · 仅供选种参考' : '待办名次由站点魔力效率内部排序 · 仅供选种参考'), 1)
                                             ])
                                           ]),
-                                          _createElementVNode("ol", _hoisted_97, [
+                                          _createElementVNode("ol", _hoisted_103, [
                                             (_openBlock(true), _createElementBlock(_Fragment, null, _renderList((candidateData.value.candidates || []).slice(0, 8), (candidate) => {
                                               return (_openBlock(), _createElementBlock("li", {
                                                 key: candidate.hash
                                               }, [
-                                                _createElementVNode("span", _hoisted_98, _toDisplayString(candidate.rank), 1),
+                                                _createElementVNode("span", _hoisted_104, _toDisplayString(candidate.rank), 1),
                                                 _createElementVNode("div", null, [
                                                   _createElementVNode("strong", null, _toDisplayString(candidate.title || '未知种子'), 1),
                                                   _createElementVNode("span", null, _toDisplayString(Number(candidate.size_gb || 0).toFixed(2)) + " GB · " + _toDisplayString(candidate.seeders) + " 做种 · " + _toDisplayString(candidate.leechers) + " 下载 · " + _toDisplayString(Number(candidate.age_weeks || 0).toFixed(1)) + " 周", 1)
@@ -6500,7 +6576,7 @@ return (_ctx, _cache) => {
                                               ]))
                                             }), 128)),
                                             (!(candidateData.value.candidates || []).length)
-                                              ? (_openBlock(), _createElementBlock("li", _hoisted_99, [...(_cache[265] || (_cache[265] = [
+                                              ? (_openBlock(), _createElementBlock("li", _hoisted_105, [...(_cache[265] || (_cache[265] = [
                                                   _createElementVNode("div", { class: "magicflow-table-empty" }, "暂无候选", -1)
                                                 ]))]))
                                               : _createCommentVNode("", true)
@@ -6514,9 +6590,9 @@ return (_ctx, _cache) => {
                                         class: "magicflow-panel magicflow-torrents app-surface-static"
                                       }, {
                                         default: _withCtx(() => [
-                                          _createElementVNode("header", _hoisted_100, [
+                                          _createElementVNode("header", _hoisted_106, [
                                             _cache[268] || (_cache[268] = _createElementVNode("div", { class: "text-body-2 text-medium-emphasis" }, " 点击任意行查看详情 / 手动保留 / 删除 ", -1)),
-                                            _createElementVNode("div", _hoisted_101, [
+                                            _createElementVNode("div", _hoisted_107, [
                                               _createVNode(_component_VSelect, {
                                                 modelValue: torrentStatusFilter.value,
                                                 "onUpdate:modelValue": _cache[11] || (_cache[11] = $event => ((torrentStatusFilter).value = $event)),
@@ -6554,8 +6630,8 @@ return (_ctx, _cache) => {
                                             ])
                                           ]),
                                           (selectedHashes.value.length)
-                                            ? (_openBlock(), _createElementBlock("div", _hoisted_102, [
-                                                _createElementVNode("span", _hoisted_103, "已选 " + _toDisplayString(selectedHashes.value.length) + " 个", 1),
+                                            ? (_openBlock(), _createElementBlock("div", _hoisted_108, [
+                                                _createElementVNode("span", _hoisted_109, "已选 " + _toDisplayString(selectedHashes.value.length) + " 个", 1),
                                                 _createVNode(_component_VBtn, {
                                                   size: "small",
                                                   variant: "tonal",
@@ -6690,7 +6766,7 @@ return (_ctx, _cache) => {
                                               }, null, 8, ["model-value", "aria-label", "onUpdate:modelValue"])
                                             ]),
                                             "item.title": _withCtx(({ item }) => [
-                                              _createElementVNode("div", _hoisted_104, [
+                                              _createElementVNode("div", _hoisted_110, [
                                                 _createElementVNode("strong", null, _toDisplayString(item.title || '未知种子'), 1),
                                                 _createElementVNode("span", null, _toDisplayString(selectedTask.value.site_name), 1)
                                               ])
@@ -6785,14 +6861,14 @@ return (_ctx, _cache) => {
                                             ]))]),
                                             _: 1
                                           }, 8, ["items", "loading"]),
-                                          _createElementVNode("div", _hoisted_105, [
+                                          _createElementVNode("div", _hoisted_111, [
                                             (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(sortedTorrents.value, (item) => {
                                               return (_openBlock(), _createElementBlock("article", {
                                                 key: item.hash || item.title,
                                                 class: "magicflow-mobile-torrent",
                                                 onClick: $event => (openTorrentDetail(item))
                                               }, [
-                                                _createElementVNode("div", _hoisted_107, [
+                                                _createElementVNode("div", _hoisted_113, [
                                                   _createVNode(_component_VCheckbox, {
                                                     "model-value": selectedHashes.value.includes(item.hash),
                                                     density: "compact",
@@ -6801,7 +6877,7 @@ return (_ctx, _cache) => {
                                                     onClick: _cache[21] || (_cache[21] = _withModifiers(() => {}, ["stop"])),
                                                     "onUpdate:modelValue": $event => (toggleTorrentSelection(item))
                                                   }, null, 8, ["model-value", "onUpdate:modelValue"]),
-                                                  _createElementVNode("div", _hoisted_108, [
+                                                  _createElementVNode("div", _hoisted_114, [
                                                     _createElementVNode("strong", null, _toDisplayString(item.title || '未知种子'), 1),
                                                     _createElementVNode("span", null, _toDisplayString(selectedTask.value.site_name), 1)
                                                   ]),
@@ -6824,7 +6900,7 @@ return (_ctx, _cache) => {
                                                   rounded: "",
                                                   class: "magicflow-mobile-torrent__bar"
                                                 }, null, 8, ["model-value", "color"]),
-                                                _createElementVNode("div", _hoisted_109, [
+                                                _createElementVNode("div", _hoisted_115, [
                                                   _createElementVNode("span", null, [
                                                     _cache[278] || (_cache[278] = _createElementVNode("em", null, "大小", -1)),
                                                     _createElementVNode("b", null, _toDisplayString(Number(item.size_gb || 0).toFixed(2)) + " GB", 1)
@@ -6838,7 +6914,7 @@ return (_ctx, _cache) => {
                                                     _createElementVNode("b", null, _toDisplayString(Number(item.ratio || 0).toFixed(2)), 1)
                                                   ])
                                                 ]),
-                                                _createElementVNode("div", _hoisted_110, [
+                                                _createElementVNode("div", _hoisted_116, [
                                                   _createVNode(_component_VBtn, {
                                                     size: "small",
                                                     variant: "tonal",
@@ -6900,10 +6976,10 @@ return (_ctx, _cache) => {
                                                     _: 1
                                                   }, 8, ["onClick"])
                                                 ])
-                                              ], 8, _hoisted_106))
+                                              ], 8, _hoisted_112))
                                             }), 128)),
                                             (!sortedTorrents.value.length)
-                                              ? (_openBlock(), _createElementBlock("div", _hoisted_111, "当前筛选下没有托管种子"))
+                                              ? (_openBlock(), _createElementBlock("div", _hoisted_117, "当前筛选下没有托管种子"))
                                               : _createCommentVNode("", true)
                                           ])
                                         ]),
@@ -6914,19 +6990,19 @@ return (_ctx, _cache) => {
                               }),
                               _createVNode(_component_VWindowItem, { value: "config" }, {
                                 default: _withCtx(() => [
-                                  _createElementVNode("div", _hoisted_112, [
+                                  _createElementVNode("div", _hoisted_118, [
                                     _createVNode(_component_VSheet, {
                                       tag: "section",
                                       class: "magicflow-panel app-surface-static"
                                     }, {
                                       default: _withCtx(() => [
-                                        _createElementVNode("header", _hoisted_113, [
+                                        _createElementVNode("header", _hoisted_119, [
                                           _createElementVNode("div", null, [
-                                            _createElementVNode("div", _hoisted_114, _toDisplayString(taskIsBrush.value ? '刷流规则' : '魔力规则'), 1),
-                                            _createElementVNode("div", _hoisted_115, _toDisplayString(taskIsBrush.value ? '刷流标准：免费 + 有下载者；做种满天数清理' : '当前服务端生效的魔力养护配置'), 1)
+                                            _createElementVNode("div", _hoisted_120, _toDisplayString(taskIsBrush.value ? '刷流规则' : '魔力规则'), 1),
+                                            _createElementVNode("div", _hoisted_121, _toDisplayString(taskIsBrush.value ? '刷流标准：免费 + 有下载者；做种满天数清理' : '当前服务端生效的魔力养护配置'), 1)
                                           ])
                                         ]),
-                                        _createElementVNode("dl", _hoisted_116, [
+                                        _createElementVNode("dl", _hoisted_122, [
                                           _createElementVNode("div", null, [
                                             _cache[284] || (_cache[284] = _createElementVNode("dt", null, "任务状态", -1)),
                                             _createElementVNode("dd", null, _toDisplayString(selectedRunMode.value.text), 1)
@@ -7115,7 +7191,7 @@ return (_ctx, _cache) => {
                                             _createElementVNode("div", { class: "text-body-2 text-medium-emphasis" }, "以下操作只影响当前任务")
                                           ])
                                         ], -1)),
-                                        _createElementVNode("div", _hoisted_117, [
+                                        _createElementVNode("div", _hoisted_123, [
                                           _createElementVNode("div", null, [
                                             _cache[327] || (_cache[327] = _createElementVNode("strong", null, "执行一次", -1)),
                                             _createElementVNode("span", null, _toDisplayString(taskIsBrush.value ? '立即按刷流标准抓取免费热种并保持上传' : '立即按当前策略抓取候选并养护做种'), 1),
@@ -7181,7 +7257,7 @@ return (_ctx, _cache) => {
                           style: {"margin-top":"16px"}
                         }, {
                           default: _withCtx(() => [
-                            _createElementVNode("header", _hoisted_118, [
+                            _createElementVNode("header", _hoisted_124, [
                               _cache[335] || (_cache[335] = _createElementVNode("div", null, [
                                 _createElementVNode("div", { class: "text-subtitle-1 font-weight-medium" }, "静默托管 · 常驻 worker"),
                                 _createElementVNode("div", { class: "text-body-2 text-medium-emphasis" }, "静默池的负责人：清理未下完 / 保挂（恢复做种）/ H&R 统一管理 / 辅种校验 / 分拣，低频自动运行")
@@ -7198,7 +7274,7 @@ return (_ctx, _cache) => {
                                 _: 1
                               })
                             ]),
-                            _createElementVNode("div", _hoisted_119, [
+                            _createElementVNode("div", _hoisted_125, [
                               _createVNode(_component_VSheet, { class: "magicflow-stat app-surface-static" }, {
                                 default: _withCtx(() => [
                                   _createElementVNode("strong", null, _toDisplayString(selectedTask.value.seeding_count || 0), 1),
@@ -7232,7 +7308,7 @@ return (_ctx, _cache) => {
                                     _createElementVNode("div", { class: "text-body-2 text-medium-emphasis" }, "静默池按子类 / 义务 / 站点拆分（职责说明见仓库 docs/静默托管.md）")
                                   ])
                                 ], -1)),
-                                _createElementVNode("div", _hoisted_120, [
+                                _createElementVNode("div", _hoisted_126, [
                                   _createVNode(_component_VChip, {
                                     size: "small",
                                     variant: "tonal",
@@ -7283,7 +7359,7 @@ return (_ctx, _cache) => {
                                   })
                                 ]),
                                 (silentHostSites.value.length)
-                                  ? (_openBlock(), _createElementBlock("div", _hoisted_121, [
+                                  ? (_openBlock(), _createElementBlock("div", _hoisted_127, [
                                       (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(silentHostSites.value, (row, i) => {
                                         return (_openBlock(), _createElementBlock("span", {
                                           key: row.name
@@ -7306,7 +7382,7 @@ return (_ctx, _cache) => {
                               class: "magicflow-panel app-surface-static mt-4"
                             }, {
                               default: _withCtx(() => [
-                                _createElementVNode("header", _hoisted_122, [
+                                _createElementVNode("header", _hoisted_128, [
                                   _cache[340] || (_cache[340] = _createElementVNode("div", null, [
                                     _createElementVNode("div", { class: "text-subtitle-1 font-weight-medium" }, "操作记录"),
                                     _createElementVNode("div", { class: "text-body-2 text-medium-emphasis" }, "每次运行一条流水（展开看九步结果）")
@@ -7323,7 +7399,7 @@ return (_ctx, _cache) => {
                                     _: 1
                                   })
                                 ]),
-                                _createElementVNode("div", _hoisted_123, [
+                                _createElementVNode("div", _hoisted_129, [
                                   (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(operationData.value.operations || [], (record) => {
                                     return (_openBlock(), _createElementBlock("article", {
                                       key: record.operation_id
@@ -7357,7 +7433,7 @@ return (_ctx, _cache) => {
                                             : _createCommentVNode("", true)
                                         ]),
                                         (record.error_message)
-                                          ? (_openBlock(), _createElementBlock("span", _hoisted_124, _toDisplayString(record.error_message), 1))
+                                          ? (_openBlock(), _createElementBlock("span", _hoisted_130, _toDisplayString(record.error_message), 1))
                                           : _createCommentVNode("", true),
                                         (hasOpDetail(record))
                                           ? (_openBlock(), _createElementBlock("button", {
@@ -7371,20 +7447,20 @@ return (_ctx, _cache) => {
                                                 icon: isOpDetailOpen(record.operation_id) ? 'mdi-chevron-up' : 'mdi-chevron-down',
                                                 size: "14"
                                               }, null, 8, ["icon"])
-                                            ], 8, _hoisted_125))
+                                            ], 8, _hoisted_131))
                                           : _createCommentVNode("", true),
                                         (isOpDetailOpen(record.operation_id))
-                                          ? (_openBlock(), _createElementBlock("ul", _hoisted_126, [
+                                          ? (_openBlock(), _createElementBlock("ul", _hoisted_132, [
                                               (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(opDetailItems(record), (it, idx) => {
                                                 return (_openBlock(), _createElementBlock("li", { key: idx }, [
-                                                  _createElementVNode("span", _hoisted_127, [
+                                                  _createElementVNode("span", _hoisted_133, [
                                                     (itemSourceText(it.source))
-                                                      ? (_openBlock(), _createElementBlock("em", _hoisted_128, _toDisplayString(itemSourceText(it.source)), 1))
+                                                      ? (_openBlock(), _createElementBlock("em", _hoisted_134, _toDisplayString(itemSourceText(it.source)), 1))
                                                       : _createCommentVNode("", true),
                                                     _createElementVNode("span", {
                                                       class: "magicflow-events__detail-title",
                                                       title: it.title || it.hash
-                                                    }, _toDisplayString(it.title || it.hash || '—'), 9, _hoisted_129)
+                                                    }, _toDisplayString(it.title || it.hash || '—'), 9, _hoisted_135)
                                                   ])
                                                 ]))
                                               }), 128))
@@ -7394,13 +7470,13 @@ return (_ctx, _cache) => {
                                     ]))
                                   }), 128)),
                                   (!(operationData.value.operations || []).length)
-                                    ? (_openBlock(), _createElementBlock("div", _hoisted_130, "暂无操作记录"))
+                                    ? (_openBlock(), _createElementBlock("div", _hoisted_136, "暂无操作记录"))
                                     : _createCommentVNode("", true)
                                 ])
                               ]),
                               _: 1
                             }),
-                            _createElementVNode("div", _hoisted_131, [
+                            _createElementVNode("div", _hoisted_137, [
                               _createVNode(_component_VBtn, {
                                 size: "small",
                                 color: "primary",
@@ -7443,7 +7519,7 @@ return (_ctx, _cache) => {
       default: _withCtx(() => [
         _createVNode(_component_VCard, { class: "magicflow-dialog magicflow-ops-dialog" }, {
           default: _withCtx(() => [
-            _createElementVNode("header", _hoisted_132, [
+            _createElementVNode("header", _hoisted_138, [
               _cache[343] || (_cache[343] = _createElementVNode("span", { class: "magicflow-settings-dialog__title" }, "操作记录", -1)),
               _cache[344] || (_cache[344] = _createElementVNode("span", { class: "magicflow-ops-dialog__spacer" }, null, -1)),
               _createVNode(_component_VBtn, {
@@ -7461,9 +7537,9 @@ return (_ctx, _cache) => {
                 onClick: _cache[27] || (_cache[27] = $event => (opsOpen.value = false))
               })
             ]),
-            _createElementVNode("div", _hoisted_133, _toDisplayString(selectedTask.value ? (selectedTask.value.name || '当前任务') : '未选择任务') + " · 每次执行 / 选种 / 删种 / 保护 / 标签 的流水 ", 1),
-            _createElementVNode("div", _hoisted_134, [
-              _createElementVNode("div", _hoisted_135, [
+            _createElementVNode("div", _hoisted_139, _toDisplayString(selectedTask.value ? (selectedTask.value.name || '当前任务') : '未选择任务') + " · 每次执行 / 选种 / 删种 / 保护 / 标签 的流水 ", 1),
+            _createElementVNode("div", _hoisted_140, [
+              _createElementVNode("div", _hoisted_141, [
                 (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(operationData.value.operations || [], (record) => {
                   return (_openBlock(), _createElementBlock("article", {
                     key: record.operation_id
@@ -7497,7 +7573,7 @@ return (_ctx, _cache) => {
                           : _createCommentVNode("", true)
                       ]),
                       (record.error_message)
-                        ? (_openBlock(), _createElementBlock("span", _hoisted_136, _toDisplayString(record.error_message), 1))
+                        ? (_openBlock(), _createElementBlock("span", _hoisted_142, _toDisplayString(record.error_message), 1))
                         : _createCommentVNode("", true),
                       (hasOpDetail(record))
                         ? (_openBlock(), _createElementBlock("button", {
@@ -7511,22 +7587,22 @@ return (_ctx, _cache) => {
                               icon: isOpDetailOpen(record.operation_id) ? 'mdi-chevron-up' : 'mdi-chevron-down',
                               size: "14"
                             }, null, 8, ["icon"])
-                          ], 8, _hoisted_137))
+                          ], 8, _hoisted_143))
                         : _createCommentVNode("", true),
                       (isOpDetailOpen(record.operation_id))
-                        ? (_openBlock(), _createElementBlock("ul", _hoisted_138, [
+                        ? (_openBlock(), _createElementBlock("ul", _hoisted_144, [
                             (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(opDetailItems(record), (it, idx) => {
                               return (_openBlock(), _createElementBlock("li", { key: idx }, [
-                                _createElementVNode("span", _hoisted_139, [
+                                _createElementVNode("span", _hoisted_145, [
                                   (itemSourceText(it.source))
-                                    ? (_openBlock(), _createElementBlock("em", _hoisted_140, _toDisplayString(itemSourceText(it.source)), 1))
+                                    ? (_openBlock(), _createElementBlock("em", _hoisted_146, _toDisplayString(itemSourceText(it.source)), 1))
                                     : _createCommentVNode("", true),
                                   _createElementVNode("span", {
                                     class: "magicflow-events__detail-title",
                                     title: it.title || it.hash
-                                  }, _toDisplayString(it.title || it.hash || '—'), 9, _hoisted_141)
+                                  }, _toDisplayString(it.title || it.hash || '—'), 9, _hoisted_147)
                                 ]),
-                                _createElementVNode("span", _hoisted_142, [
+                                _createElementVNode("span", _hoisted_148, [
                                   (it.reason)
                                     ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
                                         _createTextVNode(_toDisplayString(it.reason), 1)
@@ -7551,7 +7627,7 @@ return (_ctx, _cache) => {
                   ]))
                 }), 128)),
                 (!(operationData.value.operations || []).length)
-                  ? (_openBlock(), _createElementBlock("div", _hoisted_143, "暂无操作记录"))
+                  ? (_openBlock(), _createElementBlock("div", _hoisted_149, "暂无操作记录"))
                   : _createCommentVNode("", true)
               ])
             ])
@@ -7580,7 +7656,7 @@ return (_ctx, _cache) => {
       default: _withCtx(() => [
         _createVNode(_component_VCard, { class: "magicflow-dialog magicflow-settings-dialog" }, {
           default: _withCtx(() => [
-            _createElementVNode("header", _hoisted_144, [
+            _createElementVNode("header", _hoisted_150, [
               _cache[345] || (_cache[345] = _createElementVNode("span", { class: "magicflow-settings-dialog__title" }, "插件设置", -1)),
               _createVNode(_component_VBtn, {
                 icon: "mdi-close",
@@ -7590,7 +7666,7 @@ return (_ctx, _cache) => {
                 onClick: _cache[30] || (_cache[30] = $event => (settingsDialog.value = false))
               })
             ]),
-            _createElementVNode("div", _hoisted_145, [
+            _createElementVNode("div", _hoisted_151, [
               (_openBlock(), _createElementBlock(_Fragment, null, _renderList(MF_SETTINGS_TABS, (t) => {
                 return _createElementVNode("button", {
                   key: t.key,
@@ -7603,7 +7679,7 @@ return (_ctx, _cache) => {
                     size: "18"
                   }, null, 8, ["icon"]),
                   _createElementVNode("span", null, _toDisplayString(t.label), 1)
-                ], 10, _hoisted_146)
+                ], 10, _hoisted_152)
               }), 64))
             ]),
             _createVNode(_component_VTabs, {
@@ -7744,9 +7820,9 @@ return (_ctx, _cache) => {
               _: 1
             }, 8, ["modelValue"]),
             _createVNode(_component_VDivider),
-            _createElementVNode("div", _hoisted_147, [
+            _createElementVNode("div", _hoisted_153, [
               (settingsTab.value === 'general')
-                ? (_openBlock(), _createElementBlock("div", _hoisted_148, [
+                ? (_openBlock(), _createElementBlock("div", _hoisted_154, [
                     _createVNode(_component_VSwitch, {
                       modelValue: settingsDraft.value.enabled,
                       "onUpdate:modelValue": _cache[32] || (_cache[32] = $event => ((settingsDraft.value.enabled) = $event)),
@@ -7793,7 +7869,7 @@ return (_ctx, _cache) => {
                       _createElementVNode("strong", null, "全局上传限速"),
                       _createTextVNode("（只限上传，不动下载）。有刷流任务时用刷流档，只有魔力任务时用魔力档；两者同时在跑取刷流档；一个启用的任务都没有则清除限速。 ")
                     ], -1)),
-                    _createElementVNode("div", _hoisted_149, [
+                    _createElementVNode("div", _hoisted_155, [
                       _createVNode(_component_VTextField, {
                         modelValue: settingsDraft.value.bonus_upload_limit_kbps,
                         "onUpdate:modelValue": _cache[36] || (_cache[36] = $event => ((settingsDraft.value.bonus_upload_limit_kbps) = $event)),
@@ -7865,9 +7941,9 @@ return (_ctx, _cache) => {
                     }, null, 8, ["modelValue"])
                   ]))
                 : (settingsTab.value === 'downloader')
-                  ? (_openBlock(), _createElementBlock("div", _hoisted_150, [
+                  ? (_openBlock(), _createElementBlock("div", _hoisted_156, [
                       _cache[361] || (_cache[361] = _createElementVNode("p", { class: "magicflow-settings-hint magicflow-settings-hint--warn" }, " 以下为 qBittorrent 全局参数，将直接写入下载器，会影响所有使用该下载器的插件。 ", -1)),
-                      _createElementVNode("div", _hoisted_151, [
+                      _createElementVNode("div", _hoisted_157, [
                         _createVNode(_component_VTextField, {
                           modelValue: downloaderPrefsDraft.value.download_limit_kbps,
                           "onUpdate:modelValue": _cache[42] || (_cache[42] = $event => ((downloaderPrefsDraft.value.download_limit_kbps) = $event)),
@@ -7975,7 +8051,7 @@ return (_ctx, _cache) => {
                       }, null, 8, ["modelValue"])
                     ]))
                   : (settingsTab.value === 'paths')
-                    ? (_openBlock(), _createElementBlock("div", _hoisted_152, [
+                    ? (_openBlock(), _createElementBlock("div", _hoisted_158, [
                         _cache[362] || (_cache[362] = _createElementVNode("p", { class: "magicflow-settings-hint" }, " qBittorrent 全局目录，写入后影响所有使用该下载器的插件。 ", -1)),
                         _createVNode(_component_VTextField, {
                           modelValue: downloaderPathsDraft.value.save_path,
@@ -8018,7 +8094,7 @@ return (_ctx, _cache) => {
                         }, null, 8, ["modelValue"])
                       ]))
                     : (settingsTab.value === 'iyuu')
-                      ? (_openBlock(), _createElementBlock("div", _hoisted_153, [
+                      ? (_openBlock(), _createElementBlock("div", _hoisted_159, [
                           _cache[370] || (_cache[370] = _createElementVNode("p", { class: "magicflow-settings-hint" }, [
                             _createTextVNode(" IYUU 云端辅种为"),
                             _createElementVNode("strong", null, "可选增强"),
@@ -8028,7 +8104,7 @@ return (_ctx, _cache) => {
                             _createElementVNode("strong", null, "不填 Token 则完全不启用"),
                             _createTextVNode("，一切照旧走内置跨站特征码方案。 ")
                           ], -1)),
-                          _createElementVNode("div", _hoisted_154, [
+                          _createElementVNode("div", _hoisted_160, [
                             _createVNode(_component_VTextField, {
                               modelValue: settingsDraft.value.iyuu_token,
                               "onUpdate:modelValue": _cache[55] || (_cache[55] = $event => ((settingsDraft.value.iyuu_token) = $event)),
@@ -8069,8 +8145,8 @@ return (_ctx, _cache) => {
                                 }))
                               : _createCommentVNode("", true)
                           ]),
-                          _createElementVNode("div", _hoisted_155, [
-                            _createElementVNode("div", _hoisted_156, [
+                          _createElementVNode("div", _hoisted_161, [
+                            _createElementVNode("div", _hoisted_162, [
                               _cache[367] || (_cache[367] = _createElementVNode("span", null, "站点密钥（按 MoviePilot 已配置站点生成）", -1)),
                               (iyuuStatus.value)
                                 ? (_openBlock(), _createBlock(_component_VChip, {
@@ -8087,17 +8163,17 @@ return (_ctx, _cache) => {
                                 : _createCommentVNode("", true)
                             ]),
                             (iyuuLoading.value)
-                              ? (_openBlock(), _createElementBlock("p", _hoisted_157, "加载中…"))
+                              ? (_openBlock(), _createElementBlock("p", _hoisted_163, "加载中…"))
                               : (!iyuuSites.value.length)
-                                ? (_openBlock(), _createElementBlock("p", _hoisted_158, " 未检测到已配置站点（请先在 MoviePilot 中添加站点）。 "))
+                                ? (_openBlock(), _createElementBlock("p", _hoisted_164, " 未检测到已配置站点（请先在 MoviePilot 中添加站点）。 "))
                                 : _createCommentVNode("", true),
                             (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(iyuuSites.value, (row) => {
                               return (_openBlock(), _createElementBlock("div", {
                                 key: row.domain || row.name,
                                 class: "magicflow-iyuu-row"
                               }, [
-                                _createElementVNode("div", _hoisted_159, [
-                                  _createElementVNode("span", _hoisted_160, _toDisplayString(row.name), 1),
+                                _createElementVNode("div", _hoisted_165, [
+                                  _createElementVNode("span", _hoisted_166, _toDisplayString(row.name), 1),
                                   (row.iyuu_sid)
                                     ? (_openBlock(), _createBlock(_component_VChip, {
                                         key: 0,
@@ -8149,7 +8225,7 @@ return (_ctx, _cache) => {
                                     _: 2
                                   }, 1032, ["append-icon", "onClick"])
                                 ]),
-                                _createElementVNode("div", _hoisted_161, [
+                                _createElementVNode("div", _hoisted_167, [
                                   _createVNode(_component_VTextField, {
                                     modelValue: row.passkey,
                                     "onUpdate:modelValue": $event => ((row.passkey) = $event),
@@ -8187,9 +8263,9 @@ return (_ctx, _cache) => {
                           ])
                         ]))
                       : (settingsTab.value === 'template')
-                        ? (_openBlock(), _createElementBlock("div", _hoisted_162, [
+                        ? (_openBlock(), _createElementBlock("div", _hoisted_168, [
                             _cache[371] || (_cache[371] = _createElementVNode("p", { class: "magicflow-settings-hint" }, " 仅用于新建任务时预填，不影响已有任务。 ", -1)),
-                            _createElementVNode("div", _hoisted_163, [
+                            _createElementVNode("div", _hoisted_169, [
                               _createVNode(_component_VSelect, {
                                 modelValue: defaultsDraft.value.downloader,
                                 "onUpdate:modelValue": _cache[56] || (_cache[56] = $event => ((defaultsDraft.value.downloader) = $event)),
@@ -8290,7 +8366,7 @@ return (_ctx, _cache) => {
                                 "hide-details": ""
                               }, null, 8, ["modelValue"])
                             ]),
-                            _createElementVNode("div", _hoisted_164, [
+                            _createElementVNode("div", _hoisted_170, [
                               _createVNode(_component_VSwitch, {
                                 modelValue: defaultsDraft.value.refill_when_empty,
                                 "onUpdate:modelValue": _cache[65] || (_cache[65] = $event => ((defaultsDraft.value.refill_when_empty) = $event)),
@@ -8358,7 +8434,7 @@ return (_ctx, _cache) => {
                             ])
                           ]))
                         : (settingsTab.value === 'exam')
-                          ? (_openBlock(), _createElementBlock("div", _hoisted_165, [
+                          ? (_openBlock(), _createElementBlock("div", _hoisted_171, [
                               _cache[374] || (_cache[374] = _createElementVNode("p", { class: "magicflow-settings-hint" }, [
                                 _createTextVNode(" 把各站"),
                                 _createElementVNode("strong", null, "新手考核"),
@@ -8383,7 +8459,7 @@ return (_ctx, _cache) => {
                                 _createElementVNode("strong", null, "全站免费期间"),
                                 _createTextVNode("提示你「免费期下载不计入下载量」。 ")
                               ], -1)),
-                              _createElementVNode("div", _hoisted_166, [
+                              _createElementVNode("div", _hoisted_172, [
                                 _createVNode(_component_VSwitch, {
                                   modelValue: settingsDraft.value.exam_enabled,
                                   "onUpdate:modelValue": _cache[73] || (_cache[73] = $event => ((settingsDraft.value.exam_enabled) = $event)),
@@ -8401,7 +8477,7 @@ return (_ctx, _cache) => {
                                   inset: ""
                                 }, null, 8, ["modelValue"])
                               ]),
-                              _createElementVNode("div", _hoisted_167, [
+                              _createElementVNode("div", _hoisted_173, [
                                 _createVNode(_component_VSelect, {
                                   modelValue: settingsDraft.value.exam_sites,
                                   "onUpdate:modelValue": _cache[75] || (_cache[75] = $event => ((settingsDraft.value.exam_sites) = $event)),
@@ -8417,7 +8493,7 @@ return (_ctx, _cache) => {
                                 _cache[372] || (_cache[372] = _createElementVNode("p", { class: "magicflow-settings-hint" }, "选多少有多少：只盯你关心的站，不选就是全都盯。", -1))
                               ]),
                               (!settingsDraft.value.exam_enabled)
-                                ? (_openBlock(), _createElementBlock("p", _hoisted_168, [...(_cache[373] || (_cache[373] = [
+                                ? (_openBlock(), _createElementBlock("p", _hoisted_174, [...(_cache[373] || (_cache[373] = [
                                     _createTextVNode(" 当前处于", -1),
                                     _createElementVNode("strong", null, "关闭", -1),
                                     _createTextVNode("状态：不会去抓考核，也不会做任何额外请求。 ", -1)
@@ -8425,7 +8501,7 @@ return (_ctx, _cache) => {
                                 : _createCommentVNode("", true)
                             ]))
                           : (settingsTab.value === 'signin')
-                            ? (_openBlock(), _createElementBlock("div", _hoisted_169, [
+                            ? (_openBlock(), _createElementBlock("div", _hoisted_175, [
                                 _cache[382] || (_cache[382] = _createElementVNode("p", { class: "magicflow-settings-hint" }, [
                                   _createTextVNode(" 站点"),
                                   _createElementVNode("strong", null, "每日签到"),
@@ -8441,7 +8517,7 @@ return (_ctx, _cache) => {
                                   _createElementVNode("strong", null, "自动跳过"),
                                   _createTextVNode("（一天最多 1 次请求/站，不浪费站点访问次数）； 命中「每日访问上限（PV）」则该站当日不再尝试。 ")
                                 ], -1)),
-                                _createElementVNode("div", _hoisted_170, [
+                                _createElementVNode("div", _hoisted_176, [
                                   _createVNode(_component_VSwitch, {
                                     modelValue: settingsDraft.value.signin_enabled,
                                     "onUpdate:modelValue": _cache[76] || (_cache[76] = $event => ((settingsDraft.value.signin_enabled) = $event)),
@@ -8459,7 +8535,7 @@ return (_ctx, _cache) => {
                                     inset: ""
                                   }, null, 8, ["modelValue"])
                                 ]),
-                                _createElementVNode("div", _hoisted_171, [
+                                _createElementVNode("div", _hoisted_177, [
                                   _createVNode(_component_VSelect, {
                                     modelValue: settingsDraft.value.signin_sites,
                                     "onUpdate:modelValue": _cache[78] || (_cache[78] = $event => ((settingsDraft.value.signin_sites) = $event)),
@@ -8473,7 +8549,7 @@ return (_ctx, _cache) => {
                                     "hide-details": ""
                                   }, null, 8, ["modelValue", "items"])
                                 ]),
-                                _createElementVNode("div", _hoisted_172, [
+                                _createElementVNode("div", _hoisted_178, [
                                   _createVNode(_component_VSelect, {
                                     modelValue: settingsDraft.value.signin_login_sites,
                                     "onUpdate:modelValue": _cache[79] || (_cache[79] = $event => ((settingsDraft.value.signin_login_sites) = $event)),
@@ -8487,7 +8563,7 @@ return (_ctx, _cache) => {
                                     "hide-details": ""
                                   }, null, 8, ["modelValue", "items"])
                                 ]),
-                                _createElementVNode("div", _hoisted_173, [
+                                _createElementVNode("div", _hoisted_179, [
                                   _createVNode(_component_VTextField, {
                                     modelValue: settingsDraft.value.signin_retry_keyword,
                                     "onUpdate:modelValue": _cache[80] || (_cache[80] = $event => ((settingsDraft.value.signin_retry_keyword) = $event)),
@@ -8508,7 +8584,7 @@ return (_ctx, _cache) => {
                                     "hide-details": ""
                                   }, null, 8, ["modelValue"])
                                 ]),
-                                _createElementVNode("div", _hoisted_174, [
+                                _createElementVNode("div", _hoisted_180, [
                                   _createVNode(_component_VTextField, {
                                     modelValue: settingsDraft.value.signin_interval_minutes,
                                     "onUpdate:modelValue": _cache[82] || (_cache[82] = $event => ((settingsDraft.value.signin_interval_minutes) = $event)),
@@ -8550,7 +8626,7 @@ return (_ctx, _cache) => {
                                   _createElementVNode("strong", null, "9:00–23:00"),
                                   _createTextVNode("；同站当天已成功会自动跳过，所以间隔设长一点也没关系。 ")
                                 ], -1)),
-                                _createElementVNode("div", _hoisted_175, [
+                                _createElementVNode("div", _hoisted_181, [
                                   _createVNode(_component_VBtn, {
                                     size: "small",
                                     color: "primary",
@@ -8580,15 +8656,15 @@ return (_ctx, _cache) => {
                                   _cache[379] || (_cache[379] = _createElementVNode("span", { class: "magicflow-settings-hint" }, "（立即执行会直接发请求；需先保存设置并启用）", -1))
                                 ]),
                                 (signinTodayRows.value.length)
-                                  ? (_openBlock(), _createElementBlock("div", _hoisted_176, [
+                                  ? (_openBlock(), _createElementBlock("div", _hoisted_182, [
                                       _cache[380] || (_cache[380] = _createElementVNode("div", { class: "magicflow-signin-list__title" }, "今日结果", -1)),
                                       (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(signinTodayRows.value, (row) => {
                                         return (_openBlock(), _createElementBlock("div", {
                                           key: row.site_id,
                                           class: "magicflow-signin-list__row"
                                         }, [
-                                          _createElementVNode("span", _hoisted_177, _toDisplayString(row.site_name), 1),
-                                          _createElementVNode("span", _hoisted_178, [
+                                          _createElementVNode("span", _hoisted_183, _toDisplayString(row.site_name), 1),
+                                          _createElementVNode("span", _hoisted_184, [
                                             (row.sign)
                                               ? (_openBlock(), _createElementBlock("span", {
                                                   key: 0,
@@ -8607,7 +8683,7 @@ return (_ctx, _cache) => {
                                     ]))
                                   : _createCommentVNode("", true),
                                 (!settingsDraft.value.signin_enabled)
-                                  ? (_openBlock(), _createElementBlock("p", _hoisted_179, [...(_cache[381] || (_cache[381] = [
+                                  ? (_openBlock(), _createElementBlock("p", _hoisted_185, [...(_cache[381] || (_cache[381] = [
                                       _createTextVNode(" 当前处于", -1),
                                       _createElementVNode("strong", null, "关闭", -1),
                                       _createTextVNode("状态：不会签到、不会模拟登录，也不发任何请求。 ", -1)
@@ -8615,7 +8691,7 @@ return (_ctx, _cache) => {
                                   : _createCommentVNode("", true)
                               ]))
                             : (settingsTab.value === 'live')
-                              ? (_openBlock(), _createElementBlock("div", _hoisted_180, [
+                              ? (_openBlock(), _createElementBlock("div", _hoisted_186, [
                                   _cache[385] || (_cache[385] = _createElementVNode("p", { class: "magicflow-settings-hint" }, [
                                     _createTextVNode(" MoviePilot 的站点账号数据靠它自己的「站点数据刷新」任务写库（默认 "),
                                     _createElementVNode("strong", null, "6 小时"),
@@ -8636,7 +8712,7 @@ return (_ctx, _cache) => {
                                     _createElementVNode("strong", null, "建议按站点把采样周期放长"),
                                     _createTextVNode("（比如 15–30 分钟），给选种浏览留余量。 ")
                                   ], -1)),
-                                  _createElementVNode("div", _hoisted_181, [
+                                  _createElementVNode("div", _hoisted_187, [
                                     _createVNode(_component_VSwitch, {
                                       modelValue: settingsDraft.value.live_enabled,
                                       "onUpdate:modelValue": _cache[87] || (_cache[87] = $event => ((settingsDraft.value.live_enabled) = $event)),
@@ -8678,7 +8754,7 @@ return (_ctx, _cache) => {
                                       inset: ""
                                     }, null, 8, ["modelValue"])
                                   ]),
-                                  _createElementVNode("div", _hoisted_182, [
+                                  _createElementVNode("div", _hoisted_188, [
                                     _createVNode(_component_VTextField, {
                                       modelValue: settingsDraft.value.live_interval_minutes,
                                       "onUpdate:modelValue": _cache[92] || (_cache[92] = $event => ((settingsDraft.value.live_interval_minutes) = $event)),
@@ -8718,8 +8794,8 @@ return (_ctx, _cache) => {
                                     }, null, 8, ["modelValue"])
                                   ]),
                                   (siteLiveAlerts.value.length)
-                                    ? (_openBlock(), _createElementBlock("div", _hoisted_183, [
-                                        _createElementVNode("div", _hoisted_184, "当前「" + _toDisplayString(selectedTask.value?.name) + "」站点告警", 1),
+                                    ? (_openBlock(), _createElementBlock("div", _hoisted_189, [
+                                        _createElementVNode("div", _hoisted_190, "当前「" + _toDisplayString(selectedTask.value?.name) + "」站点告警", 1),
                                         (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(siteLiveAlerts.value, (alert, idx) => {
                                           return (_openBlock(), _createElementBlock("div", {
                                             key: `live-cfg-${idx}`,
@@ -8730,7 +8806,7 @@ return (_ctx, _cache) => {
                                     : _createCommentVNode("", true)
                                 ]))
                               : (settingsTab.value === 'recommend')
-                                ? (_openBlock(), _createElementBlock("div", _hoisted_185, [
+                                ? (_openBlock(), _createElementBlock("div", _hoisted_191, [
                                     _cache[387] || (_cache[387] = _createElementVNode("p", { class: "magicflow-settings-hint" }, " 刷流时顺带甄别「值得收藏 / 观看」的资源：命中的种子会打上推荐标签（受「媒体资产价值闸门」保护、不会被当临时种删掉）并通知你确认；错过确认窗口（过期 / 磁盘不足）则按临时种回收。 ", -1)),
                                     _createVNode(_component_VSwitch, {
                                       modelValue: settingsDraft.value.recommend_enabled,
@@ -8740,7 +8816,7 @@ return (_ctx, _cache) => {
                                       "hide-details": "",
                                       inset: ""
                                     }, null, 8, ["modelValue"]),
-                                    _createElementVNode("div", _hoisted_186, [
+                                    _createElementVNode("div", _hoisted_192, [
                                       _createVNode(_component_VTextField, {
                                         modelValue: settingsDraft.value.recommend_min_rating,
                                         "onUpdate:modelValue": _cache[96] || (_cache[96] = $event => ((settingsDraft.value.recommend_min_rating) = $event)),
@@ -8814,7 +8890,7 @@ return (_ctx, _cache) => {
                                         density: "comfortable"
                                       }, null, 8, ["modelValue"])
                                     ]),
-                                    _createElementVNode("div", _hoisted_187, [
+                                    _createElementVNode("div", _hoisted_193, [
                                       _createVNode(_component_VSelect, {
                                         modelValue: settingsDraft.value.recommend_rating_source,
                                         "onUpdate:modelValue": _cache[102] || (_cache[102] = $event => ((settingsDraft.value.recommend_rating_source) = $event)),
@@ -8828,7 +8904,7 @@ return (_ctx, _cache) => {
                                         density: "comfortable"
                                       }, null, 8, ["modelValue"])
                                     ]),
-                                    _createElementVNode("div", _hoisted_188, [
+                                    _createElementVNode("div", _hoisted_194, [
                                       _createVNode(_component_VSwitch, {
                                         modelValue: settingsDraft.value.recommend_require_chart,
                                         "onUpdate:modelValue": _cache[103] || (_cache[103] = $event => ((settingsDraft.value.recommend_require_chart) = $event)),
@@ -8856,7 +8932,7 @@ return (_ctx, _cache) => {
                                     ])
                                   ]))
                                 : (settingsTab.value === 'rules')
-                                  ? (_openBlock(), _createElementBlock("div", _hoisted_189, [
+                                  ? (_openBlock(), _createElementBlock("div", _hoisted_195, [
                                       _cache[399] || (_cache[399] = _createElementVNode("p", { class: "magicflow-settings-hint" }, [
                                         _createTextVNode(" 站点规则库："),
                                         _createElementVNode("strong", null, "H&R / 最短保种时长 / 做种上限"),
@@ -8864,7 +8940,7 @@ return (_ctx, _cache) => {
                                         _createElementVNode("strong", null, "手填 > 页面探测 > 内置 > 全局默认"),
                                         _createTextVNode("； 探测遵循「宁保守勿乐观」—— 抓不到就保持原值，绝不假设「没有 H&R」。 ")
                                       ], -1)),
-                                      _createElementVNode("div", _hoisted_190, [
+                                      _createElementVNode("div", _hoisted_196, [
                                         _createVNode(_component_VSwitch, {
                                           modelValue: settingsDraft.value.rules_auto_refresh,
                                           "onUpdate:modelValue": _cache[106] || (_cache[106] = $event => ((settingsDraft.value.rules_auto_refresh) = $event)),
@@ -8874,7 +8950,7 @@ return (_ctx, _cache) => {
                                           inset: ""
                                         }, null, 8, ["modelValue"])
                                       ]),
-                                      _createElementVNode("div", _hoisted_191, [
+                                      _createElementVNode("div", _hoisted_197, [
                                         _createVNode(_component_VBtn, {
                                           size: "small",
                                           color: "primary",
@@ -8908,12 +8984,12 @@ return (_ctx, _cache) => {
                                           _: 1
                                         }, 8, ["disabled"]),
                                         _createVNode(_component_VSpacer),
-                                        _createElementVNode("span", _hoisted_192, "共 " + _toDisplayString(siteRules.value.length) + " 条", 1)
+                                        _createElementVNode("span", _hoisted_198, "共 " + _toDisplayString(siteRules.value.length) + " 条", 1)
                                       ]),
                                       (rulesProbing.value)
-                                        ? (_openBlock(), _createElementBlock("p", _hoisted_193, "正在逐站抓取规则页（每站 1~2 个请求，站间随机歇 1.5~3.5 秒）…"))
+                                        ? (_openBlock(), _createElementBlock("p", _hoisted_199, "正在逐站抓取规则页（每站 1~2 个请求，站间随机歇 1.5~3.5 秒）…"))
                                         : _createCommentVNode("", true),
-                                      _createElementVNode("div", _hoisted_194, [
+                                      _createElementVNode("div", _hoisted_200, [
                                         _cache[398] || (_cache[398] = _createElementVNode("div", { class: "magicflow-rules-row magicflow-rules-row--head" }, [
                                           _createElementVNode("span", null, "站点"),
                                           _createElementVNode("span", null, "H&R"),
@@ -8933,25 +9009,25 @@ return (_ctx, _cache) => {
                                             }, [
                                               _createTextVNode(_toDisplayString(row.site_name || row.domain) + " ", 1),
                                               (!row.in_library)
-                                                ? (_openBlock(), _createElementBlock("em", _hoisted_196, "未入库"))
+                                                ? (_openBlock(), _createElementBlock("em", _hoisted_202, "未入库"))
                                                 : _createCommentVNode("", true),
                                               (row.exam_avg_hours)
                                                 ? (_openBlock(), _createElementBlock("em", {
                                                     key: 1,
                                                     title: row.exam_evidence || '站点考核的平均做种要求（不是 H&R）'
-                                                  }, "考核均值" + _toDisplayString(row.exam_avg_hours) + "h", 9, _hoisted_197))
+                                                  }, "考核均值" + _toDisplayString(row.exam_avg_hours) + "h", 9, _hoisted_203))
                                                 : _createCommentVNode("", true),
                                               (row.free_over_gb)
-                                                ? (_openBlock(), _createElementBlock("em", _hoisted_198, ">" + _toDisplayString(row.free_over_gb) + "G免", 1))
+                                                ? (_openBlock(), _createElementBlock("em", _hoisted_204, ">" + _toDisplayString(row.free_over_gb) + "G免", 1))
                                                 : _createCommentVNode("", true),
                                               (row.free_original)
-                                                ? (_openBlock(), _createElementBlock("em", _hoisted_199, "原盘免"))
+                                                ? (_openBlock(), _createElementBlock("em", _hoisted_205, "原盘免"))
                                                 : _createCommentVNode("", true),
                                               (row.free_ep1)
-                                                ? (_openBlock(), _createElementBlock("em", _hoisted_200, "首集免"))
+                                                ? (_openBlock(), _createElementBlock("em", _hoisted_206, "首集免"))
                                                 : _createCommentVNode("", true)
-                                            ], 8, _hoisted_195),
-                                            _createElementVNode("span", _hoisted_201, [
+                                            ], 8, _hoisted_201),
+                                            _createElementVNode("span", _hoisted_207, [
                                               (row.hr === true)
                                                 ? (_openBlock(), _createBlock(_component_VChip, {
                                                     key: 0,
@@ -9051,12 +9127,12 @@ return (_ctx, _cache) => {
                                                 ? (_openBlock(), _createElementBlock("em", {
                                                     key: 0,
                                                     title: '规则窗口 ' + (row.seed_window_hours || row.seed_hours || 0) + 'h，达到线 ' + row.seed_need_hours + 'h；保护期取窗口(保守)'
-                                                  }, "需" + _toDisplayString(row.seed_need_hours) + "h", 9, _hoisted_203))
+                                                  }, "需" + _toDisplayString(row.seed_need_hours) + "h", 9, _hoisted_209))
                                                 : _createCommentVNode("", true),
                                               (row.seed_hours_seen != null)
-                                                ? (_openBlock(), _createElementBlock("em", _hoisted_204, "(看到" + _toDisplayString(row.seed_hours_seen) + "h)", 1))
+                                                ? (_openBlock(), _createElementBlock("em", _hoisted_210, "(看到" + _toDisplayString(row.seed_hours_seen) + "h)", 1))
                                                 : _createCommentVNode("", true)
-                                            ], 8, _hoisted_202),
+                                            ], 8, _hoisted_208),
                                             _createElementVNode("span", null, [
                                               _createVNode(_component_VBtn, {
                                                 size: "x-small",
@@ -9076,7 +9152,7 @@ return (_ctx, _cache) => {
                                       _cache[400] || (_cache[400] = _createElementVNode("p", { class: "magicflow-settings-hint" }, " 「保种(h)」直接改 = 写入手填覆盖（等同于跨站页的「站点保种时长」）。 ", -1))
                                     ]))
                                   : (settingsTab.value === 'tags')
-                                    ? (_openBlock(), _createElementBlock("div", _hoisted_205, [
+                                    ? (_openBlock(), _createElementBlock("div", _hoisted_211, [
                                         _cache[409] || (_cache[409] = _createElementVNode("p", { class: "magicflow-settings-hint" }, [
                                           _createTextVNode(" 标签模型：种子状态 = 标签 "),
                                           _createElementVNode("code", null, "魔流-<站点>-<状态>[-<子类>]"),
@@ -9090,7 +9166,7 @@ return (_ctx, _cache) => {
                                           _createElementVNode("em", null, "摘成员只删种，最后一个成员才连文件清"),
                                           _createTextVNode("。 ")
                                         ], -1)),
-                                        _createElementVNode("div", _hoisted_206, [
+                                        _createElementVNode("div", _hoisted_212, [
                                           _createVNode(_component_VSwitch, {
                                             modelValue: settingsDraft.value.tag_model_enabled,
                                             "onUpdate:modelValue": _cache[108] || (_cache[108] = $event => ((settingsDraft.value.tag_model_enabled) = $event)),
@@ -9100,7 +9176,7 @@ return (_ctx, _cache) => {
                                             inset: ""
                                           }, null, 8, ["modelValue"])
                                         ]),
-                                        _createElementVNode("div", _hoisted_207, [
+                                        _createElementVNode("div", _hoisted_213, [
                                           _createVNode(_component_VTextField, {
                                             modelValue: settingsDraft.value.tag_silent_new_timeout_hours,
                                             "onUpdate:modelValue": _cache[109] || (_cache[109] = $event => ((settingsDraft.value.tag_silent_new_timeout_hours) = $event)),
@@ -9139,7 +9215,7 @@ return (_ctx, _cache) => {
                                           _createElementVNode("code", null, "静默-普通"),
                                           _createTextVNode("（受站点魔力产出考核）。 ")
                                         ], -1)),
-                                        _createElementVNode("div", _hoisted_208, [
+                                        _createElementVNode("div", _hoisted_214, [
                                           _cache[402] || (_cache[402] = _createElementVNode("div", { class: "magicflow-sort-rules__row magicflow-sort-rules__row--head" }, [
                                             _createElementVNode("span", null, "规则"),
                                             _createElementVNode("span", null, "阈值"),
@@ -9167,7 +9243,7 @@ return (_ctx, _cache) => {
                                                       "hide-details": "",
                                                       style: {"max-width":"110px"}
                                                     }, null, 8, ["modelValue", "onUpdate:modelValue"]))
-                                                  : (_openBlock(), _createElementBlock("em", _hoisted_209, "-"))
+                                                  : (_openBlock(), _createElementBlock("em", _hoisted_215, "-"))
                                               ]),
                                               _createElementVNode("span", null, [
                                                 _createVNode(_component_VTextField, {
@@ -9208,7 +9284,7 @@ return (_ctx, _cache) => {
                                             ]))
                                           }), 128))
                                         ]),
-                                        _createElementVNode("div", _hoisted_210, [
+                                        _createElementVNode("div", _hoisted_216, [
                                           _createVNode(_component_VSelect, {
                                             modelValue: newRuleType.value,
                                             "onUpdate:modelValue": _cache[111] || (_cache[111] = $event => ((newRuleType).value = $event)),
@@ -9234,7 +9310,7 @@ return (_ctx, _cache) => {
                                           })
                                         ]),
                                         _createVNode(_component_VDivider, { class: "my-3" }),
-                                        _createElementVNode("div", _hoisted_211, [
+                                        _createElementVNode("div", _hoisted_217, [
                                           _createVNode(_component_VBtn, {
                                             size: "small",
                                             variant: "tonal",
@@ -9272,11 +9348,11 @@ return (_ctx, _cache) => {
                                               }, 8, ["loading"]))
                                             : _createCommentVNode("", true),
                                           _createVNode(_component_VSpacer),
-                                          _createElementVNode("span", _hoisted_212, "账本 " + _toDisplayString(tagInfo.value?.ledger_count ?? 0) + " 条 · 文件组 " + _toDisplayString(tagInfo.value?.groups?.groups ?? 0) + "（多站 " + _toDisplayString(tagInfo.value?.groups?.multi_site_groups ?? 0) + "）", 1)
+                                          _createElementVNode("span", _hoisted_218, "账本 " + _toDisplayString(tagInfo.value?.ledger_count ?? 0) + " 条 · 文件组 " + _toDisplayString(tagInfo.value?.groups?.groups ?? 0) + "（多站 " + _toDisplayString(tagInfo.value?.groups?.multi_site_groups ?? 0) + "）", 1)
                                         ]),
                                         (tagMigratePlan.value)
-                                          ? (_openBlock(), _createElementBlock("div", _hoisted_213, [
-                                              _createElementVNode("p", _hoisted_214, [
+                                          ? (_openBlock(), _createElementBlock("div", _hoisted_219, [
+                                              _createElementVNode("p", _hoisted_220, [
                                                 _cache[406] || (_cache[406] = _createTextVNode(" 待迁移 ", -1)),
                                                 _createElementVNode("strong", null, _toDisplayString(tagMigratePlan.value.total), 1),
                                                 _cache[407] || (_cache[407] = _createTextVNode(" 个： ", -1)),
@@ -9284,7 +9360,7 @@ return (_ctx, _cache) => {
                                                   return (_openBlock(), _createElementBlock("em", { key: k }, _toDisplayString(k) + " " + _toDisplayString(n), 1))
                                                 }), 128))
                                               ]),
-                                              _createElementVNode("div", _hoisted_215, [
+                                              _createElementVNode("div", _hoisted_221, [
                                                 (_openBlock(true), _createElementBlock(_Fragment, null, _renderList((tagMigratePlan.value.samples || []), (row, i) => {
                                                   return (_openBlock(), _createElementBlock("div", {
                                                     key: i,
@@ -9293,8 +9369,8 @@ return (_ctx, _cache) => {
                                                     _createElementVNode("span", {
                                                       class: "magicflow-tag-migrate__title",
                                                       title: row.title
-                                                    }, _toDisplayString(row.title), 9, _hoisted_216),
-                                                    _createElementVNode("span", _hoisted_217, [
+                                                    }, _toDisplayString(row.title), 9, _hoisted_222),
+                                                    _createElementVNode("span", _hoisted_223, [
                                                       _createElementVNode("em", null, _toDisplayString((row.remove || []).join(' ')), 1),
                                                       _cache[408] || (_cache[408] = _createTextVNode(" → ", -1)),
                                                       _createElementVNode("strong", null, _toDisplayString(row.add), 1)
@@ -9315,7 +9391,7 @@ return (_ctx, _cache) => {
                                         ], -1))
                                       ]))
                                     : (settingsTab.value === 'crossseed')
-                                      ? (_openBlock(), _createElementBlock("div", _hoisted_218, [
+                                      ? (_openBlock(), _createElementBlock("div", _hoisted_224, [
                                           _cache[412] || (_cache[412] = _createElementVNode("p", { class: "magicflow-settings-hint" }, [
                                             _createTextVNode(" 跨站免费取种：本站"),
                                             _createElementVNode("strong", null, "非免费"),
@@ -9332,7 +9408,7 @@ return (_ctx, _cache) => {
                                             _createElementVNode("strong", null, "立即删种并拉黑该站"),
                                             _createTextVNode("（需到工作台「跨站」页人工解除）。 ")
                                           ], -1)),
-                                          _createElementVNode("div", _hoisted_219, [
+                                          _createElementVNode("div", _hoisted_225, [
                                             _createVNode(_component_VSwitch, {
                                               modelValue: settingsDraft.value.crossseed_guard,
                                               "onUpdate:modelValue": _cache[112] || (_cache[112] = $event => ((settingsDraft.value.crossseed_guard) = $event)),
@@ -9342,7 +9418,7 @@ return (_ctx, _cache) => {
                                               inset: ""
                                             }, null, 8, ["modelValue"])
                                           ]),
-                                          _createElementVNode("div", _hoisted_220, [
+                                          _createElementVNode("div", _hoisted_226, [
                                             _createVNode(_component_VSwitch, {
                                               modelValue: settingsDraft.value.crossseed_guard_keep_seed,
                                               "onUpdate:modelValue": _cache[113] || (_cache[113] = $event => ((settingsDraft.value.crossseed_guard_keep_seed) = $event)),
@@ -9360,7 +9436,7 @@ return (_ctx, _cache) => {
                                               inset: ""
                                             }, null, 8, ["modelValue"])
                                           ]),
-                                          _createElementVNode("div", _hoisted_221, [
+                                          _createElementVNode("div", _hoisted_227, [
                                             _createVNode(_component_VTextField, {
                                               modelValue: settingsDraft.value.crossseed_guard_pct,
                                               "onUpdate:modelValue": _cache[115] || (_cache[115] = $event => ((settingsDraft.value.crossseed_guard_pct) = $event)),
@@ -9432,7 +9508,7 @@ return (_ctx, _cache) => {
                                           ])
                                         ]))
                                       : (settingsTab.value === 'fallback')
-                                        ? (_openBlock(), _createElementBlock("div", _hoisted_222, [
+                                        ? (_openBlock(), _createElementBlock("div", _hoisted_228, [
                                             _cache[418] || (_cache[418] = _createElementVNode("p", { class: "magicflow-settings-hint" }, [
                                               _createTextVNode(" TMDB 对"),
                                               _createElementVNode("strong", null, "番剧特别篇/前传、国漫、B站特供"),
@@ -9443,7 +9519,7 @@ return (_ctx, _cache) => {
                                               _createTextVNode("， 让播放器 / 飞牛影视能显示名称与集号。"),
                                               _createElementVNode("strong", null, "只写 NFO，不动媒体文件，已存在的好 NFO 不覆盖。")
                                             ], -1)),
-                                            _createElementVNode("div", _hoisted_223, [
+                                            _createElementVNode("div", _hoisted_229, [
                                               _createVNode(_component_VSwitch, {
                                                 modelValue: settingsDraft.value.fallback_enabled,
                                                 "onUpdate:modelValue": _cache[120] || (_cache[120] = $event => ((settingsDraft.value.fallback_enabled) = $event)),
@@ -9469,16 +9545,16 @@ return (_ctx, _cache) => {
                                                 inset: ""
                                               }, null, 8, ["modelValue"])
                                             ]),
-                                            _createElementVNode("div", _hoisted_224, [
+                                            _createElementVNode("div", _hoisted_230, [
                                               _cache[414] || (_cache[414] = _createElementVNode("div", { class: "magicflow-settings-label" }, "识别来源顺序（自上而下依次尝试）", -1)),
-                                              _createElementVNode("ol", _hoisted_225, [
+                                              _createElementVNode("ol", _hoisted_231, [
                                                 (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(usedFallbackSources.value, (src, idx) => {
                                                   return (_openBlock(), _createElementBlock("li", {
                                                     key: src,
                                                     class: "magicflow-fb-source"
                                                   }, [
-                                                    _createElementVNode("span", _hoisted_226, _toDisplayString(idx + 1), 1),
-                                                    _createElementVNode("span", _hoisted_227, _toDisplayString(fallbackSourceLabel(src)), 1),
+                                                    _createElementVNode("span", _hoisted_232, _toDisplayString(idx + 1), 1),
+                                                    _createElementVNode("span", _hoisted_233, _toDisplayString(fallbackSourceLabel(src)), 1),
                                                     _createVNode(_component_VBtn, {
                                                       icon: "mdi-arrow-up",
                                                       size: "x-small",
@@ -9505,7 +9581,7 @@ return (_ctx, _cache) => {
                                                   ]))
                                                 }), 128))
                                               ]),
-                                              _createElementVNode("div", _hoisted_228, [
+                                              _createElementVNode("div", _hoisted_234, [
                                                 _createVNode(_component_VSelect, {
                                                   modelValue: fallbackSourceDraft.value,
                                                   "onUpdate:modelValue": _cache[123] || (_cache[123] = $event => ((fallbackSourceDraft).value = $event)),
@@ -9544,7 +9620,7 @@ return (_ctx, _cache) => {
                                               chips: "",
                                               clearable: ""
                                             }, null, 8, ["modelValue", "items"]),
-                                            _createElementVNode("div", _hoisted_229, [
+                                            _createElementVNode("div", _hoisted_235, [
                                               _createVNode(_component_VTextField, {
                                                 modelValue: settingsDraft.value.fallback_interval_minutes,
                                                 "onUpdate:modelValue": _cache[125] || (_cache[125] = $event => ((settingsDraft.value.fallback_interval_minutes) = $event)),
@@ -9568,7 +9644,7 @@ return (_ctx, _cache) => {
                                                 density: "comfortable"
                                               }, null, 8, ["modelValue"])
                                             ]),
-                                            _createElementVNode("div", _hoisted_230, [
+                                            _createElementVNode("div", _hoisted_236, [
                                               _createVNode(_component_VSwitch, {
                                                 modelValue: settingsDraft.value.fallback_sp_to_s00,
                                                 "onUpdate:modelValue": _cache[127] || (_cache[127] = $event => ((settingsDraft.value.fallback_sp_to_s00) = $event)),
@@ -9579,7 +9655,7 @@ return (_ctx, _cache) => {
                                               }, null, 8, ["modelValue"])
                                             ]),
                                             _createVNode(_component_VDivider, { class: "magicflow-fb-divider" }),
-                                            _createElementVNode("div", _hoisted_231, [
+                                            _createElementVNode("div", _hoisted_237, [
                                               _createVNode(_component_VBtn, {
                                                 variant: "tonal",
                                                 color: "primary",
@@ -9618,12 +9694,12 @@ return (_ctx, _cache) => {
                                                 _: 1
                                               }, 8, ["loading"]),
                                               (fallbackState.value?.running)
-                                                ? (_openBlock(), _createElementBlock("span", _hoisted_232, "● 扫描中…"))
+                                                ? (_openBlock(), _createElementBlock("span", _hoisted_238, "● 扫描中…"))
                                                 : _createCommentVNode("", true)
                                             ]),
                                             (fallbackState.value?.report)
-                                              ? (_openBlock(), _createElementBlock("div", _hoisted_233, [
-                                                  _createElementVNode("div", _hoisted_234, [
+                                              ? (_openBlock(), _createElementBlock("div", _hoisted_239, [
+                                                  _createElementVNode("div", _hoisted_240, [
                                                     _createTextVNode(" 上次" + _toDisplayString(fallbackState.value.report.applied === false ? '演练' : '执行') + "： 扫描 " + _toDisplayString(fallbackState.value.report.stats?.shows || 0) + " 剧", 1),
                                                     (fallbackState.value.report.stats?.total_shows)
                                                       ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
@@ -9633,30 +9709,30 @@ return (_ctx, _cache) => {
                                                     _createTextVNode(" · 识别 " + _toDisplayString(fallbackState.value.report.stats?.resolved || 0) + " · 补集 NFO " + _toDisplayString(fallbackState.value.report.stats?.ep_nfo || 0) + " · 补剧 NFO " + _toDisplayString(fallbackState.value.report.stats?.show_nfo || 0) + " · 源中缺失 " + _toDisplayString(fallbackState.value.report.stats?.missing || 0) + " · 多源补齐 " + _toDisplayString(fallbackState.value.report.stats?.via_extra || 0) + " 集 · 归位 " + _toDisplayString(fallbackState.value.report.stats?.renumbered || 0) + " · " + _toDisplayString(fallbackState.value.report.duration) + "s ", 1)
                                                   ]),
                                                   (fallbackProblemShows.value.length)
-                                                    ? (_openBlock(), _createElementBlock("details", _hoisted_235, [
+                                                    ? (_openBlock(), _createElementBlock("details", _hoisted_241, [
                                                         _createElementVNode("summary", null, "源里查不到的集（" + _toDisplayString(fallbackProblemCount.value) + " 集，已按本地文件兜底）", 1),
-                                                        _createElementVNode("ul", _hoisted_236, [
+                                                        _createElementVNode("ul", _hoisted_242, [
                                                           (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(fallbackProblemShows.value, (item) => {
                                                             return (_openBlock(), _createElementBlock("li", {
                                                               key: item.show
                                                             }, [
                                                               _createElementVNode("strong", null, _toDisplayString(item.show), 1),
-                                                              _createElementVNode("span", _hoisted_237, _toDisplayString((item.problems || []).map(p => `S${String(p.season).padStart(2, '0')}E${String(p.episode).padStart(2, '0')}`).join(' ')), 1)
+                                                              _createElementVNode("span", _hoisted_243, _toDisplayString((item.problems || []).map(p => `S${String(p.season).padStart(2, '0')}E${String(p.episode).padStart(2, '0')}`).join(' ')), 1)
                                                             ]))
                                                           }), 128))
                                                         ])
                                                       ]))
                                                     : _createCommentVNode("", true),
                                                   ((fallbackState.value.report.shows || []).length)
-                                                    ? (_openBlock(), _createElementBlock("details", _hoisted_238, [
+                                                    ? (_openBlock(), _createElementBlock("details", _hoisted_244, [
                                                         _createElementVNode("summary", null, "展开本剧集明细（" + _toDisplayString(fallbackState.value.report.shows.length) + " 部有变动）", 1),
-                                                        _createElementVNode("ul", _hoisted_239, [
+                                                        _createElementVNode("ul", _hoisted_245, [
                                                           (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(fallbackState.value.report.shows, (item) => {
                                                             return (_openBlock(), _createElementBlock("li", {
                                                               key: item.show
                                                             }, [
                                                               _createElementVNode("strong", null, _toDisplayString(item.show), 1),
-                                                              _createElementVNode("span", _hoisted_240, "识别自 " + _toDisplayString(item.resolved || '未命中') + "｜补集 " + _toDisplayString((item.episodes || []).filter(e => e.nfo).length) + "｜归位 " + _toDisplayString((item.renumbered || []).length), 1)
+                                                              _createElementVNode("span", _hoisted_246, "识别自 " + _toDisplayString(item.resolved || '未命中') + "｜补集 " + _toDisplayString((item.episodes || []).filter(e => e.nfo).length) + "｜归位 " + _toDisplayString((item.renumbered || []).length), 1)
                                                             ]))
                                                           }), 128))
                                                         ])
@@ -9666,7 +9742,7 @@ return (_ctx, _cache) => {
                                               : _createCommentVNode("", true)
                                           ]))
                                         : (settingsTab.value === 'cloud')
-                                          ? (_openBlock(), _createElementBlock("div", _hoisted_241, [
+                                          ? (_openBlock(), _createElementBlock("div", _hoisted_247, [
                                               _cache[422] || (_cache[422] = _createElementVNode("p", { class: "magicflow-settings-hint" }, [
                                                 _createElementVNode("strong", null, "本地当热区，夸克当冷库。"),
                                                 _createTextVNode(" 把库里的成品大文件上传到 OpenList 的可写存储（夸克 cookie 驱动）， 同一夸克目录会被 OpenList 的 Strm 视图自动生成 "),
@@ -9677,7 +9753,7 @@ return (_ctx, _cache) => {
                                                 _createElementVNode("strong", null, "只上传、不删本地"),
                                                 _createTextVNode("；删本地与停种必须单独确认。 ")
                                               ], -1)),
-                                              _createElementVNode("div", _hoisted_242, [
+                                              _createElementVNode("div", _hoisted_248, [
                                                 _createVNode(_component_VSwitch, {
                                                   modelValue: settingsDraft.value.cloud_enabled,
                                                   "onUpdate:modelValue": _cache[130] || (_cache[130] = $event => ((settingsDraft.value.cloud_enabled) = $event)),
@@ -9703,9 +9779,9 @@ return (_ctx, _cache) => {
                                                   inset: ""
                                                 }, null, 8, ["modelValue"])
                                               ]),
-                                              _createElementVNode("div", _hoisted_243, [
+                                              _createElementVNode("div", _hoisted_249, [
                                                 _cache[420] || (_cache[420] = _createElementVNode("div", { class: "magicflow-settings-label" }, "OpenList 连接", -1)),
-                                                _createElementVNode("div", _hoisted_244, [
+                                                _createElementVNode("div", _hoisted_250, [
                                                   _createVNode(_component_VTextField, {
                                                     modelValue: settingsDraft.value.cloud_openlist_url,
                                                     "onUpdate:modelValue": _cache[133] || (_cache[133] = $event => ((settingsDraft.value.cloud_openlist_url) = $event)),
@@ -9717,7 +9793,7 @@ return (_ctx, _cache) => {
                                                     autocomplete: "off"
                                                   }, null, 8, ["modelValue"])
                                                 ]),
-                                                _createElementVNode("div", _hoisted_245, [
+                                                _createElementVNode("div", _hoisted_251, [
                                                   _createVNode(_component_VTextField, {
                                                     modelValue: settingsDraft.value.cloud_openlist_token,
                                                     "onUpdate:modelValue": _cache[134] || (_cache[134] = $event => ((settingsDraft.value.cloud_openlist_token) = $event)),
@@ -9751,7 +9827,7 @@ return (_ctx, _cache) => {
                                                     }, _toDisplayString(cloudTestMsg.value), 3))
                                                   : _createCommentVNode("", true)
                                               ]),
-                                              _createElementVNode("div", _hoisted_246, [
+                                              _createElementVNode("div", _hoisted_252, [
                                                 _createVNode(_component_VTextField, {
                                                   modelValue: settingsDraft.value.cloud_source_mount,
                                                   "onUpdate:modelValue": _cache[135] || (_cache[135] = $event => ((settingsDraft.value.cloud_source_mount) = $event)),
@@ -9817,7 +9893,7 @@ return (_ctx, _cache) => {
                                                 clearable: "",
                                                 items: ['魔流-推荐', '辅种', '已整理']
                                               }, null, 8, ["modelValue"]),
-                                              _createElementVNode("div", _hoisted_247, [
+                                              _createElementVNode("div", _hoisted_253, [
                                                 _createVNode(_component_VTextField, {
                                                   modelValue: settingsDraft.value.cloud_min_size_gb,
                                                   "onUpdate:modelValue": _cache[141] || (_cache[141] = $event => ((settingsDraft.value.cloud_min_size_gb) = $event)),
@@ -9881,7 +9957,7 @@ return (_ctx, _cache) => {
                                                 }, null, 8, ["modelValue"])
                                               ]),
                                               _createVNode(_component_VDivider, { class: "magicflow-fb-divider" }),
-                                              _createElementVNode("div", _hoisted_248, [
+                                              _createElementVNode("div", _hoisted_254, [
                                                 _createVNode(_component_VSwitch, {
                                                   modelValue: settingsDraft.value.cloud_delete_local,
                                                   "onUpdate:modelValue": _cache[147] || (_cache[147] = $event => ((settingsDraft.value.cloud_delete_local) = $event)),
@@ -9914,7 +9990,7 @@ return (_ctx, _cache) => {
                                             ]))
                                           : _createCommentVNode("", true)
             ]),
-            _createElementVNode("footer", _hoisted_249, [
+            _createElementVNode("footer", _hoisted_255, [
               (settingsTab.value === 'downloader')
                 ? (_openBlock(), _createBlock(_component_VBtn, {
                     key: 0,
@@ -9970,8 +10046,8 @@ return (_ctx, _cache) => {
               class: "magicflow-dialog magicflow-torrent-dialog"
             }, {
               default: _withCtx(() => [
-                _createElementVNode("header", _hoisted_250, [
-                  _createElementVNode("div", _hoisted_251, [
+                _createElementVNode("header", _hoisted_256, [
+                  _createElementVNode("div", _hoisted_257, [
                     _createVNode(_component_VChip, {
                       size: "small",
                       color: stateColor(activeTorrent.value.state),
@@ -10014,17 +10090,17 @@ return (_ctx, _cache) => {
                     onClick: _cache[151] || (_cache[151] = $event => (torrentDialog.value = false))
                   })
                 ]),
-                _createElementVNode("div", _hoisted_252, _toDisplayString(activeTorrent.value.title || '种子详情'), 1),
-                _createElementVNode("div", _hoisted_253, [
+                _createElementVNode("div", _hoisted_258, _toDisplayString(activeTorrent.value.title || '种子详情'), 1),
+                _createElementVNode("div", _hoisted_259, [
                   _createVNode(_component_VProgressLinear, {
                     "model-value": torrentProgressPct(activeTorrent.value),
                     color: stateColor(activeTorrent.value.state),
                     height: "8",
                     rounded: ""
                   }, null, 8, ["model-value", "color"]),
-                  _createElementVNode("span", _hoisted_254, _toDisplayString(torrentProgressPct(activeTorrent.value)) + "%", 1)
+                  _createElementVNode("span", _hoisted_260, _toDisplayString(torrentProgressPct(activeTorrent.value)) + "%", 1)
                 ]),
-                _createElementVNode("dl", _hoisted_255, [
+                _createElementVNode("dl", _hoisted_261, [
                   _createElementVNode("div", null, [
                     _cache[427] || (_cache[427] = _createElementVNode("dt", null, "大小", -1)),
                     _createElementVNode("dd", null, _toDisplayString(Number(activeTorrent.value.size_gb || 0).toFixed(2)) + " GB", 1)
@@ -10042,7 +10118,7 @@ return (_ctx, _cache) => {
                     _createElementVNode("dd", null, _toDisplayString(stateLabel(activeTorrent.value.state)), 1)
                   ])
                 ]),
-                _createElementVNode("div", _hoisted_256, [
+                _createElementVNode("div", _hoisted_262, [
                   _cache[431] || (_cache[431] = _createElementVNode("span", { class: "magicflow-torrent-dialog__hash-label" }, "infohash", -1)),
                   _createElementVNode("code", null, _toDisplayString(activeTorrent.value.hash), 1),
                   _createVNode(_component_VBtn, {
@@ -10221,7 +10297,7 @@ return (_ctx, _cache) => {
                 _createElementVNode("b", null, _toDisplayString(selectedHashes.value.length), 1),
                 _cache[442] || (_cache[442] = _createTextVNode(" 个种子？ ", -1)),
                 _cache[443] || (_cache[443] = _createElementVNode("br", null, null, -1)),
-                _createElementVNode("span", _hoisted_257, " 将按任务设置" + _toDisplayString(selectedTask.value.delete_files ? '连同文件' : '保留文件') + "从下载器删除，不可撤销。 ", 1)
+                _createElementVNode("span", _hoisted_263, " 将按任务设置" + _toDisplayString(selectedTask.value.delete_files ? '连同文件' : '保留文件') + "从下载器删除，不可撤销。 ", 1)
               ]),
               _: 1
             }),
@@ -10275,7 +10351,7 @@ return (_ctx, _cache) => {
               default: _withCtx(() => [
                 _createTextVNode(" 确认删除「" + _toDisplayString(pendingTorrentDelete.value?.title || '该种子') + "」？ ", 1),
                 _cache[447] || (_cache[447] = _createElementVNode("br", null, null, -1)),
-                _createElementVNode("span", _hoisted_258, " 将按任务设置" + _toDisplayString(selectedTask.value.delete_files ? '连同文件' : '保留文件') + "从下载器删除，不可撤销。 ", 1)
+                _createElementVNode("span", _hoisted_264, " 将按任务设置" + _toDisplayString(selectedTask.value.delete_files ? '连同文件' : '保留文件') + "从下载器删除，不可撤销。 ", 1)
               ]),
               _: 1
             }),
@@ -10451,9 +10527,9 @@ return (_ctx, _cache) => {
       default: _withCtx(() => [
         _createVNode(_component_VCard, { class: "magicflow-dialog magicflow-cloud-dialog" }, {
           default: _withCtx(() => [
-            _createElementVNode("header", _hoisted_259, [
+            _createElementVNode("header", _hoisted_265, [
               _cache[464] || (_cache[464] = _createElementVNode("span", { class: "magicflow-settings-dialog__title" }, "云盘归档", -1)),
-              _createElementVNode("div", _hoisted_260, [
+              _createElementVNode("div", _hoisted_266, [
                 _createVNode(_component_VBtn, {
                   variant: "text",
                   color: "primary",
@@ -10493,7 +10569,7 @@ return (_ctx, _cache) => {
                       _: 1
                     }))
                   : _createCommentVNode("", true),
-                _createElementVNode("div", _hoisted_261, [
+                _createElementVNode("div", _hoisted_267, [
                   _createElementVNode("span", null, [
                     _createElementVNode("strong", null, _toDisplayString(cloudPlanStats.value?.pending ?? 0), 1),
                     _cache[466] || (_cache[466] = _createTextVNode(" 待上传", -1))
@@ -10521,7 +10597,7 @@ return (_ctx, _cache) => {
                   _createElementVNode("strong", null, "只上传不删除"),
                   _createTextVNode("；本地删除需单独确认。 ")
                 ], -1)),
-                _createElementVNode("div", _hoisted_262, [
+                _createElementVNode("div", _hoisted_268, [
                   _createVNode(_component_VBtn, {
                     variant: "tonal",
                     color: "primary",
@@ -10624,23 +10700,23 @@ return (_ctx, _cache) => {
                       ])
                     ], -1)),
                     (cloudLoading.value && !cloudPlanItems.value.length)
-                      ? (_openBlock(), _createElementBlock("p", _hoisted_263, "加载中…"))
+                      ? (_openBlock(), _createElementBlock("p", _hoisted_269, "加载中…"))
                       : (!cloudPlanItems.value.length)
-                        ? (_openBlock(), _createElementBlock("p", _hoisted_264, " 还没有候选。点上方「扫描候选」；若为 0，检查设置里的「扫描目录 / 体积范围 / 最小入库天数」。 "))
+                        ? (_openBlock(), _createElementBlock("p", _hoisted_270, " 还没有候选。点上方「扫描候选」；若为 0，检查设置里的「扫描目录 / 体积范围 / 最小入库天数」。 "))
                         : _createCommentVNode("", true),
                     (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(cloudPlanItems.value, (it) => {
                       return (_openBlock(), _createElementBlock("div", {
                         key: it.path,
                         class: "magicflow-cloud-row"
                       }, [
-                        _createElementVNode("div", _hoisted_265, [
-                          _createElementVNode("div", _hoisted_266, _toDisplayString(it.name), 1),
-                          _createElementVNode("div", _hoisted_267, _toDisplayString(it.rel) + " · " + _toDisplayString(it.size_gb) + " GB", 1),
+                        _createElementVNode("div", _hoisted_271, [
+                          _createElementVNode("div", _hoisted_272, _toDisplayString(it.name), 1),
+                          _createElementVNode("div", _hoisted_273, _toDisplayString(it.rel) + " · " + _toDisplayString(it.size_gb) + " GB", 1),
                           (it.message || (cloudRecordFor(it) || {}).error)
-                            ? (_openBlock(), _createElementBlock("div", _hoisted_268, _toDisplayString(it.message || (cloudRecordFor(it) || {}).error), 1))
+                            ? (_openBlock(), _createElementBlock("div", _hoisted_274, _toDisplayString(it.message || (cloudRecordFor(it) || {}).error), 1))
                             : _createCommentVNode("", true)
                         ]),
-                        _createElementVNode("div", _hoisted_269, [
+                        _createElementVNode("div", _hoisted_275, [
                           _createVNode(_component_VChip, {
                             size: "x-small",
                             variant: "tonal",
@@ -10688,9 +10764,9 @@ return (_ctx, _cache) => {
       default: _withCtx(() => [
         _createVNode(_component_VCard, { class: "magicflow-dialog magicflow-douban-dialog" }, {
           default: _withCtx(() => [
-            _createElementVNode("header", _hoisted_270, [
+            _createElementVNode("header", _hoisted_276, [
               _cache[483] || (_cache[483] = _createElementVNode("span", { class: "magicflow-settings-dialog__title" }, "豆瓣评分服务", -1)),
-              _createElementVNode("div", _hoisted_271, [
+              _createElementVNode("div", _hoisted_277, [
                 _createVNode(_component_VBtn, {
                   variant: "text",
                   color: "primary",
@@ -10715,7 +10791,7 @@ return (_ctx, _cache) => {
             _createVNode(_component_VDivider),
             _createVNode(_component_VCardText, { class: "magicflow-douban-dialog__body" }, {
               default: _withCtx(() => [
-                _createElementVNode("div", _hoisted_272, [
+                _createElementVNode("div", _hoisted_278, [
                   _createVNode(_component_VChip, {
                     size: "small",
                     color: doubanServiceData.value.ok ? 'success' : 'error',
@@ -10735,13 +10811,13 @@ return (_ctx, _cache) => {
                   _cache[487] || (_cache[487] = _createElementVNode("i", null, "·", -1)),
                   _createElementVNode("span", null, "缓存 " + _toDisplayString(fmtCount(doubanServiceData.value.cache?.total)) + "（负 " + _toDisplayString(doubanServiceData.value.cache?.negative || 0) + "）", 1)
                 ]),
-                _createElementVNode("div", _hoisted_273, " 地址：" + _toDisplayString(doubanServiceData.value.service || '（未配置）') + "。独立服务 magicflow-douban，本地查询 <1ms，不受豆瓣限流影响。 ", 1),
+                _createElementVNode("div", _hoisted_279, " 地址：" + _toDisplayString(doubanServiceData.value.service || '（未配置）') + "。独立服务 magicflow-douban，本地查询 <1ms，不受豆瓣限流影响。 ", 1),
                 _createVNode(_component_VSheet, {
                   tag: "section",
                   class: "magicflow-panel app-surface-static mt-2"
                 }, {
                   default: _withCtx(() => [
-                    _createElementVNode("header", _hoisted_274, [
+                    _createElementVNode("header", _hoisted_280, [
                       _cache[488] || (_cache[488] = _createElementVNode("div", null, [
                         _createElementVNode("div", { class: "text-subtitle-2 font-weight-medium" }, "后台数据采集（慢爬）"),
                         _createElementVNode("div", { class: "text-body-2 text-medium-emphasis" }, " 从豆瓣「选电影」接口（一次 20 条带评分）按类型×题材×排序逐步枚举，限速 + 每日上限，进度落库可续跑 ")
@@ -10757,10 +10833,10 @@ return (_ctx, _cache) => {
                         _: 1
                       }, 8, ["color"])
                     ]),
-                    _createElementVNode("div", _hoisted_275, [
-                      _createElementVNode("div", _hoisted_276, [
+                    _createElementVNode("div", _hoisted_281, [
+                      _createElementVNode("div", _hoisted_282, [
                         _cache[489] || (_cache[489] = _createElementVNode("span", null, "进度", -1)),
-                        _createElementVNode("span", _hoisted_277, [
+                        _createElementVNode("span", _hoisted_283, [
                           _createTextVNode(" 组合 " + _toDisplayString(doubanCrawl.value.spec_index || 0) + " / " + _toDisplayString(doubanCrawl.value.spec_total || 0) + " ", 1),
                           (doubanCrawl.value.current)
                             ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
@@ -10776,7 +10852,7 @@ return (_ctx, _cache) => {
                         color: "primary",
                         class: "my-2"
                       }, null, 8, ["model-value"]),
-                      _createElementVNode("div", _hoisted_278, [
+                      _createElementVNode("div", _hoisted_284, [
                         _createElementVNode("span", null, [
                           _cache[490] || (_cache[490] = _createTextVNode("请求 ", -1)),
                           _createElementVNode("strong", null, _toDisplayString(doubanCrawl.value.requests || 0), 1)
@@ -10802,11 +10878,11 @@ return (_ctx, _cache) => {
                         ])
                       ]),
                       (doubanCrawl.value.blocked_for > 0)
-                        ? (_openBlock(), _createElementBlock("div", _hoisted_279, " ⚠ 触发限流/退避，暂停 " + _toDisplayString(doubanCrawl.value.blocked_for) + " 秒后继续 ", 1))
+                        ? (_openBlock(), _createElementBlock("div", _hoisted_285, " ⚠ 触发限流/退避，暂停 " + _toDisplayString(doubanCrawl.value.blocked_for) + " 秒后继续 ", 1))
                         : (doubanCrawl.value.last_error)
-                          ? (_openBlock(), _createElementBlock("div", _hoisted_280, " 最近异常：" + _toDisplayString(doubanCrawl.value.last_error), 1))
+                          ? (_openBlock(), _createElementBlock("div", _hoisted_286, " 最近异常：" + _toDisplayString(doubanCrawl.value.last_error), 1))
                           : _createCommentVNode("", true),
-                      _createElementVNode("div", _hoisted_281, [
+                      _createElementVNode("div", _hoisted_287, [
                         (doubanCrawl.value.running)
                           ? (_openBlock(), _createBlock(_component_VBtn, {
                               key: 0,
@@ -10873,9 +10949,9 @@ return (_ctx, _cache) => {
       default: _withCtx(() => [
         _createVNode(_component_VCard, { class: "magicflow-dialog magicflow-crossseed-dialog" }, {
           default: _withCtx(() => [
-            _createElementVNode("header", _hoisted_282, [
+            _createElementVNode("header", _hoisted_288, [
               _cache[501] || (_cache[501] = _createElementVNode("span", { class: "magicflow-settings-dialog__title" }, "跨站免费取种", -1)),
-              _createElementVNode("div", _hoisted_283, [
+              _createElementVNode("div", _hoisted_289, [
                 _createVNode(_component_VBtn, {
                   variant: "text",
                   color: "primary",
@@ -10900,7 +10976,7 @@ return (_ctx, _cache) => {
             _createVNode(_component_VDivider),
             _createVNode(_component_VCardText, { class: "magicflow-crossseed-dialog__body" }, {
               default: _withCtx(() => [
-                _createElementVNode("div", _hoisted_284, [
+                _createElementVNode("div", _hoisted_290, [
                   _createElementVNode("span", null, [
                     _createElementVNode("strong", null, _toDisplayString(crossseedData.value.count || 0), 1),
                     _cache[502] || (_cache[502] = _createTextVNode(" 待回辅", -1))
@@ -10924,7 +11000,7 @@ return (_ctx, _cache) => {
                   class: "magicflow-panel app-surface-static mt-2"
                 }, {
                   default: _withCtx(() => [
-                    _createElementVNode("header", _hoisted_285, [
+                    _createElementVNode("header", _hoisted_291, [
                       _cache[509] || (_cache[509] = _createElementVNode("div", null, [
                         _createElementVNode("div", { class: "text-subtitle-2 font-weight-medium" }, "兄弟站流量兜底"),
                         _createElementVNode("div", { class: "text-body-2 text-medium-emphasis" }, " 判「免费」可能出错 → 取种期间核对来源站免费状态 + 下载量增量： 发现其实不免费立即**删种 + 拉黑该站**（需人工确认后解除） ")
@@ -10943,7 +11019,7 @@ return (_ctx, _cache) => {
                         _: 1
                       }, 8, ["loading"])
                     ]),
-                    _createElementVNode("div", _hoisted_286, [
+                    _createElementVNode("div", _hoisted_292, [
                       _createVNode(_component_VChip, {
                         size: "small",
                         color: crossseedGuard.value.enabled === false ? 'error' : 'success',
@@ -10954,18 +11030,18 @@ return (_ctx, _cache) => {
                         ]),
                         _: 1
                       }, 8, ["color"]),
-                      _createElementVNode("span", _hoisted_287, " 阈值：下载增量 > 体积 × " + _toDisplayString(crossseedGuard.value.pct ?? 5) + "%（且 ≥ " + _toDisplayString(crossseedGuard.value.min_mb ?? 50) + "MB） · 核对间隔 " + _toDisplayString(crossseedGuard.value.interval_min ?? 15) + " 分钟 ", 1)
+                      _createElementVNode("span", _hoisted_293, " 阈值：下载增量 > 体积 × " + _toDisplayString(crossseedGuard.value.pct ?? 5) + "%（且 ≥ " + _toDisplayString(crossseedGuard.value.min_mb ?? 50) + "MB） · 核对间隔 " + _toDisplayString(crossseedGuard.value.interval_min ?? 15) + " 分钟 ", 1)
                     ]),
                     (crossseedBanned.value.length)
-                      ? (_openBlock(), _createElementBlock("div", _hoisted_288, [
+                      ? (_openBlock(), _createElementBlock("div", _hoisted_294, [
                           (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(crossseedBanned.value, (b) => {
                             return (_openBlock(), _createElementBlock("article", {
                               key: b.domain,
                               class: "magicflow-crossseed-ban"
                             }, [
-                              _createElementVNode("div", _hoisted_289, [
+                              _createElementVNode("div", _hoisted_295, [
                                 _createElementVNode("strong", null, _toDisplayString(b.domain), 1),
-                                _createElementVNode("span", _hoisted_290, _toDisplayString(b.reason) + " · " + _toDisplayString(b.age_min) + " 分钟前", 1)
+                                _createElementVNode("span", _hoisted_296, _toDisplayString(b.reason) + " · " + _toDisplayString(b.age_min) + " 分钟前", 1)
                               ]),
                               _createVNode(_component_VBtn, {
                                 size: "x-small",
@@ -10993,7 +11069,7 @@ return (_ctx, _cache) => {
                             _: 1
                           })
                         ]))
-                      : (_openBlock(), _createElementBlock("div", _hoisted_291, "暂无被拉黑的来源站（出现「判免费实际不免费」时才会拉黑）。"))
+                      : (_openBlock(), _createElementBlock("div", _hoisted_297, "暂无被拉黑的来源站（出现「判免费实际不免费」时才会拉黑）。"))
                   ]),
                   _: 1
                 }),
@@ -11010,17 +11086,17 @@ return (_ctx, _cache) => {
                             _createElementVNode("div", { class: "text-body-2 text-medium-emphasis" }, " 他站那份已下完（回辅成功/失败都要留在来源站挂种，否则算 H&R）—— 保种期内任何任务都不会删它、也不会改它的标签 ")
                           ])
                         ], -1)),
-                        _createElementVNode("div", _hoisted_292, [
+                        _createElementVNode("div", _hoisted_298, [
                           (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(crossseedSources.value, (it) => {
                             return (_openBlock(), _createElementBlock("article", {
                               key: it.sib_hash,
                               class: "magicflow-crossseed-item"
                             }, [
-                              _createElementVNode("div", _hoisted_293, [
+                              _createElementVNode("div", _hoisted_299, [
                                 _createElementVNode("strong", {
                                   title: it.title
-                                }, _toDisplayString(it.title || it.sib_hash), 9, _hoisted_294),
-                                _createElementVNode("span", _hoisted_295, [
+                                }, _toDisplayString(it.title || it.sib_hash), 9, _hoisted_300),
+                                _createElementVNode("span", _hoisted_301, [
                                   _createVNode(_component_VChip, {
                                     size: "x-small",
                                     variant: "tonal",
@@ -11063,7 +11139,7 @@ return (_ctx, _cache) => {
                                           _createTextVNode(" · 要求 " + _toDisplayString(it.hours) + "h · " + _toDisplayString(it.done ? '保种期已满（可回收）' : `还剩 ${formatRemain(it.remain_min)}`), 1)
                                         ], 64)),
                                   (it.hours_src)
-                                    ? (_openBlock(), _createElementBlock("span", _hoisted_296, "（" + _toDisplayString(String(it.hours_src).startsWith('种子标记') ? '种子自带 H&R 标记' : '站点规则库') + "）", 1))
+                                    ? (_openBlock(), _createElementBlock("span", _hoisted_302, "（" + _toDisplayString(String(it.hours_src).startsWith('种子标记') ? '种子自带 H&R 标记' : '站点规则库') + "）", 1))
                                     : _createCommentVNode("", true),
                                   (it.files_shared)
                                     ? (_openBlock(), _createElementBlock(_Fragment, { key: 5 }, [
@@ -11084,7 +11160,7 @@ return (_ctx, _cache) => {
                   class: "magicflow-panel app-surface-static mt-3"
                 }, {
                   default: _withCtx(() => [
-                    _createElementVNode("header", _hoisted_297, [
+                    _createElementVNode("header", _hoisted_303, [
                       _cache[515] || (_cache[515] = _createElementVNode("div", null, [
                         _createElementVNode("div", { class: "text-subtitle-2 font-weight-medium" }, "待回辅队列"),
                         _createElementVNode("div", { class: "text-body-2 text-medium-emphasis" }, "他站下完 → 自动回辅目标站；超过 6 小时未完成会放弃")
@@ -11105,17 +11181,17 @@ return (_ctx, _cache) => {
                           }, 8, ["loading"]))
                         : _createCommentVNode("", true)
                     ]),
-                    _createElementVNode("div", _hoisted_298, [
+                    _createElementVNode("div", _hoisted_304, [
                       (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(crossseedPending.value, (it) => {
                         return (_openBlock(), _createElementBlock("article", {
                           key: it.sib_hash,
                           class: "magicflow-crossseed-item"
                         }, [
-                          _createElementVNode("div", _hoisted_299, [
+                          _createElementVNode("div", _hoisted_305, [
                             _createElementVNode("strong", {
                               title: it.title || it.sib_hash
-                            }, _toDisplayString(it.title || it.sib_hash), 9, _hoisted_300),
-                            _createElementVNode("span", _hoisted_301, [
+                            }, _toDisplayString(it.title || it.sib_hash), 9, _hoisted_306),
+                            _createElementVNode("span", _hoisted_307, [
                               _createVNode(_component_VChip, {
                                 size: "x-small",
                                 variant: "tonal",
@@ -11165,7 +11241,7 @@ return (_ctx, _cache) => {
                         ]))
                       }), 128)),
                       (!crossseedPending.value.length)
-                        ? (_openBlock(), _createElementBlock("div", _hoisted_302, " 暂无待回辅的跨站种子。任务配置里开启「跨站免费取种」后，本站非免费的候选会自动去他站找免费源。 "))
+                        ? (_openBlock(), _createElementBlock("div", _hoisted_308, " 暂无待回辅的跨站种子。任务配置里开启「跨站免费取种」后，本站非免费的候选会自动去他站找免费源。 "))
                         : _createCommentVNode("", true)
                     ])
                   ]),
@@ -11190,9 +11266,9 @@ return (_ctx, _cache) => {
       default: _withCtx(() => [
         _createVNode(_component_VCard, { class: "magicflow-dialog magicflow-recommend-dialog" }, {
           default: _withCtx(() => [
-            _createElementVNode("header", _hoisted_303, [
+            _createElementVNode("header", _hoisted_309, [
               _cache[519] || (_cache[519] = _createElementVNode("span", { class: "magicflow-settings-dialog__title" }, "推荐甄别", -1)),
-              _createElementVNode("div", _hoisted_304, [
+              _createElementVNode("div", _hoisted_310, [
                 _createVNode(_component_VBtn, {
                   variant: "text",
                   color: "primary",
@@ -11217,7 +11293,7 @@ return (_ctx, _cache) => {
             _createVNode(_component_VDivider),
             _createVNode(_component_VCardText, { class: "magicflow-recommend-dialog__body" }, {
               default: _withCtx(() => [
-                _createElementVNode("div", _hoisted_305, [
+                _createElementVNode("div", _hoisted_311, [
                   _createElementVNode("span", null, [
                     _createElementVNode("strong", null, _toDisplayString(recommendData.value.recommended || 0), 1),
                     _cache[520] || (_cache[520] = _createTextVNode(" 待确认", -1))
@@ -11237,7 +11313,7 @@ return (_ctx, _cache) => {
                   _cache[526] || (_cache[526] = _createElementVNode("i", null, "·", -1)),
                   _createElementVNode("span", null, "标签 " + _toDisplayString(recommendData.value.tag || '魔流-推荐'), 1)
                 ]),
-                _createElementVNode("div", _hoisted_306, [
+                _createElementVNode("div", _hoisted_312, [
                   _createTextVNode(" 评分 > " + _toDisplayString(recommendData.value.min_rating ?? 7.5), 1),
                   (recommendData.value.require_chart !== false)
                     ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
@@ -11265,12 +11341,12 @@ return (_ctx, _cache) => {
                   class: "magicflow-panel app-surface-static mt-2"
                 }, {
                   default: _withCtx(() => [
-                    _createElementVNode("header", _hoisted_307, [
+                    _createElementVNode("header", _hoisted_313, [
                       _cache[529] || (_cache[529] = _createElementVNode("div", null, [
                         _createElementVNode("div", { class: "text-subtitle-2 font-weight-medium" }, "甄别结果"),
                         _createElementVNode("div", { class: "text-body-2 text-medium-emphasis" }, "全部任务汇总 · 确认 = 自动整理入库；忽略 = 删除该临时种（«待核实»也可手动确认）")
                       ], -1)),
-                      _createElementVNode("div", _hoisted_308, [
+                      _createElementVNode("div", _hoisted_314, [
                         (recSelectable.value.length)
                           ? (_openBlock(), _createBlock(_component_VBtn, {
                               key: 0,
@@ -11327,7 +11403,7 @@ return (_ctx, _cache) => {
                         }, 8, ["prepend-icon"])
                       ])
                     ]),
-                    _createElementVNode("div", _hoisted_309, [
+                    _createElementVNode("div", _hoisted_315, [
                       (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(recommendItems.value, (rec) => {
                         return (_openBlock(), _createElementBlock("article", {
                           key: rec.hash,
@@ -11344,7 +11420,7 @@ return (_ctx, _cache) => {
                                 "onUpdate:modelValue": $event => (toggleRec(rec.hash))
                               }, null, 8, ["model-value", "aria-label", "onUpdate:modelValue"]))
                             : _createCommentVNode("", true),
-                          _createElementVNode("div", _hoisted_310, [
+                          _createElementVNode("div", _hoisted_316, [
                             (rec.poster)
                               ? (_openBlock(), _createElementBlock("img", {
                                   key: 0,
@@ -11352,18 +11428,18 @@ return (_ctx, _cache) => {
                                   alt: recName(rec),
                                   loading: "lazy",
                                   referrerpolicy: "no-referrer"
-                                }, null, 8, _hoisted_311))
+                                }, null, 8, _hoisted_317))
                               : (_openBlock(), _createBlock(_component_VIcon, {
                                   key: 1,
                                   icon: "mdi-movie-open-outline",
                                   size: "22"
                                 }))
                           ]),
-                          _createElementVNode("div", _hoisted_312, [
+                          _createElementVNode("div", _hoisted_318, [
                             _createElementVNode("strong", {
                               title: rec.title || rec.hash
-                            }, _toDisplayString(recName(rec)), 9, _hoisted_313),
-                            _createElementVNode("span", _hoisted_314, [
+                            }, _toDisplayString(recName(rec)), 9, _hoisted_319),
+                            _createElementVNode("span", _hoisted_320, [
                               _createVNode(_component_VChip, {
                                 size: "x-small",
                                 variant: "tonal",
@@ -11400,7 +11476,7 @@ return (_ctx, _cache) => {
                                   ], 64))
                                 : _createCommentVNode("", true)
                             ]),
-                            _createElementVNode("span", _hoisted_315, [
+                            _createElementVNode("span", _hoisted_321, [
                               _createTextVNode(" 首次发现 " + _toDisplayString(_unref(formatDateTime)(rec.first_seen)) + " ", 1),
                               (rec.import_result)
                                 ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
@@ -11415,7 +11491,7 @@ return (_ctx, _cache) => {
                             ])
                           ]),
                           (recommendActionable(rec))
-                            ? (_openBlock(), _createElementBlock("div", _hoisted_316, [
+                            ? (_openBlock(), _createElementBlock("div", _hoisted_322, [
                                 _createVNode(_component_VBtn, {
                                   size: "small",
                                   color: "primary",
@@ -11447,7 +11523,7 @@ return (_ctx, _cache) => {
                         ], 2))
                       }), 128)),
                       (!recommendItems.value.length)
-                        ? (_openBlock(), _createElementBlock("div", _hoisted_317, [
+                        ? (_openBlock(), _createElementBlock("div", _hoisted_323, [
                             _createTextVNode(" 暂无推荐" + _toDisplayString(showAllRecs.value ? '' : '（当前没有同时满足「评分 > ' + (recommendData.value.min_rating ?? 7.5) + ' 且在榜 / 热映 / 订阅」的资源）') + "。 ", 1),
                             (!showAllRecs.value && hiddenRecCount.value)
                               ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
@@ -11479,9 +11555,9 @@ return (_ctx, _cache) => {
       default: _withCtx(() => [
         _createVNode(_component_VCard, { class: "magicflow-dialog magicflow-exam-dialog" }, {
           default: _withCtx(() => [
-            _createElementVNode("header", _hoisted_318, [
+            _createElementVNode("header", _hoisted_324, [
               _cache[533] || (_cache[533] = _createElementVNode("span", { class: "magicflow-settings-dialog__title" }, "新手考核", -1)),
-              _createElementVNode("div", _hoisted_319, [
+              _createElementVNode("div", _hoisted_325, [
                 _createVNode(_component_VBtn, {
                   variant: "text",
                   color: "primary",
@@ -11506,7 +11582,7 @@ return (_ctx, _cache) => {
             _createVNode(_component_VDivider),
             _createVNode(_component_VCardText, { class: "magicflow-recommend-dialog__body" }, {
               default: _withCtx(() => [
-                _createElementVNode("div", _hoisted_320, [
+                _createElementVNode("div", _hoisted_326, [
                   _createElementVNode("span", null, [
                     _createElementVNode("strong", null, _toDisplayString(examBadge.value), 1),
                     _cache[534] || (_cache[534] = _createTextVNode(" 个未通过", -1))
@@ -11532,7 +11608,7 @@ return (_ctx, _cache) => {
                       _: 1
                     }))
                   : (!examSites.value.length)
-                    ? (_openBlock(), _createElementBlock("div", _hoisted_321, " 没有未通过的考核（或站点数据暂时取不到）。 "))
+                    ? (_openBlock(), _createElementBlock("div", _hoisted_327, " 没有未通过的考核（或站点数据暂时取不到）。 "))
                     : _createCommentVNode("", true),
                 (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(examSites.value, (row) => {
                   return (_openBlock(), _createBlock(_component_VSheet, {
@@ -11541,13 +11617,13 @@ return (_ctx, _cache) => {
                     class: "magicflow-panel app-surface-static mt-2"
                   }, {
                     default: _withCtx(() => [
-                      _createElementVNode("header", _hoisted_322, [
+                      _createElementVNode("header", _hoisted_328, [
                         _createElementVNode("div", null, [
-                          _createElementVNode("div", _hoisted_323, _toDisplayString(row.site_name || ('站点 ' + row.site_id)), 1),
-                          _createElementVNode("div", _hoisted_324, _toDisplayString(examDaysText(row)) + " · 未通过：" + _toDisplayString(examFailedText(row)), 1)
+                          _createElementVNode("div", _hoisted_329, _toDisplayString(row.site_name || ('站点 ' + row.site_id)), 1),
+                          _createElementVNode("div", _hoisted_330, _toDisplayString(examDaysText(row)) + " · 未通过：" + _toDisplayString(examFailedText(row)), 1)
                         ])
                       ]),
-                      _createElementVNode("div", _hoisted_325, [
+                      _createElementVNode("div", _hoisted_331, [
                         _createElementVNode("span", null, "上传 " + _toDisplayString(examGb(row.upload)), 1),
                         _cache[538] || (_cache[538] = _createElementVNode("i", null, "·", -1)),
                         _createElementVNode("span", null, "下载 " + _toDisplayString(examGb(row.download)), 1),
@@ -11556,13 +11632,13 @@ return (_ctx, _cache) => {
                         _cache[540] || (_cache[540] = _createElementVNode("i", null, "·", -1)),
                         _createElementVNode("span", null, "做种 " + _toDisplayString(row.seeding ?? 0), 1)
                       ]),
-                      _createElementVNode("div", _hoisted_326, [
+                      _createElementVNode("div", _hoisted_332, [
                         (_openBlock(true), _createElementBlock(_Fragment, null, _renderList((row.plan || []), (p, idx) => {
                           return (_openBlock(), _createElementBlock("article", {
                             key: idx,
                             class: "magicflow-exam-plan__item"
                           }, [
-                            _createElementVNode("div", _hoisted_327, [
+                            _createElementVNode("div", _hoisted_333, [
                               _createElementVNode("strong", null, _toDisplayString(p.label || '考核项'), 1),
                               _createVNode(_component_VChip, {
                                 size: "x-small",
@@ -11576,7 +11652,7 @@ return (_ctx, _cache) => {
                               }, 1032, ["color"])
                             ]),
                             ((p.notes || []).length)
-                              ? (_openBlock(), _createElementBlock("ul", _hoisted_328, [
+                              ? (_openBlock(), _createElementBlock("ul", _hoisted_334, [
                                   (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(p.notes, (n, ni) => {
                                     return (_openBlock(), _createElementBlock("li", { key: ni }, _toDisplayString(n), 1))
                                   }), 128))
@@ -11601,7 +11677,7 @@ return (_ctx, _cache) => {
                           ]))
                         }), 128)),
                         (!(row.plan || []).length)
-                          ? (_openBlock(), _createElementBlock("div", _hoisted_329, " 未识别到可执行动作（可能考核不要求下载量 / 或解析不出；可在「做种明细」里看站点实时数据）。 "))
+                          ? (_openBlock(), _createElementBlock("div", _hoisted_335, " 未识别到可执行动作（可能考核不要求下载量 / 或解析不出；可在「做种明细」里看站点实时数据）。 "))
                           : _createCommentVNode("", true)
                       ])
                     ]),
@@ -11642,12 +11718,12 @@ return (_ctx, _cache) => {
                       _createElementVNode("strong", null, _toDisplayString(examConfirm.value.item.kind === 'download' ? '创建 / 启用「考核下载」任务' : examConfirm.value.item.kind === 'upload' ? '创建 / 启用「考核刷流」任务' : '创建 / 启用「考核魔力」任务'), 1),
                       _cache[544] || (_cache[544] = _createTextVNode("： ", -1))
                     ]),
-                    _createElementVNode("div", _hoisted_330, [
+                    _createElementVNode("div", _hoisted_336, [
                       _cache[545] || (_cache[545] = _createTextVNode("任务名：", -1)),
                       _createElementVNode("code", null, _toDisplayString(examConfirm.value.item.task_name), 1)
                     ]),
                     ((examConfirm.value.item.notes || []).length)
-                      ? (_openBlock(), _createElementBlock("ul", _hoisted_331, [
+                      ? (_openBlock(), _createElementBlock("ul", _hoisted_337, [
                           (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(examConfirm.value.item.notes, (n, ni) => {
                             return (_openBlock(), _createElementBlock("li", { key: ni }, _toDisplayString(n), 1))
                           }), 128))
@@ -11706,6 +11782,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-263fcfaf"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-94c6f71c"]]);
 
 export { MagicFlowWorkbench as M };
