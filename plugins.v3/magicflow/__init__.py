@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.21.2"
+__version__ = "3.21.3"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -10956,10 +10956,14 @@ class MagicFlow(_PluginBase):
         })
         return Response(success=True, data=data)
 
-    def debug_recognize(self, name: str = "") -> Response:
-        """诊断:识别一个种子名并返回评分/榜单/订阅命中 + 是否已在影视库(只读)。"""
+    def debug_recognize(self, name: str = "", source: str = "") -> Response:
+        """诊断:识别一个种子名并返回评分/榜单/订阅命中 + 是否已在影视库(只读)。
+
+        ``source``（可选）= 强制识别源（``douban`` / ``themoviedb`` / ``bangumi``…），
+        用于多源对比：本机 MP 全局 ``RECOGNIZE_SOURCE`` = themoviedb，所以默认拿的是 TMDB 分。
+        """
         try:
-            info = self._get_recommend_engine().evaluate(name or "")
+            info = self._get_recommend_engine().evaluate(name or "", source=str(source or ""))
             try:
                 info["in_library"] = self._recommend_in_library(info)
                 info["media_key"] = self._recommend_media_key(

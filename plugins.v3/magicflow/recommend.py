@@ -27,15 +27,37 @@ def _norm(s: Any) -> str:
     return _NORM_RE.sub("", str(s or "").lower())
 
 
-def recognize(name: str) -> Optional[Any]:
-    """识别种子名 → ``MediaInfo``（失败 / 非影视返回 None）。"""
+def recognize(name: str, source: str = "") -> Optional[Any]:
+    """识别种子名 → ``MediaInfo``（失败 / 非影视返回 None）。
+
+    ``source`` 为空时走 MP 默认识别链（受全局 ``RECOGNIZE_SOURCE`` 影响，本机 = themoviedb）；
+    指定 ``"douban"`` / ``"themoviedb"`` / ``"bangumi"`` 等则**只强制该源**（用于多源对比）。
+    """
     if not name:
         return None
     try:
         from app.sdk.media import MetaInfo  # type: ignore  # noqa: WPS433
         from app.chain.media import MediaChain  # type: ignore  # noqa: WPS433
 
-        return MediaChain().recognize_by_meta(MetaInfo(name))
+        if source:
+            _meta = MetaInfo(name)
+            try:
+                _src: Any = source
+                try:  # 优先传 MediaSource 枚举
+                    from app.schemas.types import MediaSource  # type: ignore  # noqa: WPS433
+                    for _m in MediaSource:
+                        if str(getattr(_m, "value", "")).lower() == str(source).lower() \
+                                or str(getattr(_m, "name", "")).lower() == str(source).lower():
+                            _src = _m
+                            break
+                except Exception:  # noqa: BLE001
+                    pass
+                info = MediaChain().recognize_media(meta=_meta, media_source=_src)
+                if info:
+                    return info
+            except Exception:  # noqa: BLE001
+                pass
+        return MediaChain().recognize_by_meta(_meta if source else MetaInfo(name))
     except Exception:
         return None
 
@@ -123,9 +145,9 @@ class RecommendEngine:
                 titles.add(k[2:])
         return titles
 
-    def _recognize_cached(self, name: str) -> Any:
+    def _recognize_cached(self, name: str, source: str = "") -> Any:
         """识别（带 TTL 缓存）：同一作品名只走一次识别插件链。"""
-        key = _norm(name)
+        key = (_norm(name) + (("|" + str(source).lower()) if source else ""))
         if not key:
             return None
         now = time.time()
@@ -133,17 +155,20 @@ class RecommendEngine:
             hit = self._recog.get(key)
         if hit and (now - float(hit[0])) < CHART_TTL:
             return hit[1]
-        info = recognize(name)
+        info = recognize(name, source=source)
         with self._lock:
             if len(self._recog) > 2000:
                 self._recog.clear()
             self._recog[key] = (now, info)
         return info
 
-    def evaluate(self, name: str, with_poster: bool = True) -> Dict[str, Any]:
-        """甄别一个种子名。始终不抛异常；``recognized=False`` 表示识别不出/非影视。"""
+    def evaluate(self, name: str, with_poster: bool = True, source: str = "") -> Dict[str, Any]:
+        """甄别一个种子名。始终不抛异常；``recognized=False`` 表示识别不出/非影视。
+
+        ``source`` 可强制指定识别源（如 ``"douban"``），空则走 MP 默认链。
+        """
         out: Dict[str, Any] = {"recognized": False}
-        info = self._recognize_cached(name)
+        info = self._recognize_cached(name, source=source)
         if not info:
             return out
         try:
