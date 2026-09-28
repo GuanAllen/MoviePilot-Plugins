@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.24.0"
+__version__ = "3.24.1"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -7813,7 +7813,8 @@ class MagicFlow(_PluginBase):
             return Response(
                 success=True,
                 message=(f"H&R 统一管理:欠 {info.get('obligated')} 个 → 打标 {info.get('tagged')} · "
-                         f"强拉起 {info.get('resumed')} · 结清摘标 {info.get('cleared')}"
+                         f"强拉起 {info.get('resumed')} · 结清摘标 {info.get('cleared')} · "
+                         f"松绑 {info.get('released')}"
                          + ("" if _ap else "（预演）")),
                 data=info,
             )
@@ -12172,9 +12173,9 @@ class MagicFlow(_PluginBase):
 
             def _s3() -> str:
                 i = self._hr_guard_tick(apply=True, limit=0)
-                if i.get("tagged") or i.get("resumed") or i.get("cleared"):
-                    self._log(f"魔流:静默托管:H&R 管理:打标 {i.get('tagged')} · 拉起 {i.get('resumed')} · 摘标 {i.get('cleared')}")
-                    return f"打标 {i.get('tagged')} · 拉起 {i.get('resumed')} · 摘标 {i.get('cleared')}"
+                if i.get("tagged") or i.get("resumed") or i.get("cleared") or i.get("released"):
+                    self._log(f"魔流:静默托管:H&R 管理:打标 {i.get('tagged')} · 拉起 {i.get('resumed')} · 摘标 {i.get('cleared')} · 松绑 {i.get('released')}")
+                    return f"打标 {i.get('tagged')} · 拉起 {i.get('resumed')} · 摘标 {i.get('cleared')} · 松绑 {i.get('released')}"
                 return ""
 
             def _s4() -> str:
@@ -14245,7 +14246,8 @@ class MagicFlow(_PluginBase):
         """
         rep: Dict[str, Any] = {"apply": bool(apply), "checked": 0, "completed": 0,
                                "obligated": 0, "tagged": 0, "resumed": 0,
-                               "cleared": 0, "failed": 0, "items": []}
+                               "cleared": 0, "released": 0, "failed": 0,
+                               "items": [], "release": []}
         snap = self._tag_all_torrents() or {}
         if not snap:
             rep["reason"] = "无快照"
@@ -14266,6 +14268,7 @@ class MagicFlow(_PluginBase):
         to_tag: List[str] = []
         to_start: List[str] = []
         to_clear: List[str] = []
+        to_release: List[str] = []
         for hh in sorted(scope):
             if cap and rep["checked"] >= cap:
                 break
@@ -14289,6 +14292,15 @@ class MagicFlow(_PluginBase):
             if not obl:
                 if has_tag:
                     to_clear.append(hh)
+                # ★ 非义务却还「强制挂种」（3.15.0 残留 / 结清后没松绑）→ 松绑，降回普通做种
+                st_now = str(getattr(t, "state", "") or "").strip().lower()
+                if st_now == "forcedup" and any(str(x).startswith("魔流-") for x in tags):
+                    to_release.append(hh)
+                    rep["release"].append({
+                        "hash": hh[:12], "site": site, "state": st_now,
+                        "tagged": bool(has_tag),
+                        "name": str(getattr(t, "title", "") or "")[:50],
+                    })
                 continue
             rep["obligated"] = int(rep["obligated"]) + 1
             rep["items"].append({
@@ -14346,10 +14358,30 @@ class MagicFlow(_PluginBase):
                 except Exception as err:  # noqa: BLE001
                     rep["failed"] = int(rep["failed"]) + 1
                     self._log(f"H&R:摘标失败 {hh[:12]}:{err}", "warning")
-        if apply and (rep["tagged"] or rep["resumed"] or rep["cleared"]):
+        if apply and to_release:
+            # ★ 取消强挂（enable=False）：降回普通做种（不暂停、不删，只是不再强制绕过队列）
+            _by_dl: Dict[str, List[str]] = {}
+            for hh in to_release:
+                _dn = str((ledger.get(hh) or {}).get("downloader") or "qbittorrent")
+                _by_dl.setdefault(_dn, []).append(hh)
+            _tot = 0
+            for _dn, _hs in _by_dl.items():
+                try:
+                    dl = self._get_downloader(_dn)
+                    fn = getattr(dl, "release_force_start_torrents", None) if dl is not None else None
+                    if callable(fn):
+                        cnt, err = fn(_hs)
+                        _tot += int(cnt or 0)
+                        if err:
+                            self._log(f"H&R:松绑失败({_dn}) {err}", "warning")
+                except Exception as err:  # noqa: BLE001
+                    rep["failed"] = int(rep["failed"]) + 1
+                    self._log(f"H&R:松绑异常({_dn}):{err}", "warning")
+            rep["released"] = _tot
+        if apply and (rep["tagged"] or rep["resumed"] or rep["cleared"] or rep["released"]):
             self._log(
                 f"魔流:H&R 统一管理:欠 H&R {rep['obligated']} 个 → 打标 {rep['tagged']} · "
-                f"强拉起 {rep['resumed']} · 结清摘标 {rep['cleared']}"
+                f"强拉起 {rep['resumed']} · 结清摘标 {rep['cleared']} · 松绑 {rep['released']}"
             )
         return rep
 
