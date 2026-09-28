@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.20.1"
+__version__ = "3.21.1"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -2604,12 +2604,23 @@ class MagicFlow(_PluginBase):
         if task is not None:
             _extra_raw = str(getattr(task, "delete_except_tags", "") or "")
             extra_tags = {s.strip() for s in _extra_raw.replace(",", ",").split(",") if s.strip()}
+        _ledger: Dict[str, Any] = {}
+        try:
+            _ledger = dict(self._tag_state().items() or {})
+        except Exception:  # noqa: BLE001
+            _ledger = {}
         for t in torrents or []:
             h = _torrent_hash(t)
             if not h:
                 continue
             cand.append(h)
             if _has_media_asset_tag(t, extra_tags):
+                # ★ 推荐流程复核「不达标」的（asset_recheck=fail）→ 不再当库内资产保护
+                try:
+                    if str((_ledger.get(str(h).lower()) or {}).get("asset_recheck") or "") == "fail":
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass
                 hashes.add(h)
         if not cand:
             return hashes
@@ -4013,6 +4024,27 @@ class MagicFlow(_PluginBase):
         except Exception as err:  # noqa: BLE001
             self._log(f"推荐通知发送失败:{err}", "warning")
 
+    @staticmethod
+    def _transfer_already_done(msg: Any) -> bool:
+        """★ 识别「MP 整理返回的错误其实只是『已整理过』」。
+
+        MP 的 ``TransferChain.manual_transfer`` 对**已经整理过**的文件返回
+        ``ok=False`` + ``msg="<文件> 已整理过（成功记录 #N…）、…，等N个文件错误！"``，
+        但文件其实早在库里（硬链接都在）→ 应当视作**成功**。
+        规则：消息里出现「已整理过」，且拆开后**没有**其它实质错误（忽略「等N个文件错误！」这种汇总）。
+        """
+        s = str(msg or "").strip()
+        if not s or "已整理过" not in s:
+            return False
+        for _p in re.split(r"[、,，;；]", s):
+            _p = _p.strip()
+            if not _p or "已整理过" in _p:
+                continue
+            if re.fullmatch(r"等\s*\d+\s*个文件错误[!！]?", _p):
+                continue
+            return False
+        return True
+
     def _recommend_import(self, h: str, rec: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
         """确认后自动整理入库:识别 → 用 TransferChain 手动整理该资源。"""
         try:
@@ -4075,8 +4107,23 @@ class MagicFlow(_PluginBase):
                 downloader="qbittorrent",
                 download_hash=str(h).lower(),
             )
-            self._log(f"推荐整理「{title}」→ ok={ok} msg={msg}")
+            _note = ""
+            if not ok and self._transfer_already_done(msg):
+                # ★ MP 把「已整理过（成功记录 #N）」的重复文件当**错误**返回（ok=False），
+                #   但文件早已在库 → 等价成功（Master 2026-09-28 08:19 报的「等39个文件错误」）
+                ok = True
+                _note = "文件已在库（已整理过）"
+            self._log(f"推荐整理「{title}」→ ok={ok} msg={msg}" + (f" [{_note}]" if _note else ""))
             if ok:
+                if _note:
+                    # MP 对「已整理过」不广播 TransferComplete → 自己补库记（否则转不了「静默-资源」）
+                    try:
+                        _gidq = self._tag_groups().queue_library(
+                            str(h).lower(), media_id=str(getattr(mi, "media_id", "") or ""))
+                        if _gidq:
+                            self._log(f"库记:整理完成(已整理过) {h[:12]} → 资源 {_gidq[:46]}")
+                    except Exception as err:  # noqa: BLE001
+                        self._log(f"库记:补写失败(已整理过) {h[:12]}:{err}", "warning")
                 # ★ 入库即转「静默-资源」（不等下一轮分拣）
                 try:
                     _gid1 = ""
@@ -4091,7 +4138,7 @@ class MagicFlow(_PluginBase):
                     self._log(f"推荐整理:入库即转失败 {h[:12]}:{err}", "warning")
                 # 整理入库后顺带做一次元数据兜底(异步,不阻塞确认请求)
                 self._fallback_after_import(str(getattr(mi, "title", "") or title))
-            return bool(ok), str(msg)
+            return bool(ok), str(_note or msg)
         except Exception as err:  # noqa: BLE001
             import traceback
             logger.error(f"魔流 推荐整理异常: {err}\n{traceback.format_exc()}")
@@ -7775,6 +7822,17 @@ class MagicFlow(_PluginBase):
             return Response(success=True, message="特征码补录完成", data=self.backfill_fingerprints(limit=_lim))
         if act in ("syncres", "resource_sync"):
             return Response(success=True, message="资源账本已刷新", data=self.sync_resources(apply=True))
+        if act in ("assets_recheck", "assets_recheck_apply", "recheck"):
+            _ap = act in ("assets_recheck_apply", "recheck")
+            info = self._assets_recheck(apply=_ap, limit=int(limit or 0))
+            return Response(
+                success=True,
+                message=(f"已入库资源过推荐流程:复核 {info.get('resources')} 组 · 达标 {info.get('qualified')}"
+                         f" · 不达标 {info.get('unqualified')} · 未识别 {info.get('unrecognized')}"
+                         f" · 已转普通 {info.get('downgraded')}"
+                         + ("" if _ap else "（预演，未动）")),
+                data=info,
+            )
         if act in ("asset_untag", "asset_untag_apply"):
             _ap = act == "asset_untag_apply"
             info = self._asset_untag(apply=_ap, limit=int(limit or 0))
@@ -11579,6 +11637,106 @@ class MagicFlow(_PluginBase):
         finally:
             self._release_worker_slot()
 
+    def _assets_recheck(self, *, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
+        """★ 给「已整理（在库）」的资源**过一遍推荐流程**（Master 2026-09-28 07:57）。
+
+        背景：qB 里 326 个种带「已整理」标、文件确实进了影视库，但**「入库」不等于「够格」**
+        —— 上次那批整理行为不一定符合我们的资源标准。这里用推荐引擎（评分/榜单/订阅）复核：
+
+        - **够格** → 保持「静默-资源」（记 ``asset_recheck=keep``）
+        - **不够格** → 降为「静默-普通」（记 ``asset_recheck=fail``）→ 此后**不再享受库内资产保护**
+          （库里的硬链接文件不受影响，删的只是做种副本）
+
+        识别不出来的资源**不动**（保持现状）。
+        """
+        cfg = getattr(self, "_recommend_cfg", {}) or {}
+        try:
+            groups = self._tag_groups()
+        except Exception:  # noqa: BLE001
+            groups = None
+        snap = self._tag_all_torrents() or {}
+        buckets: Dict[str, List[str]] = {}
+        for h, t in (snap or {}).items():
+            hh = str(h or "").strip().lower()
+            tags = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
+            if not is_asset_tags(tags):
+                continue
+            gid = ""
+            if groups is not None:
+                try:
+                    gid = groups.group_of(hh)
+                except Exception:  # noqa: BLE001
+                    gid = ""
+            buckets.setdefault(gid or ("h:" + hh), []).append(hh)
+        rep: Dict[str, Any] = {"ok": True, "applied": bool(apply), "resources": len(buckets),
+                               "seeds": sum(len(v) for v in buckets.values()),
+                               "qualified": 0, "unqualified": 0, "unrecognized": 0,
+                               "downgraded": 0, "failed": 0,
+                               "skip_no_ledger": 0, "skip_state": 0,
+                               "samples_fail": [], "samples_keep": []}
+        try:
+            engine = self._get_recommend_engine()
+        except Exception as err:  # noqa: BLE001
+            rep["ok"] = False
+            rep["reason"] = f"推荐引擎不可用:{err}"
+            return rep
+        st = self._tag_state()
+        _cache: Dict[str, Any] = {}
+        _limit = int(limit or 0)
+        for gid, members in buckets.items():
+            t0 = snap.get(members[0])
+            title = str(getattr(t0, "title", "") or "") if t0 is not None else ""
+            if title not in _cache:
+                try:
+                    _cache[title] = (engine.evaluate(title, with_poster=False) if title
+                                     else {"recognized": False})
+                except Exception:  # noqa: BLE001
+                    _cache[title] = {"recognized": False}
+            like = _cache.get(title) or {}
+            if not like.get("recognized"):
+                rep["unrecognized"] += 1
+                continue
+            _row = {"name": title[:70], "media": like.get("title"), "year": like.get("year"),
+                    "rating": like.get("rating"), "seeds": len(members), "group": gid[:36]}
+            if self._recommend_worth(like, cfg):
+                rep["qualified"] += 1
+                if len(rep["samples_keep"]) < 12:
+                    rep["samples_keep"].append(_row)
+                if apply:
+                    for hh in members:
+                        try:
+                            st.put(hh, {"asset_recheck": "keep", "asset_recheck_at": time.time()})
+                        except Exception:  # noqa: BLE001
+                            continue
+                continue
+            rep["unqualified"] += 1
+            if len(rep["samples_fail"]) < 15:
+                rep["samples_fail"].append(_row)
+            if not apply or (_limit and rep["downgraded"] >= _limit):
+                continue
+            for hh in members:
+                try:
+                    cur = st.get(hh) or {}
+                    if not cur:
+                        rep["skip_no_ledger"] = int(rep.get("skip_no_ledger") or 0) + 1
+                        continue
+                    if str(cur.get("state") or "") != STATE_SILENT:
+                        rep["skip_state"] = int(rep.get("skip_state") or 0) + 1
+                        continue
+                    okd = self._silent_to_plain(hh)
+                    st.put(hh, {"asset_recheck": "fail", "asset_recheck_at": time.time()})
+                    if okd:
+                        rep["downgraded"] += 1
+                    else:
+                        rep["failed"] += 1
+                except Exception as err:  # noqa: BLE001
+                    rep["failed"] += 1
+                    self._log(f"资源复核:降级失败 {hh[:12]}:{err}", "warning")
+        if rep["downgraded"]:
+            self._log(f"资源复核:复核 {rep['resources']} 组 → 达标 {rep['qualified']} · "
+                      f"不达标 {rep['unqualified']}（已转普通 {rep['downgraded']}）")
+        return rep
+
     def _asset_untag(self, *, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
         """★ 摘掉**假**「已整理 / 辅种」标（Master 2026-09-28「你整理下」）。
 
@@ -14147,17 +14305,20 @@ class MagicFlow(_PluginBase):
             # 保护 = MP 资产标 / 推荐中 / **资源已入库** / 欠 H&R
             # ★ 不再按「魔流-跨站」「魔流-辅种」硬豁免 —— 它们「跟资源走」：
             #   资源在库里 → 上面 in_library 保护；不在库里 → 该考核就考核（否则跨站没法收口）
-            if is_asset_tags(tags):
-                protected += 1
-                _pwhy["asset"] = int(_pwhy.get("asset") or 0) + 1
-                continue
+            # ★ 推荐流程复核「不达标」的（asset_recheck=fail）→ 不再享受资产/库记保护
+            _rc = str(rec.get("asset_recheck") or "")
+            if _rc != "fail":
+                if is_asset_tags(tags):
+                    protected += 1
+                    _pwhy["asset"] = int(_pwhy.get("asset") or 0) + 1
+                    continue
+                if _in_lib(hh):
+                    protected += 1
+                    _pwhy["in_library"] = int(_pwhy.get("in_library") or 0) + 1
+                    continue
             if "魔流-推荐" in tags:
                 protected += 1
                 _pwhy["recommend"] = int(_pwhy.get("recommend") or 0) + 1
-                continue
-            if _in_lib(hh):
-                protected += 1
-                _pwhy["in_library"] = int(_pwhy.get("in_library") or 0) + 1
                 continue
             site = str(rec.get("site") or "").strip() or self._torrent_site_name(tags, "")
             done_hr, _why = self._silent_hr_done(site, t)
@@ -14309,6 +14470,18 @@ class MagicFlow(_PluginBase):
                 except Exception:  # noqa: BLE001
                     in_lib = False
             if in_lib:
+                _rcf = False
+                try:
+                    _st0 = self._tag_state()
+                    for _h0 in h_list:
+                        if str((_st0.get(_h0) or {}).get("asset_recheck") or "") == "fail":
+                            _rcf = True
+                            break
+                except Exception:  # noqa: BLE001
+                    _rcf = False
+                if _rcf:
+                    rep["recheck_fail"] = int(rep.get("recheck_fail") or 0) + 1
+                    continue
                 rep["asset"] = int(rep.get("asset") or 0) + 1
                 if apply:
                     for _h, _r, _t in members:
