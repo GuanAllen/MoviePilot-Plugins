@@ -334,6 +334,7 @@ const MF_PAGES = [
   { key: 'cloud', label: '云盘归档', icon: 'mdi-cloud-upload-outline' },
   { key: 'douban', label: '豆瓣评分', icon: 'mdi-database-search-outline' },
   { key: 'crossseed', label: '跨站取种', icon: 'mdi-swap-horizontal-bold' },
+  { key: 'ops', label: '操作记录', icon: 'mdi-history' },
   { key: 'settings', label: '插件设置', icon: 'mdi-tune-variant' },
 ]
 // 统一分发：新增功能页只改 MF_PAGES + 这里加一行
@@ -345,8 +346,15 @@ function mfOpenPage(page) {
     case 'cloud': return openCloud()
     case 'douban': return openDoubanService()
     case 'crossseed': return showCrossseed()
+    case 'ops': return openOperations()
     case 'settings': return openSettings()
   }
+}
+const opsOpen = ref(false)
+// 操作记录独立页（当前任务的流水）
+function openOperations() {
+  opsOpen.value = true
+  if (selectedTaskId.value) loadOperations(selectedTaskId.value)
 }
 // 设置页目录（手机端：标签栏 → 目录列表；桌面端仍用标签栏）
 const MF_SETTINGS_TABS = [
@@ -424,8 +432,13 @@ const MF_DETAIL_ENTRIES = [
   { key: 'diagnostics', label: '运行诊断', icon: 'mdi-stethoscope' },
   { key: 'pool', label: '种子池', icon: 'mdi-seed-outline' },
   { key: 'config', label: '任务配置', icon: 'mdi-tune-variant' },
+  { key: 'ops', label: '操作记录', icon: 'mdi-history', action: 'ops' },
 ]
-function mobileDetailEntry(tab) { activeTab.value = activeTab.value === tab ? 'overview' : tab }
+function mobileDetailEntry(entry) {
+  const e = typeof entry === 'string' ? { key: entry } : entry
+  if (e.action === 'ops') return openOperations()
+  activeTab.value = activeTab.value === e.key ? 'overview' : e.key
+}
 const mobileDetailCards = computed(() => {
   const t = selectedTask.value
   if (!t) return []
@@ -2742,7 +2755,7 @@ onUnmounted(() => {
                 type="button"
                 class="md-entry"
                 :class="{ 'is-active': activeTab === e.key }"
-                @click="mobileDetailEntry(e.key)"
+                @click="mobileDetailEntry(e)"
               >
                 <VIcon :icon="e.icon" size="20" />
                 <span>{{ e.label }}</span>
@@ -3436,6 +3449,63 @@ onUnmounted(() => {
         </main>
       </div>
     </template>
+
+    <VDialog v-model="opsOpen" max-width="46rem" scrollable :fullscreen="isNarrow">
+      <VCard class="magicflow-dialog magicflow-ops-dialog">
+        <header class="magicflow-settings-dialog__head">
+          <span class="magicflow-settings-dialog__title">操作记录</span>
+          <span class="magicflow-ops-dialog__spacer" />
+          <VBtn icon="mdi-refresh" size="small" variant="text" aria-label="刷新" @click="loadOperations(selectedTaskId)" />
+          <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="opsOpen = false" />
+        </header>
+        <div class="magicflow-ops-dialog__sub">
+          {{ selectedTask ? (selectedTask.name || '当前任务') : '未选择任务' }} · 每次执行 / 选种 / 删种 / 保护 / 标签 的流水
+        </div>
+        <div class="magicflow-ops-dialog__body">
+          <div class="magicflow-events">
+            <article v-for="record in operationData.operations || []" :key="record.operation_id">
+              <VIcon :icon="operationIcon(record.kind)" :color="operationColor(record)" />
+              <div>
+                <strong>
+                  {{ operationKindText(record.kind) }}
+                  <VChip size="x-small" variant="tonal" :color="operationColor(record)" class="ml-2">{{ operationStateText(record.state) }}</VChip>
+                </strong>
+                <span>{{ operationSummary(record) }}</span>
+                <span>
+                  {{ formatDateTime(record.created_at) }} ·
+                  耗时 {{ operationDuration(record) }}
+                  <template v-if="hasOpDetail(record)"> · {{ opDetailItems(record).length }} 条明细</template>
+                </span>
+                <span v-if="record.error_message" class="text-error">{{ record.error_message }}</span>
+                <button
+                  v-if="hasOpDetail(record)"
+                  type="button"
+                  class="magicflow-events__toggle"
+                  @click="toggleOpDetail(record.operation_id)"
+                >
+                  {{ isOpDetailOpen(record.operation_id) ? '收起明细' : '展开明细' }}
+                  <VIcon :icon="isOpDetailOpen(record.operation_id) ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="14" />
+                </button>
+                <ul v-if="isOpDetailOpen(record.operation_id)" class="magicflow-events__detail">
+                  <li v-for="(it, idx) in opDetailItems(record)" :key="idx">
+                    <span class="magicflow-events__detail-line">
+                      <em v-if="itemSourceText(it.source)" class="magicflow-events__detail-src">{{ itemSourceText(it.source) }}</em>
+                      <span class="magicflow-events__detail-title" :title="it.title || it.hash">{{ it.title || it.hash || '—' }}</span>
+                    </span>
+                    <span class="magicflow-events__detail-sub">
+                      <template v-if="it.reason">{{ it.reason }}</template>
+                      <template v-if="it.size_gb"> · {{ Number(it.size_gb).toFixed(2) }}G</template>
+                      <template v-if="it.seeders"> · 做种 {{ it.seeders }}</template>
+                    </span>
+                  </li>
+                </ul>
+              </div>
+            </article>
+            <div v-if="!(operationData.operations || []).length" class="magicflow-table-empty">暂无操作记录</div>
+          </div>
+        </div>
+      </VCard>
+    </VDialog>
 
     <TaskEditorDialog
       v-model="editorOpen"
@@ -8084,7 +8154,7 @@ onUnmounted(() => {
 .magicflow-page .md-card b { font-size: 19px; font-weight: 800; display: block; letter-spacing: 0.2px; }
 .magicflow-page .md-card span { font-size: 10.5px; color: rgba(231, 234, 246, 0.38); margin-block-start: 6px; display: block; }
 .magicflow-page .md-strategy { margin-block-start: 10px; font-size: 12px; color: rgba(231, 234, 246, 0.6); padding: 0 4px; line-height: 1.5; }
-.magicflow-page .md-entries { display: flex; gap: 9px; margin-block-start: 14px; }
+.magicflow-page .md-entries { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-block-start: 14px; }
 .magicflow-page .md-entry {
   flex: 1 1 0; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 6px;
   border-radius: 15px; background: rgba(24, 30, 54, 0.9); border: 1px solid var(--magicflow-panel-brd);
@@ -8110,6 +8180,15 @@ onUnmounted(() => {
   color: rgba(231, 234, 246, 0.66); font: inherit; font-size: 12px; cursor: pointer;
 }
 .magicflow-settings-nav__item.is-active { color: #cfc7ff; border-color: rgba(139, 123, 240, 0.5); background: rgba(139, 123, 240, 0.16); }
+
+/* ── ★ 操作记录独立页 ─────────────────────────────── */
+.magicflow-ops-dialog { display: flex; flex-direction: column; }
+.magicflow-ops-dialog__spacer { flex: 1 1 auto; }
+.magicflow-ops-dialog__sub { padding: 6px 18px 4px; font-size: 12px; color: rgba(231, 234, 246, 0.55); }
+.magicflow-ops-dialog__body { padding: 6px 18px 20px; overflow: auto; }
+@media (max-width: 959px) {
+  .magicflow-ops-dialog__body { padding: 4px 14px 18px; }
+}
 @media (max-width: 959px) {
   .magicflow-settings-dialog__tabs { display: none; }
   .magicflow-settings-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 12px 16px; }
