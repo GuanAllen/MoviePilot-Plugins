@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.21.1"
+__version__ = "3.21.2"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -7829,6 +7829,7 @@ class MagicFlow(_PluginBase):
                 success=True,
                 message=(f"已入库资源过推荐流程:复核 {info.get('resources')} 组 · 达标 {info.get('qualified')}"
                          f" · 不达标 {info.get('unqualified')} · 未识别 {info.get('unrecognized')}"
+                         f" · 无评分(豁免) {info.get('unrated')}"
                          f" · 已转普通 {info.get('downgraded')}"
                          + ("" if _ap else "（预演，未动）")),
                 data=info,
@@ -11671,9 +11672,9 @@ class MagicFlow(_PluginBase):
         rep: Dict[str, Any] = {"ok": True, "applied": bool(apply), "resources": len(buckets),
                                "seeds": sum(len(v) for v in buckets.values()),
                                "qualified": 0, "unqualified": 0, "unrecognized": 0,
-                               "downgraded": 0, "failed": 0,
+                               "downgraded": 0, "failed": 0, "unrated": 0,
                                "skip_no_ledger": 0, "skip_state": 0,
-                               "samples_fail": [], "samples_keep": []}
+                               "samples_fail": [], "samples_keep": [], "samples_unrated": []}
         try:
             engine = self._get_recommend_engine()
         except Exception as err:  # noqa: BLE001
@@ -11710,6 +11711,16 @@ class MagicFlow(_PluginBase):
                             continue
                 continue
             rep["unqualified"] += 1
+            try:
+                _rtf = float(like.get("rating") or 0)
+            except (TypeError, ValueError):
+                _rtf = 0.0
+            if _rtf <= 0:
+                # ★ TMDB 无评分（没数据 ≠ 差）→ 豁免不动（Master 2026-09-28 08:33 同意）
+                rep["unrated"] += 1
+                if len(rep["samples_unrated"]) < 12:
+                    rep["samples_unrated"].append(_row)
+                continue
             if len(rep["samples_fail"]) < 15:
                 rep["samples_fail"].append(_row)
             if not apply or (_limit and rep["downgraded"] >= _limit):
