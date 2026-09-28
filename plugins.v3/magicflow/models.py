@@ -294,8 +294,12 @@ class MagicFlowSettingsPayload(BaseModel):
         description="评分源：douban=豆瓣优先(取不到回退 TMDB) / tmdb=只用 TMDB"
     )
     recommend_douban_max_per_run: int = Field(
-        30, ge=0,
+        0, ge=0,
         description="每轮最多新增多少次豆瓣查询（防風控；默认 30，0=不限）"
+    )
+    recommend_douban_service_url: str = Field(
+        "", max_length=200,
+        description="豆瓣评分服务地址（magicflow-douban），留空用默认 http://magicflow-douban:18789"
     )
     recommend_require_chart: bool = Field(True, description="榜单/热映/命中订阅时也算达标（与评分为「或」关系）")
     recommend_expire_days: float = Field(7.0, ge=0, le=3650, description="推荐待确认窗口（天）；磁盘不足则立即视为过期")

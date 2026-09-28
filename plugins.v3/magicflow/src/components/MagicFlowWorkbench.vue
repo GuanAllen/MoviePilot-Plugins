@@ -3728,12 +3728,10 @@ onUnmounted(() => {
                 density="comfortable"
               />
               <VTextField
-                v-model.number="settingsDraft.recommend_douban_max_per_run"
-                type="number"
-                min="0"
-                step="10"
-                label="每轮豆瓣查询上限"
-                hint="超过就本轮回退 TMDB（防豆瓣限流），默认 30；0 = 不限"
+                v-model="settingsDraft.recommend_douban_service_url"
+                label="豆瓣服务地址"
+                placeholder="http://magicflow-douban:18789"
+                hint="独立服务 magicflow-douban 的地址，留空用默认；本地查询 <1ms，不受豆瓣限流影响"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
@@ -3754,7 +3752,7 @@ onUnmounted(() => {
                 item-title="title"
                 item-value="value"
                 label="评分来源"
-                hint="默认只用 TMDB；豆瓣优先需自备网络与限流容忍度（20s/次）"
+                hint="默认只用 TMDB；豆瓣优先走本地服务 magicflow-douban（不再直连豆瓣）"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"

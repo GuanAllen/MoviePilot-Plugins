@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.22.6"
+__version__ = "3.23.0"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -858,6 +858,7 @@ class MagicFlow(_PluginBase):
             # ★ 评分源：douban=豆瓣优先(取不到回退 TMDB) / tmdb（Master 2026-09-28 09:06 选 A）
             "rating_source": str(raw_config.get("recommend_rating_source") or "tmdb").strip().lower(),
             "douban_max_per_run": int(_rf(raw_config.get("recommend_douban_max_per_run"), 30.0)),
+            "douban_service_url": str(raw_config.get("recommend_douban_service_url") or "").strip(),
         }
         # ★ 3.22.4 一次性迁移：Master 2026-09-28 09:42「还是别走豆瓣了吧」→ 默认回到 TMDB。
         #   存量配置里若还写着 douban（旧默认被自动落盘的），只在这一版强制改回 tmdb 并落盘；
@@ -1964,6 +1965,7 @@ class MagicFlow(_PluginBase):
             "recommend_disk_min_free_gb": float(self._recommend_cfg.get("disk_min_free_gb", 50.0)),
             "recommend_rating_source": str(self._recommend_cfg.get("rating_source", "tmdb")),
             "recommend_douban_max_per_run": int(self._recommend_cfg.get("douban_max_per_run", 30) or 0),
+            "recommend_douban_service_url": str(self._recommend_cfg.get("douban_service_url", "") or ""),
             "crossseed_guard": bool(getattr(self, "_cs_cfg", {}).get("guard", True)),
             "crossseed_guard_pct": float(getattr(self, "_cs_cfg", {}).get("guard_pct") or 5.0),
             "crossseed_guard_min_mb": float(getattr(self, "_cs_cfg", {}).get("guard_min_mb") or 50.0),
