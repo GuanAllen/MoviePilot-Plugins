@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.22.5"
+__version__ = "3.22.6"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -11010,7 +11010,7 @@ class MagicFlow(_PluginBase):
             return Response(success=False, message=str(e))
 
     def debug_douban(self, name: str = "", year: str = "", keyword: str = "", count: int = 6,
-                     action: str = "") -> Response:
+                     action: str = "", flush_snapshot: bool = False) -> Response:
         """诊断:直接查豆瓣评分源（自带 frodo 客户端）。
 
         - ``name``+``year``：走正式查询（带缓存/限速/匹配），返回命中结果；
@@ -11025,6 +11025,16 @@ class MagicFlow(_PluginBase):
             if str(action or "") == "purge_neg":
                 n = cli.purge_negatives()
                 return Response(success=True, message=f"已清掉 {n} 条「未命中/未开分」缓存", data=cli.stats())
+            if flush_snapshot:
+                cli.refresh_snapshot()
+                return Response(success=True, message=f"已重读快照: {cli.snapshot_stats()['total']} 条", data=cli.stats())
+            if str(action or "") == "snap_test":
+                # 诊断：单独查 snapshot（不查 cache/live）
+                from .douban import _norm
+                _ss = cli.snapshot_stats()
+                _hit = cli._snapshot_lookup(name or "", year or "")
+                return Response(success=True, message=f"snap_test: norm={repr(_norm(name))} snapshot_total={_ss['total']} hit={'Y' if _hit else 'N'}",
+                                data={"norm": _norm(name or ""), "hit": _hit, "stats": _ss})
             if keyword:
                 _c = cli.search(keyword, count=count)
                 return Response(success=True, message=("请求失败(风控/网络,已冷却)" if _c is None else "候选"),
