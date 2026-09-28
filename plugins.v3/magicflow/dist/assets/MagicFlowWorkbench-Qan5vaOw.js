@@ -192,7 +192,7 @@ return (_ctx, _cache) => {
     scrollable: "",
     fullscreen: _unref$1(display).smAndDown.value,
     "max-width": "74rem",
-    "onUpdate:modelValue": _cache[89] || (_cache[89] = value => emit('update:modelValue', value))
+    "onUpdate:modelValue": _cache[91] || (_cache[91] = value => emit('update:modelValue', value))
   }, {
     default: _withCtx$1(() => [
       _createVNode$1(_component_VCard, { class: "magicflow-editor" }, {
@@ -230,7 +230,7 @@ return (_ctx, _cache) => {
                 loading: __props.saving,
                 onClick: saveTask
               }, {
-                default: _withCtx$1(() => [...(_cache[90] || (_cache[90] = [
+                default: _withCtx$1(() => [...(_cache[92] || (_cache[92] = [
                   _createTextVNode$1(" 保存任务 ", -1)
                 ]))]),
                 _: 1
@@ -282,7 +282,7 @@ return (_ctx, _cache) => {
                   }, null, 8, ["vertical"]),
                   _createVNode$1(_component_VWindow, {
                     modelValue: activeTab.value,
-                    "onUpdate:modelValue": _cache[86] || (_cache[86] = $event => ((activeTab).value = $event)),
+                    "onUpdate:modelValue": _cache[88] || (_cache[88] = $event => ((activeTab).value = $event)),
                     touch: false,
                     class: "magicflow-editor__window"
                   }, {
@@ -290,7 +290,7 @@ return (_ctx, _cache) => {
                       _createVNode$1(_component_VWindowItem, { value: "base" }, {
                         default: _withCtx$1(() => [
                           _createElementVNode$1("section", _hoisted_1$1, [
-                            _cache[91] || (_cache[91] = _createElementVNode$1("header", { class: "editor-section__head" }, [
+                            _cache[93] || (_cache[93] = _createElementVNode$1("header", { class: "editor-section__head" }, [
                               _createElementVNode$1("div", null, [
                                 _createElementVNode$1("div", { class: "text-subtitle-1 font-weight-medium" }, "任务类型"),
                                 _createElementVNode$1("div", { class: "text-body-2 text-medium-emphasis" }, "决定选种排序与清理策略，建议新建时就选定")
@@ -323,7 +323,7 @@ return (_ctx, _cache) => {
                           ]),
                           _createElementVNode$1("section", _hoisted_2$1, [
                             _createElementVNode$1("header", _hoisted_3$1, [
-                              _cache[93] || (_cache[93] = _createElementVNode$1("div", null, [
+                              _cache[95] || (_cache[95] = _createElementVNode$1("div", null, [
                                 _createElementVNode$1("div", { class: "text-subtitle-1 font-weight-medium" }, "任务身份"),
                                 _createElementVNode$1("div", { class: "text-body-2 text-medium-emphasis" }, "每个任务绑定一个站点和下载器")
                               ], -1)),
@@ -332,7 +332,7 @@ return (_ctx, _cache) => {
                                 color: "primary",
                                 variant: "tonal"
                               }, {
-                                default: _withCtx$1(() => [...(_cache[92] || (_cache[92] = [
+                                default: _withCtx$1(() => [...(_cache[94] || (_cache[94] = [
                                   _createTextVNode$1("必填", -1)
                                 ]))]),
                                 _: 1
@@ -440,7 +440,7 @@ return (_ctx, _cache) => {
                           ]),
                           _createElementVNode$1("section", _hoisted_5$1, [
                             _createElementVNode$1("header", _hoisted_6$1, [
-                              _cache[94] || (_cache[94] = _createElementVNode$1("div", null, [
+                              _cache[96] || (_cache[96] = _createElementVNode$1("div", null, [
                                 _createElementVNode$1("div", { class: "text-subtitle-1 font-weight-medium" }, "刷新计划"),
                                 _createElementVNode$1("div", { class: "text-body-2 text-medium-emphasis" }, "选种刷新和做种检查分别调度")
                               ], -1)),
@@ -517,7 +517,7 @@ return (_ctx, _cache) => {
                           _createElementVNode$1("section", _hoisted_8$1, [
                             _createElementVNode$1("header", _hoisted_9$1, [
                               _createElementVNode$1("div", null, [
-                                _cache[95] || (_cache[95] = _createElementVNode$1("div", { class: "text-subtitle-1 font-weight-medium" }, "任务目标", -1)),
+                                _cache[97] || (_cache[97] = _createElementVNode$1("div", { class: "text-subtitle-1 font-weight-medium" }, "任务目标", -1)),
                                 _createElementVNode$1("div", _hoisted_10$1, _toDisplayString$1(isBrush.value ? '站点上传量达到目标后，任务自动停止' : '站点魔力值达到目标后，任务自动停止'), 1)
                               ]),
                               _createVNode$1(_component_VChip, {
@@ -525,7 +525,7 @@ return (_ctx, _cache) => {
                                 color: "primary",
                                 variant: "tonal"
                               }, {
-                                default: _withCtx$1(() => [...(_cache[96] || (_cache[96] = [
+                                default: _withCtx$1(() => [...(_cache[98] || (_cache[98] = [
                                   _createTextVNode$1("建议填写", -1)
                                 ]))]),
                                 _: 1
@@ -564,7 +564,7 @@ return (_ctx, _cache) => {
                             class: "mb-2",
                             icon: "mdi-upload-network-outline"
                           }, {
-                            default: _withCtx$1(() => [...(_cache[97] || (_cache[97] = [
+                            default: _withCtx$1(() => [...(_cache[99] || (_cache[99] = [
                               _createTextVNode$1(" 刷流模式：", -1),
                               _createElementVNode$1("strong", null, "按「上传潜力」运行，有自己的选种标准", -1),
                               _createTextVNode$1(" —— 只挑", -1),
@@ -576,7 +576,7 @@ return (_ctx, _cache) => {
                             _: 1
                           }),
                           _createElementVNode$1("section", _hoisted_11$1, [
-                            _cache[98] || (_cache[98] = _createElementVNode$1("header", { class: "editor-section__head" }, [
+                            _cache[100] || (_cache[100] = _createElementVNode$1("header", { class: "editor-section__head" }, [
                               _createElementVNode$1("div", null, [
                                 _createElementVNode$1("div", { class: "text-subtitle-1 font-weight-medium" }, "刷流轮换"),
                                 _createElementVNode$1("div", { class: "text-body-2 text-medium-emphasis" }, "做种满设定天数即清理换新（默认 2 天）")
@@ -682,7 +682,7 @@ return (_ctx, _cache) => {
                             ])
                           ]),
                           _createElementVNode$1("section", _hoisted_13$1, [
-                            _cache[99] || (_cache[99] = _createElementVNode$1("header", { class: "editor-section__head" }, [
+                            _cache[101] || (_cache[101] = _createElementVNode$1("header", { class: "editor-section__head" }, [
                               _createElementVNode$1("div", null, [
                                 _createElementVNode$1("div", { class: "text-subtitle-1 font-weight-medium" }, "无上传判定（保种天数 = 0 时启用）"),
                                 _createElementVNode$1("div", { class: "text-body-2 text-medium-emphasis" }, "保种天数填 0 时不按天数轮换，而是以「平均上传速率」为准清理换新")
@@ -752,7 +752,7 @@ return (_ctx, _cache) => {
                             })
                           ]),
                           _createElementVNode$1("section", _hoisted_14$1, [
-                            _cache[100] || (_cache[100] = _createElementVNode$1("header", { class: "editor-section__head" }, [
+                            _cache[102] || (_cache[102] = _createElementVNode$1("header", { class: "editor-section__head" }, [
                               _createElementVNode$1("div", null, [
                                 _createElementVNode$1("div", { class: "text-subtitle-1 font-weight-medium" }, "抓取与并发"),
                                 _createElementVNode$1("div", { class: "text-body-2 text-medium-emphasis" }, "刷流只看最新页（免费热种在最新页），不深翻")
@@ -842,7 +842,7 @@ return (_ctx, _cache) => {
                             })
                           ]),
                           _createElementVNode$1("section", _hoisted_15$1, [
-                            _cache[101] || (_cache[101] = _createElementVNode$1("header", { class: "editor-section__head" }, [
+                            _cache[103] || (_cache[103] = _createElementVNode$1("header", { class: "editor-section__head" }, [
                               _createElementVNode$1("div", null, [
                                 _createElementVNode$1("div", { class: "text-subtitle-1 font-weight-medium" }, "复用与清理"),
                                 _createElementVNode$1("div", { class: "text-body-2 text-medium-emphasis" }, "优先复用本机已有资源；做种满天数 / 促销失效的种子清理")
@@ -875,8 +875,16 @@ return (_ctx, _cache) => {
                                 inset: ""
                               }, null, 8, ["modelValue", "disabled"]),
                               _createVNode$1(_component_VSwitch, {
+                                modelValue: localTask.value.auto_swap,
+                                "onUpdate:modelValue": _cache[29] || (_cache[29] = $event => ((localTask.value.auto_swap) = $event)),
+                                label: "自动换种（名额/磁盘/站点接近上限时，按边际魔力换掉低价值种）",
+                                color: "primary",
+                                "hide-details": "",
+                                inset: ""
+                              }, null, 8, ["modelValue"]),
+                              _createVNode$1(_component_VSwitch, {
                                 modelValue: localTask.value.cleanup_no_progress,
-                                "onUpdate:modelValue": _cache[29] || (_cache[29] = $event => ((localTask.value.cleanup_no_progress) = $event)),
+                                "onUpdate:modelValue": _cache[30] || (_cache[30] = $event => ((localTask.value.cleanup_no_progress) = $event)),
                                 label: "清理无进度种子（停滞/出错且进度为 0）",
                                 color: "primary",
                                 "hide-details": "",
@@ -884,7 +892,7 @@ return (_ctx, _cache) => {
                               }, null, 8, ["modelValue"]),
                               _createVNode$1(_component_VSwitch, {
                                 modelValue: localTask.value.cleanup_slow_progress,
-                                "onUpdate:modelValue": _cache[30] || (_cache[30] = $event => ((localTask.value.cleanup_slow_progress) = $event)),
+                                "onUpdate:modelValue": _cache[31] || (_cache[31] = $event => ((localTask.value.cleanup_slow_progress) = $event)),
                                 label: "清理下载过慢的种子（长期下不完腾名额）",
                                 color: "primary",
                                 "hide-details": "",
@@ -892,7 +900,7 @@ return (_ctx, _cache) => {
                               }, null, 8, ["modelValue"]),
                               _createVNode$1(_component_VSwitch, {
                                 modelValue: localTask.value.purge_unfree_incomplete,
-                                "onUpdate:modelValue": _cache[31] || (_cache[31] = $event => ((localTask.value.purge_unfree_incomplete) = $event)),
+                                "onUpdate:modelValue": _cache[32] || (_cache[32] = $event => ((localTask.value.purge_unfree_incomplete) = $event)),
                                 label: "清理「已不再免费且未下完」的种子",
                                 color: "primary",
                                 "hide-details": "",
@@ -900,7 +908,7 @@ return (_ctx, _cache) => {
                               }, null, 8, ["modelValue"]),
                               _createVNode$1(_component_VSwitch, {
                                 modelValue: localTask.value.auto_resume_paused,
-                                "onUpdate:modelValue": _cache[32] || (_cache[32] = $event => ((localTask.value.auto_resume_paused) = $event)),
+                                "onUpdate:modelValue": _cache[33] || (_cache[33] = $event => ((localTask.value.auto_resume_paused) = $event)),
                                 label: "自动恢复被暂停的已完成种子",
                                 color: "primary",
                                 "hide-details": "",
@@ -908,7 +916,7 @@ return (_ctx, _cache) => {
                               }, null, 8, ["modelValue"]),
                               _createVNode$1(_component_VSwitch, {
                                 modelValue: localTask.value.delete_files,
-                                "onUpdate:modelValue": _cache[33] || (_cache[33] = $event => ((localTask.value.delete_files) = $event)),
+                                "onUpdate:modelValue": _cache[34] || (_cache[34] = $event => ((localTask.value.delete_files) = $event)),
                                 label: "删种同时删除文件",
                                 color: "primary",
                                 "hide-details": "",
@@ -921,7 +929,7 @@ return (_ctx, _cache) => {
                                   default: _withCtx$1(() => [
                                     _createVNode$1(_component_VTextField, {
                                       modelValue: localTask.value.delete_except_tags,
-                                      "onUpdate:modelValue": _cache[34] || (_cache[34] = $event => ((localTask.value.delete_except_tags) = $event)),
+                                      "onUpdate:modelValue": _cache[35] || (_cache[35] = $event => ((localTask.value.delete_except_tags) = $event)),
                                       label: "永不删除的标签（可选，逗号分隔）",
                                       hint: "叠加在「已整理 / 辅种」之上：带这些标签的种子删种时永不删除",
                                       "persistent-hint": "",
@@ -943,7 +951,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.no_progress_minutes,
-                                          "onUpdate:modelValue": _cache[35] || (_cache[35] = $event => ((localTask.value.no_progress_minutes) = $event)),
+                                          "onUpdate:modelValue": _cache[36] || (_cache[36] = $event => ((localTask.value.no_progress_minutes) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "1",
@@ -960,7 +968,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.seen_cooldown_hours,
-                                          "onUpdate:modelValue": _cache[36] || (_cache[36] = $event => ((localTask.value.seen_cooldown_hours) = $event)),
+                                          "onUpdate:modelValue": _cache[37] || (_cache[37] = $event => ((localTask.value.seen_cooldown_hours) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "0",
@@ -985,7 +993,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.slow_progress_grace_minutes,
-                                          "onUpdate:modelValue": _cache[37] || (_cache[37] = $event => ((localTask.value.slow_progress_grace_minutes) = $event)),
+                                          "onUpdate:modelValue": _cache[38] || (_cache[38] = $event => ((localTask.value.slow_progress_grace_minutes) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "1",
@@ -1002,7 +1010,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.slow_progress_max_hours,
-                                          "onUpdate:modelValue": _cache[38] || (_cache[38] = $event => ((localTask.value.slow_progress_max_hours) = $event)),
+                                          "onUpdate:modelValue": _cache[39] || (_cache[39] = $event => ((localTask.value.slow_progress_max_hours) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "1",
@@ -1028,7 +1036,7 @@ return (_ctx, _cache) => {
                             default: _withCtx$1(() => [
                               _createElementVNode$1("section", _hoisted_17$1, [
                                 _createElementVNode$1("header", _hoisted_18$1, [
-                                  _cache[103] || (_cache[103] = _createElementVNode$1("div", null, [
+                                  _cache[105] || (_cache[105] = _createElementVNode$1("div", null, [
                                     _createElementVNode$1("div", { class: "text-subtitle-1 font-weight-medium" }, "魔力门槛（留空 = 自动）"),
                                     _createElementVNode$1("div", { class: "text-body-2 text-medium-emphasis" }, "留空由公式与实时数据自动推算，手填即覆盖")
                                   ], -1)),
@@ -1037,7 +1045,7 @@ return (_ctx, _cache) => {
                                     color: "primary",
                                     variant: "tonal"
                                   }, {
-                                    default: _withCtx$1(() => [...(_cache[102] || (_cache[102] = [
+                                    default: _withCtx$1(() => [...(_cache[104] || (_cache[104] = [
                                       _createTextVNode$1("可自动", -1)
                                     ]))]),
                                     _: 1
@@ -1052,7 +1060,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.min_bonus_per_hour,
-                                          "onUpdate:modelValue": _cache[39] || (_cache[39] = $event => ((localTask.value.min_bonus_per_hour) = $event)),
+                                          "onUpdate:modelValue": _cache[40] || (_cache[40] = $event => ((localTask.value.min_bonus_per_hour) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "0",
@@ -1072,7 +1080,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.disk_size_gb,
-                                          "onUpdate:modelValue": _cache[40] || (_cache[40] = $event => ((localTask.value.disk_size_gb) = $event)),
+                                          "onUpdate:modelValue": _cache[41] || (_cache[41] = $event => ((localTask.value.disk_size_gb) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "0",
@@ -1092,7 +1100,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.max_keep_torrents,
-                                          "onUpdate:modelValue": _cache[41] || (_cache[41] = $event => ((localTask.value.max_keep_torrents) = $event)),
+                                          "onUpdate:modelValue": _cache[42] || (_cache[42] = $event => ((localTask.value.max_keep_torrents) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "1",
@@ -1110,7 +1118,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.max_add_per_run,
-                                          "onUpdate:modelValue": _cache[42] || (_cache[42] = $event => ((localTask.value.max_add_per_run) = $event)),
+                                          "onUpdate:modelValue": _cache[43] || (_cache[43] = $event => ((localTask.value.max_add_per_run) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "1",
@@ -1129,7 +1137,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.max_download_concurrent,
-                                          "onUpdate:modelValue": _cache[43] || (_cache[43] = $event => ((localTask.value.max_download_concurrent) = $event)),
+                                          "onUpdate:modelValue": _cache[44] || (_cache[44] = $event => ((localTask.value.max_download_concurrent) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "1",
@@ -1148,7 +1156,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.top_n,
-                                          "onUpdate:modelValue": _cache[44] || (_cache[44] = $event => ((localTask.value.top_n) = $event)),
+                                          "onUpdate:modelValue": _cache[45] || (_cache[45] = $event => ((localTask.value.top_n) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "1",
@@ -1167,7 +1175,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.browse_pages,
-                                          "onUpdate:modelValue": _cache[45] || (_cache[45] = $event => ((localTask.value.browse_pages) = $event)),
+                                          "onUpdate:modelValue": _cache[46] || (_cache[46] = $event => ((localTask.value.browse_pages) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "1",
@@ -1187,7 +1195,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.bonus_protect_threshold,
-                                          "onUpdate:modelValue": _cache[46] || (_cache[46] = $event => ((localTask.value.bonus_protect_threshold) = $event)),
+                                          "onUpdate:modelValue": _cache[47] || (_cache[47] = $event => ((localTask.value.bonus_protect_threshold) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "0",
@@ -1205,7 +1213,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.min_bonus_to_keep,
-                                          "onUpdate:modelValue": _cache[47] || (_cache[47] = $event => ((localTask.value.min_bonus_to_keep) = $event)),
+                                          "onUpdate:modelValue": _cache[48] || (_cache[48] = $event => ((localTask.value.min_bonus_to_keep) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "0",
@@ -1227,7 +1235,7 @@ return (_ctx, _cache) => {
                                 _createElementVNode$1("div", _hoisted_19$1, [
                                   _createVNode$1(_component_VSwitch, {
                                     modelValue: localTask.value.refill_when_empty,
-                                    "onUpdate:modelValue": _cache[48] || (_cache[48] = $event => ((localTask.value.refill_when_empty) = $event)),
+                                    "onUpdate:modelValue": _cache[49] || (_cache[49] = $event => ((localTask.value.refill_when_empty) = $event)),
                                     label: "清理后主动补种",
                                     color: "primary",
                                     "hide-details": "",
@@ -1235,7 +1243,7 @@ return (_ctx, _cache) => {
                                   }, null, 8, ["modelValue"]),
                                   _createVNode$1(_component_VSwitch, {
                                     modelValue: localTask.value.reuse_existing,
-                                    "onUpdate:modelValue": _cache[49] || (_cache[49] = $event => ((localTask.value.reuse_existing) = $event)),
+                                    "onUpdate:modelValue": _cache[50] || (_cache[50] = $event => ((localTask.value.reuse_existing) = $event)),
                                     label: "复用本机已有资源（辅种）",
                                     color: "primary",
                                     "hide-details": "",
@@ -1243,7 +1251,7 @@ return (_ctx, _cache) => {
                                   }, null, 8, ["modelValue"]),
                                   _createVNode$1(_component_VSwitch, {
                                     modelValue: localTask.value.reuse_verify,
-                                    "onUpdate:modelValue": _cache[50] || (_cache[50] = $event => ((localTask.value.reuse_verify) = $event)),
+                                    "onUpdate:modelValue": _cache[51] || (_cache[51] = $event => ((localTask.value.reuse_verify) = $event)),
                                     disabled: !localTask.value.reuse_existing,
                                     label: "辅种前先校验（不匹配自动撤销）",
                                     color: "primary",
@@ -1251,8 +1259,16 @@ return (_ctx, _cache) => {
                                     inset: ""
                                   }, null, 8, ["modelValue", "disabled"]),
                                   _createVNode$1(_component_VSwitch, {
+                                    modelValue: localTask.value.auto_swap,
+                                    "onUpdate:modelValue": _cache[52] || (_cache[52] = $event => ((localTask.value.auto_swap) = $event)),
+                                    label: "自动换种（名额/磁盘/站点接近上限时，按边际魔力换掉低价值种）",
+                                    color: "primary",
+                                    "hide-details": "",
+                                    inset: ""
+                                  }, null, 8, ["modelValue"]),
+                                  _createVNode$1(_component_VSwitch, {
                                     modelValue: localTask.value.cleanup_no_progress,
-                                    "onUpdate:modelValue": _cache[51] || (_cache[51] = $event => ((localTask.value.cleanup_no_progress) = $event)),
+                                    "onUpdate:modelValue": _cache[53] || (_cache[53] = $event => ((localTask.value.cleanup_no_progress) = $event)),
                                     label: "每次运行清理无进度种子（停滞/出错且进度为 0）",
                                     color: "primary",
                                     "hide-details": "",
@@ -1260,7 +1276,7 @@ return (_ctx, _cache) => {
                                   }, null, 8, ["modelValue"]),
                                   _createVNode$1(_component_VSwitch, {
                                     modelValue: localTask.value.cleanup_slow_progress,
-                                    "onUpdate:modelValue": _cache[52] || (_cache[52] = $event => ((localTask.value.cleanup_slow_progress) = $event)),
+                                    "onUpdate:modelValue": _cache[54] || (_cache[54] = $event => ((localTask.value.cleanup_slow_progress) = $event)),
                                     label: "清理下载过慢的种子（速度÷体积算 ETA，长期下不完的腾名额）",
                                     color: "primary",
                                     "hide-details": "",
@@ -1268,7 +1284,7 @@ return (_ctx, _cache) => {
                                   }, null, 8, ["modelValue"]),
                                   _createVNode$1(_component_VSwitch, {
                                     modelValue: localTask.value.purge_unfree_incomplete,
-                                    "onUpdate:modelValue": _cache[53] || (_cache[53] = $event => ((localTask.value.purge_unfree_incomplete) = $event)),
+                                    "onUpdate:modelValue": _cache[55] || (_cache[55] = $event => ((localTask.value.purge_unfree_incomplete) = $event)),
                                     label: "检查时清理「已不再免费且未下完」的种子（回站点核对促销）",
                                     color: "primary",
                                     "hide-details": "",
@@ -1276,7 +1292,7 @@ return (_ctx, _cache) => {
                                   }, null, 8, ["modelValue"]),
                                   _createVNode$1(_component_VSwitch, {
                                     modelValue: localTask.value.auto_resume_paused,
-                                    "onUpdate:modelValue": _cache[54] || (_cache[54] = $event => ((localTask.value.auto_resume_paused) = $event)),
+                                    "onUpdate:modelValue": _cache[56] || (_cache[56] = $event => ((localTask.value.auto_resume_paused) = $event)),
                                     label: "自动恢复被暂停的已完成种子（重新做种）",
                                     color: "primary",
                                     "hide-details": "",
@@ -1292,7 +1308,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VSelect, {
                                           modelValue: localTask.value.ti_source,
-                                          "onUpdate:modelValue": _cache[55] || (_cache[55] = $event => ((localTask.value.ti_source) = $event)),
+                                          "onUpdate:modelValue": _cache[57] || (_cache[57] = $event => ((localTask.value.ti_source) = $event)),
                                           items: [
                         { title: '发布时长（站点公式口径，推荐）', value: 'publish' },
                         { title: '做种时长（qB 统计）', value: 'seed_time' },
@@ -1317,7 +1333,7 @@ return (_ctx, _cache) => {
                                           default: _withCtx$1(() => [
                                             _createVNode$1(_component_VTextField, {
                                               modelValue: localTask.value.no_progress_minutes,
-                                              "onUpdate:modelValue": _cache[56] || (_cache[56] = $event => ((localTask.value.no_progress_minutes) = $event)),
+                                              "onUpdate:modelValue": _cache[58] || (_cache[58] = $event => ((localTask.value.no_progress_minutes) = $event)),
                                               modelModifiers: { number: true },
                                               type: "number",
                                               min: "1",
@@ -1335,7 +1351,7 @@ return (_ctx, _cache) => {
                                           default: _withCtx$1(() => [
                                             _createVNode$1(_component_VTextField, {
                                               modelValue: localTask.value.seen_cooldown_hours,
-                                              "onUpdate:modelValue": _cache[57] || (_cache[57] = $event => ((localTask.value.seen_cooldown_hours) = $event)),
+                                              "onUpdate:modelValue": _cache[59] || (_cache[59] = $event => ((localTask.value.seen_cooldown_hours) = $event)),
                                               modelModifiers: { number: true },
                                               type: "number",
                                               min: "0",
@@ -1360,7 +1376,7 @@ return (_ctx, _cache) => {
                                           default: _withCtx$1(() => [
                                             _createVNode$1(_component_VTextField, {
                                               modelValue: localTask.value.slow_progress_grace_minutes,
-                                              "onUpdate:modelValue": _cache[58] || (_cache[58] = $event => ((localTask.value.slow_progress_grace_minutes) = $event)),
+                                              "onUpdate:modelValue": _cache[60] || (_cache[60] = $event => ((localTask.value.slow_progress_grace_minutes) = $event)),
                                               modelModifiers: { number: true },
                                               type: "number",
                                               min: "1",
@@ -1378,7 +1394,7 @@ return (_ctx, _cache) => {
                                           default: _withCtx$1(() => [
                                             _createVNode$1(_component_VTextField, {
                                               modelValue: localTask.value.slow_progress_max_hours,
-                                              "onUpdate:modelValue": _cache[59] || (_cache[59] = $event => ((localTask.value.slow_progress_max_hours) = $event)),
+                                              "onUpdate:modelValue": _cache[61] || (_cache[61] = $event => ((localTask.value.slow_progress_max_hours) = $event)),
                                               modelModifiers: { number: true },
                                               type: "number",
                                               min: "1",
@@ -1395,7 +1411,7 @@ return (_ctx, _cache) => {
                                   : _createCommentVNode$1("", true)
                               ]),
                               _createElementVNode$1("section", _hoisted_20$1, [
-                                _cache[104] || (_cache[104] = _createElementVNode$1("header", { class: "editor-section__head" }, [
+                                _cache[106] || (_cache[106] = _createElementVNode$1("header", { class: "editor-section__head" }, [
                                   _createElementVNode$1("div", null, [
                                     _createElementVNode$1("div", { class: "text-subtitle-1 font-weight-medium" }, "删种保护"),
                                     _createElementVNode$1("div", { class: "text-body-2 text-medium-emphasis" }, "保护期内、受保护与 H&R 种子永不删除")
@@ -1410,7 +1426,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.min_seed_time,
-                                          "onUpdate:modelValue": _cache[60] || (_cache[60] = $event => ((localTask.value.min_seed_time) = $event)),
+                                          "onUpdate:modelValue": _cache[62] || (_cache[62] = $event => ((localTask.value.min_seed_time) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "0",
@@ -1427,7 +1443,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.min_ratio,
-                                          "onUpdate:modelValue": _cache[61] || (_cache[61] = $event => ((localTask.value.min_ratio) = $event)),
+                                          "onUpdate:modelValue": _cache[63] || (_cache[63] = $event => ((localTask.value.min_ratio) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "0",
@@ -1444,7 +1460,7 @@ return (_ctx, _cache) => {
                                 _createElementVNode$1("div", _hoisted_21$1, [
                                   _createVNode$1(_component_VSwitch, {
                                     modelValue: localTask.value.delete_files,
-                                    "onUpdate:modelValue": _cache[62] || (_cache[62] = $event => ((localTask.value.delete_files) = $event)),
+                                    "onUpdate:modelValue": _cache[64] || (_cache[64] = $event => ((localTask.value.delete_files) = $event)),
                                     label: "删种同时删除文件",
                                     color: "primary",
                                     "hide-details": "",
@@ -1457,7 +1473,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.delete_except_tags,
-                                          "onUpdate:modelValue": _cache[63] || (_cache[63] = $event => ((localTask.value.delete_except_tags) = $event)),
+                                          "onUpdate:modelValue": _cache[65] || (_cache[65] = $event => ((localTask.value.delete_except_tags) = $event)),
                                           label: "永不删除的标签（可选，逗号分隔）",
                                           hint: "叠加在「已整理 / 辅种」之上：带这些标签的种子删种时永不删除",
                                           "persistent-hint": "",
@@ -1471,7 +1487,7 @@ return (_ctx, _cache) => {
                                 })
                               ]),
                               _createElementVNode$1("section", _hoisted_22$1, [
-                                _cache[105] || (_cache[105] = _createElementVNode$1("header", { class: "editor-section__head" }, [
+                                _cache[107] || (_cache[107] = _createElementVNode$1("header", { class: "editor-section__head" }, [
                                   _createElementVNode$1("div", null, [
                                     _createElementVNode$1("div", { class: "text-subtitle-1 font-weight-medium" }, "完美种保护"),
                                     _createElementVNode$1("div", { class: "text-body-2 text-medium-emphasis" }, "优质老种（非零魔 · 做种人数少 · 挂得够老）永久保留，不参与任何清理——魔力靠「养」，越老越肥")
@@ -1480,7 +1496,7 @@ return (_ctx, _cache) => {
                                 _createElementVNode$1("div", _hoisted_23$1, [
                                   _createVNode$1(_component_VSwitch, {
                                     modelValue: localTask.value.protect_perfect,
-                                    "onUpdate:modelValue": _cache[64] || (_cache[64] = $event => ((localTask.value.protect_perfect) = $event)),
+                                    "onUpdate:modelValue": _cache[66] || (_cache[66] = $event => ((localTask.value.protect_perfect) = $event)),
                                     label: "启用完美种保护（满足条件的种子永不清理）",
                                     color: "primary",
                                     "hide-details": "",
@@ -1497,7 +1513,7 @@ return (_ctx, _cache) => {
                                           default: _withCtx$1(() => [
                                             _createVNode$1(_component_VTextField, {
                                               modelValue: localTask.value.perfect_max_seeders,
-                                              "onUpdate:modelValue": _cache[65] || (_cache[65] = $event => ((localTask.value.perfect_max_seeders) = $event)),
+                                              "onUpdate:modelValue": _cache[67] || (_cache[67] = $event => ((localTask.value.perfect_max_seeders) = $event)),
                                               modelModifiers: { number: true },
                                               type: "number",
                                               min: "0",
@@ -1516,7 +1532,7 @@ return (_ctx, _cache) => {
                                           default: _withCtx$1(() => [
                                             _createVNode$1(_component_VTextField, {
                                               modelValue: localTask.value.perfect_min_weeks,
-                                              "onUpdate:modelValue": _cache[66] || (_cache[66] = $event => ((localTask.value.perfect_min_weeks) = $event)),
+                                              "onUpdate:modelValue": _cache[68] || (_cache[68] = $event => ((localTask.value.perfect_min_weeks) = $event)),
                                               modelModifiers: { number: true },
                                               type: "number",
                                               min: "0",
@@ -1546,7 +1562,7 @@ return (_ctx, _cache) => {
                             default: _withCtx$1(() => [
                               _createElementVNode$1("section", _hoisted_24$1, [
                                 _createElementVNode$1("header", _hoisted_25$1, [
-                                  _cache[107] || (_cache[107] = _createElementVNode$1("div", null, [
+                                  _cache[109] || (_cache[109] = _createElementVNode$1("div", null, [
                                     _createElementVNode$1("div", { class: "text-subtitle-1 font-weight-medium" }, "魔力公式参数"),
                                     _createElementVNode$1("div", { class: "text-body-2 text-medium-emphasis" }, " 留空使用站点预设 / NexusPHP 标准式（T0=5，N0=7，B0=100，L=300） ")
                                   ], -1)),
@@ -1555,7 +1571,7 @@ return (_ctx, _cache) => {
                                     color: "primary",
                                     variant: "tonal"
                                   }, {
-                                    default: _withCtx$1(() => [...(_cache[106] || (_cache[106] = [
+                                    default: _withCtx$1(() => [...(_cache[108] || (_cache[108] = [
                                       _createTextVNode$1("高级", -1)
                                     ]))]),
                                     _: 1
@@ -1570,7 +1586,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.bonus_t0,
-                                          "onUpdate:modelValue": _cache[67] || (_cache[67] = $event => ((localTask.value.bonus_t0) = $event)),
+                                          "onUpdate:modelValue": _cache[69] || (_cache[69] = $event => ((localTask.value.bonus_t0) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "0.1",
@@ -1588,7 +1604,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.bonus_n0,
-                                          "onUpdate:modelValue": _cache[68] || (_cache[68] = $event => ((localTask.value.bonus_n0) = $event)),
+                                          "onUpdate:modelValue": _cache[70] || (_cache[70] = $event => ((localTask.value.bonus_n0) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "2",
@@ -1605,7 +1621,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.bonus_b0,
-                                          "onUpdate:modelValue": _cache[69] || (_cache[69] = $event => ((localTask.value.bonus_b0) = $event)),
+                                          "onUpdate:modelValue": _cache[71] || (_cache[71] = $event => ((localTask.value.bonus_b0) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "0.1",
@@ -1623,7 +1639,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.bonus_l,
-                                          "onUpdate:modelValue": _cache[70] || (_cache[70] = $event => ((localTask.value.bonus_l) = $event)),
+                                          "onUpdate:modelValue": _cache[72] || (_cache[72] = $event => ((localTask.value.bonus_l) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "0.1",
@@ -1641,7 +1657,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.bonus_zero_weight,
-                                          "onUpdate:modelValue": _cache[71] || (_cache[71] = $event => ((localTask.value.bonus_zero_weight) = $event)),
+                                          "onUpdate:modelValue": _cache[73] || (_cache[73] = $event => ((localTask.value.bonus_zero_weight) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "0",
@@ -1665,7 +1681,7 @@ return (_ctx, _cache) => {
                           _createElementVNode$1("section", _hoisted_26$1, [
                             _createElementVNode$1("header", _hoisted_27$1, [
                               _createElementVNode$1("div", null, [
-                                _cache[108] || (_cache[108] = _createElementVNode$1("div", { class: "text-subtitle-1 font-weight-medium" }, "来源与促销", -1)),
+                                _cache[110] || (_cache[110] = _createElementVNode$1("div", { class: "text-subtitle-1 font-weight-medium" }, "来源与促销", -1)),
                                 _createElementVNode$1("div", _hoisted_28$1, _toDisplayString$1(isBrush.value ? '刷流只看站点最新页（免费热种在最新页），不做游标深翻' : '沿用站点列表页或 RSS 获取链路'), 1)
                               ])
                             ]),
@@ -1689,7 +1705,7 @@ return (_ctx, _cache) => {
                                       : (_openBlock$1(), _createBlock$1(_component_VSelect, {
                                           key: 1,
                                           modelValue: localTask.value.freeleech,
-                                          "onUpdate:modelValue": _cache[72] || (_cache[72] = $event => ((localTask.value.freeleech) = $event)),
+                                          "onUpdate:modelValue": _cache[74] || (_cache[74] = $event => ((localTask.value.freeleech) = $event)),
                                           label: "促销",
                                           items: [
                         { title: '全部（包括普通）', value: '' },
@@ -1707,7 +1723,7 @@ return (_ctx, _cache) => {
                                   default: _withCtx$1(() => [
                                     _createVNode$1(_component_VSelect, {
                                       modelValue: localTask.value.hr,
-                                      "onUpdate:modelValue": _cache[73] || (_cache[73] = $event => ((localTask.value.hr) = $event)),
+                                      "onUpdate:modelValue": _cache[75] || (_cache[75] = $event => ((localTask.value.hr) = $event)),
                                       label: "排除 H&R",
                                       items: [
                         { title: '是', value: 'yes' },
@@ -1724,7 +1740,7 @@ return (_ctx, _cache) => {
                           _createElementVNode$1("section", _hoisted_29$1, [
                             _createElementVNode$1("header", _hoisted_30$1, [
                               _createElementVNode$1("div", null, [
-                                _cache[109] || (_cache[109] = _createElementVNode$1("div", { class: "text-subtitle-1 font-weight-medium" }, "候选过滤", -1)),
+                                _cache[111] || (_cache[111] = _createElementVNode$1("div", { class: "text-subtitle-1 font-weight-medium" }, "候选过滤", -1)),
                                 _createElementVNode$1("div", _hoisted_31$1, _toDisplayString$1(isBrush.value ? '刷流默认不限人数 / 体积 / 年龄（留空即为不限），如需收敛再填；范围支持单值或「最小值-最大值」' : '范围字段支持单值或「最小值-最大值」'), 1)
                               ])
                             ]),
@@ -1737,7 +1753,7 @@ return (_ctx, _cache) => {
                                   default: _withCtx$1(() => [
                                     _createVNode$1(_component_VTextField, {
                                       modelValue: localTask.value.size,
-                                      "onUpdate:modelValue": _cache[74] || (_cache[74] = $event => ((localTask.value.size) = $event)),
+                                      "onUpdate:modelValue": _cache[76] || (_cache[76] = $event => ((localTask.value.size) = $event)),
                                       label: "种子大小（GB）",
                                       placeholder: "10-80"
                                     }, null, 8, ["modelValue"])
@@ -1751,7 +1767,7 @@ return (_ctx, _cache) => {
                                   default: _withCtx$1(() => [
                                     _createVNode$1(_component_VTextField, {
                                       modelValue: localTask.value.seeder,
-                                      "onUpdate:modelValue": _cache[75] || (_cache[75] = $event => ((localTask.value.seeder) = $event)),
+                                      "onUpdate:modelValue": _cache[77] || (_cache[77] = $event => ((localTask.value.seeder) = $event)),
                                       label: "做种人数",
                                       placeholder: "1-10"
                                     }, null, 8, ["modelValue"])
@@ -1765,7 +1781,7 @@ return (_ctx, _cache) => {
                                   default: _withCtx$1(() => [
                                     _createVNode$1(_component_VTextField, {
                                       modelValue: localTask.value.pubtime,
-                                      "onUpdate:modelValue": _cache[76] || (_cache[76] = $event => ((localTask.value.pubtime) = $event)),
+                                      "onUpdate:modelValue": _cache[78] || (_cache[78] = $event => ((localTask.value.pubtime) = $event)),
                                       label: "发布时间（分钟）",
                                       placeholder: "5-120"
                                     }, null, 8, ["modelValue"])
@@ -1776,7 +1792,7 @@ return (_ctx, _cache) => {
                                   default: _withCtx$1(() => [
                                     _createVNode$1(_component_VTextField, {
                                       modelValue: localTask.value.include,
-                                      "onUpdate:modelValue": _cache[77] || (_cache[77] = $event => ((localTask.value.include) = $event)),
+                                      "onUpdate:modelValue": _cache[79] || (_cache[79] = $event => ((localTask.value.include) = $event)),
                                       label: "包含规则",
                                       placeholder: "支持正则表达式"
                                     }, null, 8, ["modelValue"])
@@ -1787,7 +1803,7 @@ return (_ctx, _cache) => {
                                   default: _withCtx$1(() => [
                                     _createVNode$1(_component_VTextField, {
                                       modelValue: localTask.value.exclude,
-                                      "onUpdate:modelValue": _cache[78] || (_cache[78] = $event => ((localTask.value.exclude) = $event)),
+                                      "onUpdate:modelValue": _cache[80] || (_cache[80] = $event => ((localTask.value.exclude) = $event)),
                                       label: "排除规则",
                                       placeholder: "支持正则表达式"
                                     }, null, 8, ["modelValue"])
@@ -1802,7 +1818,7 @@ return (_ctx, _cache) => {
                                 ? (_openBlock$1(), _createBlock$1(_component_VSwitch, {
                                     key: 0,
                                     modelValue: localTask.value.exclude_zero_bonus,
-                                    "onUpdate:modelValue": _cache[79] || (_cache[79] = $event => ((localTask.value.exclude_zero_bonus) = $event)),
+                                    "onUpdate:modelValue": _cache[81] || (_cache[81] = $event => ((localTask.value.exclude_zero_bonus) = $event)),
                                     label: "不选零魔种子（Wi=0.2）",
                                     color: "primary",
                                     "hide-details": "",
@@ -1817,7 +1833,7 @@ return (_ctx, _cache) => {
                       _createVNode$1(_component_VWindowItem, { value: "advanced" }, {
                         default: _withCtx$1(() => [
                           _createElementVNode$1("section", _hoisted_33$1, [
-                            _cache[110] || (_cache[110] = _createElementVNode$1("header", { class: "editor-section__head" }, [
+                            _cache[112] || (_cache[112] = _createElementVNode$1("header", { class: "editor-section__head" }, [
                               _createElementVNode$1("div", null, [
                                 _createElementVNode$1("div", { class: "text-subtitle-1 font-weight-medium" }, "跨站免费取种"),
                                 _createElementVNode$1("div", { class: "text-body-2 text-medium-emphasis" }, " 本站这颗不免费（下了就烧流量、拉低分享率）→ 去任意他站找「免费且同一 Release」的副本下回来，下完自动辅回本站（零下载纯做种） ")
@@ -1826,7 +1842,7 @@ return (_ctx, _cache) => {
                             _createElementVNode$1("div", _hoisted_34$1, [
                               _createVNode$1(_component_VSwitch, {
                                 modelValue: localTask.value.crossseed_enabled,
-                                "onUpdate:modelValue": _cache[80] || (_cache[80] = $event => ((localTask.value.crossseed_enabled) = $event)),
+                                "onUpdate:modelValue": _cache[82] || (_cache[82] = $event => ((localTask.value.crossseed_enabled) = $event)),
                                 label: "启用跨站免费取种",
                                 color: "primary",
                                 "hide-details": "",
@@ -1843,7 +1859,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.crossseed_max_per_round,
-                                          "onUpdate:modelValue": _cache[81] || (_cache[81] = $event => ((localTask.value.crossseed_max_per_round) = $event)),
+                                          "onUpdate:modelValue": _cache[83] || (_cache[83] = $event => ((localTask.value.crossseed_max_per_round) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "1",
@@ -1861,7 +1877,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.crossseed_max_size_gb,
-                                          "onUpdate:modelValue": _cache[82] || (_cache[82] = $event => ((localTask.value.crossseed_max_size_gb) = $event)),
+                                          "onUpdate:modelValue": _cache[84] || (_cache[84] = $event => ((localTask.value.crossseed_max_size_gb) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "0.1",
@@ -1880,7 +1896,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: localTask.value.crossseed_max_sites,
-                                          "onUpdate:modelValue": _cache[83] || (_cache[83] = $event => ((localTask.value.crossseed_max_sites) = $event)),
+                                          "onUpdate:modelValue": _cache[85] || (_cache[85] = $event => ((localTask.value.crossseed_max_sites) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "1",
@@ -1897,7 +1913,7 @@ return (_ctx, _cache) => {
                               : _createCommentVNode$1("", true)
                           ]),
                           _createElementVNode$1("section", _hoisted_35$1, [
-                            _cache[111] || (_cache[111] = _createElementVNode$1("header", { class: "editor-section__head" }, [
+                            _cache[113] || (_cache[113] = _createElementVNode$1("header", { class: "editor-section__head" }, [
                               _createElementVNode$1("div", null, [
                                 _createElementVNode$1("div", { class: "text-subtitle-1 font-weight-medium" }, "单种限速"),
                                 _createElementVNode$1("div", { class: "text-body-2 text-medium-emphasis" }, "只作用于当前任务新添加的种子")
@@ -1912,7 +1928,7 @@ return (_ctx, _cache) => {
                                   default: _withCtx$1(() => [
                                     _createVNode$1(_component_VTextField, {
                                       modelValue: localTask.value.up_speed,
-                                      "onUpdate:modelValue": _cache[84] || (_cache[84] = $event => ((localTask.value.up_speed) = $event)),
+                                      "onUpdate:modelValue": _cache[86] || (_cache[86] = $event => ((localTask.value.up_speed) = $event)),
                                       modelModifiers: { number: true },
                                       type: "number",
                                       min: "1",
@@ -1928,7 +1944,7 @@ return (_ctx, _cache) => {
                                   default: _withCtx$1(() => [
                                     _createVNode$1(_component_VTextField, {
                                       modelValue: localTask.value.dl_speed,
-                                      "onUpdate:modelValue": _cache[85] || (_cache[85] = $event => ((localTask.value.dl_speed) = $event)),
+                                      "onUpdate:modelValue": _cache[87] || (_cache[87] = $event => ((localTask.value.dl_speed) = $event)),
                                       modelModifiers: { number: true },
                                       type: "number",
                                       min: "1",
@@ -1942,7 +1958,7 @@ return (_ctx, _cache) => {
                             })
                           ]),
                           _createElementVNode$1("section", _hoisted_36$1, [
-                            _cache[117] || (_cache[117] = _createElementVNode$1("header", { class: "editor-section__head" }, [
+                            _cache[119] || (_cache[119] = _createElementVNode$1("header", { class: "editor-section__head" }, [
                               _createElementVNode$1("div", null, [
                                 _createElementVNode$1("div", { class: "text-subtitle-1 font-weight-medium" }, "生效预览"),
                                 _createElementVNode$1("div", { class: "text-body-2 text-medium-emphasis" }, "保存后立即写入调度，无需重启插件")
@@ -1950,23 +1966,23 @@ return (_ctx, _cache) => {
                             ], -1)),
                             _createElementVNode$1("dl", _hoisted_37$1, [
                               _createElementVNode$1("div", null, [
-                                _cache[112] || (_cache[112] = _createElementVNode$1("dt", null, "站点", -1)),
+                                _cache[114] || (_cache[114] = _createElementVNode$1("dt", null, "站点", -1)),
                                 _createElementVNode$1("dd", null, _toDisplayString$1(siteName.value), 1)
                               ]),
                               _createElementVNode$1("div", null, [
-                                _cache[113] || (_cache[113] = _createElementVNode$1("dt", null, "下载器", -1)),
+                                _cache[115] || (_cache[115] = _createElementVNode$1("dt", null, "下载器", -1)),
                                 _createElementVNode$1("dd", null, _toDisplayString$1(localTask.value.downloader || '未选择'), 1)
                               ]),
                               _createElementVNode$1("div", null, [
-                                _cache[114] || (_cache[114] = _createElementVNode$1("dt", null, "调度", -1)),
+                                _cache[116] || (_cache[116] = _createElementVNode$1("dt", null, "调度", -1)),
                                 _createElementVNode$1("dd", null, _toDisplayString$1(scheduleText.value), 1)
                               ]),
                               _createElementVNode$1("div", null, [
-                                _cache[115] || (_cache[115] = _createElementVNode$1("dt", null, "开启时段", -1)),
+                                _cache[117] || (_cache[117] = _createElementVNode$1("dt", null, "开启时段", -1)),
                                 _createElementVNode$1("dd", null, _toDisplayString$1(localTask.value.active_time_range || '全天'), 1)
                               ]),
                               _createElementVNode$1("div", null, [
-                                _cache[116] || (_cache[116] = _createElementVNode$1("dt", null, "任务目标", -1)),
+                                _cache[118] || (_cache[118] = _createElementVNode$1("dt", null, "任务目标", -1)),
                                 _createElementVNode$1("dd", null, _toDisplayString$1(hasGoal() ? (isBrush.value ? `${localTask.value.goal_value} GB 上传量` : `${localTask.value.goal_value} 魔力值`) : '未设置'), 1)
                               ])
                             ])
@@ -1988,7 +2004,7 @@ return (_ctx, _cache) => {
       }),
       _createVNode$1(_component_VDialog, {
         modelValue: goalWarning.value,
-        "onUpdate:modelValue": _cache[88] || (_cache[88] = $event => ((goalWarning).value = $event)),
+        "onUpdate:modelValue": _cache[90] || (_cache[90] = $event => ((goalWarning).value = $event)),
         "max-width": "30rem"
       }, {
         default: _withCtx$1(() => [
@@ -2002,12 +2018,12 @@ return (_ctx, _cache) => {
                       color: "warning",
                       class: "mr-2"
                     }),
-                    _cache[118] || (_cache[118] = _createElementVNode$1("span", { class: "text-subtitle-1 font-weight-medium" }, "尚未设置任务目标", -1))
+                    _cache[120] || (_cache[120] = _createElementVNode$1("span", { class: "text-subtitle-1 font-weight-medium" }, "尚未设置任务目标", -1))
                   ]),
                   _createElementVNode$1("div", _hoisted_39$1, [
-                    _cache[119] || (_cache[119] = _createTextVNode$1(" 建议为每个任务设置目标，达到后会自动停止： ", -1)),
+                    _cache[121] || (_cache[121] = _createTextVNode$1(" 建议为每个任务设置目标，达到后会自动停止： ", -1)),
                     _createElementVNode$1("strong", null, _toDisplayString$1(isBrush.value ? '站点上传量（GB）' : '站点魔力值'), 1),
-                    _cache[120] || (_cache[120] = _createTextVNode$1("。 ", -1))
+                    _cache[122] || (_cache[122] = _createTextVNode$1("。 ", -1))
                   ])
                 ]),
                 _: 1
@@ -2017,9 +2033,9 @@ return (_ctx, _cache) => {
                   _createVNode$1(_component_VSpacer),
                   _createVNode$1(_component_VBtn, {
                     variant: "text",
-                    onClick: _cache[87] || (_cache[87] = $event => (goalWarning.value = false))
+                    onClick: _cache[89] || (_cache[89] = $event => (goalWarning.value = false))
                   }, {
-                    default: _withCtx$1(() => [...(_cache[121] || (_cache[121] = [
+                    default: _withCtx$1(() => [...(_cache[123] || (_cache[123] = [
                       _createTextVNode$1("返回填写", -1)
                     ]))]),
                     _: 1
@@ -2029,7 +2045,7 @@ return (_ctx, _cache) => {
                     variant: "flat",
                     onClick: confirmSaveWithoutGoal
                   }, {
-                    default: _withCtx$1(() => [...(_cache[122] || (_cache[122] = [
+                    default: _withCtx$1(() => [...(_cache[124] || (_cache[124] = [
                       _createTextVNode$1("仍然保存", -1)
                     ]))]),
                     _: 1
@@ -2050,7 +2066,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-2f54478b"]]);
+const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-28cb420d"]]);
 
 const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,openBlock:_openBlock,createElementBlock:_createElementBlock,createCommentVNode:_createCommentVNode,createBlock:_createBlock,toDisplayString:_toDisplayString,normalizeClass:_normalizeClass,mergeProps:_mergeProps,renderList:_renderList,Fragment:_Fragment,withCtx:_withCtx,createTextVNode:_createTextVNode,vShow:_vShow,withDirectives:_withDirectives,unref:_unref,normalizeStyle:_normalizeStyle,withModifiers:_withModifiers} = await importShared('vue');
 
@@ -3274,13 +3290,14 @@ function notify(message, color = 'success') {
   }
 }
 
-const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reuse: '存量复用', crossseed: '跨站取种', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止', state: '运行状态', tag: '标签变更', fallback: '元数据兜底', cloud: '云盘归档' };
+const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reuse: '存量复用', crossseed: '跨站取种', swap: '换种', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止', state: '运行状态', tag: '标签变更', fallback: '元数据兜底', cloud: '云盘归档' };
 const STATE_TEXT = { submitting: '提交中', accepted: '已受理', completed: '已完成', failed: '失败' };
 const KIND_ICON = {
   run: 'mdi-play-circle-outline',
   selection: 'mdi-download-outline',
   deletion: 'mdi-delete-outline',
   reuse: 'mdi-content-duplicate',
+  swap: 'mdi-swap-horizontal-circle-outline',
   protection: 'mdi-shield-check-outline',
   unprotection: 'mdi-shield-off-outline',
   pause: 'mdi-pause-circle-outline',
@@ -11927,6 +11944,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-d6d0b644"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-4a1d4929"]]);
 
 export { MagicFlowWorkbench as M };

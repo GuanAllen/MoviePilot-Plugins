@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.33.0"
+__version__ = "3.34.0"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -197,6 +197,8 @@ def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
 # 候选扩充:站点列表页翻页数(拿更多、更老的种子)。
 # 注意:是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数(启动时会记日志探测)。
 BROWSE_PAGES = 3
+SWAP_INTERVAL = 600.0        # 自动换种最小间隔(秒):换种要抓候选+下载,不宜过频
+SWAP_MAX_PER_ROUND = 3       # 单轮最多换几对(安全阀:避免一次性大批撤种)
 # 游标深翻:翻页游标上限;超过则回到首页重扫(避免越翻越深拿到无效/超老页面)。
 MAX_PAGE_CURSOR = 60
 # 分类阶段并发预取 .torrent 的线程数(原为逐个串行,TopN=100 会耗时数分钟)。
@@ -484,6 +486,10 @@ class MagicFlowTaskConfig:
     # 存量复用(辅种)
     reuse_existing: bool = True                  # 复用本机已有资源,避免重复下载
     reuse_verify: bool = True                    # 辅种前先校验,不匹配自动撤销
+    # ★ 自动换种:名额/磁盘/站点上限吃紧时,按边际魔力把低价值托管种换成高价值候选(程序自己决定换哪个)
+    auto_swap: bool = True                       # 开关(默认开)
+    swap_ceiling_pct: float = 70.0               # 站点魔力占用 ≥ 该值 → 视为接近上限,参与换种
+    swap_min_gain_pct: float = 25.0              # 净收益 ≥ 被撤种边际的该比例才动手
     # 跨站免费取种（3.9.0）：目标站的种子若不免费，去他站找免费同一 Release 下回来，再回辅目标站
     crossseed_enabled: bool = False              # 开关（默认关，开了才会走跨站）
     crossseed_max_per_round: int = 3             # 每轮最多发起几个跨站取种
@@ -597,6 +603,9 @@ class MagicFlowTaskConfig:
             "browse_pages": self.browse_pages,
             "reuse_existing": self.reuse_existing,
             "reuse_verify": self.reuse_verify,
+            "auto_swap": bool(getattr(self, "auto_swap", True)),
+            "swap_ceiling_pct": getattr(self, "swap_ceiling_pct", 70.0),
+            "swap_min_gain_pct": getattr(self, "swap_min_gain_pct", 25.0),
             "crossseed_enabled": self.crossseed_enabled,
             "crossseed_max_per_round": self.crossseed_max_per_round,
             "crossseed_max_size_gb": self.crossseed_max_size_gb,
@@ -1214,6 +1223,13 @@ class MagicFlow(_PluginBase):
                 "methods": ["GET"],
                 "auth": "bear",
                 "summary": "诊断:列出下载器全部种子并按标签分组(只读)",
+            },
+            {
+                "path": "/debug/swap",
+                "endpoint": self.debug_swap,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "诊断:自动换种干跑(不落盘;task_id=空则全任务)",
             },
             {
                 "path": "/debug/seedlimit",
@@ -5498,6 +5514,17 @@ class MagicFlow(_PluginBase):
                 self._log(f"魔流 [{task.name}] Check 同站纳管异常: {_adopt_exc}", "warning")
 
             r = self._cleanup_round(task, downloader)
+            # ★ 自动换种：名额/磁盘/站点上限吃紧时，按边际魔力换掉低价值种（程序自主决策）
+            try:
+                _sw = self._swap_round(task, downloader)
+                if _sw.get("applied"):
+                    r = dict(r or {})
+                    r["swapped"] = int(_sw.get("applied", 0) or 0)
+                    r["deleted"] = int(r.get("deleted", 0) or 0) + int(_sw.get("applied") or 0)
+                elif _sw.get("reason") and _sw.get("trigger"):
+                    self._dbg(f"魔流 [{task.name}] 换种未执行：{_sw.get('reason')}")
+            except Exception as _swe:  # noqa: BLE001
+                self._log(f"魔流 [{task.name}] 自动换种异常: {_swe}", "warning")
             self._settle(WorkReport(
                 task_id=task.id,
                 source="check",
@@ -5772,6 +5799,302 @@ class MagicFlow(_PluginBase):
             f"站点口径时魔 {out['total_before']:.2f} -> {out['total_after']:.2f}/h"
         )
         return out
+
+    # ============================================================
+    # ★ 自动换种（魔力口径）
+    # ============================================================
+
+    def _site_ceiling_pct(self, task: MagicFlowTaskConfig) -> float:
+        """站点魔力占其理论上限的百分比（与总览口径一致，用于「接近上限」判断）。"""
+        try:
+            rep = self._site_reported(task) or {}
+            b = float(rep.get("bonus_per_hour") or 0.0)
+            ceil = float(site_ceiling(self._build_formula_params(task)) or 0.0)
+            if ceil > 0:
+                return min(b / ceil * 100.0, 999.0)
+        except Exception:  # noqa: BLE001
+            pass
+        return 0.0
+
+    def _swap_plan(self, task: MagicFlowTaskConfig, downloader: DownloaderAdapter) -> Dict[str, Any]:
+        """算出「该换哪些种」——纯决策，不落盘。
+
+        站点魔力是「对**合计 A** 只取一次 arctan」，所以换种能算真实边际：
+            gain = B(A − a_v + a_c) − B(A − a_v)
+            loss = B(A) − B(A − a_v)
+            net  = gain − loss      （> 0 才说明「换掉 v、换进 c」净赚）
+        只有 ``net ≥ loss × swap_min_gain_pct`` 才列入计划。
+
+        撤种侧一律排除：H&R 义务种 / 完美种 / 媒体资产 / 跨站来源份 / 手动保护 /
+        尚未下载完成（progress < 1）/ 无 a 值的种。
+        触发条件（任一）：名额满 / 磁盘满 / 站点占用 ≥ swap_ceiling_pct。
+        还有空间时**不换**（直接补种更划算，由 brush 负责）。
+        """
+        out: Dict[str, Any] = {"ok": False, "reason": "", "pairs": [], "net": 0.0, "trigger": "", "a_total": 0.0}
+        if not downloader or not downloader.is_available:
+            out["reason"] = "下载器不可用"
+            return out
+        if not bool(getattr(task, "auto_swap", True)):
+            out["reason"] = "未开启自动换种"
+            return out
+        if str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() != "bonus":
+            out["reason"] = "刷流任务不参与魔力换种（自有「产出换种」）"
+            return out
+        if not str(getattr(task, "save_path", "") or "").strip():
+            out["reason"] = "未配置保存目录"
+            return out
+
+        # 1) 本任务托管种
+        try:
+            _groups, _ = downloader.get_torrents_by_tag() if hasattr(downloader, "get_torrents_by_tag") else ({}, "n/a")
+        except Exception as e:  # noqa: BLE001
+            out["reason"] = f"取托管种失败:{e}"
+            return out
+        all_tagged = _groups.get(task.brush_tag, []) if isinstance(_groups, dict) else []
+        managed = self._task_owned_torrents(task, all_tagged)
+        if len(managed) < 2:
+            out["reason"] = "托管种不足，无需换种"
+            return out
+
+        params = self._build_formula_params(task)
+        official = self._site_official_titles(task.site_id)
+        self._backfill_pub_dates(task, managed)
+        managed_bonus = self._convert_to_bonus_list(
+            managed, params, self._task_pub_dates(task),
+            getattr(task, "ti_source", "publish"),
+            self._site_ni_map(task.site_id, managed), official,
+        )
+        a_total = 0.0
+        for b in managed_bonus:
+            try:
+                a_total += float(getattr(b, "bonus_score", 0.0) or 0.0)
+            except Exception:  # noqa: BLE001
+                pass
+        out["a_total"] = round(a_total, 4)
+
+        # 2) 触发条件
+        policy = self._build_magic_policy(task, managed_bonus)
+        max_keep = policy.max_keep_torrents
+        disk_gb = task.disk_size_gb
+        try:
+            size_gb = sum(float(getattr(t, "size_gb", 0) or 0) for t in managed)
+        except Exception:  # noqa: BLE001
+            size_gb = 0.0
+        occ = self._site_ceiling_pct(task)
+        ceiling_pct = float(getattr(task, "swap_ceiling_pct", 70.0) or 70.0)
+        triggers = []
+        if max_keep and len(managed) >= int(max_keep):
+            triggers.append(f"名额满 {len(managed)}/{int(max_keep)}")
+        if disk_gb and size_gb >= float(disk_gb):
+            triggers.append(f"磁盘满 {size_gb:.0f}/{float(disk_gb):.0f}GB")
+        if occ >= ceiling_pct:
+            triggers.append(f"站点占用 {occ:.0f}%≥{ceiling_pct:.0f}%")
+        if not triggers:
+            out["reason"] = f"还有空间（占用 {occ:.0f}%），直接补种更划算"
+            return out
+        out["trigger"] = " / ".join(triggers)
+
+        # 冷却：换种要抓候选 + 下载，不宜每分钟都跑
+        _now = time.time()
+        _bag = getattr(self, "_swap_last", None)
+        if _bag is None:
+            _bag = self._swap_last = {}
+        _last = float(_bag.get(task.id, 0.0) or 0.0)
+        if _last and (_now - _last) < SWAP_INTERVAL:
+            out["reason"] = f"换种冷却中（剩 {int(SWAP_INTERVAL - (_now - _last))}s）"
+            return out
+        _bag[task.id] = _now
+
+        # 3) 保护集合
+        protected: set = set()
+        if self._store:
+            try:
+                protected |= set(self._store.get_protected_torrents(task.id) or set())
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            protected |= set(self._media_asset_hashes(list(managed), task) or set())
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            protected |= set(self._crossseed_source_hashes() or set())
+        except Exception:  # noqa: BLE001
+            pass
+        site_name = task.site_name or task.site_domain
+        for b in managed_bonus:
+            try:
+                owed, _h, _sh, _src = self._hr_obligation(site_name, b)
+            except Exception:  # noqa: BLE001
+                owed = False
+            if owed and b.hash:
+                protected.add(b.hash)
+
+        # 4) 撤种候选（a 最小、非保护、已下完）
+        by_hash = {(getattr(t, "hash", "") or "").lower(): t for t in managed}
+
+        def _seedable(h: str) -> bool:
+            t = by_hash.get((h or "").lower())
+            if not t:
+                return False
+            try:
+                return float(getattr(t, "progress", 1.0) or 0.0) >= 0.999
+            except Exception:  # noqa: BLE001
+                return True
+
+        victims = [
+            b for b in managed_bonus
+            if b.hash and b.hash not in protected
+            and float(getattr(b, "bonus_score", 0.0) or 0.0) > 0
+            and _seedable(b.hash)
+        ]
+        victims.sort(key=lambda b: float(getattr(b, "bonus_score", 0.0) or 0.0))
+        if not victims:
+            out["reason"] = "无可撤种（全受保护）"
+            return out
+
+        # 5) 候选（站点级共享抓取）
+        try:
+            cands = self._fetch_site_candidates(task, pages=max(int(task.browse_pages or BROWSE_PAGES), 1))
+        except Exception as e:  # noqa: BLE001
+            out["reason"] = f"抓取候选失败:{e}"
+            return out
+        if not cands:
+            out["reason"] = "未获取到候选"
+            return out
+        min_seeders = max(int(getattr(policy, "min_seeders", 0) or 0), 1)
+        flat = float(getattr(params, "per_torrent_flat", 0.0) or 0.0)
+        cap_n = int(getattr(params, "seeding_count_cap", 0) or 0)
+        flat_gain = flat if (not cap_n or len(managed) < cap_n) else 0.0
+        have_titles = {(normalize_title(getattr(t, "title", "") or "")) for t in managed}
+        scored: List[Tuple[Any, Any]] = []
+        for c in cands:
+            try:
+                if float(getattr(c, "size_gb", 0) or 0) <= 0:
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+            if have_titles and normalize_title(getattr(c, "title", "") or "") in have_titles:
+                continue
+            _is_off = bool(official) and (normalize_title(getattr(c, "title", "") or "") in official)
+            sc = score_candidate(
+                size_gb=float(getattr(c, "size_gb", 0) or 0),
+                seeders=int(getattr(c, "seeders", 0) or 0),
+                age_weeks=float(getattr(c, "age_weeks", 0) or 0),
+                a_current=a_total,
+                is_zero_bonus=bool(getattr(c, "is_zero_bonus", False)),
+                is_official=_is_off,
+                params=params,
+                min_seeders=min_seeders,
+                flat_gain=flat_gain,
+            )
+            if not sc.viable:
+                continue
+            scored.append((c, sc))
+        scored.sort(key=lambda kv: (float(kv[1].a_contrib or 0.0), float(kv[1].value or 0.0)), reverse=True)
+        if not scored:
+            out["reason"] = "无可用候选（无源/高于门槛）"
+            return out
+
+        # 6) 贪心配对：候选 a 必须超过被撤种 a，且净收益达门槛
+        margin = max(float(getattr(task, "swap_min_gain_pct", 25.0) or 25.0) / 100.0, 0.05)
+        A = a_total
+        pairs: List[Dict[str, Any]] = []
+        for (c, sc), v in zip(scored, victims):
+            a_v = float(getattr(v, "bonus_score", 0.0) or 0.0)
+            a_c = float(sc.a_contrib or 0.0)
+            if a_c <= a_v:
+                break
+            a_after = max(A - a_v, 0.0)
+            gain = marginal_bonus_per_hour(a_after, a_c, params)
+            loss = marginal_bonus_per_hour(a_after, a_v, params)
+            net = gain - loss
+            if net < loss * margin:
+                continue
+            pairs.append({"cand": c, "score": sc, "victim": v, "net": net, "gain": gain, "loss": loss})
+            A = a_after + a_c
+        if not pairs:
+            out["reason"] = "无可换（现有种都比候选优）"
+            return out
+        pairs = pairs[:SWAP_MAX_PER_ROUND]
+        out["ok"] = True
+        out["pairs"] = pairs
+        out["net"] = round(sum(float(p["net"]) for p in pairs), 3)
+        return out
+    def _swap_round(self, task: MagicFlowTaskConfig, downloader: DownloaderAdapter, apply: bool = True) -> Dict[str, Any]:
+        """★ 自动换种：执行 ``_swap_plan``（先加候选、成功后再撤旧种）。"""
+        plan = self._swap_plan(task, downloader)
+        pairs = plan.get("pairs") or []
+        if not plan.get("ok") or not pairs:
+            return plan
+        if not apply:
+            plan["applied"] = 0
+            return plan
+        swapped = 0
+        swap_items: List[OperationItem] = []
+        for p in pairs:
+            c = p["cand"]
+            v = p["victim"]
+            raw = None
+            try:
+                if getattr(c, "enclosure", None):
+                    raw = downloader.fetch_torrent_bytes(
+                        c.enclosure,
+                        cookie=getattr(c, "site_cookie", None),
+                        user_agent=getattr(c, "site_ua", None),
+                        referer=getattr(c, "page_url", "") or None,
+                    )
+            except Exception as e:  # noqa: BLE001
+                self._log(f"魔流 [{task.name}] 换种:取种失败 {str(getattr(c, 'title', ''))[:40]} ({e})", "warning")
+                continue
+            if not raw:
+                continue
+            nh, err = downloader.add_torrent(
+                content=raw,
+                download_dir=task.save_path or "",
+                tag=self._task_tag(task),
+                cookie=getattr(c, "site_cookie", None),
+                user_agent=getattr(c, "site_ua", None),
+                upload_limit=task.up_speed,
+                download_limit=task.dl_speed,
+            )
+            if not nh:
+                self._log(f"魔流 [{task.name}] 换种:换入失败 {str(getattr(c, 'title', ''))[:40]} ({err})", "warning")
+                continue
+            ok_cnt, derr = downloader.delete_torrents(hashes=[v.hash], delete_file=bool(task.delete_files))
+            if not ok_cnt:
+                self._log(
+                    f"魔流 [{task.name}] 换种:撤旧种失败（新种已加）{str(getattr(v, 'title', ''))[:40]} ({derr})",
+                    "warning",
+                )
+                continue
+            swapped += 1
+            swap_items.append(OperationItem(
+                hash=nh.lower(), title=str(getattr(c, "title", "")),
+                reason=f"换入（净 +{p['net']:.2f}/h）",
+                size_gb=float(getattr(c, "size_gb", 0) or 0), source="swap",
+            ))
+            swap_items.append(OperationItem(
+                hash=v.hash, title=str(getattr(v, "title", "")),
+                reason=f"换出（边际 {p['loss']:.2f} → {p['gain']:.2f}/h）",
+                size_gb=float(getattr(v, "size_gb", 0) or 0), source="swap",
+            ))
+            if self._store:
+                try:
+                    self._store.forget_torrents(task.id, [v.hash])
+                    self._store.seen.mark(task.id, [f"hash:{nh.lower()}"])
+                except Exception:  # noqa: BLE001
+                    pass
+        if swap_items and self._store:
+            try:
+                self._store.journal.record(task_id=task.id, kind="swap", items=swap_items)
+            except Exception:  # noqa: BLE001
+                pass
+        plan["applied"] = swapped
+        if swapped:
+            self._log(
+                f"魔流 [{task.name}] 换种 {swapped} 对（净 +{plan['net']:.2f}/h）| 触发 {plan.get('trigger')}"
+            )
+        return plan
 
     def _pubdate_ts(self, pubdate: Any) -> float:
         """把候选的发布时间转为 unix 秒(与候选排序同一套口径)。"""
@@ -11246,6 +11569,52 @@ class MagicFlow(_PluginBase):
             return Response(success=True, data={"total": len(items), "items": items})
         except Exception as e:  # noqa: BLE001
             return Response(success=False, message=str(e))
+
+    def debug_swap(self, task_id: str = "", apply: int = 0) -> Response:
+        """诊断:自动换种干跑（``apply=0`` 只出计划，不落盘）。"""
+        try:
+            ids = [task_id] if task_id else list(self._task_configs.keys())
+        except Exception:  # noqa: BLE001
+            ids = []
+        rows: List[Dict[str, Any]] = []
+        for tid in ids:
+            task = self._get_task_config(tid)
+            if not task:
+                continue
+            try:
+                dl = self._get_downloader(task.downloader)
+                if not dl or not dl.is_available:
+                    rows.append({"task": task.name, "id": tid, "error": "下载器不可用"})
+                    continue
+                plan = self._swap_round(task, dl, apply=bool(apply))
+            except Exception as e:  # noqa: BLE001
+                rows.append({"task": task.name, "id": tid, "error": f"{type(e).__name__}: {e}"})
+                continue
+            rows.append({
+                "task": task.name,
+                "id": tid,
+                "type": getattr(task, "task_type", ""),
+                "mode": getattr(task, "run_mode", ""),
+                "ok": bool(plan.get("ok")),
+                "reason": plan.get("reason"),
+                "trigger": plan.get("trigger"),
+                "a_total": plan.get("a_total"),
+                "net": plan.get("net"),
+                "applied": plan.get("applied"),
+                "pairs": [
+                    {
+                        "in": str(getattr(p["cand"], "title", ""))[:90],
+                        "in_size": round(float(getattr(p["cand"], "size_gb", 0) or 0), 2),
+                        "in_seeders": int(getattr(p["cand"], "seeders", 0) or 0),
+                        "out": str(getattr(p["victim"], "title", ""))[:90],
+                        "out_size": round(float(getattr(p["victim"], "size_gb", 0) or 0), 2),
+                        "out_seeders": int(getattr(p["victim"], "seeders", 0) or 0),
+                        "net": round(float(p["net"]), 3),
+                    }
+                    for p in (plan.get("pairs") or [])
+                ],
+            })
+        return Response(success=True, data={"apply": bool(apply), "tasks": rows})
 
     def debug_qb_torrents(self, downloader: str = "qbittorrent") -> Response:
         """诊断:列出指定下载器的全部种子并按标签分组(只读)。"""
