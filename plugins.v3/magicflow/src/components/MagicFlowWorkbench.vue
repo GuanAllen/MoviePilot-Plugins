@@ -129,6 +129,10 @@ async function confirmTransfer() {
 const selectedHashes = computed(() =>
   (selectedRows.value || []).map(row => row?.hash).filter(Boolean),
 )
+const ratingSourceItems = [
+  { title: '豆瓣优先（拿不到回退 TMDB）', value: 'douban' },
+  { title: '只用 TMDB', value: 'tmdb' },
+]
 const settingsDialog = ref(false)
 const settingsTab = ref('general')
 const settingsDraft = ref({
@@ -3685,7 +3689,7 @@ onUnmounted(() => {
                 max="10"
                 step="0.1"
                 label="评分门槛（高于）"
-                hint="豆瓣 / TMDB 评分高于该值才推荐，默认 7.5"
+                hint="评分高于该值才推荐，默认 7.5（评分源见左侧「评分来源」）"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
@@ -3724,9 +3728,33 @@ onUnmounted(() => {
                 density="comfortable"
               />
               <VTextField
+                v-model.number="settingsDraft.recommend_douban_max_per_run"
+                type="number"
+                min="0"
+                step="10"
+                label="每轮豆瓣查询上限"
+                hint="超过就本轮回退 TMDB（防豆瓣风控），默认 60；0 = 不限"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
                 v-model="settingsDraft.recommend_tag"
                 label="推荐标签"
                 hint="推荐资源单独打的标签，默认「魔流-推荐」"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+            </div>
+            <div class="magicflow-settings-grid">
+              <VSelect
+                v-model="settingsDraft.recommend_rating_source"
+                :items="ratingSourceItems"
+                item-title="title"
+                item-value="value"
+                label="评分来源"
+                hint="豆瓣优先：拿不到豆瓣分自动回退 TMDB"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"

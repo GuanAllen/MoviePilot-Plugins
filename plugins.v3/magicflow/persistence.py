@@ -37,12 +37,13 @@ def _shared():
     import types as _types
 
     mod = _sys.modules.get(_SHARED_KEY)
-    if mod is None or not hasattr(mod, "instances"):
+    if mod is None:
         mod = _types.ModuleType(_SHARED_KEY)
-        mod.instances = {}
-        mod.counters = {}
-        mod.lock = threading.Lock()
         _sys.modules[_SHARED_KEY] = mod
+    # ★ 幂等补齐（任何入口先建模块都不能缺属性）
+    for _attr, _factory in (("instances", dict), ("counters", dict), ("lock", threading.Lock)):
+        if not hasattr(mod, _attr):
+            setattr(mod, _attr, _factory())
     return mod
 
 

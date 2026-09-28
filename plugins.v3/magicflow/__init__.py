@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.21.3"
+__version__ = "3.22.1"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
@@ -855,6 +855,9 @@ class MagicFlow(_PluginBase):
             "notify": bool(raw_config.get("recommend_notify", True)),
             "temp_ttl_days": _rf(raw_config.get("recommend_temp_ttl_days"), 7.0),
             "disk_min_free_gb": _rf(raw_config.get("recommend_disk_min_free_gb"), 50.0),
+            # ★ 评分源：douban=豆瓣优先(取不到回退 TMDB) / tmdb（Master 2026-09-28 09:06 选 A）
+            "rating_source": str(raw_config.get("recommend_rating_source") or "douban").strip().lower(),
+            "douban_max_per_run": int(_rf(raw_config.get("recommend_douban_max_per_run"), 60.0)),
         }
         # 静默-普通清理（Master 01:17：「普通考核魔力产出…在魔力产出够的情况下普通的直接干」）
         self._silent_cfg = {
@@ -1243,6 +1246,13 @@ class MagicFlow(_PluginBase):
                 "methods": ["GET"],
                 "auth": "bear",
                 "summary": "诊断:识别种子名(评分/榜单/订阅)",
+            },
+            {
+                "path": "/debug/douban",
+                "endpoint": self.debug_douban,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "诊断:查豆瓣评分源(自带 frodo 客户端,带缓存/限速)",
             },
             {
                 "path": "/debug/recommend-run",
@@ -1940,6 +1950,8 @@ class MagicFlow(_PluginBase):
             "recommend_notify": bool(self._recommend_cfg.get("notify", True)),
             "recommend_temp_ttl_days": float(self._recommend_cfg.get("temp_ttl_days", 7.0)),
             "recommend_disk_min_free_gb": float(self._recommend_cfg.get("disk_min_free_gb", 50.0)),
+            "recommend_rating_source": str(self._recommend_cfg.get("rating_source", "douban")),
+            "recommend_douban_max_per_run": int(self._recommend_cfg.get("douban_max_per_run", 60) or 0),
             "crossseed_guard": bool(getattr(self, "_cs_cfg", {}).get("guard", True)),
             "crossseed_guard_pct": float(getattr(self, "_cs_cfg", {}).get("guard_pct") or 5.0),
             "crossseed_guard_min_mb": float(getattr(self, "_cs_cfg", {}).get("guard_min_mb") or 50.0),
@@ -3798,6 +3810,7 @@ class MagicFlow(_PluginBase):
             self._log(f"魔流 [{task.name}] 推荐甄别:上一轮仍在执行,跳过")
             return
         try:
+            self._get_recommend_engine().begin_round(int(cfg.get("douban_max_per_run") or 0))
             tag = task.brush_tag
             groups = self._tag_snapshot(getattr(task, "downloader", None) or "qbittorrent")
             torrents = self._task_owned_torrents(task, groups.get(tag, []) or [])
@@ -7330,11 +7343,14 @@ class MagicFlow(_PluginBase):
 
             _key = "__magicflow_shared__"
             mod = _sys.modules.get(_key)
-            if mod is None or not hasattr(mod, "instances"):
+            if mod is None:
                 mod = _types.ModuleType(_key)
-                mod.instances = {}
-                mod.counters = {}
                 _sys.modules[_key] = mod
+            # ★ 幂等补齐所有共享属性：任一入口先建了模块，都不能少了 lock
+            #   （踩过：__init__ 只建 instances/counters → persistence.__new__ 里 sh.lock 直接 AttributeError，插件加载失败）
+            for _attr, _factory in (("instances", dict), ("counters", dict), ("lock", threading.Lock)):
+                if not hasattr(mod, _attr):
+                    setattr(mod, _attr, _factory())
             obj = mod.instances.get("tag_state")
             # ★ 热重载后模块里是「新的类」，但单例还是「旧类的实例」→ 方法可能缺失。
             #   校验过类型，不匹配就重建（否则新加的方法永远 AttributeError）。
@@ -7359,11 +7375,14 @@ class MagicFlow(_PluginBase):
 
             _key = "__magicflow_shared__"
             mod = _sys.modules.get(_key)
-            if mod is None or not hasattr(mod, "instances"):
+            if mod is None:
                 mod = _types.ModuleType(_key)
-                mod.instances = {}
-                mod.counters = {}
                 _sys.modules[_key] = mod
+            # ★ 幂等补齐所有共享属性：任一入口先建了模块，都不能少了 lock
+            #   （踩过：__init__ 只建 instances/counters → persistence.__new__ 里 sh.lock 直接 AttributeError，插件加载失败）
+            for _attr, _factory in (("instances", dict), ("counters", dict), ("lock", threading.Lock)):
+                if not hasattr(mod, _attr):
+                    setattr(mod, _attr, _factory())
             obj = mod.instances.get("tag_groups")
             if obj is not None and not isinstance(obj, FileGroupStore):
                 obj = None
@@ -7830,7 +7849,7 @@ class MagicFlow(_PluginBase):
                 message=(f"已入库资源过推荐流程:复核 {info.get('resources')} 组 · 达标 {info.get('qualified')}"
                          f" · 不达标 {info.get('unqualified')} · 未识别 {info.get('unrecognized')}"
                          f" · 无评分(豁免) {info.get('unrated')}"
-                         f" · 已转普通 {info.get('downgraded')}"
+                         f" · 已转普通 {info.get('downgraded')} · 回升资源 {info.get('restored')}"
                          + ("" if _ap else "（预演，未动）")),
                 data=info,
             )
@@ -7946,11 +7965,14 @@ class MagicFlow(_PluginBase):
 
             _key = "__magicflow_shared__"
             mod = _sys.modules.get(_key)
-            if mod is None or not hasattr(mod, "instances"):
+            if mod is None:
                 mod = _types.ModuleType(_key)
-                mod.instances = {}
-                mod.counters = {}
                 _sys.modules[_key] = mod
+            # ★ 幂等补齐所有共享属性：任一入口先建了模块，都不能少了 lock
+            #   （踩过：__init__ 只建 instances/counters → persistence.__new__ 里 sh.lock 直接 AttributeError，插件加载失败）
+            for _attr, _factory in (("instances", dict), ("counters", dict), ("lock", threading.Lock)):
+                if not hasattr(mod, _attr):
+                    setattr(mod, _attr, _factory())
             obj = mod.instances.get("site_rules")
             # ★ 热重载后模块里是「新的类」，但单例可能还是「旧类的实例」→ 新方法会 AttributeError。
             #   踩过：旧 SiteRules 没有 hr_of → H&R 判定全落到「未知保守」，规则库整块失效。
@@ -10975,6 +10997,28 @@ class MagicFlow(_PluginBase):
         except Exception as e:  # noqa: BLE001
             return Response(success=False, message=str(e))
 
+    def debug_douban(self, name: str = "", year: str = "", keyword: str = "", count: int = 6) -> Response:
+        """诊断:直接查豆瓣评分源（自带 frodo 客户端）。
+
+        - ``name``+``year``：走正式查询（带缓存/限速/匹配），返回命中结果；
+        - ``keyword``：原样列候选（调试匹配规则用）。
+        """
+        try:
+            from .douban import get_client  # noqa: WPS433
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=f"豆瓣模块不可用:{err}")
+        cli = get_client(self)
+        try:
+            if keyword:
+                return Response(success=True, message="候选", data={"candidates": cli.search(keyword, count=count)})
+            hit = cli.lookup(name or "", year or "")
+            if not hit:
+                return Response(success=True, message="未命中/未开分（已进缓存，不重复查）",
+                                data={"hit": None, "stats": cli.stats()})
+            return Response(success=True, message=f"豆瓣 {hit.get('rating')} 分", data={"hit": hit, "stats": cli.stats()})
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=str(err))
+
     def debug_recommend_run(self, task_id: str = "") -> Response:
         """诊断:立即对一个任务跑一轮推荐甄别(不指定则 round-robin 一个)。"""
         try:
@@ -11676,7 +11720,7 @@ class MagicFlow(_PluginBase):
         rep: Dict[str, Any] = {"ok": True, "applied": bool(apply), "resources": len(buckets),
                                "seeds": sum(len(v) for v in buckets.values()),
                                "qualified": 0, "unqualified": 0, "unrecognized": 0,
-                               "downgraded": 0, "failed": 0, "unrated": 0,
+                               "downgraded": 0, "failed": 0, "unrated": 0, "restored": 0,
                                "skip_no_ledger": 0, "skip_state": 0,
                                "samples_fail": [], "samples_keep": [], "samples_unrated": []}
         try:
@@ -11688,6 +11732,10 @@ class MagicFlow(_PluginBase):
         st = self._tag_state()
         _cache: Dict[str, Any] = {}
         _limit = int(limit or 0)
+        try:  # 豆瓣评分源：本轮预算（防风控，超了就回退 TMDB）
+            engine.begin_round(int(cfg.get("douban_max_per_run") or 0))
+        except Exception:  # noqa: BLE001
+            pass
         for gid, members in buckets.items():
             t0 = snap.get(members[0])
             title = str(getattr(t0, "title", "") or "") if t0 is not None else ""
@@ -11710,7 +11758,12 @@ class MagicFlow(_PluginBase):
                 if apply:
                     for hh in members:
                         try:
+                            _was = str((st.get(hh) or {}).get("asset_recheck") or "")
                             st.put(hh, {"asset_recheck": "keep", "asset_recheck_at": time.time()})
+                            # ★ 双向：上一轮被判「不达标」的，这次达标了就放回「静默-资源」
+                            if _was == "fail":
+                                self._silent_to_resource(hh)
+                                rep["restored"] = int(rep.get("restored") or 0) + 1
                         except Exception:  # noqa: BLE001
                             continue
                 continue
