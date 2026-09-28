@@ -215,7 +215,7 @@ export function normalizeSettings(settings = {}) {
     recommend_notify: settings.recommend_notify === undefined ? true : Boolean(settings.recommend_notify),
     recommend_temp_ttl_days: Math.max(0, num(settings.recommend_temp_ttl_days, 7)),
     recommend_disk_min_free_gb: Math.max(0, num(settings.recommend_disk_min_free_gb, 50)),
-    recommend_rating_source: settings.recommend_rating_source === 'tmdb' ? 'tmdb' : 'douban',
+    recommend_rating_source: settings.recommend_rating_source === 'douban' ? 'douban' : 'tmdb',
     recommend_douban_max_per_run: Math.max(0, Math.round(num(settings.recommend_douban_max_per_run, 30))),
     crossseed_guard: settings.crossseed_guard === undefined ? true : Boolean(settings.crossseed_guard),
     crossseed_guard_pct: Math.min(100, Math.max(0, num(settings.crossseed_guard_pct, 5))),

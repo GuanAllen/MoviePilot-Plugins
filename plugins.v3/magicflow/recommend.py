@@ -233,7 +233,7 @@ class RecommendEngine:
         _cfg = getattr(self.plugin, "_recommend_cfg", {}) or {}
         out["rating_tmdb"] = rating
         out["rating_source"] = "tmdb"
-        if str(_cfg.get("rating_source", "douban") or "douban").lower() == "douban":
+        if str(_cfg.get("rating_source", "tmdb") or "tmdb").lower() == "douban":
             _cli = self._douban_client()
             _db = None
             if _cli is not None:

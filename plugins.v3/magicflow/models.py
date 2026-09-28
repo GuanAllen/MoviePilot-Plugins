@@ -287,10 +287,10 @@ class MagicFlowSettingsPayload(BaseModel):
     recommend_enabled: bool = Field(True, description="启用「刷流种甄别与推荐」")
     recommend_min_rating: float = Field(
         7.5, ge=0, le=10,
-        description="推荐门槛：评分需大于该值（默认取豆瓣评分，拿不到回退 TMDB）"
+        description="推荐门槛：评分需大于该值（默认 TMDB 评分；可切换为豆瓣优先）"
     )
     recommend_rating_source: str = Field(
-        "douban", max_length=20,
+        "tmdb", max_length=20,
         description="评分源：douban=豆瓣优先(取不到回退 TMDB) / tmdb=只用 TMDB"
     )
     recommend_douban_max_per_run: int = Field(
