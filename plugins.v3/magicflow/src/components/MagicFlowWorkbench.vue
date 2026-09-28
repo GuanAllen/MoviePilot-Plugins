@@ -300,6 +300,166 @@ function taskBadge(task) {
   if (mode === 'stopped') return runModeMeta('stopped')
   return taskStateMeta(task?.state, task?.enabled ?? true)
 }
+// 任务切换器菜单的副标题：站点 + 关键数字一行表达
+function taskSwitchSubtitle(task) {
+  if (!task) return ''
+  const site = task.site_name || task.site_domain || ''
+  const t = task.task_type || 'bonus'
+  const sc = Number(task.seeding_count || 0)
+  const isBrush = t === 'brush'
+  // stopped 且未运行
+  const mode = task.run_mode || 'running'
+  if (mode === 'stopped') {
+    return site ? `${site} · 已停` : '已停'
+  }
+  if (isBrush) {
+    // 刷流任务：托管数 + 上传量
+    const up = Number(task.task_uploaded || 0)
+    const upText = up ? formatBytes(up) : '—'
+    return site ? `${site} · ${sc} 种 · 上传 ${upText}` : `${sc} 种 · 上传 ${upText}`
+  }
+  // bonus 任务：托管数 + 时魔
+  if (task.site_bonus_ok && task.site_bonus_per_hour != null) {
+    const bh = formatBonus(task.site_bonus_per_hour)
+    return site ? `${site} · ${sc} 种 · ${bh}` : `${sc} 种 · ${bh}`
+  }
+  return site ? `${site} · ${sc} 种` : `${sc} 种`
+}
+// ── ★ 页面注册表（数据驱动，新增功能页只改这个数组，不必动布局）──────────────
+// key 与 open* 处理函数一一对应；后续接入手机端导航 / 底栏 / 更多菜单时统一从这里取。
+const MF_PAGES = [
+  { key: 'recommend', label: '推荐', icon: 'mdi-movie-star-outline' },
+  { key: 'exam', label: '新手考核', icon: 'mdi-school-outline' },
+  { key: 'signin', label: '签到', icon: 'mdi-calendar-check-outline' },
+  { key: 'cloud', label: '云盘归档', icon: 'mdi-cloud-upload-outline' },
+  { key: 'douban', label: '豆瓣评分', icon: 'mdi-database-search-outline' },
+  { key: 'crossseed', label: '跨站取种', icon: 'mdi-swap-horizontal-bold' },
+  { key: 'settings', label: '插件设置', icon: 'mdi-tune-variant' },
+]
+// 统一分发：新增功能页只改 MF_PAGES + 这里加一行
+function mfOpenPage(page) {
+  switch (page.key) {
+    case 'recommend': return openRecommend()
+    case 'exam': return openExam()
+    case 'signin': return openSettings('signin')
+    case 'cloud': return openCloud()
+    case 'douban': return openDoubanService()
+    case 'crossseed': return showCrossseed()
+    case 'settings': return openSettings()
+  }
+}
+// 设置页目录（手机端：标签栏 → 目录列表；桌面端仍用标签栏）
+const MF_SETTINGS_TABS = [
+  { key: 'general', label: '常规', icon: 'mdi-cog-outline' },
+  { key: 'downloader', label: '下载器参数', icon: 'mdi-download-network-outline' },
+  { key: 'paths', label: '下载目录', icon: 'mdi-folder-outline' },
+  { key: 'template', label: '默认任务模板', icon: 'mdi-file-document-outline' },
+  { key: 'iyuu', label: 'IYUU 辅种', icon: 'mdi-sync' },
+  { key: 'fallback', label: '元数据兜底', icon: 'mdi-database-search-outline' },
+  { key: 'cloud', label: '云盘归档', icon: 'mdi-cloud-upload-outline' },
+  { key: 'exam', label: '考核', icon: 'mdi-school-outline' },
+  { key: 'signin', label: '签到', icon: 'mdi-calendar-check-outline' },
+  { key: 'live', label: '站点监控', icon: 'mdi-monitor-eye' },
+  { key: 'recommend', label: '推荐', icon: 'mdi-movie-star-outline' },
+  { key: 'crossseed', label: '跨站', icon: 'mdi-swap-horizontal-bold' },
+  { key: 'rules', label: '站点规则', icon: 'mdi-shield-check-outline' },
+  { key: 'tags', label: '标签管理', icon: 'mdi-tag-multiple-outline' },
+]
+
+// ── 手机端首页（任务列表）导航状态 ────────────────────────────────────────
+// 桌面端无需该状态：相关显隐全部由 @media (max-width: 959px) 的 CSS 控制。
+const mobileView = ref('list') // 'list' | 'detail'
+// 窄屏（手机/平板竖屏）：弹窗改为整页。数据驱动，只改这一处。
+const isNarrow = ref(typeof window !== 'undefined' ? window.matchMedia('(max-width: 959px)').matches : false)
+if (typeof window !== 'undefined') {
+  const mq = window.matchMedia('(max-width: 959px)')
+  const onChange = (e) => { isNarrow.value = e.matches }
+  if (mq.addEventListener) mq.addEventListener('change', onChange)
+  else if (mq.addListener) mq.addListener(onChange)
+}
+const mhOpen = ref({ need: true, live: true, rest: false })
+function isGroupOpen(key) { return !!mhOpen.value[key] }
+function toggleGroup(key) { mhOpen.value = { ...mhOpen.value, [key]: !mhOpen.value[key] } }
+function openTaskMobile(id) { selectTask(id); mobileView.value = 'detail' }
+function backToMobileList() { mobileView.value = 'list' }
+
+// 首页分组：需要你管（有问题/待决策）> 在跑 > 不用管（已停用 / 静默托管）
+const mobileHomeGroups = computed(() => {
+  const need = [], live = [], rest = []
+  for (const t of tasks.value) {
+    if (t.builtin) { rest.push(t); continue }
+    const mode = t.run_mode || 'running'
+    const color = taskBadge(t).color
+    if (color === 'error' || color === 'warning') need.push(t)
+    else if (mode === 'seeding' || mode === 'running') live.push(t)
+    else rest.push(t)
+  }
+  const byBonus = (a, b) => Number(b.site_bonus_per_hour || 0) - Number(a.site_bonus_per_hour || 0)
+  need.sort(byBonus); live.sort(byBonus); rest.sort(byBonus)
+  return [
+    { key: 'need', label: '需要你管', hint: '有问题或待决策', tasks: need },
+    { key: 'live', label: '在跑', hint: '正常养护中', tasks: live },
+    { key: 'rest', label: '不用管', hint: '已停用 / 静默托管', tasks: rest },
+  ].filter(g => g.tasks.length)
+})
+const mobileLiveCount = computed(() => (mobileHomeGroups.value.find(g => g.key === 'live')?.tasks.length) || 0)
+const mobileBonus = computed(() => (Number(summary.value.bonus_per_hour) || 0).toFixed(1))
+const mobileSilentCount = computed(() => tasks.value.find(t => t.builtin)?.seeding_count || 0)
+// 列表行副标题：状态词 + 关键数
+function mobileRowLine(t) {
+  const parts = []
+  const b = taskBadge(t)
+  parts.push(b.text)
+  if (t.seeding_count) parts.push(`${t.seeding_count} 种`)
+  return parts.join(' · ')
+}
+// 列表行右侧主数：刷魔力任务给时魔（/h），刷流任务给上传量
+function mobileRowNum(t) {
+  if (t.task_type === 'brush') return t.task_uploaded ? formatBytes(t.task_uploaded) : ''
+  if (t.site_bonus_ok && t.site_bonus_per_hour != null) return formatBonus(t.site_bonus_per_hour)
+  return ''
+}
+// ── 手机端任务详情：紧凑块（三个数 + 策略一行 + 次级入口）──────────────
+const MF_DETAIL_ENTRIES = [
+  { key: 'diagnostics', label: '运行诊断', icon: 'mdi-stethoscope' },
+  { key: 'pool', label: '种子池', icon: 'mdi-seed-outline' },
+  { key: 'config', label: '任务配置', icon: 'mdi-tune-variant' },
+]
+function mobileDetailEntry(tab) { activeTab.value = activeTab.value === tab ? 'overview' : tab }
+const mobileDetailCards = computed(() => {
+  const t = selectedTask.value
+  if (!t) return []
+  const cards = [{ v: String(t.seeding_count || 0), k: '托管种' }]
+  if (t.task_type === 'brush') {
+    cards.push({ v: formatBytes(t.task_uploaded || 0), k: '本任务上传' })
+    cards.push({ v: siteAccount.value?.ok ? formatBytes(siteAccount.value.upload || 0) : '—', k: '站点上传' })
+  } else {
+    cards.push({ v: t.site_bonus_ok && t.site_bonus_per_hour != null ? Number(t.site_bonus_per_hour).toFixed(2) : '—', k: '时魔 /h' })
+    cards.push({ v: t.site_current_bonus != null ? Number(t.site_current_bonus).toFixed(0) : '—', k: '站点魔力' })
+  }
+  return cards
+})
+const mobileStrategyText = computed(() => {
+  const t = selectedTask.value
+  if (!t) return ''
+  const c = taskConfig.value || {}
+  const parts = [t.task_type === 'brush' ? '刷流' : '刷魔力']
+  if (t.task_type === 'brush') {
+    parts.push(`选种每 ${c.brush_interval ?? '—'} 分钟`)
+    if (c.brush_seed_days) parts.push(`满 ${c.brush_seed_days} 天清理`)
+  } else {
+    parts.push(c.min_bonus_per_hour == null ? '最低魔力自动' : `最低魔力 ${Number(c.min_bonus_per_hour).toFixed(1)}/h`)
+    parts.push(c.protect_perfect === false ? '完美种保护关' : '完美种保护开')
+    if (t.protected_count) parts.push(`接管保护 ${t.protected_count}`)
+  }
+  return parts.join(' · ')
+})
+const mobileDetailHint = computed(() => {
+  const d = detailStats.value || {}
+  if (d.last_error) return `⚠ ${String(d.last_error).slice(0, 60)}`
+  if (d.last_run_at) return `上次运行 ${formatDateTime(d.last_run_at)}`
+  return '尚未运行'
+})
 // 当前任务是否刷流模式（驱动整块工作台按类型显示）
 const taskIsBrush = computed(() => selectedTask.value?.task_type === 'brush')
 // 站点账号真实数据（上传/下载/分享率/做种数，来自站点用户页）
@@ -315,8 +475,11 @@ const goalFactText = computed(() => {
   const t = taskConfig.value || {}
   if (!t.goal_has) return '未设置'
   const unit = t.goal_unit || (t.task_type === 'brush' ? 'GB' : '魔力值')
-  const cur = Number(t.goal_current || 0)
   const tgt = Number(t.goal_target || 0)
+  if (t.goal_source === 'pending') {
+    return `— / ${tgt} ${unit} · 加载中`
+  }
+  const cur = Number(t.goal_current || 0)
   const curText = unit === 'GB' ? cur.toFixed(1) : cur.toFixed(2)
   return `${curText} / ${tgt} ${unit}${t.goal_reached ? '（已达标）' : ''}`
 })
@@ -2142,7 +2305,14 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="magicflow-page" :class="{ 'magicflow-page--compact': compact || status.compact_mode }">
+  <div
+    class="magicflow-page"
+    :class="{
+      'magicflow-page--compact': compact || status.compact_mode,
+      'magicflow-page--m-list': mobileView === 'list',
+      'magicflow-page--m-detail': mobileView === 'detail',
+    }"
+  >
     <header class="magicflow-page__header">
       <div class="magicflow-page__identity">
         <span class="magicflow-logo"><VIcon icon="mdi-magnet" size="20" /></span>
@@ -2177,8 +2347,9 @@ onUnmounted(() => {
               v-for="task in tasks"
               :key="task.id"
               :title="task.name"
-              :subtitle="task.site_name"
+              :subtitle="taskSwitchSubtitle(task)"
               :active="task.id === selectedTaskId"
+              lines="two"
               @click="selectTask(task.id)"
             >
               <template #prepend>
@@ -2349,6 +2520,7 @@ onUnmounted(() => {
 
     <template v-else>
       <div class="magicflow-mobile-toolbar">
+        <VBtn class="magicflow-mobile-back" icon="mdi-arrow-left" variant="text" aria-label="返回列表" @click="backToMobileList" />
         <VMenu v-if="tasks.length > 1" :close-on-content-click="true" location="bottom start">
           <template #activator="{ props: menuProps }">
             <button
@@ -2374,8 +2546,9 @@ onUnmounted(() => {
               v-for="task in tasks"
               :key="task.id"
               :title="task.name"
-              :subtitle="task.site_name"
+              :subtitle="taskSwitchSubtitle(task)"
               :active="task.id === selectedTaskId"
+              lines="two"
               @click="selectTask(task.id)"
             >
               <template #prepend>
@@ -2391,6 +2564,59 @@ onUnmounted(() => {
         <VBtn class="magicflow-mobile-add" variant="tonal" color="primary" prepend-icon="mdi-plus" @click="openCreateTask">
           新建
         </VBtn>
+      </div>
+
+      <!-- ★ 手机端首页：任务列表（列表优先；详情是第二层）。桌面端由 CSS 隐藏。 -->
+      <div class="magicflow-mobile-home">
+        <div class="mh-hero">
+          <div class="mh-hero__v">{{ mobileBonus }}<small>/h</small></div>
+          <div class="mh-hero__s">{{ mobileLiveCount }} 个站在跑<template v-if="mobileSilentCount"> · 静默托管 {{ mobileSilentCount }} 种</template></div>
+        </div>
+        <div v-for="g in mobileHomeGroups" :key="g.key" class="mh-group">
+          <button type="button" class="mh-group__head" @click="toggleGroup(g.key)">
+            <span>{{ g.label }}</span>
+            <span class="mh-count">{{ g.tasks.length }}</span>
+            <VIcon :icon="isGroupOpen(g.key) ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="18" />
+          </button>
+          <div v-show="isGroupOpen(g.key)" class="mh-list">
+            <button
+              v-for="t in g.tasks"
+              :key="t.id"
+              type="button"
+              class="mh-row"
+              @click="openTaskMobile(t.id)"
+            >
+              <span class="mh-dot" :class="`is-${taskBadge(t).color}`" />
+              <span class="mh-row__main">
+                <span class="mh-row__nm">{{ t.site_name || t.name }}</span>
+                <span class="mh-row__st">{{ mobileRowLine(t) }}</span>
+              </span>
+              <span v-if="mobileRowNum(t)" class="mh-row__num">{{ mobileRowNum(t) }}</span>
+              <VIcon icon="mdi-chevron-right" size="18" class="mh-row__chev" />
+            </button>
+          </div>
+        </div>
+        <div class="mh-sect">功能</div>
+        <div class="mh-tools">
+          <button
+            v-for="p in MF_PAGES.filter(item => item.key !== 'settings')"
+            :key="p.key"
+            type="button"
+            class="mh-tool"
+            @click="mfOpenPage(p)"
+          >
+            <VIcon :icon="p.icon" size="20" />
+            <span>{{ p.label }}</span>
+          </button>
+        </div>
+        <div class="mh-foot">
+          <button type="button" class="mh-btn" @click="openCreateTask">
+            <VIcon icon="mdi-plus" size="18" />新建任务
+          </button>
+          <button type="button" class="mh-btn mh-btn--ghost" @click="openSettings()">
+            <VIcon icon="mdi-tune-variant" size="18" />设置
+          </button>
+        </div>
       </div>
 
       <div class="magicflow-layout">
@@ -2494,6 +2720,36 @@ onUnmounted(() => {
           </section>
 
           <template v-if="!selectedTask.builtin">
+          <!-- ★ 手机端任务详情紧凑块（结论 + 三个数 + 策略一行 + 次级入口）；桌面端 CSS 隐藏 -->
+          <div class="magicflow-mobile-detail">
+            <div class="md-verdict" :class="{ 'is-warn': !!detailStats.last_error }">
+              <span class="md-dot" :class="`is-${selectedState.color}`" />
+              <div class="md-verdict__body">
+                <div class="md-v">{{ selectedState.text }}<template v-if="!detailStats.last_error"> · 无需操作</template></div>
+                <div class="md-s">{{ mobileDetailHint }}</div>
+              </div>
+            </div>
+            <div class="md-cards">
+              <div v-for="c in mobileDetailCards" :key="c.k" class="md-card">
+                <b>{{ c.v }}</b><span>{{ c.k }}</span>
+              </div>
+            </div>
+            <div class="md-strategy">{{ mobileStrategyText }}</div>
+            <div class="md-entries">
+              <button
+                v-for="e in MF_DETAIL_ENTRIES"
+                :key="e.key"
+                type="button"
+                class="md-entry"
+                :class="{ 'is-active': activeTab === e.key }"
+                @click="mobileDetailEntry(e.key)"
+              >
+                <VIcon :icon="e.icon" size="20" />
+                <span>{{ e.label }}</span>
+              </button>
+            </div>
+          </div>
+
           <div class="magicflow-tabs" role="tablist">
             <button
               v-for="tab in MF_TABS"
@@ -2510,7 +2766,7 @@ onUnmounted(() => {
           </div>
 
           <VWindow v-model="activeTab" :touch="false" class="magicflow-window">
-            <VWindowItem value="overview">
+            <VWindowItem value="overview" class="magicflow-window-ov">
               <div class="magicflow-stat-grid">
                 <VSheet class="magicflow-stat magicflow-stat--accent app-surface-static">
                   <strong>{{ selectedTask.seeding_count || 0 }}</strong>
@@ -2539,6 +2795,12 @@ onUnmounted(() => {
                 <VSheet class="magicflow-stat app-surface-static">
                   <strong>{{ detailStats.last_added || 0 }} / {{ detailStats.last_reused || 0 }} / {{ detailStats.last_deleted || 0 }}</strong>
                   <span>上次运行 新增/复用/删除 · 当前托管 {{ detailStats.last_kept || selectedTask.seeding_count || 0 }}</span>
+                </VSheet>
+              </div>
+              <div v-if="(selectedTask.run_mode || 'running') === 'seeding'" class="magicflow-stat-grid magicflow-stat-grid--single">
+                <VSheet class="magicflow-stat magicflow-stat--accent app-surface-static">
+                  <strong>{{ selectedTask.protected_count || 0 }}</strong>
+                  <span>接管保护 · 手动加或 IYUU 回来的种子已纳管并永久保护（不再补种/刷魔力）</span>
                 </VSheet>
               </div>
 
@@ -3185,12 +3447,26 @@ onUnmounted(() => {
       @save="saveTask"
     />
 
-    <VDialog v-model="settingsDialog" max-width="40rem">
+    <VDialog v-model="settingsDialog" max-width="40rem" :fullscreen="isNarrow">
       <VCard class="magicflow-dialog magicflow-settings-dialog">
         <header class="magicflow-settings-dialog__head">
           <span class="magicflow-settings-dialog__title">插件设置</span>
           <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="settingsDialog = false" />
         </header>
+
+        <div class="magicflow-settings-nav">
+          <button
+            v-for="t in MF_SETTINGS_TABS"
+            :key="t.key"
+            type="button"
+            class="magicflow-settings-nav__item"
+            :class="{ 'is-active': settingsTab === t.key }"
+            @click="settingsTab = t.key"
+          >
+            <VIcon :icon="t.icon" size="18" />
+            <span>{{ t.label }}</span>
+          </button>
+        </div>
 
         <VTabs v-model="settingsTab" class="magicflow-settings-dialog__tabs" density="comfortable" show-arrows>
           <VTab value="general" class="magicflow-settings-tab">常规</VTab>
@@ -4385,7 +4661,7 @@ onUnmounted(() => {
       </VCard>
     </VDialog>
 
-    <VDialog v-model="torrentDialog" max-width="34rem">
+    <VDialog v-model="torrentDialog" max-width="34rem" :fullscreen="isNarrow">
       <VCard v-if="activeTorrent" class="magicflow-dialog magicflow-torrent-dialog">
         <header class="magicflow-torrent-dialog__head">
           <div class="magicflow-torrent-dialog__tags">
@@ -4535,7 +4811,7 @@ onUnmounted(() => {
       </VCard>
     </VDialog>
 
-    <VDialog v-model="cloudOpen" max-width="52rem" scrollable>
+    <VDialog v-model="cloudOpen" max-width="52rem" scrollable :fullscreen="isNarrow">
       <VCard class="magicflow-dialog magicflow-cloud-dialog">
         <header class="magicflow-settings-dialog__head">
           <span class="magicflow-settings-dialog__title">云盘归档</span>
@@ -4623,7 +4899,7 @@ onUnmounted(() => {
     </VDialog>
 
     <!-- 跨站辅种：队列 + 流量兜底（3.11.0） -->
-    <VDialog v-model="doubanServiceOpen" max-width="46rem" scrollable>
+    <VDialog v-model="doubanServiceOpen" max-width="46rem" scrollable :fullscreen="isNarrow">
       <VCard class="magicflow-dialog magicflow-douban-dialog">
         <header class="magicflow-settings-dialog__head">
           <span class="magicflow-settings-dialog__title">豆瓣评分服务</span>
@@ -4706,7 +4982,7 @@ onUnmounted(() => {
       </VCard>
     </VDialog>
 
-    <VDialog v-model="crossseedOpen" max-width="52rem" scrollable>
+    <VDialog v-model="crossseedOpen" max-width="52rem" scrollable :fullscreen="isNarrow">
       <VCard class="magicflow-dialog magicflow-crossseed-dialog">
         <header class="magicflow-settings-dialog__head">
           <span class="magicflow-settings-dialog__title">跨站免费取种</span>
@@ -4870,7 +5146,7 @@ onUnmounted(() => {
       </VCard>
     </VDialog>
 
-    <VDialog v-model="recommendOpen" max-width="46rem" scrollable>
+    <VDialog v-model="recommendOpen" max-width="46rem" scrollable :fullscreen="isNarrow">
       <VCard class="magicflow-dialog magicflow-recommend-dialog">
         <header class="magicflow-settings-dialog__head">
           <span class="magicflow-settings-dialog__title">推荐甄别</span>
@@ -5003,7 +5279,7 @@ onUnmounted(() => {
     </VDialog>
 
     <!-- 新手考核：汇总弹窗（Layout A，同「推荐」范式） -->
-    <VDialog v-model="examOpen" max-width="46rem" scrollable>
+    <VDialog v-model="examOpen" max-width="46rem" scrollable :fullscreen="isNarrow">
       <VCard class="magicflow-dialog magicflow-exam-dialog">
         <header class="magicflow-settings-dialog__head">
           <span class="magicflow-settings-dialog__title">新手考核</span>
@@ -5980,6 +6256,16 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
+}
+
+.magicflow-stat-grid--single {
+  grid-template-columns: minmax(0, 1fr);
+  margin-block-start: 12px;
+}
+
+.magicflow-stat-grid--single .magicflow-stat {
+  min-block-size: auto;
+  padding-block: 12px;
 }
 
 .magicflow-stat,
@@ -7400,6 +7686,12 @@ onUnmounted(() => {
 .magicflow-page .magicflow-task-switch__menu {
   min-inline-size: 15rem;
 }
+/* 任务切换菜单项：站点 + 关键数字 (两行子文字) */
+.magicflow-page .magicflow-task-switch__menu .v-list-item__subtitle {
+  font-size: 11px !important;
+  opacity: 0.85;
+  letter-spacing: 0.01em;
+}
 
 @media (max-width: 959px) {
   /* 桌面品牌头里的切换胶囊隐藏；移动端由工具栏承担 */
@@ -7687,6 +7979,151 @@ onUnmounted(() => {
   .magicflow-page {
     padding-block-end: 76px;
   }
+}
+
+/* ── ★ 手机端首页（任务列表）────────────────────────────────────────── */
+.magicflow-page .magicflow-mobile-home { display: none; }
+.magicflow-page .magicflow-mobile-back { display: none; }
+
+.magicflow-page .mh-hero {
+  padding: 18px 18px 16px;
+  border-radius: 18px;
+  background: linear-gradient(140deg, rgba(139, 123, 240, 0.20), rgba(139, 123, 240, 0.05));
+  border: 1px solid rgba(139, 123, 240, 0.30);
+}
+.magicflow-page .mh-hero__v { font-size: 34px; font-weight: 800; letter-spacing: 0.5px; line-height: 1; }
+.magicflow-page .mh-hero__v small { font-size: 14px; font-weight: 600; color: rgba(231, 234, 246, 0.6); margin-inline-start: 4px; }
+.magicflow-page .mh-hero__s { margin-block-start: 8px; font-size: 12.5px; color: rgba(231, 234, 246, 0.62); }
+
+.magicflow-page .mh-group { display: flex; flex-direction: column; gap: 8px; margin-block-start: 16px; }
+.magicflow-page .mh-group__head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 6px; background: transparent; border: 0;
+  color: rgba(231, 234, 246, 0.66); font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.magicflow-page .mh-group__head .mh-count { color: rgba(231, 234, 246, 0.4); }
+.magicflow-page .mh-group__head .v-icon { margin-inline-start: auto; }
+.magicflow-page .mh-list { display: flex; flex-direction: column; gap: 8px; }
+
+.magicflow-page .mh-row {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: start;
+  padding: 14px; border-radius: 15px;
+  background: rgba(24, 30, 54, 0.9); border: 1px solid var(--magicflow-panel-brd);
+  color: inherit; font: inherit; cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+.magicflow-page .mh-row:active { background: rgba(139, 123, 240, 0.14); }
+.magicflow-page .mh-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: #6b7391; }
+.magicflow-page .mh-dot.is-primary,
+.magicflow-page .mh-dot.is-success { background: #8b7bf0; box-shadow: 0 0 8px rgba(139, 123, 240, 0.8); }
+.magicflow-page .mh-dot.is-error { background: #f2726d; box-shadow: 0 0 8px rgba(242, 114, 109, 0.7); }
+.magicflow-page .mh-dot.is-warning { background: #e8b24d; box-shadow: 0 0 8px rgba(232, 178, 77, 0.7); }
+.magicflow-page .mh-row__main { min-inline-size: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 3px; }
+.magicflow-page .mh-row__nm { font-size: 14.5px; font-weight: 650; }
+.magicflow-page .mh-row__st { font-size: 11.5px; color: rgba(231, 234, 246, 0.55); }
+.magicflow-page .mh-row__num { font-size: 16px; font-weight: 800; flex: 0 0 auto; }
+.magicflow-page .mh-row__chev { color: rgba(231, 234, 246, 0.32); flex: 0 0 auto; }
+
+.magicflow-page .mh-sect { margin-block-start: 22px; font-size: 11px; color: rgba(231, 234, 246, 0.38); letter-spacing: 0.4px; padding: 0 6px 6px; }
+.magicflow-page .mh-tools { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+.magicflow-page .mh-tool {
+  display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 6px;
+  border-radius: 15px; background: rgba(24, 30, 54, 0.9); border: 1px solid var(--magicflow-panel-brd);
+  color: rgba(231, 234, 246, 0.66); font: inherit; font-size: 12px; cursor: pointer;
+}
+.magicflow-page .mh-tool:active { background: rgba(139, 123, 240, 0.14); }
+.magicflow-page .mh-foot { display: flex; gap: 10px; margin-block-start: 22px; }
+
+.magicflow-page .mh-btn {
+  flex: 1 1 0; display: flex; align-items: center; justify-content: center; gap: 6px;
+  block-size: 46px; border-radius: 14px; border: 0; cursor: pointer;
+  font-size: 14px; font-weight: 650; color: #fff;
+  background: linear-gradient(145deg, #9484f5, #6a5cd8);
+}
+.magicflow-page .mh-btn--ghost {
+  background: rgba(20, 26, 48, 0.9); border: 1px solid var(--magicflow-panel-brd);
+  color: rgba(231, 234, 246, 0.66);
+}
+
+@media (max-width: 959px) {
+  /* 列表页：显示首页，隐藏工作区与旧移动工具栏 / 桌面计数胶囊 */
+  .magicflow-page--m-list .magicflow-mobile-home {
+    display: flex; flex-direction: column; padding: 2px 0 6px;
+  }
+  .magicflow-page--m-list .magicflow-layout,
+  .magicflow-page--m-list .magicflow-mobile-toolbar { display: none; }
+  /* 手机端隐藏自相矛盾的运行计数胶囊（信息已由首页大数承担） */
+  .magicflow-page .magicflow-enabled-chip { display: none; }
+  /* 详情页：隐藏首页 */
+  .magicflow-page--m-detail .magicflow-mobile-home { display: none; }
+  /* 详情页显示返回列表按钮 */
+  .magicflow-page .magicflow-mobile-back { display: inline-flex; }
+}
+
+/* ── ★ 手机端任务详情：紧凑块 ─────────────────────────── */
+.magicflow-page .magicflow-mobile-detail { display: none; }
+.magicflow-page .md-verdict {
+  display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-radius: 16px;
+  background: linear-gradient(140deg, rgba(90, 209, 154, 0.15), rgba(90, 209, 154, 0.04));
+  border: 1px solid rgba(90, 209, 154, 0.32);
+}
+.magicflow-page .md-verdict.is-warn {
+  background: linear-gradient(140deg, rgba(242, 114, 109, 0.15), rgba(242, 114, 109, 0.04));
+  border-color: rgba(242, 114, 109, 0.34);
+}
+.magicflow-page .md-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: #8b7bf0; box-shadow: 0 0 8px rgba(139, 123, 240, 0.8); }
+.magicflow-page .md-dot.is-error { background: #f2726d; box-shadow: 0 0 8px rgba(242, 114, 109, 0.7); }
+.magicflow-page .md-dot.is-warning { background: #e8b24d; box-shadow: 0 0 8px rgba(232, 178, 77, 0.7); }
+.magicflow-page .md-dot.is-secondary { background: #6b7391; box-shadow: none; }
+.magicflow-page .md-verdict__body { min-inline-size: 0; }
+.magicflow-page .md-v { font-size: 15px; font-weight: 750; color: #8fe6b8; }
+.magicflow-page .md-verdict.is-warn .md-v { color: #f59793; }
+.magicflow-page .md-s { font-size: 11.5px; color: rgba(231, 234, 246, 0.6); margin-block-start: 2px; }
+.magicflow-page .md-cards { display: flex; gap: 9px; margin-block-start: 12px; }
+.magicflow-page .md-card { flex: 1 1 0; min-inline-size: 0; background: rgba(24, 30, 54, 0.9); border: 1px solid var(--magicflow-panel-brd); border-radius: 15px; padding: 14px 12px; }
+.magicflow-page .md-card b { font-size: 19px; font-weight: 800; display: block; letter-spacing: 0.2px; }
+.magicflow-page .md-card span { font-size: 10.5px; color: rgba(231, 234, 246, 0.38); margin-block-start: 6px; display: block; }
+.magicflow-page .md-strategy { margin-block-start: 10px; font-size: 12px; color: rgba(231, 234, 246, 0.6); padding: 0 4px; line-height: 1.5; }
+.magicflow-page .md-entries { display: flex; gap: 9px; margin-block-start: 14px; }
+.magicflow-page .md-entry {
+  flex: 1 1 0; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 6px;
+  border-radius: 15px; background: rgba(24, 30, 54, 0.9); border: 1px solid var(--magicflow-panel-brd);
+  color: rgba(231, 234, 246, 0.66); font: inherit; font-size: 12px; cursor: pointer;
+}
+.magicflow-page .md-entry.is-active { color: #cfc7ff; border-color: rgba(139, 123, 240, 0.5); background: rgba(139, 123, 240, 0.16); }
+
+@media (max-width: 959px) {
+  .magicflow-page--m-detail .magicflow-mobile-detail { display: block; }
+  /* 手机端：取消平级四 tab，改为紧凑块 + 次级入口 */
+  .magicflow-page .magicflow-tabs { display: none; }
+  /* 概览窗口里的旧大块内容在手机端隐藏（信息已收进紧凑块 / 任务配置页） */
+  .magicflow-page .magicflow-window .magicflow-window-ov .magicflow-stat-grid,
+  .magicflow-page .magicflow-window .magicflow-window-ov .magicflow-overview-grid { display: none; }
+  .magicflow-page .magicflow-window { padding-block-start: 12px; }
+}
+
+/* ── ★ 设置页手机端目录（桌面端隐藏，仍用标签栏）────────────── */
+.magicflow-settings-nav { display: none; }
+.magicflow-settings-nav__item {
+  display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 6px;
+  border-radius: 14px; background: rgba(24, 30, 54, 0.9); border: 1px solid rgba(140, 150, 220, 0.16);
+  color: rgba(231, 234, 246, 0.66); font: inherit; font-size: 12px; cursor: pointer;
+}
+.magicflow-settings-nav__item.is-active { color: #cfc7ff; border-color: rgba(139, 123, 240, 0.5); background: rgba(139, 123, 240, 0.16); }
+@media (max-width: 959px) {
+  .magicflow-settings-dialog__tabs { display: none; }
+  .magicflow-settings-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 12px 16px; }
+}
+
+/* ── ★ 功能页（整页弹窗）内部网格手机端适配 ───────────────── */
+@media (max-width: 959px) {
+  .magicflow-dialog .magicflow-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .magicflow-dialog .magicflow-stat-grid--single { grid-template-columns: minmax(0, 1fr); }
+  .magicflow-dialog .magicflow-config-grid { grid-template-columns: minmax(0, 1fr); }
+  .magicflow-dialog .magicflow-facts--two { grid-template-columns: minmax(0, 1fr); }
+  .magicflow-dialog .magicflow-run-summary { grid-template-columns: minmax(0, 1fr); }
+  .magicflow-settings-dialog .magicflow-settings-grid { grid-template-columns: minmax(0, 1fr); }
+  .magicflow-settings-dialog .magicflow-settings-switches { grid-template-columns: minmax(0, 1fr); }
 }
 </style>
 

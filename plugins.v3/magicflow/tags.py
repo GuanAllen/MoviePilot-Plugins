@@ -266,17 +266,30 @@ class TagStateStore:
 
     # ---- 读写
     def items(self) -> Dict[str, Dict[str, Any]]:
+        # 缓存 items() 返回接口状态（状态账本写入后会调 _invalidate 失效）
+        cached = getattr(self, "_items_cache", None)
+        if cached is not None:
+            return cached
         try:
             data = self._get_data(STATE_KEY) or {}
         except Exception:  # noqa: BLE001
             return {}
         if not isinstance(data, dict):
             return {}
-        return {str(k).lower(): v for k, v in data.items() if isinstance(v, dict)}
+        out = {str(k).lower(): v for k, v in data.items() if isinstance(v, dict)}
+        self._items_cache = out
+        return out
+
+    def _invalidate(self) -> None:
+        try:
+            self._items_cache = None
+        except Exception:
+            pass
 
     def _write(self, data: Dict[str, Any]) -> None:
         try:
             self._save_data(STATE_KEY, data)
+            self._invalidate()
         except Exception as err:  # noqa: BLE001
             self._log and self._log(f"标签:状态账本写入失败:{err}", "error")
 
