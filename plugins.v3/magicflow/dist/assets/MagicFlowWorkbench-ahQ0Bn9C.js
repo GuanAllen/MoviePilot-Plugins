@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { _ as _export_sfc, c as cloneTask, n as normalizeTask, a as normalizeDownloaderPrefs, b as normalizeDownloaderPaths, d as normalizeDefaults, t as taskStateMeta, r as runModeMeta, e as runStatusText, F as FALLBACK_SOURCE_OPTIONS, g as formatBytes, f as formatBonus, R as RUN_MODES, h as formatDateTime, i as formatDurationSeconds, S as SORT_RULE_TYPES, j as cloudStatusMeta, k as recommendStatusMeta, u as unwrapResponse, l as normalizeSettings, m as normalizeSortRules, o as formatDuration, p as normalizeIyuuSites } from './_plugin-vue_export-helper-BHYbEPds.js';
+import { _ as _export_sfc, c as cloneTask, n as normalizeTask, a as normalizeDownloaderPrefs, b as normalizeDownloaderPaths, d as normalizeDefaults, t as taskStateMeta, r as runModeMeta, e as runStatusText, F as FALLBACK_SOURCE_OPTIONS, g as formatBytes, f as formatBonus, R as RUN_MODES, h as formatDateTime, i as formatDurationSeconds, S as SORT_RULE_TYPES, j as cloudStatusMeta, k as recommendStatusMeta, u as unwrapResponse, l as normalizeSettings, m as normalizeSortRules, o as formatDuration, p as normalizeIyuuSites } from './_plugin-vue_export-helper-CD6piqJp.js';
 
 const {unref:_unref$1,toDisplayString:_toDisplayString$1,createTextVNode:_createTextVNode$1,resolveComponent:_resolveComponent$1,withCtx:_withCtx$1,createVNode:_createVNode$1,openBlock:_openBlock$1,createBlock:_createBlock$1,createCommentVNode:_createCommentVNode$1,renderList:_renderList$1,Fragment:_Fragment$1,createElementBlock:_createElementBlock$1,createElementVNode:_createElementVNode$1,withModifiers:_withModifiers$1} = await importShared('vue');
 
@@ -8162,14 +8162,11 @@ return (_ctx, _cache) => {
                                         density: "comfortable"
                                       }, null, 8, ["modelValue"]),
                                       _createVNode(_component_VTextField, {
-                                        modelValue: settingsDraft.value.recommend_douban_max_per_run,
-                                        "onUpdate:modelValue": _cache[96] || (_cache[96] = $event => ((settingsDraft.value.recommend_douban_max_per_run) = $event)),
-                                        modelModifiers: { number: true },
-                                        type: "number",
-                                        min: "0",
-                                        step: "10",
-                                        label: "每轮豆瓣查询上限",
-                                        hint: "超过就本轮回退 TMDB（防豆瓣限流），默认 30；0 = 不限",
+                                        modelValue: settingsDraft.value.recommend_douban_service_url,
+                                        "onUpdate:modelValue": _cache[96] || (_cache[96] = $event => ((settingsDraft.value.recommend_douban_service_url) = $event)),
+                                        label: "豆瓣服务地址",
+                                        placeholder: "http://magicflow-douban:18789",
+                                        hint: "独立服务 magicflow-douban 的地址，留空用默认；本地查询 <1ms，不受豆瓣限流影响",
                                         "persistent-hint": "",
                                         variant: "outlined",
                                         density: "comfortable"
@@ -8192,7 +8189,7 @@ return (_ctx, _cache) => {
                                         "item-title": "title",
                                         "item-value": "value",
                                         label: "评分来源",
-                                        hint: "默认只用 TMDB；豆瓣优先需自备网络与限流容忍度（20s/次）",
+                                        hint: "默认只用 TMDB；豆瓣优先走本地服务 magicflow-douban（不再直连豆瓣）",
                                         "persistent-hint": "",
                                         variant: "outlined",
                                         density: "comfortable"
@@ -10886,6 +10883,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-ca15f956"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-d3aafb73"]]);
 
 export { MagicFlowWorkbench as M };
