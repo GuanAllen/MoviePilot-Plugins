@@ -394,6 +394,7 @@ function backToMobileList() { mobileView.value = 'list' }
 // 首页分组：**按站点聚合**（同站多任务折叠为一行，时魔只算一次）→ 再按优先级分组
 // 需要你管（有问题/待决策）> 在跑 > 不用管（已停用 / 静默托管）
 function mhTaskRank(t) {
+  if (t.attention) return 0
   if (t.builtin) return 3
   const c = taskBadge(t).color
   if (c === 'error' || c === 'warning') return 0
@@ -413,6 +414,7 @@ const mobileHomeGroups = computed(() => {
     const head = s.tasks[0]
     s.bonus = head.site_bonus_ok ? Number(head.site_bonus_per_hour || 0) : 0
     s.num = mobileRowNum(head)
+    s.attention = s.tasks.map(x => x.attention).find(Boolean) || null
     return s
   })
   const byBonus = (a, b) => b.bonus - a.bonus
@@ -502,6 +504,8 @@ const mobileDetailHint = computed(() => {
   if (d.last_run_at) return `上次运行 ${formatDateTime(d.last_run_at)}`
   return '尚未运行'
 })
+// 「需要你管」：后端给的信号（出错 / 站点读不到 / 从未成功）
+const detailAttention = computed(() => selectedTask.value?.attention || detailStats.value?.attention || null)
 // 当前任务是否刷流模式（驱动整块工作台按类型显示）
 const taskIsBrush = computed(() => selectedTask.value?.task_type === 'brush')
 // 站点账号真实数据（上传/下载/分享率/做种数，来自站点用户页）
@@ -2627,13 +2631,13 @@ onUnmounted(() => {
                 class="mh-row"
                 @click="openSiteRow(s)"
               >
-                <span class="mh-dot" :class="`is-${taskBadge(s.tasks[0]).color}`" />
+                <span class="mh-dot" :class="`is-${s.attention ? s.attention.level : taskBadge(s.tasks[0]).color}`" />
                 <span class="mh-row__main">
                   <span class="mh-row__nm">
                     {{ s.site }}
                     <span v-if="siteMulti(s)" class="mh-row__tag">{{ s.tasks.length }} 任务</span>
                   </span>
-                  <span class="mh-row__st">{{ mobileRowLine(s.tasks[0]) }}</span>
+                  <span class="mh-row__st" :class="{ 'is-att': s.attention }">{{ s.attention ? s.attention.text : mobileRowLine(s.tasks[0]) }}</span>
                 </span>
                 <span v-if="s.num" class="mh-row__num">{{ s.num }}</span>
                 <VIcon
@@ -2784,12 +2788,13 @@ onUnmounted(() => {
           <template v-if="!selectedTask.builtin">
           <!-- ★ 手机端任务详情紧凑块（结论 + 三个数 + 策略一行 + 次级入口）；桌面端 CSS 隐藏 -->
           <div class="magicflow-mobile-detail">
-            <div class="md-verdict" :class="{ 'is-warn': !!detailStats.last_error }">
-              <span class="md-dot" :class="`is-${selectedState.color}`" />
+            <div class="md-verdict" :class="{ 'is-warn': !!detailAttention }">
+              <span class="md-dot" :class="`is-${detailAttention ? detailAttention.level : selectedState.color}`" />
               <div class="md-verdict__body">
-                <div class="md-v">{{ selectedState.text }}<template v-if="!detailStats.last_error"> · 无需操作</template></div>
-                <div class="md-s">{{ mobileDetailHint }}</div>
+                <div class="md-v">{{ detailAttention ? detailAttention.text : selectedState.text }}<template v-if="!detailAttention"> · 无需操作</template></div>
+                <div class="md-s">{{ detailAttention ? detailAttention.detail : mobileDetailHint }}</div>
               </div>
+              <button v-if="detailAttention" type="button" class="md-act" @click="activeTab = 'diagnostics'">{{ detailAttention.action }}</button>
             </div>
             <div class="md-cards">
               <div v-for="c in mobileDetailCards" :key="c.k" class="md-card">
@@ -8210,6 +8215,11 @@ onUnmounted(() => {
 .magicflow-page .md-v { font-size: 15px; font-weight: 750; color: #8fe6b8; }
 .magicflow-page .md-verdict.is-warn .md-v { color: #f59793; }
 .magicflow-page .md-s { font-size: 11.5px; color: rgba(231, 234, 246, 0.6); margin-block-start: 2px; }
+.magicflow-page .md-act {
+  margin-inline-start: auto; flex: 0 0 auto; font: inherit; font-size: 12px; font-weight: 650;
+  padding: 7px 13px; border-radius: 10px; cursor: pointer; color: #fff;
+  background: rgba(242, 114, 109, 0.92); border: 1px solid rgba(242, 114, 109, 0.92);
+}
 .magicflow-page .md-cards { display: flex; gap: 9px; margin-block-start: 12px; }
 .magicflow-page .md-card { flex: 1 1 0; min-inline-size: 0; background: rgba(24, 30, 54, 0.9); border: 1px solid var(--magicflow-panel-brd); border-radius: 15px; padding: 14px 12px; }
 .magicflow-page .md-card b { font-size: 19px; font-weight: 800; display: block; letter-spacing: 0.2px; }
