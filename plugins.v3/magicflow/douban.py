@@ -19,7 +19,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 DEFAULT_SERVICE_URL = os.environ.get("MAGICFLOW_DOUBAN_URL", "http://magicflow-douban:18789")
 HTTP_TIMEOUT = float(os.environ.get("MAGICFLOW_DOUBAN_TIMEOUT", "6"))
@@ -89,25 +89,6 @@ class DoubanRating:
         out.setdefault("source", "magicflow-douban")
         out["snapshot"] = True  # 兼容旧调用方的字段语义：来自本地库
         return out
-
-    def lookup_batch(self, items: List[dict]) -> List[Optional[Dict[str, Any]]]:
-        payload = self._req("/search_batch", method="POST",
-                            body={"items": [{"title": i.get("title"), "year": i.get("year")} for i in items]})
-        if not payload:
-            return [None] * len(items)
-        out = []
-        for r in payload.get("results") or []:
-            h = r.get("hit")
-            if h:
-                h = dict(h)
-                h.setdefault("source", "magicflow-douban")
-                h["snapshot"] = True
-            out.append(h)
-        return out
-
-    def search(self, keyword: str, count: int = 6) -> Optional[List[dict]]:
-        """本地服务不支持关键词模糊搜索，返回 None（调用方按「无结果」处理）。"""
-        return None
 
     def begin_round(self, max_new: int = 0) -> None:
         with self._lock:
