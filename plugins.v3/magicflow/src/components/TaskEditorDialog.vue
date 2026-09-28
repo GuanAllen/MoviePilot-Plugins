@@ -430,6 +430,7 @@ function confirmSaveWithoutGoal() {
                   <VSwitch v-model="localTask.refill_when_empty" label="清理后主动补种" color="primary" hide-details inset />
                   <VSwitch v-model="localTask.reuse_existing" label="复用本机已有资源（辅种）" color="primary" hide-details inset />
                   <VSwitch v-model="localTask.reuse_verify" :disabled="!localTask.reuse_existing" label="辅种前先校验（不匹配自动撤销）" color="primary" hide-details inset />
+                  <VSwitch v-model="localTask.auto_swap" label="自动换种（名额/磁盘/站点接近上限时，按边际魔力换掉低价值种）" color="primary" hide-details inset />
                   <VSwitch v-model="localTask.cleanup_no_progress" label="清理无进度种子（停滞/出错且进度为 0）" color="primary" hide-details inset />
                   <VSwitch v-model="localTask.cleanup_slow_progress" label="清理下载过慢的种子（长期下不完腾名额）" color="primary" hide-details inset />
                   <VSwitch v-model="localTask.purge_unfree_incomplete" label="清理「已不再免费且未下完」的种子" color="primary" hide-details inset />
@@ -586,6 +587,13 @@ function confirmSaveWithoutGoal() {
                     v-model="localTask.reuse_verify"
                     :disabled="!localTask.reuse_existing"
                     label="辅种前先校验（不匹配自动撤销）"
+                    color="primary"
+                    hide-details
+                    inset
+                  />
+                  <VSwitch
+                    v-model="localTask.auto_swap"
+                    label="自动换种（名额/磁盘/站点接近上限时，按边际魔力换掉低价值种）"
                     color="primary"
                     hide-details
                     inset
