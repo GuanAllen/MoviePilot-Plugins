@@ -158,7 +158,7 @@ from .sites.formula_fetch import (
     _norm_title as normalize_title,
 )
 
-__version__ = "3.32.0"
+__version__ = "3.33.0"
 
 
 def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
