@@ -4282,7 +4282,9 @@ function openSignin() {
 // ---------------- 报表（按「几十个站」的规模设计） ----------------
 const signinFilter = ref('all');
 const signinSearch = ref('');
-const SIGNIN_STATUS_TEXT = { ok: '成功', fail: '失败', pending: '待执行', skip: '跳过', none: '无记录' };
+const SIGNIN_STATUS_TEXT = { ok: '成功', fail: '都失败', signfail: '签到失败', loginfail: '登录失败', pending: '待执行', skip: '跳过', none: '无记录' };
+// 失败类（三种颜色）：signfail=签到✗登录✓（红） / loginfail=签到✓登录✗（橙） / fail=都✗（深红）
+const SIGNIN_FAIL_STATUS = ['fail', 'signfail', 'loginfail'];
 function signinStatusText(s) {
   return SIGNIN_STATUS_TEXT[s] || s
 }
@@ -4304,9 +4306,15 @@ function _signinStatus(signin, loginResult, pendingWhenEmpty, cfgSign, cfgLogin)
   const want = _signinWant({ sign: cfgSign, login: cfgLogin, signin, loginResult });
   if (!want.length) return pendingWhenEmpty ? 'pending' : 'none'
   const vals = want.map(([, x]) => x).filter(Boolean);
-  if (vals.some(x => !x.ok && !x.skipped)) return 'fail'
   if (vals.length < want.length) return pendingWhenEmpty ? 'pending' : 'none'
   if (vals.every(x => x.skipped)) return 'skip'
+  // ★ 失败按「谁失败」分色：签到✗=红、登录✗=橙、都✗=深红
+  const bad = k => want.some(([kk, x]) => kk === k && x && !x.ok && !x.skipped);
+  const signBad = bad('签到');
+  const loginBad = bad('登录');
+  if (signBad && loginBad) return 'fail'
+  if (signBad) return 'signfail'
+  if (loginBad) return 'loginfail'
   return 'ok'
 }
 const signinReportTodayRows = computed(() => {
@@ -4327,7 +4335,8 @@ const signinTodayCounts = computed(() => {
   ;(signinReportTodayRows.value || []).forEach(r => {
     const s = _signinStatus(r.signin, r.loginResult, true, r.sign, r.login);
     c.all++;
-    c[s] = (c[s] || 0) + 1;
+    if (SIGNIN_FAIL_STATUS.includes(s)) c.fail++;
+    else c[s] = (c[s] || 0) + 1;
   });
   return c
 });
@@ -4340,8 +4349,9 @@ const signinFilterItems = computed(() => {
     { value: 'ok', label: `成功 ${c.ok}`, color: 'success' },
   ]
 });
+const SIGNIN_ORDER = { fail: 0, signfail: 1, loginfail: 2, pending: 3, ok: 4, skip: 5 };
 const signinTodayList = computed(() => {
-  const ord = { fail: 0, pending: 1, ok: 2, skip: 3 };
+  const ord = SIGNIN_ORDER;
   const q = String(signinSearch.value || '').trim().toLowerCase();
   return (signinReportTodayRows.value || [])
     .map(r => {
@@ -4356,10 +4366,10 @@ const signinTodayList = computed(() => {
         // 全成功 / 待执行：只给简短标记，几十个站也不刷屏（失败才展开原因）
         msg = pairs.map(([k, x]) => (x ? `${k} ${x.ok ? '✓' : (x.skipped ? '跳过' : '✗')}` : `${k} ⏳`)).join(' · ');
       }
-      return { ...r, status, msg: status === 'fail' && rt ? `${msg} · ${rt.next_at} 重试` : msg }
+      return { ...r, status, msg: SIGNIN_FAIL_STATUS.includes(status) && rt ? `${msg} · ${rt.next_at} 重试` : msg }
     })
     .filter(r => !q || String(r.site_name || '').toLowerCase().includes(q))
-    .filter(r => signinFilter.value === 'all' || r.status === signinFilter.value)
+    .filter(r => signinFilter.value === 'all' || (signinFilter.value === 'fail' ? SIGNIN_FAIL_STATUS.includes(r.status) : r.status === signinFilter.value))
     .sort((a, b) => (ord[a.status] - ord[b.status]) || String(a.site_name || '').localeCompare(String(b.site_name || '')))
 });
 // 近 7 天矩阵：行=站点、列=日期（点阵）；异常在前，支持几十个站滚动查看
@@ -8331,7 +8341,7 @@ return (_ctx, _cache) => {
                       (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(signinTodayList.value, (row) => {
                         return (_openBlock(), _createElementBlock("div", {
                           key: row.site_id,
-                          class: "magicflow-signin-row"
+                          class: _normalizeClass(["magicflow-signin-row", 'is-' + row.status])
                         }, [
                           _createElementVNode("span", {
                             class: _normalizeClass(["magicflow-signin-row__dot", 'is-' + row.status])
@@ -8341,7 +8351,7 @@ return (_ctx, _cache) => {
                             class: "magicflow-signin-row__msg",
                             title: row.msg
                           }, _toDisplayString(row.msg || '待执行'), 9, _hoisted_163)
-                        ]))
+                        ], 2))
                       }), 128))
                     ]))
                   : (_openBlock(), _createElementBlock("p", _hoisted_164, "还没有站点结果。先到右上齿轮里勾选要签到的站点。"))
@@ -8390,8 +8400,16 @@ return (_ctx, _cache) => {
                         _createTextVNode("成功")
                       ]),
                       _createElementVNode("span", null, [
+                        _createElementVNode("i", { class: "magicflow-signin-cell is-signfail" }),
+                        _createTextVNode("签到失败")
+                      ]),
+                      _createElementVNode("span", null, [
+                        _createElementVNode("i", { class: "magicflow-signin-cell is-loginfail" }),
+                        _createTextVNode("登录失败")
+                      ]),
+                      _createElementVNode("span", null, [
                         _createElementVNode("i", { class: "magicflow-signin-cell is-fail" }),
-                        _createTextVNode("失败")
+                        _createTextVNode("都失败")
                       ]),
                       _createElementVNode("span", null, [
                         _createElementVNode("i", { class: "magicflow-signin-cell is-pending" }),
@@ -12703,6 +12721,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-bc37803c"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-f6d8b208"]]);
 
 export { MagicFlowWorkbench as M };
