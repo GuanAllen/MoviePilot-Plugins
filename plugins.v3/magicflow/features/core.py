@@ -76,6 +76,7 @@ from ..common import (
     SIGNIN_INTERVAL_MINUTES,
     SIGNIN_QUEUE,
     SIGNIN_RETRY_KEYWORD,
+    SIGNIN_TICK_MINUTES,
     SILENT_HOST_INTERVAL_MINUTES,
     _MF_ACTIVE,
     _cs_parse_site_hours,
