@@ -717,7 +717,7 @@ class TasksMixin:
 
             # 与总览共用同一份「全部种子按标签分组」快照(避免再单独全量拉一次 qB)
             task_torrents = self._task_owned_torrents(
-                task, self._tag_snapshot(task.downloader).get(task.brush_tag, []))
+                task, self._tag_snapshot_view(task.downloader).get(task.brush_tag, []))
             error = None
             self._log(
                 f"API 做种明细:task={task_id} tag=「{task.brush_tag}」 tagged={len(task_torrents)} err={error}"

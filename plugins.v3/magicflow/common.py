@@ -206,6 +206,8 @@ STATS_TTL = 20
 # 下载器「全部种子按标签分组」快照 TTL(秒):一次拉取全部种子(qB 一次 torrents_info),
 # 供所有任务共用(替代「每任务各拉一次全量」)。冷启动 /status 由 N 次全量 → 1 次。
 TAG_SNAPSHOT_TTL = 20.0
+# 展示用标签快照的「最久可容忍陈旧」秒数：超过就阻塞重拉（防一直吃旧数据）
+TAG_SNAPSHOT_STALE_MAX = 300.0
 # 站点用户数据行缓存 TTL(秒):SiteOper.get_userdata_latest() 走 DB + 循环找域名,
 # 一次 _status_heavy 含 7 任务 = 7 次同表 DB 查询。缓存使本轮 / 跨轮复用,DB 1 次/TTL。
 USERDATA_ROW_TTL = 60.0
