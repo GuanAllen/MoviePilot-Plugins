@@ -51,6 +51,7 @@ from ..common import (
     TAG_NEW_TIMEOUT,
     TAG_SNAPSHOT_INTERVAL,
     TAG_SNAPSHOT_TTL,
+    TAG_SNAPSHOT_STALE_MAX,
     _has_media_asset_tag,
     _torrent_hash,
 )
@@ -117,22 +118,18 @@ class TagsMixin:
         # 只统计「本任务托管范围内」的资产(避免把无关 hash 也算进去)
         return {h for h in hashes if h in set(uniq)}
 
-    def _tag_snapshot(self, downloader_name: str = "qbittorrent") -> Dict[str, List[Any]]:
-        """下载器「全部种子按标签分组」快照(tag -> [TorrentInfo]),带短 TTL 缓存。
-
-        **一次拉取全部种子**(qB 一次 torrents_info)供所有任务共用,替代旧的
-        「每任务各调 get_torrents(tags=[tag])(= 各自全量拉取)」。总览、任务列表、
-        做种明细都读这一份,冷启动 /status 的下载器查询由 N 次 → 1 次。
-        """
-        now = time.time()
+    def _tag_snapshot_ctx(self):
+        """快照缓存 + 锁（惰性初始化，两个取快照入口共用）。"""
         cache = getattr(self, "_tag_snapshot_cache", None)
         lock = getattr(self, "_tag_snapshot_lock", None)
         if cache is None or lock is None:
             cache = self._tag_snapshot_cache = {}
             lock = self._tag_snapshot_lock = threading.Lock()
-        hit = cache.get(downloader_name)
-        if hit and (now - float(hit.get("ts", 0))) < TAG_SNAPSHOT_TTL:
-            return hit.get("groups") or {}
+        return cache, lock
+
+    def _tag_snapshot_fetch(self, downloader_name: str = "qbittorrent") -> Dict[str, List[Any]]:
+        """真正去下载器拉一次全量标签快照（单飞：同一下载器并发只拉一次），并写缓存。"""
+        cache, lock = self._tag_snapshot_ctx()
         with lock:
             hit = cache.get(downloader_name)
             if hit and (time.time() - float(hit.get("ts", 0))) < TAG_SNAPSHOT_TTL:
@@ -146,6 +143,60 @@ class TagsMixin:
                 self._log(f"标签快照获取失败: {err}", "warning")
             cache[downloader_name] = {"ts": time.time(), "groups": groups}
             return groups
+
+    def _tag_snapshot(self, downloader_name: str = "qbittorrent") -> Dict[str, List[Any]]:
+        """下载器「全部种子按标签分组」快照（阻塞式：需要最新值时用）。
+
+        **一次拉取全部种子**(qB 一次 torrents_info)供所有任务共用,替代旧的
+        「每任务各调 get_torrents(tags=[tag])(= 各自全量拉取)」。
+        TTL 内命中缓存;**过期就同步重拉** —— 所以刷流 / 标签审计 / 推荐这类
+        「要拿它做决定/写账本」的路径走这里（宁慢一刻，不拿旧数据做决策）。
+        纯展示路径请用 `_tag_snapshot_view`。
+        """
+        cache, _lock = self._tag_snapshot_ctx()
+        hit = cache.get(downloader_name)
+        if hit and (time.time() - float(hit.get("ts", 0))) < TAG_SNAPSHOT_TTL:
+            return hit.get("groups") or {}
+        return self._tag_snapshot_fetch(downloader_name)
+
+    def _tag_snapshot_view(self, downloader_name: str = "qbittorrent") -> Dict[str, List[Any]]:
+        """展示用快照：**stale-while-revalidate**（过期先返回旧值 + 后台单飞刷新）。
+
+        只有「完全没有缓存」或「过期太久（> TAG_SNAPSHOT_STALE_MAX）」才阻塞。
+        总览 / 任务列表这类纯展示路径走这里 —— 界面不再为 qB 全量拉取买单。
+        """
+        cache, _lock = self._tag_snapshot_ctx()
+        hit = cache.get(downloader_name)
+        if hit:
+            age = time.time() - float(hit.get("ts", 0))
+            if age < TAG_SNAPSHOT_TTL:
+                return hit.get("groups") or {}
+            if age < TAG_SNAPSHOT_STALE_MAX:
+                self._spawn_tag_snapshot_refresh(downloader_name)
+                return hit.get("groups") or {}
+        return self._tag_snapshot_fetch(downloader_name)
+
+    def _spawn_tag_snapshot_refresh(self, downloader_name: str = "qbittorrent") -> None:
+        """后台单飞刷新标签快照（同一个下载器同时只跑一个刷新线程）。"""
+        busy = getattr(self, "_tag_snapshot_refreshing", None)
+        if busy is None:
+            busy = self._tag_snapshot_refreshing = set()
+        if downloader_name in busy:
+            return
+        busy.add(downloader_name)
+
+        def _worker() -> None:
+            try:
+                self._tag_snapshot_fetch(downloader_name)
+            except Exception as err:  # noqa: BLE001
+                self._log(f"标签快照后台刷新失败: {err}", "warning")
+            finally:
+                busy.discard(downloader_name)
+
+        try:
+            threading.Thread(target=_worker, name=f"mf-tagsnap-{downloader_name}", daemon=True).start()
+        except Exception:  # noqa: BLE001
+            busy.discard(downloader_name)
 
     # ---------------------------------------------------------
     # 标签模型（3.13.0）

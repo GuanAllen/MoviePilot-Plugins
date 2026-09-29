@@ -82,6 +82,7 @@ class StatusMixin:
             "bonus_day_delta": None,
             "attention": None,
         }
+        _t0 = time.time()
         # 站点上报(黑盒:不再自算模型值)
         try:
             rep = self._site_reported(task)
@@ -95,6 +96,7 @@ class StatusMixin:
             stats["site_user"] = rep.get("user") or {}
         except Exception as err:
             self._log(f"统计任务 [{task.name}] 站点魔力失败: {err}", "warning")
+        _t_site = time.time()
         # 站点上限感知:时魔天花板(B0 + 固定奖励封顶)+ 距上限占用
         try:
             params = self._build_formula_params(task)
@@ -105,9 +107,10 @@ class StatusMixin:
                 stats["ceiling_pct"] = round(min(stats["site_bonus_per_hour"] / ceiling * 100.0, 999.0), 1)
         except Exception:
             pass
+        _t_ceiling = time.time()
         try:
             managed = self._task_owned_torrents(
-                task, self._tag_snapshot(task.downloader).get(task.brush_tag, []))
+                task, self._tag_snapshot_view(task.downloader).get(task.brush_tag, []))
             from collections import Counter
             state_dist = dict(Counter(str(getattr(t, "state", "") or "?") for t in managed))
             self._log(
@@ -150,6 +153,7 @@ class StatusMixin:
                 stats["state"] = "downloading"
         except Exception as err:
             self._log(f"统计任务 [{task.name}] 运行时数据失败: {err}", "warning")
+        _t_managed = time.time()
 
         store_stats: Dict[str, Any] = {}
         if self._store:
@@ -157,6 +161,7 @@ class StatusMixin:
             stats["protected_count"] = store_stats.get("protected_count", 0)
             if store_stats.get("last_error"):
                 stats["state"] = "error"
+        _t_store = time.time()
 
         # ★ 「需要你管」：真实可操作信号（不是只看颜色）
         try:
@@ -205,6 +210,14 @@ class StatusMixin:
         started = self._task_runs.get(task.id)
         if started is not None and (time.time() - started) < self._task_run_timeout:
             stats["state"] = "running"
+        _t_end = time.time()
+        if (_t_end - _t0) > 0.3:
+            self._log(
+                f"统计任务 [{task.name}] 慢 {round((_t_end - _t0) * 1000)}ms"
+                f"（站点上报 {round((_t_site - _t0) * 1000)} / 上限 {round((_t_ceiling - _t_site) * 1000)}"
+                f" / 托管 {round((_t_managed - _t_ceiling) * 1000)} / 存储 {round((_t_store - _t_managed) * 1000)}）",
+                "warning",
+            )
         cache[task.id] = {"ts": time.time(), "data": stats}
         return stats
 
@@ -300,6 +313,7 @@ class StatusMixin:
             mode_counts[run_mode_of(_t)] += 1
         active_tasks = total_tasks - mode_counts["stopped"]
         stats_by_id = self._runtime_stats_bulk(all_tasks)
+        _t_bulk = time.time()
         for task in all_tasks:
             # 运行中的任务 + 「做种中」的任务都在做种(后者只是不跑刷流流程)
             if not task_is_participating(task):
@@ -317,6 +331,7 @@ class StatusMixin:
                 ceiling += float(site_ceiling(self._build_formula_params(task)))
             except Exception:
                 pass
+        _t_sites = time.time()
 
         summary = {
             "total_tasks": total_tasks,
@@ -336,6 +351,12 @@ class StatusMixin:
         }
         self._summary_cache = summary
         self._summary_cache_at = now
+        if (time.time() - now) > 0.3:
+            self._log(
+                f"总览统计慢 {round((time.time() - now) * 1000)}ms"
+                f"（任务统计 {round((_t_bulk - now) * 1000)} / 站点汇总 {round((_t_sites - _t_bulk) * 1000)}）",
+                "warning",
+            )
         return summary
 
     def _build_task_list(self) -> List[Dict[str, Any]]:
