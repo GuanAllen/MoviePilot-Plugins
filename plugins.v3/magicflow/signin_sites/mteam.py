@@ -36,17 +36,29 @@ class MTorrent(_ISiteSigninHandler):
             "Content-Type": "application/json",
             "User-Agent": site_info.get("ua"),
             "Accept": "application/json, text/plain, */*",
-            "Authorization": site_info.get("token")
         }
         url = site_info.get('url')
         timeout = site_info.get("timeout")
-        domain = StringUtils.get_url_domain(url)
+        # ★ 魔流适配：优先用采集模块的 API 通道（域名/鉴权字段来自 MoviePilot 站点配置）。
+        #   原版用 StringUtils.get_url_domain(url) 会拼出 api.kp.m-team.cc（本机无法解析）。
+        base = str(site_info.get("api_base") or "").rstrip("/")
+        if not base:
+            base = f"https://api.{StringUtils.get_url_domain(url)}/api"
+        auth = site_info.get("api_auth") or {}
+        field = str(auth.get("field") or "apikey")
+        header = str(auth.get("header") or "x-api-key")
+        prefix = str(auth.get("prefix") or "")
+        value = str(site_info.get(field) or "") or str(site_info.get("token") or "")
+        if value:
+            headers[header] = f"{prefix}{value}"
+        elif site_info.get("token"):
+            headers["Authorization"] = str(site_info.get("token"))
         # 更新最后访问时间
         res = RequestUtils(headers=headers,
                            timeout=timeout,
                            proxies=settings.PROXY if site_info.get("proxy") else None,
                            referer=f"{url}index"
-                           ).post_res(url=f"https://api.{domain}/api/member/updateLastBrowse")
+                           ).post_res(url=f"{base}/member/updateLastBrowse")
         if res:
             return True, "模拟登录成功"
         elif res is not None:

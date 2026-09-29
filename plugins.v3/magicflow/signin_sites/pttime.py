@@ -19,6 +19,9 @@ class PTTime(_ISiteSigninHandler):
     # 签到成功
     _succeed_regex = ['签到成功']
 
+    # ★ 魔流增强：已签到的站点会返回「拒绝访问：已签到，无需再签」，同样算成功
+    _already_regex = ['已签到', '无需再签', '已经签到', '今日已签']
+
     @classmethod
     def match(cls, url: str) -> bool:
         """
@@ -63,6 +66,12 @@ class PTTime(_ISiteSigninHandler):
         if sign_status:
             logger.info(f"{site} 签到成功")
             return True, '签到成功'
+
+        # 已经签过 → 也视为成功
+        if self.sign_in_result(html_res=html_text,
+                               regexs=self._already_regex):
+            logger.info(f"{site} 今日已签到")
+            return True, '今日已签到'
 
         logger.error(f"{site} 签到失败，签到接口返回 {html_text}")
         return False, '签到失败'
