@@ -1376,7 +1376,9 @@ function openSignin() {
 // ---------------- 报表（按「几十个站」的规模设计） ----------------
 const signinFilter = ref('all')
 const signinSearch = ref('')
-const SIGNIN_STATUS_TEXT = { ok: '成功', fail: '失败', pending: '待执行', skip: '跳过', none: '无记录' }
+const SIGNIN_STATUS_TEXT = { ok: '成功', fail: '都失败', signfail: '签到失败', loginfail: '登录失败', pending: '待执行', skip: '跳过', none: '无记录' }
+// 失败类（三种颜色）：signfail=签到✗登录✓（红） / loginfail=签到✓登录✗（橙） / fail=都✗（深红）
+const SIGNIN_FAIL_STATUS = ['fail', 'signfail', 'loginfail']
 function signinStatusText(s) {
   return SIGNIN_STATUS_TEXT[s] || s
 }
@@ -1398,9 +1400,15 @@ function _signinStatus(signin, loginResult, pendingWhenEmpty, cfgSign, cfgLogin)
   const want = _signinWant({ sign: cfgSign, login: cfgLogin, signin, loginResult })
   if (!want.length) return pendingWhenEmpty ? 'pending' : 'none'
   const vals = want.map(([, x]) => x).filter(Boolean)
-  if (vals.some(x => !x.ok && !x.skipped)) return 'fail'
   if (vals.length < want.length) return pendingWhenEmpty ? 'pending' : 'none'
   if (vals.every(x => x.skipped)) return 'skip'
+  // ★ 失败按「谁失败」分色：签到✗=红、登录✗=橙、都✗=深红
+  const bad = k => want.some(([kk, x]) => kk === k && x && !x.ok && !x.skipped)
+  const signBad = bad('签到')
+  const loginBad = bad('登录')
+  if (signBad && loginBad) return 'fail'
+  if (signBad) return 'signfail'
+  if (loginBad) return 'loginfail'
   return 'ok'
 }
 const signinReportTodayRows = computed(() => {
@@ -1421,7 +1429,8 @@ const signinTodayCounts = computed(() => {
   ;(signinReportTodayRows.value || []).forEach(r => {
     const s = _signinStatus(r.signin, r.loginResult, true, r.sign, r.login)
     c.all++
-    c[s] = (c[s] || 0) + 1
+    if (SIGNIN_FAIL_STATUS.includes(s)) c.fail++
+    else c[s] = (c[s] || 0) + 1
   })
   return c
 })
@@ -1434,8 +1443,9 @@ const signinFilterItems = computed(() => {
     { value: 'ok', label: `成功 ${c.ok}`, color: 'success' },
   ]
 })
+const SIGNIN_ORDER = { fail: 0, signfail: 1, loginfail: 2, pending: 3, ok: 4, skip: 5 }
 const signinTodayList = computed(() => {
-  const ord = { fail: 0, pending: 1, ok: 2, skip: 3 }
+  const ord = SIGNIN_ORDER
   const q = String(signinSearch.value || '').trim().toLowerCase()
   return (signinReportTodayRows.value || [])
     .map(r => {
@@ -1450,10 +1460,10 @@ const signinTodayList = computed(() => {
         // 全成功 / 待执行：只给简短标记，几十个站也不刷屏（失败才展开原因）
         msg = pairs.map(([k, x]) => (x ? `${k} ${x.ok ? '✓' : (x.skipped ? '跳过' : '✗')}` : `${k} ⏳`)).join(' · ')
       }
-      return { ...r, status, msg: status === 'fail' && rt ? `${msg} · ${rt.next_at} 重试` : msg }
+      return { ...r, status, msg: SIGNIN_FAIL_STATUS.includes(status) && rt ? `${msg} · ${rt.next_at} 重试` : msg }
     })
     .filter(r => !q || String(r.site_name || '').toLowerCase().includes(q))
-    .filter(r => signinFilter.value === 'all' || r.status === signinFilter.value)
+    .filter(r => signinFilter.value === 'all' || (signinFilter.value === 'fail' ? SIGNIN_FAIL_STATUS.includes(r.status) : r.status === signinFilter.value))
     .sort((a, b) => (ord[a.status] - ord[b.status]) || String(a.site_name || '').localeCompare(String(b.site_name || '')))
 })
 // 近 7 天矩阵：行=站点、列=日期（点阵）；异常在前，支持几十个站滚动查看
@@ -3885,7 +3895,7 @@ onUnmounted(() => {
               />
             </div>
             <div v-if="signinTodayList.length" class="magicflow-signin-today">
-              <div v-for="row in signinTodayList" :key="row.site_id" class="magicflow-signin-row">
+              <div v-for="row in signinTodayList" :key="row.site_id" class="magicflow-signin-row" :class="'is-' + row.status">
                 <span class="magicflow-signin-row__dot" :class="'is-' + row.status" />
                 <span class="magicflow-signin-row__name">{{ row.site_name }}</span>
                 <span class="magicflow-signin-row__msg" :title="row.msg">{{ row.msg || '待执行' }}</span>
@@ -3908,7 +3918,9 @@ onUnmounted(() => {
             </div>
             <div class="magicflow-signin-legend">
               <span><i class="magicflow-signin-cell is-ok" />成功</span>
-              <span><i class="magicflow-signin-cell is-fail" />失败</span>
+              <span><i class="magicflow-signin-cell is-signfail" />签到失败</span>
+              <span><i class="magicflow-signin-cell is-loginfail" />登录失败</span>
+              <span><i class="magicflow-signin-cell is-fail" />都失败</span>
               <span><i class="magicflow-signin-cell is-pending" />待执行</span>
               <span><i class="magicflow-signin-cell is-none" />无记录</span>
             </div>
@@ -6603,9 +6615,16 @@ onUnmounted(() => {
 }
 
 .magicflow-signin-row__dot.is-ok { background: rgb(var(--v-theme-success)); }
-.magicflow-signin-row__dot.is-fail { background: rgb(var(--v-theme-error)); }
+.magicflow-signin-row__dot.is-signfail { background: rgb(var(--v-theme-error)); }
+.magicflow-signin-row__dot.is-loginfail { background: #f59e0b; }
+.magicflow-signin-row__dot.is-fail { background: #b91c1c; }
 .magicflow-signin-row__dot.is-pending { background: rgb(var(--v-theme-warning)); }
 .magicflow-signin-row__dot.is-skip { background: rgba(var(--v-theme-on-surface), 0.3); }
+
+/* 失败行整体着色：签到失败=红 / 登录失败=橙 / 都失败=深红 */
+.magicflow-signin-row.is-signfail .magicflow-signin-row__msg { color: rgb(var(--v-theme-error)); }
+.magicflow-signin-row.is-loginfail .magicflow-signin-row__msg { color: #b45309; }
+.magicflow-signin-row.is-fail .magicflow-signin-row__msg { color: #b91c1c; font-weight: 600; }
 
 .magicflow-signin-row__name {
   flex: 0 1 auto;
@@ -6675,7 +6694,9 @@ onUnmounted(() => {
 }
 
 .magicflow-signin-cell.is-ok { background: rgb(var(--v-theme-success)); }
-.magicflow-signin-cell.is-fail { background: rgb(var(--v-theme-error)); }
+.magicflow-signin-cell.is-signfail { background: rgb(var(--v-theme-error)); }
+.magicflow-signin-cell.is-loginfail { background: #f59e0b; }
+.magicflow-signin-cell.is-fail { background: #b91c1c; }
 .magicflow-signin-cell.is-pending { background: rgb(var(--v-theme-warning)); }
 .magicflow-signin-cell.is-skip { background: rgba(var(--v-theme-on-surface), 0.3); }
 
