@@ -12,6 +12,9 @@ from typing import Any, Dict, List, Tuple
 from ..tags import (
     MARK_REUSE,
     MARK_HR,
+    SUB_PLAIN,
+    SUB_RESOURCE,
+    duty_of,
 )
 
 
@@ -125,6 +128,22 @@ class HrMixin:
             cssrc = dict(self._crossseed_sources().items() or {})
         except Exception:  # noqa: BLE001
             cssrc = {}
+        # ★ 「家人已有身份」→ 不贴（Master 2026-09-30 01:34）：
+        #   同**资源**在本池已经有拿到身份的（资源/普通）→ 新来的跟家人走，不隔离。
+        fam_gids: set = set()
+        try:
+            _files = self._tag_groups()
+            for _h2, _r2 in ledger.items():
+                if str(_r2.get("sub") or "") not in (SUB_RESOURCE, SUB_PLAIN):
+                    continue
+                try:
+                    _g2 = str(_files.group_of(_h2) or "")
+                except Exception:  # noqa: BLE001
+                    _g2 = ""
+                if _g2:
+                    fam_gids.add(_g2)
+        except Exception:  # noqa: BLE001
+            pass
         scope = set(ledger) | set(cssrc)
         for _h, _t in snap.items():
             if MARK_HR in [str(x) for x in (getattr(_t, "tags", None) or [])]:
@@ -168,6 +187,21 @@ class HrMixin:
                     })
                 continue
             rep["obligated"] = int(rep["obligated"]) + 1
+            # ★ 检查站语义（Master 2026-09-30 01:34「h&r 是过检查站给贴的」）：
+            #   ① 家人已有身份（同资源在本池已是 资源/普通）→ 不贴；已贴的摘掉。
+            #   ② 在岗（带职务标签）不贴 —— 等回池（进池/回池当场 + 每小时兜底）再过检查站。
+            try:
+                _g = str(self._tag_groups().group_of(hh) or "")
+            except Exception:  # noqa: BLE001
+                _g = ""
+            if _g and _g in fam_gids:
+                rep["family"] = int(rep.get("family") or 0) + 1
+                if has_tag:
+                    to_clear.append(hh)
+                continue
+            if duty_of(tags)[1] and not has_tag:
+                rep["on_duty"] = int(rep.get("on_duty") or 0) + 1
+                continue
             rep["items"].append({
                 "hash": hh[:12], "site": site, "need_h": round(need, 1),
                 "seeded_h": round(seeded, 1), "src": src,
@@ -244,8 +278,11 @@ class HrMixin:
                     self._log(f"H&R:松绑异常({_dn}):{err}", "warning")
             rep["released"] = _tot
         if apply and (rep["tagged"] or rep["resumed"] or rep["cleared"] or rep["released"]):
+            _skip = ""
+            if rep.get("family") or rep.get("on_duty"):
+                _skip = f"（家人已有身份跳过 {rep.get('family', 0)} · 在岗跳过 {rep.get('on_duty', 0)}）"
             self._log(
                 f"魔流:H&R 统一管理:欠 H&R {rep['obligated']} 个 → 打标 {rep['tagged']} · "
-                f"强拉起 {rep['resumed']} · 结清摘标 {rep['cleared']} · 松绑 {rep['released']}"
+                f"强拉起 {rep['resumed']} · 结清摘标 {rep['cleared']} · 松绑 {rep['released']}{_skip}"
             )
         return rep

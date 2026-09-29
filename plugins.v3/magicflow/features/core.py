@@ -79,6 +79,7 @@ from ..common import (
     SILENT_HOST_INTERVAL_MINUTES,
     _MF_ACTIVE,
     _cs_parse_site_hours,
+    task_is_participating,
 )
 
 
@@ -1057,12 +1058,12 @@ class CoreMixin:
         return tiers
 
     def _apply_seed_upload_limit(self, force: bool = False) -> None:
-        """★ 给托管的每个种子套「单种上传限速」(默认 100 KB/s)。
+        """给**我们管控的**种子套「单种上传限速」（按标签档位）。
 
         - 只动上传（``torrents/setUploadLimit``），不动下载；
-        - 目标 = 所有启用任务的标签 ∪ 跨站标签下的种子（一次快照分组，不逐任务拉）；
-        - 值没变且 10 分钟内扫过 → 跳过（避免频繁写）；
-        - 0 = 不限（显式清除）。
+        - 目标 = 我们管控的标签下的种子（一次快照分组，不逐任务拉）；
+        - **不在我们管控下的种一律不动**（由标签巡检纳管，纳管后自然纳入本档位）；
+        - 值没变且 10 分钟内扫过 → 跳过（避免频繁写）。
         """
         tiers = self._seed_tag_tiers()
         sig = tuple(sorted((t, round(k, 3)) for t, k in tiers.items()))
@@ -1080,20 +1081,26 @@ class CoreMixin:
         try:
             groups, err = downloader.get_torrents_by_tag()
         except Exception as exc:  # noqa: BLE001
-            self._log(f"挂种限速:读取种子列表失败:{exc}", "warning")
+            self._log(f"单种限速:读取种子列表失败:{exc}", "warning")
             return
         if err and not groups:
             return
         by_kbps: Dict[float, set] = {}
+        # ★ 5.0.0：身份 + 职务两标签并存 → 同一颗种可能命中多档；按**最高档**取（刷流 > 挂种）
+        _pick: Dict[str, float] = {}
         for tag, kbps in tiers.items():
             for t in (groups or {}).get(tag, []) or []:
                 h = str(getattr(t, "hash", "") or "").lower()
-                if h:
-                    by_kbps.setdefault(kbps, set()).add(h)
-        if not by_kbps:
-            self._seed_up_limit_last = (sig, time.time())
-            return
+                if not h:
+                    continue
+                if h in _pick and _pick[h] >= kbps:
+                    continue
+                _pick[h] = max(float(_pick.get(h, 0.0)), float(kbps))
+        for h, kbps in _pick.items():
+            by_kbps.setdefault(kbps, set()).add(h)
         self._seed_up_limit_last = (sig, time.time())
+        if not by_kbps:
+            return
         parts = []
         for kbps, hashes in sorted(by_kbps.items()):
             try:
@@ -1102,11 +1109,11 @@ class CoreMixin:
                 n, serr = 0, str(exc)
             label = f"{kbps:g} KB/s" if kbps > 0 else "不限速"
             if serr:
-                self._log(f"挂种限速:单种上传限速写入部分失败({label}):{serr}", "warning")
+                self._log(f"单种限速:写入部分失败({label}):{serr}", "warning")
             elif n:
                 parts.append(f"{label}×{n}")
         if parts:
-            msg = f"挂种限速:已设置单种上传 {' / '.join(parts)}"
+            msg = f"单种限速:我们管控的种 → {' / '.join(parts)}"
             self._dbg(msg)
             self._log(msg)
 
@@ -1122,14 +1129,17 @@ class CoreMixin:
     def _apply_run_mode(self, task: MagicFlowTaskConfig, mode: str) -> Dict[str, int]:
         """按运行状态操作托管种子(只动本任务标签内的种子,保文件、可逆)。
 
-        - ``running``:恢复所有被暂停的托管种(尊重手动暂停),随后立刻跑一轮 check;
-        - ``seeding``:暂停「未完成」种(防非免费偷下),已完成种继续做种;
-        - ``stopped``:暂停全部托管种(保文件)。
+        - ``running``(上班+招人):恢复所有被暂停的托管种(尊重手动暂停),随后立刻跑一轮 check;
+        - ``seeding``(上班):暂停「未完成」种(防非免费偷下),已完成种继续做种;
+        - ``stopped``(遣散):名下种子**退回静默仓库**(释放账本占用) + 暂停(保文件)。
 
-        返回 {paused, resumed}。
+        ★ 口径来源（Master 2026-09-30 00:37）：
+          停止=遣散大家、做种=叫大家来上班、运行=上班+招人。
+
+        返回 {paused, resumed, released}。
         """
         mode = self._normalize_run_mode(mode)
-        out = {"paused": 0, "resumed": 0}
+        out = {"paused": 0, "resumed": 0, "released": 0}
         downloader = self._get_downloader(task.downloader)
         if not downloader or not downloader.is_available:
             if mode == "running":
@@ -1173,10 +1183,31 @@ class CoreMixin:
         if resume_hashes:
             n, _e = downloader.resume_torrents(resume_hashes)
             out["resumed"] = int(n or 0)
-        mode_label = {"running": "运行中", "seeding": "做种中", "stopped": "已停止"}.get(mode, mode)
+        # ★ 4.6.0 遣散：停止 → 名下种子**立刻**退回静默仓库（释放账本占用），
+        #   不等 hourly 的「标签账本维护」worker（那是兜底）。
+        if mode == "stopped":
+            try:
+                _rls = [h for h in (getattr(t, "hash", "") or "" for t in managed) if h]
+                out["released"] = int(
+                    self._tag_release(task, _rls, reason="任务已停止→遣散（退回静默仓库）") or 0
+                )
+            except Exception as err:  # noqa: BLE001
+                self._log(f"魔流 [{task.name}] 遣散退回静默失败:{err}", "warning")
+            # ★ 5.0.0：回池的种**当场**过一遍 H&R 闸门
+            #   （欠工时 → 打「H&R」隔离标 + 强挂保种；没欠的保持不动）
+            if out.get("released"):
+                try:
+                    self._hr_guard_tick(apply=True)
+                except Exception as err:  # noqa: BLE001
+                    self._log(f"魔流 [{task.name}] 遣散后 H&R 闸门失败:{err}", "warning")
+        mode_label = {
+            "running": "运行中（上班+招人）",
+            "seeding": "做种中（上班）",
+            "stopped": "已停止（遣散）",
+        }.get(mode, mode)
         self._log(
             f"魔流 [{task.name}] 运行状态 → {mode_label}"
-            f"(暂停 {out['paused']} / 恢复 {out['resumed']})"
+            f"(暂停 {out['paused']} / 恢复 {out['resumed']} / 遣散 {out.get('released', 0)})"
         )
         if self._store:
             try:
@@ -1186,7 +1217,7 @@ class CoreMixin:
                     items=[OperationItem(
                         hash="",
                         title=f"运行状态 → {mode_label}",
-                        reason=f"暂停 {out['paused']} / 恢复 {out['resumed']}",
+                        reason=f"暂停 {out['paused']} / 恢复 {out['resumed']} / 遣散 {out.get('released', 0)}",
                     )],
                 )
             except Exception as err:
@@ -1211,6 +1242,14 @@ class CoreMixin:
                     f"魔流 [{task.name}] seeding 切状态同站纳管异常:{_adopt_exc}",
                     "warning",
                 )
+        # ★ 5.0.3：状态切换会**贴/摘职务标签** → 限速档位跟着变。
+        #   而 `update_task_state` 里那次限速是在标签写盘**之前**跑的（拿到的是旧档），
+        #   任务又停着不会再有 Check → 限速会**停在旧档**（实测：刷流的种被限成 200KB/s）。
+        #   所以在异步应用完成后**强制重算一次**。
+        try:
+            self._apply_seed_upload_limit(force=True)
+        except Exception as _lim_exc:  # noqa: BLE001
+            self._log(f"魔流 [{task.name}] 切状态后单种限速重算失败:{_lim_exc}", "warning")
         return out
 
     def _save_config(self) -> None:
@@ -1461,14 +1500,16 @@ class CoreMixin:
             self._log(f"停止任务退回静默失败:{err}", "warning")
 
     def _settle_disabled_tasks(self, apply: bool = False) -> Dict[str, Any]:
-        """★ 停止（未启用）的任务：名下种子一律退回「静默」。
+        """★ 「已停止」的任务 = 遣散：名下种子一律退回「静默仓库」。
 
+        口径（Master 2026-09-30 00:37）：运行=上班+招人 / 做种=上班 / 停止=遣散走人。
         静默＝不刷流、不做魔力优化，只是挂着保种/攒魔力，限速走静默档 200KB/s。
-        同站同状态若有**启用中**的任务，则不动（那批种归它）。
+        同站同状态若有**在岗（运行中/做种中）**的任务，则不动（那批种归它）。
         """
         report: Dict[str, Any] = {"tasks": [], "settled": 0, "skipped_live": 0, "pending": 0}
         for t in list(self._task_configs.values()):
-            if bool(getattr(t, "enabled", False)):
+            # ★ 4.6.0 口径：只有 run_mode=stopped 才「遣散」；「做种中」(enabled 派生为 False) 不退。
+            if task_is_participating(t):
                 continue
             try:
                 hs = list(self._task_managed_hashes(t))
@@ -1486,7 +1527,19 @@ class CoreMixin:
                 report["pending"] += len(hs)
                 report["tasks"].append({"task": str(getattr(t, "name", "") or ""), "hashes": len(hs)})
                 continue
-            n = self._tag_release(t, hs, reason="任务已停止→退回静默")
+            n = self._tag_release(t, hs, reason="任务已停止→遣散（退回静默仓库）")
             report["settled"] += n
             report["tasks"].append({"task": str(getattr(t, "name", "") or ""), "settled": n})
+        # ★ 5.0.0：遣散完**当场**过一遍 H&R 闸门（回池的种该隔离就隔离）
+        if apply and report.get("settled"):
+            try:
+                report["hr"] = self._hr_guard_tick(apply=True)
+            except Exception as err:  # noqa: BLE001
+                self._log(f"遣散后 H&R 闸门失败:{err}", "warning")
+        # ★ 5.0.3：遣散改变了职务标签 → 单种限速要按新档位重算（否则停在刷流 5120）
+        if apply and report.get("settled"):
+            try:
+                self._apply_seed_upload_limit(force=True)
+            except Exception as err:  # noqa: BLE001
+                self._log(f"遣散后单种限速重算失败:{err}", "warning")
         return report

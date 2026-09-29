@@ -62,7 +62,7 @@ class EventsMixin:
             groups = self._tag_groups()
             gid = groups.queue_library(h, path=path, media_id=media_id)
             try:
-                self._tag_state().set_asset(h, True, origin_sub="资源")
+                self._tag_state().set_asset(h, True, sub="资源")
             except Exception:  # noqa: BLE001
                 pass
             if gid:

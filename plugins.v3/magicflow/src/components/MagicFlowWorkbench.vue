@@ -3556,7 +3556,7 @@ onUnmounted(() => {
               <div class="magicflow-stat-grid">
                 <VSheet class="magicflow-stat app-surface-static">
                   <strong>{{ selectedTask.seeding_count || 0 }}</strong>
-                  <span>静默池种子 · 其中 H&R 强制挂种 {{ selectedTask.hr_count || 0 }} / 其他 {{ selectedTask.nonhr_count || 0 }}（不强制）</span>
+                  <span>静默池种子 · 其中隔离区（欠 H&R 工时）{{ selectedTask.hr_count || 0 }} / 其他 {{ selectedTask.nonhr_count || 0 }}</span>
                 </VSheet>
                 <VSheet class="magicflow-stat app-surface-static">
                   <strong>{{ selectedTask.host_interval_minutes || 60 }} 分钟</strong>
@@ -3578,11 +3578,11 @@ onUnmounted(() => {
                   <VChip size="small" variant="tonal" color="info">静默-新 {{ (selectedTask.classify && selectedTask.classify.by_state && selectedTask.classify.by_state['新']) || 0 }}</VChip>
                   <VChip size="small" variant="tonal" color="success">静默-资源 {{ (selectedTask.classify && selectedTask.classify.by_state && selectedTask.classify.by_state['资源']) || 0 }}</VChip>
                   <VChip size="small" variant="tonal">静默-普通 {{ (selectedTask.classify && selectedTask.classify.by_state && selectedTask.classify.by_state['普通']) || 0 }}</VChip>
-                  <VChip size="small" variant="tonal" color="error">H&R 强制挂种 {{ selectedTask.hr_count || 0 }}</VChip>
-                  <VChip size="small" variant="tonal">其他（不强制）{{ selectedTask.nonhr_count || 0 }}</VChip>
+                  <VChip size="small" variant="tonal" color="error">隔离区（欠 H&R 工时）{{ selectedTask.hr_count || 0 }}</VChip>
+                  <VChip size="small" variant="tonal">其他 {{ selectedTask.nonhr_count || 0 }}</VChip>
                 </div>
                 <div v-if="silentHostSites.length" class="text-body-2 text-medium-emphasis">
-                  <span v-for="(row, i) in silentHostSites" :key="row.name">{{ i ? '  ·  ' : '' }}{{ row.name }} {{ row.total }}<template v-if="row.hr">（H&R {{ row.hr }}）</template></span>
+                  <span v-for="(row, i) in silentHostSites" :key="row.name">{{ i ? '  ·  ' : '' }}{{ row.name }} {{ row.total }}<template v-if="row.hr">（隔离 {{ row.hr }}）</template></span>
                 </div>
               </VSheet>
 
@@ -3845,7 +3845,7 @@ onUnmounted(() => {
                 min="0"
                 step="50"
                 label="挂种单种上传限速（KB/s）"
-                hint="魔力 / 来源份 / 推荐的种子：单种单独限速，默认 200（低于 100 可能被站点判「恶意限速」）；0 = 不限"
+                hint="我们管控的魔力 / 推荐 / 跨站种：单种限速，默认 200；不在管控下的种不限速；0 = 全不限"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
@@ -3856,7 +3856,7 @@ onUnmounted(() => {
                 min="0"
                 step="256"
                 label="刷流单种上传限速（KB/s）"
-                hint="刷流任务的种子：要冲量，默认 5120（=5 MB/s）；0 = 不限"
+                hint="我们管控的刷流种：要冲量，默认 5120（=5 MB/s）；0 = 不限"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
@@ -5925,29 +5925,8 @@ onUnmounted(() => {
 }
 .magicflow-page {
   /* ===== 深色磨砂主题（仅限本插件工作台作用域）===== */
-  --v-theme-background: 7, 11, 24;
-  --v-theme-on-background: 231, 234, 246;
-  --v-theme-surface: 17, 23, 43;
-  --v-theme-on-surface: 231, 234, 246;
-  --v-theme-surface-variant: 38, 46, 78;
-  --v-theme-on-surface-variant: 200, 206, 232;
-  --v-theme-surface-light: 26, 32, 56;
-  --v-theme-surface-bright: 34, 42, 72;
-  --v-theme-outline: 92, 102, 152;
-  --v-theme-primary: 139, 123, 240;
-  --v-theme-on-primary: 255, 255, 255;
-  --v-theme-secondary: 122, 132, 212;
-  --v-theme-on-secondary: 12, 16, 32;
-  --v-theme-error: 235, 100, 122;
-  --v-theme-on-error: 255, 255, 255;
-  --v-theme-info: 120, 162, 242;
-  --v-theme-on-info: 8, 12, 26;
-  --v-theme-success: 96, 202, 162;
-  --v-theme-on-success: 6, 20, 14;
-  --v-theme-warning: 236, 182, 92;
-  --v-theme-on-warning: 26, 18, 4;
-  --magicflow-panel-bg: rgba(24, 30, 54, 0.72);
-  --magicflow-panel-brd: rgba(140, 150, 220, 0.14);
+  --magicflow-panel-bg: rgb(var(--v-theme-surface));
+  --magicflow-panel-brd: rgba(var(--v-border-color), 0.14);
 
   display: flex;
   flex-direction: column;
@@ -5956,10 +5935,7 @@ onUnmounted(() => {
   padding: 18px;
   color: rgb(var(--v-theme-on-background));
   border-radius: 20px;
-  background:
-    radial-gradient(1100px 560px at 12% -12%, rgba(42, 50, 116, 0.55) 0%, transparent 60%),
-    radial-gradient(820px 480px at 104% -4%, rgba(74, 46, 128, 0.42) 0%, transparent 56%),
-    linear-gradient(180deg, #0b1226 0%, #070b18 100%);
+  background: rgb(var(--v-theme-background));
 }
 
 .magicflow-page--compact {
@@ -6649,8 +6625,8 @@ onUnmounted(() => {
 }
 
 .magicflow-settings-hint--warn {
-  background: rgba(255, 152, 0, 0.10);
-  border-inline-start: 3px solid #ff9800;
+  background: rgba(var(--v-theme-warning), 0.10);
+  border-inline-start: 3px solid rgb(var(--v-theme-warning));
   padding: 8px 10px;
   border-radius: 8px;
 }
@@ -6677,8 +6653,8 @@ onUnmounted(() => {
 }
 
 .magicflow-live-alert--warn {
-  background: rgba(255, 152, 0, 0.12);
-  border-inline-start-color: #ff9800;
+  background: rgba(var(--v-theme-warning), 0.12);
+  border-inline-start-color: rgb(var(--v-theme-warning));
 }
 
 .magicflow-live-alert--info {
@@ -6752,14 +6728,14 @@ onUnmounted(() => {
   margin-block: 10px 4px;
   padding: 8px 10px;
   border-radius: 12px;
-  background: rgba(139, 123, 240, 0.12);
-  box-shadow: inset 0 0 0 1px rgba(139, 123, 240, 0.28);
+  background: rgba(var(--v-theme-primary), 0.12);
+  box-shadow: inset 0 0 0 1px rgba(var(--v-theme-primary), 0.28);
 }
 
 .magicflow-bulk-bar__count {
   font-size: 12px;
   font-weight: 600;
-  color: #cfc7ff;
+  color: rgb(var(--v-theme-primary));
   margin-inline-end: 4px;
 }
 
@@ -6816,7 +6792,7 @@ onUnmounted(() => {
   flex: 0 0 auto;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
-  color: rgba(226, 232, 240, 0.85);
+  color: rgba(var(--v-theme-on-surface), 0.85);
   min-inline-size: 3.2em;
   text-align: end;
 }
@@ -6828,8 +6804,8 @@ onUnmounted(() => {
   margin-block: 14px 4px;
   padding: 12px 14px;
   border-radius: 12px;
-  background: rgba(139, 123, 240, 0.07);
-  box-shadow: inset 0 0 0 1px rgba(139, 123, 240, 0.16);
+  background: rgba(var(--v-theme-primary), 0.07);
+  box-shadow: inset 0 0 0 1px rgba(var(--v-theme-primary), 0.16);
 }
 
 .magicflow-torrent-dialog__grid > div {
@@ -6838,7 +6814,7 @@ onUnmounted(() => {
 
 .magicflow-torrent-dialog__grid dt {
   font-size: 11px;
-  color: rgba(200, 208, 232, 0.65);
+  color: rgba(var(--v-theme-on-surface), 0.65);
   margin-block-end: 2px;
 }
 
@@ -6860,7 +6836,7 @@ onUnmounted(() => {
 .magicflow-torrent-dialog__hash-label {
   flex: 0 0 auto;
   font-size: 11px;
-  color: rgba(200, 208, 232, 0.6);
+  color: rgba(var(--v-theme-on-surface), 0.6);
 }
 
 .magicflow-torrent-dialog__hash code {
@@ -6869,7 +6845,7 @@ onUnmounted(() => {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
   overflow-wrap: anywhere;
-  color: rgba(210, 216, 240, 0.8);
+  color: rgba(var(--v-theme-on-surface), 0.8);
 }
 
 .magicflow-torrent-dialog__actions {
@@ -7577,7 +7553,7 @@ onUnmounted(() => {
     gap: 0;
     margin-block-start: 10px;
     padding-block-start: 8px;
-    border-block-start: 1px solid rgba(140, 150, 220, 0.1);
+    border-block-start: 1px solid rgba(var(--v-border-color), 0.1);
   }
 
   .magicflow-page__actions,
@@ -7709,7 +7685,7 @@ onUnmounted(() => {
   width: 30px;
   height: 30px;
   border-radius: 50%;
-  border: 2px solid rgba(150, 158, 200, 0.3);
+  border: 2px solid rgba(var(--v-border-color), 0.5);
   background: transparent;
   color: transparent;
   z-index: 1;
@@ -7718,12 +7694,12 @@ onUnmounted(() => {
 .magicflow-flow__label {
   font-size: 10.5px;
   line-height: 1.2;
-  color: #5f688c;
+  color: rgba(var(--v-theme-on-surface), 0.45);
   white-space: nowrap;
 }
 
 .magicflow-flow__node.is-done .magicflow-flow__label {
-  color: #9aa3c7;
+  color: rgba(var(--v-theme-on-surface), 0.45);
 }
 
 /* 连接线：未执行=浅灰虚线；已走过=紫色实线 */
@@ -7733,30 +7709,30 @@ onUnmounted(() => {
   right: -50%;
   width: 100%;
   height: 0;
-  border-top: 2px dashed rgba(150, 158, 200, 0.3);
+  border-top: 2px dashed rgba(var(--v-border-color), 0.5);
   z-index: 0;
 }
 
 .magicflow-flow__line.is-done {
   border-top-style: solid;
-  border-top-color: #8b7bf0;
-  box-shadow: 0 0 8px rgba(139, 123, 240, 0.35);
+  border-top-color: rgb(var(--v-theme-primary));
+  box-shadow: 0 0 8px rgba(var(--v-theme-primary), 0.35);
 }
 
 /* 已完成：紫色实心圆 + 白色对勾，无光晕 */
 .magicflow-flow__node.is-done .magicflow-flow__dot {
-  border-color: #8b7bf0;
-  background: linear-gradient(150deg, #9484f5, #6a5cd8);
-  box-shadow: 0 4px 14px rgba(139, 123, 240, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.25);
-  color: #fff;
+  border-color: rgb(var(--v-theme-primary));
+  background: linear-gradient(150deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary)));
+  box-shadow: 0 4px 14px rgba(var(--v-theme-primary), 0.35), inset 0 1px 0 rgba(var(--v-theme-on-primary), 0.25);
+  color: rgb(var(--v-theme-on-primary));
 }
 
 /* 运行中：紫色实心圆 + 白色对勾 + 细小缓慢脉冲环 + 微弱光晕（仅当前节点） */
 .magicflow-flow__node.is-running .magicflow-flow__dot {
-  border-color: #a396ff;
-  background: linear-gradient(150deg, #9c8cff, #6f60dd);
-  color: #fff;
-  box-shadow: 0 0 10px rgba(139, 123, 240, 0.5);
+  border-color: rgb(var(--v-theme-primary));
+  background: linear-gradient(150deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary)));
+  color: rgb(var(--v-theme-on-primary));
+  box-shadow: 0 0 10px rgba(var(--v-theme-primary), 0.5);
 }
 
 .magicflow-flow__node.is-running .magicflow-flow__dot::before,
@@ -7765,7 +7741,7 @@ onUnmounted(() => {
   position: absolute;
   inset: -2px;
   border-radius: 50%;
-  border: 1.5px solid rgba(160, 148, 255, 0.85);
+  border: 1.5px solid rgba(var(--v-theme-primary), 0.85);
   animation: magicflow-halo 2.6s cubic-bezier(0.22, 0.61, 0.36, 1) infinite;
 }
 
@@ -7774,7 +7750,7 @@ onUnmounted(() => {
 }
 
 .magicflow-flow__node.is-running .magicflow-flow__label {
-  color: #cfc7ff;
+  color: rgb(var(--v-theme-primary));
   font-weight: 600;
 }
 
@@ -7782,7 +7758,7 @@ onUnmounted(() => {
 .magicflow-flow__node.is-error .magicflow-flow__dot {
   border-color: rgb(var(--v-theme-error));
   background: rgb(var(--v-theme-error));
-  color: #fff;
+  color: rgb(var(--v-theme-on-primary));
 }
 
 /* 运行流程右上角阶段标签（预览图：阶段名 pill + 呼吸圆点） */
@@ -7793,9 +7769,9 @@ onUnmounted(() => {
   flex: 0 0 auto;
   padding: 4px 10px;
   border-radius: 999px;
-  border: 1px solid rgba(139, 123, 240, 0.3);
-  background: rgba(139, 123, 240, 0.16);
-  color: #bdb4ff;
+  border: 1px solid rgba(var(--v-theme-primary), 0.3);
+  background: rgba(var(--v-theme-primary), 0.16);
+  color: rgb(var(--v-theme-primary));
   font-size: 11px;
   line-height: 1.4;
   white-space: nowrap;
@@ -7805,8 +7781,8 @@ onUnmounted(() => {
   inline-size: 6px;
   block-size: 6px;
   border-radius: 50%;
-  background: #8b7bf0;
-  box-shadow: 0 0 8px #8b7bf0;
+  background: rgb(var(--v-theme-primary));
+  box-shadow: 0 0 8px rgb(var(--v-theme-primary));
 }
 
 .magicflow-flow__tag.is-live i {
@@ -7814,9 +7790,9 @@ onUnmounted(() => {
 }
 
 .magicflow-flow__tag.is-error {
-  border-color: rgba(235, 100, 122, 0.32);
-  background: rgba(235, 100, 122, 0.16);
-  color: #f0a0af;
+  border-color: rgba(var(--v-theme-error), 0.32);
+  background: rgba(var(--v-theme-error), 0.16);
+  color: rgb(var(--v-theme-error));
 }
 
 .magicflow-flow__tag.is-error i {
@@ -7847,35 +7823,27 @@ onUnmounted(() => {
   border-radius: 16px;
   backdrop-filter: blur(14px) saturate(120%);
   -webkit-backdrop-filter: blur(14px) saturate(120%);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(var(--v-theme-on-surface), 0.04);
 }
 
 .magicflow-page .magicflow-task-item {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--v-theme-on-surface), 0.03);
   border: 1px solid transparent;
   border-radius: 12px;
 }
 
 .magicflow-page .magicflow-task-item--selected {
-  background: rgba(139, 123, 240, 0.16);
-  border-color: rgba(139, 123, 240, 0.42);
+  background: rgba(var(--v-theme-primary), 0.16);
+  border-color: rgba(var(--v-theme-primary), 0.42);
 }
 
 .magicflow-page .magicflow-task-item:hover {
-  background: rgba(139, 123, 240, 0.1);
+  background: rgba(var(--v-theme-primary), 0.1);
 }
 
 /* 弹窗（会 teleport 到 body，按专属类名限定，不污染宿主） */
 .magicflow-dialog {
-  --v-theme-surface: 17, 23, 43;
-  --v-theme-on-surface: 231, 234, 246;
-  --v-theme-surface-variant: 38, 46, 78;
-  --v-theme-on-surface-variant: 200, 206, 232;
-  --v-theme-outline: 92, 102, 152;
-  --v-theme-primary: 139, 123, 240;
-  --v-theme-on-primary: 255, 255, 255;
-  --v-theme-error: 235, 100, 122;
-  background: rgba(24, 30, 54, 0.92) !important;
+  background: rgb(var(--v-theme-surface)) !important;
   border: 1px solid var(--magicflow-panel-brd);
   border-radius: 18px;
   backdrop-filter: blur(16px) saturate(120%);
@@ -7897,9 +7865,9 @@ onUnmounted(() => {
   display: grid;
   place-items: center;
   border-radius: 12px;
-  color: #fff;
-  background: linear-gradient(145deg, #9484f5, #5b4fb8);
-  box-shadow: 0 6px 20px rgba(139, 123, 240, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  color: rgb(var(--v-theme-on-primary));
+  background: linear-gradient(145deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary)));
+  box-shadow: 0 6px 20px rgba(var(--v-theme-primary), 0.45), inset 0 1px 0 rgba(var(--v-theme-on-primary), 0.25);
 }
 
 .magicflow-page .magicflow-page__identity h1 {
@@ -7915,9 +7883,9 @@ onUnmounted(() => {
   margin-inline-start: 8px;
   padding: 1px 7px;
   border-radius: 999px;
-  border: 1px solid rgba(139, 123, 240, 0.3);
-  background: rgba(139, 123, 240, 0.16);
-  color: #bdb4ff;
+  border: 1px solid rgba(var(--v-theme-primary), 0.3);
+  background: rgba(var(--v-theme-primary), 0.16);
+  color: rgb(var(--v-theme-primary));
   font-size: 11px;
   font-weight: 500;
   line-height: 1.5;
@@ -7943,17 +7911,17 @@ onUnmounted(() => {
   gap: 9px;
   max-inline-size: 22rem;
   padding: 6px 10px 6px 7px;
-  border: 1px solid rgba(139, 123, 240, 0.26);
+  border: 1px solid rgba(var(--v-theme-primary), 0.26);
   border-radius: 12px;
-  background: linear-gradient(145deg, rgba(139, 123, 240, 0.16), rgba(139, 123, 240, 0.05));
+  background: linear-gradient(145deg, rgba(var(--v-theme-primary), 0.16), rgba(var(--v-theme-primary), 0.05));
   color: rgb(var(--v-theme-on-surface));
   font: inherit;
   cursor: pointer;
-  box-shadow: 0 6px 18px rgba(139, 123, 240, 0.16);
+  box-shadow: 0 6px 18px rgba(var(--v-theme-primary), 0.16);
 }
 
 .magicflow-page .magicflow-task-switch:hover {
-  border-color: rgba(139, 123, 240, 0.42);
+  border-color: rgba(var(--v-theme-primary), 0.42);
 }
 
 .magicflow-page .magicflow-task-switch:focus-visible {
@@ -7969,8 +7937,8 @@ onUnmounted(() => {
   place-items: center;
   overflow: hidden;
   border-radius: 8px;
-  color: #fff;
-  background: linear-gradient(145deg, #9484f5, #5b4fb8);
+  color: rgb(var(--v-theme-on-primary));
+  background: linear-gradient(145deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary)));
 }
 
 .magicflow-page .magicflow-task-switch__icon img {
@@ -8081,7 +8049,7 @@ onUnmounted(() => {
   background: var(--magicflow-panel-bg);
   backdrop-filter: blur(14px) saturate(120%);
   -webkit-backdrop-filter: blur(14px) saturate(120%);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(var(--v-theme-on-surface), 0.04);
 }
 
 .magicflow-page .magicflow-tab {
@@ -8090,7 +8058,7 @@ onUnmounted(() => {
   padding: 9px 4px;
   border: 0;
   border-radius: 11px;
-  color: rgba(231, 234, 246, 0.6);
+  color: rgba(var(--v-theme-on-surface), 0.6);
   background: transparent;
   font: inherit;
   font-size: 12px;
@@ -8101,10 +8069,10 @@ onUnmounted(() => {
 }
 
 .magicflow-page .magicflow-tab.is-active {
-  color: #cfc7ff;
-  background: rgba(139, 123, 240, 0.18);
+  color: rgb(var(--v-theme-primary));
+  background: rgba(var(--v-theme-primary), 0.18);
   font-weight: 600;
-  box-shadow: inset 0 0 0 1px rgba(139, 123, 240, 0.4);
+  box-shadow: inset 0 0 0 1px rgba(var(--v-theme-primary), 0.4);
 }
 
 /* 数据卡：数值在上、说明在下（预览图样式） */
@@ -8133,7 +8101,7 @@ onUnmounted(() => {
 }
 
 .magicflow-page .magicflow-stat--accent > strong {
-  color: #c3b8ff;
+  color: rgb(var(--v-theme-primary));
 }
 
 /* 面板标题排版（预览图：14px/600 + 11px 说明） */
@@ -8158,13 +8126,13 @@ onUnmounted(() => {
 .magicflow-page .magicflow-reason__track {
   block-size: 8px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--v-theme-on-surface), 0.05);
 }
 
 .magicflow-page .magicflow-reason__track i {
   border-radius: 999px;
-  background: linear-gradient(90deg, #6a5cd8, #9c8cff);
-  box-shadow: 0 0 12px rgba(139, 123, 240, 0.5);
+  background: linear-gradient(90deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary)));
+  box-shadow: 0 0 12px rgba(var(--v-theme-primary), 0.5);
 }
 
 /* 操作记录（预览图：图标瓦片 + 顶部细分隔线） */
@@ -8172,7 +8140,7 @@ onUnmounted(() => {
   align-items: start;
   gap: 11px;
   padding-block: 11px;
-  border-top: 1px solid rgba(140, 150, 220, 0.1);
+  border-top: 1px solid rgba(var(--v-border-color), 0.1);
 }
 
 .magicflow-page .magicflow-events article:first-child {
@@ -8185,7 +8153,7 @@ onUnmounted(() => {
   block-size: 30px;
   flex: 0 0 auto;
   border-radius: 10px;
-  background: rgba(139, 123, 240, 0.14);
+  background: rgba(var(--v-theme-primary), 0.14);
 }
 
 .magicflow-page .magicflow-events article strong {
@@ -8224,7 +8192,7 @@ onUnmounted(() => {
   gap: 1px;
   min-inline-size: 0;
   padding-block: 5px;
-  border-top: 1px dashed rgba(140, 150, 220, 0.14);
+  border-top: 1px dashed rgba(var(--v-border-color), 0.14);
 }
 
 .magicflow-page .magicflow-events__detail li:first-child {
@@ -8246,7 +8214,7 @@ onUnmounted(() => {
   padding: 0 5px;
   border-radius: 5px;
   color: rgb(var(--v-theme-primary));
-  background: rgba(139, 123, 240, 0.16);
+  background: rgba(var(--v-theme-primary), 0.16);
 }
 
 .magicflow-page .magicflow-events__detail-title {
@@ -8295,7 +8263,7 @@ onUnmounted(() => {
   padding-inline: 12px;
   border: 1px solid var(--magicflow-panel-brd);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--v-theme-on-surface), 0.03);
 }
 
 /* 底部宿主悬浮导航会盖住内容，预留安全间距 */
@@ -8313,64 +8281,64 @@ onUnmounted(() => {
   display: flex; align-items: center; gap: 10px; cursor: pointer;
   padding: 18px 18px 16px;
   border-radius: 18px;
-  background: linear-gradient(140deg, rgba(139, 123, 240, 0.20), rgba(139, 123, 240, 0.05));
-  border: 1px solid rgba(139, 123, 240, 0.30);
+  background: linear-gradient(140deg, rgba(var(--v-theme-primary), 0.20), rgba(var(--v-theme-primary), 0.05));
+  border: 1px solid rgba(var(--v-theme-primary), 0.30);
 }
 .magicflow-page .mh-hero__main { min-inline-size: 0; flex: 1 1 auto; }
-.magicflow-page .mh-hero__chev { color: rgba(231, 234, 246, 0.4); flex: 0 0 auto; }
+.magicflow-page .mh-hero__chev { color: rgba(var(--v-theme-on-surface), 0.4); flex: 0 0 auto; }
 .magicflow-page .mh-hero__v { font-size: 34px; font-weight: 800; letter-spacing: 0.5px; line-height: 1; }
-.magicflow-page .mh-hero__v small { font-size: 14px; font-weight: 600; color: rgba(231, 234, 246, 0.6); margin-inline-start: 4px; }
-.magicflow-page .mh-hero__s { margin-block-start: 8px; font-size: 12.5px; color: rgba(231, 234, 246, 0.62); }
+.magicflow-page .mh-hero__v small { font-size: 14px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.6); margin-inline-start: 4px; }
+.magicflow-page .mh-hero__s { margin-block-start: 8px; font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.62); }
 
 .magicflow-page .mh-group { display: flex; flex-direction: column; gap: 8px; margin-block-start: 16px; }
 .magicflow-page .mh-group__head {
   display: flex; align-items: center; gap: 8px;
   padding: 4px 6px; background: transparent; border: 0;
-  color: rgba(231, 234, 246, 0.66); font: inherit; font-size: 12.5px; cursor: pointer;
+  color: rgba(var(--v-theme-on-surface), 0.66); font: inherit; font-size: 12.5px; cursor: pointer;
 }
-.magicflow-page .mh-group__head .mh-count { color: rgba(231, 234, 246, 0.4); }
+.magicflow-page .mh-group__head .mh-count { color: rgba(var(--v-theme-on-surface), 0.4); }
 .magicflow-page .mh-group__head .v-icon { margin-inline-start: auto; }
 .magicflow-page .mh-list { display: flex; flex-direction: column; gap: 8px; }
 
 .magicflow-page .mh-row {
   display: flex; align-items: center; gap: 12px; width: 100%; text-align: start;
   padding: 14px; border-radius: 15px;
-  background: rgba(24, 30, 54, 0.9); border: 1px solid var(--magicflow-panel-brd);
+  background: rgba(var(--v-theme-surface), 0.9); border: 1px solid var(--magicflow-panel-brd);
   color: inherit; font: inherit; cursor: pointer;
   transition: background-color 0.15s ease;
 }
-.magicflow-page .mh-row:active { background: rgba(139, 123, 240, 0.14); }
-.magicflow-page .mh-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: #6b7391; }
+.magicflow-page .mh-row:active { background: rgba(var(--v-theme-primary), 0.14); }
+.magicflow-page .mh-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: rgba(var(--v-theme-on-surface), 0.45); }
 .magicflow-page .mh-dot.is-primary,
-.magicflow-page .mh-dot.is-success { background: #8b7bf0; box-shadow: 0 0 8px rgba(139, 123, 240, 0.8); }
-.magicflow-page .mh-dot.is-error { background: #f2726d; box-shadow: 0 0 8px rgba(242, 114, 109, 0.7); }
-.magicflow-page .mh-dot.is-warning { background: #e8b24d; box-shadow: 0 0 8px rgba(232, 178, 77, 0.7); }
+.magicflow-page .mh-dot.is-success { background: rgb(var(--v-theme-primary)); box-shadow: 0 0 8px rgba(var(--v-theme-primary), 0.8); }
+.magicflow-page .mh-dot.is-error { background: rgb(var(--v-theme-error)); box-shadow: 0 0 8px rgba(var(--v-theme-error), 0.7); }
+.magicflow-page .mh-dot.is-warning { background: rgb(var(--v-theme-warning)); box-shadow: 0 0 8px rgba(var(--v-theme-warning), 0.7); }
 .magicflow-page .mh-row__main { min-inline-size: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 3px; }
 .magicflow-page .mh-row__nm { font-size: 14.5px; font-weight: 650; }
 .magicflow-page .mh-row__tag {
   margin-inline-start: 7px; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 7px;
-  color: #cfc7ff; background: rgba(139, 123, 240, 0.18); vertical-align: 1.5px;
+  color: rgb(var(--v-theme-primary)); background: rgba(var(--v-theme-primary), 0.18); vertical-align: 1.5px;
 }
-.magicflow-page .mh-sublist { margin: 2px 0 6px 14px; border-inline-start: 1px solid rgba(140, 150, 220, 0.18); padding-inline-start: 10px; }
+.magicflow-page .mh-sublist { margin: 2px 0 6px 14px; border-inline-start: 1px solid rgba(var(--v-border-color), 0.18); padding-inline-start: 10px; }
 .magicflow-page .mh-subrow {
   display: flex; align-items: center; gap: 9px; inline-size: 100%; text-align: start; padding: 9px 6px;
   background: none; border: 0; color: inherit; font: inherit; cursor: pointer; border-radius: 10px;
 }
-.magicflow-page .mh-subrow:active { background: rgba(139, 123, 240, 0.12); }
-.magicflow-page .mh-subrow .mh-row__nm { font-size: 13px; font-weight: 600; color: rgba(231, 234, 246, 0.82); }
-.magicflow-page .mh-subrow .mh-row__num { font-size: 14px; font-weight: 700; color: rgba(231, 234, 246, 0.7); }
-.magicflow-page .mh-row__st { font-size: 11.5px; color: rgba(231, 234, 246, 0.55); }
+.magicflow-page .mh-subrow:active { background: rgba(var(--v-theme-primary), 0.12); }
+.magicflow-page .mh-subrow .mh-row__nm { font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.82); }
+.magicflow-page .mh-subrow .mh-row__num { font-size: 14px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.7); }
+.magicflow-page .mh-row__st { font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.55); }
 .magicflow-page .mh-row__num { font-size: 16px; font-weight: 800; flex: 0 0 auto; }
-.magicflow-page .mh-row__chev { color: rgba(231, 234, 246, 0.32); flex: 0 0 auto; }
+.magicflow-page .mh-row__chev { color: rgba(var(--v-theme-on-surface), 0.32); flex: 0 0 auto; }
 
-.magicflow-page .mh-sect { margin-block-start: 22px; font-size: 11px; color: rgba(231, 234, 246, 0.38); letter-spacing: 0.4px; padding: 0 6px 6px; }
+.magicflow-page .mh-sect { margin-block-start: 22px; font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.38); letter-spacing: 0.4px; padding: 0 6px 6px; }
 .magicflow-page .mh-tools { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
 .magicflow-page .mh-tool {
   display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 6px;
-  border-radius: 15px; background: rgba(24, 30, 54, 0.9); border: 1px solid var(--magicflow-panel-brd);
-  color: rgba(231, 234, 246, 0.66); font: inherit; font-size: 12px; cursor: pointer;
+  border-radius: 15px; background: rgba(var(--v-theme-surface), 0.9); border: 1px solid var(--magicflow-panel-brd);
+  color: rgba(var(--v-theme-on-surface), 0.66); font: inherit; font-size: 12px; cursor: pointer;
 }
-.magicflow-page .mh-tool:active { background: rgba(139, 123, 240, 0.14); }
+.magicflow-page .mh-tool:active { background: rgba(var(--v-theme-primary), 0.14); }
 .magicflow-page .mh-tool__scope {
   margin-inline-start: 4px;
   padding: 0 4px;
@@ -8386,12 +8354,12 @@ onUnmounted(() => {
 .magicflow-page .mh-btn {
   flex: 1 1 0; display: flex; align-items: center; justify-content: center; gap: 6px;
   block-size: 46px; border-radius: 14px; border: 0; cursor: pointer;
-  font-size: 14px; font-weight: 650; color: #fff;
-  background: linear-gradient(145deg, #9484f5, #6a5cd8);
+  font-size: 14px; font-weight: 650; color: rgb(var(--v-theme-on-primary));
+  background: linear-gradient(145deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary)));
 }
 .magicflow-page .mh-btn--ghost {
-  background: rgba(20, 26, 48, 0.9); border: 1px solid var(--magicflow-panel-brd);
-  color: rgba(231, 234, 246, 0.66);
+  background: rgba(var(--v-theme-surface), 0.9); border: 1px solid var(--magicflow-panel-brd);
+  color: rgba(var(--v-theme-on-surface), 0.66);
 }
 
 @media (max-width: 959px) {
@@ -8413,38 +8381,38 @@ onUnmounted(() => {
 .magicflow-page .magicflow-mobile-detail { display: none; }
 .magicflow-page .md-verdict {
   display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-radius: 16px;
-  background: linear-gradient(140deg, rgba(90, 209, 154, 0.15), rgba(90, 209, 154, 0.04));
-  border: 1px solid rgba(90, 209, 154, 0.32);
+  background: linear-gradient(140deg, rgba(var(--v-theme-success), 0.15), rgba(var(--v-theme-success), 0.04));
+  border: 1px solid rgba(var(--v-theme-success), 0.32);
 }
 .magicflow-page .md-verdict.is-warn {
-  background: linear-gradient(140deg, rgba(242, 114, 109, 0.15), rgba(242, 114, 109, 0.04));
-  border-color: rgba(242, 114, 109, 0.34);
+  background: linear-gradient(140deg, rgba(var(--v-theme-error), 0.15), rgba(var(--v-theme-error), 0.04));
+  border-color: rgba(var(--v-theme-error), 0.34);
 }
-.magicflow-page .md-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: #8b7bf0; box-shadow: 0 0 8px rgba(139, 123, 240, 0.8); }
-.magicflow-page .md-dot.is-error { background: #f2726d; box-shadow: 0 0 8px rgba(242, 114, 109, 0.7); }
-.magicflow-page .md-dot.is-warning { background: #e8b24d; box-shadow: 0 0 8px rgba(232, 178, 77, 0.7); }
-.magicflow-page .md-dot.is-secondary { background: #6b7391; box-shadow: none; }
+.magicflow-page .md-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: rgb(var(--v-theme-primary)); box-shadow: 0 0 8px rgba(var(--v-theme-primary), 0.8); }
+.magicflow-page .md-dot.is-error { background: rgb(var(--v-theme-error)); box-shadow: 0 0 8px rgba(var(--v-theme-error), 0.7); }
+.magicflow-page .md-dot.is-warning { background: rgb(var(--v-theme-warning)); box-shadow: 0 0 8px rgba(var(--v-theme-warning), 0.7); }
+.magicflow-page .md-dot.is-secondary { background: rgba(var(--v-theme-on-surface), 0.45); box-shadow: none; }
 .magicflow-page .md-verdict__body { min-inline-size: 0; }
-.magicflow-page .md-v { font-size: 15px; font-weight: 750; color: #8fe6b8; }
-.magicflow-page .md-verdict.is-warn .md-v { color: #f59793; }
-.magicflow-page .md-s { font-size: 11.5px; color: rgba(231, 234, 246, 0.6); margin-block-start: 2px; }
+.magicflow-page .md-v { font-size: 15px; font-weight: 750; color: rgb(var(--v-theme-success)); }
+.magicflow-page .md-verdict.is-warn .md-v { color: rgb(var(--v-theme-error)); }
+.magicflow-page .md-s { font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.6); margin-block-start: 2px; }
 .magicflow-page .md-act {
   margin-inline-start: auto; flex: 0 0 auto; font: inherit; font-size: 12px; font-weight: 650;
-  padding: 7px 13px; border-radius: 10px; cursor: pointer; color: #fff;
-  background: rgba(242, 114, 109, 0.92); border: 1px solid rgba(242, 114, 109, 0.92);
+  padding: 7px 13px; border-radius: 10px; cursor: pointer; color: rgb(var(--v-theme-on-primary));
+  background: rgba(var(--v-theme-error), 0.92); border: 1px solid rgba(var(--v-theme-error), 0.92);
 }
 .magicflow-page .md-cards { display: flex; gap: 9px; margin-block-start: 12px; }
-.magicflow-page .md-card { flex: 1 1 0; min-inline-size: 0; background: rgba(24, 30, 54, 0.9); border: 1px solid var(--magicflow-panel-brd); border-radius: 15px; padding: 14px 12px; }
+.magicflow-page .md-card { flex: 1 1 0; min-inline-size: 0; background: rgba(var(--v-theme-surface), 0.9); border: 1px solid var(--magicflow-panel-brd); border-radius: 15px; padding: 14px 12px; }
 .magicflow-page .md-card b { font-size: 19px; font-weight: 800; display: block; letter-spacing: 0.2px; }
-.magicflow-page .md-card span { font-size: 10.5px; color: rgba(231, 234, 246, 0.38); margin-block-start: 6px; display: block; }
-.magicflow-page .md-strategy { margin-block-start: 10px; font-size: 12px; color: rgba(231, 234, 246, 0.6); padding: 0 4px; line-height: 1.5; }
+.magicflow-page .md-card span { font-size: 10.5px; color: rgba(var(--v-theme-on-surface), 0.38); margin-block-start: 6px; display: block; }
+.magicflow-page .md-strategy { margin-block-start: 10px; font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.6); padding: 0 4px; line-height: 1.5; }
 .magicflow-page .md-entries { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-block-start: 14px; }
 .magicflow-page .md-entry {
   flex: 1 1 0; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 6px;
-  border-radius: 15px; background: rgba(24, 30, 54, 0.9); border: 1px solid var(--magicflow-panel-brd);
-  color: rgba(231, 234, 246, 0.66); font: inherit; font-size: 12px; cursor: pointer;
+  border-radius: 15px; background: rgba(var(--v-theme-surface), 0.9); border: 1px solid var(--magicflow-panel-brd);
+  color: rgba(var(--v-theme-on-surface), 0.66); font: inherit; font-size: 12px; cursor: pointer;
 }
-.magicflow-page .md-entry.is-active { color: #cfc7ff; border-color: rgba(139, 123, 240, 0.5); background: rgba(139, 123, 240, 0.16); }
+.magicflow-page .md-entry.is-active { color: rgb(var(--v-theme-primary)); border-color: rgba(var(--v-theme-primary), 0.5); background: rgba(var(--v-theme-primary), 0.16); }
 
 @media (max-width: 959px) {
   .magicflow-page--m-detail .magicflow-mobile-detail { display: block; }
@@ -8460,15 +8428,15 @@ onUnmounted(() => {
 .magicflow-settings-nav { display: none; }
 .magicflow-settings-nav__item {
   display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 6px;
-  border-radius: 14px; background: rgba(24, 30, 54, 0.9); border: 1px solid rgba(140, 150, 220, 0.16);
-  color: rgba(231, 234, 246, 0.66); font: inherit; font-size: 12px; cursor: pointer;
+  border-radius: 14px; background: rgba(var(--v-theme-surface), 0.9); border: 1px solid rgba(var(--v-border-color), 0.16);
+  color: rgba(var(--v-theme-on-surface), 0.66); font: inherit; font-size: 12px; cursor: pointer;
 }
-.magicflow-settings-nav__item.is-active { color: #cfc7ff; border-color: rgba(139, 123, 240, 0.5); background: rgba(139, 123, 240, 0.16); }
+.magicflow-settings-nav__item.is-active { color: rgb(var(--v-theme-primary)); border-color: rgba(var(--v-theme-primary), 0.5); background: rgba(var(--v-theme-primary), 0.16); }
 
 /* ── ★ 操作记录独立页 ─────────────────────────────── */
 .magicflow-ops-dialog { display: flex; flex-direction: column; }
 .magicflow-ops-dialog__spacer { flex: 1 1 auto; }
-.magicflow-ops-dialog__sub { padding: 6px 18px 4px; font-size: 12px; color: rgba(231, 234, 246, 0.55); }
+.magicflow-ops-dialog__sub { padding: 6px 18px 4px; font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.55); }
 .magicflow-ops-dialog__body { padding: 6px 18px 20px; overflow: auto; flex: 1 1 auto; min-height: 0; }
 /* 操作记录 / 站点容量 弹窗：让列表撑满卡片可滚区，不再被 .magicflow-events 的 52dvh 上限截断，下方留一大片空白 */
 .magicflow-ops-dialog .magicflow-events { max-block-size: none; margin-block-start: 0; padding-inline-end: 0; overflow: visible; }
@@ -8503,13 +8471,13 @@ onUnmounted(() => {
 .magicflow-ceiling-list { display: flex; flex-direction: column; gap: 15px; }
 .magicflow-ceiling-row__head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .magicflow-ceiling-row__nm { font-size: 14px; font-weight: 650; }
-.magicflow-ceiling-row__val { font-size: 13px; font-weight: 700; color: #cfc7ff; flex: 0 0 auto; }
-.magicflow-ceiling-row__val small { font-size: 10px; color: rgba(231, 234, 246, 0.5); margin-inline-start: 1px; }
-.magicflow-ceiling-bar { margin-block-start: 7px; height: 7px; border-radius: 4px; background: rgba(140, 150, 220, 0.16); overflow: hidden; }
-.magicflow-ceiling-bar i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, #8b7bf0, #b6a9ff); }
-.magicflow-ceiling-bar i.is-full { background: linear-gradient(90deg, #e8b24d, #f2726d); }
-.magicflow-ceiling-row__foot { display: flex; justify-content: space-between; margin-block-start: 5px; font-size: 11px; color: rgba(231, 234, 246, 0.5); }
-.magicflow-ceiling-empty { font-size: 12.5px; color: rgba(231, 234, 246, 0.5); text-align: center; padding: 20px 0; }
+.magicflow-ceiling-row__val { font-size: 13px; font-weight: 700; color: rgb(var(--v-theme-primary)); flex: 0 0 auto; }
+.magicflow-ceiling-row__val small { font-size: 10px; color: rgba(var(--v-theme-on-surface), 0.5); margin-inline-start: 1px; }
+.magicflow-ceiling-bar { margin-block-start: 7px; height: 7px; border-radius: 4px; background: rgba(var(--v-border-color), 0.16); overflow: hidden; }
+.magicflow-ceiling-bar i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary))); }
+.magicflow-ceiling-bar i.is-full { background: linear-gradient(90deg, rgb(var(--v-theme-warning)), rgb(var(--v-theme-error))); }
+.magicflow-ceiling-row__foot { display: flex; justify-content: space-between; margin-block-start: 5px; font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.5); }
+.magicflow-ceiling-empty { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.5); text-align: center; padding: 20px 0; }
 @media (max-width: 959px) {
   .magicflow-ops-dialog__body { padding: 4px 14px 18px; }
 }
@@ -8524,7 +8492,7 @@ onUnmounted(() => {
   .magicflow-settings-nav__item {
     padding: 18px 10px; font-size: 12.5px;
   }
-  .magicflow-settings-nav__item.is-active { background: rgba(139, 123, 240, 0.22); }
+  .magicflow-settings-nav__item.is-active { background: rgba(var(--v-theme-primary), 0.22); }
 }
 
 /* ── ★ 功能页（整页弹窗）内部网格手机端适配 ───────────────── */

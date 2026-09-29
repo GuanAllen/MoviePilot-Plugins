@@ -684,13 +684,34 @@ class DebugMixin:
                 out["list_error"] = str(err)
         return Response(success=True, message="ok", data=self._jsonable(out))
 
+    def debug_traffic(self) -> Response:
+        """诊断：未知流量审计（无魔流标签的种 + 单种限速分布）。"""
+        data = self.traffic_audit()
+        _u = int(data.get("unknown_uploading") or 0)
+        return Response(success=bool(data.get("ok")), message=(
+            f"流量审计:共 {data.get('total')} 种 / 纳管 {data.get('managed')}"
+            f" / 未知 {len(data.get('unknown') or [])}（其中在上传 {_u}）"
+        ), data=data)
+
     def debug_seed_limit(self) -> Response:
-        """诊断：强制重套挂种限速（按标签档位表）。"""
-        tiers = self._seed_tag_tiers()
+        """诊断：立即给**我们管控的**种套单种限速（按档），其他种不动；回报前后档位分布。"""
+        downloader = self._get_downloader()
+        before: Dict[str, Any] = {}
+        after: Dict[str, Any] = {}
+        if downloader is not None and callable(getattr(downloader, "upload_limit_stats", None)):
+            try:
+                before = downloader.upload_limit_stats()
+            except Exception:  # noqa: BLE001
+                before = {}
         self._apply_seed_upload_limit(force=True)
-        return Response(success=True, message="已套用挂种限速", data={
-            "tiers": {k: v for k, v in sorted(tiers.items(), key=lambda x: -x[1])},
-            "count": len(tiers),
+        if downloader is not None and callable(getattr(downloader, "upload_limit_stats", None)):
+            try:
+                after = downloader.upload_limit_stats()
+            except Exception:  # noqa: BLE001
+                after = {}
+        return Response(success=True, message="已给我们管控的种按档套用单种限速（其他种不动）", data={
+            "before": before,
+            "after": after,
         })
 
     def debug_qb_info(self, path: str = "", hash: str = "", limit: int = 1, audit: str = "",

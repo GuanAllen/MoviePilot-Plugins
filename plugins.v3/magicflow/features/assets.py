@@ -229,9 +229,13 @@ class AssetsMixin:
             rec = data.get(hh) or {}
             if bool(rec.get("asset")) == is_a:
                 continue
+            # ★ 标签主权（Master 2026-09-29）：真值源已迁到魔流账本；
+            #   MP 标签只是「证据输入」之一 → **只升不降**（摘掉标签后不会把库内身份抹掉）。
+            if not is_a and bool(rec.get("asset")):
+                continue
             changed += 1
             if apply:
-                store.set_asset(hh, is_a, origin_sub=(SUB_RESOURCE if is_a else SUB_NEW))
+                store.set_asset(hh, is_a, sub=(SUB_RESOURCE if is_a else SUB_NEW))
         return {"ok": True, "applied": bool(apply), "asset": asset, "non_asset": non,
                 "changed": changed, "ledger": len(data)}
 
@@ -284,7 +288,7 @@ class AssetsMixin:
                 store.add_member(gid, hh, site=rec.get("site") or "", size_gb=size,
                                  downloaded=prog >= 0.999, progress=prog,
                                  state=rec.get("state") or "", fp=_fp)
-                if is_asset_tags(tags) and store.set_library(gid, True):
+                if (is_asset_tags(tags) or bool(rec.get("asset"))) and store.set_library(gid, True):
                     stat["in_library"] = int(stat["in_library"]) + 1
         # 来源站 + H&R 账单：跨站来源份账本里的义务挂到「资源」上
         try:

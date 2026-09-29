@@ -4533,29 +4533,8 @@ onUnmounted(() => {
 }
 .magicflow-page {
   /* ===== 深色磨砂主题（仅限本插件工作台作用域）===== */
-  --v-theme-background: 7, 11, 24;
-  --v-theme-on-background: 231, 234, 246;
-  --v-theme-surface: 17, 23, 43;
-  --v-theme-on-surface: 231, 234, 246;
-  --v-theme-surface-variant: 38, 46, 78;
-  --v-theme-on-surface-variant: 200, 206, 232;
-  --v-theme-surface-light: 26, 32, 56;
-  --v-theme-surface-bright: 34, 42, 72;
-  --v-theme-outline: 92, 102, 152;
-  --v-theme-primary: 139, 123, 240;
-  --v-theme-on-primary: 255, 255, 255;
-  --v-theme-secondary: 122, 132, 212;
-  --v-theme-on-secondary: 12, 16, 32;
-  --v-theme-error: 235, 100, 122;
-  --v-theme-on-error: 255, 255, 255;
-  --v-theme-info: 120, 162, 242;
-  --v-theme-on-info: 8, 12, 26;
-  --v-theme-success: 96, 202, 162;
-  --v-theme-on-success: 6, 20, 14;
-  --v-theme-warning: 236, 182, 92;
-  --v-theme-on-warning: 26, 18, 4;
-  --magicflow-panel-bg: rgba(24, 30, 54, 0.72);
-  --magicflow-panel-brd: rgba(140, 150, 220, 0.14);
+  --magicflow-panel-bg: rgb(var(--v-theme-surface));
+  --magicflow-panel-brd: rgba(var(--v-border-color), 0.14);
 
   display: flex;
   flex-direction: column;
@@ -4564,10 +4543,7 @@ onUnmounted(() => {
   padding: 18px;
   color: rgb(var(--v-theme-on-background));
   border-radius: 20px;
-  background:
-    radial-gradient(1100px 560px at 12% -12%, rgba(42, 50, 116, 0.55) 0%, transparent 60%),
-    radial-gradient(820px 480px at 104% -4%, rgba(74, 46, 128, 0.42) 0%, transparent 56%),
-    linear-gradient(180deg, #0b1226 0%, #070b18 100%);
+  background: rgb(var(--v-theme-background));
 }
 
 .magicflow-page--compact {
@@ -5238,8 +5214,8 @@ onUnmounted(() => {
 }
 
 .magicflow-settings-hint--warn {
-  background: rgba(255, 152, 0, 0.10);
-  border-inline-start: 3px solid #ff9800;
+  background: rgba(var(--v-theme-warning), 0.10);
+  border-inline-start: 3px solid rgb(var(--v-theme-warning));
   padding: 8px 10px;
   border-radius: 8px;
 }
@@ -5266,8 +5242,8 @@ onUnmounted(() => {
 }
 
 .magicflow-live-alert--warn {
-  background: rgba(255, 152, 0, 0.12);
-  border-inline-start-color: #ff9800;
+  background: rgba(var(--v-theme-warning), 0.12);
+  border-inline-start-color: rgb(var(--v-theme-warning));
 }
 
 .magicflow-live-alert--info {
@@ -5341,14 +5317,14 @@ onUnmounted(() => {
   margin-block: 10px 4px;
   padding: 8px 10px;
   border-radius: 12px;
-  background: rgba(139, 123, 240, 0.12);
-  box-shadow: inset 0 0 0 1px rgba(139, 123, 240, 0.28);
+  background: rgba(var(--v-theme-primary), 0.12);
+  box-shadow: inset 0 0 0 1px rgba(var(--v-theme-primary), 0.28);
 }
 
 .magicflow-bulk-bar__count {
   font-size: 12px;
   font-weight: 600;
-  color: #cfc7ff;
+  color: rgb(var(--v-theme-primary));
   margin-inline-end: 4px;
 }
 
@@ -5405,7 +5381,7 @@ onUnmounted(() => {
   flex: 0 0 auto;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
-  color: rgba(226, 232, 240, 0.85);
+  color: rgba(var(--v-theme-on-surface), 0.85);
   min-inline-size: 3.2em;
   text-align: end;
 }
@@ -5417,8 +5393,8 @@ onUnmounted(() => {
   margin-block: 14px 4px;
   padding: 12px 14px;
   border-radius: 12px;
-  background: rgba(139, 123, 240, 0.07);
-  box-shadow: inset 0 0 0 1px rgba(139, 123, 240, 0.16);
+  background: rgba(var(--v-theme-primary), 0.07);
+  box-shadow: inset 0 0 0 1px rgba(var(--v-theme-primary), 0.16);
 }
 
 .magicflow-torrent-dialog__grid > div {
@@ -5427,7 +5403,7 @@ onUnmounted(() => {
 
 .magicflow-torrent-dialog__grid dt {
   font-size: 11px;
-  color: rgba(200, 208, 232, 0.65);
+  color: rgba(var(--v-theme-on-surface), 0.65);
   margin-block-end: 2px;
 }
 
@@ -5449,7 +5425,7 @@ onUnmounted(() => {
 .magicflow-torrent-dialog__hash-label {
   flex: 0 0 auto;
   font-size: 11px;
-  color: rgba(200, 208, 232, 0.6);
+  color: rgba(var(--v-theme-on-surface), 0.6);
 }
 
 .magicflow-torrent-dialog__hash code {
@@ -5458,7 +5434,7 @@ onUnmounted(() => {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
   overflow-wrap: anywhere;
-  color: rgba(210, 216, 240, 0.8);
+  color: rgba(var(--v-theme-on-surface), 0.8);
 }
 
 .magicflow-torrent-dialog__actions {
@@ -6153,7 +6129,7 @@ onUnmounted(() => {
     gap: 0;
     margin-block-start: 10px;
     padding-block-start: 8px;
-    border-block-start: 1px solid rgba(140, 150, 220, 0.1);
+    border-block-start: 1px solid rgba(var(--v-border-color), 0.1);
   }
 
   .magicflow-page__actions,
@@ -6285,7 +6261,7 @@ onUnmounted(() => {
   width: 30px;
   height: 30px;
   border-radius: 50%;
-  border: 2px solid rgba(150, 158, 200, 0.3);
+  border: 2px solid rgba(var(--v-border-color), 0.5);
   background: transparent;
   color: transparent;
   z-index: 1;
@@ -6294,12 +6270,12 @@ onUnmounted(() => {
 .magicflow-flow__label {
   font-size: 10.5px;
   line-height: 1.2;
-  color: #5f688c;
+  color: rgba(var(--v-theme-on-surface), 0.45);
   white-space: nowrap;
 }
 
 .magicflow-flow__node.is-done .magicflow-flow__label {
-  color: #9aa3c7;
+  color: rgba(var(--v-theme-on-surface), 0.45);
 }
 
 /* 连接线：未执行=浅灰虚线；已走过=紫色实线 */
@@ -6309,30 +6285,30 @@ onUnmounted(() => {
   right: -50%;
   width: 100%;
   height: 0;
-  border-top: 2px dashed rgba(150, 158, 200, 0.3);
+  border-top: 2px dashed rgba(var(--v-border-color), 0.5);
   z-index: 0;
 }
 
 .magicflow-flow__line.is-done {
   border-top-style: solid;
-  border-top-color: #8b7bf0;
-  box-shadow: 0 0 8px rgba(139, 123, 240, 0.35);
+  border-top-color: rgb(var(--v-theme-primary));
+  box-shadow: 0 0 8px rgba(var(--v-theme-primary), 0.35);
 }
 
 /* 已完成：紫色实心圆 + 白色对勾，无光晕 */
 .magicflow-flow__node.is-done .magicflow-flow__dot {
-  border-color: #8b7bf0;
-  background: linear-gradient(150deg, #9484f5, #6a5cd8);
-  box-shadow: 0 4px 14px rgba(139, 123, 240, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.25);
-  color: #fff;
+  border-color: rgb(var(--v-theme-primary));
+  background: linear-gradient(150deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary)));
+  box-shadow: 0 4px 14px rgba(var(--v-theme-primary), 0.35), inset 0 1px 0 rgba(var(--v-theme-on-primary), 0.25);
+  color: rgb(var(--v-theme-on-primary));
 }
 
 /* 运行中：紫色实心圆 + 白色对勾 + 细小缓慢脉冲环 + 微弱光晕（仅当前节点） */
 .magicflow-flow__node.is-running .magicflow-flow__dot {
-  border-color: #a396ff;
-  background: linear-gradient(150deg, #9c8cff, #6f60dd);
-  color: #fff;
-  box-shadow: 0 0 10px rgba(139, 123, 240, 0.5);
+  border-color: rgb(var(--v-theme-primary));
+  background: linear-gradient(150deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary)));
+  color: rgb(var(--v-theme-on-primary));
+  box-shadow: 0 0 10px rgba(var(--v-theme-primary), 0.5);
 }
 
 .magicflow-flow__node.is-running .magicflow-flow__dot::before,
@@ -6341,7 +6317,7 @@ onUnmounted(() => {
   position: absolute;
   inset: -2px;
   border-radius: 50%;
-  border: 1.5px solid rgba(160, 148, 255, 0.85);
+  border: 1.5px solid rgba(var(--v-theme-primary), 0.85);
   animation: magicflow-halo 2.6s cubic-bezier(0.22, 0.61, 0.36, 1) infinite;
 }
 
@@ -6350,7 +6326,7 @@ onUnmounted(() => {
 }
 
 .magicflow-flow__node.is-running .magicflow-flow__label {
-  color: #cfc7ff;
+  color: rgb(var(--v-theme-primary));
   font-weight: 600;
 }
 
@@ -6358,7 +6334,7 @@ onUnmounted(() => {
 .magicflow-flow__node.is-error .magicflow-flow__dot {
   border-color: rgb(var(--v-theme-error));
   background: rgb(var(--v-theme-error));
-  color: #fff;
+  color: rgb(var(--v-theme-on-primary));
 }
 
 /* 运行流程右上角阶段标签（预览图：阶段名 pill + 呼吸圆点） */
@@ -6369,9 +6345,9 @@ onUnmounted(() => {
   flex: 0 0 auto;
   padding: 4px 10px;
   border-radius: 999px;
-  border: 1px solid rgba(139, 123, 240, 0.3);
-  background: rgba(139, 123, 240, 0.16);
-  color: #bdb4ff;
+  border: 1px solid rgba(var(--v-theme-primary), 0.3);
+  background: rgba(var(--v-theme-primary), 0.16);
+  color: rgb(var(--v-theme-primary));
   font-size: 11px;
   line-height: 1.4;
   white-space: nowrap;
@@ -6381,8 +6357,8 @@ onUnmounted(() => {
   inline-size: 6px;
   block-size: 6px;
   border-radius: 50%;
-  background: #8b7bf0;
-  box-shadow: 0 0 8px #8b7bf0;
+  background: rgb(var(--v-theme-primary));
+  box-shadow: 0 0 8px rgb(var(--v-theme-primary));
 }
 
 .magicflow-flow__tag.is-live i {
@@ -6390,9 +6366,9 @@ onUnmounted(() => {
 }
 
 .magicflow-flow__tag.is-error {
-  border-color: rgba(235, 100, 122, 0.32);
-  background: rgba(235, 100, 122, 0.16);
-  color: #f0a0af;
+  border-color: rgba(var(--v-theme-error), 0.32);
+  background: rgba(var(--v-theme-error), 0.16);
+  color: rgb(var(--v-theme-error));
 }
 
 .magicflow-flow__tag.is-error i {
@@ -6423,35 +6399,27 @@ onUnmounted(() => {
   border-radius: 16px;
   backdrop-filter: blur(14px) saturate(120%);
   -webkit-backdrop-filter: blur(14px) saturate(120%);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(var(--v-theme-on-surface), 0.04);
 }
 
 .magicflow-page .magicflow-task-item {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--v-theme-on-surface), 0.03);
   border: 1px solid transparent;
   border-radius: 12px;
 }
 
 .magicflow-page .magicflow-task-item--selected {
-  background: rgba(139, 123, 240, 0.16);
-  border-color: rgba(139, 123, 240, 0.42);
+  background: rgba(var(--v-theme-primary), 0.16);
+  border-color: rgba(var(--v-theme-primary), 0.42);
 }
 
 .magicflow-page .magicflow-task-item:hover {
-  background: rgba(139, 123, 240, 0.1);
+  background: rgba(var(--v-theme-primary), 0.1);
 }
 
 /* 弹窗（会 teleport 到 body，按专属类名限定，不污染宿主） */
 .magicflow-dialog {
-  --v-theme-surface: 17, 23, 43;
-  --v-theme-on-surface: 231, 234, 246;
-  --v-theme-surface-variant: 38, 46, 78;
-  --v-theme-on-surface-variant: 200, 206, 232;
-  --v-theme-outline: 92, 102, 152;
-  --v-theme-primary: 139, 123, 240;
-  --v-theme-on-primary: 255, 255, 255;
-  --v-theme-error: 235, 100, 122;
-  background: rgba(24, 30, 54, 0.92) !important;
+  background: rgb(var(--v-theme-surface)) !important;
   border: 1px solid var(--magicflow-panel-brd);
   border-radius: 18px;
   backdrop-filter: blur(16px) saturate(120%);
@@ -6473,9 +6441,9 @@ onUnmounted(() => {
   display: grid;
   place-items: center;
   border-radius: 12px;
-  color: #fff;
-  background: linear-gradient(145deg, #9484f5, #5b4fb8);
-  box-shadow: 0 6px 20px rgba(139, 123, 240, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  color: rgb(var(--v-theme-on-primary));
+  background: linear-gradient(145deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary)));
+  box-shadow: 0 6px 20px rgba(var(--v-theme-primary), 0.45), inset 0 1px 0 rgba(var(--v-theme-on-primary), 0.25);
 }
 
 .magicflow-page .magicflow-page__identity h1 {
@@ -6491,9 +6459,9 @@ onUnmounted(() => {
   margin-inline-start: 8px;
   padding: 1px 7px;
   border-radius: 999px;
-  border: 1px solid rgba(139, 123, 240, 0.3);
-  background: rgba(139, 123, 240, 0.16);
-  color: #bdb4ff;
+  border: 1px solid rgba(var(--v-theme-primary), 0.3);
+  background: rgba(var(--v-theme-primary), 0.16);
+  color: rgb(var(--v-theme-primary));
   font-size: 11px;
   font-weight: 500;
   line-height: 1.5;
@@ -6519,17 +6487,17 @@ onUnmounted(() => {
   gap: 9px;
   max-inline-size: 22rem;
   padding: 6px 10px 6px 7px;
-  border: 1px solid rgba(139, 123, 240, 0.26);
+  border: 1px solid rgba(var(--v-theme-primary), 0.26);
   border-radius: 12px;
-  background: linear-gradient(145deg, rgba(139, 123, 240, 0.16), rgba(139, 123, 240, 0.05));
+  background: linear-gradient(145deg, rgba(var(--v-theme-primary), 0.16), rgba(var(--v-theme-primary), 0.05));
   color: rgb(var(--v-theme-on-surface));
   font: inherit;
   cursor: pointer;
-  box-shadow: 0 6px 18px rgba(139, 123, 240, 0.16);
+  box-shadow: 0 6px 18px rgba(var(--v-theme-primary), 0.16);
 }
 
 .magicflow-page .magicflow-task-switch:hover {
-  border-color: rgba(139, 123, 240, 0.42);
+  border-color: rgba(var(--v-theme-primary), 0.42);
 }
 
 .magicflow-page .magicflow-task-switch:focus-visible {
@@ -6545,8 +6513,8 @@ onUnmounted(() => {
   place-items: center;
   overflow: hidden;
   border-radius: 8px;
-  color: #fff;
-  background: linear-gradient(145deg, #9484f5, #5b4fb8);
+  color: rgb(var(--v-theme-on-primary));
+  background: linear-gradient(145deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary)));
 }
 
 .magicflow-page .magicflow-task-switch__icon img {
@@ -6651,7 +6619,7 @@ onUnmounted(() => {
   background: var(--magicflow-panel-bg);
   backdrop-filter: blur(14px) saturate(120%);
   -webkit-backdrop-filter: blur(14px) saturate(120%);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(var(--v-theme-on-surface), 0.04);
 }
 
 .magicflow-page .magicflow-tab {
@@ -6660,7 +6628,7 @@ onUnmounted(() => {
   padding: 9px 4px;
   border: 0;
   border-radius: 11px;
-  color: rgba(231, 234, 246, 0.6);
+  color: rgba(var(--v-theme-on-surface), 0.6);
   background: transparent;
   font: inherit;
   font-size: 12px;
@@ -6671,10 +6639,10 @@ onUnmounted(() => {
 }
 
 .magicflow-page .magicflow-tab.is-active {
-  color: #cfc7ff;
-  background: rgba(139, 123, 240, 0.18);
+  color: rgb(var(--v-theme-primary));
+  background: rgba(var(--v-theme-primary), 0.18);
   font-weight: 600;
-  box-shadow: inset 0 0 0 1px rgba(139, 123, 240, 0.4);
+  box-shadow: inset 0 0 0 1px rgba(var(--v-theme-primary), 0.4);
 }
 
 /* 数据卡：数值在上、说明在下（预览图样式） */
@@ -6703,7 +6671,7 @@ onUnmounted(() => {
 }
 
 .magicflow-page .magicflow-stat--accent > strong {
-  color: #c3b8ff;
+  color: rgb(var(--v-theme-primary));
 }
 
 /* 面板标题排版（预览图：14px/600 + 11px 说明） */
@@ -6728,13 +6696,13 @@ onUnmounted(() => {
 .magicflow-page .magicflow-reason__track {
   block-size: 8px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--v-theme-on-surface), 0.05);
 }
 
 .magicflow-page .magicflow-reason__track i {
   border-radius: 999px;
-  background: linear-gradient(90deg, #6a5cd8, #9c8cff);
-  box-shadow: 0 0 12px rgba(139, 123, 240, 0.5);
+  background: linear-gradient(90deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary)));
+  box-shadow: 0 0 12px rgba(var(--v-theme-primary), 0.5);
 }
 
 /* 操作记录（预览图：图标瓦片 + 顶部细分隔线） */
@@ -6742,7 +6710,7 @@ onUnmounted(() => {
   align-items: start;
   gap: 11px;
   padding-block: 11px;
-  border-top: 1px solid rgba(140, 150, 220, 0.1);
+  border-top: 1px solid rgba(var(--v-border-color), 0.1);
 }
 
 .magicflow-page .magicflow-events article:first-child {
@@ -6755,7 +6723,7 @@ onUnmounted(() => {
   block-size: 30px;
   flex: 0 0 auto;
   border-radius: 10px;
-  background: rgba(139, 123, 240, 0.14);
+  background: rgba(var(--v-theme-primary), 0.14);
 }
 
 .magicflow-page .magicflow-events article strong {
@@ -6794,7 +6762,7 @@ onUnmounted(() => {
   gap: 1px;
   min-inline-size: 0;
   padding-block: 5px;
-  border-top: 1px dashed rgba(140, 150, 220, 0.14);
+  border-top: 1px dashed rgba(var(--v-border-color), 0.14);
 }
 
 .magicflow-page .magicflow-events__detail li:first-child {
@@ -6816,7 +6784,7 @@ onUnmounted(() => {
   padding: 0 5px;
   border-radius: 5px;
   color: rgb(var(--v-theme-primary));
-  background: rgba(139, 123, 240, 0.16);
+  background: rgba(var(--v-theme-primary), 0.16);
 }
 
 .magicflow-page .magicflow-events__detail-title {
@@ -6865,7 +6833,7 @@ onUnmounted(() => {
   padding-inline: 12px;
   border: 1px solid var(--magicflow-panel-brd);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--v-theme-on-surface), 0.03);
 }
 
 /* 底部宿主悬浮导航会盖住内容，预留安全间距 */

@@ -585,6 +585,33 @@ class DownloaderAdapter:
                 index[info.hash.lower()] = info
         return index
 
+    def tracker_domain(self, hash_string: str) -> str:
+        """按需从 ``torrents_trackers`` 解析站点域名（qB 的 ``tracker`` 字段常为空时的兜底）。
+
+        实测 qB ``torrents_info`` 的 tracker 字段会为空（138/922），但逐 hash 的
+        ``torrents_trackers`` 能拿到真实 announce 地址 —— 只在需要归属判定时调用。
+        """
+        h = str(hash_string or "").strip().lower()
+        if not h:
+            return ""
+        try:
+            qbc = self._qb_client()
+            rows = qbc.torrents_trackers(torrent_hash=h) or []
+        except Exception:  # noqa: BLE001
+            return ""
+        for x in rows:
+            url = str((x or {}).get("url") or "")
+            if not url or url.startswith("**"):
+                continue
+            m = re.search(r"https?://([^/]+)", url)
+            host = (m.group(1) if m else url).lower().split(":")[0]
+            for pre in ("tracker.", "www."):
+                if host.startswith(pre) and len(host) > len(pre) + 3:
+                    host = host[len(pre):]
+            if host:
+                return host
+        return ""
+
     def get_torrents_by_tag(self) -> Tuple[Dict[str, List[TorrentInfo]], Optional[str]]:
         """**一次**拉取全部种子，按标签分组返回：tag -> [TorrentInfo]。
 
@@ -1633,6 +1660,25 @@ class DownloaderAdapter:
         if self.downloader_name != "qbittorrent" or not self._downloader:
             return None
         return getattr(self._downloader, "qbc", None)
+
+    def upload_limit_stats(self) -> Dict[str, int]:
+        """单种上传限速分布（诊断用）。"""
+        qbc = self._qb_client()
+        if qbc is None:
+            return {}
+        try:
+            info = list(qbc.torrents_info() or [])
+        except Exception:  # noqa: BLE001
+            return {}
+        out: Dict[str, int] = {}
+        for t in info:
+            try:
+                lim = int(t.get("up_limit") or 0)
+            except Exception:  # noqa: BLE001
+                lim = 0
+            key = "不限" if lim <= 0 else f"{lim} B/s"
+            out[key] = int(out.get(key, 0)) + 1
+        return out
 
     def set_upload_limit(self, hashes: Any, kbps: float) -> Tuple[int, Optional[str]]:
         """**单种**上传限速（KB/s；0 = 不限）。返回 (成功条数, 错误信息)。

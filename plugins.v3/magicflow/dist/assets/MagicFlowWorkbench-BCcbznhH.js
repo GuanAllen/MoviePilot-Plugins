@@ -2312,7 +2312,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-dfac126d"]]);
+const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-8c0e24f8"]]);
 
 const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,openBlock:_openBlock,createElementBlock:_createElementBlock,createCommentVNode:_createCommentVNode,createBlock:_createBlock,toDisplayString:_toDisplayString,normalizeClass:_normalizeClass,mergeProps:_mergeProps,renderList:_renderList,Fragment:_Fragment,withCtx:_withCtx,createTextVNode:_createTextVNode,vShow:_vShow,withDirectives:_withDirectives,unref:_unref,normalizeStyle:_normalizeStyle,withModifiers:_withModifiers} = await importShared('vue');
 
@@ -7679,7 +7679,7 @@ return (_ctx, _cache) => {
                               _createVNode(_component_VSheet, { class: "magicflow-stat app-surface-static" }, {
                                 default: _withCtx(() => [
                                   _createElementVNode("strong", null, _toDisplayString(selectedTask.value.seeding_count || 0), 1),
-                                  _createElementVNode("span", null, "静默池种子 · 其中 H&R 强制挂种 " + _toDisplayString(selectedTask.value.hr_count || 0) + " / 其他 " + _toDisplayString(selectedTask.value.nonhr_count || 0) + "（不强制）", 1)
+                                  _createElementVNode("span", null, "静默池种子 · 其中隔离区（欠 H&R 工时）" + _toDisplayString(selectedTask.value.hr_count || 0) + " / 其他 " + _toDisplayString(selectedTask.value.nonhr_count || 0), 1)
                                 ]),
                                 _: 1
                               }),
@@ -7745,7 +7745,7 @@ return (_ctx, _cache) => {
                                     color: "error"
                                   }, {
                                     default: _withCtx(() => [
-                                      _createTextVNode("H&R 强制挂种 " + _toDisplayString(selectedTask.value.hr_count || 0), 1)
+                                      _createTextVNode("隔离区（欠 H&R 工时）" + _toDisplayString(selectedTask.value.hr_count || 0), 1)
                                     ]),
                                     _: 1
                                   }),
@@ -7754,7 +7754,7 @@ return (_ctx, _cache) => {
                                     variant: "tonal"
                                   }, {
                                     default: _withCtx(() => [
-                                      _createTextVNode("其他（不强制）" + _toDisplayString(selectedTask.value.nonhr_count || 0), 1)
+                                      _createTextVNode("其他 " + _toDisplayString(selectedTask.value.nonhr_count || 0), 1)
                                     ]),
                                     _: 1
                                   })
@@ -7768,7 +7768,7 @@ return (_ctx, _cache) => {
                                           _createTextVNode(_toDisplayString(i ? '  ·  ' : '') + _toDisplayString(row.name) + " " + _toDisplayString(row.total), 1),
                                           (row.hr)
                                             ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
-                                                _createTextVNode("（H&R " + _toDisplayString(row.hr) + "）", 1)
+                                                _createTextVNode("（隔离 " + _toDisplayString(row.hr) + "）", 1)
                                               ], 64))
                                             : _createCommentVNode("", true)
                                         ]))
@@ -8403,7 +8403,7 @@ return (_ctx, _cache) => {
                             min: "0",
                             step: "50",
                             label: "挂种单种上传限速（KB/s）",
-                            hint: "魔力 / 来源份 / 推荐的种子：单种单独限速，默认 200（低于 100 可能被站点判「恶意限速」）；0 = 不限",
+                            hint: "我们管控的魔力 / 推荐 / 跨站种：单种限速，默认 200；不在管控下的种不限速；0 = 全不限",
                             "persistent-hint": "",
                             variant: "outlined",
                             density: "comfortable"
@@ -8416,7 +8416,7 @@ return (_ctx, _cache) => {
                             min: "0",
                             step: "256",
                             label: "刷流单种上传限速（KB/s）",
-                            hint: "刷流任务的种子：要冲量，默认 5120（=5 MB/s）；0 = 不限",
+                            hint: "我们管控的刷流种：要冲量，默认 5120（=5 MB/s）；0 = 不限",
                             "persistent-hint": "",
                             variant: "outlined",
                             density: "comfortable"
@@ -12340,6 +12340,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-61a438ab"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-6f6ad3ab"]]);
 
 export { MagicFlowWorkbench as M };
