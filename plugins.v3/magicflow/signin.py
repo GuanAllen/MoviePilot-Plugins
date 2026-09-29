@@ -70,6 +70,56 @@ class SigninEngine:
         except Exception:  # noqa: BLE001
             return None
 
+    # ---------------------------------------------------- 专用处理器（5.1.0）
+    def _handler(self, site: Any) -> Any:
+        """按域名匹配站点专用处理器（命中返回类，否则 None）。"""
+        if not site:
+            return None
+        try:
+            from . import signin_sites  # noqa: WPS433
+        except Exception as err:  # noqa: BLE001
+            self._log(f"签到处理器包不可用：{err}", "warning")
+            return None
+        url = str(getattr(site, "url", "") or getattr(site, "domain", "") or "")
+        try:
+            return signin_sites.find(url)
+        except Exception as err:  # noqa: BLE001
+            self._log(f"匹配签到处理器失败（{url}）：{err}", "debug")
+            return None
+
+    @staticmethod
+    def _site_ctx(site: Any) -> Dict[str, Any]:
+        """构造处理器要的站点信息字典（与 autosignin 的 site_info 同键）。"""
+        def _s(key: str) -> str:
+            return str(getattr(site, key, "") or "").strip()
+
+        timeout = int(getattr(site, "timeout", 0) or 0)
+        return {
+            "id": getattr(site, "id", None),
+            "name": _s("name"),
+            "url": _s("url"),
+            "domain": _s("domain"),
+            "cookie": _s("cookie"),
+            "ua": _s("ua"),
+            "token": _s("token"),
+            "apikey": _s("apikey"),
+            "proxy": bool(getattr(site, "proxy", 0)),
+            "render": bool(getattr(site, "render", 0)),
+            "timeout": timeout or None,
+        }
+
+    def _run_handler(self, kind: str, site: Any, handler: Any, site_id: Any, name: str) -> Dict[str, Any]:
+        """调用专用处理器并落库。"""
+        ctx = self._site_ctx(site)
+        hname = getattr(handler, "__name__", "handler")
+        try:
+            fn = handler().signin if kind == "sign" else handler().login
+            ok, msg = fn(ctx)
+        except Exception as err:  # noqa: BLE001
+            ok, msg = False, f"{'签到' if kind == 'sign' else '模拟登录'}失败：{err}"
+        msg = str(msg or ("成功" if ok else "失败"))
+        return self._store_result(kind, site_id, name, bool(ok), f"[专用] {msg}", handler=hname)
+
     def _get_text(self, site_id: Any, page: str, kind: str = "signin") -> Tuple[str, Optional[str], int]:
         """抓站点页（★ 3.38.0：站点请求只出自采集模块 collect，配额/熔断都在那边）。"""
         c = getattr(self._plugin, "collect", None)
@@ -145,6 +195,7 @@ class SigninEngine:
         message: str,
         bonus: Optional[float] = None,
         skipped: bool = False,
+        handler: Optional[str] = None,
     ) -> Dict[str, Any]:
         row = {
             "ok": bool(ok),
@@ -153,6 +204,10 @@ class SigninEngine:
             "time": datetime.now().strftime("%H:%M:%S"),
             "skipped": bool(skipped),
         }
+        if handler:
+            row["handler"] = str(handler)
+        row["site_id"] = site_id
+        row["site_name"] = site_name
         if bonus:
             row["bonus"] = float(bonus)
         try:
@@ -180,6 +235,11 @@ class SigninEngine:
         name = _site_name(site, site_id)
         if not site:
             return {"site_id": site_id, "site_name": name, "ok": False, "message": "站点不存在"}
+        # ① 站点专用处理器（HDSky OCR / U2 随机 / 馒头 API / CHD 表单 …）
+        h = self._handler(site)
+        if h is not None:
+            return self._run_handler("sign", site, h, site_id, name)
+        # ② API 鉴权站（无网页可签）
         if self._is_api_site(site):
             return self._store_result("sign", site_id, name, True, "API 站点无签到页（跳过）", skipped=True)
         text, err, status = self._get_text(site_id, SIGNIN_PAGE)
@@ -207,8 +267,9 @@ class SigninEngine:
         name = _site_name(site, site_id)
         if not site:
             return {"site_id": site_id, "site_name": name, "ok": False, "message": "站点不存在"}
-        if self._is_api_site(site):
-            return self._store_result("login", site_id, name, True, "API 站点（跳过）", skipped=True)
+        # 站点专用处理器：API 站（馒头等）先交给采集通道（走后台 API），
+        # 采集拿不到时再用专用处理器兜底。
+        h = self._handler(site)
         started = time.time()
         # ★ 3.38.0「顺便」：用户栏页（index.php）本来每轮就被站点实时抓（kind=live），
         #   这里直接读同一份事实 → 保活零额外 PV；TTL 内没有才真抓一次（同一 URL，仍只 1 次）。
@@ -220,6 +281,9 @@ class SigninEngine:
             except Exception as err:  # noqa: BLE001
                 got = {"ok": False, "error": f"采集模块异常: {err}"}
         if not got.get("ok"):
+            # 采集通道拿不到 → 有专用处理器就用它兜底
+            if h is not None:
+                return self._run_handler("login", site, h, site_id, name)
             msg = f"模拟登录失败：{got.get('error') or '抓取失败'}"
             return self._store_result("login", site_id, name, False, msg)
         if not got.get("logged_in") and not (got.get("ratio") or got.get("bonus")):
@@ -344,6 +408,7 @@ class SigninEngine:
                 "signin": row.get("sign"),
                 "login_result": row.get("login"),
                 "checked": bool(site and getattr(site, "cookie", None)),
+                "handler": getattr(self._handler(site), "__name__", "") if site else "",
             })
         keep = max(1, int(days or KEEP_DAYS))
         dates = sorted(data.keys())[-keep:]
