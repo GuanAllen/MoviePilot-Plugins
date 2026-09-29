@@ -1,0 +1,1352 @@
+# -*- coding: utf-8 -*-
+"""魔流 · silent —— 静默池（托管非任务种：保挂/清理/分拣）。
+
+（由原 `__init__.py` 拆分为 mixin，逐字搬运，行为不变。）
+"""
+
+import time
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+
+from ..bonus import (
+    calc_bonus_per_hour,
+)
+from ..persistence import OperationItem
+from ..tags import (
+    is_asset_tags,
+    MARK_REUSE,
+    SPECIAL_TAGS,
+    MARK_HR,
+    STATE_SILENT,
+    SUB_NEW,
+    SUB_PLAIN,
+    SUB_RESOURCE,
+    is_magicflow_tag,
+    retag,
+    tag_for,
+)
+
+
+from ..common import (
+    RECOMMEND_SCAN_MAX,
+    SILENT_HOST_INTERVAL_MINUTES,
+    SILENT_HOST_TASK_ID,
+    TAG_NEW_TIMEOUT,
+)
+
+
+class SilentMixin:
+    """silent 功能集（原 MagicFlow 方法原样搬入）。"""
+
+    def silent_host(self) -> None:
+        """★ 静默托管（**常驻 worker**，Master 2026-09-28 06:30：「常驻，不用每20分钟检查一次」）。
+
+        静默池的「负责人」——常驻（reload 即注册，不随任务增减开关）、低频（默认 60min）。
+        九步职责（每次运行在**操作记录**里留一条流水，明细即各步结果；职责说明见 docs/静默托管.md）：
+        ① 池清理 ② **H&R 保挂**（只对欠 H&R 的种强制挂种）③ H&R 统一管理 ④ 辅种校验
+        ⑤ 静默-普通 清理 ⑥ 推荐过期降级 ⑦ 分拣 ⑧ 静默-新 超时归普通 ⑨ 库内资产刷新
+        """
+        summary: List[tuple] = []
+
+        def _step(key: str, label: str, fn) -> None:
+            """跑一步：成功记结果文本，失败记失败原因（不中断后续步骤）。"""
+            try:
+                txt = fn() or ""
+            except Exception as err:  # noqa: BLE001
+                self._log(f"静默托管:{label}失败:{err}", "warning")
+                summary.append((key, f"{label} 失败：{err}"))
+                return
+            summary.append((key, f"{label}：{txt}" if txt else f"{label}：无需处理"))
+
+        try:
+            store = self._tag_state()
+            _started = time.time()
+            # 上一轮若被 reload/重启打断，会留下一条「运行中」记录 → 先收尾（>10min 才算异常）
+            try:
+                for _r in self._store.journal.list_by_task(SILENT_HOST_TASK_ID, limit=5):
+                    if str(getattr(_r, "state", "")) in ("submitting", "accepted") \
+                            and (time.time() - float(getattr(_r, "created_at", 0) or 0)) > 600:
+                        self._store.journal.finalize(
+                            _r.operation_id, "failed",
+                            items=[OperationItem(hash="", title="上一轮被中断（reload/重启）", source="run")],
+                            error_message="上一轮被中断",
+                        )
+            except Exception:  # noqa: BLE001
+                pass
+            # ★ 操作记录：开始时先登记一条「运行中」，结束时落明细（前台「操作记录」可展开）
+            _rec = None
+            try:
+                _rec = self._store.journal.add(
+                    task_id=SILENT_HOST_TASK_ID, kind="run",
+                    items=[OperationItem(hash="", title="静默托管运行中…", source="run")],
+                )
+            except Exception as err:  # noqa: BLE001
+                self._log(f"静默托管:操作记录登记失败:{err}", "warning")
+
+            def _s1() -> str:
+                i = self._silent_purge_incomplete(apply=True, limit=200)
+                if i.get("deleted"):
+                    self._log(f"魔流:静默托管:未下完直接删 {i.get('deleted')} 个（不计 H&R）")
+                    return f"删未下完 {i.get('deleted')} 个（不计 H&R）"
+                return ""
+
+            def _s2() -> str:
+                i = self._silent_resume_tick(apply=True, limit=0)
+                if i.get("resumed"):
+                    self._log(f"魔流:静默托管:H&R 保挂强制挂种 {i.get('resumed')} 个")
+                    return f"强制挂种 {i.get('resumed')} 个（欠H&R {i.get('hr_pending')} / 非H&R {i.get('nonhr')} 不动）"
+                return f"欠H&R {i.get('hr_pending')} 个均已挂种"
+
+            def _s3() -> str:
+                i = self._hr_guard_tick(apply=True, limit=0)
+                if i.get("tagged") or i.get("resumed") or i.get("cleared") or i.get("released"):
+                    self._log(f"魔流:静默托管:H&R 管理:打标 {i.get('tagged')} · 拉起 {i.get('resumed')} · 摘标 {i.get('cleared')} · 松绑 {i.get('released')}")
+                    return f"打标 {i.get('tagged')} · 拉起 {i.get('resumed')} · 摘标 {i.get('cleared')} · 松绑 {i.get('released')}"
+                return ""
+
+            def _s4() -> str:
+                i = self._silent_verify_marks(apply=True, limit=60)
+                if i.get("checked"):
+                    self._log(f"魔流:静默托管:辅种 recheck {i.get('checked')} 个")
+                    return f"recheck {i.get('checked')} 个"
+                return ""
+
+            def _s5() -> str:
+                i = self._silent_plain_sweep(apply=True, limit=0)
+                if i.get("deleted"):
+                    self._log(f"魔流:静默托管:删除低效普通种 {i.get('deleted')} 个")
+                    return f"删低效普通种 {i.get('deleted')} 个"
+                return ""
+
+            def _s6() -> str:
+                i = self._recommend_downgrade_expired(apply=True, limit=0)
+                if i.get("downgraded"):
+                    self._log(f"魔流:静默托管:推荐过期降级转普通 {i.get('downgraded')} 个")
+                    return f"推荐过期降级 {i.get('downgraded')} 个"
+                return ""
+
+            def _s7() -> str:
+                self._silent_triage(apply=True, limit=60, budget=600.0)
+                return ""
+
+            def _s8() -> str:
+                _snap = self._tag_all_torrents()
+                try:
+                    _hr_wait = self._silent_hr_pending(_snap)
+                except Exception:  # noqa: BLE001
+                    _hr_wait = set()
+                moved = store.expire_new(
+                    timeout=float(self._tags_cfg.get("new_timeout") or TAG_NEW_TIMEOUT),
+                    skip=_hr_wait,
+                )
+                if moved:
+                    self._log(f"魔流:静默托管:「静默-新」超时归「静默-普通」{len(moved)} 个")
+                    for _h in moved:
+                        try:
+                            self._silent_to_plain(_h)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    return f"超时归普通 {len(moved)} 个"
+                return ""
+
+            def _s9() -> str:
+                i = self.sync_tag_assets(apply=True)
+                if i.get("changed"):
+                    self._log(f"魔流:静默托管:库内资产标记刷新 {i.get('changed')} 个（资产 {i.get('asset')}）")
+                    return f"资产标记刷新 {i.get('changed')} 个（资产 {i.get('asset')}）"
+                return ""
+
+            _step("purge", "①池清理", _s1)
+            _step("hr_keep", "②H&R保挂", _s2)
+            _step("hr_guard", "③H&R管理", _s3)
+            _step("verify", "④辅种校验", _s4)
+            _step("plain", "⑤普通清理", _s5)
+            _step("downgrade", "⑥推荐降级", _s6)
+            _step("triage", "⑦分拣", _s7)
+            _step("expire", "⑧超时归位", _s8)
+            _step("assets", "⑨资产刷新", _s9)
+
+            self._silent_host_last = time.time()
+            # ★ 操作记录：落明细 = 九步结果（前台「操作记录」可展开）
+            try:
+                _items = [OperationItem(hash="", title="静默托管运行完成", source="run")]
+                for _k, _t in summary:
+                    _items.append(OperationItem(hash="", title=str(_t), source=str(_k)))
+                _dur = round(time.time() - _started, 2)
+                if _rec is not None:
+                    self._store.journal.finalize(_rec.operation_id, "completed", items=_items, duration=_dur)
+                else:
+                    self._store.journal.record(task_id=SILENT_HOST_TASK_ID, kind="run", items=_items, duration=_dur)
+            except Exception as err:  # noqa: BLE001
+                self._log(f"静默托管:操作记录写入失败:{err}", "warning")
+        except Exception as err:  # noqa: BLE001
+            self._log(f"静默托管异常:{err}", "warning")
+
+    def _silent_host_card(self) -> Dict[str, Any]:
+        """★ 「静默托管」常驻任务在**任务列表**里的只读条目（Master 2026-09-28 06:33）。
+
+        带 30s 内存缓存（按运行身份）：原来每次 /status 都会全量走 _tag_all_torrents
+        拉到 868 个种子，跳表 + 分类 + stat 组装，在 status 30s 轮询时是最大慢点之一。
+        缓存后稳态首次 0.01s。
+        """
+        cache = getattr(self, "_silent_host_card_cache", None)
+        now = time.time()
+        if cache and (now - cache["ts"]) < 30:
+            return cache["data"]
+        n_sil = 0
+        n_hr = 0
+        by_state: Dict[str, int] = {}
+        by_site: Dict[str, Dict[str, int]] = {}
+        try:
+            for _t in (self._tag_all_torrents() or {}).values():
+                _tg = [str(x) for x in (getattr(_t, "tags", None) or [])]
+                _st = next((x for x in _tg if "静默" in x and is_magicflow_tag(x)), "")
+                if not _st:
+                    continue
+                n_sil += 1
+                _ishr = bool(MARK_HR in _tg)
+                if _ishr:
+                    n_hr += 1
+                _sub = "新"
+                for _s in ("新", "资源", "普通"):
+                    if _st.endswith(_s):
+                        _sub = _s
+                by_state[_sub] = int(by_state.get(_sub) or 0) + 1
+                _site = self._torrent_site_name(_tg, "") or "未知"
+                _d = by_site.setdefault(_site, {"total": 0, "hr": 0})
+                _d["total"] += 1
+                if _ishr:
+                    _d["hr"] += 1
+        except Exception:  # noqa: BLE001
+            try:
+                led = self._tag_state().items() or {}
+                n_sil = sum(1 for r in led.values() if str(r.get("state") or "") == STATE_SILENT)
+                n_hr = 0
+            except Exception:  # noqa: BLE001
+                n_sil, n_hr = 0, 0
+        try:
+            _min = float(getattr(self, "_tags_cfg", {}).get("host_interval") or SILENT_HOST_INTERVAL_MINUTES)
+        except Exception:  # noqa: BLE001
+            _min = float(SILENT_HOST_INTERVAL_MINUTES)
+        last = float(getattr(self, "_silent_host_last", 0) or 0)
+        try:
+            _rows = self._store.journal.list_by_task(SILENT_HOST_TASK_ID, limit=1)
+            if _rows:
+                _t = float(getattr(_rows[0], "resolved_at", None) or getattr(_rows[0], "created_at", 0) or 0)
+                if _t > last:
+                    last = _t
+        except Exception:  # noqa: BLE001
+            pass
+        return {
+            "id": SILENT_HOST_TASK_ID,
+            "name": "静默托管",
+            "builtin": True,
+            "enabled": True,
+            "run_mode": "running",
+            "task_type": "host",
+            "state": "running",
+            "site_id": 0,
+            "site_domain": "",
+            "site_name": "全部站点（静默池）",
+            "downloader": "所有下载器",
+            "brush_tag": "魔流-<站点>-静默[-子类]",
+            "save_path": "",
+            "seeding_count": n_sil,
+            "hr_count": n_hr,
+            "nonhr_count": max(0, n_sil - n_hr),
+            "active_seeding_count": n_sil,
+            "downloading_count": 0,
+            "paused_count": 0,
+            "classify": {
+                "by_state": by_state,
+                "by_site": by_site,
+            },
+            "host_interval_minutes": round(_min, 1),
+            "host_last_run": (time.strftime("%m-%d %H:%M", time.localtime(last)) if last else "—"),
+        }
+        out = {
+            "id": SILENT_HOST_TASK_ID,
+            "name": "静默托管",
+            "builtin": True,
+            "enabled": True,
+            "run_mode": "running",
+            "task_type": "host",
+            "state": "running",
+            "site_id": 0,
+            "site_domain": "",
+            "site_name": "全部站点（静默池）",
+            "downloader": "所有下载器",
+            "brush_tag": "魔流-<站点>-静默[-子类]",
+            "save_path": "",
+            "seeding_count": n_sil,
+            "hr_count": n_hr,
+            "nonhr_count": max(0, n_sil - n_hr),
+            "active_seeding_count": n_sil,
+            "downloading_count": 0,
+            "paused_count": 0,
+            "classify": {
+                "by_state": by_state,
+                "by_site": by_site,
+            },
+            "host_interval_minutes": round(_min, 1),
+            "host_last_run": (time.strftime("%m-%d %H:%M", time.localtime(last)) if last else "—"),
+        }
+        if cache is None:
+            cache = self._silent_host_card_cache = {}
+        cache["ts"] = now
+        cache["data"] = out
+        return out
+
+    # ---------------------------------------------------------
+    # 静默池分拣（3.14.0）：静默-新 --(挂种完成 H&R)--> 推荐 → 整理入库 → 静默-资源
+    #                                                    否则 → 静默-普通
+    # ---------------------------------------------------------
+
+    def _silent_hr_done(self, site: str, torrent: Any) -> Tuple[bool, str]:
+        """静默种的 H&R/保种义务是否完成（站点规则 + 实测做种时长）。无 H&R → 直接算完成。"""
+        dom = str(site or "").strip().lower()
+        try:
+            protect, hours, src = self._crossseed_hr_decision(dom, None)
+        except Exception:  # noqa: BLE001
+            protect, hours, src = False, 0.0, "unknown"
+        if not protect:
+            return True, f"无H&R({src})"
+        need = 0.0
+        try:
+            need = float(self._crossseed_seed_need_hours(dom) or 0.0)
+        except Exception:  # noqa: BLE001
+            need = 0.0
+        if need <= 0:
+            need = float(hours or 0.0)
+        if need <= 0:
+            return True, f"无时长要求({src})"
+        try:
+            seeded = float(getattr(torrent, "seed_time", 0) or 0.0)
+        except (TypeError, ValueError):
+            seeded = 0.0
+        if seeded >= need * 3600.0:
+            return True, f"已挂{seeded / 3600.0:.1f}h/{need:.0f}h"
+        return False, f"挂{seeded / 3600.0:.1f}h/{need:.0f}h"
+
+    def _silent_to_plain(self, h: str) -> bool:
+        """静默-新 → 静默-普通（不达标；此后可被磁盘压力清理）。"""
+        hh = str(h or "").strip().lower()
+        if not hh:
+            return False
+        try:
+            rec = self._tag_state().get(hh) or {}
+        except Exception:  # noqa: BLE001
+            rec = {}
+        site = str(rec.get("site") or "").strip()
+        dl_name = str(rec.get("downloader") or "qbittorrent")
+        try:
+            t = (self._tag_all_torrents() or {}).get(hh)
+            cur = [str(x).strip() for x in (getattr(t, "tags", None) or [])] if t is not None else []
+        except Exception:  # noqa: BLE001
+            cur = []
+        if not site:
+            site = self._torrent_site_name(cur, "")
+        # ★ 降级要**摘掉**「魔流-推荐」（它是推荐生命周期的标记，不走状态模型保留）
+        _keep = tuple(x for x in SPECIAL_TAGS if x != "魔流-推荐")
+        new_tags = (
+            retag(cur, site=site, state=STATE_SILENT, sub=SUB_PLAIN, keep=_keep)
+            if cur
+            else [tag_for(site, STATE_SILENT, SUB_PLAIN)]
+        )
+        ok = False
+        try:
+            dl = self._get_downloader(dl_name)
+            fn = getattr(dl, "replace_torrent_tags", None) if dl is not None else None
+            ok = bool(fn(hh, new_tags)) if callable(fn) else False
+        except Exception as err:  # noqa: BLE001
+            self._log(f"静默分拣:归普通失败 {hh[:12]}:{err}", "warning")
+            ok = False
+        if ok:
+            try:
+                self._tag_state().put(hh, {"sub": SUB_PLAIN, "reason": "静默分拣:未达标→普通"})
+            except Exception:  # noqa: BLE001
+                pass
+        return ok
+
+    def _promote_resource(self, gid: str) -> int:
+        """★ 资源已入库 → **立刻**把该资源的「静默」成员转「静默-资源」。
+
+        Master 2026-09-28 07:23：入库后应该**当场**变「静默-资源」，而不是等静默托管那轮
+        分拣（现在每小时一轮 → 最多滞后 1 小时）。入库事件（TransferComplete）/ 推荐确认
+        入库成功后直接调用本方法。
+        """
+        _gid = str(gid or "").strip()
+        if not _gid:
+            return 0
+        try:
+            rec = (self._tag_groups().items() or {}).get(_gid) or {}
+            members = [str(h).lower() for h in (rec.get("members") or {}) if h]
+        except Exception:  # noqa: BLE001
+            return 0
+        st = self._tag_state()
+        n = 0
+        for _h in members:
+            try:
+                cur = st.get(_h) or {}
+                if str(cur.get("state") or "") != STATE_SILENT:
+                    continue
+                if str(cur.get("sub") or "") == SUB_RESOURCE:
+                    continue
+                if self._silent_to_resource(_h):
+                    n += 1
+            except Exception:  # noqa: BLE001
+                continue
+        if n:
+            self._log(f"入库即转:资源 {_gid[:40]} → 静默-资源 {n} 个")
+        return n
+
+    def _silent_to_resource(self, h: str) -> bool:
+        """静默-新 → 静默-资源（该**资源**已在影视库；库内资产永不删）。
+
+        与 ``_silent_to_plain`` 同构，仅状态子类与账本标记不同。
+        """
+        hh = str(h or "").strip().lower()
+        if not hh:
+            return False
+        try:
+            rec = self._tag_state().get(hh) or {}
+        except Exception:  # noqa: BLE001
+            rec = {}
+        site = str(rec.get("site") or "").strip()
+        dl_name = str(rec.get("downloader") or "qbittorrent")
+        try:
+            t = (self._tag_all_torrents() or {}).get(hh)
+            cur = [str(x).strip() for x in (getattr(t, "tags", None) or [])] if t is not None else []
+        except Exception:  # noqa: BLE001
+            cur = []
+        if not site:
+            site = self._torrent_site_name(cur, "")
+        _keep = tuple(x for x in SPECIAL_TAGS if x != "魔流-推荐")
+        new_tags = (
+            retag(cur, site=site, state=STATE_SILENT, sub=SUB_RESOURCE, keep=_keep)
+            if cur
+            else [tag_for(site, STATE_SILENT, SUB_RESOURCE)]
+        )
+        ok = False
+        try:
+            dl = self._get_downloader(dl_name)
+            fn = getattr(dl, "replace_torrent_tags", None) if dl is not None else None
+            ok = bool(fn(hh, new_tags)) if callable(fn) else False
+        except Exception as err:  # noqa: BLE001
+            self._log(f"静默分拣:归资源失败 {hh[:12]}:{err}", "warning")
+            ok = False
+        if ok:
+            try:
+                self._tag_state().put(hh, {"sub": SUB_RESOURCE, "asset": True,
+                                           "reason": "静默分拣:资源已入库→静默-资源"})
+            except Exception:  # noqa: BLE001
+                pass
+        return ok
+
+    def _silent_hr_pending(self, snap: Optional[Dict[str, Any]] = None) -> Set[str]:
+        """仍欠 H&R（没挂满）的「静默-新」hash：不许被超时降级成「普通」。"""
+        out: Set[str] = set()
+        try:
+            data = self._tag_state().items() or {}
+        except Exception:  # noqa: BLE001
+            return out
+        shots = snap if snap is not None else self._tag_all_torrents()
+        # 推荐待确认的（状态 recommended/pending）也不许被超时降级：它们走推荐生命周期
+        try:
+            _rstore = getattr(self._store, "recommend", None)
+            _rwait = _rstore.list("recommended") + _rstore.list("pending") if _rstore else []
+            for _r in _rwait:
+                _rh = str(_r.get("hash") or "").lower()
+                if _rh:
+                    out.add(_rh)
+        except Exception:  # noqa: BLE001
+            pass
+        for h, rec in data.items():
+            if str(rec.get("state") or "") != STATE_SILENT or str(rec.get("sub") or "") != SUB_NEW:
+                continue
+            t = (shots or {}).get(str(h).lower())
+            if t is None:
+                continue
+            site = str(rec.get("site") or "").strip() or self._torrent_site_name(
+                getattr(t, "tags", None), ""
+            )
+            try:
+                done, _why = self._silent_hr_done(site, t)
+            except Exception:  # noqa: BLE001
+                done = True
+            if not done:
+                out.add(str(h).lower())
+        return out
+
+    def _silent_resume_tick(self, apply: bool = True, limit: int = 0) -> Dict[str, Any]:
+        """★ **H&R 保挂**：只对**欠 H&R 的静默种**强制挂种（Master 2026-09-28 06:44：
+
+        「你得拆出来啊，只有 h&r 要强制挂种」）——静默池必须"拆开"看：
+        - **欠 H&R** 的种 → ``force_start`` 强制挂种（义务，不能被暂停/清掉）；
+        - **其余**（静默-资源 / 静默-普通 / 静默-新 里不欠 H&R 的）→ **不强制**，保持原状，
+          由站点魔力产出 / 资源价值决定去留（可被清理/换种，不受此 tick 干预）。
+        """
+        rep: Dict[str, Any] = {"apply": bool(apply), "checked": 0, "silent": 0, "hr_pending": 0,
+                               "nonhr": 0, "resumed": 0, "skipped_manual": 0,
+                               "skipped_incomplete": 0, "failed": 0, "items": [], "sites": {}}
+        snap = self._tag_all_torrents() or {}
+        if not snap:
+            rep["reason"] = "无快照"
+            return rep
+        try:
+            ledger = dict(self._tag_state().items() or {})
+        except Exception:  # noqa: BLE001
+            ledger = {}
+        cap = int(limit or 0)
+        to_resume: List[str] = []
+        for hh, t in snap.items():
+            tags = [str(x) for x in (getattr(t, "tags", None) or [])]
+            if not any(("静默" in x and is_magicflow_tag(x)) for x in tags):
+                continue
+            rep["silent"] = int(rep["silent"]) + 1
+            if cap and rep["checked"] >= cap:
+                continue
+            rep["checked"] = int(rep["checked"]) + 1
+            rec = ledger.get(hh) or {}
+            if rec.get("manual_paused"):
+                rep["skipped_manual"] = int(rep["skipped_manual"]) + 1
+                continue
+            try:
+                done = float(getattr(t, "progress", 0) or 0) >= 0.999
+            except (TypeError, ValueError):
+                done = False
+            reuse = (MARK_REUSE in tags) or is_asset_tags(tags)
+            if not done and not reuse:
+                rep["skipped_incomplete"] = int(rep["skipped_incomplete"]) + 1
+                continue
+            st = str(getattr(t, "state", "") or "").strip().lower()
+            if not (st.startswith("paused") or st.startswith("stopped") or st.startswith("queued")):
+                continue  # 已在做种/校验 → 不动
+            site = str(rec.get("site") or "").strip() or self._torrent_site_name(tags, "")
+            try:
+                obl = bool(self._hr_obligation(site, t)[0])
+            except Exception:  # noqa: BLE001
+                obl = bool(MARK_HR in tags)
+            if not obl:
+                rep["nonhr"] = int(rep["nonhr"]) + 1  # 非 H&R → 不强制，保持原状
+                continue
+            rep["hr_pending"] = int(rep["hr_pending"]) + 1
+            rep["sites"][site] = int(rep["sites"].get(site) or 0) + 1
+            if len(rep["items"]) < 40:
+                rep["items"].append({"hash": hh[:12], "site": site, "state": st})
+            to_resume.append(hh)
+        if apply and to_resume:
+            try:
+                dl = self._get_downloader("qbittorrent")
+                fn = getattr(dl, "force_start_torrents", None) if dl is not None else None
+                if callable(fn):
+                    cnt, err = fn(to_resume)
+                elif dl is not None:
+                    cnt, err = dl.resume_torrents(to_resume)
+                else:
+                    cnt, err = 0, "无下载器"
+                rep["resumed"] = int(cnt or 0)
+                if err:
+                    self._log(f"H&R 保挂:强制挂种失败 {err}", "warning")
+            except Exception as err:  # noqa: BLE001
+                rep["failed"] = int(rep["failed"]) + 1
+                self._log(f"H&R 保挂:强制挂种异常:{err}", "warning")
+        if rep["resumed"]:
+            self._log(f"魔流:H&R 保挂:强制挂种 {rep['resumed']} 个"
+                      f"（静默 {rep['silent']} · 欠H&R {rep['hr_pending']} · 非H&R{rep['nonhr']}不动）")
+        return rep
+
+    def _silent_verify_marks(self, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
+        """★ 静默池「辅种/复用种」校验：停在 pausedDL 是**等校验**，不是没下完。
+
+        （Master 2026-09-28：「所有跨站辅种都是 pausedDL吧」）
+        对带 ``魔流-辅种`` / ``辅种`` / ``已整理`` 标记、且未到 100% 的静默种 → recheck + 恢复做种。
+        校验完若文件对得上 → 自动 100% 继续做种；对不上 → 由后续流程按「坏辅种」处理（只删种）。
+        """
+        rep: Dict[str, Any] = {"apply": bool(apply), "pending": 0, "checked": 0,
+                               "failed": 0, "items": []}
+        try:
+            data = dict(self._tag_state().items() or {})
+        except Exception:  # noqa: BLE001
+            return rep
+        snap = self._tag_all_torrents() or {}
+        cap = int(limit or 0)
+        for h, rec in list(data.items()):
+            hh = str(h or "").lower()
+            if str(rec.get("state") or "") != STATE_SILENT:
+                continue
+            t = snap.get(hh)
+            if t is None:
+                continue
+            tags = [str(x) for x in (getattr(t, "tags", None) or [])]
+            if not (MARK_REUSE in tags or is_asset_tags(tags)):
+                continue
+            try:
+                prog = float(getattr(t, "progress", 1.0) or 0.0)
+            except (TypeError, ValueError):
+                prog = 1.0
+            if prog >= 0.999:
+                continue
+            rep["pending"] += 1
+            rep["items"].append({
+                "hash": hh[:12], "title": str(getattr(t, "title", "") or "")[:50],
+                "progress": round(prog * 100.0, 1), "state": str(getattr(t, "state", "") or ""),
+                "tries": int(rec.get("verify_n") or 0),
+            })
+            if not apply or (cap and rep["checked"] >= cap):
+                continue
+            # ★ 别每小时反复 recheck 同一颗（磁盘 IO 浪费）：同一颗 6h 内只校验一次
+            now = time.time()
+            try:
+                last = float(rec.get("verify_at") or 0.0)
+            except (TypeError, ValueError):
+                last = 0.0
+            if now - last < 6 * 3600.0:
+                rep["skipped"] = int(rep.get("skipped") or 0) + 1
+                continue
+            try:
+                dl = self._get_downloader(str(rec.get("downloader") or "qbittorrent"))
+                if dl is None:
+                    rep["failed"] += 1
+                    continue
+                dl.recheck_torrents([hh])
+                dl.resume_torrents([hh])
+                rep["checked"] += 1
+                _tries = int(rec.get("verify_n") or 0) + 1
+                try:
+                    self._tag_state().put(hh, {"verify_at": now, "verify_n": _tries})
+                except Exception:  # noqa: BLE001
+                    pass
+                if _tries >= 3:
+                    rep["stuck"] = int(rep.get("stuck") or 0) + 1
+            except Exception as err:  # noqa: BLE001
+                rep["failed"] += 1
+                self._log(f"静默池校验:辅种 recheck 失败 {hh[:12]}:{err}", "warning")
+        if apply and rep["checked"]:
+            self._log(
+                f"魔流:静默池校验:辅种复用种 recheck {rep['checked']} 个"
+                f"（停在 pausedDL 是等校验，不是没下完）"
+            )
+        if apply and rep.get("stuck"):
+            self._log(
+                f"静默池校验:{rep['stuck']} 个辅种反复校验仍不完整（疑似文件已移走/坏种），"
+                f"已不自动删——请人工确认", "warning"
+            )
+        return rep
+
+    def _silent_purge_incomplete(self, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
+        """★ 静默池「未下完」清理：没下完的直接删，**不计 H&R**（Master 2026-09-28 00:16）。
+
+        - 只扫静默池（``魔流-<站点>-静默[-子类]``）
+        - 排除：跨站来源份（``魔流-跨站``：数据已下、正在校验）、推荐待确认（``魔流-推荐``）、
+          库内资产（已整理/辅种）—— 这些都不是「没下完的半成品」
+        - 删文件策略：同目录还有别的**已完成**种子在用 → 只删种子；否则连文件一起删
+        """
+        rep: Dict[str, Any] = {"apply": bool(apply), "pending": 0, "deleted": 0,
+                               "torrent_only": 0, "failed": 0, "items": []}
+        try:
+            store = self._tag_state()
+            data = dict(store.items() or {})
+        except Exception:  # noqa: BLE001
+            return rep
+        snap = self._tag_all_torrents() or {}
+        cap = int(limit or 0)
+        # ★ 同「Release 目录」保护：另一个**已完成**种子占着同一个
+        #   `save_path/name`（典型：跨站辅种同一发布）→ 只删种子、不删文件。
+        #   注意 qB 的 save_path 是**根目录**（几百个种共用），不能拿它当判据。
+        def _rkey(_t: Any) -> str:
+            _sp = str(getattr(_t, "save_path", "") or "").rstrip("/")
+            _nm = str(getattr(_t, "name", "") or "").strip()
+            return (_sp + "/" + _nm) if (_sp and _nm) else ""
+
+        done_keys: Dict[str, str] = {}
+        for _h, _t in (snap or {}).items():
+            try:
+                if float(getattr(_t, "progress", 0) or 0) >= 0.999:
+                    _k = _rkey(_t)
+                    if _k:
+                        done_keys.setdefault(_k, str(_h).lower())
+            except Exception:  # noqa: BLE001
+                continue
+        for h, rec in list(data.items()):
+            h = str(h or "").lower()
+            if str(rec.get("state") or "") != STATE_SILENT:
+                continue
+            t = snap.get(h)
+            if t is None:
+                continue
+            tags = [str(x) for x in (getattr(t, "tags", None) or [])]
+            # 跨站来源份 / 推荐中 / 库内资产 / **辅种复用种**（它们停在 pausedDL 是等校验，
+            # 不是「没下完的下载」Master 2026-09-28）→ 都不在「未下完直接删」范围内
+            if ("魔流-跨站" in tags or "魔流-推荐" in tags
+                    or MARK_REUSE in tags or is_asset_tags(tags)):
+                continue
+            try:
+                prog = float(getattr(t, "progress", 1.0) or 0.0)
+            except Exception:  # noqa: BLE001
+                prog = 1.0
+            state_name = str(getattr(t, "state", "") or "")
+            if not (prog < 0.999 or state_name.endswith("DL")):
+                continue
+            rep["pending"] += 1
+            rep["items"].append({"hash": h[:12], "title": str(getattr(t, "title", "") or "")[:60],
+                                 "progress": round(prog * 100.0, 1), "state": state_name})
+            if not apply or (cap and rep["deleted"] >= cap):
+                continue
+            _k = _rkey(t)
+            shared = bool(_k and done_keys.get(_k) and done_keys.get(_k) != h)
+            try:
+                dl = self._get_downloader(str(rec.get("downloader") or "qbittorrent"))
+                if dl is None:
+                    rep["failed"] += 1
+                    continue
+                cnt, err = dl.delete_torrents(hashes=[h], delete_file=not shared)
+                if cnt:
+                    rep["deleted"] += 1
+                    if shared:
+                        rep["torrent_only"] += 1
+                    try:
+                        store.drop(h)
+                    except Exception:  # noqa: BLE001
+                        pass
+                else:
+                    rep["failed"] += 1
+                    self._log(f"静默池清理:删除失败 {h[:12]}:{err}", "warning")
+            except Exception as err:  # noqa: BLE001
+                rep["failed"] += 1
+                self._log(f"静默池清理:删除异常 {h[:12]}:{err}", "warning")
+        if apply and rep["deleted"]:
+            self._log(
+                f"魔流:静默池清理:未下完直接删 {rep['deleted']} 个（不计 H&R；"
+                f"其中只删种 {rep['torrent_only']} 个）"
+            )
+        return rep
+
+    def _recommend_downgrade_expired(self, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
+        """★ 推荐「过期 → 转普通」，覆盖**静默池**里的推荐记录。
+
+        （任务范围那条路在 ``recommend_scan`` 里；静默池的推荐没有活跃任务归属，
+        以前既不过期也不清理 → 这里补上。Master 01:17：推荐过期**不删，转普通**。）
+        """
+        rep: Dict[str, Any] = {"apply": bool(apply), "scanned": 0, "downgraded": 0,
+                               "not_yet": 0, "items": []}
+        store = getattr(self._store, "recommend", None) if self._store else None
+        if store is None:
+            rep["reason"] = "推荐库不可用"
+            return rep
+        cfg = getattr(self, "_recommend_cfg", {}) or {}
+        try:
+            expire_sec = float(cfg.get("expire_days", 7.0) or 0) * 86400.0
+        except (TypeError, ValueError):
+            expire_sec = 7 * 86400.0
+        if expire_sec <= 0:
+            rep["reason"] = "未设过期"
+            return rep
+        dl = None
+        try:
+            all_items = dict(store.all() or {})
+        except Exception:  # noqa: BLE001
+            return rep
+        now = time.time()
+        cap = int(limit or 0)
+        for h, rec in list(all_items.items()):
+            if str(rec.get("status") or "") not in ("recommended", "pending"):
+                continue
+            try:
+                first = float(rec.get("first_seen") or rec.get("evaluated_at") or 0) or now
+            except (TypeError, ValueError):
+                first = now
+            if now - first <= expire_sec:
+                rep["not_yet"] = int(rep.get("not_yet") or 0) + 1
+                continue
+            rep["scanned"] = int(rep.get("scanned") or 0) + 1
+            members = [str(x or "").lower() for x in (rec.get("members") or [])] or [str(h).lower()]
+            rep["items"].append({"hash": str(h)[:12], "title": str(rec.get("title") or "")[:50],
+                                 "members": len(members)})
+            if not apply or (cap and rep["downgraded"] >= cap):
+                continue
+            if dl is None:
+                try:
+                    dl = self._get_downloader("qbittorrent")
+                except Exception:  # noqa: BLE001
+                    dl = None
+            for m in members:
+                try:
+                    self._recommend_downgrade_one(dl, m)
+                except Exception as err:  # noqa: BLE001
+                    self._log(f"推荐过期降级失败 {m[:12]}:{err}", "warning")
+            try:
+                store.set_status(str(h), "downgraded", note="过期→转普通", downgraded_at=now)
+            except Exception:  # noqa: BLE001
+                pass
+            rep["downgraded"] = int(rep.get("downgraded") or 0) + 1
+        return rep
+
+    def _recommend_downgrade_one(self, downloader: Any, h: str) -> bool:
+        """推荐「过期 → 转普通」（Master 01:17）：
+
+        - 静默池成员（``静默-新``）→ 降级成 ``静默-普通``（会摘掉「魔流-推荐」）
+        - 其它（任务名下的种）→ **只摘掉「魔流-推荐」标签**，其余标签/归属不动
+        """
+        hh = str(h or "").strip().lower()
+        if not hh:
+            return False
+        try:
+            rec = self._tag_state().get(hh) or {}
+        except Exception:  # noqa: BLE001
+            rec = {}
+        if (str(rec.get("state") or "") == STATE_SILENT
+                and str(rec.get("sub") or "") == SUB_NEW):
+            return self._silent_to_plain(hh)
+        try:
+            t = (self._tag_all_torrents() or {}).get(hh)
+            cur = [str(x).strip() for x in (getattr(t, "tags", None) or [])] if t is not None else []
+            if cur and "魔流-推荐" in cur:
+                new_tags = [x for x in cur if x != "魔流-推荐"]
+                fn = getattr(downloader, "replace_torrent_tags", None)
+                if callable(fn):
+                    return bool(fn(hh, new_tags))
+        except Exception as err:  # noqa: BLE001
+            self._log(f"推荐降级:摘标签失败 {hh[:12]}:{err}", "warning")
+        return False
+
+    def _qb_num_complete(self) -> Dict[str, int]:
+        """qB 真实做种人数（``num_complete``）→ ``{hash: n}``。
+
+        ★ 魔力公式里的 Ni 用**做种人数**；站点页面上的 seeders 是抓来的快照，
+        用 qB 的实时值更准（Master 2026-09-27 提过）。
+        """
+        out: Dict[str, int] = {}
+        try:
+            dl = self._get_downloader("qbittorrent")
+            qbc = getattr(dl, "_qb_client", lambda: None)() if dl is not None else None
+            if qbc is None:
+                return out
+            for x in (qbc.torrents_info() or []):
+                try:
+                    _h = str(x.get("hash") or "").lower()
+                except Exception:  # noqa: BLE001
+                    _h = ""
+                if _h:
+                    try:
+                        out[_h] = int(x.get("num_complete") or 0)
+                    except (TypeError, ValueError):
+                        out[_h] = 0
+        except Exception as err:  # noqa: BLE001
+            self._log(f"魔力考核:读取 qB num_complete 失败:{err}", "warning")
+        return out
+
+    def _magic_out_per_hour(self, t: Any, ni: int = 0) -> float:
+        """单个种子的每小时魔力产出（估计）。Ni 优先取 qB ``num_complete``。"""
+        try:
+            sz = float(getattr(t, "size_gb", 0) or 0)
+        except (TypeError, ValueError):
+            sz = 0.0
+        try:
+            _ni = int(ni or 0)
+        except (TypeError, ValueError):
+            _ni = 0
+        if _ni <= 0:
+            try:
+                _ni = int(getattr(t, "seeder", 0) or 0)
+            except (TypeError, ValueError):
+                _ni = 0
+        age_w = 0.0
+        try:
+            _added = float(getattr(t, "added_on", 0) or 0)
+            if _added > 0:
+                age_w = max(0.0, (time.time() - _added) / (7.0 * 86400.0))
+        except (TypeError, ValueError):
+            age_w = 0.0
+        try:
+            return float(calc_bonus_per_hour(
+                size_gb=sz, seeders=max(_ni, 1), age_weeks=age_w,
+                is_zero_bonus=bool(getattr(t, "is_zero_bonus", False)),
+            ))
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    def _site_magic_enough(self, site: str) -> Tuple[bool, str]:
+        """该站「魔力产出够了」吗？= 有配了目标的 bonus 任务且**目标已达成**。
+
+        没配目标 → **视为没够**（不清理）。
+        """
+        s = str(site or "").strip()
+        if not s:
+            return False, "无站点"
+        try:
+            tasks = list(self._task_configs.values())
+        except Exception:  # noqa: BLE001
+            return False, "任务不可读"
+        for t in tasks:
+            try:
+                if str(getattr(t, "task_type", "bonus") or "bonus").lower() != "bonus":
+                    continue
+                if not getattr(t, "goal_value", None):
+                    continue
+                if str(getattr(t, "site_name", "") or "").strip() != s:
+                    continue
+                st = self._task_goal_status(t) or {}
+                if st.get("goal_reached"):
+                    return True, f"{getattr(t, 'name', '')} 目标已达成"
+            except Exception:  # noqa: BLE001
+                continue
+        return False, "未达标/未设目标"
+
+    def _site_domain_by_name(self, name: str) -> str:
+        """站点短名/全名 → 域名（带 300s 缓存）。
+
+        ★ 规则库（``sites/rules.py``）的键是**域名**，而标签/账本里存的是**中文短名**
+        （如「红豆饭」「学校」）—— 不转换就会出现「所有站点都按未知保守 24h」的假象。
+        """
+        nm = str(name or "").strip()
+        if not nm:
+            return ""
+        if "." in nm and " " not in nm:
+            return nm.lower()
+        cache = getattr(self, "_site_name2dom", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._site_name2dom = cache
+        now = time.time()
+        ts = float(getattr(self, "_site_name2dom_at", 0) or 0)
+        if not cache or (now - ts) > 300:
+            # ★ ① 规则库自带「中文站名 ↔ 域名」映射（最准，优先）
+            try:
+                for _dom, _rec in (self._site_rules().items() or {}).items():
+                    _n = str((_rec or {}).get("site_name") or "").strip()
+                    _d = str(_dom or "").strip().lower()
+                    if _n and _d:
+                        cache.setdefault(_n, _d)
+            except Exception as err:  # noqa: BLE001
+                self._log(f"H&R:规则库站名映射失败:{err}", "warning")
+            # ② MoviePilot 站点表兜底（同名的**不覆盖**规则库结果）
+            try:
+                for it in self._list_sites() or []:
+                    _n = str((it or {}).get("name") or "").strip()
+                    _d = str((it or {}).get("domain") or "").strip().lower()
+                    if _n and not cache.get(_n):
+                        cache[_n] = _d or _n.lower()
+            except Exception as err:  # noqa: BLE001
+                self._log(f"H&R:站点名解析失败:{err}", "warning")
+            self._site_name2dom_at = now
+        return str(cache.get(nm) or "").lower()
+
+    def _silent_plain_sweep(self, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
+        """★ 静默-普通 清理：**考核魔力产出**，站点魔力够了就把「没用的」直接删。
+
+        Master 2026-09-28 01:17：「推荐不过过期转普通 普通考核魔力产出没用，
+        在魔力产出够的情况下普通的直接干」
+
+        - 「够」= 该站有配目标的 bonus 任务且**目标已达成**（没配 → 不清理）
+        - 「没用」= 本种每小时魔力产出 ≤ 池内中位数 × ratio（默认 0.5）
+        - 永不删：库内资产 / 推荐中 / 跨站来源份 / 辅种复用种 / 欠 H&R / 手动保护
+        - 删文件按「Release 目录」共用判断（同 3.14.1）：有别的已完成种子在用 → 只删种子
+        """
+        rep: Dict[str, Any] = {"apply": bool(apply), "pending": 0, "deleted": 0,
+                               "torrent_only": 0, "failed": 0, "sites": {},
+                               "skipped_site": 0, "items": []}
+        cfg = getattr(self, "_silent_cfg", {}) or {}
+        if not cfg.get("sweep", True):
+            rep["reason"] = "未启用"
+            return rep
+        try:
+            ratio = float(cfg.get("ratio", 0.5) or 0.5)
+        except (TypeError, ValueError):
+            ratio = 0.5
+        try:
+            ledger = dict(self._tag_state().items() or {})
+        except Exception:  # noqa: BLE001
+            return rep
+        snap = self._tag_all_torrents() or {}
+        ni_map = self._qb_num_complete()
+
+        def _rkey(_t: Any) -> str:
+            _sp = str(getattr(_t, "save_path", "") or "").rstrip("/")
+            _nm = str(getattr(_t, "name", "") or "").strip()
+            return (_sp + "/" + _nm) if (_sp and _nm) else ""
+
+        done_keys: Dict[str, str] = {}
+        for _h, _t in (snap or {}).items():
+            try:
+                if float(getattr(_t, "progress", 0) or 0) >= 0.999:
+                    _k = _rkey(_t)
+                    if _k:
+                        done_keys.setdefault(_k, str(_h).lower())
+            except Exception:  # noqa: BLE001
+                continue
+        try:
+            files = self._tag_groups()
+        except Exception:  # noqa: BLE001
+            files = None
+        _lib_cache: Dict[str, bool] = {}
+
+        def _in_lib(_h: str) -> bool:
+            """该种所属**资源**是否已入库（★ 库记挂资源，不挂种子 —— P1-6）。"""
+            if files is None:
+                return False
+            try:
+                _g = files.group_of(_h)
+            except Exception:  # noqa: BLE001
+                return False
+            if not _g:
+                return False
+            if _g in _lib_cache:
+                return _lib_cache[_g]
+            try:
+                _v = bool((files.items().get(_g) or {}).get("library", {}).get("in_library"))
+            except Exception:  # noqa: BLE001
+                _v = False
+            _lib_cache[_g] = _v
+            return _v
+
+        by_site: Dict[str, List[Tuple[str, Any, float, Dict[str, Any]]]] = {}
+        protected = 0
+        _pwhy = {"asset": 0, "recommend": 0, "in_library": 0, "hr": 0}
+        for h, rec in list(ledger.items()):
+            hh = str(h or "").lower()
+            if (str(rec.get("state") or "") != STATE_SILENT
+                    or str(rec.get("sub") or "") != SUB_PLAIN):
+                continue
+            t = snap.get(hh)
+            if t is None:
+                continue
+            tags = [str(x) for x in (getattr(t, "tags", None) or [])]
+            # 保护 = MP 资产标 / 推荐中 / **资源已入库** / 欠 H&R
+            # ★ 不再按「魔流-跨站」「魔流-辅种」硬豁免 —— 它们「跟资源走」：
+            #   资源在库里 → 上面 in_library 保护；不在库里 → 该考核就考核（否则跨站没法收口）
+            # ★ 推荐流程复核「不达标」的（asset_recheck=fail）→ 不再享受资产/库记保护
+            _rc = str(rec.get("asset_recheck") or "")
+            if _rc != "fail":
+                if is_asset_tags(tags):
+                    protected += 1
+                    _pwhy["asset"] = int(_pwhy.get("asset") or 0) + 1
+                    continue
+                if _in_lib(hh):
+                    protected += 1
+                    _pwhy["in_library"] = int(_pwhy.get("in_library") or 0) + 1
+                    continue
+            if "魔流-推荐" in tags:
+                protected += 1
+                _pwhy["recommend"] = int(_pwhy.get("recommend") or 0) + 1
+                continue
+            site = str(rec.get("site") or "").strip() or self._torrent_site_name(tags, "")
+            done_hr, _why = self._silent_hr_done(site, t)
+            if not done_hr:
+                protected += 1
+                _pwhy["hr"] = int(_pwhy.get("hr") or 0) + 1
+                continue
+            by_site.setdefault(site or "-", []).append(
+                (hh, t, self._magic_out_per_hour(t, int(ni_map.get(hh, 0) or 0)), rec)
+            )
+        rep["protected"] = protected
+        rep["protected_why"] = _pwhy
+        cap = int(limit or 0)
+        for site, rows in by_site.items():
+            enough, why = self._site_magic_enough(site)
+            outs = sorted(x[2] for x in rows)
+            med = outs[len(outs) // 2] if outs else 0.0
+            rep["sites"][str(site)] = {
+                "members": len(rows), "enough": bool(enough), "why": why,
+                "median_per_hour": round(med, 2),
+                "total_per_hour": round(sum(outs), 2),
+            }
+            if not enough:
+                rep["skipped_site"] = int(rep.get("skipped_site") or 0) + 1
+                continue
+            thr = med * ratio
+            for hh, t, out_h, rec in sorted(rows, key=lambda x: x[2]):
+                if out_h > thr:
+                    break
+                rep["pending"] += 1
+                rep["items"].append({
+                    "hash": hh[:12], "site": site, "title": str(getattr(t, "title", "") or "")[:50],
+                    "per_hour": round(out_h, 2), "median": round(med, 2),
+                })
+                if not apply or (cap and rep["deleted"] >= cap):
+                    continue
+                _k = _rkey(t)
+                shared = bool(_k and done_keys.get(_k) and done_keys.get(_k) != hh)
+                try:
+                    dl = self._get_downloader(str(rec.get("downloader") or "qbittorrent"))
+                    if dl is None:
+                        rep["failed"] = int(rep["failed"]) + 1
+                        continue
+                    cnt, err = dl.delete_torrents(hashes=[hh], delete_file=not shared)
+                    if cnt:
+                        rep["deleted"] = int(rep["deleted"]) + 1
+                        if shared:
+                            rep["torrent_only"] = int(rep["torrent_only"]) + 1
+                        try:
+                            self._tag_state().drop(hh)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        # ★ 跨站来源份：既然删了种，来源份账本也一起收口（不留悬挂记录）
+                        try:
+                            if hh in (self._crossseed_sources().items() or {}):
+                                self._crossseed_sources().drop(hh)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    else:
+                        rep["failed"] = int(rep["failed"]) + 1
+                        self._log(f"静默普通清理:删除失败 {hh[:12]}:{err}", "warning")
+                except Exception as err:  # noqa: BLE001
+                    rep["failed"] = int(rep["failed"]) + 1
+                    self._log(f"静默普通清理:删除异常 {hh[:12]}:{err}", "warning")
+        if apply and rep["deleted"]:
+            self._log(
+                f"魔流:静默普通清理:魔力已达标站点删掉 {rep['deleted']} 个低效普通种"
+                f"（只删种 {rep['torrent_only']} 个；共查 {len(by_site)} 站）"
+            )
+        return rep
+
+    def _silent_triage(self, apply: bool = False, limit: int = 0, budget: float = 900.0) -> Dict[str, Any]:
+        """★ 静默池分拣（**以「资源」为单位**，不是以「种」为单位）。
+
+        Master 2026-09-28：「推荐推的是资源，不是种」→
+        - 同一资源（文件特征码/文件组）下的静默成员**一起判定、一起打标**：
+          达标 → 全部成员都打 ``魔流-推荐``（入库后由库记统一转 ``静默-资源``）；
+          不达标 → 全部成员一起转 ``静默-普通``；
+        - ★ 资源身份 = ``is_asset_tags`` + 推荐过（Master 2026-09-28 14:47）：
+          - 库内 + 推荐过 → ``静默-资源``（资产永不删）
+          - 库内但推荐没过 → ``静默-普通``（即使已入库，没过推荐也不算合格资源）
+        - 该资源**已有推荐记录**（推荐中/待确认/已确认）→ 整组不重复甄别、不重复通知；
+        - 资源内**代表种**（优先已完成、其次体积大）欠 H&R → 整组原地挂种等待。
+        """
+        tag_state = self._tag_state()
+        cfg = getattr(self, "_recommend_cfg", {}) or {}
+        rec_tag = str(cfg.get("tag") or "魔流-推荐")
+        rstore = getattr(self._store, "recommend", None)
+        try:
+            files = self._tag_groups()
+        except Exception:  # noqa: BLE001
+            files = None
+        snap = self._tag_all_torrents()
+        # ★ 豆瓣评分源：本轮预算（防风控，超了就回退 TMDB）。3.24.3 加上，原逻辑 step 5 evaluate
+        # 一直没设预算,现在闸门也要 evaluate,一并补上。
+        try:
+            self._get_recommend_engine().begin_round(int(cfg.get("douban_max_per_run") or 0))
+        except Exception:  # noqa: BLE001
+            pass
+        # ---- 1) 候选（静默-新）按「资源」归组（没有文件组 → 单种成组）
+        buckets: Dict[str, List[Tuple[str, Dict[str, Any], Any]]] = {}
+        for h, rec in list((tag_state.items() or {}).items()):
+            if str(rec.get("state") or "") != STATE_SILENT or str(rec.get("sub") or "") != SUB_NEW:
+                continue
+            hh = str(h or "").lower()
+            t = (snap or {}).get(hh)
+            if t is None:
+                continue  # 已不在下载器 → 交给对账
+            gid = ""
+            try:
+                gid = files.group_of(hh) if files is not None else ""
+            except Exception:  # noqa: BLE001
+                gid = ""
+            buckets.setdefault(str(gid) or ("h:" + hh), []).append((hh, rec, t))
+
+        def _pick(items: List[Tuple[str, Dict[str, Any], Any]]) -> Tuple[str, Dict[str, Any], Any]:
+            """代表种：优先「已完成」，其次体积大（导入要用它）。"""
+
+            def _k(x: Tuple[str, Dict[str, Any], Any]) -> Tuple[int, float]:
+                _t = x[2]
+                try:
+                    _done = 1 if float(getattr(_t, "progress", 0) or 0) >= 0.999 else 0
+                except (TypeError, ValueError):
+                    _done = 0
+                try:
+                    _sz = float(getattr(_t, "size_gb", 0) or 0)
+                except (TypeError, ValueError):
+                    _sz = 0.0
+                return (_done, _sz)
+
+            return sorted(items, key=_k, reverse=True)[0]
+
+        cap = int(limit or 0) or max(int(RECOMMEND_SCAN_MAX), 1)
+        rep: Dict[str, Any] = {
+            "apply": bool(apply), "pending": len(buckets),
+            "torrents": sum(len(v) for v in buckets.values()),
+            "scanned": 0, "waiting_hr": 0, "promoted": 0, "plain": 0,
+            "recognized": 0, "limited": False, "evaluated": 0, "kept": 0,
+            "asset": 0, "items": [],
+        }
+        _deadline = time.time() + float(budget or 0)
+        _used = 0
+        for gid, members in buckets.items():
+            if budget and time.time() > _deadline:
+                rep["limited"] = True
+                break
+            if cap and _used >= cap:
+                break
+            rep["scanned"] += 1
+            h_list = [x[0] for x in members]
+            r_h, r_rec, r_t = _pick(members)
+            # ---- 2) 资源身份 = is_asset_tags + 推荐过（Master 2026-09-28 14:47）。
+            # 库内 + 推荐过 → 静默-资源；库内但推荐没过 → 静默-普通。
+            in_lib = False
+            if files is not None and not str(gid).startswith("h:"):
+                try:
+                    in_lib = bool((files.items().get(gid) or {}).get("library", {}).get("in_library"))
+                except Exception:  # noqa: BLE001
+                    in_lib = False
+            if in_lib:
+                _rcf = False
+                try:
+                    _st0 = self._tag_state()
+                    for _h0 in h_list:
+                        if str((_st0.get(_h0) or {}).get("asset_recheck") or "") == "fail":
+                            _rcf = True
+                            break
+                except Exception:  # noqa: BLE001
+                    _rcf = False
+                if _rcf:
+                    rep["recheck_fail"] = int(rep.get("recheck_fail") or 0) + 1
+                    continue
+                # ★ 补闸门：库内 + 推荐过 = 资源。仅 ``is_asset_tags`` 不够，必须过推荐（Master 2026-09-28 14:47）。
+                _in_lib_like: Dict[str, Any] = {"recognized": False}
+                _in_lib_title: str = str(getattr(r_t, "title", "") or "")
+                if _in_lib_title:
+                    try:
+                        _in_lib_like = self._get_recommend_engine().evaluate(_in_lib_title, with_poster=False)
+                    except Exception:  # noqa: BLE001
+                        _in_lib_like = {"recognized": False}
+                _in_lib_worth = bool(self._recommend_worth(_in_lib_like, cfg))
+                if _in_lib_worth:
+                    rep["asset"] = int(rep.get("asset") or 0) + 1
+                    if apply:
+                        for _h, _r, _t in members:
+                            try:
+                                self._silent_to_resource(_h)
+                            except Exception as err:  # noqa: BLE001
+                                self._log(f"静默分拣:归资源失败 {_h[:12]}:{err}", "warning")
+                    continue
+                # 库内但推荐没过 → 普通（不算合格资源）。
+                rep["plain"] = int(rep.get("plain") or 0) + 1
+                if apply:
+                    for _h, _r, _t in members:
+                        try:
+                            self._silent_to_plain(_h)
+                        except Exception as err:  # noqa: BLE001
+                            self._log(f"静默分拣:库内但推荐不过→归普通失败 {_h[:12]}:{err}", "warning")
+                    try:
+                        rep["items"].append({
+                            "hash": r_h[:12], "title": _in_lib_title,
+                            "verdict": "普通(库内但推荐不过)",
+                            "rating": _in_lib_like.get("rating"), "members": len(members),
+                        })
+                    except Exception:  # noqa: BLE001
+                        pass
+                continue
+            # ---- 3) 该资源已有推荐记录 → 整组不重复
+            _dup = self._recommend_dup_group(rstore, gid, h_list)
+            if _dup:
+                rep["kept"] = int(rep.get("kept") or 0) + 1
+                continue
+            # ---- 4) H&R 门槛（看代表种）
+            site = str(r_rec.get("site") or "").strip() or self._torrent_site_name(
+                getattr(r_t, "tags", None), ""
+            )
+            done, _why = self._silent_hr_done(site, r_t)
+            if not done:
+                rep["waiting_hr"] += 1
+                continue
+            _used += 1
+            # ---- 5) 识别 + 评分（每个**资源**只评一次）
+            title = str(getattr(r_t, "title", "") or "")
+            like: Dict[str, Any] = {"recognized": False}
+            media: Optional[Dict[str, Any]] = None
+            if title:
+                try:
+                    like = self._get_recommend_engine().evaluate(title, with_poster=False)
+                except Exception:  # noqa: BLE001
+                    like = {"recognized": False}
+                if like.get("media_id"):
+                    media = {
+                        "source": like.get("media_source"), "id": like.get("media_id"),
+                        "type": like.get("type"), "year": like.get("year"),
+                        # ★ 必须带「资源名」（Master 2026-09-28 07:08：列表要显示资源名，不是种子名）
+                        "title": like.get("title") or like.get("name") or "",
+                    }
+            _mkey = self._recommend_media_key(media, like)
+            if like.get("recognized"):
+                rep["recognized"] += 1
+            worth = bool(self._recommend_worth(like, cfg)) and not self._recommend_dup(
+                rstore, _mkey, r_h, ("recommended", "confirmed")
+            )
+            _sz = sum(float(getattr(x[2], "size_gb", 0) or 0) for x in members)
+            if worth:
+                rep["promoted"] += 1
+                rep["items"].append({"hash": r_h[:12], "title": title, "verdict": "推荐",
+                                     "rating": like.get("rating"), "members": len(members)})
+                if apply and rstore is not None:
+                    now = time.time()
+                    try:
+                        rstore.upsert(
+                            r_h, status="recommended", title=title, size_gb=_sz,
+                            media=media, media_key=_mkey, rating=like.get("rating"),
+                            in_chart=bool(like.get("in_chart")),
+                            in_subscribe=bool(like.get("in_subscribe")),
+                            group_id=("" if str(gid).startswith("h:") else str(gid)),
+                            members=h_list,
+                            source="silent_triage", first_seen=now, evaluated_at=now,
+                            reason=("评分 %.1f" % float(like.get("rating") or 0))
+                            + ("·在榜" if like.get("in_chart") else "")
+                            + ("·订阅" if like.get("in_subscribe") else ""),
+                        )
+                    except Exception as err:  # noqa: BLE001
+                        self._log(f"静默分拣:推荐建档失败 {r_h[:12]}:{err}", "warning")
+                    # ★ 资源级打标：**整组静默成员**都打「魔流-推荐」
+                    try:
+                        dl = self._get_downloader(str(r_rec.get("downloader") or "qbittorrent"))
+                        if dl is not None:
+                            for _h, _r, _t in members:
+                                try:
+                                    self._recommend_tag(dl, f"silent:{site}", rec_tag, _h)
+                                except Exception as err:  # noqa: BLE001
+                                    self._log(f"静默分拣:推荐打标失败 {_h[:12]}:{err}", "warning")
+                    except Exception as err:  # noqa: BLE001
+                        self._log(f"静默分拣:推荐打标失败 {r_h[:12]}:{err}", "warning")
+            else:
+                rep["plain"] += 1
+                rep["items"].append({"hash": r_h[:12], "title": title, "verdict": "普通",
+                                     "rating": like.get("rating"), "members": len(members)})
+                if apply:
+                    for _h, _r, _t in members:
+                        try:
+                            self._silent_to_plain(_h)
+                        except Exception as err:  # noqa: BLE001
+                            self._log(f"静默分拣:归普通失败 {_h[:12]}:{err}", "warning")
+        rep["evaluated"] = _used
+        if apply and (rep["promoted"] or rep["plain"] or rep["asset"]):
+            self._log(
+                f"魔流:静默池分拣(按资源):{rep['scanned']} 组/{rep['torrents']} 种"
+                f"（欠H&R {rep['waiting_hr']} 组，已推荐 {rep['kept']} 组）"
+                f"→ 推荐 {rep['promoted']} 组 · 普通 {rep['plain']} 组 · 资源 {rep['asset']} 组"
+            )
+        if apply and rep["promoted"]:
+            self._silent_promote_notify(rep)
+        return rep
+
+    def _silent_promote_notify(self, report: Dict[str, Any]) -> None:
+        """静默池分拣出的推荐：一轮一条汇总通知（避免逐条刷屏）。"""
+        if not bool((getattr(self, "_recommend_cfg", {}) or {}).get("notify", True)):
+            return
+        rows = [x for x in (report.get("items") or []) if x.get("verdict") == "推荐"]
+        if not rows:
+            return
+        try:
+            lines = []
+            for it in rows[:10]:
+                _r = it.get("rating")
+                lines.append(f"· {str(it.get('title') or '')[:48]}（评分 {_r if _r else '—'}）")
+            more = f"\n…共 {len(rows)} 部" if len(rows) > 10 else ""
+            self.post_message(
+                title="魔流·静默池推荐",
+                text=(
+                    "静默池分拣完成，以下资源值得收藏（已打「魔流-推荐」并保护）：\n"
+                    + "\n".join(lines) + more
+                    + "\n在工作台 →「推荐」确认入库，确认后自动整理进资源库（转「静默-资源」）。"
+                ),
+            )
+        except Exception as err:  # noqa: BLE001
+            self._dbg(f"静默分拣:汇总通知失败:{err}")

@@ -24,6 +24,9 @@ import re
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+# 默认框架（其余常量在文件后半段从规则包读取；这里先定，避免前向引用）
+_NEXUS = "nexusphp"
+
 RULES_KEY = "site_rules"
 
 
@@ -74,39 +77,325 @@ BUILTIN_RULES: Dict[str, Dict[str, Any]] = {
     "kp.m-team.cc": {
         "hr": False,
         "seed_hours": None,
-        "seed_cap": 100,
-        "note": "馒头：无 H&R；做种数上限 100（bonus seeding_count_cap）",
+        "seed_cap": None,
+        "note": "馒头：**无 H&R**（官方 wiki 规则页 0 处提及，2026-09-29 全站扫描确认）；"
+                "**无做种数上限**。曾误记的「100」出自官方魔力公式参数 ``torrentMsSum``"
+                "（= **计入魔力的做种数上限**，超过后时魔不再增长——是收益口径，不是禁令）。",
     },
     "m-team.cc": {
         "hr": False,
         "seed_hours": None,
-        "seed_cap": 100,
-        "note": "馒头（备用域名）",
+        "seed_cap": None,
+        "note": "馒头（备用域名）：同 kp.m-team.cc，无 H&R、无做种数上限。",
     },
 }
 
 
 # ============================================================
+# 类型级规则（框架默认 + 按框架选解析器）★ 3.39.0
+# ============================================================
+# 分层原则（别越界）：
+#   · **类型级只提供「怎么读」+ 兜底默认**，永远**不给站点阈值结论**——
+#     同一框架下站点差异很大（财神明确无 H&R，而其它 NexusPHP 站有；学校 20h vs 红豆饭 24h）。
+#   · 阈值结论（有无 H&R / 保种小时 / 上限 / 免费体积阈值）一律**站点级**（探测或手填）。
+#   · 兜底默认里 ``hr/seed_hours/...`` 一律 **None = 未知**，交给既有「未知保守」逻辑，
+#     因此**不改变任何既有行为**，只是把「未知」这层写明白、可看。
+FRAMEWORK_RULE_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "nexusphp": {
+        "hr": None,
+        "seed_hours": None,
+        "seed_need_hours": None,
+        "seed_cap": None,
+        "probe_paths": ("myhr.php", "rules.php"),
+        "note": "NexusPHP 家族：H&R/保种以站点 myhr.php / rules.php 为准；"
+                "促销（体积自动免费/原盘/首集）见站点规则页。同类站结构一致，解析走同一套。",
+    },
+    "gazelle": {
+        "hr": None,
+        "seed_hours": None,
+        "seed_need_hours": None,
+        "seed_cap": None,
+        "probe_paths": ("rules.php", "wiki.php"),
+        "note": "Gazelle 家族：规则多为 wiki/rules 页面，关键词解析（低可信），"
+                "探到明确 H&R 条款才落库。",
+    },
+    "unit3d": {
+        "hr": None,
+        "seed_hours": None,
+        "seed_need_hours": None,
+        "seed_cap": None,
+        "probe_paths": ("rules", "pages/1"),
+        "note": "UNIT3D 家族：规则在 /rules 等页面；H&R 与免费政策各站自定。",
+    },
+    "mteam": {
+        "hr": None,
+        "seed_hours": None,
+        "seed_need_hours": None,
+        "seed_cap": None,
+        "probe_paths": ("rules.php",),
+        "note": "M-Team 系：站点参数走 API，网页规则页信息少；阈值仍按站点判断。",
+    },
+    "custom": {
+        "hr": None,
+        "seed_hours": None,
+        "seed_need_hours": None,
+        "seed_cap": None,
+        "probe_paths": ("rules.php", "myhr.php"),
+        "note": "自有/魔改框架：结构不可假定，用通用关键词解析，宁可判「未知」。",
+    },
+    "unknown": {
+        "hr": None,
+        "seed_hours": None,
+        "seed_need_hours": None,
+        "seed_cap": None,
+        "probe_paths": ("rules.php", "myhr.php"),
+        "note": "框架未识别：只做通用关键词解析，不猜。",
+    },
+}
+
+
+def framework_rule_defaults(framework: str) -> Dict[str, Any]:
+    """取某框架的兜底默认（**优先规则包** conf/frameworks.yml；缺 → 代码内置表）。
+
+    注意：值恒为 ``None``（未知）——阈值结论只能来自站点级探测/手填。
+    """
+    fw = str(framework or "").strip().lower() or "unknown"
+    if _rp is not None:
+        try:
+            d = _rp.framework_defaults(fw)
+            if isinstance(d, dict) and d:
+                return d
+        except Exception:  # noqa: BLE001
+            pass
+    return dict(FRAMEWORK_RULE_DEFAULTS.get(fw) or FRAMEWORK_RULE_DEFAULTS["unknown"])
+
+
+def framework_note(framework: str) -> str:
+    """该框架「怎么读」的说明（来自规则包，供界面展示）。"""
+    if _rp is not None:
+        try:
+            note = _rp.framework_note(framework)
+            if note:
+                return note
+        except Exception:  # noqa: BLE001
+            pass
+    fw = str(framework or "").strip().lower() or "unknown"
+    return str((FRAMEWORK_RULE_DEFAULTS.get(fw) or {}).get("note") or "")
+
+
+def framework_probe_paths(framework: str) -> Tuple[str, ...]:
+    """该框架优先探测哪些页面（优先规则包；未知 → 通用两条）。"""
+    if _rp is not None:
+        try:
+            paths = _rp.framework_probe_paths(framework)
+            if paths:
+                return tuple(paths)
+        except Exception:  # noqa: BLE001
+            pass
+    d = framework_rule_defaults(framework)
+    paths = d.get("probe_paths") or ("rules.php", "myhr.php")
+    return tuple(str(p) for p in paths if str(p).strip())
+
+
+def _fw_masks(fw: str):
+    """按框架取（H&R / 排除 / 允许撤种 / 保种动作）四个正则；规则包缺项 → 兜底默认。"""
+    fw = str(fw or "unknown").strip().lower() or "unknown"
+
+    def _m(kind: str, fallback: str):
+        return _rx(f"{fw}:{kind}", _tok_alt(fw, kind, fallback))
+
+    return (
+        _m("hr", _D_HR_TOKENS),
+        _m("exclude", _D_EXCLUDE),
+        _m("permit_withdraw", _D_PERMIT_WITHDRAW),
+        _m("seed", _D_SEED_TOKENS),
+    )
+
+
+def _hours_in(seg: str, fw: str = "nexusphp"):
+    """按**该框架**的时长写法解析小时数（天 → ×24）。"""
+    h = _rx(f"{fw}:hours", str(_fire(fw, "hours") or _D_HOURS)).search(seg)
+    if h:
+        try:
+            return float(h.group(1))
+        except (TypeError, ValueError):
+            return None
+    d = _rx(f"{fw}:days", str(_fire(fw, "days") or _D_DAYS)).search(seg)
+    if d:
+        try:
+            return float(d.group(1)) * 24.0
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def parse_hr_generic(html_text: str, framework: str = "unknown") -> Dict[str, Any]:
+    """**通用**（非 NexusPHP）H&R/保种解析：关键词 + 数字，**低可信**。
+
+    保守纪律：
+      · 只有「同一句里同时出现 H&R 关键词 + 明确时长」才判 ``hr=True``；
+      · 其余一律 ``hr=None``（未知）——**绝不返回 False**（「没解析到」≠「没有 H&R」）。
+    """
+    text = str(html_text or "")
+    if not text:
+        return {"hr": None, "confidence": "low", "evidence": ""}
+    fw = str(framework or "unknown").strip().lower() or "unknown"
+    _hr_re, _ex_re, _pw_re, _seed_re = _fw_masks(fw)
+    need_re = _rx(f"{fw}:need", _tok_alt(fw, "need", _D_RULE_NEED))
+    out: Dict[str, Any] = {"hr": None, "confidence": "low", "evidence": ""}
+    for seg in _segments(text):
+        if not _hr_re.search(seg) or _ex_re.search(seg) or _pw_re.search(seg):
+            continue
+        hours = _hours_in(seg, fw)
+        if hours is None or not _seed_re.search(seg):
+            continue
+        out["hr"] = True
+        out["seed_hours"] = float(hours)
+        out["evidence"] = seg[:120]
+        out["confidence"] = "medium" if need_re.search(seg) else "low"
+        break
+    if out["hr"] is None:
+        # 促销/上限是「有就采」的良性信息，与 H&R 无关，单独扫
+        _fs = _free_size_pats(fw)
+        _fs0 = _rx(f"{fw}:free_size0", _fs[0])
+        _fs1 = _rx(f"{fw}:free_size1", _fs[1])
+        for seg in _segments(text):
+            if _ex_re.search(seg):
+                continue
+            m = _fs0.search(seg) or _fs1.search(seg)
+            if m:
+                try:
+                    out["free_over_gb"] = float(m.group(1))
+                except (TypeError, ValueError):
+                    pass
+    return out
+
+
+def framework_parsers() -> Dict[str, Any]:
+    """框架 → 解析器（**惰性构造**：``parse_hr_from_html`` 在本文件后面才定义）。
+
+    新站接进来「探测一次」即出规则，不用人工写。
+    """
+    return {
+        "nexusphp": parse_hr_from_html,
+        "mteam": parse_hr_generic,
+        "gazelle": parse_hr_generic,
+        "unit3d": parse_hr_generic,
+        "custom": parse_hr_generic,
+        "unknown": parse_hr_generic,
+    }
+
+
+def parser_for_framework(framework: str):
+    """按框架取解析器：**nexus 引擎** 或 **通用引擎（绑定该框架的 token）**。
+
+    解析器名叫什么由规则包决定（``frameworks.<fw>.parser``），代码里只认两类引擎。
+    """
+    fw = str(framework or "").strip().lower() or "unknown"
+    name = "generic"
+    if _rp is not None:
+        try:
+            name = _rp.framework_parser_name(fw)
+        except Exception:  # noqa: BLE001
+            name = "generic"
+    if name == "nexus" or (fw == _NEXUS and name != "generic"):
+        return parse_hr_from_html
+    if name == "nexus":
+        return parse_hr_from_html
+
+    def _bound(html_text: str, _fw: str = fw) -> Dict[str, Any]:
+        return parse_hr_generic(html_text, framework=_fw)
+
+    return _bound
+
+
+# ★ 3.41.0 定调（Master）：「**所有 H&R 规则都从收件箱的欢迎邮件进，外面的是假规则**」。
+#    → 只有这两个来源的 H&R 结论算数；公开页/内置表推出来的 H&R 一律**作废**。
+HR_TRUSTED_SOURCES = ("manual", "welcome")
+
+# ============================================================
 # 页面解析
 # ============================================================
+# ★ 3.40.0：**规则数据在 conf/frameworks.yml（rulepack），这里只留兜底默认值。**
+#   加站类型 = 改 YAML；YAML 读不到 = 用下面这些默认值（行为与旧版一致）。
+try:  # 离线单测/独立导入时可能没有包上下文
+    from .. import rulepack as _rp
+except Exception:  # noqa: BLE001
+    _rp = None
+
+# 兜底默认（YAML 缺失/缺项时使用；与 3.39.x 的常量完全一致）
+_D_HOURS = r"(\d+(?:\.\d+)?)\s*(?:个)?\s*(?:小时|小時|個小時|hours?|hrs?|h\b)"
+_D_DAYS = r"(\d+(?:\.\d+)?)\s*(?:天|日|days?)"
+_D_HR = r"H\s*&\s*R|hit\s*[&a]nd\s*run|Hit\s*and\s*Run|做种率|H&R"
+_D_SEED_CTX = r"(?:做种|保种|挂种|seeding|seed|share\s*time)[^\u4e00-\u9fffA-Za-z0-9]{0,12}"
+_D_CAP = r"(?:最多|上限|同时|做种数|seeding)[^\d]{0,12}(\d{1,4})\s*(?:个|個|条|種|种)?"
+_D_EXCLUDE = (
+    r"考核|达标|魔力|奖励|捐赠|申诉|免罪|警告|相册|邀请|邮箱|注册|每月|月做种|新人|"
+    r"上传者|发布者|发种|候选|认领"
+)
+_D_HR_TOKENS = r"H\s*&\s*R|hit\s*[&a]nd\s*run|hit and run"
+_D_SEED_TOKENS = r"做种|保种|挂种|seeding|seed"
+_D_RULE_NEED = (
+    r"必须|需|要求|不得少于|不少于|至少|达到|以内|之内|at least|must|minimum"
+)
+_D_PERMIT_WITHDRAW = r"可撤种|可以撤种|允许撤种|可撤除|即可撤|可删除种子|撤种条件不适用"
+
+_D_FREE_SIZE0 = (
+    r"(?:总体积|文件体积|体积|大小)[^。\n]{0,12}?大于\s*([\d.]+)\s*(?:G|GB|GiB)[^。\n]{0,30}免费"
+)
+_D_FREE_SIZE1 = r"大于\s*([\d.]+)\s*(?:G|GB|GiB)[^。\n]{0,20}自动[^。\n]{0,10}免费"
+_D_FREE_ORIG = r"(?:Blu-?ray\s*Disk|HD\s*DVD|原盘)[^。\n]{0,40}(?:免费|free)"
+_D_FREE_EP1 = r"每季的第?一集|第1集[^。\n]{0,20}免费|第一集[^。\n]{0,20}免费"
+
+
+def _fire(fw: str, patch: str) -> Any:
+    """按框架取「数据里的值」（字符串或列表）；空则返回默认。"""
+    if _rp is None:
+        return patch
+    try:
+        got = _rp.pattern(fw, patch)
+    except Exception:  # noqa: BLE001
+        got = None
+    return got if got else patch
+
+
+def _tok_alt(fw: str, kind: str, default: str) -> str:
+    """按框架取 token 列表拼成正则；列表空 → 默认。"""
+    if _rp is None:
+        return default
+    try:
+        alt = _rp.alternation(_rp.tokens(fw, kind))
+    except Exception:  # noqa: BLE001
+        alt = ""
+    return alt or default
+
+
+def _rx(key: str, text: str) -> Any:
+    if _rp is not None:
+        try:
+            return _rp.rx(key, text)
+        except Exception:  # noqa: BLE001
+            pass
+    return re.compile(text, re.I)
+
+
 # 小时数：中文/英文两种写法。允许「10 个 小时」「10小時」「10 hours」「10h」。
-_HOURS_RE = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(?:个)?\s*(?:小时|小時|個小時|hours?|hrs?|h\b)",
-    re.I,
-)
-_DAYS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:天|日|days?)", re.I)
+# ★ 3.41.2：用户栏统计 / 促销句**不是 H&R 规则**，先排除（踩过：用户栏 "H&R: [0/0/10]" 被判成有 H&R；
+#   红豆饭「盒子做种的，72小时内只享受种子体积*3的上传量」是盒子促销）
+_D_SEG_USERBAR = r"可连接|连接数|认领\s*[:：]|H\s*&\s*R\s*[:：]|种子区\s*[:：]|上传量\s*[:：]|下载量\s*[:：]"
+_D_SEG_PROMO = r"盒子|上传速度|下载速度|[Kk]B/s|上传量|优惠|种子体积|免费区"
+_SEG_REJECT_USERBAR_RE = _rx(f"{_NEXUS}:seg_reject_userbar", str(_fire(_NEXUS, "seg_reject_userbar") or _D_SEG_USERBAR))
+_SEG_REJECT_PROMO_RE = _rx(f"{_NEXUS}:seg_reject_promo", str(_fire(_NEXUS, "seg_reject_promo") or _D_SEG_PROMO))
+
+_HOURS_RE = _rx(f"{_NEXUS}:hours", str(_fire(_NEXUS, "hours") or _D_HOURS))
+_DAYS_RE = _rx(f"{_NEXUS}:days", str(_fire(_NEXUS, "days")))
 # H&R 关键词
-_HR_WORD_RE = re.compile(r"H\s*&\s*R|hit\s*[&a]nd\s*run|Hit\s*and\s*Run|做种率|H&R", re.I)
+# ★ 3.40.0：以下全部来自 conf/frameworks.yml（nexusphp 段），代码里只留兜底默认。
+_HR_WORD_RE = _rx(f"{_NEXUS}:hr_word", str(_fire(_NEXUS, "hr") and _D_HR or _D_HR))
 # 「需要做种/挂种 ... 」的上下文
-_SEED_CTX_RE = re.compile(
-    r"(?:做种|保种|挂种|seeding|seed|share\s*time)[^\u4e00-\u9fffA-Za-z0-9]{0,12}",
-    re.I,
-)
+_SEED_CTX_RE = _rx(f"{_NEXUS}:seed_ctx", _D_SEED_CTX)
 # 做种数上限
-_CAP_RE = re.compile(
-    r"(?:最多|上限|同时|做种数|seeding)[^\d]{0,12}(\d{1,4})\s*(?:个|個|条|種|种)?",
-    re.I,
-)
+_CAP_RE = _rx(f"{_NEXUS}:cap", str(_fire(_NEXUS, "cap") or _D_CAP))
 
 
 def _segments(text: str) -> List[str]:
@@ -116,33 +405,44 @@ def _segments(text: str) -> List[str]:
 
 
 # 明确**不属于** H&R 的上下文（考核/达标/魔力/上传者规则/发布者/捐赠 等）
-_EXCLUDE_RE = re.compile(
-    r"考核|达标|魔力|奖励|捐赠|申诉|免罪|警告|相册|邀请|邮箱|注册|每月|月做种|新人|"
-    r"上传者|发布者|发种|候选|认领",
-    re.I,
+_EXCLUDE_RE = _rx(f"{_NEXUS}:exclude", _tok_alt(_NEXUS, "exclude", _D_EXCLUDE))
+# ★ 3.39.1/3.40.0：「可撤种 / 允许撤种」= 允许你停（撤种规定），**不是** H&R 义务。
+#   （踩过：咖啡 rules.php「10集以下剧集需要保种10天以上可撤种」被判成 hr=True/240h/high）
+_PERMIT_WITHDRAW_RE = _rx(
+    f"{_NEXUS}:permit_withdraw", _tok_alt(_NEXUS, "permit_withdraw", _D_PERMIT_WITHDRAW)
 )
 # 「同一句里」的 H&R 关键词
-_HR_TOKENS = re.compile(r"H\s*&\s*R|hit\s*[&a]nd\s*run|hit and run", re.I)
+_HR_TOKENS = _rx(f"{_NEXUS}:hr_tokens", _tok_alt(_NEXUS, "hr", _D_HR_TOKENS))
 # 「同一句里」的保种动作词
-_SEED_TOKENS = re.compile(r"做种|保种|挂种|seeding|seed", re.I)
+_SEED_TOKENS = _rx(f"{_NEXUS}:seed_tokens", _tok_alt(_NEXUS, "seed", _D_SEED_TOKENS))
 # 促销规则：「文件总体积大于20GB的种子将自动成为免费」/「原盘免费」/「每季第一集免费」
-_FREE_SIZE_RE = re.compile(
-    r"(?:总体积|文件体积|体积|大小)[^。\n]{0,12}?大于\s*([\d.]+)\s*(?:G|GB|GiB)[^。\n]{0,30}免费",
-    re.I,
-)
-_FREE_SIZE_RE2 = re.compile(r"大于\s*([\d.]+)\s*(?:G|GB|GiB)[^。\n]{0,20}自动[^。\n]{0,10}免费", re.I)
-_FREE_ORIG_RE = re.compile(
-    r"(?:Blu-?ray\s*Disk|HD\s*DVD|原盘)[^。\n]{0,40}(?:免费|free)", re.I
-)
-_FREE_EP1_RE = re.compile(r"每季的第?一集|第1集[^。\n]{0,20}免费|第一集[^。\n]{0,20}免费", re.I)
+def _free_size_pats(fw: str) -> List[str]:
+    """体积自动免费正则（YAML 可给单条字符串或列表）→ 至少两条（主/备）。"""
+    got = _fire(fw, "free_size")
+    if isinstance(got, str):
+        pats = [got]
+    elif isinstance(got, (list, tuple)):
+        pats = [str(x) for x in got if str(x).strip()]
+    else:
+        pats = []
+    if not pats:
+        pats = [_D_FREE_SIZE0]
+    while len(pats) < 2:
+        pats.append(_D_FREE_SIZE1)
+    return pats
+
+
+_FREE_SIZE_PATS = _free_size_pats(_NEXUS)
+_FREE_SIZE_RE = _rx(f"{_NEXUS}:free_size0", _FREE_SIZE_PATS[0])
+_FREE_SIZE_RE2 = _rx(f"{_NEXUS}:free_size1", _FREE_SIZE_PATS[1])
+_FREE_ORIG_RE = _rx(f"{_NEXUS}:free_original", str(_fire(_NEXUS, "free_original") or _D_FREE_ORIG))
+_FREE_EP1_RE = _rx(f"{_NEXUS}:free_ep1", str(_fire(_NEXUS, "free_ep1") or _D_FREE_EP1))
 
 # 「考核指标」句式：指标N：平均做种时间, 要求：30 Hour —— 这是**新人考核的达标线**，
 # 不是 H&R 规则，必须分开存（否则会把考核要求误当成保种义务）。
-_EXAM_RE = re.compile(r"指标|平均做种时间|考核|达标线|要求\s*[:：]", re.I)
+_EXAM_RE = _rx(f"{_NEXUS}:exam", str(_fire(_NEXUS, "exam") or r"指标|平均做种时间|考核|达标线|要求\s*[:：]"))
 # 明确的规则句式（最可信）：必须/需/要求/至少 ...
-_RULE_NEED_RE = re.compile(
-    r"必须|需|要求|不得少于|不少于|至少|达到|以内|之内|at least|must|minimum", re.I
-)
+_RULE_NEED_RE = _rx(f"{_NEXUS}:rule_need", _tok_alt(_NEXUS, "need", _D_RULE_NEED))
 
 
 def _parse_hours_in(seg: str):
@@ -195,12 +495,17 @@ def parse_hr_from_html(html_text: str) -> Dict[str, Any]:
     best_high = None
     best_low = None
     ev_high = ev_low = ""
+    ev_hit = ""          # ★ 3.40.1：只凭关键词判「有 H&R」时用它当证据（否则界面上一片空）
     hits = 0
     for seg in _segments(text):
+        if _SEG_REJECT_USERBAR_RE.search(seg) or _SEG_REJECT_PROMO_RE.search(seg):
+            continue      # 用户栏统计 / 促销（盒子、上传速度、上传量）≠ H&R
         has_hr = bool(_HR_TOKENS.search(seg))
         has_seed = bool(_SEED_TOKENS.search(seg))
         if has_hr:
             hits += 1
+            if not ev_hit:
+                ev_hit = seg
         if not (has_hr or has_seed):
             continue
         hours = _parse_hours_in(seg)
@@ -219,7 +524,7 @@ def parse_hr_from_html(html_text: str) -> Dict[str, Any]:
                     hours = _win
             except (TypeError, ValueError):
                 pass
-        excluded = bool(_EXCLUDE_RE.search(seg))
+        excluded = bool(_EXCLUDE_RE.search(seg)) or bool(_PERMIT_WITHDRAW_RE.search(seg))  # ★ 3.39.1 撤种规定≠H&R
         strong = bool(_RULE_NEED_RE.search(seg))
         if _EXAM_RE.search(seg) and not re.search(r"认领|达标标准", seg):
             # 考核达标线（例：指标2：平均做种时间，要求 30 Hour）→ 单独存，不当 H&R
@@ -239,7 +544,9 @@ def parse_hr_from_html(html_text: str) -> Dict[str, Any]:
             if best_low is None or hours > best_low:
                 best_low = hours
                 ev_low = seg
-    if hits or best_high is not None or best_low is not None:
+    # ★ 3.41.2：判「有 H&R」要**硬证据** —— 明确 H&R 关键词，或「必须/至少 + 小时」的强义务句。
+    #   仅「出现做种+小时」的弱句（如论坛功能说明）不算，避免 PTT「动态刷新」那类误判。
+    if hits or best_high is not None:
         out["hr"] = True
     out["hits"] = hits
     if best_high is not None:
@@ -252,6 +559,8 @@ def parse_hr_from_html(html_text: str) -> Dict[str, Any]:
         out["evidence"] = ev_low[:300]
     elif ev_low or ev_high:
         out["evidence"] = (ev_high or ev_low)[:300]
+    elif ev_hit:
+        out["evidence"] = ev_hit[:300]
     # 促销规则（整页散文，不按句切）
     for rx in (_FREE_SIZE_RE, _FREE_SIZE_RE2):
         m = rx.search(text)
@@ -267,15 +576,50 @@ def parse_hr_from_html(html_text: str) -> Dict[str, Any]:
         out["free_ep1"] = True
 
     cap = None
+    # ★ 3.40.1：上限要排除「角色词/集数/考核」上下文
+    #   （踩过：咖啡「10集以下剧集需要保种10天…」里的 10 被当成做种数上限 10）
+    _cap_reject: Tuple[str, ...] = ("集",)
+    if _rp is not None:
+        try:
+            _got = _rp.cap_reject(_NEXUS)
+            if _got:
+                _cap_reject = tuple(_got)
+        except Exception:  # noqa: BLE001
+            pass
     for m in _CAP_RE.finditer(text):
         try:
             v = int(m.group(1))
         except (TypeError, ValueError):
             continue
+        _ls = text.rfind("\n", 0, m.start()) + 1
+        _le = text.find("\n", m.end())
+        if _le < 0:
+            _le = len(text)
+        _line = text[_ls:_le]
+        if any(w and w in _line for w in _cap_reject):
+            continue
         if 1 <= v <= 5000 and (cap is None or v < cap):
             cap = v
     if cap is not None:
         out["seed_cap"] = cap
+    return out
+
+
+def parse_hr_from_mail(body_text: str, framework: str = "nexusphp") -> Dict[str, Any]:
+    """从**收件箱欢迎短讯正文**里解析 H&R（唯一自动来源）。
+
+    正文通常是通用欢迎语 → 解析不到就 ``hr=None``（**保守**，不臆断成「无 H&R」）。
+    """
+    out = parse_hr_from_html(str(body_text or ""))
+    if str(framework or "").strip().lower() not in ("", "nexusphp"):
+        try:
+            alt = parse_hr_generic(str(body_text or ""), framework=framework)
+            if out.get("hr") is None and alt.get("hr") is not None:
+                out = alt
+        except Exception:  # noqa: BLE001
+            pass
+    ev = str(out.get("evidence") or "").strip()
+    out["evidence"] = ("欢迎短讯: " + ev) if ev else "欢迎短讯（未提到 H&R）"
     return out
 
 
@@ -298,10 +642,13 @@ class SiteRules:
         get_data: Callable[[str], Any],
         save_data: Callable[..., Any],
         log: Optional[Callable[[str, str], None]] = None,
+        framework_of: Optional[Callable[[str], str]] = None,
     ) -> None:
         self._get = get_data
         self._save = save_data
         self._log = log
+        # ★ 3.39.0：类型级兜底用——「域名 → 框架」查询（由插件注入 sitecap）
+        self._fw_of = framework_of
         self._cache: Optional[Dict[str, Dict[str, Any]]] = None
 
     def _load(self) -> Dict[str, Dict[str, Any]]:
@@ -356,7 +703,7 @@ class SiteRules:
         d = _norm_domain(domain)
         cur = dict(self.items().get(d) or {})
         out = dict(cur)
-        manual = str(cur.get("source") or "") == "manual"
+        manual = str(cur.get("source") or "") in HR_TRUSTED_SOURCES   # 手填 / 欢迎短讯 = 权威
         conf = str((probed or {}).get("confidence") or "low")
         if not manual:
             for key in ("hr", "seed_cap", "evidence"):
@@ -364,6 +711,12 @@ class SiteRules:
                 if val is not None:
                     out[key] = val
             out["confidence"] = conf
+            _psrc = str((probed or {}).get("source") or "")
+            if _psrc:
+                out["source"] = _psrc
+            _phsrc = str((probed or {}).get("hr_src") or "")
+            if _phsrc:
+                out["hr_src"] = _phsrc
         else:
             if (probed or {}).get("seed_cap") is not None and out.get("seed_cap") is None:
                 out["seed_cap"] = (probed or {}).get("seed_cap")
@@ -385,7 +738,8 @@ class SiteRules:
                 out["seed_hours_seen"] = val
                 out.pop("seed_hours", None)
         if not manual:
-            out["source"] = "probe"
+            # ★ 3.41.0：来源以「探测结果自带来源」为准（欢迎短讯链路 = ``welcome``），不要硬写 probe
+            out["source"] = str((probed or {}).get("source") or "probe")
         out["probed_at"] = float(time.time())
         out["domain"] = d
         out["updated"] = float(time.time())
@@ -403,8 +757,26 @@ class SiteRules:
             return dict(cur)
         b = BUILTIN_RULES.get(d)
         if not b:
-            return {}
-        return self.put(d, dict(b, name=name or ""), source="builtin")
+            for k, v in BUILTIN_RULES.items():
+                if _same_domain(k, d):
+                    b = v or {}
+                    break
+        if b:
+            return self.put(d, dict(b, name=name or ""), source="builtin")
+        # ★ 3.39.0：没内置记录 → 用**类型级兜底**补一条。
+        #   注意：这里**只写「未知」**（阈值全 None）→ 行为与旧版完全一致（未知保守），
+        #   好处是「这站按哪个框架、为什么还没探」在规则库里一眼可见。
+        fw = "unknown"
+        try:
+            if self._fw_of:
+                fw = str(self._fw_of(d) or "unknown").strip().lower() or "unknown"
+        except Exception:  # noqa: BLE001
+            fw = "unknown"
+        dflt = framework_rule_defaults(fw)
+        rec = {k: dflt.get(k) for k in ("hr", "seed_hours", "seed_need_hours", "seed_cap")}
+        rec["framework"] = fw
+        rec["note"] = dflt.get("note", "")
+        return self.put(d, rec, source="framework")
 
     def free_rules(self, domain: str) -> Dict[str, Any]:
         """取该站的「促销规则」（体积自动免费阈值/原盘免费/第一集免费）。"""
@@ -427,6 +799,37 @@ class SiteRules:
             if val is not None:
                 out[key] = val
         return out
+
+    def retire_untrusted_hr(self) -> int:
+        """★ 3.41.0：把**非权威来源**推出来的 H&R 结论作废（置 ``None`` = 未知）。
+
+        「外面的是假规则」——公开页/内置表推出的 ``hr=True/False``/保种时长全部作废；
+        生效时长随之回落到「未知 → 默认 24h」（保守：宁可多挂）。返回作废条数。
+        """
+        n = 0
+        data = self.items()
+        for dom, rec in list((data or {}).items()):
+            r = dict(rec or {})
+            src = str(r.get("source") or "")
+            if src in HR_TRUSTED_SOURCES:
+                continue
+            if r.get("hr") is None and r.get("seed_hours") is None:
+                continue
+            if r.get("hr") is not None:
+                r["hr"] = None
+            if r.get("seed_hours") is not None:
+                r["seed_hours_retired"] = r.get("seed_hours")
+                r["seed_hours"] = None
+            r["hr_src"] = "retired"
+            note = str(r.get("note") or "").strip()
+            tag = "H&R 来源非权威（外部页面），已作废"
+            if tag not in note:
+                r["note"] = (note + " / " + tag).strip(" /")
+            data[dom] = r
+            n += 1
+        if n:
+            self._write()
+        return n
 
     def clear(self, domain: str = "") -> int:
         d = _norm_domain(domain)
@@ -457,16 +860,17 @@ class SiteRules:
                 if _same_domain(k, d):
                     rec = dict(v or {})
                     break
-        if rec.get("hr") is not None:
+        if rec.get("hr") is not None and str(rec.get("source") or "") in HR_TRUSTED_SOURCES:
             return bool(rec.get("hr"))
-        b = BUILTIN_RULES.get(d) or {}
-        if not b:
-            for k, v in BUILTIN_RULES.items():
-                if _same_domain(k, d):
-                    b = v or {}
-                    break
-        if b.get("hr") is not None:
-            return bool(b.get("hr"))
+        if "builtin" in HR_TRUSTED_SOURCES:      # ★ 3.41.0：默认**不信**内置表
+            b = BUILTIN_RULES.get(d) or {}
+            if not b:
+                for k, v in BUILTIN_RULES.items():
+                    if _same_domain(k, d):
+                        b = v or {}
+                        break
+            if b.get("hr") is not None:
+                return bool(b.get("hr"))
         return None
 
     def seed_cap_of(self, domain: str) -> Optional[int]:
@@ -519,28 +923,32 @@ class SiteRules:
                 if _same_domain(k, d):
                     rec = dict(v or {})
                     break
+        src = str(rec.get("source") or "")
         h = rec.get("seed_hours")
-        if h is not None and str(rec.get("source") or "") == "probe" and str(rec.get("confidence") or "") != "high":
+        if h is not None and src not in HR_TRUSTED_SOURCES:
+            h = None            # ★ 3.41.0：非权威来源的保种时长不参与生效
+        if h is not None and src == "probe" and str(rec.get("confidence") or "") != "high":
             h = None
         if h is not None:
             try:
                 hv = float(h)
                 if hv >= 0:
-                    return hv, str(rec.get("source") or "store")
+                    return hv, src or "store"
             except (TypeError, ValueError):
                 pass
-        b = BUILTIN_RULES.get(d) or {}
-        if not b:
-            for k, v in BUILTIN_RULES.items():
-                if _same_domain(k, d):
-                    b = v or {}
-                    break
-        bh = b.get("seed_hours")
-        if bh is not None:
-            return float(bh), "builtin"
-        if b.get("hr") is False:
-            # 内置明确「无 H&R」→ 没有保种义务，不用保护（例：馒头）
-            return 0.0, "builtin"
+        if "builtin" in HR_TRUSTED_SOURCES:
+            b = BUILTIN_RULES.get(d) or {}
+            if not b:
+                for k, v in BUILTIN_RULES.items():
+                    if _same_domain(k, d):
+                        b = v or {}
+                        break
+            bh = b.get("seed_hours")
+            if bh is not None:
+                return float(bh), "builtin"
+            if b.get("hr") is False:
+                # 内置明确「无 H&R」→ 没有保种义务，不用保护（例：馒头）
+                return 0.0, "builtin"
         return float(default), "default"
 
 

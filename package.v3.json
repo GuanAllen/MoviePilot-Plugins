@@ -3,7 +3,7 @@
     "name": "魔流",
     "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
     "labels": "站点,做种,魔力,刷流",
-    "version": "3.34.0",
+    "version": "4.0.0",
     "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
     "author": "IronOx",
     "level": 1,
@@ -236,11 +236,28 @@
       "3.22.4": "**3.22.4**：**默认评分源改回 TMDB**（`recommend_rating_source` 默认 `tmdb`）—— 豆瓣源实测被按 IP 限流（403），Master 09:42 决定不走豆瓣；豆瓣代码保留，需在设置里手动切「豆瓣优先」才启用。",
       "3.22.5": "**3.22.5**：加**一次性迁移**把存量配置里的 `recommend_rating_source=douban` 强制改回 `tmdb`（旧默认被自动落盘，光改代码默认值不生效）；迁移标记 `rating_source_migrated_3224` 落 `save_data`，之后手动选「豆瓣优先」不会再被覆盖。",
       "3.22.6": "**3.22.6**：**本地快照（离线兜底）** —— 豆瓣 web（`movie.douban.com`）可访问而 frodo API 被限，于是爬了两份种子快照：`data/snapshots/douban_top250.json`（250 部电影）+ `douban_movie_chart.json`（本周热门 ~30 部）。`douban.py` 加 `_load_snapshot` / `_snapshot_lookup`：在缓存之前先查本地快照，命中**不计预算、不触发风控**。`/debug/douban` stats 加 `snapshot / snapshot_sources` 字段。增量成长继续靠现有 30 天命中缓存。覆盖典型种池 ~25-30%。",
-      "3.23.0": "豆瓣评分源拆成独立服务 magicflow-douban（FastAPI+SQLite，本地库查询<1ms，不直连豆瓣、不受限流）；插件侧 douban.py 从 449 行自建 frodo 客户端瘦身为 HTTP 客户端，删除内置快照/风控/缓存；新增设置项「豆瓣服务地址」（默认 http://magicflow-douban:18789）"
+      "3.23.0": "豆瓣评分源拆成独立服务 magicflow-douban（FastAPI+SQLite，本地库查询<1ms，不直连豆瓣、不受限流）；插件侧 douban.py 从 449 行自建 frodo 客户端瘦身为 HTTP 客户端，删除内置快照/风控/缓存；新增设置项「豆瓣服务地址」（默认 http://magicflow-douban:18789）",
+      "3.41.1": "H&R 真值源 = 收件箱：① 采集层新增收件箱/欢迎短讯（`messages.php`）；② 站点规则探测**只走欢迎短讯给出的规则地址**（rules.php/wiki/论坛教程），地址**落库复用**（省 PV），公开页 H&R 一律不采；③ 旧「公开页/内置表」H&R 一次性作废；④ /rules 暴露 rule_url，设置页 🔗 可点开。",
+      "3.42.0": "API 鉴权站（馒头）接入采集层：新增 `Http.api()`（`x-api-key` 鉴权，不抓网页）+ `SiteView.api_profile()`；馒头「站点实时」改用 `/api/member/profile` 读取魔力/上传/下载/分享率/uid（此前无 cookie → 一直抓取失败）；顺带修**站点 UA 前导空白**导致 httpx 判非法头、请求 0.9ms 即「无响应」的坑（蟹黄堡规则页从此可抓）。",
+      "3.43.0": "馒头 API 打通（Master 12:10 给规格，实测订正）：`/torrent/detail`、`/torrent/genDlToken` 走 **query 参数**（`x-api-key`，对齐 MP `iyuuautoseed` 的可用调法），新增 `SiteView.api_search/api_detail/api_dl_token`（促销 discount / 热度 seeders·leechers / 签名下载直链，全程无 cookie）+ 诊断端点 `GET /debug/mteam`。",
+      "3.44.0": "馒头接进刷流链路（Master 12:39「加」）：候选走官方 API `/torrent/search`（discount 促销 + seeders/leechers，`parse_mteam_rows`），**下载直链留到入选时**用 `/torrent/genDlToken` 现取（`_cand_enclosure`，只为已入选候选花 1 次请求），接进 `_prefetch`/辅种慢扫/换种/跨站取种四处；API 站候选不再按 browse 记 PV。",
+      "3.45.0": "3.45.0：新增「API 通道表」（conf/frameworks.yml → api_channels），把「带 API 鉴权的站怎么调」全部外置成数据：根地址模板 / 认证头 / 成功判定 / 端点表 / 提交形态 / 下载直链模板。接入叶PT（YemaPT）开放 API（Authorization: AuthKey）：档案（积分/等级）、公开种子列表（含权威 hrPunishEnable H&R 标记 + 免费促销到期）、piecesHash 反查种子 ID、下载凭证→直链；新增 /debug/api 诊断端点（profile/list/search/detail/dl/hash）。采集层不写任何站点专属 URL/认证头。",
+      "3.46.0": "3.46.0：作废馒头「做种数上限 100」——查证官方 wiki/API 后确认那只是魔力公式的「计入上限」(torrentMsSum，超过后时魔不再增长)，**不是做种数量禁令**；保种不再被这个硬天花板截断（改为提示，交给换种优化收益）；同时把馒头官方公式常量（T0=4/N0=7/B0=50/L=300）内置为离线兜底，从此时魔估算不依赖网页会话/接口。",
+      "3.46.1": "3.46.1：**一步到位拆分 `__init__.py`**（17,517 行 → 363 行）：新增 `common.py`（常量/纯工具/模型/跨模块状态）与 `features/` 27 个功能模块（core/runtime/api/status/tasks/brush/formula/reuse/cleanup/swap/crossseed/tags/assets/silent/hr/recommend/live/exam/cloud/siteops/protection/services/events/actions/debug…），主类改为 mixin 组合；**逐字搬运 + 源码一致性校验**，行为零变化。（本版最终形态：①任务状态机 ②取种唯一入口 `AcquireSource` ③功能注册表 `Feature` 三项契约**全部落码**，并配 **五条**可执行护栏：check_deps 依赖方向+层级登记 / gen_modules 模块登记表 / check_contracts 契约(R1运行状态·R2不比较字面量·R3取种唯一入口) / check_names 未定义名 / check_pages 功能页对齐；`sh tools/preflight.sh` 一把过闸。新增 `GET /features` 功能注册表端点。）",
+      "4.0.0": "4.0.0：**架构级不兼容变更（MAJOR）**——① `__init__.py` 从 **17,517 行单文件**拆为 `common.py`（常量/纯工具/模型/跨模块状态）+ 27 个 `features/*` mixin（逐字搬运、行为不变，主类 mixin 组合）；② 引入**三大契约**：①任务状态机（`run_mode` 唯一真值源，`enabled` 只是派生镜像）/②取种来源 `AcquireSource`（本机→IYUU→MP搜索→跨站免费，一条通道）/③功能模块 `Feature` 协议；③ 引入**四条硬护栏**（`check_deps` 依赖方向+层级登记 / `check_names` 未定义名 / `check_contracts` 契约 / `gen_modules` 模块登记表），`sh tools/preflight.sh` 一把过闸；④ 清理机械拆分带进的 import 噪声 6,353 条（逐字校验：除 import 外所有代码行与原版一致）；⑤ 新增 `docs/CONTRACTS.md`（契约一页纸）与 `docs/MODULES-REGISTRY.md`（自动生成模块登记表）。本版最终形态：三项契约（①任务状态机 run_mode / ②取种唯一入口 AcquireSource / ③功能注册表 Feature）**全部落码**；配 **五条**可执行护栏（check_deps 依赖方向+层级登记 / gen_modules 模块登记表 / check_contracts 契约 R1·R2·R3 / check_names 未定义名 / check_pages 功能页对齐）；`sh tools/preflight.sh` 一把过闸。新增 `GET /features` 端点。"
     }
   },
-  "version": "3.34.0",
+  "version": "4.0.0",
   "history": {
+    "3.40.1": "规则包收尾：① 站点能力/标记/域名/规则全部由 conf/frameworks.yml 驱动（代码留兜底），`rulepack` 状态在 /rules 可见；② 修 `_NEXUS` 前向引用导致插件加载失败（3.40.0 曾停摆）；③ 「保种员/管理组 24小时回应」不再被当 H&R；④ 做种数上限不再把「10集以下…」的集数当上限（同句排除 集/考核/达标）；⑤ 识别成 unknown 的历史记录不再压过内置域名表。",
+    "3.40.0": "规则数据化：新增 conf/frameworks.yml 类型规则包（框架标记/探测页/解析器/token/正则/能力表/已知域名），解析引擎薄、按框架取数据；加站点类型 = 改 YAML。sitecap 与 sites/rules 统一从规则包读（代码留兜底）。同时修 `_PERMIT_WITHDRAW_RE` 未定义与「可撤种规定被当 H&R」。",
+    "3.39.1": "逐站抓规则暴露的三处修复：① 框架未知的站现场识别一次（走采集层+PV闸门，识别一次用 30 天）；② 「可撤种规定」不再被判成 H&R（咖啡 rules.php 曾解析成 hr=True/240h/high）；③ 内置域名表补实测结论：March/NovaHD/CarPT/Depth Studio = NexusPHP，YemaPT = 文档站。",
+    "3.39.0": "类型级站点规则：新增「框架默认 + 按框架选解析器」——同类站一套读法（NexusPHP / Gazelle / UNIT3D / M-Team / 自研），探测按框架选页面与解析器；没有内置记录的站用框架兜底补一条（阈值一律留「未知」，交给既有「未知保守」逻辑，行为不变）；规则库每行可见「框架 / 来源层」。优先级不变：手填 > 探测 > 内置 > 框架默认。",
+    "3.38.0": "采集层（B6，一次性落地）：新建唯一采集模块 collect.py —— 站点请求/解析/配额/缓存全归它，落地三条硬原则（一次抓全 / 一轮一抓 / 一个出口）。live_stats、signin、sitecap、fetcher、sites/formula_fetch、IYUU passkey、调试抓页全部改走它；PV 闸门内置在采集层（调用方不再各写一遍）；保活改“顺便”复用已抓的用户栏事实（index.php 每轮 2 次请求 → 1 次）；新增 /debug/collect 观测（谁在抓 / 抓什么 / 花几 PV / worker 注册原因）。",
+    "3.37.7": "修复「站点监控」监控范围：X11——`enabled` 是 run_mode 的派生镜像（只有「运行中」为真），而服务注册与站点过滤还在用它，导致「做种中」的站完全不在监控内、`LiveWatch` 服务甚至不注册。改为看真源 `run_mode`：运行中+做种中都采样/告警；「清非免费下载种」这类动手操作仍只限「运行中」任务所在的站（做种中只告警不动手）。",
+    "3.37.6": "文案清理：UI 去掉「证据①②③」这类给调试看的话术（Master：系统要是好要证据干嘛）——「站点监控 → 流量兜底」只按「任务内 / 全局 / 取种期间」三处核对平铺说明。",
+    "3.37.5": "修复 3.37.4 前端两处：① 「站点监控 → 流量兜底」补回证据③的三个数值框（3.37.4 误删，只因跨站页删除时正则命中了同形代码块）；② 「下载与目录」去掉重复的「任务保存目录」标题。",
+    "3.37.4": "模块化收口（B3/B4/B5）：① 流量兜底收成「一个系统三条证据」（新增总开关 promo_guard，任务内/全局在下载列表/跨站来源站共用）；② 取种收成唯一入口 `_acquire_existing()`（本机同 hash → 本机同 Release → IYUU 云端），刷流与换种统一走它；③ 设置收敛：下载器参数+下载目录合并为「下载与目录」、跨站页的流量兜底与 H&R 分别归到「站点监控·流量兜底」与「站点规则」；功能页标注「全局/查看」。",
     "3.34.0": "自动换种：名额/磁盘/站点接近上限时，按边际魔力把「插件自己刷进来的低价值种」换成更优候选（先加后撤、单轮≤3、10min 冷却）；库内/同站纳管/H&R/手动保护一律不动；新增 /debug/swap 干跑。",
     "3.33.0": "首页大数可点 → 新增「站点容量」页：每站时魔/上限/占用进度条（占用高=快满、低=还有空间），作为「在哪加种更划算」的决策视角。",
     "3.32.0": "首页大数副标题加「上限占用 X%」（稳定反馈：时魔/站点上限）；今日 +X 仅在魔力变动时追加。",
@@ -281,6 +298,12 @@
     "3.6.0": "站点签到 / 模拟登录（新功能，借鉴 MoviePilot「站点自动签到」插件）：通用签到 = 带站点 Cookie 访问 attendance.php（NexusPHP 访问即签到）；结果识别（login.php/密码框 → Cookie 失效；已签|签到已得|签到成功|每日签到 → 成功）；通用登录 = 带 Cookie 访问站点首页做「模拟登录」保活，并按结果刷新 MoviePilot 站点数据；失败文案命中「重试关键词」（默认 错误|失败）重试一次。设置页新增「签到」标签：站点可多选（签到站点 / 登录站点，选多少有多少）+ 并发数 + 间隔 + 执行时段（默认 9-23 点）+ 通知 + 「立即签到 / 立即登录」按钮 + 今日结果。同一站点当天已成功自动跳过（一天最多 1 次请求/站）；命中站点每日访问上限（PV）则该站当日不再尝试；API 站（如馒头）自动跳过。结果写入操作记录并落库（按「日期 × 站点」保留 7 天）。另：考核标签页新增「考核站点」多选（不选 = 全部已配置 Cookie 的站点）。",
     "3.7.0": "新手考核前端入口（顶栏 + 汇总弹窗 + 一键起任务）：顶栏新增「考核」按钮（v-if 关闭时隐藏）+ 角标（未通过数，3 天内截止变红）；点开为汇总弹窗（同「推荐」范式）：按站点列出未通过考核项、剩余天数、上传/下载/魔力/做种数，并把每项翻译成可执行动作（刷上传 / 补下载 / 攒魔力 / 保持做种）并给出提示（全站 Free 期间下载不计入、补下载后分享率估算、剩余天数告警）；「一键起任务」先弹确认框展示任务名与影响，确认后调 POST /exam/act（自动创建或启用对应任务；考核下载任务执行期间豁免「3.4.0 下载异常自动清种」、不删种）；弹窗每 5 分钟自动刷新角标（模块关闭时服务端立即返回，零开销）；窄屏收纳进「更多」菜单。",
     "3.7.1": "PV 配额治理（数据分层）+ 一批修复：① **缓存分层落地** —— 站点候选列表 / 站点公式改由 TierCache 托管（内存热层 + MoviePilot FileCache 冷层：配了 Redis 走 Redis、没配就落本地文件），插件热重载 / 重启后不再清零。此前一天 120 次热重载会把站点公式缓存清空 → 一天 874 次公式抓取风暴。② **新增 PV 账本**：按「日期 × 站点 × 类型（抓取/实时/公式/签到）」用 save_data 落库（PluginData 表，卸载保留、重装继承，无需自建表 / 迁移）；新增 GET /pv 查询、POST /pv/budget 设站点日预算；抓取前置「预算闸门」（默认不限，PTT 这类 300PV/天 的站可设 300）。③ **修「候选缓存 key 漏 start_page」** → 游标深翻永远命中第 0 页；同时**取消游标深翻**（各任务从不同页起抓 → 永远命中不了彼此缓存 → 每轮每任务都真打站点，这是 PTT 一天打爆 300PV 的主因），统一从首页抓同一份窗口共享（同站 1 次/小时）。④ 公式抓取**补 PV 闸门**（此前站点被封后仍打了 98 次）+ 去掉 refresh_site_preset 的重复抓取（每次刷新双倍请求）。⑤ 站点候选缓存 TTL 20min→60min。⑥ is_pv_limited / PV_LIMIT_MARKERS 去掉裸 \"PV\"（避免普通页面误判为封禁页）。⑦ 删除「候选预取」worker（实测不省 PV，且其 get_cached 是死代码）。",
-    "3.7.2": "官种列表缓存改分层 + 走 PV 闸门：原为纯内存 dict，插件每次热重载清空 → 又真抓 2 页（实测站点已被 PV 封禁后 07:57 仍抓了一次官种列表）；且完全不进 PV 账本。现改为 TierCache（内存热层 + FileCache 冷层，12h TTL 跨重载存活）并纳入 PV 预算闸门；被封/超预算时回退「过期但可用」的官种列表而不是空集（空集会让打分低估魔力 → 误删）。"
+    "3.7.2": "官种列表缓存改分层 + 走 PV 闸门：原为纯内存 dict，插件每次热重载清空 → 又真抓 2 页（实测站点已被 PV 封禁后 07:57 仍抓了一次官种列表）；且完全不进 PV 账本。现改为 TierCache（内存热层 + FileCache 冷层，12h TTL 跨重载存活）并纳入 PV 预算闸门；被封/超预算时回退「过期但可用」的官种列表而不是空集（空集会让打分低估魔力 → 误删）。",
+    "3.25.0": "「任务·做种中」接管同站：seeding 模式注册 Check（不再单纯停调度不做事）+ 切换/每轮检查都跑同站纳管（手动加/IYUU/资源等被纳管并永久保护，3.13.0 设计收敛）；seeding 仅做已完成种继续做种 + 同站纳管 + 清理无进度/H&R，不再补种不再刷魔力。",
+    "3.41.1": "H&R 真值源 = 收件箱：① 采集层新增收件箱/欢迎短讯（`messages.php`）；② 站点规则探测**只走欢迎短讯给出的规则地址**（rules.php/wiki/论坛教程），地址**落库复用**（省 PV），公开页 H&R 一律不采；③ 旧「公开页/内置表」H&R 一次性作废；④ /rules 暴露 rule_url，设置页 🔗 可点开。",
+    "3.45.0": "3.45.0：新增「API 通道表」（conf/frameworks.yml → api_channels），把「带 API 鉴权的站怎么调」全部外置成数据：根地址模板 / 认证头 / 成功判定 / 端点表 / 提交形态 / 下载直链模板。接入叶PT（YemaPT）开放 API（Authorization: AuthKey）：档案（积分/等级）、公开种子列表（含权威 hrPunishEnable H&R 标记 + 免费促销到期）、piecesHash 反查种子 ID、下载凭证→直链；新增 /debug/api 诊断端点（profile/list/search/detail/dl/hash）。采集层不写任何站点专属 URL/认证头。",
+    "3.46.0": "3.46.0：作废馒头「做种数上限 100」——查证官方 wiki/API 后确认那只是魔力公式的「计入上限」(torrentMsSum，超过后时魔不再增长)，**不是做种数量禁令**；保种不再被这个硬天花板截断（改为提示，交给换种优化收益）；同时把馒头官方公式常量（T0=4/N0=7/B0=50/L=300）内置为离线兜底，从此时魔估算不依赖网页会话/接口。",
+    "3.46.1": "3.46.1：**一步到位拆分 `__init__.py`**（17,517 行 → 363 行）：新增 `common.py`（常量/纯工具/模型/跨模块状态）与 `features/` 27 个功能模块（core/runtime/api/status/tasks/brush/formula/reuse/cleanup/swap/crossseed/tags/assets/silent/hr/recommend/live/exam/cloud/siteops/protection/services/events/actions/debug…），主类改为 mixin 组合；**逐字搬运 + 源码一致性校验**，行为零变化。（本版最终形态：①任务状态机 ②取种唯一入口 `AcquireSource` ③功能注册表 `Feature` 三项契约**全部落码**，并配 **五条**可执行护栏：check_deps 依赖方向+层级登记 / gen_modules 模块登记表 / check_contracts 契约(R1运行状态·R2不比较字面量·R3取种唯一入口) / check_names 未定义名 / check_pages 功能页对齐；`sh tools/preflight.sh` 一把过闸。新增 `GET /features` 功能注册表端点。）",
+    "4.0.0": "4.0.0：**架构级不兼容变更（MAJOR）**——① `__init__.py` 从 **17,517 行单文件**拆为 `common.py`（常量/纯工具/模型/跨模块状态）+ 27 个 `features/*` mixin（逐字搬运、行为不变，主类 mixin 组合）；② 引入**三大契约**：①任务状态机（`run_mode` 唯一真值源，`enabled` 只是派生镜像）/②取种来源 `AcquireSource`（本机→IYUU→MP搜索→跨站免费，一条通道）/③功能模块 `Feature` 协议；③ 引入**四条硬护栏**（`check_deps` 依赖方向+层级登记 / `check_names` 未定义名 / `check_contracts` 契约 / `gen_modules` 模块登记表），`sh tools/preflight.sh` 一把过闸；④ 清理机械拆分带进的 import 噪声 6,353 条（逐字校验：除 import 外所有代码行与原版一致）；⑤ 新增 `docs/CONTRACTS.md`（契约一页纸）与 `docs/MODULES-REGISTRY.md`（自动生成模块登记表）。本版最终形态：三项契约（①任务状态机 run_mode / ②取种唯一入口 AcquireSource / ③功能注册表 Feature）**全部落码**；配 **五条**可执行护栏（check_deps 依赖方向+层级登记 / gen_modules 模块登记表 / check_contracts 契约 R1·R2·R3 / check_names 未定义名 / check_pages 功能页对齐）；`sh tools/preflight.sh` 一把过闸。新增 `GET /features` 端点。"
   }
 }

@@ -1,7 +1,7 @@
 {
   "name": "moviepilot-magicflow-plugin",
   "private": true,
-  "version": "3.34.0",
+  "version": "4.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite build --watch",
@@ -15,5 +15,19 @@
     "@originjs/vite-plugin-federation": "^1.4.1",
     "@vitejs/plugin-vue": "^5.0.4",
     "vite": "^5.4.11"
+  },
+  "history": {
+    "3.40.1": "规则包收尾：① 站点能力/标记/域名/规则全部由 conf/frameworks.yml 驱动（代码留兜底），`rulepack` 状态在 /rules 可见；② 修 `_NEXUS` 前向引用导致插件加载失败（3.40.0 曾停摆）；③ 「保种员/管理组 24小时回应」不再被当 H&R；④ 做种数上限不再把「10集以下…」的集数当上限（同句排除 集/考核/达标）；⑤ 识别成 unknown 的历史记录不再压过内置域名表。",
+    "3.40.0": "规则数据化：新增 conf/frameworks.yml 类型规则包（框架标记/探测页/解析器/token/正则/能力表/已知域名），解析引擎薄，按框架取数据；加站点类型 = 改 YAML 不改代码。sitecap 与 sites/rules 统一从规则包读（代码留兜底默认）。顺带修 `_PERMIT_WITHDRAW_RE` 未定义（上一版探测报 NameError）与「可撤种规定被当 H&R」。",
+    "3.39.1": "逐站抓规则暴露的三处修复：① 框架未知的站**现场识别一次**（`_site_cap(probe=True)`，走采集层+PV闸门，识别一次用 30 天），不再拿通用解析器硬套 NexusPHP 站；② 「可撤种规定」不再被判成 H&R（咖啡 rules.php「保种10天以上可撤种」曾解析成 hr=True/240h/high）；③ 内置域名表补实测结论：March/NovaHD/CarPT/Depth Studio = NexusPHP，YemaPT = 文档站（无 rules 页）。",
+    "3.39.0": "类型级站点规则：新增「框架默认 + 按框架选解析器」——同类站一套读法（NexusPHP / Gazelle / UNIT3D / M-Team / 自研），探测按框架选页面与解析器；没有内置记录的站用框架兜底补一条（阈值一律留「未知」，交给既有「未知保守」逻辑，行为不变）；规则库每行可见「框架 / 来源层」。优先级不变：手填 > 探测 > 内置 > 框架默认。",
+    "3.38.0": "采集层（B6，一次性落地）：新建唯一采集模块 collect.py —— 站点请求/解析/配额/缓存全归它，落地三条硬原则（一次抓全 / 一轮一抓 / 一个出口）。live_stats、signin、sitecap、fetcher、sites/formula_fetch、IYUU passkey、调试抓页全部改走它；PV 闸门内置在采集层（调用方不再各写一遍）；保活改“顺便”复用已抓的用户栏事实（index.php 每轮 2 次请求 → 1 次）；新增 /debug/collect 观测（谁在抓 / 抓什么 / 花几 PV / worker 注册原因）。",
+    "3.37.7": "修复「站点监控」监控范围：X11——`enabled` 是 run_mode 的派生镜像（只有「运行中」为真），而服务注册与站点过滤还在用它，导致「做种中」的站完全不在监控内、`LiveWatch` 服务甚至不注册。改为看真源 `run_mode`：运行中+做种中都采样/告警；「清非免费下载种」这类动手操作仍只限「运行中」任务所在的站（做种中只告警不动手）。",
+    "3.41.0": "H&R 真值源改「收件箱」：① 采集层新增收件箱/欢迎短讯（`messages.php` → 欢迎信 → 链接+正文，6h/7d 缓存）；② 站点规则探测**只走欢迎短讯里给出的「规则」地址**（rules.php / wiki / 论坛教程），公开页只留促销/名额/考核事实，H&R 一律不采；③ 旧「公开页/内置表」推出的 H&R 一次性作废（layer=retired，生效时长回落默认 24h 保守）；④ `hr_trusted/hr_source` 在 /rules 可见。",
+    "3.41.1": "规则地址落库 + 可见：① 从收件箱欢迎短讯捞到的「规则地址」存进站点规则（rule_url/rule_label），以后探测直接读存量地址（rule_src=saved），不再翻收件箱 → 省 PV；② /rules 暴露 rule_url；③ 设置·站点规则页显示 🔗 可点开，来源标注「收件箱规则」。",
+    "3.41.2": "按 Master「规则里面没有关键字就是没有」：① 用户栏统计（`H&R: [0/0/10]`）与盒子/上传速度等促销句**不再被当 H&R**（红豆饭那条 24h 是通用 FAQ 模板，误判已消）；② 候选地址只认「规则/rules/wiki」，faq/常见问题（各站一字不差的模板）不再当站规；③ 规则页**读到了但无 H&R 关键字 → 明确判「无 H&R」**；④ 判「有」需硬证据（明确 H&R 词 或「必须/至少+小时」义务句），弱句不再触达。",
+    "3.42.0": "API 鉴权站（馒头）接入采集层：新增 `Http.api()`（`x-api-key` 鉴权，不抓网页）+ `SiteView.api_profile()`；馒头「站点实时」改用 `/api/member/profile` 读取魔力/上传/下载/分享率/uid（此前无 cookie → 一直抓取失败）；顺带修**站点 UA 前导空白**导致 httpx 判非法头、请求 0.9ms 即「无响应」的坑（蟹黄堡规则页从此可抓）。",
+    "3.43.0": "馒头 API 打通（Master 12:10 给规格，实测订正）：`/torrent/detail`、`/torrent/genDlToken` 走 **query 参数**（`x-api-key`，对齐 MP `iyuuautoseed` 的可用调法），新增 `SiteView.api_search/api_detail/api_dl_token`（促销 discount / 热度 seeders·leechers / 签名下载直链，全程无 cookie）+ 诊断端点 `GET /debug/mteam`。",
+    "3.44.0": "馒头接进刷流链路（Master 12:39「加」）：候选走官方 API `/torrent/search`（discount 促销 + seeders/leechers，`parse_mteam_rows`），**下载直链留到入选时**用 `/torrent/genDlToken` 现取（`_cand_enclosure`，只为已入选候选花 1 次请求），接进 `_prefetch`/辅种慢扫/换种/跨站取种四处；API 站候选不再按 browse 记 PV。"
   }
 }

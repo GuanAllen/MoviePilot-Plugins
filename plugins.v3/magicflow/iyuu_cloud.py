@@ -292,7 +292,8 @@ class IyuuCloud:
 # ---------------------------------------------------------------------------
 
 def harvest_passkey(cookie: str, base_url: str, is_https: int = 2,
-                    timeout: int = 15, referer: str = "") -> Optional[str]:
+                    timeout: int = 15, referer: str = "",
+                    collect: Any = None, site_id: int = 0) -> Optional[str]:
     """用站点 cookie 抓「浏览页/个人页」把 passkey 抠出来（NexusPHP 通用）。
 
     返回 None 表示没抠到（调用方回退手填配置）。
@@ -308,6 +309,18 @@ def harvest_passkey(cookie: str, base_url: str, is_https: int = 2,
         f"{scheme}://{biz}/getusertorrentlistajax.php",
         f"{scheme}://{biz}/usercp.php",
     ]
+    # ★ 3.38.0：有采集模块就走它（唯一出口 + 配额闸门）；否则退回 SDK（老调用方）
+    if collect is not None and int(site_id or 0):
+        for path in ("torrents.php", "getusertorrentlistajax.php", "usercp.php"):
+            try:
+                res = collect.http.text(int(site_id), f"{scheme}://{biz}/{path}", kind="passkey")
+                if res.ok:
+                    m = _PASSKEY_RE.search(res.text)
+                    if m:
+                        return m.group(1)
+            except Exception:  # noqa: BLE001
+                continue
+        return None
     try:
         from app.sdk.network import RequestUtils  # noqa: WPS433
     except Exception:

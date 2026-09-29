@@ -43,6 +43,222 @@ def promo_remaining_sec(until: str) -> float:
         return -1.0
 
 
+# ── M-Team（API 站）候选解析 ★ 3.44.0 ────────────────────────────
+# ``discount`` 词表 → (下载系数, 上传系数)。实测馒头：FREE / PERCENT_50 / NORMAL。
+MT_DISCOUNT: Dict[str, Tuple[float, float]] = {
+    "FREE": (0.0, 1.0),
+    "2X_FREE": (0.0, 2.0),
+    "_2X_FREE": (0.0, 2.0),
+    "PERCENT_50": (0.5, 1.0),
+    "PERCENT_70": (0.7, 1.0),
+    "2X": (1.0, 2.0),
+    "_2X": (1.0, 2.0),
+    "2X_PERCENT_50": (0.5, 2.0),
+    "_2X_PERCENT_50": (0.5, 2.0),
+    "NORMAL": (1.0, 1.0),
+}
+
+
+def mteam_promo(discount: Any) -> Tuple[float, float]:
+    """M-Team ``discount`` → ``(downloadvolumefactor, uploadvolumefactor)``。
+
+    ★ 3.44.0：词表为主，字符串兜底（含 ``FREE`` → 免费；含 ``2X`` → 双倍上传；
+    含 ``PERCENT_50/70`` → 打折），未知取值一律当普通（1.0/1.0）——宁可少算免费。
+    """
+    key = str(discount or "").strip().upper()
+    if key in MT_DISCOUNT:
+        return MT_DISCOUNT[key]
+    dvf, uvf = 1.0, 1.0
+    if "PERCENT_50" in key:
+        dvf = 0.5
+    elif "PERCENT_70" in key:
+        dvf = 0.7
+    if "FREE" in key:
+        dvf = 0.0
+    if key.startswith("2X") or key.startswith("_2X"):
+        uvf = 2.0
+    return dvf, uvf
+
+
+# ── 叶PT（YemaPT）开放 API 词表（3.45.0）────────────────────────────
+# downloadPromotion：none / half / free；uploadPromotion：none / one_half / double_upload
+YEMA_DOWN: Dict[str, float] = {"FREE": 0.0, "HALF": 0.5, "NONE": 1.0}
+YEMA_UP: Dict[str, float] = {"DOUBLE_UPLOAD": 2.0, "ONE_HALF": 1.5, "NONE": 1.0}
+
+
+def yema_promo(download: Any, upload: Any) -> Tuple[float, float]:
+    """叶PT 促销文案 → ``(downloadvolumefactor, uploadvolumefactor)``。
+
+    词表为主，字符串兜底；未知值一律当普通（1.0/1.0）——宁可少算免费。
+    """
+    dk = str(download or "").strip().upper()
+    uk = str(upload or "").strip().upper()
+    dvf = YEMA_DOWN.get(dk)
+    if dvf is None:
+        dvf = 0.0 if ("FREE" in dk or "免费" in dk) else (0.5 if "HALF" in dk else 1.0)
+    uvf = YEMA_UP.get(uk)
+    if uvf is None:
+        uvf = 2.0 if "DOUBLE" in uk else (1.5 if "HALF" in uk else 1.0)
+    return float(dvf), float(uvf)
+
+
+def _age_weeks_from_text(created: Any) -> float:
+    """任意时间文本 → 做种周数（容错多种格式；解析不了返回 0）。"""
+    raw = str(created or "").strip()
+    if not raw:
+        return 0.0
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d"):
+        try:
+            text = raw.replace("Z", "+0000") if "%z" in fmt else raw
+            dt = datetime.strptime(text, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=SITE_TZ)
+            return max((time.time() - dt.timestamp()) / (7 * 86400.0), 0.0)
+        except Exception:  # noqa: BLE001, PERF203
+            continue
+    return 0.0
+
+
+def parse_yema_rows(
+    rows: Any,
+    *,
+    site_name: str = "",
+    domain: str = "",
+    site_url: str = "",
+    site_id: int = 0,
+    site_proxy: bool = False,
+) -> List[SiteCandidateTorrent]:
+    """叶PT（YemaPT）``fetchOpenTorrentList`` 的行 → 候选项。
+
+    ★ 3.45.0：与馒头一样留空 hash/直链（下载凭证入选时现取）。
+    额外好处：``hrPunishEnable`` 是该站的**权威 H&R 标记**，直接照抄事实。
+    """
+    out: List[SiteCandidateTorrent] = []
+    base = str(site_url or "").rstrip("/")
+
+    def _i(v: Any) -> int:
+        try:
+            return int(float(v or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        tid = str(row.get("id") or "").strip()
+        if not tid:
+            continue
+        dvf, uvf = yema_promo(row.get("downloadPromotion"), row.get("uploadPromotion"))
+        listing = str(row.get("listingTime") or "")
+        free_until = str(row.get("downloadPromotionEndTime") or "") if dvf == 0.0 else ""
+        try:
+            size = float(row.get("fileSize") or 0)
+        except (TypeError, ValueError):
+            size = 0.0
+        out.append(
+            SiteCandidateTorrent(
+                hash="",
+                title=str(row.get("showName") or "").strip(),
+                size=size,
+                seeders=_i(row.get("seedNum")),
+                leechers=_i(row.get("leechNum")),
+                pubdate=listing,
+                age_weeks=_age_weeks_from_text(listing),
+                page_url=f"{base}/torrent/{tid}" if base else "",
+                enclosure="",
+                site_name=str(site_name or ""),
+                site_domain=str(domain or ""),
+                site_id=int(site_id or 0),
+                api_tid=tid,
+                is_free=(dvf == 0.0),
+                is_double_free=(dvf == 0.0 and uvf == 2.0),
+                hit_and_run=bool(row.get("hrPunishEnable")),
+                volume_factor=dvf,
+                downloadvolumefactor=dvf,
+                uploadvolumefactor=uvf,
+                site_proxy=bool(site_proxy),
+                free_until=free_until,
+                free_remaining_sec=promo_remaining_sec(free_until) if free_until else -1.0,
+            )
+        )
+    return out
+
+
+def _mteam_age_weeks(created: Any) -> float:
+    try:
+        dt = datetime.strptime(str(created).strip(), "%Y-%m-%d %H:%M:%S").replace(tzinfo=SITE_TZ)
+        return max((time.time() - dt.timestamp()) / (7 * 86400.0), 0.0)
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def parse_mteam_rows(
+    rows: Any,
+    *,
+    site_name: str = "",
+    domain: str = "",
+    site_url: str = "",
+    site_id: int = 0,
+    site_proxy: bool = False,
+) -> List[SiteCandidateTorrent]:
+    """M-Team ``/torrent/search`` 的行 → 候选项。
+
+    ★ 3.44.0：API 站没有 RSS/enclosure，**下载直链留到入选时**用
+    ``/torrent/genDlToken`` 现取（插件 ``_cand_enclosure``），这里只放 ``api_tid``；
+    ``infoHash`` 在 API 里为 null，故 ``hash`` 留空（真 hash 由取回的 .torrent 算）。
+    """
+    out: List[SiteCandidateTorrent] = []
+    base = str(site_url or "").rstrip("/")
+
+    def _i(v: Any) -> int:
+        try:
+            return int(float(v or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        tid = str(row.get("id") or "").strip()
+        if not tid:
+            continue
+        st = row.get("status") if isinstance(row.get("status"), dict) else {}
+        dvf, uvf = mteam_promo(st.get("discount"))
+        created = str(row.get("createdDate") or "")
+        free_until = str(st.get("discountEndTime") or "") if dvf == 0.0 else ""
+        try:
+            size = float(row.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0.0
+        out.append(
+            SiteCandidateTorrent(
+                hash="",
+                title=str(row.get("name") or "").strip(),
+                size=size,
+                seeders=_i(st.get("seeders")),
+                leechers=_i(st.get("leechers")),
+                pubdate=created,
+                age_weeks=_mteam_age_weeks(created),
+                page_url=f"{base}/detail/{tid}" if base else "",
+                enclosure="",
+                site_name=str(site_name or ""),
+                site_domain=str(domain or ""),
+                site_id=int(site_id or 0),
+                api_tid=tid,
+                is_free=(dvf == 0.0),
+                is_double_free=(dvf == 0.0 and uvf == 2.0),
+                hit_and_run=False,
+                volume_factor=dvf,
+                downloadvolumefactor=dvf,
+                uploadvolumefactor=uvf,
+                site_proxy=bool(site_proxy),
+                free_until=free_until,
+                free_remaining_sec=promo_remaining_sec(free_until) if free_until else -1.0,
+            )
+        )
+    return out
+
+
 # ── 限时免费（促销到期）闸门参数 ─────────────────────────────
 # PT 站的「免费/2X免费」多为**限时**促销（Pttime 实测：12 分钟～6 天不等）。
 # 到期后继续下载会按原价计流量 → 得判断「剩余免费时间够不够下完」。
@@ -82,6 +298,15 @@ def set_request_interval(seconds: float) -> None:
 # 翻页调试日志：默认关。之前这四条 logger.warning 是**无条件**打的，
 # 每次抓取 × 每页都刷一遍 → 日志被淹、真问题看不见。
 _BROWSE_DEBUG = False
+
+
+_COLLECT = None
+
+
+def set_collect(ref: Any) -> None:
+    """注入采集模块（★ 3.38.0：站点请求唯一出口）。未注入时退回 SDK。"""
+    global _COLLECT
+    _COLLECT = ref
 
 
 def set_browse_debug(flag: Any) -> None:
@@ -188,6 +413,9 @@ class SiteCandidateTorrent:
     is_zero_bonus: bool = False
     is_free: bool = False
     is_double_free: bool = False
+    # ★ 3.44.0 API 站（馒头）：站点 id + API 端种子 id（下载直链入选时现取）
+    site_id: int = 0
+    api_tid: str = ""
     hit_and_run: bool = False
     volume_factor: float = 1.0
     site_proxy: bool = False
@@ -716,16 +944,28 @@ class SiteFetcher:
         base = (getattr(site, "url", "") or f"https://{getattr(site, 'domain', '')}").rstrip("/")
         domain = getattr(site, "domain", "") or base
         cookie = getattr(site, "cookie", None)
-        ua = getattr(site, "ua", None)
+        ua = str(getattr(site, "ua", None) or "").strip() or None   # ★ 前导空白会被 httpx 判非法头
         if not base:
             return out
-        try:
-            from app.sdk.network import RequestUtils  # noqa: WPS433
-        except Exception as err:  # noqa: BLE001
-            logger.warning(f"NexusPHP 直连需要 SDK：{err}")
-            return out
-
-        req = RequestUtils(cookies=cookie, ua=ua, timeout=30, referer=f"{base}/")
+        # ★ 3.38.0：优先走采集模块（唯一出口 + 配额闸门 + URL 缓存）
+        if _COLLECT is not None:
+            try:
+                req = _COLLECT.http.client(int(getattr(site, "id", 0) or 0), kind="browse", referer=f"{base}/")
+            except Exception as err:  # noqa: BLE001
+                logger.warning(f"NexusPHP 直连：采集模块不可用({err})")
+                return out
+        else:
+            try:
+                from app.sdk.network import RequestUtils  # noqa: WPS433
+            except Exception as err:  # noqa: BLE001
+                logger.warning(f"NexusPHP 直连需要 SDK：{err}")
+                return out
+            req = RequestUtils(
+                cookies=str(cookie or "").strip() or None,
+                ua=ua,
+                timeout=30,
+                referer=f"{base}/",
+            )
         # 站内检索（可选）：`?search=<kw>&search_area=0` 与 spstate 叠加 → 只搜免费种。
         _kw = str(search or "").strip()
         _q = f"&search={quote(_kw)}&search_area={int(search_area or 0)}" if _kw else ""
