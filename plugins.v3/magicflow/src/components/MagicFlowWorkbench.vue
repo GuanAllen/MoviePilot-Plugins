@@ -355,7 +355,7 @@ function mfOpenPage(page) {
   switch (page.key) {
     case 'recommend': return openRecommend()
     case 'exam': return openExam()
-    case 'signin': return openSettings('signin')
+    case 'signin': return openSignin()
     case 'cloud': return openCloud()
     case 'douban': return openDoubanService()
     case 'crossseed': return showCrossseed()
@@ -1348,12 +1348,79 @@ async function runSigninNow(kind = 'sign') {
     notify(`${kind === 'sign' ? '签到' : '登录'}完成：成功 ${s.ok || 0} / 失败 ${s.fail || 0}`)
     // 只刷新 status（不重载 settingsDraft，避免把正在编辑的设置冲掉）
     status.value = unwrapResponse(await props.api.get(`${pluginBase.value}/status`)) || status.value
+    if (signinOpen.value) loadSigninReport()
   } catch (err) {
     notify(`执行失败：${err?.message || err}`, 'error')
   } finally {
     signinRunning.value = false
   }
 }
+// ── 签到报表页（独立的「签到」功能页；设置仍在设置页）─────────────────
+const signinOpen = ref(false)
+const signinReport = ref({ enabled: false, sites: [], records: [], today: '' })
+const signinReportLoading = ref(false)
+async function loadSigninReport() {
+  signinReportLoading.value = true
+  try {
+    signinReport.value = unwrapResponse(await props.api.get(`${pluginBase.value}/signin?days=7`)) || signinReport.value
+  } catch (err) {
+    notify(`签到报表读取失败：${err?.message || err}`, 'error')
+  } finally {
+    signinReportLoading.value = false
+  }
+}
+function openSignin() {
+  signinOpen.value = true
+  loadSigninReport()
+}
+const signinReportTodayRows = computed(() => {
+  const sites = signinReport.value.sites || []
+  if (!sites.length) return signinTodayRows.value
+  return sites.map(s => ({
+    site_id: s.site_id,
+    site_name: s.site_name || s.domain || String(s.site_id),
+    sign: !!s.sign,
+    login: !!s.login,
+    signin: s.signin || null,
+    loginResult: s.login_result || null,
+  }))
+})
+const signinReportSummary = computed(() => {
+  let ok = 0
+  let fail = 0
+  ;(signinReportTodayRows.value || []).forEach(r => {
+    if (r.signin) { r.signin.ok ? ok++ : fail++ }
+    if (r.loginResult) { r.loginResult.ok ? ok++ : fail++ }
+  })
+  return { ok, fail, sites: (signinReportTodayRows.value || []).length }
+})
+// 近 7 天记录：新的在前，每天汇总成功/失败，附各站明细
+const signinHistoryRows = computed(() => {
+  const recs = (signinReport.value.records || []).slice().reverse()
+  return recs.map(r => {
+    const sites = r.sites || {}
+    const items = Object.keys(sites).map(sid => {
+      const rec = sites[sid] || {}
+      const name = rec.site_name || (siteSelectItems.value.find(s => s.value === String(sid)) || {}).title || String(sid)
+      const sign = rec.sign || null
+      const login = rec.login || null
+      return {
+        sid,
+        name,
+        sign,
+        login,
+        okCount: [sign, login].filter(x => x && x.ok).length,
+        failCount: [sign, login].filter(x => x && !x.ok).length,
+      }
+    })
+    return {
+      date: r.date,
+      items,
+      ok: items.reduce((a, i) => a + i.okCount, 0),
+      fail: items.reduce((a, i) => a + i.failCount, 0),
+    }
+  })
+})
 const siteLiveLevel = computed(() => (siteLive.value || {}).level || 'ok')
 const siteLiveInfo = computed(() => (siteLive.value || {}).live || {})
 const siteLiveRates = computed(() => (siteLive.value || {}).rates || {})
@@ -3666,6 +3733,71 @@ onUnmounted(() => {
       </VCard>
     </VDialog>
 
+    <VDialog v-model="signinOpen" max-width="40rem" scrollable :fullscreen="isNarrow">
+      <VCard class="magicflow-dialog magicflow-signin-dialog">
+        <header class="magicflow-settings-dialog__head">
+          <span class="magicflow-settings-dialog__title">签到</span>
+          <VChip v-if="signinReport.enabled" size="x-small" color="success" variant="tonal">已启用</VChip>
+          <VChip v-else size="x-small" color="grey" variant="tonal">已关闭</VChip>
+          <span class="magicflow-ops-dialog__spacer" />
+          <VBtn icon="mdi-refresh" size="small" variant="text" aria-label="刷新" :loading="signinReportLoading" @click="loadSigninReport" />
+          <VBtn icon="mdi-tune-variant" size="small" variant="text" aria-label="设置" @click="signinOpen = false; openSettings('signin')" />
+          <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="signinOpen = false" />
+        </header>
+        <div class="magicflow-ops-dialog__sub">今日结果 · 近 7 天记录（右上齿轮进入设置）</div>
+        <div class="magicflow-ops-dialog__body">
+          <div class="magicflow-signin-actions">
+            <VBtn size="small" color="primary" variant="flat" prepend-icon="mdi-calendar-check" :loading="signinRunning" @click="runSigninNow('sign')">立即签到</VBtn>
+            <VBtn size="small" color="primary" variant="tonal" prepend-icon="mdi-login-variant" :loading="signinRunning" @click="runSigninNow('login')">立即登录</VBtn>
+            <VChip size="small" variant="tonal" class="magicflow-signin-report__summary">今日 成功 {{ signinReportSummary.ok }} / 失败 {{ signinReportSummary.fail }}</VChip>
+          </div>
+
+          <div class="magicflow-settings-block">
+            <div class="magicflow-settings-block__head"><VIcon icon="mdi-clipboard-check-outline" size="16" /> 今日（{{ signinReport.today || '—' }}）</div>
+            <div v-if="signinReportTodayRows.length" class="magicflow-signin-list">
+              <div v-for="row in signinReportTodayRows" :key="row.site_id" class="magicflow-signin-list__row">
+                <span class="magicflow-signin-list__name">{{ row.site_name }}</span>
+                <span class="magicflow-signin-list__tags">
+                  <span v-if="row.sign" class="magicflow-signin-tag" :class="row.signin ? (row.signin.ok ? 'is-ok' : 'is-fail') : ''">
+                    <VIcon size="14" :icon="row.signin ? (row.signin.ok ? 'mdi-check-circle' : 'mdi-close-circle') : 'mdi-clock-outline'" />
+                    签到：{{ row.signin ? row.signin.message : '待执行' }}
+                  </span>
+                  <span v-if="row.login" class="magicflow-signin-tag" :class="row.loginResult ? (row.loginResult.ok ? 'is-ok' : 'is-fail') : ''">
+                    <VIcon size="14" :icon="row.loginResult ? (row.loginResult.ok ? 'mdi-check-circle' : 'mdi-close-circle') : 'mdi-clock-outline'" />
+                    登录：{{ row.loginResult ? row.loginResult.message : '待执行' }}
+                  </span>
+                </span>
+              </div>
+            </div>
+            <p v-else class="magicflow-field__sub">还没有站点结果。先到右上齿轮里勾选要签到的站点。</p>
+          </div>
+
+          <div v-if="signinHistoryRows.length" class="magicflow-settings-block">
+            <div class="magicflow-settings-block__head"><VIcon icon="mdi-calendar-clock" size="16" /> 近 7 天</div>
+            <div class="magicflow-signin-history">
+              <div v-for="d in signinHistoryRows" :key="d.date" class="magicflow-signin-history__row">
+                <div class="magicflow-signin-history__head">
+                  <span class="magicflow-signin-history__date">{{ d.date }}</span>
+                  <span class="magicflow-signin-history__sum">成功 {{ d.ok }} / 失败 {{ d.fail }}</span>
+                </div>
+                <div class="magicflow-signin-history__items">
+                  <span
+                    v-for="it in d.items"
+                    :key="it.sid"
+                    class="magicflow-signin-histchip"
+                    :class="it.failCount && !it.okCount ? 'is-fail' : (it.okCount ? 'is-ok' : 'is-none')"
+                    :title="[it.sign ? ('签到：' + it.sign.message) : '', it.login ? ('登录：' + it.login.message) : ''].filter(Boolean).join(' · ')"
+                  >
+                    {{ it.name }}<template v-if="it.okCount"> ✔</template><template v-if="it.failCount"> ✘</template>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </VCard>
+    </VDialog>
+
     <VDialog v-model="opsOpen" max-width="46rem" scrollable :fullscreen="isNarrow">
       <VCard class="magicflow-dialog magicflow-ops-dialog">
         <header class="magicflow-settings-dialog__head">
@@ -4184,7 +4316,7 @@ onUnmounted(() => {
                   </VChip>
                 </div>
                 <div class="magicflow-signin-hero__desc">
-                  每日用站点 Cookie 访问 <code>attendance.php</code> 完成签到；模拟登录保活 Cookie 并刷新站点数据。
+                  勾选站点即可，其余全自动完成。
                 </div>
               </div>
             </div>
@@ -4201,7 +4333,7 @@ onUnmounted(() => {
             </div>
 
             <div class="magicflow-settings-block">
-              <div class="magicflow-settings-block__head"><VIcon icon="mdi-web" size="16" /> 站点选择</div>
+              <div class="magicflow-settings-block__head"><VIcon icon="mdi-web" size="16" /> 站点选择（勾选即生效）</div>
               <div class="magicflow-field-stack">
                 <div class="magicflow-field">
                   <VSelect
@@ -4234,43 +4366,9 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <div class="magicflow-settings-block">
-              <div class="magicflow-settings-block__head"><VIcon icon="mdi-timer-cog-outline" size="16" /> 执行参数</div>
-              <div class="magicflow-field-grid">
-                <VTextField v-model.number="settingsDraft.signin_queue" type="number" min="1" label="并发数" variant="outlined" density="comfortable" hide-details />
-                <VTextField v-model.number="settingsDraft.signin_interval_minutes" type="number" min="10" label="间隔（分钟）" variant="outlined" density="comfortable" hide-details />
-                <VTextField v-model.number="settingsDraft.signin_window_start" type="number" min="0" max="23" label="开始（时）" variant="outlined" density="comfortable" hide-details />
-                <VTextField v-model.number="settingsDraft.signin_window_end" type="number" min="1" max="24" label="结束（时）" variant="outlined" density="comfortable" hide-details />
-              </div>
-              <div class="magicflow-field">
-                <VTextField v-model="settingsDraft.signin_retry_keyword" label="重试关键词（正则，留空则不重试）" variant="outlined" density="comfortable" hide-details />
-              </div>
-              <p class="magicflow-field__sub">执行时段默认 9:00–23:00；同一站点当天已成功会自动跳过（一天最多 1 次请求/站），命中每日 PV 上限则该站当日不再尝试。</p>
-            </div>
-
             <div class="magicflow-signin-actions">
-              <VBtn size="small" color="primary" variant="flat" prepend-icon="mdi-calendar-check" :loading="signinRunning" @click="runSigninNow('sign')">立即签到</VBtn>
-              <VBtn size="small" color="primary" variant="tonal" prepend-icon="mdi-login-variant" :loading="signinRunning" @click="runSigninNow('login')">立即登录</VBtn>
-              <span class="magicflow-field__sub">立即执行会直接发请求，需先保存并启用</span>
-            </div>
-
-            <div v-if="signinTodayRows.length" class="magicflow-settings-block">
-              <div class="magicflow-settings-block__head"><VIcon icon="mdi-clipboard-check-outline" size="16" /> 今日结果</div>
-              <div class="magicflow-signin-list">
-                <div v-for="row in signinTodayRows" :key="row.site_id" class="magicflow-signin-list__row">
-                  <span class="magicflow-signin-list__name">{{ row.site_name }}</span>
-                  <span class="magicflow-signin-list__tags">
-                    <span v-if="row.sign" class="magicflow-signin-tag" :class="row.signin ? (row.signin.ok ? 'is-ok' : 'is-fail') : ''">
-                      <VIcon size="14" :icon="row.signin ? (row.signin.ok ? 'mdi-check-circle' : 'mdi-close-circle') : 'mdi-clock-outline'" />
-                      签到：{{ row.signin ? row.signin.message : '待执行' }}
-                    </span>
-                    <span v-if="row.login" class="magicflow-signin-tag" :class="row.loginResult ? (row.loginResult.ok ? 'is-ok' : 'is-fail') : ''">
-                      <VIcon size="14" :icon="row.loginResult ? (row.loginResult.ok ? 'mdi-check-circle' : 'mdi-close-circle') : 'mdi-clock-outline'" />
-                      登录：{{ row.loginResult ? row.loginResult.message : '待执行' }}
-                    </span>
-                  </span>
-                </div>
-              </div>
+              <VBtn size="small" color="primary" variant="tonal" prepend-icon="mdi-chart-box-outline" @click="openSignin()">查看签到报表</VBtn>
+              <span class="magicflow-field__sub">签到结果与近 7 天记录都在报表页</span>
             </div>
           </div>
 
@@ -6251,7 +6349,9 @@ onUnmounted(() => {
 
 .magicflow-field-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* MoviePilot 在窄屏会把每个控件渲染成「左标签 / 右值」一行，
+     列宽太窄会把「并发数」等标签拆成多行 → 窄屏自动收成单列，宽屏才分两列 */
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 10px 12px;
 }
 
@@ -6320,6 +6420,64 @@ onUnmounted(() => {
 .magicflow-signin-list {
   display: grid;
   gap: 6px;
+}
+
+/* 签到报表页 */
+.magicflow-signin-report__summary {
+  margin-inline-start: auto;
+}
+
+.magicflow-signin-history {
+  display: grid;
+  gap: 10px;
+}
+
+.magicflow-signin-history__row {
+  display: grid;
+  gap: 6px;
+}
+
+.magicflow-signin-history__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.magicflow-signin-history__date {
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.magicflow-signin-history__sum {
+  font-size: 0.72rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.magicflow-signin-history__items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.magicflow-signin-histchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.magicflow-signin-histchip.is-ok {
+  color: rgb(var(--v-theme-success));
+  background: rgba(var(--v-theme-success), 0.12);
+}
+
+.magicflow-signin-histchip.is-fail {
+  color: rgb(var(--v-theme-error));
+  background: rgba(var(--v-theme-error), 0.12);
 }
 
 .magicflow-signin-list__title {
