@@ -1373,6 +1373,27 @@ function openSignin() {
   signinOpen.value = true
   loadSigninReport()
 }
+// ---------------- 报表（按「几十个站」的规模设计） ----------------
+const signinFilter = ref('all')
+const signinSearch = ref('')
+const SIGNIN_STATUS_TEXT = { ok: '成功', fail: '失败', pending: '待执行', skip: '跳过', none: '无记录' }
+function signinStatusText(s) {
+  return SIGNIN_STATUS_TEXT[s] || s
+}
+// 日期标签：09/30 → 9/30（窄屏也能完整显示）
+function signinDateLabel(d) {
+  const s = String(d || '')
+  if (s.length < 10) return s
+  return `${Number(s.slice(5, 7))}/${Number(s.slice(8, 10))}`
+}
+// 单站某天的状态：全跳过→skip；有失败→fail；无记录→pending（今天）/none（历史）
+function _signinStatus(signin, loginResult, pendingWhenEmpty) {
+  const arr = [signin, loginResult].filter(Boolean)
+  if (!arr.length) return pendingWhenEmpty ? 'pending' : 'none'
+  if (arr.every(x => x.skipped)) return 'skip'
+  if (arr.some(x => !x.ok && !x.skipped)) return 'fail'
+  return 'ok'
+}
 const signinReportTodayRows = computed(() => {
   const sites = signinReport.value.sites || []
   if (!sites.length) return signinTodayRows.value
@@ -1385,41 +1406,99 @@ const signinReportTodayRows = computed(() => {
     loginResult: s.login_result || null,
   }))
 })
-const signinReportSummary = computed(() => {
-  let ok = 0
-  let fail = 0
+// 今日各状态计数 + 过滤后的列表（失败优先，几十个站也一眼看出问题）
+const signinTodayCounts = computed(() => {
+  const c = { all: 0, ok: 0, fail: 0, pending: 0, skip: 0 }
   ;(signinReportTodayRows.value || []).forEach(r => {
-    if (r.signin) { r.signin.ok ? ok++ : fail++ }
-    if (r.loginResult) { r.loginResult.ok ? ok++ : fail++ }
+    const s = _signinStatus(r.signin, r.loginResult, true)
+    c.all++
+    c[s] = (c[s] || 0) + 1
   })
-  return { ok, fail, sites: (signinReportTodayRows.value || []).length }
+  return c
 })
-// 近 7 天记录：新的在前，每天汇总成功/失败，附各站明细
-const signinHistoryRows = computed(() => {
-  const recs = (signinReport.value.records || []).slice().reverse()
-  return recs.map(r => {
-    const sites = r.sites || {}
-    const items = Object.keys(sites).map(sid => {
-      const rec = sites[sid] || {}
-      const name = rec.site_name || (siteSelectItems.value.find(s => s.value === String(sid)) || {}).title || String(sid)
-      const sign = rec.sign || null
-      const login = rec.login || null
-      return {
-        sid,
-        name,
-        sign,
-        login,
-        okCount: [sign, login].filter(x => x && x.ok).length,
-        failCount: [sign, login].filter(x => x && !x.ok).length,
+const signinFilterItems = computed(() => {
+  const c = signinTodayCounts.value
+  return [
+    { value: 'all', label: `全部 ${c.all}`, color: 'primary' },
+    { value: 'fail', label: `失败 ${c.fail}`, color: 'error' },
+    { value: 'pending', label: `待执行 ${c.pending}`, color: 'warning' },
+    { value: 'ok', label: `成功 ${c.ok}`, color: 'success' },
+  ]
+})
+const signinTodayList = computed(() => {
+  const ord = { fail: 0, pending: 1, ok: 2, skip: 3 }
+  const q = String(signinSearch.value || '').trim().toLowerCase()
+  return (signinReportTodayRows.value || [])
+    .map(r => {
+      const status = _signinStatus(r.signin, r.loginResult, true)
+      const pairs = [['签到', r.signin], ['登录', r.loginResult]]
+      const fails = pairs.filter(([, x]) => x && !x.ok && !x.skipped)
+      const skips = pairs.filter(([, x]) => x && x.skipped)
+      let msg
+      if (fails.length) {
+        msg = fails.map(([k, x]) => `${k} ✗ ${x.message || ''}`.trim()).join(' · ')
+      } else if (status === 'skip') {
+        msg = skips.map(([k]) => `${k} 跳过`).join(' · ')
+      } else if (status === 'pending') {
+        msg = '待执行'
+      } else {
+        // 全部成功 → 只给简洁对勾，几十个站也不刷屏
+        msg = pairs.filter(([, x]) => x && x.ok).map(([k]) => `${k} ✓`).join(' · ')
       }
+      return { ...r, status, msg }
     })
-    return {
-      date: r.date,
-      items,
-      ok: items.reduce((a, i) => a + i.okCount, 0),
-      fail: items.reduce((a, i) => a + i.failCount, 0),
+    .filter(r => !q || String(r.site_name || '').toLowerCase().includes(q))
+    .filter(r => signinFilter.value === 'all' || r.status === signinFilter.value)
+    .sort((a, b) => (ord[a.status] - ord[b.status]) || String(a.site_name || '').localeCompare(String(b.site_name || '')))
+})
+// 近 7 天矩阵：行=站点、列=日期（点阵）；异常在前，支持几十个站滚动查看
+const signinMatrix = computed(() => {
+  const records = signinReport.value.records || []
+  const today = signinReport.value.today || ''
+  // 近 7 天窗口：以今天为锚，缺记录的日期补空点（列固定 7 个，方便竖着对比）
+  const anchor = today || records.map(r => r.date).sort().slice(-1)[0] || ''
+  const dates = []
+  if (anchor) {
+    const base = new Date(`${anchor}T00:00:00`)
+    for (let i = 0; i < 7; i += 1) {
+      const d = new Date(base)
+      d.setDate(base.getDate() - i)
+      dates.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)
     }
+  }
+  const map = new Map()
+  const ensure = (sid, name) => {
+    const k = String(sid)
+    if (!map.has(k)) map.set(k, { sid: k, name: name || k, cells: {} })
+    else if (name) map.get(k).name = name
+    return map.get(k)
+  }
+  ;(signinReport.value.sites || []).forEach(s => ensure(s.site_id, s.site_name || s.domain || String(s.site_id)))
+  records.forEach(r => {
+    Object.keys(r.sites || {}).forEach(sid => {
+      const rec = r.sites[sid] || {}
+      const row = ensure(sid, rec.site_name)
+      row.cells[r.date] = _signinStatus(rec.sign, rec.login, false)
+      if (rec.sign) row.sign = true
+      if (rec.login) row.login = true
+    })
   })
+  ;(signinReport.value.sites || []).forEach(s => {
+    const row = ensure(s.site_id, s.site_name)
+    row.cells[today] = _signinStatus(s.signin, s.login_result, true)
+    row.sign = !!s.sign
+    row.login = !!s.login
+  })
+  const rows = [...map.values()].map(row => {
+    const cells = dates.map(d => ({ date: d, status: row.cells[d] || 'none' }))
+    const failIdx = cells.findIndex(c => c.status === 'fail')
+    return { ...row, cells, failIdx, todayStatus: cells.length ? cells[0].status : 'none' }
+  })
+  const rank = r => (r.todayStatus === 'fail' ? 0 : r.todayStatus === 'pending' ? 1 : r.failIdx >= 0 ? 2 : 3)
+  rows.sort((a, b) => (rank(a) - rank(b)) || (a.failIdx - b.failIdx) || String(a.name).localeCompare(String(b.name)))
+  const stats = { ok: 0, fail: 0 }
+  rows.forEach(r => r.cells.forEach(c => { if (c.status === 'ok') stats.ok++; else if (c.status === 'fail') stats.fail++ }))
+  return { dates, rows, stats }
 })
 const siteLiveLevel = computed(() => (siteLive.value || {}).level || 'ok')
 const siteLiveInfo = computed(() => (siteLive.value || {}).live || {})
@@ -3738,60 +3817,89 @@ onUnmounted(() => {
         <header class="magicflow-settings-dialog__head">
           <span class="magicflow-settings-dialog__title">签到</span>
           <VChip v-if="signinReport.enabled" size="x-small" color="success" variant="tonal">已启用</VChip>
+          <VChip v-else-if="signinReportLoading" size="x-small" color="grey" variant="tonal">加载中</VChip>
           <VChip v-else size="x-small" color="grey" variant="tonal">已关闭</VChip>
           <span class="magicflow-ops-dialog__spacer" />
           <VBtn icon="mdi-refresh" size="small" variant="text" aria-label="刷新" :loading="signinReportLoading" @click="loadSigninReport" />
           <VBtn icon="mdi-tune-variant" size="small" variant="text" aria-label="设置" @click="signinOpen = false; openSettings('signin')" />
           <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="signinOpen = false" />
         </header>
-        <div class="magicflow-ops-dialog__sub">今日结果 · 近 7 天记录（右上齿轮进入设置）</div>
+        <div class="magicflow-ops-dialog__sub">共 {{ signinReportTodayRows.length }} 个站点 · 近 7 天记录（右上设置进入配置）</div>
         <div class="magicflow-ops-dialog__body">
+          <div class="magicflow-signin-stats">
+            <div class="magicflow-signin-stat is-ok">
+              <div class="magicflow-signin-stat__v">{{ signinTodayCounts.ok }}</div>
+              <div class="magicflow-signin-stat__l">今日成功</div>
+            </div>
+            <div class="magicflow-signin-stat" :class="signinTodayCounts.fail ? 'is-fail' : ''">
+              <div class="magicflow-signin-stat__v">{{ signinTodayCounts.fail }}</div>
+              <div class="magicflow-signin-stat__l">今日失败</div>
+            </div>
+            <div class="magicflow-signin-stat" :class="signinTodayCounts.pending ? 'is-pending' : ''">
+              <div class="magicflow-signin-stat__v">{{ signinTodayCounts.pending }}</div>
+              <div class="magicflow-signin-stat__l">待执行</div>
+            </div>
+            <div class="magicflow-signin-stat">
+              <div class="magicflow-signin-stat__v">{{ (signinMatrix.stats.ok + signinMatrix.stats.fail) ? Math.round(signinMatrix.stats.ok * 100 / (signinMatrix.stats.ok + signinMatrix.stats.fail)) + '%' : '—' }}</div>
+              <div class="magicflow-signin-stat__l">近 7 天成功率</div>
+            </div>
+          </div>
+
           <div class="magicflow-signin-actions">
             <VBtn size="small" color="primary" variant="flat" prepend-icon="mdi-calendar-check" :loading="signinRunning" @click="runSigninNow('sign')">立即签到</VBtn>
             <VBtn size="small" color="primary" variant="tonal" prepend-icon="mdi-login-variant" :loading="signinRunning" @click="runSigninNow('login')">立即登录</VBtn>
-            <VChip size="small" variant="tonal" class="magicflow-signin-report__summary">今日 成功 {{ signinReportSummary.ok }} / 失败 {{ signinReportSummary.fail }}</VChip>
           </div>
 
           <div class="magicflow-settings-block">
             <div class="magicflow-settings-block__head"><VIcon icon="mdi-clipboard-check-outline" size="16" /> 今日（{{ signinReport.today || '—' }}）</div>
-            <div v-if="signinReportTodayRows.length" class="magicflow-signin-list">
-              <div v-for="row in signinReportTodayRows" :key="row.site_id" class="magicflow-signin-list__row">
-                <span class="magicflow-signin-list__name">{{ row.site_name }}</span>
-                <span class="magicflow-signin-list__tags">
-                  <span v-if="row.sign" class="magicflow-signin-tag" :class="row.signin ? (row.signin.ok ? 'is-ok' : 'is-fail') : ''">
-                    <VIcon size="14" :icon="row.signin ? (row.signin.ok ? 'mdi-check-circle' : 'mdi-close-circle') : 'mdi-clock-outline'" />
-                    签到：{{ row.signin ? row.signin.message : '待执行' }}
-                  </span>
-                  <span v-if="row.login" class="magicflow-signin-tag" :class="row.loginResult ? (row.loginResult.ok ? 'is-ok' : 'is-fail') : ''">
-                    <VIcon size="14" :icon="row.loginResult ? (row.loginResult.ok ? 'mdi-check-circle' : 'mdi-close-circle') : 'mdi-clock-outline'" />
-                    登录：{{ row.loginResult ? row.loginResult.message : '待执行' }}
-                  </span>
-                </span>
+            <div class="magicflow-signin-filters">
+              <VChip
+                v-for="f in signinFilterItems"
+                :key="f.value"
+                size="x-small"
+                :color="signinFilter === f.value ? f.color : undefined"
+                :variant="signinFilter === f.value ? 'flat' : 'tonal'"
+                @click="signinFilter = f.value"
+              >{{ f.label }}</VChip>
+              <VTextField
+                v-model="signinSearch"
+                class="magicflow-signin-search"
+                density="compact"
+                variant="solo-filled"
+                flat
+                hide-details
+                clearable
+                placeholder="搜索站点"
+                prepend-inner-icon="mdi-magnify"
+              />
+            </div>
+            <div v-if="signinTodayList.length" class="magicflow-signin-today">
+              <div v-for="row in signinTodayList" :key="row.site_id" class="magicflow-signin-row">
+                <span class="magicflow-signin-row__dot" :class="'is-' + row.status" />
+                <span class="magicflow-signin-row__name">{{ row.site_name }}</span>
+                <span class="magicflow-signin-row__msg" :title="row.msg">{{ row.msg || '待执行' }}</span>
               </div>
             </div>
             <p v-else class="magicflow-field__sub">还没有站点结果。先到右上齿轮里勾选要签到的站点。</p>
           </div>
 
-          <div v-if="signinHistoryRows.length" class="magicflow-settings-block">
-            <div class="magicflow-settings-block__head"><VIcon icon="mdi-calendar-clock" size="16" /> 近 7 天</div>
-            <div class="magicflow-signin-history">
-              <div v-for="d in signinHistoryRows" :key="d.date" class="magicflow-signin-history__row">
-                <div class="magicflow-signin-history__head">
-                  <span class="magicflow-signin-history__date">{{ d.date }}</span>
-                  <span class="magicflow-signin-history__sum">成功 {{ d.ok }} / 失败 {{ d.fail }}</span>
-                </div>
-                <div class="magicflow-signin-history__items">
-                  <span
-                    v-for="it in d.items"
-                    :key="it.sid"
-                    class="magicflow-signin-histchip"
-                    :class="it.failCount && !it.okCount ? 'is-fail' : (it.okCount ? 'is-ok' : 'is-none')"
-                    :title="[it.sign ? ('签到：' + it.sign.message) : '', it.login ? ('登录：' + it.login.message) : ''].filter(Boolean).join(' · ')"
-                  >
-                    {{ it.name }}<template v-if="it.okCount"> ✔</template><template v-if="it.failCount"> ✘</template>
-                  </span>
-                </div>
+          <div v-if="signinMatrix.rows.length" class="magicflow-settings-block">
+            <div class="magicflow-settings-block__head"><VIcon icon="mdi-calendar-clock" size="16" /> 近 7 天（{{ signinMatrix.rows.length }} 站）</div>
+            <div class="magicflow-signin-matrix">
+              <div class="magicflow-signin-matrix__row is-head">
+                <span class="magicflow-signin-matrix__name">站点</span>
+                <span v-for="d in signinMatrix.dates" :key="d" class="magicflow-signin-matrix__date">{{ signinDateLabel(d) }}</span>
               </div>
+              <div v-for="row in signinMatrix.rows" :key="row.sid" class="magicflow-signin-matrix__row">
+                <span class="magicflow-signin-matrix__name" :title="row.name">{{ row.name }}</span>
+                <span v-for="c in row.cells" :key="c.date" class="magicflow-signin-cell" :class="'is-' + c.status" :title="c.date + ' ' + signinStatusText(c.status)" />
+              </div>
+            </div>
+            <div class="magicflow-signin-legend">
+              <span><i class="magicflow-signin-cell is-ok" />成功</span>
+              <span><i class="magicflow-signin-cell is-fail" />失败</span>
+              <span><i class="magicflow-signin-cell is-pending" />待执行</span>
+              <span><i class="magicflow-signin-cell is-none" />无记录</span>
             </div>
           </div>
         </div>
@@ -6417,111 +6525,168 @@ onUnmounted(() => {
   overflow-wrap: anywhere;
 }
 
-.magicflow-signin-list {
+/* 签到报表页（按「几十个站点」的规模设计：汇总 → 今日（可筛可搜）→ 近 7 天点阵） */
+.magicflow-signin-stats {
   display: grid;
-  gap: 6px;
-}
-
-/* 签到报表页 */
-.magicflow-signin-report__summary {
-  margin-inline-start: auto;
-}
-
-.magicflow-signin-history {
-  display: grid;
-  gap: 10px;
-}
-
-.magicflow-signin-history__row {
-  display: grid;
-  gap: 6px;
-}
-
-.magicflow-signin-history__head {
-  display: flex;
-  align-items: baseline;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 8px;
 }
 
-.magicflow-signin-history__date {
-  font-size: 0.78rem;
+.magicflow-signin-stat {
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+}
+
+.magicflow-signin-stat__v {
+  font-size: 1.35rem;
   font-weight: 700;
+  line-height: 1.15;
 }
 
-.magicflow-signin-history__sum {
-  font-size: 0.72rem;
+.magicflow-signin-stat__l {
+  margin-block-start: 2px;
+  font-size: 0.68rem;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
 
-.magicflow-signin-history__items {
+.magicflow-signin-stat.is-ok .magicflow-signin-stat__v { color: rgb(var(--v-theme-success)); }
+.magicflow-signin-stat.is-fail .magicflow-signin-stat__v { color: rgb(var(--v-theme-error)); }
+.magicflow-signin-stat.is-pending .magicflow-signin-stat__v { color: rgb(var(--v-theme-warning)); }
+
+.magicflow-signin-filters {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
+  margin-block: 8px;
 }
 
-.magicflow-signin-histchip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 0.72rem;
-  background: rgba(var(--v-theme-on-surface), 0.06);
-  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+.magicflow-signin-search {
+  flex: 1 1 140px;
+  min-inline-size: 120px;
 }
 
-.magicflow-signin-histchip.is-ok {
-  color: rgb(var(--v-theme-success));
-  background: rgba(var(--v-theme-success), 0.12);
+.magicflow-signin-today {
+  display: grid;
+  gap: 2px;
+  max-block-size: 44vh;
+  overflow: auto;
 }
 
-.magicflow-signin-histchip.is-fail {
-  color: rgb(var(--v-theme-error));
-  background: rgba(var(--v-theme-error), 0.12);
-}
-
-.magicflow-signin-list__title {
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
-}
-
-.magicflow-signin-list__row {
+.magicflow-signin-row {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-  align-items: baseline;
-  font-size: 0.82rem;
+  align-items: center;
+  gap: 8px;
+  padding-block: 7px;
+  border-block-end: 1px solid rgba(var(--v-theme-on-surface), 0.07);
   min-inline-size: 0;
 }
 
-.magicflow-signin-list__name {
-  font-weight: 600;
+.magicflow-signin-row__dot {
   flex: 0 0 auto;
+  inline-size: 8px;
+  block-size: 8px;
+  border-radius: 50%;
+  background: rgba(var(--v-theme-on-surface), 0.25);
 }
 
-.magicflow-signin-list__tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 8px;
+.magicflow-signin-row__dot.is-ok { background: rgb(var(--v-theme-success)); }
+.magicflow-signin-row__dot.is-fail { background: rgb(var(--v-theme-error)); }
+.magicflow-signin-row__dot.is-pending { background: rgb(var(--v-theme-warning)); }
+.magicflow-signin-row__dot.is-skip { background: rgba(var(--v-theme-on-surface), 0.3); }
+
+.magicflow-signin-row__name {
+  flex: 0 1 auto;
+  min-inline-size: 5.5em;
+  max-inline-size: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.magicflow-signin-row__msg {
+  flex: 1 1 auto;
   min-inline-size: 0;
-}
-
-.magicflow-signin-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: end;
+  font-size: 0.72rem;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
 
-.magicflow-signin-tag.is-ok {
-  color: rgb(var(--v-theme-success));
+.magicflow-signin-matrix {
+  max-block-size: 52vh;
+  overflow: auto;
 }
 
-.magicflow-signin-tag.is-fail {
-  color: rgb(var(--v-theme-error));
+.magicflow-signin-matrix__row {
+  display: grid;
+  grid-template-columns: minmax(70px, 1fr) repeat(7, 26px);
+  align-items: center;
+  gap: 2px;
+  padding-block: 3px;
+  min-inline-size: 0;
 }
+
+.magicflow-signin-matrix__row.is-head {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  background: rgb(var(--v-theme-surface));
+  border-block-end: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+}
+
+.magicflow-signin-matrix__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.76rem;
+}
+
+.magicflow-signin-matrix__date {
+  font-size: 0.6rem;
+  text-align: center;
+  white-space: nowrap;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.magicflow-signin-cell {
+  display: inline-block;
+  inline-size: 12px;
+  block-size: 12px;
+  margin-inline: auto;
+  border-radius: 3px;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+
+.magicflow-signin-cell.is-ok { background: rgb(var(--v-theme-success)); }
+.magicflow-signin-cell.is-fail { background: rgb(var(--v-theme-error)); }
+.magicflow-signin-cell.is-pending { background: rgb(var(--v-theme-warning)); }
+.magicflow-signin-cell.is-skip { background: rgba(var(--v-theme-on-surface), 0.3); }
+
+.magicflow-signin-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-block-start: 8px;
+  font-size: 0.66rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.magicflow-signin-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.magicflow-signin-legend .magicflow-signin-cell {
+  margin-inline: 0;
+}
+
 
 .magicflow-settings-actions {
   display: grid;
