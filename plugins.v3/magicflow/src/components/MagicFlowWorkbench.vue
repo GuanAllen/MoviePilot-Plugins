@@ -4174,76 +4174,104 @@ onUnmounted(() => {
           </div>
 
           <div v-else-if="settingsTab === 'signin'" class="magicflow-settings-form">
-            <p class="magicflow-settings-hint">
-              站点<strong>每日签到</strong> + <strong>模拟登录</strong>保活（借鉴 MoviePilot「站点自动签到」插件）：
-              通用签到就是带站点 Cookie 访问 <code>attendance.php</code>（NexusPHP 访问即签到）；
-              登录就是访问站点首页做一次「模拟登录」，顺带刷新站点数据。
-            </p>
-            <p class="magicflow-settings-hint">
-              <strong>站点多选，选多少有多少：</strong>签到站点、登录站点分别勾。
-              同一站点当天已成功就<strong>自动跳过</strong>（一天最多 1 次请求/站，不浪费站点访问次数）；
-              命中「每日访问上限（PV）」则该站当日不再尝试。
-            </p>
-            <div class="magicflow-settings-switches">
-              <VSwitch v-model="settingsDraft.signin_enabled" label="启用「站点签到 / 模拟登录」" color="primary" hide-details inset />
-              <VSwitch v-model="settingsDraft.signin_notify" label="结果推送通知" color="primary" hide-details inset />
-            </div>
-            <div class="magicflow-settings-field">
-              <VSelect
-                v-model="settingsDraft.signin_sites"
-                :items="siteSelectItems"
-                label="签到站点（多选）"
-                multiple
-                chips
-                closable-chips
-                variant="outlined"
-                density="comfortable"
-                hide-details
-              />
-            </div>
-            <div class="magicflow-settings-field">
-              <VSelect
-                v-model="settingsDraft.signin_login_sites"
-                :items="siteSelectItems"
-                label="模拟登录站点（多选，保活 Cookie + 刷新站点数据）"
-                multiple
-                chips
-                closable-chips
-                variant="outlined"
-                density="comfortable"
-                hide-details
-              />
-            </div>
-            <div class="magicflow-settings-row">
-              <VTextField v-model="settingsDraft.signin_retry_keyword" label="重试关键词（正则，留空不重试）" variant="outlined" density="comfortable" hide-details />
-              <VTextField v-model.number="settingsDraft.signin_queue" type="number" min="1" label="并发数" variant="outlined" density="comfortable" hide-details />
-            </div>
-            <div class="magicflow-settings-row">
-              <VTextField v-model.number="settingsDraft.signin_interval_minutes" type="number" min="10" label="间隔（分钟）" variant="outlined" density="comfortable" hide-details />
-              <VTextField v-model.number="settingsDraft.signin_window_start" type="number" min="0" max="23" label="几点开始" variant="outlined" density="comfortable" hide-details />
-              <VTextField v-model.number="settingsDraft.signin_window_end" type="number" min="1" max="24" label="几点停" variant="outlined" density="comfortable" hide-details />
-            </div>
-            <p class="magicflow-settings-hint">
-              执行时段默认 <strong>9:00–23:00</strong>；同站当天已成功会自动跳过，所以间隔设长一点也没关系。
-            </p>
-            <div class="magicflow-signin-actions">
-              <VBtn size="small" color="primary" variant="tonal" prepend-icon="mdi-calendar-check" :loading="signinRunning" @click="runSigninNow('sign')">立即签到</VBtn>
-              <VBtn size="small" color="primary" variant="text" prepend-icon="mdi-login-variant" :loading="signinRunning" @click="runSigninNow('login')">立即登录</VBtn>
-              <span class="magicflow-settings-hint">（立即执行会直接发请求；需先保存设置并启用）</span>
-            </div>
-            <div v-if="signinTodayRows.length" class="magicflow-signin-list">
-              <div class="magicflow-signin-list__title">今日结果</div>
-              <div v-for="row in signinTodayRows" :key="row.site_id" class="magicflow-signin-list__row">
-                <span class="magicflow-signin-list__name">{{ row.site_name }}</span>
-                <span class="magicflow-signin-list__tags">
-                  <span v-if="row.sign" class="magicflow-signin-tag" :class="row.signin ? (row.signin.ok ? 'is-ok' : 'is-fail') : ''">签到：{{ row.signin ? row.signin.message : '待执行' }}</span>
-                  <span v-if="row.login" class="magicflow-signin-tag" :class="row.loginResult ? (row.loginResult.ok ? 'is-ok' : 'is-fail') : ''">登录：{{ row.loginResult ? row.loginResult.message : '待执行' }}</span>
-                </span>
+            <div class="magicflow-signin-hero">
+              <span class="magicflow-signin-hero__icon"><VIcon icon="mdi-calendar-check-outline" size="20" /></span>
+              <div class="magicflow-signin-hero__body">
+                <div class="magicflow-signin-hero__title">
+                  <span>站点签到 / 模拟登录</span>
+                  <VChip size="small" variant="tonal" :color="settingsDraft.signin_enabled ? 'success' : 'grey'">
+                    {{ settingsDraft.signin_enabled ? '已启用' : '已关闭' }}
+                  </VChip>
+                </div>
+                <div class="magicflow-signin-hero__desc">
+                  每日用站点 Cookie 访问 <code>attendance.php</code> 完成签到；模拟登录保活 Cookie 并刷新站点数据。
+                </div>
               </div>
             </div>
-            <p v-if="!settingsDraft.signin_enabled" class="magicflow-settings-hint magicflow-settings-hint--warn">
-              当前处于<strong>关闭</strong>状态：不会签到、不会模拟登录，也不发任何请求。
-            </p>
+
+            <div class="magicflow-settings-block">
+              <div class="magicflow-settings-block__head"><VIcon icon="mdi-toggle-switch-outline" size="16" /> 开关</div>
+              <div class="magicflow-switch-list">
+                <VSwitch v-model="settingsDraft.signin_enabled" label="启用站点签到 / 模拟登录" color="primary" hide-details inset density="comfortable" />
+                <VSwitch v-model="settingsDraft.signin_notify" label="结果推送通知" color="primary" hide-details inset density="comfortable" :disabled="!settingsDraft.signin_enabled" />
+              </div>
+              <p v-if="!settingsDraft.signin_enabled" class="magicflow-field__sub">
+                当前为关闭状态：不会签到、不会模拟登录，也不发任何请求。
+              </p>
+            </div>
+
+            <div class="magicflow-settings-block">
+              <div class="magicflow-settings-block__head"><VIcon icon="mdi-web" size="16" /> 站点选择</div>
+              <div class="magicflow-field-stack">
+                <div class="magicflow-field">
+                  <VSelect
+                    v-model="settingsDraft.signin_sites"
+                    :items="siteSelectItems"
+                    label="签到站点"
+                    multiple
+                    chips
+                    closable-chips
+                    variant="outlined"
+                    density="comfortable"
+                    hide-details
+                  />
+                  <span class="magicflow-field__sub">已选 {{ (settingsDraft.signin_sites || []).length }} 个站点</span>
+                </div>
+                <div class="magicflow-field">
+                  <VSelect
+                    v-model="settingsDraft.signin_login_sites"
+                    :items="siteSelectItems"
+                    label="模拟登录站点"
+                    multiple
+                    chips
+                    closable-chips
+                    variant="outlined"
+                    density="comfortable"
+                    hide-details
+                  />
+                  <span class="magicflow-field__sub">已选 {{ (settingsDraft.signin_login_sites || []).length }} 个站点 · 保活 Cookie + 刷新站点数据</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="magicflow-settings-block">
+              <div class="magicflow-settings-block__head"><VIcon icon="mdi-timer-cog-outline" size="16" /> 执行参数</div>
+              <div class="magicflow-field-grid">
+                <VTextField v-model.number="settingsDraft.signin_queue" type="number" min="1" label="并发数" variant="outlined" density="comfortable" hide-details />
+                <VTextField v-model.number="settingsDraft.signin_interval_minutes" type="number" min="10" label="间隔（分钟）" variant="outlined" density="comfortable" hide-details />
+                <VTextField v-model.number="settingsDraft.signin_window_start" type="number" min="0" max="23" label="开始（时）" variant="outlined" density="comfortable" hide-details />
+                <VTextField v-model.number="settingsDraft.signin_window_end" type="number" min="1" max="24" label="结束（时）" variant="outlined" density="comfortable" hide-details />
+              </div>
+              <div class="magicflow-field">
+                <VTextField v-model="settingsDraft.signin_retry_keyword" label="重试关键词（正则，留空则不重试）" variant="outlined" density="comfortable" hide-details />
+              </div>
+              <p class="magicflow-field__sub">执行时段默认 9:00–23:00；同一站点当天已成功会自动跳过（一天最多 1 次请求/站），命中每日 PV 上限则该站当日不再尝试。</p>
+            </div>
+
+            <div class="magicflow-signin-actions">
+              <VBtn size="small" color="primary" variant="flat" prepend-icon="mdi-calendar-check" :loading="signinRunning" @click="runSigninNow('sign')">立即签到</VBtn>
+              <VBtn size="small" color="primary" variant="tonal" prepend-icon="mdi-login-variant" :loading="signinRunning" @click="runSigninNow('login')">立即登录</VBtn>
+              <span class="magicflow-field__sub">立即执行会直接发请求，需先保存并启用</span>
+            </div>
+
+            <div v-if="signinTodayRows.length" class="magicflow-settings-block">
+              <div class="magicflow-settings-block__head"><VIcon icon="mdi-clipboard-check-outline" size="16" /> 今日结果</div>
+              <div class="magicflow-signin-list">
+                <div v-for="row in signinTodayRows" :key="row.site_id" class="magicflow-signin-list__row">
+                  <span class="magicflow-signin-list__name">{{ row.site_name }}</span>
+                  <span class="magicflow-signin-list__tags">
+                    <span v-if="row.sign" class="magicflow-signin-tag" :class="row.signin ? (row.signin.ok ? 'is-ok' : 'is-fail') : ''">
+                      <VIcon size="14" :icon="row.signin ? (row.signin.ok ? 'mdi-check-circle' : 'mdi-close-circle') : 'mdi-clock-outline'" />
+                      签到：{{ row.signin ? row.signin.message : '待执行' }}
+                    </span>
+                    <span v-if="row.login" class="magicflow-signin-tag" :class="row.loginResult ? (row.loginResult.ok ? 'is-ok' : 'is-fail') : ''">
+                      <VIcon size="14" :icon="row.loginResult ? (row.loginResult.ok ? 'mdi-check-circle' : 'mdi-close-circle') : 'mdi-clock-outline'" />
+                      登录：{{ row.loginResult ? row.loginResult.message : '待执行' }}
+                    </span>
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div v-else-if="settingsTab === 'live'" class="magicflow-settings-form">
@@ -6115,6 +6143,118 @@ onUnmounted(() => {
   gap: 4px 16px;
 }
 
+/* ── 签到设置：头部 / 分块 / 字段 ─────────────────────────────── */
+.magicflow-signin-hero {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(var(--v-theme-primary), 0.13), rgba(var(--v-theme-primary), 0.04));
+  border: 1px solid rgba(var(--v-theme-primary), 0.18);
+}
+
+.magicflow-signin-hero__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: 34px;
+  block-size: 34px;
+  flex: 0 0 auto;
+  border-radius: 9px;
+  background: rgba(var(--v-theme-primary), 0.16);
+  color: rgb(var(--v-theme-primary));
+}
+
+.magicflow-signin-hero__body {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.magicflow-signin-hero__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.magicflow-signin-hero__title > .v-chip {
+  margin-inline-start: auto;
+}
+
+/* MoviePilot 会给表单控件套一层 .app-responsive-input（默认 ~72px 高），
+   在自研分块里把它收紧，让间距由我们自己的 grid/gap 决定 */
+.magicflow-settings-block .app-responsive-input {
+  min-block-size: 0 !important;
+  block-size: auto !important;
+  padding-block: 0 !important;
+  margin-block: 0 !important;
+}
+
+.magicflow-signin-hero__desc {
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  overflow-wrap: anywhere;
+}
+
+.magicflow-signin-hero__desc code {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+
+.magicflow-settings-block {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 10px;
+}
+
+.magicflow-settings-block__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.magicflow-switch-list {
+  display: grid;
+  gap: 2px;
+}
+
+.magicflow-field-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.magicflow-field {
+  display: grid;
+  gap: 4px;
+  min-inline-size: 0;
+}
+
+.magicflow-field__sub {
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  overflow-wrap: anywhere;
+}
+
+.magicflow-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+}
+
 /* 考核 / 签到 设置（借鉴「站点自动签到」插件的站点多选） */
 .magicflow-settings-field {
   display: block;
@@ -6178,10 +6318,6 @@ onUnmounted(() => {
 }
 
 .magicflow-signin-list {
-  margin-block-start: 10px;
-  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
-  border-radius: 8px;
-  padding: 8px 10px;
   display: grid;
   gap: 6px;
 }
@@ -6214,6 +6350,9 @@ onUnmounted(() => {
 }
 
 .magicflow-signin-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   overflow-wrap: anywhere;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
