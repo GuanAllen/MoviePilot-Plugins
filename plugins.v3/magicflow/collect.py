@@ -56,7 +56,7 @@ KIND_TTL: Dict[str, float] = {
     "welcome": 604800.0,  # 欢迎短讯正文（7d，基本不变）
 }
 # 每站每日硬上限（0 = 不限，交给站点 PV 预算管）；签到一天最多一次是事实
-KIND_DAY_CAP: Dict[str, int] = {"signin": 1}
+KIND_DAY_CAP: Dict[str, int] = {"signin": 2}
 
 # 站点「每日访问次数已达上限」拦截页特征
 PV_LIMIT_MARKERS = ("访问次数已达上限", "访问次数已达", "今日访问次数")
@@ -1521,7 +1521,7 @@ class SiteView:
         return dict(out)
 
     def signin_page(self, *, force: bool = False) -> Fetched:
-        """签到页（访问即签到；一天一次由闸门 KIND_DAY_CAP 保证）。"""
+        """签到页（访问即签到；一天最多 2 次 = 首次 + 一次失败重试，由闸门 KIND_DAY_CAP 保证）。"""
         return self.page("attendance.php", kind="signin", ttl=KIND_TTL["signin"], force=force)
 
     def signin(self, *, force: bool = False) -> Dict[str, Any]:

@@ -790,10 +790,13 @@ class CoreMixin:
             }
         )
         # ★ 站点签到 / 模拟登录:插件级单 worker(借鉴「站点自动签到」插件,多选站点)。
+        #   ★ 调度节拍 = min(签到间隔, 15min)：全量跑仍由「签到间隔」把关（signin_last_full），
+        #     多出来的轻量 tick 只为了「按 PV 节奏补失败重试」（空闲 tick 不发请求）。
         if bool(getattr(self, "_signin_cfg", {}).get("enabled", False)) and (
             (getattr(self, "_signin_cfg", {}) or {}).get("sites") or (getattr(self, "_signin_cfg", {}) or {}).get("login_sites")
         ):
             _si_min = float(getattr(self, "_signin_cfg", {}).get("interval") or SIGNIN_INTERVAL_MINUTES)
+            _si_min = max(1.0, min(_si_min, SIGNIN_TICK_MINUTES))
             services.append(
                 {
                     "id": "Signin",

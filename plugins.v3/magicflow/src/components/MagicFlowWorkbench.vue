@@ -1441,6 +1441,7 @@ const signinTodayList = computed(() => {
     .map(r => {
       const status = _signinStatus(r.signin, r.loginResult, true, r.sign, r.login)
       const pairs = _signinWant(r)
+      const rt = (signinReport.value.retry || {})[String(r.site_id)]
       const fails = pairs.filter(([, x]) => x && !x.ok && !x.skipped)
       let msg
       if (fails.length) {
@@ -1449,7 +1450,7 @@ const signinTodayList = computed(() => {
         // 全成功 / 待执行：只给简短标记，几十个站也不刷屏（失败才展开原因）
         msg = pairs.map(([k, x]) => (x ? `${k} ${x.ok ? '✓' : (x.skipped ? '跳过' : '✗')}` : `${k} ⏳`)).join(' · ')
       }
-      return { ...r, status, msg }
+      return { ...r, status, msg: status === 'fail' && rt ? `${msg} · ${rt.next_at} 重试` : msg }
     })
     .filter(r => !q || String(r.site_name || '').toLowerCase().includes(q))
     .filter(r => signinFilter.value === 'all' || r.status === signinFilter.value)
