@@ -4292,12 +4292,21 @@ function signinDateLabel(d) {
   if (s.length < 10) return s
   return `${Number(s.slice(5, 7))}/${Number(s.slice(8, 10))}`
 }
-// 单站某天的状态：全跳过→skip；有失败→fail；无记录→pending（今天）/none（历史）
-function _signinStatus(signin, loginResult, pendingWhenEmpty) {
-  const arr = [signin, loginResult].filter(Boolean);
-  if (!arr.length) return pendingWhenEmpty ? 'pending' : 'none'
-  if (arr.every(x => x.skipped)) return 'skip'
-  if (arr.some(x => !x.ok && !x.skipped)) return 'fail'
+// 单站当天要看的动作：只算「设置里勾了」的那几项（登录站不会显示签到结果）
+function _signinWant(r) {
+  const want = [];
+  if (r.sign !== false) want.push(['签到', r.signin]);
+  if (r.login !== false) want.push(['登录', r.loginResult]);
+  return want
+}
+// 单站某天的状态：有失败→fail；缺结果→pending（今天）/none（历史）；全跳过→skip
+function _signinStatus(signin, loginResult, pendingWhenEmpty, cfgSign, cfgLogin) {
+  const want = _signinWant({ sign: cfgSign, login: cfgLogin, signin, loginResult });
+  if (!want.length) return pendingWhenEmpty ? 'pending' : 'none'
+  const vals = want.map(([, x]) => x).filter(Boolean);
+  if (vals.some(x => !x.ok && !x.skipped)) return 'fail'
+  if (vals.length < want.length) return pendingWhenEmpty ? 'pending' : 'none'
+  if (vals.every(x => x.skipped)) return 'skip'
   return 'ok'
 }
 const signinReportTodayRows = computed(() => {
@@ -4316,7 +4325,7 @@ const signinReportTodayRows = computed(() => {
 const signinTodayCounts = computed(() => {
   const c = { all: 0, ok: 0, fail: 0, pending: 0, skip: 0 }
   ;(signinReportTodayRows.value || []).forEach(r => {
-    const s = _signinStatus(r.signin, r.loginResult, true);
+    const s = _signinStatus(r.signin, r.loginResult, true, r.sign, r.login);
     c.all++;
     c[s] = (c[s] || 0) + 1;
   });
@@ -4336,20 +4345,15 @@ const signinTodayList = computed(() => {
   const q = String(signinSearch.value || '').trim().toLowerCase();
   return (signinReportTodayRows.value || [])
     .map(r => {
-      const status = _signinStatus(r.signin, r.loginResult, true);
-      const pairs = [['签到', r.signin], ['登录', r.loginResult]];
+      const status = _signinStatus(r.signin, r.loginResult, true, r.sign, r.login);
+      const pairs = _signinWant(r);
       const fails = pairs.filter(([, x]) => x && !x.ok && !x.skipped);
-      const skips = pairs.filter(([, x]) => x && x.skipped);
       let msg;
       if (fails.length) {
         msg = fails.map(([k, x]) => `${k} ✗ ${x.message || ''}`.trim()).join(' · ');
-      } else if (status === 'skip') {
-        msg = skips.map(([k]) => `${k} 跳过`).join(' · ');
-      } else if (status === 'pending') {
-        msg = '待执行';
       } else {
-        // 全部成功 → 只给简洁对勾，几十个站也不刷屏
-        msg = pairs.filter(([, x]) => x && x.ok).map(([k]) => `${k} ✓`).join(' · ');
+        // 全成功 / 待执行：只给简短标记，几十个站也不刷屏（失败才展开原因）
+        msg = pairs.map(([k, x]) => (x ? `${k} ${x.ok ? '✓' : (x.skipped ? '跳过' : '✗')}` : `${k} ⏳`)).join(' · ');
       }
       return { ...r, status, msg }
     })
@@ -4378,20 +4382,26 @@ const signinMatrix = computed(() => {
     if (!map.has(k)) map.set(k, { sid: k, name: name || k, cells: {} });
     else if (name) map.get(k).name = name;
     return map.get(k)
-  }
-  ;(signinReport.value.sites || []).forEach(s => ensure(s.site_id, s.site_name || s.domain || String(s.site_id)));
+  };
+  // 先按设置里的勾选取好「该看哪几项」（登录站不算签到）
+  const flags = new Map()
+  ;(signinReport.value.sites || []).forEach(s => {
+    ensure(s.site_id, s.site_name || s.domain || String(s.site_id));
+    flags.set(String(s.site_id), { sign: !!s.sign, login: !!s.login });
+  });
   records.forEach(r => {
     Object.keys(r.sites || {}).forEach(sid => {
       const rec = r.sites[sid] || {};
       const row = ensure(sid, rec.site_name);
-      row.cells[r.date] = _signinStatus(rec.sign, rec.login, false);
+      const f = flags.get(String(sid)) || {};
+      row.cells[r.date] = _signinStatus(rec.sign, rec.login, false, f.sign, f.login);
       if (rec.sign) row.sign = true;
       if (rec.login) row.login = true;
     });
   })
   ;(signinReport.value.sites || []).forEach(s => {
     const row = ensure(s.site_id, s.site_name);
-    row.cells[today] = _signinStatus(s.signin, s.login_result, true);
+    row.cells[today] = _signinStatus(s.signin, s.login_result, true, s.sign, s.login);
     row.sign = !!s.sign;
     row.login = !!s.login;
   });
@@ -12692,6 +12702,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-868024d7"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-f6adbfb2"]]);
 
 export { MagicFlowWorkbench as M };

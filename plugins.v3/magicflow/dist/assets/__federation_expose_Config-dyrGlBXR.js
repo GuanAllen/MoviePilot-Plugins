@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { M as MagicFlowWorkbench } from './MagicFlowWorkbench-JCyVLF20.js';
+import { M as MagicFlowWorkbench } from './MagicFlowWorkbench-sJ1CLP-E.js';
 
 const {openBlock:_openBlock,createBlock:_createBlock} = await importShared('vue');
 
