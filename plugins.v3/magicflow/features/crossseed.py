@@ -841,7 +841,6 @@ class CrossSeedMixin:
                 "size_gb": float(rec.get("size_gb") or getattr(info, "size_gb", 0) or 0.0),
                 "downloader": str(rec.get("downloader") or "qbittorrent"),
                 "taken_by": "", "lease_until": 0,
-                "origin_state": STATE_SILENT, "origin_sub": _sub,
                 "crossseed": True, "ts": now,
                 "reason": "跨站来源份下完→静默池挂H&R",
             })

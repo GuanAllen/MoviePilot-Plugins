@@ -144,10 +144,127 @@ class MpHotStore:
             self._info(f"热层删失败({err})，回退 JSON", "debug")
             return False
 
-    def _bump_writes(self) -> None:
+    # ------------------------------------------------------------- 原生批处理（省往返）
+    def _raw(self) -> Any:
+        """尝试拿到 **MP 自己复用的** 原生 Redis 客户端（拿不到 → None，走逐键慢路径）。
+
+        MP 的 `items()` 是「scan + 每键一次 GET」，我们热层上千个键时加载就很慢；
+        直接用它的客户端做 SCAN/MGET/PIPELINE，一次往返抵上千次。
+        **不自建连接**（复用 MP 的连接池）；任何异常一律退回逐键路径。
+        """
+        try:
+            helper = getattr(self.backend(), "redis_helper", None)
+            if helper is None:
+                return None
+            connect = getattr(helper, "_connect", None)
+            if callable(connect):
+                connect()
+            return getattr(helper, "client", None)
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _serialize(value: Any) -> Any:
+        """复用 MP 的序列化（与它自己的 get/set 完全兼容）。"""
+        from app.adapters.cache.redis import serialize  # noqa: WPS433
+
+        return serialize(value)
+
+    @staticmethod
+    def _deserialize(value: Any) -> Any:
+        from app.adapters.cache.redis import deserialize  # noqa: WPS433
+
+        return deserialize(value)
+
+    def _rkey(self, name: str) -> str:
+        """逻辑名 → MP 的 Redis 物理键（`region:<region>:key:<quote(逻辑名)>`）。"""
+        from urllib.parse import quote  # noqa: WPS433
+
+        return f"region:{self.region}:key:{quote(self.key(name))}"
+
+    def get_many(self, names: Any) -> Dict[str, Any]:
+        """一次 MGET 拿多个逻辑键：{逻辑名: 值}（不可用/失败 → {}，调用方自行回退）。"""
+        raw = self._raw()
+        if raw is None or not self.available():
+            return {}
+        logical = [str(n or "").lstrip(":") for n in (names or [])]
+        logical = [n for n in logical if n]
+        if not logical:
+            return {}
+        try:
+            physical = [self._rkey(n) for n in logical]
+            vals = raw.mget(physical)
+        except Exception as err:  # noqa: BLE001
+            self._info(f"热层批量读失败({err})", "debug")
+            return {}
+        out: Dict[str, Any] = {}
+        for name, val in zip(logical, vals or []):
+            if val is None:
+                continue
+            try:
+                out[name] = self._deserialize(val)
+            except Exception:  # noqa: BLE001
+                continue
+        return out
+
+    def set_many(self, mapping: Any) -> bool:
+        """一次 pipeline 写多个逻辑键（**省往返**：上千条记录 = 1 次网络往返）。"""
+        raw = self._raw()
+        items = [(str(k or "").lstrip(":"), v) for k, v in dict(mapping or {}).items()]
+        items = [(k, v) for k, v in items if k]
+        if not items:
+            return True
+        if raw is None or not self.available():
+            ok = True
+            for k, v in items:
+                ok = self.set(k, v) and ok
+            return ok
+        try:
+            with raw.pipeline(transaction=False) as pipe:
+                for k, v in items:
+                    pipe.set(self._rkey(k), self._serialize(v), ex=int(KEY_TTL))
+                pipe.execute()
+        except Exception as err:  # noqa: BLE001
+            self._info(f"热层批量写失败({err})，回退逐键", "debug")
+            ok = True
+            for k, v in items:
+                ok = self.set(k, v) and ok
+            return ok
+        self._bump_writes(len(items), batched=True)
+        return True
+
+    def delete_many(self, names: Any) -> bool:
+        """一次 pipeline 删多个逻辑键。"""
+        logical = [str(n or "").lstrip(":") for n in (names or [])]
+        logical = [n for n in logical if n]
+        if not logical:
+            return True
+        raw = self._raw()
+        if raw is None or not self.available():
+            ok = True
+            for n in logical:
+                ok = self.delete(n) and ok
+            return ok
+        try:
+            with raw.pipeline(transaction=False) as pipe:
+                for n in logical:
+                    pipe.delete(self._rkey(n))
+                pipe.execute()
+        except Exception as err:  # noqa: BLE001
+            self._info(f"热层批量删失败({err})，回退逐键", "debug")
+            ok = True
+            for n in logical:
+                ok = self.delete(n) and ok
+            return ok
+        self._bump_writes(len(logical), batched=True)
+        return True
+
+    def _bump_writes(self, n: int = 1, *, batched: bool = False) -> None:
         try:
             c = _counters()
-            c["hot_writes"] = int(c.get("hot_writes", 0)) + 1
+            c["hot_writes"] = int(c.get("hot_writes", 0)) + int(n or 1)
+            if batched:
+                c["hot_batches"] = int(c.get("hot_batches", 0)) + 1
         except Exception:  # noqa: BLE001
             pass
 
@@ -159,10 +276,16 @@ class MpHotStore:
             return int(getattr(self, "_writes", 0) or 0)
 
     def items(self, prefix: str = "") -> Dict[str, Any]:
-        """列出热层里我们自己的键值对：{逻辑名（不含 mf:）: 值}。"""
+        """列出热层里我们自己的键值对：{逻辑名（不含 mf:）: 值}。
+
+        ★ 快路径：有原生客户端时用「一次 SCAN + 一次 MGET」（~2 次往返抵上千次逐键 GET）。
+        """
         if not self.available():
             return {}
         want = self.key(prefix) if prefix else _PREFIX
+        fast = self._items_fast(want)
+        if fast is not None:
+            return fast
         out: Dict[str, Any] = {}
         try:
             rows = self.backend().items(region=self.region)
@@ -180,6 +303,42 @@ class MpHotStore:
             self._info(f"热层枚举失败({err})", "debug")
             return {}
         return out
+
+    def _items_fast(self, want: str) -> Optional[Dict[str, Any]]:
+        """SCAN + MGET 快路径；不可用/异常 → None（调用方走逐键）。"""
+        raw = self._raw()
+        if raw is None:
+            return None
+        try:
+            from urllib.parse import quote, unquote  # noqa: WPS433
+
+            pattern = f"region:{self.region}:key:{quote(want)}*"
+            physical = []
+            for key in raw.scan_iter(match=pattern, count=1000):
+                physical.append(key)
+            if not physical:
+                return {}
+            vals = raw.mget(physical)
+            out: Dict[str, Any] = {}
+            for raw_key, val in zip(physical, vals or []):
+                if val is None:
+                    continue
+                name = raw_key.decode("utf-8") if isinstance(raw_key, bytes) else str(raw_key)
+                for prefix_head in (f"region:{self.region}:key:", f"{self.region}:", "region:"):
+                    if name.startswith(prefix_head):
+                        name = name[len(prefix_head):]
+                        break
+                name = unquote(name)
+                if not name.startswith(want):
+                    continue
+                try:
+                    out[name[len(_PREFIX):] if name.startswith(_PREFIX) else name] = self._deserialize(val)
+                except Exception:  # noqa: BLE001
+                    continue
+            return out
+        except Exception as err:  # noqa: BLE001
+            self._info(f"热层快路径枚举失败({err})，回退逐键", "debug")
+            return None
 
     def count(self) -> int:
         return len(self.items())

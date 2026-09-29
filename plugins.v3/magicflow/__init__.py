@@ -69,8 +69,8 @@ class MagicFlow(CoreMixin, RuntimeMixin, ApiMixin, SettingsMixin, StatusMixin, T
     plugin_icon = "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png"
     plugin_version = __version__
     plugin_label = "站点,做种,魔力,刷流"
-    plugin_author = "IronOx"
-    author_url = "https://github.com/ironox"
+    plugin_author = "GuanAllen"
+    author_url = "https://github.com/GuanAllen"
     plugin_config_prefix = "magicflow_"
     plugin_order = 50
     auth_level = 1

@@ -95,11 +95,18 @@ class ApiMixin:
                 "summary": "诊断:自动换种干跑(不落盘;task_id=空则全任务)",
             },
             {
+                "path": "/debug/traffic",
+                "endpoint": self.debug_traffic,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "诊断:未知流量审计（无魔流标签的种 + 单种限速分布）",
+            },
+            {
                 "path": "/debug/seedlimit",
                 "endpoint": self.debug_seed_limit,
                 "methods": ["GET", "POST"],
                 "auth": "bear",
-                "summary": "诊断:立即套用单种上传限速(返回档位表)",
+                "summary": "诊断:解除全部单种上传限速（0 = 不限）",
             },
             {
                 "path": "/debug/emit-transfer",

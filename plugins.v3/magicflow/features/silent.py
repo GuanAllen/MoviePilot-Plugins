@@ -22,6 +22,7 @@ from ..tags import (
     SUB_NEW,
     SUB_PLAIN,
     SUB_RESOURCE,
+    duty_of,
     is_magicflow_tag,
     retag,
     tag_for,
@@ -204,6 +205,8 @@ class SilentMixin:
                 _st = next((x for x in _tg if "静默" in x and is_magicflow_tag(x)), "")
                 if not _st:
                     continue
+                if duty_of(_tg)[1]:
+                    continue  # ★ 5.0.0：带职务标签 = 在岗，不算「池内」
                 n_sil += 1
                 _ishr = bool(MARK_HR in _tg)
                 if _ishr:
@@ -504,7 +507,9 @@ class SilentMixin:
             tags = [str(x) for x in (getattr(t, "tags", None) or [])]
             if not any(("静默" in x and is_magicflow_tag(x)) for x in tags):
                 continue
-            rep["silent"] = int(rep["silent"]) + 1
+            _in_pool = not duty_of(tags)[1]   # ★ 5.0.0：在岗的不算「静默」
+            if _in_pool:
+                rep["silent"] = int(rep["silent"]) + 1
             if cap and rep["checked"] >= cap:
                 continue
             rep["checked"] = int(rep["checked"]) + 1

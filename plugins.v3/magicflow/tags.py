@@ -41,6 +41,10 @@ __all__ = [
     "tag_for",
     "parse_tag",
     "is_magicflow_tag",
+    "identity_of",
+    "duty_of",
+    "has_hr_tag",
+    "KEEP_FOREIGN_TAGS",
     "retag",
     "TagStateStore",
     "FileGroupStore",
@@ -70,6 +74,10 @@ STATES_WITH_SUB = (STATE_SILENT,)
 #   同时文件已移到媒体库目录。这两个标签是**唯一可靠的库内证据**（本部署 MP 的
 #   downloadhistory / transferhistory / downloadfiles 三张表都是 0 行，不能依赖）。
 ASSET_TAGS = ("已整理", "辅种")
+
+# ★ 「其他标签」白名单：MP 自己的标记（属我方系统）→ 清理时不摘。
+#   Master 2026-09-29 23:41「减少其他 tag，确保所有种子的行为都在我们管控下」。
+KEEP_FOREIGN_TAGS = ("MOVIEPILOT",)
 
 STATE_KEY = "tag_state"
 GROUPS_KEY = "tag_groups"
@@ -211,6 +219,35 @@ MARK_HR = "魔流-H&R"
 SPECIAL_TAGS = ("魔流-推荐", "魔流-跨站", MARK_REUSE, MARK_HR)
 
 
+def identity_of(tags: Any) -> Tuple[str, str]:
+    """取出种子的**身份**（静默态标签）→ ``(站点, 子类)``；没有则 ``("", "")``。
+
+    ★ 5.0.0「身份/职务分离」：
+    - **身份** = ``魔流-<站点>-静默-<新|资源|普通>`` —— 每个种永远带着，**上班/下班都不改**；
+      只有分拣（判资源/普通）与推荐确认才会改它。
+    - **职务** = ``魔流-<站点>-<刷流|魔力>`` —— 上班贴、下班摘。
+    """
+    for t in tags or []:
+        p = parse_tag(t)
+        if p and p.get("state") == STATE_SILENT and p.get("sub"):
+            return _clean(p.get("site")), _clean(p.get("sub"))
+    return "", ""
+
+
+def duty_of(tags: Any) -> Tuple[str, str]:
+    """取出种子的**职务**（刷流/魔力）→ ``(站点, 状态)``；没有职务则 ``("", "")``。"""
+    for t in tags or []:
+        p = parse_tag(t)
+        if p and p.get("state") in (STATE_BRUSH, STATE_BONUS):
+            return _clean(p.get("site")), _clean(p.get("state"))
+    return "", ""
+
+
+def has_hr_tag(tags: Any) -> bool:
+    """是否带「H&R 病毒标签」（= 在**隔离区**：欠 H&R 工时，强挂保种中）。"""
+    return MARK_HR in [_clean(x) for x in (tags or [])]
+
+
 def retag(
     tags: Any,
     *,
@@ -220,12 +257,16 @@ def retag(
     keep_foreign: bool = True,
     keep: Sequence[str] = SPECIAL_TAGS,
 ) -> List[str]:
-    """按新状态重算标签集合：去掉旧的魔流标签，加上新的；外来标签保留。
+    """按新状态重算标签集合 —— **身份与职务两条轴**（5.0.0）。
 
-    ``keep`` 里的特殊标签（推荐/跨站）即便带 ``魔流-`` 前缀也**保留**。
+    - **身份轴**（``魔流-<站点>-静默-<子类>``）：**永久保留**。``sub`` 给定 → 换成新身份
+      （站点取 ``site``，为空则沿用原身份站点）；``sub`` 为空 → 沿用原身份；都没有 → ``新``。
+    - **职务轴**（``魔流-<站点>-<刷流|魔力>``）：``state`` 是职务时重贴；``state`` 为静默/空 → **摘掉**职务。
+    - ``keep`` 里的特殊标签（推荐/跨站/辅种/H&R）原样保留；``keep_foreign`` → 非魔流标签保留。
     """
     keep_set = {_clean(x) for x in (keep or ())}
     out: List[str] = []
+    ident_site, ident_sub = "", ""
     for t in tags or []:
         s = _clean(t)
         if not s:
@@ -235,13 +276,25 @@ def retag(
                 out.append(s)
             continue
         if is_magicflow_tag(s):
-            continue
+            p = parse_tag(s)
+            if p and p.get("state") == STATE_SILENT and p.get("sub") and not ident_sub:
+                ident_site, ident_sub = _clean(p.get("site")), _clean(p.get("sub"))
+            continue  # 其它魔流标签（职务/老格式）丢弃，下面按新状态重贴
         if keep_foreign and s not in out:
             out.append(s)
-    if state:
-        new = tag_for(site, state, sub)
-        if new not in out:
-            out.append(new)
+    _site = _clean(site) or ident_site
+    _sub = _clean(sub) or ident_sub or (SUB_NEW if (_clean(state) or _site) else "")
+    if _sub:
+        it = tag_for(_site, STATE_SILENT, _sub)
+        if it not in out:
+            out.append(it)
+    _st = _clean(state)
+    if _st in (STATE_BRUSH, STATE_BONUS):
+        dt = tag_for(_site, _st)
+        if dt not in out:
+            out.append(dt)
+    elif _st == STATE_RECOMMEND and "魔流-推荐" not in out:
+        out.append("魔流-推荐")
     return out
 
 
@@ -293,20 +346,24 @@ class TagStateStore:
         except Exception as err:  # noqa: BLE001
             self._log and self._log(f"标签:状态账本写入失败:{err}", "error")
 
-    def set_asset(self, hash_string: str, asset: bool, *, origin_sub: str = "") -> bool:
-        """固化「库内资产」标记（清理闸门读它，而不是每次去看标签）。"""
+    def set_asset(self, hash_string: str, asset: bool, *, sub: str = "", origin_sub: str = "") -> bool:
+        """固化「库内资产」标记（清理闸门读它，而不是每次去看标签）。
+
+        ★ 5.0.0：库内资产 = **身份**「资源」 → 直接写 ``sub``（``origin_sub`` 为旧名，兼容保留）。
+        """
         h = _clean(hash_string).lower()
         if not h:
             return False
+        sub = _clean(sub) or _clean(origin_sub)
         data = self.items()
         rec = dict(data.get(h) or {})
         if not rec:
             return False
-        if bool(rec.get("asset")) == bool(asset) and not origin_sub:
+        if bool(rec.get("asset")) == bool(asset) and not sub:
             return False
         rec["asset"] = bool(asset)
-        if origin_sub:
-            rec["origin_sub"] = origin_sub
+        if sub:
+            rec["sub"] = sub
         rec["updated"] = time.time()
         data[h] = rec
         self._write(data)
@@ -323,24 +380,29 @@ class TagStateStore:
         return _clean(rec.get("state")), _clean(rec.get("sub"))
 
     def put(self, hash_string: str, patch: Dict[str, Any], *, now: Optional[float] = None) -> Dict[str, Any]:
-        """写入/合并一条记录（``state``/``sub`` 变化时自动记 origin）。"""
+        """写入/合并一条记录（``state`` = 职务，``sub`` = 身份；不再记 origin）。"""
         h = _clean(hash_string).lower()
         if not h:
             return {}
         data = self.items()
         rec = dict(data.get(h) or {})
         ts = float(now if now is not None else time.time())
+        _old_sub = _clean(rec.get("sub"))
         new_state = _clean(patch.get("state", rec.get("state")))
         new_sub = _clean(patch.get("sub", rec.get("sub")))
-        # origin 只在「非占用态」之间变化时更新（占用态由 claim/release 管）
-        if new_state in (STATE_SILENT, STATE_RECOMMEND) and new_state != rec.get("state"):
-            rec["origin_state"] = new_state
-            rec["origin_sub"] = new_sub
+        _state_given = bool(_clean(patch.get("state")))
         rec.update({k: v for k, v in patch.items() if v is not None})
         if new_state:
             rec["state"] = new_state
         if new_state in STATES_WITH_SUB:
             rec["sub"] = new_sub
+        elif new_state in (STATE_BRUSH, STATE_BONUS) and not _state_given and "sub" in patch:
+            # ★ 5.0.0 铁律：在岗（职务轴）期间**不接**「顺手改身份」的写
+            #   （分拣/推荐只能改池内种子的身份；在岗的等回池再过站）
+            if _old_sub:
+                rec["sub"] = _old_sub
+            else:
+                rec.pop("sub", None)
         elif "sub" in patch and not patch.get("sub"):
             rec.pop("sub", None)
         rec.setdefault("created", ts)
@@ -359,16 +421,21 @@ class TagStateStore:
             if not hh or not isinstance(patch, dict):
                 continue
             rec = dict(data.get(hh) or {})
+            _old_sub = _clean(rec.get("sub"))
             new_state = _clean(patch.get("state", rec.get("state")))
             new_sub = _clean(patch.get("sub", rec.get("sub")))
-            if new_state in (STATE_SILENT, STATE_RECOMMEND) and new_state != rec.get("state"):
-                rec["origin_state"] = new_state
-                rec["origin_sub"] = new_sub
+            _state_given = bool(_clean(patch.get("state")))
             rec.update({k: v for k, v in patch.items() if v is not None})
             if new_state:
                 rec["state"] = new_state
             if new_state in STATES_WITH_SUB:
                 rec["sub"] = new_sub
+            elif new_state in (STATE_BRUSH, STATE_BONUS) and not _state_given and "sub" in patch:
+                # ★ 在岗不动身份（同 put）
+                if _old_sub:
+                    rec["sub"] = _old_sub
+                else:
+                    rec.pop("sub", None)
             elif "sub" in patch and not patch.get("sub"):
                 rec.pop("sub", None)
             rec.setdefault("created", ts)
@@ -423,7 +490,7 @@ class TagStateStore:
 
     def drop(self, hash_string: str) -> bool:
         h = _clean(hash_string).lower()
-        data = self.items()
+        data = dict(self.items())   # ★ 拷贝再改：直接改缓存会让快照与账本别名（5.0.0 修）
         if h not in data:
             return False
         data.pop(h, None)
@@ -432,7 +499,7 @@ class TagStateStore:
 
     def clear(self, *, keep_observed: bool = False) -> int:
         """清空账本。``keep_observed=True`` 时保留带 ``observed`` 标记的记录。"""
-        data = self.items()
+        data = dict(self.items())   # ★ 同上：拷贝再改
         if not keep_observed:
             self._write({})
             return len(data)
@@ -497,9 +564,10 @@ class TagStateStore:
         ttl: float = LEASE_TTL,
         now: Optional[float] = None,
     ) -> Tuple[bool, str]:
-        """占用一个静默种（``静默-*`` → ``刷流``/``魔力``）。
+        """占用一个静默种（贴**职务**：``静默-*`` → ``刷流``/``魔力``）。
 
         返回 ``(是否成功, 原因)``。已有**未过期**占用者时拒绝（刷流/魔力互不接管）。
+        ★ 只写职务，**身份（``sub``）原样保留**。
         """
         h = _clean(hash_string).lower()
         if not h:
@@ -517,27 +585,28 @@ class TagStateStore:
             self._log and self._log(f"标签:抢占过期占用 {h[:8]}（原 {owner}）", "warning")
         if cur_state in (STATE_BRUSH, STATE_BONUS) and owner and owner != _clean(task_id):
             return False, f"状态已被占用：{cur_state}"
-        origin_state = _clean(rec.get("origin_state")) or cur_state or STATE_SILENT
-        origin_sub = _clean(rec.get("origin_sub")) or _clean(rec.get("sub"))
+        # ★ 5.0.0：``state`` 只表达**职务**；``sub`` 是**身份** —— 占用不改写、不清空，
+        #   也就没有「回退目标 origin」这个字段了（旧记录里残留的无害，可忽略）。
         rec.update({
             "state": state,
             "taken_by": _clean(task_id),
             "taken_at": ts,
             "lease_until": ts + float(ttl),
-            "origin_state": origin_state,
-            "origin_sub": origin_sub,
             "updated": ts,
         })
         if site:
             rec["site"] = _clean(site)
-        rec.pop("sub", None)  # 占用态没有子类
         rec.setdefault("created", ts)
         data[h] = rec
         self._write(data)
         return True, "ok"
 
     def release(self, hash_string: str, *, task_id: str = "", now: Optional[float] = None) -> Optional[str]:
-        """释放占用 → 按 ``origin`` 退回原静默子类；返回退回到的标签状态串。"""
+        """下班：**只摘职务** —— 身份（``sub``）原样保留，返回回到的标签串。
+
+        ★ 5.0.0：不再有「按 origin 退回」这一步 —— 上班前是资源/普通，下班还是资源/普通。
+        只有账本里没有身份的老记录才兜底（库内资产 → 资源，其余 → 普通）。
+        """
         h = _clean(hash_string).lower()
         data = self.items()
         rec = dict(data.get(h) or {})
@@ -546,18 +615,16 @@ class TagStateStore:
         owner = _clean(rec.get("taken_by"))
         if task_id and owner and owner != _clean(task_id):
             return None  # 不是本任务占用的，别乱放
-        state = _clean(rec.get("origin_state")) or STATE_SILENT
-        sub = _clean(rec.get("origin_sub"))
-        if state == STATE_SILENT and not sub:
-            sub = SUB_PLAIN
-        rec.update({"state": state, "updated": float(now if now is not None else time.time())})
+        state = STATE_SILENT
+        sub = _clean(rec.get("sub"))
+        if not sub:
+            sub = SUB_RESOURCE if bool(rec.get("asset")) else SUB_PLAIN
+        rec.update({"state": state, "sub": sub, "updated": float(now if now is not None else time.time())})
         rec.pop("taken_by", None)
         rec.pop("taken_at", None)
         rec.pop("lease_until", None)
-        if state in STATES_WITH_SUB:
-            rec["sub"] = sub
-        else:
-            rec.pop("sub", None)
+        rec.pop("origin_state", None)
+        rec.pop("origin_sub", None)
         data[h] = rec
         self._write(data)
         return tag_for(_clean(rec.get("site")), state, sub)
@@ -578,7 +645,8 @@ class TagStateStore:
         """落一份滚动快照（只保留最近 ``keep`` 份）。"""
         ts = float(now if now is not None else time.time())
         snaps = self.snapshots()
-        snaps.append({"ts": ts, "count": len(self.items()), "items": self.items()})
+        snaps.append({"ts": ts, "count": len(self.items()),
+                      "items": {k: dict(v) for k, v in self.items().items()}})
         snaps = snaps[-max(1, int(keep)):]
         try:
             self._save_data(SNAPSHOT_KEY, snaps)
@@ -643,9 +711,7 @@ class TagStateStore:
             data[h] = {
                 "site": site,
                 "state": state,
-                "sub": sub if state in STATES_WITH_SUB else "",
-                "origin_state": state,
-                "origin_sub": sub,
+                "sub": sub if state in STATES_WITH_SUB else (SUB_NEW if state else ""),
                 "approx": True,
                 "created": ts,
                 "updated": ts,
@@ -1070,17 +1136,36 @@ if __name__ == "__main__":  # pragma: no cover
     assert parse_tag("刷流-咖啡") is None
     assert retag(["已整理", "魔流-财神"], site="财神", state=STATE_SILENT, sub=SUB_PLAIN) == [
         "已整理", "魔流-财神-静默-普通"]
+    # ★ 5.0.0 身份/职务两轴：上班只贴职务，身份不动；下班只摘职务
+    assert retag(["魔流-财神-静默-资源"], site="财神", state=STATE_BRUSH) == [
+        "魔流-财神-静默-资源", "魔流-财神-刷流"], "上班必须保住身份"
+    assert retag(["魔流-财神-静默-资源", "魔流-财神-刷流"], site="财神", state=STATE_SILENT) == [
+        "魔流-财神-静默-资源"], "下班只摘职务"
+    assert retag(["魔流-财神-静默-普通", "魔流-财神-魔力", "魔流-H&R"], state=STATE_SILENT) == [
+        "魔流-H&R", "魔流-财神-静默-普通"]
+    assert identity_of(["魔流-财神-静默-资源", "魔流-财神-魔力"]) == ("财神", "资源")
+    assert duty_of(["魔流-财神-静默-资源", "魔流-财神-魔力"]) == ("财神", "魔力")
 
     st = TagStateStore(_get, _save, log=lambda *a, **k: None)
     st.put("aaa", {"site": "财神", "state": STATE_SILENT, "sub": SUB_RESOURCE, "size_gb": 10})
     assert st.state_of("aaa") == (STATE_SILENT, SUB_RESOURCE)
     ok, why = st.claim("aaa", "task1", state=STATE_BRUSH)
     assert ok, why
-    assert st.state_of("aaa") == (STATE_BRUSH, "")
+    # ★ 5.0.0：占用只改职务，身份（sub）保留
+    assert st.state_of("aaa") == (STATE_BRUSH, SUB_RESOURCE)
     ok2, why2 = st.claim("aaa", "task2", state=STATE_BONUS)
     assert not ok2, "刷流/魔力互不接管必须拦住"
     back = st.release("aaa", task_id="task1")
     assert back == "魔流-财神-静默-资源", back
+    # ★ 5.0.0 铁律：在岗（职务轴）期间**不接**「顺手改身份」的写（分拣只在池内改）
+    _ok3, _why3 = st.claim("aaa", "task1", state=STATE_BRUSH)
+    assert _ok3, _why3
+    st.put("aaa", {"sub": SUB_PLAIN, "reason": "静默分拣:想改身份"})
+    assert st.state_of("aaa") == (STATE_BRUSH, SUB_RESOURCE), "在岗期间身份被顺手改了！"
+    st.put("aaa", {"sub": SUB_PLAIN, "state": STATE_SILENT})
+    assert st.state_of("aaa") == (STATE_SILENT, SUB_PLAIN), "回池后应能改身份"
+    st.release("aaa", task_id="task1")
+    assert st.state_of("aaa") == (STATE_SILENT, SUB_PLAIN)
     # 静默-新 超时 → 普通
     st.put("bbb", {"site": "咖啡", "state": STATE_SILENT, "sub": SUB_NEW, "created": time.time() - 90_000})
     assert st.expire_new() == ["bbb"]

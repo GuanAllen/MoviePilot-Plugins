@@ -352,11 +352,9 @@ class TasksMixin:
             if claim and (owner != tid or lease <= now):
                 patches[h] = {
                     "site": site, "state": state,
-                    "sub": str(rec.get("sub") or ""),
+                    "sub": str(rec.get("sub") or "") or SUB_NEW,
                     "taken_by": tid, "task": name,
                     "taken_at": now, "lease_until": now + float(LEASE_TTL),
-                    "origin_state": str(rec.get("origin_state") or STATE_SILENT),
-                    "origin_sub": str(rec.get("origin_sub") or SUB_NEW),
                     "title": str(getattr(t, "title", "") or "")[:200],
                     "size_gb": float(getattr(t, "size_gb", 0) or 0),
                 }
@@ -481,10 +479,8 @@ class TasksMixin:
                 continue
             rec = dict(store.get(h) or {})
             rec.update({
-                "site": site, "state": state, "sub": sub,
+                "site": site, "state": state, "sub": sub or str(rec.get("sub") or "") or SUB_NEW,
                 "taken_by": dst_id, "task": dn,
-                "origin_state": rec.get("origin_state") or STATE_SILENT,
-                "origin_sub": rec.get("origin_sub") or SUB_NEW,
             })
             if live is not None:
                 rec.setdefault("title", str(getattr(live, "title", "") or "")[:200])

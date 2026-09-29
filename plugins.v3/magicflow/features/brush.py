@@ -81,6 +81,7 @@ from ..common import (
     TORRENT_FETCH_PER_TIMEOUT,
     TORRENT_FETCH_WORKERS,
     _SizeIndex,
+    task_is_participating,
     task_is_running,
     enabled_of_run_mode,
     RUN_MODE_SEEDING,
@@ -762,12 +763,18 @@ class BrushMixin:
             try:
                 _site = str(getattr(task, "site_name", "") or "")
                 _groups = self._tag_snapshot(getattr(task, "downloader", "qbittorrent") or "qbittorrent")
+                _seen: set = set()
                 for _tg, _rows in (_groups or {}).items():
                     if str(_tg) == str(getattr(task, "brush_tag", "")):
                         continue
                     _p = parse_tag(str(_tg))
                     if _p and str(_p.get("site") or "") == _site:
-                        _moved += len(_rows or [])
+                        # ★ 5.0.0：身份 + 职务两条标签 → 同一颗种会在两个组里出现，按 hash 去重
+                        for _row in (_rows or []):
+                            _rh = str(getattr(_row, "hash", "") or "").lower()
+                            if _rh:
+                                _seen.add(_rh)
+                _moved = len(_seen)
             except Exception:  # noqa: BLE001
                 _moved = 0
             if _moved + c >= prev * 0.8:
@@ -1872,6 +1879,16 @@ class BrushMixin:
             except Exception as _adopt_exc:  # noqa: BLE001
                 self._log(f"魔流 [{task.name}] Check 同站纳管异常: {_adopt_exc}", "warning")
 
+            # ★ 3.43.0: 标签主权巡检 —— 别的插件/人私下挂的种立即归流、
+            #   其他标签一律摘掉（先记账本再摘），MP 来源（订阅/自下）直接进资源。
+            #   频控在 _tag_hygiene_round 内部（默认 900s），每轮 Check 都调无负担。
+            try:
+                _hy = self._tag_hygiene_round()
+                if _hy.get("cleaned") or _hy.get("adopted") or _hy.get("promoted"):
+                    self._dbg(f"魔流 [{task.name}] 标签巡检: {_hy}")
+            except Exception as _hy_exc:  # noqa: BLE001
+                self._log(f"魔流 [{task.name}] 标签巡检异常: {_hy_exc}", "warning")
+
             r = self._cleanup_round(task, downloader)
             # ★ 自动换种：名额/磁盘/站点上限吃紧时，按边际魔力换掉低价值种（程序自主决策）
             try:
@@ -2149,7 +2166,7 @@ class BrushMixin:
         return policy
 
     def _same_site_state_live(self, task: Any) -> str:
-        """同站同状态是否有**启用中**的任务（有则那批种归它，停止的任务不用退静默）。"""
+        """同站同状态是否有**在岗（运行中/做种中）**的任务（有则那批种归它，已停止的任务不用退静默）。"""
         try:
             pair = self._task_site_state(task)
         except Exception:  # noqa: BLE001
@@ -2158,7 +2175,7 @@ class BrushMixin:
         for other in self._task_configs.values():
             if str(getattr(other, "id", "") or "") == tid:
                 continue
-            if not bool(getattr(other, "enabled", False)):
+            if not task_is_participating(other):
                 continue
             try:
                 if self._task_site_state(other) == pair:

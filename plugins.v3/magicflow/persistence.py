@@ -26,6 +26,8 @@ from typing import Any, Dict, List, Optional, Set
 # 60s 太密（活跃时 5~6 张表每分钟都脏 → 每分钟 5~6 次全量表 dump，反而比增量写便宜不了多少，
 # 实测 63MB/h）。改成 5 分钟：丢掉最多 5 分钟的 seen/dead 记忆，无副作用。
 KV_FILE_FLUSH_SEC = 300.0
+# 热层「载入后未改动」哨兵值：跳过逐条 JSON 指纹重算（加载提速的关键）
+_IN_SYNC = "\x00in-sync"
 
 # ★ 跨热重载共享的进程级容器（放独立模块，MP 不会清它）
 _SHARED_KEY = "__magicflow_shared__"
@@ -480,40 +482,52 @@ class OperationJournal(KvBridge):
                 data = body if isinstance(body, dict) else json.loads(body)
                 op_id = str(data.get("operation_id") or _op_id)
                 self._operations[op_id] = OperationRecord.from_dict(data)
-                self._kv_written[op_id] = json.dumps(data, ensure_ascii=False, sort_keys=True, default=str)
+                # ★ 载入即视为「与热层一致」：不算指纹（1465 条 × json.dumps ≈ 300ms，就是加载慢的元凶）
+                self._kv_written[op_id] = _IN_SYNC
                 loaded += 1
             except Exception:  # noqa: BLE001
                 continue
         return loaded > 0
 
     def _kv_apply(self, delta: Optional[Set[str]] = None) -> bool:
-        """把内存快照增量写进热层（一个 op 一个键：`ops:{operation_id}`）。"""
+        """把内存快照增量写进热层（一个 op 一个键：`ops:{operation_id}`）。
+
+        ★ 批量写：变化的记录攒成一次 pipeline（原先每条一次 SET）。
+        """
         if not self.kv_ready():
             return False
         with self._lock:
             ops = list(self._operations.values())
         written = dict(self._kv_written)
         alive: Set[str] = set()
-        ok = True
+        batch: Dict[str, Any] = {}
         for op in ops:
             op_id = str(getattr(op, "operation_id", "") or "")
             if not op_id:
                 continue
             alive.add(op_id)
+            if written.get(op_id) == _IN_SYNC:  # 载入后没动过 → 热层里就是它，跳过
+                continue
             body = op.to_dict()
             fingerprint = json.dumps(body, ensure_ascii=False, sort_keys=True, default=str)
             if written.get(op_id) == fingerprint:
                 continue
-            if self.kv.set(self.kv_key(op_id), body):
-                written[op_id] = fingerprint
-            else:
-                ok = False
+            batch[self.kv_key(op_id)] = body
+            written[op_id] = fingerprint
         # 被裁掉/删除的记录 → 删对应键
-        for op_id in [x for x in self._kv_written if x not in alive]:
-            ok = self.kv.delete(self.kv_key(op_id)) and ok
-            written.pop(op_id, None)
-        if ok:
-            self._kv_written = written
+        stale = [self.kv_key(x) for x in self._kv_written if x not in alive]
+        ok = True
+        if batch:
+            if not self.kv.set_many(batch):
+                ok = False
+            else:
+                self._kv_written = written
+        if stale:
+            if not self.kv.delete_many(stale):
+                ok = False
+            else:
+                for _sid in stale:
+                    self._kv_written.pop(_sid[len(self.kv_region) + 1:], None)
         return ok
 
     # 超过该秒数仍 submitting 视为孤儿（正常运行 < _task_run_timeout=600s）
@@ -534,6 +548,7 @@ class OperationJournal(KvBridge):
                     op.resolved_at = now
                     if not getattr(op, "error_message", None):
                         op.error_message = "中断（进程重载或异常，未正常收尾）"
+                    self._kv_written.pop(op.operation_id, None)  # 改过 → 下次写回热层
                     healed += 1
             if healed:
                 self._save()
@@ -657,6 +672,7 @@ class OperationJournal(KvBridge):
             if error_message:
                 record.error_message = error_message
             record.resolved_at = time.time()
+            self._kv_written.pop(operation_id, None)  # 改过 → 下次写回热层
             self._save()
             return True
 
@@ -692,6 +708,7 @@ class OperationJournal(KvBridge):
             if error_message:
                 record.error_message = error_message
 
+            self._kv_written.pop(operation_id, None)  # 改过 → 下次写回热层
             self._save()
         return True
 
@@ -1148,31 +1165,40 @@ class RecommendStore(KvBridge):
 
     # ---------------------------------------------------------- 热层（MP 缓存/Redis）
     def _kv_apply(self, key: Optional[str] = None) -> bool:
-        """增量写热层（key 为空 = 全量对比）。"""
+        """增量写热层（key 为空 = 全量对比）。★ 批量 pipeline 写。"""
         if not self.kv_ready():
             return False
         with self._lock:
             items = dict(self._items)
         targets = [str(key).lower()] if key else list(items)
         ok = True
+        batch: Dict[str, Any] = {}
         for k in targets:
             item = items.get(k)
             if item is None:
-                ok = self.kv.delete(self.kv_key(k)) and ok
-                self._kv_written.pop(k, None)
+                batch[self.kv_key(k)] = None
                 continue
             fingerprint = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
             if self._kv_written.get(k) == fingerprint:
                 continue
-            if self.kv.set(self.kv_key(k), item):
-                self._kv_written[k] = fingerprint
-            else:
-                ok = False
+            batch[self.kv_key(k)] = item
         # 内存里已没有的项 → 删键（全量模式才做）
         if not key:
             for k in [x for x in self._kv_written if x not in items]:
-                ok = self.kv.delete(self.kv_key(k)) and ok
+                batch[self.kv_key(k)] = None
                 self._kv_written.pop(k, None)
+        if not batch:
+            return True
+        writes = {k: v for k, v in batch.items() if v is not None}
+        drops = [k for k, v in batch.items() if v is None]
+        if writes and not self.kv.set_many(writes):
+            ok = False
+        if drops and not self.kv.delete_many(drops):
+            ok = False
+        if ok:
+            for k, item in items.items():
+                if self.kv_key(k) in writes:
+                    self._kv_written[k] = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
         return ok
 
     def _save(self, key: Optional[str] = None) -> None:
@@ -1326,29 +1352,39 @@ class ArchiveStore(KvBridge):
 
     # ---------------------------------------------------------- 热层（MP 缓存/Redis）
     def _kv_apply(self, key: Optional[str] = None) -> bool:
+        """★ 批量 pipeline 写热层。"""
         if not self.kv_ready():
             return False
         with self._lock:
             items = dict(self._items)
         targets = [str(key)] if key else list(items)
         ok = True
+        batch: Dict[str, Any] = {}
         for k in targets:
             item = items.get(k)
             if item is None:
-                ok = self.kv.delete(self.kv_key(k)) and ok
-                self._kv_written.pop(k, None)
+                batch[self.kv_key(k)] = None
                 continue
             fingerprint = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
             if self._kv_written.get(k) == fingerprint:
                 continue
-            if self.kv.set(self.kv_key(k), item):
-                self._kv_written[k] = fingerprint
-            else:
-                ok = False
+            batch[self.kv_key(k)] = item
         if not key:
             for k in [x for x in self._kv_written if x not in items]:
-                ok = self.kv.delete(self.kv_key(k)) and ok
+                batch[self.kv_key(k)] = None
                 self._kv_written.pop(k, None)
+        if not batch:
+            return True
+        writes = {k: v for k, v in batch.items() if v is not None}
+        drops = [k for k, v in batch.items() if v is None]
+        if writes and not self.kv.set_many(writes):
+            ok = False
+        if drops and not self.kv.delete_many(drops):
+            ok = False
+        if ok:
+            for k, item in items.items():
+                if self.kv_key(k) in writes:
+                    self._kv_written[k] = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
         return ok
 
     def _save(self, key: Optional[str] = None) -> None:
@@ -1479,12 +1515,31 @@ class MagicFlowStore:
             return
         self._initialized = True
         self.data_dir = data_dir
+        _t0 = time.perf_counter()
+        _marks: Dict[str, float] = {}
         self.journal = OperationJournal(data_dir, kv=kv)
+        _marks["日志"] = time.perf_counter()
         self.task_states = TaskStateStore(data_dir, kv=kv)
         self.seen = SeenStore(data_dir, kv=kv)
         self.dead = DeadStore(data_dir, kv=kv)
+        _marks["状态"] = time.perf_counter()
         self.recommend = RecommendStore(data_dir, kv=kv)
         self.cloud = ArchiveStore(data_dir, kv=kv)
+        _marks["推荐"] = time.perf_counter()
+        # 数据层载入耗时（常驻诊断：>300ms 才告警，带分项）——「加载慢」可量化
+        _total_ms = (time.perf_counter() - _t0) * 1000
+        try:
+            _log = getattr(kv, "_log", None) if kv is not None else None
+            _keys = int(kv.count()) if kv is not None and kv.available() else 0
+            _msg = (
+                f"数据层载入 {_total_ms:.0f}ms（日志 {(_marks['日志'] - _t0) * 1000:.0f} / "
+                f"状态 {(_marks['状态'] - _marks['日志']) * 1000:.0f} / "
+                f"推荐 {(_marks['推荐'] - _marks['状态']) * 1000:.0f}）热层键 {_keys}"
+            )
+            if callable(_log):
+                _log(_msg, "warning" if _total_ms > 300 else "info")
+        except Exception:  # noqa: BLE001
+            pass
         self.flush_sec = float(KV_FILE_FLUSH_SEC)
         self._flusher_stop = False
         self._flusher_thread = None

@@ -1077,18 +1077,9 @@ function confirmSaveWithoutGoal() {
 <style scoped>
 .magicflow-editor {
   /* 深色磨砂主题（与工作台保持一致）*/
-  --v-theme-surface: 17, 23, 43;
-  --v-theme-on-surface: 231, 234, 246;
-  --v-theme-surface-variant: 38, 46, 78;
-  --v-theme-on-surface-variant: 200, 206, 232;
-  --v-theme-surface-light: 26, 32, 56;
-  --v-theme-outline: 92, 102, 152;
-  --v-theme-primary: 139, 123, 240;
-  --v-theme-on-primary: 255, 255, 255;
-  --v-theme-error: 235, 100, 122;
   max-block-size: min(90dvh, 58rem);
-  background: rgba(20, 26, 48, 0.94) !important;
-  border: 1px solid rgba(140, 150, 220, 0.14);
+  background: rgb(var(--v-theme-surface)) !important;
+  border: 1px solid rgba(var(--v-border-color), 0.14);
   border-radius: 18px;
   backdrop-filter: blur(16px) saturate(120%);
   -webkit-backdrop-filter: blur(16px) saturate(120%);
