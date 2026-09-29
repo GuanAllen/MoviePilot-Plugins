@@ -215,7 +215,11 @@ class ExamMixin:
                 pass
 
     def signin_watch(self) -> None:
-        """签到 worker:只在配置时段内跑;同站当天已成功自动跳过(一天最多 1 请求/站)。"""
+        """签到 worker：① 先补到期的失败重试（按 PV 节奏，间隔+抖动）；② 再按「签到间隔」跑全量。
+
+        注：调度器按 min(签到间隔, 15min) 唤醒本函数——空闲 tick 几乎零成本（不发请求），
+        只有真的到点才发请求（重试请求同样被 collect 配额闸门管着）。
+        """
         cfg = getattr(self, "_signin_cfg", {}) or {}
         engine = getattr(self, "_signin", None)
         if not cfg.get("enabled") or engine is None:
@@ -230,10 +234,27 @@ class ExamMixin:
             if not lock.acquire(blocking=False):
                 return
             try:
-                if cfg.get("sites"):
-                    engine.run(kind="sign")
-                if cfg.get("login_sites"):
-                    engine.run(kind="login")
+                # ① 到期的失败重试（只补签到；已经成功的会被 already_done 跳过）
+                try:
+                    due = engine.retry_due() if cfg.get("sites") else []
+                except Exception:  # noqa: BLE001
+                    due = []
+                if due:
+                    self._log(f"签到重试：{len(due)} 个站点到期补一次", "info")
+                    engine.run(kind="sign", site_ids=due)
+                # ② 全量：距上次全量跑够「签到间隔」才跑
+                now = time.time()
+                try:
+                    last_full = float(self.get_data("signin_last_full") or 0)
+                except Exception:  # noqa: BLE001
+                    last_full = 0.0
+                gap = float(cfg.get("interval") or SIGNIN_INTERVAL_MINUTES) * 60.0
+                if now - last_full >= gap:
+                    if cfg.get("sites"):
+                        engine.run(kind="sign")
+                    if cfg.get("login_sites"):
+                        engine.run(kind="login")
+                    self.save_data(key="signin_last_full", value=now)
             finally:
                 lock.release()
         except Exception as err:  # noqa: BLE001

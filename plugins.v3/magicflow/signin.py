@@ -5,7 +5,10 @@
   · 结果识别 = 未登录（密码框 / login.php）→ Cookie 失效；
               命中 `已签|签到已得|签到成功|每日签到` → 成功（或今日已签）；
   · 通用登录 = 带 Cookie GET 站点首页做「模拟登录」保活，并按结果刷新 MoviePilot 站点数据；
-  · 失败文案命中「重试关键词」（默认 `错误|失败`）→ 重试一次；
+  · 失败文案命中「重试关键词」（默认 `错误|失败`）→ **当天延后重试**（默认只补 1 次，间隔 ~20~30 分钟），
+    且重试同样吃 PV 闸门（预算/熔断/当日上限）——不搞隔壁那种「失败立刻再打一次」；
+  · Cookie 失效 → 发 `PluginAction site_refresh`，让站点自动登录去刷 Cookie（同隔壁）；
+  · 专用处理器（21 个站）的请求也要过采集模块的配额闸门（`collect.budget`）；
   · 站点多选：想签几个签几个（`signin_sites` / `signin_login_sites`）；
   · 结果按「日期 × 站点」落库（保留 7 天），前端出状态表。
 
@@ -31,6 +34,13 @@ HOME_PAGE = "index.php"
 KEEP_DAYS = 7
 DEFAULT_RETRY_KEYWORD = "错误|失败"
 DEFAULT_QUEUE = 5
+# ★ 失败重试（按我们的 PV 节奏，不是隔壁的「失败立刻再打」）：
+#   - 每天每站最多 2 次尝试（首次 + 1 次重试）→ 与 collect.KIND_DAY_CAP["signin"] 对齐；
+#   - 两次之间至少隔 RETRY_GAP 分钟（再叠 0~RETRY_JITTER 分钟抖动），错峰不扎堆。
+RETRY_KEY = "signin_retry"
+RETRY_MAX_ATTEMPTS = 2
+RETRY_GAP_MINUTES = 20.0
+RETRY_JITTER_MINUTES = 10.0
 
 LOGIN_HINT_RE = re.compile(
     r"login\.php|takelogin\.php|type=[\"']password[\"']|name=[\"']password[\"']",
@@ -121,14 +131,18 @@ class SigninEngine:
         return ctx
 
     def _run_handler(self, kind: str, site: Any, handler: Any, site_id: Any, name: str) -> Dict[str, Any]:
-        """调用专用处理器并落库。"""
+        """调用专用处理器并落库。★ 请求同样过配额闸门（闸门拒了就不发）。"""
         ctx = self._site_ctx(site)
         hname = getattr(handler, "__name__", "handler")
+        allow, why = self._budget_allow(site_id)
+        if not allow:
+            return self._store_result(kind, site_id, name, False, f"[专用] 未执行：{why}", skipped=True, handler=hname)
         try:
             fn = handler().signin if kind == "sign" else handler().login
             ok, msg = fn(ctx)
         except Exception as err:  # noqa: BLE001
             ok, msg = False, f"{'签到' if kind == 'sign' else '模拟登录'}失败：{err}"
+        self._budget_spend(site_id)
         msg = str(msg or ("成功" if ok else "失败"))
         return self._store_result(kind, site_id, name, bool(ok), f"[专用] {msg}", handler=hname)
 
@@ -247,6 +261,29 @@ class SigninEngine:
         row["site_name"] = site_name
         if bonus:
             row["bonus"] = float(bonus)
+        # ★ 先把「今天已成功过」的历史读出来：**成功记录不被后来的失败/上限盖掉**
+        try:
+            _prev = ((self.records().get(_now_date(), {}) or {}).get(str(site_id), {}) or {}).get(kind) or {}
+        except Exception:  # noqa: BLE001
+            _prev = {}
+        if _prev.get("ok") and not ok:
+            # 今日该动作已经成功过：本次结果（常见：配额/次数上限、又试了一次）不当失败，保留成功
+            self._log(f"{site_name} 今日已成功，忽略本次结果：{message}", "debug")
+            if "Cookie" in str(message):
+                try:
+                    self._trigger_site_refresh(site_id)
+                except Exception:  # noqa: BLE001
+                    pass
+            keep = dict(_prev)
+            keep["attempt"] = str(message or "")[:160]
+            keep["attempt_time"] = datetime.now().strftime("%H:%M:%S")
+            return keep
+        # ★ Cookie/密钥失效 → 发 site_refresh（同隔壁），让站点自动登录去刷 Cookie
+        if not ok and ("Cookie 已失效" in str(message) or "密钥/Cookie 已失效" in str(message)):
+            try:
+                self._trigger_site_refresh(site_id)
+            except Exception:  # noqa: BLE001
+                pass
         try:
             data = self.records()
             day = data.setdefault(_now_date(), {})
@@ -275,15 +312,18 @@ class SigninEngine:
         # ① API 鉴权站（馒头 / 叶PT）：没有 attendance 页 → 用后台 API 保活（等效「签到」）
         if self._collect_is_api(site) or self._is_api_site(site):
             ok, msg = self._api_ping(site_id)
-            return self._store_result("sign", site_id, name, ok, f"API 站：{msg}")
+            return self._store_result("sign", site_id, name, ok, f"API 站（无签到页）:{msg}")
         # ② 站点专用处理器（HDSky OCR / U2 随机 / CHD·HDChina 表单 …）
         h = self._handler(site)
         if h is not None:
             return self._run_handler("sign", site, h, site_id, name)
         text, err, status = self._get_text(site_id, SIGNIN_PAGE)
         if not text:
-            msg = f"签到失败：{err or ('HTTP %s' % status)}"
-            return self._store_result("sign", site_id, name, False, msg)
+            err_s = str(err or ("HTTP %s" % status))
+            # ★ 配额类（次数上限/预算不足）是「今天不再试」，不是签到失败 → 标 skipped（不刷红）
+            if any(k in err_s for k in ("已达上限", "预算不足", "每日访问次数", "今日访问")):
+                return self._store_result("sign", site_id, name, False, f"未执行：{err_s}", skipped=True)
+            return self._store_result("sign", site_id, name, False, f"签到失败：{err_s}")
         # ★ 3.38.0：页面 → 事实的解析归采集模块（这里只做"该不该记/怎么记"的判断）
         got = parse_signin(text)
         if got.get("pv_limited"):
@@ -331,19 +371,133 @@ class SigninEngine:
 
     # ---------------------------------------------------------------- 跑批
     def _do(self, kind: str, site_id: Any, retry_keyword: str = "") -> Dict[str, Any]:
+        """跑一个站点的一次动作（★ 不再「失败立刻重试」——重试由 _plan_retries 延后排期）。"""
         fn = self.checkin if kind == "sign" else self.login
-        res = fn(site_id)
-        kw = str(retry_keyword or "").strip()
-        if kw and not res.get("ok"):
+        return fn(site_id)
+
+    # ---------------------------------------------------------------- 配额闸门
+    def _budget(self) -> Any:
+        return getattr(getattr(self._plugin, "collect", None), "budget", None)
+
+    def _budget_allow(self, site_id: Any, kind: str = "signin") -> Tuple[bool, str]:
+        """专用处理器的请求也要过配额闸门（预算 / 熔断 / 当日上限）。"""
+        b = self._budget()
+        if b is None:
+            return True, ""
+        try:
+            allow, why = b.allow(site_id, kind, 1)
             try:
-                hit = bool(re.search(kw, str(res.get("message") or "")))
+                used = b.day_used(site_id, kind)
             except Exception:  # noqa: BLE001
-                hit = False
-            if hit:
-                time.sleep(3)
-                res = fn(site_id)
-                res["retried"] = True
-        return res
+                used = -1
+            self._log(f"配额闸门 site={site_id} kind={kind} used={used} allow={allow} {why}", "debug")
+            return allow, why
+        except Exception as err:  # noqa: BLE001
+            self._log(f"配额闸门异常（site={site_id}）：{err}", "warning")
+            return True, ""
+
+    def _budget_spend(self, site_id: Any, kind: str = "signin") -> None:
+        b = self._budget()
+        if b is None:
+            return
+        try:
+            b.spend(site_id, kind, 1)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ---------------------------------------------------------------- 重试计划
+    def _retry_state(self) -> Dict[str, Any]:
+        try:
+            data = self._plugin.get_data(RETRY_KEY) or {}
+        except Exception:  # noqa: BLE001
+            data = {}
+        return data if isinstance(data, dict) else {}
+
+    def _save_retry_state(self, bucket: Dict[str, Any]) -> None:
+        """只留今天——重试计划天然是「当日」的。"""
+        try:
+            self._plugin.save_data(RETRY_KEY, {_now_date(): dict(bucket or {})})
+        except Exception as err:  # noqa: BLE001
+            self._log(f"重试计划落库失败：{err}", "debug")
+
+    def _plan_retries(self, kind: str, results: List[Dict[str, Any]], retry_keyword: str) -> None:
+        """跑完一轮后重排失败重试计划：成功清掉；命中关键词的延后一次（间隔+抖动，最多 2 次/天）。"""
+        if kind != "sign":
+            return
+        day = _now_date()
+        bucket = dict(self._retry_state().get(day) or {})
+        kw = str(retry_keyword or "").strip()
+        now = time.time()
+        for r in results or []:
+            sid = str(r.get("site_id") or "")
+            if not sid:
+                continue
+            if r.get("ok"):
+                bucket.pop(sid, None)
+                continue
+            if r.get("skipped"):
+                continue
+            msg = str(r.get("message") or "")
+            try:
+                hit = bool(re.search(kw, msg)) if kw else True
+            except Exception:  # noqa: BLE001
+                hit = True
+            # ★ 配额类失败重试没意义（次数上限/预算不足/未执行/熔断）→ 直接放弃，不排重试
+            if any(k in msg for k in ("已达上限", "预算不足", "未执行", "熔断", "每日访问次数")):
+                bucket.pop(sid, None)
+                continue
+            prev = int((bucket.get(sid) or {}).get("tries") or 0)
+            tries = prev + 1
+            if hit and tries < RETRY_MAX_ATTEMPTS:
+                import random as _r  # noqa: WPS433
+
+                delay = (RETRY_GAP_MINUTES + _r.uniform(0.0, RETRY_JITTER_MINUTES)) * 60.0
+                bucket[sid] = {
+                    "tries": tries,
+                    "next": round(now + delay, 1),
+                    "next_at": time.strftime("%H:%M", time.localtime(now + delay)),
+                    "last": msg[:120],
+                }
+                self._log(f"失败待重试：站点 {sid}（第 {tries} 次，{bucket[sid]['next_at']} 再试）— {msg[:60]}", "debug")
+            else:
+                bucket.pop(sid, None)
+        self._save_retry_state(bucket)
+
+    def retry_due(self) -> List[str]:
+        """到点该补一次的签到站点（登录不排重试——登录本身是保活，失败下一轮再说）。"""
+        day = _now_date()
+        bucket = self._retry_state().get(day) or {}
+        now = time.time()
+        out: List[str] = []
+        for sid, info in (bucket or {}).items():
+            try:
+                if int((info or {}).get("tries") or 0) >= RETRY_MAX_ATTEMPTS:
+                    continue
+                if float((info or {}).get("next") or 0) <= now:
+                    out.append(str(sid))
+            except Exception:  # noqa: BLE001
+                continue
+        return out
+
+    def retry_plan_view(self) -> Dict[str, Any]:
+        """给状态接口看的重试计划（省得前端看不见「在等重试」）。"""
+        day = _now_date()
+        return dict(self._retry_state().get(day) or {})
+
+    # ---------------------------------------------------------------- 事件
+    def _trigger_site_refresh(self, site_id: Any) -> None:
+        """Cookie 失效 → 发 `PluginAction site_refresh`（同隔壁），让站点自动登录去刷 Cookie。"""
+        try:
+            from .common import _MF_EVENTS_READY, _MFEventType, _mf_eventmanager  # noqa: WPS433
+        except Exception:  # noqa: BLE001
+            return
+        if not _MF_EVENTS_READY or _mf_eventmanager is None or _MFEventType is None:
+            return
+        try:
+            _mf_eventmanager.send_event(_MFEventType.PluginAction, {"site_id": int(site_id), "action": "site_refresh"})
+            self._log(f"站点 {site_id} Cookie 失效 → 已触发 site_refresh", "info")
+        except Exception as err:  # noqa: BLE001
+            self._log(f"触发 site_refresh 失败（站点 {site_id}）：{err}", "debug")
 
     def run(
         self,
@@ -405,6 +559,11 @@ class SigninEngine:
             flag = "✅" if r.get("ok") else "❌"
             lines.append(f"{flag} {r.get('site_name') or r.get('site_id')}：{r.get('message')}")
         summary = {"total": len(results), "ok": ok_n, "fail": fail_n, "skipped": len(results) - len(done)}
+        # ★ 重试排期：失败且命中关键词 → 当天延后补一次（按 PV 节奏：间隔+抖动、最多 2 次/天）
+        try:
+            self._plan_retries(kind, results, kw)
+        except Exception as err:  # noqa: BLE001
+            self._log(f"重试排期失败：{err}", "debug")
         if lines:
             try:
                 self._plugin._store.journal.record(
@@ -460,6 +619,7 @@ class SigninEngine:
             "sites": out_sites,
             "records": table,
             "today": _now_date(),
+            "retry": self.retry_plan_view(),
             "ts": time.time(),
         }
 

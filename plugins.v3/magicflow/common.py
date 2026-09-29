@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "5.2.3"
+__version__ = "5.3.3"
 
 import bisect
 import copy
@@ -245,8 +245,9 @@ CLOUD_SCAN_MAX = 50
 LIVE_DEFAULT_TTL = 1800.0           # 抓取缓存 TTL(秒)--30min 缓存,同站 30min 内最多 1 次真实抓取
 LIVE_INTERVAL_MINUTES = 30          # 看门狗轮询周期(分钟),避免 PTT 300PV/天 配额迅速耗尽
 # 站点签到 / 模拟登录(借鉴「站点自动签到」插件)
-SIGNIN_INTERVAL_MINUTES = 360       # 签到 worker 轮询周期(分钟)--同站当天已成功自动跳过
-SIGNIN_RETRY_KEYWORD = "错误|失败"   # 失败文案命中则重试一次
+SIGNIN_INTERVAL_MINUTES = 360       # 签到 worker 全量轮询周期(分钟)--同站当天已成功自动跳过
+SIGNIN_TICK_MINUTES = 15            # 签到 worker 调度节拍(分钟)：只为「按 PV 节奏补失败重试」，空闲 tick 不发请求
+SIGNIN_RETRY_KEYWORD = "错误|失败"   # 失败文案命中则（当天延后）重试一次
 SIGNIN_QUEUE = 5                    # 并发站点数
 LIVE_DOWNLOAD_ALERT_MB = 50.0       # 下载量增长告警阈值(MB/分钟)
 LIVE_RATIO_TARGET = 0.5             # 分享率目标线(低于则告警)
