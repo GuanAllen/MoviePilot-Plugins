@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
+from .collect import parse_signin
 from .persistence import OperationItem
 
 SIGNIN_PAGE = "attendance.php"
@@ -69,8 +70,17 @@ class SigninEngine:
         except Exception:  # noqa: BLE001
             return None
 
-    def _get_text(self, site_id: Any, page: str) -> Tuple[str, Optional[str], int]:
-        """复用站点实时抓取层（带 Cookie / UA / 超时 / PV 识别）。"""
+    def _get_text(self, site_id: Any, page: str, kind: str = "signin") -> Tuple[str, Optional[str], int]:
+        """抓站点页（★ 3.38.0：站点请求只出自采集模块 collect，配额/熔断都在那边）。"""
+        c = getattr(self._plugin, "collect", None)
+        if c is not None:
+            try:
+                res = c.site(int(site_id)).page(page, kind=str(kind or "signin"), ttl=0.0)
+                if res.ok:
+                    return res.text, None, int(res.status or 200)
+                return "", res.error or "抓取失败", int(res.status or 0)
+            except Exception as err:  # noqa: BLE001
+                return "", f"采集模块异常: {err}", 0
         live = getattr(self._plugin, "_live", None)
         if live is not None:
             try:
@@ -176,21 +186,19 @@ class SigninEngine:
         if not text:
             msg = f"签到失败：{err or ('HTTP %s' % status)}"
             return self._store_result("sign", site_id, name, False, msg)
-        if PV_LIMIT_RE.search(text):
+        # ★ 3.38.0：页面 → 事实的解析归采集模块（这里只做"该不该记/怎么记"的判断）
+        got = parse_signin(text)
+        if got.get("pv_limited"):
             return self._store_result("sign", site_id, name, False, "站点每日访问次数已达上限（今日不再尝试）")
-        m = SIGNED_RE.search(text)
-        if m or any(t in text for t in SIGNED_TEXTS):
-            bonus = None
-            if m:
-                try:
-                    bonus = float(m.group(1).replace(",", ""))
-                except Exception:  # noqa: BLE001
-                    bonus = None
-            already = "已签" in text or m is not None
-            msg = "今日已签到（+%s 魔力）" % int(bonus) if (already and bonus) else ("今日已签到" if already else "签到成功")
-            return self._store_result("sign", site_id, name, True, msg, bonus=bonus)
-        if LOGIN_HINT_RE.search(text) and not self._is_logged_in(text):
+        if got.get("cookie_dead"):
             return self._store_result("sign", site_id, name, False, "Cookie 已失效或未登录")
+        if got.get("signed"):
+            bonus = got.get("bonus")
+            already = bool(got.get("already"))
+            msg = "今日已签到（+%s 魔力）" % int(bonus) if (already and bonus) else (
+                "今日已签到" if already else "签到成功"
+            )
+            return self._store_result("sign", site_id, name, True, msg, bonus=bonus)
         return self._store_result("sign", site_id, name, True, "已执行（未识别到结果文案，可去站点确认）")
 
     # ---------------------------------------------------------------- 登录
@@ -202,13 +210,19 @@ class SigninEngine:
         if self._is_api_site(site):
             return self._store_result("login", site_id, name, True, "API 站点（跳过）", skipped=True)
         started = time.time()
-        text, err, status = self._get_text(site_id, HOME_PAGE)
-        if not text:
-            msg = f"模拟登录失败：{err or ('HTTP %s' % status)}"
+        # ★ 3.38.0「顺便」：用户栏页（index.php）本来每轮就被站点实时抓（kind=live），
+        #   这里直接读同一份事实 → 保活零额外 PV；TTL 内没有才真抓一次（同一 URL，仍只 1 次）。
+        c = getattr(self._plugin, "collect", None)
+        got: Dict[str, Any] = {}
+        if c is not None:
+            try:
+                got = c.site(int(site_id)).user_bar() or {}
+            except Exception as err:  # noqa: BLE001
+                got = {"ok": False, "error": f"采集模块异常: {err}"}
+        if not got.get("ok"):
+            msg = f"模拟登录失败：{got.get('error') or '抓取失败'}"
             return self._store_result("login", site_id, name, False, msg)
-        if PV_LIMIT_RE.search(text):
-            return self._store_result("login", site_id, name, False, "站点每日访问次数已达上限（今日不再尝试）")
-        if not self._is_logged_in(text):
+        if not got.get("logged_in") and not (got.get("ratio") or got.get("bonus")):
             return self._store_result("login", site_id, name, False, "Cookie 已失效或未登录")
         self._refresh_site(site, seconds=int(time.time() - started))
         return self._store_result("login", site_id, name, True, "模拟登录成功（站点数据已刷新）")

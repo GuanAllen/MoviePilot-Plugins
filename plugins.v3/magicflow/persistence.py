@@ -204,6 +204,9 @@ class TaskState:
     # 用户手动「暂停做种」的种子 hash（小写）。这些种子不再被自动恢复（auto_resume_paused）
     # 重新拉起，直到用户在界面上点「恢复做种」或在下载器里手动启动。
     manual_paused: Set[str] = field(default_factory=set)
+    # 「换种」被下线（暂停做种、**不删种**）的种子 hash（小写）。换种只是不再拉它做种，
+    # 种子与文件全部保留；站点腾出空间后会按需恢复（换回）。
+    swap_paused: Set[str] = field(default_factory=set)
     enabled: bool = True
     revision: int = 0  # 配置版本号，用于 optimistic locking
     # 「考核下载」模式：进入该模式时记录「站点下载量基线」（byte），用于计算本站下载增量。
@@ -256,6 +259,7 @@ class TaskState:
             "pub_tz": self.pub_tz,
             "adopted_hashes": list(self.adopted_hashes),
             "manual_paused": list(self.manual_paused),
+            "swap_paused": list(getattr(self, "swap_paused", set()) or set()),
             "enabled": self.enabled,
             "revision": self.revision,
             "last_phase": self.last_phase,
@@ -300,6 +304,7 @@ class TaskState:
             pub_tz=float(d.get("pub_tz", 0.0) or 0.0),
             adopted_hashes=set(d.get("adopted_hashes", []) or []),
             manual_paused=set(d.get("manual_paused", []) or []),
+            swap_paused=set(d.get("swap_paused", []) or []),
             enabled=d.get("enabled", True),
             revision=d.get("revision", 0),
             exam_download_base=(
@@ -1636,6 +1641,20 @@ class MagicFlowStore:
         state.exam_download_note = str(note or "")
         self.task_states.save(state)
 
+    # -------------------- 自动换种：被下线（暂停做种、不删种）的种子 --------------------
+
+    def get_swap_paused(self, task_id: str) -> Set[str]:
+        """读取本任务被「换种」下线（暂停做种）的种子 hash 集合。"""
+        return self.task_states.get_swap_paused(task_id)
+
+    def mark_swap_paused(self, task_id: str, hashes: Any) -> int:
+        """登记被「换种」下线的种子 hash（返回新增数量）。"""
+        return self.task_states.mark_swap_paused(task_id, hashes)
+
+    def clear_swap_paused(self, task_id: str, hashes: Any) -> int:
+        """销销换种下线登记（站点腾出空间后换回，返回移除数量）。"""
+        return self.task_states.clear_swap_paused(task_id, hashes)
+
     # -------------------- 种子详情页映射（hash→details URL） --------------------
 
     def get_torrent_pages(self, task_id: str) -> Dict[str, str]:
@@ -1855,6 +1874,12 @@ class MagicFlowStore:
                 h for h in mp
                 if (h or "").strip().lower() not in keys
             }
+        sp = getattr(state, "swap_paused", None)
+        if sp:
+            state.swap_paused = {
+                h for h in sp
+                if (h or "").strip().lower() not in keys
+            }
         fu = getattr(state, "torrent_free_until", None)
         if fu:
             fu2 = {
@@ -1907,6 +1932,12 @@ class MagicFlowStore:
         if mp:
             state.manual_paused = {
                 h for h in mp
+                if (h or "").strip().lower() in live
+            }
+        sp = getattr(state, "swap_paused", None)
+        if sp:
+            state.swap_paused = {
+                h for h in sp
                 if (h or "").strip().lower() in live
             }
         after = len(state.protected_torrents) + len(getattr(state, "adopted_hashes", set()) or set())
@@ -1965,6 +1996,44 @@ class MagicFlowStore:
         if len(state.manual_paused) != before:
             self.task_states.save(state)
         return before - len(state.manual_paused)
+
+    # -------------------- 自动换种：换出（暂停做种）记录 --------------------
+
+    def get_swap_paused(self, task_id: str) -> Set[str]:
+        """获取被「换种」下线的种子 hash 集合（暂停做种但保留文件）。"""
+        state = self.task_states.get(task_id)
+        if not state:
+            return set()
+        return set(getattr(state, "swap_paused", set()) or set())
+
+    def mark_swap_paused(self, task_id: str, hashes: Any) -> int:
+        """记录被换种下线的种子（不再自动恢复做种，直到换回）。"""
+        state = self.task_states.get(task_id)
+        if not state:
+            state = self.task_states.create(task_id)
+        keys = {(h or "").strip().lower() for h in (hashes or []) if (h or "").strip()}
+        if not keys:
+            return 0
+        before = len(getattr(state, "swap_paused", set()) or set())
+        state.swap_paused = set(getattr(state, "swap_paused", set()) or set()) | keys
+        if len(state.swap_paused) != before:
+            self.task_states.save(state)
+        return len(state.swap_paused) - before
+
+    def clear_swap_paused(self, task_id: str, hashes: Any) -> int:
+        """取消换种下线标记（换回做种，或种子已不在下载器里）。"""
+        state = self.task_states.get(task_id)
+        if not state:
+            return 0
+        keys = {(h or "").strip().lower() for h in (hashes or []) if (h or "").strip()}
+        if not keys:
+            return 0
+        cur = set(getattr(state, "swap_paused", set()) or set())
+        before = len(cur)
+        state.swap_paused = {h for h in cur if (h or "").strip().lower() not in keys}
+        if len(state.swap_paused) != before:
+            self.task_states.save(state)
+        return before - len(state.swap_paused)
 
     # -------------------- 同站纳管 --------------------
 

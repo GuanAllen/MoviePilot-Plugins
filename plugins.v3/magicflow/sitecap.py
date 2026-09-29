@@ -42,53 +42,72 @@ FW_CUSTOM = "custom"      # 自有框架 / 魔改（判不出但已知不是上�
 FW_UNKNOWN = "unknown"    # 还没识别过
 
 # 特征串（小写匹配）。命中即判定，多个命中取第一个命中的框架。
+try:  # ★ 3.40.0：类型规则包（conf/frameworks.yml）——数据驱动，代码里只留兜底
+    from .rulepack import (
+        builtin_capabilities as _rp_caps_fb,
+        builtin_domains_fallback as _rp_doms_fb,
+        builtin_markers as _rp_markers_fb,
+        capabilities as _rp_caps,
+        builtin_domains as _rp_doms,
+        markers as _rp_markers,
+        pack_ok as _rp_ok,
+    )
+except Exception:  # noqa: BLE001
+    _rp_caps = _rp_doms = _rp_markers = None  # type: ignore[assignment]
+    _rp_caps_fb = _rp_doms_fb = _rp_markers_fb = None  # type: ignore[assignment]
+
+    def _rp_ok() -> bool:  # type: ignore[misc]
+        return False
+
+
 _MARKERS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
-    (FW_NEXUS, ("powered by nexusphp", "nexusphp", "spstate=", "downloadvolumefactor")),
-    (FW_GAZELLE, ("powered by gazelle", "gazelle", "ajax.php?action=browse")),
-    (FW_UNIT3D, ("unit3d", "powered by unit3d")),
-    (FW_MTEAM, ("api.m-team", "m-team.cc", "mteam")),
+    (_rp_markers() if _rp_markers else ()) or (_rp_markers_fb() if _rp_markers_fb else ())
 )
 
 # 框架默认能力。free_index = 能不能「只要免费就只抓免费」，是省 PV 的关键。
-FRAMEWORK_DEFAULTS: Dict[str, Dict[str, Any]] = {
-    FW_NEXUS: {
-        "free_index": True,
-        "free_spstates": (2, 4),
-        "free_url": "{base}/torrents.php?incldead=1&spstate={sp}&page={page}",
-        "page_param": "works",
-        "promo_in_list": True,
-    },
-    FW_GAZELLE: {
-        "free_index": False,
-        "free_spstates": (),
-        "page_param": "unknown",
-        "promo_in_list": False,
-    },
-    FW_UNIT3D: {
-        "free_index": False,
-        "free_spstates": (),
-        "page_param": "unknown",
-        "promo_in_list": True,
-    },
-    FW_MTEAM: {
-        "free_index": False,
-        "free_spstates": (),
-        "page_param": "unknown",
-        "promo_in_list": True,
-    },
-    FW_CUSTOM: {"free_index": False, "free_spstates": (), "page_param": "unknown"},
-    FW_UNKNOWN: {"free_index": False, "free_spstates": (), "page_param": "unknown"},
-}
+# ★ 3.40.0：数据在 conf/frameworks.yml → frameworks.<fw>.capabilities（下面只是兜底）
+def _load_framework_defaults() -> Dict[str, Dict[str, Any]]:
+    """按规则包构造能力表（含 YAML 里没列出的框架 → 用通用兜底）。"""
+    fb = dict(_rp_caps_fb() if _rp_caps_fb else {})
+    out: Dict[str, Dict[str, Any]] = {}
+    names: List[str] = []
+    if _rp_markers is not None and _rp_caps is not None:
+        try:
+            from .rulepack import framework_names as _rp_names
+
+            names = list(_rp_names())
+        except Exception:  # noqa: BLE001
+            names = []
+    for fw in names:
+        try:
+            got = _rp_caps(fw) if _rp_caps else {}
+        except Exception:  # noqa: BLE001
+            got = {}
+        if not got:
+            got = dict(fb.get(fw) or fb.get("unknown") or {})
+        out[fw] = got
+    for fw, val in fb.items():          # 代码兜底项补齐（YAML 缺项也能跑）
+        out.setdefault(fw, dict(val))
+    return out
+
+
+FRAMEWORK_DEFAULTS: Dict[str, Dict[str, Any]] = _load_framework_defaults()
 
 # 内置已知域名（可被覆盖表/探针更新；只是省一次探测）
-BUILTIN_DOMAINS: Dict[str, str] = {
-    "hdfans.org": FW_NEXUS,
-    "pttime.org": FW_NEXUS,
-    "hdtime.org": FW_NEXUS,
-    "cspt.top": FW_NEXUS,
-    "m-team.cc": FW_MTEAM,
-    "soulvoice.club": FW_CUSTOM,
-}
+def _load_builtin_domains() -> Dict[str, str]:
+    """已知域名 → 框架（数据在 conf/frameworks.yml → builtin_domains）。"""
+    out: Dict[str, str] = {}
+    if _rp_doms_fb is not None:
+        out.update(dict(_rp_doms_fb()))
+    if _rp_doms is not None:
+        try:
+            out.update(dict(_rp_doms()))
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
+BUILTIN_DOMAINS: Dict[str, str] = _load_builtin_domains()
 
 # 探针缓存有效期：识别一次能用很久（框架基本不变）
 PROBE_TTL = 30 * 86400.0
@@ -196,6 +215,12 @@ class SiteCap:
         return cap
 
 
+def _known_fw(fw: str) -> bool:
+    """框架是否算「认识」（unknown / 空 = 不认识）。"""
+    f = str(fw or "").strip().lower()
+    return bool(f) and f != FW_UNKNOWN and f != "-"
+
+
 class SiteCapRegistry:
     """站点能力注册表：查表 + 探针 + 持久化。
 
@@ -247,18 +272,44 @@ class SiteCapRegistry:
     def get(self, domain: str) -> SiteCap:
         """查表（不联网）。命中顺序：人工覆盖 > 已识别 > 内置域名表 > 未知。"""
         dom = norm_domain(domain)
+
+        def _alias(a: str, b: str) -> bool:
+            # ★ 3.39.0：别名域也要认得（kp.m-team.cc ≙ m-team.cc / pt.soulvoice.club ≙ soulvoice.club）
+            a, b = norm_domain(a), norm_domain(b)
+            if not a or not b:
+                return False
+            return a == b or a.endswith("." + b) or b.endswith("." + a)
+
         with self._lock:
             self._load()
             if dom in self._override:
                 cap = SiteCap.from_dict({**self._override[dom], "domain": dom})
                 cap.source = "manual"
                 return cap.apply_defaults()
-            if dom in self._caps:
+            # ★ 3.40.0：识别成「未知」的历史记录**不压过**内置域名表
+            #   （踩过：carpt.net 早前那次探测 200 但没抓到特征 → 记成 unknown，之后一直 unknown）
+            if dom in self._caps and _known_fw(self._caps[dom].framework):
                 return self._caps[dom]
+            if dom:
+                for k, item in self._override.items():
+                    if _alias(dom, k):
+                        cap = SiteCap.from_dict({**item, "domain": norm_domain(k)})
+                        cap.source = "manual"
+                        return cap.apply_defaults()
+                for k, cap in self._caps.items():
+                    if _alias(dom, k) and _known_fw(cap.framework):
+                        return cap
         if dom in BUILTIN_DOMAINS:
             cap = SiteCap(domain=dom, framework=BUILTIN_DOMAINS[dom],
                           source="builtin", evidence=f"known-domain:{dom}", ts=time.time())
             return cap.apply_defaults()
+        for k, fw in BUILTIN_DOMAINS.items():
+            if _alias(dom, k):
+                cap = SiteCap(domain=dom, framework=fw,
+                              source="builtin", evidence=f"known-domain:{k}", ts=time.time())
+                return cap.apply_defaults()
+        if dom in self._caps:
+            return self._caps[dom]        # 兜底：仍是那条 unknown 记录（可见）
         return SiteCap(domain=dom)
 
     def all(self) -> Dict[str, SiteCap]:
@@ -369,18 +420,30 @@ class SiteCapRegistry:
                                         source="probe", evidence="no-marker")) 
 
     def _make_fetcher(self, site: Any):
-        """基于 SDK RequestUtils 造一个 ``(url) -> text`` 抓取器（仅本站域名）。"""
-        try:
-            from app.sdk.network import RequestUtils  # noqa: WPS433
-        except Exception:  # noqa: BLE001
-            return None
+        """造一个 ``(url) -> text`` 抓取器（仅本站域名）。
+
+        ★ 3.38.0：优先走采集模块（唯一出口 + 配额闸门）；未注入时退回 SDK。
+        """
         base = (getattr(site, "url", "") or f"https://{getattr(site, 'domain', '')}").rstrip("/")
-        cookie = getattr(site, "cookie", None)
-        ua = getattr(site, "ua", None)
-        try:
-            req = RequestUtils(cookies=cookie, ua=ua, timeout=20, referer=f"{base}/")
-        except Exception:  # noqa: BLE001
-            return None
+        cookie = str(getattr(site, "cookie", None) or "").strip() or None
+        ua = str(getattr(site, "ua", None) or "").strip() or None   # ★ 前导空白 → httpx 判非法头
+
+        _c = getattr(getattr(self, "_plugin", None), "collect", None)
+        _sid = int(getattr(site, "id", 0) or 0)
+        if _c is not None and _sid:
+            try:
+                req = _c.http.client(_sid, kind="sitecap", referer=f"{base}/")
+            except Exception:  # noqa: BLE001
+                return None
+        else:
+            try:
+                from app.sdk.network import RequestUtils  # noqa: WPS433
+            except Exception:  # noqa: BLE001
+                return None
+            try:
+                req = RequestUtils(cookies=cookie, ua=ua, timeout=20, referer=f"{base}/")
+            except Exception:  # noqa: BLE001
+                return None
 
         def _fetch(url: str) -> str:
             if not url.lower().startswith(base.lower()):

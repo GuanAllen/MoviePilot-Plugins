@@ -1,0 +1,263 @@
+# ============================================================
+# 站点类型规则包（数据驱动）★ 3.40.0
+# ============================================================
+# 设计：**解析引擎在代码里，规则数据在这里。**
+#   · 加一个站点类型 = 这里加一段（不改代码）；
+#   · 阈值结论（有无 H&R / 保种小时 / 上限 / 免费体积阈值）**不在这里**——
+#     那是「站点级事实」，只能探测或手填（同框架站之间差异很大）。
+#   · tokens.* 与 patterns.* 都是**正则片段**（不是纯文本），改的时候当正则写。
+#
+# 加载方：magicflow/rulepack.py（YAML 读不到时，代码里保留的同名默认值兜底）。
+# ------------------------------------------------------------
+version: 1
+
+# 未知框架 / 未列出的站用这一档
+defaults:
+  parser: generic
+  probe_paths: [rules.php, myhr.php]
+
+frameworks:
+
+  # ---------------- NexusPHP 家族 ----------------
+  nexusphp:
+    markers: ["powered by nexusphp", "nexusphp", "spstate=", "downloadvolumefactor"]
+    probe_paths: [myhr.php, rules.php]
+    parser: nexus
+    note: >-
+      NexusPHP 家族：H&R/保种以站点 myhr.php / rules.php 为准；
+      促销（体积自动免费/原盘/首集）见站点规则页。同类站结构一致，解析走同一套。
+    tokens:
+      hr:
+        - 'H\s*&\s*R'
+        - 'hit\s*[&a]nd\s*run'
+        - 'hit and run'
+        - '做种率'
+      seed: ['做种', '保种', '挂种', 'seeding', 'seed', 'share\s*time']
+      need: ['必须', '需', '要求', '不得少于', '不少于', '至少', '达到', '以内', '之内', 'at least', 'must', 'minimum']
+      # 明确**不属于** H&R 的上下文（考核/达标/魔力/上传者规则/发布者/捐赠 等）
+      exclude: ['考核', '达标', '魔力', '奖励', '捐赠', '申诉', '免罪', '警告', '相册', '邀请', '邮箱', '注册', '每月', '月做种', '新人', '上传者', '发布者', '发种', '候选', '认领', '保种员', '管理组']  # 保种员/管理组＝角色词，不是 H&R 义务（实测 2026-09-29 咖啡）
+      # ★「可撤种 / 允许撤种」= 允许你停（撤种规定），**不是** H&R 义务。
+      #   只在「明确允许撤」的句子排除；「未达标就撤种」这类义务表述不受影响。
+      permit_withdraw: ['可撤种', '可以撤种', '允许撤种', '可撤除', '即可撤', '可删除种子', '撤种条件不适用']
+      # 上限解析要拒绝的上下文（「10集以下…」的 10 是集数，不是做种数）
+      cap_reject: ['集', '保种员', '考核', '达标']
+    patterns:
+      hours: '(\d+(?:\.\d+)?)\s*(?:个)?\s*(?:小时|小時|個小時|hours?|hrs?|h\b)'
+      days: '(\d+(?:\.\d+)?)\s*(?:天|日|days?)'
+      cap: '(?:最多|上限|同时|做种数|seeding)[^\d\n]{0,12}(\d{1,4})\s*(?:个|個|条|種|种)?(?!\s*(?:集|天|小时|小時|hours?|h\b|G|GB|元|积分|魔力))'
+      rule_need: '必须|需|要求|不得少于|不少于|至少|达到|以内|之内|at least|must|minimum'
+      exam: '指标|平均做种时间|考核|达标线|要求\s*[:：]'
+      free_size:
+        - '(?:总体积|文件体积|体积|大小)[^。\n]{0,12}?大于\s*([\d.]+)\s*(?:G|GB|GiB)[^。\n]{0,30}免费'
+        - '大于\s*([\d.]+)\s*(?:G|GB|GiB)[^。\n]{0,20}自动[^。\n]{0,10}免费'
+      free_original: '(?:Blu-?ray\s*Disk|HD\s*DVD|原盘)[^。\n]{0,40}(?:免费|free)'
+      free_ep1: '每季的第?一集|第1集[^。\n]{0,20}免费|第一集[^。\n]{0,20}免费'
+      # ★ 3.41.2：这些句**不是 H&R 规则** —— 用户栏统计 / 盒子与促销
+      seg_reject_userbar: '可连接|连接数|认领\s*[:：]|H\s*&\s*R\s*[:：]|种子区\s*[:：]|上传量\s*[:：]|下载量\s*[:：]'
+      seg_reject_promo: '盒子|上传速度|下载速度|[Kk]B/s|上传量|优惠|种子体积|免费区'
+
+  # ---------------- Gazelle 家族 ----------------
+    capabilities:
+      free_index: true
+      free_spstates: [2, 4]
+      free_url: "{base}/torrents.php?incldead=1&spstate={sp}&page={page}"
+      page_param: works
+      promo_in_list: true
+  gazelle:
+    markers: ["powered by gazelle", "gazelle", "ajax.php?action=browse"]
+    probe_paths: [rules.php, wiki.php]
+    parser: generic
+    note: Gazelle 家族：规则多为 wiki/rules 页面，关键词解析（低可信），探到明确 H&R 条款才落库。
+    tokens:
+      hr: ['H\s*&\s*R', 'hit\s*[&a]nd\s*run', 'warning']
+      seed: ['seeding', 'seed', '做种', '保种']
+      need: ['must', 'at least', 'minimum', '必须', '至少']
+      exclude: ['bonus', '积分', '魔力', 'donate', '捐赠', 'invite', '邀请']
+      permit_withdraw: ['可撤种', '允许撤种', 'may stop seeding']
+    patterns:
+      hours: '(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h\b)'
+      days: '(\d+(?:\.\d+)?)\s*(?:days?)'
+      cap: '(?:seeding|做种)[^\d\n]{0,12}(\d{1,4})'
+
+  # ---------------- UNIT3D 家族 ----------------
+    capabilities:
+      free_index: false
+      free_spstates: []
+      page_param: unknown
+      promo_in_list: false
+  unit3d:
+    markers: ["unit3d", "powered by unit3d"]
+    probe_paths: [rules, "pages/1"]
+    parser: generic
+    note: UNIT3D 家族：规则在 /rules 等页面；H&R 与免费政策各站自定。
+    tokens:
+      hr: ['H\s*&\s*R', 'hit\s*[&a]nd\s*run']
+      seed: ['seeding', 'seed', '做种', '保种']
+      need: ['must', 'at least', 'minimum', '必须', '至少']
+      exclude: ['bonus', '积分', '魔力', 'donate', '捐赠']
+      permit_withdraw: ['可撤种', '允许撤种']
+    patterns:
+      hours: '(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h\b)'
+      days: '(\d+(?:\.\d+)?)\s*(?:days?)'
+      cap: '(?:seeding|做种)[^\d\n]{0,12}(\d{1,4})'
+
+  # ---------------- M-Team 系 ----------------
+    capabilities:
+      free_index: false
+      free_spstates: []
+      page_param: unknown
+      promo_in_list: true
+  mteam:
+    markers: ["api.m-team", "m-team.cc", "mteam"]
+    probe_paths: [rules.php]
+    parser: generic
+    note: M-Team 系：站点参数走 API，网页规则页信息少；阈值仍按站点判断（cookie 通常为空 → 跳过抓取）。
+    tokens:
+      hr: ['H\s*&\s*R', 'hit\s*[&a]nd\s*run']
+      seed: ['做种', '保种', 'seeding']
+      need: ['必须', '至少', '需']
+      exclude: ['魔力', '积分', '奖励']
+      permit_withdraw: ['可撤种']
+    patterns:
+      hours: '(\d+(?:\.\d+)?)\s*(?:小时|小時|hours?|hrs?|h\b)'
+      days: '(\d+(?:\.\d+)?)\s*(?:天|日|days?)'
+      cap: '(?:做种数|seeding)[^\d\n]{0,12}(\d{1,4})'
+
+  # ---------------- 自有 / 魔改框架 ----------------
+    capabilities:
+      free_index: false
+      free_spstates: []
+      page_param: unknown
+      promo_in_list: true
+  custom:
+    markers: []
+    probe_paths: [rules.php, myhr.php]
+    parser: generic
+    note: 自有/魔改框架：结构不可假定，用通用关键词解析，宁可判「未知」。
+    tokens:
+      hr: ['H\s*&\s*R', 'hit\s*[&a]nd\s*run', '做种率']
+      seed: ['做种', '保种', '挂种', 'seeding', 'seed']
+      need: ['必须', '需', '要求', '至少', '达到']
+      exclude: ['考核', '达标', '魔力', '奖励', '捐赠', '邀请', '新人']
+      permit_withdraw: ['可撤种', '允许撤种']
+    patterns:
+      hours: '(\d+(?:\.\d+)?)\s*(?:个)?\s*(?:小时|小時|hours?|hrs?|h\b)'
+      days: '(\d+(?:\.\d+)?)\s*(?:天|日|days?)'
+      cap: '(?:最多|上限|做种数|seeding)[^\d\n]{0,12}(\d{1,4})'
+
+  # ---------------- 未识别 ----------------
+    capabilities:
+      free_index: false
+      free_spstates: []
+      page_param: unknown
+  unknown:
+    markers: ["powered by", "generator"]
+    probe_paths: [rules.php, myhr.php]
+    parser: generic
+    note: 框架未识别：只做通用关键词解析，不猜。
+    tokens:
+      hr: ['H\s*&\s*R', 'hit\s*[&a]nd\s*run']
+      seed: ['做种', '保种', 'seeding', 'seed']
+      need: ['必须', '需', '要求', '至少']
+      exclude: ['考核', '达标', '魔力', '奖励', '捐赠']
+      permit_withdraw: ['可撤种', '允许撤种']
+    patterns:
+      hours: '(\d+(?:\.\d+)?)\s*(?:个)?\s*(?:小时|小時|hours?|hrs?|h\b)'
+      days: '(\d+(?:\.\d+)?)\s*(?:天|日|days?)'
+      cap: '(?:最多|上限|做种数|seeding)[^\d\n]{0,12}(\d{1,4})'
+    capabilities:
+      free_index: false
+      free_spstates: []
+      page_param: unknown
+
+# ============================================================
+# 已知域名 → 框架（只是**省一次识别**，可被探针/覆盖更新）
+# ============================================================
+builtin_domains:
+  hdfans.org: nexusphp      # 红豆饭
+  pttime.org: nexusphp      # PT时间（PTT）
+  hdtime.org: nexusphp      # 高清时间
+  cspt.top: nexusphp        # 财神
+  cspt.cc: nexusphp         # 财神（备用域）
+  pt.btschool.club: nexusphp  # 学校
+  m-team.cc: mteam          # 馒头
+  kp.m-team.cc: mteam       # 馒头（备用域）
+  soulvoice.club: custom    # 聆音
+  # 2026-09-29 逐站实测（首页 title/generator 均为 Powered by NexusPHP）
+  duckboobee.org: nexusphp    # March
+  novahd.top: nexusphp        # NovaHD（tracker.novahd.top）
+  carpt.net: nexusphp
+  cyanbug.net: nexusphp          # 实测 2026-09-29：title「Powered by NexusPHP」
+  ptcafe.club: nexusphp          # 实测 2026-09-29：咖啡         # CarPT
+  dstudio.me: nexusphp        # Depth Studio
+  yemapt.org: custom          # YemaPT：Docusaurus 文档站，无 rules 页
+
+# ─────────────────────────────────────────────────────────────────────────
+# API 通道表（3.45.0）——「带 API 鉴权的站」怎么调，全部外置
+#   铁律：采集层只认这张表；代码里不许再写站点专属的 URL / 认证头。
+#   * markers：域名/URL/站名里命中任一即归本通道（小写子串）
+#   * base：API 根地址模板，可用 {domain} {site_url}
+#   * auth：header=认证头名，field=站点记录里取值的字段，prefix=前缀（可空）
+#   * envelope：判定业务成功的字段/值（mteam: code=="0"；yemapt: success==true）
+#   * endpoints：逻辑名 → 路径（+ param=该端点要的 ID 参数名）
+#   * body：默认提交形态 json | form（端点可覆盖）
+#   * dl_url：下载凭证 → 直链模板；留空表示端点直接返回直链
+api_channels:
+  mteam:
+    markers:
+      - m-team
+      - mteam
+    base: https://api.{domain}/api
+    auth:
+      header: x-api-key
+      field: apikey
+      prefix: ""
+    envelope:
+      ok_field: code
+      ok_value: "0"
+      err_field: message
+    body: json          # 端点级覆盖见下（mteam 两种形态混用，历史原因）
+    endpoints:
+      profile:
+        path: /member/profile
+        body: json
+      search:
+        path: /torrent/search
+        body: json
+      detail:
+        path: /torrent/detail
+        body: form
+        param: id
+      dl:
+        path: /torrent/genDlToken
+        body: form
+        param: id
+  yemapt:
+    markers:
+      - yemapt
+    base: https://www.yemapt.org/openApi
+    auth:
+      header: Authorization
+      field: apikey
+      prefix: ""
+    envelope:
+      ok_field: success
+      ok_value: true
+      err_field: errorMessage
+    body: json
+    endpoints:
+      profile:
+        path: /user/fetchBasicInfo.json
+        body: json
+      list:
+        path: /torrent/fetchOpenTorrentList.json
+        body: json
+      dl:
+        path: /torrent/generateDownloadKey.json
+        body: json
+        param: id
+      hash:
+        path: /torrent/fetchTorrentIdWithPiecesHash.json
+        body: json
+    dl_url: https://www.yemapt.org/api/torrent/download1?token={key}
+    note: 下载凭证 30 分钟有效；hrPunishEnable 为该站权威 H&R 标记

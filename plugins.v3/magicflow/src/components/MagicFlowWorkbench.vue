@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import TaskEditorDialog from './TaskEditorDialog.vue'
 import {
   cloneTask,
@@ -136,6 +136,15 @@ const ratingSourceItems = [
 ]
 const settingsDialog = ref(false)
 const settingsTab = ref('general')
+const settingsPane = ref('form') // 手机端设置：'dir' = 分类目录页 / 'form' = 分类表单页
+const settingsNavEl = ref(null)
+// ★ 手机端设置分类是单行横向胶囊条：让当前分类自动滚到可见位置（否则打开时总停在最左边）
+function scrollSettingsNavToActive() {
+  const el = settingsNavEl.value?.querySelector('.magicflow-settings-nav__item.is-active')
+  if (el?.scrollIntoView) el.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' })
+}
+watch(settingsDialog, v => { if (v) nextTick(() => scrollSettingsNavToActive()) })
+watch(settingsTab, () => nextTick(() => scrollSettingsNavToActive()))
 const settingsDraft = ref({
   enabled: false,
   show_sidebar_nav: true,
@@ -189,6 +198,7 @@ const settingsDraft = ref({
   live_auto_stop: false,
   live_kill_unfree: true,
   live_kill_delete_files: true,
+  promo_guard: true,
   live_notify: true,
   crossseed_guard: true,
   crossseed_guard_pct: 5,
@@ -327,16 +337,18 @@ function taskSwitchSubtitle(task) {
 }
 // ── ★ 页面注册表（数据驱动，新增功能页只改这个数组，不必动布局）──────────────
 // key 与 open* 处理函数一一对应；后续接入手机端导航 / 底栏 / 更多菜单时统一从这里取。
+// scope='global' = 插件级单例（不按任务配）；'view' = 只读视图。
+// ★ 权责口径见 docs/MODULES.md：全局单例的功能页必须显式标注，避免被当成「任务级」。
 const MF_PAGES = [
-  { key: 'recommend', label: '推荐', icon: 'mdi-movie-star-outline' },
-  { key: 'exam', label: '新手考核', icon: 'mdi-school-outline' },
-  { key: 'signin', label: '签到', icon: 'mdi-calendar-check-outline' },
-  { key: 'cloud', label: '云盘归档', icon: 'mdi-cloud-upload-outline' },
-  { key: 'douban', label: '豆瓣评分', icon: 'mdi-database-search-outline' },
-  { key: 'crossseed', label: '跨站取种', icon: 'mdi-swap-horizontal-bold' },
-  { key: 'ceiling', label: '站点容量', icon: 'mdi-gauge' },
-  { key: 'ops', label: '操作记录', icon: 'mdi-history' },
-  { key: 'settings', label: '插件设置', icon: 'mdi-tune-variant' },
+  { key: 'recommend', label: '推荐', icon: 'mdi-movie-star-outline', scope: 'global' },
+  { key: 'exam', label: '新手考核', icon: 'mdi-school-outline', scope: 'global' },
+  { key: 'signin', label: '签到', icon: 'mdi-calendar-check-outline', scope: 'global' },
+  { key: 'cloud', label: '云盘归档', icon: 'mdi-cloud-upload-outline', scope: 'global' },
+  { key: 'douban', label: '豆瓣评分', icon: 'mdi-database-search-outline', scope: 'global' },
+  { key: 'crossseed', label: '跨站取种', icon: 'mdi-swap-horizontal-bold', scope: 'global' },
+  { key: 'ceiling', label: '站点容量', icon: 'mdi-gauge', scope: 'view' },
+  { key: 'ops', label: '操作记录', icon: 'mdi-history', scope: 'view' },
+  { key: 'settings', label: '插件设置', icon: 'mdi-tune-variant', scope: 'global' },
 ]
 // 统一分发：新增功能页只改 MF_PAGES + 这里加一行
 function mfOpenPage(page) {
@@ -348,21 +360,25 @@ function mfOpenPage(page) {
     case 'douban': return openDoubanService()
     case 'crossseed': return showCrossseed()
     case 'ceiling': return openCeiling()
-    case 'ops': return openOperations()
+    case 'ops': return openOperations('all')
     case 'settings': return openSettings()
   }
 }
 const opsOpen = ref(false)
-// 操作记录独立页（当前任务的流水）
-function openOperations() {
+// 操作记录作用域：'all' = 主页入口（跨任务 / 跨站点汇总）；'task' = 任务详情入口（当前任务）。
+// ★ 主页是全局视角，绝不能把「单个任务」的流水摆在主页（既别扭又不合语义）。
+const opsScope = ref('all')
+function openOperations(scope = 'all') {
+  opsScope.value = scope
   opsOpen.value = true
-  if (selectedTaskId.value) loadOperations(selectedTaskId.value)
+  if (scope === 'all') loadOperationsAll()
+  else if (selectedTaskId.value) loadOperations(selectedTaskId.value)
+  else operationData.value = { operations: [], total: 0 }
 }
 // 设置页目录（手机端：标签栏 → 目录列表；桌面端仍用标签栏）
 const MF_SETTINGS_TABS = [
   { key: 'general', label: '常规', icon: 'mdi-cog-outline' },
-  { key: 'downloader', label: '下载器参数', icon: 'mdi-download-network-outline' },
-  { key: 'paths', label: '下载目录', icon: 'mdi-folder-outline' },
+  { key: 'downloader', label: '下载与目录', icon: 'mdi-download-network-outline' },
   { key: 'template', label: '默认任务模板', icon: 'mdi-file-document-outline' },
   { key: 'iyuu', label: 'IYUU 辅种', icon: 'mdi-sync' },
   { key: 'fallback', label: '元数据兜底', icon: 'mdi-database-search-outline' },
@@ -433,6 +449,8 @@ const mobileLiveCount = computed(() => {
   const set = new Set()
   for (const t of tasks.value) {
     if (t.builtin) continue
+    // 只数「魔力站」（刷流任务的数字口径是上传量，不算进时魔总览）
+    if (t.task_type === 'brush') continue
     const m = t.run_mode || 'running'
     if (m === 'seeding' || m === 'running') set.add(t.site_name || t.id)
   }
@@ -491,7 +509,7 @@ function mobileRowLine(t) {
 }
 // 列表行右侧主数：刷魔力任务给时魔（/h），刷流任务给上传量
 function mobileRowNum(t) {
-  if (t.task_type === 'brush') return t.task_uploaded ? formatBytes(t.task_uploaded) : ''
+  if (t.task_type === 'brush') return t.task_uploaded ? `↑ ${formatBytes(t.task_uploaded)}` : ''
   if (t.site_bonus_ok && t.site_bonus_per_hour != null) return formatBonus(t.site_bonus_per_hour)
   return ''
 }
@@ -504,7 +522,7 @@ const MF_DETAIL_ENTRIES = [
 ]
 function mobileDetailEntry(entry) {
   const e = typeof entry === 'string' ? { key: entry } : entry
-  if (e.action === 'ops') return openOperations()
+  if (e.action === 'ops') return openOperations('task')
   activeTab.value = activeTab.value === e.key ? 'overview' : e.key
 }
 const mobileDetailCards = computed(() => {
@@ -891,6 +909,7 @@ async function loadStatus() {
         live_auto_stop: status.value.live.auto_stop,
         live_kill_unfree: status.value.live.kill_unfree,
         live_kill_delete_files: status.value.live.kill_delete_files,
+        promo_guard: status.value.live.promo_guard !== false,
         live_notify: status.value.live.notify,
         exam_enabled: status.value.live.exam_enabled,
         exam_include_pass: status.value.live.exam_include_pass,
@@ -1019,7 +1038,7 @@ async function loadCandidates(taskId) {
   }
 }
 
-// 加载操作记录。
+// 加载操作记录（单任务）。
 async function loadOperations(taskId) {
   try {
     operationData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/tasks/${taskId}/operations`)) || {
@@ -1029,6 +1048,31 @@ async function loadOperations(taskId) {
   } catch (err) {
     error.value = err?.message || String(err)
   }
+}
+
+// 加载操作记录（全局：最近 100 条，跨任务 / 跨站点）。
+async function loadOperationsAll() {
+  opsLoadingAll.value = true
+  try {
+    operationData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/operations`)) || {
+      operations: [],
+      total: 0,
+    }
+  } catch (err) {
+    error.value = err?.message || String(err)
+  } finally {
+    opsLoadingAll.value = false
+  }
+}
+
+const opsLoadingAll = ref(false)
+// 操作记录全局视图：task_id → 任务名（静默池是常驻伪任务，任务列表里没有它的条目）。
+function taskLabel(taskId) {
+  if (!taskId) return '—'
+  if (taskId === '__silent_host__') return '静默池'
+  if (taskId.startsWith('silent:')) return '静默·' + taskId.slice('silent:'.length)
+  const t = tasks.value.find((x) => x.id === taskId)
+  return t ? t.name || taskId : taskId
 }
 
 // ---- 推荐甄别（价值生命周期） ----
@@ -1781,14 +1825,30 @@ async function detailTorrentAction(action) {
 }
 
 // 打开插件设置弹窗。
-async function openSettings(tab = 'general') {
-  settingsTab.value = tab
+async function openSettings(tab = '') {
+  settingsTab.value = tab || 'general'
+  // 手机端：从「设置」按钮进 → 先给分类目录页；从功能格指定分类进 → 直达该分类表单页。
+  settingsPane.value = isNarrow.value && !tab ? 'dir' : 'form'
   settingsDialog.value = true
   await Promise.all([loadDownloaderPrefs(), loadDefaults(), loadIyuuSites()])
-  if (tab === 'fallback') loadFallback()
-  if (tab === 'cloud') loadCloud()
-  if (tab === 'rules') loadRules()
-  if (tab === 'tags') loadTags()
+  if (settingsTab.value === 'fallback') loadFallback()
+  if (settingsTab.value === 'cloud') loadCloud()
+  if (settingsTab.value === 'rules') loadRules()
+  if (settingsTab.value === 'tags') loadTags()
+}
+
+// 设置分类「跳转」：目录页点分类 → 进入该分类表单页（手机端）。
+function openSettingsTab(key) {
+  settingsTab.value = key
+  settingsPane.value = 'form'
+}
+
+function settingsTabLabel(key) {
+  return (MF_SETTINGS_TABS.find(t => t.key === key) || {}).label || '插件设置'
+}
+
+function backToSettingsDir() {
+  settingsPane.value = 'dir'
 }
 
 // ── 标签模型 ─────────────────────────────────────────────
@@ -2077,8 +2137,9 @@ async function refreshRules() {
 
 function ruleSourceText(row) {
   const src = row?.hours_src
-  const base = ({ manual: '手填', probe: '页面探测', builtin: '内置', default: '全局默认' })[src] || src || '-'
+  const base = ({ manual: '手填', welcome: '收件箱规则', probe: '页面探测', builtin: '内置', default: '全局默认' })[src] || src || '-'
   if (src === 'probe' && row?.confidence && row.confidence !== 'high') return `${base}(低可信)`
+  if (row?.hr_src === 'retired') return `${base}`
   return base
 }
 
@@ -2263,8 +2324,7 @@ async function saveDefaults() {
 // 保存当前设置标签页。
 function saveActiveSettings() {
   const tab = settingsTab.value
-  if (tab === 'downloader') return saveDownloaderPrefs()
-  if (tab === 'paths') return savePathsTab()
+  if (tab === 'downloader') return saveDownloaderAndPaths()
   if (tab === 'template') return saveDefaults()
   if (tab === 'iyuu') return saveIyuu()
   if (tab === 'fallback') return saveSettings()
@@ -2277,6 +2337,31 @@ async function saveCloud() {
   await saveSettings()
   await loadCloud()
   await testCloud()
+}
+
+// 保存「下载与目录」标签：qBittorrent 全局参数 + 全局路径 + 任务保存目录（一次存齐）。
+async function saveDownloaderAndPaths() {
+  saving.value = true
+  try {
+    const data = unwrapResponse(
+      await props.api.post(`${pluginBase.value}/downloader/prefs`, normalizeDownloaderPrefs(downloaderPrefsDraft.value)),
+    )
+    if (data && data.available) {
+      downloaderPrefsDraft.value = normalizeDownloaderPrefs(data)
+      downloaderPrefsRaw.value = data.raw || null
+    }
+    unwrapResponse(
+      await props.api.post(`${pluginBase.value}/downloader/paths`, normalizeDownloaderPaths(downloaderPathsDraft.value)),
+    )
+    unwrapResponse(await props.api.post(`${pluginBase.value}/defaults`, normalizeDefaults(defaultsDraft.value)))
+    notify('下载与目录已保存')
+    await loadStatus()
+    emit('action')
+  } catch (err) {
+    error.value = err?.message || String(err)
+  } finally {
+    saving.value = false
+  }
 }
 
 // 保存「下载目录」标签：qBittorrent 全局路径 + 任务保存目录（默认模板）。
@@ -2657,7 +2742,7 @@ onUnmounted(() => {
         <div class="mh-hero" role="button" tabindex="0" @click="openCeiling()">
           <div class="mh-hero__main">
             <div class="mh-hero__v">{{ mobileBonus }}<small>/h</small></div>
-            <div class="mh-hero__s">{{ mobileLiveCount }} 个站在跑<template v-if="mobileCeilingPct > 0"> · 上限占用 {{ mobileCeilingPct }}%</template><template v-if="mobileTodayGain > 0"> · 今日 +{{ mobileTodayGain.toFixed(1) }}</template></div>
+            <div class="mh-hero__s">{{ mobileLiveCount }} 个魔力站在跑<template v-if="mobileCeilingPct > 0"> · 上限占用 {{ mobileCeilingPct }}%</template><template v-if="mobileTodayGain > 0"> · 今日 +{{ mobileTodayGain.toFixed(1) }}</template></div>
           </div>
           <VIcon icon="mdi-chevron-right" size="22" class="mh-hero__chev" />
         </div>
@@ -2715,7 +2800,7 @@ onUnmounted(() => {
             @click="mfOpenPage(p)"
           >
             <VIcon :icon="p.icon" size="20" />
-            <span>{{ p.label }}</span>
+            <span>{{ p.label }}<em v-if="p.scope === 'global'" class="mh-tool__scope">全局</em></span>
           </button>
         </div>
         <div class="mh-foot">
@@ -3586,11 +3671,12 @@ onUnmounted(() => {
         <header class="magicflow-settings-dialog__head">
           <span class="magicflow-settings-dialog__title">操作记录</span>
           <span class="magicflow-ops-dialog__spacer" />
-          <VBtn icon="mdi-refresh" size="small" variant="text" aria-label="刷新" @click="loadOperations(selectedTaskId)" />
+          <VBtn icon="mdi-refresh" size="small" variant="text" aria-label="刷新" :loading="opsLoadingAll" @click="opsScope === 'all' ? loadOperationsAll() : loadOperations(selectedTaskId)" />
           <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="opsOpen = false" />
         </header>
         <div class="magicflow-ops-dialog__sub">
-          {{ selectedTask ? (selectedTask.name || '当前任务') : '未选择任务' }} · 每次执行 / 选种 / 删种 / 保护 / 标签 的流水
+          <template v-if="opsScope === 'all'">全部任务 · 跨站点汇总 · 每次执行 / 选种 / 删种 / 保护 / 标签 的流水（最近 100 条）</template>
+          <template v-else>{{ selectedTask ? (selectedTask.name || '当前任务') : '未选择任务' }} · 每次执行 / 选种 / 删种 / 保护 / 标签 的流水</template>
         </div>
         <div class="magicflow-ops-dialog__body">
           <div class="magicflow-events">
@@ -3599,6 +3685,7 @@ onUnmounted(() => {
               <div>
                 <strong>
                   {{ operationKindText(record.kind) }}
+                  <VChip v-if="opsScope === 'all'" size="x-small" variant="text" class="ml-1 magicflow-ops-dialog__task">{{ taskLabel(record.task_id) }}</VChip>
                   <VChip size="x-small" variant="tonal" :color="operationColor(record)" class="ml-2">{{ operationStateText(record.state) }}</VChip>
                 </strong>
                 <span>{{ operationSummary(record) }}</span>
@@ -3651,18 +3738,27 @@ onUnmounted(() => {
     <VDialog v-model="settingsDialog" max-width="40rem" :fullscreen="isNarrow">
       <VCard class="magicflow-dialog magicflow-settings-dialog">
         <header class="magicflow-settings-dialog__head">
-          <span class="magicflow-settings-dialog__title">插件设置</span>
+          <VBtn
+            v-if="isNarrow && settingsPane === 'form'"
+            icon="mdi-arrow-left"
+            size="small"
+            variant="text"
+            aria-label="返回设置目录"
+            @click="backToSettingsDir"
+          />
+          <span class="magicflow-settings-dialog__title">{{ isNarrow && settingsPane === 'form' ? settingsTabLabel(settingsTab) : '插件设置' }}</span>
+          <span class="magicflow-scope-tag">全局</span>
           <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="settingsDialog = false" />
         </header>
 
-        <div class="magicflow-settings-nav">
+        <div v-if="!isNarrow || settingsPane === 'dir'" class="magicflow-settings-nav" ref="settingsNavEl">
           <button
             v-for="t in MF_SETTINGS_TABS"
             :key="t.key"
             type="button"
             class="magicflow-settings-nav__item"
             :class="{ 'is-active': settingsTab === t.key }"
-            @click="settingsTab = t.key"
+            @click="openSettingsTab(t.key)"
           >
             <VIcon :icon="t.icon" size="18" />
             <span>{{ t.label }}</span>
@@ -3671,8 +3767,7 @@ onUnmounted(() => {
 
         <VTabs v-model="settingsTab" class="magicflow-settings-dialog__tabs" density="comfortable" show-arrows>
           <VTab value="general" class="magicflow-settings-tab">常规</VTab>
-          <VTab value="downloader" class="magicflow-settings-tab">下载器参数</VTab>
-          <VTab value="paths" class="magicflow-settings-tab">下载目录</VTab>
+          <VTab value="downloader" class="magicflow-settings-tab">下载与目录</VTab>
           <VTab value="template" class="magicflow-settings-tab">默认任务模板</VTab>
           <VTab value="iyuu" class="magicflow-settings-tab">IYUU 辅种</VTab>
           <VTab value="fallback" class="magicflow-settings-tab">元数据兜底</VTab>
@@ -3685,11 +3780,11 @@ onUnmounted(() => {
           <VTab value="rules" class="magicflow-settings-tab">站点规则</VTab>
           <VTab value="tags" class="magicflow-settings-tab">标签管理</VTab>
         </VTabs>
-        <VDivider />
+        <VDivider v-if="!isNarrow || settingsPane === 'form'" />
 
-        <div class="magicflow-settings-dialog__body">
+        <div v-if="!isNarrow || settingsPane === 'form'" class="magicflow-settings-dialog__body">
           <div v-if="settingsTab === 'general'" class="magicflow-settings-form">
-            <VSwitch v-model="settingsDraft.enabled" label="启用插件" color="primary" hide-details inset />
+            <VSwitch v-model="settingsDraft.enabled" label="启用插件（总开关）" color="primary" hide-details inset />
             <VSwitch
               v-model="settingsDraft.show_sidebar_nav"
               label="显示侧栏入口"
@@ -3864,9 +3959,8 @@ onUnmounted(() => {
               hide-details
               inset
             />
-          </div>
 
-          <div v-else-if="settingsTab === 'paths'" class="magicflow-settings-form">
+            <VDivider class="my-3" />
             <p class="magicflow-settings-hint">
               qBittorrent 全局目录，写入后影响所有使用该下载器的插件。
             </p>
@@ -3895,9 +3989,8 @@ onUnmounted(() => {
             />
 
             <VDivider class="my-2" />
-            <div class="text-subtitle-2 font-weight-medium">任务保存目录</div>
             <p class="magicflow-settings-hint">
-              仅对魔流生效，不影响下载器全局设置。
+              任务保存目录：仅对魔流生效，不影响下载器全局设置。
             </p>
             <VTextField
               v-model="defaultsDraft.save_path"
@@ -3909,6 +4002,7 @@ onUnmounted(() => {
               density="comfortable"
             />
           </div>
+
 
           <div v-else-if="settingsTab === 'iyuu'" class="magicflow-settings-form">
             <p class="magicflow-settings-hint">
@@ -4168,9 +4262,62 @@ onUnmounted(() => {
             <div class="magicflow-settings-switches">
               <VSwitch v-model="settingsDraft.live_enabled" label="启用站点实时数据 + 流量监控" color="primary" hide-details inset />
               <VSwitch v-model="settingsDraft.live_notify" label="命中告警时推送通知" color="primary" hide-details inset />
-              <VSwitch v-model="settingsDraft.live_kill_unfree" label="★ 下载量异常增长 → 去站点「正在下载」列表，把非免费的种从下载器干掉" color="primary" hide-details inset />
-              <VSwitch v-model="settingsDraft.live_kill_delete_files" label="干掉时连文件一起删（只动「下载中」且名称+体积对得上的种）" color="primary" hide-details inset />
               <VSwitch v-model="settingsDraft.live_auto_stop" label="同时把该站「运行中」任务切「做种中」（停调度、不删种）" color="primary" hide-details inset />
+            </div>
+
+            <VDivider class="my-3" />
+            <p class="magicflow-settings-hint">
+              <strong>流量兜底</strong>：下载中被判「非免费」就干掉，避免白烧下载量。
+              三处都会核对：<em>任务内</em>回种子详情页核对（开关在任务「高级」里，受本总开关约束）、
+              <em>全局</em>用站点「正在下载」列表核对、<em>取种期间</em>核对来源站。共用下面这个总开关。
+            </p>
+            <div class="magicflow-settings-switches">
+              <VSwitch v-model="settingsDraft.promo_guard" label="启用流量兜底（关掉 = 下面三项都只告警、不动手）" color="primary" hide-details inset />
+            </div>
+            <div class="magicflow-settings-switches">
+              <VSwitch v-model="settingsDraft.live_kill_unfree" :disabled="!settingsDraft.promo_guard" label="全局：下载量异常增长 → 站点「正在下载」列表里非免费的种，从下载器干掉" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.live_kill_delete_files" :disabled="!settingsDraft.promo_guard || !settingsDraft.live_kill_unfree" label="干掉时连文件一起删（只动「下载中」且名称+体积对得上的种）" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.crossseed_guard" :disabled="!settingsDraft.promo_guard" label="取种期间：核对来源站免费状态与下载量增量，判错就删种并拉黑该站（强烈建议）" color="primary" hide-details inset />
+            </div>
+            <div class="magicflow-settings-grid">
+              <VTextField
+                v-model.number="settingsDraft.crossseed_guard_pct"
+                type="number"
+                min="0"
+                max="100"
+                step="0.5"
+                :disabled="!settingsDraft.promo_guard || !settingsDraft.crossseed_guard"
+                label="下载增量阈值（体积的 %）"
+                hint="来源站下载增量 > 目标体积 × 该值 即判定「不免费」，默认 5%"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="settingsDraft.crossseed_guard_min_mb"
+                type="number"
+                min="0"
+                step="10"
+                :disabled="!settingsDraft.promo_guard || !settingsDraft.crossseed_guard"
+                label="最小判定增量（MB）"
+                hint="避免统计抖动误判，默认 50MB"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="settingsDraft.crossseed_guard_interval_min"
+                type="number"
+                min="1"
+                max="1440"
+                step="1"
+                :disabled="!settingsDraft.promo_guard || !settingsDraft.crossseed_guard"
+                label="兜底核对间隔（分钟）"
+                hint="同一来源站两次核对的间隔，默认 15 分钟（各花 1 次站点请求）"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
             </div>
             <div class="magicflow-settings-grid">
               <VTextField
@@ -4303,13 +4450,38 @@ onUnmounted(() => {
 
           <div v-else-if="settingsTab === 'rules'" class="magicflow-settings-form">
             <p class="magicflow-settings-hint">
-              站点规则库：<strong>H&amp;R / 最短保种时长 / 做种上限</strong>。
-              跨站取种的「来源份」在兄弟站仍背 H&amp;R 义务（例：学校 BTSchool 要挂种 10 小时），
-              这张表决定保种多久。优先级：<strong>手填 &gt; 页面探测 &gt; 内置 &gt; 全局默认</strong>；
+              <strong>全站 H&amp;R 的唯一入口</strong>：H&amp;R 有无 / 最短保种时长 / 做种上限都在这一页
+              （跨站取种的「来源份」在兄弟站同样背 H&amp;R 义务，例：学校 BTSchool 要挂种 10 小时）。
+              优先级：<strong>手填 &gt; 页面探测 &gt; 内置 &gt; 全局默认</strong>；
               探测遵循「宁保守勿乐观」—— 抓不到就保持原值，绝不假设「没有 H&amp;R」。
             </p>
             <div class="magicflow-settings-switches">
               <VSwitch v-model="settingsDraft.rules_auto_refresh" label="每周自动逐站探测规则并入库" color="primary" hide-details inset />
+            </div>
+
+            <VDivider class="my-3" />
+            <p class="magicflow-settings-hint">
+              <strong>H&amp;R 来源</strong>：只认<strong>收件箱「欢迎短讯」里给出的规则地址</strong>（🔗 已存下，可点开）；
+              页面里顺带抓到的 H&amp;R 不算数。默认时长给<strong>表里未收录</strong>的站点兜底；
+              每站的时长直接改上表的「<strong>保种(h)</strong>」列（手填覆盖，优先级最高）。
+            </p>
+            <div class="magicflow-settings-grid">
+              <VTextField
+                v-model.number="settingsDraft.crossseed_seed_hours_default"
+                type="number"
+                min="0"
+                max="720"
+                step="1"
+                label="默认最短保种时长（小时）"
+                hint="未收录站点的 H&R 保种时长，默认 24h"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+            </div>
+            <div class="magicflow-settings-switches">
+              <VSwitch v-model="settingsDraft.crossseed_guard_keep_seed" label="来源份 H&R 保护（保种期内任何任务不得删/改标签）" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.crossseed_reclaim" label="H&R 期满后回收来源份（只删种子不删文件）" color="warning" hide-details inset />
             </div>
             <div class="magicflow-rules-actions">
               <VBtn size="small" color="primary" variant="tonal" :loading="rulesProbing" @click="probeRules()">
@@ -4364,12 +4536,22 @@ onUnmounted(() => {
                   <em v-if="row.seed_hours_seen != null">(看到{{ row.seed_hours_seen }}h)</em>
                 </span>
                 <span>
+                  <VBtn
+                    v-if="row.rule_url"
+                    size="x-small"
+                    variant="text"
+                    icon
+                    :href="String(row.rule_url).split(/\s+/)[0]"
+                    target="_blank"
+                    rel="noopener"
+                    :title="'规则地址（来自收件箱欢迎短讯，已存下）：' + row.rule_url"
+                  ><VIcon size="x-small">mdi-link-variant</VIcon></VBtn>
                   <VBtn size="x-small" variant="text" :disabled="rulesProbing" @click="probeRules(row.domain)">探测</VBtn>
                 </span>
               </div>
             </div>
             <p class="magicflow-settings-hint">
-              「保种(h)」直接改 = 写入手填覆盖（等同于跨站页的「站点保种时长」）。
+              「保种(h)」直接改 = 写入手填覆盖（最高优先级：手填 &gt; 探测 &gt; 内置 &gt; 全局默认）。
             </p>
           </div>
 
@@ -4460,78 +4642,10 @@ onUnmounted(() => {
               跨站免费取种：本站<strong>非免费</strong>的候选（或本地没有的免费种）→ 去<strong>兄弟站免费下</strong>，
               下完再把目标站的种子指向同一批文件回辅（校验通过才保留）。
               <br />
-              <strong>兄弟站流量兜底</strong>：判「免费」可能出错（解析错 / 促销变了），一旦错了就是白烧兄弟站流量。
-              启用后会在取种期间核对来源站<strong>免费状态</strong>与<strong>下载量增量</strong>，
-              发现其实不免费<strong>立即删种并拉黑该站</strong>（需到工作台「跨站」页人工解除）。
+              本页只管「<strong>怎么取种</strong>」：
+              <strong>流量兜底</strong>（含取种期间核对来源站）已在「<strong>站点监控 → 流量兜底</strong>」统一配置；
+              <strong>H&amp;R</strong>（保种时长 / 来源份保护 / 期满回收）在「<strong>站点规则</strong>」页。
             </p>
-            <div class="magicflow-settings-switches">
-              <VSwitch v-model="settingsDraft.crossseed_guard" label="启用兄弟站流量兜底（强烈建议）" color="primary" hide-details inset />
-            </div>
-            <div class="magicflow-settings-switches">
-              <VSwitch v-model="settingsDraft.crossseed_guard_keep_seed" label="来源份 H&R 保护（保种期内任何任务不得删/改标签）" color="primary" hide-details inset />
-              <VSwitch v-model="settingsDraft.crossseed_reclaim" label="H&R 期满后回收来源份（只删种子不删文件）" color="warning" hide-details inset />
-            </div>
-            <div class="magicflow-settings-grid">
-              <VTextField
-                v-model.number="settingsDraft.crossseed_guard_pct"
-                type="number"
-                min="0"
-                max="100"
-                step="0.5"
-                label="下载增量阈值（体积的 %）"
-                hint="来源站下载增量 > 目标体积 × 该值 即判定「不免费」，默认 5%"
-                persistent-hint
-                variant="outlined"
-                density="comfortable"
-              />
-              <VTextField
-                v-model.number="settingsDraft.crossseed_guard_min_mb"
-                type="number"
-                min="0"
-                step="10"
-                label="最小判定增量（MB）"
-                hint="避免统计抖动误判，默认 50MB"
-                persistent-hint
-                variant="outlined"
-                density="comfortable"
-              />
-              <VTextField
-                v-model.number="settingsDraft.crossseed_guard_interval_min"
-                type="number"
-                min="1"
-                max="1440"
-                step="1"
-                label="兜底核对间隔（分钟）"
-                hint="同一来源站两次核对的间隔，默认 15 分钟（会各花 1 次站点请求）"
-                persistent-hint
-                variant="outlined"
-                density="comfortable"
-              />
-              <VTextField
-                v-model.number="settingsDraft.crossseed_seed_hours_default"
-                type="number"
-                min="0"
-                max="720"
-                step="1"
-                label="默认最短保种时长（小时）"
-                hint="来源站未单独指定时的 H&R 保种时长，默认 24h"
-                persistent-hint
-                variant="outlined"
-                density="comfortable"
-              />
-              <VCombobox
-                v-model="settingsDraft.crossseed_site_hours"
-                label="站点保种时长（域名=小时）"
-                hint="按站点覆盖，例：pt.btschool.club=10（学校要挂 10h）。回车可加多个"
-                persistent-hint
-                variant="outlined"
-                density="comfortable"
-                chips
-                multiple
-                clearable
-                :items="['pt.btschool.club=10', 'hdfans.org=24', 'cspt.top=0']"
-              />
-            </div>
           </div>
 
           <div v-else-if="settingsTab === 'fallback'" class="magicflow-settings-form">
@@ -5204,8 +5318,8 @@ onUnmounted(() => {
             <span><strong>{{ crossseedData.sources_count || 0 }}</strong> 来源份 H&R 保种中</span>
           </div>
           <div class="magicflow-recommend-dialog__note">
-            在他站**免费**下 → 下完把目标站种子指向同一批文件回辅（校验通过才保留）。
-            本站判断「非免费」的候选只走跨站，**绝不在本站下载**。
+            在他站<strong>免费</strong>下 → 下完把目标站种子指向同一批文件回辅（校验通过才保留）。
+            本站判断「非免费」的候选只走跨站，<strong>绝不在本站下载</strong>。
           </div>
 
           <!-- ★ 流量兜底 -->
@@ -5215,7 +5329,7 @@ onUnmounted(() => {
                 <div class="text-subtitle-2 font-weight-medium">兄弟站流量兜底</div>
                 <div class="text-body-2 text-medium-emphasis">
                   判「免费」可能出错 → 取种期间核对来源站免费状态 + 下载量增量：
-                  发现其实不免费立即**删种 + 拉黑该站**（需人工确认后解除）
+                  发现其实不免费立即<strong>删种 + 拉黑该站</strong>（需人工确认后解除）
                 </div>
               </div>
               <VBtn
@@ -5950,6 +6064,15 @@ onUnmounted(() => {
   padding: 16px 18px 12px;
 }
 
+.magicflow-scope-tag {
+  margin-inline-start: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 1.6;
+  opacity: 0.6;
+  border: 1px solid currentColor;
+}
 .magicflow-settings-dialog__title {
   font-size: 1.05rem;
   font-weight: 600;
@@ -8248,6 +8371,16 @@ onUnmounted(() => {
   color: rgba(231, 234, 246, 0.66); font: inherit; font-size: 12px; cursor: pointer;
 }
 .magicflow-page .mh-tool:active { background: rgba(139, 123, 240, 0.14); }
+.magicflow-page .mh-tool__scope {
+  margin-inline-start: 4px;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-style: normal;
+  font-size: 10px;
+  line-height: 1.5;
+  opacity: 0.66;
+  border: 1px solid currentColor;
+}
 .magicflow-page .mh-foot { display: flex; gap: 10px; margin-block-start: 22px; }
 
 .magicflow-page .mh-btn {
@@ -8336,8 +8469,37 @@ onUnmounted(() => {
 .magicflow-ops-dialog { display: flex; flex-direction: column; }
 .magicflow-ops-dialog__spacer { flex: 1 1 auto; }
 .magicflow-ops-dialog__sub { padding: 6px 18px 4px; font-size: 12px; color: rgba(231, 234, 246, 0.55); }
-.magicflow-ops-dialog__body { padding: 6px 18px 20px; overflow: auto; }
+.magicflow-ops-dialog__body { padding: 6px 18px 20px; overflow: auto; flex: 1 1 auto; min-height: 0; }
+/* 操作记录 / 站点容量 弹窗：让列表撑满卡片可滚区，不再被 .magicflow-events 的 52dvh 上限截断，下方留一大片空白 */
+.magicflow-ops-dialog .magicflow-events { max-block-size: none; margin-block-start: 0; padding-inline-end: 0; overflow: visible; }
 .magicflow-ceiling-dialog { display: flex; flex-direction: column; }
+
+/* ── ★ 功能弹窗统一：卡片纵向 flex + 正文吃掉剩余高度（消除手机端全屏弹窗底部大片留白）──
+   原先这些弹窗正文被限高（推荐/考核 68dvh、云盘 70dvh）且卡片不伸展 → 全屏时下半屏全空。 */
+.magicflow-cloud-dialog,
+.magicflow-douban-dialog,
+.magicflow-crossseed-dialog,
+.magicflow-recommend-dialog,
+.magicflow-exam-dialog,
+.magicflow-torrent-dialog {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  max-block-size: 92vh;
+  overflow: hidden;
+}
+.magicflow-cloud-dialog__body,
+.magicflow-douban-dialog__body,
+.magicflow-crossseed-dialog__body,
+.magicflow-recommend-dialog__body {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  max-block-size: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* 种子详情：内容在顶、操作按钮钉底，中间自然撑开（手机端全屏不再留白）*/
+.magicflow-torrent-dialog__actions { margin-block-start: auto; }
 .magicflow-ceiling-list { display: flex; flex-direction: column; gap: 15px; }
 .magicflow-ceiling-row__head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .magicflow-ceiling-row__nm { font-size: 14px; font-weight: 650; }
@@ -8353,7 +8515,16 @@ onUnmounted(() => {
 }
 @media (max-width: 959px) {
   .magicflow-settings-dialog__tabs { display: none; }
-  .magicflow-settings-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 12px 16px; }
+  /* ★ 手机端设置：分类「目录页」（2 列网格，恢复 3.33.0 版式）。
+     点分类 = 跳转到该分类的「表单页」——目录不再和表单挤在同一屏，正文拿回整屏高度。 */
+  .magicflow-settings-nav {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px; padding: 12px 16px 18px; overflow: visible;
+  }
+  .magicflow-settings-nav__item {
+    padding: 18px 10px; font-size: 12.5px;
+  }
+  .magicflow-settings-nav__item.is-active { background: rgba(139, 123, 240, 0.22); }
 }
 
 /* ── ★ 功能页（整页弹窗）内部网格手机端适配 ───────────────── */
@@ -8399,5 +8570,20 @@ onUnmounted(() => {
 .magicflow-dialog::-webkit-scrollbar-thumb:hover {
   background: rgba(var(--v-border-color), 0.5);
   background-clip: content-box;
+}
+</style>
+
+<!-- ★ 手机端底部安全区：MP 的 AI 悬浮球固定在右下角，会压住最后一屏内容 -->
+<style>
+@media (max-width: 959px) {
+  .magicflow-page--m-list,
+  .magicflow-page--m-detail { padding-bottom: 92px; }
+  .magicflow-ops-dialog__body,
+  .magicflow-settings-dialog__body,
+  .magicflow-cloud-dialog__body,
+  .magicflow-douban-dialog__body,
+  .magicflow-crossseed-dialog__body,
+  .magicflow-recommend-dialog__body { padding-bottom: 92px; }
+  .magicflow-torrent-dialog { padding-bottom: 92px; }
 }
 </style>

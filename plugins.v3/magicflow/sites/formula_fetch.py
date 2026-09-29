@@ -92,6 +92,30 @@ class FormulaCapture:
         }
 
 
+# ★ 3.38.0：站点请求唯一出口 = 采集模块。这里注入；未注入（离线单测）退回 SDK。
+_COLLECT = None
+
+
+def set_collect(ref: Any) -> None:
+    """注入采集模块（由插件 init 调用）。"""
+    global _COLLECT
+    _COLLECT = ref
+
+
+def _mk_client(site: Any, base: str, kind: str, cookie: Any = None, ua: Any = None,
+               timeout: int = 20):
+    """造一个 ``.get_res(url)`` 客户端：优先采集模块（配额/缓存/观测），否则 SDK。"""
+    sid = int(getattr(site, "id", 0) or 0)
+    if _COLLECT is not None and sid:
+        try:
+            return _COLLECT.http.client(sid, kind=kind, referer=f"{base}/")
+        except Exception:  # noqa: BLE001
+            pass
+    from app.sdk.network import RequestUtils  # noqa: WPS433
+    return RequestUtils(cookies=cookie, ua=ua, timeout=timeout, referer=f"{base}/")
+
+
+
 def _strip_tags(text: str) -> str:
     """去标签 + 实体解码 + 折叠空白，用于 legend 文本抽取。"""
     text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", text, flags=re.S | re.I)
@@ -342,6 +366,29 @@ def parse_mteam_bonus(payload: Optional[dict]) -> FormulaCapture:
     return cap
 
 
+# ★ M-Team 官方魔力公式常量（来源：官方 wiki「官方種子魔力獎勵公式」+
+#   ``/api/tracker/mybonus`` 实测）。用于 API 拿不到参数时**离线兜底**（不依赖会话/网络）：
+#     B = B0 * 2/pi * arctan( A / L )
+#     A = Σ_{i=1..min(n,cap)} ( 1 - 10^(-Ti/T0) ) * Si * ( 1 + sqrt(2) * 10^(-(Ni-1)/(N0-1)) )
+# 注：站点**无做种数上限**；``cap`` 只是「**计入魔力**」的收益上限（超过后时魔不再增长）。
+_MTEAM_WIKI_PARAMS: Dict[str, Any] = {"t0": 4.0, "n0": 7.0, "b0": 50.0, "l": 300.0}
+_MTEAM_WIKI_EXTRA: Dict[str, Any] = {"seeding_count_cap": 100, "per_torrent_flat": 0.1}
+
+
+def mteam_builtin_formula() -> FormulaCapture:
+    """M-Team 内置公式常量（官方 wiki 公开）—— API 失败时的离线兜底。"""
+    cap = FormulaCapture(source="mteam-wiki", note="M-Team 官方公式常量（wiki + API 实测）")
+    cap.params = dict(_MTEAM_WIKI_PARAMS)
+    cap.extra = dict(_MTEAM_WIKI_EXTRA)
+    cap.expr_a = (
+        "A = sigma_{i=1..min(n,cap)}( ( 1 - 10 ^ ( - Ti / T0 ) ) * Si * "
+        "( 1 + sqrt( 2 ) * 10 ^ ( - ( Ni - 1 ) / ( N0 - 1 ) ) ) )"
+    )
+    cap.expr_b = "B = B0 * 2 / pi * arctan( A / L )"
+    cap.ok = True
+    return cap
+
+
 def fetch_mteam_bonus(site: Any, timeout: int = 30) -> FormulaCapture:
     """用站点 API Key（``x-api-key``）抓 M-Team 的魔力公式与时魔。"""
     apikey = (getattr(site, "apikey", None) or "").strip()
@@ -386,7 +433,11 @@ def fetch_mteam_bonus(site: Any, timeout: int = 30) -> FormulaCapture:
         if cap.ok:
             return cap
         note = cap.note
-    return FormulaCapture(source="mteam-api", note=note or "M-Team API 全部失败")
+    # ★ 3.46.0：API 拿不到（如 x-api-key 无权限 / 站点收紧）→ 回退官方 wiki 常量，
+    #   保证馒头时魔估算仍按官方公式（T0=4/N0=7/B0=50/L=300），零网络依赖。
+    fallback = mteam_builtin_formula()
+    fallback.note = f"{note or 'M-Team API 全部失败'} → 已回退官方 wiki 常量"
+    return fallback
 
 
 def fetch_site_formula(site: Any, timeout: int = 30) -> FormulaCapture:
@@ -421,7 +472,7 @@ def fetch_site_formula(site: Any, timeout: int = 30) -> FormulaCapture:
         return FormulaCapture(source="mybonus.php", note=f"SDK 不可用: {err}")
 
     try:
-        req = RequestUtils(cookies=cookie, ua=ua, timeout=timeout, referer=f"{base}/")
+        req = _mk_client(site, base, "formula", cookie=cookie, ua=ua, timeout=timeout)
         resp = req.get_res(url)
     except Exception as err:
         return FormulaCapture(source="mybonus.php", note=f"请求失败: {err}")
@@ -508,7 +559,7 @@ def fetch_torrent_promotion(site: Any, page_url: str, timeout: int = 20) -> Dict
     except Exception as err:
         return {"promotion": "unknown", "raw": "", "error": f"SDK 不可用: {err}"}
     try:
-        req = RequestUtils(cookies=cookie, ua=ua, timeout=timeout, referer=f"{base}/")
+        req = _mk_client(site, base, "promo", cookie=cookie, ua=ua, timeout=timeout)
         resp = req.get_res(url)
     except Exception as err:
         return {"promotion": "unknown", "raw": "", "error": f"请求失败: {err}"}
@@ -554,7 +605,7 @@ def fetch_user_torrent_urls(
     except Exception:
         return {}
     try:
-        req = RequestUtils(cookies=cookie, ua=ua, timeout=timeout, referer=f"{base}/")
+        req = _mk_client(site, base, "seeding", cookie=cookie, ua=ua, timeout=timeout)
         resp = req.get_res(url)
     except Exception:
         return {}
@@ -666,7 +717,7 @@ def fetch_seeding_list(site: Any, userid: Any, timeout: int = 25) -> list:
     except Exception:
         return []
     try:
-        req = RequestUtils(cookies=cookie, ua=ua, timeout=timeout, referer=f"{base}/")
+        req = _mk_client(site, base, "seeding", cookie=cookie, ua=ua, timeout=timeout)
         resp = req.get_res(url)
     except Exception:
         return []
@@ -753,7 +804,7 @@ def fetch_official_titles(site: Any, pages: int = 2, timeout: int = 25) -> list:
         return []
 
     try:
-        req = RequestUtils(cookies=cookie, ua=ua, timeout=timeout, referer=f"{base}/")
+        req = _mk_client(site, base, "official", cookie=cookie, ua=ua, timeout=timeout)
     except Exception:
         return []
 
