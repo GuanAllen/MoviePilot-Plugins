@@ -94,7 +94,7 @@ class SigninEngine:
             return str(getattr(site, key, "") or "").strip()
 
         timeout = int(getattr(site, "timeout", 0) or 0)
-        return {
+        ctx = {
             "id": getattr(site, "id", None),
             "name": _s("name"),
             "url": _s("url"),
@@ -107,6 +107,18 @@ class SigninEngine:
             "render": bool(getattr(site, "render", 0)),
             "timeout": timeout or None,
         }
+        # ★ API 通道信息（馒头 x-api-key / 叶PT Authorization）：处理器可直接用
+        try:
+            from .collect import api_base, api_channel, is_api_site  # noqa: WPS433
+
+            ctx["api_base"] = api_base(site)
+            tname, cfg = api_channel(site)
+            ctx["api_channel"] = tname
+            ctx["api_auth"] = dict((cfg or {}).get("auth") or {})
+            ctx["is_api_site"] = is_api_site(site)
+        except Exception as err:  # noqa: BLE001
+            self._log(f"构造 API 通道信息失败：{err}", "debug")
+        return ctx
 
     def _run_handler(self, kind: str, site: Any, handler: Any, site_id: Any, name: str) -> Dict[str, Any]:
         """调用专用处理器并落库。"""
@@ -143,6 +155,31 @@ class SigninEngine:
     def _is_api_site(site: Any) -> bool:
         host = f"{getattr(site, 'domain', '') or ''} {getattr(site, 'url', '') or ''}".lower()
         return any(k in host for k in API_SITE_DOMAINS)
+
+    @staticmethod
+    def _collect_is_api(site: Any) -> bool:
+        """采集模块口径的「API 鉴权站」（看站点配置里鉴权字段是否真有值）。"""
+        try:
+            from .collect import is_api_site  # noqa: WPS433
+
+            return bool(is_api_site(site))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _api_ping(self, site_id: Any) -> Tuple[bool, str]:
+        """API 鉴权站的「保活」（等效签到）：走采集模块的后台 API 档案。"""
+        c = getattr(self._plugin, "collect", None)
+        if c is None:
+            return False, "采集模块不可用"
+        try:
+            got = c.site(int(site_id)).user_bar() or {}
+        except Exception as err:  # noqa: BLE001
+            return False, f"采集模块异常: {err}"
+        if not got.get("ok"):
+            return False, str(got.get("error") or "抓取失败")
+        if not got.get("logged_in") and not (got.get("ratio") or got.get("bonus")):
+            return False, "密钥/Cookie 已失效"
+        return True, "后台 API 保活成功（站点数据已刷新）"
 
     @staticmethod
     def _is_logged_in(text: str) -> bool:
@@ -235,13 +272,14 @@ class SigninEngine:
         name = _site_name(site, site_id)
         if not site:
             return {"site_id": site_id, "site_name": name, "ok": False, "message": "站点不存在"}
-        # ① 站点专用处理器（HDSky OCR / U2 随机 / 馒头 API / CHD 表单 …）
+        # ① API 鉴权站（馒头 / 叶PT）：没有 attendance 页 → 用后台 API 保活（等效「签到」）
+        if self._collect_is_api(site) or self._is_api_site(site):
+            ok, msg = self._api_ping(site_id)
+            return self._store_result("sign", site_id, name, ok, f"API 站：{msg}")
+        # ② 站点专用处理器（HDSky OCR / U2 随机 / CHD·HDChina 表单 …）
         h = self._handler(site)
         if h is not None:
             return self._run_handler("sign", site, h, site_id, name)
-        # ② API 鉴权站（无网页可签）
-        if self._is_api_site(site):
-            return self._store_result("sign", site_id, name, True, "API 站点无签到页（跳过）", skipped=True)
         text, err, status = self._get_text(site_id, SIGNIN_PAGE)
         if not text:
             msg = f"签到失败：{err or ('HTTP %s' % status)}"
