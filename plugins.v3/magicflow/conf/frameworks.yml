@@ -260,4 +260,11 @@ api_channels:
         path: /torrent/fetchTorrentIdWithPiecesHash.json
         body: json
     dl_url: https://www.yemapt.org/api/torrent/download1?token={key}
+    # ★ 5.7.0：JS 单页站 —— 首页 HTML 只有空壳，考核只能从后台接口读（带站点 cookie）
+    exam_api:
+      path: /api/user/profile
+      field: examTask
+      metrics:
+        promotionUploadAmount: 上传增量
+        promotionDownloadAmount: 下载增量
     note: 下载凭证 30 分钟有效；hrPunishEnable 为该站权威 H&R 标记

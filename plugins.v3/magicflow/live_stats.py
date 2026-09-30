@@ -18,6 +18,7 @@ security：cookie 只发给该站点自己的域名；不落盘、不外传、�
 from __future__ import annotations
 
 import html as _html
+import json
 import re
 import threading
 import time
@@ -174,6 +175,102 @@ def parse_site_free(raw: Any) -> Optional[Dict[str, Any]]:
     except (ValueError, OverflowError):
         pass
     return {"on": bool(days is None or days > 0), "start": start, "end": end, "days_left": days}
+
+
+# ── ★ 5.7.0：JS/API 类站点的考核（站点后台接口直接给结构化考核）────────────
+#   YemaPT 这类站首页是 JS 单页应用，HTML 里只有空壳 → 网页解析永远读不到；
+#   但它的 `/api/user/profile` 直接返回 examTask{taskName,beginTime,endTime,itemList[]}。
+#   通道表里配 ``exam_api: {path, field, metrics}`` 即可（采集层只认表）。
+EXAM_METRIC_LABELS = {
+    "promotionuploadamount": "上传增量",
+    "promotiondownloadamount": "下载增量",
+    "promotionupload": "上传增量",
+    "promotiondownload": "下载增量",
+    "promotionbonus": "魔力增量",
+    "promotionpoint": "积分增量",
+    "promotionseedtime": "做种时间增量",
+    "promotionseedingcount": "做种数增量",
+}
+
+
+def _fmt_bytes(value: Any) -> str:
+    """字节 → 人读字符串（`32212254720` → `30 GB`）。"""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return ""
+    for unit, div in (("TB", 1024.0 ** 4), ("GB", 1024.0 ** 3), ("MB", 1024.0 ** 2), ("KB", 1024.0), ("B", 1.0)):
+        if abs(v) >= div or unit == "B":
+            got = v / div
+            txt = f"{got:.2f}".rstrip("0").rstrip(".")
+            return f"{txt} {unit}"
+    return ""
+
+
+def parse_exam_task(raw: Any, metrics: Any = None) -> Optional[Dict[str, Any]]:
+    """解析接口式考核对象 → **与 ``parse_exam`` 完全同一 schema**（前端不用分支）。
+
+    YemaPT ``/api/user/profile`` → ``data.examTask``:
+    ``{taskName, status, beginTime, endTime, completedCount, requiredCount, itemList:[{metric, targetValue, currentValue, isCompleted}]}``
+    单位为**字节**；`metric` 由通道表的 ``metrics`` 映射成中文标签。
+    """
+    if not isinstance(raw, dict):
+        return None
+    items_raw = raw.get("itemList")
+    if not raw.get("taskName") and not items_raw:
+        return None
+    labels = dict(EXAM_METRIC_LABELS)
+    if isinstance(metrics, dict):
+        labels.update({str(k).strip().lower(): str(v) for k, v in metrics.items() if str(k).strip()})
+    out: Dict[str, Any] = {
+        "name": str(raw.get("taskName") or ""),
+        "start": str(raw.get("beginTime") or ""),
+        "end": str(raw.get("endTime") or ""),
+        "days_left": None,
+        "items": [],
+        "source": "api",
+    }
+    for it in items_raw or []:
+        if not isinstance(it, dict):
+            continue
+        metric = str(it.get("metric") or "").strip()
+        tgt, cur = it.get("targetValue"), it.get("currentValue")
+        try:
+            gb_req = float(tgt) / (1024.0 ** 3)
+        except (TypeError, ValueError):
+            gb_req = None
+        try:
+            gb_cur = float(cur) / (1024.0 ** 3)
+        except (TypeError, ValueError):
+            gb_cur = None
+        item: Dict[str, Any] = {
+            "idx": "",
+            "label": labels.get(metric.lower(), metric or "指标"),
+            "req": _fmt_bytes(tgt),
+            "cur": _fmt_bytes(cur),
+            "pass": bool(it.get("isCompleted")),
+            "req_num": gb_req,
+            "cur_num": gb_cur,
+            "unit": "GB",
+        }
+        if gb_req is not None:
+            item["req_gb"] = gb_req
+            item["cur_gb"] = gb_cur
+            item["short_gb"] = max(0.0, round(gb_req - (gb_cur or 0.0), 3))
+        out["items"].append(item)
+    if out["end"] and out["days_left"] is None:
+        try:
+            e = time.mktime(time.strptime(out["end"], "%Y-%m-%d %H:%M:%S"))
+            out["days_left"] = round((e - time.time()) / 86400.0, 2)
+        except (ValueError, OverflowError):
+            pass
+    out["failed"] = [i["label"] for i in out["items"] if not i.get("pass")]
+    out["all_pass"] = bool(out["items"]) and not out["failed"]
+    out["active"] = bool(out["all_pass"] is False and out["items"])
+    if out["days_left"] is not None and out["days_left"] <= 0:
+        out["ended"] = True
+        out["active"] = False
+    return out
 
 
 def parse_exam(raw: Any) -> Optional[Dict[str, Any]]:
@@ -388,6 +485,58 @@ class LiveStats:
         # 采集模块不可用（极早启动阶段）→ 不自行发请求（唯一出口纪律）
         return "", "采集模块不可用", 0
 
+    def _exam_from_api(self, site_id: int, site: Any) -> Optional[Dict[str, Any]]:
+        """★ 5.7.0：从站点**后台接口**读考核（JS 单页站专用；通道表 ``exam_api`` 驱动）。
+
+        例：YemaPT 首页是 JS 空壳，但 ``GET /api/user/profile``（带站点 cookie）
+        直接返回 ``data.examTask``。读不到/没配 → None（不猜）。
+        """
+        try:
+            try:
+                from . import collect as _C  # noqa: WPS433
+            except ImportError:
+                import collect as _C  # type: ignore  # noqa: WPS433
+            ep = _C.exam_api(site) if hasattr(_C, "exam_api") else {}
+        except Exception:  # noqa: BLE001
+            ep = {}
+        if not isinstance(ep, dict) or not ep:
+            return None
+        path = str(ep.get("path") or "").strip()
+        if not path:
+            return None
+        if path.startswith("http"):
+            url = path
+        else:
+            base = str(getattr(site, "url", "") or f"https://{getattr(site, 'domain', '')}")
+            try:
+                from urllib.parse import urlsplit  # noqa: WPS433
+
+                sp = urlsplit(base)
+                root = f"{sp.scheme}://{sp.netloc}" if sp.scheme else base.rstrip("/")
+            except Exception:  # noqa: BLE001
+                root = base.rstrip("/")
+            url = f"{root}/{path.lstrip('/')}"
+        c = getattr(self._plugin, "collect", None)
+        if c is None:
+            return None
+        try:
+            res = c.http.text(int(site_id), url, kind="exam", ttl=1800.0)
+        except Exception:  # noqa: BLE001
+            return None
+        if not getattr(res, "ok", False):
+            return None
+        try:
+            payload = json.loads(getattr(res, "text", "") or "{}")
+        except Exception:  # noqa: BLE001
+            return None
+        field = str(ep.get("field") or "examTask")
+        node = payload.get(field) if isinstance(payload, dict) else None
+        if node is None and isinstance(payload, dict):
+            inner = payload.get("data")
+            if isinstance(inner, dict):
+                node = inner.get(field)
+        return parse_exam_task(node, ep.get("metrics"))
+
     def _fetch_once(self, site_id: int, page: str = DEFAULT_PAGE) -> Dict[str, Any]:
         """真抓一次（无缓存）。返回 {ok, ...}；异常一律 ok=False（绝不抛出）。"""
         site = self._site(site_id)
@@ -421,6 +570,14 @@ class LiveStats:
                 for _k in ("uid", "ratio", "upload", "download", "bonus")
                 if bar.get(_k) not in (None, 0.0, "")
             ]
+            # ★ 5.7.0：API 站的考核（通道表 exam_api）也一并读
+            try:
+                if bool(getattr(self, "exam_enabled", False)):
+                    _ex = self._exam_from_api(int(site_id), site)
+                    if _ex:
+                        out["exam"] = _ex
+            except Exception:  # noqa: BLE001
+                pass
             return out
         # ★ 3.38.0：PV 记账与预算闸门已内置在采集模块（collect.http），这里不再重复
         base = (getattr(site, "url", "") or f"https://{getattr(site, 'domain', '')}").rstrip("/")
@@ -440,6 +597,9 @@ class LiveStats:
         try:
             if bool(getattr(self, "exam_enabled", False)):
                 exam = parse_exam(text)
+                if not exam:
+                    # ★ 5.7.0：网页读不到 → 试试站点后台接口（JS 单页站）
+                    exam = self._exam_from_api(int(site_id), site)
             else:
                 exam = None
         except Exception:  # noqa: BLE001
