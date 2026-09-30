@@ -232,6 +232,33 @@ api_channels:
         path: /torrent/genDlToken
         body: form
         param: id
+    # ★ 5.8.0：馒头没有「网页考核区块」这类可抓的结构，但官方新人考核标准是**固定阈值**
+    #   （wiki 帳號規則：上傳>30G、下載>15G、做種獲得魔力>6000，注册后 30 天；任一不达标=禁用）
+    #   数据全部来自**官方 API 白名单** `/member/profile` → 合规，不读网页会话。
+    exam_rule:
+      name: 新手考核
+      window_days: 30
+      metrics:
+        - label: 上传量
+          field: upload
+          target: 32212254720          # 30 GiB
+          target_h: 30 GB
+        - label: 下载量
+          field: download
+          target: 16106127360          # 15 GiB
+          target_h: 15 GB
+        - label: 魔力值
+          field: bonus
+          target: 6000
+          target_h: 6000
+          unit: point
+      guard:
+        label: 分享率安全线
+        field: ratio
+        min: 0.3
+        when_field: download
+        when_gt: 10737418240           # 下载 > 10 GiB 且分享率 < 0.3 → 立即禁用（无宽限）
+        hint: "≥0.3"
   yemapt:
     markers:
       - yemapt

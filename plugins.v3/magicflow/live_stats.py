@@ -273,6 +273,124 @@ def parse_exam_task(raw: Any, metrics: Any = None) -> Optional[Dict[str, Any]]:
     return out
 
 
+def parse_exam_rule(bar: Any, rule: Any, now: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    """★ 5.8.0：**规则式考核** —— 站点不给考核区块，但官方标准是**固定阈值**时，
+    用白名单接口里的自己数据推算（馒头：上传>30G / 下载>15G / 魔力>6000，注册后 30 天）。
+
+    ★ 合规性：数据全部来自**官方 API 白名单端点**（``/member/profile``），不读网页会话。
+    ``rule`` 来自通道表 ``exam_rule``；``bar`` 是采集归一后的用户栏（含 created）。
+    """
+    if not isinstance(bar, dict) or not isinstance(rule, dict):
+        return None
+    metas = rule.get("metrics") or []
+    if not metas:
+        return None
+    now = time.time() if now is None else float(now)
+    out: Dict[str, Any] = {
+        "name": str(rule.get("name") or "新手考核"),
+        "start": str(bar.get("created") or ""),
+        "end": "",
+        "days_left": None,
+        "items": [],
+        "source": "api-rule",
+    }
+    win = rule.get("window_days")
+    if out["start"] and win:
+        try:
+            s = time.mktime(time.strptime(out["start"], "%Y-%m-%d %H:%M:%S"))
+            e = s + float(win) * 86400.0
+            out["start"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(s))
+            out["end"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(e))
+            out["days_left"] = round((e - now) / 86400.0, 2)
+        except (ValueError, OverflowError, TypeError):
+            pass
+
+    def _mk(label, cur_n, tgt_n, ok, req_h, bytes_unit):
+        item: Dict[str, Any] = {
+            "idx": "",
+            "label": label,
+            "req": req_h,
+            "cur": _fmt_bytes(cur_n) if bytes_unit else ("" if cur_n is None else f"{cur_n:g}"),
+            "pass": bool(ok),
+            "req_num": tgt_n,
+            "cur_num": cur_n,
+            "unit": "GB" if bytes_unit else "",
+        }
+        if tgt_n is not None and cur_n is not None:
+            if bytes_unit:
+                item["req_gb"] = tgt_n / (1024.0 ** 3)
+                item["cur_gb"] = cur_n / (1024.0 ** 3)
+                item["short_gb"] = max(0.0, round(item["req_gb"] - item["cur_gb"], 3))
+            else:
+                item["short_num"] = max(0.0, tgt_n - cur_n)
+        return item
+
+    for i, m in enumerate(metas, 1):
+        if not isinstance(m, dict):
+            continue
+        field = str(m.get("field") or "")
+        bytes_unit = str(m.get("unit") or "bytes") == "bytes"
+        try:
+            cur_n = float(bar.get(field))
+        except (TypeError, ValueError):
+            cur_n = None
+        try:
+            tgt_n = float(m.get("target"))
+        except (TypeError, ValueError):
+            tgt_n = None
+        op = str(m.get("op") or ">")
+        ok = cur_n is not None and tgt_n is not None
+        if ok:
+            ok = {
+                ">": cur_n > tgt_n,
+                ">=": cur_n >= tgt_n,
+                "<": cur_n < tgt_n,
+                "<=": cur_n <= tgt_n,
+            }.get(op, cur_n > tgt_n)
+        item = _mk(str(m.get("label") or field), cur_n, tgt_n, ok, str(m.get("target_h") or ""), bytes_unit)
+        item["idx"] = str(i)
+        out["items"].append(item)
+
+    # 附加安全线（复合条件，如馒头「注冊未満 30 天下載>10G 且分享率<0.3 → 直接禁用」）
+    g = rule.get("guard")
+    if isinstance(g, dict):
+        try:
+            cur_n = float(bar.get(str(g.get("field") or "ratio")))
+        except (TypeError, ValueError):
+            cur_n = None
+        try:
+            when_cur = float(bar.get(str(g.get("when_field") or "")))
+            when_gt = float(g.get("when_gt"))
+            triggered = when_cur > when_gt
+        except (TypeError, ValueError):
+            triggered = False
+        try:
+            mn = float(g.get("min"))
+        except (TypeError, ValueError):
+            mn = None
+        ok = not (triggered and cur_n is not None and mn is not None and cur_n < mn)
+        item = _mk(
+            str(g.get("label") or "安全线"),
+            None if triggered else cur_n,
+            None,
+            ok,
+            str(g.get("hint") or ""),
+            False,
+        )
+        item["cur"] = "" if cur_n is None else f"{cur_n:g}"
+        item["pass"] = bool(ok)
+        item["idx"] = str(len(out["items"]) + 1)
+        out["items"].append(item)
+
+    out["failed"] = [i["label"] for i in out["items"] if not i.get("pass")]
+    out["all_pass"] = bool(out["items"]) and not out["failed"]
+    out["active"] = bool(out["all_pass"] is False and out["items"])
+    if out["days_left"] is not None and out["days_left"] <= 0:
+        out["ended"] = True
+        out["active"] = False
+    return out
+
+
 def parse_exam(raw: Any) -> Optional[Dict[str, Any]]:
     """解析 NexusPHP「新手考核 / 新人进站考核」区块。
 
@@ -485,6 +603,37 @@ class LiveStats:
         # 采集模块不可用（极早启动阶段）→ 不自行发请求（唯一出口纪律）
         return "", "采集模块不可用", 0
 
+    def _exam_from_rule(self, site_id: int, site: Any, bar: Any = None) -> Optional[Dict[str, Any]]:
+        """★ 5.8.0：**规则式考核** —— 站点不给考核区块、但官方标准是固定阈值时，
+        用**官方 API 白名单字段**推算（馒头：上传>30G/下载>15G/魔力>6000，注册后 30 天）。
+
+        数据源＝``/member/profile``（官方明确允许第三方调用），**不读网页会话 → 合规**。
+        """
+        try:
+            try:
+                from . import collect as _C  # noqa: WPS433
+            except ImportError:
+                import collect as _C  # type: ignore  # noqa: WPS433
+            rule = _C.exam_rule(site) if hasattr(_C, "exam_rule") else {}
+        except Exception:  # noqa: BLE001
+            rule = {}
+        if not isinstance(rule, dict) or not rule.get("metrics"):
+            return None
+        if bar is None:
+            c = getattr(self._plugin, "collect", None)
+            if c is None:
+                return None
+            try:
+                bar = c.site(int(site_id)).user_bar(force=True)
+            except Exception:  # noqa: BLE001
+                return None
+        if not isinstance(bar, dict) or not bar.get("ok"):
+            return None
+        try:
+            return parse_exam_rule(bar, rule)
+        except Exception:  # noqa: BLE001
+            return None
+
     def _exam_from_api(self, site_id: int, site: Any) -> Optional[Dict[str, Any]]:
         """★ 5.7.0：从站点**后台接口**读考核（JS 单页站专用；通道表 ``exam_api`` 驱动）。
 
@@ -574,6 +723,9 @@ class LiveStats:
             try:
                 if bool(getattr(self, "exam_enabled", False)):
                     _ex = self._exam_from_api(int(site_id), site)
+                    if not _ex:
+                        # ★ 5.8.0：没有接口式考核 → 试官方规则推算（白名单字段）
+                        _ex = self._exam_from_rule(int(site_id), site, bar)
                     if _ex:
                         out["exam"] = _ex
             except Exception:  # noqa: BLE001
@@ -600,6 +752,9 @@ class LiveStats:
                 if not exam:
                     # ★ 5.7.0：网页读不到 → 试试站点后台接口（JS 单页站）
                     exam = self._exam_from_api(int(site_id), site)
+                if not exam:
+                    # ★ 5.8.0：也没有接口 → 试官方规则推算
+                    exam = self._exam_from_rule(int(site_id), site)
             else:
                 exam = None
         except Exception:  # noqa: BLE001
