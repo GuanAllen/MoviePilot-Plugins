@@ -142,8 +142,14 @@ class ExamMixin:
                 })
                 notes.append(f"目标:本站魔力 {target:.0f}(当前 {bonus:.0f},还差 {short:.0f})达到后自动停;魔力靠多挂种 / 挂老种")
             else:
-                entry["kind"] = "hold"
-                notes.append("靠「保持做种 + 增加做种数(多辅种)」改善,不需要新任务;别停该站任务、别删种")
+                # 简版考核（没给具体数值）：只放行「上传/下载/魔力/积分」类，不硬套「保持做种」
+                if any(k in label for k in ("上传", "下载", "魔力", "积分", "分享率")):
+                    entry["kind"] = "info"
+                    entry["label"] = f"{label}（未通过）"
+                    notes.append("该站考核区块没给具体数值，去「做种明细」看站点实时数据")
+                else:
+                    entry["kind"] = "hold"
+                    notes.append("靠「保持做种 + 增加做种数(多辅种)」改善,不需要新任务;别停该站任务、别删种")
             if left is not None and float(left) <= 3:
                 notes.append(f"⏰ 考核只剩 {float(left):.1f} 天,尽快处理")
             entry["notes"] = notes

@@ -6014,9 +6014,10 @@ onUnmounted(() => {
               >
                 <span class="magicflow-exam-item__label">{{ it.label }}</span>
                 <span v-if="examItemGap(it)" class="magicflow-exam-item__gap">还差 {{ examItemGap(it) }}</span>
-                <span class="magicflow-exam-item__val"><strong>{{ it.cur }}</strong><i> / {{ it.req }}</i></span>
+                <span v-if="it.cur || it.req" class="magicflow-exam-item__val"><strong>{{ it.cur }}</strong><i> / {{ it.req }}</i></span>
                 <VIcon :icon="it.pass ? 'mdi-check-circle-outline' : 'mdi-alert-circle-outline'" size="14" :color="it.pass ? 'success' : 'error'" />
                 <VProgressLinear
+                  v-if="Number(it.req_num) > 0"
                   class="magicflow-exam-item__bar"
                   :model-value="examItemPct(it)"
                   height="4"

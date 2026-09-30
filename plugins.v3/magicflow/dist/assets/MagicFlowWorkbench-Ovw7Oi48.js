@@ -2920,7 +2920,10 @@ const _hoisted_378 = {
   key: 0,
   class: "magicflow-exam-item__gap"
 };
-const _hoisted_379 = { class: "magicflow-exam-item__val" };
+const _hoisted_379 = {
+  key: 1,
+  class: "magicflow-exam-item__val"
+};
 const _hoisted_380 = ["onClick"];
 const _hoisted_381 = ["onClick"];
 const _hoisted_382 = { class: "magicflow-exam-acts" };
@@ -12713,23 +12716,28 @@ return (_ctx, _cache) => {
                             (examItemGap(it))
                               ? (_openBlock(), _createElementBlock("span", _hoisted_378, "还差 " + _toDisplayString(examItemGap(it)), 1))
                               : _createCommentVNode("", true),
-                            _createElementVNode("span", _hoisted_379, [
-                              _createElementVNode("strong", null, _toDisplayString(it.cur), 1),
-                              _createElementVNode("i", null, " / " + _toDisplayString(it.req), 1)
-                            ]),
+                            (it.cur || it.req)
+                              ? (_openBlock(), _createElementBlock("span", _hoisted_379, [
+                                  _createElementVNode("strong", null, _toDisplayString(it.cur), 1),
+                                  _createElementVNode("i", null, " / " + _toDisplayString(it.req), 1)
+                                ]))
+                              : _createCommentVNode("", true),
                             _createVNode(_component_VIcon, {
                               icon: it.pass ? 'mdi-check-circle-outline' : 'mdi-alert-circle-outline',
                               size: "14",
                               color: it.pass ? 'success' : 'error'
                             }, null, 8, ["icon", "color"]),
-                            _createVNode(_component_VProgressLinear, {
-                              class: "magicflow-exam-item__bar",
-                              "model-value": examItemPct(it),
-                              height: "4",
-                              rounded: "",
-                              color: it.pass ? 'success' : 'error',
-                              "bg-color": "rgba(var(--v-theme-on-surface), 0.12)"
-                            }, null, 8, ["model-value", "color"])
+                            (Number(it.req_num) > 0)
+                              ? (_openBlock(), _createBlock(_component_VProgressLinear, {
+                                  key: 2,
+                                  class: "magicflow-exam-item__bar",
+                                  "model-value": examItemPct(it),
+                                  height: "4",
+                                  rounded: "",
+                                  color: it.pass ? 'success' : 'error',
+                                  "bg-color": "rgba(var(--v-theme-on-surface), 0.12)"
+                                }, null, 8, ["model-value", "color"]))
+                              : _createCommentVNode("", true)
                           ], 2))
                         }), 128))
                       ]),
@@ -12931,6 +12939,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-b61245d0"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-a714bda8"]]);
 
 export { MagicFlowWorkbench as M };
