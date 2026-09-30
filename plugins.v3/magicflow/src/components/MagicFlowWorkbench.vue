@@ -4109,6 +4109,8 @@ onUnmounted(() => {
       :downloaders="status.options.downloaders"
       :default-save-path="defaultSavePath"
       :saving="saving"
+      :api="api"
+      :plugin-base="pluginBase"
       @save="saveTask"
     />
 

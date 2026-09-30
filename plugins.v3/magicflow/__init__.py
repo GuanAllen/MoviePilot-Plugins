@@ -53,6 +53,7 @@ from .features.silent import SilentMixin
 from .features.recommend import RecommendMixin
 from .features.live import LiveMixin
 from .features.exam import ExamMixin
+from .features.pool import PoolMixin
 from .features.cloud import CloudMixin
 from .features.siteops import SiteOpsMixin
 from .features.events import EventsMixin
@@ -61,7 +62,7 @@ from .features.debug import DebugMixin
 from .features.registry import RegistryMixin
 
 
-class MagicFlow(CoreMixin, RuntimeMixin, ApiMixin, SettingsMixin, StatusMixin, TasksMixin, BrushMixin, FormulaMixin, ProtectionMixin, HrMixin, AssetsMixin, ServicesMixin, ReuseMixin, CleanupMixin, SwapMixin, CrossSeedMixin, TagsMixin, SilentMixin, RecommendMixin, LiveMixin, ExamMixin, CloudMixin, SiteOpsMixin, EventsMixin, ActionsMixin, DebugMixin, RegistryMixin, _PluginBase):
+class MagicFlow(CoreMixin, RuntimeMixin, ApiMixin, SettingsMixin, StatusMixin, TasksMixin, BrushMixin, FormulaMixin, ProtectionMixin, HrMixin, AssetsMixin, ServicesMixin, ReuseMixin, CleanupMixin, SwapMixin, CrossSeedMixin, TagsMixin, SilentMixin, RecommendMixin, LiveMixin, ExamMixin, PoolMixin, CloudMixin, SiteOpsMixin, EventsMixin, ActionsMixin, DebugMixin, RegistryMixin, _PluginBase):
     """魔流插件主类。"""
 
     plugin_name = "魔流"

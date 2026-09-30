@@ -234,9 +234,15 @@ class RecommendMixin:
                 break
         if not path:
             return False
+        # ★ 5.10.2:下载器返回的是**宿主路径**(如 /vol6/1000/movie/刷流),容器里 statvfs 不到 →
+        #   改为按「目录分池」映射到容器目录再算(见 features/pool.py)。
         try:
-            import shutil
-            return (shutil.disk_usage(path).free / (1024 ** 3)) < min_free_gb
+            dirs = self._pool_dirs()
+            _pool_name, container = self._match_pool(path, dirs)
+            info = self._usage(container) if container else {}
+            if not info:
+                return False
+            return (float(info.get("free") or 0) / (1024 ** 3)) < min_free_gb
         except Exception:  # noqa: BLE001
             return False
 

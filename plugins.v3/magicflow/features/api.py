@@ -18,6 +18,13 @@ class ApiMixin:
         """注册 Vue 工作台使用的魔流任务 API"""
         return [
             {
+                "path": "/pool",
+                "endpoint": self.pool_info,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "池盘空间（按目录分池：总量/已用/80% 阈值下的可占体积）",
+            },
+            {
                 "path": "/status",
                 "endpoint": self.get_status,
                 "methods": ["GET"],
