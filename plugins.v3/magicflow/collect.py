@@ -172,6 +172,17 @@ def api_endpoint(site: Any, key: str) -> Dict[str, Any]:
     return dict(ep) if isinstance(ep, dict) else {}
 
 
+def exam_api(site: Any) -> Dict[str, Any]:
+    """★ 5.7.0：通道表里的「考核接口」（JS 单页站的考核只能从后台接口读）。
+
+    形如 ``{"path": "/api/user/profile", "field": "examTask", "metrics": {...}}``；
+    没配就返回 ``{}``（**不猜** —— 读不到就是读不到，绝不编造考核）。
+    """
+    _tname, cfg = api_channel(site)
+    ep = (cfg or {}).get("exam_api") or {}
+    return dict(ep) if isinstance(ep, dict) else {}
+
+
 def api_dl_url(site: Any, payload: Any) -> str:
     """★ 3.45.0 下载凭证 → 直链：有 ``dl_url`` 模板就套模板（叶PT），否则凭证本身就是直链（馒头）。"""
     _tname, cfg = api_channel(site)
