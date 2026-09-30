@@ -483,7 +483,7 @@ function confirmSaveWithoutGoal() {
                     <VTextField
                       v-model="localTask.brush_tag"
                       label="下载器标签"
-                      placeholder="留空自动使用「魔流-任务名」"
+                      placeholder="留空自动使用「魔流-站点-职务」"
                     />
                   </VCol>
                   <VCol cols="12">

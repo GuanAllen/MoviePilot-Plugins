@@ -708,7 +708,7 @@ return (_ctx, _cache) => {
                                           modelValue: localTask.value.brush_tag,
                                           "onUpdate:modelValue": _cache[5] || (_cache[5] = $event => ((localTask.value.brush_tag) = $event)),
                                           label: "下载器标签",
-                                          placeholder: "留空自动使用「魔流-任务名」"
+                                          placeholder: "留空自动使用「魔流-站点-职务」"
                                         }, null, 8, ["modelValue"])
                                       ]),
                                       _: 1
@@ -2704,7 +2704,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-ff7e4f65"]]);
+const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-f6b33a88"]]);
 
 const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,openBlock:_openBlock,createElementBlock:_createElementBlock,createCommentVNode:_createCommentVNode,createBlock:_createBlock,toDisplayString:_toDisplayString,normalizeClass:_normalizeClass,mergeProps:_mergeProps,renderList:_renderList,Fragment:_Fragment,withCtx:_withCtx,createTextVNode:_createTextVNode,vShow:_vShow,withDirectives:_withDirectives,unref:_unref,normalizeStyle:_normalizeStyle,withModifiers:_withModifiers} = await importShared('vue');
 
