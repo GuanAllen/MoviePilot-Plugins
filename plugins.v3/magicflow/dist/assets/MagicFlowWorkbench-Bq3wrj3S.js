@@ -4545,13 +4545,16 @@ const examUrgentWeek = computed(() => examRows.value.filter(r => Number(((r.exam
 const examPendingItems = computed(() =>
   examRows.value.reduce((n, r) => n + (((r.exam || {}).items || []).filter(i => !i.pass).length), 0)
 );
-const EXAM_KIND_TEXT = { upload: '刷上传', download: '补下载', bonus: '攒魔力', hold: '保持做种' };
+const EXAM_KIND_TEXT = { upload: '刷上传', download: '下载考核', bonus: '攒魔力', hold: '保持做种', info: '下载考核' };
 const EXAM_KIND_ICON = {
   upload: 'mdi-upload',
   download: 'mdi-download',
   bonus: 'mdi-star-four-points-outline',
   hold: 'mdi-pause-circle-outline',
+  info: 'mdi-download',
 };
+// ★ 可一键起任务的只有「刷上传 / 攒魔力」；下载类我们不做（Master 2026-09-30），只作提示
+const EXAM_ACTIONABLE = ['upload', 'bonus'];
 function examDaysShort(row) {
   const d = Number(((row || {}).exam || {}).days_left);
   if (!isFinite(d)) return '—'
@@ -4617,6 +4620,7 @@ function examActions(row) {
         label: EXAM_KIND_TEXT[p.kind] || p.label || '任务',
         icon: EXAM_KIND_ICON[p.kind] || 'mdi-play-circle-outline',
         task_name: p.task_name || '',
+        can_run: EXAM_ACTIONABLE.includes(p.kind),
         notes: [],
         warn: '',
       });
@@ -9503,16 +9507,14 @@ return (_ctx, _cache) => {
                                 ], -1)),
                                 _cache[394] || (_cache[394] = _createElementVNode("p", { class: "magicflow-settings-hint" }, [
                                   _createElementVNode("strong", null, "已通过的考核默认不显示"),
-                                  _createTextVNode("（过掉的就不占地方了）；想看全部就打开下面的「显示已通过」。 考不过的站会算好缺口并给出建议：上传差多少 → 刷流任务；下载差多少 → 专门下载任务； 魔力/积分差多少 → 魔力任务；平均做种时间不够 → 保持做种 + 多辅种（不用建任务）。 ")
+                                  _createTextVNode("（过掉的就不占地方了）；想看全部就打开下面的「显示已通过」。 考不过的站会算好缺口：上传差多少 → 刷流任务；魔力/积分差多少 → 魔力任务；平均做种时间不够 → 保持做种 + 多辅种（不用建任务）。 下载类考核项（下载增量）"),
+                                  _createElementVNode("strong", null, "只做提示、不建任务"),
+                                  _createTextVNode("。 ")
                                 ], -1)),
-                                _cache[395] || (_cache[395] = _createElementVNode("p", { class: "magicflow-settings-hint magicflow-settings-hint--warn" }, [
-                                  _createTextVNode(" ⚠️ 「考核下载」任务会"),
-                                  _createElementVNode("strong", null, "真的下载非免费种"),
-                                  _createTextVNode("（下载增量只能在有下载时增长）， 会拉低分享率。魔流会在它跑的时候"),
-                                  _createElementVNode("strong", null, "豁免「清除非免费下载种」"),
-                                  _createTextVNode("（否则会互相打架）， 并在"),
-                                  _createElementVNode("strong", null, "全站免费期间"),
-                                  _createTextVNode("提示你「免费期下载不计入下载量」。 ")
+                                _cache[395] || (_cache[395] = _createElementVNode("p", { class: "magicflow-settings-hint" }, [
+                                  _createTextVNode(" 魔流不做下载业务："),
+                                  _createElementVNode("strong", null, "不会创建任何下载任务"),
+                                  _createTextVNode("，也不会为凑下载量去下非免费种。 缺的下载量需要你自己安排；已通过/未通过都不会影响现有做种。 ")
                                 ], -1)),
                                 _createElementVNode("div", _hoisted_204, [
                                   _createVNode(_component_VSwitch, {
@@ -12769,7 +12771,19 @@ return (_ctx, _cache) => {
                                     ]),
                                     _: 2
                                   }, 1024))
-                                : _createCommentVNode("", true)
+                                : (!a.can_run)
+                                  ? (_openBlock(), _createBlock(_component_VChip, {
+                                      key: 1,
+                                      size: "x-small",
+                                      variant: "tonal",
+                                      color: "grey"
+                                    }, {
+                                      default: _withCtx(() => [
+                                        _createTextVNode(_toDisplayString(a.kind === 'info' ? '不建任务' : '保持做种'), 1)
+                                      ]),
+                                      _: 2
+                                    }, 1024))
+                                  : _createCommentVNode("", true)
                             ]),
                             (a.warn)
                               ? (_openBlock(), _createBlock(_component_VAlert, {
@@ -12792,23 +12806,26 @@ return (_ctx, _cache) => {
                                   }), 128))
                                 ]))
                               : _createCommentVNode("", true),
-                            _createVNode(_component_VBtn, {
-                              size: "small",
-                              color: "primary",
-                              variant: "tonal",
-                              "prepend-icon": "mdi-play-circle-outline",
-                              loading: examActing.value === `${a.kind}:${row.site_id}`,
-                              onClick: $event => (examAct(row, a.kind))
-                            }, {
-                              default: _withCtx(() => [...(_cache[556] || (_cache[556] = [
-                                _createTextVNode("一键起任务", -1)
-                              ]))]),
-                              _: 1
-                            }, 8, ["loading", "onClick"])
+                            (a.can_run)
+                              ? (_openBlock(), _createBlock(_component_VBtn, {
+                                  key: 2,
+                                  size: "small",
+                                  color: "primary",
+                                  variant: "tonal",
+                                  "prepend-icon": "mdi-play-circle-outline",
+                                  loading: examActing.value === `${a.kind}:${row.site_id}`,
+                                  onClick: $event => (examAct(row, a.kind))
+                                }, {
+                                  default: _withCtx(() => [...(_cache[556] || (_cache[556] = [
+                                    _createTextVNode("一键起任务", -1)
+                                  ]))]),
+                                  _: 1
+                                }, 8, ["loading", "onClick"]))
+                              : _createCommentVNode("", true)
                           ]))
                         }), 128)),
                         (!(row.plan || []).length)
-                          ? (_openBlock(), _createElementBlock("div", _hoisted_385, " 未识别到可执行动作（可能考核不要求下载量 / 或解析不出；可在「做种明细」里看站点实时数据）。 "))
+                          ? (_openBlock(), _createElementBlock("div", _hoisted_385, " 本站没有需要新任务的项目（保持做种即可）。 "))
                           : _createCommentVNode("", true)
                       ])
                     ]),
@@ -12847,7 +12864,7 @@ return (_ctx, _cache) => {
                       _cache[558] || (_cache[558] = _createTextVNode(" 将在 ", -1)),
                       _createElementVNode("strong", null, _toDisplayString(examConfirm.value.row.site_name), 1),
                       _cache[559] || (_cache[559] = _createTextVNode(" 上 ", -1)),
-                      _createElementVNode("strong", null, _toDisplayString(examConfirm.value.item.kind === 'download' ? '创建 / 启用「考核下载」任务' : examConfirm.value.item.kind === 'upload' ? '创建 / 启用「考核刷流」任务' : '创建 / 启用「考核魔力」任务'), 1),
+                      _createElementVNode("strong", null, _toDisplayString(examConfirm.value.item.kind === 'upload' ? '创建 / 启用「考核刷流」任务' : '创建 / 启用「考核魔力」任务'), 1),
                       _cache[560] || (_cache[560] = _createTextVNode("： ", -1))
                     ]),
                     _createElementVNode("div", _hoisted_386, [
@@ -12862,12 +12879,12 @@ return (_ctx, _cache) => {
                         ]))
                       : _createCommentVNode("", true),
                     _createVNode(_component_VAlert, {
-                      type: "warning",
+                      type: "info",
                       variant: "tonal",
                       density: "compact"
                     }, {
                       default: _withCtx(() => [...(_cache[562] || (_cache[562] = [
-                        _createTextVNode(" 考核下载会真下非免费种（下载量才算数），且执行期间不会被「3.4.0 下载异常自动清种」误杀。 ", -1)
+                        _createTextVNode(" 任务达标后自动停；全程只做种、不删种（魔流不做下载任务）。 ", -1)
                       ]))]),
                       _: 1
                     })
@@ -12914,6 +12931,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-f19cc2bf"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-b61245d0"]]);
 
 export { MagicFlowWorkbench as M };

@@ -109,29 +109,13 @@ class ExamMixin:
             notes: List[str] = []
             entry: Dict[str, Any] = {"label": label, "kind": "hold", "notes": [], "blocked": False}
             if "下载" in label and short_gb is not None:
+                # ★ 我们不做下载业务 / 不建下载任务（Master 2026-09-30）：只如实提示，不给可执行动作
                 short = float(short_gb)
-                entry.update({
-                    "kind": "download",
-                    "short_gb": short,
-                    "task_name": f"{site_name}-考核下载",
-                    "params": {
-                        "task_type": "brush",
-                        "download_target_gb": short,
-                        "allow_unfree_download": True,
-                        "purge_unfree_incomplete": False,
-                        "brush_interval": 5,
-                        "check_interval": 1,
-                    },
-                })
-                if free_on:
-                    notes.append(
-                        f"⚠️ 全站 Free 生效中(至 {str(free.get('end') or '')[:16]}):免费期间下载不计入下载量,"
-                        "建议等结束再开,否则白拉"
-                    )
-                if dn + short * (1024 ** 3) > 0:
+                entry.update({"kind": "info", "label": f"{label}（不建任务）", "short_gb": short})
+                notes.append("下载类考核：本插件不建下载任务，需自行安排；不建任务不影响已有做种")
+                if up and dn + short * (1024 ** 3) > 0:
                     ra = up / (dn + short * (1024 ** 3))
-                    notes.append(f"下载 {short:.1f}GB 后分享率约 {ra:.2f}" + ("(会低于 1,建议先补上传)" if ra < 1 else ""))
-                notes.append("下载完成会自动转「做种中」保种(不删种)")
+                    notes.append(f"参考：若补下载 {short:.1f}GB，分享率约 {ra:.2f}" + ("（会低于 1）" if ra < 1 else ""))
             elif "上传" in label and short_gb is not None:
                 short = float(short_gb)
                 target = round(up / (1024 ** 3) + short, 2)
@@ -391,6 +375,8 @@ class ExamMixin:
         if not sid:
             return Response(success=False, message="缺少 site_id")
         kind = str(kind or "").strip().lower()
+        if kind == "download":
+            return Response(success=False, message="本插件不做下载任务（下载类考核请自行安排）")
         if kind not in ("upload", "download", "bonus", "hold"):
             return Response(success=False, message="kind 只能是 upload/download/bonus/hold")
         live = (self._live_snapshot(sid) or {}).get("live") or {}
