@@ -9,6 +9,7 @@ const props = defineProps({
   sites: { type: Array, default: () => [] },
   downloaders: { type: Array, default: () => [] },
   defaultSavePath: { type: String, default: '' },
+  savePaths: { type: Array, default: () => [] },
   saving: { type: Boolean, default: false },
   api: { type: Object, default: null },
   pluginBase: { type: String, default: 'plugin/MagicFlow' },
@@ -58,9 +59,52 @@ const uploadRateOptions = [
   { title: '激进 · 500 KB/s（≈ 300 MB / 10 分钟）', value: 500 },
   { title: '极限 · 1000 KB/s（1 MB/s，只留最热）', value: 1000 },
 ]
-// 保存目录候选：插件设置的默认目录 + 任务当前值（供统一下拉选择，也可手输）。
+// 保存目录候选：**填过一次就记住**（localStorage）+ 已有任务用过的目录 + 设置里的默认目录 + 任务当前值。
+// 用户手输过的目录会立刻落进 localStorage，下次新建/编辑就能从下拉里选到。
+const SAVE_PATH_KEY = 'magicflow_save_paths'
+const savePathHistory = ref([])
+// 清理候选：去重 + **丢掉「别人的前缀」**（如 /vol3/1000/med 是 /vol3/1000/media 的前缀）
+// —— 用户逐字打路径时 v-model 每敲一个字就变一次，不做这步会存一堆半截路径。
+function cleanSavePaths(list) {
+  const uniq = []
+  for (const raw of list || []) {
+    const v = String(raw || '').trim()
+    // 至少两层目录才算「一个目录」，顺手把历史里的垃圾（半截路径）清掉
+    if (v && v.split('/').filter(Boolean).length >= 2 && !uniq.includes(v)) uniq.push(v)
+  }
+  // 丢掉「被更长的条目吃掉」的半截路径：
+  //   /vol3/1000/m、/vol3/1000/med（没打完）→ 丢；/vol3/1000/（结尾斜杠）→ 丢
+  //   但 /vol6/1000/movie 与 /vol6/1000/movie/刷流 属于「父子目录」→ 都留
+  return uniq
+    .filter(v => !uniq.some(o => o !== v && o.length > v.length && o.startsWith(v)
+      && (v.endsWith('/') || o[v.length] !== '/')))
+    .slice(0, 12)
+}
+function readSavePathHistory() {
+  try {
+    const raw = window.localStorage.getItem(SAVE_PATH_KEY)
+    const list = raw ? JSON.parse(raw) : []
+    savePathHistory.value = cleanSavePaths(Array.isArray(list) ? list : [])
+  } catch (error) {
+    savePathHistory.value = []
+  }
+}
+// ★ 只在**输入完成**时才记（失焦 / 保存任务），绝不逐字记
+function rememberSavePath(value) {
+  const path = String(value || '').trim()
+  if (!path || path.split('/').filter(Boolean).length < 2) return
+  const list = cleanSavePaths([path, ...savePathHistory.value])
+  savePathHistory.value = list
+  try {
+    window.localStorage.setItem(SAVE_PATH_KEY, JSON.stringify(list))
+  } catch (error) {
+    /* 隐私模式等场景忽略 */
+  }
+}
 const savePathOptions = computed(() => {
   const set = new Set()
+  for (const item of savePathHistory.value) set.add(item)
+  for (const item of props.savePaths || []) if (item) set.add(String(item))
   if (props.defaultSavePath) set.add(props.defaultSavePath)
   if (localTask.value.save_path) set.add(localTask.value.save_path)
   return [...set]
@@ -68,7 +112,8 @@ const savePathOptions = computed(() => {
 
 // ★ 5.9.0 预设模板：用户「选类型就行」—— 模板只覆盖**程序可决定**的参数
 //   （选种/清理/限速/调度/复用…）；站点 / 保存目录 / 目标 / 任务名 仍由用户决定。
-// ★ 5.10.0 模板还会按**当前池盘空间**自动设「最多占多少体积」：以 80% 为阈值（见 POOL_THRESHOLD）。
+// ★ 5.10.0/5.10.3 模板还会按**当前磁盘空间**自动设「最多占多少体积」：以 80% 为阈值（见 POOL_THRESHOLD），
+//   并给一个**可拉的百分比**（拉条实时显示折合多少 GB）。
 const POOL_THRESHOLD = 0.8
 const TASK_PRESETS = [
   {
@@ -184,7 +229,7 @@ const TASK_PRESETS = [
 const presetKey = ref('bonus')
 const simpleMode = computed(() => presetKey.value !== 'custom')
 const presetInfo = computed(() => TASK_PRESETS.find(p => p.key === presetKey.value) || TASK_PRESETS[1])
-// 池盘状态（**按目录分池**，只看任务自己那个池；80% 阈值 → 本任务可占体积）
+// 磁盘状态（**按目录分盘**，只看任务自己那块盘；80% 阈值 → 本任务可占体积）
 // ★ 不能用 MP 仪表板的「本地存储」：那是把多个目录加起来的总数（例如 /movie + /media），
 //   任务写不到别的池里，拿总和算阈值会严重高估。
 const pool = ref(null)
@@ -192,7 +237,7 @@ const poolError = ref('')
 const poolLoading = ref(false)
 async function loadPool() {
   if (!props.api) {
-    poolError.value = '未接入宿主 API，无法读取池盘空间'
+    poolError.value = '未接入宿主 API，无法读取磁盘空间'
     return
   }
   poolLoading.value = true
@@ -212,44 +257,58 @@ async function loadPool() {
       budget_gb: Number(data.budget_gb) || 0,
       pools: Array.isArray(data.pools) ? data.pools : [],
     }
-    // 池盘读得快时，把体积上限回填给当前模板（自定义模式不碰用户手填值）
+    // 磁盘读得快时，把体积上限回填给当前模板（自定义模式不碰用户手填值）
     if (simpleMode.value && poolBudgetGb.value > 0) localTask.value.disk_size_gb = poolBudgetGb.value
   } catch (error) {
     pool.value = null
-    poolError.value = '池盘空间读取失败'
+    poolError.value = '磁盘空间读取失败'
   } finally {
     poolLoading.value = false
   }
 }
 const poolOver = computed(() => !!pool.value && pool.value.pct >= POOL_THRESHOLD * 100)
+// 可拉的百分比：占「磁盘剩余可用空间（到 80% 阈值）」的比例（0~100），拉条实时显示折合 GB
+const poolPct = ref(100)
 const poolBudgetGb = computed(() => {
   if (!pool.value) return 0
-  const share = presetInfo.value.share || 0
-  if (!share) return 0
-  return Math.round(pool.value.budget_gb * share * 10) / 10
+  return Math.round(pool.value.budget_gb * (Number(poolPct.value) || 0) / 100 * 10) / 10
 })
-const poolBudgetText = computed(() => (poolBudgetGb.value > 0 ? `${poolBudgetGb.value} GB` : '—'))
+const poolBudgetText = computed(() => (poolBudgetGb.value > 0 ? `${poolBudgetGb.value} GB` : '不限'))
+const poolFreeText = computed(() => (pool.value ? formatBytes(pool.value.budget_gb * 1024 ** 3) : '—'))
 const presetPatchCount = computed(() => Object.keys(presetInfo.value.patch || {}).length + (poolBudgetGb.value > 0 ? 1 : 0))
 // 选模板 → 只覆盖「程序可决定」的参数（用户已填的站点/目录/目标/名称不动）
 function applyPreset(key) {
   presetKey.value = key
   const p = TASK_PRESETS.find(x => x.key === key)
   if (p && Object.keys(p.patch || {}).length) Object.assign(localTask.value, p.patch)
-  // 体积上限：按池盘 80% 阈值（轻量保种只拿 25%），池已超阈则不设
+  // 体积上限：按磁盘 80% 阈值 × 拉条比例（轻量保种默认 25%），已超阈则不设
+  if (p && Number(p.share)) poolPct.value = Math.round(Number(p.share) * 100)
+  else if (p && p.key === 'custom') poolPct.value = poolPct.value || 100
   const budget = poolBudgetGb.value
   if (budget > 0) localTask.value.disk_size_gb = budget
   autoFillName(false)
   if (key === 'custom') activeTab.value = 'base'
 }
-// 任务名自动填「站点·模板名」（用户改过就不动）
+// 任务名自动填「站点·模板名」；换站点/换模板都会跟着变（用户手改过才不动）
+const autoNameSet = computed(() => {
+  const set = new Set()
+  for (const site of props.sites) {
+    const sname = site?.title || site?.name || ''
+    if (!sname) continue
+    for (const p of TASK_PRESETS) set.add(`${sname}·${p.title}`)
+  }
+  return set
+})
 function autoFillName(force = true) {
   const site = props.sites.find(item => Number(item.value ?? item.id) === Number(localTask.value.site_id))
   const sname = site?.title || site?.name || ''
   if (!sname) return
-  const auto = `${sname}·${presetInfo.value.title}`
   const cur = String(localTask.value.name || '').trim()
-  const wasAuto = !cur || TASK_PRESETS.some(p => cur === `${sname}·${p.title}`)
-  if (force || wasAuto) localTask.value.name = auto
+  const wasAuto = !cur || autoNameSet.value.has(cur)
+  if (force || wasAuto) localTask.value.name = `${sname}·${presetInfo.value.title}`
+}
+function onPctChange() {
+  if (simpleMode.value && poolBudgetGb.value > 0) localTask.value.disk_size_gb = poolBudgetGb.value
 }
 function onSiteChange() {
   autoFillName(false)
@@ -266,6 +325,8 @@ watch(
     localTask.value = cloneTask(props.task)
     activeTab.value = 'base'
     presetKey.value = localTask.value.task_type === 'brush' ? 'brush' : 'bonus'
+    readSavePathHistory()
+    rememberSavePath(localTask.value.save_path)
     pool.value = null
     loadPool()
   },
@@ -302,12 +363,14 @@ async function saveTask() {
     goalWarning.value = true
     return
   }
+  rememberSavePath(localTask.value.save_path)
   emit('save', normalizeTask(localTask.value))
 }
 
 // 确认「仍然保存」（不带目标）
 function confirmSaveWithoutGoal() {
   goalWarning.value = false
+  rememberSavePath(localTask.value.save_path)
   emit('save', normalizeTask(localTask.value))
 }
 </script>
@@ -373,21 +436,6 @@ function confirmSaveWithoutGoal() {
                     <span class="editor-preset__desc">{{ p.desc }}</span>
                   </button>
                 </div>
-                <div class="editor-pool" :class="{ 'is-warn': poolOver, 'is-error': !!poolError }">
-                  <VIcon :icon="poolOver ? 'mdi-alert-outline' : 'mdi-harddisk'" size="14" />
-                  <template v-if="pool">
-                    <span>
-                      池盘 {{ pool.name ? `「${pool.name}」` : '' }}{{ pool.path }} ·
-                      {{ formatBytes(pool.used_gb * 1024 ** 3) }} / {{ formatBytes(pool.total_gb * 1024 ** 3) }}
-                      （{{ pool.pct.toFixed(1) }}%）· 80% 阈值 → 本任务最多占 {{ poolBudgetText }}
-                    </span>
-                    <span v-if="poolOver" class="editor-pool__hint">已超 80%，建议先清理再加种</span>
-                  </template>
-                  <template v-else>
-                    <span>{{ poolLoading ? '正在读取池盘空间…' : (poolError || '池盘空间未知') }}</span>
-                  </template>
-                  <button type="button" class="editor-pool__link" @click="loadPool">刷新</button>
-                </div>
                 <div v-if="simpleMode" class="editor-simple-note">
                   <VIcon icon="mdi-auto-fix" size="14" />
                   <span>已自动配置 {{ presetPatchCount }} 项专业参数（调度 5 分钟 · 复用辅种 · 清理低效 · 限速两档 · 体积上限）</span>
@@ -405,13 +453,6 @@ function confirmSaveWithoutGoal() {
                 </header>
                 <VRow>
                   <VCol cols="12" md="6">
-                    <VTextField
-                      v-model="localTask.name"
-                      label="任务名称"
-                      :rules="[value => !!String(value || '').trim() || '请输入任务名称']"
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
                     <VSelect
                       v-model="localTask.site_id"
                       :items="sites"
@@ -420,6 +461,14 @@ function confirmSaveWithoutGoal() {
                       label="站点"
                       :rules="[value => !!value || '请选择站点']"
                       @update:model-value="onSiteChange"
+                    />
+                  </VCol>
+                  <VCol cols="12" md="6">
+                    <VTextField
+                      v-model="localTask.name"
+                      label="任务名称"
+                      hint="选站点后自动填「站点·模板名」，可手改"
+                      :rules="[value => !!String(value || '').trim() || '请输入任务名称']"
                     />
                   </VCol>
                   <VCol v-if="downloaders.length > 1" cols="12" md="6">
@@ -443,12 +492,49 @@ function confirmSaveWithoutGoal() {
                       :items="savePathOptions"
                       label="保存目录"
                       @update:model-value="onSavePathChange"
+                      @update:focused="focused => { if (!focused) rememberSavePath(localTask.save_path) }"
                       placeholder="留空使用下载器默认目录"
                       hint="默认目录可在插件设置「下载目录」中配置"
                       persistent-hint
                       clearable
                       variant="outlined"
                     />
+                  </VCol>
+                  <VCol cols="12">
+                    <div class="editor-pool" :class="{ 'is-warn': poolOver, 'is-error': !!poolError }">
+                      <VIcon :icon="poolOver ? 'mdi-alert-outline' : 'mdi-harddisk'" size="14" />
+                      <template v-if="pool">
+                        <span>
+                        磁盘 {{ pool.path }} · 已用 {{ pool.pct.toFixed(0) }}%（{{ formatBytes(pool.used_gb * 1024 ** 3) }} / {{ formatBytes(pool.total_gb * 1024 ** 3) }}）· 按 80% 阈值还能再放 {{ poolFreeText }}
+                      </span>
+                        <span v-if="poolOver" class="editor-pool__hint">已超 80%，建议先清理再加种</span>
+                      </template>
+                      <template v-else>
+                        <span>{{ poolLoading ? '正在读取磁盘空间…' : (poolError || '磁盘空间未知') }}</span>
+                      </template>
+                      <button type="button" class="editor-pool__link" @click="loadPool">刷新</button>
+                    </div>
+                    <div v-if="simpleMode && pool" class="editor-quota">
+                      <div class="editor-quota__head">
+                        <span>本任务最多占多少</span>
+                        <strong>{{ poolBudgetText }}</strong>
+                      </div>
+                      <VSlider
+                        v-model="poolPct"
+                        :min="0"
+                        :max="100"
+                        :step="5"
+                        color="primary"
+                        hide-details
+                        density="compact"
+                        :disabled="poolOver"
+                        @update:model-value="onPctChange"
+                      />
+                      <div class="editor-quota__foot">
+                        <span>{{ poolPct }}% · 占磁盘剩余可用（{{ poolFreeText }}）</span>
+                        <span v-if="poolOver" class="editor-pool__hint">磁盘已超 80%，先清理再加种</span>
+                      </div>
+                    </div>
                   </VCol>
                 </VRow>
                 <div class="editor-switches">
@@ -1390,6 +1476,34 @@ function confirmSaveWithoutGoal() {
   line-height: 1.35;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
+.editor-quota {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 6px;
+}
+
+.editor-quota__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+.editor-quota__head strong {
+  font-size: 14px;
+}
+
+.editor-quota__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
 .editor-pool.is-warn {
   color: rgb(var(--v-theme-warning));
 }

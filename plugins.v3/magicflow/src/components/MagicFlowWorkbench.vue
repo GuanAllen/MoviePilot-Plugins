@@ -282,6 +282,16 @@ async function loadSiteIcon(siteId) {
 const pluginBase = computed(() => `plugin/${props.pluginId || 'MagicFlow'}`)
 const tasks = computed(() => status.value.tasks || [])
 const defaultSavePath = computed(() => (status.value.defaults || {}).save_path || '')
+/** 保存目录候选：所有任务用过的目录（+ 设置里的默认）——“填一次就能选到”。 */
+const recentSavePaths = computed(() => {
+  const set = new Set()
+  if (defaultSavePath.value) set.add(defaultSavePath.value)
+  for (const t of tasks.value) {
+    const p = String(t.save_path || '').trim()
+    if (p) set.add(p)
+  }
+  return [...set]
+})
 const selectedTask = computed(() => tasks.value.find(item => item.id === selectedTaskId.value) || null)
 /** 静默托管：静默池按站点分类（分类卡片用）。 */
 const silentHostSites = computed(() => {
@@ -4108,6 +4118,7 @@ onUnmounted(() => {
       :sites="status.options.sites"
       :downloaders="status.options.downloaders"
       :default-save-path="defaultSavePath"
+      :save-paths="recentSavePaths"
       :saving="saving"
       :api="api"
       :plugin-base="pluginBase"
