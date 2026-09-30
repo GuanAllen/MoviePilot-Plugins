@@ -1615,10 +1615,18 @@ const examBadge = computed(() => (examData.value.enabled === false ? 0 : Number(
 const examUrgent = computed(() => examSites.value.filter(s => Number((s.exam || {}).days_left ?? 999) <= 3).length)
 // ── 板面重设（5.5.0）：按剩余天数排序 + 每项进度条 + 同任务合并 + 警告前置
 const examShowPassed = ref({})
+// ★ 排序：**已完成的沉到最下面**；未完成的按剩余天数升序（最紧急的在最上面）
 const examRows = computed(() =>
-  [...(examData.value.sites || [])].sort((a, b) => Number(((a.exam || {}).days_left ?? 999)) - Number(((b.exam || {}).days_left ?? 999)))
+  [...(examData.value.sites || [])].sort((a, b) => {
+    const pa = (a.exam || {}).all_pass ? 1 : 0
+    const pb = (b.exam || {}).all_pass ? 1 : 0
+    if (pa !== pb) return pa - pb
+    return Number(((a.exam || {}).days_left ?? 999)) - Number(((b.exam || {}).days_left ?? 999))
+  })
 )
-const examNext = computed(() => examRows.value[0] || null)
+// 未完成（还有未通过项）的站点数 —— 顶部大数用这个口径，不含已完成的
+const examPendingSites = computed(() => examRows.value.filter(r => !(r.exam || {}).all_pass).length)
+const examNext = computed(() => examRows.value.find(r => !(r.exam || {}).all_pass) || examRows.value[0] || null)
 const examUrgentWeek = computed(() => examRows.value.filter(r => Number(((r.exam || {}).days_left ?? 999)) <= 7).length)
 const examPendingItems = computed(() =>
   examRows.value.reduce((n, r) => n + (((r.exam || {}).items || []).filter(i => !i.pass).length), 0)
@@ -5970,7 +5978,7 @@ onUnmounted(() => {
           <!-- ① 概览：未过站数 + 最近截止 + 待过项 -->
           <div class="magicflow-exam-hero" :class="examUrgent ? 'is-urgent' : ''">
             <div class="magicflow-exam-hero__left">
-              <span class="magicflow-exam-hero__num">{{ examRows.length }}</span>
+              <span class="magicflow-exam-hero__num">{{ examPendingSites }}</span>
               <span class="magicflow-exam-hero__cap">站考核未过</span>
             </div>
             <div class="magicflow-exam-hero__right">
@@ -5993,7 +6001,8 @@ onUnmounted(() => {
             <header class="magicflow-exam-card__head">
               <div class="magicflow-exam-card__title">
                 <span class="magicflow-exam-card__name">{{ row.site_name || ('站点 ' + row.site_id) }}</span>
-                <VChip size="x-small" variant="tonal" :color="examUrgencyColor(row)">剩 {{ examDaysShort(row) }}</VChip>
+                <VChip v-if="!(row.exam || {}).all_pass" size="x-small" variant="tonal" :color="examUrgencyColor(row)">剩 {{ examDaysShort(row) }}</VChip>
+                <VChip v-else size="x-small" variant="tonal" color="success">已完成</VChip>
                 <span class="magicflow-exam-card__passed">{{ examPassedCount(row) }}/{{ (row.exam.items || []).length }} 已过</span>
               </div>
               <VProgressLinear

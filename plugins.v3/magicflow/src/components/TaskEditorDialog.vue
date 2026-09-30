@@ -22,7 +22,10 @@ const localTask = ref(cloneTask())
 const isBrush = computed(() => localTask.value.task_type === 'brush')
 const dialogTitle = computed(() => {
   const kind = isBrush.value ? '刷流任务' : '魔力任务'
-  return localTask.value.id ? `编辑${kind}` : `新建${kind}`
+  const full = localTask.value.id ? `编辑${kind}` : `新建${kind}`
+  // 手机端标题栏窄（还要放「保存任务」按钮）→ 用短标题，避免被截成「新建魔...」
+  if (display.smAndDown.value) return localTask.value.id ? '编辑任务' : '新建任务'
+  return full
 })
 // 编辑器标签页随类型切换：刷流隐藏「魔力托管/魔力公式」，改显「刷流运维」。
 const editorTabs = computed(() =>
@@ -61,6 +64,88 @@ const savePathOptions = computed(() => {
   return [...set]
 })
 
+// ★ 5.9.0 预设模板：用户「选类型就行」—— 模板只覆盖**程序可决定**的参数
+//   （选种/清理/限速/调度/复用…）；站点 / 保存目录 / 目标 / 任务名 仍由用户决定。
+const TASK_PRESETS = [
+  {
+    key: 'brush',
+    icon: 'mdi-upload-network-outline',
+    title: '刷流',
+    desc: '按上传潜力选种，做种满几天轮换；达标自动停',
+    patch: {
+      task_type: 'brush',
+      brush_seed_days: 2,
+      brush_min_leechers: 1,
+      upload_min_kbps: 200,
+      except_subscribe: true,
+      refill_when_empty: true,
+      auto_swap: false,
+      swap_allow_download: false,
+      reuse_existing: true,
+      reuse_verify: true,
+      cleanup_no_progress: true,
+      cleanup_slow_progress: true,
+      purge_unfree_incomplete: true,
+      auto_resume_paused: true,
+      delete_files: true,
+      ti_source: 'publish',
+    },
+  },
+  {
+    key: 'bonus',
+    icon: 'mdi-star-four-points-outline',
+    title: '刷魔力',
+    desc: '挂种产出魔力最大化；复用本机资源、自动换种',
+    patch: {
+      task_type: 'bonus',
+      except_subscribe: true,
+      refill_when_empty: true,
+      auto_swap: true,
+      swap_allow_download: false,
+      reuse_existing: true,
+      reuse_verify: true,
+      cleanup_no_progress: true,
+      cleanup_slow_progress: true,
+      purge_unfree_incomplete: true,
+      auto_resume_paused: true,
+      delete_files: true,
+      ti_source: 'publish',
+    },
+  },
+  {
+    key: 'custom',
+    icon: 'mdi-tune-variant',
+    title: '自定义',
+    desc: '所有参数自己来（展开全部标签页）',
+    patch: {},
+  },
+]
+const presetKey = ref('bonus')
+const simpleMode = computed(() => presetKey.value !== 'custom')
+const presetInfo = computed(() => TASK_PRESETS.find(p => p.key === presetKey.value) || TASK_PRESETS[1])
+const presetPatchCount = computed(() => Object.keys(presetInfo.value.patch || {}).length)
+// 选模板 → 只覆盖「程序可决定」的参数（用户已填的站点/目录/目标/名称不动）
+function applyPreset(key) {
+  presetKey.value = key
+  const p = TASK_PRESETS.find(x => x.key === key)
+  if (p && Object.keys(p.patch || {}).length) Object.assign(localTask.value, p.patch)
+  autoFillName(false)
+  if (key === 'custom') activeTab.value = 'base'
+}
+// 任务名自动填「站点·模板名」（用户改过就不动）
+function autoFillName(force = true) {
+  const site = props.sites.find(item => Number(item.value ?? item.id) === Number(localTask.value.site_id))
+  const sname = site?.title || site?.name || ''
+  if (!sname) return
+  const auto = `${sname}·${presetInfo.value.title}`
+  const cur = String(localTask.value.name || '').trim()
+  const wasAuto = !cur || TASK_PRESETS.some(p => cur === `${sname}·${p.title}`)
+  if (force || wasAuto) localTask.value.name = auto
+}
+function onSiteChange() {
+  autoFillName(false)
+}
+
 // 每次打开弹窗都从服务端任务快照重新创建本地草稿。
 watch(
   () => props.modelValue,
@@ -68,6 +153,7 @@ watch(
     if (!visible) return
     localTask.value = cloneTask(props.task)
     activeTab.value = 'base'
+    presetKey.value = localTask.value.task_type === 'brush' ? 'brush' : 'bonus'
   },
 )
 
@@ -75,6 +161,7 @@ watch(
 watch(
   () => localTask.value.task_type,
   () => {
+    presetKey.value = localTask.value.task_type === 'brush' ? 'brush' : 'bonus'
     if (!editorTabs.value.some(tab => tab.value === activeTab.value)) activeTab.value = 'base'
   },
 )
@@ -134,6 +221,7 @@ function confirmSaveWithoutGoal() {
       <VCardText class="magicflow-editor__body">
         <VForm ref="formRef" class="magicflow-editor__form" @submit.prevent="saveTask">
           <VTabs
+            v-if="!simpleMode"
             v-model="activeTab"
             :direction="display.mdAndUp.value ? 'vertical' : 'horizontal'"
             color="primary"
@@ -144,31 +232,38 @@ function confirmSaveWithoutGoal() {
             </VTab>
           </VTabs>
 
-          <VDivider :vertical="display.mdAndUp.value" />
+          <VDivider v-if="!simpleMode" :vertical="display.mdAndUp.value" />
 
           <VWindow v-model="activeTab" :touch="false" class="magicflow-editor__window">
             <VWindowItem value="base">
               <section class="editor-section">
                 <header class="editor-section__head">
                   <div>
-                    <div class="text-subtitle-1 font-weight-medium">任务类型</div>
-                    <div class="text-body-2 text-medium-emphasis">决定选种排序与清理策略，建议新建时就选定</div>
+                    <div class="text-subtitle-1 font-weight-medium">任务模板</div>
+                    <div class="text-body-2 text-medium-emphasis">
+                      选一个就行 —— 选种/清理/限速/复用等参数按模板自动配好，站点·目录·目标自己定
+                    </div>
                   </div>
                 </header>
-                <VRow>
-                  <VCol cols="12" md="6">
-                    <VSelect
-                      v-model="localTask.task_type"
-                      label="类型"
-                      :items="[
-                        { title: '刷魔力（魔力/小时最大化）', value: 'bonus' },
-                        { title: '刷流（按上传潜力选种，做种满天数轮换）', value: 'brush' },
-                      ]"
-                      hint="刷流模式在「刷流运维」标签配置，魔力门槛/公式自动隐藏"
-                      persistent-hint
-                    />
-                  </VCol>
-                </VRow>
+                <div class="editor-presets">
+                  <button
+                    v-for="p in TASK_PRESETS"
+                    :key="p.key"
+                    type="button"
+                    class="editor-preset"
+                    :class="{ 'is-active': presetKey === p.key }"
+                    @click="applyPreset(p.key)"
+                  >
+                    <VIcon :icon="p.icon" size="18" />
+                    <span class="editor-preset__title">{{ p.title }}</span>
+                    <span class="editor-preset__desc">{{ p.desc }}</span>
+                  </button>
+                </div>
+                <div v-if="simpleMode" class="editor-simple-note">
+                  <VIcon icon="mdi-auto-fix" size="14" />
+                  <span>已自动配置 {{ presetPatchCount }} 项专业参数（调度 5 分钟 · 复用辅种 · 清理低效 · 限速两档）</span>
+                  <button type="button" class="editor-simple-note__link" @click="applyPreset('custom')">展开全部参数</button>
+                </div>
               </section>
 
               <section class="editor-section">
@@ -195,9 +290,10 @@ function confirmSaveWithoutGoal() {
                       item-value="id"
                       label="站点"
                       :rules="[value => !!value || '请选择站点']"
+                      @update:model-value="onSiteChange"
                     />
                   </VCol>
-                  <VCol cols="12" md="6">
+                  <VCol v-if="downloaders.length > 1" cols="12" md="6">
                     <VSelect
                       v-model="localTask.downloader"
                       :items="downloaders"
@@ -205,7 +301,7 @@ function confirmSaveWithoutGoal() {
                       :rules="[value => !!value || '请选择下载器']"
                     />
                   </VCol>
-                  <VCol cols="12" md="6">
+                  <VCol v-if="!simpleMode" cols="12" md="6">
                     <VTextField
                       v-model="localTask.brush_tag"
                       label="下载器标签"
@@ -227,11 +323,11 @@ function confirmSaveWithoutGoal() {
                 </VRow>
                 <div class="editor-switches">
                   <VSwitch v-model="localTask.enabled" label="启用任务" color="primary" hide-details inset />
-                  <VSwitch v-model="localTask.rss_support" label="使用 RSS" color="primary" hide-details inset />
+                  <VSwitch v-if="!simpleMode" v-model="localTask.rss_support" label="使用 RSS" color="primary" hide-details inset />
                 </div>
               </section>
 
-              <section class="editor-section">
+              <section v-if="!simpleMode" class="editor-section">
                 <header class="editor-section__head">
                   <div>
                     <div class="text-subtitle-1 font-weight-medium">刷新计划</div>
@@ -292,7 +388,7 @@ function confirmSaveWithoutGoal() {
               </section>
             </VWindowItem>
 
-            <VWindowItem value="brush">
+            <VWindowItem v-if="!simpleMode" value="brush">
               <VAlert type="info" variant="tonal" density="compact" class="mb-2" icon="mdi-upload-network-outline">
                 刷流模式：<strong>按「上传潜力」运行，有自己的选种标准</strong> —— 只挑<strong>免费（含 2X免费）且有下载者</strong>的种，
                 不设做种人数上限、体积/年龄不限（热门大种才是上传主力）；定期检查每个种子，
@@ -481,7 +577,7 @@ function confirmSaveWithoutGoal() {
               </section>
             </VWindowItem>
 
-            <VWindowItem v-if="!isBrush" value="magic">
+            <VWindowItem v-if="!simpleMode && !isBrush" value="magic">
               <section class="editor-section">
                 <header class="editor-section__head">
                   <div>
@@ -821,7 +917,7 @@ function confirmSaveWithoutGoal() {
               </section>
             </VWindowItem>
 
-            <VWindowItem v-if="!isBrush" value="formula">
+            <VWindowItem v-if="!simpleMode && !isBrush" value="formula">
               <section class="editor-section">
                 <header class="editor-section__head">
                   <div>
@@ -886,7 +982,7 @@ function confirmSaveWithoutGoal() {
               </section>
             </VWindowItem>
 
-            <VWindowItem value="selection">
+            <VWindowItem v-if="!simpleMode" value="selection">
               <section class="editor-section">
                 <header class="editor-section__head">
                   <div>
@@ -966,7 +1062,7 @@ function confirmSaveWithoutGoal() {
               </section>
             </VWindowItem>
 
-            <VWindowItem value="advanced">
+            <VWindowItem v-if="!simpleMode" value="advanced">
               <section class="editor-section">
                 <header class="editor-section__head">
                   <div>
@@ -1112,6 +1208,64 @@ function confirmSaveWithoutGoal() {
 .magicflow-editor__window {
   min-inline-size: 0;
   padding: 20px;
+}
+
+/* ★ 5.9.0 任务模板选择（移动端友好：整块可点，一行一个） */
+.editor-presets {
+  display: grid;
+  gap: 8px;
+}
+.editor-preset {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  grid-template-areas: "icon title" "icon desc";
+  gap: 2px 8px;
+  align-items: center;
+  padding: 10px 12px;
+  text-align: start;
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 10px;
+  background: rgba(var(--v-theme-surface-variant), 0.35);
+  color: inherit;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.editor-preset > .v-icon {
+  grid-area: icon;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+.editor-preset__title {
+  grid-area: title;
+  font-weight: 600;
+}
+.editor-preset__desc {
+  grid-area: desc;
+  font-size: 0.75rem;
+  line-height: 1.3;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+.editor-preset.is-active {
+  border-color: rgb(var(--v-theme-primary));
+  background: rgba(var(--v-theme-primary), 0.08);
+}
+.editor-preset.is-active > .v-icon {
+  color: rgb(var(--v-theme-primary));
+}
+.editor-simple-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 0.75rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+.editor-simple-note__link {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: rgb(var(--v-theme-primary));
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .editor-section {
