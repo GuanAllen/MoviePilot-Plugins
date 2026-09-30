@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { useDisplay } from 'vuetify'
-import { cloneTask, normalizeTask } from '../utils'
+import { cloneTask, formatBytes, normalizeTask, unwrapResponse } from '../utils'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -10,6 +10,8 @@ const props = defineProps({
   downloaders: { type: Array, default: () => [] },
   defaultSavePath: { type: String, default: '' },
   saving: { type: Boolean, default: false },
+  api: { type: Object, default: null },
+  pluginBase: { type: String, default: 'plugin/MagicFlow' },
 })
 
 const emit = defineEmits(['update:modelValue', 'save'])
@@ -66,12 +68,15 @@ const savePathOptions = computed(() => {
 
 // ★ 5.9.0 预设模板：用户「选类型就行」—— 模板只覆盖**程序可决定**的参数
 //   （选种/清理/限速/调度/复用…）；站点 / 保存目录 / 目标 / 任务名 仍由用户决定。
+// ★ 5.10.0 模板还会按**当前池盘空间**自动设「最多占多少体积」：以 80% 为阈值（见 POOL_THRESHOLD）。
+const POOL_THRESHOLD = 0.8
 const TASK_PRESETS = [
   {
     key: 'brush',
     icon: 'mdi-upload-network-outline',
     title: '刷流',
     desc: '按上传潜力选种，做种满几天轮换；达标自动停',
+    share: 1,
     patch: {
       task_type: 'brush',
       brush_seed_days: 2,
@@ -96,6 +101,7 @@ const TASK_PRESETS = [
     icon: 'mdi-star-four-points-outline',
     title: '刷魔力',
     desc: '挂种产出魔力最大化；复用本机资源、自动换种',
+    share: 1,
     patch: {
       task_type: 'bonus',
       except_subscribe: true,
@@ -113,22 +119,125 @@ const TASK_PRESETS = [
     },
   },
   {
+    key: 'exam',
+    icon: 'mdi-school-outline',
+    title: '考核冲刺',
+    desc: '新站考核期：抢热门免费种攒上传，快转速换',
+    share: 1,
+    patch: {
+      task_type: 'brush',
+      brush_seed_days: 1,
+      brush_min_leechers: 2,
+      upload_min_kbps: 300,
+      upload_idle_minutes: 30,
+      brush_grace_minutes: 15,
+      rotate_upload_gb: null,
+      except_subscribe: true,
+      refill_when_empty: true,
+      max_add_per_run: 8,
+      auto_swap: false,
+      swap_allow_download: false,
+      reuse_existing: true,
+      reuse_verify: true,
+      cleanup_no_progress: true,
+      cleanup_slow_progress: false,
+      purge_unfree_incomplete: true,
+      auto_resume_paused: true,
+      delete_files: true,
+      ti_source: 'publish',
+    },
+  },
+  {
+    key: 'keep',
+    icon: 'mdi-shield-outline',
+    title: '轻量保种',
+    desc: '少占盘：只复用本机资源，尽量不新增下载',
+    share: 0.25,
+    patch: {
+      task_type: 'bonus',
+      max_add_per_run: 3,
+      top_n: 20,
+      browse_pages: 1,
+      except_subscribe: true,
+      refill_when_empty: false,
+      auto_swap: false,
+      swap_allow_download: false,
+      reuse_existing: true,
+      reuse_verify: true,
+      cleanup_no_progress: true,
+      cleanup_slow_progress: true,
+      purge_unfree_incomplete: true,
+      auto_resume_paused: true,
+      delete_files: true,
+      ti_source: 'publish',
+    },
+  },
+  {
     key: 'custom',
     icon: 'mdi-tune-variant',
     title: '自定义',
     desc: '所有参数自己来（展开全部标签页）',
+    share: 0,
     patch: {},
   },
 ]
 const presetKey = ref('bonus')
 const simpleMode = computed(() => presetKey.value !== 'custom')
 const presetInfo = computed(() => TASK_PRESETS.find(p => p.key === presetKey.value) || TASK_PRESETS[1])
-const presetPatchCount = computed(() => Object.keys(presetInfo.value.patch || {}).length)
+// 池盘状态（**按目录分池**，只看任务自己那个池；80% 阈值 → 本任务可占体积）
+// ★ 不能用 MP 仪表板的「本地存储」：那是把多个目录加起来的总数（例如 /movie + /media），
+//   任务写不到别的池里，拿总和算阈值会严重高估。
+const pool = ref(null)
+const poolError = ref('')
+const poolLoading = ref(false)
+async function loadPool() {
+  if (!props.api) {
+    poolError.value = '未接入宿主 API，无法读取池盘空间'
+    return
+  }
+  poolLoading.value = true
+  poolError.value = ''
+  try {
+    const savePath = String(localTask.value.save_path || props.defaultSavePath || '').trim()
+    const query = `?path=${encodeURIComponent(savePath)}`
+    const raw = await props.api.get(`${props.pluginBase}/pool${query}`)
+    const data = unwrapResponse(raw) || {}
+    if (!data.total) throw new Error('empty')
+    pool.value = {
+      name: data.name || '',
+      path: data.path || '',
+      total_gb: Number(data.total) / 1024 ** 3,
+      used_gb: Number(data.used) / 1024 ** 3,
+      pct: Number(data.pct) || 0,
+      budget_gb: Number(data.budget_gb) || 0,
+      pools: Array.isArray(data.pools) ? data.pools : [],
+    }
+    // 池盘读得快时，把体积上限回填给当前模板（自定义模式不碰用户手填值）
+    if (simpleMode.value && poolBudgetGb.value > 0) localTask.value.disk_size_gb = poolBudgetGb.value
+  } catch (error) {
+    pool.value = null
+    poolError.value = '池盘空间读取失败'
+  } finally {
+    poolLoading.value = false
+  }
+}
+const poolOver = computed(() => !!pool.value && pool.value.pct >= POOL_THRESHOLD * 100)
+const poolBudgetGb = computed(() => {
+  if (!pool.value) return 0
+  const share = presetInfo.value.share || 0
+  if (!share) return 0
+  return Math.round(pool.value.budget_gb * share * 10) / 10
+})
+const poolBudgetText = computed(() => (poolBudgetGb.value > 0 ? `${poolBudgetGb.value} GB` : '—'))
+const presetPatchCount = computed(() => Object.keys(presetInfo.value.patch || {}).length + (poolBudgetGb.value > 0 ? 1 : 0))
 // 选模板 → 只覆盖「程序可决定」的参数（用户已填的站点/目录/目标/名称不动）
 function applyPreset(key) {
   presetKey.value = key
   const p = TASK_PRESETS.find(x => x.key === key)
   if (p && Object.keys(p.patch || {}).length) Object.assign(localTask.value, p.patch)
+  // 体积上限：按池盘 80% 阈值（轻量保种只拿 25%），池已超阈则不设
+  const budget = poolBudgetGb.value
+  if (budget > 0) localTask.value.disk_size_gb = budget
   autoFillName(false)
   if (key === 'custom') activeTab.value = 'base'
 }
@@ -145,6 +254,9 @@ function autoFillName(force = true) {
 function onSiteChange() {
   autoFillName(false)
 }
+function onSavePathChange() {
+  loadPool()
+}
 
 // 每次打开弹窗都从服务端任务快照重新创建本地草稿。
 watch(
@@ -154,6 +266,8 @@ watch(
     localTask.value = cloneTask(props.task)
     activeTab.value = 'base'
     presetKey.value = localTask.value.task_type === 'brush' ? 'brush' : 'bonus'
+    pool.value = null
+    loadPool()
   },
 )
 
@@ -259,9 +373,24 @@ function confirmSaveWithoutGoal() {
                     <span class="editor-preset__desc">{{ p.desc }}</span>
                   </button>
                 </div>
+                <div class="editor-pool" :class="{ 'is-warn': poolOver, 'is-error': !!poolError }">
+                  <VIcon :icon="poolOver ? 'mdi-alert-outline' : 'mdi-harddisk'" size="14" />
+                  <template v-if="pool">
+                    <span>
+                      池盘 {{ pool.name ? `「${pool.name}」` : '' }}{{ pool.path }} ·
+                      {{ formatBytes(pool.used_gb * 1024 ** 3) }} / {{ formatBytes(pool.total_gb * 1024 ** 3) }}
+                      （{{ pool.pct.toFixed(1) }}%）· 80% 阈值 → 本任务最多占 {{ poolBudgetText }}
+                    </span>
+                    <span v-if="poolOver" class="editor-pool__hint">已超 80%，建议先清理再加种</span>
+                  </template>
+                  <template v-else>
+                    <span>{{ poolLoading ? '正在读取池盘空间…' : (poolError || '池盘空间未知') }}</span>
+                  </template>
+                  <button type="button" class="editor-pool__link" @click="loadPool">刷新</button>
+                </div>
                 <div v-if="simpleMode" class="editor-simple-note">
                   <VIcon icon="mdi-auto-fix" size="14" />
-                  <span>已自动配置 {{ presetPatchCount }} 项专业参数（调度 5 分钟 · 复用辅种 · 清理低效 · 限速两档）</span>
+                  <span>已自动配置 {{ presetPatchCount }} 项专业参数（调度 5 分钟 · 复用辅种 · 清理低效 · 限速两档 · 体积上限）</span>
                   <button type="button" class="editor-simple-note__link" @click="applyPreset('custom')">展开全部参数</button>
                 </div>
               </section>
@@ -313,6 +442,7 @@ function confirmSaveWithoutGoal() {
                       v-model="localTask.save_path"
                       :items="savePathOptions"
                       label="保存目录"
+                      @update:model-value="onSavePathChange"
                       placeholder="留空使用下载器默认目录"
                       hint="默认目录可在插件设置「下载目录」中配置"
                       persistent-hint
@@ -1250,6 +1380,34 @@ function confirmSaveWithoutGoal() {
 .editor-preset.is-active > .v-icon {
   color: rgb(var(--v-theme-primary));
 }
+.editor-pool {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin-top: 10px;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+.editor-pool.is-warn {
+  color: rgb(var(--v-theme-warning));
+}
+.editor-pool.is-error {
+  color: rgb(var(--v-theme-error));
+}
+.editor-pool__hint {
+  font-weight: 600;
+}
+.editor-pool__link {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: rgb(var(--v-theme-primary));
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .editor-simple-note {
   display: flex;
   flex-wrap: wrap;
