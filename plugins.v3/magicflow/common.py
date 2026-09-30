@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "5.11.5"
+__version__ = "5.11.6"
 
 import bisect
 import copy
