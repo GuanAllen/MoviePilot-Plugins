@@ -347,7 +347,7 @@ class ExamMixin:
             "name": name,
             "site_id": int(site_id),
             "site_name": site_name,
-            "brush_tag": f"魔流-{name}",
+            "brush_tag": "",  # ★ 5.11.5：留空 → 由 create_task 按「站点+任务类型」派生（魔流-<站点>-<刷流|魔力>）
             "task_type": str(params.get("task_type") or "bonus"),
             "brush_interval": int(params.get("brush_interval") or 5),
             "check_interval": int(params.get("check_interval") or 1),

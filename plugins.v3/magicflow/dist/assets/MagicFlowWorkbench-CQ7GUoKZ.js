@@ -365,6 +365,7 @@ function applyPreset(key) {
   const budget = poolBudgetGb.value;
   if (budget > 0) localTask.value.disk_size_gb = budget;
   autoFillName(false);
+  autoFillTag();
   if (key === 'custom') activeTab.value = 'base';
 }
 // 任务名自动填「站点·模板名」；换站点/换模板都会跟着变（用户手改过才不动）
@@ -385,11 +386,26 @@ function autoFillName(force = true) {
   const wasAuto = !cur || autoNameSet.value.has(cur);
   if (force || wasAuto) localTask.value.name = `${sname}·${presetInfo.value.title}`;
 }
+// ★ 下载器标签：和任务名同规矩 —— 没要求（空 / 旧版自动生成的「魔流-…」）
+//   就按「站点 + 任务类型」派生（刷流任务 → 刷流，其余 → 魔力）；
+//   用户手填的自定义标签（非「魔流-」前缀）固定住，绝不被覆盖。
+const tagState = computed$1(() => (String(localTask.value.task_type || 'bonus').toLowerCase() === 'brush' ? '刷流' : '魔力'));
+// siteName 已在上面定义（未选择站点时为「未选择」）
+const autoTag = computed$1(() => {
+  const n = String(siteName.value || '').trim();
+  return n && n !== '未选择' ? `魔流-${n}-${tagState.value}` : ''
+});
+function autoFillTag() {
+  const cur = String(localTask.value.brush_tag || '').trim();
+  if (cur && !cur.startsWith('魔流-') && !cur.startsWith('刷流-')) return
+  if (autoTag.value) localTask.value.brush_tag = autoTag.value;
+}
 function onPctChange() {
   if (simpleMode.value && poolBudgetGb.value > 0) localTask.value.disk_size_gb = poolBudgetGb.value;
 }
 function onSiteChange() {
   autoFillName(false);
+  autoFillTag();
 }
 function onSavePathChange() {
   loadPool();
@@ -405,6 +421,7 @@ watch$1(
     presetKey.value = localTask.value.task_type === 'brush' ? 'brush' : 'bonus';
     readSavePathHistory();
     rememberSavePath(localTask.value.save_path);
+    autoFillTag();
     pool.value = null;
     loadPool();
   },
@@ -415,6 +432,7 @@ watch$1(
   () => localTask.value.task_type,
   () => {
     presetKey.value = localTask.value.task_type === 'brush' ? 'brush' : 'bonus';
+    autoFillTag();
     if (!editorTabs.value.some(tab => tab.value === activeTab.value)) activeTab.value = 'base';
   },
 );
@@ -708,8 +726,10 @@ return (_ctx, _cache) => {
                                           modelValue: localTask.value.brush_tag,
                                           "onUpdate:modelValue": _cache[5] || (_cache[5] = $event => ((localTask.value.brush_tag) = $event)),
                                           label: "下载器标签",
-                                          placeholder: "留空自动使用「魔流-站点-职务」"
-                                        }, null, 8, ["modelValue"])
+                                          placeholder: "留空自动使用「魔流-站点-职务」",
+                                          hint: `自动：${autoTag.value || '魔流-站点-职务'}（站点/任务类型变了会跟着变；手填则固定）`,
+                                          "persistent-hint": ""
+                                        }, null, 8, ["modelValue", "hint"])
                                       ]),
                                       _: 1
                                     }))
@@ -2704,7 +2724,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-f6b33a88"]]);
+const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-4f94c8d4"]]);
 
 const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,openBlock:_openBlock,createElementBlock:_createElementBlock,createCommentVNode:_createCommentVNode,createBlock:_createBlock,toDisplayString:_toDisplayString,normalizeClass:_normalizeClass,mergeProps:_mergeProps,renderList:_renderList,Fragment:_Fragment,withCtx:_withCtx,createTextVNode:_createTextVNode,vShow:_vShow,withDirectives:_withDirectives,unref:_unref,normalizeStyle:_normalizeStyle,withModifiers:_withModifiers} = await importShared('vue');
 
