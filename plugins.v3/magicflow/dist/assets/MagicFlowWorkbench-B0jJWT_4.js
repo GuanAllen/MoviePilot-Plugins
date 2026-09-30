@@ -724,8 +724,9 @@ return (_ctx, _cache) => {
                                           modelValue: localTask.value.brush_tag,
                                           "onUpdate:modelValue": _cache[5] || (_cache[5] = $event => ((localTask.value.brush_tag) = $event)),
                                           label: "下载器标签",
-                                          placeholder: "留空自动使用「魔流-站点-职务」",
-                                          hint: `自动：${autoTag.value || '魔流-站点-职务'}（按站点+任务类型派生，手填不统一也会被纠正）`,
+                                          readonly: "",
+                                          "prepend-inner-icon": "mdi-lock-outline",
+                                          hint: `自动：${autoTag.value || '魔流-站点-职务'}（按站点+任务类型派生，只读）`,
                                           "persistent-hint": ""
                                         }, null, 8, ["modelValue", "hint"])
                                       ]),
@@ -2722,7 +2723,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-6c402a77"]]);
+const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-f2f706cd"]]);
 
 const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,openBlock:_openBlock,createElementBlock:_createElementBlock,createCommentVNode:_createCommentVNode,createBlock:_createBlock,toDisplayString:_toDisplayString,normalizeClass:_normalizeClass,mergeProps:_mergeProps,renderList:_renderList,Fragment:_Fragment,withCtx:_withCtx,createTextVNode:_createTextVNode,vShow:_vShow,withDirectives:_withDirectives,unref:_unref,normalizeStyle:_normalizeStyle,withModifiers:_withModifiers} = await importShared('vue');
 

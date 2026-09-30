@@ -499,8 +499,9 @@ function confirmSaveWithoutGoal() {
                     <VTextField
                       v-model="localTask.brush_tag"
                       label="下载器标签"
-                      placeholder="留空自动使用「魔流-站点-职务」"
-                      :hint="`自动：${autoTag || '魔流-站点-职务'}（按站点+任务类型派生，手填不统一也会被纠正）`"
+                      readonly
+                      prepend-inner-icon="mdi-lock-outline"
+                      :hint="`自动：${autoTag || '魔流-站点-职务'}（按站点+任务类型派生，只读）`"
                       persistent-hint
                     />
                   </VCol>
