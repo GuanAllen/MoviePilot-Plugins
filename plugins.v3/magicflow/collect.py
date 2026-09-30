@@ -172,6 +172,17 @@ def api_endpoint(site: Any, key: str) -> Dict[str, Any]:
     return dict(ep) if isinstance(ep, dict) else {}
 
 
+def exam_rule(site: Any) -> Dict[str, Any]:
+    """★ 5.8.0：通道表里的「规则式考核」（站点不给考核区块，但官方标准是固定阈值）。
+
+    形如 ``{"window_days": 30, "metrics": [{"field": "upload", "target": 32212254720, ...}]}``；
+    数据取自**官方 API 白名单字段**，没配返回 ``{}``。
+    """
+    _tname, cfg = api_channel(site)
+    ep = (cfg or {}).get("exam_rule") or {}
+    return dict(ep) if isinstance(ep, dict) else {}
+
+
 def exam_api(site: Any) -> Dict[str, Any]:
     """★ 5.7.0：通道表里的「考核接口」（JS 单页站的考核只能从后台接口读）。
 
@@ -1424,6 +1435,7 @@ class SiteView:
             "bonus_per_hour": None,
             "level": _num(d.get("level")),
             "name": str(d.get("name") or ""),
+            "created": str(d.get("createdDate") or st.get("createdDate") or ""),
             "logged_in": str(d.get("status") or st.get("status") or "").upper()
             in ("CONFIRMED", "ENABLE", "ENABLED", "ACTIVE", "")
             and (bool(d) or bool(st)),
