@@ -1613,6 +1613,108 @@ let examTimer = null
 const examSites = computed(() => examData.value.sites || [])
 const examBadge = computed(() => (examData.value.enabled === false ? 0 : Number(examData.value.count || 0)))
 const examUrgent = computed(() => examSites.value.filter(s => Number((s.exam || {}).days_left ?? 999) <= 3).length)
+// ── 板面重设（5.5.0）：按剩余天数排序 + 每项进度条 + 同任务合并 + 警告前置
+const examShowPassed = ref({})
+const examRows = computed(() =>
+  [...(examData.value.sites || [])].sort((a, b) => Number(((a.exam || {}).days_left ?? 999)) - Number(((b.exam || {}).days_left ?? 999)))
+)
+const examNext = computed(() => examRows.value[0] || null)
+const examUrgentWeek = computed(() => examRows.value.filter(r => Number(((r.exam || {}).days_left ?? 999)) <= 7).length)
+const examPendingItems = computed(() =>
+  examRows.value.reduce((n, r) => n + (((r.exam || {}).items || []).filter(i => !i.pass).length), 0)
+)
+const EXAM_KIND_TEXT = { upload: '刷上传', download: '补下载', bonus: '攒魔力', hold: '保持做种' }
+const EXAM_KIND_ICON = {
+  upload: 'mdi-upload',
+  download: 'mdi-download',
+  bonus: 'mdi-star-four-points-outline',
+  hold: 'mdi-pause-circle-outline',
+}
+function examDaysShort(row) {
+  const d = Number(((row || {}).exam || {}).days_left)
+  if (!isFinite(d)) return '—'
+  return `${Math.max(0, Math.ceil(d))} 天`
+}
+function examUrgencyColor(row) {
+  const d = Number(((row || {}).exam || {}).days_left)
+  if (!isFinite(d)) return 'grey'
+  if (d <= 3) return 'error'
+  if (d <= 7) return 'warning'
+  return 'success'
+}
+// 未过的排前面（已过项可折叠）
+function examItems(row) {
+  const its = ((row || {}).exam || {}).items || []
+  return [...its].sort((a, b) => (a.pass ? 1 : 0) - (b.pass ? 1 : 0))
+}
+function examPassedCount(row) {
+  return (((row || {}).exam || {}).items || []).filter(i => i.pass).length
+}
+function examSitePct(row) {
+  const total = (((row || {}).exam || {}).items || []).length || 1
+  return Math.round((examPassedCount(row) * 100) / total)
+}
+function examItemPct(it) {
+  const req = Number((it || {}).req_num) || 0
+  const cur = Number((it || {}).cur_num) || 0
+  if (req <= 0) return it && it.pass ? 100 : 0
+  return Math.max(0, Math.min(100, Math.round((cur * 100) / req)))
+}
+// 还差多少（失败项最关键的信息；后端给了 short_gb/short_num 就用它）
+function examItemGap(it) {
+  const o = it || {}
+  if (o.pass) return ''
+  const fmt = v => (Math.abs(v) >= 100 ? String(Math.round(v)) : String(Math.round(v * 100) / 100))
+  if (Number(o.short_gb) > 0) return `${fmt(Number(o.short_gb))} GB`
+  if (Number(o.short_num) > 0) return `${fmt(Number(o.short_num))}${o.unit ? ` ${o.unit}` : ''}`
+  const d = (Number(o.req_num) || 0) - (Number(o.cur_num) || 0)
+  if (d > 0) return `${fmt(d)}${o.unit ? ` ${o.unit}` : ''}`
+  return ''
+}
+function examVisibleItems(row) {
+  const all = examItems(row)
+  if (examShowPassed.value[row.site_id]) return all
+  const fails = all.filter(i => !i.pass)
+  return fails.length ? fails : all
+}
+function examHiddenPassed(row) {
+  return examItems(row).length - examVisibleItems(row).length
+}
+function examTogglePassed(siteId) {
+  examShowPassed.value = { ...examShowPassed.value, [siteId]: !examShowPassed.value[siteId] }
+}
+// 同一任务只出一个动作（如「魔力增量 / 做种积分增量」都指向 XX-考核魔力）
+function examActions(row) {
+  const out = new Map()
+  ;((row || {}).plan || []).forEach(p => {
+    const key = `${p.kind}|${p.task_name || ''}`
+    if (!out.has(key)) {
+      out.set(key, {
+        key,
+        kind: p.kind,
+        label: EXAM_KIND_TEXT[p.kind] || p.label || '任务',
+        icon: EXAM_KIND_ICON[p.kind] || 'mdi-play-circle-outline',
+        task_name: p.task_name || '',
+        notes: [],
+        warn: '',
+      })
+    }
+    const a = out.get(key)
+    ;(p.notes || []).forEach(n => {
+      let s = String(n || '').trim()
+      if (!s) return
+      // 窄屏压缩后端长句：尾巴的泛泛建议没信息量，去掉
+      s = s.replace(/[;；]?\s*(魔力靠多挂种.*|靠多挂种.*)$/, '').replace('达到后自动停', '→ 自动停')
+      // ⚠️ 类提醒（花钱白干/比例掉）前置成警戒条，不能埋在按钮下面
+      if (/^⚠️|不建议|建议等|会低于 1|先补上传/.test(s)) {
+        a.warn = a.warn ? `${a.warn} · ${s}` : s
+        return
+      }
+      if (!a.notes.includes(s)) a.notes.push(s)
+    })
+  })
+  return [...out.values()]
+}
 async function loadExam() {
   try {
     examData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/exam`)) || examData.value
@@ -5861,65 +5963,111 @@ onUnmounted(() => {
           </div>
         </header>
         <VDivider />
-        <VCardText class="magicflow-recommend-dialog__body">
-          <div class="magicflow-recommend-dialog__summary">
-            <span><strong>{{ examBadge }}</strong> 个未通过</span>
-            <i>·</i>
-            <span><strong>{{ examUrgent }}</strong> 个 3 天内截止</span>
-          </div>
-          <div class="magicflow-recommend-dialog__note">
-            只统计「有 Cookie」的站点；已通过的默认不显示（可在「插件设置 → 考核」里改为显示）
+        <VCardText class="magicflow-exam-body">
+          <!-- ① 概览：未过站数 + 最近截止 + 待过项 -->
+          <div class="magicflow-exam-hero" :class="examUrgent ? 'is-urgent' : ''">
+            <div class="magicflow-exam-hero__left">
+              <span class="magicflow-exam-hero__num">{{ examRows.length }}</span>
+              <span class="magicflow-exam-hero__cap">站考核未过</span>
+            </div>
+            <div class="magicflow-exam-hero__right">
+              <div v-if="examNext" class="magicflow-exam-hero__line">
+                <VIcon icon="mdi-alarm" size="14" />
+                最近截止：{{ examNext.site_name || ('站点 ' + examNext.site_id) }}
+                <VChip size="x-small" variant="tonal" :color="examUrgencyColor(examNext)">剩 {{ examDaysShort(examNext) }}</VChip>
+              </div>
+              <div class="magicflow-exam-hero__line is-dim">待过 {{ examPendingItems }} 项 · {{ examUrgentWeek }} 站 7 天内截止</div>
+            </div>
           </div>
           <VAlert v-if="examData.enabled === false" type="info" variant="tonal" density="compact" class="my-2">
             新手考核模块已关闭（可在「插件设置 → 考核」开启；开启后零额外 PV）
           </VAlert>
-          <div v-else-if="!examSites.length" class="magicflow-table-empty">
+          <div v-else-if="!examRows.length" class="magicflow-table-empty">
             没有未通过的考核（或站点数据暂时取不到）。
           </div>
-          <VSheet v-for="row in examSites" :key="row.site_id" tag="section" class="magicflow-panel app-surface-static mt-2">
-            <header class="magicflow-panel__head">
-              <div>
-                <div class="text-subtitle-2 font-weight-medium">{{ row.site_name || ('站点 ' + row.site_id) }}</div>
-                <div class="text-body-2 text-medium-emphasis">
-                  {{ examDaysText(row) }} · 未通过：{{ examFailedText(row) }}
-                </div>
+          <!-- ② 按「剩余天数」升序：最紧急的排在最上面 -->
+          <VSheet v-for="row in examRows" :key="row.site_id" tag="section" class="magicflow-exam-card">
+            <header class="magicflow-exam-card__head">
+              <div class="magicflow-exam-card__title">
+                <span class="magicflow-exam-card__name">{{ row.site_name || ('站点 ' + row.site_id) }}</span>
+                <VChip size="x-small" variant="tonal" :color="examUrgencyColor(row)">剩 {{ examDaysShort(row) }}</VChip>
+                <span class="magicflow-exam-card__passed">{{ examPassedCount(row) }}/{{ (row.exam.items || []).length }} 已过</span>
               </div>
+              <VProgressLinear
+                :model-value="examSitePct(row)"
+                height="4"
+                rounded
+                :color="examUrgencyColor(row)"
+                bg-color="rgba(var(--v-theme-on-surface), 0.12)"
+              />
             </header>
-            <div class="magicflow-exam-stats">
-              <span>上传 {{ examGb(row.upload) }}</span>
-              <i>·</i>
-              <span>下载 {{ examGb(row.download) }}</span>
-              <i>·</i>
-              <span>魔力 {{ Math.round(Number(row.bonus || 0)) }}</span>
-              <i>·</i>
-              <span>做种 {{ row.seeding ?? 0 }}</span>
-            </div>
-            <div class="magicflow-exam-plan">
-              <article v-for="(p, idx) in (row.plan || [])" :key="idx" class="magicflow-exam-plan__item">
-                <div class="magicflow-exam-plan__main">
-                  <strong>{{ p.label || '考核项' }}</strong>
-                  <VChip size="x-small" variant="tonal" :color="p.kind === 'hold' ? 'grey' : 'primary'">
-                    {{ p.kind === 'upload' ? '刷上传' : p.kind === 'download' ? '补下载' : p.kind === 'bonus' ? '攒魔力' : '保持做种' }}
-                  </VChip>
+            <!-- 考核项：未过的在前，带进度条一眼看出还差多少 -->
+            <ul class="magicflow-exam-items">
+              <li
+                v-for="it in examVisibleItems(row)"
+                :key="it.idx"
+                class="magicflow-exam-item"
+                :class="it.pass ? 'is-pass' : 'is-fail'"
+              >
+                <span class="magicflow-exam-item__label">{{ it.label }}</span>
+                <span v-if="examItemGap(it)" class="magicflow-exam-item__gap">还差 {{ examItemGap(it) }}</span>
+                <span class="magicflow-exam-item__val"><strong>{{ it.cur }}</strong><i> / {{ it.req }}</i></span>
+                <VIcon :icon="it.pass ? 'mdi-check-circle-outline' : 'mdi-alert-circle-outline'" size="14" :color="it.pass ? 'success' : 'error'" />
+                <VProgressLinear
+                  class="magicflow-exam-item__bar"
+                  :model-value="examItemPct(it)"
+                  height="4"
+                  rounded
+                  :color="it.pass ? 'success' : 'error'"
+                  bg-color="rgba(var(--v-theme-on-surface), 0.12)"
+                />
+              </li>
+            </ul>
+            <button
+              v-if="examHiddenPassed(row) > 0"
+              type="button"
+              class="magicflow-exam-more"
+              @click="examTogglePassed(row.site_id)"
+            >显示已通过 {{ examHiddenPassed(row) }} 项</button>
+            <button
+              v-else-if="examShowPassed[row.site_id] && (row.exam.items || []).length > 1"
+              type="button"
+              class="magicflow-exam-more"
+              @click="examTogglePassed(row.site_id)"
+            >只看未通过</button>
+            <!-- 可执行动作：同任务合并（魔力/做种积分都指向同一个任务只出一个） -->
+            <div class="magicflow-exam-acts">
+              <article v-for="a in examActions(row)" :key="a.key" class="magicflow-exam-act">
+                <div class="magicflow-exam-act__head">
+                  <VIcon :icon="a.icon" size="15" />
+                  <strong>{{ a.label }}</strong>
+                  <VChip v-if="a.task_name" size="x-small" variant="text">{{ a.task_name }}</VChip>
                 </div>
-                <ul v-if="(p.notes || []).length" class="magicflow-exam-plan__notes">
-                  <li v-for="(n, ni) in p.notes" :key="ni">{{ n }}</li>
+                <VAlert
+                  v-if="a.warn"
+                  type="warning"
+                  variant="tonal"
+                  density="compact"
+                  class="magicflow-exam-act__warn"
+                >{{ a.warn }}</VAlert>
+                <ul v-if="a.notes.length" class="magicflow-exam-act__notes">
+                  <li v-for="(n, ni) in a.notes" :key="ni">{{ n }}</li>
                 </ul>
                 <VBtn
-                  v-if="p.kind !== 'hold'"
                   size="small"
                   color="primary"
                   variant="tonal"
                   prepend-icon="mdi-play-circle-outline"
-                  :loading="examActing === `${p.kind}:${row.site_id}`"
-                  @click="examAct(row, p.kind)"
-                >一键起任务（{{ p.task_name || p.kind }}）</VBtn>
+                  :loading="examActing === `${a.kind}:${row.site_id}`"
+                  @click="examAct(row, a.kind)"
+                >一键起任务</VBtn>
               </article>
               <div v-if="!(row.plan || []).length" class="magicflow-table-empty">
                 未识别到可执行动作（可能考核不要求下载量 / 或解析不出；可在「做种明细」里看站点实时数据）。
               </div>
             </div>
           </VSheet>
+          <div class="magicflow-exam-foot">只统计「有 Cookie」的站点；已通过的默认不显示（可在「插件设置 → 考核」里改）</div>
         </VCardText>
       </VCard>
     </VDialog>
@@ -6507,16 +6655,211 @@ onUnmounted(() => {
   margin-block-start: 8px;
 }
 
-/* 新手考核弹窗 */
-.magicflow-exam-stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-  font-size: 0.82rem;
-  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
-  padding-block: 2px 6px;
+/* 新手任务板面（5.5.0 重设）：概览 → 按紧急度排序的站点卡（考核项进度条）→ 合并后的动作 */
+.magicflow-exam-body {
+  display: grid;
+  gap: 10px;
+  align-content: start;
 }
 
+.magicflow-exam-hero {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(var(--v-theme-primary), 0.08);
+  border: 1px solid rgba(var(--v-theme-primary), 0.18);
+}
+
+.magicflow-exam-hero.is-urgent {
+  background: rgba(var(--v-theme-error), 0.1);
+  border-color: rgba(var(--v-theme-error), 0.28);
+}
+
+.magicflow-exam-hero__left {
+  display: grid;
+  gap: 2px;
+  min-inline-size: 3.6em;
+}
+
+.magicflow-exam-hero__num {
+  font-size: 1.55rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.magicflow-exam-hero__cap {
+  font-size: 0.68rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  white-space: nowrap;
+}
+
+.magicflow-exam-hero__right {
+  margin-inline-start: auto;
+  display: grid;
+  gap: 3px;
+  text-align: end;
+}
+
+.magicflow-exam-hero__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px 6px;
+  font-size: 0.76rem;
+}
+
+.magicflow-exam-hero__line.is-dim {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  font-size: 0.7rem;
+}
+
+.magicflow-exam-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 12px;
+}
+
+.magicflow-exam-card__head {
+  display: grid;
+  gap: 6px;
+  min-inline-size: 0;
+}
+
+.magicflow-exam-card__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.magicflow-exam-card__name {
+  font-size: 0.9rem;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-inline-size: 45%;
+}
+
+.magicflow-exam-card__passed {
+  margin-inline-start: auto;
+  font-size: 0.7rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  white-space: nowrap;
+}
+
+.magicflow-exam-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.magicflow-exam-item {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  align-items: center;
+  gap: 0 6px;
+  font-size: 0.76rem;
+  min-inline-size: 0;
+}
+
+.magicflow-exam-item__gap {
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: rgb(var(--v-theme-error));
+  background: rgba(var(--v-theme-error), 0.12);
+}
+
+.magicflow-exam-item.is-pass {
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+
+.magicflow-exam-item__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.magicflow-exam-item__val {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.magicflow-exam-item__val i {
+  font-style: normal;
+  opacity: 0.6;
+}
+
+.magicflow-exam-item__bar {
+  grid-column: 1 / -1;
+  margin-block-start: 3px;
+}
+
+.magicflow-exam-more {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 0.72rem;
+  color: rgb(var(--v-theme-primary));
+  cursor: pointer;
+}
+
+.magicflow-exam-acts {
+  display: grid;
+  gap: 8px;
+  border-block-start: 1px dashed rgba(var(--v-border-color), var(--v-border-opacity));
+  padding-block-start: 8px;
+}
+
+.magicflow-exam-act {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  padding: 8px 10px;
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 10px;
+  min-inline-size: 0;
+}
+
+.magicflow-exam-act__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  font-size: 0.82rem;
+}
+
+.magicflow-exam-act__notes {
+  margin: 0;
+  padding-inline-start: 1.1em;
+  font-size: 0.74rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  overflow-wrap: anywhere;
+}
+
+.magicflow-exam-act__warn {
+  inline-size: 100%;
+  font-size: 0.74rem !important;
+}
+
+.magicflow-exam-foot {
+  font-size: 0.68rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  text-align: center;
+}
+
+/* 旧版新手考核样式（保留，部分页面仍在用） */
 .magicflow-exam-plan {
   display: grid;
   gap: 8px;

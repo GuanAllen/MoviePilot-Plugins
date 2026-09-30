@@ -2898,27 +2898,43 @@ const _hoisted_363 = {
 };
 const _hoisted_364 = { class: "magicflow-settings-dialog__head" };
 const _hoisted_365 = { class: "magicflow-recommend-dialog__head-actions" };
-const _hoisted_366 = { class: "magicflow-recommend-dialog__summary" };
-const _hoisted_367 = {
+const _hoisted_366 = { class: "magicflow-exam-hero__left" };
+const _hoisted_367 = { class: "magicflow-exam-hero__num" };
+const _hoisted_368 = { class: "magicflow-exam-hero__right" };
+const _hoisted_369 = {
+  key: 0,
+  class: "magicflow-exam-hero__line"
+};
+const _hoisted_370 = { class: "magicflow-exam-hero__line is-dim" };
+const _hoisted_371 = {
   key: 1,
   class: "magicflow-table-empty"
 };
-const _hoisted_368 = { class: "magicflow-panel__head" };
-const _hoisted_369 = { class: "text-subtitle-2 font-weight-medium" };
-const _hoisted_370 = { class: "text-body-2 text-medium-emphasis" };
-const _hoisted_371 = { class: "magicflow-exam-stats" };
-const _hoisted_372 = { class: "magicflow-exam-plan" };
-const _hoisted_373 = { class: "magicflow-exam-plan__main" };
-const _hoisted_374 = {
+const _hoisted_372 = { class: "magicflow-exam-card__head" };
+const _hoisted_373 = { class: "magicflow-exam-card__title" };
+const _hoisted_374 = { class: "magicflow-exam-card__name" };
+const _hoisted_375 = { class: "magicflow-exam-card__passed" };
+const _hoisted_376 = { class: "magicflow-exam-items" };
+const _hoisted_377 = { class: "magicflow-exam-item__label" };
+const _hoisted_378 = {
   key: 0,
-  class: "magicflow-exam-plan__notes"
+  class: "magicflow-exam-item__gap"
 };
-const _hoisted_375 = {
+const _hoisted_379 = { class: "magicflow-exam-item__val" };
+const _hoisted_380 = ["onClick"];
+const _hoisted_381 = ["onClick"];
+const _hoisted_382 = { class: "magicflow-exam-acts" };
+const _hoisted_383 = { class: "magicflow-exam-act__head" };
+const _hoisted_384 = {
+  key: 1,
+  class: "magicflow-exam-act__notes"
+};
+const _hoisted_385 = {
   key: 0,
   class: "magicflow-table-empty"
 };
-const _hoisted_376 = { class: "text-body-2" };
-const _hoisted_377 = {
+const _hoisted_386 = { class: "text-body-2" };
+const _hoisted_387 = {
   key: 0,
   class: "magicflow-exam-plan__notes"
 };
@@ -4519,6 +4535,108 @@ let examTimer = null;
 const examSites = computed(() => examData.value.sites || []);
 const examBadge = computed(() => (examData.value.enabled === false ? 0 : Number(examData.value.count || 0)));
 const examUrgent = computed(() => examSites.value.filter(s => Number((s.exam || {}).days_left ?? 999) <= 3).length);
+// ── 板面重设（5.5.0）：按剩余天数排序 + 每项进度条 + 同任务合并 + 警告前置
+const examShowPassed = ref({});
+const examRows = computed(() =>
+  [...(examData.value.sites || [])].sort((a, b) => Number(((a.exam || {}).days_left ?? 999)) - Number(((b.exam || {}).days_left ?? 999)))
+);
+const examNext = computed(() => examRows.value[0] || null);
+const examUrgentWeek = computed(() => examRows.value.filter(r => Number(((r.exam || {}).days_left ?? 999)) <= 7).length);
+const examPendingItems = computed(() =>
+  examRows.value.reduce((n, r) => n + (((r.exam || {}).items || []).filter(i => !i.pass).length), 0)
+);
+const EXAM_KIND_TEXT = { upload: '刷上传', download: '补下载', bonus: '攒魔力', hold: '保持做种' };
+const EXAM_KIND_ICON = {
+  upload: 'mdi-upload',
+  download: 'mdi-download',
+  bonus: 'mdi-star-four-points-outline',
+  hold: 'mdi-pause-circle-outline',
+};
+function examDaysShort(row) {
+  const d = Number(((row || {}).exam || {}).days_left);
+  if (!isFinite(d)) return '—'
+  return `${Math.max(0, Math.ceil(d))} 天`
+}
+function examUrgencyColor(row) {
+  const d = Number(((row || {}).exam || {}).days_left);
+  if (!isFinite(d)) return 'grey'
+  if (d <= 3) return 'error'
+  if (d <= 7) return 'warning'
+  return 'success'
+}
+// 未过的排前面（已过项可折叠）
+function examItems(row) {
+  const its = ((row || {}).exam || {}).items || [];
+  return [...its].sort((a, b) => (a.pass ? 1 : 0) - (b.pass ? 1 : 0))
+}
+function examPassedCount(row) {
+  return (((row || {}).exam || {}).items || []).filter(i => i.pass).length
+}
+function examSitePct(row) {
+  const total = (((row || {}).exam || {}).items || []).length || 1;
+  return Math.round((examPassedCount(row) * 100) / total)
+}
+function examItemPct(it) {
+  const req = Number((it || {}).req_num) || 0;
+  const cur = Number((it || {}).cur_num) || 0;
+  if (req <= 0) return it && it.pass ? 100 : 0
+  return Math.max(0, Math.min(100, Math.round((cur * 100) / req)))
+}
+// 还差多少（失败项最关键的信息；后端给了 short_gb/short_num 就用它）
+function examItemGap(it) {
+  const o = it || {};
+  if (o.pass) return ''
+  const fmt = v => (Math.abs(v) >= 100 ? String(Math.round(v)) : String(Math.round(v * 100) / 100));
+  if (Number(o.short_gb) > 0) return `${fmt(Number(o.short_gb))} GB`
+  if (Number(o.short_num) > 0) return `${fmt(Number(o.short_num))}${o.unit ? ` ${o.unit}` : ''}`
+  const d = (Number(o.req_num) || 0) - (Number(o.cur_num) || 0);
+  if (d > 0) return `${fmt(d)}${o.unit ? ` ${o.unit}` : ''}`
+  return ''
+}
+function examVisibleItems(row) {
+  const all = examItems(row);
+  if (examShowPassed.value[row.site_id]) return all
+  const fails = all.filter(i => !i.pass);
+  return fails.length ? fails : all
+}
+function examHiddenPassed(row) {
+  return examItems(row).length - examVisibleItems(row).length
+}
+function examTogglePassed(siteId) {
+  examShowPassed.value = { ...examShowPassed.value, [siteId]: !examShowPassed.value[siteId] };
+}
+// 同一任务只出一个动作（如「魔力增量 / 做种积分增量」都指向 XX-考核魔力）
+function examActions(row) {
+  const out = new Map()
+  ;((row || {}).plan || []).forEach(p => {
+    const key = `${p.kind}|${p.task_name || ''}`;
+    if (!out.has(key)) {
+      out.set(key, {
+        key,
+        kind: p.kind,
+        label: EXAM_KIND_TEXT[p.kind] || p.label || '任务',
+        icon: EXAM_KIND_ICON[p.kind] || 'mdi-play-circle-outline',
+        task_name: p.task_name || '',
+        notes: [],
+        warn: '',
+      });
+    }
+    const a = out.get(key)
+    ;(p.notes || []).forEach(n => {
+      let s = String(n || '').trim();
+      if (!s) return
+      // 窄屏压缩后端长句：尾巴的泛泛建议没信息量，去掉
+      s = s.replace(/[;；]?\s*(魔力靠多挂种.*|靠多挂种.*)$/, '').replace('达到后自动停', '→ 自动停');
+      // ⚠️ 类提醒（花钱白干/比例掉）前置成警戒条，不能埋在按钮下面
+      if (/^⚠️|不建议|建议等|会低于 1|先补上传/.test(s)) {
+        a.warn = a.warn ? `${a.warn} · ${s}` : s;
+        return
+      }
+      if (!a.notes.includes(s)) a.notes.push(s);
+    });
+  });
+  return [...out.values()]
+}
 async function loadExam() {
   try {
     examData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/exam`)) || examData.value;
@@ -4529,20 +4647,6 @@ async function loadExam() {
 function openExam() {
   examOpen.value = true;
   loadExam();
-}
-function examFailedText(row) {
-  return ((row.exam || {}).failed || []).join(' / ') || '—'
-}
-function examDaysText(row) {
-  const d = (row.exam || {}).days_left;
-  if (d === null || d === undefined) return '截止未知'
-  const v = Number(d);
-  return v <= 3 ? `⚠️ 剩 ${v.toFixed(1)} 天` : `剩 ${v.toFixed(1)} 天`
-}
-function examGb(v) {
-  const n = Number(v || 0) / (1024 ** 3);
-  if (!n) return '0'
-  return n >= 1024 ? `${(n / 1024).toFixed(2)}T` : `${n.toFixed(2)}G`
 }
 function examPlan(row, kind) {
   return (row.plan || []).find(p => p.kind === kind) || null
@@ -12519,20 +12623,38 @@ return (_ctx, _cache) => {
               ])
             ]),
             _createVNode(_component_VDivider),
-            _createVNode(_component_VCardText, { class: "magicflow-recommend-dialog__body" }, {
+            _createVNode(_component_VCardText, { class: "magicflow-exam-body" }, {
               default: _withCtx(() => [
-                _createElementVNode("div", _hoisted_366, [
-                  _createElementVNode("span", null, [
-                    _createElementVNode("strong", null, _toDisplayString(examBadge.value), 1),
-                    _cache[554] || (_cache[554] = _createTextVNode(" 个未通过", -1))
+                _createElementVNode("div", {
+                  class: _normalizeClass(["magicflow-exam-hero", examUrgent.value ? 'is-urgent' : ''])
+                }, [
+                  _createElementVNode("div", _hoisted_366, [
+                    _createElementVNode("span", _hoisted_367, _toDisplayString(examRows.value.length), 1),
+                    _cache[554] || (_cache[554] = _createElementVNode("span", { class: "magicflow-exam-hero__cap" }, "站考核未过", -1))
                   ]),
-                  _cache[556] || (_cache[556] = _createElementVNode("i", null, "·", -1)),
-                  _createElementVNode("span", null, [
-                    _createElementVNode("strong", null, _toDisplayString(examUrgent.value), 1),
-                    _cache[555] || (_cache[555] = _createTextVNode(" 个 3 天内截止", -1))
+                  _createElementVNode("div", _hoisted_368, [
+                    (examNext.value)
+                      ? (_openBlock(), _createElementBlock("div", _hoisted_369, [
+                          _createVNode(_component_VIcon, {
+                            icon: "mdi-alarm",
+                            size: "14"
+                          }),
+                          _createTextVNode(" 最近截止：" + _toDisplayString(examNext.value.site_name || ('站点 ' + examNext.value.site_id)) + " ", 1),
+                          _createVNode(_component_VChip, {
+                            size: "x-small",
+                            variant: "tonal",
+                            color: examUrgencyColor(examNext.value)
+                          }, {
+                            default: _withCtx(() => [
+                              _createTextVNode("剩 " + _toDisplayString(examDaysShort(examNext.value)), 1)
+                            ]),
+                            _: 1
+                          }, 8, ["color"])
+                        ]))
+                      : _createCommentVNode("", true),
+                    _createElementVNode("div", _hoisted_370, "待过 " + _toDisplayString(examPendingItems.value) + " 项 · " + _toDisplayString(examUrgentWeek.value) + " 站 7 天内截止", 1)
                   ])
-                ]),
-                _cache[561] || (_cache[561] = _createElementVNode("div", { class: "magicflow-recommend-dialog__note" }, " 只统计「有 Cookie」的站点；已通过的默认不显示（可在「插件设置 → 考核」里改为显示） ", -1)),
+                ], 2),
                 (examData.value.enabled === false)
                   ? (_openBlock(), _createBlock(_component_VAlert, {
                       key: 0,
@@ -12541,88 +12663,159 @@ return (_ctx, _cache) => {
                       density: "compact",
                       class: "my-2"
                     }, {
-                      default: _withCtx(() => [...(_cache[557] || (_cache[557] = [
+                      default: _withCtx(() => [...(_cache[555] || (_cache[555] = [
                         _createTextVNode(" 新手考核模块已关闭（可在「插件设置 → 考核」开启；开启后零额外 PV） ", -1)
                       ]))]),
                       _: 1
                     }))
-                  : (!examSites.value.length)
-                    ? (_openBlock(), _createElementBlock("div", _hoisted_367, " 没有未通过的考核（或站点数据暂时取不到）。 "))
+                  : (!examRows.value.length)
+                    ? (_openBlock(), _createElementBlock("div", _hoisted_371, " 没有未通过的考核（或站点数据暂时取不到）。 "))
                     : _createCommentVNode("", true),
-                (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(examSites.value, (row) => {
+                (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(examRows.value, (row) => {
                   return (_openBlock(), _createBlock(_component_VSheet, {
                     key: row.site_id,
                     tag: "section",
-                    class: "magicflow-panel app-surface-static mt-2"
+                    class: "magicflow-exam-card"
                   }, {
                     default: _withCtx(() => [
-                      _createElementVNode("header", _hoisted_368, [
-                        _createElementVNode("div", null, [
-                          _createElementVNode("div", _hoisted_369, _toDisplayString(row.site_name || ('站点 ' + row.site_id)), 1),
-                          _createElementVNode("div", _hoisted_370, _toDisplayString(examDaysText(row)) + " · 未通过：" + _toDisplayString(examFailedText(row)), 1)
-                        ])
-                      ]),
-                      _createElementVNode("div", _hoisted_371, [
-                        _createElementVNode("span", null, "上传 " + _toDisplayString(examGb(row.upload)), 1),
-                        _cache[558] || (_cache[558] = _createElementVNode("i", null, "·", -1)),
-                        _createElementVNode("span", null, "下载 " + _toDisplayString(examGb(row.download)), 1),
-                        _cache[559] || (_cache[559] = _createElementVNode("i", null, "·", -1)),
-                        _createElementVNode("span", null, "魔力 " + _toDisplayString(Math.round(Number(row.bonus || 0))), 1),
-                        _cache[560] || (_cache[560] = _createElementVNode("i", null, "·", -1)),
-                        _createElementVNode("span", null, "做种 " + _toDisplayString(row.seeding ?? 0), 1)
-                      ]),
-                      _createElementVNode("div", _hoisted_372, [
-                        (_openBlock(true), _createElementBlock(_Fragment, null, _renderList((row.plan || []), (p, idx) => {
-                          return (_openBlock(), _createElementBlock("article", {
-                            key: idx,
-                            class: "magicflow-exam-plan__item"
-                          }, [
-                            _createElementVNode("div", _hoisted_373, [
-                              _createElementVNode("strong", null, _toDisplayString(p.label || '考核项'), 1),
-                              _createVNode(_component_VChip, {
-                                size: "x-small",
-                                variant: "tonal",
-                                color: p.kind === 'hold' ? 'grey' : 'primary'
-                              }, {
-                                default: _withCtx(() => [
-                                  _createTextVNode(_toDisplayString(p.kind === 'upload' ? '刷上传' : p.kind === 'download' ? '补下载' : p.kind === 'bonus' ? '攒魔力' : '保持做种'), 1)
-                                ]),
-                                _: 2
-                              }, 1032, ["color"])
+                      _createElementVNode("header", _hoisted_372, [
+                        _createElementVNode("div", _hoisted_373, [
+                          _createElementVNode("span", _hoisted_374, _toDisplayString(row.site_name || ('站点 ' + row.site_id)), 1),
+                          _createVNode(_component_VChip, {
+                            size: "x-small",
+                            variant: "tonal",
+                            color: examUrgencyColor(row)
+                          }, {
+                            default: _withCtx(() => [
+                              _createTextVNode("剩 " + _toDisplayString(examDaysShort(row)), 1)
                             ]),
-                            ((p.notes || []).length)
-                              ? (_openBlock(), _createElementBlock("ul", _hoisted_374, [
-                                  (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(p.notes, (n, ni) => {
+                            _: 2
+                          }, 1032, ["color"]),
+                          _createElementVNode("span", _hoisted_375, _toDisplayString(examPassedCount(row)) + "/" + _toDisplayString((row.exam.items || []).length) + " 已过", 1)
+                        ]),
+                        _createVNode(_component_VProgressLinear, {
+                          "model-value": examSitePct(row),
+                          height: "4",
+                          rounded: "",
+                          color: examUrgencyColor(row),
+                          "bg-color": "rgba(var(--v-theme-on-surface), 0.12)"
+                        }, null, 8, ["model-value", "color"])
+                      ]),
+                      _createElementVNode("ul", _hoisted_376, [
+                        (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(examVisibleItems(row), (it) => {
+                          return (_openBlock(), _createElementBlock("li", {
+                            key: it.idx,
+                            class: _normalizeClass(["magicflow-exam-item", it.pass ? 'is-pass' : 'is-fail'])
+                          }, [
+                            _createElementVNode("span", _hoisted_377, _toDisplayString(it.label), 1),
+                            (examItemGap(it))
+                              ? (_openBlock(), _createElementBlock("span", _hoisted_378, "还差 " + _toDisplayString(examItemGap(it)), 1))
+                              : _createCommentVNode("", true),
+                            _createElementVNode("span", _hoisted_379, [
+                              _createElementVNode("strong", null, _toDisplayString(it.cur), 1),
+                              _createElementVNode("i", null, " / " + _toDisplayString(it.req), 1)
+                            ]),
+                            _createVNode(_component_VIcon, {
+                              icon: it.pass ? 'mdi-check-circle-outline' : 'mdi-alert-circle-outline',
+                              size: "14",
+                              color: it.pass ? 'success' : 'error'
+                            }, null, 8, ["icon", "color"]),
+                            _createVNode(_component_VProgressLinear, {
+                              class: "magicflow-exam-item__bar",
+                              "model-value": examItemPct(it),
+                              height: "4",
+                              rounded: "",
+                              color: it.pass ? 'success' : 'error',
+                              "bg-color": "rgba(var(--v-theme-on-surface), 0.12)"
+                            }, null, 8, ["model-value", "color"])
+                          ], 2))
+                        }), 128))
+                      ]),
+                      (examHiddenPassed(row) > 0)
+                        ? (_openBlock(), _createElementBlock("button", {
+                            key: 0,
+                            type: "button",
+                            class: "magicflow-exam-more",
+                            onClick: $event => (examTogglePassed(row.site_id))
+                          }, "显示已通过 " + _toDisplayString(examHiddenPassed(row)) + " 项", 9, _hoisted_380))
+                        : (examShowPassed.value[row.site_id] && (row.exam.items || []).length > 1)
+                          ? (_openBlock(), _createElementBlock("button", {
+                              key: 1,
+                              type: "button",
+                              class: "magicflow-exam-more",
+                              onClick: $event => (examTogglePassed(row.site_id))
+                            }, "只看未通过", 8, _hoisted_381))
+                          : _createCommentVNode("", true),
+                      _createElementVNode("div", _hoisted_382, [
+                        (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(examActions(row), (a) => {
+                          return (_openBlock(), _createElementBlock("article", {
+                            key: a.key,
+                            class: "magicflow-exam-act"
+                          }, [
+                            _createElementVNode("div", _hoisted_383, [
+                              _createVNode(_component_VIcon, {
+                                icon: a.icon,
+                                size: "15"
+                              }, null, 8, ["icon"]),
+                              _createElementVNode("strong", null, _toDisplayString(a.label), 1),
+                              (a.task_name)
+                                ? (_openBlock(), _createBlock(_component_VChip, {
+                                    key: 0,
+                                    size: "x-small",
+                                    variant: "text"
+                                  }, {
+                                    default: _withCtx(() => [
+                                      _createTextVNode(_toDisplayString(a.task_name), 1)
+                                    ]),
+                                    _: 2
+                                  }, 1024))
+                                : _createCommentVNode("", true)
+                            ]),
+                            (a.warn)
+                              ? (_openBlock(), _createBlock(_component_VAlert, {
+                                  key: 0,
+                                  type: "warning",
+                                  variant: "tonal",
+                                  density: "compact",
+                                  class: "magicflow-exam-act__warn"
+                                }, {
+                                  default: _withCtx(() => [
+                                    _createTextVNode(_toDisplayString(a.warn), 1)
+                                  ]),
+                                  _: 2
+                                }, 1024))
+                              : _createCommentVNode("", true),
+                            (a.notes.length)
+                              ? (_openBlock(), _createElementBlock("ul", _hoisted_384, [
+                                  (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(a.notes, (n, ni) => {
                                     return (_openBlock(), _createElementBlock("li", { key: ni }, _toDisplayString(n), 1))
                                   }), 128))
                                 ]))
                               : _createCommentVNode("", true),
-                            (p.kind !== 'hold')
-                              ? (_openBlock(), _createBlock(_component_VBtn, {
-                                  key: 1,
-                                  size: "small",
-                                  color: "primary",
-                                  variant: "tonal",
-                                  "prepend-icon": "mdi-play-circle-outline",
-                                  loading: examActing.value === `${p.kind}:${row.site_id}`,
-                                  onClick: $event => (examAct(row, p.kind))
-                                }, {
-                                  default: _withCtx(() => [
-                                    _createTextVNode("一键起任务（" + _toDisplayString(p.task_name || p.kind) + "）", 1)
-                                  ]),
-                                  _: 2
-                                }, 1032, ["loading", "onClick"]))
-                              : _createCommentVNode("", true)
+                            _createVNode(_component_VBtn, {
+                              size: "small",
+                              color: "primary",
+                              variant: "tonal",
+                              "prepend-icon": "mdi-play-circle-outline",
+                              loading: examActing.value === `${a.kind}:${row.site_id}`,
+                              onClick: $event => (examAct(row, a.kind))
+                            }, {
+                              default: _withCtx(() => [...(_cache[556] || (_cache[556] = [
+                                _createTextVNode("一键起任务", -1)
+                              ]))]),
+                              _: 1
+                            }, 8, ["loading", "onClick"])
                           ]))
                         }), 128)),
                         (!(row.plan || []).length)
-                          ? (_openBlock(), _createElementBlock("div", _hoisted_375, " 未识别到可执行动作（可能考核不要求下载量 / 或解析不出；可在「做种明细」里看站点实时数据）。 "))
+                          ? (_openBlock(), _createElementBlock("div", _hoisted_385, " 未识别到可执行动作（可能考核不要求下载量 / 或解析不出；可在「做种明细」里看站点实时数据）。 "))
                           : _createCommentVNode("", true)
                       ])
                     ]),
                     _: 2
                   }, 1024))
-                }), 128))
+                }), 128)),
+                _cache[557] || (_cache[557] = _createElementVNode("div", { class: "magicflow-exam-foot" }, "只统计「有 Cookie」的站点；已通过的默认不显示（可在「插件设置 → 考核」里改）", -1))
               ]),
               _: 1
             })
@@ -12644,25 +12837,25 @@ return (_ctx, _cache) => {
               class: "magicflow-dialog"
             }, {
               default: _withCtx(() => [
-                _cache[569] || (_cache[569] = _createElementVNode("header", { class: "magicflow-settings-dialog__head" }, [
+                _cache[565] || (_cache[565] = _createElementVNode("header", { class: "magicflow-settings-dialog__head" }, [
                   _createElementVNode("span", { class: "magicflow-settings-dialog__title" }, "确认执行")
                 ], -1)),
                 _createVNode(_component_VDivider),
                 _createVNode(_component_VCardText, { class: "d-flex flex-column ga-2" }, {
                   default: _withCtx(() => [
                     _createElementVNode("div", null, [
-                      _cache[562] || (_cache[562] = _createTextVNode(" 将在 ", -1)),
+                      _cache[558] || (_cache[558] = _createTextVNode(" 将在 ", -1)),
                       _createElementVNode("strong", null, _toDisplayString(examConfirm.value.row.site_name), 1),
-                      _cache[563] || (_cache[563] = _createTextVNode(" 上 ", -1)),
+                      _cache[559] || (_cache[559] = _createTextVNode(" 上 ", -1)),
                       _createElementVNode("strong", null, _toDisplayString(examConfirm.value.item.kind === 'download' ? '创建 / 启用「考核下载」任务' : examConfirm.value.item.kind === 'upload' ? '创建 / 启用「考核刷流」任务' : '创建 / 启用「考核魔力」任务'), 1),
-                      _cache[564] || (_cache[564] = _createTextVNode("： ", -1))
+                      _cache[560] || (_cache[560] = _createTextVNode("： ", -1))
                     ]),
-                    _createElementVNode("div", _hoisted_376, [
-                      _cache[565] || (_cache[565] = _createTextVNode("任务名：", -1)),
+                    _createElementVNode("div", _hoisted_386, [
+                      _cache[561] || (_cache[561] = _createTextVNode("任务名：", -1)),
                       _createElementVNode("code", null, _toDisplayString(examConfirm.value.item.task_name), 1)
                     ]),
                     ((examConfirm.value.item.notes || []).length)
-                      ? (_openBlock(), _createElementBlock("ul", _hoisted_377, [
+                      ? (_openBlock(), _createElementBlock("ul", _hoisted_387, [
                           (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(examConfirm.value.item.notes, (n, ni) => {
                             return (_openBlock(), _createElementBlock("li", { key: ni }, _toDisplayString(n), 1))
                           }), 128))
@@ -12673,7 +12866,7 @@ return (_ctx, _cache) => {
                       variant: "tonal",
                       density: "compact"
                     }, {
-                      default: _withCtx(() => [...(_cache[566] || (_cache[566] = [
+                      default: _withCtx(() => [...(_cache[562] || (_cache[562] = [
                         _createTextVNode(" 考核下载会真下非免费种（下载量才算数），且执行期间不会被「3.4.0 下载异常自动清种」误杀。 ", -1)
                       ]))]),
                       _: 1
@@ -12690,7 +12883,7 @@ return (_ctx, _cache) => {
                       disabled: !!examActing.value,
                       onClick: _cache[194] || (_cache[194] = $event => (examConfirm.value = null))
                     }, {
-                      default: _withCtx(() => [...(_cache[567] || (_cache[567] = [
+                      default: _withCtx(() => [...(_cache[563] || (_cache[563] = [
                         _createTextVNode("取消", -1)
                       ]))]),
                       _: 1
@@ -12701,7 +12894,7 @@ return (_ctx, _cache) => {
                       loading: !!examActing.value,
                       onClick: examConfirmRun
                     }, {
-                      default: _withCtx(() => [...(_cache[568] || (_cache[568] = [
+                      default: _withCtx(() => [...(_cache[564] || (_cache[564] = [
                         _createTextVNode("确认创建 / 启用", -1)
                       ]))]),
                       _: 1
@@ -12721,6 +12914,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-f6d8b208"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-f19cc2bf"]]);
 
 export { MagicFlowWorkbench as M };
