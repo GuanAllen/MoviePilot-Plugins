@@ -386,9 +386,9 @@ function autoFillName(force = true) {
   const wasAuto = !cur || autoNameSet.value.has(cur);
   if (force || wasAuto) localTask.value.name = `${sname}·${presetInfo.value.title}`;
 }
-// ★ 下载器标签：和任务名同规矩 —— 没要求（空 / 旧版自动生成的「魔流-…」）
-//   就按「站点 + 任务类型」派生（刷流任务 → 刷流，其余 → 魔力）；
-//   用户手填的自定义标签（非「魔流-」前缀）固定住，绝不被覆盖。
+// ★ 下载器标签：和任务名同规矩 —— **推荐默认值 + 强制统一**。
+//   永远按「站点 + 任务类型」派生（刷流任务 → 刷流，其余 → 魔力）；
+//   字段里展示的就是推荐值，手填了不统一的内容也会在换站点/换类型/保存时被纠正。
 const tagState = computed$1(() => (String(localTask.value.task_type || 'bonus').toLowerCase() === 'brush' ? '刷流' : '魔力'));
 // siteName 已在上面定义（未选择站点时为「未选择」）
 const autoTag = computed$1(() => {
@@ -396,8 +396,6 @@ const autoTag = computed$1(() => {
   return n && n !== '未选择' ? `魔流-${n}-${tagState.value}` : ''
 });
 function autoFillTag() {
-  const cur = String(localTask.value.brush_tag || '').trim();
-  if (cur && !cur.startsWith('魔流-') && !cur.startsWith('刷流-')) return
   if (autoTag.value) localTask.value.brush_tag = autoTag.value;
 }
 function onPctChange() {
@@ -727,7 +725,7 @@ return (_ctx, _cache) => {
                                           "onUpdate:modelValue": _cache[5] || (_cache[5] = $event => ((localTask.value.brush_tag) = $event)),
                                           label: "下载器标签",
                                           placeholder: "留空自动使用「魔流-站点-职务」",
-                                          hint: `自动：${autoTag.value || '魔流-站点-职务'}（站点/任务类型变了会跟着变；手填则固定）`,
+                                          hint: `自动：${autoTag.value || '魔流-站点-职务'}（按站点+任务类型派生，手填不统一也会被纠正）`,
                                           "persistent-hint": ""
                                         }, null, 8, ["modelValue", "hint"])
                                       ]),
@@ -2724,7 +2722,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-4f94c8d4"]]);
+const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-6c402a77"]]);
 
 const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,openBlock:_openBlock,createElementBlock:_createElementBlock,createCommentVNode:_createCommentVNode,createBlock:_createBlock,toDisplayString:_toDisplayString,normalizeClass:_normalizeClass,mergeProps:_mergeProps,renderList:_renderList,Fragment:_Fragment,withCtx:_withCtx,createTextVNode:_createTextVNode,vShow:_vShow,withDirectives:_withDirectives,unref:_unref,normalizeStyle:_normalizeStyle,withModifiers:_withModifiers} = await importShared('vue');
 

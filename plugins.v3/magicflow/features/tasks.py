@@ -36,7 +36,6 @@ from ..tags import (
     STATE_BONUS,
     STATE_SILENT,
     SUB_NEW,
-    is_magicflow_tag,
     retag,
     tag_for,
 )
@@ -59,20 +58,19 @@ from ..common import (
 class TasksMixin:
     """tasks 功能集（原 MagicFlow 方法原样搬入）。"""
 
-    def _derive_task_tag(self, task: Any, payload: Any, current: str = "") -> str:
-        """★ 5.11.4：任务标签统一为「站点级状态标签」（5.0.0 身份/职务模型的**职务轴**）。
+    def _derive_task_tag(self, task: Any) -> str:
+        """★ 5.11.6：任务的下载器标签由插件**统一管理** —— 永远按「站点 + 任务类型」派生。
 
-        新建/编辑时若没手填标签，或填的是**自动生成的魔流标签**（如
-        「魔流-March·刷魔力」—— 旧默认 ``魔流-<任务名>`` 生成），统一改写为
-        ``魔流-<站点>-<刷流|魔力>``。用户自定义标签（非魔流前缀）保持不动。
+        派生规则（依据 ``tags.py::_task_site_state``）：
+        ``魔流-<站点>-<刷流|魔力>``（``task_type == "brush"`` → 刷流，其余 → 魔力）。
 
-        背景（Master 2026-09-30 10:44「新任务取不到魔力」）：任务标签与实际贴的职务标签
-        不一致 → 统计/做种明细都按 ``task.brush_tag`` 查 → 托管恒为 0，看着像「取不到魔力」。
-        与 ``_load_config`` 里的迁移规则同口径（空 / 魔流标签 / ``刷流-`` 老格式 → 派生）。
+        用户手填的标签**只当推荐默认值**：只要不是标准式（不统一）一律被派生覆盖——
+        站点/类型一变标签必须跟着走；否则统计 / 做种明细 / 限速档全按标签查，会集体错位。
+        站点缺失时退回 ``魔流-<任务名>``。
+
+        （Master 2026-09-30 11:16/11:26：“有要求固定住（任务名），没要求按站点和任务类型
+        匹配”、“自定义我也希望你推荐默认值，如果我要是手填名称不统一你要派生”。）
         """
-        cur = str(getattr(payload, "brush_tag", "") or current or "").strip()
-        if cur and not is_magicflow_tag(cur) and not cur.startswith("刷流-"):
-            return cur
         site = str(getattr(task, "site_name", "") or "").strip()
         if not site:
             return f"魔流-{getattr(task, 'name', '') or getattr(task, 'id', '')}"
@@ -185,7 +183,7 @@ class TasksMixin:
             dl_speed=int(payload.dl_speed) if payload.dl_speed else None,
         )
 
-        task.brush_tag = self._derive_task_tag(task, payload)
+        task.brush_tag = self._derive_task_tag(task)
         self._task_configs[task.id] = task
         self._save_config()
         self._refresh_scheduler()
@@ -227,7 +225,7 @@ class TasksMixin:
         task.site_domain = payload.site_domain or getattr(site, "domain", "") or ""
         task.site_name = payload.site_name or getattr(site, "name", "") or ""
         task.downloader = payload.downloader
-        task.brush_tag = self._derive_task_tag(task, payload, current=task.brush_tag)
+        task.brush_tag = self._derive_task_tag(task)
         task.save_path = payload.save_path or ""
         task.task_type = getattr(payload, "task_type", "bonus") or "bonus"
         task.brush_grace_minutes = int(getattr(payload, "brush_grace_minutes", 15) or 0)
