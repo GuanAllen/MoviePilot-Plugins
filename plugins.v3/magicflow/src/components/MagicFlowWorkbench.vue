@@ -1623,13 +1623,16 @@ const examUrgentWeek = computed(() => examRows.value.filter(r => Number(((r.exam
 const examPendingItems = computed(() =>
   examRows.value.reduce((n, r) => n + (((r.exam || {}).items || []).filter(i => !i.pass).length), 0)
 )
-const EXAM_KIND_TEXT = { upload: '刷上传', download: '补下载', bonus: '攒魔力', hold: '保持做种' }
+const EXAM_KIND_TEXT = { upload: '刷上传', download: '下载考核', bonus: '攒魔力', hold: '保持做种', info: '下载考核' }
 const EXAM_KIND_ICON = {
   upload: 'mdi-upload',
   download: 'mdi-download',
   bonus: 'mdi-star-four-points-outline',
   hold: 'mdi-pause-circle-outline',
+  info: 'mdi-download',
 }
+// ★ 可一键起任务的只有「刷上传 / 攒魔力」；下载类我们不做（Master 2026-09-30），只作提示
+const EXAM_ACTIONABLE = ['upload', 'bonus']
 function examDaysShort(row) {
   const d = Number(((row || {}).exam || {}).days_left)
   if (!isFinite(d)) return '—'
@@ -1695,6 +1698,7 @@ function examActions(row) {
         label: EXAM_KIND_TEXT[p.kind] || p.label || '任务',
         icon: EXAM_KIND_ICON[p.kind] || 'mdi-play-circle-outline',
         task_name: p.task_name || '',
+        can_run: EXAM_ACTIONABLE.includes(p.kind),
         notes: [],
         warn: '',
       })
@@ -4507,13 +4511,12 @@ onUnmounted(() => {
             </p>
             <p class="magicflow-settings-hint">
               <strong>已通过的考核默认不显示</strong>（过掉的就不占地方了）；想看全部就打开下面的「显示已通过」。
-              考不过的站会算好缺口并给出建议：上传差多少 → 刷流任务；下载差多少 → 专门下载任务；
-              魔力/积分差多少 → 魔力任务；平均做种时间不够 → 保持做种 + 多辅种（不用建任务）。
+              考不过的站会算好缺口：上传差多少 → 刷流任务；魔力/积分差多少 → 魔力任务；平均做种时间不够 → 保持做种 + 多辅种（不用建任务）。
+              下载类考核项（下载增量）<strong>只做提示、不建任务</strong>。
             </p>
-            <p class="magicflow-settings-hint magicflow-settings-hint--warn">
-              ⚠️ 「考核下载」任务会<strong>真的下载非免费种</strong>（下载增量只能在有下载时增长），
-              会拉低分享率。魔流会在它跑的时候<strong>豁免「清除非免费下载种」</strong>（否则会互相打架），
-              并在<strong>全站免费期间</strong>提示你「免费期下载不计入下载量」。
+            <p class="magicflow-settings-hint">
+              魔流不做下载业务：<strong>不会创建任何下载任务</strong>，也不会为凑下载量去下非免费种。
+              缺的下载量需要你自己安排；已通过/未通过都不会影响现有做种。
             </p>
             <div class="magicflow-settings-switches">
               <VSwitch v-model="settingsDraft.exam_enabled" label="启用「新手考核」（关闭则不抓取、不解析、不显示）" color="primary" hide-details inset />
@@ -6042,6 +6045,7 @@ onUnmounted(() => {
                   <VIcon :icon="a.icon" size="15" />
                   <strong>{{ a.label }}</strong>
                   <VChip v-if="a.task_name" size="x-small" variant="text">{{ a.task_name }}</VChip>
+                  <VChip v-else-if="!a.can_run" size="x-small" variant="tonal" color="grey">{{ a.kind === 'info' ? '不建任务' : '保持做种' }}</VChip>
                 </div>
                 <VAlert
                   v-if="a.warn"
@@ -6054,6 +6058,7 @@ onUnmounted(() => {
                   <li v-for="(n, ni) in a.notes" :key="ni">{{ n }}</li>
                 </ul>
                 <VBtn
+                  v-if="a.can_run"
                   size="small"
                   color="primary"
                   variant="tonal"
@@ -6063,7 +6068,7 @@ onUnmounted(() => {
                 >一键起任务</VBtn>
               </article>
               <div v-if="!(row.plan || []).length" class="magicflow-table-empty">
-                未识别到可执行动作（可能考核不要求下载量 / 或解析不出；可在「做种明细」里看站点实时数据）。
+                本站没有需要新任务的项目（保持做种即可）。
               </div>
             </div>
           </VSheet>
@@ -6082,14 +6087,14 @@ onUnmounted(() => {
         <VCardText class="d-flex flex-column ga-2">
           <div>
             将在 <strong>{{ examConfirm.row.site_name }}</strong> 上
-            <strong>{{ examConfirm.item.kind === 'download' ? '创建 / 启用「考核下载」任务' : examConfirm.item.kind === 'upload' ? '创建 / 启用「考核刷流」任务' : '创建 / 启用「考核魔力」任务' }}</strong>：
+            <strong>{{ examConfirm.item.kind === 'upload' ? '创建 / 启用「考核刷流」任务' : '创建 / 启用「考核魔力」任务' }}</strong>：
           </div>
           <div class="text-body-2">任务名：<code>{{ examConfirm.item.task_name }}</code></div>
           <ul v-if="(examConfirm.item.notes || []).length" class="magicflow-exam-plan__notes">
             <li v-for="(n, ni) in examConfirm.item.notes" :key="ni">{{ n }}</li>
           </ul>
-          <VAlert type="warning" variant="tonal" density="compact">
-            考核下载会真下非免费种（下载量才算数），且执行期间不会被「3.4.0 下载异常自动清种」误杀。
+          <VAlert type="info" variant="tonal" density="compact">
+            任务达标后自动停；全程只做种、不删种（魔流不做下载任务）。
           </VAlert>
         </VCardText>
         <VDivider />
