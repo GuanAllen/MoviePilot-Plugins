@@ -36,6 +36,7 @@ from ..tags import (
     STATE_BONUS,
     STATE_SILENT,
     SUB_NEW,
+    is_magicflow_tag,
     retag,
     tag_for,
 )
@@ -58,6 +59,29 @@ from ..common import (
 class TasksMixin:
     """tasks 功能集（原 MagicFlow 方法原样搬入）。"""
 
+    def _derive_task_tag(self, task: Any, payload: Any, current: str = "") -> str:
+        """★ 5.11.4：任务标签统一为「站点级状态标签」（5.0.0 身份/职务模型的**职务轴**）。
+
+        新建/编辑时若没手填标签，或填的是**自动生成的魔流标签**（如
+        「魔流-March·刷魔力」—— 旧默认 ``魔流-<任务名>`` 生成），统一改写为
+        ``魔流-<站点>-<刷流|魔力>``。用户自定义标签（非魔流前缀）保持不动。
+
+        背景（Master 2026-09-30 10:44「新任务取不到魔力」）：任务标签与实际贴的职务标签
+        不一致 → 统计/做种明细都按 ``task.brush_tag`` 查 → 托管恒为 0，看着像「取不到魔力」。
+        与 ``_load_config`` 里的迁移规则同口径（空 / 魔流标签 / ``刷流-`` 老格式 → 派生）。
+        """
+        cur = str(getattr(payload, "brush_tag", "") or current or "").strip()
+        if cur and not is_magicflow_tag(cur) and not cur.startswith("刷流-"):
+            return cur
+        site = str(getattr(task, "site_name", "") or "").strip()
+        if not site:
+            return f"魔流-{getattr(task, 'name', '') or getattr(task, 'id', '')}"
+        try:
+            derived = self._task_tag(task)
+        except Exception:  # noqa: BLE001
+            derived = ""
+        return derived or f"魔流-{getattr(task, 'name', '') or getattr(task, 'id', '')}"
+
     def create_task(self, payload: MagicFlowTaskPayload) -> Response:
         """创建魔流任务。"""
         task_id = payload.id or uuid.uuid4().hex[:12]
@@ -77,7 +101,7 @@ class TasksMixin:
             site_domain=payload.site_domain or getattr(site, "domain", "") or "",
             site_name=payload.site_name or getattr(site, "name", "") or "",
             downloader=payload.downloader,
-            brush_tag=payload.brush_tag or f"魔流-{payload.name}",
+            brush_tag="",  # ★ 5.11.4：构造后统一由 _derive_task_tag 派生（见下方）
             save_path=payload.save_path or "",
             task_type=getattr(payload, "task_type", "bonus") or "bonus",
             run_mode=run_mode,
@@ -161,6 +185,7 @@ class TasksMixin:
             dl_speed=int(payload.dl_speed) if payload.dl_speed else None,
         )
 
+        task.brush_tag = self._derive_task_tag(task, payload)
         self._task_configs[task.id] = task
         self._save_config()
         self._refresh_scheduler()
@@ -202,7 +227,7 @@ class TasksMixin:
         task.site_domain = payload.site_domain or getattr(site, "domain", "") or ""
         task.site_name = payload.site_name or getattr(site, "name", "") or ""
         task.downloader = payload.downloader
-        task.brush_tag = payload.brush_tag or task.brush_tag or f"魔流-{payload.name}"
+        task.brush_tag = self._derive_task_tag(task, payload, current=task.brush_tag)
         task.save_path = payload.save_path or ""
         task.task_type = getattr(payload, "task_type", "bonus") or "bonus"
         task.brush_grace_minutes = int(getattr(payload, "brush_grace_minutes", 15) or 0)
