@@ -437,8 +437,11 @@ class DebugMixin:
         except Exception as e:  # noqa: BLE001
             return Response(success=False, message=str(e))
 
-    def debug_swap(self, task_id: str = "", apply: int = 0) -> Response:
-        """诊断:自动换种干跑（``apply=0`` 只出计划，不落盘）。"""
+    def debug_swap(self, task_id: str = "", apply: int = 0, force: int = 0) -> Response:
+        """诊断:自动换种干跑（``apply=0`` 只出计划，不落盘；``force=1`` 忽略开关/触发/冷却，仅干跑）。"""
+        _force = bool(force)
+        if _force:
+            apply = 0   # 强制只用于观察，绝不落盘
         try:
             ids = [task_id] if task_id else list(self._task_configs.keys())
         except Exception:  # noqa: BLE001
@@ -453,7 +456,7 @@ class DebugMixin:
                 if not dl or not dl.is_available:
                     rows.append({"task": task.name, "id": tid, "error": "下载器不可用"})
                     continue
-                plan = self._swap_round(task, dl, apply=bool(apply))
+                plan = self._swap_round(task, dl, apply=bool(apply), force=_force)
             except Exception as e:  # noqa: BLE001
                 rows.append({"task": task.name, "id": tid, "error": f"{type(e).__name__}: {e}"})
                 continue
@@ -482,6 +485,14 @@ class DebugMixin:
                         "out": str(getattr(p["victim"], "title", ""))[:90],
                         "out_size": round(float(getattr(p["victim"], "size_gb", 0) or 0), 2),
                         "out_seeders": int(getattr(p["victim"], "seeders", 0) or 0),
+                        "k": int(p.get("k") or 1),
+                        "outs": [
+                            {
+                                "title": str(getattr(x, "title", ""))[:90],
+                                "size": round(float(getattr(x, "size_gb", 0) or 0), 2),
+                            }
+                            for x in (p.get("victims") or ([p["victim"]] if p.get("victim") else []))
+                        ],
                         "net": round(float(p["net"]), 3),
                     }
                     for p in (plan.get("pairs") or [])

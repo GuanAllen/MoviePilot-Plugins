@@ -32,6 +32,7 @@ from ..common import (
     SWAP_INTERVAL,
     SWAP_MAX_ADD_GB,
     SWAP_MAX_IN_GB,
+    SWAP_MAX_OUT_PER_ROUND,
     SWAP_MAX_PER_ROUND,
     SWAP_MIN_GAIN_PER_GB,
     SWAP_SOFT_MARGIN_MULT,
@@ -41,7 +42,8 @@ from ..common import (
 class SwapMixin:
     """swap 功能集（原 MagicFlow 方法原样搬入）。"""
 
-    def _swap_plan(self, task: MagicFlowTaskConfig, downloader: DownloaderAdapter) -> Dict[str, Any]:
+    def _swap_plan(self, task: MagicFlowTaskConfig, downloader: DownloaderAdapter,
+                   force: bool = False) -> Dict[str, Any]:
         """算出「该换哪些种」——纯决策，不落盘。
 
         站点魔力是「对**合计 A** 只取一次 arctan」，所以换种能算真实边际：
@@ -55,12 +57,15 @@ class SwapMixin:
         达基础的 ``SWAP_SOFT_MARGIN_MULT`` 倍。
         触发条件（任一）：名额满 / 磁盘满 / 站点占用 ≥ swap_ceiling_pct。
         还有空间时**不换**（直接补种更划算，由 brush 负责）。
+
+        ★ 组合换入（**1 换 K**，MODEL.md §5）：一个强候选可顶掉 k（≤ ``SWAP_MAX_OUT_PER_ROUND``）
+        个弱种；在「净赚 + 达门槛」前提下取**最大的 k** —— 既保正收益，又顺带腾出 k−1 个名额。
         """
         out: Dict[str, Any] = {"ok": False, "reason": "", "pairs": [], "net": 0.0, "trigger": "", "triggered": False, "a_total": 0.0, "active": 0}
         if not downloader or not downloader.is_available:
             out["reason"] = "下载器不可用"
             return out
-        if not bool(getattr(task, "auto_swap", True)):
+        if not force and not bool(getattr(task, "auto_swap", True)):
             out["reason"] = "未开启自动换种"
             return out
         if str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() != "bonus":
@@ -70,15 +75,9 @@ class SwapMixin:
             out["reason"] = "未配置保存目录"
             return out
 
-        # 1) 本任务托管种
-        try:
-            _groups, _ = downloader.get_torrents_by_tag() if hasattr(downloader, "get_torrents_by_tag") else ({}, "n/a")
-        except Exception as e:  # noqa: BLE001
-            out["reason"] = f"取托管种失败:{e}"
-            return out
-        all_tagged = _groups.get(task.brush_tag, []) if isinstance(_groups, dict) else []
-        managed = self._task_owned_torrents(task, all_tagged)
-        if len(managed) < 2:
+        # 1) 本任务托管种（站点×职务）
+        managed = self._task_managed_torrents(task)
+        if len(managed) < 2 and not force:
             out["reason"] = "托管种不足，无需换种"
             return out
 
@@ -135,11 +134,12 @@ class SwapMixin:
             triggers.append(f"磁盘满 {size_gb:.0f}/{float(disk_gb):.0f}GB")
         if occ >= ceiling_pct:
             triggers.append(f"站点占用 {occ:.0f}%≥{ceiling_pct:.0f}%")
-        if not triggers:
+        if not triggers and not force:
             out["reason"] = f"还有空间（占用 {occ:.0f}%），直接补种更划算"
             return out
         out["triggered"] = True
-        out["trigger"] = " / ".join(triggers)
+        out["forced"] = bool(force and not triggers)
+        out["trigger"] = " / ".join(triggers) or "强制（诊断干跑）"
 
         # 冷却：换种要抓候选 + 下载，不宜每分钟都跑
         _now = time.time()
@@ -147,7 +147,7 @@ class SwapMixin:
         if _bag is None:
             _bag = self._swap_last = {}
         _last = float(_bag.get(task.id, 0.0) or 0.0)
-        if _last and (_now - _last) < SWAP_INTERVAL:
+        if _last and (_now - _last) < SWAP_INTERVAL and not force:
             out["reason"] = f"换种冷却中（剩 {int(SWAP_INTERVAL - (_now - _last))}s）"
             return out
         _bag[task.id] = _now
@@ -229,35 +229,72 @@ class SwapMixin:
             return out
         out["skipped_big"] = skipped_big
 
-        # 6) 贪心配对：候选 a 必须超过被撤种 a，且净收益达门槛
+        # 6) ★ 组合配对（允许 1 换 K）：一个强候选可顶掉 k 个弱种；净赚就换 k 个（顺带腾出 k−1 个名额）。
+        #    net = B(A − Σa_v + a_c) − B(A)（等价于 gain − loss）；net > 0 ⟺ a_c > Σa_v。
+        #    因为 arctan 饱和，net(k) 随 k 递减；所以在「净赚 + 达门槛」前提下取 **最大的 k**，
+        #    既保正收益、又尽可能多腾名额（这正是 1换K 相对 1换1 的价值）。
         margin = max(float(getattr(task, "swap_min_gain_pct", 25.0) or 25.0) / 100.0, 0.05)
+        K = max(int(SWAP_MAX_OUT_PER_ROUND), 1)
         A = a_total
+        size_now = size_gb
         pairs: List[Dict[str, Any]] = []
         added_gb = 0.0
-        for (c, sc), v in zip(scored, victims):
-            a_v = float(getattr(v, "bonus_score", 0.0) or 0.0)
+        used: set = set()
+        for (c, sc) in scored:
             a_c = float(sc.a_contrib or 0.0)
-            if a_c <= a_v:
-                break
             in_gb = float(getattr(c, "size_gb", 0) or 0)
-            out_gb = float(getattr(v, "size_gb", 0) or 0)
-            grow = max(in_gb - out_gb, 0.0)
-            # 单轮累计「多占磁盘」不超过阈值
-            if added_gb + grow > SWAP_MAX_ADD_GB:
+            pick: Optional[Dict[str, Any]] = None
+            a_v_sum = 0.0
+            out_gb_sum = 0.0
+            taken: List[Any] = []
+            # victims 已按 a 升序（最弱在前）；依次多收一个，k 越大越优先（若仍净赚）
+            for v in victims:
+                if len(taken) >= K:
+                    break
+                if v.hash in used:
+                    continue
+                a_v_sum += float(getattr(v, "bonus_score", 0.0) or 0.0)
+                out_gb_sum += float(getattr(v, "size_gb", 0) or 0.0)
+                taken.append(v)
+                grow = max(in_gb - out_gb_sum, 0.0)
+                # 单轮累计「多占磁盘」不超过阈值
+                if added_gb + grow > SWAP_MAX_ADD_GB:
+                    continue
+                # 不越任务磁盘预算
+                if disk_gb and (size_now - out_gb_sum + in_gb) > float(disk_gb):
+                    continue
+                a_after = max(A - a_v_sum, 0.0)
+                gain = marginal_bonus_per_hour(a_after, a_c, params, flat_gain=flat_gain)
+                loss = marginal_bonus_per_hour(a_after, a_v_sum, params)
+                net = gain - loss
+                if net <= 0:
+                    continue
+                _mult = SWAP_SOFT_MARGIN_MULT if any(vv.hash in soft for vv in taken) else 1.0
+                if net < loss * margin * _mult:
+                    continue
+                # 达标 → 覆盖（循环继续到更大的 k，若仍达标则以最大 k 胜出）
+                pick = {
+                    "victims": list(taken), "k": len(taken),
+                    "net": net, "gain": gain, "loss": loss,
+                    "a_v_sum": a_v_sum, "out_gb": out_gb_sum,
+                    "soft": any(vv.hash in soft for vv in taken),
+                }
+            if not pick:
                 continue
-            # 不越任务磁盘预算
-            if disk_gb and (size_gb - out_gb + in_gb) > float(disk_gb):
-                continue
-            a_after = max(A - a_v, 0.0)
-            gain = marginal_bonus_per_hour(a_after, a_c, params)
-            loss = marginal_bonus_per_hour(a_after, a_v, params)
-            net = gain - loss
-            _mult = SWAP_SOFT_MARGIN_MULT if (v.hash in soft) else 1.0
-            if net < loss * margin * _mult:
-                continue
-            pairs.append({"cand": c, "score": sc, "victim": v, "net": net, "gain": gain, "loss": loss, "soft": bool(v.hash in soft)})
-            added_gb += grow
-            A = a_after + a_c
+            pairs.append({
+                "cand": c, "score": sc,
+                "victim": pick["victims"][0],          # 兼容旧字段（第一颗换出种）
+                "victims": pick["victims"], "k": pick["k"],
+                "net": pick["net"], "gain": pick["gain"], "loss": pick["loss"],
+                "soft": pick["soft"],
+            })
+            for vv in pick["victims"]:
+                used.add(vv.hash)
+            A = max(A - pick["a_v_sum"], 0.0) + a_c
+            size_now = size_now - pick["out_gb"] + in_gb
+            added_gb += max(in_gb - pick["out_gb"], 0.0)
+            if len(pairs) >= SWAP_MAX_PER_ROUND:
+                break
         if not pairs:
             out["reason"] = "无可换（现有种都比候选优）"
             return out
@@ -320,14 +357,15 @@ class SwapMixin:
             )
             return None
 
-    def _swap_round(self, task: MagicFlowTaskConfig, downloader: DownloaderAdapter, apply: bool = True) -> Dict[str, Any]:
+    def _swap_round(self, task: MagicFlowTaskConfig, downloader: DownloaderAdapter, apply: bool = True,
+                    force: bool = False) -> Dict[str, Any]:
         """★ 自动换种：把低价值种「换下线」（暂停做种，**不删种**），换入更优候选。
 
         换出 = 不再拉它做种（种子与文件全部保留，可随时换回）；
         换入 = 优先复用本机已有同资源（零下载辅种），没命中才下载。
         不在换种触发状态且站点占用明显回落时，把之前换下线的种「换回」做种（滞回，防抖）。
         """
-        plan = self._swap_plan(task, downloader)
+        plan = self._swap_plan(task, downloader, force=force)
         if not apply:
             return plan
         _eligible = (
@@ -381,10 +419,14 @@ class SwapMixin:
         except Exception:  # noqa: BLE001
             local_by_size = None
         swapped = 0
+        swapped_out = 0
         swap_items: List[OperationItem] = []
         for p in pairs:
             c = p["cand"]
             v = p["victim"]
+            # ★ 1换K：一对可能是「1 个换入 ⇄ k 个换出」
+            _victims = list(p.get("victims") or ([v] if v else []))
+            _vhashes = [str(getattr(x, "hash", "") or "").lower() for x in _victims if getattr(x, "hash", "")]
             _sz = float(getattr(c, "size_gb", 0) or 0)
             _is_free = bool(getattr(c, "is_free", False) or getattr(c, "is_double_free", False))
             new_hash = ""
@@ -467,9 +509,9 @@ class SwapMixin:
                         self._log(f"魔流 [{task.name}] 换种:换入失败 {str(getattr(c, 'title', ''))[:40]} ({err})", "warning")
                         continue
                     _kind = "dl"
-            # 换出：暂停做种（不删种、不删文件）
+            # 换出：暂停做种（不删种、不删文件）——1换K 则 k 个一起下线
             try:
-                pcnt, perr = downloader.pause_torrents([v.hash])
+                pcnt, perr = downloader.pause_torrents(_vhashes)
             except Exception as e:  # noqa: BLE001
                 pcnt, perr = 0, str(e)
             if not pcnt:
@@ -479,6 +521,7 @@ class SwapMixin:
                 )
                 continue
             swapped += 1
+            swapped_out += len(_vhashes)
             if not reused:
                 _used += _sz
                 _used_g += _sz
@@ -488,36 +531,39 @@ class SwapMixin:
                 plan[_k] = round(float(plan.get(_k) or 0.0) + _sz, 1)
             if self._store:
                 try:
-                    self._store.mark_swap_paused(task.id, [v.hash])
+                    self._store.mark_swap_paused(task.id, _vhashes)
                     if new_hash:
                         self._store.seen.mark(task.id, [f"hash:{new_hash.lower()}"])
                 except Exception:  # noqa: BLE001
                     pass
+            _ksfx = "" if len(_victims) <= 1 else f"·1换{len(_victims)}"
             swap_items.append(OperationItem(
                 hash=(new_hash or "").lower(), title=str(getattr(c, "title", "")),
                 reason=(
                     "换入·辅种（零下载，净 +%.2f/h）" % float(p["net"]) if _kind == "reuse" else
                     ("换入·跨站免费（净 +%.2f/h）" % float(p["net"]) if _kind == "cross" else
                      "换入·本站免费下载（净 +%.2f/h）" % float(p["net"]))
-                ),
+                ) + _ksfx,
                 size_gb=float(getattr(c, "size_gb", 0) or 0), source="swap",
             ))
-            swap_items.append(OperationItem(
-                hash=v.hash, title=str(getattr(v, "title", "")),
-                reason=f"换出·暂停做种（边际 {p['loss']:.2f} → {p['gain']:.2f}/h，不删种）",
-                size_gb=float(getattr(v, "size_gb", 0) or 0), source="swap",
-            ))
+            for _vv in _victims:
+                swap_items.append(OperationItem(
+                    hash=_vv.hash, title=str(getattr(_vv, "title", "")),
+                    reason=f"换出·暂停做种（边际 {p['loss']:.2f} → {p['gain']:.2f}/h，不删种）",
+                    size_gb=float(getattr(_vv, "size_gb", 0) or 0), source="swap",
+                ))
         if swap_items and self._store:
             try:
                 self._store.journal.record(task_id=task.id, kind="swap", items=swap_items)
             except Exception:  # noqa: BLE001
                 pass
         plan["applied"] = swapped
+        plan["applied_out"] = swapped_out
         plan["day_gb"] = round(_used, 1)
         plan["day_gb_total"] = round(_used_g, 1)
         if swapped:
             self._log(
-                f"魔流 [{task.name}] 换种 {swapped} 对（净 +{plan['net']:.2f}/h）"
+                f"魔流 [{task.name}] 换种 {swapped} 对（换出 {swapped_out} 个，净 +{plan['net']:.2f}/h）"
                 f"| 换出=暂停做种不删种 | 今日取种 {_used:.0f}/{_dl_cap:.0f}GB"
                 f"（本站免费 {float(plan.get('free_gb') or 0):.0f} / 跨站免费 {float(plan.get('cross_gb') or 0):.0f}）"
                 f"（全局 {_used_g:.0f}/{SWAP_DAY_DL_GB_TOTAL:.0f}GB）| 触发 {plan.get('trigger')}"

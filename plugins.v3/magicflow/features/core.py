@@ -69,6 +69,10 @@ from ..common import (
     MagicFlowTaskConfig,
     OPTIONS_TTL,
     RECOMMEND_INTERVAL_MINUTES,
+    RESEED_BATCH,
+    RESEED_DAILY_PER_SITE,
+    RESEED_INTERVAL_MINUTES,
+    RESEED_MIN_SIZE_GB,
     REUSE_INTERVAL_MINUTES,
     RULES_INTERVAL_MINUTES,
     SEED_UP_LIMIT_APPLY_INTERVAL,
@@ -82,6 +86,7 @@ from ..common import (
     _cs_parse_site_hours,
     task_is_participating,
 )
+from .migrate import MIGRATE_INTERVAL_MINUTES
 
 
 class CoreMixin:
@@ -104,6 +109,18 @@ class CoreMixin:
         self._status_heavy_at: float = 0.0
         self._status_refreshing: bool = False
         self._enabled = bool(raw_config.get("enabled", False))
+        # ★ 6.0.0 升级闸门：<6.0 直跳 6.1+ / 6.0 的迁移没做好 → 不让升（插件不干活）。
+        self._gate_blocked: Optional[Dict[str, Any]] = None
+        try:
+            _gate = self.migrate_gate()
+            if _gate.get("blocked"):
+                self._gate_blocked = _gate
+                self._enabled = False
+                logger.error(f"魔流升级闸门:{_gate.get('reason')}")
+            else:
+                self.migrate_record_version()
+        except Exception as _gate_err:  # noqa: BLE001
+            logger.warning(f"魔流升级闸门检查失败:{_gate_err}")
         self._show_sidebar_nav = bool(raw_config.get("show_sidebar_nav", True))
         self._debug_log = bool(raw_config.get("debug_log", False))
         self._compact_mode = bool(raw_config.get("compact_mode", False))
@@ -140,6 +157,7 @@ class CoreMixin:
             _sr = []
         self._tags_cfg = {
             "enabled": bool(raw_config.get("tag_model_enabled", True)),
+            "show_qb_tags": bool(raw_config.get("show_qb_tags", True)),
             "new_timeout": max(0.0, float(raw_config.get("tag_silent_new_timeout_hours", 24.0) or 0)) * 3600.0,
             "snapshot_interval": max(0.0, float(raw_config.get("tag_snapshot_interval_hours", 6.0) or 0)) * 3600.0,
             "host_interval": max(5.0, float(raw_config.get("silent_host_interval_minutes", 60.0) or 60.0)),
@@ -232,6 +250,23 @@ class CoreMixin:
         }
         self._recommend_engine = RecommendEngine(self)
         self._recommend_cursor = ""
+
+        # ★ 全站辅种（本机驱动：本机已有资源 → 去各站落户，零下载）Master 2026-09-30
+        try:
+            _rs_sites = raw_config.get("reseed_sites")
+            if isinstance(_rs_sites, str):
+                _rs_sites = [x.strip() for x in _rs_sites.replace("，", ",").split(",") if x.strip()]
+            if not isinstance(_rs_sites, list):
+                _rs_sites = []
+            self._reseed_enabled = bool(raw_config.get("reseed_enabled", False))
+            self._reseed_sites = [str(x).strip() for x in _rs_sites if str(x).strip()]
+            self._reseed_daily = int(_rf(raw_config.get("reseed_daily_per_site"),
+                                        float(RESEED_DAILY_PER_SITE)))
+            self._reseed_batch = int(_rf(raw_config.get("reseed_batch"), float(RESEED_BATCH)))
+            self._reseed_min_size_gb = _rf(raw_config.get("reseed_min_size_gb"), RESEED_MIN_SIZE_GB)
+            self._reseed_dry = bool(raw_config.get("reseed_dry", False))
+        except Exception as err:  # noqa: BLE001
+            self._log(f"全站辅种:配置读取失败 {err}", "warning")
 
         # 跨站辅种：兄弟站「流量兜底」（判「免费」可能错 → 必须实时核对，错了立刻止损）
         self._cs_cfg = {
@@ -595,6 +630,8 @@ class CoreMixin:
         """
         if not self.get_state():
             return []
+        if getattr(self, "_gate_blocked", None):
+            return []          # ★ 升级闸门未通过：不注册任何 worker（插件 inert）
         services: List[Dict[str, Any]] = []
         for task in self._task_configs.values():
             _mode = self._normalize_run_mode(task.run_mode)
@@ -663,6 +700,36 @@ class CoreMixin:
                     },
                 }
             )
+        # ★ 全站辅种（本机驱动）：插件级单 worker。开关在设置里；没开就不注册。
+        if bool(getattr(self, "_reseed_enabled", False)) or bool(
+                (self.get_data("reseed_cfg") or {}).get("enabled")):
+            services.append(
+                {
+                    "id": "ReSeed",
+                    "name": "全站辅种",
+                    "trigger": "interval",
+                    "func": self.reseed_scan,
+                    "kwargs": {
+                        "minutes": RESEED_INTERVAL_MINUTES,
+                        "jitter": self._jitter_seconds(RESEED_INTERVAL_MINUTES),
+                    },
+                }
+            )
+        # ★ 6.0.0 账本结构自迁移：一次性 worker。完成戳存在就不注册（后续版本整块下线）。
+        #   开工前旧键原样备份，只增不删；失败保留旧键，旧代码照跑。
+        try:
+            if self.migrate_pending():
+                services.append(
+                    {
+                        "id": "Migrate",
+                        "name": "账本迁移",
+                        "trigger": "interval",
+                        "func": self.migrate_scan,
+                        "kwargs": {"minutes": MIGRATE_INTERVAL_MINUTES},
+                    }
+                )
+        except Exception:  # noqa: BLE001
+            pass
         # ★ 3.7.1:删除「候选预取」worker。
         #   实测它**不省 PV**——省 PV 靠的是站点级缓存 TTL(已拉长到 1h)+ 缓存持久化;
         #   预取只是把「同一份抓取」换个时间点做,任务数×频率并没有下降,反而多一条线程。
@@ -868,6 +935,7 @@ class CoreMixin:
             "seed_up_limit_kbps": float(getattr(self, "_seed_up_limit_kbps", SEED_UP_LIMIT_KBPS_DEFAULT) or 0),
             "brush_seed_up_limit_kbps": float(getattr(self, "_brush_seed_up_limit_kbps", BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT) or 0),
             "tag_model_enabled": bool(self._tags_cfg.get("enabled", True)),
+            "show_qb_tags": bool(self._tags_cfg.get("show_qb_tags", True)),
             "tag_silent_new_timeout_hours": round(float(self._tags_cfg.get("new_timeout") or 0) / 3600.0, 3),
             "tag_snapshot_interval_hours": round(float(self._tags_cfg.get("snapshot_interval") or 0) / 3600.0, 3),
             "sort_rules": [dict(r) for r in (self._tags_cfg.get("rules") or [])],
@@ -893,6 +961,13 @@ class CoreMixin:
             "crossseed_seed_hours_default": float(getattr(self, "_cs_cfg", {}).get("seed_hours_default") or CROSSSEED_SEED_HOURS_DEFAULT),
             "crossseed_site_hours": [f"{d}={h:g}" for d, h in sorted((getattr(self, "_cs_cfg", {}).get("site_hours") or {}).items())],
             "crossseed_reclaim": bool(getattr(self, "_cs_cfg", {}).get("reclaim", False)),
+            # ★ 全站辅种（本机驱动）
+            "reseed_enabled": bool(getattr(self, "_reseed_enabled", False)),
+            "reseed_sites": list(getattr(self, "_reseed_sites", None) or []),
+            "reseed_daily_per_site": int(getattr(self, "_reseed_daily", RESEED_DAILY_PER_SITE) or 0),
+            "reseed_batch": int(getattr(self, "_reseed_batch", RESEED_BATCH) or 1),
+            "reseed_min_size_gb": float(getattr(self, "_reseed_min_size_gb", RESEED_MIN_SIZE_GB) or 0.0),
+            "reseed_dry": bool(getattr(self, "_reseed_dry", False)),
             "rules_auto_refresh": bool(getattr(self, "_rules_cfg", {}).get("auto_refresh", True)),
             "fallback_enabled": bool(self._fallback_cfg.get("enabled", True)),
             "fallback_sources": list(self._fallback_cfg.get("sources") or FALLBACK_SOURCES),
@@ -1022,8 +1097,14 @@ class CoreMixin:
         else:
             self._log(f"任务流量:设置全局上传限速失败:{err}", "warning")
 
-    def _seed_tag_tiers(self) -> Dict[str, float]:
-        """返回 {标签: 单种上传限速 KB/s}：刷流标签走刷流档，其余(魔力/来源份/推荐)走挂种档。"""
+    def _apply_seed_upload_limit(self, force: bool = False) -> None:
+        """给**我们管控的**种子套「单种上传限速」（按账本职务态，不再按标签）。
+
+        - 只动上传（``torrents/setUploadLimit``），不动下载；
+        - 档位：state=刷流 → 刷流档；其余（魔力/静默/推荐/跨站来源份）→ 挂种档；
+        - **不在账本（无职务态）的种一律不动**；
+        - 值没变且 10 分钟内扫过 → 跳过（避免频繁写）。
+        """
         try:
             brush_kbps = float(getattr(self, "_brush_seed_up_limit_kbps", BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT) or 0)
         except (TypeError, ValueError):
@@ -1032,77 +1113,42 @@ class CoreMixin:
             seed_kbps = float(getattr(self, "_seed_up_limit_kbps", SEED_UP_LIMIT_KBPS_DEFAULT) or 0)
         except (TypeError, ValueError):
             seed_kbps = SEED_UP_LIMIT_KBPS_DEFAULT
-        tiers: Dict[str, float] = {CROSSSEED_TAG: seed_kbps}
-        try:
-            tiers[str(self._recommend_cfg.get("tag", "魔流-推荐") or "魔流-推荐")] = seed_kbps
-        except Exception:  # noqa: BLE001
-            tiers["魔流-推荐"] = seed_kbps
-        for task in self._task_configs.values():
-            # ★ 不再只看启用任务：停用任务名下的种子也要按状态限速
-            #   （否则「魔力档 200KB/s」只对在跑的任务生效，停用的一批全是不限速）
-            tag = str(getattr(task, "brush_tag", "") or "").strip()
-            if not tag:
-                continue
-            is_brush = str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush"
-            tiers[tag] = brush_kbps if is_brush else seed_kbps
-        # 按标签模型兜底：账本里出现过的 魔流-<站点>-<状态> 一律按状态归档
-        try:
-            for rec in self._tag_state().items().values():
-                site = str(rec.get("site") or "").strip()
-                state = str(rec.get("state") or "").strip()
-                if not site or not state:
-                    continue
-                _kbps = brush_kbps if state == STATE_BRUSH else seed_kbps
-                _sub = str(rec.get("sub") or "")
-                for tag in {tag_for(site, state), tag_for(site, state, _sub if state in STATES_WITH_SUB else "")}:
-                    if tag:
-                        tiers.setdefault(tag, _kbps)
-        except Exception:  # noqa: BLE001
-            pass
-        return tiers
-
-    def _apply_seed_upload_limit(self, force: bool = False) -> None:
-        """给**我们管控的**种子套「单种上传限速」（按标签档位）。
-
-        - 只动上传（``torrents/setUploadLimit``），不动下载；
-        - 目标 = 我们管控的标签下的种子（一次快照分组，不逐任务拉）；
-        - **不在我们管控下的种一律不动**（由标签巡检纳管，纳管后自然纳入本档位）；
-        - 值没变且 10 分钟内扫过 → 跳过（避免频繁写）。
-        """
-        tiers = self._seed_tag_tiers()
-        sig = tuple(sorted((t, round(k, 3)) for t, k in tiers.items()))
         last = getattr(self, "_seed_up_limit_last", None)
         if not force and last is not None:
             try:
-                lsig, lts = last[0], float(last[1])
+                _lts = float(last[1])
             except Exception:  # noqa: BLE001
-                lsig, lts = None, 0.0
-            if lsig == sig and (time.time() - lts) < SEED_UP_LIMIT_APPLY_INTERVAL:
+                _lts = 0.0
+            if (time.time() - _lts) < SEED_UP_LIMIT_APPLY_INTERVAL:
                 return
         downloader = self._get_downloader()
         if downloader is None or not getattr(downloader, "is_available", False):
             return
         try:
-            groups, err = downloader.get_torrents_by_tag()
+            snap = self._tag_all_torrents()
         except Exception as exc:  # noqa: BLE001
             self._log(f"单种限速:读取种子列表失败:{exc}", "warning")
             return
-        if err and not groups:
-            return
+        store = self._tag_state()
         by_kbps: Dict[float, set] = {}
-        # ★ 5.0.0：身份 + 职务两标签并存 → 同一颗种可能命中多档；按**最高档**取（刷流 > 挂种）
-        _pick: Dict[str, float] = {}
-        for tag, kbps in tiers.items():
-            for t in (groups or {}).get(tag, []) or []:
-                h = str(getattr(t, "hash", "") or "").lower()
-                if not h:
-                    continue
-                if h in _pick and _pick[h] >= kbps:
-                    continue
-                _pick[h] = max(float(_pick.get(h, 0.0)), float(kbps))
-        for h, kbps in _pick.items():
+        for h, t in (snap or {}).items():
+            try:
+                rec = store.get(h) or {}
+            except Exception:  # noqa: BLE001
+                rec = {}
+            state = str(rec.get("state") or "").strip()
+            if not state:
+                continue  # 不在账本（无职务态）→ 不管控
+            kbps = brush_kbps if state == STATE_BRUSH else seed_kbps
             by_kbps.setdefault(kbps, set()).add(h)
-        self._seed_up_limit_last = (sig, time.time())
+        # 跨站来源份（账本 state 可能为空，单独挂种档）
+        try:
+            for h in (self._crossseed_source_hashes() or set()):
+                if h in snap:
+                    by_kbps.setdefault(seed_kbps, set()).add(h)
+        except Exception:  # noqa: BLE001
+            pass
+        self._seed_up_limit_last = (None, time.time())
         if not by_kbps:
             return
         parts = []
@@ -1149,12 +1195,7 @@ class CoreMixin:
             if mode == "running":
                 self._run_check(task.id)
             return out
-        try:
-            all_tagged, _err = downloader.get_torrents(tags=[task.brush_tag])
-        except Exception as exc:
-            self._log(f"魔流 [{task.name}] 读取托管种子失败:{exc}", "warning")
-            all_tagged = []
-        managed = self._task_owned_torrents(task, all_tagged)
+        managed = self._task_managed_torrents(task)
         manual_paused = self._store.get_manual_paused(task.id) if self._store else set()
         pause_hashes: List[str] = []
         resume_hashes: List[str] = []
@@ -1346,11 +1387,6 @@ class CoreMixin:
             ]
         return out
 
-    def _get_task_lock(self, task_id: str) -> Optional[threading.Lock]:
-        """获取任务锁。"""
-        if task_id not in self._task_locks:
-            self._task_locks[task_id] = threading.Lock()
-        return self._task_locks.get(task_id)
 
     def _try_begin_run(self, task_id: str) -> bool:
         """尝试开始一轮运行。
@@ -1425,10 +1461,19 @@ class CoreMixin:
     def _get_downloader(self, downloader_name: str = "qbittorrent") -> Optional[DownloaderAdapter]:
         """获取下载器适配器。"""
         try:
-            return DownloaderAdapter(downloader_name=downloader_name)
+            dl = DownloaderAdapter(downloader_name=downloader_name)
+            dl.tags_enabled = self._show_qb_tags()
+            return dl
         except Exception as e:
             self._log(f"获取下载器失败: {e}", "error")
             return None
+
+    def _show_qb_tags(self) -> bool:
+        """是否往 qB 写标签（show_qb_tags 开关，默认开=纯投影）。"""
+        try:
+            return bool(self._tags_cfg.get("show_qb_tags", True))
+        except Exception:  # noqa: BLE001
+            return True
 
     def _cached_options(self) -> Dict[str, Any]:
         """站点/下载器下拉选项(带 TTL 缓存)。几乎不变,无需随每次 /status 重拉。"""
@@ -1443,9 +1488,6 @@ class CoreMixin:
         self._options_cache = {"ts": now, "data": data}
         return data
 
-    def _get_site_calculator(self, site_domain: str) -> Optional[BonusCalculator]:
-        """获取站点魔力计算器。"""
-        return get_calculator(site_domain)
 
     # ---------------------------------------------------------
     # API:下载器全局参数(qBittorrent 应用级偏好)

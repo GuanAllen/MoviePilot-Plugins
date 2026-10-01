@@ -66,17 +66,9 @@ class CleanupMixin:
             except Exception as _rec_err:
                 self._log(f"魔流 [{task.name}] 保护记录校准失败: {_rec_err}", "warning")
 
-        # ★ 全量快照(见 brush_impl 同样逻辑):不走 get_torrents(tags=),
-        #   qB 对 downloading 状态的种子按 tag 过滤会漏,用全量快照替代。
-        _tag = task.brush_tag
-        try:
-            _groups, _gerr = downloader.get_torrents_by_tag() if hasattr(downloader, 'get_torrents_by_tag') else ({}, "n/a")
-        except Exception:
-            _groups, _gerr = {}, "exception"
-        all_tagged: List[Any] = _groups.get(_tag, []) if isinstance(_groups, dict) else []
-        # ★ 归属唯一：只清理「归本任务」的种（同站其它任务的种不动）
-        all_tagged = self._task_owned_torrents(task, all_tagged)
-        _tag_err = _gerr if _gerr != "n/a" else None
+        # ★ 本任务名下的种：站点×职务（标签/归属已退役），只清理本站本职务的种
+        all_tagged: List[Any] = self._task_managed_torrents(task)
+        _tag_err = None
 
         # ★ 媒体资产价值闸门:把「已整理 / 辅种 / 下载历史命中」的种子并入保护集合,
         #   本轮所有清理(无进度 / 过慢 / 非免费 / 无上传 / 到期 / 低效)都跳过它们。

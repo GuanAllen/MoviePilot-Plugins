@@ -25,6 +25,7 @@ __all__ = [
     "STATE_BONUS",
     "STATE_SILENT",
     "STATE_RECOMMEND",
+    "DUTY_STATES",
     "SUB_NEW",
     "SUB_RESOURCE",
     "SUB_PLAIN",
@@ -43,7 +44,6 @@ __all__ = [
     "is_magicflow_tag",
     "identity_of",
     "duty_of",
-    "has_hr_tag",
     "KEEP_FOREIGN_TAGS",
     "retag",
     "TagStateStore",
@@ -65,6 +65,8 @@ SUB_RESOURCE = "资源"
 SUB_PLAIN = "普通"
 
 STATES = (STATE_BRUSH, STATE_BONUS, STATE_SILENT, STATE_RECOMMEND)
+# 职务轴（上班贴 / 下班摘）：辅种不单列职务 —— 它只给**身份**，之后由该站任务照常让它上班。
+DUTY_STATES = (STATE_BRUSH, STATE_BONUS)
 SUBS = (SUB_NEW, SUB_RESOURCE, SUB_PLAIN)
 
 # 只有「静默」有子类
@@ -134,11 +136,6 @@ def tag_for(site: str, state: str, sub: str = "") -> str:
     if sub and state in STATES_WITH_SUB:
         parts.append(sub)
     return "-".join(parts)
-
-
-def _official_sites() -> List[str]:
-    """交给插件注入的站点短名表（用于把 ``魔流-财神-静默`` 解析成 (站点, 状态)）。"""
-    return list(_SITE_NAMES)
 
 
 # 站点短名表由插件启动时注入（避免本模块依赖插件配置）
@@ -238,14 +235,9 @@ def duty_of(tags: Any) -> Tuple[str, str]:
     """取出种子的**职务**（刷流/魔力）→ ``(站点, 状态)``；没有职务则 ``("", "")``。"""
     for t in tags or []:
         p = parse_tag(t)
-        if p and p.get("state") in (STATE_BRUSH, STATE_BONUS):
+        if p and p.get("state") in DUTY_STATES:
             return _clean(p.get("site")), _clean(p.get("state"))
     return "", ""
-
-
-def has_hr_tag(tags: Any) -> bool:
-    """是否带「H&R 病毒标签」（= 在**隔离区**：欠 H&R 工时，强挂保种中）。"""
-    return MARK_HR in [_clean(x) for x in (tags or [])]
 
 
 def retag(
@@ -289,7 +281,7 @@ def retag(
         if it not in out:
             out.append(it)
     _st = _clean(state)
-    if _st in (STATE_BRUSH, STATE_BONUS):
+    if _st in DUTY_STATES:
         dt = tag_for(_site, _st)
         if dt not in out:
             out.append(dt)
@@ -961,6 +953,50 @@ class FileGroupStore:
             lib["path"] = str(path)
         lib["updated"] = ts
         rec["library"] = lib
+        rec["updated"] = ts
+        data[gid] = rec
+        self._write(data)
+        return True
+
+    # ------------------------------------------------------------ 资源级：身份
+    #   Master 2026-09-30：**资源表(资源id, 身份) + 种子表(资源id, 站点id, 身份)**。
+    #   资源身份 = 已认证（入库 / 推荐过）→ 「资源」；否则「普通」。
+    #   种子身份**继承**资源身份：一资源变「资源」，旗下各站种子一起变（不用各站重算）。
+    def identity(self, group_id: str) -> str:
+        """资源身份：``资源`` / ``普通``（无此资源返回空串）。"""
+        rec = self.items().get(_clean(group_id)) or {}
+        if not rec:
+            return ""
+        ident = _clean(rec.get("identity"))
+        if ident in (SUB_RESOURCE, SUB_PLAIN):
+            return ident
+        if bool((rec.get("library") or {}).get("in_library")):
+            return SUB_RESOURCE
+        return SUB_PLAIN
+
+    def identity_of_hash(self, hash_string: str) -> str:
+        """该种子所属**资源**的身份（种子身份应跟它走）。"""
+        h = _clean(hash_string).lower()
+        gid = self.group_of(h) if h else ""
+        return self.identity(gid) if gid else ""
+
+    def set_identity(self, group_id: str, identity: str, *, by: str = "",
+                     now: Optional[float] = None) -> bool:
+        """写资源身份（``资源``/``普通``）。"""
+        gid = _clean(group_id)
+        ident = _clean(identity)
+        if not gid or ident not in (SUB_RESOURCE, SUB_PLAIN):
+            return False
+        data = self.items()
+        rec = dict(data.get(gid) or {})
+        if not rec:
+            return False
+        if _clean(rec.get("identity")) == ident:
+            return False
+        ts = float(now if now is not None else time.time())
+        rec["identity"] = ident
+        rec["identity_by"] = _clean(by)
+        rec["identity_at"] = ts
         rec["updated"] = ts
         data[gid] = rec
         self._write(data)

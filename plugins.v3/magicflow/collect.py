@@ -709,6 +709,20 @@ def parse_signin(raw: Any) -> Dict[str, Any]:
 _PASSKEY_RE = re.compile(r"passkey=([0-9a-fA-F]{16,64})")
 _HASH_RE = re.compile(r"(?:downhash|hash)=([0-9a-zA-Z]{8,64})")
 _UID_RE = re.compile(r"[?&]id=(\d+)")
+# ★ 5.12.0：不少 NexusPHP 站不把 passkey 写成 `passkey=xxx`，而是在个人页/导航里
+# 以「密钥」这一行展示（值可能是 hex/字母数字，偶尔包在 <span> 里）→ 补一条容错抽法。
+_KEY_LABEL_RE = re.compile(r"密钥|密鑰|Passkey|PassKey")
+_ALNUM_RUN_RE = re.compile(r"[0-9a-zA-Z]{16,64}")
+
+
+def _passkey_from_label(s: str) -> str:
+    """从「密钥」标签后面的片段里抠出 passkey（先剥标签再取第一段字母数字）。"""
+    for m in _KEY_LABEL_RE.finditer(s):
+        frag = re.sub(r"<[^>]*>", " ", s[m.end(): m.end() + 400])
+        hit = _ALNUM_RUN_RE.search(frag)
+        if hit:
+            return hit.group(0)
+    return ""
 
 
 def parse_passkey(raw: Any) -> Dict[str, Any]:
@@ -717,8 +731,9 @@ def parse_passkey(raw: Any) -> Dict[str, Any]:
     pk = _PASSKEY_RE.search(s)
     dh = _HASH_RE.search(s)
     uid = _UID_RE.search(s)
+    pk_val = pk.group(1) if pk else _passkey_from_label(s)
     return {
-        "passkey": pk.group(1) if pk else "",
+        "passkey": pk_val,
         "downhash": dh.group(1) if dh else "",
         "uid": uid.group(1) if uid else "",
     }

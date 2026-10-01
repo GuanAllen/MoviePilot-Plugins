@@ -195,15 +195,6 @@ class SigninEngine:
             return False, "密钥/Cookie 已失效"
         return True, "后台 API 保活成功（站点数据已刷新）"
 
-    @staticmethod
-    def _is_logged_in(text: str) -> bool:
-        """优先用宿主 SiteUtils；失败回退正则。"""
-        try:
-            from app.sdk.network import SiteUtils  # noqa: WPS433
-
-            return bool(SiteUtils.is_logged_in(text))
-        except Exception:  # noqa: BLE001
-            return bool(LOGGED_IN_RE.search(text or ""))
 
     def _refresh_site(self, site: Any, seconds: int = 0) -> None:
         """告诉 MoviePilot「这个站刚访问成功」→ 顺带刷新站点数据/在线状态。"""

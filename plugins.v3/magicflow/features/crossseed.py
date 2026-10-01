@@ -78,11 +78,19 @@ class CrossSeedMixin:
         """当前受 H&R 保护的来源份 hash 集合（并入清理保护集合）。
 
         ★ 排除「义务已履行」（实测做种时长达标）的条目 —— 挂够就能撤，不必再占位。
+        ★ 30s TTL 缓存：统计/总览路径会逐任务调它，避免每任务都读一次来源份 kv。
         """
+        cached = getattr(self, "_cs_src_hashes_cache", None)
+        if cached is not None:
+            _ts, _val = cached
+            if time.time() - float(_ts) < 30.0:
+                return _val
         try:
-            return self._crossseed_sources().active()
+            val = self._crossseed_sources().active()
         except Exception:  # noqa: BLE001
-            return set()
+            val = set()
+        self._cs_src_hashes_cache = (time.time(), val)
+        return val
 
     def _crossseed_seed_hours(self, domain: str) -> float:
         """该来源站要求的 H&R 最短保种时长(小时)：站点覆盖 > 全局默认。
@@ -612,6 +620,7 @@ class CrossSeedMixin:
             until = time.time() + hours * 3600.0
         self._crossseed_sources().add({
             "sib_hash": h,
+            "resource_id": str(rec.get("resource_id") or ""),
             "title": str(rec.get("title") or ""),
             "size_gb": float(rec.get("size_gb") or 0.0),
             "site_a": str(rec.get("site_a") or ""),
@@ -811,9 +820,8 @@ class CrossSeedMixin:
         if not site:
             site, _dom = self._guess_site_of_torrent(cur_tags, rec.get("title"))
         if (str(cur.get("state") or "") == STATE_SILENT
-                and str(cur.get("sub") or "") == _sub
-                and tag_for(site, STATE_SILENT, _sub) in cur_tags):
-            return False  # 已在静默池（账本 + 标签都对）
+                and str(cur.get("sub") or "") == _sub):
+            return False  # 已在静默池（账本已就位；标签只作投影，不看）
         # 保留非魔流标签（站点名/已整理/辅种/其它插件），去掉旧的任务态标签
         keep = [t for t in cur_tags
                 if t and t not in SPECIAL_TAGS and not is_magicflow_tag(t)]
@@ -1089,6 +1097,11 @@ class CrossSeedMixin:
         sib_hash = str(hs).lower()
         a_key = str(getattr(cand, "real_hash", "") or "").lower() or f"sib-{sib_hash}"
         a_path = self._crossseed_pending().put_torrent(a_key, getattr(cand, "raw", b"") or b"")
+        # ★ 资源 id（文件特征码）= 辅种流水归组键
+        try:
+            _fp = fingerprint(getattr(cand, "raw", b"") or b"")
+        except Exception:  # noqa: BLE001
+            _fp = ""
         # ★ 流量兜底基线：记下来源站此刻的下载量（后结增量超阈值 = 其实不免费）
         _b_dom = str(src.get("site_domain") or "").strip().lower()
         # ★ 种子里有 H&R 信息 → 以种子为准；没有 → 兜底站点规则库（见 _crossseed_hr_decision）
@@ -1112,6 +1125,7 @@ class CrossSeedMixin:
         self._crossseed_pending().add({
             "sib_hash": sib_hash,
             "a_hash": str(getattr(cand, "real_hash", "") or "").lower(),
+            "resource_id": _fp or "",
             "title": str(getattr(cand, "title", "") or ""),
             "size_gb": float(getattr(cand, "size_gb", 0.0) or 0.0),
             "site_a": str(getattr(task, "site_name", "") or getattr(task, "site_domain", "") or ""),
@@ -1138,7 +1152,7 @@ class CrossSeedMixin:
         if self._store:
             self._store.journal.record(
                 task_id=str(getattr(task, "id", "") or ""),
-                kind="crossseed",
+                kind="reseed",
                 items=[OperationItem(
                     hash=sib_hash,
                     title=str(getattr(cand, "title", "") or ""),
@@ -1351,7 +1365,7 @@ class CrossSeedMixin:
                     if self._store:
                         self._store.journal.record(
                             task_id=str(rec.get("task_id") or ""),
-                            kind="crossseed",
+                            kind="reseed",
                             items=[OperationItem(
                                 hash=str(hs).lower(),
                                 title=str(rec.get("title") or ""),

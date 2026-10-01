@@ -136,10 +136,22 @@ class SettingsMixin:
         self._rules_cfg = {
             "auto_refresh": bool(getattr(payload, "rules_auto_refresh", True)),
         }
+        # ★ 全站辅种（本机驱动）：本机已有资源 → 去各站落户（零下载）
+        try:
+            self._reseed_enabled = bool(getattr(payload, "reseed_enabled", False))
+            _rs_sites = getattr(payload, "reseed_sites", None)
+            self._reseed_sites = [str(x).strip() for x in (_rs_sites or []) if str(x).strip()]
+            self._reseed_daily = int(_rf(getattr(payload, "reseed_daily_per_site", 30.0), 30.0))
+            self._reseed_batch = int(_rf(getattr(payload, "reseed_batch", 10.0), 10.0))
+            self._reseed_min_size_gb = _rf(getattr(payload, "reseed_min_size_gb", 1.0), 1.0)
+            self._reseed_dry = bool(getattr(payload, "reseed_dry", False))
+        except Exception:  # noqa: BLE001
+            pass
         # 标签模型（3.13.0）
         _sr = getattr(payload, "sort_rules", None)
         self._tags_cfg = {
             "enabled": bool(getattr(payload, "tag_model_enabled", True)),
+            "show_qb_tags": bool(getattr(payload, "show_qb_tags", True)),
             "new_timeout": max(0.0, _rf(getattr(payload, "tag_silent_new_timeout_hours", 24.0), 24.0)) * 3600.0,
             "snapshot_interval": max(0.0, _rf(getattr(payload, "tag_snapshot_interval_hours", 6.0), 6.0)) * 3600.0,
             "rules": [dict(r) for r in _sr if isinstance(r, dict)] if isinstance(_sr, list) and _sr else [dict(r) for r in DEFAULT_SORT_RULES],

@@ -53,10 +53,43 @@ class ActionsMixin:
         return Response(success=True, message="已取消保留")
 
     def manual_delete_torrent(self, task_id: str, hash: str) -> Response:
-        """手动删除种子。"""
+        """手动删除种子。
+
+        ★ MODEL.md §3：**还在欠 H&R 的种不允许手动删**（保种义务未还清）。
+        ★ MODEL.md §4：跨站来源份在 H&R 保种期内也拦。
+        """
         task = self._get_task_config(task_id)
         if not task:
             return Response(success=False, message="任务不存在")
+
+        # ★ 手动删除前的保护闸门（欠 H&R / 跨站来源份保种期）
+        try:
+            _h = str(hash or "").strip().lower()
+            if _h:
+                _src = set()
+                try:
+                    _src = {str(x).lower() for x in (self._crossseed_source_hashes() or set())}
+                except Exception:  # noqa: BLE001
+                    _src = set()
+                if _h in _src:
+                    return Response(success=False,
+                                    message="该种是跨站来源份（H&R 保种期内），不能手动删除")
+                _t = (self._tag_all_torrents() or {}).get(_h)
+                if _t is not None:
+                    _rec = (self._tag_state().items() or {}).get(_h) or {}
+                    _site = str(_rec.get("site") or "").strip()
+                    if not _site:
+                        _site = self._torrent_site_name(
+                            [str(x) for x in (getattr(_t, "tags", None) or [])], "")
+                    if _site:
+                        _obl, _need, _seeded, _src2 = self._hr_obligation(_site, _t)
+                        if _obl:
+                            _left = max(0.0, float(_need or 0.0) - float(_seeded or 0.0))
+                            return Response(success=False, message=(
+                                f"该种还在欠 H&R（{_site} 还差约 {_left:.1f} 小时），不能手动删除；"
+                                "确需强删请在下载器里直接删"))
+        except Exception as _hr_err:  # noqa: BLE001
+            self._log(f"手动删除前 H&R 校验失败:{_hr_err}", "warning")
 
         try:
             downloader = self._get_downloader(task.downloader)

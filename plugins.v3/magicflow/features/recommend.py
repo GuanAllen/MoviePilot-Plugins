@@ -293,9 +293,7 @@ class RecommendMixin:
             return
         try:
             self._get_recommend_engine().begin_round(int(cfg.get("douban_max_per_run") or 0))
-            tag = task.brush_tag
-            groups = self._tag_snapshot(getattr(task, "downloader", None) or "qbittorrent")
-            torrents = self._task_owned_torrents(task, groups.get(tag, []) or [])
+            torrents = self._task_managed_torrents(task)
             if not torrents:
                 return
             asset = self._media_asset_hashes(torrents, task)

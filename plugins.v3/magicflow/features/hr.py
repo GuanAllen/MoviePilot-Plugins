@@ -5,6 +5,7 @@
 """
 
 import time
+import threading
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
@@ -14,7 +15,7 @@ from ..tags import (
     MARK_HR,
     SUB_PLAIN,
     SUB_RESOURCE,
-    duty_of,
+    DUTY_STATES,
 )
 
 
@@ -57,57 +58,71 @@ class HrMixin:
 
         站点级口径（H&R 是**账号级**风险，不按任务切分）：同一站点所有种子
         （含静默池 / 跨站来源份）一起统计。
+
+        ★ 性能（6.1.4）：这是**展示路径**（只给 /status 算数字），却曾经：
+          ① 用阻塞式 `_tag_all_torrents()` 拉快照 —— 快照一过期，9 个任务统计线程
+             全堵在 qB 全量重拉上（实测每任务 ~3.5s、一天 1300+ 条「统计任务慢」告警）；
+          ② 缓存过期瞬间 9 个线程同时重算（重复劳动 9 份）。
+          现在：改用 stale-while-revalidate 的展示快照 + **单飞锁**（同一时刻只算一次）。
         """
         now = time.time()
         cache = getattr(self, "_hr_owed_cache", None)
         if isinstance(cache, dict) and (now - float(cache.get("ts", 0) or 0)) < 300:
             return cache.get("data") or {}
-        out: Dict[str, Dict[str, float]] = {}
-        try:
-            snap = self._tag_all_torrents() or {}
-            ledger = dict(self._tag_state().items() or {})
-        except Exception:
-            snap, ledger = {}, {}
-        try:
-            cssrc = dict(self._crossseed_sources().items() or {})
-        except Exception:
-            cssrc = {}
-        # 只算「魔流相关」的种（账本 / 跨站来源份 / 带魔流-标），与 H&R 巡检同口径
-        scope = {str(x).strip().lower() for x in set(ledger) | set(cssrc)}
-        for h, t in snap.items():
-            if any(str(x).startswith("魔流-") for x in (getattr(t, "tags", None) or [])):
-                scope.add(str(h).lower())
-        for h, t in snap.items():
+        lock = getattr(self, "_hr_owed_lock", None)
+        if lock is None:
+            lock = self._hr_owed_lock = threading.Lock()
+        with lock:                                   # 单飞：并发统计线程只算一次
+            now = time.time()
+            cache = getattr(self, "_hr_owed_cache", None)
+            if isinstance(cache, dict) and (now - float(cache.get("ts", 0) or 0)) < 300:
+                return cache.get("data") or {}
+            _t0 = time.time()
+            out: Dict[str, Dict[str, float]] = {}
             try:
-                if float(getattr(t, "progress", 0) or 0) < 0.999:
-                    continue
-                if str(h).lower() not in scope:
-                    continue
-                rec = ledger.get(str(h).lower()) or {}
-                tags = [str(x) for x in (getattr(t, "tags", None) or [])]
-                site = str(rec.get("site") or "").strip() or self._torrent_site_name(tags, "")
-                if not site:
-                    continue
-                obl, need, seeded, _src = self._hr_obligation(site, t)
-                if not obl:
-                    continue
-                slot = out.setdefault(site, {"n": 0, "h": 0.0})
-                slot["n"] = int(slot["n"]) + 1
-                slot["h"] = float(slot["h"]) + max(0.0, float(need or 0.0) - float(seeded or 0.0))
+                snap = self._tag_snapshot_view() or {}      # ★ 展示用快照：stale 先返回
+                ledger = dict(self._tag_state().items() or {})
             except Exception:
-                continue
-        data = {k: {"n": int(v["n"]), "h": round(float(v["h"]), 1)} for k, v in out.items()}
-        self._hr_owed_cache = {"ts": now, "data": data}
-        return data
+                snap, ledger = {}, {}
+            try:
+                cssrc = dict(self._crossseed_sources().items() or {})
+            except Exception:
+                cssrc = {}
+            # 只算「魔流相关」的种（账本 / 跨站来源份），与 H&R 巡检同口径（不再读标签）
+            scope = {str(x).strip().lower() for x in set(ledger) | set(cssrc)}
+            for h, t in snap.items():
+                try:
+                    if float(getattr(t, "progress", 0) or 0) < 0.999:
+                        continue
+                    if str(h).lower() not in scope:
+                        continue
+                    rec = ledger.get(str(h).lower()) or {}
+                    tags = [str(x) for x in (getattr(t, "tags", None) or [])]
+                    site = str(rec.get("site") or "").strip() or self._torrent_site_name(tags, "")
+                    if not site:
+                        continue
+                    obl, need, seeded, _src = self._hr_obligation(site, t)
+                    if not obl:
+                        continue
+                    slot = out.setdefault(site, {"n": 0, "h": 0.0})
+                    slot["n"] = int(slot["n"]) + 1
+                    slot["h"] = float(slot["h"]) + max(0.0, float(need or 0.0) - float(seeded or 0.0))
+                except Exception:
+                    continue
+            data = {k: {"n": int(v["n"]), "h": round(float(v["h"]), 1)} for k, v in out.items()}
+            self._hr_owed_cache = {"ts": time.time(), "data": data}
+            _ms = (time.time() - _t0) * 1000.0
+            if _ms > 300:
+                self._dbg(f"H&R 欠账扫描 {_ms:.0f}ms（站点 {len(data)}）")
+            return data
 
     def _hr_guard_tick(self, apply: bool = True, limit: int = 0) -> Dict[str, Any]:
         """★ H&R **统一管理**（Master 2026-09-28 01:37）：
 
-        「tag 打上 h&r 统一管理，没到时间暂停强行拉起来」
-
-        ① 欠 H&R 的种统一打 ``魔流-H&R`` 标（管理入口，跨任务/跨站/静默池都管）；
-        ② 没到时间却被暂停/排队 → **强制开始**（``force_start``，绕过队列）拉起来继续挂；
-        ③ 结清（实测做种时长够 / 站点无 H&R）→ **摘掉** ``魔流-H&R``（收口）。
+        ① 欠 H&R 的种 → 统一**强挂保种**（``force_start``，绕过队列）拉起继续挂；
+        ② 非义务却仍强制挂种（3.15.0 残留 / 结清后没松绑）→ 松绑降回普通做种；
+        ③ H&R 状态已**账本化**（7.0.0）：``魔流-H&R`` 标签不再写/摘（真值源在账本 + 站点规则），
+           标签仅作展示投影 / 历史可读。
 
         只处理**已完成**的种：没下完的没有 H&R 义务（未完成删除不计 H&R），
         未下完的跨站来源份归「跨站池」/辅种归校验流程管。
@@ -145,9 +160,6 @@ class HrMixin:
         except Exception:  # noqa: BLE001
             pass
         scope = set(ledger) | set(cssrc)
-        for _h, _t in snap.items():
-            if MARK_HR in [str(x) for x in (getattr(_t, "tags", None) or [])]:
-                scope.add(_h)
         cap = int(limit or 0)
         to_tag: List[str] = []
         to_start: List[str] = []
@@ -199,7 +211,8 @@ class HrMixin:
                 if has_tag:
                     to_clear.append(hh)
                 continue
-            if duty_of(tags)[1] and not has_tag:
+            # ★ 账本判在岗（职务=刷流/魔力）；标签只作展示投影
+            if str(rec.get("state") or "") in DUTY_STATES and not has_tag:
                 rep["on_duty"] = int(rep.get("on_duty") or 0) + 1
                 continue
             rep["items"].append({
@@ -217,17 +230,11 @@ class HrMixin:
                 if not (MARK_REUSE in tags and not done):
                     to_start.append(hh)
         if apply and to_tag:
-            try:
-                dl = self._get_downloader("qbittorrent")
-                cnt, err = (dl.add_torrents_tag(to_tag, MARK_HR)
-                            if dl is not None and hasattr(dl, "add_torrents_tag")
-                            else (0, "no api"))
-                rep["tagged"] = int(cnt or 0)
-                if err:
-                    self._log(f"H&R:打标失败 {err}", "warning")
-            except Exception as err:  # noqa: BLE001
-                rep["failed"] = int(rep["failed"]) + 1
-                self._log(f"H&R:打标异常:{err}", "warning")
+            # ★ 7.0.0 标签退役：不写 MARK_HR 标签（H&R 状态账本化、账本是真值源）。
+            #   保留``to_tag``统计/``has_tag``展示投影；老种身上的旧标签无害，仅历史可读。
+            rep["tagged"] = len(to_tag)
+            if to_tag:
+                self._log(f"H&R:打标已退役（账本化）{len(to_tag)} 个", "info")
         if apply and to_start:
             try:
                 dl = self._get_downloader("qbittorrent")
@@ -245,18 +252,10 @@ class HrMixin:
                 rep["failed"] = int(rep["failed"]) + 1
                 self._log(f"H&R:强拉异常:{err}", "warning")
         if apply and to_clear:
-            dl = None
-            for hh in to_clear:
-                try:
-                    if dl is None:
-                        dl = self._get_downloader("qbittorrent")
-                    t = snap.get(hh)
-                    cur = [str(x) for x in (getattr(t, "tags", None) or [])]
-                    if dl is not None and dl.replace_torrent_tags(hh, [x for x in cur if x != MARK_HR]):
-                        rep["cleared"] = int(rep["cleared"]) + 1
-                except Exception as err:  # noqa: BLE001
-                    rep["failed"] = int(rep["failed"]) + 1
-                    self._log(f"H&R:摘标失败 {hh[:12]}:{err}", "warning")
+            # ★ 7.0.0 标签退役：不再主动摘 MARK_HR 标签（不再写新标，老标仅历史可读）。
+            rep["cleared"] = len(to_clear)
+            if to_clear:
+                self._log(f"H&R:摘标已退役（账本化）{len(to_clear)} 个", "info")
         if apply and to_release:
             # ★ 取消强挂（enable=False）：降回普通做种（不暂停、不删，只是不再强制绕过队列）
             _by_dl: Dict[str, List[str]] = {}

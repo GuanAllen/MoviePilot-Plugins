@@ -128,7 +128,7 @@ class OperationRecord:
     operation_id: str
     request_id: str
     task_id: str
-    kind: str  # "selection" | "deletion" | "protection" | "unprotection" | "reuse"
+    kind: str  # "selection" | "deletion" | "protection" | "unprotection" | "reseed"(辅种;原 reuse/crossseed 已归一)
     state: str  # "submitting" | "accepted" | "completed" | "failed"
     items: List[OperationItem] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)

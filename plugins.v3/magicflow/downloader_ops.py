@@ -322,6 +322,15 @@ QB_APP_PREF_KEYS = (
     "temp_path_enabled",
 )
 
+# ★ qB 会话失效（旧 SID 过期/ qB 重启）时，几乎所有 API 都返回 403 Forbidden
+_QB_AUTH_ERROR_HINTS = ("Forbidden", "Forbidden403Error", "Unauthorized", "Unauthorized401Error", "LoginFailed", "403", "401")
+
+
+def _is_auth_error(err: Any) -> bool:
+    """判断异常/返回值是否属于「会话失效」类错误（可重连自救）。"""
+    s = f"{type(err).__name__}: {err}"
+    return any(k in s for k in _QB_AUTH_ERROR_HINTS)
+
 
 def _ensure_sdk():
     """延迟导入 MoviePilot SDK。"""
@@ -428,6 +437,7 @@ class DownloaderAdapter:
         self.downloader_name = downloader_name
         self._downloader = None
         self._service = None
+        self.tags_enabled = True  # ★ 标签写开关（show_qb_tags=False 时由上层关掉）
         self._init_downloader()
 
     def _init_downloader(self) -> None:
@@ -445,6 +455,43 @@ class DownloaderAdapter:
         except Exception as e:
             logger.error(f"下载器适配器初始化失败: {e}")
             self._downloader = None
+
+    def _reconnect_downloader(self) -> bool:
+        """★ 强制重连下载器（qB 会话失效返回 403 时自愈）。
+
+        背景：MP 的 qB 客户端是**长连接单例**；qB 侧会话过期（``WebUI\\SessionTimeout``）
+        或 qB 重启后，旧 SID 一律 403 Forbidden。而 MP 的 ``is_inactive()`` 只在
+        「从未登录成功」时为真 → **不会自动重连**，表现为插件所有 qB 调用持续 Forbidden。
+        这里主动调 MP 客户端的 ``reconnect()``（内部会重新 ``auth_log_in``）。
+        """
+        try:
+            fn = getattr(self._downloader, "reconnect", None)
+            if not callable(fn):
+                return False
+            fn()
+            return bool(getattr(self._downloader, "qbc", None))
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"下载器重连失败: {e}")
+            return False
+
+    def _qb_call(self, method: str, *args, **kwargs) -> Any:
+        """调用底层 qB 客户端方法；遇 403/401（会话失效）时**强制重连并重试一次**。"""
+        qbc = self._qb_client()
+        fn = getattr(qbc, method, None) if qbc is not None else None
+        if not callable(fn):
+            return None
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001
+            if not _is_auth_error(e):
+                raise
+            logger.warning(f"qB 会话失效（{e}），重连后重试: {method}")
+            if not self._reconnect_downloader():
+                raise
+            fn = getattr(self._qb_client(), method, None)
+            if not callable(fn):
+                return None
+            return fn(*args, **kwargs)
 
     @property
     def is_available(self) -> bool:
@@ -504,6 +551,10 @@ class DownloaderAdapter:
 
         try:
             torrents, error = self._downloader.get_torrents()
+            if error:
+                # ★ qB 会话失效会一直报错 → 强制重连后重试一次（自愈）
+                if self._reconnect_downloader():
+                    torrents, error = self._downloader.get_torrents()
             if error:
                 return [], error
 
@@ -567,6 +618,9 @@ class DownloaderAdapter:
         try:
             torrents, error = self._downloader.get_torrents()
             if error:
+                if self._reconnect_downloader():
+                    torrents, error = self._downloader.get_torrents()
+            if error:
                 return []
             return list(torrents or [])
         except Exception as e:
@@ -596,7 +650,7 @@ class DownloaderAdapter:
             return ""
         try:
             qbc = self._qb_client()
-            rows = qbc.torrents_trackers(torrent_hash=h) or []
+            rows = self._qb_call("torrents_trackers", torrent_hash=h) or []
         except Exception:  # noqa: BLE001
             return ""
         for x in rows:
@@ -796,10 +850,11 @@ class DownloaderAdapter:
         return None
 
     def _wait_checked(self, hash_string: str, timeout: int = 120) -> Optional[float]:
-        """等待校验结束，返回进度（0~1）。超时返回 None。"""
+        """等待校验结束，返回进度（0~1）。**超时（仍在校验）返回 None**。"""
         deadline = time.time() + max(timeout, 5)
         pending = {"checkingdl", "checkingup", "checkingresume", "moving", "allocating", "metadl"}
         progress = None
+        _last_log = 0.0
         while time.time() < deadline:
             raw = self._find_raw_torrent(hash_string)
             if raw is None:
@@ -809,8 +864,13 @@ class DownloaderAdapter:
             progress = float(_kv(raw, "progress", 0) or 0)
             if state not in pending and not state.startswith("checking"):
                 return progress
+            # 大种子校验很慢（几十 GB 常要数分钟）→ 每 20s 记一次，方便判断它到底在不在动
+            if time.time() - _last_log >= 20:
+                _last_log = time.time()
+                logger.info(f"[标签审计] 辅种校验中 {hash_string[:10]} state={state} "
+                            f"progress={progress:.1%}")
             time.sleep(2)
-        return progress
+        return None  # 到点还在校验 → 视为「未完成」，由调用方撤销
 
     def add_torrent_reuse(
         self,
@@ -914,13 +974,42 @@ class DownloaderAdapter:
             logger.warning(f"撤销辅种后种子仍存在（需人工清理）: {hash_string}")
             return reason
 
+        # ★ 等 qB 先「认识」这颗新种：add 返回 ≠ 立即可见；
+        #   若立刻 recheck，qB 会因为找不到该 hash 而静默忽略 → 状态停在 stopped/paused 0% → 误判「文件不匹配」
+        _appeared = False
+        for _try in range(30):
+            if self._find_raw_torrent(hash_string) is not None:
+                _appeared = True
+                break
+            time.sleep(0.5)
+        if not _appeared:
+            return None, _delete_added("添加后未出现在下载器，已撤销")
+
         # 重新校验：指向已有文件，若命中则瞬时 100%
+        try:
+            _raw = self._find_raw_torrent(hash_string) or {}
+            logger.info(
+                f"[标签审计] ADD-REUSE recheck hash={hash_string} "
+                f"qb_save_path={_kv(_raw, 'save_path', '')} "
+                f"qb_content_path={_kv(_raw, 'content_path', '')} "
+                f"size={_kv(_raw, 'size', 0)}"
+            )
+        except Exception:  # noqa: BLE001
+            pass
         try:
             self._downloader.recheck_torrents(hash_string)
         except Exception as e:
             logger.warning(f"触发校验失败 {hash_string}: {e}")
 
         if verify:
+            # ★ 校验时长按体积给：NAS 上 100GB 的种抽查要十几分钟，写死 120s 会把好种当坏种删掉
+            try:
+                _r = self._find_raw_torrent(hash_string) or {}
+                _size = float(_kv(_r, "size", 0) or 0)
+            except Exception:  # noqa: BLE001
+                _size = 0.0
+            _need = int(300 + (_size / 1024 ** 3) * 20) if _size else int(timeout)
+            timeout = max(int(timeout), _need)
             progress = self._wait_checked(hash_string, timeout=timeout)
             if progress is None:
                 # 校验超时/无法确认 → 撤销，避免留下「暂停·0%」僵尸种
@@ -1408,6 +1497,8 @@ class DownloaderAdapter:
         Returns:
             是否成功
         """
+        if not self.tags_enabled:  # ★ 标签写已关闭（纯账本模式）
+            return False
         if not self._downloader or not hash_string:
             return False
 
@@ -1460,6 +1551,8 @@ class DownloaderAdapter:
         ⚠ 踩过：``torrents_add_tags(hashes=[...])`` 传 list 时 qB 侧静默不生效
         （273 个只落了 1 个）→ 这里先试「pipe 串」批量，**读回校验**，不行再逐个补。
         """
+        if not self.tags_enabled:  # ★ 标签写已关闭（纯账本模式）
+            return 0, None
         tg = str(tag or "").strip()
         hs = [str(h).strip().lower() for h in (hashes or []) if str(h).strip()]
         if not tg or not hs:
@@ -1468,7 +1561,7 @@ class DownloaderAdapter:
         qbc = qbc() if callable(qbc) else None
         if qbc is not None:
             try:
-                qbc.torrents_add_tags(tags=tg, hashes="|".join(hs))
+                self._qb_call("torrents_add_tags", tags=tg, hashes="|".join(hs))
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"批量打标签(pipe)失败: {e}")
         # 校验前若干个；不够就逐个补
@@ -1503,7 +1596,7 @@ class DownloaderAdapter:
             ok = 0
             for h in hs:  # ★ 逐个（批量传 list 在 qB 侧同样不生效）
                 try:
-                    qbc.torrents_set_force_start(hashes=h)
+                    self._qb_call("torrents_set_force_start", hashes=h)
                     ok += 1
                 except Exception as e:  # noqa: BLE001
                     logger.warning(f"强制开始失败 {h}: {e}")
@@ -1538,7 +1631,7 @@ class DownloaderAdapter:
         ok = 0
         for h in hs:  # ★ 逐个（与 force_start 同理：批量传 list 在 qB 侧不生效）
             try:
-                qbc.torrents_set_force_start(enable=False, torrent_hashes=h)
+                self._qb_call("torrents_set_force_start", enable=False, torrent_hashes=h)
                 ok += 1
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"取消强挂失败 {h}: {e}")
@@ -1550,6 +1643,8 @@ class DownloaderAdapter:
         MP 适配器的 ``set_torrents_tag`` 实际是 ``torrents_add_tags``（只加不删），
         迁移/改状态时必须用本方法，否则老标签会一直堆着。
         """
+        if not self.tags_enabled:  # ★ 标签写已关闭（纯账本模式）
+            return False
         if not self._downloader or not hash_string:
             return False
         target = [str(t).strip() for t in (tags or []) if str(t).strip()]
@@ -1667,7 +1762,7 @@ class DownloaderAdapter:
         if qbc is None:
             return {}
         try:
-            info = list(qbc.torrents_info() or [])
+            info = list(self._qb_call("torrents_info") or [])
         except Exception:  # noqa: BLE001
             return {}
         out: Dict[str, int] = {}
@@ -1701,7 +1796,7 @@ class DownloaderAdapter:
         for i in range(0, len(hs), 200):
             chunk = hs[i:i + 200]
             try:
-                qbc.torrents_set_upload_limit(limit=limit, torrent_hashes="|".join(chunk))
+                self._qb_call("torrents_set_upload_limit", limit=limit, torrent_hashes="|".join(chunk))
                 done += len(chunk)
             except Exception as exc:  # noqa: BLE001
                 err = str(exc)
@@ -1717,7 +1812,7 @@ class DownloaderAdapter:
         if qbc is None:
             return {}, f"下载器 {self.downloader_name} 不支持读取全局参数"
         try:
-            prefs = qbc.app_preferences()
+            prefs = self._qb_call("app_preferences") or {}
             data = {}
             for key in QB_APP_PREF_KEYS:
                 try:
@@ -1745,7 +1840,7 @@ class DownloaderAdapter:
         if not payload:
             return False, "无可写入的参数"
         try:
-            qbc.app_set_preferences(payload)
+            self._qb_call("app_set_preferences", payload)
             return True, None
         except Exception as e:
             logger.error(f"写入 qBittorrent 全局参数失败: {e}")

@@ -109,8 +109,7 @@ class StatusMixin:
             pass
         _t_ceiling = time.time()
         try:
-            managed = self._task_owned_torrents(
-                task, self._tag_snapshot_view(task.downloader).get(task.brush_tag, []))
+            managed = self._task_managed_torrents(task, view=True)
             from collections import Counter
             state_dist = dict(Counter(str(getattr(t, "state", "") or "?") for t in managed))
             self._log(
@@ -491,6 +490,7 @@ class StatusMixin:
         data.update({
             "enabled": self.get_state(),
             "version": __version__,
+            "gate_blocked": getattr(self, "_gate_blocked", None),
             "warming": warming,
             "show_sidebar_nav": bool(getattr(self, "_show_sidebar_nav", True)),
             "debug_log": bool(getattr(self, "_debug_log", False)),
@@ -502,6 +502,7 @@ class StatusMixin:
             "seed_up_limit_kbps": float(getattr(self, "_seed_up_limit_kbps", SEED_UP_LIMIT_KBPS_DEFAULT) or 0),
             "brush_seed_up_limit_kbps": float(getattr(self, "_brush_seed_up_limit_kbps", BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT) or 0),
             "tag_model_enabled": bool(self._tags_cfg.get("enabled", True)),
+            "show_qb_tags": bool(self._tags_cfg.get("show_qb_tags", True)),
             "tag_silent_new_timeout_hours": round(float(self._tags_cfg.get("new_timeout") or 0) / 3600.0, 3),
             "tag_snapshot_interval_hours": round(float(self._tags_cfg.get("snapshot_interval") or 0) / 3600.0, 3),
             "sort_rules": [dict(r) for r in (self._tags_cfg.get("rules") or [])],

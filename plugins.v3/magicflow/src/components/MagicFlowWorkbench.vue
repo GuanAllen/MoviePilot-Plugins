@@ -157,6 +157,7 @@ const settingsDraft = ref({
   seed_up_limit_kbps: 200,
   brush_seed_up_limit_kbps: 5120,
   tag_model_enabled: true,
+  show_qb_tags: true,
   tag_silent_new_timeout_hours: 24,
   tag_snapshot_interval_hours: 6,
   sort_rules: [],
@@ -699,12 +700,13 @@ function notify(message, color = 'success') {
   }
 }
 
-const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reuse: '存量复用', crossseed: '跨站取种', swap: '换种', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止', state: '运行状态', tag: '标签变更', fallback: '元数据兜底', cloud: '云盘归档' }
+const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reseed: '辅种', reuse: '存量复用(旧)', crossseed: '跨站取种(旧)', swap: '换种', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止', state: '运行状态', tag: '标签变更', fallback: '元数据兜底', cloud: '云盘归档' }
 const STATE_TEXT = { submitting: '提交中', accepted: '已受理', completed: '已完成', failed: '失败' }
 const KIND_ICON = {
   run: 'mdi-play-circle-outline',
   selection: 'mdi-download-outline',
   deletion: 'mdi-delete-outline',
+  reseed: 'mdi-content-duplicate',
   reuse: 'mdi-content-duplicate',
   swap: 'mdi-swap-horizontal-circle-outline',
   protection: 'mdi-shield-check-outline',
@@ -767,6 +769,42 @@ const ITEM_SOURCE_TEXT = { add: '新增', 'add-fail': '失败', reuse: '复用',
 function itemSourceText(src) {
   return ITEM_SOURCE_TEXT[src] || ''
 }
+
+/** ★ §4.1 辅种流水：把「辅种」类记录（kind=reseed，含历史 reuse/crossseed）摊平成一张表。 */
+const opsView = ref('flow') // 'flow'=全部流水 · 'reseed'=辅种流水
+const RESEED_KINDS = ['reseed', 'reuse', 'crossseed']
+function isReseedRecord(record) {
+  return !!record && RESEED_KINDS.includes(record.kind)
+}
+function reseedActionText(record) {
+  if (!record) return ''
+  if (record.kind === 'crossseed') return '跨站取种'
+  if (record.kind === 'reuse') return '存量复用'
+  return '辅种'
+}
+const reseedRows = computed(() => {
+  const out = []
+  for (const r of operationData.value.operations || []) {
+    if (!isReseedRecord(r)) continue
+    const items = (r.items || []).length ? r.items : [{}]
+    for (let i = 0; i < items.length; i += 1) {
+      const it = items[i] || {}
+      out.push({
+        key: `${r.operation_id}:${i}`,
+        ts: r.created_at,
+        task: taskLabel(r.task_id),
+        action: reseedActionText(r),
+        stage: operationStateText(r.state),
+        state: r.state,
+        hash: it.hash || '',
+        title: it.title || '',
+        reason: it.reason || '',
+        size_gb: Number(it.size_gb || 0),
+      })
+    }
+  }
+  return out.sort((a, b) => String(b.ts || '').localeCompare(String(a.ts || '')))
+})
 
 /** 操作记录的耗时文本（优先用后端记录，回退到创建/完成时间差）。 */
 function operationDuration(record) {
@@ -894,6 +932,7 @@ async function loadStatus() {
       seed_up_limit_kbps: status.value.seed_up_limit_kbps,
       brush_seed_up_limit_kbps: status.value.brush_seed_up_limit_kbps,
       tag_model_enabled: status.value.tag_model_enabled !== false,
+      show_qb_tags: status.value.show_qb_tags !== false,
       tag_silent_new_timeout_hours: status.value.tag_silent_new_timeout_hours ?? 24,
       tag_snapshot_interval_hours: status.value.tag_snapshot_interval_hours ?? 6,
       sort_rules: normalizeSortRules(status.value.sort_rules),
@@ -1202,6 +1241,66 @@ function fmtCount(n) {
   const v = Number(n || 0)
   if (v >= 10000) return `${(v / 10000).toFixed(1)} 万`
   return String(v)
+}
+
+// ── 点播（§1 权威来源 1 · 7.1.0）────────────────────────────────────
+const ondemandOpen = ref(false)
+const ondemandQuery = ref('')
+const ondemandTaskId = ref('')
+// ★ 站点多选（勾选框）：不勾 = 全部站点；勾了就只搜勾中的（点播不再依赖任务）
+const ondemandSiteIds = ref([])
+const ondemandBusy = ref('')
+const ondemandResult = ref(null)
+const ondemandError = ref('')
+const ondemandCandidates = computed(() => {
+  const rows = ondemandResult.value?.candidates
+  return Array.isArray(rows) ? rows : []
+})
+
+function openOndemand() {
+  ondemandOpen.value = true
+  ondemandResult.value = null
+  ondemandError.value = ''
+}
+
+function fmtSizeGb(bytes) {
+  const v = Number(bytes || 0) / (1024 * 1024 * 1024)
+  return v ? `${v.toFixed(2)} GB` : '—'
+}
+
+// 点播候选的流量标识：dv=下载因子（0=免费，0<dv<1=折扣，1=全额计入）
+function odTraffic(dv) {
+  const v = Number(dv ?? 1)
+  if (!Number.isFinite(v) || v >= 1) return { text: '计流量', color: '' }
+  if (v <= 0) return { text: '免费', color: 'success' }
+  return { text: `流量 ×${Math.round(v * 100)}%`, color: 'warning' }
+}
+
+function isOndemandAuto(row) {
+  return !!row?.enclosure && row.enclosure === ondemandResult.value?.auto_pick
+}
+
+async function runOndemand(apply, pick = '') {
+  const q = String(ondemandQuery.value || '').trim()
+  if (!q) {
+    ondemandError.value = '请输入片名或豆瓣/TMDB/IMDB 链接'
+    return
+  }
+  ondemandBusy.value = apply ? 'apply' : 'preview'
+  ondemandError.value = ''
+  try {
+    const params = [`query=${encodeURIComponent(q)}`, `apply=${apply ? 'true' : 'false'}`]
+    if (ondemandTaskId.value) params.push(`task_id=${encodeURIComponent(ondemandTaskId.value)}`)
+    const _sites = (Array.isArray(ondemandSiteIds.value) ? ondemandSiteIds.value : []).map(String).filter(Boolean)
+    if (_sites.length) params.push(`site_ids=${encodeURIComponent(_sites.join(','))}`)
+    if (pick) params.push(`pick=${encodeURIComponent(pick)}`)
+    const res = unwrapResponse(await props.api.post(`${pluginBase.value}/ondemand?${params.join('&')}`, {}))
+    if (res) ondemandResult.value = res
+  } catch (err) {
+    ondemandError.value = err?.message || String(err)
+  } finally {
+    ondemandBusy.value = ''
+  }
 }
 
 // ── 跨站辅种：队列 / 流量兜底（3.11.0）────────────────────────────────
@@ -2898,6 +2997,14 @@ onUnmounted(() => {
           :title="`豆瓣评分服务：库 ${doubanServiceData.records || 0} 条${doubanServiceData.ok ? '' : '（不可用）'}`"
           @click="openDoubanService"
         />
+        <VBtn
+          class="magicflow-ondemand-btn"
+          icon="mdi-cloud-download-outline"
+          variant="text"
+          aria-label="点播"
+          title="点播：片名 / 豆瓣·TMDB·IMDB 链接 → 搜索选源（免费优先）→ 直接转「资源」"
+          @click="openOndemand"
+        />
         <VBadge
           v-if="examData.enabled !== false && examBadge > 0"
           class="magicflow-exam-wrap"
@@ -4065,8 +4172,26 @@ onUnmounted(() => {
           <template v-if="opsScope === 'all'">全部任务 · 跨站点汇总 · 每次执行 / 选种 / 删种 / 保护 / 标签 的流水（最近 100 条）</template>
           <template v-else>{{ selectedTask ? (selectedTask.name || '当前任务') : '未选择任务' }} · 每次执行 / 选种 / 删种 / 保护 / 标签 的流水</template>
         </div>
+        <div class="magicflow-ops-dialog__tabs">
+          <VBtn size="small" :variant="opsView === 'flow' ? 'tonal' : 'text'" prepend-icon="mdi-format-list-bulleted" @click="opsView = 'flow'">全部流水</VBtn>
+          <VBtn size="small" :variant="opsView === 'reseed' ? 'tonal' : 'text'" prepend-icon="mdi-content-duplicate" @click="opsView = 'reseed'">辅种流水</VBtn>
+        </div>
         <div class="magicflow-ops-dialog__body">
-          <div class="magicflow-events">
+          <div v-if="opsView === 'reseed'" class="magicflow-reseed">
+            <div class="magicflow-reseed__head">
+              <span>时间</span><span>任务</span><span>动作</span><span>资源</span><span class="is-num">大小</span><span>阶段</span>
+            </div>
+            <div v-for="row in reseedRows" :key="row.key" class="magicflow-reseed__row">
+              <span class="is-time">{{ formatDateTime(row.ts) }}</span>
+              <span class="is-task" :title="row.task">{{ row.task }}</span>
+              <span><VChip size="x-small" variant="tonal" color="primary">{{ row.action }}</VChip></span>
+              <span class="is-title" :title="row.reason || row.title">{{ row.title || row.hash || '—' }}</span>
+              <span class="is-num">{{ row.size_gb ? Number(row.size_gb).toFixed(2) + 'G' : '—' }}</span>
+              <span class="is-stage" :class="row.state === 'failed' ? 'text-error' : ''">{{ row.stage }}</span>
+            </div>
+            <div v-if="!reseedRows.length" class="magicflow-table-empty">暂无辅种流水</div>
+          </div>
+          <div v-else class="magicflow-events">
             <article v-for="record in operationData.operations || []" :key="record.operation_id">
               <VIcon :icon="operationIcon(record.kind)" :color="operationColor(record)" />
               <div>
@@ -4947,6 +5072,7 @@ onUnmounted(() => {
             </p>
             <div class="magicflow-settings-switches">
               <VSwitch v-model="settingsDraft.tag_model_enabled" label="启用标签模型（状态账本 + 魔流-站点-状态 标签）" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.show_qb_tags" label="往 qB 写标签（关=纯账本模式）" color="primary" hide-details inset />
             </div>
             <div class="magicflow-settings-grid">
               <VTextField v-model.number="settingsDraft.tag_silent_new_timeout_hours" type="number" min="0" step="1"
@@ -5597,6 +5723,129 @@ onUnmounted(() => {
     </VDialog>
 
     <!-- 跨站辅种：队列 + 流量兜底（3.11.0） -->
+    <VDialog v-model="ondemandOpen" max-width="46rem" scrollable>
+      <VCard class="magicflow-dialog magicflow-ondemand-dialog">
+        <header class="magicflow-settings-dialog__head">
+          <span class="magicflow-settings-dialog__title">点播</span>
+          <div class="magicflow-recommend-dialog__head-actions">
+            <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="ondemandOpen = false" />
+          </div>
+        </header>
+        <VDivider />
+        <VCardText class="magicflow-ondemand-dialog__body">
+          <div class="magicflow-ondemand-hint">
+            <div>输入片名或链接 → <strong>搜候选</strong> → 点<strong>「下这条」</strong>；不选就点<strong>「选源并下载」</strong>（自动挑推荐源）。下完<strong>自动整理进影视库</strong>。</div>
+            <div class="magicflow-ondemand-hint__legend">
+              站点可多选，<strong>不勾＝全部</strong>；默认优先选<strong>免费</strong>的源。
+            </div>
+          </div>
+          <div class="magicflow-ondemand-form">
+            <VTextField
+              v-model="ondemandQuery"
+              density="comfortable"
+              hide-details="auto"
+              label="片名 / 链接"
+              placeholder="如 流浪地球 或 https://movie.douban.com/subject/35267208/"
+              @keyup.enter="runOndemand(false)"
+            />
+            <VSelect
+              v-model="ondemandSiteIds"
+              density="comfortable"
+              hide-details="auto"
+              :items="siteSelectItems"
+              label="站点（可多选 · 不勾 = 全部站点）"
+              multiple
+              chips
+              closable-chips
+            />
+            <VSelect
+              v-model="ondemandTaskId"
+              density="comfortable"
+              hide-details="auto"
+              :items="[{ title: '（默认目录）', value: '' }, ...tasks.map((t) => ({ title: `${t.name}·${t.site_name || t.site_id}`, value: t.id }))]"
+              label="保存目录"
+            />
+          </div>
+          <div class="magicflow-ondemand-actions">
+            <VBtn
+              size="small"
+              variant="tonal"
+              color="primary"
+              prepend-icon="mdi-magnify"
+              :loading="ondemandBusy === 'preview'"
+              @click="runOndemand(false)"
+            >搜候选</VBtn>
+            <VBtn
+              size="small"
+              color="primary"
+              prepend-icon="mdi-cloud-download-outline"
+              :loading="ondemandBusy === 'apply'"
+              @click="runOndemand(true)"
+            >选源并下载</VBtn>
+          </div>
+          <VAlert v-if="ondemandError" type="error" variant="tonal" density="compact" class="mt-2">
+            {{ ondemandError }}
+          </VAlert>
+          <template v-if="ondemandResult">
+            <div class="magicflow-recommend-dialog__summary mt-2">
+              <VChip size="small" :color="ondemandResult.resource?.recognized ? 'success' : 'warning'" variant="tonal">
+                {{ ondemandResult.resource?.recognized ? '已识别' : '未识别（按原串搜）' }}
+              </VChip>
+              <i>·</i>
+              <span>{{ ondemandResult.resource?.title }} {{ ondemandResult.resource?.year }}</span>
+              <i>·</i>
+              <span>候选 {{ ondemandCandidates.length }}</span>
+              <i>·</i>
+              <span>站点 {{ (ondemandResult.sites || []).join(', ') || '—' }}</span>
+              <i>·</i>
+              <span>存到 <code>{{ ondemandResult.save_path || '（未配置）' }}</code></span>
+            </div>
+            <div v-if="ondemandResult.added" class="magicflow-recommend-dialog__note">
+              已下载：<code>{{ ondemandResult.added }}</code>（完成后直接转「资源」）
+            </div>
+            <div v-if="ondemandCandidates.length" class="magicflow-ondemand-list mt-2">
+              <article
+                v-for="(row, idx) in ondemandCandidates"
+                :key="idx"
+                class="magicflow-ondemand-item"
+                :class="{ 'magicflow-ondemand-item--auto': isOndemandAuto(row) }"
+              >
+                <div class="magicflow-ondemand-item__title" :title="row.title">{{ row.title }}</div>
+                <div class="magicflow-ondemand-item__meta">
+                  <VChip size="x-small" variant="tonal">{{ row.site_name || row.site }}</VChip>
+                  <span>{{ fmtSizeGb(row.size) }}</span>
+                  <span>做种 {{ row.seeders }}</span>
+                  <VChip
+                    size="x-small"
+                    variant="tonal"
+                    :color="odTraffic(row.downloadvolumefactor).color || undefined"
+                  >{{ odTraffic(row.downloadvolumefactor).text }}</VChip>
+                  <VChip v-if="isOndemandAuto(row)" size="x-small" variant="flat" color="primary">推荐</VChip>
+                  <VChip
+                    v-if="ondemandResult?.added && ondemandResult?.picked?.enclosure === row.enclosure"
+                    size="x-small"
+                    variant="flat"
+                    color="success"
+                  >已下</VChip>
+                </div>
+                <div class="magicflow-ondemand-item__act">
+                  <VBtn
+                    size="x-small"
+                    variant="tonal"
+                    color="primary"
+                    prepend-icon="mdi-download"
+                    :loading="ondemandBusy === 'apply'"
+                    :disabled="!!ondemandBusy"
+                    @click="runOndemand(true, row.enclosure)"
+                  >下这条</VBtn>
+                </div>
+              </article>
+            </div>
+          </template>
+        </VCardText>
+      </VCard>
+    </VDialog>
+
     <VDialog v-model="doubanServiceOpen" max-width="46rem" scrollable :fullscreen="isNarrow">
       <VCard class="magicflow-dialog magicflow-douban-dialog">
         <header class="magicflow-settings-dialog__head">
@@ -5767,7 +6016,9 @@ onUnmounted(() => {
                 <div class="magicflow-crossseed-item__main">
                   <strong :title="it.title">{{ it.title || it.sib_hash }}</strong>
                   <span class="magicflow-crossseed-item__meta">
+                    <VChip size="x-small" variant="tonal" color="warning">来源份</VChip>
                     <VChip size="x-small" variant="tonal" color="warning">{{ it.site_b }}</VChip>
+                    <template v-if="it.resource_id"> <span class="text-medium-emphasis" :title="it.resource_id">id {{ String(it.resource_id).slice(0, 12) }}</span></template>
                     <template v-if="it.size_gb"> · {{ Number(it.size_gb).toFixed(2) }}G</template>
                     <template v-if="it.fulfilled">
                       <VChip size="x-small" variant="tonal" color="success">义务已完成</VChip>
@@ -5811,7 +6062,9 @@ onUnmounted(() => {
                 <div class="magicflow-crossseed-item__main">
                   <strong :title="it.title || it.sib_hash">{{ it.title || it.sib_hash }}</strong>
                   <span class="magicflow-crossseed-item__meta">
+                    <VChip size="x-small" variant="tonal" color="info">待回辅</VChip>
                     <VChip size="x-small" variant="tonal" color="info">{{ it.site_b }} → {{ it.site_a }}</VChip>
+                    <template v-if="it.resource_id"> <span class="text-medium-emphasis" :title="it.resource_id">id {{ String(it.resource_id).slice(0, 12) }}</span></template>
                     <template v-if="it.size_gb"> · {{ Number(it.size_gb).toFixed(2) }}G</template>
                     · {{ crossseedStateText(it) }}
                     · {{ it.age_min }} 分钟前
@@ -9302,6 +9555,40 @@ onUnmounted(() => {
 .magicflow-ops-dialog { display: flex; flex-direction: column; }
 .magicflow-ops-dialog__spacer { flex: 1 1 auto; }
 .magicflow-ops-dialog__sub { padding: 6px 18px 4px; font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.55); }
+.magicflow-ops-dialog__tabs { display: flex; gap: 4px; padding: 0 14px 4px; }
+/* ★ §1 点播弹窗 */
+.magicflow-ondemand-dialog { display: flex; flex-direction: column; }
+.magicflow-ondemand-dialog__body { padding: 10px 18px 20px; overflow: auto; flex: 1 1 auto; min-height: 0; }
+.magicflow-ondemand-form { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-start; margin-top: 8px; }
+.magicflow-ondemand-form > .v-input:first-child { flex: 1 1 100%; }
+.magicflow-ondemand-form > .v-input:not(:first-child) { flex: 1 1 12rem; max-width: 24rem; }
+.magicflow-ondemand-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.magicflow-ondemand-hint { margin: 2px 0 10px; padding: 8px 10px; border-radius: 10px; background: rgba(var(--v-theme-primary), 0.10); font-size: 0.84rem; line-height: 1.6; }
+.magicflow-ondemand-hint strong { color: rgb(var(--v-theme-primary)); }
+.magicflow-ondemand-hint__legend { margin-top: 4px; font-size: 0.76rem; color: rgb(var(--v-theme-on-surface-variant)); }
+.magicflow-ondemand-hint__legend em { font-style: normal; font-weight: 600; color: rgb(var(--v-theme-on-surface)); }
+.magicflow-ondemand-list { display: flex; flex-direction: column; gap: 6px; }
+.magicflow-ondemand-item { border: 1px solid rgba(var(--v-theme-on-surface), 0.14); border-radius: 8px; padding: 6px 8px; }
+.magicflow-ondemand-item--auto { border-color: rgba(var(--v-theme-primary), 0.55); box-shadow: inset 0 0 0 1px rgba(var(--v-theme-primary), 0.22); }
+.magicflow-ondemand-item__act { display: flex; justify-content: flex-end; margin-top: 6px; }
+.magicflow-ondemand-item__title { font-size: 0.8rem; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
+.magicflow-ondemand-item__meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; font-size: 0.74rem; color: rgb(var(--v-theme-on-surface-variant)); }
+/* ★ §4.1 辅种流水单表 */
+.magicflow-reseed { display: flex; flex-direction: column; font-size: 12px; }
+.magicflow-reseed__head, .magicflow-reseed__row { display: grid; grid-template-columns: 8.5em minmax(0, 0.8fr) 5.2em minmax(0, 2fr) 4.2em 4.2em; gap: 8px; align-items: center; padding: 5px 2px; }
+.magicflow-reseed__head { font-weight: 600; opacity: 0.6; border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.12); position: sticky; top: 0; background: rgb(var(--v-theme-surface)); z-index: 1; }
+.magicflow-reseed__row { border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06); }
+.magicflow-reseed__row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.magicflow-reseed .is-time { font-variant-numeric: tabular-nums; opacity: 0.72; }
+.magicflow-reseed .is-num { text-align: right; font-variant-numeric: tabular-nums; }
+.magicflow-reseed .is-stage { opacity: 0.8; }
+/* ★ 窄屏（手机 390px）：6 列固定宽会把表撑到 463px 横向溢出 —— 缩小字号并隐去「大小」列（4+1 列） */
+@media (max-width: 640px) {
+  .magicflow-reseed { font-size: 11px; }
+  .magicflow-reseed__head, .magicflow-reseed__row { grid-template-columns: 5.6em minmax(0, 0.9fr) 4.4em minmax(0, 1.7fr) 3.4em; gap: 6px; }
+  .magicflow-reseed__head > span:nth-child(5),
+  .magicflow-reseed__row > span:nth-child(5) { display: none; }
+}
 .magicflow-ops-dialog__body { padding: 6px 18px 20px; overflow: auto; flex: 1 1 auto; min-height: 0; }
 /* 操作记录 / 站点容量 弹窗：让列表撑满卡片可滚区，不再被 .magicflow-events 的 52dvh 上限截断，下方留一大片空白 */
 .magicflow-ops-dialog .magicflow-events { max-block-size: none; margin-block-start: 0; padding-inline-end: 0; overflow: visible; }
@@ -9311,6 +9598,7 @@ onUnmounted(() => {
    原先这些弹窗正文被限高（推荐/考核 68dvh、云盘 70dvh）且卡片不伸展 → 全屏时下半屏全空。 */
 .magicflow-cloud-dialog,
 .magicflow-douban-dialog,
+.magicflow-ondemand-dialog,
 .magicflow-crossseed-dialog,
 .magicflow-recommend-dialog,
 .magicflow-exam-dialog,

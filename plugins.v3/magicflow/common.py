@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "5.11.7"
+__version__ = "7.3.1"
 
 import bisect
 import copy
@@ -81,6 +81,7 @@ SWAP_MAX_PER_ROUND = 3       # 单轮最多换几对(安全阀:避免一次性�
 SWAP_SOFT_MARGIN_MULT = 2.0  # 库内/自有种(软保护)换出所需净收益门槛 = 基础 × 该倍数
 SWAP_MAX_IN_GB = 30.0        # 换入候选单个体积上限(GB,默认;任务可覆盖;0=不限)
 SWAP_MAX_ADD_GB = 25.0       # 单轮换入累计「多占磁盘」上限(GB):防拿小种换进巨物
+SWAP_MAX_OUT_PER_ROUND = 3   # ★ 1换K:单个换入候选最多顶掉几个弱种(k 上限) —— 腾名额靠它
 SWAP_DAY_DL_GB = 20.0        # 每任务每日换种「实际下载」上限(GB):按真实下载量计,不是磁盘增量
 SWAP_DAY_DL_GB_TOTAL = 40.0  # 全局(所有任务合计)每日换种下载上限(GB):防多任务叠加把流量烧穿
 SWAP_MIN_GAIN_PER_GB = 0.05  # 每 GB 下载至少要换回的魔力(/h):过滤「几十GB换零点几/h」的赔本买卖
@@ -107,6 +108,21 @@ REUSE_SCAN_MAX = 15
 #   - 间隔(分钟):比刷流间隔长很多,慢慢扫,避免短时间大量取种触发站点流控。
 #   - 每轮批量:一次只取这么多个候选的 .torrent 做辅种判定。
 REUSE_INTERVAL_MINUTES = 15
+
+# ★ 5.12.0 全站辅种（本机驱动）：本机已有文件 → 去各站找同一 Release 落户 + 登记「辅种」职务。
+#   与「跨站取种」相反方向：那个是「本机没有 → 去他站免费下」，这个是「本机已有 → 零下载去各站挂」。
+RESEED_INTERVAL_MINUTES = 15      # worker 周期（分钟；低频，慢慢喂）
+RESEED_BATCH = 10                 # 每轮最多处理多少个「本机种 × 目标站」对
+RESEED_DAILY_PER_SITE = 30        # 每站每天最多挂多少辅种（防一口气灌爆站点）
+RESEED_MIN_SIZE_GB = 1.0          # 小于该体积的本机种不参与（不值得挂）
+RESEED_CLOUD_TTL = 3 * 86400.0    # IYUU 云端反查结果的有效期（秒）
+RESEED_MISS_TTL = 30 * 86400.0    # 特征码不匹配 → 30 天内不再重试该对
+RESEED_FAIL_TTL = 86400.0         # 取种失败（流控/网络）→ 1 天后重试
+RESEED_CFG_KEY = "reseed_cfg"
+RESEED_LEDGER_KEY = "reseed_ledger"
+RESEED_DAY_KEY = "reseed_day"
+RESEED_CLOUD_KEY = "reseed_cloud"
+RESEED_PASSKEY_KEY = "reseed_passkeys"
 SILENT_HOST_INTERVAL_MINUTES = 60  # ⭐「静默托管」常驻 worker 周期(分钟，低频)
 SILENT_HOST_TASK_ID = "__silent_host__"  # ⭐「静默托管」常驻任务在任务列表里的只读条目 id
 # 跨站免费取种的「回辅」轮询周期(分钟)：B/C/D… 站点下完后，尽快把它辅回目标站。
