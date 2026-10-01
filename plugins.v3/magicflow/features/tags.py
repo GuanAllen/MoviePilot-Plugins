@@ -26,9 +26,12 @@ from ..crossseed import (
 )
 from ..tags import (
     ASSET_TAGS,
+    DUTY_STATES,
     FileGroupStore,
     KEEP_FOREIGN_TAGS,
     LEASE_TTL,
+    MARK_HR,
+    MARK_REUSE,
     asset_origin_sub,
     identity_of,
     is_asset_tags,
@@ -214,6 +217,26 @@ class TagsMixin:
     # 标签模型（3.13.0）
     # ---------------------------------------------------------
 
+    def _new_tag_state(self) -> TagStateStore:
+        """建状态账本对象：账本已迁到 5 表的部署走插件库，否则继续用旧 kv。"""
+        try:
+            from ..ledger import SeedLedgerStore, get_backend, ledger_ready
+            if ledger_ready(self):
+                return SeedLedgerStore(get_backend(self), log=self._log)
+        except Exception as err:  # noqa: BLE001
+            self._log(f"标签:5 表后端不可用，回退旧 kv:{err}", "warning")
+        return TagStateStore(get_data=self.get_data, save_data=self.save_data, log=self._log)
+
+    def _new_tag_groups(self) -> FileGroupStore:
+        """建资源账本对象：同上。"""
+        try:
+            from ..ledger import ResourceLedgerStore, get_backend, ledger_ready
+            if ledger_ready(self):
+                return ResourceLedgerStore(get_backend(self), log=self._log)
+        except Exception as err:  # noqa: BLE001
+            self._log(f"标签:5 表后端不可用，回退旧 kv:{err}", "warning")
+        return FileGroupStore(get_data=self.get_data, save_data=self.save_data, log=self._log)
+
     def _tag_state(self) -> TagStateStore:
         """状态账本（真值源）。★ 进程级单例，与 ``_site_rules`` 同款防热重载整表覆盖。"""
         obj = getattr(self, "_tag_state_obj", None)
@@ -239,10 +262,10 @@ class TagsMixin:
             if obj is not None and not isinstance(obj, TagStateStore):
                 obj = None
             if obj is None:
-                obj = TagStateStore(get_data=self.get_data, save_data=self.save_data, log=self._log)
+                obj = self._new_tag_state()
                 mod.instances["tag_state"] = obj
         except Exception:  # noqa: BLE001
-            obj = TagStateStore(get_data=self.get_data, save_data=self.save_data, log=self._log)
+            obj = self._new_tag_state()
         self._tag_state_obj = obj
         return obj
 
@@ -269,10 +292,10 @@ class TagsMixin:
             if obj is not None and not isinstance(obj, FileGroupStore):
                 obj = None
             if obj is None:
-                obj = FileGroupStore(get_data=self.get_data, save_data=self.save_data, log=self._log)
+                obj = self._new_tag_groups()
                 mod.instances["tag_groups"] = obj
         except Exception:  # noqa: BLE001
-            obj = FileGroupStore(get_data=self.get_data, save_data=self.save_data, log=self._log)
+            obj = self._new_tag_groups()
         self._tag_groups_obj = obj
         return obj
 
@@ -582,7 +605,7 @@ class TagsMixin:
                     "tags": tags,
                 })
                 continue
-            keep_extra = [rec_tag] if rec_tag in mf_tags else []
+            keep_extra = [t for t in (rec_tag, MARK_REUSE, MARK_HR) if t in mf_tags]
             if not state and CROSSSEED_TAG in mf_tags:
                 state, sub, src = STATE_SILENT, SUB_RESOURCE, "跨站来源份"
             if not state:
@@ -590,7 +613,7 @@ class TagsMixin:
                 parsed = None
                 for x in mf_tags:
                     _pp = parse_tag(x)
-                    if _pp and _pp.get("state") in (STATE_BRUSH, STATE_BONUS):
+                    if _pp and _pp.get("state") in DUTY_STATES:
                         parsed = _pp
                         break
                 if parsed is None:
@@ -1460,7 +1483,7 @@ class TagsMixin:
             "stale": store.stale_count(),
             "unowned": sum(1 for r in items.values()
                            if not str(r.get("taken_by") or "")
-                           and str(r.get("state") or "") in (STATE_BRUSH, STATE_BONUS)),
+                           and str(r.get("state") or "") in DUTY_STATES),
             "assets": {"count": sum(1 for r in items.values() if r.get("asset")),
                        "size_gb": round(sum(float(r.get("size_gb") or 0) for r in items.values() if r.get("asset")), 2)},
             "groups": groups.stats(),

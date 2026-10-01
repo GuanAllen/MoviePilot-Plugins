@@ -44,6 +44,7 @@ from .features.protection import ProtectionMixin
 from .features.hr import HrMixin
 from .features.assets import AssetsMixin
 from .features.services import ServicesMixin
+from .features.reseed import ReSeedMixin
 from .features.reuse import ReuseMixin
 from .features.cleanup import CleanupMixin
 from .features.swap import SwapMixin
@@ -58,11 +59,14 @@ from .features.cloud import CloudMixin
 from .features.siteops import SiteOpsMixin
 from .features.events import EventsMixin
 from .features.actions import ActionsMixin
+from .features.deck import DeckMixin
+from .features.ondemand import OnDemandMixin
 from .features.debug import DebugMixin
 from .features.registry import RegistryMixin
+from .features.migrate import MigrateMixin
 
 
-class MagicFlow(CoreMixin, RuntimeMixin, ApiMixin, SettingsMixin, StatusMixin, TasksMixin, BrushMixin, FormulaMixin, ProtectionMixin, HrMixin, AssetsMixin, ServicesMixin, ReuseMixin, CleanupMixin, SwapMixin, CrossSeedMixin, TagsMixin, SilentMixin, RecommendMixin, LiveMixin, ExamMixin, PoolMixin, CloudMixin, SiteOpsMixin, EventsMixin, ActionsMixin, DebugMixin, RegistryMixin, _PluginBase):
+class MagicFlow(CoreMixin, RuntimeMixin, ApiMixin, SettingsMixin, StatusMixin, TasksMixin, BrushMixin, FormulaMixin, ProtectionMixin, HrMixin, AssetsMixin, ServicesMixin, ReuseMixin, ReSeedMixin, CleanupMixin, SwapMixin, CrossSeedMixin, TagsMixin, SilentMixin, RecommendMixin, LiveMixin, ExamMixin, PoolMixin, CloudMixin, SiteOpsMixin, EventsMixin, ActionsMixin, DeckMixin, OnDemandMixin, DebugMixin, RegistryMixin, MigrateMixin, _PluginBase):
     """魔流插件主类。"""
 
     plugin_name = "魔流"
@@ -77,6 +81,11 @@ class MagicFlow(CoreMixin, RuntimeMixin, ApiMixin, SettingsMixin, StatusMixin, T
     auth_level = 1
 
     DATA_SCHEMA_VERSION = 1
+
+    def get_database_models(self) -> list:
+        """声明插件自有库的 5 张表（MP 启动时一并建立，见 db.py）。"""
+        from . import db as _db
+        return list(_db.ALL_MODELS)
 
     # 运行状态
     _enabled: bool = False

@@ -219,7 +219,7 @@ class AssetsMixin:
         for h, t in snap.items():
             hh = str(h or "").strip().lower()
             tags = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
-            if not any(is_magicflow_tag(x) for x in tags) or hh not in data:
+            if hh not in data:
                 continue
             is_a = is_asset_tags(tags)
             if is_a:
@@ -270,9 +270,6 @@ class AssetsMixin:
             rec = ledger.get(hh)
             if not rec:
                 continue
-            tags = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
-            if not any(is_magicflow_tag(x) for x in tags):
-                continue
             title = getattr(t, "name", "") or rec.get("title") or ""
             size = float(getattr(t, "size_gb", 0) or rec.get("size_gb") or 0.0)
             try:
@@ -290,6 +287,9 @@ class AssetsMixin:
                                  state=rec.get("state") or "", fp=_fp)
                 if (is_asset_tags(tags) or bool(rec.get("asset"))) and store.set_library(gid, True):
                     stat["in_library"] = int(stat["in_library"]) + 1
+                # ★ 资源身份（Master 2026-09-30）：入库/推荐过 → 资源；种子身份跟它走
+                if is_asset_tags(tags) or bool(rec.get("asset")):
+                    store.set_identity(gid, SUB_RESOURCE, by="sync")
         # 来源站 + H&R 账单：跨站来源份账本里的义务挂到「资源」上
         try:
             srcs = self._crossseed_sources().items()

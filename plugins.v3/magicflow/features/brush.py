@@ -59,6 +59,8 @@ from ..sitecap import (
     norm_domain,
 )
 from ..tags import (
+    STATE_BONUS,
+    STATE_BRUSH,
     parse_tag,
 )
 from ..sites.formula_fetch import (
@@ -646,6 +648,76 @@ class BrushMixin:
                 keys.add(dom[len(prefix):])
         return {k for k in keys if k}
 
+    def _same_site_torrents(self, task: MagicFlowTaskConfig, *, snap: Optional[Dict[str, Any]] = None) -> List[str]:
+        """本任务名下的种子 hash：按「站点 + 职务」识别（取代「标签命中 ∪ taken_by」双源）。
+
+        - 站点：种子 tracker(announce) 域名匹配本站 domain（与 ``_adopt_same_site`` 同口径）。
+        - 职务：账本 ``state`` == 本任务的职务态（刷流任务→刷流 / 其余→魔力），
+          **撞站（同站多任务）时靠它区分**，取代 taken_by 租约。
+        - qB 快照 tracker 常为空 → 逐 hash 兜底 ``tracker_domain``。
+        - 跨站来源份（H&R 保种期内）不属于任何任务 → 排除。
+        """
+        keys = self._same_site_keys(task)
+        if not keys:
+            return []
+        try:
+            _, state = self._task_site_state(task)
+        except Exception:  # noqa: BLE001
+            state = STATE_BRUSH if str(getattr(task, "task_type", "bonus") or "bonus").lower() == "brush" else STATE_BONUS
+        if snap is None:
+            try:
+                snap = self._tag_all_torrents()
+            except Exception:  # noqa: BLE001
+                return []
+        try:
+            _cs_src_hashes = self._crossseed_source_hashes() or set()
+        except Exception:  # noqa: BLE001
+            _cs_src_hashes = set()
+        store = self._tag_state()
+        dl = None
+        out: List[str] = []
+        seen: Set[str] = set()
+        for h, t in (snap or {}).items():
+            hh = str(h or "").strip().lower()
+            if not hh or hh in seen:
+                continue
+            if hh in _cs_src_hashes:
+                continue
+            # 职务过滤：只认本任务的职务态（撞站时刷流/魔力各归各）
+            try:
+                rec = store.get(hh) or {}
+            except Exception:  # noqa: BLE001
+                rec = {}
+            st = str(rec.get("state") or "")
+            if st != state:
+                continue
+            tr = str(getattr(t, "tracker", "") or "").strip()
+            host = ""
+            try:
+                host = str((urlparse(tr).hostname or "") or "").lower()
+            except Exception:  # noqa: BLE001
+                host = ""
+            if not host and tr:
+                try:
+                    import re as _re
+                    _m = _re.search(r"([a-z0-9.-]+\.[a-z]{2,})", tr.lower())
+                    host = _m.group(1) if _m else ""
+                except Exception:  # noqa: BLE001
+                    host = ""
+            if not host:
+                # 逐 hash 兜底（qB tracker 字段常为空）
+                try:
+                    if dl is None:
+                        dl = self._get_downloader()
+                    if dl is not None:
+                        host = str(dl.tracker_domain(hh) or "").strip().lower()
+                except Exception:  # noqa: BLE001
+                    host = ""
+            if host and any(k in host for k in keys):
+                out.append(hh)
+                seen.add(hh)
+        return out
+
     def _adopt_same_site(self, task: MagicFlowTaskConfig, downloader: DownloaderAdapter) -> Dict[str, int]:
         """同站纳管:把下载器中「属于本站」的已有种子补打本任务 tag。
 
@@ -744,11 +816,17 @@ class BrushMixin:
         return {"matched": matched, "adopted": adopted, "already": already, "protected": protected}
 
     def _watch_tag_integrity(self, task: MagicFlowTaskConfig, count: int) -> None:
-        """托管数看门狗:与上一轮对比,骤降至一半以下 → 记「标签疑似被外部清除」。
+        """托管数看门狗:与上一轮对比,骤降至一半以下 → 记「托管种异常丢失」。
 
-        专用于捕捉"种子还在、标签却被抹掉"这类**不产生删种记录**的异常
-        (如 MoviePilot 核心 get_torrent_id_by_tag → delete_torrents_tags 删全局标签定义)。
-        正常清理会带来 deleted>0,本看门狗只看"无删种却骤降"。
+        专用于捕捉"**种子还在、却不再算作本任务托管**"这类异常
+        （如账本职务/身份被误算、标签被外部工具清除）。
+
+        ★ 修复（原逻辑会**永久误报**）：
+          ① 先扣掉「可解释的降幅」：上一轮正常删种（``last_deleted``）+
+             本任务跟踪过、但**已从下载器消失**的种（``pub_dates`` 不在快照里）。
+             真被删掉的种让托管数合理下降，不该报警；**种还在 qB 却掉出托管集**才是异常。
+          ② 基线改为**跟随实况**（写当前值），不再 ``max(prev, c)`` 只升不降 ——
+             否则一次真实下降后会**每一轮都刷同一条警告**（每 60s 一条，淹没真异常）。
         """
         if not self._store or count is None:
             return
@@ -758,7 +836,20 @@ class BrushMixin:
             return
         prev = self._store.get_last_tagged_count(task.id)
         if prev >= 3 and c < prev * 0.5:
-            # ★ 先排除「同站其它任务的标签接手」这种**正常归属转移**（不是标签被抹）
+            # ① 上一轮本任务删了多少种（正常清理导致的下降）
+            try:
+                prev_del = int(getattr(self._store.task_states.get(task.id), "last_deleted", 0) or 0)
+            except Exception:  # noqa: BLE001
+                prev_del = 0
+            # ② 本任务跟踪过、但已从下载器消失的种（被删 → 托管数下降属正常）
+            _gone = 0
+            try:
+                _pd = self._store.get_pub_dates(task.id) or {}
+                _snap_all = self._tag_all_torrents() or {}
+                _gone = sum(1 for _h in _pd if str(_h).lower() not in _snap_all)
+            except Exception:  # noqa: BLE001
+                _gone = 0
+            # ③ 同站其它任务的标签接手（正常归属转移）
             _moved = 0
             try:
                 _site = str(getattr(task, "site_name", "") or "")
@@ -777,31 +868,31 @@ class BrushMixin:
                 _moved = len(_seen)
             except Exception:  # noqa: BLE001
                 _moved = 0
-            if _moved + c >= prev * 0.8:
+            if _moved + _gone + prev_del + c >= prev * 0.8:
                 self._log(
-                    f"魔流 [{task.name}] 托管归属转移 {prev} → {c}"
-                    f"（同站其它标签现持 {_moved} 个，非异常）"
+                    f"魔流 [{task.name}] 托管数变化 {prev} → {c}"
+                    f"（删种 {prev_del} / 已从下载器消失 {_gone} / 同站其它标签 {_moved}，非异常）"
                 )
-                self._store.set_last_tagged_count(task.id, max(prev, c))
-                return
-            self._log(
-                f"魔流 [{task.name}] ⚠️ 托管数骤降 {prev} → {c}(本轮未见删种,疑似标签被外部清除)",
-                "warning",
-            )
-            try:
-                self._store.journal.record(
-                    task_id=task.id,
-                    kind="tag",
-                    items=[OperationItem(
-                        hash="", source="watchdog",
-                        title=f"⚠️ 托管数骤降 {prev} → {c}",
-                        reason="本轮未见删种,疑似标签被外部工具清除",
-                    )],
+            else:
+                self._log(
+                    f"魔流 [{task.name}] ⚠️ 托管数骤降 {prev} → {c}"
+                    f"(可解释 删种 {prev_del}+消失 {_gone}+同站它标 {_moved} 仍不足,疑似种子还在却掉出托管集)",
+                    "warning",
                 )
-            except Exception:
-                pass
-        # 记"较高值":一次骤降后不被低值覆盖,保证下次仍能对比出新的骤降
-        self._store.set_last_tagged_count(task.id, max(prev, c))
+                try:
+                    self._store.journal.record(
+                        task_id=task.id,
+                        kind="tag",
+                        items=[OperationItem(
+                            hash="", source="watchdog",
+                            title=f"⚠️ 托管数骤降 {prev} → {c}",
+                            reason=f"删种 {prev_del}+消失 {_gone}+同站它标 {_moved} 不足以解释,疑似种子还在却掉出托管集",
+                        )],
+                    )
+                except Exception:
+                    pass
+        # ★ 基线跟随实况：不再 max(prev,c)（只升不降 → 一次下降后永久误报）
+        self._store.set_last_tagged_count(task.id, c)
 
     def _brush_impl(self, task_id: str) -> None:
         """抓取站点候选并补充优质魔力种子(刷流,v5 流程)。"""
@@ -888,14 +979,8 @@ class BrushMixin:
             #   用 get_raw_torrents() 全量取,本地 filter tag + state,不依赖 qB 过滤逻辑。
             # ★ 下载器全量快照:用 get_torrents_by_tag() 一次性拉解析好的 TorrentInfo,
             #   避免 get_torrents(tags=[tag]) 对 downloading 状态漏计,也保证 managed 有完整属性。
-            try:
-                _groups, _gerr = downloader.get_torrents_by_tag() if hasattr(downloader, 'get_torrents_by_tag') else ({}, "n/a")
-            except Exception:
-                _groups, _gerr = {}, "exception"
-            _tag = task.brush_tag
-            all_tagged: List[Any] = _groups.get(_tag, []) if isinstance(_groups, dict) else []
-            # ★ 归属唯一：标签命中的种里剔除「别人租约未过期」的；无主的顺手认领（一次落盘）
-            managed = self._task_owned_torrents(task, all_tagged, claim=True)
+            # ★ 本任务名下的种：站点×职务（标签/归属已退役，不再按 tag+claim）
+            managed = self._task_managed_torrents(task)
             managed_hashes = {(t.hash or "").lower() for t in managed if t.hash}
             base_cnt = len(managed)
             base_size = round(sum(float(getattr(t, "size_gb", 0) or 0) for t in managed), 3)
@@ -1719,6 +1804,7 @@ class BrushMixin:
 
             if self._store and new_pub:
                 self._store.note_pub_dates(task.id, new_pub, tz=SITE_TZ_OFFSET_HOURS)
+                self._sync_seed_pub_dates(new_pub)      # 5 表契约：同步进种子表 published_at
 
             if self._store and new_pages:
                 self._store.note_torrent_pages(task.id, new_pages)
@@ -1728,7 +1814,7 @@ class BrushMixin:
             if reused and self._store:
                 self._store.journal.record(
                     task_id=task.id,
-                    kind="reuse",
+                    kind="reseed",
                     items=[OperationItem(hash="", title=f"存量复用 {reused} 个", reason="辅种")],
                 )
             if tagged_reuse and self._store:
@@ -1836,10 +1922,6 @@ class BrushMixin:
         except Exception:
             return True
 
-    def _should_run(self, task: MagicFlowTaskConfig) -> bool:
-        """检查任务是否应该执行。"""
-        last_run = self._last_run_times.get(task.id, 0)
-        return (time.time() - last_run) >= task.check_interval * 60
 
     def _run_check(self, task_id: str) -> None:
         """执行魔流核心流程(带并发保护)。"""
@@ -1879,6 +1961,14 @@ class BrushMixin:
             except Exception as _adopt_exc:  # noqa: BLE001
                 self._log(f"魔流 [{task.name}] Check 同站纳管异常: {_adopt_exc}", "warning")
 
+            # ★ §1 点播：已形成资源组的点播种**直接转「资源」**（不观察、不分拣）
+            try:
+                _od = self._ondemand_settle(task)
+                if _od.get("settled"):
+                    self._dbg(f"魔流 [{task.name}] 点播转资源 {_od.get('settled')} 个")
+            except Exception as _ode:  # noqa: BLE001
+                self._log(f"魔流 [{task.name}] 点播结算异常: {_ode}", "warning")
+
             # ★ 3.43.0: 标签主权巡检 —— 别的插件/人私下挂的种立即归流、
             #   其他标签一律摘掉（先记账本再摘），MP 来源（订阅/自下）直接进资源。
             #   频控在 _tag_hygiene_round 内部（默认 900s），每轮 Check 都调无负担。
@@ -1901,6 +1991,13 @@ class BrushMixin:
                     self._dbg(f"魔流 [{task.name}] 换种未执行：{_sw.get('reason')}")
             except Exception as _swe:  # noqa: BLE001
                 self._log(f"魔流 [{task.name}] 自动换种异常: {_swe}", "warning")
+            # ★ §5.2 满魔套牌存档：把当前在岗套牌写回（变了就更新；连续 N 轮不变 → 满魔冻结）
+            try:
+                _dk = self._deck_sync(task)
+                if _dk.get("frozen") and not _dk.get("added") and not _dk.get("removed"):
+                    self._dbg(f"魔流 [{task.name}] 套牌已冻结（满魔）：{_dk.get('total')} 张")
+            except Exception as _dke:  # noqa: BLE001
+                self._log(f"魔流 [{task.name}] 套牌维护异常: {_dke}", "warning")
             self._settle(WorkReport(
                 task_id=task.id,
                 source="check",
@@ -1978,8 +2075,8 @@ class BrushMixin:
             _seen = getattr(self, "_pool_cap_notice", None)
             if _seen is None:
                 _seen = self._pool_cap_notice = {}
-            if time.time() - float(_seen.get(task.task_id, 0.0) or 0.0) > 3600.0:
-                _seen[task.task_id] = time.time()
+            if time.time() - float(_seen.get(task.id, 0.0) or 0.0) > 3600.0:
+                _seen[task.id] = time.time()
                 self._log(
                     f"任务 [{task.name}] 保种 {max_keep} 个 > 站点时魔计入上限 {cap_n}"
                     f"({getattr(task, 'site_domain', '') or task.site_id})：超出部分时魔不再增长"

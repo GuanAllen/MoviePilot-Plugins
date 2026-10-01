@@ -326,93 +326,42 @@ class TasksMixin:
     # 任务删除前的「种子交棒 / 退回静默」
     # ---------------------------------------------------------
 
-    def _task_owns(self, task: Any, h: str, *, now: Optional[float] = None) -> bool:
-        """★ 归属判定：账本占用优先于标签命中（同站标签会被多个任务共享）。
+    def _task_managed_torrents(self, task: Any, *, view: bool = False) -> List[Any]:
+        """本任务名下的种（站点 × 职务），无归属/claim/tag。
 
-        - 账本 ``taken_by`` 是**别人**且租约**未过期** → 不归我（即使标签一样）
-        - 归我 / 没人占用 / 占用者租约已过期 → 归我
+        - 决策路径（view=False）：阻塞快照 ``_tag_all_torrents``（数据最新）。
+        - 展示路径（view=True）：非阻塞快照 ``_tag_snapshot_view`` 扁平化，不拖慢 API。
         """
-        hh = str(h or "").strip().lower()
-        if not hh:
-            return False
-        tid = str(getattr(task, "id", "") or "")
-        try:
-            rec = self._tag_state().get(hh) or {}
-        except Exception:  # noqa: BLE001
-            return True
-        owner = str(rec.get("taken_by") or "")
-        if not owner or owner == tid:
-            return True
-        ts = float(now if now is not None else time.time())
-        return float(rec.get("lease_until") or 0) <= ts
-
-    def _task_owned_torrents(self, task: Any, torrents: Any, *, claim: bool = False) -> List[Any]:
-        """按**归属**过滤任务名下的种（标签命中的种里剔除「别人租约未过期」的）。
-
-        ``claim=True`` 时顺手把「标签命中但账本无主」的种占为己有并续租（一次落盘），
-        两个同站同状态任务因此会在第一轮就分出唯一归属，不再互相重复计入。
-        """
-        tid = str(getattr(task, "id", "") or "")
-        name = str(getattr(task, "name", "") or "")
-        try:
-            site, state = self._task_site_state(task)
-        except Exception:  # noqa: BLE001
-            site, state = str(getattr(task, "site_name", "") or ""), STATE_BONUS
-        store = self._tag_state()
-        now = time.time()
-        out: List[Any] = []
-        patches: Dict[str, Dict[str, Any]] = {}
-        for t in list(torrents or []):
-            h = str(getattr(t, "hash", "") or "").strip().lower()
-            if not h:
-                continue
-            rec = store.get(h) or {}
-            owner = str(rec.get("taken_by") or "")
-            lease = float(rec.get("lease_until") or 0)
-            if owner and owner != tid and lease > now:
-                continue  # 归别人（租约未过期）
-            out.append(t)
-            if claim and (owner != tid or lease <= now):
-                patches[h] = {
-                    "site": site, "state": state,
-                    "sub": str(rec.get("sub") or "") or SUB_NEW,
-                    "taken_by": tid, "task": name,
-                    "taken_at": now, "lease_until": now + float(LEASE_TTL),
-                    "title": str(getattr(t, "title", "") or "")[:200],
-                    "size_gb": float(getattr(t, "size_gb", 0) or 0),
-                }
-        if patches:
+        snap: Optional[Dict[str, Any]] = None
+        if view:
             try:
-                n = store.put_many(patches, now=now)
-                self._dbg(f"归属:「{name}」认领/续租 {n} 个")
-            except Exception as err:  # noqa: BLE001
-                self._log(f"归属:占用写入失败:{err}", "warning")
-        return out
+                groups = self._tag_snapshot_view(str(getattr(task, "downloader", "") or "qbittorrent"))
+                flat: Dict[str, Any] = {}
+                for rows in (groups or {}).values():
+                    for t in rows or []:
+                        hh = str(getattr(t, "hash", "") or "").strip().lower()
+                        if hh:
+                            flat[hh] = t
+                snap = flat
+            except Exception:  # noqa: BLE001
+                snap = None
+        if snap is None:
+            try:
+                snap = self._tag_all_torrents()
+            except Exception:  # noqa: BLE001
+                return []
+        try:
+            hashes = self._same_site_torrents(task, snap=snap)
+        except Exception:  # noqa: BLE001
+            return []
+        return [snap[h] for h in hashes if h in snap]
 
     def _task_managed_hashes(self, task: Any) -> List[str]:
-        """任务名下种子 hash：标签命中（剔除别人占用的）∪ 账本里显式占用（taken_by）。"""
-        out: List[str] = []
-        seen: Set[str] = set()
-        tags = set(self._task_tags(task))
+        """任务名下种子 hash：按站点（tracker 域名）识别（标签/归属已退役）。"""
         try:
-            snap = self._tag_all_torrents()
+            return self._same_site_torrents(task)
         except Exception:  # noqa: BLE001
-            snap = {}
-        _now = time.time()
-        for h, t in (snap or {}).items():
-            tt = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
-            if any(x in tags for x in tt) and h not in seen and self._task_owns(task, h, now=_now):
-                out.append(h)
-                seen.add(h)
-        try:
-            tid = str(getattr(task, "id", "") or "")
-            for h, rec in (self._tag_state().items() or {}).items():
-                if str((rec or {}).get("taken_by") or "") == tid and h not in seen:
-                    out.append(h)
-                    seen.add(h)
-        except Exception:  # noqa: BLE001
-            pass
-        return out
+            return []
 
     def _task_handover_plan(self, task: Any) -> Dict[str, Any]:
         """算出「删掉这个任务，名下种子能交给谁」：同站其它任务 + 各自会接管多少。"""
@@ -648,10 +597,7 @@ class TasksMixin:
             downloader = self._get_downloader(task.downloader)
             if not downloader or not downloader.is_available:
                 return Response(success=False, message="下载器不可用")
-            tagged, error = downloader.get_torrents(tags=[task.brush_tag])
-            if error:
-                return Response(success=False, message=str(error))
-            managed = list(tagged or [])
+            managed = self._task_managed_torrents(task, view=True)
             site = self._get_site(task.site_id)
 
             pages = dict(self._store.get_torrent_pages(task.id) or {})
@@ -735,8 +681,7 @@ class TasksMixin:
                 return Response(success=False, message="下载器不可用")
 
             # 与总览共用同一份「全部种子按标签分组」快照(避免再单独全量拉一次 qB)
-            task_torrents = self._task_owned_torrents(
-                task, self._tag_snapshot_view(task.downloader).get(task.brush_tag, []))
+            task_torrents = self._task_managed_torrents(task, view=True)
             error = None
             self._log(
                 f"API 做种明细:task={task_id} tag=「{task.brush_tag}」 tagged={len(task_torrents)} err={error}"
@@ -892,11 +837,11 @@ class TasksMixin:
             if not downloader or not downloader.is_available:
                 return Response(success=False, message="下载器不可用")
 
-            seeding_torrents, error = downloader.get_seeding_torrents(tag=task.brush_tag)
-            if error or not seeding_torrents:
+            _managed = self._task_managed_torrents(task, view=True)
+            if not _managed:
                 return Response(success=True, data={"preview": {}, "message": "没有做种种子"})
-
-            task_torrents = [t for t in seeding_torrents if task.brush_tag in t.tags]
+            _SEED = {"uploading", "stalledup", "forcedup", "queuedup", "checkingup", "allocating"}
+            task_torrents = [t for t in _managed if str(getattr(t, "state", "") or "").lower() in _SEED]
             torrent_bonus_list = self._convert_to_bonus_list(task_torrents, self._build_formula_params(task), self._task_pub_dates(task), getattr(task, "ti_source", "publish"), self._site_ni_map(task.site_id, task_torrents), self._site_official_titles(task.site_id))
             protected_hashes = self._store.get_protected_torrents(task_id) if self._store else set()
             # 媒体资产价值闸门:预览也排除已整理/辅种/历史命中的种子
@@ -909,11 +854,7 @@ class TasksMixin:
 
             # 刷流模式:预览「无上传将被清理」的种子(只读,不删)
             if str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush":
-                try:
-                    all_t, _ = downloader.get_torrents(tags=[task.brush_tag])
-                except Exception:
-                    all_t = []
-                tt = [t for t in (all_t or []) if task.brush_tag in t.tags]
+                tt = _managed
                 prev = self._store.get_brush_upload(task_id) if self._store else {}
                 need, thr, _grace = self._brush_idle_params(task)
                 would = []

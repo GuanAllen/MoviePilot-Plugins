@@ -97,6 +97,9 @@ class ReuseMixin:
                 site = self._get_site(task.site_id)
                 if site:
                     task.site_domain = getattr(site, "domain", "") or task.site_domain
+                    # ★ 规范职务标签要用站点短名（_task_tag），别用可能为空的旧字段 brush_tag
+                    if not getattr(task, "site_name", ""):
+                        task.site_name = getattr(site, "name", "") or getattr(task, "site_name", "")
             try:
                 local_index, local_by_size = self._local_reuse_index(downloader)
             except Exception as _le:  # noqa: BLE001
@@ -135,7 +138,9 @@ class ReuseMixin:
             scanned = len(pool)
 
             fp_cache: Dict[str, Optional[str]] = {}
-            tag = task.brush_tag
+            # ★ 用**规范职务标签**（站点级 `魔流-<站>-<魔力|刷流>`），不是 task.brush_tag：
+            #   brush_tag 是旧字段、可能为空 → 裸 set 会把种子贴上空的脏标签。
+            tag = self._task_tag(task) or str(getattr(task, "brush_tag", "") or "")
             for c in pool:
                 ckey = self._candidate_key(c)
                 raw = None
@@ -180,13 +185,22 @@ class ReuseMixin:
                     continue
 
                 if mode == "hash":
-                    ok = downloader.set_torrent_tags(h, [tag])
-                    st = str(getattr(linfo, "state", "") or "").lower()
-                    if ok and st in (QB_PAUSED_STATES | {"error", "missingfiles"}):
-                        downloader.resume_torrent(h)
-                    if ok:
-                        reused += 1
-                        self._log(f"魔流 [{task.name}] 辅种慢扫·复用(本机同 hash):{c.title}")
+                    # ★ 本机同 hash 但**已带本任务标签** = 早在管了，不是「本轮救回来」的：
+                    #   ① 不重复计命中（否则统计虚高）；② 不重复写账（免得账本 churn）；
+                    #   ③ 不动它的暂停状态（静默池的种本来就是暂停挂着，别被我们无意唤醒）。
+                    _already = tag in [str(t or "") for t in (getattr(linfo, "tags", None) or [])]
+                    if _already:
+                        self._dbg(f"辅种慢扫·本机已带本任务标签，不计命中:{c.title}")
+                    else:
+                        # ★ 走正式归户（贴职务 + 保留身份 + **写账本/拿租约**），别裸调 downloader：
+                        #   裸 set 只动 qB 标签、不落账 → 账本与 qB 漂移（这粒种在账本里仍是无主）。
+                        ok = self._tag_assign(task, [h], reason="辅种慢扫·复用(本机同 hash)") > 0
+                        st = str(getattr(linfo, "state", "") or "").lower()
+                        if ok and st in (QB_PAUSED_STATES | {"error", "missingfiles"}):
+                            downloader.resume_torrent(h)
+                        if ok:
+                            reused += 1
+                            self._log(f"魔流 [{task.name}] 辅种慢扫·复用(本机同 hash):{c.title}")
                 else:
                     hs, err = downloader.add_torrent_reuse(
                         torrent_bytes=raw,
@@ -195,6 +209,11 @@ class ReuseMixin:
                         verify=task.reuse_verify,
                     )
                     if hs:
+                        # ★ 同 brush：加完补一次正式归户（写账本/租约 + 规范化标签）
+                        try:
+                            self._tag_assign(task, [hs], reason="辅种慢扫·跨站辅种")
+                        except Exception as _ae:  # noqa: BLE001
+                            self._dbg(f"辅种慢扫·归户失败:{_ae}")
                         reused += 1
                         self._log(f"魔流 [{task.name}] 辅种慢扫·跨站辅种:{c.title}")
                     elif err:
@@ -216,7 +235,7 @@ class ReuseMixin:
             if self._store:
                 self._store.journal.add(
                     task_id=task_id,
-                    kind="reuse",
+                    kind="reseed",
                     items=[OperationItem(
                         hash="", title=f"辅种慢扫:命中 {reused} / 扫 {scanned}",
                         reason="复用(本机已有资源)", source="reuse",
@@ -379,7 +398,7 @@ class ReuseMixin:
             hash_string, error = downloader.add_torrent_reuse(
                 torrent_bytes=raw,
                 save_path=local.save_path or task.save_path or "",
-                tag=task.brush_tag,
+                tag=(self._task_tag(task) or str(getattr(task, "brush_tag", "") or "")),
                 verify=task.reuse_verify,
             )
             if hash_string:

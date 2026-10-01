@@ -80,6 +80,13 @@ class MagicFlowTaskPayload(BaseModel):
     crossseed_max_per_round: int = Field(3, ge=1, le=50, description="每轮最多发起几个跨站取种")
     crossseed_max_size_gb: float = Field(20.0, gt=0, le=2000, description="跨站取种的单个种子大小上限(GB)")
     crossseed_max_sites: int = Field(6, ge=1, le=50, description="每个候选最多探测几个站(PV 上限)")
+    # ★ 全站辅种（本机驱动）：本机已有资源 → 去各站挂种落户（**零下载**，Master 2026-09-30）
+    reseed_enabled: bool = Field(False, description="全站辅种:本机已有的资源去各站挂种落户(零下载;默认关)")
+    reseed_sites: List[str] = Field(default_factory=list, description="只在这些站铺(域名;空=全部有 IYUU sid 的站)")
+    reseed_daily_per_site: int = Field(30, ge=0, le=500, description="每站每天最多挂多少个辅种")
+    reseed_batch: int = Field(10, ge=1, le=200, description="每轮最多处理多少个「本机种×目标站」对")
+    reseed_min_size_gb: float = Field(1.0, ge=0, le=1000, description="小于该体积的本机种不参与(GB)")
+    reseed_dry: bool = Field(False, description="干跑:只算不挂(先看能挂多少)")
 
     # 无进度清理:每次运行清掉「没进度」的种子(进度为 0 且停滞/出错),避免占位却不产魔力
     cleanup_no_progress: bool = Field(True, description="每次运行清理「没进度」的种子(下载进度为 0 且停滞/出错)")
@@ -346,6 +353,7 @@ class MagicFlowSettingsPayload(BaseModel):
     #  命名:魔流-<站点>-<状态>[-<子类>];状态 刷流/魔力/静默(新|资源|普通)/推荐。
     #  账本记 hash→状态/来源子类/占用者,标签可被改坏而账本自愈。
     tag_model_enabled: bool = Field(True, description="启用标签模型(状态账本 + 魔流-<站点>-<状态> 标签)")
+    show_qb_tags: bool = Field(True, description="往 qB 写标签(状态账本才是真值源,关=纯账本模式)")
     tag_silent_new_timeout_hours: float = Field(24.0, ge=0, le=720, description="「静默-新」超过该小时数未分拣自动归「静默-普通」,0 = 不超时")
     tag_snapshot_interval_hours: float = Field(6.0, ge=0, le=168, description="状态账本快照间隔(小时),0 = 不快照")
     sort_rules: List[Dict[str, Any]] = Field(

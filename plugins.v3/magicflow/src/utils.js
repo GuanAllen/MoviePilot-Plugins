@@ -200,6 +200,7 @@ export function normalizeSettings(settings = {}) {
     seed_up_limit_kbps: Math.max(0, num(settings.seed_up_limit_kbps, 200)),
     brush_seed_up_limit_kbps: Math.max(0, num(settings.brush_seed_up_limit_kbps, 5120)),
     tag_model_enabled: settings.tag_model_enabled === undefined ? true : Boolean(settings.tag_model_enabled),
+    show_qb_tags: settings.show_qb_tags === undefined ? true : Boolean(settings.show_qb_tags),
     tag_silent_new_timeout_hours: Math.max(0, num(settings.tag_silent_new_timeout_hours, 24)),
     tag_snapshot_interval_hours: Math.max(0, num(settings.tag_snapshot_interval_hours, 6)),
     sort_rules: normalizeSortRules(settings.sort_rules),

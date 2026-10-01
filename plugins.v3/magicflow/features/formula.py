@@ -277,60 +277,17 @@ class FormulaMixin:
             with lock:
                 flights.discard(domain)
 
-    def _bonus_formula_block(self, task: MagicFlowTaskConfig, torrent_list, seeding_count: Optional[int] = None) -> Dict[str, Any]:
-        """组装「魔力计算」页所需的公式信息 + 本轮汇总推导链。"""
-        params = self._build_formula_params(task)
-        cap = self._acquire_site_formula(task)
-        extra = dict(getattr(cap, "extra", {}) or {}) if cap else {}
-        age = None
-        cache = self._cache_formula()
-        domain = (getattr(task, "site_domain", "") or "").strip().lower()
-        if domain:
-            _age = cache.age(domain)
-            if _age is not None:
-                age = max(0, int(_age))
-        if seeding_count is None:
-            seeding_count = self._site_seeding_count(task.site_id) or len(torrent_list or [])
-        bd = aggregate_breakdown(torrent_list, params, seeding_count=seeding_count, harem_hourly=float(extra.get("harem_hourly") or 0))
-        site_reported = extra.get("current_bonus_per_hour")
-        site_reported_a = extra.get("current_a")
-        deviation = None
-        if site_reported:
-            try:
-                deviation = round((bd["total"] - float(site_reported)) / float(site_reported) * 100, 1)
-            except (TypeError, ValueError, ZeroDivisionError):
-                deviation = None
-        return {
-            "site_domain": getattr(task, "site_domain", ""),
-            "site_name": getattr(task, "site_name", ""),
-            "source": (getattr(cap, "source", "") if cap else "") or "default",
-            "ok": bool(getattr(cap, "ok", False)) if cap else False,
-            "note": getattr(cap, "note", "") if cap else "",
-            "age_seconds": age,
-            "expr_a": getattr(cap, "expr_a", None) if cap else None,
-            "expr_b": getattr(cap, "expr_b", None) if cap else None,
-            "params": {
-                "t0": params.t0, "n0": params.n0, "b0": params.b0, "l": params.l,
-                "zero_weight": params.zero_weight, "normal_weight": params.normal_weight,
-                "official_coef": params.official_coef, "harem_coef": params.harem_coef,
-                "per_torrent_flat": params.per_torrent_flat, "seeding_count_cap": params.seeding_count_cap,
-            },
-            "extra": extra,
-            "seeding_count": int(seeding_count or 0),
-            "sum_a": round(bd["a_total"], 4),
-            "a_official": round(bd["a_official"], 4),
-            "b_base": round(bd["b_base"], 4),
-            "b_flat": round(bd["b_flat"], 4),
-            "b_official": round(bd["b_official"], 4),
-            "b_harem": round(bd["b_harem"], 4),
-            "total": round(bd["total"], 4),
-            "site_reported_a": site_reported_a,
-            "site_reported_bonus": site_reported,
-            "deviation_pct": deviation,
-        }
 
     def _site_user_id(self, site) -> Optional[str]:
-        """读取站点用户 UID(做种列表页需要)。优先从 cookie 的 c_secure_uid(NexusPHP = base64(uid))解析。"""
+        """读取站点用户 UID(做种列表页需要)。优先从 cookie 的 c_secure_uid(NexusPHP = base64(uid))解析。
+
+        ★ 6.1.5/6.1.6：兑底走 ``_userdata_row`` + ``_ud_get``（已有 60s 缓存、且**已兼容 ORM 对象**）。
+        以前这里手写了一版用 ``isinstance(row, dict)`` 的判断，而 MP 的
+        ``SiteOper().get_userdata_latest()`` 返回的是 **ORM 对象**（已对照官方 BrushFlow 的
+        ``getattr(row,'domain')`` 写法证实）→ 整条兑底成了**死代码**：15 个站里 9 个 cookie
+        没有 ``c_secure_uid``（馒头/咖啡/大青虫/聆音/March/NovaHD/蟹黄堡/Depth Studio/YemaPT）
+        → 天天「未取到站点 UID,跳过」，站点做种页永远拉不到。
+        """
         cookie = getattr(site, "cookie", "") or ""
         try:
             m = re.search(r"c_secure_uid=([^;]+)", cookie)
@@ -345,15 +302,11 @@ class FormulaMixin:
         except Exception:
             pass
         try:
-            from app.db.oper.site import SiteOper
-            dom = (getattr(site, "domain", "") or "").strip().lower()
-            sid = getattr(site, "id", None)
-            for row in SiteOper().get_userdata_latest() or []:
-                if not isinstance(row, dict):
-                    continue
-                if (row.get("domain", "") or "").lower() == dom or (sid is not None and row.get("id") == sid):
-                    uid = row.get("userid")
-                    return str(uid) if uid else None
+            row = self._userdata_row(int(getattr(site, "id", 0) or 0))
+            if row is not None:
+                uid = self._ud_get(row, "userid")
+                if uid:
+                    return str(uid).strip()
         except Exception:
             pass
         return None
@@ -376,7 +329,10 @@ class FormulaMixin:
             return 0
         uid = self._site_user_id(site)
         if not uid:
-            self._log("回填发布时间:未取到站点 UID,跳过", "warning")
+            self._log(
+                f"回填发布时间:未取到站点 UID,跳过({getattr(site, 'name', '') or ''}/{getattr(site, 'domain', '') or ''})",
+                "warning",
+            )
             return 0
         try:
             rows = fetch_seeding_list(site, uid, timeout=25)
@@ -421,10 +377,56 @@ class FormulaMixin:
                 mapping[h] = ts
         if mapping:
             self._store.note_pub_dates(task.id, mapping, tz=SITE_TZ_OFFSET_HOURS)
-            self._log(f"回填发布时间:{len(mapping)} 个种子改用「发布时长」计算 Ti")
+            self._sync_seed_pub_dates(mapping)
+            self._log(
+                f"回填发布时间[{getattr(task, 'name', '') or ''}]:"
+                f"{len(mapping)} 个种子改用「发布时长」计算 Ti"
+            )
         else:
-            self._log(f"回填发布时间:未匹配(做种页 {len(rows)} 条)", "warning")
+            # ★ 6.1.6：区分「没什么可补」（正常，已记录过）与「真没匹上」（异常）。
+            #   旧版一律 warning「未匹配(做种页 N 条)」→ 一天 26 条噪音，且看不出原因；
+            #   实测真相：March 的 43 条 pub_dates 早就在，做种页那 6 条全在里面 → 全被
+            #   ``if h in old: continue`` 跳过 → 根本不是「没匹配上」。
+            _mg = list(managed or [])
+            _known = sum(
+                1 for t in _mg
+                if (getattr(t, "hash", "") or "").lower() in old
+            )
+            if _known and _known >= len(_mg):
+                self._dbg(
+                    f"回填发布时间[{getattr(task, 'name', '') or ''}]:"
+                    f"本轮无新增(做种页 {len(rows)} 条,{_known} 个已记录)"
+                )
+            else:
+                self._log(
+                    f"回填发布时间[{getattr(task, 'name', '') or ''}]:未匹配"
+                    f"(做种页 {len(rows)} 条/托管 {len(_mg)} 个/已记录 {_known}/"
+                    f"{getattr(site, 'name', '') or ''})",
+                    "warning",
+                )
         return len(mapping)
+
+    def _sync_seed_pub_dates(self, mapping: Dict[str, float]) -> int:
+        """把「发布时间」落进**种子表 published_at**（5 表契约）。
+
+        Ti 的真值仍在 TaskState.pub_dates（老 kv / Redis），这里只是镜像——
+        否则 ``mf_seed.published_at`` 永远是空的（线上 913 行全空、Ti 只活在边上）。
+        """
+        if not mapping:
+            return 0
+        try:
+            store = self._tag_state()
+            patches = {
+                str(h).lower(): {"published_at": float(ts)}
+                for h, ts in mapping.items()
+                if ts and float(ts) > 0
+            }
+            if not patches:
+                return 0
+            return int(store.put_many(patches) or 0)
+        except Exception as err:  # noqa: BLE001
+            self._dbg(f"发布时间落表失败:{err}")
+            return 0
 
     @staticmethod
     def _ud_get(row, key, default=None):
@@ -462,13 +464,21 @@ class FormulaMixin:
         site = self._get_site(site_id)
         want_domain = (getattr(site, "domain", "") or "").strip() if site else ""
         match = None
-        for row in rows:
-            if want_domain and str(self._ud_get(row, "domain", "") or "").strip() == want_domain:
-                match = row
-                break
-            if self._ud_get(row, "id") == site_id:
-                match = row
-                break
+        # ★ 先按域名精确匹配（主键）。
+        #   旧写法在同一个循环里「域名不中就比 id」，而 siteuserdata.id 与 site.id
+        #   **不是同一个序列** → 两个小整数撞上就会拿别的站的用户行（跟着污染魔力/做种数/Ti）。
+        if want_domain:
+            for row in rows:
+                if str(self._ud_get(row, "domain", "") or "").strip() == want_domain:
+                    match = row
+                    break
+        if match is None:      # 没域名才退而求其次：按站名（同样来自 site 表，不会错站）
+            want_name = str(getattr(site, "name", "") or "").strip() if site else ""
+            if want_name:
+                for row in rows:
+                    if str(self._ud_get(row, "name", "") or "").strip() == want_name:
+                        match = row
+                        break
         cache[site_id] = (now, match)
         return match
 
@@ -765,5 +775,3 @@ class FormulaMixin:
                 self._log(f"记录达标停止失败:{err}", "warning")
         return True
 
-    def _site_current_bonus_old(self, site_id: int) -> float:
-        """(已弃用)旧实现:依赖 row 为 dict,实际 ORM 对象会全部跳过。"""

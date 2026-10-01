@@ -200,23 +200,20 @@ class SilentMixin:
         by_state: Dict[str, int] = {}
         by_site: Dict[str, Dict[str, int]] = {}
         try:
-            for _t in (self._tag_all_torrents() or {}).values():
+            _store = self._tag_state()
+            _led = _store.items()
+            for _h, _t in (self._tag_all_torrents() or {}).items():
                 _tg = [str(x) for x in (getattr(_t, "tags", None) or [])]
-                _st = next((x for x in _tg if "静默" in x and is_magicflow_tag(x)), "")
-                if not _st:
-                    continue
-                if duty_of(_tg)[1]:
-                    continue  # ★ 5.0.0：带职务标签 = 在岗，不算「池内」
+                _rec = _led.get(_h) or {}
+                if str(_rec.get("state") or "") != STATE_SILENT:
+                    continue  # ★ 账本判池内：职务=静默才算；在岗(刷流/魔力)/未知跳过
                 n_sil += 1
                 _ishr = bool(MARK_HR in _tg)
                 if _ishr:
                     n_hr += 1
-                _sub = "新"
-                for _s in ("新", "资源", "普通"):
-                    if _st.endswith(_s):
-                        _sub = _s
+                _sub = str(_rec.get("sub") or SUB_NEW)
                 by_state[_sub] = int(by_state.get(_sub) or 0) + 1
-                _site = self._torrent_site_name(_tg, "") or "未知"
+                _site = str(_rec.get("site") or "") or self._torrent_site_name(_tg, "") or "未知"
                 _d = by_site.setdefault(_site, {"total": 0, "hr": 0})
                 _d["total"] += 1
                 if _ishr:
@@ -388,6 +385,10 @@ class SilentMixin:
         except Exception:  # noqa: BLE001
             return 0
         st = self._tag_state()
+        try:
+            self._tag_groups().set_identity(_gid, SUB_RESOURCE, by="promote")
+        except Exception:  # noqa: BLE001
+            pass
         n = 0
         for _h in members:
             try:
@@ -505,15 +506,13 @@ class SilentMixin:
         to_resume: List[str] = []
         for hh, t in snap.items():
             tags = [str(x) for x in (getattr(t, "tags", None) or [])]
-            if not any(("静默" in x and is_magicflow_tag(x)) for x in tags):
-                continue
-            _in_pool = not duty_of(tags)[1]   # ★ 5.0.0：在岗的不算「静默」
-            if _in_pool:
-                rep["silent"] = int(rep["silent"]) + 1
+            rec = ledger.get(hh) or {}
+            if str(rec.get("state") or "") != STATE_SILENT:
+                continue  # ★ 账本判池内：在岗(刷流/魔力)/未知 → 不是静默池，跳过
+            rep["silent"] = int(rep["silent"]) + 1
             if cap and rep["checked"] >= cap:
                 continue
             rep["checked"] = int(rep["checked"]) + 1
-            rec = ledger.get(hh) or {}
             if rec.get("manual_paused"):
                 rep["skipped_manual"] = int(rep["skipped_manual"]) + 1
                 continue
@@ -532,7 +531,7 @@ class SilentMixin:
             try:
                 obl = bool(self._hr_obligation(site, t)[0])
             except Exception:  # noqa: BLE001
-                obl = bool(MARK_HR in tags)
+                obl = False
             if not obl:
                 rep["nonhr"] = int(rep["nonhr"]) + 1  # 非 H&R → 不强制，保持原状
                 continue
@@ -1148,6 +1147,16 @@ class SilentMixin:
                 gid = files.group_of(hh) if files is not None else ""
             except Exception:  # noqa: BLE001
                 gid = ""
+            # ★ §1 点播（权威来源 1）：手动指定的资源**直接=资源**，不观察、不分拣
+            try:
+                if self._ondemand_is_pending(hh):
+                    if files is not None and gid:
+                        files.set_identity(gid, SUB_RESOURCE, by="ondemand")
+                    self._ondemand_unmark(hh)
+                    rep["ondemand"] = int(rep.get("ondemand") or 0) + 1
+                    continue
+            except Exception:  # noqa: BLE001
+                pass
             buckets.setdefault(str(gid) or ("h:" + hh), []).append((hh, rec, t))
 
         def _pick(items: List[Tuple[str, Dict[str, Any], Any]]) -> Tuple[str, Dict[str, Any], Any]:

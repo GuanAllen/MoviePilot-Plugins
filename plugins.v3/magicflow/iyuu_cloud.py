@@ -225,9 +225,12 @@ class IyuuCloud:
         return self._sid_sha1
 
     # ------------------------------------------------------------ 辅种批量查询
-    def query(self, infohashes: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    def query(self, infohashes: List[str],
+              sids: Optional[List[int]] = None) -> Dict[str, List[Dict[str, Any]]]:
         """批量查询：提交 infohash 列表 → {我的hash: [{info_hash, sid, torrent_id}, ...]}。
 
+        ``sids``：只声明我们**真持有**的站点（默认沿用站点表全量）。
+        声明得越准，云端返回的「他站同资源」越干净（不会拿我们没号的站来烦我们）。
         命中限流/失败一律返回空字典（调用方回退）。
         """
         hashes = sorted({(h or "").strip().lower() for h in infohashes if h})
@@ -236,13 +239,21 @@ class IyuuCloud:
         now = time.time()
         if now < self._blocked_until:
             return {}
-        sids = []
-        for item in self.sites().values():
-            try:
-                sids.append(int(item.get("id")))
-            except (TypeError, ValueError):
-                continue
-        sid_sha1 = self.sid_sha1(sids)
+        if sids:
+            sid_list: List[int] = []
+            for s in sids:
+                try:
+                    sid_list.append(int(s))
+                except (TypeError, ValueError):
+                    continue
+        else:
+            sid_list = []
+            for item in self.sites().values():
+                try:
+                    sid_list.append(int(item.get("id")))
+                except (TypeError, ValueError):
+                    continue
+        sid_sha1 = self.sid_sha1(sid_list)
         if not sid_sha1:
             return {}
         wait = _QUERY_MIN_INTERVAL - (now - self._last_query_at)
