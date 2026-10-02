@@ -16,7 +16,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from .fingerprint import Entry, entries_fingerprint, info_hash, load_torrent_entries
 
@@ -1443,10 +1443,22 @@ class DownloaderAdapter:
         except Exception as _rn_exc:  # noqa: BLE001
             logger.debug(f"删除前重新报到异常（忽略）: {_rn_exc}")
 
+        # ★★ 共享文件护栏（2026-10-01）：要连文件删时，先看这些种的文件是否被**别的**种子共用
+        #   （跨站辅种 / 多任务同一份资源）。共用则只删种、不删文件 —— 否则会把别人的文件一起干掉
+        #   （2026-10-01 事故：多站辅种共用同一份文件，其中一路删种连文件 → 其余站全成空壳）。
+        shared: Set[str] = set()
+        if delete_file:
+            shared = self._shared_file_hashes(hashes)
+            if shared:
+                logger.info(
+                    f"[共享护栏] {len(shared)}/{len(hashes)} 个种的文件被其它种子共用 → 降级为只删种不删文件"
+                )
+
         try:
             success_count = 0
             for hash_string in hashes:
-                if self._downloader.delete_torrents(ids=[hash_string], delete_file=delete_file):
+                _df = bool(delete_file) and str(hash_string or "").strip().lower() not in shared
+                if self._downloader.delete_torrents(ids=[hash_string], delete_file=_df):
                     success_count += 1
 
             if success_count < len(hashes):
@@ -1457,6 +1469,46 @@ class DownloaderAdapter:
         except Exception as e:
             logger.error(f"删除种子失败: {e}")
             return 0, str(e)
+
+    def _shared_file_hashes(self, hashes: List[str]) -> Set[str]:
+        """返回这些 hash 中「文件被下载器里别的种子共用」的子集（小写）。
+
+        判定：下载器里存在**别的**种子，其 ``save_path`` 与本种相同且 ``content_path``
+        的顶层目录名/文件名相同（同一份资源被多站/多任务挂）。取不到索引时返回空集
+        （保持原行为，绝不因为查不到就阻断删除）。
+        """
+        want = {str(h or "").strip().lower() for h in (hashes or []) if str(h or "").strip()}
+        if not want:
+            return set()
+        try:
+            index = self.get_all_torrents_index()
+        except Exception as err:  # noqa: BLE001
+            logger.debug(f"[共享护栏] 取种子索引失败（跳过检查）: {err}")
+            return set()
+        if not index:
+            return set()
+        buckets: Dict[Tuple[str, str], List[str]] = {}
+        for h, t in index.items():
+            cp = str(getattr(t, "content_path", "") or "").strip()
+            if not cp:
+                continue
+            key = (str(getattr(t, "save_path", "") or "").strip(),
+                   cp.rstrip("/").rsplit("/", 1)[-1])
+            buckets.setdefault(key, []).append(str(h).lower())
+        out: Set[str] = set()
+        for h in want:
+            t = index.get(h)
+            if t is None:
+                continue
+            cp = str(getattr(t, "content_path", "") or "").strip()
+            if not cp:
+                continue
+            key = (str(getattr(t, "save_path", "") or "").strip(),
+                   cp.rstrip("/").rsplit("/", 1)[-1])
+            # ★ 只认「不在本批删除集合里」的别人（同批一起删的互不算共用）
+            if any(x not in want for x in buckets.get(key, [])):
+                out.add(h)
+        return out
 
     def reannounce(self, hashes: List[str]) -> Tuple[int, Optional[str]]:
         """向 tracker 重新报到（尽力而为，失败不阻断）。

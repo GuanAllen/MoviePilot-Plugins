@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "7.3.1"
+__version__ = "7.13.5"
 
 import bisect
 import copy
@@ -97,6 +97,23 @@ TORRENT_DL_RETRIES = 3
 # 分类阶段「取种」整段时长上限(秒):超过则不再等待剩余候选(个别请求可能卡死),
 # 本轮跳过、下轮重试;避免把整轮拖到运行超时(600s)而触发「判定为卡死」。
 TORRENT_FETCH_DEADLINE = 120.0
+
+# ★ 全局（跨任务）资源下载闸门：同一资源（同 infohash / 同完整特征码）只允许下载一次，
+#   无论哪个任务发起（MODEL.md「一个资源只从一个站下载」）。防「A 下过 → B 又下一遍」的重复下载。
+ADD_GATE_INFLIGHT_TTL = 3 * 3600.0     # 「在飞占用」超时(秒)：任务中断/崩溃后自动释放
+ADD_GATE_DONE_TTL = 24 * 3600.0        # 「已下载」记忆窗口(秒)：窗口内其它任务不再重复下载
+
+
+def dup_gate_keys(info_hash: Any, fingerprint: Any = None) -> List[str]:
+    """资源身份的去重键：``h:<infohash>`` / ``fp:<完整特征码>``（只取非空者）。"""
+    out: List[str] = []
+    _h = str(info_hash or "").strip().lower()
+    if _h:
+        out.append(f"h:{_h}")
+    _fp = str(fingerprint or "").strip().lower()
+    if _fp:
+        out.append(f"fp:{_fp}")
+    return out
 # 分类阶段「单次取种」硬超时(秒):若在飞请求连续这么久都没有任何完成(典型=请求卡死/站点限速),
 # 则放弃等待剩余候选、立即进入处理阶段,避免个别慢请求把整段拖满。
 TORRENT_FETCH_PER_TIMEOUT = 20.0
@@ -214,8 +231,11 @@ GLOBAL_WORKER_LIMIT = 6
 # 站点抓取失败后的冷却(秒):失败站点在此时窗内不再重试抓取(共享给同站所有任务)。
 SITE_FETCH_BACKOFF = 180.0
 # 站点魔力公式抓取缓存 TTL(秒);抓取失败时只缓存 SHORT 秒后重试。
-SITE_FORMULA_TTL = 12 * 3600
+SITE_FORMULA_TTL = 3600  # ★ 7.4.0：站点上报时魔是实时值（原 12h → 显示/统计长期不更新）
 SITE_FORMULA_RETRY = 30 * 60
+# ★ 7.8.1：站点上报「时魔 = 0」时只认这么久的缓存——0 基本都是「站点还没把我们的种
+#   算进魔力页」（刚建号 / 刚下种 / 页面缓存），钉 1h 会让 UI 长时间显示 0。
+SITE_FORMULA_ZERO_TTL = 300.0
 # /status 实时统计(每任务一次下载器查询)缓存 TTL(秒):
 # 同一请求内「总览」与「任务列表」会各算一次,缓存可去重;也令 30s 轮询与二次进入更廉价。
 STATS_TTL = 20
@@ -467,7 +487,7 @@ class MagicFlowTaskConfig:
     pubtime: str = ""     # 发布时间范围(分钟)
     include: str = ""     # 包含正则
     exclude: str = ""     # 排除正则
-    freeleech: str = ""   # 免费过滤
+    freeleech: str = "free"   # 只下免费(系统硬规则);仅 "2xfree" 可进一步收窄
     hr: str = ""          # H&R 过滤
 
     # 删除配置

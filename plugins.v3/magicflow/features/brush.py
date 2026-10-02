@@ -21,6 +21,7 @@ from ..bonus import (
     MagicPolicy,
     TorrentBonusInfo,
     DEFAULT_CANDIDATE_REF_WEEKS,
+    candidate_ref_weeks,
     site_ceiling,
     score_candidate,
     calc_torrent_bonus,
@@ -92,6 +93,7 @@ from ..common import (
 
 class BrushMixin:
     """brush 功能集（原 MagicFlow 方法原样搬入）。"""
+
 
     def _cache_cands(self) -> TierCache:
         """候选列表缓存(内存热层 + FileCache 冷层)。编解码 = SiteCandidateTorrent ↔ dict。"""
@@ -1057,13 +1059,17 @@ class BrushMixin:
             # 站点级共享:同站只抓一份**完整**候选列表,刷流与魔力共用
             # (二者只是排序/筛选不同;谁先抓谁填缓存,其余在 TTL 内复用)。
             candidates = self._fetch_site_candidates(task, pages=pages, start_page=0)
+            # 刷流只吃免费/2X免费:从共享的完整列表里筛(不动共享数据本体)。
+            # ★ 7.9.0：刷魔力任务**不在这里筛** —— 非免费候选要留给洗池阶段的「跨站路由」
+            #   （本站绝不下，只走跨站）；真正保证「本站只下免费」的是 _build_filter_policy
+            #   里强制 free_only=True（任务字段已无法绕过）。
             if _brush_crawl and candidates:
-                # 刷流只吃免费/2X免费:从共享的完整列表里筛(不动共享数据本体)。
+                _free_all = len(candidates)
                 candidates = [
                     c for c in candidates
                     if getattr(c, "is_free", False) or getattr(c, "is_double_free", False)
                 ]
-                self._log(f"魔流 [{task.name}] 刷流·免费筛选 命中 {len(candidates)} 个")
+                self._log(f"魔流 [{task.name}] 刷流·免费筛选 命中 {len(candidates)}/{_free_all} 个")
             if not candidates:
                 self._log(f"魔力任务 [{task.name}] 未获取到候选种子(游标 {cursor})")
                 return {"status": "noop", "reason": "未获取到候选种子", "candidates": 0, "filtered": 0}
@@ -1196,6 +1202,7 @@ class BrushMixin:
             skipped_dead = 0
             skipped_low = 0
             skipped_nosrc = 0
+            skipped_dup_global = 0  # ★ 跨任务重复资源（同一 infohash / 同一完整特征码已被其它任务下过）
             for c in filtered:
                 ckey = self._candidate_key(c)
                 if ckey and self._store and self._store.seen.is_seen(task.id, f"cand:{ckey}", seen_cooldown):
@@ -1211,7 +1218,7 @@ class BrushMixin:
                     size_gb=c.size_gb,
                     seeders=c.seeders,
                     leechers=c.leechers,
-                    age_weeks=max(c.age_weeks, DEFAULT_CANDIDATE_REF_WEEKS),
+                    age_weeks=max(c.age_weeks, candidate_ref_weeks(formula_params)),
                     volume_factor=c.volume_factor,
                     is_zero_bonus=c.is_zero_bonus,
                     is_free=c.is_free,
@@ -1501,6 +1508,16 @@ class BrushMixin:
                     group_a.append((bonus, cand, mode, linfo))
                 elif _in_topn:
                     # 仅 TopN 候选参与「下载」排队;为复用而额外取回的候选不可复用则丢弃。
+                    # ★ 全局（跨任务）去重：该资源已被其它任务下载/在飞 → 不再排队下载。
+                    #   · 对方「在飞」→ 只让位本轮（**不打 seen**）：下轮本机有副本 → 走辅种；
+                    #   · 对方「已下过」且本机无副本 → 真没得辅，终局跳过（记 seen 防反复抓）。
+                    _gkeys = self._dup_keys(h, fingerprint(raw) if raw else None)
+                    _cst = self._dup_conflict_states(task.id, keys=_gkeys) if _gkeys else {}
+                    if _cst:
+                        skipped_dup_global += 1
+                        if ckey and all(v == "done" for v in _cst.values()):
+                            self._store.seen.mark(task.id, [f"cand:{ckey}"])
+                        continue
                     group_b.append((bonus, cand))
             if task.reuse_existing:
                 self._log(
@@ -1559,6 +1576,7 @@ class BrushMixin:
                 else:
                     bonus, cand = item
                 h = (getattr(cand, "real_hash", "") or "").lower()
+                _cand_h = h  # 原始候选 hash（跨站辅种后 h 会被换成兄弟种 hash）
                 ckey = self._candidate_key(cand)
 
                 # 兜底去重(fetch 后二次检查)
@@ -1660,6 +1678,13 @@ class BrushMixin:
                             self._store.dead.mark(task.id, [f"cand:{ckey}"])
                         continue
                     reused += 1
+                    # ★ 复用/辅种成功 = 资源已在本地 → 登记闸门 done，免得别的任务再从零下一份
+                    self._dup_finish(
+                        task.id,
+                        keys=self._dup_keys(
+                            _cand_h, fingerprint(cand.raw) if getattr(cand, "raw", None) else None
+                        ),
+                    )
                     add_cnt += 1
                     add_size += size_gb
                     pub_ts = self._pubdate_ts(getattr(cand, "pubdate", None))
@@ -1745,6 +1770,25 @@ class BrushMixin:
                             size_gb=size_gb, source="crossseed",
                         ))
                         continue
+                # ★ 全局（跨任务）资源去重闸门：同一资源（同 infohash / 同完整特征码）只下一次。
+                #   先原子占用；被其它任务占用/近期下过 → 跳过（不重复下载）。
+                _gkeys = self._dup_keys(
+                    h, fingerprint(cand.raw) if getattr(cand, "raw", None) else None
+                )
+                _gconf = self._dup_claim(task.id, keys=_gkeys)
+                if _gconf:
+                    _cst = self._dup_conflict_states(task.id, keys=_gkeys) or {}
+                    _terminal = bool(_cst) and all(v == "done" for v in _cst.values())
+                    skipped_dup_global += 1
+                    self._log(f"跳过·重复资源（其它任务{'已下载' if _terminal else '在飞'}）:{cand.title}")
+                    # 仅「已下过且本机无副本」才记 seen；「在飞」让位本轮，留给下轮辅种
+                    if _terminal and self._store:
+                        _sk = [f"hash:{h}"] if h else []
+                        if ckey:
+                            _sk.append(f"cand:{ckey}")
+                        if _sk:
+                            self._store.seen.mark(task.id, _sk)
+                    continue
                 hash_string, error = downloader.add_torrent(
                     content=cand.raw,
                     download_dir=task.save_path or "",
@@ -1760,6 +1804,7 @@ class BrushMixin:
                     add_size += size_gb
                     dl_budget -= 1
                     dl_concurrent += 1
+                    self._dup_finish(task.id, keys=_gkeys)
                     nh = (hash_string or h).lower()
                     managed_hashes.add(nh)
                     pub_ts = self._pubdate_ts(getattr(cand, "pubdate", None))
@@ -1793,6 +1838,7 @@ class BrushMixin:
                     ))
                 else:
                     add_failed += 1
+                    self._dup_release(task.id, keys=_gkeys)
                     if self._store and ckey:
                         self._store.dead.mark(task.id, [f"cand:{ckey}"])
                     self._log(f"添加失败:{cand.title}({error})", "warning")
@@ -1870,6 +1916,7 @@ class BrushMixin:
             self._set_phase(task.id, "done")
             detail = (
                 f"(复用 {reused} / 新增 {added} / 跨站 {crossseed_started} / 去重 {skipped_dup}"
+                f" / 跨任务去重 {skipped_dup_global}"
                 f" / 配额满 {skipped_quota} / 复用限并发 {skipped_reuse_limit} / 流控 {skipped_rate}"
                 f" / 免费到期 {skipped_expiring} / 失败 {add_failed})"
             )
@@ -1978,6 +2025,15 @@ class BrushMixin:
                     self._dbg(f"魔流 [{task.name}] 标签巡检: {_hy}")
             except Exception as _hy_exc:  # noqa: BLE001
                 self._log(f"魔流 [{task.name}] 标签巡检异常: {_hy_exc}", "warning")
+
+            # ★ 7.6.0: 空壳种（文件已不在）认出即清 —— 既不产魔力也不产上传，
+            #   以前只靠「恢复做种」白折腾（Master 2026-10-01 17:43）。
+            try:
+                _mf = self._missing_files_tick(apply=True)
+                if _mf.get("deleted"):
+                    self._dbg(f"魔流 [{task.name}] 空壳种清理 {_mf.get('deleted')} 个（待处理 {_mf.get('pending')}）")
+            except Exception as _mfe:  # noqa: BLE001
+                self._log(f"魔流 [{task.name}] 空壳种清理异常: {_mfe}", "warning")
 
             r = self._cleanup_round(task, downloader)
             # ★ 自动换种：名额/磁盘/站点上限吃紧时，按边际魔力换掉低价值种（程序自主决策）
@@ -2244,12 +2300,12 @@ class BrushMixin:
         policy.include_pattern = task.include
         policy.exclude_pattern = task.exclude
         policy.exclude_zero_bonus = task.exclude_zero_bonus
-        # 「免费」选项真正生效(历史上只存了任务字段、没接进筛选 → 照下非免费)
+        # ★ 7.9.0 系统硬规则：**只下免费**（非免费一概不碰——下几百 G 非免费流量靠刷流补不回来）。
+        #   任务字段 freeleech 只用于**进一步收窄**：""/ "free" → 免费(含 2X免费)；
+        #   "2xfree" → 只 2X 免费。（历史坑：字段留空 = 不判断 → 会照下非免费，且新任务默认就是空。）
         mode = (task.freeleech or "").strip().lower()
-        if mode == "2xfree":
-            policy.double_free_only = True
-        elif mode == "free":
-            policy.free_only = True
+        policy.free_only = True
+        policy.double_free_only = mode == "2xfree"
         # 「排除 H&R」选项(hr=yes → 过滤掉 H&R 种子)
         if str(getattr(task, "hr", "") or "").strip().lower() in ("yes", "y", "1", "true", "是"):
             policy.exclude_hnr = True

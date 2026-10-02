@@ -245,6 +245,9 @@ class NewSiteBonusCalculator(BonusCalculator):
   5. 本地市场索引 `core/local-plugins/package.v3.json` → `version` + `history`
   6. 本地仓 `core/local-plugins/plugins.v3/magicflow/{__init__.py, package.json}`
   7. 已安装副本 `config/plugins_backup/magicflow/`（由 monitor 自动同步覆盖，通常不用手改）
+- **★ 私有化（2026-10-02 定）**：**第 3、4 项（市场仓 = 公共 GitHub 仓）默认跳过** —— 新功能只发**本地市场**（第 5、6 项）+ 已装副本。公共仓 `GuanAllen/MoviePilot-Plugins` 冻结在 **7.3.1**，不再推送。
+  - 想恢复开源时再单独做（可考虑「公共子集白名单打包」方案：私有模块只留本地 + 插件侧 try-import 降级）。
+  - 已有公开历史不可收回（可能已被 clone/fork），冻结 = 往后不再更新。
 - **为什么必须 bump**：MoviePilot 插件前端走 `remoteEntry.js?v=<__version__>`，不 bump 客户端继续吃旧 chunk；`__version__` 同时是市场判定「有无更新」的依据。
 
 ## 协议

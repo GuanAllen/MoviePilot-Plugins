@@ -62,7 +62,7 @@ const taskDefaults = {
   pubtime: null,
   include: null,
   exclude: null,
-  freeleech: '',
+  freeleech: 'free',
   hr: null,
   min_seed_time: 0,
   min_ratio: 0,
@@ -164,7 +164,7 @@ function normalizeTask(task) {
   result.auto_resume_paused = Boolean(result.auto_resume_paused ?? true);
   result.ti_source = ['publish', 'seed_time'].includes(result.ti_source) ? result.ti_source : 'publish';
   result.seen_cooldown_hours = Number(result.seen_cooldown_hours ?? 24);
-  result.freeleech = result.freeleech || '';
+  result.freeleech = result.freeleech === '2xfree' ? '2xfree' : 'free';
   result.task_type = ['bonus', 'brush'].includes(result.task_type) ? result.task_type : 'bonus';
   result.brush_grace_minutes = Number(result.brush_grace_minutes ?? 15);
   result.upload_idle_minutes = Number(result.upload_idle_minutes ?? 10);
@@ -229,6 +229,13 @@ function normalizeSettings(settings = {}) {
       ? settings.crossseed_site_hours.map(v => String(v || '').trim()).filter(Boolean)
       : normalizePathList(settings.crossseed_site_hours),
     crossseed_reclaim: Boolean(settings.crossseed_reclaim),
+    // ★ 全站辅种（7.10.0）：本机已有资源 → 去各站挂种落户（零下载）
+    reseed_enabled: Boolean(settings.reseed_enabled),
+    reseed_dry: settings.reseed_dry === undefined ? true : Boolean(settings.reseed_dry),
+    reseed_sites: normalizePathList(settings.reseed_sites),
+    reseed_daily_per_site: Math.max(0, Math.round(num(settings.reseed_daily_per_site, 30))),
+    reseed_batch: Math.max(1, Math.round(num(settings.reseed_batch, 10))),
+    reseed_min_size_gb: Math.max(0, num(settings.reseed_min_size_gb, 1)),
     rules_auto_refresh: settings.rules_auto_refresh === undefined ? true : Boolean(settings.rules_auto_refresh),
     fallback_enabled: settings.fallback_enabled === undefined ? true : Boolean(settings.fallback_enabled),
     fallback_sources: normalizeFallbackSources(settings.fallback_sources),
@@ -279,6 +286,10 @@ function normalizeSettings(settings = {}) {
     cloud_delete_local: Boolean(settings.cloud_delete_local),
     cloud_remove_torrent: Boolean(settings.cloud_remove_torrent),
     cloud_notify: settings.cloud_notify === undefined ? true : Boolean(settings.cloud_notify),
+    // 顶栏功能磁贴显隐（纯界面层）：存「隐藏」白名单，空 = 全部显示
+    hidden_tiles: Array.isArray(settings.hidden_tiles)
+      ? settings.hidden_tiles.map(v => String(v || '').trim()).filter(Boolean)
+      : normalizePathList(settings.hidden_tiles),
   }
 }
 

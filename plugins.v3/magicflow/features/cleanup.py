@@ -792,3 +792,134 @@ class CleanupMixin:
             + (f"(其中按期记录到期 {recorded_hits} 个)" if recorded_hits else "")
         )
         return deleted
+
+
+    # ============================================================
+    # 清理流水：写「操作记录」（所有删种路径共用）
+    # ============================================================
+    def _journal_deletions(self, by_task: Dict[str, List[Any]], log_prefix: str = "清理") -> int:
+        """把「本轮已删除的种子」按归属任务写进操作记录（``kind="deletion"``）。
+
+        ``by_task``：``{任务id: [OperationItem, ...]}``。返回写入的条目数。
+        **纪律（Master 2026-10-01 18:10）：程序的清理逻辑必须有操作记录。**
+        任何新增的删种路径，都必须把删掉的种子攒成 OperationItem 后调这里。
+        """
+        if not by_task:
+            return 0
+        total = 0
+        for _tid, _items in by_task.items():
+            _tid = str(_tid or "").strip()
+            _items = [x for x in (_items or []) if x is not None]
+            if not _tid or not _items:
+                continue
+            try:
+                self._store.journal.record(task_id=_tid, kind="deletion", items=_items)
+                total += len(_items)
+            except Exception as err:  # noqa: BLE001
+                self._log(f"{log_prefix}:写操作记录失败:{err}", "warning")
+        return total
+
+    # ============================================================
+    # ★ 7.6.0 空壳种清理（missingFiles）
+    # ============================================================
+    MISSING_GRACE_SEC = 1800.0   # 新加种 30 分钟内不动（避开辅种/跨站校验的瞬时状态）
+    MISSING_TAG_PREFIX = "魔流-"
+
+    def _missing_files_tick(self, apply: bool = True, limit: int = 0) -> Dict[str, Any]:
+        """认出「文件已不在」的托管种并清掉（Master 2026-10-01 17:43：「认出还得删了」）。
+
+        判定：qB 状态 = ``missingFiles``（磁盘上数据已不存在）且进度 < 99.9%
+        （校验/重挂后归零）。这类种既不产上传、也不产魔力，还白占槽位；
+        以前只靠「恢复做种」白折腾，没人清。
+
+        - 只扫带「魔流-」标签的种（任务托管的 + 静默池的），不动别人的种
+        - **只删种子、绝不删文件**（``delete_file=False``）：文件既然不在了，
+          更不能因为「删除」把同目录里别人的数据误删
+        - 排除「魔流-跨站」来源份（它有自己的校验/撤销流程）
+        - 排除 30 分钟内新加的（避免和辅种/校验竞态）
+        """
+        rep: Dict[str, Any] = {"apply": bool(apply), "pending": 0, "deleted": 0,
+                               "failed": 0, "size_gb": 0.0, "items": []}
+        snap = self._tag_all_torrents() or {}
+        if not snap:
+            return rep
+        try:
+            store = self._tag_state()
+            ledger = dict(store.items() or {})
+        except Exception:  # noqa: BLE001
+            store = None
+            ledger = {}
+        now = time.time()
+        victims: List[Tuple[str, Any]] = []
+        for h, t in snap.items():
+            tags = [str(x) for x in (getattr(t, "tags", None) or [])]
+            if not any(x.startswith(self.MISSING_TAG_PREFIX) for x in tags):
+                continue
+            if "魔流-跨站" in tags:
+                continue
+            if str(getattr(t, "state", "") or "") != "missingFiles":
+                continue
+            try:
+                prog = float(getattr(t, "progress", 0) or 0)
+            except (TypeError, ValueError):
+                prog = 0.0
+            if prog >= 0.999:
+                continue
+            try:
+                added = float(getattr(t, "added_on", 0) or 0)
+            except (TypeError, ValueError):
+                added = 0.0
+            if added > 0 and (now - added) < float(self.MISSING_GRACE_SEC):
+                continue
+            victims.append((h, t))
+        rep["pending"] = len(victims)
+        if not victims:
+            return rep
+        cap = int(limit or 0)
+        _by_task: Dict[str, List[Any]] = {}
+        for h, t in victims:
+            _sz = 0.0
+            try:
+                _sz = float(getattr(t, "size", 0) or 0) / 1073741824.0
+            except (TypeError, ValueError):
+                _sz = 0.0
+            _tid = str((ledger.get(h) or {}).get("taken_by") or "")
+            _title = str(getattr(t, "title", "") or "")
+            rep["items"].append({"hash": h[:12], "title": _title[:60],
+                                 "size_gb": round(_sz, 2), "task_id": _tid})
+            if not apply or (cap and rep["deleted"] >= cap):
+                continue
+            _dl_name = str((ledger.get(h) or {}).get("downloader") or "qbittorrent")
+            try:
+                dl = self._get_downloader(_dl_name)
+                if dl is None:
+                    rep["failed"] += 1
+                    continue
+                cnt, err = dl.delete_torrents(hashes=[h], delete_file=False)
+                if cnt:
+                    rep["deleted"] += 1
+                    rep["size_gb"] = round(float(rep["size_gb"]) + _sz, 2)
+                    if _tid:
+                        _by_task.setdefault(_tid, []).append(OperationItem(
+                            hash=h, title=_title,
+                            reason="空壳种(文件已不在)",
+                            size_gb=round(_sz, 3), source="missing",
+                        ))
+                    try:
+                        if store is not None:
+                            store.drop(h)
+                    except Exception:  # noqa: BLE001
+                        pass
+                else:
+                    rep["failed"] += 1
+                    self._log(f"空壳种清理:删除失败 {h[:12]}:{err}", "warning")
+            except Exception as err:  # noqa: BLE001
+                rep["failed"] += 1
+                self._log(f"空壳种清理:删除异常 {h[:12]}:{err}", "warning")
+        # ★ 落「操作记录」：按账本 taken_by 归到所属任务（与其它 deletion 记录同款）
+        if apply and _by_task:
+            self._journal_deletions(_by_task, log_prefix="空壳种清理")
+        if apply and rep["deleted"]:
+            self._log(f"魔流:空壳种清理:文件已不在 → 删种 {rep['deleted']} 个"
+                      f"（释放标称 {rep['size_gb']}GB；只删种不删文件，失败 {rep['failed']}）")
+        return rep

@@ -43,7 +43,7 @@ def _shared():
         mod = _types.ModuleType(_SHARED_KEY)
         _sys.modules[_SHARED_KEY] = mod
     # ★ 幂等补齐（任何入口先建模块都不能缺属性）
-    for _attr, _factory in (("instances", dict), ("counters", dict), ("lock", threading.Lock)):
+    for _attr, _factory in (("instances", dict), ("counters", dict), ("singletons", dict), ("lock", threading.Lock)):
         if not hasattr(mod, _attr):
             setattr(mod, _attr, _factory())
     return mod
@@ -736,9 +736,12 @@ class OperationJournal(KvBridge):
         records.sort(key=lambda x: x.created_at, reverse=True)
         return records[:limit]
 
-    def list_recent(self, limit: int = 100) -> List[OperationRecord]:
-        """获取最近的操作记录。"""
+    def list_recent(self, limit: int = 100, kind: Optional[str] = None) -> List[OperationRecord]:
+        """获取最近的操作记录（``kind`` 非空 → 只取该类型；支持逗号分隔多类型）。"""
+        wanted = [k.strip() for k in str(kind or "").split(",") if k.strip()]
         records = list(self._operations.values())
+        if wanted:
+            records = [r for r in records if r.kind in wanted]
         records.sort(key=lambda x: x.created_at, reverse=True)
         return records[:limit]
 
@@ -1105,6 +1108,302 @@ class DeadStore(SeenStore):
     def is_dead(self, task_id: str, key: str, cooldown_seconds: float = 0.0) -> bool:
         """该 key 是否在冷却期内被标记为死种。"""
         return self.is_seen(task_id, key, cooldown_seconds)
+
+
+class AddGateStore(KvBridge):
+    """★ 全局（**跨任务**）资源「下载占用」闸门。
+
+    目的：**同一个资源（同一 infohash 或同一完整特征码）在插件内只允许被下载一次**，
+    无论由哪个任务发起 —— 避免「A 任务下过 → B 任务又下一遍」的重复下载（白烧流量）。
+    按 MODEL.md「一个资源只从一个站下载」的模型落地这条规则。
+
+    键 = 资源身份：``h:<infohash>`` / ``fp:<完整特征码>``；值 = ``{task, ts, state}``，
+    ``state`` ∈ ``inflight``（某任务正在下 → 防**并发**各下一份）/ ``done``（某任务已下完 →
+    在 TTL 内防**后续**重复，含「清理掉之后又下」的抖动）。
+
+    - 与 ``SeenStore`` / ``DeadStore`` 分属**不同文件**（``add_gate.json``），命名空间不串扰；
+    - 热层 = 每键一个值（``addgate:<reskey>``）；``add_gate.json`` 降为冷备份；
+    - 别名/同一任务不视为冲突（幂等续占）。
+    """
+
+    kv_region = "addgate"
+
+    def __init__(self, data_dir: Path, kv: Any = None):
+        """
+        初始化。
+
+        Args:
+            data_dir: 插件数据目录
+            kv: 热层（None / 非 Redis 后端 = 纯文件模式）
+        """
+        self.data_dir = data_dir
+        self.file = data_dir / "add_gate.json"
+        self._data: Dict[str, Dict[str, Any]] = {}
+        self._lock = threading.RLock()
+        self.kv_bind(kv)
+        self._load()
+
+    # ---------------------------------------------------------- 载入 / 持久化
+    def _load(self) -> None:
+        """载入：热层优先；热层无数据 → 读文件并回灌。"""
+        if self._kv_load():
+            return
+        if not self.file.exists():
+            return
+        try:
+            with open(self.file, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                self._data = {
+                    str(k): {
+                        "task": str((v or {}).get("task") or ""),
+                        "ts": float((v or {}).get("ts") or 0),
+                        "state": str((v or {}).get("state") or "done"),
+                    }
+                    for k, v in loaded.items()
+                    if isinstance(v, dict)
+                }
+        except Exception:
+            self._data = {}
+        if self._data:  # 文件有历史（热层空/丢过）→ 回灌
+            try:
+                self._kv_apply()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _kv_load(self) -> bool:
+        rows = self.kv_items()
+        if not rows:
+            return False
+        loaded = 0
+        for k, v in rows.items():
+            if isinstance(v, dict):
+                self._data[str(k)] = {
+                    "task": str(v.get("task") or ""),
+                    "ts": float(v.get("ts") or 0),
+                    "state": str(v.get("state") or "done"),
+                }
+                loaded += 1
+        return loaded > 0
+
+    def _kv_apply(self, keys: Optional[List[str]] = None) -> bool:
+        """把指定键（或全部）写进热层。"""
+        if not self.kv_ready():
+            return False
+        ok = True
+        targets = self._norm_keys(keys) if keys else list(self._data)
+        for k in targets:
+            entry = self._data.get(k)
+            if isinstance(entry, dict):
+                ok = self.kv.set(self.kv_key(k), entry) and ok
+            else:
+                ok = self.kv.delete(self.kv_key(k)) and ok
+        return ok
+
+    def _save(self, keys: Optional[List[str]] = None) -> None:
+        """保存：热层即时增量写 + JSON 冷备份**一并落**。
+
+        本表**不**挂在 ``MagicFlowStore.stores()`` 上（见 ``get_gate_store`` 的说明），
+        因此不能依赖后台 flusher 落盘；写入又很稀疏（只在下载决策时），整表也小，
+        故直接双写，确保热重载 / 进程重启后数据都在。
+        """
+        if self.kv_ready():
+            try:
+                self._kv_apply(keys)
+            except Exception:  # noqa: BLE001
+                pass
+            self.dirty = False
+        self._write_file()
+
+    def _write_file(self) -> None:
+        """写 JSON 冷备份。"""
+        try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            tmp = self.file.with_name(self.file.name + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self._data, f, ensure_ascii=False, indent=2)
+            tmp.replace(self.file)
+        except Exception:
+            pass
+
+    # ---------------------------------------------------------- 对外
+    @staticmethod
+    def _norm_keys(keys: Any) -> List[str]:
+        out: List[str] = []
+        for k in (keys or []):
+            s = str(k or "").strip()
+            if s and s not in out:
+                out.append(s)
+        return out
+
+    def _conflicts(self, keys: List[str], task_id: str, inflight_ttl: float,
+                   done_ttl: float, now: float) -> List[str]:
+        """返回被**其它任务**在 TTL 内占用/下过的键。"""
+        out: List[str] = []
+        me = str(task_id or "")
+        for k in keys:
+            entry = self._data.get(k)
+            if not isinstance(entry, dict):
+                continue
+            owner = str(entry.get("task") or "")
+            if not owner or owner == me:
+                continue
+            ttl = inflight_ttl if str(entry.get("state") or "") == "inflight" else done_ttl
+            if ttl and (now - float(entry.get("ts") or 0)) > ttl:
+                continue
+            out.append(k)
+        return out
+
+    def claim(self, keys: Any, task_id: str, inflight_ttl: float, done_ttl: float,
+              now: Optional[float] = None) -> List[str]:
+        """尝试占用一批资源键（**全有或全无**）。
+
+        返回：被别的任务占用的冲突键列表（非空 = 未占用任何键，调用方应放弃）；
+        空列表 = 已成功占用（state=inflight）。同一任务重复占用幂等（续期）。
+        """
+        ks = self._norm_keys(keys)
+        if not ks:
+            return []
+        now = time.time() if now is None else now
+        with self._lock:
+            cf = self._conflicts(ks, task_id, inflight_ttl, done_ttl, now)
+            if cf:
+                return cf
+            changed: List[str] = []
+            for k in ks:
+                entry = self._data.get(k)
+                if (isinstance(entry, dict) and str(entry.get("task") or "") == str(task_id)
+                        and str(entry.get("state") or "") == "inflight"):
+                    entry["ts"] = now  # 幂等续占
+                else:
+                    self._data[k] = {"task": str(task_id), "ts": now, "state": "inflight"}
+                changed.append(k)
+            self._save(changed)
+        return []
+
+    def peek(self, keys: Any, task_id: str, inflight_ttl: float, done_ttl: float,
+             now: Optional[float] = None) -> List[str]:
+        """只看冲突，不占用（用于提前跳过，避免占槽）。"""
+        ks = self._norm_keys(keys)
+        if not ks:
+            return []
+        now = time.time() if now is None else now
+        with self._lock:
+            return self._conflicts(ks, task_id, inflight_ttl, done_ttl, now)
+
+    def conflict_states(self, keys: Any, task_id: str, inflight_ttl: float,
+                        done_ttl: float, now: Optional[float] = None) -> Dict[str, str]:
+        """返回冲突键 → 状态（``inflight``/``done``），仅含**其它任务**在 TTL 内的记录。
+
+        用途：区分「对方**正在下**（→ 让位本轮，下轮本机有副本可辅种）」与
+        「对方**已下过**（本机已无副本 → 真没得辅，终局跳过）」。
+        """
+        ks = self._norm_keys(keys)
+        if not ks:
+            return {}
+        now = time.time() if now is None else now
+        out: Dict[str, str] = {}
+        with self._lock:
+            me = str(task_id or "")
+            for k in ks:
+                entry = self._data.get(k)
+                if not isinstance(entry, dict):
+                    continue
+                owner = str(entry.get("task") or "")
+                if not owner or owner == me:
+                    continue
+                st = str(entry.get("state") or "done")
+                ttl = inflight_ttl if st == "inflight" else done_ttl
+                if ttl and (now - float(entry.get("ts") or 0)) > ttl:
+                    continue
+                out[k] = st
+        return out
+
+    def finish(self, keys: Any, task_id: str, now: Optional[float] = None) -> None:
+        """标记下载完成（state=done）；登记后续 TTL 内不再重复下载。"""
+        ks = self._norm_keys(keys)
+        if not ks:
+            return
+        now = time.time() if now is None else now
+        with self._lock:
+            changed: List[str] = []
+            for k in ks:
+                entry = self._data.get(k)
+                if isinstance(entry, dict) and str(entry.get("task") or "") == str(task_id):
+                    entry["state"] = "done"
+                    entry["ts"] = now
+                    changed.append(k)
+                elif k not in self._data:
+                    self._data[k] = {"task": str(task_id), "ts": now, "state": "done"}
+                    changed.append(k)
+            if changed:
+                self._save(changed)
+
+    def release(self, keys: Any, task_id: str) -> None:
+        """释放**本任务**尚未完成的占用（下载失败时调用，允许重试）。"""
+        ks = self._norm_keys(keys)
+        if not ks:
+            return
+        with self._lock:
+            removed: List[str] = []
+            for k in ks:
+                entry = self._data.get(k)
+                if (isinstance(entry, dict) and str(entry.get("task") or "") == str(task_id)
+                        and str(entry.get("state") or "") == "inflight"):
+                    del self._data[k]
+                    removed.append(k)
+            if removed:
+                self._save(removed)
+
+    def prune(self, inflight_ttl: float, done_ttl: float, now: Optional[float] = None) -> int:
+        """清掉超过 TTL 的记录（按各自状态取 TTL）。"""
+        now = time.time() if now is None else now
+        with self._lock:
+            doomed: List[str] = []
+            for k, entry in list(self._data.items()):
+                if not isinstance(entry, dict):
+                    doomed.append(k)
+                    continue
+                ttl = inflight_ttl if str(entry.get("state") or "") == "inflight" else done_ttl
+                if ttl and (now - float(entry.get("ts") or 0)) > ttl:
+                    doomed.append(k)
+            for k in doomed:
+                self._data.pop(k, None)
+            if doomed:
+                self._save(doomed)
+            return len(doomed)
+
+    def count(self) -> int:
+        """当前记录条数（诊断用）。"""
+        return len(self._data)
+
+
+def get_gate_store(data_dir: Path, kv: Any = None) -> AddGateStore:
+    """取/建**进程级**资源下载闸门（按 data_dir 单例，跨热重载存活）。
+
+    ★ 为什么不挂在 ``MagicFlowStore`` 上：``MagicFlowStore`` 是**进程级单例**，MP 热重载
+    只会让插件实例重绑它、**不会重建**——热重载后旧实例上的 ``stores()`` / 属性仍是**旧类**
+    （persistence 里 ``get_operations`` 注释亦已注明）。往 ``MagicFlowStore`` 加新子表
+    在热重载后拿不到。因此用与 store 同一套 ``_shared()`` 注册表单独持有闸门实例，
+    热重载后仍指向同一个对象，不需重启 MP 即可生效。
+
+    Args:
+        data_dir: 插件数据目录（作为单例键）
+        kv: 热层（每次调用都重绑，保证热重载后拿到新热层）
+    """
+    key = f"gate:{Path(data_dir)}"
+    sh = _shared()
+    with sh.lock:
+        gate = sh.singletons.get(key)
+        if gate is None:
+            gate = AddGateStore(data_dir, kv=kv)
+            sh.singletons[key] = gate
+        elif kv is not None:
+            try:
+                gate.kv_bind(kv)
+            except Exception:  # noqa: BLE001
+                pass
+    return gate
 
 
 # ============================================================

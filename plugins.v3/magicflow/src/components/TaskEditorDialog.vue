@@ -1241,10 +1241,11 @@ function confirmSaveWithoutGoal() {
                       v-model="localTask.freeleech"
                       label="促销"
                       :items="[
-                        { title: '全部（包括普通）', value: '' },
                         { title: '免费', value: 'free' },
                         { title: '2X 免费', value: '2xfree' },
                       ]"
+                      hint="系统硬规则：只下免费种（非免费不碰）。「免费」含 2X 免费；选「2X 免费」= 只要双倍免费"
+                      persistent-hint
                     />
                   </VCol>
                   <VCol cols="12" md="6">

@@ -102,6 +102,9 @@ class TorrentBonusInfo:
     weight: float = 1.0         # 权重（普通=1，零魔=0.2）
     bonus_score: float = 0.0    # 魔力产出评分（相对值，未归一化）
     bonus_per_hour: float = 0.0 # 估算每小时魔力产出
+    mature_bonus_per_hour: float = 0.0  # ★ 按「成熟期口径」(max(age, REF_WEEKS))估算的时魔
+    #   —— 新种 T≈0 时值时魔≈0，但它的**目标产出**是养熟后的稳定值；
+    #   选种就是按这个口径打分的，清种必须同口径，否则「选了又删」空转。
 
     # 附加信息
     pubdate: Optional[str] = None  # 发布时间
@@ -382,6 +385,23 @@ def aggregate_breakdown(
 
 
 DEFAULT_CANDIDATE_REF_WEEKS = 4.0
+# 「成熟参考周数」与站点公式 T0 的比值：默认 4.0/5.0 = 0.8
+#   —— 原写死 4 周其实隐含假设 t0=5（NexusPHP 默认）：tf(4/5)=1-10^-0.8=0.84≈「养熟」。
+#   站点 t0 不同（如 CARPT t0=50）时 4 周只到 tf=0.17，必须按 T0 等比缩放。
+CANDIDATE_REF_T0_RATIO = DEFAULT_CANDIDATE_REF_WEEKS / 5.0
+
+
+def candidate_ref_weeks(params: Optional["BonusParams"] = None) -> float:
+    """候选/清种共用的「成熟参考周数」，**随站点公式 T0 动态缩放**。
+
+    ref = 0.8 × t0（t0=5 时正好 = 4.0，老站行为完全不变）。
+    选种（预计值）、清种门槛、mature_bonus 三处统一走它，口径才一致。
+    """
+    p = BonusParams.normalized(params)
+    t0 = float(getattr(p, "t0", 5.0) or 5.0)
+    if t0 <= 0:
+        return DEFAULT_CANDIDATE_REF_WEEKS
+    return DEFAULT_CANDIDATE_REF_WEEKS * (t0 / 5.0)
 
 
 def site_ceiling(params: Optional[BonusParams] = None) -> float:
@@ -420,7 +440,7 @@ def calc_candidate_bonus_per_hour(
     seeders: int,
     age_weeks: float,
     is_zero_bonus: bool = False,
-    ref_weeks: float = DEFAULT_CANDIDATE_REF_WEEKS,
+    ref_weeks: Optional[float] = None,
     params: Optional[BonusParams] = None,
     is_official: bool = False,
 ) -> float:
@@ -428,10 +448,11 @@ def calc_candidate_bonus_per_hour(
 
     站点浏览（browse）只能拿到最新种子，实际年龄 Ti≈0，
     直接代入公式恒为 ~0/h → 排序失去意义。
-    这里把年龄下限抬到 ref_weeks（默认 4 周），用「稳定期产出」
-    给候选排序，体现大小 / 做种人数 / 权重（含官种加成）差异。
+    这里把年龄下限抬到 ``ref_weeks``（缺省 = 0.8×站点 T0，NexusPHP 默认 t0=5 时即 4 周），
+    用「稳定期产出」给候选排序，体现大小 / 做种人数 / 权重（含官种加成）差异。
     """
-    eff = max(float(age_weeks or 0.0), float(ref_weeks or 0.0))
+    _ref = float(ref_weeks) if ref_weeks is not None else candidate_ref_weeks(params)
+    eff = max(float(age_weeks or 0.0), max(_ref, 0.0))
     return calc_bonus_per_hour(size_gb, seeders, eff, is_zero_bonus, params, is_official=is_official)
 
 
@@ -489,7 +510,7 @@ def score_candidate(
     params: Optional[BonusParams] = None,
     min_seeders: int = 1,
     flat_gain: float = 0.0,
-    ref_weeks: float = DEFAULT_CANDIDATE_REF_WEEKS,
+    ref_weeks: Optional[float] = None,
     join_delta: int = 1,
 ) -> CandidateScore:
     """综合「做种人数 Ni × 体积 Si」给出单颗候选的最优解评分。
@@ -506,7 +527,8 @@ def score_candidate(
     排序建议：名额受限（保种数上限）→ 按 ``value`` 降序；磁盘受限 → 按 ``efficiency`` 降序。
     """
     p = BonusParams.normalized(params)
-    eff_age = max(float(age_weeks or 0.0), float(ref_weeks or 0.0))
+    _ref = float(ref_weeks) if ref_weeks is not None else candidate_ref_weeks(p)
+    eff_age = max(float(age_weeks or 0.0), max(_ref, 0.0))
     size_gb = max(float(size_gb or 0.0), 0.0)
     ni = int(seeders or 0)
     ni_eff = ni + max(int(join_delta or 0), 0)
@@ -614,6 +636,12 @@ def calc_torrent_bonus(
     weight = calc_weight(is_zero_bonus, params)
     bonus_score = calc_bonus_score(size_gb, seeders, age_weeks, is_zero_bonus, params, is_official=is_official)
     bonus_per_hour = calc_bonus_per_hour(size_gb, seeders, age_weeks, is_zero_bonus, params, is_official=is_official)
+    # ★ 成熟期口径：选种用 max(age, ref_weeks) 打分（见 score_candidate），清种必须一致。
+    #   ref_weeks 随站点 T0 动态缩放（CARPT t0=50 → ~40 周，t0=5 站点仍是 4 周）。
+    mature_bonus_per_hour = calc_bonus_per_hour(
+        size_gb, seeders, max(float(age_weeks or 0.0), candidate_ref_weeks(params)),
+        is_zero_bonus, params, is_official=is_official,
+    )
 
     return TorrentBonusInfo(
         hash=hash,
@@ -633,6 +661,7 @@ def calc_torrent_bonus(
         weight=weight,
         bonus_score=bonus_score,
         bonus_per_hour=bonus_per_hour,
+        mature_bonus_per_hour=mature_bonus_per_hour,
         pubdate=pubdate,
         page_url=page_url,
     )
@@ -830,9 +859,17 @@ def decide_deletions(
             priority = max(priority, 70)
 
         # 低于魔力门槛
-        if torrent.bonus_per_hour < policy.min_bonus_per_hour:
+        # ★ 口径对齐选种：年轻种子按「成熟期时魔」(max(age, REF_WEEKS)) 判，
+        #   否则新种 T≈0 → 时魔≈0 → 选了就删，永远空转（历史 bug：CARPT 下了 115 删了 81）。
+        _judge_bonus = torrent.mature_bonus_per_hour or torrent.bonus_per_hour
+        if _judge_bonus < policy.min_bonus_per_hour:
+            _yr = torrent.age_weeks * 168.0
+            _note = (
+                f"（未成熟 {_yr:.0f}h，按 4 周稳定值 {torrent.mature_bonus_per_hour:.3f}/h）"
+                if torrent.mature_bonus_per_hour > torrent.bonus_per_hour else ""
+            )
             reasons.append(
-                f"魔力 {torrent.bonus_per_hour:.3f}/h 低于门槛 {policy.min_bonus_per_hour:.3f}/h"
+                f"魔力 {torrent.bonus_per_hour:.3f}/h 低于门槛 {policy.min_bonus_per_hour:.3f}/h{_note}"
             )
             priority = max(priority, 60)
 

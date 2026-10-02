@@ -117,6 +117,10 @@ class ReuseMixin:
             if not candidates:
                 return
             filter_policy = self._build_filter_policy(task)
+            # ★ 7.9.0：辅种是**零下载**复用（暂停→校验→不匹配自动撤销），不吃站点流量，
+            #   所以不受「只下免费」硬规则约束；关掉校验（允许补下载）时仍只挑免费。
+            if getattr(task, "reuse_verify", True):
+                filter_policy.free_only = False
             filtered, _rc = filter_candidates(candidates, filter_policy)
 
             # 选「体积邻近本机」且尚未由本 worker 处理过的候选
@@ -200,6 +204,10 @@ class ReuseMixin:
                             downloader.resume_torrent(h)
                         if ok:
                             reused += 1
+                            self._dup_finish(
+                                task.id,
+                                keys=self._dup_keys(h, fingerprint(raw) if raw else None),
+                            )
                             self._log(f"魔流 [{task.name}] 辅种慢扫·复用(本机同 hash):{c.title}")
                 else:
                     hs, err = downloader.add_torrent_reuse(
@@ -215,6 +223,12 @@ class ReuseMixin:
                         except Exception as _ae:  # noqa: BLE001
                             self._dbg(f"辅种慢扫·归户失败:{_ae}")
                         reused += 1
+                        self._dup_finish(
+                            task.id,
+                            keys=self._dup_keys(
+                                getattr(c, "real_hash", None), fingerprint(raw) if raw else None
+                            ),
+                        )
                         self._log(f"魔流 [{task.name}] 辅种慢扫·跨站辅种:{c.title}")
                     elif err:
                         self._log(f"魔流 [{task.name}] 辅种慢扫·辅种失败:{c.title}({err})", "warning")
@@ -403,6 +417,12 @@ class ReuseMixin:
             )
             if hash_string:
                 self._log(f"辅种成功:{cand.title} ← 复用「{local.title}」")
+                self._dup_finish(
+                    task.id,
+                    keys=self._dup_keys(
+                        getattr(cand, "real_hash", None), fingerprint(raw) if raw else None
+                    ),
+                )
                 return True, ""
             return False, error or "辅种失败"
         return False, "skip"

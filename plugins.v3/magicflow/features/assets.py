@@ -277,6 +277,7 @@ class AssetsMixin:
             except (TypeError, ValueError):
                 prog = 1.0
             _fp = str(rec.get("fp") or "").strip()
+            tags = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
             gid = self._resource_gid(title, size, _fp)
             stat["members"] = int(stat["members"]) + 1
             if _fp:

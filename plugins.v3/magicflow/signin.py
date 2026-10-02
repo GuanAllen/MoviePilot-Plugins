@@ -97,8 +97,7 @@ class SigninEngine:
             self._log(f"匹配签到处理器失败（{url}）：{err}", "debug")
             return None
 
-    @staticmethod
-    def _site_ctx(site: Any) -> Dict[str, Any]:
+    def _site_ctx(self, site: Any) -> Dict[str, Any]:
         """构造处理器要的站点信息字典（与 autosignin 的 site_info 同键）。"""
         def _s(key: str) -> str:
             return str(getattr(site, key, "") or "").strip()

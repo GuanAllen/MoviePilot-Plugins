@@ -15,6 +15,7 @@ from app.schemas import Response
 
 from ..bonus import (
     DEFAULT_CANDIDATE_REF_WEEKS,
+    candidate_ref_weeks,
     calc_torrent_bonus,
     preview_deletions,
     rank_candidates,
@@ -754,6 +755,7 @@ class TasksMixin:
             _pages = max(int(task.browse_pages or BROWSE_PAGES), 1)
             # 站点级共享:同站一份完整列表,刷流侧再筛免费(与主流程一致)。
             candidates = self._fetch_site_candidates(task, pages=_pages, start_page=0)
+            # 刷流侧再筛免费（与主流程一致）；刷魔力不筛：非免费候选会走「跨站路由」。
             if str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush" and candidates:
                 candidates = [
                     c for c in candidates
@@ -766,6 +768,7 @@ class TasksMixin:
             filtered, reason_counts = filter_candidates(candidates, filter_policy)
 
             official_titles = self._site_official_titles(task.site_id)
+            _fp = self._build_formula_params(task)
             bonus_list = []
             for c in filtered:
                 bonus_info = calc_torrent_bonus(
@@ -774,13 +777,13 @@ class TasksMixin:
                     size_gb=c.size_gb,
                     seeders=c.seeders,
                     leechers=c.leechers,
-                    age_weeks=max(c.age_weeks, DEFAULT_CANDIDATE_REF_WEEKS),
+                    age_weeks=max(c.age_weeks, candidate_ref_weeks(_fp)),
                     volume_factor=c.volume_factor,
                     is_zero_bonus=c.is_zero_bonus,
                     is_free=c.is_free,
                     is_double_free=c.is_double_free,
                     is_official=bool(official_titles) and (normalize_title(c.title) in official_titles),
-                    params=self._build_formula_params(task),
+                    params=_fp,
                 )
                 bonus_info.age_weeks = c.age_weeks
                 bonus_list.append(bonus_info)

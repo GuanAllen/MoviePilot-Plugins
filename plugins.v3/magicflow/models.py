@@ -80,14 +80,6 @@ class MagicFlowTaskPayload(BaseModel):
     crossseed_max_per_round: int = Field(3, ge=1, le=50, description="每轮最多发起几个跨站取种")
     crossseed_max_size_gb: float = Field(20.0, gt=0, le=2000, description="跨站取种的单个种子大小上限(GB)")
     crossseed_max_sites: int = Field(6, ge=1, le=50, description="每个候选最多探测几个站(PV 上限)")
-    # ★ 全站辅种（本机驱动）：本机已有资源 → 去各站挂种落户（**零下载**，Master 2026-09-30）
-    reseed_enabled: bool = Field(False, description="全站辅种:本机已有的资源去各站挂种落户(零下载;默认关)")
-    reseed_sites: List[str] = Field(default_factory=list, description="只在这些站铺(域名;空=全部有 IYUU sid 的站)")
-    reseed_daily_per_site: int = Field(30, ge=0, le=500, description="每站每天最多挂多少个辅种")
-    reseed_batch: int = Field(10, ge=1, le=200, description="每轮最多处理多少个「本机种×目标站」对")
-    reseed_min_size_gb: float = Field(1.0, ge=0, le=1000, description="小于该体积的本机种不参与(GB)")
-    reseed_dry: bool = Field(False, description="干跑:只算不挂(先看能挂多少)")
-
     # 无进度清理:每次运行清掉「没进度」的种子(进度为 0 且停滞/出错),避免占位却不产魔力
     cleanup_no_progress: bool = Field(True, description="每次运行清理「没进度」的种子(下载进度为 0 且停滞/出错)")
     no_progress_minutes: int = Field(30, ge=1, le=1440, description="加入下载器超过该分钟数仍无进度才判定为可清理")
@@ -147,7 +139,7 @@ class MagicFlowTaskPayload(BaseModel):
     pubtime: Optional[str] = None
     include: Optional[str] = None
     exclude: Optional[str] = None
-    freeleech: Literal["", "free", "2xfree"] = ""
+    freeleech: Literal["", "free", "2xfree"] = "free"
     hr: Optional[str] = None
 
     # 删除配置
@@ -349,6 +341,16 @@ class MagicFlowSettingsPayload(BaseModel):
     crossseed_reclaim: bool = Field(False, description="H&R 保种期满后自动回收来源份:只删种子不删文件(默认关,继续做种)")
     rules_auto_refresh: bool = Field(True, description="每周自动逐站探测站点规则(H&R/最短保种时长/做种上限)并入库")
 
+    # ── 全站辅种（本机驱动，7.10.0 接入设置面；插件级单例，非任务级）────────────
+    #  本机已有资源 → 去各站挂种落户（零下载）：暂停加入 → recheck → 通过才做种。
+    #  ⚠️ 这几个字段原来误挂在 MagicFlowTaskPayload（任务级）上，设置面收不到 → 7.10.0 归位。
+    reseed_enabled: bool = Field(False, description="全站辅种:本机已有的资源去各站挂种落户(零下载;默认关)")
+    reseed_sites: List[str] = Field(default_factory=list, description="只在这些站铺(域名;空=全部有 IYUU sid 的站)")
+    reseed_daily_per_site: int = Field(30, ge=0, le=500, description="每站每天最多挂多少个辅种")
+    reseed_batch: int = Field(10, ge=1, le=200, description="每轮最多处理多少个「本机种×目标站」对")
+    reseed_min_size_gb: float = Field(1.0, ge=0, le=1000, description="小于该体积的本机种不参与(GB)")
+    reseed_dry: bool = Field(True, description="干跑:只算不挂(先看能挂多少);默认开，确认链路后再关")
+
     # ── 标签模型(3.13.0):种子状态=标签,账本=真值源 ─────────────────────
     #  命名:魔流-<站点>-<状态>[-<子类>];状态 刷流/魔力/静默(新|资源|普通)/推荐。
     #  账本记 hash→状态/来源子类/占用者,标签可被改坏而账本自愈。
@@ -450,6 +452,14 @@ class MagicFlowSettingsPayload(BaseModel):
     cloud_delete_local: bool = Field(False, description="上传校验通过后删除本地文件(危险)")
     cloud_remove_torrent: bool = Field(False, description="归档后同时删种(危险,会停种)")
     cloud_notify: bool = Field(True, description="归档完成/失败推送通知")
+
+    # ── 顶栏功能磁贴显隐（纯界面层，7.10.1）─────────────────────────────
+    #  只控制顶栏 / 手机「功能」里是否显示入口，不改任何功能逻辑。
+    #  存「隐藏」白名单：空 = 全部显示（向后兼容）。可关：recommend/exam/signin/
+    #  cloud/douban/crossseed/ondemand/ceiling/ops。
+    hidden_tiles: List[str] = Field(
+        default_factory=list, description="隐藏的顶栏功能磁贴 key 列表(空=全部显示)"
+    )
 
 class MagicFlowDownloaderPrefsPayload(BaseModel):
     """魔流「下载器全局参数」请求模型
