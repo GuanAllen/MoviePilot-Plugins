@@ -37,6 +37,7 @@ from ..common import (
     LIVE_DOWNLOAD_ALERT_MB,
     LIVE_INTERVAL_MINUTES,
     LIVE_RATIO_TARGET,
+    RESEED_CFG_KEY,
     SEED_UP_LIMIT_KBPS_DEFAULT,
     SIGNIN_INTERVAL_MINUTES,
     SIGNIN_QUEUE,
@@ -144,7 +145,9 @@ class SettingsMixin:
             self._reseed_daily = int(_rf(getattr(payload, "reseed_daily_per_site", 30.0), 30.0))
             self._reseed_batch = int(_rf(getattr(payload, "reseed_batch", 10.0), 10.0))
             self._reseed_min_size_gb = _rf(getattr(payload, "reseed_min_size_gb", 1.0), 1.0)
-            self._reseed_dry = bool(getattr(payload, "reseed_dry", False))
+            self._reseed_dry = bool(getattr(payload, "reseed_dry", True))
+            # ★ 设置面是权威：清掉历史遗留的 plugin-data 覆盖（旧 reseed_cfg 会盖住这里的值）
+            self.save_data(key=RESEED_CFG_KEY, value={})
         except Exception:  # noqa: BLE001
             pass
         # 标签模型（3.13.0）
@@ -240,6 +243,10 @@ class SettingsMixin:
         }
         if getattr(self, "_cloud_engine", None) is not None:
             self._cloud_engine.set_cfg(dict(self._cloud_cfg))
+        # 顶栏功能磁贴显隐（纯界面层）：存「隐藏」白名单，空 = 全部显示
+        self._hidden_tiles = [
+            str(x).strip() for x in (getattr(payload, "hidden_tiles", None) or []) if str(x or "").strip()
+        ]
         self._save_config()
         self._apply_runtime_settings()
         self._refresh_scheduler()

@@ -31,14 +31,17 @@ SELF = "magicflow"
 L0 = {
     "kvstore.py", "fingerprint.py", "models.py", "persistence.py",
     "douban.py", "rulepack.py", "sitecap.py", "dtier.py",
+    "db.py", "tables.py",   # 插件自有表（SQLAlchemy 模型）—— 纯基础设施
 }
 L1 = {
     "bonus.py", "collect.py", "fetcher.py", "live_stats.py", "fallback.py",
     "downloader_ops.py", "cloud_archive.py", "crossseed.py", "iyuu_cloud.py",
     "recommend.py", "signin.py", "tags.py",
+    "ledger.py",   # 种子/资源台账（SQLAlchemy 后端，依赖 tags/common）
 }
 L2_PREFIX = "features/"
-L3 = {"__init__.py", "common.py"}
+L1_PREFIXES = ("sites/", "signin_sites/")   # L1 域的包（站点解析 / 站点签到适配器）
+L3 = {"__init__.py", "common.py", "dupgate.py"}
 
 
 def layer_of(rel: str) -> int | None:
@@ -49,8 +52,10 @@ def layer_of(rel: str) -> int | None:
         return 0
     if rel in L1:
         return 1
-    if rel.startswith(L2_PREFIX) or rel.startswith("sites/"):
-        return 2 if rel.startswith(L2_PREFIX) else 1
+    if rel.startswith(L2_PREFIX):
+        return 2
+    if rel.startswith(L1_PREFIXES):
+        return 1
     return None
 
 

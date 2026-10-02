@@ -19,6 +19,7 @@ Master 2026-09-30 定稿口径：
 每轮小批量、站间轮转；取种由下载器 `fetch_torrent_bytes` 发出（撞站点流控即整站让路）。
 """
 
+import random
 import time
 from typing import Any, Dict, List, Optional
 
@@ -33,7 +34,7 @@ from ..iyuu_cloud import (
     harvest_passkey,
     resolve_link_vars,
 )
-from ..tags import STATE_SILENT, SUB_NEW, SUB_RESOURCE, tag_for
+from ..tags import STATE_SILENT, SUB_NEW, SUB_PLAIN, SUB_RESOURCE, tag_for
 
 
 from ..common import (
@@ -87,7 +88,12 @@ class ReSeedMixin:
                 cur[k] = max(1, int(v or 1))
             elif k == "min_size_gb":
                 cur[k] = max(0.0, float(v or 0.0))
-        self.save_data(key=RESEED_CFG_KEY, value=cur)
+        self.save_data(key=RESEED_CFG_KEY, value=(cur if patch else {}))
+        # ★ 开关可能翻转 → 立刻让宿主重建插件服务（enabled=true 才会注册 ReSeed worker）
+        try:
+            self._refresh_scheduler()
+        except Exception:  # noqa: BLE001
+            pass
         return self._reseed_cfg()
 
     # ------------------------------------------------------------------ 账本
@@ -428,10 +434,6 @@ class ReSeedMixin:
         if not url:
             self._reseed_ledger_put(key, "miss", "无下载链模板/缺口令")
             return "nourl"
-        if dry:
-            self._log(f"全站辅种[干跑]:{site_name} 可挂 {pair['ih'][:8]}（源 {pair['src'][:8]} "
-                      f"{float(pair.get('src_size') or 0) / 1024 ** 3:.2f}GB）")
-            return "would"
         conn = self._reseed_site_conn(sid)
         raw = None
         try:
@@ -494,6 +496,10 @@ class ReSeedMixin:
                     groups.set_identity(gid, SUB_RESOURCE, by="reseed")
         except Exception:  # noqa: BLE001
             gid = ""
+        if dry:
+            self._log(f"全站辅种[干跑·已校验]:{site_name} 可挂 {pair['ih'][:8]}（源 {pair['src'][:8]} "
+                      f"{float(pair.get('src_size') or 0) / 1024 ** 3:.2f}GB）")
+            return "would"
         try:
             h, err = downloader.add_torrent_reuse(
                 torrent_bytes=raw, save_path=save_path, tag=tag, verify=True,
@@ -546,6 +552,9 @@ class ReSeedMixin:
             return report
         site_map = self._reseed_site_map()
         pairs = self._reseed_pairs(cloud, local_index, site_map)
+        if not limit:
+            # ★ 打乱顺序：否则每轮都从同样前 N 个开始（干跑采样看不到全貌、实挂也总眷顾同一批）
+            random.shuffle(pairs)
         if limit:
             pairs = pairs[: max(1, int(limit))]
         report["plan"] = len(pairs)
@@ -618,6 +627,15 @@ class ReSeedMixin:
             "enabled": bool(cfg.get("enabled")),
             "dry": bool(cfg.get("dry")),
             "running": bool(getattr(self, "_reseed_running", False)),
+            # ★ 7.10.0 接口/设置面用：完整有效配置（models 打底 + plugin data 覆盖后的结果）
+            "config": {
+                "enabled": bool(cfg.get("enabled")),
+                "dry": bool(cfg.get("dry")),
+                "sites": [str(x) for x in (cfg.get("sites") or [])],
+                "daily": int(cfg.get("daily") or 0),
+                "batch": int(cfg.get("batch") or 1),
+                "min_size_gb": float(cfg.get("min_size_gb") or 0.0),
+            },
             "debug": {
                 "client": bool(getattr(self, "_iyuu_client", None)),
                 "token": bool(getattr(self, "_iyuu_token", "")),
@@ -638,6 +656,11 @@ class ReSeedMixin:
     # ------------------------------------------------------------------ 接口
     def reseed_probe(self, fetch: Any = None, api: Any = None) -> Response:
         """诊断：逐站看下载链能不能拼出来（模板/口令/cookie）。fetch=1 实抓；api=<sid> 试 API 取链。"""
+        fetch = self._as_bool_arg(fetch)
+        try:
+            api = int(api) if str(api or "").strip() not in ("", "0") else 0
+        except Exception:  # noqa: BLE001
+            api = 0
         if api:
             out: Dict[str, Any] = {"ver": "p2", "sid": int(api)}
             try:
@@ -763,9 +786,25 @@ class ReSeedMixin:
         except Exception as err:  # noqa: BLE001
             return Response(success=False, message=f"保存全站辅种配置失败:{err}")
 
-    def run_reseed(self, dry: Optional[bool] = None, limit: Optional[int] = None) -> Response:
-        """立刻跑一轮全站辅种（dry=true 只算不挂；首轮会做云端反查，可能要几十秒）。"""
+    @staticmethod
+    def _as_bool_arg(v: Any) -> Optional[bool]:
+        """查询参数是字符串：''/None = 未传；'0'/'false'/'off' = False；其余非空 = True。"""
+        if v is None:
+            return None
+        s = str(v).strip().lower()
+        if s == "":
+            return None
+        return s not in ("0", "false", "no", "off", "none")
+
+    def run_reseed(self, dry: Any = None, limit: Any = None) -> Response:
+        """立刻跑一轮全站辅种（dry=1 = **取种校验但不挂**，会花站点 PV；首轮会做云端反查，可能要几十秒）。"""
         try:
-            return Response(success=True, data=self.reseed_round(dry=dry, limit=limit))
+            d = self._as_bool_arg(dry)
+            lim = None
+            try:
+                lim = int(limit) if str(limit or "").strip() != "" else None
+            except Exception:  # noqa: BLE001
+                lim = None
+            return Response(success=True, data=self.reseed_round(dry=d, limit=lim))
         except Exception as err:  # noqa: BLE001
             return Response(success=False, message=f"全站辅种执行失败:{err}")

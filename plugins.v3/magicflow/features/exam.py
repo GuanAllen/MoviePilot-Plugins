@@ -20,6 +20,7 @@ from ..models import (
 
 from ..common import (
     MagicFlowTaskConfig,
+    SIGNIN_INTERVAL_MINUTES,
     enabled_of_run_mode,
     RUN_MODE_RUNNING,
     RUN_MODE_STOPPED,

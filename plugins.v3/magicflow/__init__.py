@@ -27,6 +27,7 @@ from app.schemas.types import EventType
 
 from .bonus import (
     DEFAULT_CANDIDATE_REF_WEEKS,
+    candidate_ref_weeks,
 )
 from .iyuu_cloud import IyuuCloud
 from .persistence import MagicFlowStore
@@ -65,8 +66,10 @@ from .features.debug import DebugMixin
 from .features.registry import RegistryMixin
 from .features.migrate import MigrateMixin
 
+from .dupgate import DupGateMixin
 
-class MagicFlow(CoreMixin, RuntimeMixin, ApiMixin, SettingsMixin, StatusMixin, TasksMixin, BrushMixin, FormulaMixin, ProtectionMixin, HrMixin, AssetsMixin, ServicesMixin, ReuseMixin, ReSeedMixin, CleanupMixin, SwapMixin, CrossSeedMixin, TagsMixin, SilentMixin, RecommendMixin, LiveMixin, ExamMixin, PoolMixin, CloudMixin, SiteOpsMixin, EventsMixin, ActionsMixin, DeckMixin, OnDemandMixin, DebugMixin, RegistryMixin, MigrateMixin, _PluginBase):
+
+class MagicFlow(DupGateMixin, CoreMixin, RuntimeMixin, ApiMixin, SettingsMixin, StatusMixin, TasksMixin, BrushMixin, FormulaMixin, ProtectionMixin, HrMixin, AssetsMixin, ServicesMixin, ReuseMixin, ReSeedMixin, CleanupMixin, SwapMixin, CrossSeedMixin, TagsMixin, SilentMixin, RecommendMixin, LiveMixin, ExamMixin, PoolMixin, CloudMixin, SiteOpsMixin, EventsMixin, ActionsMixin, DeckMixin, OnDemandMixin, DebugMixin, RegistryMixin, MigrateMixin, _PluginBase):
     """魔流插件主类。"""
 
     plugin_name = "魔流"

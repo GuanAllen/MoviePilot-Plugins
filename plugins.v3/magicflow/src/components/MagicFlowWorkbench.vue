@@ -150,6 +150,7 @@ const settingsDraft = ref({
   show_sidebar_nav: true,
   debug_log: false,
   compact_mode: false,
+  hidden_tiles: [],
   journal_keep: 200,
   request_interval: 0,
   bonus_upload_limit_kbps: 200,
@@ -209,6 +210,12 @@ const settingsDraft = ref({
   crossseed_seed_hours_default: 24,
   crossseed_site_hours: ['pt.btschool.club=10'],
   crossseed_reclaim: false,
+  reseed_enabled: false,
+  reseed_dry: true,
+  reseed_sites: [],
+  reseed_daily_per_site: 30,
+  reseed_batch: 10,
+  reseed_min_size_gb: 1,
   rules_auto_refresh: true,
 })
 // ---- 站点实时数据 + 流量监控（直连站点，非 MP 6h 快照）----
@@ -376,6 +383,33 @@ function mfOpenPage(page) {
   }
 }
 const opsOpen = ref(false)
+// ★ 顶栏功能磁贴显隐（7.10.1）：纯界面层开关，存「隐藏」白名单（空 = 全部显示）。
+//   功能本体各有各的开关，这里只管「顶栏/手机功能格要不要显示入口」。
+const TILE_OPTIONS = [
+  { key: 'recommend', label: '推荐', icon: 'mdi-movie-star-outline' },
+  { key: 'exam', label: '新手考核', icon: 'mdi-school-outline' },
+  { key: 'signin', label: '签到', icon: 'mdi-calendar-check-outline' },
+  { key: 'cloud', label: '云盘归档', icon: 'mdi-cloud-upload-outline' },
+  { key: 'douban', label: '豆瓣评分', icon: 'mdi-database-search-outline' },
+  { key: 'crossseed', label: '跨站取种', icon: 'mdi-swap-horizontal-bold' },
+  { key: 'ondemand', label: '点播', icon: 'mdi-cloud-download-outline' },
+  { key: 'ceiling', label: '站点容量', icon: 'mdi-gauge' },
+  { key: 'ops', label: '操作记录', icon: 'mdi-history' },
+]
+// 已保存的隐藏集合（来自 /status）→ 顶栏/菜单/功能格据此显隐。保存后 loadStatus 刷新。
+const hiddenTiles = computed(() => (Array.isArray(status.value.hidden_tiles) ? status.value.hidden_tiles : []))
+function tileVisible(key) { return !hiddenTiles.value.includes(key) }
+// 设置面板里的开关（draft 控件，保存后落盘）
+function tileShown(key) {
+  const list = settingsDraft.value.hidden_tiles
+  return !(Array.isArray(list) && list.includes(key))
+}
+function setTileShown(key, shown) {
+  let list = Array.isArray(settingsDraft.value.hidden_tiles) ? [...settingsDraft.value.hidden_tiles] : []
+  if (shown) list = list.filter(k => k !== key)
+  else if (!list.includes(key)) list.push(key)
+  settingsDraft.value.hidden_tiles = list
+}
 // 操作记录作用域：'all' = 主页入口（跨任务 / 跨站点汇总）；'task' = 任务详情入口（当前任务）。
 // ★ 主页是全局视角，绝不能把「单个任务」的流水摆在主页（既别扭又不合语义）。
 const opsScope = ref('all')
@@ -392,6 +426,7 @@ const MF_SETTINGS_TABS = [
   { key: 'downloader', label: '下载与目录', icon: 'mdi-download-network-outline' },
   { key: 'template', label: '默认任务模板', icon: 'mdi-file-document-outline' },
   { key: 'iyuu', label: 'IYUU 辅种', icon: 'mdi-sync' },
+  { key: 'reseed', label: '全站辅种', icon: 'mdi-content-duplicate' },
   { key: 'fallback', label: '元数据兜底', icon: 'mdi-database-search-outline' },
   { key: 'cloud', label: '云盘归档', icon: 'mdi-cloud-upload-outline' },
   { key: 'exam', label: '考核', icon: 'mdi-school-outline' },
@@ -744,12 +779,40 @@ function operationColor(record) {
 /** 操作记录明细：展开状态表（key=operation_id）。 */
 const expandedOps = ref({})
 
-/** 可展开的明细条目：仅 run 记录展开（tags/watchdog 等单条事件摘要已够）。
- *  run 记录第 0 项是汇总行，与上方摘要重复，过滤掉。 */
+/** 可展开的明细条目：**所有类型都可展开**（Master 2026-10-01 18:10「操作记录要加详情」）。
+ *  只有 run 记录第 0 项是汇总行（source=run），与上方摘要重复 → 过滤掉。 */
 function opDetailItems(record) {
-  if (!record || record.kind !== 'run') return []
-  return (record.items || []).filter((it) => it.source && it.source !== 'run')
+  if (!record) return []
+  return (record.items || []).filter((it) => String((it && it.source) || '') !== 'run')
 }
+
+/** ★ 操作记录按类型筛选（Master 2026-10-01 18:10）。'' = 全部。 */
+const opsKind = ref('')
+const OPS_KIND_FILTERS = [
+  { value: '', label: '全部', icon: 'mdi-format-list-bulleted' },
+  { value: 'deletion', label: '删种清理', icon: 'mdi-delete-outline' },
+  { value: 'selection', label: '选种加入', icon: 'mdi-download-outline' },
+  { value: 'reseed', label: '辅种', icon: 'mdi-content-duplicate' },
+  { value: 'protection', label: '手动保留', icon: 'mdi-shield-check-outline' },
+  { value: 'unprotection', label: '取消保留', icon: 'mdi-shield-off-outline' },
+  { value: 'tag', label: '标签变更', icon: 'mdi-tag-outline' },
+  { value: 'run', label: '执行', icon: 'mdi-play-circle-outline' },
+]
+const opsKindItems = computed(() => {
+  // ★ 下拉里只放短标签（不带条数）：手机端窄，带条数会被省略号截断
+  return OPS_KIND_FILTERS.map((k) => ({ value: k.value, label: k.label }))
+})
+
+function kindCount(kind) {
+  const rows = operationData.value.operations || []
+  if (!kind) return rows.length
+  return rows.filter((r) => String(r.kind || '') === kind).length
+}
+const opsFiltered = computed(() => {
+  const rows = operationData.value.operations || []
+  if (!opsKind.value) return rows
+  return rows.filter((r) => String(r.kind || '') === opsKind.value)
+})
 
 function hasOpDetail(record) {
   return opDetailItems(record).length > 0
@@ -764,7 +827,13 @@ function toggleOpDetail(opId) {
 }
 
 /** 明细行的短标签（来源/动作）。 */
-const ITEM_SOURCE_TEXT = { add: '新增', 'add-fail': '失败', reuse: '复用', 'reuse-fail': '辅种失败', adopt: '纳管', watchdog: '看门狗', run: '汇总' }
+const ITEM_SOURCE_TEXT = {
+  add: '新增', 'add-fail': '失败', reuse: '复用', 'reuse-fail': '辅种失败',
+  adopt: '纳管', watchdog: '看门狗', run: '汇总',
+  // ★ 清理类（Master 要求「清理逻辑必须有操作记录 + 详情」）
+  missing: '空壳种', silent: '静默池', live: '站点监控', crossseed: '跨站',
+  selection: '选种', deletion: '删种', tag: '标签', protection: '保留', unprotection: '取消保留',
+}
 
 function itemSourceText(src) {
   return ITEM_SOURCE_TEXT[src] || ''
@@ -925,6 +994,7 @@ async function loadStatus() {
       show_sidebar_nav: status.value.show_sidebar_nav,
       debug_log: status.value.debug_log,
       compact_mode: status.value.compact_mode,
+      hidden_tiles: status.value.hidden_tiles,
       journal_keep: status.value.journal_keep,
       request_interval: status.value.request_interval,
       bonus_upload_limit_kbps: status.value.bonus_upload_limit_kbps,
@@ -948,6 +1018,14 @@ async function loadStatus() {
         crossseed_site_hours: status.value.crossseed.site_hours || [],
         crossseed_reclaim: status.value.crossseed.reclaim,
         rules_auto_refresh: status.value.crossseed.rules_auto_refresh,
+      } : {}),
+      ...(status.value.reseed ? {
+        reseed_enabled: status.value.reseed.enabled,
+        reseed_dry: status.value.reseed.dry,
+        reseed_sites: status.value.reseed.sites || [],
+        reseed_daily_per_site: status.value.reseed.daily,
+        reseed_batch: status.value.reseed.batch,
+        reseed_min_size_gb: status.value.reseed.min_size_gb,
       } : {}),
       ...(status.value.fallback || {}),
       ...(status.value.live ? {
@@ -1087,10 +1165,19 @@ async function loadCandidates(taskId) {
   }
 }
 
+// ★ 类型筛选下推到服务端：选了类型就多拉（后端「先取大窗口再筛再截断」），
+//   避免只在已加载的 100 条窗口里本地过滤导致深一点的历史被漏掉。
+function opsQuery() {
+  if (!opsKind.value) return ''
+  return `?kind=${encodeURIComponent(opsKind.value)}&limit=200`
+}
+
 // 加载操作记录（单任务）。
 async function loadOperations(taskId) {
   try {
-    operationData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/tasks/${taskId}/operations`)) || {
+    operationData.value = unwrapResponse(
+      await props.api.get(`${pluginBase.value}/tasks/${taskId}/operations${opsQuery()}`),
+    ) || {
       operations: [],
       total: 0,
     }
@@ -1099,11 +1186,11 @@ async function loadOperations(taskId) {
   }
 }
 
-// 加载操作记录（全局：最近 100 条，跨任务 / 跨站点）。
+// 加载操作记录（全局：最近 100 条，跨任务 / 跨站点；按类型筛选时拉 200 条）。
 async function loadOperationsAll() {
   opsLoadingAll.value = true
   try {
-    operationData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/operations`)) || {
+    operationData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/operations${opsQuery()}`)) || {
       operations: [],
       total: 0,
     }
@@ -1113,6 +1200,14 @@ async function loadOperationsAll() {
     opsLoadingAll.value = false
   }
 }
+
+function reloadOperations() {
+  if (opsScope.value === 'all') loadOperationsAll()
+  else if (selectedTaskId.value) loadOperations(selectedTaskId.value)
+}
+
+// 切换筛选类型 → 重新拉取（服务端已按类型深挖窗口）。
+watch(opsKind, () => reloadOperations())
 
 const opsLoadingAll = ref(false)
 // 操作记录全局视图：task_id → 任务名（静默池是常驻伪任务，任务列表里没有它的条目）。
@@ -1196,6 +1291,51 @@ async function loadCrossseed() {
 function showCrossseed() {
   crossseedOpen.value = true
   loadCrossseed()
+}
+
+// ── ★ 全站辅种（7.10.0）：本机已有资源 → 去各站挂种落户（零下载）──────────────
+const reseedState = ref(null)
+const reseedRunning = ref(false)
+// 目标站候选：来自 /reseed 的站点映射（只有 IYUU 站点表里有的站才能当目标），值用域名（后端白名单按域名/名称匹配）
+const reseedSiteOptions = computed(() =>
+  ((reseedState.value && reseedState.value.sites) || []).map(s => ({
+    title: `${s.name || s.domain}${s.passkey_ok ? ' · passkey ✓' : ''}`,
+    value: String(s.domain || s.name || s.sid),
+  })),
+)
+async function loadReseed() {
+  try {
+    reseedState.value = unwrapResponse(await props.api.get(`${pluginBase.value}/reseed`)) || null
+  } catch (err) {
+    // 全站辅种是增强信息，失败不打断界面
+  }
+}
+function fmtTs(ts) {
+  const n = Number(ts || 0)
+  return n > 0 ? new Date(n * 1000).toLocaleString() : '—'
+}
+async function runReseed(forceReal = false) {
+  reseedRunning.value = true
+  try {
+    const dry = forceReal ? 0 : (settingsDraft.value.reseed_dry ? 1 : 0)
+    const rep = unwrapResponse(await props.api.post(`${pluginBase.value}/reseed/run?dry=${dry}`, {})) || {}
+    const parts = []
+    if (rep.plan != null) parts.push(`计划 ${rep.plan}`)
+    if (rep.would) parts.push(`可挂 ${rep.would}`)
+    if (rep.ok) parts.push(`挂上 ${rep.ok}`)
+    if (rep.have) parts.push(`已有 ${rep.have}`)
+    if (rep.mismatch) parts.push(`不一致 ${rep.mismatch}`)
+    if (rep.nourl) parts.push(`缺链 ${rep.nourl}`)
+    if (rep.pv) parts.push(`缺 PV ${rep.pv}`)
+    if (rep.fail) parts.push(`失败 ${rep.fail}`)
+    notify(`全站辅种${dry ? '（干跑）' : ''}完成：` + (parts.join(' / ') || '无候选') +
+      ((rep.errors && rep.errors.length) ? `｜${rep.errors[0]}` : ''))
+    await Promise.all([loadReseed(), loadStatus()])
+  } catch (err) {
+    error.value = err?.message || String(err)
+  } finally {
+    reseedRunning.value = false
+  }
 }
 
 // ── 豆瓣评分服务（magicflow-douban · 3.23.1）─────────────────────────
@@ -1324,6 +1464,28 @@ function formatRemain(min) {
   const hrs = m / 60
   if (hrs < 24) return `${hrs.toFixed(hrs < 10 ? 1 : 0)} 小时`
   return `${(hrs / 24).toFixed(1)} 天`
+}
+
+/** ★ 跨站取种（7.4.0 改版）：顶部三个核心数字 + 极简来源份卡片。 */
+const crossseedStats = computed(() => ({
+  pending: Number(crossseedData.value?.count || 0),
+  tasks: Array.isArray(crossseedData.value?.enabled_tasks) ? crossseedData.value.enabled_tasks.length : 0,
+  sources: Number(crossseedData.value?.sources_count || 0),
+}))
+
+/** 大小文案（GB / TB）。 */
+function gbText(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n) || n <= 0) return '—'
+  return n >= 1024 ? `${(n / 1024).toFixed(2)} TB` : `${n.toFixed(2)} GB`
+}
+
+/** 来源份保种状态徽章：绿=正常（义务已完成）· 黄=保种中 · 灰=保种期满可回收。 */
+function crossseedCardState(it) {
+  if (it?.done) return { color: 'grey', text: '保种期满可回收' }
+  if (it?.fulfilled) return { color: 'success', text: '正常' }
+  const rest = Number(it?.remain_min)
+  return { color: 'warning', text: rest > 0 ? `保种中 · 剩 ${formatRemain(rest)}` : '保种中' }
 }
 
 function crossseedStateText(it) {
@@ -2221,16 +2383,24 @@ async function openSettings(tab = '') {
   settingsPane.value = isNarrow.value && !tab ? 'dir' : 'form'
   settingsDialog.value = true
   await Promise.all([loadDownloaderPrefs(), loadDefaults(), loadIyuuSites()])
+  loadSettingsTabData()
+}
+
+// 各分类子页的「进页面即拉数据」链（openSettings 与目录下钻共用，别只改一处）。
+function loadSettingsTabData() {
   if (settingsTab.value === 'fallback') loadFallback()
   if (settingsTab.value === 'cloud') loadCloud()
   if (settingsTab.value === 'rules') loadRules()
   if (settingsTab.value === 'tags') loadTags()
+  if (settingsTab.value === 'reseed') loadReseed()
 }
 
 // 设置分类「跳转」：目录页点分类 → 进入该分类表单页（手机端）。
-function openSettingsTab(key) {
+async function openSettingsTab(key) {
   settingsTab.value = key
   settingsPane.value = 'form'
+  await Promise.all([loadDownloaderPrefs(), loadDefaults(), loadIyuuSites()])
+  loadSettingsTabData()
 }
 
 function settingsTabLabel(key) {
@@ -2932,7 +3102,7 @@ onUnmounted(() => {
           新建任务
         </VBtn>
         <VBadge
-          v-if="recommendData.enabled !== false && (recommendData.recommended || 0) > 0"
+          v-if="tileVisible('recommend') && recommendData.enabled !== false && (recommendData.recommended || 0) > 0"
           class="magicflow-recommend-wrap"
           :content="recommendData.recommended"
           color="error"
@@ -2949,7 +3119,7 @@ onUnmounted(() => {
           />
         </VBadge>
         <VBtn
-          v-else
+          v-else-if="tileVisible('recommend')"
           class="magicflow-recommend-btn"
           icon="mdi-movie-star-outline"
           variant="text"
@@ -2957,6 +3127,7 @@ onUnmounted(() => {
           @click="openRecommend"
         />
         <VBtn
+          v-if="tileVisible('cloud')"
           class="magicflow-cloud-btn"
           icon="mdi-cloud-upload-outline"
           variant="text"
@@ -2964,7 +3135,7 @@ onUnmounted(() => {
           @click="openCloud"
         />
         <VBadge
-          v-if="Number(crossseedData.count || 0) > 0"
+          v-if="tileVisible('crossseed') && Number(crossseedData.count || 0) > 0"
           class="magicflow-crossseed-wrap"
           :content="crossseedData.count"
           color="info"
@@ -2981,7 +3152,7 @@ onUnmounted(() => {
           />
         </VBadge>
         <VBtn
-          v-else
+          v-else-if="tileVisible('crossseed')"
           class="magicflow-crossseed-btn"
           icon="mdi-swap-horizontal-bold"
           variant="text"
@@ -2989,6 +3160,7 @@ onUnmounted(() => {
           @click="showCrossseed"
         />
         <VBtn
+          v-if="tileVisible('douban')"
           class="magicflow-douban-btn"
           icon="mdi-database-search-outline"
           variant="text"
@@ -2998,6 +3170,7 @@ onUnmounted(() => {
           @click="openDoubanService"
         />
         <VBtn
+          v-if="tileVisible('ondemand')"
           class="magicflow-ondemand-btn"
           icon="mdi-cloud-download-outline"
           variant="text"
@@ -3006,7 +3179,7 @@ onUnmounted(() => {
           @click="openOndemand"
         />
         <VBadge
-          v-if="examData.enabled !== false && examBadge > 0"
+          v-if="tileVisible('exam') && examData.enabled !== false && examBadge > 0"
           class="magicflow-exam-wrap"
           :content="examBadge"
           :color="examUrgent ? 'error' : 'warning'"
@@ -3023,13 +3196,15 @@ onUnmounted(() => {
           />
         </VBadge>
         <VBtn
-          v-else-if="examData.enabled !== false"
+          v-else-if="tileVisible('exam') && examData.enabled !== false"
           class="magicflow-exam-btn"
           icon="mdi-school-outline"
           variant="text"
           aria-label="新手考核"
           @click="openExam"
         />
+        <!-- ★ 桌面：详情磁贴（推荐/云盘/跨站/豆瓣/点播/考核）与「设置」分两档 → 中间加一条竖分隔 -->
+        <span class="magicflow-hdr-sep" aria-hidden="true" />
         <VBtn
           class="magicflow-settings-btn"
           icon="mdi-tune-variant"
@@ -3051,20 +3226,23 @@ onUnmounted(() => {
           </template>
           <VList density="comfortable" class="magicflow-more-menu" min-width="210">
             <VListItem
-              v-if="recommendData.enabled !== false"
+              v-if="tileVisible('recommend') && recommendData.enabled !== false"
               prepend-icon="mdi-movie-star-outline"
               title="推荐"
               :subtitle="(recommendData.recommended || 0) > 0 ? `${recommendData.recommended} 个待确认` : '影视推荐甄别'"
               @click="openRecommend"
             />
             <VListItem
-              v-if="examData.enabled !== false"
+              v-if="tileVisible('exam') && examData.enabled !== false"
               prepend-icon="mdi-school-outline"
               title="新手考核"
               :subtitle="examBadge > 0 ? `${examBadge} 个未通过` : '考核进度与一键起任务'"
               @click="openExam"
             />
-            <VListItem prepend-icon="mdi-cloud-upload-outline" title="云盘归档" @click="openCloud" />            <VListItem prepend-icon="mdi-tune-variant" title="插件设置" @click="openSettings()" />
+            <VListItem v-if="tileVisible('cloud')" prepend-icon="mdi-cloud-upload-outline" title="云盘归档" @click="openCloud" />
+            <!-- ★ 上面是「详情」，下面是「设置」：分隔开，别混成一串 -->
+            <VDivider class="my-1" />
+            <VListItem prepend-icon="mdi-tune-variant" title="插件设置" @click="openSettings()" />
             <VListItem v-if="showClose" prepend-icon="mdi-close" title="关闭" @click="emit('close')" />
           </VList>
         </VMenu>
@@ -3191,7 +3369,7 @@ onUnmounted(() => {
         <div class="mh-sect">功能</div>
         <div class="mh-tools">
           <button
-            v-for="p in MF_PAGES.filter(item => item.key !== 'settings')"
+            v-for="p in MF_PAGES.filter(item => item.key !== 'settings' && tileVisible(item.key))"
             :key="p.key"
             type="button"
             class="mh-tool"
@@ -3570,8 +3748,21 @@ onUnmounted(() => {
                   </div>
                   <VBtn variant="text" color="primary" prepend-icon="mdi-refresh" @click="loadOperations(selectedTaskId)">刷新</VBtn>
                 </header>
+                <div class="magicflow-ops-filter">
+                  <span class="magicflow-ops-filter__label">类型</span>
+                  <VSelect
+                    v-model="opsKind"
+                    :items="opsKindItems"
+                    item-title="label"
+                    item-value="value"
+                    density="compact"
+                    variant="outlined"
+                    hide-details
+                    class="magicflow-ops-filter__select"
+                  ></VSelect>
+                </div>
                 <div class="magicflow-events">
-                  <article v-for="record in operationData.operations || []" :key="record.operation_id">
+                  <article v-for="record in opsFiltered" :key="record.operation_id">
                     <VIcon :icon="operationIcon(record.kind)" :color="operationColor(record)" />
                     <div>
                       <strong>
@@ -3595,21 +3786,24 @@ onUnmounted(() => {
                         <VIcon :icon="isOpDetailOpen(record.operation_id) ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="14" />
                       </button>
                       <ul v-if="isOpDetailOpen(record.operation_id)" class="magicflow-events__detail">
-                        <li v-for="(it, idx) in opDetailItems(record)" :key="idx">
-                          <span class="magicflow-events__detail-line">
-                            <em v-if="itemSourceText(it.source)" class="magicflow-events__detail-src">{{ itemSourceText(it.source) }}</em>
-                            <span class="magicflow-events__detail-title" :title="it.title || it.hash">{{ it.title || it.hash || '—' }}</span>
-                          </span>
-                          <span class="magicflow-events__detail-sub">
-                            <template v-if="it.reason">{{ it.reason }}</template>
-                            <template v-if="it.size_gb"> · {{ Number(it.size_gb).toFixed(2) }}G</template>
-                            <template v-if="it.seeders"> · 做种 {{ it.seeders }}</template>
-                          </span>
-                        </li>
-                      </ul>
+                  <li v-for="(it, idx) in opDetailItems(record)" :key="idx">
+                    <span class="magicflow-events__detail-line">
+                      <em v-if="itemSourceText(it.source)" class="magicflow-events__detail-src">{{ itemSourceText(it.source) }}</em>
+                      <span class="magicflow-events__detail-title" :title="it.title || it.hash">{{ it.title || it.hash || '—' }}</span>
+                      <code v-if="it.hash" class="magicflow-events__detail-hash">{{ String(it.hash).slice(0, 12) }}</code>
+                    </span>
+                    <span class="magicflow-events__detail-sub">
+                      <template v-if="it.reason">{{ it.reason }}</template>
+                      <template v-if="it.size_gb"> · {{ Number(it.size_gb).toFixed(2) }}G</template>
+                      <template v-if="it.seeders"> · 做种 {{ it.seeders }}</template>
+                      <template v-if="it.tags"> · {{ it.tags }}</template>
+                      <template v-if="it.bonus_per_hour"> · {{ Number(it.bonus_per_hour).toFixed(2) }}/h</template>
+                    </span>
+                  </li>
+                </ul>
                     </div>
                   </article>
-                  <div v-if="!(operationData.operations || []).length" class="magicflow-table-empty">暂无操作记录</div>
+                  <div v-if="!opsFiltered.length" class="magicflow-table-empty">暂无操作记录</div>
                 </div>
               </VSheet>
             </VWindowItem>
@@ -3992,8 +4186,21 @@ onUnmounted(() => {
                   </div>
                   <VBtn variant="text" color="primary" prepend-icon="mdi-refresh" @click="loadOperations(selectedTaskId)">刷新</VBtn>
                 </header>
+                <div class="magicflow-ops-filter">
+                  <span class="magicflow-ops-filter__label">类型</span>
+                  <VSelect
+                    v-model="opsKind"
+                    :items="opsKindItems"
+                    item-title="label"
+                    item-value="value"
+                    density="compact"
+                    variant="outlined"
+                    hide-details
+                    class="magicflow-ops-filter__select"
+                  ></VSelect>
+                </div>
                 <div class="magicflow-events">
-                  <article v-for="record in operationData.operations || []" :key="record.operation_id">
+                  <article v-for="record in opsFiltered" :key="record.operation_id">
                     <VIcon :icon="operationIcon(record.kind)" :color="operationColor(record)" />
                     <div>
                       <strong>
@@ -4008,16 +4215,24 @@ onUnmounted(() => {
                         <VIcon :icon="isOpDetailOpen(record.operation_id) ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="14" />
                       </button>
                       <ul v-if="isOpDetailOpen(record.operation_id)" class="magicflow-events__detail">
-                        <li v-for="(it, idx) in opDetailItems(record)" :key="idx">
-                          <span class="magicflow-events__detail-line">
-                            <em v-if="itemSourceText(it.source)" class="magicflow-events__detail-src">{{ itemSourceText(it.source) }}</em>
-                            <span class="magicflow-events__detail-title" :title="it.title || it.hash">{{ it.title || it.hash || '—' }}</span>
-                          </span>
-                        </li>
-                      </ul>
+                  <li v-for="(it, idx) in opDetailItems(record)" :key="idx">
+                    <span class="magicflow-events__detail-line">
+                      <em v-if="itemSourceText(it.source)" class="magicflow-events__detail-src">{{ itemSourceText(it.source) }}</em>
+                      <span class="magicflow-events__detail-title" :title="it.title || it.hash">{{ it.title || it.hash || '—' }}</span>
+                      <code v-if="it.hash" class="magicflow-events__detail-hash">{{ String(it.hash).slice(0, 12) }}</code>
+                    </span>
+                    <span class="magicflow-events__detail-sub">
+                      <template v-if="it.reason">{{ it.reason }}</template>
+                      <template v-if="it.size_gb"> · {{ Number(it.size_gb).toFixed(2) }}G</template>
+                      <template v-if="it.seeders"> · 做种 {{ it.seeders }}</template>
+                      <template v-if="it.tags"> · {{ it.tags }}</template>
+                      <template v-if="it.bonus_per_hour"> · {{ Number(it.bonus_per_hour).toFixed(2) }}/h</template>
+                    </span>
+                  </li>
+                </ul>
                     </div>
                   </article>
-                  <div v-if="!(operationData.operations || []).length" class="magicflow-table-empty">暂无操作记录</div>
+                  <div v-if="!opsFiltered.length" class="magicflow-table-empty">暂无操作记录</div>
                 </div>
               </VSheet>
               <div style="margin-top:14px;display:flex;gap:8px;">
@@ -4177,6 +4392,19 @@ onUnmounted(() => {
           <VBtn size="small" :variant="opsView === 'reseed' ? 'tonal' : 'text'" prepend-icon="mdi-content-duplicate" @click="opsView = 'reseed'">辅种流水</VBtn>
         </div>
         <div class="magicflow-ops-dialog__body">
+          <div class="magicflow-ops-filter">
+            <span class="magicflow-ops-filter__label">类型</span>
+            <VSelect
+              v-model="opsKind"
+              :items="opsKindItems"
+              item-title="label"
+              item-value="value"
+              density="compact"
+              variant="outlined"
+              hide-details
+              class="magicflow-ops-filter__select"
+            ></VSelect>
+          </div>
           <div v-if="opsView === 'reseed'" class="magicflow-reseed">
             <div class="magicflow-reseed__head">
               <span>时间</span><span>任务</span><span>动作</span><span>资源</span><span class="is-num">大小</span><span>阶段</span>
@@ -4192,7 +4420,7 @@ onUnmounted(() => {
             <div v-if="!reseedRows.length" class="magicflow-table-empty">暂无辅种流水</div>
           </div>
           <div v-else class="magicflow-events">
-            <article v-for="record in operationData.operations || []" :key="record.operation_id">
+            <article v-for="record in opsFiltered" :key="record.operation_id">
               <VIcon :icon="operationIcon(record.kind)" :color="operationColor(record)" />
               <div>
                 <strong>
@@ -4221,17 +4449,20 @@ onUnmounted(() => {
                     <span class="magicflow-events__detail-line">
                       <em v-if="itemSourceText(it.source)" class="magicflow-events__detail-src">{{ itemSourceText(it.source) }}</em>
                       <span class="magicflow-events__detail-title" :title="it.title || it.hash">{{ it.title || it.hash || '—' }}</span>
+                      <code v-if="it.hash" class="magicflow-events__detail-hash">{{ String(it.hash).slice(0, 12) }}</code>
                     </span>
                     <span class="magicflow-events__detail-sub">
                       <template v-if="it.reason">{{ it.reason }}</template>
                       <template v-if="it.size_gb"> · {{ Number(it.size_gb).toFixed(2) }}G</template>
                       <template v-if="it.seeders"> · 做种 {{ it.seeders }}</template>
+                      <template v-if="it.tags"> · {{ it.tags }}</template>
+                      <template v-if="it.bonus_per_hour"> · {{ Number(it.bonus_per_hour).toFixed(2) }}/h</template>
                     </span>
                   </li>
                 </ul>
               </div>
             </article>
-            <div v-if="!(operationData.operations || []).length" class="magicflow-table-empty">暂无操作记录</div>
+            <div v-if="!opsFiltered.length" class="magicflow-table-empty">暂无操作记录</div>
           </div>
         </div>
       </VCard>
@@ -4379,6 +4610,30 @@ onUnmounted(() => {
             </div>
             <VSwitch v-model="settingsDraft.debug_log" label="调试日志" color="primary" hide-details inset />
             <VSwitch v-model="settingsDraft.compact_mode" label="紧凑模式" color="primary" hide-details inset />
+            <div class="magicflow-settings-block">
+              <div class="magicflow-settings-block__head"><VIcon icon="mdi-view-grid-outline" size="16" /> 顶栏功能磁贴</div>
+              <p class="magicflow-field__sub">
+                关掉的磁贴不再在顶栏 / 手机「功能」里显示入口。<strong>只影响入口显示</strong>：
+                功能本身在各自的设置页里单独开关，这里不动任何功能逻辑。
+              </p>
+              <div class="magicflow-tile-switches">
+                <VSwitch
+                  v-for="t in TILE_OPTIONS"
+                  :key="t.key"
+                  :model-value="tileShown(t.key)"
+                  :label="t.label"
+                  :prepend-icon="t.icon"
+                  color="primary"
+                  hide-details
+                  inset
+                  density="comfortable"
+                  @update:model-value="v => setTileShown(t.key, v)"
+                />
+              </div>
+              <p class="magicflow-field__sub">
+                已显示 {{ TILE_OPTIONS.filter(t => tileShown(t.key)).length }} / {{ TILE_OPTIONS.length }}
+              </p>
+            </div>
           </div>
 
           <div v-else-if="settingsTab === 'downloader'" class="magicflow-settings-form">
@@ -4610,6 +4865,91 @@ onUnmounted(() => {
                   autocomplete="off"
                 />
               </div>
+            </div>
+          </div>
+
+          <div v-else-if="settingsTab === 'reseed'" class="magicflow-settings-form">
+            <p class="magicflow-settings-hint">
+              <strong>全站辅种</strong>（本机驱动）：本机<strong>已有文件</strong>的资源 → 去各站找<strong>同一 Release</strong> 的种子挂上去落户。
+              <strong>零下载</strong>：暂停加入 → recheck 校验 → <strong>通过才做种</strong>，不通过自动撤销。
+              方向与「跨站取种」相反（那是本机没有、去他站免费下回来）。
+            </p>
+            <p class="magicflow-settings-hint magicflow-settings-hint--warn">
+              ⚠️ 挂种要拼目标站下载链（IYUU 站点表模板 + passkey / API 直链）。passkey 能自动抓；抓不到的站会记「缺料」跳过。
+              每站有每日上限，建议先<strong>干跑</strong>看清能挂多少再关干跑。
+            </p>
+
+            <div class="magicflow-settings-switches">
+              <VSwitch v-model="settingsDraft.reseed_enabled" label="启用全站辅种" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.reseed_dry" label="干跑（只算不挂）" color="primary" hide-details inset :disabled="!settingsDraft.reseed_enabled" />
+            </div>
+
+            <div class="magicflow-settings-block">
+              <div class="magicflow-settings-block__head"><VIcon icon="mdi-web" size="16" /> 目标站点（留空 = 全部有 IYUU 编号的站）</div>
+              <VSelect
+                v-model="settingsDraft.reseed_sites"
+                :items="reseedSiteOptions"
+                label="铺设站点"
+                multiple
+                chips
+                closable-chips
+                variant="outlined"
+                density="comfortable"
+                hide-details
+              />
+              <span class="magicflow-field__sub">已选 {{ (settingsDraft.reseed_sites || []).length }} 个 · 不在 IYUU 站点表里的站当不了目标</span>
+            </div>
+
+            <div class="magicflow-settings-block">
+              <div class="magicflow-settings-block__head"><VIcon icon="mdi-tune" size="16" /> 限量</div>
+              <div class="magicflow-settings-grid">
+                <VTextField v-model.number="settingsDraft.reseed_daily_per_site" type="number" label="每站每天挂种上限" variant="outlined" density="comfortable" hide-details />
+                <VTextField v-model.number="settingsDraft.reseed_batch" type="number" label="每轮最多处理（对）" variant="outlined" density="comfortable" hide-details />
+                <VTextField v-model.number="settingsDraft.reseed_min_size_gb" type="number" label="最小体积 GB" variant="outlined" density="comfortable" hide-details />
+              </div>
+            </div>
+
+            <div class="magicflow-settings-block">
+              <div class="magicflow-settings-block__head">
+                <VIcon icon="mdi-content-duplicate" size="16" /> 运行 / 状态
+                <VSpacer />
+                <VBtn size="small" variant="text" prepend-icon="mdi-refresh" class="me-2" @click="loadReseed()">刷新</VBtn>
+                <VBtn size="small" color="primary" variant="tonal" prepend-icon="mdi-play" :loading="reseedRunning" @click="runReseed()">
+                  {{ settingsDraft.reseed_dry ? '立即干跑一轮' : '立即跑一轮' }}
+                </VBtn>
+              </div>
+              <div v-if="reseedState" class="magicflow-reseedpanel">
+                <div class="magicflow-reseedpanel__row">
+                  <VChip size="small" variant="tonal" :color="reseedState.enabled ? 'success' : 'grey'">{{ reseedState.enabled ? '已启用' : '未启用' }}</VChip>
+                  <VChip size="small" variant="tonal" :color="reseedState.dry ? 'warning' : 'grey'">{{ reseedState.dry ? '干跑' : '实挂' }}</VChip>
+                  <VChip v-if="reseedState.running" size="small" variant="tonal" color="info">运行中…</VChip>
+                  <span class="magicflow-field__sub">IYUU 云端 {{ reseedState.debug?.token ? '✓' : '✗' }} · 云端站点表 {{ reseedState.debug?.iyuu_sites ?? 0 }} · 可辅站 {{ reseedState.debug?.mapped ?? 0 }}</span>
+                </div>
+                <div class="magicflow-reseedpanel__row">
+                  <span class="magicflow-field__sub">本机上报 {{ reseedState.cloud?.hashes ?? 0 }} 颗 · IYUU 云端命中候选 {{ reseedState.cloud?.candidates ?? 0 }} 对</span>
+                </div>
+                <div v-if="reseedState.last && reseedState.last.at" class="magicflow-reseedpanel__row">
+                  <span class="magicflow-field__sub">
+                    上轮 {{ fmtTs(reseedState.last.at) }}：计划 {{ reseedState.last.plan ?? 0 }} · 挂上 {{ reseedState.last.ok ?? 0 }} · 已有 {{ reseedState.last.have ?? 0 }} · 不一致 {{ reseedState.last.mismatch ?? 0 }} · 缺链 {{ reseedState.last.nourl ?? 0 }} · 缺 PV {{ reseedState.last.pv ?? 0 }} · 失败 {{ reseedState.last.fail ?? 0 }} · 干跑可挂 {{ reseedState.last.would ?? 0 }}（{{ reseedState.last.duration ?? 0 }}s）
+                  </span>
+                </div>
+                <div class="magicflow-reseedpanel__sites">
+                  <div class="magicflow-reseedpanel__head">
+                    <span>站点</span><span>IYUU</span><span>passkey</span><span>今日 / 上限</span>
+                  </div>
+                  <div v-for="s in (reseedState.sites || [])" :key="s.sid" class="magicflow-reseedpanel__line">
+                    <span>{{ s.name }}<em v-if="s.domain"> · {{ s.domain }}</em></span>
+                    <span>#{{ s.sid }}</span>
+                    <span>{{ s.passkey_ok ? '✓' : '—' }}</span>
+                    <span>{{ s.done_today }} / {{ s.cap }}</span>
+                  </div>
+                  <div v-if="!(reseedState.sites || []).length" class="magicflow-table-empty">没有可辅种的站点（与 IYUU 站点表对不上）</div>
+                </div>
+                <div class="magicflow-reseedpanel__row">
+                  <span class="magicflow-field__sub">账本：{{ Object.entries(reseedState.ledger || {}).map(([k, v]) => `${k} ${v}`).join(' · ') || '空（还没跑过）' }}</span>
+                </div>
+              </div>
+              <p v-else class="magicflow-field__sub">加载中…</p>
             </div>
           </div>
 
@@ -5864,7 +6204,7 @@ onUnmounted(() => {
             <i>·</i>
             <span>库 <strong>{{ fmtCount(doubanServiceData.records) }}</strong> 条</span>
             <i>·</i>
-            <span>缓存 {{ fmtCount(doubanServiceData.cache?.total) }}（负 {{ doubanServiceData.cache?.negative || 0 }}）</span>
+            <span>缓存 {{ fmtCount(doubanServiceData.cache?.total) }} 条 · 负缓存 {{ doubanServiceData.cache?.negative || 0 }}</span>
           </div>
           <div class="magicflow-recommend-dialog__note">
             地址：{{ doubanServiceData.service || '（未配置）' }}。独立服务 magicflow-douban，本地查询 &lt;1ms，不受豆瓣限流影响。
@@ -5878,25 +6218,32 @@ onUnmounted(() => {
                   从豆瓣「选电影」接口（一次 20 条带评分）按类型×题材×排序逐步枚举，限速 + 每日上限，进度落库可续跑
                 </div>
               </div>
-              <VChip size="small" :color="doubanCrawl.running ? 'success' : 'warning'" variant="tonal">
-                {{ doubanCrawl.running ? '采集中' : '已停止' }}
-              </VChip>
+              <VChip
+                size="small"
+                variant="tonal"
+                :color="doubanCrawl.running ? 'success' : (doubanCrawl.finished ? 'info' : 'warning')"
+              >{{ doubanCrawl.running ? '采集中' : (doubanCrawl.finished ? '已完成' : '已暂停') }}</VChip>
             </header>
             <div class="magicflow-douban-crawl">
               <div class="magicflow-douban-crawl__row">
                 <span>进度</span>
                 <span class="text-medium-emphasis">
                   组合 {{ doubanCrawl.spec_index || 0 }} / {{ doubanCrawl.spec_total || 0 }}
-                  <template v-if="doubanCrawl.current">· 当前 {{ doubanCrawl.current.tags || '（全部）' }} / {{ doubanCrawl.current.sort }}</template>
+                  <template v-if="doubanCrawl.finished">· 全部跑完</template>
+                  <template v-else-if="doubanCrawl.current">· 当前 {{ doubanCrawl.current.tags || '（全部）' }} / {{ doubanCrawl.current.sort }}</template>
                 </span>
               </div>
               <VProgressLinear :model-value="doubanCrawlProgress" height="6" rounded color="primary" class="my-2" />
               <div class="magicflow-douban-crawl__grid">
-                <span>请求 <strong>{{ doubanCrawl.requests || 0 }}</strong></span>
+                <span>累计请求 <strong>{{ doubanCrawl.requests || 0 }}</strong></span>
                 <span>今日 <strong>{{ doubanCrawl.day_requests || 0 }}</strong> / {{ doubanCrawl.daily_max || '—' }}</span>
                 <span>已抓 <strong>{{ fmtCount(doubanCrawl.items) }}</strong> 条</span>
                 <span>新增 <strong>{{ fmtCount(doubanCrawl.new) }}</strong> 条</span>
                 <span>错误 <strong>{{ doubanCrawl.errors || 0 }}</strong></span>
+              </div>
+              <div v-if="doubanCrawl.finished" class="magicflow-douban-crawl__warn magicflow-douban-crawl__warn--ok">
+                ✓ 全部 {{ doubanCrawl.spec_total || 0 }} 个组合已抓完（累计 {{ fmtCount(doubanCrawl.items) }} 条 / 新增 {{ fmtCount(doubanCrawl.new) }} 条）。
+                豆瓣榜单有变动时，可点「从头重跑」再补一轮。
               </div>
               <div v-if="doubanCrawl.blocked_for > 0" class="magicflow-douban-crawl__warn">
                 ⚠ 触发限流/退避，暂停 {{ doubanCrawl.blocked_for }} 秒后继续
@@ -5912,13 +6259,13 @@ onUnmounted(() => {
                   @click="doubanCrawlAction('stop')"
                 >暂停采集</VBtn>
                 <VBtn
-                  v-else
+                  v-else-if="!doubanCrawl.finished"
                   size="small" variant="tonal" color="success" prepend-icon="mdi-play"
                   :loading="doubanServiceActing === 'start'"
                   @click="doubanCrawlAction('start')"
                 >继续采集</VBtn>
                 <VBtn
-                  size="small" variant="text" color="primary" prepend-icon="mdi-restart"
+                  size="small" :variant="doubanCrawl.finished ? 'tonal' : 'text'" color="primary" prepend-icon="mdi-restart"
                   :loading="doubanServiceActing === 'reset'"
                   @click="doubanCrawlAction('reset')"
                 >从头重跑</VBtn>
@@ -5929,170 +6276,138 @@ onUnmounted(() => {
       </VCard>
     </VDialog>
 
-    <VDialog v-model="crossseedOpen" max-width="52rem" scrollable :fullscreen="isNarrow">
+    <VDialog v-model="crossseedOpen" max-width="46rem" scrollable :fullscreen="isNarrow">
       <VCard class="magicflow-dialog magicflow-crossseed-dialog">
         <header class="magicflow-settings-dialog__head">
-          <span class="magicflow-settings-dialog__title">跨站免费取种</span>
+          <span class="magicflow-settings-dialog__title">跨站取种</span>
           <div class="magicflow-recommend-dialog__head-actions">
-            <VBtn variant="text" color="primary" size="small" prepend-icon="mdi-refresh" @click="loadCrossseed">刷新</VBtn>
+            <VChip size="small" variant="tonal" color="primary">{{ crossseedData.tag || '魔流-跨站' }}</VChip>
+            <VBtn icon="mdi-refresh" size="small" variant="text" aria-label="刷新" @click="loadCrossseed" />
             <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="crossseedOpen = false" />
           </div>
         </header>
         <VDivider />
         <VCardText class="magicflow-crossseed-dialog__body">
-          <div class="magicflow-recommend-dialog__summary">
-            <span><strong>{{ crossseedData.count || 0 }}</strong> 待回辅</span>
-            <i>·</i>
-            <span><strong>{{ (crossseedData.enabled_tasks || []).length }}</strong> 个任务开了跨站</span>
-            <i>·</i>
-            <span>标签 {{ crossseedData.tag || '魔流-跨站' }}</span>
-            <i>·</i>
-            <span><strong>{{ crossseedData.sources_count || 0 }}</strong> 来源份 H&R 保种中</span>
-          </div>
-          <div class="magicflow-recommend-dialog__note">
-            在他站<strong>免费</strong>下 → 下完把目标站种子指向同一批文件回辅（校验通过才保留）。
-            本站判断「非免费」的候选只走跨站，<strong>绝不在本站下载</strong>。
+          <!-- 核心统计：待回辅 / 运行任务 / 保种来源份 -->
+          <div class="magicflow-cs-stats">
+            <div class="magicflow-cs-stat">
+              <b>{{ crossseedStats.pending }}</b>
+              <span>待回辅</span>
+            </div>
+            <div class="magicflow-cs-stat">
+              <b>{{ crossseedStats.tasks }}</b>
+              <span>运行任务</span>
+            </div>
+            <div class="magicflow-cs-stat">
+              <b>{{ crossseedStats.sources }}</b>
+              <span>保种来源份</span>
+            </div>
           </div>
 
-          <!-- ★ 流量兜底 -->
-          <VSheet tag="section" class="magicflow-panel app-surface-static mt-2">
-            <header class="magicflow-panel__head">
-              <div>
-                <div class="text-subtitle-2 font-weight-medium">兄弟站流量兜底</div>
-                <div class="text-body-2 text-medium-emphasis">
-                  判「免费」可能出错 → 取种期间核对来源站免费状态 + 下载量增量：
-                  发现其实不免费立即<strong>删种 + 拉黑该站</strong>（需人工确认后解除）
-                </div>
-              </div>
-              <VBtn
-                size="small"
-                variant="tonal"
-                color="primary"
-                prepend-icon="mdi-shield-search"
-                :loading="crossseedActing === 'guard'"
-                @click="runCrossseedGuard"
-              >立即核对</VBtn>
-            </header>
-            <div class="magicflow-crossseed-guard">
-              <VChip size="small" :color="crossseedGuard.enabled === false ? 'error' : 'success'" variant="tonal">
-                {{ crossseedGuard.enabled === false ? '兜底已关闭' : '兜底已启用' }}
-              </VChip>
-              <span class="text-body-2 text-medium-emphasis">
-                阈值：下载增量 &gt; 体积 × {{ crossseedGuard.pct ?? 5 }}%（且 ≥ {{ crossseedGuard.min_mb ?? 50 }}MB）
-                · 核对间隔 {{ crossseedGuard.interval_min ?? 15 }} 分钟
-              </span>
-            </div>
-            <div v-if="crossseedBanned.length" class="magicflow-crossseed-bans">
-              <article v-for="b in crossseedBanned" :key="b.domain" class="magicflow-crossseed-ban">
-                <div class="magicflow-crossseed-ban__main">
-                  <strong>{{ b.domain }}</strong>
-                  <span class="text-body-2 text-medium-emphasis">{{ b.reason }} · {{ b.age_min }} 分钟前</span>
-                </div>
-                <VBtn
+          <!-- 一行状态：流量兜底 -->
+          <div class="magicflow-cs-status">
+            <VChip
+              size="small"
+              variant="tonal"
+              :color="crossseedGuard.enabled === false ? 'error' : 'success'"
+              prepend-icon="mdi-shield-check-outline"
+            >流量兜底 · {{ crossseedGuard.enabled === false ? '已关闭' : '已启用' }}</VChip>
+            <span class="magicflow-cs-status__dim">
+              阈值 下载增量 &gt; 体积×{{ crossseedGuard.pct ?? 5 }}%（≥{{ crossseedGuard.min_mb ?? 50 }}MB）· 每 {{ crossseedGuard.interval_min ?? 15 }} 分钟核对
+            </span>
+            <span class="magicflow-cs-status__dim">{{ crossseedBanned.length ? `· 已拉黑 ${crossseedBanned.length} 站` : '· 无拉黑站点' }}</span>
+            <VSpacer />
+            <VBtn
+              size="small"
+              variant="tonal"
+              color="primary"
+              prepend-icon="mdi-shield-search"
+              :loading="crossseedActing === 'guard'"
+              @click="runCrossseedGuard"
+            >立即核对</VBtn>
+          </div>
+
+          <!-- 拉黑站点（有才出现） -->
+          <div v-if="crossseedBanned.length" class="magicflow-cs-bans">
+            <VChip
+              v-for="b in crossseedBanned"
+              :key="b.domain"
+              size="small"
+              variant="tonal"
+              color="error"
+              closable
+              @click:close="unbanCrossseed(b.domain)"
+            >{{ b.domain }} · {{ b.age_min }} 分钟前</VChip>
+            <VBtn
+              size="x-small"
+              variant="text"
+              color="warning"
+              :loading="crossseedActing === 'unban:'"
+              @click="unbanCrossseed('')"
+            >全部解除</VBtn>
+          </div>
+
+          <!-- 来源份卡片（极简） -->
+          <div class="magicflow-cs-list">
+            <article v-for="it in crossseedSources" :key="it.sib_hash" class="magicflow-cs-card">
+              <div class="magicflow-cs-card__name" :title="it.title || it.sib_hash">{{ it.title || it.sib_hash }}</div>
+              <div class="magicflow-cs-card__meta">
+                <span class="magicflow-cs-card__site">{{ it.site_b || '—' }}</span>
+                <span class="magicflow-cs-card__size">{{ gbText(it.size_gb) }}</span>
+                <VChip
                   size="x-small"
-                  variant="text"
-                  color="primary"
-                  :loading="crossseedActing === 'unban:' + b.domain"
-                  @click="unbanCrossseed(b.domain)"
-                >解除拉黑</VBtn>
-              </article>
-              <VBtn size="x-small" variant="text" color="warning" @click="unbanCrossseed('')">全部解除</VBtn>
-            </div>
-            <div v-else class="magicflow-table-empty">暂无被拉黑的来源站（出现「判免费实际不免费」时才会拉黑）。</div>
-          </VSheet>
-
-          <!-- ★ 来源份 H&R 保种（他站那份，正在履行保种义务） -->
-          <VSheet v-if="(crossseedSources || []).length" tag="section" class="magicflow-panel app-surface-static mt-3">
-            <header class="magicflow-panel__head">
-              <div>
-                <div class="text-subtitle-2 font-weight-medium">来源份 H&R 保种中</div>
-                <div class="text-body-2 text-medium-emphasis">
-                  他站那份已下完（回辅成功/失败都要留在来源站挂种，否则算 H&R）—— 保种期内任何任务都不会删它、也不会改它的标签
-                </div>
+                  variant="flat"
+                  class="magicflow-cs-card__chip"
+                  :class="'is-' + crossseedCardState(it).color"
+                >{{ crossseedCardState(it).text }}</VChip>
               </div>
-            </header>
-            <div class="magicflow-crossseed-list">
-              <article v-for="it in crossseedSources" :key="it.sib_hash" class="magicflow-crossseed-item">
-                <div class="magicflow-crossseed-item__main">
-                  <strong :title="it.title">{{ it.title || it.sib_hash }}</strong>
-                  <span class="magicflow-crossseed-item__meta">
-                    <VChip size="x-small" variant="tonal" color="warning">来源份</VChip>
-                    <VChip size="x-small" variant="tonal" color="warning">{{ it.site_b }}</VChip>
-                    <template v-if="it.resource_id"> <span class="text-medium-emphasis" :title="it.resource_id">id {{ String(it.resource_id).slice(0, 12) }}</span></template>
-                    <template v-if="it.size_gb"> · {{ Number(it.size_gb).toFixed(2) }}G</template>
-                    <template v-if="it.fulfilled">
-                      <VChip size="x-small" variant="tonal" color="success">义务已完成</VChip>
-                      · 已挂 {{ it.seeded_h }}h
-                      <template v-if="it.need_hours">（需 {{ it.need_hours }}h）</template>
-                    </template>
-                    <template v-else-if="it.need_hours">
-                      · 已挂 {{ it.seeded_h }}h / 需 {{ it.need_hours }}h
-                      · 窗口还剩 {{ formatRemain(it.remain_min) }}
-                    </template>
-                    <template v-else>
-                      · 要求 {{ it.hours }}h
-                      · {{ it.done ? '保种期已满（可回收）' : `还剩 ${formatRemain(it.remain_min)}` }}
-                    </template>
-                    <template v-if="it.hours_src"> <span class="text-medium-emphasis">（{{ String(it.hours_src).startsWith('种子标记') ? '种子自带 H&R 标记' : '站点规则库' }}）</span></template>
-                    <template v-if="it.files_shared"> · 文件与目标站共用</template>
-                  </span>
-                </div>
-              </article>
-            </div>
-          </VSheet>
+            </article>
+            <div v-if="!crossseedSources.length" class="magicflow-table-empty">暂无正在保种的来源份。</div>
+          </div>
 
-          <!-- 待回辅队列 -->
-          <VSheet tag="section" class="magicflow-panel app-surface-static mt-3">
-            <header class="magicflow-panel__head">
-              <div>
-                <div class="text-subtitle-2 font-weight-medium">待回辅队列</div>
-                <div class="text-body-2 text-medium-emphasis">他站下完 → 自动回辅目标站；超过 6 小时未完成会放弃</div>
-              </div>
+          <!-- 待回辅队列（有才出现） -->
+          <section v-if="crossseedPending.length" class="magicflow-cs-pending">
+            <header class="magicflow-cs-pending__head">
+              <span>待回辅队列</span>
               <VBtn
-                v-if="crossseedPending.length"
-                size="small"
+                size="x-small"
                 variant="text"
                 color="error"
                 :loading="crossseedActing === 'clear'"
                 @click="clearCrossseed"
-              >清空队列</VBtn>
+              >清空</VBtn>
             </header>
-            <div class="magicflow-crossseed-list">
-              <article v-for="it in crossseedPending" :key="it.sib_hash" class="magicflow-crossseed-item">
-                <div class="magicflow-crossseed-item__main">
-                  <strong :title="it.title || it.sib_hash">{{ it.title || it.sib_hash }}</strong>
-                  <span class="magicflow-crossseed-item__meta">
-                    <VChip size="x-small" variant="tonal" color="info">待回辅</VChip>
-                    <VChip size="x-small" variant="tonal" color="info">{{ it.site_b }} → {{ it.site_a }}</VChip>
-                    <template v-if="it.resource_id"> <span class="text-medium-emphasis" :title="it.resource_id">id {{ String(it.resource_id).slice(0, 12) }}</span></template>
-                    <template v-if="it.size_gb"> · {{ Number(it.size_gb).toFixed(2) }}G</template>
-                    · {{ crossseedStateText(it) }}
-                    · {{ it.age_min }} 分钟前
-                    <template v-if="it.task_name"> · {{ it.task_name }}</template>
-                  </span>
-                  <VProgressLinear
-                    v-if="Number.isFinite(Number(it.progress))"
-                    :model-value="Math.round(Number(it.progress) * 100)"
-                    height="4"
-                    rounded
-                    color="primary"
-                    class="mt-1"
-                  />
-                </div>
+            <article v-for="it in crossseedPending" :key="it.sib_hash" class="magicflow-cs-card">
+              <div class="magicflow-cs-card__name" :title="it.title || it.sib_hash">{{ it.title || it.sib_hash }}</div>
+              <div class="magicflow-cs-card__meta">
+                <span class="magicflow-cs-card__site">{{ it.site_b }} → {{ it.site_a }}</span>
+                <span class="magicflow-cs-card__size">{{ gbText(it.size_gb) }}</span>
+                <VChip size="x-small" variant="flat" color="info">{{ crossseedStateText(it) }}</VChip>
+                <VSpacer />
                 <VBtn
                   size="x-small"
                   variant="text"
                   color="error"
-                  prepend-icon="mdi-delete-outline"
+                  icon="mdi-delete-outline"
                   :loading="crossseedActing === 'drop:' + it.sib_hash"
                   @click="dropCrossseed(it.sib_hash)"
-                >删除</VBtn>
-              </article>
-              <div v-if="!crossseedPending.length" class="magicflow-table-empty">
-                暂无待回辅的跨站种子。任务配置里开启「跨站免费取种」后，本站非免费的候选会自动去他站找免费源。
+                />
               </div>
+            </article>
+          </section>
+
+          <!-- 完整规则：默认收起 -->
+          <details class="magicflow-cs-rules">
+            <summary>查看完整规则</summary>
+            <div class="magicflow-cs-rules__body">
+              <p><strong>取种原理</strong>：在他站<strong>免费</strong>下载 → 下完把目标站的种子指向同一批文件回辅（校验通过才保留）。本站判为「非免费」的候选只走跨站，<strong>绝不在本站下载</strong>。</p>
+              <p><strong>流量兜底</strong>：判「免费」可能出错 → 取种期间核对来源站的免费状态与下载量增量；发现其实不免费，立即<strong>删种 + 拉黑该站</strong>（需人工确认后解除）。</p>
+              <p><strong>来源份 H&amp;R 保种</strong>：他站那份下完（无论回辅成功或失败）都要留在来源站挂种，否则算 H&amp;R —— 保种期内任何任务都不会删它、也不会改它的标签。</p>
+              <p><strong>待回辅队列</strong>：他站下完 → 自动回辅目标站；超过 6 小时未完成会放弃。未下载完不会转资源、不会整理入库。</p>
+              <p><strong>保种时长</strong>：默认 {{ crossseedGuard.seed_hours_default ?? 24 }} 小时；优先级 种子自带 H&amp;R 标记 &gt; 站点规则库 &gt; 默认值。站点自定义：{{ (crossseedGuard.site_hours || []).join('、') || '无' }}。</p>
+              <p><strong>期满回收</strong>：{{ crossseedGuard.reclaim ? '已开启——保种期满后允许被任务删种回收空间。' : '未开启——保种期满的种也不会被自动删除。' }}</p>
             </div>
-          </VSheet>
+          </details>
         </VCardText>
       </VCard>
     </VDialog>
@@ -6419,11 +6734,176 @@ onUnmounted(() => {
   background: rgba(var(--v-theme-warning), 0.12);
   color: rgb(var(--v-theme-warning));
 }
+.magicflow-douban-crawl__warn--ok {
+  background: rgba(var(--v-theme-success), 0.12);
+  color: rgb(var(--v-theme-success));
+}
 .magicflow-douban-crawl__actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
+}
+
+/* ── ★ 跨站取种：极简版（7.4.0 改版：低信息噪音 / 圆角卡片 / 大段文字折叠）── */
+.magicflow-cs-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.magicflow-cs-stat {
+  flex: 1 1 6.5rem;
+  min-inline-size: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 12px 10px;
+  border-radius: 14px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  border: 1px solid rgba(var(--v-border-color), 0.16);
+}
+.magicflow-cs-stat b {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+.magicflow-cs-stat span {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+}
+.magicflow-cs-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-block: 14px 8px;
+}
+/* 弹窗标题行 / 摘要行的「·」分隔符在深浅两色下都偏淡（3.39 / 4.39）→ 提到 0.9 */
+.magicflow-recommend-dialog__summary i,
+.magicflow-settings-dialog__head i {
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.magicflow-cs-status__dim {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+}
+.magicflow-cs-card__chip.v-chip.is-success {
+  background: rgba(var(--v-theme-success), 0.16) !important;
+  color: rgb(var(--v-theme-success)) !important;
+}
+.magicflow-cs-card__chip.v-chip.is-warning {
+  background: rgba(var(--v-theme-warning), 0.16) !important;
+  color: rgb(var(--v-theme-warning)) !important;
+}
+.magicflow-cs-card__chip.v-chip.is-grey {
+  background: rgba(var(--v-theme-on-surface), 0.12) !important;
+  color: rgba(var(--v-theme-on-surface), 0.86) !important;
+}
+.magicflow-cs-bans {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-block-end: 10px;
+}
+.magicflow-cs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.magicflow-cs-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(var(--v-theme-on-surface), 0.035);
+  border: 1px solid rgba(var(--v-border-color), 0.16);
+}
+.magicflow-cs-card__name {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.magicflow-cs-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+}
+.magicflow-cs-card__site {
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
+}
+.magicflow-cs-card__size {
+  font-variant-numeric: tabular-nums;
+}
+.magicflow-cs-pending {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-block-start: 16px;
+}
+.magicflow-cs-pending__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
+}
+.magicflow-cs-rules {
+  margin-block-start: 18px;
+  border-radius: 14px;
+  border: 1px solid rgba(var(--v-border-color), 0.16);
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  overflow: hidden;
+}
+.magicflow-cs-rules > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 12px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
+  cursor: pointer;
+  list-style: none;
+}
+.magicflow-cs-rules > summary::before {
+  content: '▸';
+  font-size: 11px;
+  transition: transform 0.15s ease;
+}
+.magicflow-cs-rules[open] > summary::before {
+  transform: rotate(90deg);
+}
+.magicflow-cs-rules > summary::-webkit-details-marker {
+  display: none;
+}
+.magicflow-cs-rules__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 14px 13px;
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
+}
+.magicflow-cs-rules__body p {
+  margin: 0;
+}
+.magicflow-cs-rules__body strong {
+  font-weight: 650;
+  color: rgb(var(--v-theme-primary));
 }
 
 /* ── 跨站辅种：队列 / 流量兜底（3.11.0）────────────────────────────── */
@@ -6496,7 +6976,7 @@ onUnmounted(() => {
 
 .magicflow-sort-rules__row--head {
   font-weight: 600;
-  opacity: 0.7;
+  opacity: var(--mf-op-mid);
 }
 
 .magicflow-sort-rules__add {
@@ -6532,7 +7012,7 @@ onUnmounted(() => {
 }
 
 .magicflow-tag-migrate__tags em {
-  opacity: 0.6;
+  opacity: var(--mf-op-dim);
   text-decoration: line-through;
 }
 
@@ -6556,7 +7036,7 @@ onUnmounted(() => {
 
 .magicflow-rules-row--head {
   font-weight: 600;
-  opacity: 0.7;
+  opacity: var(--mf-op-mid);
 }
 
 .magicflow-rules-row__name {
@@ -6571,11 +7051,11 @@ onUnmounted(() => {
 .magicflow-rules-row__name em {
   font-style: normal;
   font-size: 0.7rem;
-  opacity: 0.6;
+  opacity: var(--mf-op-dim);
 }
 
 .magicflow-rules-row__src {
-  opacity: 0.75;
+  opacity: var(--mf-op-soft);
 }
 
 .magicflow-crossseed-list {
@@ -6607,7 +7087,7 @@ onUnmounted(() => {
 }
 .magicflow-crossseed-item__meta {
   font-size: 0.78rem;
-  color: rgba(var(--v-theme-on-surface), 0.65);
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
 }
 .magicflow-page {
   /* ===== 深色磨砂主题（仅限本插件工作台作用域）===== */
@@ -6626,6 +7106,17 @@ onUnmounted(() => {
 
 .magicflow-page--compact {
   padding: 20px;
+}
+
+/* ★ 桌面头部：「详情磁贴组」与「设置齿轮」之间的竖分隔（窄屏整组隐藏） */
+.magicflow-page .magicflow-hdr-sep {
+  display: inline-block;
+  inline-size: 1px;
+  block-size: 22px;
+  margin-inline: 6px;
+  align-self: center;
+  background: rgba(var(--v-border-color), 0.45);
+  flex: 0 0 auto;
 }
 
 .magicflow-page__header,
@@ -6732,7 +7223,7 @@ onUnmounted(() => {
   border-radius: 4px;
   font-size: 10px;
   line-height: 1.6;
-  opacity: 0.6;
+  opacity: var(--mf-op-dim);
   border: 1px solid currentColor;
 }
 .magicflow-settings-dialog__title {
@@ -6799,6 +7290,63 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 4px 16px;
+}
+
+/* ── 顶栏功能磁贴开关（7.10.1）────────────────────────────────── */
+.magicflow-tile-switches {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px 14px;
+  margin-top: 6px;
+}
+@media (max-width: 599px) {
+  .magicflow-tile-switches { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* ── 全站辅种状态面板（7.10.0）────────────────────────────────── */
+.magicflow-reseedpanel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid rgba(var(--v-border-color), calc(var(--v-border-opacity) * 0.7));
+  border-radius: 10px;
+  background: rgba(var(--v-theme-surface), 0.35);
+}
+.magicflow-reseedpanel__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  line-height: 1.5;
+}
+.magicflow-reseedpanel__sites {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+}
+.magicflow-reseedpanel__head,
+.magicflow-reseedpanel__line {
+  display: grid;
+  grid-template-columns: minmax(0, 2.2fr) 0.7fr 0.7fr 1fr;
+  gap: 8px;
+  align-items: center;
+  font-size: 12.5px;
+}
+.magicflow-reseedpanel__head {
+  opacity: 0.6;
+  font-weight: 600;
+  border-bottom: 1px solid rgba(var(--v-border-color), calc(var(--v-border-opacity) * 0.6));
+  padding-bottom: 4px;
+}
+.magicflow-reseedpanel__line {
+  padding: 3px 0;
+}
+.magicflow-reseedpanel__line em {
+  font-style: normal;
+  opacity: 0.55;
 }
 
 /* ── 签到设置：头部 / 分块 / 字段 ─────────────────────────────── */
@@ -7062,7 +7610,7 @@ onUnmounted(() => {
 }
 
 .magicflow-exam-item.is-pass {
-  color: rgba(var(--v-theme-on-surface), 0.6);
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
 }
 
 .magicflow-exam-item__label {
@@ -7078,7 +7626,7 @@ onUnmounted(() => {
 
 .magicflow-exam-item__val i {
   font-style: normal;
-  opacity: 0.6;
+  opacity: var(--mf-op-dim);
 }
 
 .magicflow-exam-item__bar {
@@ -7932,7 +8480,7 @@ onUnmounted(() => {
 
 .magicflow-torrent-dialog__grid dt {
   font-size: 11px;
-  color: rgba(var(--v-theme-on-surface), 0.65);
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
   margin-block-end: 2px;
 }
 
@@ -7954,7 +8502,7 @@ onUnmounted(() => {
 .magicflow-torrent-dialog__hash-label {
   flex: 0 0 auto;
   font-size: 11px;
-  color: rgba(var(--v-theme-on-surface), 0.6);
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
 }
 
 .magicflow-torrent-dialog__hash code {
@@ -8185,7 +8733,7 @@ onUnmounted(() => {
   align-items: baseline;
   gap: 6px;
   font-size: 0.85rem;
-  color: rgb(var(--v-theme-on-surface-variant));
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
 }
 
 .magicflow-recommend-dialog__summary strong {
@@ -8195,13 +8743,13 @@ onUnmounted(() => {
 
 .magicflow-recommend-dialog__summary i {
   font-style: normal;
-  opacity: 0.4;
+  opacity: var(--mf-op-dim);
 }
 
 .magicflow-recommend-dialog__note {
   margin-block: 2px 6px;
   font-size: 0.78rem;
-  color: rgb(var(--v-theme-on-surface-variant));
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
   opacity: 0.85;
 }
 
@@ -8224,7 +8772,7 @@ onUnmounted(() => {
   align-items: baseline;
   gap: 6px;
   font-size: 0.85rem;
-  color: rgb(var(--v-theme-on-surface-variant));
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
 }
 
 .magicflow-cloud-dialog__summary strong {
@@ -8234,14 +8782,14 @@ onUnmounted(() => {
 
 .magicflow-cloud-dialog__summary i {
   font-style: normal;
-  opacity: 0.4;
+  opacity: var(--mf-op-dim);
 }
 
 .magicflow-cloud-dialog__note {
   margin-block: 2px 6px;
   font-size: 0.78rem;
   line-height: 1.5;
-  color: rgb(var(--v-theme-on-surface-variant));
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
   opacity: 0.85;
 }
 
@@ -8281,7 +8829,7 @@ onUnmounted(() => {
 
 .magicflow-cloud-row__sub {
   font-size: 0.76rem;
-  color: rgb(var(--v-theme-on-surface-variant));
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
   overflow-wrap: anywhere;
 }
 
@@ -8346,7 +8894,7 @@ onUnmounted(() => {
   justify-content: center;
   flex: 0 0 auto;
   background: rgba(var(--v-theme-on-surface), 0.08);
-  color: rgb(var(--v-theme-on-surface-variant));
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
 }
 
 .magicflow-rec__poster img {
@@ -8370,7 +8918,7 @@ onUnmounted(() => {
 
 .magicflow-rec__meta,
 .magicflow-rec__sub {
-  color: rgb(var(--v-theme-on-surface-variant));
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
   font-size: 0.8rem;
   overflow-wrap: anywhere;
 }
@@ -8812,12 +9360,12 @@ onUnmounted(() => {
 .magicflow-flow__label {
   font-size: 10.5px;
   line-height: 1.2;
-  color: rgba(var(--v-theme-on-surface), 0.45);
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-dim));
   white-space: nowrap;
 }
 
 .magicflow-flow__node.is-done .magicflow-flow__label {
-  color: rgba(var(--v-theme-on-surface), 0.45);
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-dim));
 }
 
 /* 连接线：未执行=浅灰虚线；已走过=紫色实线 */
@@ -9118,6 +9666,7 @@ onUnmounted(() => {
   .magicflow-page__actions .magicflow-exam-btn,
   .magicflow-page__actions .magicflow-cloud-btn,
   .magicflow-page__actions .magicflow-settings-btn,
+  .magicflow-page__actions .magicflow-hdr-sep,
   .magicflow-page__actions .magicflow-close-btn {
     display: none;
   }
@@ -9176,7 +9725,7 @@ onUnmounted(() => {
   padding: 9px 4px;
   border: 0;
   border-radius: 11px;
-  color: rgba(var(--v-theme-on-surface), 0.6);
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
   background: transparent;
   font: inherit;
   font-size: 12px;
@@ -9351,6 +9900,49 @@ onUnmounted(() => {
   overflow-wrap: anywhere;
 }
 
+/* 明细里的短 hash（等宽、弱化） */
+.magicflow-page .magicflow-events__detail-hash,
+.magicflow-dialog .magicflow-events__detail-hash {
+  flex: 0 0 auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.66rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+/* ★ 操作记录类型筛选（Master 2026-10-01 18:10）：一行下拉，右对齐 */
+.magicflow-page .magicflow-ops-filter,
+.magicflow-dialog .magicflow-ops-filter {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin: 0 0 6px;
+}
+.magicflow-page .magicflow-ops-filter__label,
+.magicflow-dialog .magicflow-ops-filter__label {
+  font-size: 0.76rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+.magicflow-page .magicflow-ops-filter__select,
+.magicflow-dialog .magicflow-ops-filter__select {
+  inline-size: 10rem;
+  flex: 0 0 auto;
+}
+.magicflow-page .magicflow-ops-filter__select .v-field,
+.magicflow-dialog .magicflow-ops-filter__select .v-field {
+  font-size: 0.78rem;
+}
+.magicflow-page .magicflow-ops-filter__select .v-field__input,
+.magicflow-dialog .magicflow-ops-filter__select .v-field__input {
+  min-block-size: 32px;
+  padding-block: 0;
+  font-size: 0.78rem;
+}
+.magicflow-dialog .magicflow-ops-dialog__tabs {
+  align-items: center;
+  gap: 8px;
+}
+
 /* 任务头卡片内边距（对齐预览图 .thead） */
 .magicflow-page .magicflow-task-head {
   padding: 14px 16px;
@@ -9403,18 +9995,18 @@ onUnmounted(() => {
   border: 1px solid rgba(var(--v-theme-primary), 0.30);
 }
 .magicflow-page .mh-hero__main { min-inline-size: 0; flex: 1 1 auto; }
-.magicflow-page .mh-hero__chev { color: rgba(var(--v-theme-on-surface), 0.4); flex: 0 0 auto; }
+.magicflow-page .mh-hero__chev { color: rgba(var(--v-theme-on-surface), var(--mf-fg-dim)); flex: 0 0 auto; }
 .magicflow-page .mh-hero__v { font-size: 34px; font-weight: 800; letter-spacing: 0.5px; line-height: 1; }
-.magicflow-page .mh-hero__v small { font-size: 14px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.6); margin-inline-start: 4px; }
-.magicflow-page .mh-hero__s { margin-block-start: 8px; font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.62); }
+.magicflow-page .mh-hero__v small { font-size: 14px; font-weight: 600; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); margin-inline-start: 4px; }
+.magicflow-page .mh-hero__s { margin-block-start: 8px; font-size: 12.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
 
 .magicflow-page .mh-group { display: flex; flex-direction: column; gap: 8px; margin-block-start: 16px; }
 .magicflow-page .mh-group__head {
   display: flex; align-items: center; gap: 8px;
   padding: 4px 6px; background: transparent; border: 0;
-  color: rgba(var(--v-theme-on-surface), 0.66); font: inherit; font-size: 12.5px; cursor: pointer;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); font: inherit; font-size: 12.5px; cursor: pointer;
 }
-.magicflow-page .mh-group__head .mh-count { color: rgba(var(--v-theme-on-surface), 0.4); }
+.magicflow-page .mh-group__head .mh-count { color: rgba(var(--v-theme-on-surface), var(--mf-fg-dim)); }
 .magicflow-page .mh-group__head .v-icon { margin-inline-start: auto; }
 .magicflow-page .mh-list { display: flex; flex-direction: column; gap: 8px; }
 
@@ -9445,16 +10037,16 @@ onUnmounted(() => {
 .magicflow-page .mh-subrow:active { background: rgba(var(--v-theme-primary), 0.12); }
 .magicflow-page .mh-subrow .mh-row__nm { font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.82); }
 .magicflow-page .mh-subrow .mh-row__num { font-size: 14px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.7); }
-.magicflow-page .mh-row__st { font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.55); }
+.magicflow-page .mh-row__st { font-size: 11.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
 .magicflow-page .mh-row__num { font-size: 16px; font-weight: 800; flex: 0 0 auto; }
-.magicflow-page .mh-row__chev { color: rgba(var(--v-theme-on-surface), 0.32); flex: 0 0 auto; }
+.magicflow-page .mh-row__chev { color: rgba(var(--v-theme-on-surface), var(--mf-fg-dim)); flex: 0 0 auto; }
 
-.magicflow-page .mh-sect { margin-block-start: 22px; font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.38); letter-spacing: 0.4px; padding: 0 6px 6px; }
+.magicflow-page .mh-sect { margin-block-start: 22px; font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-dim)); letter-spacing: 0.4px; padding: 0 6px 6px; }
 .magicflow-page .mh-tools { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
 .magicflow-page .mh-tool {
   display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 6px;
   border-radius: 15px; background: rgba(var(--v-theme-surface), 0.9); border: 1px solid var(--magicflow-panel-brd);
-  color: rgba(var(--v-theme-on-surface), 0.66); font: inherit; font-size: 12px; cursor: pointer;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); font: inherit; font-size: 12px; cursor: pointer;
 }
 .magicflow-page .mh-tool:active { background: rgba(var(--v-theme-primary), 0.14); }
 .magicflow-page .mh-tool__scope {
@@ -9464,7 +10056,7 @@ onUnmounted(() => {
   font-style: normal;
   font-size: 10px;
   line-height: 1.5;
-  opacity: 0.66;
+  /* 透明度不再叠加：文字色继承 .mh-tool（浅色主题已加深） */
   border: 1px solid currentColor;
 }
 .magicflow-page .mh-foot { display: flex; gap: 10px; margin-block-start: 22px; }
@@ -9477,7 +10069,7 @@ onUnmounted(() => {
 }
 .magicflow-page .mh-btn--ghost {
   background: rgba(var(--v-theme-surface), 0.9); border: 1px solid var(--magicflow-panel-brd);
-  color: rgba(var(--v-theme-on-surface), 0.66);
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
 }
 
 @media (max-width: 959px) {
@@ -9513,7 +10105,7 @@ onUnmounted(() => {
 .magicflow-page .md-verdict__body { min-inline-size: 0; }
 .magicflow-page .md-v { font-size: 15px; font-weight: 750; color: rgb(var(--v-theme-success)); }
 .magicflow-page .md-verdict.is-warn .md-v { color: rgb(var(--v-theme-error)); }
-.magicflow-page .md-s { font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.6); margin-block-start: 2px; }
+.magicflow-page .md-s { font-size: 11.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); margin-block-start: 2px; }
 .magicflow-page .md-act {
   margin-inline-start: auto; flex: 0 0 auto; font: inherit; font-size: 12px; font-weight: 650;
   padding: 7px 13px; border-radius: 10px; cursor: pointer; color: rgb(var(--v-theme-on-primary));
@@ -9522,13 +10114,13 @@ onUnmounted(() => {
 .magicflow-page .md-cards { display: flex; gap: 9px; margin-block-start: 12px; }
 .magicflow-page .md-card { flex: 1 1 0; min-inline-size: 0; background: rgba(var(--v-theme-surface), 0.9); border: 1px solid var(--magicflow-panel-brd); border-radius: 15px; padding: 14px 12px; }
 .magicflow-page .md-card b { font-size: 19px; font-weight: 800; display: block; letter-spacing: 0.2px; }
-.magicflow-page .md-card span { font-size: 10.5px; color: rgba(var(--v-theme-on-surface), 0.38); margin-block-start: 6px; display: block; }
-.magicflow-page .md-strategy { margin-block-start: 10px; font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.6); padding: 0 4px; line-height: 1.5; }
+.magicflow-page .md-card span { font-size: 10.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-dim)); margin-block-start: 6px; display: block; }
+.magicflow-page .md-strategy { margin-block-start: 10px; font-size: 12px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); padding: 0 4px; line-height: 1.5; }
 .magicflow-page .md-entries { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-block-start: 14px; }
 .magicflow-page .md-entry {
   flex: 1 1 0; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 6px;
   border-radius: 15px; background: rgba(var(--v-theme-surface), 0.9); border: 1px solid var(--magicflow-panel-brd);
-  color: rgba(var(--v-theme-on-surface), 0.66); font: inherit; font-size: 12px; cursor: pointer;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); font: inherit; font-size: 12px; cursor: pointer;
 }
 .magicflow-page .md-entry.is-active { color: rgb(var(--v-theme-primary)); border-color: rgba(var(--v-theme-primary), 0.5); background: rgba(var(--v-theme-primary), 0.16); }
 
@@ -9547,14 +10139,14 @@ onUnmounted(() => {
 .magicflow-settings-nav__item {
   display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 6px;
   border-radius: 14px; background: rgba(var(--v-theme-surface), 0.9); border: 1px solid rgba(var(--v-border-color), 0.16);
-  color: rgba(var(--v-theme-on-surface), 0.66); font: inherit; font-size: 12px; cursor: pointer;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); font: inherit; font-size: 12px; cursor: pointer;
 }
 .magicflow-settings-nav__item.is-active { color: rgb(var(--v-theme-primary)); border-color: rgba(var(--v-theme-primary), 0.5); background: rgba(var(--v-theme-primary), 0.16); }
 
 /* ── ★ 操作记录独立页 ─────────────────────────────── */
 .magicflow-ops-dialog { display: flex; flex-direction: column; }
 .magicflow-ops-dialog__spacer { flex: 1 1 auto; }
-.magicflow-ops-dialog__sub { padding: 6px 18px 4px; font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.55); }
+.magicflow-ops-dialog__sub { padding: 6px 18px 4px; font-size: 12px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
 .magicflow-ops-dialog__tabs { display: flex; gap: 4px; padding: 0 14px 4px; }
 /* ★ §1 点播弹窗 */
 .magicflow-ondemand-dialog { display: flex; flex-direction: column; }
@@ -9565,21 +10157,21 @@ onUnmounted(() => {
 .magicflow-ondemand-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .magicflow-ondemand-hint { margin: 2px 0 10px; padding: 8px 10px; border-radius: 10px; background: rgba(var(--v-theme-primary), 0.10); font-size: 0.84rem; line-height: 1.6; }
 .magicflow-ondemand-hint strong { color: rgb(var(--v-theme-primary)); }
-.magicflow-ondemand-hint__legend { margin-top: 4px; font-size: 0.76rem; color: rgb(var(--v-theme-on-surface-variant)); }
+.magicflow-ondemand-hint__legend { margin-top: 4px; font-size: 0.76rem; color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); }
 .magicflow-ondemand-hint__legend em { font-style: normal; font-weight: 600; color: rgb(var(--v-theme-on-surface)); }
 .magicflow-ondemand-list { display: flex; flex-direction: column; gap: 6px; }
 .magicflow-ondemand-item { border: 1px solid rgba(var(--v-theme-on-surface), 0.14); border-radius: 8px; padding: 6px 8px; }
 .magicflow-ondemand-item--auto { border-color: rgba(var(--v-theme-primary), 0.55); box-shadow: inset 0 0 0 1px rgba(var(--v-theme-primary), 0.22); }
 .magicflow-ondemand-item__act { display: flex; justify-content: flex-end; margin-top: 6px; }
 .magicflow-ondemand-item__title { font-size: 0.8rem; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
-.magicflow-ondemand-item__meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; font-size: 0.74rem; color: rgb(var(--v-theme-on-surface-variant)); }
+.magicflow-ondemand-item__meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; font-size: 0.74rem; color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); }
 /* ★ §4.1 辅种流水单表 */
 .magicflow-reseed { display: flex; flex-direction: column; font-size: 12px; }
 .magicflow-reseed__head, .magicflow-reseed__row { display: grid; grid-template-columns: 8.5em minmax(0, 0.8fr) 5.2em minmax(0, 2fr) 4.2em 4.2em; gap: 8px; align-items: center; padding: 5px 2px; }
-.magicflow-reseed__head { font-weight: 600; opacity: 0.6; border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.12); position: sticky; top: 0; background: rgb(var(--v-theme-surface)); z-index: 1; }
+.magicflow-reseed__head { font-weight: 600; opacity: var(--mf-op-dim); border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.12); position: sticky; top: 0; background: rgb(var(--v-theme-surface)); z-index: 1; }
 .magicflow-reseed__row { border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06); }
 .magicflow-reseed__row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.magicflow-reseed .is-time { font-variant-numeric: tabular-nums; opacity: 0.72; }
+.magicflow-reseed .is-time { font-variant-numeric: tabular-nums; opacity: var(--mf-op-soft); }
 .magicflow-reseed .is-num { text-align: right; font-variant-numeric: tabular-nums; }
 .magicflow-reseed .is-stage { opacity: 0.8; }
 /* ★ 窄屏（手机 390px）：6 列固定宽会把表撑到 463px 横向溢出 —— 缩小字号并隐去「大小」列（4+1 列） */
@@ -9625,12 +10217,12 @@ onUnmounted(() => {
 .magicflow-ceiling-row__head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .magicflow-ceiling-row__nm { font-size: 14px; font-weight: 650; }
 .magicflow-ceiling-row__val { font-size: 13px; font-weight: 700; color: rgb(var(--v-theme-primary)); flex: 0 0 auto; }
-.magicflow-ceiling-row__val small { font-size: 10px; color: rgba(var(--v-theme-on-surface), 0.5); margin-inline-start: 1px; }
+.magicflow-ceiling-row__val small { font-size: 10px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); margin-inline-start: 1px; }
 .magicflow-ceiling-bar { margin-block-start: 7px; height: 7px; border-radius: 4px; background: rgba(var(--v-border-color), 0.16); overflow: hidden; }
 .magicflow-ceiling-bar i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary))); }
 .magicflow-ceiling-bar i.is-full { background: linear-gradient(90deg, rgb(var(--v-theme-warning)), rgb(var(--v-theme-error))); }
-.magicflow-ceiling-row__foot { display: flex; justify-content: space-between; margin-block-start: 5px; font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.5); }
-.magicflow-ceiling-empty { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.5); text-align: center; padding: 20px 0; }
+.magicflow-ceiling-row__foot { display: flex; justify-content: space-between; margin-block-start: 5px; font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
+.magicflow-ceiling-empty { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); text-align: center; padding: 20px 0; }
 @media (max-width: 959px) {
   .magicflow-ops-dialog__body { padding: 4px 14px 18px; }
 }
@@ -9657,6 +10249,83 @@ onUnmounted(() => {
   .magicflow-dialog .magicflow-run-summary { grid-template-columns: minmax(0, 1fr); }
   .magicflow-settings-dialog .magicflow-settings-grid { grid-template-columns: minmax(0, 1fr); }
   .magicflow-settings-dialog .magicflow-settings-switches { grid-template-columns: minmax(0, 1fr); }
+}
+</style>
+
+<style>
+/* ★ 浅色主题可读性修复（2026-10-01）
+   插件原有的次级文字用 rgba(--v-theme-on-surface, .32~.66) 写死，
+   在深色 / 玻璃主题下勉强够看，但在浅色（白底）主题下淡到看不清
+   （实测对比度 2.07~3.66，WCAG AA 对正文要求 ≥4.5）。
+   这里把「文字强调层级」抽成变量：深色维持原样，浅色主题整体加深。 */
+:root {
+  --mf-fg-dim: 0.45;   /* 分区标题 / 单位 / 箭头 / 卡片小注 */
+  --mf-fg-mid: 0.58;   /* 列表状态行 / 副标题 / 次要说明 */
+  --mf-fg-soft: 0.66;  /* 导航项 / 功能磁贴 / 次级按钮 */
+  --mf-op-dim: 0.62;   /* 表头 / 角标（opacity 形态） */
+  --mf-op-mid: 0.72;
+  --mf-op-soft: 0.80;
+}
+
+/* ★ 注意：这里不能写 .v-theme--light 当主题钩子——vite.config.js 的 postcss
+   「vuetify-filter」会删掉含 .v- 的选择器；而 MP 在 <html> 上放了 data-theme
+   （light / dark / glass / purple / transparent）。 */
+[data-theme="light"] {
+  --mf-fg-dim: 0.74;
+  --mf-fg-mid: 0.78;
+  --mf-fg-soft: 0.82;
+  --mf-op-dim: 0.82;
+  --mf-op-mid: 0.88;
+  --mf-op-soft: 0.94;
+}
+
+/* ── 工作台 / 各弹窗根元素 ───────────────────────────────── */
+.magicflow-page,
+.magicflow-dialog {
+  --v-medium-emphasis-opacity: var(--mf-fg-mid);
+}
+
+/* ── Vuetify 组件会在自己身上重新声明主题变量（.v-theme--light），
+      所以在这些元素上还要再压一层，否则 chip / 输入框 / 卡片内部
+      仍会用回 0.6（浅色下 3.58，依旧偏淡）。 ───────────────── */
+.magicflow-page .v-theme--light,
+.magicflow-dialog .v-theme--light {
+  --v-medium-emphasis-opacity: var(--mf-fg-mid);
+}
+
+/* ── MoviePilot 自带的表单提示（写死 0.56）与 Vuetify 输入后缀 ── */
+.magicflow-page .app-responsive-input__hint,
+.magicflow-dialog .app-responsive-input__hint,
+.magicflow-page .v-text-field__suffix__text,
+.magicflow-dialog .v-text-field__suffix__text {
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+}
+
+/* ── 浅色主题专修 ─────────────────────────────────────────
+   MP 浅色主题的 on-surface-variant = 238,238,238（深色底用的 token），
+   白底上等于看不见（对比度 1.16）；主题色（紫/琥珀/绿/蓝/红）在白底
+   也只有 1.8~4.5，整体加深一档到 ≥4.5。 */
+/* ── 深色 / 玻璃主题：MP 主色 141,81,249 在近黑底上仅 3.78~4.02（AA 不足）
+   → 提亮一档到 178,140,255（≈5.4），强调数字 / 徽章 / 按钮文字一并达标。 */
+.magicflow-page,
+.magicflow-dialog,
+.magicflow-page [class*="v-theme--"],
+.magicflow-dialog [class*="v-theme--"] {
+  --v-theme-primary: 178,140,255;
+}
+
+[data-theme="light"] .magicflow-page,
+[data-theme="light"] .magicflow-dialog,
+[data-theme="light"] .magicflow-page .v-theme--light,
+[data-theme="light"] .magicflow-dialog .v-theme--light,
+[data-theme="light"] .magicflow-page [class*="v-theme--"],
+[data-theme="light"] .magicflow-dialog [class*="v-theme--"] {
+  --v-theme-on-surface-variant: 101,97,107;   /* ≈ on-surface @0.78 */
+  --v-theme-primary: 124,64,232;              /* 4.49 → 5.59 */
+  --v-theme-warning: 180,83,9;                /* 1.78 → 5.02 */
+  --v-theme-success: 38,105,42;               /* 2.13 → 5.13 / 浅底提示条 4.36 → 5.2 */
+  --v-theme-info: 2,119,189;                  /* 2.40 → 4.80 */
+  --v-theme-error: 198,40,40;                 /* 3.28 → 5.62 */
 }
 </style>
 

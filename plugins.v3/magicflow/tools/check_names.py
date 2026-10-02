@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SKIP_DIRS = {"_backup", "tools", "__pycache__", "dist", "node_modules", ".git"}
-BUILTINS = set(dir(builtins)) | {"__name__", "__file__", "__doc__", "__package__", "__all__", "__builtins__", "__class__", "_"}
+BUILTINS = set(dir(builtins)) | {"__name__", "__file__", "__doc__", "__package__", "__all__", "__builtins__", "__class__", "__path__", "_"}
 
 
 def module_symbols(table: symtable.SymbolTable) -> set[str]:

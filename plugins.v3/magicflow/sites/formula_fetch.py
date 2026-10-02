@@ -103,12 +103,16 @@ def set_collect(ref: Any) -> None:
 
 
 def _mk_client(site: Any, base: str, kind: str, cookie: Any = None, ua: Any = None,
-               timeout: int = 20):
-    """造一个 ``.get_res(url)`` 客户端：优先采集模块（配额/缓存/观测），否则 SDK。"""
+               timeout: int = 20, force: bool = False):
+    """造一个 ``.get_res(url)`` 客户端：优先采集模块（配额/缓存/观测），否则 SDK。
+
+    ``force=True`` → 采集侧 ``ttl=0``（既不读缓存也不写缓存），用于零值重抓。
+    """
     sid = int(getattr(site, "id", 0) or 0)
     if _COLLECT is not None and sid:
         try:
-            return _COLLECT.http.client(sid, kind=kind, referer=f"{base}/")
+            return _COLLECT.http.client(sid, kind=kind, referer=f"{base}/",
+                                        ttl=0.0 if force else None)
         except Exception:  # noqa: BLE001
             pass
     from app.sdk.network import RequestUtils  # noqa: WPS433
@@ -133,6 +137,15 @@ def _to_float(raw: Optional[str]) -> Optional[float]:
         return None
 
 
+# ★ 7.4.0：各站把「魔力」叫法不同——NexusPHP 默认「魔力值」，
+#   财神(cspt.top) 叫「金元宝」，个别站叫「魔力/金币/积分」。解析必须按站点措辞放宽，
+#   否则该站页面里明明写着「你当前每小时能获取X个金元宝 (A = Y)」也解析不出时魔。
+_CUR = r"(?:魔力值|金元宝|元宝|魔力|金币|银币|积分|煤块|Karma)"
+
+# 「每小时获得的合计<货币>」表的锚点（找不到就退回页首）
+_TABLE_ANCHOR = re.compile(r"合计\s*(?:魔力值|金元宝|元宝|魔力|金币|银币|积分)")
+
+
 def _cell_text(raw: str) -> str:
     """单元格文本：去标签 + 实体解码 + 折叠空白。"""
     return re.sub(r"[ \t\r\n\u00a0]+", " ", _html.unescape(re.sub(r"<[^>]+>", " ", raw))).strip()
@@ -150,9 +163,8 @@ def parse_bonus_table(html_text: str) -> Dict[str, Any]:
     out: Dict[str, Any] = {"rows": [], "total": None, "base": None, "official": None, "harem": None}
     if not html_text:
         return out
-    anchor = html_text.find("合计魔力值")
-    if anchor < 0:
-        anchor = 0
+    _am = _TABLE_ANCHOR.search(html_text)
+    anchor = _am.start() if _am else 0
     seg = html_text[anchor:anchor + 4000]
     m = re.search(r"<table[^>]*>(.*?)</table>", seg, re.S | re.I)
     if not m:
@@ -240,7 +252,7 @@ def parse_nexusphp_formula(html_text: str) -> FormulaCapture:
     m = re.search(r"做种数最多计\s*(\d+)\s*个", text)
     if m:
         extra["seeding_count_cap"] = int(m.group(1))
-    m = re.search(r"([\d.]+)\s*个魔力值\s*\*\s*你的做种数", text)
+    m = re.search(rf"([\d.]+)\s*个{_CUR}\s*\*\s*你的做种数", text)
     if m:
         extra["per_torrent_flat"] = _to_float(m.group(1))
     # 时魔：「你当前每小时能获取15个魔力值 (A = 59.7，每小时魔力详情)」
@@ -249,7 +261,7 @@ def parse_nexusphp_formula(html_text: str) -> FormulaCapture:
     #   - 括号：半角 ( ) 或全角 （ ）
     #   - A 值之后允许任意非括号字符（如「，每小时魔力详情」）再到右括号
     m = re.search(
-        r"当前每小时[能可]?\s*(?:获取|获得)\s*([\d,.]+)\s*个魔力值\s*[（(]\s*A\s*=\s*([\d,.]+)[^)）]*[)）]",
+        rf"当前每小时[能可]?\s*(?:获取|获得)\s*([\d,.]+)\s*个{_CUR}\s*[（(]\s*A\s*=\s*([\d,.]+)[^)）]*[)）]",
         text,
     )
     if m:
@@ -257,7 +269,7 @@ def parse_nexusphp_formula(html_text: str) -> FormulaCapture:
         extra["current_a"] = _to_float(m.group(2))
     else:
         # 兜底：顶部状态栏「魔力值(15魔力/小时)」
-        m2 = re.search(r"魔力值\s*[（(]\s*([\d,.]+)\s*魔力\s*/\s*小时\s*[)）]", text)
+        m2 = re.search(rf"{_CUR}\s*[（(]\s*([\d,.]+)\s*{_CUR}\s*/\s*小时\s*[)）]", text)
         if m2:
             extra["current_bonus_per_hour"] = _to_float(m2.group(1))
 
@@ -440,7 +452,7 @@ def fetch_mteam_bonus(site: Any, timeout: int = 30) -> FormulaCapture:
     return fallback
 
 
-def fetch_site_formula(site: Any, timeout: int = 30) -> FormulaCapture:
+def fetch_site_formula(site: Any, timeout: int = 30, force: bool = False) -> FormulaCapture:
     """
     用 MoviePilot SDK 抓取站点 ``mybonus.php`` 并解析公式。
 
@@ -472,7 +484,7 @@ def fetch_site_formula(site: Any, timeout: int = 30) -> FormulaCapture:
         return FormulaCapture(source="mybonus.php", note=f"SDK 不可用: {err}")
 
     try:
-        req = _mk_client(site, base, "formula", cookie=cookie, ua=ua, timeout=timeout)
+        req = _mk_client(site, base, "formula", cookie=cookie, ua=ua, timeout=timeout, force=force)
         resp = req.get_res(url)
     except Exception as err:
         return FormulaCapture(source="mybonus.php", note=f"请求失败: {err}")

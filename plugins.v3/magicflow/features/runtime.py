@@ -6,7 +6,7 @@
 
 import time
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 
 from app.schemas import Response
@@ -19,6 +19,18 @@ from ..common import (
     PV_BUDGET_RESERVE,
     PV_DEFAULT_DAILY_BUDGET,
 )
+
+
+def _filter_kind(records: List[Any], kind: str) -> List[Any]:
+    """按 ``kind`` 过滤操作记录（逗号分隔多类型；空 = 全部）。
+
+    ★ 兼容性说明：不用 store 侧的筛选参数——`MagicFlowStore` 进程级单例跨热重载存活，
+    其 `journal` 可能还是旧类，新加的关键字参数会 TypeError。
+    """
+    wanted = [k.strip() for k in str(kind or "").split(",") if k.strip()]
+    if not wanted:
+        return list(records or [])
+    return [r for r in (records or []) if str(getattr(r, "kind", "") or "") in wanted]
 
 
 class RuntimeMixin:
@@ -208,13 +220,18 @@ class RuntimeMixin:
             if store is not None:
                 out["dirty"] = store.hot_stats()
                 base = self.get_data_path()
-                for name in ("seen", "dead", "task_states", "operations", "recommend", "cloud"):
+                for name in ("seen", "dead", "add_gate", "task_states", "operations", "recommend", "cloud"):
                     f = base / f"{name}.json"
                     out["files"][name] = {
                         "exists": f.exists(),
                         "bytes": f.stat().st_size if f.exists() else 0,
                         "mtime": f.stat().st_mtime if f.exists() else 0,
                     }
+                try:
+                    from ..persistence import get_gate_store
+                    out["gate_keys"] = get_gate_store(base, getattr(self, "_hot", None)).count()
+                except Exception as _ge:  # noqa: BLE001
+                    out["gate_error"] = repr(_ge)
         except Exception:  # noqa: BLE001
             pass
         return out
@@ -243,18 +260,43 @@ class RuntimeMixin:
             return Response(success=bool(out.get("success")), message=f"已清热层键 {out.get('deleted', 0)} 个（JSON 仍在）", data=self.store_stats())
         return Response(success=True, message="OK", data=self.store_stats())
 
-    def get_operations(self, task_id: str) -> Response:
-        """获取任务操作记录。"""
-        if not self._store:
-            return Response(success=True, data={"operations": [], "total": 0})
-        records = self._store.journal.list_by_task(task_id, limit=50)
-        operations = [r.to_dict() for r in records]
-        return Response(success=True, data={"operations": operations, "total": len(operations)})
+    def get_operations(self, task_id: str, kind: str = "", limit: int = 50) -> Response:
+        """获取任务操作记录。
 
-    def get_all_operations(self) -> Response:
-        """获取全部任务的操作记录（主页「操作记录」全局视图：跨任务 / 跨站点汇总）。"""
+        ``kind``：按类型筛选（逗号分隔多类型，如 ``deletion,selection``；空 = 全部）。
+        ``limit``：返回条数上限（默认 50）。
+
+        ★ 筛选在**本层**做，不依赖 store 侧方法签名：`MagicFlowStore` 是进程级单例
+        （跨热重载存活，见 persistence.py），热重载后 store 里的 `journal` 仍是**旧类**，
+        给 `list_recent()` 新加的关键字参数在旧实例上会 TypeError。
+        """
         if not self._store:
             return Response(success=True, data={"operations": [], "total": 0})
-        records = self._store.journal.list_recent(limit=100)
+        try:
+            cap = max(1, min(int(limit or 50), 500))
+        except (TypeError, ValueError):
+            cap = 50
+        # ★ 先取足够大的窗口再筛再截断：若先按 cap 截断，类型筛选会取不到（旧的记录被截掉了）
+        _win = max(cap, 500) if kind else cap
+        records = _filter_kind(
+            self._store.journal.list_by_task(task_id, limit=_win), kind)[:cap]
         operations = [r.to_dict() for r in records]
-        return Response(success=True, data={"operations": operations, "total": len(operations), "scope": "all"})
+        return Response(success=True, data={"operations": operations, "total": len(operations),
+                                            "kind": kind or "", "scope": "task"})
+
+    def get_all_operations(self, kind: str = "", limit: int = 100) -> Response:
+        """获取全部任务的操作记录（主页「操作记录」全局视图：跨任务 / 跨站点汇总）。
+
+        ``kind``：按类型筛选（逗号分隔多类型；空 = 全部）；``limit``：条数上限（默认 100）。
+        """
+        if not self._store:
+            return Response(success=True, data={"operations": [], "total": 0})
+        try:
+            cap = max(1, min(int(limit or 100), 1000))
+        except (TypeError, ValueError):
+            cap = 100
+        _win = max(cap, 2000) if kind else cap
+        records = _filter_kind(self._store.journal.list_recent(limit=_win), kind)[:cap]
+        operations = [r.to_dict() for r in records]
+        return Response(success=True, data={"operations": operations, "total": len(operations),
+                                            "kind": kind or "", "scope": "all"})

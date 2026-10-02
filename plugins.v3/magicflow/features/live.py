@@ -24,6 +24,7 @@ from ..sitecap import (
 
 
 from ..common import (
+    SILENT_HOST_TASK_ID,
     LIVE_ALERT_COOLDOWN_MIN,
     LIVE_DOWNLOAD_ALERT_MB,
     LIVE_INTERVAL_MINUTES,
@@ -291,6 +292,7 @@ class LiveMixin:
             #   ★ X11(3.37.7):动手只限「运行中」任务所在的站(运行中有刷流下载=可能白烧);
             #     「做种中」的站只采样/告警、不动手(做种模式本就不该有插件发起的下载)。
             kill_info = ""
+            killed_rows: List[Dict[str, Any]] = []
             if (
                 bool(meta.get("has_running"))
                 and self._promo_guard_on()
@@ -299,6 +301,7 @@ class LiveMixin:
             ):
                 kres = self._live_kill_unfree(sid, name)
                 killed = kres.get("killed") or []
+                killed_rows = [k for k in killed if isinstance(k, dict)]
                 if killed:
                     gb = sum(float(k.get("size") or 0) for k in killed) / (1024 ** 3)
                     kill_info = (
@@ -330,6 +333,19 @@ class LiveMixin:
                     )
                 except Exception as err:  # noqa: BLE001
                     self._log(f"记录站点监控事件失败:{err}", "warning")
+            # ★ 止损删掉的种：逐条落「操作记录」（Master：清理逻辑必须有操作记录 + 详情）
+            if killed_rows and self._store:
+                _tid = str((meta.get("tasks") or [{}])[0].get("id") or SILENT_HOST_TASK_ID)
+                self._journal_deletions({_tid: [
+                    OperationItem(
+                        hash=str(k.get("hash") or ""),
+                        title=str(k.get("name") or ""),
+                        reason=f"站点监控[{name}]：站内下载量异常增长，该种非免费（白烧流量）→ 删除",
+                        size_gb=round(float(k.get("size") or 0.0) / (1024 ** 3), 3),
+                        source="live",
+                    )
+                    for k in killed_rows
+                ]}, log_prefix="站点监控止损")
             if bool(self._live_cfg.get("notify", True)):
                 try:
                     gb = 1024 ** 3

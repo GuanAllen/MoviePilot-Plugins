@@ -45,6 +45,7 @@ from ..tags import (
 
 
 from ..common import (
+    SILENT_HOST_TASK_ID,
     CROSSSEED_CACHE_TTL,
     CROSSSEED_EXTRA_SCAN,
     CROSSSEED_SEED_HOURS_DEFAULT,
@@ -655,6 +656,7 @@ class CrossSeedMixin:
         if not self._promo_guard_on():
             return {"ok": False, "skipped": "流量兜底总开关已关", "killed": [], "banned": []}
         out: Dict[str, Any] = {"enabled": False, "checked_sites": [], "violations": [], "errors": []}
+        _by_task: Dict[str, List[Any]] = {}
         cfg = getattr(self, "_cs_cfg", {}) or {}
         # ★ H&R：来源份的保种监督（标签确权 / 清无效 / 到期回收 / 历史回填）
         #   必须**先**跑：它跟「有没有待回辅」无关，guard 关闭时也要维护。
@@ -770,6 +772,17 @@ class CrossSeedMixin:
                 pend.cleanup_torrent(str(rec.get("a_torrent") or ""))
                 if dom:
                     self._cs_ban_add(dom, reason)
+                try:
+                    _sz = float(rec.get("size_gb") or 0.0)
+                except (TypeError, ValueError):
+                    _sz = 0.0
+                _by_task.setdefault(str(rec.get("task_id") or SILENT_HOST_TASK_ID), []).append(OperationItem(
+                    hash=h,
+                    title=str(rec.get("title") or ""),
+                    reason=f"跨站兜底止损[{rec.get('site_b', '') or dom}]：{reason}（连文件删除；文件被共用时自动降级为只删种）",
+                    size_gb=round(_sz, 3),
+                    source="crossseed",
+                ))
                 out["violations"].append({
                     "hash": h, "title": rec.get("title", ""), "site_b": rec.get("site_b", ""),
                     "domain": dom, "size_gb": rec.get("size_gb", 0), "reason": reason,
@@ -790,6 +803,7 @@ class CrossSeedMixin:
                 )
             except Exception:  # noqa: BLE001
                 pass
+        self._journal_deletions(_by_task, log_prefix="跨站兜底止损")
         return out
 
     def _crossseed_to_silent(self, h: str, rec: Dict[str, Any], info: Any,
@@ -958,6 +972,14 @@ class CrossSeedMixin:
                         if not err:
                             store.drop(h)
                             res["reclaimed"] = int(res.get("reclaimed") or 0) + 1
+                            self._journal_deletions({str(rec.get("task_id") or SILENT_HOST_TASK_ID): [
+                                OperationItem(
+                                    hash=h, title=str(rec.get("title") or ""),
+                                    reason=(f"H&R 义务已完成（做种 {seeded / 3600.0:.1f}h ≥ {need:g}h）"
+                                            "→ 回收来源份（只删种子不删文件）"),
+                                    size_gb=float(rec.get("size_gb") or 0.0),
+                                    source="crossseed",
+                                )]}, log_prefix="跨站回收")
                     except Exception as rerr:  # noqa: BLE001
                         res.setdefault("errors", []).append(f"回收失败:{rerr}")
                     continue
@@ -987,6 +1009,13 @@ class CrossSeedMixin:
                     if not err:
                         store.drop(h)
                         res["reclaimed"] += 1
+                        self._journal_deletions({str(rec.get("task_id") or SILENT_HOST_TASK_ID): [
+                            OperationItem(
+                                hash=h, title=str(rec.get("title") or ""),
+                                reason="跨站保种期满 → 回收来源份（只删种子不删文件）",
+                                size_gb=float(rec.get("size_gb") or 0.0),
+                                source="crossseed",
+                            )]}, log_prefix="跨站回收")
                         self._log(
                             "跨站:H&R 保种期满，回收来源份（只删种子不删文件）:"
                             f"{str(rec.get('title') or '')[:50]}"
@@ -1086,6 +1115,11 @@ class CrossSeedMixin:
         sname = str(src.get("site_name") or src.get("site_domain") or "")
         if not sib_bytes:
             return None
+        # ★ 全局（跨任务）资源去重：该兄弟种（同 infohash / 同完整特征码）已被别的任务下过/在飞 → 跳过
+        _gkeys = self._dup_keys(info_hash(sib_bytes), fingerprint(sib_bytes))
+        if _gkeys and self._dup_claim(task.id, keys=_gkeys):
+            self._log(f"跨站:跳过·重复资源（其它任务已下载/在飞）:{cand.title}")
+            return None
         hs, err = downloader.add_torrent(
             content=sib_bytes,
             download_dir=task.save_path or "",
@@ -1093,7 +1127,9 @@ class CrossSeedMixin:
         )
         if not hs:
             self._log(f"跨站:在他站 {sname} 添加失败:{cand.title}({err or '未知'})", "warning")
+            self._dup_release(task.id, keys=_gkeys)
             return None
+        self._dup_finish(task.id, keys=_gkeys)
         sib_hash = str(hs).lower()
         a_key = str(getattr(cand, "real_hash", "") or "").lower() or f"sib-{sib_hash}"
         a_path = self._crossseed_pending().put_torrent(a_key, getattr(cand, "raw", b"") or b"")
@@ -1435,6 +1471,7 @@ class CrossSeedMixin:
                 rec = (pend.items() or {}).get(h) or {}
                 dl_name = str(rec.get("downloader") or "qbittorrent")
                 msg = "已删除跨站种"
+                _n = 0
                 try:
                     downloader = self._get_downloader(dl_name)
                     if downloader is not None and getattr(downloader, "is_available", False):
@@ -1443,6 +1480,14 @@ class CrossSeedMixin:
                             msg = f"记录已删，但下载器删除失败:{err}"
                 except Exception as err:  # noqa: BLE001
                     msg = f"记录已删，但下载器删除异常:{err}"
+                if _n:
+                    self._journal_deletions({str(rec.get("task_id") or SILENT_HOST_TASK_ID): [
+                        OperationItem(
+                            hash=h, title=str(rec.get("title") or ""),
+                            reason="手动删除跨站待回辅种（连文件删除；文件被共用时自动降级为只删种）",
+                            size_gb=float(rec.get("size_gb") or 0.0),
+                            source="crossseed",
+                        )]}, log_prefix="跨站手动删除")
                 pend.drop(h)
                 pend.cleanup_torrent(str(rec.get("a_torrent") or ""))
                 return Response(success=True, message=msg, data=self._crossseed_info())

@@ -51,8 +51,13 @@ export default defineConfig({
           },
         },
         {
+          // ★ 只剥离「Vuetify 自带」的样式表：MoviePilot 已全局加载同一份，
+          //   插件再注一份会盖掉主题变量。本插件自己的 <style> 必须保留，
+          //   否则 .v-* 覆盖规则（如把 --v-medium-emphasis-opacity 抬到 0.78）会被静默删掉。
           postcssPlugin: 'vuetify-filter',
           Root(root) {
+            const file = (root.source && root.source.input && root.source.input.file) || ''
+            if (/\.vue\b/i.test(file)) return
             root.walkRules(rule => {
               if (rule.selector && (rule.selector.includes('.v-') || rule.selector.includes('.mdi-'))) {
                 rule.remove()

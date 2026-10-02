@@ -124,6 +124,10 @@ class CoreMixin:
         self._show_sidebar_nav = bool(raw_config.get("show_sidebar_nav", True))
         self._debug_log = bool(raw_config.get("debug_log", False))
         self._compact_mode = bool(raw_config.get("compact_mode", False))
+        # 顶栏功能磁贴显隐（纯界面层）：存「隐藏」白名单，空 = 全部显示
+        self._hidden_tiles = [
+            str(x).strip() for x in (raw_config.get("hidden_tiles") or []) if str(x or "").strip()
+        ]
         try:
             self._journal_keep = int(raw_config.get("journal_keep", 200) or 0)
         except (TypeError, ValueError):
@@ -264,7 +268,7 @@ class CoreMixin:
                                         float(RESEED_DAILY_PER_SITE)))
             self._reseed_batch = int(_rf(raw_config.get("reseed_batch"), float(RESEED_BATCH)))
             self._reseed_min_size_gb = _rf(raw_config.get("reseed_min_size_gb"), RESEED_MIN_SIZE_GB)
-            self._reseed_dry = bool(raw_config.get("reseed_dry", False))
+            self._reseed_dry = bool(raw_config.get("reseed_dry", True))
         except Exception as err:  # noqa: BLE001
             self._log(f"全站辅种:配置读取失败 {err}", "warning")
 
@@ -928,6 +932,7 @@ class CoreMixin:
             "show_sidebar_nav": bool(getattr(self, "_show_sidebar_nav", True)),
             "debug_log": bool(getattr(self, "_debug_log", False)),
             "compact_mode": bool(getattr(self, "_compact_mode", False)),
+            "hidden_tiles": list(getattr(self, "_hidden_tiles", None) or []),
             "journal_keep": int(getattr(self, "_journal_keep", 200) or 0),
             "request_interval": float(getattr(self, "_request_interval", 0) or 0),
             "bonus_upload_limit_kbps": float(getattr(self, "_bonus_upload_limit_kbps", 200.0) or 0),
@@ -967,7 +972,7 @@ class CoreMixin:
             "reseed_daily_per_site": int(getattr(self, "_reseed_daily", RESEED_DAILY_PER_SITE) or 0),
             "reseed_batch": int(getattr(self, "_reseed_batch", RESEED_BATCH) or 1),
             "reseed_min_size_gb": float(getattr(self, "_reseed_min_size_gb", RESEED_MIN_SIZE_GB) or 0.0),
-            "reseed_dry": bool(getattr(self, "_reseed_dry", False)),
+            "reseed_dry": bool(getattr(self, "_reseed_dry", True)),
             "rules_auto_refresh": bool(getattr(self, "_rules_cfg", {}).get("auto_refresh", True)),
             "fallback_enabled": bool(self._fallback_cfg.get("enabled", True)),
             "fallback_sources": list(self._fallback_cfg.get("sources") or FALLBACK_SOURCES),

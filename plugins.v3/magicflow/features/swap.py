@@ -19,6 +19,7 @@ from ..downloader_ops import (
     QB_PAUSED_STATES,
 )
 from ..persistence import OperationItem
+from ..fingerprint import fingerprint, info_hash
 from ..sites.formula_fetch import (
     _norm_title as normalize_title,
 )
@@ -496,6 +497,12 @@ class SwapMixin:
                         continue
                     if not raw:
                         continue
+                    # ★ 全局（跨任务）资源去重：该资源（同 infohash / 同完整特征码）已被别的任务下过/在飞 → 跳过
+                    _gkeys = self._dup_keys(info_hash(raw), fingerprint(raw))
+                    if _gkeys and self._dup_claim(task.id, keys=_gkeys):
+                        self._log(f"魔流 [{task.name}] 换种:跳过·重复资源 {str(getattr(c, 'title', ''))[:40]}")
+                        plan["skipped_dup"] = int(plan.get("skipped_dup") or 0) + 1
+                        continue
                     new_hash, err = downloader.add_torrent(
                         content=raw,
                         download_dir=task.save_path or "",
@@ -507,7 +514,9 @@ class SwapMixin:
                     )
                     if not new_hash:
                         self._log(f"魔流 [{task.name}] 换种:换入失败 {str(getattr(c, 'title', ''))[:40]} ({err})", "warning")
+                        self._dup_release(task.id, keys=_gkeys)
                         continue
+                    self._dup_finish(task.id, keys=_gkeys)
                     _kind = "dl"
             # 换出：暂停做种（不删种、不删文件）——1换K 则 k 个一起下线
             try:

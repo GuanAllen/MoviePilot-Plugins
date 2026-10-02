@@ -43,6 +43,7 @@ from ..common import (
     OFFICIAL_PAGES,
     SITE_FORMULA_RETRY,
     SITE_FORMULA_TTL,
+    SITE_FORMULA_ZERO_TTL,
     SITE_OFFICIAL_STALE_TTL,
     SITE_OFFICIAL_TTL,
     USERDATA_ROW_TTL,
@@ -181,6 +182,24 @@ class FormulaMixin:
             zero_weight=task.bonus_zero_weight,
         )
 
+    @staticmethod
+    def _formula_report_empty(cap: Any) -> bool:
+        """站点上报的时魔是否为 0 / 缺失。
+
+        True 表示「这份页面里站点还没把我们的种算进魔力页」（刚建号 / 刚下种 / 站点缓存），
+        调用方据此放宽缓存窗口、尽快重抓。
+        """
+        try:
+            extra = getattr(cap, "extra", None) or {}
+            total = extra.get("total_bonus_per_hour")
+            if total is None:
+                total = extra.get("current_bonus_per_hour")
+            if total is None:
+                return True
+            return float(total or 0.0) <= 0.0
+        except Exception:  # noqa: BLE001
+            return False
+
     def _acquire_site_formula(self, task: MagicFlowTaskConfig):
         """
         自动抓取站点魔力公式(带 TTL 缓存)。
@@ -194,14 +213,26 @@ class FormulaMixin:
             return None
         cache = self._cache_formula()
         cached = cache.get(domain, SITE_FORMULA_TTL)
-        if cached is not None:
+        if cached is not None and not self._formula_report_empty(cached):
             # 顺手把命中的参数回注预设(纯内存、零请求),否则热重载后预设会空一轮。
+            self._register_formula_params(domain, cached, getattr(task, "site_name", "") or "")
+            return cached
+        # ★ 7.8.1：站点上报「时魔 = 0」不认 1h 长缓存，只认 ZERO_TTL 短缓存；
+        #   过短窗口就后台重抓（单飞 + 失败冷却）——否则刚下种后 UI 会钉 0 一个小时。
+        # 只有**启用中**的任务才值得为零值重抓（停用任务没在跑，白打站点请求）。
+        _zero_ok = bool(getattr(task, "enabled", False))
+        if cached is not None and _zero_ok:
+            _short = cache.get(domain, SITE_FORMULA_ZERO_TTL)
+            if _short is not None and not self._formula_report_empty(_short):
+                self._register_formula_params(domain, _short, getattr(task, "site_name", "") or "")
+                return _short
+        if cached is not None and not _zero_ok:
             self._register_formula_params(domain, cached, getattr(task, "site_name", "") or "")
             return cached
         # 未命中/已过期:不阻塞当前请求--后台单飞抓取,本次先返回旧值(可能为 None)。
         # 这样 /status、总览等永远不会因站点 mybonus.php 卡顿/超时而拖慢。
         self._schedule_formula_fetch(task, domain, cache)
-        return cache.get(domain, SITE_FORMULA_TTL)
+        return (cache.get(domain, SITE_FORMULA_ZERO_TTL) if (cached is not None and _zero_ok) else None) or cached
 
     def _register_formula_params(self, domain: str, cap: Any, name: str = "") -> None:
         """把公式参数注册进站点预设（纯内存、零请求）。
@@ -252,7 +283,8 @@ class FormulaMixin:
                     self._log(f"站点公式:未找到站点 {sid},本轮跳过", "warning")
                     return
                 try:
-                    cap = fetch_site_formula(site, timeout=15)
+                    # ★ 7.8.1：强制绕过采集页缓存——零值重抓时若命中旧的 0 页面就白跑了。
+                    cap = fetch_site_formula(site, timeout=15, force=True)
                 except Exception as err:
                     self._log(f"站点公式抓取失败 [{domain}]: {err}", "warning")
                     cap = None

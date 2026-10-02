@@ -1322,6 +1322,15 @@ class TagsMixin:
                          + ("" if _ap else "（预演，未删）")),
                 data=info,
             )
+        if act in ("missing", "missing_files", "missing_apply"):
+            _ap = act == "missing_apply"
+            info = self._missing_files_tick(apply=_ap, limit=int(limit or 0))
+            return Response(
+                success=True,
+                message=(f"空壳种（文件已不在）{info.get('pending')} 个 → 删除 {info.get('deleted')} 个"
+                         + ("" if _ap else "（预演，未删）")),
+                data=info,
+            )
         if act in ("hr", "hr_guard", "hr_apply"):
             _ap = act == "hr_apply"
             info = self._hr_guard_tick(apply=_ap, limit=int(limit or 0))

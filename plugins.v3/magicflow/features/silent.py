@@ -151,6 +151,13 @@ class SilentMixin:
                     return f"超时归普通 {len(moved)} 个"
                 return ""
 
+            def _s10() -> str:
+                # ★ 7.6.0: 文件已不在的托管种 → 认出即清（只删种不删文件）
+                i = self._missing_files_tick(apply=True)
+                if i.get("deleted"):
+                    return f"空壳种清理 {i.get('deleted')} 个（标称 {i.get('size_gb')}GB）"
+                return ""
+
             def _s9() -> str:
                 i = self.sync_tag_assets(apply=True)
                 if i.get("changed"):
@@ -167,6 +174,7 @@ class SilentMixin:
             _step("triage", "⑦分拣", _s7)
             _step("expire", "⑧超时归位", _s8)
             _step("assets", "⑨资产刷新", _s9)
+            _step("missing", "⑩空壳清理", _s10)
 
             self._silent_host_last = time.time()
             # ★ 操作记录：落明细 = 九步结果（前台「操作记录」可展开）
@@ -649,6 +657,7 @@ class SilentMixin:
         """
         rep: Dict[str, Any] = {"apply": bool(apply), "pending": 0, "deleted": 0,
                                "torrent_only": 0, "failed": 0, "items": []}
+        _by_task: Dict[str, List[Any]] = {}
         try:
             store = self._tag_state()
             data = dict(store.items() or {})
@@ -711,6 +720,20 @@ class SilentMixin:
                     if shared:
                         rep["torrent_only"] += 1
                     try:
+                        _sz = float(getattr(t, "size", 0) or 0) / 1073741824.0
+                    except (TypeError, ValueError):
+                        _sz = 0.0
+                    _by_task.setdefault(
+                        str(rec.get("taken_by") or SILENT_HOST_TASK_ID), []
+                    ).append(OperationItem(
+                        hash=h,
+                        title=str(getattr(t, "title", "") or ""),
+                        reason=(f"静默池未下完({state_name} {prog * 100:.1f}%)"
+                                + ("·同目录另有完成种，仅删种保留文件" if shared else "")),
+                        size_gb=round(_sz, 3),
+                        source="silent",
+                    ))
+                    try:
                         store.drop(h)
                     except Exception:  # noqa: BLE001
                         pass
@@ -720,6 +743,7 @@ class SilentMixin:
             except Exception as err:  # noqa: BLE001
                 rep["failed"] += 1
                 self._log(f"静默池清理:删除异常 {h[:12]}:{err}", "warning")
+        self._journal_deletions(_by_task, log_prefix="静默池清理")
         if apply and rep["deleted"]:
             self._log(
                 f"魔流:静默池清理:未下完直接删 {rep['deleted']} 个（不计 H&R；"
@@ -951,6 +975,7 @@ class SilentMixin:
         rep: Dict[str, Any] = {"apply": bool(apply), "pending": 0, "deleted": 0,
                                "torrent_only": 0, "failed": 0, "sites": {},
                                "skipped_site": 0, "items": []}
+        _by_task: Dict[str, List[Any]] = {}
         cfg = getattr(self, "_silent_cfg", {}) or {}
         if not cfg.get("sweep", True):
             rep["reason"] = "未启用"
@@ -1083,6 +1108,21 @@ class SilentMixin:
                         if shared:
                             rep["torrent_only"] = int(rep["torrent_only"]) + 1
                         try:
+                            _sz = float(getattr(t, "size", 0) or 0) / 1073741824.0
+                        except (TypeError, ValueError):
+                            _sz = 0.0
+                        _by_task.setdefault(
+                            str(rec.get("taken_by") or SILENT_HOST_TASK_ID), []
+                        ).append(OperationItem(
+                            hash=hh,
+                            title=str(getattr(t, "title", "") or ""),
+                            reason=(f"静默-普通低效[{site}]：站内魔力已达标，"
+                                    f"时魔 {out_h:.2f} ≤ 中位数 {med:.2f}×{ratio:g}"
+                                    + ("·同目录另有完成种，仅删种" if shared else "")),
+                            size_gb=round(_sz, 3),
+                            source="silent",
+                        ))
+                        try:
                             self._tag_state().drop(hh)
                         except Exception:  # noqa: BLE001
                             pass
@@ -1098,6 +1138,7 @@ class SilentMixin:
                 except Exception as err:  # noqa: BLE001
                     rep["failed"] = int(rep["failed"]) + 1
                     self._log(f"静默普通清理:删除异常 {hh[:12]}:{err}", "warning")
+        self._journal_deletions(_by_task, log_prefix="静默普通清理")
         if apply and rep["deleted"]:
             self._log(
                 f"魔流:静默普通清理:魔力已达标站点删掉 {rep['deleted']} 个低效普通种"
