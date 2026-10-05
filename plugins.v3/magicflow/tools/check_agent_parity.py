@@ -60,6 +60,7 @@ COVERED = {
     "/iyuu/sites": "/agent/iyuu",
     "/iyuu/test": "/agent/iyuu",
     "/events": "/agent/events",
+    "/site/seeds": "/agent/site/seeds",
 }
 
 # 前端 GET 只读域 → 豁免理由（非插件端点 / MP 全局端点）

@@ -176,6 +176,12 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
          "params": {"tid": "站点 torrentId（必填）", "confirm": "1=真写（默认干跑，只报成本）"},
          "returns": "YemaAbsolve", "version": AGENT_ENDPOINT_VERSION,
          "summary": "★野马PT「免罪」（扣积分、不可逆）：默认干跑；confirm=1 才写"},
+        {"path": "/agent/site/seeds", "method": "GET", "handler": "agent_site_seeds",
+         "write": False,
+         "params": {"site": "站点域名 / 短名 / id（可空 = 只回站点清单）",
+                    "live": "1 = 现抓站点 H&R 对账（同 /agent/hr/reconcile）"},
+         "returns": "SiteSeedsReport", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "★站点级种子报表：逐条种子状态（分类/保护/账单/qB） + H&R 摘要"},
         # ---- P1.5c：功能域只读（AI ⊇ 前端，收编 19 个只读豁免域）----
         {"path": "/agent/tasks/{id}/bonus", "method": "GET", "handler": "agent_task_bonus", "write": False,
          "params": {"id": "任务 id 路径参数"}, "returns": "TaskBonusReport",
@@ -668,6 +674,37 @@ class AgentApiMixin:
             payload, t0,
             ("hrbills._hr_reconcile_site() → 站点 myhr.php + 下载器快照 + hr_bills.json；"
              "缓存 hr_reconcile.json（派生，非真值源）"))
+
+    # ---------------------------------------------------- 11.10.0 站点级种子报表（只读）
+    def agent_site_seeds(self, site: str = "", live: int = 0) -> Dict[str, Any]:
+        """``GET /agent/site/seeds`` —— ★ **站点级种子报表**（只读）。
+
+        一次调用答：**「某站点上，我们挂的各种种子现在都是什么状态」**。
+
+        - 逐条种子：hash / 标题 / 体积 / 保存目录 / qB 状态 / 进度 / 比例 / 上传 / 分类桶 /
+          是否保护 / 账单 / H&R 需做种时间；
+        - 分类桶：欠H&R / 未完成 / 暂停 / 静默 / 保护 / 普通；
+        - 汇总：按桶 / 按 qB 状态计数 + 体积 + H&R 欠账摘要（owed / in_qb / missing）；
+        - ``site`` 可空 → 只回 ``available_sites``（供选择器）；
+        - ``live=1`` → 现抓站点 H&R 对账（否则读上一轮缓存）。
+
+        真值源：下载器快照 + ``hr_bills.json`` + 站点 ``myhr.php``（经 ``_hr_reconcile_site``）；
+        本端点**只读**：不写下载器 / 不写账本 / 不新增缓存。
+        """
+        t0 = time.time()
+        try:
+            data = self._site_seed_report(str(site or ""), int(live or 0))
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"站点报表失败:{e}", t0, trace_id=str(e))
+        payload = dict(data or {})
+        payload["write"] = {
+            "run_now": "GET /agent/hr/reconcile?site=<domain>&live=1（刷新 H&R 对账）",
+            "note": "本站点报表只读；补种 / 开账 / 轮换见 /agent/hr/reconcile、/agent/bills",
+        }
+        return self._agent_report(
+            payload, t0,
+            ("features/sitereport._site_seed_report() → 下载器快照 + hr_bills.json + "
+             "站点 myhr.php（经 _hr_reconcile_site）"))
 
     # ---------------------------------------------------- 11.9.0 野马PT 逐种 H&R（只读 + 免罪写）
     def agent_yema(self, live: int = 0, force: int = 0) -> Dict[str, Any]:

@@ -25,6 +25,13 @@ class ApiMixin:
                 "summary": "池盘空间（按目录分池：总量/已用/80% 阈值下的可占体积）",
             },
             {
+                "path": "/site/seeds",
+                "endpoint": self.get_site_seeds,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "站点级种子报表（逐条种子状态：分类/保护/账单/qB）",
+            },
+            {
                 "path": "/status",
                 "endpoint": self.get_status,
                 "methods": ["GET"],

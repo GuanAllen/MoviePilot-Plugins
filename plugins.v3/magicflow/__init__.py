@@ -78,11 +78,12 @@ from .features.claim import ClaimMixin
 from .features.trend import TrendMixin
 from .features.health import HealthMixin
 from .features.eventlog import EventLogMixin
+from .features.sitereport import SiteReportMixin
 
 from .dupgate import DupGateMixin
 
 
-class MagicFlow(DupGateMixin, CoreMixin, RuntimeMixin, AgentApiMixin, AgentLedgerMixin, ApiMixin, RescueMixin, SettingsMixin, StatusMixin, TasksMixin, BrushMixin, FormulaMixin, ProtectionMixin, DeleteGateMixin, HrMixin, HrBillsMixin, YemaHrMixin, AssetsMixin, ServicesMixin, ReuseMixin, ReSeedMixin, CleanupMixin, SwapMixin, CrossSeedMixin, TagsMixin, SilentMixin, RecommendMixin, LiveMixin, ExamMixin, PoolMixin, CloudMixin, SiteOpsMixin, EventsMixin, ActionsMixin, DeckMixin, OnDemandMixin, DebugMixin, RegistryMixin, MigrateMixin, ClaimMixin, TrendMixin, HealthMixin, EventLogMixin, _PluginBase):
+class MagicFlow(DupGateMixin, CoreMixin, RuntimeMixin, AgentApiMixin, AgentLedgerMixin, ApiMixin, RescueMixin, SettingsMixin, StatusMixin, TasksMixin, BrushMixin, FormulaMixin, ProtectionMixin, DeleteGateMixin, HrMixin, HrBillsMixin, YemaHrMixin, AssetsMixin, ServicesMixin, ReuseMixin, ReSeedMixin, CleanupMixin, SwapMixin, CrossSeedMixin, TagsMixin, SilentMixin, RecommendMixin, LiveMixin, ExamMixin, PoolMixin, CloudMixin, SiteOpsMixin, EventsMixin, ActionsMixin, DeckMixin, OnDemandMixin, DebugMixin, RegistryMixin, MigrateMixin, ClaimMixin, TrendMixin, HealthMixin, EventLogMixin, SiteReportMixin, _PluginBase):
     """魔流插件主类。"""
 
     plugin_name = "魔流"
