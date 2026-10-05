@@ -1534,7 +1534,11 @@ class HrBillsMixin:
 # ============================================================================
 
 _HR_SIZE_RE = re.compile(r"([\d.]+)\s*(TB|TiB|GB|GiB|MB|MiB|KB|KiB)", re.I)
-_HR_NEED_RE = re.compile(r"^(\d+):([0-5]\d):([0-5]\d)$")
+# ★ 11.9.2："还需做种时间"列有两种渲染 —— 剩余 ≥1h 为 ``H:MM:SS``/``HH:MM:SS``，
+#   剩余 <1h 为 ``MM:SS``（实测 CARPT：如 ``48:00``）。旧正则只认三段
+#   ``H:MM:SS`` → 把 <1h 的行判成「布局不兼容」→ 整站 ``myhr`` 对账整页跳过。
+#   放宽为「可选第三段」，两种都收。
+_HR_NEED_RE = re.compile(r"^(\d+):([0-5]\d)(?::([0-5]\d))?$")
 _HR_ROW_RE = re.compile(r"<tr[^>]*>(.*?)</tr>", re.S | re.I)
 _HR_TID_RE = re.compile(r"details\.php\?id=(\d+)", re.I)
 _HR_ID_RE = re.compile(r"<td[^>]*>\s*(\d{5,})\s*</td>", re.I)
