@@ -3,7 +3,7 @@
     "name": "魔流",
     "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
     "labels": "站点,做种,魔力,刷流",
-    "version": "11.9.1",
+    "version": "11.9.2",
     "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
     "author": "GuanAllen",
     "level": 1,
@@ -375,8 +375,9 @@
       "11.8.0": "站点 myhr 定期对账（第三视角·MINOR）：补上「站点说欠、本机却没有种」这一路盲区（账本/本机两条巡检看不见）——抓站点 myhr.php 权威页三方对账（站点说欠 × 本机有无 × 账本账单）；只判「还欠」绝不判「已结清」（settled 只归 seed_hours_for_hr）；只增保护、绝不据此删种；补种走新写的「同站重下」动作（不走 rescue）；独立 6h worker + 每站退避 6h→12h→24h 封顶，失败=本轮零写入；新 AI 只读端点 GET /agent/hr/reconcile（清单 39）。",
       "11.8.1": "myhr 解析健壮性 + 中文↔罗马化 token 粗配（PATCH）：修 4 个真 bug —— ① 页头噪声行（用户名/新人考核里的 details.php?id=<uid>）被当 H&R 记录 → 改「以含『还需做种时间』的表头行为分界 + need 单元格 + 标题链接 + ≥3 个 td」；② 标题套子表 → 按 </tr> 切断 → 加守门 candidates>rows → 整页退避（绝不当「无欠」）；③ size 列错位（取到上传量）→ 改 down_gb or up_gb；④ 粗配「前缀相等」→ token Jaccard（NFKC+小写，≥0.80 且交集≥2 且 margin≥0.1 且 1:1）。同时纠正「btschool 取种要 passkey」的误判（cookie+UA 即可取种）。",
       "11.9.0": "野马PT 逐种 H&R 权威接口接入（MINOR）：野马无站点级 H&R，H&R 是发布者逐种开关 hrPunishEnable → 唯一权威来源是站点后台接口（cookie 鉴权，容器内跑）。新增 features/yema.py：① 对账 GET /agent/yema（分页拉 fetchUserTorrentList ≤20/页 + fetchUserTorrentCount；按 torrentId 下载 .torrent 算 infohash 精确对上本机/账本）→ 三桶 missing_local（站点说欠、本机没有=违规风险）/ present_no_bill（本机有、站点说欠、账本未保护=可补保护）/ unknown_bills（rule=unknown 可能漏记）；② 补保护 GET /tags?action=yema&confirm=1（存量 unknown → 升级 hit_and_run；无账单→新开；默认干跑、写前现算）；③ 免罪写路径 GET /agent/yema/absolve?tid=&confirm=1（POST /api/userTorrent/absolve，扣积分不可逆，默认干跑零网络写）；④ 独立 6h worker（自带周期门）。硬约束同 11.8.0：站点只判「还欠」、绝不产 settled、绝不自动作废、只增保护。清单 39→41。回退 YEMA_ENABLED / YEMA_ABSOLVE_ENABLED。",
-      "11.9.1": "移动端 UI 修复（PATCH）：窄屏（≤959px）顶栏把「跨站取种 / 豆瓣评分 / 健康自检 / 点播 / 死种补源」五个图标按钮也一并收进右上角「⋮ 更多」菜单——此前这些图标仍留在顶栏、与「⋮」里的功能重复（同一入口两处出现）。现在窄屏顶栏只保留品牌 +「⋮」一个入口，菜单内按桌面同序铺开全部功能：推荐 / 云盘归档 / 跨站取种 / 豆瓣评分 / 健康自检 / 点播 / 新手考核 / 死种补源，并各自带状态副标题（待确认数 / 可免费取种数 / 库条数 / 待处理项 / 未通过数）。桌面端（>959px）布局不变。"
+      "11.9.1": "移动端 UI 修复（PATCH）：窄屏（≤959px）顶栏把「跨站取种 / 豆瓣评分 / 健康自检 / 点播 / 死种补源」五个图标按钮也一并收进右上角「⋮ 更多」菜单——此前这些图标仍留在顶栏、与「⋮」里的功能重复（同一入口两处出现）。现在窄屏顶栏只保留品牌 +「⋮」一个入口，菜单内按桌面同序铺开全部功能：推荐 / 云盘归档 / 跨站取种 / 豆瓣评分 / 健康自检 / 点播 / 新手考核 / 死种补源，并各自带状态副标题（待确认数 / 可免费取种数 / 库条数 / 待处理项 / 未通过数）。桌面端（>959px）布局不变。",
+      "11.9.2": "站点 myhr 对账解析修复（PATCH）：CARPT 的「还需做种时间」列在剩余 <1h 时渲染成 MM:SS（如 48:00），而 features/hrbills.py::_HR_NEED_RE 只认 H:MM:SS → 这些行识别不出 → 候选行(50) > 解析行(40) → 整页被守门判「布局不兼容」→ 整站 myhr 对账跳过（GET /agent/hr/reconcile 对 carpt 直接失败）；放宽正则为「可选第三段」同时接受 MM:SS 与 H:MM:SS。need_left 仅作字符串透传、无时间运算，口径不变。"
     }
   },
-  "version": "11.9.1"
+  "version": "11.9.2"
 }
