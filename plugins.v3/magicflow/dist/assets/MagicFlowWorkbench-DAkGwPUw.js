@@ -7371,7 +7371,7 @@ return (_ctx, _cache) => {
             _createVNode(_component_VList, {
               density: "comfortable",
               class: "magicflow-more-menu",
-              "min-width": "210"
+              "min-width": "228"
             }, {
               default: _withCtx(() => [
                 (tileVisible('recommend') && recommendData.value.enabled !== false)
@@ -7383,22 +7383,55 @@ return (_ctx, _cache) => {
                       onClick: openRecommend
                     }, null, 8, ["subtitle"]))
                   : _createCommentVNode("", true),
-                (tileVisible('exam') && examData.value.enabled !== false)
+                (tileVisible('cloud'))
                   ? (_openBlock(), _createBlock(_component_VListItem, {
                       key: 1,
+                      "prepend-icon": "mdi-cloud-upload-outline",
+                      title: "云盘归档",
+                      onClick: openCloud
+                    }))
+                  : _createCommentVNode("", true),
+                (tileVisible('crossseed'))
+                  ? (_openBlock(), _createBlock(_component_VListItem, {
+                      key: 2,
+                      "prepend-icon": "mdi-swap-horizontal-bold",
+                      title: "跨站取种",
+                      subtitle: Number(crossseedData.value.count || 0) > 0 ? `${crossseedData.value.count} 个可免费取种` : '跨站免费取种',
+                      onClick: showCrossseed
+                    }, null, 8, ["subtitle"]))
+                  : _createCommentVNode("", true),
+                (tileVisible('douban'))
+                  ? (_openBlock(), _createBlock(_component_VListItem, {
+                      key: 3,
+                      "prepend-icon": "mdi-database-search-outline",
+                      title: "豆瓣评分",
+                      subtitle: `库 ${doubanServiceData.value.records || 0} 条${doubanServiceData.value.ok ? '' : '（服务不可用）'}`,
+                      onClick: openDoubanService
+                    }, null, 8, ["subtitle"]))
+                  : _createCommentVNode("", true),
+                _createVNode(_component_VListItem, {
+                  "prepend-icon": "mdi-heart-pulse",
+                  title: "健康自检",
+                  subtitle: healthBadgeCount.value > 0 ? `${healthBadgeCount.value} 项待处理` : '各子系统正常',
+                  onClick: openHealth
+                }, null, 8, ["subtitle"]),
+                (tileVisible('ondemand'))
+                  ? (_openBlock(), _createBlock(_component_VListItem, {
+                      key: 4,
+                      "prepend-icon": "mdi-cloud-download-outline",
+                      title: "点播",
+                      subtitle: "片名 / 链接 → 搜索选源（免费优先）",
+                      onClick: openOndemand
+                    }))
+                  : _createCommentVNode("", true),
+                (tileVisible('exam') && examData.value.enabled !== false)
+                  ? (_openBlock(), _createBlock(_component_VListItem, {
+                      key: 5,
                       "prepend-icon": "mdi-school-outline",
                       title: "新手考核",
                       subtitle: examBadge.value > 0 ? `${examBadge.value} 个未通过` : '考核进度与一键起任务',
                       onClick: openExam
                     }, null, 8, ["subtitle"]))
-                  : _createCommentVNode("", true),
-                (tileVisible('cloud'))
-                  ? (_openBlock(), _createBlock(_component_VListItem, {
-                      key: 2,
-                      "prepend-icon": "mdi-cloud-upload-outline",
-                      title: "云盘归档",
-                      onClick: openCloud
-                    }))
                   : _createCommentVNode("", true),
                 _createVNode(_component_VListItem, {
                   "prepend-icon": "mdi-lifebuoy",
@@ -7414,7 +7447,7 @@ return (_ctx, _cache) => {
                 }),
                 (__props.showClose)
                   ? (_openBlock(), _createBlock(_component_VListItem, {
-                      key: 3,
+                      key: 6,
                       "prepend-icon": "mdi-close",
                       title: "关闭",
                       onClick: _cache[3] || (_cache[3] = $event => (emit('close')))
@@ -16593,6 +16626,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-53ace821"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-47f2ed7d"]]);
 
 export { MagicFlowWorkbench as M };
