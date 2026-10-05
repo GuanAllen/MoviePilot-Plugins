@@ -58,6 +58,8 @@ KIND_TTL: Dict[str, float] = {
     # ★ 3.41.0：收件箱 / 欢迎短讯（H&R 的**唯一自动来源**，Master 定调）
     "inbox": 21600.0,     # 收件箱列表（6h）
     "welcome": 604800.0,  # 欢迎短讯正文（7d，基本不变）
+    # ★ 11.8.0：站点 H&R 对账（``myhr.php``）——页面便宜、变化慢（对账周期 6h）
+    "hr": 1800.0,         # H&R 记录页（30min）
 }
 # 每站每日硬上限（0 = 不限，交给站点 PV 预算管）；签到一天最多一次是事实
 KIND_DAY_CAP: Dict[str, int] = {"signin": 2}
@@ -1189,6 +1191,111 @@ class Http:
                     pass
             return {"ok": True, "data": data, "cost": 1}
 
+    def post_json(
+        self,
+        site_id: Any,
+        url: str,
+        payload: Optional[Dict[str, Any]] = None,
+        *,
+        kind: str = "hr",
+        ttl: Optional[float] = None,
+        force: bool = False,
+        cache: bool = True,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """POST JSON（**cookie 鉴权**的站点后台接口，如野马PT ``/api/*``）。
+
+        与 ``api()`` 的区别：``api()`` 走 **apikey 头**（馒头/叶PT openApi）；本方法用
+        **站点 cookie + UA**，但仍遵守同一套规矩：唯一出口 / 域校验 / 配额闸门 /
+        规范化缓存 / 观测登记。
+
+        ★ 实测（2026-10-06，野马PT）：不带 ``Accept: application/json`` 时后端回
+        ``{"success":false,"showType":0}``（看起来像「没登录」）；带上即正常。
+        ★ ``cache=False`` 用于**写操作**（如免罪）—— 绝不缓存副作用。
+
+        返回 ``{"ok", "data", "cached", "cost", "error"}``；``data`` 原样返回（不猜信封）。
+        """
+        import json as _json  # noqa: WPS433
+
+        sid = int(site_id or 0)
+        site = self._p._get_site(sid)
+        if not site:
+            return {"ok": False, "error": "站点不存在"}
+        base = self._base(site)
+        target = str(url or "").strip()
+        if target and not target.lower().startswith("http"):
+            target = f"{base}/{target.lstrip('/')}"
+        if not target:
+            return {"ok": False, "error": "缺少 URL"}
+        if not self._p._url_allowed_for_site(target, site):
+            return {"ok": False, "error": "仅允许访问该站点域名下的地址"}
+        body = dict(payload or {})
+        ttl = float(KIND_TTL.get(kind, 300.0) if ttl is None else ttl)
+        if not cache:
+            ttl = 0.0
+        ckey = f"post|{sid}|{self._norm_url(target)}|{_json.dumps(body, sort_keys=True, ensure_ascii=False)}"
+
+        def _hit() -> Optional[Dict[str, Any]]:
+            if force or ttl <= 0 or self._tier is None:
+                return None
+            got = self._tier.get(ckey, ttl)
+            if isinstance(got, dict) and got.get("data") is not None:
+                return got
+            return None
+
+        cached = _hit()
+        if cached is not None:
+            self._obs.record(f"{kind}:{sid}", ok=True, cached=True, site=sid, detail=target)
+            return {"ok": True, "data": cached.get("data"), "cached": True, "cost": 0}
+        with self._lock_for(ckey):
+            cached = _hit()
+            if cached is not None:
+                self._obs.record(f"{kind}:{sid}", ok=True, cached=True, site=sid, detail=target)
+                return {"ok": True, "data": cached.get("data"), "cached": True, "cost": 0}
+            allow, why = self._b.allow(sid, kind, 1)
+            if not allow:
+                self._obs.record(f"{kind}:{sid}", ok=False, site=sid, detail=why)
+                return {"ok": False, "error": why}
+            ua, cookie = sanitize_site_headers(site)
+            hdr = {
+                "Accept": "application/json, text/plain, */*",
+                "Content-Type": "application/json",
+                "User-Agent": ua or "Mozilla/5.0",
+                "Origin": base,
+            }
+            if headers:
+                hdr.update({k: v for k, v in headers.items() if v})
+            started = time.time()
+            raw: Any = None
+            try:
+                from app.sdk.network import RequestUtils  # noqa: WPS433
+
+                req = RequestUtils(cookies=cookie, ua=ua, timeout=30, referer=f"{base}/")
+                resp = req.post_res(target, json=body, headers=hdr)
+                if resp is not None:
+                    try:
+                        raw = resp.json()
+                    finally:
+                        try:
+                            resp.close()
+                        except Exception:  # noqa: BLE001
+                            pass
+            except Exception as err:  # noqa: BLE001
+                self._obs.record(f"{kind}:{sid}", ok=False, site=sid, detail=f"POST 失败: {err}")
+                return {"ok": False, "error": f"POST 失败: {err}"}
+            ms = (time.time() - started) * 1000.0
+            if not isinstance(raw, (dict, list)):
+                self._obs.record(f"{kind}:{sid}", ok=False, ms=ms, site=sid, detail="无有效 JSON")
+                return {"ok": False, "error": "无有效 JSON 响应"}
+            self._b.spend(sid, kind, 1)
+            self._obs.record(f"{kind}:{sid}", ok=True, ms=ms, cost=1, site=sid, detail=target)
+            if ttl > 0 and self._tier is not None:
+                try:
+                    self._tier.set(ckey, {"data": raw, "url": target}, ttl)
+                except Exception:  # noqa: BLE001
+                    pass
+            return {"ok": True, "data": raw, "cost": 1}
+
     def client(self, site_id: Any, *, kind: str = "browse", ttl: Optional[float] = None, referer: str = "") -> "Client":
         """返回鸭子型客户端（``.get_res(url)``），供"还在别处"的采集点一行接进来。"""
         return Client(self, site_id, kind=kind, ttl=ttl, referer=referer)
@@ -1298,6 +1405,26 @@ class SiteView:
             return self._c._p._get_site(self.sid)
         except Exception:  # noqa: BLE001
             return None
+
+    def post_json(
+        self,
+        path: str,
+        payload: Optional[Dict[str, Any]] = None,
+        *,
+        kind: str = "hr",
+        ttl: Optional[float] = None,
+        force: bool = False,
+        cache: bool = True,
+    ) -> Dict[str, Any]:
+        """★ 11.9.0 POST JSON（cookie 鉴权后台接口，如野马PT ``/api/*``）。
+
+        ``path`` 可传相对路径（自动拼站点根）或绝对 URL。返回
+        ``{"ok","data","cached","cost","error"}``，``data`` 原样（不猜信封）。
+        写操作用 ``cache=False``（绝不缓存副作用）。
+        """
+        return self._c.http.post_json(
+            self.sid, str(path or ""), payload, kind=kind, ttl=ttl, force=force, cache=cache
+        )
 
     def api_run(
         self,
@@ -1455,6 +1582,9 @@ class SiteView:
             "level": _num(d.get("level")),
             "name": str(d.get("name") or ""),
             "created": str(d.get("createdDate") or st.get("createdDate") or ""),
+            # ★ 7.17.0 账号保活：站点记录的「最后登入 / 最后浏览」（第三方工具的调用**不会**刷新它们）
+            "last_login": str(st.get("lastLogin") or d.get("lastLogin") or ""),
+            "last_browse": str(st.get("lastBrowse") or d.get("lastBrowse") or ""),
             "logged_in": str(d.get("status") or st.get("status") or "").upper()
             in ("CONFIRMED", "ENABLE", "ENABLED", "ACTIVE", "")
             and (bool(d) or bool(st)),

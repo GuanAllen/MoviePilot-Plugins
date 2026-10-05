@@ -16,6 +16,9 @@
   · 命中站点「每日访问上限（PV）」→ 该站当日不再尝试（免得越试越锁）；
   · 同一站当天已成功签到 → 不再重复请求（一天最多 1 次请求/站）；
   · API 类站点（如馒头）没有 attendance 页 → 直接标记「不支持」，不浪费请求。
+  · ★ 7.17.0 账号保活：站点「多久不登入删号」规则（``sites/keepalive_presets.py``）→ 只**如实显示**
+    站点记录的最后登入时间 + 剩余天数，到点提醒；插件是第三方工具（站点口径**不算登入**），
+    **不替主人保活**（馒头：第三方工具间接存取也不算登入，保活得主人用浏览器/官方 App 亲自登）。
 """
 
 from __future__ import annotations
@@ -28,10 +31,18 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .collect import parse_signin
 from .persistence import OperationItem
+from .sites.keepalive_presets import keepalive_rule
 
 SIGNIN_PAGE = "attendance.php"
 HOME_PAGE = "index.php"
 KEEP_DAYS = 7
+
+# ★ 7.17.0 账号保活（站点「多久不登入删号」规则）——
+#   只**如实显示**站点记录的最后登入时间 + 剩余天数，并到点提醒；
+#   绝不替主人「保活」：站点口径是「第三方工具间接存取不算登入」。
+KEEPALIVE_KEY = "signin_keepalive"
+KEEPALIVE_TTL = 6 * 3600.0        # 快照有效期（保活是「天」粒度，没必要勤刷）
+KEEPALIVE_ALERT_KEY = "keepalive_alert_day"
 DEFAULT_RETRY_KEYWORD = "错误|失败"
 DEFAULT_QUEUE = 5
 # ★ 失败重试（按我们的 PV 节奏，不是隔壁的「失败立刻再打」）：
@@ -55,6 +66,19 @@ API_SITE_DOMAINS = ("m-team", "mteam", "api.")
 
 def _now_date() -> str:
     return datetime.now().strftime("%Y-%m-%d")
+
+
+def _parse_site_dt(value: Any) -> Optional[float]:
+    """站点返回的本地时间串（`2026-09-29 14:00:51`）→ epoch；解析不了 → None。"""
+    s = str(value or "").strip()
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt).timestamp()
+        except Exception:  # noqa: BLE001
+            continue
+    return None
 
 
 def _site_name(site: Any, site_id: Any) -> str:
@@ -179,20 +203,100 @@ class SigninEngine:
         except Exception:  # noqa: BLE001
             return False
 
-    def _api_ping(self, site_id: Any) -> Tuple[bool, str]:
-        """API 鉴权站的「保活」（等效签到）：走采集模块的后台 API 档案。"""
-        c = getattr(self._plugin, "collect", None)
-        if c is None:
-            return False, "采集模块不可用"
+    # ---------------------------------------------------------------- 账号保活
+    def keepalive_snapshot(self) -> Dict[str, Any]:
+        """上次算好的保活快照（只读插件数据，**零请求**；给面板 / 健康自检用）。"""
         try:
-            got = c.site(int(site_id)).user_bar() or {}
+            d = self._plugin.get_data(KEEPALIVE_KEY) or {}
+        except Exception:  # noqa: BLE001
+            d = {}
+        return d if isinstance(d, dict) else {}
+
+    def keepalive_check(self, force: bool = False) -> Dict[str, Any]:
+        """账号保活：站点记录的最后登入/浏览 → 距「不登入删号」还剩几天。
+
+        ★ 只做「如实显示」：插件是第三方工具，按站点口径**不计入登入**，
+          保活必须主人亲自用浏览器 / 官方 App 完成。
+        ★ 省请求：快照 KEEPALIVE_TTL 内直接复用；站点档案走采集模块缓存（TTL 300s）。
+        """
+        snap = self.keepalive_snapshot()
+        if (
+            not force
+            and snap.get("sites") is not None
+            and (time.time() - float(snap.get("ts") or 0.0)) < KEEPALIVE_TTL
+        ):
+            return snap
+        rows: List[Dict[str, Any]] = []
+        for item in self._plugin._list_sites() or []:
+            try:
+                sid = int(item.get("id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if not sid:
+                continue
+            rule = keepalive_rule(str(item.get("domain") or item.get("url") or ""))
+            if not rule:
+                continue
+            site = self._site(sid)
+            name = str(item.get("name") or rule.get("name") or sid)
+            row: Dict[str, Any] = {
+                "site_id": sid,
+                "site_name": name,
+                "domain": str(getattr(site, "domain", "") or item.get("domain") or ""),
+                "keep_days": int(rule.get("keep_days") or 0),
+                "archived_days": int(rule.get("archived_days") or 0),
+                "warn_days": int(rule.get("warn_days") or 7),
+                "exempt": str(rule.get("exempt") or ""),
+                "agent": str(rule.get("agent") or ""),
+                "rule_url": str(rule.get("rule_url") or ""),
+                "rule_note": str(rule.get("note") or ""),
+                "last_login": "",
+                "last_browse": "",
+                "last_seen": "",
+                "last_seen_kind": "",
+                "days_since": None,
+                "days_left": None,
+                "warn": False,
+                "level": "unknown",
+            }
+            bar: Dict[str, Any] = {}
+            try:
+                c = getattr(self._plugin, "collect", None)
+                if c is not None and (c.is_api_site(sid) or self._is_api_site(site)):
+                    bar = c.site(sid).user_bar(force=force) or {}
+            except Exception as err:  # noqa: BLE001
+                self._log(f"保活检查读取「{name}」档案失败：{err}", "debug")
+                bar = {}
+            if bar.get("ok"):
+                ll = str(bar.get("last_login") or "")
+                lb = str(bar.get("last_browse") or "")
+                row["last_login"], row["last_browse"] = ll, lb
+                cands = [(
+                    _parse_site_dt(ll), "登入", ll,
+                ), (
+                    _parse_site_dt(lb), "浏览", lb,
+                )]
+                cands = [x for x in cands if x[0]]
+                if cands:
+                    # ★ 保守：取**更早**的一次（站点到底按哪个字段算「不登入」未公开，宁可早提醒）
+                    ts0, kind0, txt0 = min(cands, key=lambda x: float(x[0]))  # type: ignore[arg-type]
+                    row["last_seen"], row["last_seen_kind"] = str(txt0), str(kind0)
+                    days = max(0.0, (time.time() - float(ts0)) / 86400.0)  # type: ignore[arg-type]
+                    row["days_since"] = int(days)
+                    row["days_left"] = max(0, int(round(float(row["keep_days"]) - days)))
+                    row["warn"] = row["days_left"] <= int(row["warn_days"])
+                    row["level"] = "warn" if row["warn"] else "ok"
+            rows.append(row)
+        out: Dict[str, Any] = {
+            "ts": time.time(),
+            "sites": rows,
+            "warnings": [r for r in rows if r.get("warn")],
+        }
+        try:
+            self._plugin.save_data(KEEPALIVE_KEY, out)
         except Exception as err:  # noqa: BLE001
-            return False, f"采集模块异常: {err}"
-        if not got.get("ok"):
-            return False, str(got.get("error") or "抓取失败")
-        if not got.get("logged_in") and not (got.get("ratio") or got.get("bonus")):
-            return False, "密钥/Cookie 已失效"
-        return True, "后台 API 保活成功（站点数据已刷新）"
+            self._log(f"保活快照落库失败：{err}", "debug")
+        return out
 
 
     def _refresh_site(self, site: Any, seconds: int = 0) -> None:
@@ -237,6 +341,7 @@ class SigninEngine:
         bonus: Optional[float] = None,
         skipped: bool = False,
         handler: Optional[str] = None,
+        na: bool = False,
     ) -> Dict[str, Any]:
         row = {
             "ok": bool(ok),
@@ -245,6 +350,10 @@ class SigninEngine:
             "time": datetime.now().strftime("%H:%M:%S"),
             "skipped": bool(skipped),
         }
+        if na:
+            # ★ 7.17.0：「不适用」（API 鉴权站无签到/登录页）——不参与「今日已成功」的保留逻辑，
+            #   否则旧版误报的「模拟登录成功」会粘一天，看不到如实文案。
+            row["na"] = True
         if handler:
             row["handler"] = str(handler)
         row["site_id"] = site_id
@@ -256,7 +365,7 @@ class SigninEngine:
             _prev = ((self.records().get(_now_date(), {}) or {}).get(str(site_id), {}) or {}).get(kind) or {}
         except Exception:  # noqa: BLE001
             _prev = {}
-        if _prev.get("ok") and not ok:
+        if _prev.get("ok") and not ok and not na:
             # 今日该动作已经成功过：本次结果（常见：配额/次数上限、又试了一次）不当失败，保留成功
             self._log(f"{site_name} 今日已成功，忽略本次结果：{message}", "debug")
             if "Cookie" in str(message):
@@ -299,12 +408,15 @@ class SigninEngine:
         name = _site_name(site, site_id)
         if not site:
             return {"site_id": site_id, "site_name": name, "ok": False, "message": "站点不存在"}
-        # ① API 鉴权站（馒头 / 叶PT）：没有 attendance 页 → 用后台 API 保活（等效「签到」）
-        if self._collect_is_api(site) or self._is_api_site(site):
-            ok, msg = self._api_ping(site_id)
-            return self._store_result("sign", site_id, name, ok, f"API 站（无签到页）:{msg}")
-        # ② 站点专用处理器（HDSky OCR / U2 随机 / CHD·HDChina 表单 …）
+        # ② 站点专用处理器（HDSky OCR / U2 随机 / CHD·HDChina 表单 / 叶PT Altcha …）
         h = self._handler(site)
+        # ① API 鉴权站（馒头）：站点口径「第三方工具间接存取不算登入」→ 如实说「不支持」。
+        #   ★ 7.19.0：仅当**没有专用处理器**、或处理器自己声明 `api_no_signin`（馒头）时才短路；
+        #   有「能签到」的专用处理器的站（叶PT 走 openApi checkIn + Altcha）优先走处理器。
+        if (self._collect_is_api(site) or self._is_api_site(site)) and (
+            h is None or bool(getattr(h, "api_no_signin", False))
+        ):
+            return self._store_result("sign", site_id, name, False, "不支持签到（API 鉴权站）", skipped=True, na=True)
         if h is not None:
             return self._run_handler("sign", site, h, site_id, name)
         text, err, status = self._get_text(site_id, SIGNIN_PAGE)
@@ -335,9 +447,15 @@ class SigninEngine:
         name = _site_name(site, site_id)
         if not site:
             return {"site_id": site_id, "site_name": name, "ok": False, "message": "站点不存在"}
-        # 站点专用处理器：API 站（馒头等）先交给采集通道（走后台 API），
-        # 采集拿不到时再用专用处理器兜底。
+        # 站点专用处理器：API 站先交给采集通道（走后台 API），采集拿不到时用专用处理器兜底。
         h = self._handler(site)
+        # ★ 7.17.0/7.19.0：API 鉴权站（馒头等）——站点口径「第三方工具间接存取不算登入」，
+        #   不能也不该假装登录成功 → 如实说「不支持」。★ 仅当**没有专用处理器**、或处理器声明
+        #   `api_no_signin`（馒头）时才短路；有专用处理器的 API 站（叶PT）优先走处理器。
+        if (self._collect_is_api(site) or self._is_api_site(site)) and (
+            h is None or bool(getattr(h, "api_no_signin", False))
+        ):
+            return self._store_result("login", site_id, name, False, "不支持登录（API 鉴权站）", skipped=True, na=True)
         started = time.time()
         # ★ 3.38.0「顺便」：用户栏页（index.php）本来每轮就被站点实时抓（kind=live），
         #   这里直接读同一份事实 → 保活零额外 PV；TTL 内没有才真抓一次（同一 URL，仍只 1 次）。
@@ -610,6 +728,7 @@ class SigninEngine:
             "records": table,
             "today": _now_date(),
             "retry": self.retry_plan_view(),
+            "keepalive": self.keepalive_check(),
             "ts": time.time(),
         }
 

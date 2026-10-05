@@ -29,6 +29,7 @@ from ..tags import (
 
 from ..common import (
     BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT,
+    CLAIM_CFG_KEY,
     CLOUD_INTERVAL_MINUTES,
     CLOUD_SCAN_MAX,
     CROSSSEED_SEED_HOURS_DEFAULT,
@@ -148,6 +149,22 @@ class SettingsMixin:
             self._reseed_dry = bool(getattr(payload, "reseed_dry", True))
             # ★ 设置面是权威：清掉历史遗留的 plugin-data 覆盖（旧 reseed_cfg 会盖住这里的值）
             self.save_data(key=RESEED_CFG_KEY, value={})
+        except Exception:  # noqa: BLE001
+            pass
+        # ★ 认领（claim，7.14.0）：设置面为权威，同样清掉 plugin-data 覆盖
+        try:
+            self._claim_enabled = bool(getattr(payload, "claim_enabled", False))
+            self._claim_dry = bool(getattr(payload, "claim_dry", True))
+            _cl_sites = getattr(payload, "claim_sites", None)
+            self._claim_sites = [str(x).strip().lower() for x in (_cl_sites or []) if str(x).strip()]
+            self._claim_daily = int(_rf(getattr(payload, "claim_daily_per_site", 20.0), 20.0))
+            self._claim_batch = int(_rf(getattr(payload, "claim_batch", 5.0), 5.0))
+            self._claim_interval_sec = _rf(getattr(payload, "claim_interval_sec", 8.0), 8.0)
+            self._claim_min_age_days = _rf(getattr(payload, "claim_min_age_days", 0.0), 0.0)
+            self._claim_require_seeders = int(_rf(getattr(payload, "claim_require_seeders", 0.0), 0.0))
+            self._claim_min_size_gb = _rf(getattr(payload, "claim_min_size_gb", 0.0), 0.0)
+            self._claim_exclude_zero_bonus = bool(getattr(payload, "claim_exclude_zero_bonus", True))
+            self.save_data(key=CLAIM_CFG_KEY, value={})
         except Exception:  # noqa: BLE001
             pass
         # 标签模型（3.13.0）

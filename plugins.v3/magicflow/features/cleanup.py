@@ -17,6 +17,7 @@ from ..downloader_ops import (
     DownloaderAdapter,
     TorrentInfo,
     QB_DOWNLOADING_STATES,
+    seed_hours_for_hr,
 )
 from ..persistence import OperationItem
 from ..sites.formula_fetch import (
@@ -27,19 +28,22 @@ from ..sites.formula_fetch import (
 from ..common import (
     MEDIA_ASSET_TAGS,
     MagicFlowTaskConfig,
+    begin_decision_round,
+    note_snapshot_pull,
 )
 
 
 class CleanupMixin:
     """cleanup 功能集（原 MagicFlow 方法原样搬入）。"""
 
-    def _cleanup_round(self, task: MagicFlowTaskConfig, downloader: DownloaderAdapter) -> Dict[str, Any]:
+    def _cleanup_round(self, task: MagicFlowTaskConfig, downloader: DownloaderAdapter, snap: Any = None) -> Dict[str, Any]:
         """清理一轮:自动恢复暂停做种 + 清理无进度种子 + 删除低效种子。
 
         抽出供两处复用:
           - ``_brush_impl``:放在**入口检查之前**(池满时先清理腾空间,再决定抓取);
           - ``_run_check_impl``:独立的 check 任务。
 
+        ``snap``：本轮已拉好的 qB 全量快照（可选，同一轮内复用）。
         返回计数 {resumed, no_progress, low_eff, deleted, kept, total_before, total_after}。
         """
         out: Dict[str, Any] = {
@@ -48,6 +52,11 @@ class CleanupMixin:
         }
         if not downloader or not downloader.is_available:
             return out
+        begin_decision_round()
+        self._decision_round_label = "cleanup"
+        if snap is None:
+            snap = self._tag_all_torrents() or {}
+            note_snapshot_pull(1)
         protected = self._store.get_protected_torrents(task.id) if self._store else set()
         _is_brush = str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush"
 
@@ -93,6 +102,57 @@ class CleanupMixin:
         except Exception as _cs_err:  # noqa: BLE001
             self._log(f"魔流 [{task.name}] 跨站来源份保护计算失败: {_cs_err}", "warning")
 
+        # ★ X3 保护裁决真值源：清理必须消费 `_protection_sets`（docs/MODULES.md X3）。
+        #   ★ 7.21.1：保护集合必须与「删除候选」同口径（Master：「清理程序太多太乱，放一起」）。
+        #   历史上托管集合只有「站点+职务」一个来源（`_same_site_torrents`），而删除候选
+        #   来自「标签命中」；机器过载 / 解析 tracker 失败时两者分叉 → 掉出托管集合的种
+        #   仍留在删除候选里、失去硬保护，被「超保留上限按魔力从低到淘汰」误删
+        #   （实测 CARPT 37 个 H&R 补种）。这里把三种归属口径（站点+职务 ∪ 标签命中）
+        #   并集后统一计算硬保护，全体清理路径共用同一集合，从源头杆绝分叉。
+        #   hard = 永不删：手动保留 / 跨站来源份 / 欠 H&R / 未下完 / 已认领。
+        _promo_protected = None   # ★ 8.0.2：供「促销失效且未下完」清理用的放行集合
+        try:
+            _scope = list(all_tagged or [])
+            _scope_seen = {str(getattr(t, "hash", "") or "").strip().lower() for t in _scope}
+            try:
+                _snapw = snap
+                _btag = str(getattr(task, "brush_tag", "") or "")
+                if _btag:
+                    for _hh, _tt in (_snapw or {}).items():
+                        _k = str(_hh or "").strip().lower()
+                        if _k and _k not in _scope_seen and _btag in (getattr(_tt, "tags", []) or []):
+                            _scope.append(_tt)
+                            _scope_seen.add(_k)
+            except Exception:  # noqa: BLE001
+                pass
+            _prot = self._protection_sets(task, _scope, _scope, snap=snap)
+            _hard = set(_prot.get("hard") or set())
+            if _hard:
+                protected = set(protected) | _hard
+                self._dbg(
+                    f"[{task.name}] X3 硬保护 {len(_hard)} 个"
+                    f"（含欠 H&R / 未下完；口径 站点{len(all_tagged or [])}∪总{len(_scope)}）"
+                )
+            # ★ 8.0.2（Master：「143g 促销到点前下不完你怎么删」）：
+            #   「促销失效且未下完」清理的候选 **天生就是未下完的种**，却因 7.21.1 把「未下完」
+            #   也收进 hard 而被整体滤掉 → 该路径永远删 0（名存实亡，日志里从没出现过）。
+            #   这里只把「**仅因**未下完而硬保护」的种从促销清理的保护集合里剔掉（其余理由
+            #   ——手动保留/跨站/欠 H&R/已认领/库内资产——照旧硬拦），让这条路径按设计生效。
+            try:
+                _inc = set(_prot.get("incomplete") or set())
+                _soft = set(_prot.get("soft") or set())
+                _inc_only = _inc - (_hard - _inc) - _soft
+                if _inc_only:
+                    _promo_protected = set(protected) - _inc_only
+                    self._dbg(
+                        f"[{task.name}] 促销清理放行「仅未下完」{len(_inc_only)} 个"
+                        f"（其余保护不变）"
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception as _prot_err:  # noqa: BLE001
+            self._log(f"魔流 [{task.name}] X3 保护裁决计算失败: {_prot_err}", "warning")
+
         # 看门狗:与上一轮对比,检测「种子还在、标签却被抹掉」(托管骤降但本轮无删种)
         if not _tag_err:
             try:
@@ -132,7 +192,8 @@ class CleanupMixin:
         if all_tagged and getattr(task, "purge_unfree_incomplete", True):
             try:
                 out["unfree"] = self._cleanup_unfree_incomplete(
-                    task, downloader, list(all_tagged), protected
+                    task, downloader, list(all_tagged),
+                    _promo_protected if _promo_protected is not None else protected,
                 )
             except Exception as _unfree_err:
                 self._log(f"魔流 [{task.name}] 清理「已非免费」种子异常: {_unfree_err}", "warning")
@@ -192,6 +253,7 @@ class CleanupMixin:
                 f"恢复 {out['resumed']} / 无进度 {out['no_progress']} / 到期 {_aged} / 产出 {_rot} / 无上传 {_noupl};"
                 f"保留 {out['kept']} 个"
             )
+            self._decision_round_end()
             return out
 
         # 3 删低效种子(零魔 / 做种人数过多 / 低于门槛 / 超保种上限)
@@ -216,7 +278,8 @@ class CleanupMixin:
             self._site_ni_map(task.site_id, task_torrents),
             self._site_official_titles(task.site_id),
         )
-        policy = self._build_magic_policy(task, torrent_bonus_list)
+        _dec: Dict[str, Any] = {}
+        policy = self._build_magic_policy(task, torrent_bonus_list, _dec)
         result = decide_deletions(
             seeding_torrents=torrent_bonus_list,
             policy=policy,
@@ -252,6 +315,29 @@ class CleanupMixin:
         out["low_eff"] = deleted_count
         out["deleted"] = int(out["no_progress"]) + int(out["slow"]) + deleted_count
         out["kept"] = len(result.to_keep)
+        # ★ 7.15.0 可观测：本轮决策轨迹（回答「为什么没删 / 删了什么」）
+        try:
+            _by_reason: Dict[str, int] = {}
+            for d in (result.to_delete or []):
+                k = str(getattr(d, "reason", "") or "").split("，")[0].split("(")[0].strip()[:24] or "未注明"
+                _by_reason[k] = _by_reason.get(k, 0) + 1
+            _dec.update({
+                "candidates": len(torrent_bonus_list),
+                "protected": len(protected or []),
+                "keep": len(result.to_keep or []),
+                "to_delete": len(result.to_delete or []),
+                "deleted": int(deleted_count or 0),
+                "deleted_by_reason": _by_reason,
+                "zero_bonus_delete": bool(getattr(policy, "prefer_delete_zero_bonus", False)),
+                "protect_threshold": (
+                    None
+                    if getattr(policy, "bonus_protect_threshold", 0) in (float("inf"), None)
+                    else round(float(policy.bonus_protect_threshold), 2)
+                ),
+            })
+        except Exception:  # noqa: BLE001
+            pass
+        out["decision"] = _dec
         # ★ 站点口径合计时魔(对合计 A 只取一次 arctan + 做种固定奖励),使数值与站点上报对齐。
         # 原来把每颗种子各自的时魔简单相加 → 漏掉「做种数 × 每种子」固定奖励,只有站点值的 ~1/3。
         # 「做种固定奖励」按**站点账号去重后的做种数**计(非本任务托管数),否则会比站点整号值偏低。
@@ -284,6 +370,7 @@ class CleanupMixin:
             f"保留 {out['kept']} 个,"
             f"站点口径时魔 {out['total_before']:.2f} -> {out['total_after']:.2f}/h"
         )
+        self._decision_round_end()
         return out
 
     def _cleanup_no_upload(
@@ -399,8 +486,8 @@ class CleanupMixin:
             if not h or h in protected_hashes:
                 continue
             try:
-                seed_secs = float(getattr(t, "seed_time", 0) or 0)
-            except (TypeError, ValueError):
+                seed_secs = seed_hours_for_hr(t) * 3600.0
+            except Exception:  # noqa: BLE001
                 seed_secs = 0.0
             try:
                 added = float(getattr(t, "added_on", 0) or 0)
@@ -693,6 +780,16 @@ class CleanupMixin:
             or not downloader
         ):
             return 0
+        # ★ 8.0.2：考核下载模式（`allow_unfree_download`）下「非免费」是**故意**的
+        #   （新手考核要靠它凑「下载增量」）→ 绝不清理，否则把考核任务的下种删了。
+        #   与 `_live_kill_unfree` 的豁免同口径。
+        if bool(getattr(task, "allow_unfree_download", False)):
+            return 0
+        try:
+            if self._exam_download_active(task):
+                return 0
+        except Exception:  # noqa: BLE001
+            pass
         protected_hashes = protected_hashes or set()
         site = self._get_site(task.site_id) if getattr(task, "site_id", 0) else None
         pages = dict(self._store.get_torrent_pages(task.id) if self._store else {})
@@ -825,7 +922,7 @@ class CleanupMixin:
     MISSING_GRACE_SEC = 1800.0   # 新加种 30 分钟内不动（避开辅种/跨站校验的瞬时状态）
     MISSING_TAG_PREFIX = "魔流-"
 
-    def _missing_files_tick(self, apply: bool = True, limit: int = 0) -> Dict[str, Any]:
+    def _missing_files_tick(self, apply: bool = True, limit: int = 0, snap: Any = None) -> Dict[str, Any]:
         """认出「文件已不在」的托管种并清掉（Master 2026-10-01 17:43：「认出还得删了」）。
 
         判定：qB 状态 = ``missingFiles``（磁盘上数据已不存在）且进度 < 99.9%
@@ -840,7 +937,9 @@ class CleanupMixin:
         """
         rep: Dict[str, Any] = {"apply": bool(apply), "pending": 0, "deleted": 0,
                                "failed": 0, "size_gb": 0.0, "items": []}
-        snap = self._tag_all_torrents() or {}
+        if snap is None:
+            snap = self._tag_all_torrents() or {}
+            note_snapshot_pull(1)
         if not snap:
             return rep
         try:

@@ -1,13 +1,11 @@
 # 来源：MoviePilot「站点自动签到」插件（thsrite / autosignin, GPL-3.0）—— 移植适配魔流。
-# 逻辑保持原样，仅改基类导入路径；站点信息 dict 由 magicflow/signin.py 构造。
+# ★ 7.17.0：馒头走官方 API Key 通道（第三方工具），按站点口径**不算登入**；
+#   这里不再发无意义的 updateLastBrowse（apikey 直接 401），如实回报「不支持」。
 from typing import Tuple
 
 from ruamel.yaml import CommentedMap
 
-from app.core.config import settings
 from . import SiteSigninHandler as _ISiteSigninHandler
-from app.utils.http import RequestUtils
-from app.utils.string import StringUtils
 
 
 class MTorrent(_ISiteSigninHandler):
@@ -16,6 +14,10 @@ class MTorrent(_ISiteSigninHandler):
     """
     # 匹配的站点Url，每一个实现类都需要设置为自己的站点Url
     site_url = "m-team"
+
+    # ★ 7.19.0：馒头是**真·不支持**（官方口径「第三方工具间接存取不算登入」）→ 声明后
+    #   signin.py 的「API 鉴权站」短路才生效（如实回报「不支持」，不刷红）。
+    api_no_signin = True
 
     @classmethod
     def match(cls, url: str) -> bool:
@@ -27,44 +29,12 @@ class MTorrent(_ISiteSigninHandler):
         return True if cls.site_url in url.split(".") else False
 
     def signin(self, site_info: CommentedMap) -> Tuple[bool, str]:
+        """★ 7.17.0：馒头官方口径「第三方工具间接存取不算登入」→ **不再发**
+        ``/member/updateLastBrowse``（实测该端点对 apikey 直接 401
+        「Full authentication is required」，旧版不看响应体 → 误报「模拟登录成功」）。
+        如实回报「不支持」，保活交给主人用浏览器 / 官方 App 亲自登。
         """
-        执行签到操作，馒头实际没有签到，非仿真模式下需要更新访问时间
-        :param site_info: 站点信息，含有站点Url、站点Cookie、UA等信息
-        :return: 签到结果信息
-        """
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": site_info.get("ua"),
-            "Accept": "application/json, text/plain, */*",
-        }
-        url = site_info.get('url')
-        timeout = site_info.get("timeout")
-        # ★ 魔流适配：优先用采集模块的 API 通道（域名/鉴权字段来自 MoviePilot 站点配置）。
-        #   原版用 StringUtils.get_url_domain(url) 会拼出 api.kp.m-team.cc（本机无法解析）。
-        base = str(site_info.get("api_base") or "").rstrip("/")
-        if not base:
-            base = f"https://api.{StringUtils.get_url_domain(url)}/api"
-        auth = site_info.get("api_auth") or {}
-        field = str(auth.get("field") or "apikey")
-        header = str(auth.get("header") or "x-api-key")
-        prefix = str(auth.get("prefix") or "")
-        value = str(site_info.get(field) or "") or str(site_info.get("token") or "")
-        if value:
-            headers[header] = f"{prefix}{value}"
-        elif site_info.get("token"):
-            headers["Authorization"] = str(site_info.get("token"))
-        # 更新最后访问时间
-        res = RequestUtils(headers=headers,
-                           timeout=timeout,
-                           proxies=settings.PROXY if site_info.get("proxy") else None,
-                           referer=f"{url}index"
-                           ).post_res(url=f"{base}/member/updateLastBrowse")
-        if res:
-            return True, "模拟登录成功"
-        elif res is not None:
-            return False, f"模拟登录失败，状态码：{res.status_code}"
-        else:
-            return False, "模拟登录失败，无法打开网站"
+        return False, "馒头不支持登录（站点口径：第三方工具存取不计入登入）"
 
     def login(self, site_info: CommentedMap) -> Tuple[bool, str]:
         """

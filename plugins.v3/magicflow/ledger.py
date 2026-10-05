@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -27,6 +28,12 @@ from . import tables as T
 from .tags import (GROUPS_KEY, STATE_BONUS, STATE_BRUSH, STATE_KEY, STATE_SILENT,
                    FileGroupStore, TagStateStore)
 from .common import task_is_participating
+
+
+# ★ 10.0.0：合法「完整特征码」= sha1 十六进制（32~64 位）。不是这个样子的 group/rid 就是
+#   历史遗留的**弱身份**（``|2.0`` 这种体积档）。弱组被清理时要把残留种子直接解绑，
+#   否则资源行会因「还有种子指着它」被留下 → 下次重载弱组复活。
+_STRONG_RID = re.compile(r"^[0-9a-f]{32,64}$")
 
 # 台账真列（6.1.0 从 rt 收敛）
 _SEED_COLS = ("state", "title", "reason", "asset", "taken_by", "taken_at", "lease_until",
@@ -371,15 +378,21 @@ class LedgerBackend:
         return patch
 
     def res_row(self, rid: str, rec: Dict[str, Any], now: float) -> Dict[str, Any]:
-        hr = rec.get("hr") or {}
+        # ★ 10.0.0：账单**按站分账**（``hrs``）—— 同一资源多站各欠一份，全部写入
+        _bills = rec.get("hrs") if isinstance(rec.get("hrs"), dict) else None
+        if not _bills:
+            _h0 = rec.get("hr") or {}
+            _bills = {str(_h0.get("site") or "_"): _h0} if isinstance(_h0, dict) and _h0 else {}
         hrs: List[Dict[str, Any]] = []
-        if isinstance(hr, dict) and hr:
-            item = dict(hr)
+        for _b in (_bills or {}).values():
+            if not isinstance(_b, dict) or not _b:
+                continue
+            item = dict(_b)
             site_name = str(item.get("site") or "").strip()
             if site_name:
                 item["site_id"] = self._site_id(site_name)
                 item.pop("site", None)
-            hrs = [item]
+            hrs.append(item)
         src_site = str(rec.get("source_site") or "").strip()
         src_id = self._site_id(src_site) if src_site else None
         lib = rec.get("library") or {}
@@ -563,6 +576,10 @@ class LedgerBackend:
                             rid = norm_res_id(gid).lower()
                             if not rid:
                                 continue
+                            if not _STRONG_RID.match(rid):          # 弱身份组被清 → 残留种直接解绑
+                                sess.execute(update(mfdb.SeedRow)
+                                             .where(mfdb.SeedRow.resource_id == rid)
+                                             .values(resource_id=None))
                             left = sess.execute(select(func.count()).select_from(mfdb.SeedRow)
                                                 .where(mfdb.SeedRow.resource_id == rid)).scalar()
                             if left:

@@ -246,10 +246,47 @@ class ExamMixin:
                     if cfg.get("login_sites"):
                         engine.run(kind="login")
                     self.save_data(key="signin_last_full", value=now)
+                    # ★ 7.17.0 账号保活：站点「多久不登入删号」临近 → 当日提醒一次（快照 6h 内零请求）
+                    try:
+                        self._alert_keepalive(engine)
+                    except Exception as err:  # noqa: BLE001
+                        self._log(f"账号保活检查失败:{err}", "debug")
             finally:
                 lock.release()
         except Exception as err:  # noqa: BLE001
             self._log(f"签到 worker 失败:{err}", "warning")
+
+    def _alert_keepalive(self, engine: Any) -> None:
+        """账号保活提醒：剩 ≤ 临界天数 → 当日提醒一次。
+
+        ★ 只提醒，不替主人做任何事：站点口径「第三方工具间接存取不算登入」，
+          保活只能主人用浏览器 / 官方 App 亲自登。
+        """
+        snap = engine.keepalive_check()
+        warns: List[Dict[str, Any]] = list(snap.get("warnings") or [])
+        if not warns:
+            return
+        day = datetime.now().strftime("%Y-%m-%d")
+        try:
+            if str(self.get_data("keepalive_alert_day") or "") == day:
+                return
+            self.save_data(key="keepalive_alert_day", value=day)
+        except Exception:  # noqa: BLE001
+            return
+        lines = [
+            f"⚠️ {w.get('site_name')}：最后登入 {w.get('last_login') or '未知'}，"
+            f"距不登入删号还有 {w.get('days_left')} 天"
+            for w in warns
+        ]
+        self._log("账号保活提醒：" + "；".join(lines), "warning")
+        hint = str((warns[0] or {}).get("agent") or "")
+        try:
+            self.post_message(
+                title="魔流·账号保活提醒",
+                text="\n".join(lines) + (("\n\n" + hint) if hint else ""),
+            )
+        except Exception as err:  # noqa: BLE001
+            self._log(f"保活提醒发送失败:{err}", "debug")
 
     def _exam_sites(self, only_site_id: int = 0) -> Dict[int, Dict[str, Any]]:
         """考核要看的站点集合:**所有已配置 cookie 的站点**(不只任务站点)+ 任务站点兜底。

@@ -1,40 +1,44 @@
 {
-  "name": "moviepilot-magicflow-plugin",
-  "private": true,
-  "version": "7.13.5",
-  "type": "module",
-  "scripts": {
-    "dev": "vite build --watch",
-    "build": "vite build"
-  },
-  "dependencies": {
-    "vue": "^3.5.13",
-    "vuetify": "3.7.3"
-  },
-  "devDependencies": {
-    "@originjs/vite-plugin-federation": "^1.4.1",
-    "@vitejs/plugin-vue": "^5.0.4",
-    "vite": "^5.4.11"
-  },
-  "history": {
-    "7.13.4": "参考成熟期改为**随站点公式 T0 动态缩放**（ref = 0.8×t0，t0=5 时仍是 4 周，CARPT t0=50 → ~40 周），选种/清种/mature 三处统一；修正原写死 4 周对非默认公式站点的尺度错误。",
-    "7.13.3": "修「下了就删」空转：清种门槛判定与选种口径对齐——年轻种子按**成熟期时魔**(max(age, 4周))判门槛，不再因 T≈0→时魔≈0 被误删（CARPT 曾下了 115 删了 81）。新增 TorrentBonusInfo.mature_bonus_per_hour。",
-    "7.13.2": "去重闸门登记覆盖补全：**复用/辅种成功也登记闸门 done**（本机同 hash 换标签、跨站辅种、慢扫辅种、换种复用）——资源已在本机即视为「占用」，第三个任务连匹配都省一步。",
-    "7.13.1": "修去重闸门命中的「seen 污染」：命中时不再一律打 seen（打上就 24h 不再碰该候选，会把后续**辅种**机会一起挡掉）。改为区分状态：对方**在飞**→只让位本轮、不打 seen（下轮本机有了副本自动走辅种）；对方**已下过且本机已无副本**→才算真没得辅，终局跳过并记 seen。新增 AddGateStore.conflict_states / DupGateMixin._dup_conflict_states。",
-    "7.13.0": "把「全局资源下载去重」抽成**公共模块**：新增 dupgate.py（+DupGateMixin）——统一入口 self._dup_claim / _dup_peek / _dup_finish / _dup_release，所有会「往下载器加新种」的路径共用同一张全局占用表：刷流、跨站取种（_crossseed_start）、换种（swap 本站免费分支）。同一资源（同 infohash / 同完整特征码）全插件只下一次，防并发抢种与「清理后又下」。行为不变，纯结构化归位（闸门存储仍在 persistence.AddGateStore；仍只拦 ①同 infohash ②同完整特征码，③同内容不同打包仍允许下载）。",
-    "7.12.0": "跨任务去重——同一资源（同 infohash / 同完整特征码）全插件只下载一次。新增全局「下载占用」闸门 persistence.AddGateStore（冷备 add_gate.json / 热键 addgate）：分类排队前先 peek 一次（避免占下载槽），下载前再原子占用（冲突=别的任务已下/在飞→跳过，防**并发**各下一份）；下载成功登记 24h「已下载」记忆（防「清理掉之后又下」的抖动），失败则释放占用允许重试。落实 MODEL.md「一个资源只从一个站下载」。仅拦截 ①同 infohash ②同完整特征码；③同内容不同打包（仅内层特征码相同）按既定策略**仍允许下载**。",
-    "7.11.0": "7.11.0：顶栏功能磁贴支持从设置关闭。设置页「常规」新增「顶栏功能磁贴」区块：推荐/新手考核/签到/云盘归档/豆瓣评分/跨站取种/点播/站点容量/操作记录，逐个开关。关掉的磁贴不再在顶栏 / 手机「功能」格显示入口（纯界面层，不影响功能本体——功能各自在对应设置页单独开关）。新增全局 settings 字段 hidden_tiles（隐藏白名单，空=全显示，向后兼容）。",
-    "3.40.1": "规则包收尾：① 站点能力/标记/域名/规则全部由 conf/frameworks.yml 驱动（代码留兜底），`rulepack` 状态在 /rules 可见；② 修 `_NEXUS` 前向引用导致插件加载失败（3.40.0 曾停摆）；③ 「保种员/管理组 24小时回应」不再被当 H&R；④ 做种数上限不再把「10集以下…」的集数当上限（同句排除 集/考核/达标）；⑤ 识别成 unknown 的历史记录不再压过内置域名表。",
-    "3.40.0": "规则数据化：新增 conf/frameworks.yml 类型规则包（框架标记/探测页/解析器/token/正则/能力表/已知域名），解析引擎薄，按框架取数据；加站点类型 = 改 YAML 不改代码。sitecap 与 sites/rules 统一从规则包读（代码留兜底默认）。顺带修 `_PERMIT_WITHDRAW_RE` 未定义（上一版探测报 NameError）与「可撤种规定被当 H&R」。",
-    "3.39.1": "逐站抓规则暴露的三处修复：① 框架未知的站**现场识别一次**（`_site_cap(probe=True)`，走采集层+PV闸门，识别一次用 30 天），不再拿通用解析器硬套 NexusPHP 站；② 「可撤种规定」不再被判成 H&R（咖啡 rules.php「保种10天以上可撤种」曾解析成 hr=True/240h/high）；③ 内置域名表补实测结论：March/NovaHD/CarPT/Depth Studio = NexusPHP，YemaPT = 文档站（无 rules 页）。",
-    "3.39.0": "类型级站点规则：新增「框架默认 + 按框架选解析器」——同类站一套读法（NexusPHP / Gazelle / UNIT3D / M-Team / 自研），探测按框架选页面与解析器；没有内置记录的站用框架兜底补一条（阈值一律留「未知」，交给既有「未知保守」逻辑，行为不变）；规则库每行可见「框架 / 来源层」。优先级不变：手填 > 探测 > 内置 > 框架默认。",
-    "3.38.0": "采集层（B6，一次性落地）：新建唯一采集模块 collect.py —— 站点请求/解析/配额/缓存全归它，落地三条硬原则（一次抓全 / 一轮一抓 / 一个出口）。live_stats、signin、sitecap、fetcher、sites/formula_fetch、IYUU passkey、调试抓页全部改走它；PV 闸门内置在采集层（调用方不再各写一遍）；保活改“顺便”复用已抓的用户栏事实（index.php 每轮 2 次请求 → 1 次）；新增 /debug/collect 观测（谁在抓 / 抓什么 / 花几 PV / worker 注册原因）。",
-    "3.37.7": "修复「站点监控」监控范围：X11——`enabled` 是 run_mode 的派生镜像（只有「运行中」为真），而服务注册与站点过滤还在用它，导致「做种中」的站完全不在监控内、`LiveWatch` 服务甚至不注册。改为看真源 `run_mode`：运行中+做种中都采样/告警；「清非免费下载种」这类动手操作仍只限「运行中」任务所在的站（做种中只告警不动手）。",
-    "3.41.0": "H&R 真值源改「收件箱」：① 采集层新增收件箱/欢迎短讯（`messages.php` → 欢迎信 → 链接+正文，6h/7d 缓存）；② 站点规则探测**只走欢迎短讯里给出的「规则」地址**（rules.php / wiki / 论坛教程），公开页只留促销/名额/考核事实，H&R 一律不采；③ 旧「公开页/内置表」推出的 H&R 一次性作废（layer=retired，生效时长回落默认 24h 保守）；④ `hr_trusted/hr_source` 在 /rules 可见。",
-    "3.41.1": "规则地址落库 + 可见：① 从收件箱欢迎短讯捞到的「规则地址」存进站点规则（rule_url/rule_label），以后探测直接读存量地址（rule_src=saved），不再翻收件箱 → 省 PV；② /rules 暴露 rule_url；③ 设置·站点规则页显示 🔗 可点开，来源标注「收件箱规则」。",
-    "3.41.2": "按 Master「规则里面没有关键字就是没有」：① 用户栏统计（`H&R: [0/0/10]`）与盒子/上传速度等促销句**不再被当 H&R**（红豆饭那条 24h 是通用 FAQ 模板，误判已消）；② 候选地址只认「规则/rules/wiki」，faq/常见问题（各站一字不差的模板）不再当站规；③ 规则页**读到了但无 H&R 关键字 → 明确判「无 H&R」**；④ 判「有」需硬证据（明确 H&R 词 或「必须/至少+小时」义务句），弱句不再触达。",
-    "3.42.0": "API 鉴权站（馒头）接入采集层：新增 `Http.api()`（`x-api-key` 鉴权，不抓网页）+ `SiteView.api_profile()`；馒头「站点实时」改用 `/api/member/profile` 读取魔力/上传/下载/分享率/uid（此前无 cookie → 一直抓取失败）；顺带修**站点 UA 前导空白**导致 httpx 判非法头、请求 0.9ms 即「无响应」的坑（蟹黄堡规则页从此可抓）。",
-    "3.43.0": "馒头 API 打通（Master 12:10 给规格，实测订正）：`/torrent/detail`、`/torrent/genDlToken` 走 **query 参数**（`x-api-key`，对齐 MP `iyuuautoseed` 的可用调法），新增 `SiteView.api_search/api_detail/api_dl_token`（促销 discount / 热度 seeders·leechers / 签名下载直链，全程无 cookie）+ 诊断端点 `GET /debug/mteam`。",
-    "3.44.0": "馒头接进刷流链路（Master 12:39「加」）：候选走官方 API `/torrent/search`（discount 促销 + seeders/leechers，`parse_mteam_rows`），**下载直链留到入选时**用 `/torrent/genDlToken` 现取（`_cand_enclosure`，只为已入选候选花 1 次请求），接进 `_prefetch`/辅种慢扫/换种/跨站取种四处；API 站候选不再按 browse 记 PV。"
-  }
+    "name": "moviepilot-magicflow-plugin",
+    "private": true,
+    "version": "11.9.0",
+    "type": "module",
+    "scripts": {
+        "dev": "vite build --watch",
+        "build": "vite build"
+    },
+    "dependencies": {
+        "vue": "^3.5.13",
+        "vuetify": "3.7.3"
+    },
+    "devDependencies": {
+        "@originjs/vite-plugin-federation": "^1.4.1",
+        "@vitejs/plugin-vue": "^5.0.4",
+        "vite": "^5.4.11"
+    },
+    "history": {
+        "7.15.0": "可观测④**结构化事件流**：`GET /events`（`since/limit/kind/task_id/level/min_level/include_open`，默认升序便于增量拉取）+ `GET /debug/events`。**不造第二份日志**——已有的「操作日志」（journal，热层 Redis + 冷备）就是结构化的发生过流水，本模块把它读成统一事件（`_event_from_record`：kind→级别/动作名、主因、明细前 10 条、时魔/体积合计），再补上 journal 覆盖不到的本地事件（健康告警/任务执行失败/同站纳管，小环形 `eventlog_v1` 300 条，带 dedup 防抖）。事件 schema：id/ts/kind/level/action/task_id/(task_name)/site_id(site_name)/state/count/reason/items/metrics/error。前端：操作记录弹窗新增「事件流」标签页（级别筛选 + 时间倒序 + 严重度左边框着色）。",
+        "7.14.2": "Master 口径（09:16 / 09:57 / 10:15）：**「换种」只在到达上限之后才有意义**——两个上限口径任一命中即算「满」：① 做种数达站点「计入魔力的做种数上限」(seeding_count_cap；March 500 / 财神 1000 / CARPT 100)；② 达到任务设定的**存储上限**(disk_size_gb)。⇒ `_build_magic_policy` 新增 at_cap 判定（做种数取 max(站点账号口径, 本任务托管数)）。★**体积只算本任务自己下载占用的种，辅种（存量复用/跨站辅种，标「魔流-辅种」）复用已有文件不占新增磁盘 → 不计入**。**未达上限 → 关闭「低效淘汰」**（门槛清零 + prefer_delete_zero_bonus=False），只清「0 产出垃圾」（无进度/过慢/非免费）与磁盘体积超限强制淘汰；达上限才做换种。",
+        "7.14.1": "修「站内做种人数过多」误删高产种：旧代码写死 `people_factor < 1.5`（=人数因子硬阈），等价于**Ni≥4 就删**——删种理由完全无视体积/做种时长/官种系数，把一堆**产出仍然很高**的种子一起误杀（March·刷魔力 08:34 一轮删 8 个，站点口径时魔 98.85 → 68.32/h）。修法：① 该口径改为**默认关**（policy.prefer_delete_crowded=False）——它本来就被「低于魔力门槛」覆盖（人数因子已算进 bonus_per_hour）；② 真需要时用**站点公式算出的人数因子**（torrent.people_factor，不再用默认 n0 重算）+ 可配阈 crowded_people_factor（默认 1.05≈几乎不触发）。",
+        "7.14.0": "新功能「认领」（顶部功能页）：把「我们在做种」的种在**站点侧认领**掉，换站点权益（CARPT：达标种魔力奖励=正常值×2）。保种增值动作，与刷流拿种解耦。① 站点能力模型 ClaimProfile（天数/名额/单用户上限/权益/罚则/接口模板）按站存 kv（TTL 24h），内置预设表 sites/claim_presets.py（CARPT 全套参数，代码不出现站点字面量）；② 写动作适配器 claim_sites/（照 signin_sites 模式，RequestUtils 带 cookie）——v1 只落地 CARPT `POST /ajax.php {action:addClaim}`；③ 认领账本 kv `claim_ledger`（ok/already 永久保留，失败类 24h TTL）；④ **★ 认领=保种承诺 → 已认领种进 _protection_sets 硬保护、永不自动删**；⑤ 独立全局功能页「认领」（MF_PAGES + FEATURES scope=global）：概览/可认领/已认领/快到期/站点能力 + 干跑扫描 + 逐条二次确认 + 记录（journal kind=claim）；⑥ 安全默认：**默认关 + 默认干跑**，写动作必须 confirm=1，限速 + 安全阀（最短发布天数/做种人数下限/体积下限/零魔不认领）。",
+        "7.13.4": "参考成熟期改为**随站点公式 T0 动态缩放**（ref = 0.8×t0，t0=5 时仍是 4 周，CARPT t0=50 → ~40 周），选种/清种/mature 三处统一；修正原写死 4 周对非默认公式站点的尺度错误。",
+        "7.13.3": "修「下了就删」空转：清种门槛判定与选种口径对齐——年轻种子按**成熟期时魔**(max(age, 4周))判门槛，不再因 T≈0→时魔≈0 被误删（CARPT 曾下了 115 删了 81）。新增 TorrentBonusInfo.mature_bonus_per_hour。",
+        "7.13.2": "去重闸门登记覆盖补全：**复用/辅种成功也登记闸门 done**（本机同 hash 换标签、跨站辅种、慢扫辅种、换种复用）——资源已在本机即视为「占用」，第三个任务连匹配都省一步。",
+        "7.13.1": "修去重闸门命中的「seen 污染」：命中时不再一律打 seen（打上就 24h 不再碰该候选，会把后续**辅种**机会一起挡掉）。改为区分状态：对方**在飞**→只让位本轮、不打 seen（下轮本机有了副本自动走辅种）；对方**已下过且本机已无副本**→才算真没得辅，终局跳过并记 seen。新增 AddGateStore.conflict_states / DupGateMixin._dup_conflict_states。",
+        "7.13.0": "把「全局资源下载去重」抽成**公共模块**：新增 dupgate.py（+DupGateMixin）——统一入口 self._dup_claim / _dup_peek / _dup_finish / _dup_release，所有会「往下载器加新种」的路径共用同一张全局占用表：刷流、跨站取种（_crossseed_start）、换种（swap 本站免费分支）。同一资源（同 infohash / 同完整特征码）全插件只下一次，防并发抢种与「清理后又下」。行为不变，纯结构化归位（闸门存储仍在 persistence.AddGateStore；仍只拦 ①同 infohash ②同完整特征码，③同内容不同打包仍允许下载）。",
+        "7.12.0": "跨任务去重——同一资源（同 infohash / 同完整特征码）全插件只下载一次。新增全局「下载占用」闸门 persistence.AddGateStore（冷备 add_gate.json / 热键 addgate）：分类排队前先 peek 一次（避免占下载槽），下载前再原子占用（冲突=别的任务已下/在飞→跳过，防**并发**各下一份）；下载成功登记 24h「已下载」记忆（防「清理掉之后又下」的抖动），失败则释放占用允许重试。落实 MODEL.md「一个资源只从一个站下载」。仅拦截 ①同 infohash ②同完整特征码；③同内容不同打包（仅内层特征码相同）按既定策略**仍允许下载**。",
+        "7.11.0": "7.11.0：顶栏功能磁贴支持从设置关闭。设置页「常规」新增「顶栏功能磁贴」区块：推荐/新手考核/签到/云盘归档/豆瓣评分/跨站取种/点播/站点容量/操作记录，逐个开关。关掉的磁贴不再在顶栏 / 手机「功能」格显示入口（纯界面层，不影响功能本体——功能各自在对应设置页单独开关）。新增全局 settings 字段 hidden_tiles（隐藏白名单，空=全显示，向后兼容）。",
+        "3.40.1": "规则包收尾：① 站点能力/标记/域名/规则全部由 conf/frameworks.yml 驱动（代码留兜底），`rulepack` 状态在 /rules 可见；② 修 `_NEXUS` 前向引用导致插件加载失败（3.40.0 曾停摆）；③ 「保种员/管理组 24小时回应」不再被当 H&R；④ 做种数上限不再把「10集以下…」的集数当上限（同句排除 集/考核/达标）；⑤ 识别成 unknown 的历史记录不再压过内置域名表。",
+        "3.40.0": "规则数据化：新增 conf/frameworks.yml 类型规则包（框架标记/探测页/解析器/token/正则/能力表/已知域名），解析引擎薄，按框架取数据；加站点类型 = 改 YAML 不改代码。sitecap 与 sites/rules 统一从规则包读（代码留兜底默认）。顺带修 `_PERMIT_WITHDRAW_RE` 未定义（上一版探测报 NameError）与「可撤种规定被当 H&R」。",
+        "3.39.1": "逐站抓规则暴露的三处修复：① 框架未知的站**现场识别一次**（`_site_cap(probe=True)`，走采集层+PV闸门，识别一次用 30 天），不再拿通用解析器硬套 NexusPHP 站；② 「可撤种规定」不再被判成 H&R（咖啡 rules.php「保种10天以上可撤种」曾解析成 hr=True/240h/high）；③ 内置域名表补实测结论：March/NovaHD/CarPT/Depth Studio = NexusPHP，YemaPT = 文档站（无 rules 页）。",
+        "3.39.0": "类型级站点规则：新增「框架默认 + 按框架选解析器」——同类站一套读法（NexusPHP / Gazelle / UNIT3D / M-Team / 自研），探测按框架选页面与解析器；没有内置记录的站用框架兜底补一条（阈值一律留「未知」，交给既有「未知保守」逻辑，行为不变）；规则库每行可见「框架 / 来源层」。优先级不变：手填 > 探测 > 内置 > 框架默认。",
+        "3.38.0": "采集层（B6，一次性落地）：新建唯一采集模块 collect.py —— 站点请求/解析/配额/缓存全归它，落地三条硬原则（一次抓全 / 一轮一抓 / 一个出口）。live_stats、signin、sitecap、fetcher、sites/formula_fetch、IYUU passkey、调试抓页全部改走它；PV 闸门内置在采集层（调用方不再各写一遍）；保活改“顺便”复用已抓的用户栏事实（index.php 每轮 2 次请求 → 1 次）；新增 /debug/collect 观测（谁在抓 / 抓什么 / 花几 PV / worker 注册原因）。",
+        "3.37.7": "修复「站点监控」监控范围：X11——`enabled` 是 run_mode 的派生镜像（只有「运行中」为真），而服务注册与站点过滤还在用它，导致「做种中」的站完全不在监控内、`LiveWatch` 服务甚至不注册。改为看真源 `run_mode`：运行中+做种中都采样/告警；「清非免费下载种」这类动手操作仍只限「运行中」任务所在的站（做种中只告警不动手）。",
+        "3.41.0": "H&R 真值源改「收件箱」：① 采集层新增收件箱/欢迎短讯（`messages.php` → 欢迎信 → 链接+正文，6h/7d 缓存）；② 站点规则探测**只走欢迎短讯里给出的「规则」地址**（rules.php / wiki / 论坛教程），公开页只留促销/名额/考核事实，H&R 一律不采；③ 旧「公开页/内置表」推出的 H&R 一次性作废（layer=retired，生效时长回落默认 24h 保守）；④ `hr_trusted/hr_source` 在 /rules 可见。",
+        "3.41.1": "规则地址落库 + 可见：① 从收件箱欢迎短讯捞到的「规则地址」存进站点规则（rule_url/rule_label），以后探测直接读存量地址（rule_src=saved），不再翻收件箱 → 省 PV；② /rules 暴露 rule_url；③ 设置·站点规则页显示 🔗 可点开，来源标注「收件箱规则」。",
+        "3.41.2": "按 Master「规则里面没有关键字就是没有」：① 用户栏统计（`H&R: [0/0/10]`）与盒子/上传速度等促销句**不再被当 H&R**（红豆饭那条 24h 是通用 FAQ 模板，误判已消）；② 候选地址只认「规则/rules/wiki」，faq/常见问题（各站一字不差的模板）不再当站规；③ 规则页**读到了但无 H&R 关键字 → 明确判「无 H&R」**；④ 判「有」需硬证据（明确 H&R 词 或「必须/至少+小时」义务句），弱句不再触达。",
+        "3.42.0": "API 鉴权站（馒头）接入采集层：新增 `Http.api()`（`x-api-key` 鉴权，不抓网页）+ `SiteView.api_profile()`；馒头「站点实时」改用 `/api/member/profile` 读取魔力/上传/下载/分享率/uid（此前无 cookie → 一直抓取失败）；顺带修**站点 UA 前导空白**导致 httpx 判非法头、请求 0.9ms 即「无响应」的坑（蟹黄堡规则页从此可抓）。",
+        "3.43.0": "馒头 API 打通（Master 12:10 给规格，实测订正）：`/torrent/detail`、`/torrent/genDlToken` 走 **query 参数**（`x-api-key`，对齐 MP `iyuuautoseed` 的可用调法），新增 `SiteView.api_search/api_detail/api_dl_token`（促销 discount / 热度 seeders·leechers / 签名下载直链，全程无 cookie）+ 诊断端点 `GET /debug/mteam`。",
+        "3.44.0": "馒头接进刷流链路（Master 12:39「加」）：候选走官方 API `/torrent/search`（discount 促销 + seeders/leechers，`parse_mteam_rows`），**下载直链留到入选时**用 `/torrent/genDlToken` 现取（`_cand_enclosure`，只为已入选候选花 1 次请求），接进 `_prefetch`/辅种慢扫/换种/跨站取种四处；API 站候选不再按 browse 记 PV。"
+    }
 }

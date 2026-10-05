@@ -23,6 +23,7 @@ from ..downloader_ops import (
     set_dl_gate_base,
     QB_PAUSED_STATES,
 )
+from .. import downloader_ops
 from ..fetcher import (
     set_request_interval,
     set_browse_debug,
@@ -60,6 +61,10 @@ from ..common import (
     CROSSSEED_INTERVAL_MINUTES,
     CROSSSEED_SEED_HOURS_DEFAULT,
     CROSSSEED_SITE_HOURS_DEFAULT,
+    DELETE_GATE_FAIL_CLOSED,
+    CLAIM_BATCH,
+    CLAIM_DAILY_PER_SITE,
+    CLAIM_INTERVAL_SEC,
     FALLBACK_SCAN_MAX,
     GLOBAL_WORKER_LIMIT,
     LIVE_DEFAULT_TTL,
@@ -84,9 +89,14 @@ from ..common import (
     SILENT_HOST_INTERVAL_MINUTES,
     _MF_ACTIVE,
     _cs_parse_site_hours,
+    begin_decision_round,
+    decision_round_stats,
+    end_decision_round,
+    note_snapshot_pull,
     task_is_participating,
 )
 from .migrate import MIGRATE_INTERVAL_MINUTES
+from .pool import POOL_THRESHOLD
 
 
 class CoreMixin:
@@ -235,6 +245,11 @@ class CoreMixin:
             "douban_max_per_run": int(_rf(raw_config.get("recommend_douban_max_per_run"), 30.0)),
             "douban_service_url": str(raw_config.get("recommend_douban_service_url") or "").strip(),
         }
+        # ★ 11.2.1 死种补源（rescue）：停滞阈值 / 候选上限（设置面板可调）
+        self._rescue_cfg = {
+            "stall_hours": _rf(raw_config.get("rescue_stall_hours"), 6.0),
+            "max_candidates": int(_rf(raw_config.get("rescue_max_candidates"), 3.0)),
+        }
         # ★ 3.22.4 一次性迁移：Master 2026-09-28 09:42「还是别走豆瓣了吧」→ 默认回到 TMDB。
         #   存量配置里若还写着 douban（旧默认被自动落盘的），只在这一版强制改回 tmdb 并落盘；
         #   之后 Master 在设置里手动选「豆瓣优先」不会再被覆盖（标记已置位）。
@@ -251,6 +266,13 @@ class CoreMixin:
         self._silent_cfg = {
             "sweep": bool(raw_config.get("silent_sweep_enabled", True)),
             "ratio": _rf(raw_config.get("silent_plain_ratio"), 0.5),
+            # ★ 7.20.0：磁盘压力触发「静默-普通」清理 —— 池用量 ≥ 水位时不再等站点魔力达标
+            "disk_pressure": bool(raw_config.get("silent_plain_disk_pressure", True)),
+            "watermark": _rf(raw_config.get("silent_plain_watermark"), 0.85),
+            # ★ 7.21.0：水位驱动 · 清到目标线（Master 08:33「上限 85% 一直清到 75% 才合格」）
+            "target_pct": _rf(raw_config.get("silent_plain_target_pct"), 0.75),
+            # 高产护线（产出 > 中位 × max_ratio → 留，不再往下清）
+            "max_ratio": _rf(raw_config.get("silent_plain_max_ratio"), 2.0),
         }
         self._recommend_engine = RecommendEngine(self)
         self._recommend_cursor = ""
@@ -271,6 +293,27 @@ class CoreMixin:
             self._reseed_dry = bool(raw_config.get("reseed_dry", True))
         except Exception as err:  # noqa: BLE001
             self._log(f"全站辅种:配置读取失败 {err}", "warning")
+
+        # ★ 认领（claim，7.14.0）：把「我们在做种」的种在站点侧认领掉，换站点权益
+        try:
+            _cl_sites = raw_config.get("claim_sites")
+            if isinstance(_cl_sites, str):
+                _cl_sites = [x.strip() for x in _cl_sites.replace("，", ",").split(",") if x.strip()]
+            if not isinstance(_cl_sites, list):
+                _cl_sites = []
+            self._claim_enabled = bool(raw_config.get("claim_enabled", False))
+            self._claim_dry = bool(raw_config.get("claim_dry", True))
+            self._claim_sites = [str(x).strip().lower() for x in _cl_sites if str(x).strip()]
+            self._claim_daily = int(_rf(raw_config.get("claim_daily_per_site"),
+                                        float(CLAIM_DAILY_PER_SITE)))
+            self._claim_batch = int(_rf(raw_config.get("claim_batch"), float(CLAIM_BATCH)))
+            self._claim_interval_sec = _rf(raw_config.get("claim_interval_sec"), CLAIM_INTERVAL_SEC)
+            self._claim_min_age_days = _rf(raw_config.get("claim_min_age_days"), 0.0)
+            self._claim_require_seeders = int(_rf(raw_config.get("claim_require_seeders"), 0.0))
+            self._claim_min_size_gb = _rf(raw_config.get("claim_min_size_gb"), 0.0)
+            self._claim_exclude_zero_bonus = bool(raw_config.get("claim_exclude_zero_bonus", True))
+        except Exception as err:  # noqa: BLE001
+            self._log(f"认领:配置读取失败 {err}", "warning")
 
         # 跨站辅种：兄弟站「流量兜底」（判「免费」可能错 → 必须实时核对，错了立刻止损）
         self._cs_cfg = {
@@ -530,6 +573,44 @@ class CoreMixin:
             self._store.set_flush_sec(KV_FILE_FLUSH_SEC)
         except Exception as err:  # noqa: BLE001
             self._log(f"状态落盘间隔设置失败:{err}", "debug")
+
+        # ★ 删除唯一入口（Master 2026-10-05「删除令出一门」补洞）：把「硬保护闸门 + 统一台账」
+        #   注册成**进程级安装器** —— 之后任何 ``DownloaderAdapter(...)``（含不经 _get_downloader
+        #   的裸构造）在 __init__ 末尾都会自动挂闸门，消除「类属性 _global_gate 至少被设过一次」
+        #   的顺序依赖（热重载后类属性归零 → 裸构造先跑 → 删种无闸门）。
+        #   同时设定 fail-closed 策略（默认开）：闸门取不到 / 抛异常时一律阻断删除，不放行。
+        #   注：用 ``self._delete_gate`` / ``self._delete_log_cb`` 在调用时解析（不捕获 stale 绑定）。
+        try:
+            def _install_delete_gate(_dl) -> None:
+                _dl.gate = self._delete_gate
+                _dl.deletion_log = self._delete_log_cb
+                type(_dl)._global_gate = self._delete_gate
+                type(_dl)._global_dlog = self._delete_log_cb
+            downloader_ops.set_gate_installer(_install_delete_gate)
+            downloader_ops.set_gate_fail_closed(bool(DELETE_GATE_FAIL_CLOSED))
+            logger.info(
+                "魔流删除闸门:安装器已注册（裸构造自动挂闸门）；fail-closed=%s"
+                % bool(DELETE_GATE_FAIL_CLOSED)
+            )
+        except Exception as _wire_err:  # noqa: BLE001
+            logger.error(f"魔流删除闸门:安装器注册失败:{_wire_err}")
+
+        # ★ 10.2.0 下载即开账（影子记账）：注册 H&R 开账钩子 + 初始化账单 store。
+        #   钩子用「调用时解析 self._hrbills_open」的闭包（不捕获 stale 绑定，热重载安全）。
+        #   11.0.0 第二阶段起 HR_BILLS_ENFORCE=True：账单作为 _hr_obligation 的第三来源（只增保护）。
+        try:
+            from .. import downloader_ops as _dlops  # noqa: WPS433
+
+            def _hr_open_hook(_hs, _site_domain, _tag, _content, _hit_and_run=False):
+                _fn = getattr(self, "_hrbills_open", None)
+                if callable(_fn):
+                    _fn(_hs, _site_domain, _tag, _content, hit_and_run=_hit_and_run)
+            _dlops.set_hr_open_hook(_hr_open_hook)
+            self._hrbills_store()
+            logger.info("魔流H&R账单:开账钩子已注册（账单已生效，接入 _hr_obligation 第三来源）")
+        except Exception as _hr_wire_err:  # noqa: BLE001
+            logger.error(f"魔流H&R账单:注册失败:{_hr_wire_err}")
+
         self._apply_runtime_settings()
 
         # 任务配置:优先从 config 读取,兼容旧版 plugindata
@@ -958,6 +1039,8 @@ class CoreMixin:
             "recommend_rating_source": str(self._recommend_cfg.get("rating_source", "tmdb")),
             "recommend_douban_max_per_run": int(self._recommend_cfg.get("douban_max_per_run", 30) or 0),
             "recommend_douban_service_url": str(self._recommend_cfg.get("douban_service_url", "") or ""),
+            "rescue_stall_hours": float(getattr(self, "_rescue_cfg", {}).get("stall_hours") or 6.0),
+            "rescue_max_candidates": int(getattr(self, "_rescue_cfg", {}).get("max_candidates") or 3),
             "crossseed_guard": bool(getattr(self, "_cs_cfg", {}).get("guard", True)),
             "crossseed_guard_pct": float(getattr(self, "_cs_cfg", {}).get("guard_pct") or 5.0),
             "crossseed_guard_min_mb": float(getattr(self, "_cs_cfg", {}).get("guard_min_mb") or 50.0),
@@ -973,6 +1056,17 @@ class CoreMixin:
             "reseed_batch": int(getattr(self, "_reseed_batch", RESEED_BATCH) or 1),
             "reseed_min_size_gb": float(getattr(self, "_reseed_min_size_gb", RESEED_MIN_SIZE_GB) or 0.0),
             "reseed_dry": bool(getattr(self, "_reseed_dry", True)),
+            # ★ 认领（claim）
+            "claim_enabled": bool(getattr(self, "_claim_enabled", False)),
+            "claim_dry": bool(getattr(self, "_claim_dry", True)),
+            "claim_sites": list(getattr(self, "_claim_sites", None) or []),
+            "claim_daily_per_site": int(getattr(self, "_claim_daily", CLAIM_DAILY_PER_SITE) or 0),
+            "claim_batch": int(getattr(self, "_claim_batch", CLAIM_BATCH) or 1),
+            "claim_interval_sec": float(getattr(self, "_claim_interval_sec", CLAIM_INTERVAL_SEC) or 0.0),
+            "claim_min_age_days": float(getattr(self, "_claim_min_age_days", 0.0) or 0.0),
+            "claim_require_seeders": int(getattr(self, "_claim_require_seeders", 0) or 0),
+            "claim_min_size_gb": float(getattr(self, "_claim_min_size_gb", 0.0) or 0.0),
+            "claim_exclude_zero_bonus": bool(getattr(self, "_claim_exclude_zero_bonus", True)),
             "rules_auto_refresh": bool(getattr(self, "_rules_cfg", {}).get("auto_refresh", True)),
             "fallback_enabled": bool(self._fallback_cfg.get("enabled", True)),
             "fallback_sources": list(self._fallback_cfg.get("sources") or FALLBACK_SOURCES),
@@ -1172,6 +1266,36 @@ class CoreMixin:
             self._dbg(msg)
             self._log(msg)
 
+    # ============================================================
+    # ★ 决策路径「一轮只拉一次 qB 全量快照」—— 观测钩子（P0）
+    # ============================================================
+    def _decision_round_begin(self, label: str = "") -> None:
+        """标记新一轮决策开始（归零快照计数 + 记时）。"""
+        begin_decision_round()
+        self._decision_round_label = label
+
+    def _decision_round_note_pull(self) -> None:
+        """供「没拿到传入 snap、自行回退拉取」的决策函数计数（本轮第 2+ 次会告警）。
+
+        hr.py 等不能 import common 的 mixin 用 ``getattr(self, "_decision_round_note_pull",
+        None)`` 钩子调用本方法，缺失时静默降级（离线单测无 core 实例）。
+        """
+        note_snapshot_pull(1)
+        stats = decision_round_stats()
+        if int(stats.get("pulls", 0)) > 1:
+            self._dbg(
+                f"决策轮[{getattr(self, '_decision_round_label', '') or '?'}] "
+                f"快照已拉取 {stats['pulls']} 次（应只拉 1 次：上游决策函数未复用 snap）"
+            )
+
+    def _decision_round_end(self) -> None:
+        """决策轮收尾：打印本轮快照拉取次数 / 耗时。"""
+        stats = end_decision_round()
+        self._dbg(
+            f"决策轮[{getattr(self, '_decision_round_label', '') or '?'}] "
+            f"快照拉取 {stats.get('pulls', 0)} 次 / 耗时 {stats.get('elapsed_ms', 0)}ms"
+        )
+
     def _spawn_run_mode_apply(self, task: MagicFlowTaskConfig, mode: str) -> None:
         """异步应用运行状态对应的种子操作(暂停/恢复),并在「运行中」时立即跑一轮 check。"""
         def _worker():
@@ -1223,7 +1347,20 @@ class CoreMixin:
                         resume_hashes.append(h)
                 else:
                     if not paused:
-                        pause_hashes.append(h)
+                        # ★ 欠 H&R 的种**不暂停**：它本就需要先下完、再做满义务时长，
+                        #   暂停只会让它更下不完、更容易被清理淘汰（H&R 违约）。
+                        try:
+                            _owed = bool(
+                                self._hr_obligation(
+                                    getattr(task, "site_name", "")
+                                    or getattr(task, "site_domain", ""),
+                                    t,
+                                )[0]
+                            )
+                        except Exception:  # noqa: BLE001
+                            _owed = False
+                        if not _owed:
+                            pause_hashes.append(h)
             else:  # running
                 if paused and (h or "").lower() not in manual_paused:
                     resume_hashes.append(h)
@@ -1468,6 +1605,15 @@ class CoreMixin:
         try:
             dl = DownloaderAdapter(downloader_name=downloader_name)
             dl.tags_enabled = self._show_qb_tags()
+            # ★ 删除唯一入口（Master 2026-10-05「删除令出一门」）：挂上硬保护闸门 + 统一台账。
+            #   同时打到类属性上，覆盖不走本方法而直接 `DownloaderAdapter(...)` 的调用点。
+            try:
+                dl.gate = self._delete_gate
+                dl.deletion_log = self._delete_log_cb
+                type(dl)._global_gate = self._delete_gate
+                type(dl)._global_dlog = self._delete_log_cb
+            except Exception:  # noqa: BLE001
+                pass
             return dl
         except Exception as e:
             self._log(f"获取下载器失败: {e}", "error")

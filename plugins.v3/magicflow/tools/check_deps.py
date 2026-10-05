@@ -40,7 +40,7 @@ L1 = {
     "ledger.py",   # 种子/资源台账（SQLAlchemy 后端，依赖 tags/common）
 }
 L2_PREFIX = "features/"
-L1_PREFIXES = ("sites/", "signin_sites/")   # L1 域的包（站点解析 / 站点签到适配器）
+L1_PREFIXES = ("sites/", "signin_sites/", "claim_sites/")   # L1 域的包（站点解析 / 站点签到适配器 / 站点认领写动作）
 L3 = {"__init__.py", "common.py", "dupgate.py"}
 
 

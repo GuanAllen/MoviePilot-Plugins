@@ -5,12 +5,13 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "7.13.5"
+__version__ = "11.9.0"
 
 import bisect
 import copy
 import random
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -76,6 +77,14 @@ def _torrent_entries_digest(raw: Any) -> Dict[str, Any]:
 # 候选扩充:站点列表页翻页数(拿更多、更老的种子)。
 # 注意:是否能翻页取决于 fork 的 TorrentsChain.browse 是否支持 page 参数(启动时会记日志探测)。
 BROWSE_PAGES = 3
+
+# ★ 删除闸门「失败即封」安全默认（唯一删种入口 ``DownloaderAdapter.delete_torrents``）。
+#   闸门回调 **缺失**（含热重载后类属性归零 + 裸构造）或 **抛异常** 时，一律 **阻断删除**
+#   （不删、返回 0、记错误、台账标注 ``blocked_by=gate_error``）—— 这是安全默认：拿不到
+#   「欠 H&R / 跨站来源份 / 已认领 / 手动保留」的硬保护判定就宁可不删。
+#   设为 False 可回退到旧行为（fail-open：拿不到闸门 / 闸门异常都放行）。
+DELETE_GATE_FAIL_CLOSED = True
+
 SWAP_INTERVAL = 1800.0       # 自动换种最小间隔(秒):换种要抓候选+下载,不宜过频
 SWAP_MAX_PER_ROUND = 3       # 单轮最多换几对(安全阀:避免一次性大批换下线)
 SWAP_SOFT_MARGIN_MULT = 2.0  # 库内/自有种(软保护)换出所需净收益门槛 = 基础 × 该倍数
@@ -140,6 +149,19 @@ RESEED_LEDGER_KEY = "reseed_ledger"
 RESEED_DAY_KEY = "reseed_day"
 RESEED_CLOUD_KEY = "reseed_cloud"
 RESEED_PASSKEY_KEY = "reseed_passkeys"
+# ---------------------------------------------------------------- 认领（claim）
+# 把「我们在做种」的种在站点侧认领掉，换站点权益。CARPT：达标种魔力 ×2；
+# 代价：不达标 −100 / 主动放弃 −500。→ 默认关 + 默认干跑 + 写动作必须 confirm。
+CLAIM_CFG_KEY = "claim_cfg"                  # 接口层覆盖配置（plugin data）
+CLAIM_LEDGER_KEY = "claim_ledger"            # 认领账本 "<site_id>:<hash>" → {...}
+CLAIM_PROFILE_KEY = "claim_profile"          # 站点能力（ClaimProfile）缓存
+CLAIM_TASK_ID = "__claim__"                  # 认领记录归属的伪任务 id（无属地时）
+CLAIM_PROFILE_TTL = 24 * 3600.0              # 能力缓存有效期（秒）
+CLAIM_DAILY_PER_SITE = 20                    # 每站每天最多认领多少颗（防一口气灌爆）
+CLAIM_BATCH = 5                              # 单轮最多认领多少颗
+CLAIM_INTERVAL_SEC = 8.0                     # 两次认领之间的最小间隔（秒，限速）
+CLAIM_FAIL_TTL = 24 * 3600.0                 # 失败/名额满/不达标 → 24h 内不重试
+CLAIM_SOFT_CAP = 200                         # 单站账本软上限（仅提示，不强制）
 SILENT_HOST_INTERVAL_MINUTES = 60  # ⭐「静默托管」常驻 worker 周期(分钟，低频)
 SILENT_HOST_TASK_ID = "__silent_host__"  # ⭐「静默托管」常驻任务在任务列表里的只读条目 id
 # 跨站免费取种的「回辅」轮询周期(分钟)：B/C/D… 站点下完后，尽快把它辅回目标站。
@@ -710,3 +732,93 @@ def task_is_seeding_only(task: Any) -> bool:
 def task_watches_site(task: Any) -> bool:
     """任务是否应参与站点观测（running + seeding 都要盯站，只有 stopped 不盯）。"""
     return run_mode_of(task) != RUN_MODE_STOPPED
+
+
+# ============================================================
+# ★ 决策路径「一轮只拉一次 qB 全量快照」（P0 性能重构，2026-10-05）
+# ============================================================
+# 决策快照必须每轮入口显式重拉（阻塞版 ``_tag_all_torrents``），再**显式传参**给下游
+# 决策函数（形如 ``snap=None`` 的可选参数）；调用方传了就复用，没传就照旧自己拉
+# （向后兼容）。这里只提供「同一轮内复用」的**观测**（计数 + 计时），
+# **不做跨轮 SWR 缓存** —— 决策新鲜度红线：决策=阻塞、展示=SWR。
+class SnapshotRound:
+    """决策轮快照复用跟踪器（模块级工厂单例，**纯观测**，不含决策状态）。"""
+
+    __slots__ = ("_round_id", "_pulls", "_started", "_open")
+
+    def __init__(self) -> None:
+        self._round_id = 0
+        self._pulls = 0
+        self._started = 0.0
+        self._open = False
+
+    def begin(self) -> int:
+        """标记新一轮决策开始：归零计数 + 记时。返回轮次 id。
+
+        ★ 若当前已有一轮**未收尾**（嵌套调用，如一轮里再进删除闸门），
+        则不重置 —— 否则内层会把外层的 `pulls` 清零，观测失真。
+        """
+        if self._open:
+            return self._round_id
+        self._round_id += 1
+        self._pulls = 0
+        self._started = time.time()
+        self._open = True
+        return self._round_id
+
+    def end(self) -> Dict[str, Any]:
+        """标记当前轮收尾；返回本轮观测。"""
+        out = self.stats()
+        self._open = False
+        return out
+
+    def note_pull(self, n: int = 1) -> None:
+        """本轮内发生一次决策快照拉取（计数 +n）。"""
+        self._pulls += int(n or 0)
+
+    def stats(self) -> Dict[str, Any]:
+        """本轮观测：``{round_id, pulls, elapsed_ms}``。"""
+        return {
+            "round_id": self._round_id,
+            "pulls": self._pulls,
+            "elapsed_ms": round((time.time() - self._started) * 1000.0, 1) if self._started else 0.0,
+        }
+
+
+def _get_snapshot_round() -> "SnapshotRound":
+    """模块级工厂：跨热重载存活的快照轮跟踪器单例（挂 ``__magicflow_shared__``，非决策状态）。"""
+    import sys as _sys
+    import types as _types
+    _key = "__magicflow_shared__"
+    mod = _sys.modules.get(_key)
+    if mod is None:
+        mod = _types.ModuleType(_key)
+        _sys.modules[_key] = mod
+    if not hasattr(mod, "lock"):
+        import threading as _th
+        setattr(mod, "lock", _th.Lock())
+    obj = getattr(mod, "snapshot_round", None)
+    if obj is None or not isinstance(obj, SnapshotRound):
+        obj = SnapshotRound()
+        mod.snapshot_round = obj
+    return obj
+
+
+def begin_decision_round() -> int:
+    """新一轮决策开始：归零快照计数并记时。返回轮次 id。"""
+    return _get_snapshot_round().begin()
+
+
+def note_snapshot_pull(n: int = 1) -> None:
+    """本轮内发生一次决策快照拉取（计数 +n）。"""
+    _get_snapshot_round().note_pull(n)
+
+
+def decision_round_stats() -> Dict[str, Any]:
+    """本轮决策快照拉取观测：``{round_id, pulls, elapsed_ms}``。"""
+    return _get_snapshot_round().stats()
+
+
+def end_decision_round() -> Dict[str, Any]:
+    """标记当前决策轮收尾（后续 ``begin`` 才会新开一轮）。"""
+    return _get_snapshot_round().end()

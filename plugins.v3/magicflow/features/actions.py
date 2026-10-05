@@ -4,6 +4,7 @@
 （由原 `__init__.py` 拆分为 mixin，逐字搬运，行为不变。）
 """
 
+import time
 from datetime import datetime
 
 
@@ -101,6 +102,7 @@ class ActionsMixin:
                 delete_file=task.delete_files,
             )
             if success_count > 0:
+                self._note_deleted(task_id, [hash])
                 if self._store:
                     self._store.journal.record(
                         task_id=task_id,
@@ -115,6 +117,29 @@ class ActionsMixin:
         except Exception as e:
             self._log(f"手动删除种子失败: {e}", "error")
             return Response(success=False, message=str(e))
+
+    def _note_deleted(self, task_id: str, hashes) -> None:
+        """★ 7.19.4：手动删除后记「dead」冷却 + 内存速查，避免下一轮刷流把同一颗又拉回来。
+
+        背景：插件自己的清理（无进度/过慢/无上传）都会 `dead.mark`，但**手动删除**
+        以前只 `forget_torrents`（忘账），导致同一候选下轮被重新挑中 → 「删了又回来」。
+        """
+        now = time.time()
+        hs = [str(h).lower() for h in (hashes or []) if h]
+        if not hs:
+            return
+        try:
+            _mem = getattr(self, "_dead_hashes", None)
+            if isinstance(_mem, dict):
+                for h in hs:
+                    _mem[h] = now
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if self._store:
+                self._store.dead.mark(task_id, [f"hash:{h}" for h in hs], ts=now)
+        except Exception as _e:  # noqa: BLE001
+            self._log(f"手动删除后记 dead 失败:{_e}", "warning")
 
     def _control_torrent(self, task_id: str, hash: str, action: str) -> Response:
         """托管种子控制:暂停 / 恢复做种 / 强制校验。"""
@@ -232,6 +257,8 @@ class ActionsMixin:
                     self._store.clear_manual_paused(task_id, done)
                 if action == "delete":
                     self._store.forget_torrents(task_id, done)
+            if action == "delete" and done:
+                self._note_deleted(task_id, done)
                 self._store.journal.record(
                     task_id=task_id,
                     kind=action,

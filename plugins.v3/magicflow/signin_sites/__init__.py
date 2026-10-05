@@ -27,6 +27,11 @@ class SiteSigninHandler(metaclass=ABCMeta):
     # 匹配的站点 Url（各实现类自行设置）
     site_url = ""
 
+    # ★ 7.19.0：该站是否「确实是 API 鉴权站且**本就不支持**签到/登录」（如馒头：官方口径
+    #   第三方工具存取不算登入）。置 True 时，signin.py 的「API 鉴权站」短路才会把它拦下
+    #   （如实回报「不支持」）；默认 False = 有专用处理器就优先走处理器（如叶PT 走 openApi+Altcha）。
+    api_no_signin = False
+
     @abstractmethod
     def match(self, url: str) -> bool:
         """根据站点 Url 判断是否匹配当前处理器。"""

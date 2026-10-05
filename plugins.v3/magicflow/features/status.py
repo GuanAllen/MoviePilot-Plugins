@@ -283,11 +283,20 @@ class StatusMixin:
         if not task:
             return None
         store_stats = self._store.get_task_stats(task_id) if self._store else {}
+        # ★ 7.15.0 可观测：直读内存状态对象上的「本轮决策轨迹」
+        #   （store 是进程级单例，热重载不重建 → 新字段进不了 get_task_stats，这里同口径补上）
+        _dec: Dict[str, Any] = {}
+        try:
+            _st = self._store.task_states.get(task_id) if self._store else None
+            _dec = dict(getattr(_st, "last_decision", None) or {})
+        except Exception:  # noqa: BLE001
+            _dec = {}
         return {
             **task.to_dict(),
             **store_stats,
             **self._phase_info(task_id),
             **self._task_goal_status(task),
+            "last_decision": _dec,
         }
 
     def _compute_summary(self) -> Dict[str, Any]:
@@ -535,6 +544,7 @@ class StatusMixin:
                 "batch": int(getattr(self, "_reseed_batch", RESEED_BATCH) or 1),
                 "min_size_gb": float(getattr(self, "_reseed_min_size_gb", RESEED_MIN_SIZE_GB) or 0.0),
             },
+            "claim": self._claim_cfg(),
             "live": dict(getattr(self, "_live_cfg", {}) or {}),
             "signin": self._signin_cfg_view(),
             "cloud": self._cloud_cfg_view(),

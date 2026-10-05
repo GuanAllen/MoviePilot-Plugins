@@ -27,6 +27,53 @@ REUSE_MARK = "魔流-辅种"
 logger = logging.getLogger("magicflow")
 DownloaderHelper = None
 
+# hash -> (ts, domain)；空 tracker 种的归属兜底缓存（announce 域名几乎不变）
+_TRACKER_DOMAIN_CACHE: Dict[str, Tuple[float, str]] = {}
+_TRACKER_DOMAIN_TTL = 1800.0
+
+
+# ---------------------------------------------------------------------------
+# ★ 删除闸门安装器 / fail-closed 策略（Master 2026-10-05「删除令出一门」补洞）
+#   - set_gate_installer(fn)：注册「适配器一构造就自动挂闸门」的进程级安装器。
+#     ``DownloaderAdapter.__init__`` 末尾会调用它 → **裸构造**（不经 _get_downloader 的
+#     ``DownloaderAdapter(...)``）也会自动带上 gate/deletion_log，消除「类属性 _global_gate
+#     至少要设过一次」的顺序依赖（热重载后类属性归零 → 裸构造先跑 → 删种无闸门）。
+#   - set_gate_fail_closed(flag)：运行时切换「闸门缺失/异常时是否阻断删除」。
+#     默认 True（安全）：拿不到硬保护判定就宁可不删；False=旧行为（fail-open 放行）。
+# ---------------------------------------------------------------------------
+_INSTALL = None                 # 安装器：fn(adapter) -> None；None = 未注册（安全默认由 installer 兜底）
+_GATE_FAIL_CLOSED = True        # ★ 安全默认：与 common.DELETE_GATE_FAIL_CLOSED 对齐
+
+# ★ 10.2.0 下载即开账（影子记账）：添加成功后回调的 H&R 开账钩子。
+#   签名：fn(hash_string, site_domain, tag, content, hit_and_run)；异常必须被吞掉、绝不影响添加。
+#   11.7.0：新增第 5 参 ``hit_and_run``（逐种 H&R 标记，qB 侧无此信息，只能下载瞬间带入）。
+_HR_OPEN = None
+
+
+def set_hr_open_hook(fn) -> None:
+    """注册「下载即开账」钩子：``fn(hash_string, site_domain, tag, content, hit_and_run)``。
+
+    在 ``add_torrent`` **成功后**被调用（异常吞掉 + 记 error，绝不影响添加）。传 ``None`` 注销。
+    """
+    global _HR_OPEN
+    _HR_OPEN = fn
+
+
+def set_gate_installer(fn) -> None:
+    """注册删除闸门安装器：``fn(adapter)`` 在每个 DownloaderAdapter 构造末尾被调用。
+
+    ``fn`` 应给适配器挂上 ``gate``（硬保护判定）与 ``deletion_log``（统一台账），并同步类属性
+    ``_global_gate`` / ``_global_dlog``（向后兼容）。传 ``None`` 可注销。
+    """
+    global _INSTALL
+    _INSTALL = fn
+
+
+def set_gate_fail_closed(flag: bool) -> None:
+    """设置删除闸门「失败即封」策略（True=安全默认；False=回退旧 fail-open 行为）。"""
+    global _GATE_FAIL_CLOSED
+    _GATE_FAIL_CLOSED = bool(flag)
+
 
 class TorrentFetchFlowControl(RuntimeError):
     """站点对 .torrent 下载接口触发流控（429 / 限速）。
@@ -381,10 +428,14 @@ class TorrentInfo:
     progress: float = 0.0        # 下载进度 0~1
     downloaded: float = 0.0      # 已下载字节
     added_on: float = 0.0        # 加入下载器的时间戳（秒）
+    last_activity: float = 0.0   # 最后一次活动时间戳（秒；qB last_activity，用于停滞估算）
+    completion_on: float = 0.0   # ★ 11.6.1 完成时间戳（秒；qB completion_on，H&R 做种时长的保守上界）
     content_path: str = ""
     is_zero_bonus: bool = False
     is_free: bool = False
     is_double_free: bool = False
+    # ★ 11.7.0：该字段**只由候选构造**（fetcher 从站点列表读到的逐种标记），qB 侧没有此信息、
+    #   也不在 ``_from_qb`` 映射里；账单的 ``rule`` 必须在**下载瞬间**用候选值落账，不得回读 qB 快照。
     hit_and_run: bool = False
     tracker: str = ""
     volume_factor: float = 1.0
@@ -406,6 +457,38 @@ class TorrentInfo:
     def age_weeks(self) -> float:
         """生存周数（等同于做种时间）。"""
         return self.seed_time_weeks or (self.seed_time / 3600 / (7 * 24) if self.seed_time else 0.0)
+
+
+def seed_hours_for_hr(torrent: Any, now: float = 0.0) -> float:
+    """H&R 口径的「已挂做种小时数」——**保守**取值。
+
+    ★ 11.6.1 修：qB ``seeding_time`` 在部分情形会把「未下完的时段」也算进去
+    （实测 CARPT 目标 ``fe00726e1dd4``：added 06:49、真正完成 22:42，qB 却报 16.0h）。
+    直接采信 → 「挂够 24h」提前达成 → 账单提前结清 → 提前删种 → **真欠 H&R**。
+    故取：① 未下完（``progress < 0.999``）→ 0；② 已下完 → ``min(qB seeding_time, now - completion_on)``。
+    只会往**小**里算（= 保护更久），不会让欠账被低估。
+    """
+    try:
+        prog = float(getattr(torrent, "progress", 0) or 0)
+    except (TypeError, ValueError):
+        prog = 0.0
+    if prog < 0.999:
+        return 0.0
+    try:
+        sec = float(getattr(torrent, "seed_time", 0) or 0)
+    except (TypeError, ValueError):
+        sec = 0.0
+    try:
+        comp = float(getattr(torrent, "completion_on", 0) or 0)
+    except (TypeError, ValueError):
+        comp = 0.0
+    if comp > 0:
+        try:
+            _now = float(now or 0) or time.time()
+        except Exception:  # noqa: BLE001
+            _now = time.time()
+        sec = min(sec, max(0.0, _now - comp))
+    return max(0.0, sec) / 3600.0
 
 
 @dataclass
@@ -438,7 +521,19 @@ class DownloaderAdapter:
         self._downloader = None
         self._service = None
         self.tags_enabled = True  # ★ 标签写开关（show_qb_tags=False 时由上层关掉）
+        # ★ 删除唯一入口（Master 2026-10-05「删除令出一门」）：由插件挂上
+        #   gate=硬保护判定回调 / deletion_log=统一台账回调。见 features/deletegate.py。
+        self.gate = None
+        self.deletion_log = None
         self._init_downloader()
+        # ★ 裸构造也自动挂闸门：注册在案的安装器（见 set_gate_installer）在构造末尾执行 →
+        #   消除「类属性 _global_gate 至少要设过一次」的顺序依赖（热重载后归零 → 裸构造无闸门）。
+        #   安装器本身失败也不放行：delete_torrents 的 fail-closed 兜底会把删种全阻断。
+        if _INSTALL is not None:
+            try:
+                _INSTALL(self)
+            except Exception as _ins_err:  # noqa: BLE001
+                logger.error(f"删除闸门安装器执行失败（fail-closed 兜底仍生效）: {_ins_err}")
 
     def _init_downloader(self) -> None:
         """初始化下载器实例。"""
@@ -642,12 +737,19 @@ class DownloaderAdapter:
     def tracker_domain(self, hash_string: str) -> str:
         """按需从 ``torrents_trackers`` 解析站点域名（qB 的 ``tracker`` 字段常为空时的兜底）。
 
-        实测 qB ``torrents_info`` 的 tracker 字段会为空（138/922），但逐 hash 的
+        实测 qB ``torrents_info`` 的 tracker 字段会为空（实测 250/726），但逐 hash 的
         ``torrents_trackers`` 能拿到真实 announce 地址 —— 只在需要归属判定时调用。
+
+        ★ 带 TTL 缓存：纳管/同站识别每轮都会问，而 announce 域名几乎不变；
+          不缓存的话每个任务每轮要为「空 tracker」的种打 200+ 次 qB 请求。
         """
         h = str(hash_string or "").strip().lower()
         if not h:
             return ""
+        _now = time.time()
+        _hit = _TRACKER_DOMAIN_CACHE.get(h)
+        if _hit and (_now - _hit[0]) < _TRACKER_DOMAIN_TTL:
+            return _hit[1]
         try:
             qbc = self._qb_client()
             rows = self._qb_call("torrents_trackers", torrent_hash=h) or []
@@ -663,7 +765,9 @@ class DownloaderAdapter:
                 if host.startswith(pre) and len(host) > len(pre) + 3:
                     host = host[len(pre):]
             if host:
+                _TRACKER_DOMAIN_CACHE[h] = (_now, host)
                 return host
+        _TRACKER_DOMAIN_CACHE[h] = (_now, "")
         return ""
 
     def get_torrents_by_tag(self) -> Tuple[Dict[str, List[TorrentInfo]], Optional[str]]:
@@ -1091,6 +1195,16 @@ class DownloaderAdapter:
             added_on = float(added_on_raw or 0)
         except (TypeError, ValueError):
             added_on = 0.0
+        # ★ 11.2.1：最后活动时间（qB ``last_activity``）——用于「停滞估算」
+        try:
+            last_activity = float(_kv(torrent, "last_activity", 0) or 0)
+        except (TypeError, ValueError):
+            last_activity = 0.0
+        # ★ 11.6.1：完成时间戳（qB ``completion_on``）——H&R 做种时长保守上界
+        try:
+            completion_on = float(_kv(torrent, "completion_on", 0) or 0)
+        except (TypeError, ValueError):
+            completion_on = 0.0
 
         # 标签（qB 可能是字符串或列表，Tr 可能是列表）
         tags_raw = _kv(torrent, "tags", []) or []
@@ -1143,6 +1257,8 @@ class DownloaderAdapter:
             progress=progress,
             downloaded=downloaded,
             added_on=added_on,
+            last_activity=last_activity,
+            completion_on=completion_on,
             is_zero_bonus=is_zero_bonus,
             is_free=is_free,
             is_double_free=is_double_free,
@@ -1160,6 +1276,8 @@ class DownloaderAdapter:
         cookie: Optional[str] = None,
         user_agent: Optional[str] = None,
         proxies: Optional[str] = None,
+        site_domain: str = "",
+        hit_and_run: bool = False,
     ) -> Tuple[Optional[str], Optional[str]]:
         """
         添加种子到下载器。
@@ -1174,6 +1292,9 @@ class DownloaderAdapter:
             cookie: 站点 Cookie
             user_agent: User-Agent
             proxies: 代理
+            site_domain: 站点域名（10.2.0 下载即开账；可选，默认空）
+            hit_and_run: ★ 11.7.0 逐种 H&R 标记（如 YemaPT ``hrPunishEnable``）。qB 无此字段，
+                只能在**下载瞬间**由候选带入开账钩子；带默认值，老调用点行为不变。
 
         Returns:
             (种子 hash, 错误信息)
@@ -1183,9 +1304,10 @@ class DownloaderAdapter:
         if not str(download_dir or "").strip():
             return None, "未配置保存目录，已跳过（避免落到下载器默认目录）"
 
+        result: Tuple[Optional[str], Optional[str]] = (None, None)
         try:
             if self.downloader_name == "qbittorrent":
-                return self._add_torrent_qbittorrent(
+                result = self._add_torrent_qbittorrent(
                     content=content,
                     download_dir=download_dir,
                     tag=tag,
@@ -1197,7 +1319,7 @@ class DownloaderAdapter:
                     proxies=proxies,
                 )
             elif self.downloader_name == "transmission":
-                return self._add_torrent_transmission(
+                result = self._add_torrent_transmission(
                     content=content,
                     download_dir=download_dir,
                     labels=[tag] if tag else None,
@@ -1209,10 +1331,21 @@ class DownloaderAdapter:
                 )
             else:
                 return None, f"不支持的下载器: {self.downloader_name}"
-
         except Exception as e:
             logger.error(f"添加种子失败: {e}")
             return None, str(e)
+
+        # ★ 10.2.0 下载即开账（影子记账）：添加成功后回调 H&R 开账钩子（异常吞掉，绝不影响添加）
+        _hs, _err = result or (None, None)
+        if _hs and not _err:
+            try:
+                _fn = _HR_OPEN
+                if callable(_fn):
+                    _fn(str(_hs), str(site_domain or ""), str(tag or ""), content,
+                        bool(hit_and_run))
+            except Exception:  # noqa: BLE001
+                logger.error("HR 开账钩子异常", exc_info=True)
+        return result
 
     def _add_torrent_qbittorrent(
         self,
@@ -1417,13 +1550,21 @@ class DownloaderAdapter:
         self,
         hashes: List[str],
         delete_file: bool = False,
+        reason: str = "",
+        source: str = "",
     ) -> Tuple[int, Optional[str]]:
         """
         删除种子。
 
+        ★ 这是插件内**唯一**的删种物理入口（Master 2026-10-05「删除令出一门」）。
+        删除前先过 ``self.gate``（硬保护：欠 H&R / 跨站来源份 / 已认领 / 手动保留）——
+        受保护的一律拒删；删完（含失败 / 拦截）写 ``self.deletion_log`` 统一台账。
+
         Args:
             hashes: 种子 hash 列表
             delete_file: 是否删除文件
+            reason: 删除原因（进统一台账，便于排障）
+            source: 调用来源（模块.函数；留空则由台账自动从调用栈推断）
 
         Returns:
             (成功删除数量, 错误信息)
@@ -1432,6 +1573,60 @@ class DownloaderAdapter:
             return 0, "下载器不可用"
 
         if not hashes:
+            return 0, None
+
+        # ★ 硬保护闸门：任何路径都不得删「欠 H&R / 跨站来源份 / 已认领 / 手动保留」的种。
+        #   ★ 2026-10-05 补两个洞（fail-closed，默认开，见 common.DELETE_GATE_FAIL_CLOSED）：
+        #     ① fail-silent：gate 取值链**拿不到任何回调**（含热重载后类属性归零 + 裸构造）→ 旧代码整段跳过；
+        #     ② fail-open：gate 回调**抛异常** → 旧代码 _blk=set() 照样删。
+        #   现在两者都 → **全部阻断**（不删、返回 0、台账标注 blocked_by=gate_error）。
+        #   set_gate_fail_closed(False) 可回退旧行为（放行 / 仅记日志）。
+        _blocked: List[str] = []
+        _gate = getattr(self, "gate", None) or getattr(type(self), "_global_gate", None)
+        if _gate is None:
+            if _GATE_FAIL_CLOSED:
+                logger.error(
+                    "[删除闸门] 未安装闸门（fail-closed）：拒绝删除全部 %d 个种子（硬保护无法判定）"
+                    % len(hashes)
+                )
+                _blocked = list(hashes)
+                self._emit_delete_log(
+                    [], delete_file, reason, source,
+                    "删除闸门未安装（fail-closed），已全部阻断",
+                    _blocked, blocked_by="gate_error",
+                )
+                return 0, "删除闸门未安装（fail-closed），已全部阻断"
+            # 兼容旧行为：拿不到闸门 → 放行
+            logger.warning("[删除闸门] 未安装闸门，按旧行为放行（fail-open）")
+        else:
+            try:
+                _blk = {str(x).strip().lower() for x in (_gate(list(hashes)) or set())}
+            except Exception as _g_err:  # noqa: BLE001
+                if _GATE_FAIL_CLOSED:
+                    logger.error(
+                        "[删除闸门] 闸门异常（fail-closed）：拒绝删除全部 %d 个种子: %s"
+                        % (len(hashes), _g_err)
+                    )
+                    _blocked = list(hashes)
+                    self._emit_delete_log(
+                        [], delete_file, reason, source,
+                        f"删除闸门异常（fail-closed），已全部阻断: {_g_err}",
+                        _blocked, blocked_by="gate_error",
+                    )
+                    return 0, f"删除闸门异常（fail-closed），已全部阻断: {_g_err}"
+                # 兼容旧行为：闸门异常 → 放行
+                logger.error(f"删除闸门异常（放行）: {_g_err}")
+                _blk = set()
+            if _blk:
+                _blocked = [h for h in hashes if str(h or "").strip().lower() in _blk]
+                hashes = [h for h in hashes if str(h or "").strip().lower() not in _blk]
+                logger.warning(
+                    f"[删除闸门] 拦截 {len(_blocked)} 个受硬保护种子"
+                    f"（欠 H&R / 跨站来源份 / 已认领 / 手动保留）"
+                )
+
+        if not hashes:
+            self._emit_delete_log([], delete_file, reason, source, None, _blocked)
             return 0, None
 
         # ★ 删种前先向 tracker 报到一次：站点更快把状态从「下载中/做种中」更新为已停止，
@@ -1456,19 +1651,56 @@ class DownloaderAdapter:
 
         try:
             success_count = 0
+            _ok_hashes: List[str] = []
             for hash_string in hashes:
                 _df = bool(delete_file) and str(hash_string or "").strip().lower() not in shared
                 if self._downloader.delete_torrents(ids=[hash_string], delete_file=_df):
                     success_count += 1
+                    _ok_hashes.append(hash_string)
 
+            _err: Optional[str] = None
             if success_count < len(hashes):
-                return success_count, f"部分种子删除失败 ({success_count}/{len(hashes)})"
-
-            return success_count, None
+                _err = f"部分种子删除失败 ({success_count}/{len(hashes)})"
+            elif _blocked and success_count == 0:
+                _err = f"{len(_blocked)} 个种子受硬保护，已拦截（未删除）"
+            self._emit_delete_log(_ok_hashes, delete_file, reason, source, _err, _blocked)
+            return success_count, _err
 
         except Exception as e:
             logger.error(f"删除种子失败: {e}")
+            self._emit_delete_log([], delete_file, reason, source, str(e), _blocked)
             return 0, str(e)
+
+    def _emit_delete_log(
+        self,
+        hashes: List[str],
+        delete_file: bool,
+        reason: str,
+        source: str,
+        error: Optional[str],
+        blocked: Optional[List[str]],
+        blocked_by: str = "",
+    ) -> None:
+        """调用插件挂上的统一台账回调（未挂则忽略）。
+
+        ``blocked_by``：阻断原因分类（如 ``"gate_error"`` 表示闸门故障导致 fail-closed 全阻断）；
+        旧签名回调（无该形参）自动退化为 6 参调用，保证向后兼容。
+        """
+        cb = getattr(self, "deletion_log", None) or getattr(type(self), "_global_dlog", None)
+        if not cb:
+            return
+        try:
+            cb(list(hashes or []), bool(delete_file), str(reason or ""),
+               str(source or ""), error, list(blocked or []), blocked_by=str(blocked_by or ""))
+        except TypeError:
+            # 兼容旧签名回调：退回 6 参调用
+            try:
+                cb(list(hashes or []), bool(delete_file), str(reason or ""),
+                   str(source or ""), error, list(blocked or []))
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception:  # noqa: BLE001
+            pass
 
     def _shared_file_hashes(self, hashes: List[str]) -> Set[str]:
         """返回这些 hash 中「文件被下载器里别的种子共用」的子集（小写）。

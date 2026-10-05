@@ -511,6 +511,8 @@ class SwapMixin:
                         user_agent=getattr(c, "site_ua", None),
                         upload_limit=task.up_speed,
                         download_limit=task.dl_speed,
+                        site_domain=getattr(c, "site_domain", "") or "",
+                        hit_and_run=bool(getattr(c, "hit_and_run", False)),
                     )
                     if not new_hash:
                         self._log(f"魔流 [{task.name}] 换种:换入失败 {str(getattr(c, 'title', ''))[:40]} ({err})", "warning")

@@ -39,6 +39,19 @@ from ..common import (
 )
 
 
+def _reuse_local_complete(local: Any) -> bool:
+    """★ 11.2.1：本机种必须「已下完」才能当辅种源。
+
+    ``progress < 0.999``（含 pausedDL 这种「暂停但未下完」）的种没有完整文件，
+    辅种必然校验不过（“全站辅种:xx 挂种失败 文件不匹配…已撤销”），纯属空转。
+    未知 progress → 保守放行（行为不变）。
+    """
+    try:
+        return float(getattr(local, "progress", 1.0) or 1.0) >= 0.999
+    except (TypeError, ValueError):
+        return True
+
+
 class ReuseMixin:
     """reuse 功能集（原 MagicFlow 方法原样搬入）。"""
 
@@ -401,6 +414,8 @@ class ReuseMixin:
             return False, "skip"
 
         for local in same_size:
+            if not _reuse_local_complete(local):
+                continue  # ★ 11.2.1：未下完的本机种不能当辅种源（避免无效 ADD-REUSE 空转）
             local_hash = (local.hash or "").lower()
             if not local_hash:
                 continue
@@ -452,6 +467,8 @@ class ReuseMixin:
         if not cand_fp:
             return "", None
         for local in same:
+            if not _reuse_local_complete(local):
+                continue  # ★ 11.2.1：未下完的本机种不能当辅种源
             lh = (local.hash or "").lower()
             if not lh:
                 continue
@@ -506,7 +523,7 @@ class ReuseMixin:
         # ① 本机同 hash
         if local_index and h:
             local = local_index.get(h)
-            if local is not None and str(
+            if local is not None and _reuse_local_complete(local) and str(
                 getattr(local, "state", "") or ""
             ).lower() not in QB_DOWNLOADING_STATES:
                 return "hash", local
@@ -531,6 +548,8 @@ class ReuseMixin:
             for sib in (iyuu_map.get(h) or []):
                 loc = local_index.get(str(sib or "").lower())
                 if loc is None:
+                    continue
+                if not _reuse_local_complete(loc):
                     continue
                 if str(getattr(loc, "state", "") or "").lower() in QB_DOWNLOADING_STATES:
                     continue

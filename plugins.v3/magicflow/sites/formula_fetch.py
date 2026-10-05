@@ -21,7 +21,7 @@ from __future__ import annotations
 import html as _html
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from ..bonus import BonusParams
 
@@ -527,18 +527,53 @@ def parse_torrent_promotion(html_text: str) -> Dict[str, Any]:
     """
     if not html_text:
         return {"promotion": "unknown", "raw": ""}
-    m = re.search(r"id=['\"]?top['\"]?[^>]*>(.*?)</h1>", html_text, re.S | re.I)
-    if not m:
+    # ★ 促销信息的位置**因皮肤而异**，不能只看 <h1>：
+    #   ① 经典 NexusPHP：``<h1 id='top'>标题 [免费 57分钟][0个做种者]</h1>``
+    #   ② 新版（dstudio 等）：``<header id="top">…<h1 class="details-title">标题</h1>
+    #      <div class="details-title-statuses"><span>[ <font class='free'>免费</font> ]
+    #      剩余时间：…</span></div>…</header>`` → 促销在 h1 **之后**的兄弟块里
+    _anchor = re.search(r"id=['\"]?top['\"]?[^>]*>", html_text, re.I)
+    if not _anchor:
         return {"promotion": "unknown", "raw": ""}
-    scope = re.sub(r"<[^>]+>", "", m.group(1)).replace("&nbsp;", " ")
+    _start = _anchor.end()
     raw = ""
-    for bracket in re.findall(r"\[([^\[\]]{1,40})\]", scope):
-        txt = bracket.strip()
-        if "免费" in txt or "2x" in txt.lower():
-            raw = txt
+    _scope_htmls: List[str] = []
+    _h1end = html_text.find("</h1>", _start)
+    if 0 <= _h1end and (_h1end - _start) <= 20000:
+        _scope_htmls.append(html_text[_start:_h1end])          # ① 经典
+    _tail = html_text[_start:_start + 20000]
+    _hend = _tail.lower().find("</header>")
+    _hdrend = _tail.lower().find("</div>", 0, 4000)
+    _scope_htmls.append(_tail[:_hend] if 0 <= _hend <= 4000 else _tail[:2500])   # ② 新版
+    for _sh in _scope_htmls:
+        _txt = re.sub(r"<[^>]+>", " ", _sh).replace("&nbsp;", " ")
+        for bracket in re.findall(r"\[([^\[\]]{1,40})\]", _txt):
+            txt = bracket.strip()
+            if "免费" in txt or "2x" in txt.lower() or "%" in txt or "半价" in txt:
+                raw = txt
+                break
+        if raw:
             break
+    # ③ 蓝图兜底：促销用 <img class="pro_free"> 标、括号文本不在标题区
+    if not raw and _scope_htmls:
+        _blk = _scope_htmls[-1]
+        if re.search(r'class=["\']pro_free2up["\']', _blk):
+            raw = "2X免费"
+        elif re.search(r'class=["\']pro_free["\']', _blk):
+            raw = "免费"
+        elif re.search(r'class=["\']pro_(?:50|30|25)pctdown["\']', _blk):
+            raw = "50%"
+    # 免费到期（限时）→ 供调用方参考
+    _fu = ""
+    if _scope_htmls:
+        _fm = re.search(
+            r"剩余时间[：:]\s*<span[^>]*title=[\"'](\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[\"']",
+            _scope_htmls[-1],
+        )
+        if _fm:
+            _fu = _fm.group(1)
     if not raw:
-        return {"promotion": "none", "raw": ""}
+        return {"promotion": "none", "raw": "", "free_until": _fu}
     low = raw.lower()
     if "50%" in raw or "30%" in raw or "25%" in raw or "半价" in raw:
         promo = "partial"
@@ -548,7 +583,7 @@ def parse_torrent_promotion(html_text: str) -> Dict[str, Any]:
         promo = "twoup"
     else:
         promo = "none"
-    return {"promotion": promo, "raw": raw}
+    return {"promotion": promo, "raw": raw, "free_until": _fu}
 
 
 def fetch_torrent_promotion(site: Any, page_url: str, timeout: int = 20) -> Dict[str, Any]:

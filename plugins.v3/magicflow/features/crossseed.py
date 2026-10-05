@@ -19,6 +19,7 @@ from ..downloader_ops import (
     DownloaderAdapter,
     QB_DOWNLOADING_STATES,
     QB_PAUSED_STATES,
+    seed_hours_for_hr,
 )
 from ..fingerprint import fingerprint, info_hash
 from ..live_stats import title_match
@@ -932,8 +933,8 @@ class CrossSeedMixin:
             # ★ ② 实际做种时长（qB seeding_time）：达标线一到 = H&R 义务完成 → 可撤种
             #   （Master：连挂挂满就行 —— 用真实做种秒数判，不看墙钟）
             try:
-                seeded = float(getattr(info, "seed_time", 0) or 0.0)
-            except (TypeError, ValueError):
+                seeded = seed_hours_for_hr(info) * 3600.0
+            except Exception:  # noqa: BLE001
                 seeded = 0.0
             try:
                 need = float(rec.get("need_hours") or 0.0)
@@ -945,7 +946,9 @@ class CrossSeedMixin:
                 rec["seeded_sec"] = seeded
                 try:
                     self._tag_groups().note_hr_progress(
-                        self._resource_gid(rec.get("title"), rec.get("size_gb")), seeded_seconds=seeded
+                        self._resource_gid(rec.get("title"), rec.get("size_gb"),
+                                           str(rec.get("resource_id") or "")),
+                        seeded_seconds=seeded, by_hash=h
                     )
                 except Exception:  # noqa: BLE001
                     pass
@@ -955,8 +958,9 @@ class CrossSeedMixin:
                 res["completed"] = int(res.get("completed") or 0) + 1
                 # ★ 挂够时长 = 来源站种子的义务还完 → 给「资源」结清 H&R 账单
                 try:
-                    _gid = self._resource_gid(rec.get("title"), rec.get("size_gb"))
-                    hr = self._tag_groups().note_hr_progress(_gid, seeded_seconds=seeded)
+                    _gid = self._resource_gid(rec.get("title"), rec.get("size_gb"),
+                                             str(rec.get("resource_id") or ""))
+                    hr = self._tag_groups().note_hr_progress(_gid, seeded_seconds=seeded, by_hash=h)
                     if hr.get("settled"):
                         self._log(f"资源:H&R 账单已结清 —— 资源「{str(rec.get('title') or '')[:50]}」"
                                   f"（来源站 {hr.get('site') or rec.get('site_b', '')} 已挂 {seeded / 3600.0:.1f}h）")
@@ -1260,8 +1264,28 @@ class CrossSeedMixin:
                 except (TypeError, ValueError):
                     until = 0.0
                 age_min = round(max(0.0, (now - float(rec.get("created") or 0)) / 60.0), 1)
+                # ★ 7.19.3：来源份也带「下载器实时进度/状态」，与在途同口径
+                _p_prog: Any = None
+                _p_state = ""
+                try:
+                    _dl_name = str(rec.get("downloader") or "qbittorrent")
+                    _dl = dl_cache.get(_dl_name)
+                    if _dl is None:
+                        _dl = self._get_downloader(_dl_name)
+                        dl_cache[_dl_name] = _dl
+                    if _dl is not None and getattr(_dl, "is_available", False):
+                        _info = _dl.get_torrent_info(h)
+                        if _info is not None:
+                            _p_prog = round(float(getattr(_info, "progress", 0) or 0), 4)
+                            _p_state = str(getattr(_info, "state", "") or "")
+                except Exception:  # noqa: BLE001
+                    _p_prog, _p_state = None, ""
                 sources.append({
                     "sib_hash": h,
+                    "progress": _p_prog,
+                    "state": _p_state,
+                    # ★ 7.19.3：老「回填」记录没有 来源/目标站 信息 → 前端当前页不展示（历史留在操作记录）
+                    "legacy": bool(rec.get("backfilled")) or not str(rec.get("site_a") or ""),
                     "title": rec.get("title", ""),
                     "site_a": rec.get("site_a", ""),
                     "site_b": rec.get("site_b", ""),
@@ -1276,6 +1300,7 @@ class CrossSeedMixin:
                     "seed_until": until,
                     "remain_min": round(max(0.0, (until - now) / 60.0), 1),
                     "done": bool(until and now >= until),
+                    "pool": str(rec.get("pool") or ""),
                     "files_shared": bool(rec.get("files_shared")),
                     "age_min": age_min,
                     "task_name": rec.get("task_name", ""),
