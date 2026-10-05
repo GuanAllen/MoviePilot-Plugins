@@ -3658,13 +3658,41 @@ onUnmounted(() => {
               aria-label="更多"
             />
           </template>
-          <VList density="comfortable" class="magicflow-more-menu" min-width="210">
+          <VList density="comfortable" class="magicflow-more-menu" min-width="228">
             <VListItem
               v-if="tileVisible('recommend') && recommendData.enabled !== false"
               prepend-icon="mdi-movie-star-outline"
               title="推荐"
               :subtitle="(recommendData.recommended || 0) > 0 ? `${recommendData.recommended} 个待确认` : '影视推荐甄别'"
               @click="openRecommend"
+            />
+            <VListItem v-if="tileVisible('cloud')" prepend-icon="mdi-cloud-upload-outline" title="云盘归档" @click="openCloud" />
+            <VListItem
+              v-if="tileVisible('crossseed')"
+              prepend-icon="mdi-swap-horizontal-bold"
+              title="跨站取种"
+              :subtitle="Number(crossseedData.count || 0) > 0 ? `${crossseedData.count} 个可免费取种` : '跨站免费取种'"
+              @click="showCrossseed"
+            />
+            <VListItem
+              v-if="tileVisible('douban')"
+              prepend-icon="mdi-database-search-outline"
+              title="豆瓣评分"
+              :subtitle="`库 ${doubanServiceData.records || 0} 条${doubanServiceData.ok ? '' : '（服务不可用）'}`"
+              @click="openDoubanService"
+            />
+            <VListItem
+              prepend-icon="mdi-heart-pulse"
+              title="健康自检"
+              :subtitle="healthBadgeCount > 0 ? `${healthBadgeCount} 项待处理` : '各子系统正常'"
+              @click="openHealth"
+            />
+            <VListItem
+              v-if="tileVisible('ondemand')"
+              prepend-icon="mdi-cloud-download-outline"
+              title="点播"
+              subtitle="片名 / 链接 → 搜索选源（免费优先）"
+              @click="openOndemand"
             />
             <VListItem
               v-if="tileVisible('exam') && examData.enabled !== false"
@@ -3673,7 +3701,6 @@ onUnmounted(() => {
               :subtitle="examBadge > 0 ? `${examBadge} 个未通过` : '考核进度与一键起任务'"
               @click="openExam"
             />
-            <VListItem v-if="tileVisible('cloud')" prepend-icon="mdi-cloud-upload-outline" title="云盘归档" @click="openCloud" />
             <VListItem prepend-icon="mdi-lifebuoy" title="死种补源" subtitle="停滞欠 H&R 的种 → 无 H&R 站补源" @click="openRescue" />
             <!-- ★ 上面是「详情」，下面是「设置」：分隔开，别混成一串 -->
             <VDivider class="my-1" />
@@ -11040,14 +11067,21 @@ onUnmounted(() => {
     display: none;
   }
 
-  /* ★ 窄屏：把「新建任务 / 推荐 / 云盘归档 / 插件设置 / 关闭」这几个按钮收进右上角「⋮ 更多」菜单，
-     腾出横向空间给品牌（其余版式与 3.2.0 保持一致） */
+  /* ★ 窄屏：顶栏只留「魔流」品牌 + 右上角「⋮ 更多」——把**所有**功能入口（推荐/云盘/跨站/豆瓣/
+     健康/点播/考核/补源/设置/关闭）都收进这一个菜单，别一边留图标、一边又放菜单（≡ 两边都有）。 */
   .magicflow-page__actions .magicflow-header-create,
   .magicflow-page__actions .magicflow-recommend-wrap,
   .magicflow-page__actions .magicflow-recommend-btn,
   .magicflow-page__actions .magicflow-exam-wrap,
   .magicflow-page__actions .magicflow-exam-btn,
   .magicflow-page__actions .magicflow-cloud-btn,
+  .magicflow-page__actions .magicflow-crossseed-wrap,
+  .magicflow-page__actions .magicflow-crossseed-btn,
+  .magicflow-page__actions .magicflow-douban-btn,
+  .magicflow-page__actions .magicflow-health-wrap,
+  .magicflow-page__actions .magicflow-health-btn,
+  .magicflow-page__actions .magicflow-ondemand-btn,
+  .magicflow-page__actions .magicflow-rescue-btn,
   .magicflow-page__actions .magicflow-settings-btn,
   .magicflow-page__actions .magicflow-hdr-sep,
   .magicflow-page__actions .magicflow-close-btn {
