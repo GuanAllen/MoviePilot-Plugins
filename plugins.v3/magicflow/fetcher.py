@@ -490,6 +490,9 @@ _NP_PRO_CLASSES: Dict[str, Tuple[float, float]] = {
     "pro_2up50pct": (0.5, 2.0),   # 2X 上传 + 50% 下载
     "pro_halfdown": (0.5, 1.0),
     "pro_50pct": (0.5, 1.0),
+    "pro_50pctdown": (0.5, 1.0),   # dstudio 等：50% 下载（非免费，别当免费）
+    "pro_30pctdown": (0.7, 1.0),
+    "pro_25pctdown": (0.75, 1.0),
     "pro_75pct": (0.25, 1.0),
     "pro_30pct": (0.7, 1.0),
     "pro_25pct": (0.75, 1.0),
@@ -805,15 +808,53 @@ class SiteFetcher:
                     r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[\"']" % re.escape(promo),
                     chunk,
                 )
+                if not _em:
+                    # ★ 皮肤差异（dstudio 等）：到期时间不在促销标记后，而是单独一行
+                    #   ``<font color=...>剩余时间：<span title="YYYY-MM-DD HH:MM:SS">2天0时</span></font>``
+                    #   读不到 → 「限时免费闸门」失效 → 会把马上到期的免费种下回来（下了就白烧流量）。
+                    _em = re.search(
+                        r"剩余时间[：:]\s*<span[^>]*title=[\"']"
+                        r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[\"']",
+                        chunk,
+                    )
                 if _em:
                     free_until = _em.group(1)
                     free_remaining_sec = promo_remaining_sec(free_until)
 
             # 添加时间（列表页 <span title="YYYY-MM-DD HH:MM:SS">）
+            # ★ 皮肤差异：dstudio 等把「免费到期时间」也写成同样的 span 且排在前面 →
+            #   必须优先取明确的「时间单元格」，并排除「剩余时间」旁边那个，
+            #   否则免费种会被算成刚发布（age_weeks=0 → 魔力公式 Ti 全按 0 算）。
             pubdate = None
-            dm = re.search(r'<span title=["\'](\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})["\']', chunk)
-            if dm:
-                pubdate = dm.group(1)
+            _dm = re.search(
+                r'class=["\'][^"\']*(?:torrent-cell-time|torrent-info-text-added)[^"\']*["\'][^>]*>'
+                r'\s*<span[^>]*title=["\'](\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})["\']',
+                chunk,
+            )
+            if not _dm:
+                _expiry_dates = set(
+                    re.findall(
+                        r"剩余时间[：:]\s*<[^>]*>?\s*<span[^>]*title=[\"']"
+                        r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[\"']",
+                        chunk,
+                    )
+                )
+                if promo:
+                    _em2 = re.search(
+                        r"promotion\s+%s['\"]\s*>[^<]*</font>\s*<span\s+title=[\"']"
+                        r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[\"']" % re.escape(promo),
+                        chunk,
+                    )
+                    if _em2:
+                        _expiry_dates.add(_em2.group(1))
+                for _dm in re.finditer(
+                    r'<span\s+title=["\'](\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})["\']', chunk
+                ):
+                    if _dm.group(1) not in _expiry_dates:
+                        pubdate = _dm.group(1)
+                        break
+            else:
+                pubdate = _dm.group(1)
 
             # 大小：① 经典/CHD <td class="rowfollow">83.28<br>GB</td>
             #      ② 新版 <div class="torrent-info-text-size">1.01 GB</div>
@@ -874,9 +915,14 @@ class SiteFetcher:
             if not (size or seeders or leechers or enclosure):
                 continue
 
-            # ★ 站点促销规则补判（列表未标促销但规则上免费，如 >20GB 自动免费）
+            # ★ 站点促销规则补判（**仅当列表页没标任何下载促销时**，如 >20GB 自动免费）。
+            #   ★ 7.19.2：列表页若已给出 dv<1 的下载优惠（50%/30%/25% 等），那就是站点
+            #   当下生效的事实，**不能再被规则覆盖** —— 规则只描述「新种/常规免费」的静态条件，
+            #   不知道「免费限时几天/到期自动转为 50%」这类时效（踩过：dstudio 规则页写
+            #   「体积>0.1GB 自动免费 + 发布 3 天后自动永久 50%」→ 旧逻辑把满屏 pro_50pctdown
+            #   的全判成免费 → 全下 → 详情页核对又全删 → 下→删空转烧流量）。
             _rule_free = False
-            if dv != 0:
+            if float(dv) >= 1.0:
                 _why = promo_rule_verdict(site_domain, (size / (1024 ** 3)) if size else 0.0, title)
                 if _why:
                     _rule_free = True

@@ -74,6 +74,25 @@ BUILTIN_RULES: Dict[str, Dict[str, Any]] = {
         "seed_cap": None,
         "note": "财神（备用域名 cspt.cc）：同 cspt.top，**无 H&R**。",
     },
+    # ★ 11.7.0：逐种 H&R 站（无站点级规则，H&R 由发布者逐种开关）。
+    #   站点级无法评估具体种子的标记 ⇒ 补源（站点级预筛）必须**保守排除**。
+    "yemapt.org": {
+        "hr": False,
+        "seed_hours": None,
+        "seed_cap": None,
+        "per_torrent_hr": True,
+        "note": "野马PT：**无站点级 H&R**；H&R 由**发布者逐种开关**（openApi `hrPunishEnable`），"
+                "未达标会被罚（>10 个未达标种自动 ban），可去站点 HR 列表**花积分免罪**（罚分部分返还发布者）。"
+                "依据：https://wiki.yemapt.org/torrent/hit-and-run （2026-10-05 Master 引原文）。"
+                "⇒ 逐种标记站：补源禁用（保守排除）。",
+    },
+    "www.yemapt.org": {
+        "hr": False,
+        "seed_hours": None,
+        "seed_cap": None,
+        "per_torrent_hr": True,
+        "note": "野马PT（别名域名 www.）：同 yemapt.org，无站点级 H&R、H&R 逐种开关 ⇒ 补源禁用。",
+    },
     "kp.m-team.cc": {
         "hr": False,
         "seed_hours": None,
@@ -872,6 +891,28 @@ class SiteRules:
             if b.get("hr") is not None:
                 return bool(b.get("hr"))
         return None
+
+    def per_torrent_hr_of(self, domain: str) -> bool:
+        """该站 H&R 是否为**逐种开关**（如 YemaPT ``hrPunishEnable``）。
+
+        站点级无法评估具体种子的标记 ⇒ 需要「站点级预筛」的场景（补源）必须**保守排除**。
+        取值：账本记录里的 ``per_torrent_hr``（若有）→ 内置表 → 默认 ``False``。
+        """
+        d = _norm_domain(domain)
+        rec = dict(self.items().get(d) or {})
+        if not rec:
+            for k, v in self.items().items():
+                if _same_domain(k, d):
+                    rec = dict(v or {})
+                    break
+        if rec.get("per_torrent_hr") is not None:
+            return bool(rec.get("per_torrent_hr"))
+        b: Dict[str, Any] = {}
+        for k, v in BUILTIN_RULES.items():
+            if _same_domain(k, d):
+                b = dict(v or {})
+                break
+        return bool(b.get("per_torrent_hr"))
 
     def seed_cap_of(self, domain: str) -> Optional[int]:
         """该站「同时在册做种数上限」（``None`` = 未知 / 不限）。

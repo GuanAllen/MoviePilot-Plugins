@@ -323,6 +323,14 @@ class MagicFlowSettingsPayload(BaseModel):
     recommend_notify: bool = Field(True, description="命中推荐时推送通知")
     recommend_temp_ttl_days: float = Field(7.0, ge=0, le=3650, description="识别不出/不推荐的纯刷流临时种 TTL(天),0=不按此清")
     recommend_disk_min_free_gb: float = Field(50.0, ge=0, description="磁盘剩余低于该值(GB)即视为「磁盘不足」:推荐种立即按过期处理")
+    rescue_stall_hours: float = Field(
+        6.0, ge=0, le=720,
+        description="死种补源:未下完且 0 速停滞超过该小时数才纳入补源(默认 6,越小越灵敏)"
+    )
+    rescue_max_candidates: int = Field(
+        3, ge=1, le=10,
+        description="死种补源:每个目标最多列几个他站候选(默认 3;只选无 H&R 的站)"
+    )
 
     # ── 跨站辅种(兄弟站取种 → 回辅,3.11.0 流量兜底)──────────────────────
     #  跨站取种依赖「他站这个种免费」的判断。判断可能错(程序解析错 / 站点促销变了),
@@ -350,6 +358,20 @@ class MagicFlowSettingsPayload(BaseModel):
     reseed_batch: int = Field(10, ge=1, le=200, description="每轮最多处理多少个「本机种×目标站」对")
     reseed_min_size_gb: float = Field(1.0, ge=0, le=1000, description="小于该体积的本机种不参与(GB)")
     reseed_dry: bool = Field(True, description="干跑:只算不挂(先看能挂多少);默认开，确认链路后再关")
+
+    # ── 认领（claim，7.14.0）：把「我们在做种」的种在站点侧认领掉，换站点权益 ────────
+    #  CARPT：达标种子魔力奖励 = 正常值 ×2；代价：不达标 −100 魔力 / 主动放弃 −500。
+    #  ★ 写动作不可逆且有真实代价 → 默认关 + 默认干跑 + 写动作必须显式 confirm。
+    claim_enabled: bool = Field(False, description="认领:把本站在做的种在站点侧认领,换权益(默认关)")
+    claim_dry: bool = Field(True, description="认领干跑:只列表不写(默认开,确认链路后再关)")
+    claim_sites: List[str] = Field(default_factory=list, description="只在这些站认领(域名;空=全部支持的站)")
+    claim_daily_per_site: int = Field(20, ge=0, le=500, description="每站每天最多认领多少颗")
+    claim_batch: int = Field(5, ge=1, le=100, description="单轮最多认领多少颗")
+    claim_interval_sec: float = Field(8.0, ge=0, le=120, description="两次认领之间的最小间隔(秒,限速)")
+    claim_min_age_days: float = Field(0.0, ge=0, le=365, description="覆盖站点的最短发布天数(0=按站点规则)")
+    claim_require_seeders: int = Field(0, ge=0, le=1000, description="安全阀:做种人数低于该值不认领(0=不限)")
+    claim_min_size_gb: float = Field(0.0, ge=0, le=1000, description="安全阀:体积小于该值不认领(GB,0=不限)")
+    claim_exclude_zero_bonus: bool = Field(True, description="零魔种不认领(认领无收益)")
 
     # ── 标签模型(3.13.0):种子状态=标签,账本=真值源 ─────────────────────
     #  命名:魔流-<站点>-<状态>[-<子类>];状态 刷流/魔力/静默(新|资源|普通)/推荐。

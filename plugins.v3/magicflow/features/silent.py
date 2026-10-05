@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 
+from app.schemas import Response
+
 from ..bonus import (
     calc_bonus_per_hour,
 )
@@ -34,7 +36,10 @@ from ..common import (
     SILENT_HOST_INTERVAL_MINUTES,
     SILENT_HOST_TASK_ID,
     TAG_NEW_TIMEOUT,
+    begin_decision_round,
+    note_snapshot_pull,
 )
+from ..downloader_ops import seed_hours_for_hr
 
 
 class SilentMixin:
@@ -63,6 +68,11 @@ class SilentMixin:
         try:
             store = self._tag_state()
             _started = time.time()
+            # ★ P0：本轮只拉一次 qB 全量快照，同一轮内的 H&R 管理 / 超时归位 / 空壳清理共用一份
+            begin_decision_round()
+            self._decision_round_label = "silent_host"
+            _round_snap = self._tag_all_torrents() or {}
+            note_snapshot_pull(1)
             # 上一轮若被 reload/重启打断，会留下一条「运行中」记录 → 先收尾（>10min 才算异常）
             try:
                 for _r in self._store.journal.list_by_task(SILENT_HOST_TASK_ID, limit=5):
@@ -100,7 +110,7 @@ class SilentMixin:
                 return f"欠H&R {i.get('hr_pending')} 个均已挂种"
 
             def _s3() -> str:
-                i = self._hr_guard_tick(apply=True, limit=0)
+                i = self._hr_guard_tick(apply=True, limit=0, snap=_round_snap)
                 if i.get("tagged") or i.get("resumed") or i.get("cleared") or i.get("released"):
                     self._log(f"魔流:静默托管:H&R 管理:打标 {i.get('tagged')} · 拉起 {i.get('resumed')} · 摘标 {i.get('cleared')} · 松绑 {i.get('released')}")
                     return f"打标 {i.get('tagged')} · 拉起 {i.get('resumed')} · 摘标 {i.get('cleared')} · 松绑 {i.get('released')}"
@@ -132,7 +142,7 @@ class SilentMixin:
                 return ""
 
             def _s8() -> str:
-                _snap = self._tag_all_torrents()
+                _snap = _round_snap
                 try:
                     _hr_wait = self._silent_hr_pending(_snap)
                 except Exception:  # noqa: BLE001
@@ -153,7 +163,7 @@ class SilentMixin:
 
             def _s10() -> str:
                 # ★ 7.6.0: 文件已不在的托管种 → 认出即清（只删种不删文件）
-                i = self._missing_files_tick(apply=True)
+                i = self._missing_files_tick(apply=True, snap=_round_snap)
                 if i.get("deleted"):
                     return f"空壳种清理 {i.get('deleted')} 个（标称 {i.get('size_gb')}GB）"
                 return ""
@@ -177,6 +187,7 @@ class SilentMixin:
             _step("missing", "⑩空壳清理", _s10)
 
             self._silent_host_last = time.time()
+            self._decision_round_end()
             # ★ 操作记录：落明细 = 九步结果（前台「操作记录」可展开）
             try:
                 _items = [OperationItem(hash="", title="静默托管运行完成", source="run")]
@@ -306,14 +317,206 @@ class SilentMixin:
         cache["data"] = out
         return out
 
+    def silent_pool(self, limit: Any = 400, records: Any = 60) -> Response:
+        """★ 静默池全局视图（7.16.0，只读）：概览 / 按站 / 条目 / 记录。
+
+        静默池 = 「无主」种的池子（跨站 / 跨任务）。这些种不归任何任务管，由常驻
+        「静默托管」worker 负责：保挂 H&R、清未下完、超时降级（新→普通）、分拣（推荐→资源）。
+        本端点只做聚合（真值源 = 标签账本 ``tag_state`` + 下载器快照 + 跨站来源份），
+        不改动任何逻辑。
+        """
+        try:
+            _limit = int(limit or 400)
+        except (TypeError, ValueError):
+            _limit = 400
+        try:
+            _rlimit = int(records or 60)
+        except (TypeError, ValueError):
+            _rlimit = 60
+        now = time.time()
+        try:
+            led = dict(self._tag_state().items() or {})
+        except Exception:  # noqa: BLE001
+            led = {}
+        try:
+            torrents = self._tag_all_torrents() or {}
+        except Exception:  # noqa: BLE001
+            torrents = {}
+        try:
+            cssrc = dict(self._crossseed_sources().items() or {})
+        except Exception:  # noqa: BLE001
+            cssrc = {}
+        by_sub: Dict[str, int] = {}
+        sites: Dict[str, Dict[str, Any]] = {}
+        items: List[Dict[str, Any]] = []
+        hr_n = 0
+        total_gb = 0.0
+        incomplete = 0
+        for h, t in torrents.items():
+            rec = led.get(h) or {}
+            if str(rec.get("state") or "") != STATE_SILENT:
+                continue  # 只看「职务=静默」的；在岗（刷流/魔力）不算池内
+            tags = [str(x) for x in (getattr(t, "tags", None) or [])]
+            sub = str(rec.get("sub") or SUB_NEW)
+            site = str(rec.get("site") or "") or self._torrent_site_name(tags, "") or "未知"
+            ishr = bool(MARK_HR in tags)
+            try:
+                size_gb = float(rec.get("size_gb") or getattr(t, "size_gb", 0) or 0.0)
+            except (TypeError, ValueError):
+                size_gb = 0.0
+            try:
+                progress = float(getattr(t, "progress", 0) or 0.0)
+            except (TypeError, ValueError):
+                progress = 0.0
+            # ★ 进池时间：账本不保证有 ts（各入口写入字段不一）→ 没有就 None，别编造
+            _ts = rec.get("ts") or rec.get("since") or rec.get("taken_at") or 0
+            try:
+                _tsf = float(_ts)
+            except (TypeError, ValueError):
+                _tsf = 0.0
+            if _tsf > 1e11:
+                _tsf = _tsf / 1000.0
+            age_h = round(max(0.0, now - _tsf) / 3600.0, 2) if _tsf > 0 else None
+            remain_min = None
+            need_hours = 0.0
+            seeded_h = 0.0
+            cs = cssrc.get(h) or {}
+            if cs:
+                try:
+                    until = float(cs.get("seed_until") or 0.0)
+                except (TypeError, ValueError):
+                    until = 0.0
+                if until:
+                    remain_min = round(max(0.0, (until - now) / 60.0), 1)
+                try:
+                    need_hours = float(cs.get("need_hours") or 0.0)
+                except (TypeError, ValueError):
+                    need_hours = 0.0
+                try:
+                    seeded_h = round(float(cs.get("seeded_sec") or 0.0) / 3600.0, 2)
+                except (TypeError, ValueError):
+                    seeded_h = 0.0
+            src = "crossseed" if (rec.get("crossseed") or cs) else "task"
+            if progress < 0.999:
+                incomplete += 1
+            hr_n += 1 if ishr else 0
+            total_gb += size_gb
+            by_sub[sub] = int(by_sub.get(sub) or 0) + 1
+            d = sites.setdefault(site, {"site": site, "total": 0, "hr": 0, "size_gb": 0.0})
+            d["total"] += 1
+            d["hr"] += 1 if ishr else 0
+            d["size_gb"] = round(float(d["size_gb"]) + size_gb, 2)
+            items.append({
+                "hash": h,
+                "title": str(rec.get("title") or getattr(t, "title", "") or ""),
+                "site": site,
+                "sub": sub,
+                "hr": ishr,
+                "size_gb": round(size_gb, 2),
+                "progress": round(progress, 4),
+                "state": str(getattr(t, "state", "") or ""),
+                "taken_by": str(rec.get("taken_by") or ""),
+                "source": src,
+                "crossseed": bool(src == "crossseed"),
+                "remain_min": remain_min,
+                "need_hours": need_hours,
+                "seeded_h": seeded_h,
+                "age_h": age_h,
+                "reason": str(rec.get("reason") or ""),
+            })
+        # 未下完的排前面，其次按进池时间倒序
+        items.sort(key=lambda x: (0 if float(x.get("progress") or 0) < 0.999 else 1, -float(x.get("age_h") or 0.0)))
+        sub_labels = {SUB_NEW: "静默-新", SUB_RESOURCE: "静默-资源", SUB_PLAIN: "静默-普通"}
+        try:
+            host_min = float(getattr(self, "_tags_cfg", {}).get("host_interval") or SILENT_HOST_INTERVAL_MINUTES)
+        except Exception:  # noqa: BLE001
+            host_min = float(SILENT_HOST_INTERVAL_MINUTES)
+        try:
+            new_timeout_h = float(self._tags_cfg.get("new_timeout") or 0) / 3600.0
+        except Exception:  # noqa: BLE001
+            new_timeout_h = 0.0
+        last = float(getattr(self, "_silent_host_last", 0) or 0)
+        recs: List[Dict[str, Any]] = []
+        try:
+            rows = self._store.journal.list_by_task(SILENT_HOST_TASK_ID, limit=_rlimit) or []
+            for r in rows:
+                try:
+                    d = r.to_dict() if hasattr(r, "to_dict") else dict(r)
+                except Exception:  # noqa: BLE001
+                    continue
+                ts = float(d.get("ts") or d.get("created_at") or d.get("resolved_at") or 0)
+                if ts > last:
+                    last = ts
+                recs.append({
+                    "ts": ts,
+                    "kind": str(d.get("kind") or ""),
+                    "count": int(d.get("count") or len(d.get("items") or []) or 0),
+                    "reason": str(d.get("reason") or d.get("message") or ""),
+                    "duration_ms": d.get("duration_ms") or d.get("duration") or 0,
+                    "items": (d.get("items") or [])[:6],
+                })
+        except Exception:  # noqa: BLE001
+            recs = []
+        data = {
+            "summary": {
+                "total": len(items),
+                "hr": hr_n,
+                "non_hr": max(0, len(items) - hr_n),
+                "incomplete": incomplete,
+                "size_gb": round(total_gb, 2),
+                "subs": [
+                    {"key": k, "label": sub_labels.get(k, k), "count": v}
+                    for k, v in sorted(by_sub.items(), key=lambda kv: -kv[1])
+                ],
+                "sites": sorted(sites.values(), key=lambda x: -int(x.get("total") or 0)),
+            },
+            "items": items[:_limit],
+            "items_truncated": max(0, len(items) - _limit),
+            "records": recs,
+            "host": {
+                "interval_minutes": round(host_min, 1),
+                "last_run": (time.strftime("%m-%d %H:%M", time.localtime(last)) if last else "—"),
+                "last_run_ts": last,
+            },
+            "settings": {
+                "new_timeout_hours": round(new_timeout_h, 2),
+                "hr_default_hours": 0.0,
+            },
+            "generated_at": now,
+        }
+        try:
+            data["settings"]["hr_default_hours"] = float(
+                getattr(self, "_cs_cfg", {}).get("seed_hours_default") or 0.0
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return Response(success=True, data=data)
+
+    def _silent_pool_records(self, limit: int = 60) -> List[Dict[str, Any]]:
+        """静默池操作记录（kind=run / reseed 等，来源于静默托管 worker）。"""
+        try:
+            rows = self._store.journal.list_recent(limit=limit, kind="run") or []
+            return [r.to_dict() if hasattr(r, "to_dict") else dict(r) for r in rows]
+        except Exception:  # noqa: BLE001
+            return []
+
     # ---------------------------------------------------------
     # 静默池分拣（3.14.0）：静默-新 --(挂种完成 H&R)--> 推荐 → 整理入库 → 静默-资源
     #                                                    否则 → 静默-普通
     # ---------------------------------------------------------
 
     def _silent_hr_done(self, site: str, torrent: Any) -> Tuple[bool, str]:
-        """静默种的 H&R/保种义务是否完成（站点规则 + 实测做种时长）。无 H&R → 直接算完成。"""
+        """静默种的 H&R/保种义务是否完成（站点规则 + 实测做种时长）。无 H&R → 直接算完成。
+
+        ★ 7.20.1：站点短名 → 域名再查规则库。规则库（``sites/rules.py``）的键是**域名**，
+        而账本/标签里存的是**中文短名**（如「红豆饭」）—— 不转换就查不到 → 全落「未知保守
+        24h」→ 假 H&R：普通清理被过度保护、分拣（新→推荐）被无限期挂起。
+        """
         dom = str(site or "").strip().lower()
+        try:
+            dom = self._site_domain_by_name(site) or dom
+        except Exception:  # noqa: BLE001
+            pass
         try:
             protect, hours, src = self._crossseed_hr_decision(dom, None)
         except Exception:  # noqa: BLE001
@@ -330,8 +533,8 @@ class SilentMixin:
         if need <= 0:
             return True, f"无时长要求({src})"
         try:
-            seeded = float(getattr(torrent, "seed_time", 0) or 0.0)
-        except (TypeError, ValueError):
+            seeded = seed_hours_for_hr(torrent) * 3600.0
+        except Exception:  # noqa: BLE001
             seeded = 0.0
         if seeded >= need * 3600.0:
             return True, f"已挂{seeded / 3600.0:.1f}h/{need:.0f}h"
@@ -943,7 +1146,10 @@ class SilentMixin:
             # ★ ① 规则库自带「中文站名 ↔ 域名」映射（最准，优先）
             try:
                 for _dom, _rec in (self._site_rules().items() or {}).items():
-                    _n = str((_rec or {}).get("site_name") or "").strip()
+                    # ★ 7.21.1：规则库里站点名是 `name`（不是 `site_name`）——读错字段
+                    #   会让本缓存恒为空，只能靠 MP 站点表兜底；一旦 MP 名称大小写/别名
+                    #   不一致（如 CARPT/CarPT），H&R 解析就会失准。
+                    _n = str((_rec or {}).get("name") or (_rec or {}).get("site_name") or "").strip()
                     _d = str(_dom or "").strip().lower()
                     if _n and _d:
                         cache.setdefault(_n, _d)
@@ -969,6 +1175,10 @@ class SilentMixin:
 
         - 「够」= 该站有配目标的 bonus 任务且**目标已达成**（没配 → 不清理）
         - 「没用」= 本种每小时魔力产出 ≤ 池内中位数 × ratio（默认 0.5）
+        - ★ 7.21.0：**水位驱动 · 清到目标线**（Master 08:33「一直清到 75% 才合格」）
+          - 触发：池用量 ≥ watermark（默认 85%，不再仅 80%）
+          - 目标：池用量 ≤ target_pct（默认 75%）。未到目标水位则**跨过「低效门槛」**
+            继续清「中产出」，但**留高产**（默认产出于中位×max_ratio 以上）。
         - 永不删：库内资产 / 推荐中 / 跨站来源份 / 辅种复用种 / 欠 H&R / 手动保护
         - 删文件按「Release 目录」共用判断（同 3.14.1）：有别的已完成种子在用 → 只删种子
         """
@@ -984,12 +1194,40 @@ class SilentMixin:
             ratio = float(cfg.get("ratio", 0.5) or 0.5)
         except (TypeError, ValueError):
             ratio = 0.5
+        _dp_on = bool(cfg.get("disk_pressure", True))
+        try:
+            _wm = float(cfg.get("watermark", 0.85) or 0.85)
+        except (TypeError, ValueError):
+            _wm = 0.85
+        # ★ 7.21.0：目标水位（清到这个水位才算合格）；默认 0.75（Master 08:33）
+        try:
+            _target_pct = float(cfg.get("target_pct", 0.75) or 0.75)
+        except (TypeError, ValueError):
+            _target_pct = 0.75
+        try:
+            _max_ratio = float(cfg.get("max_ratio", 2.0) or 2.0)
+        except (TypeError, ValueError):
+            _max_ratio = 2.0
         try:
             ledger = dict(self._tag_state().items() or {})
         except Exception:  # noqa: BLE001
             return rep
         snap = self._tag_all_torrents() or {}
         ni_map = self._qb_num_complete()
+        # ★ 7.20.0 磁盘压力：该种所在池用量（读不到给 0）
+        try:
+            _pool_dirs = self._pool_dirs()
+        except Exception:  # noqa: BLE001
+            _pool_dirs = []
+
+        def _pool_pct_of(_t: Any) -> float:
+            try:
+                _sp = str(getattr(_t, "save_path", "") or "")
+                _nm2, _ct = self._match_pool(_sp, _pool_dirs)
+                _u = self._usage(_ct) if _ct else {}
+                return float(_u.get("pct") or 0.0)
+            except Exception:  # noqa: BLE001
+                return 0.0
 
         def _rkey(_t: Any) -> str:
             _sp = str(getattr(_t, "save_path", "") or "").rstrip("/")
@@ -1032,7 +1270,19 @@ class SilentMixin:
 
         by_site: Dict[str, List[Tuple[str, Any, float, Dict[str, Any]]]] = {}
         protected = 0
-        _pwhy = {"asset": 0, "recommend": 0, "in_library": 0, "hr": 0}
+        _pwhy = {"asset": 0, "recommend": 0, "in_library": 0, "hr": 0,
+                 "crossseed": 0, "claim": 0}
+        # ★ 7.21.1：与 X3 真值源同源 —— 跨站来源份 / 已认领 同属「永不删」硬保护。
+        #   静默清理是全局口径（无单任务），无法直接调 `_protection_sets`，
+        #   这里手工补齐与其 hard 集合等价的类别，避免「各自保护各自」再分叉。
+        try:
+            _cs_src = set(self._crossseed_source_hashes() or set())
+        except Exception:  # noqa: BLE001
+            _cs_src = set()
+        try:
+            _claim_p = set(self._claim_protected_hashes() or set())
+        except Exception:  # noqa: BLE001
+            _claim_p = set()
         for h, rec in list(ledger.items()):
             hh = str(h or "").lower()
             if (str(rec.get("state") or "") != STATE_SILENT
@@ -1060,11 +1310,34 @@ class SilentMixin:
                 protected += 1
                 _pwhy["recommend"] = int(_pwhy.get("recommend") or 0) + 1
                 continue
+            # ★ 7.21.1：跨站来源份（别的站的 H&R 保种责任种）/ 已认领 → 永不删
+            if hh in _cs_src:
+                protected += 1
+                _pwhy["crossseed"] = int(_pwhy.get("crossseed") or 0) + 1
+                continue
+            if hh in _claim_p:
+                protected += 1
+                _pwhy["claim"] = int(_pwhy.get("claim") or 0) + 1
+                continue
             site = str(rec.get("site") or "").strip() or self._torrent_site_name(tags, "")
             done_hr, _why = self._silent_hr_done(site, t)
             if not done_hr:
                 protected += 1
                 _pwhy["hr"] = int(_pwhy.get("hr") or 0) + 1
+                try:
+                    _seeded_h = round(seed_hours_for_hr(t), 1)
+                except Exception:  # noqa: BLE001
+                    _seeded_h = 0.0
+                try:
+                    _hsrc = str(self._crossseed_hr_decision(str(site or "").strip(), None)[2] or "")
+                except Exception:  # noqa: BLE001
+                    _hsrc = ""
+                rep.setdefault("protected_hr", []).append({
+                    "hash": hh, "site": site,
+                    "title": str(getattr(t, "name", "") or "")[:64],
+                    "seeded_h": _seeded_h, "why": str(_why or ""),
+                    "hr_src": _hsrc,
+                })
                 continue
             by_site.setdefault(site or "-", []).append(
                 (hh, t, self._magic_out_per_hour(t, int(ni_map.get(hh, 0) or 0)), rec)
@@ -1076,17 +1349,39 @@ class SilentMixin:
             enough, why = self._site_magic_enough(site)
             outs = sorted(x[2] for x in rows)
             med = outs[len(outs) // 2] if outs else 0.0
+            # ★ 7.20.0 磁盘压力：该站种子所在池用量 ≥ 水位 → 也触发清理（不再等魔力达标）
+            _dp = _pool_pct_of(rows[0][1]) if (_dp_on and rows) else 0.0
+            _dp_fire = bool(_dp_on and _dp >= _wm * 100)
             rep["sites"][str(site)] = {
                 "members": len(rows), "enough": bool(enough), "why": why,
+                "disk_pct": round(_dp, 1), "disk_fire": bool(_dp_fire),
                 "median_per_hour": round(med, 2),
                 "total_per_hour": round(sum(outs), 2),
             }
-            if not enough:
+            if not enough and not _dp_fire:
                 rep["skipped_site"] = int(rep.get("skipped_site") or 0) + 1
                 continue
+            if _dp_fire and not enough:
+                why = f"磁盘压力 {_dp:.1f}%≥{_wm * 100:.0f}%"
+            rep["sites"][str(site)].update({
+                "target_pct": round(_target_pct * 100, 1),
+                "watermark_pct": round(_wm * 100, 1),
+            })
             thr = med * ratio
             for hh, t, out_h, rec in sorted(rows, key=lambda x: x[2]):
-                if out_h > thr:
+                # ★ 7.21.0 水位驱动：先看池用量是否已到目标线
+                try:
+                    _cur_pct = _pool_pct_of(t)
+                except Exception:  # noqa: BLE001
+                    _cur_pct = _dp
+                if _cur_pct <= _target_pct * 100:
+                    rep.setdefault("target_reached", 0)
+                    rep["target_reached"] = int(rep["target_reached"]) + 1
+                    break
+                # 极高产护住（中位 × max_ratio 默认 ×2）；低于这个阈都清
+                if out_h > med * _max_ratio:
+                    rep.setdefault("kept_high", 0)
+                    rep["kept_high"] = int(rep["kept_high"]) + 1
                     break
                 rep["pending"] += 1
                 rep["items"].append({
@@ -1116,7 +1411,7 @@ class SilentMixin:
                         ).append(OperationItem(
                             hash=hh,
                             title=str(getattr(t, "title", "") or ""),
-                            reason=(f"静默-普通低效[{site}]：站内魔力已达标，"
+                            reason=(f"静默-普通低效[{site}]：{why}，"
                                     f"时魔 {out_h:.2f} ≤ 中位数 {med:.2f}×{ratio:g}"
                                     + ("·同目录另有完成种，仅删种" if shared else "")),
                             size_gb=round(_sz, 3),
@@ -1141,7 +1436,7 @@ class SilentMixin:
         self._journal_deletions(_by_task, log_prefix="静默普通清理")
         if apply and rep["deleted"]:
             self._log(
-                f"魔流:静默普通清理:魔力已达标站点删掉 {rep['deleted']} 个低效普通种"
+                f"魔流:静默普通清理:删掉 {rep['deleted']} 个低效普通种（魔力达标/磁盘压力）"
                 f"（只删种 {rep['torrent_only']} 个；共查 {len(by_site)} 站）"
             )
         return rep

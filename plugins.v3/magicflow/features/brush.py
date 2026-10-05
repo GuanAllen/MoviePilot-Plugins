@@ -60,6 +60,7 @@ from ..sitecap import (
     norm_domain,
 )
 from ..tags import (
+    MARK_REUSE,
     STATE_BONUS,
     STATE_BRUSH,
     parse_tag,
@@ -749,15 +750,24 @@ class BrushMixin:
             _cs_src_hashes = set()
         for t in downloader.get_raw_torrents():
             tr = str(_kv(t, "tracker", "") or "").strip()
-            if not tr:
-                continue
-            try:
-                host = (urlparse(tr).hostname or "").lower()
-            except Exception:
-                host = ""
+            h = str(_kv(t, "hash", "") or "").lower()
+            host = ""
+            if tr:
+                try:
+                    host = (urlparse(tr).hostname or "").lower()
+                except Exception:
+                    host = ""
+            if not host and h:
+                # ★ 7.16.1 兜底：qB 的 tracker 字段对「暂停 / 未汇报」的种**常为空**
+                #   （本机实测 250/726），但逐 hash 的 torrents_trackers 能拿到真实
+                #   announce 域名。旧代码 `if not tr: continue` 直接把这类种排除 →
+                #   做种中任务永远纳管不到它们（PT时间 27 个种全被漏掉的实际 bug）。
+                try:
+                    host = str(downloader.tracker_domain(h) or "").strip().lower()
+                except Exception:  # noqa: BLE001
+                    host = ""
             if not host or not any(k in host for k in keys):
                 continue
-            h = str(_kv(t, "hash", "") or "").lower()
             if not h:
                 continue
             matched += 1
@@ -957,6 +967,8 @@ class BrushMixin:
         # 腾出空间与名额,再进入入口检查决定是否抓取。Master 口径:清理任务前置。
         try:
             _cl = self._cleanup_round(task, downloader)
+            self._note_decision(task.id, (_cl or {}).get("decision"))
+            self._trend_sample_task(task, _cl)
             if _cl.get("deleted"):
                 self._log(
                     f"魔流 [{task.name}] 入口前清理:删 {_cl['deleted']} 个"
@@ -969,7 +981,14 @@ class BrushMixin:
         # 本插件自己刷流加的照常按效率清理;本机早已存在的同站种子(IYUU/其它插件/
         # 手动添加/自己下载的影视资源)纳管并**永久保护**,绝不被删种。
         try:
-            self._adopt_same_site(task, downloader)
+            _ad = self._adopt_same_site(task, downloader) or {}
+            if int(_ad.get("adopted") or 0) > 0:
+                self._emit_event(
+                    "tag", action="同站纳管", level="info", task_id=task.id,
+                    reason=f"新接管 {int(_ad.get('adopted') or 0)} 个（匹配 {int(_ad.get('matched') or 0)}）",
+                    metrics={"count": int(_ad.get("adopted") or 0), "matched": int(_ad.get("matched") or 0)},
+                    dedup_key=f"adopt:{task.id}:{int(_ad.get('adopted') or 0)}",
+                )
         except Exception as _ade:
             self._log(f"魔流 [{task.name}] 同站纳管异常: {_ade}", "warning")
 
@@ -1797,6 +1816,8 @@ class BrushMixin:
                     user_agent=cand.site_ua,
                     upload_limit=task.up_speed,
                     download_limit=task.dl_speed,
+                    site_domain=getattr(cand, "site_domain", "") or "",
+                    hit_and_run=bool(getattr(cand, "hit_and_run", False)),
                 )
                 if hash_string:
                     added += 1
@@ -1970,6 +1991,22 @@ class BrushMixin:
             return True
 
 
+    def _note_decision(self, task_id: str, dec: Optional[Dict[str, Any]]) -> None:
+        """★ 7.15.0 可观测：把「本轮决策轨迹」记到任务状态对象上。
+
+        为何不直接改 ``store.settle``：``MagicFlowStore`` 是**进程级单例**（热重载不重建，
+        老实例仍挂老类）→ 新增的 store 方法要重启 MP 才生效。这里走 mixin（热重载必重建）
+        直写内存对象，详情接口同口径读取，免重启即时可见。
+        """
+        if not dec or not self._store:
+            return
+        try:
+            st = self._store.task_states.get(task_id)
+            if st is not None:
+                setattr(st, "last_decision", dict(dec))
+        except Exception:  # noqa: BLE001
+            pass
+
     def _run_check(self, task_id: str) -> None:
         """执行魔流核心流程(带并发保护)。"""
         task = self._get_task_config(task_id)
@@ -2004,7 +2041,14 @@ class BrushMixin:
             #     回来的同站种靠这里纳管并保护。复用 brush() 入口的同名逻辑(2026-09-26
             #     设计:已纳管 / 跨站来源份 / 本插件自己刷的种三路分流)——一律跳过误纳管。
             try:
-                self._adopt_same_site(task, downloader)
+                _ad2 = self._adopt_same_site(task, downloader) or {}
+                if int(_ad2.get("adopted") or 0) > 0:
+                    self._emit_event(
+                        "tag", action="同站纳管", level="info", task_id=task.id,
+                        reason=f"新接管 {int(_ad2.get('adopted') or 0)} 个（匹配 {int(_ad2.get('matched') or 0)}）",
+                        metrics={"count": int(_ad2.get("adopted") or 0), "matched": int(_ad2.get("matched") or 0)},
+                        dedup_key=f"adopt:{task.id}:{int(_ad2.get('adopted') or 0)}",
+                    )
             except Exception as _adopt_exc:  # noqa: BLE001
                 self._log(f"魔流 [{task.name}] Check 同站纳管异常: {_adopt_exc}", "warning")
 
@@ -2036,7 +2080,9 @@ class BrushMixin:
                 self._log(f"魔流 [{task.name}] 空壳种清理异常: {_mfe}", "warning")
 
             r = self._cleanup_round(task, downloader)
+            _dec = dict((r or {}).get("decision") or {})
             # ★ 自动换种：名额/磁盘/站点上限吃紧时，按边际魔力换掉低价值种（程序自主决策）
+            _sw: Dict[str, Any] = {}
             try:
                 _sw = self._swap_round(task, downloader)
                 if _sw.get("applied"):
@@ -2047,6 +2093,18 @@ class BrushMixin:
                     self._dbg(f"魔流 [{task.name}] 换种未执行：{_sw.get('reason')}")
             except Exception as _swe:  # noqa: BLE001
                 self._log(f"魔流 [{task.name}] 自动换种异常: {_swe}", "warning")
+            try:
+                _dec["swap"] = {
+                    "triggered": bool(_sw.get("triggered")),
+                    "trigger": str(_sw.get("trigger", "") or ""),
+                    "reason": str(_sw.get("reason", "") or ""),
+                    "applied": int(_sw.get("applied", 0) or 0),
+                    "net": round(float(_sw.get("net") or 0.0), 2),
+                }
+            except Exception:  # noqa: BLE001
+                pass
+            self._note_decision(task.id, _dec)
+            self._trend_sample_task(task, {**(r or {}), "decision": _dec})
             # ★ §5.2 满魔套牌存档：把当前在岗套牌写回（变了就更新；连续 N 轮不变 → 满魔冻结）
             try:
                 _dk = self._deck_sync(task)
@@ -2061,11 +2119,14 @@ class BrushMixin:
                 added=0,
                 deleted=int(r.get("deleted", 0) or 0),
                 kept=int(r.get("kept", 0) or 0),
+                decision=_dec,
             ))
             self._invalidate_summary()
 
         except Exception as e:
             self._log(f"魔流 [{task.name}] 执行失败: {e}", "error")
+            self._emit_event("run", action="任务执行失败", level="error", task_id=task.id,
+                             reason=str(e)[:300], dedup_key=f"runfail:{task.id}:{str(e)[:60]}")
             self._store.record_run_error(task.id, str(e))
 
     # ============================================================
@@ -2088,6 +2149,7 @@ class BrushMixin:
         self,
         task: MagicFlowTaskConfig,
         torrents: Optional[List[TorrentBonusInfo]] = None,
+        debug: Optional[Dict[str, Any]] = None,
     ) -> MagicPolicy:
         """
         从任务配置构建魔力策略。
@@ -2096,6 +2158,10 @@ class BrushMixin:
           - min_bonus_per_hour → 当前种子魔力中位数 × 0.5(无数据时为 0,不删)
           - bonus_protect_threshold → 站点当前魔力(读不到则不限)
           - max_keep_torrents  → 保种体积上限 ÷ 平均种子大小(无保种体积时为 None=不限)
+
+        ★ 7.15.0 可观测：传 ``debug`` 字典时，把「本轮闸门判定」填进去
+        （at_cap / 做种数 / 体积含辅种剔除 / 门槛 / 保护阈值 / max_keep），
+        供上层汇入 WorkReport.decision，回答「为什么没换种」。
         """
         torrents = torrents or []
 
@@ -2139,6 +2205,76 @@ class BrushMixin:
                     f"（非禁令，不再硬限；由换种优化收益）"
                 )
 
+        # ★ 7.14.2 Master 口径（2026-10-02 09:16 / 09:57）：
+        #   **「换种」只在到达上限之后才有意义**。两个上限口径，任一命中就算「满」：
+        #     ① **做种数达站点「计入魔力的做种数上限」**(``seeding_count_cap``)；
+        #     ② **达到任务设定的存储上限**(``task.disk_size_gb``)。
+        #   都没到 → 「多挂 = 多产」，此时按门槛淘汰低效种 = 纯浪费
+        #   （删掉了产出，又没换来更好的名额，因为名额/磁盘根本没用满）。
+        #   ⇒ **未达上限 → 关闭「低效淘汰」（门槛 / 零魔 / 大文件）**，
+        #     只清「0 产出垃圾」（无进度 / 过慢 / 非免费，走各自通道）；
+        #     磁盘体积超限的强制淘汰保留（那是磁盘硬约束）。
+        _managed_n = len(torrents)
+        _site_n = 0
+        try:
+            _site_n = int(self._site_seeding_count(getattr(task, "site_id", 0)) or 0)
+        except Exception:  # noqa: BLE001
+            _site_n = 0
+        _cur_n = max(_site_n, _managed_n)  # 站点账号数可能滞后/偏低，取与本任务托管数的较大者
+        _count_at_cap = bool(cap_n > 0 and _cur_n >= cap_n)
+
+        # ★ 7.14.2 Master 口径（09:57 补齐 / 10:15 修正）：**“满”有两个口径**——
+        #   ① 做种数达站点「计入魔力的做种数上限」；② **达到任务设定的存储上限**（task.disk_size_gb）。
+        #   任一命中 → 名额/磁盘已用满，此时「换种（淘汰低效、换入更优）」才有意义。
+        #   ⚠️ **体积只算「本任务自己下载占用」的种**：**辅种（存量复用 / 跨站辅种，标 ``MARK_REUSE``）
+        #   复用已有文件、不占新增磁盘，不计入**（Master 10:15：辅来的种不算自己体积）。
+        _disk_gb = float(getattr(task, "disk_size_gb", 0) or 0)
+        _cur_gb = 0.0
+        _reuse_gb = 0.0
+        try:
+            _mgr = self._task_managed_torrents(task)
+        except Exception:  # noqa: BLE001
+            _mgr = []
+        if _mgr:
+            for _t in _mgr:
+                _sz = float(getattr(_t, "size_gb", 0) or 0)
+                if _sz <= 0:
+                    _sz = float(getattr(_t, "size", 0) or 0) / (1024 ** 3)
+                if _sz <= 0:
+                    continue
+                _tg = [str(x) for x in (getattr(_t, "tags", None) or [])]
+                if MARK_REUSE in _tg:
+                    _reuse_gb += _sz
+                else:
+                    _cur_gb += _sz
+        else:
+            _cur_gb = sum(float(getattr(t, "size_gb", 0) or 0) for t in torrents)
+        _disk_at_cap = bool(_disk_gb > 0 and _cur_gb >= _disk_gb)
+
+        at_cap = _count_at_cap or _disk_at_cap
+        if debug is not None:
+            debug.update({
+                "at_cap": bool(at_cap),
+                "cap_n": cap_n,
+                "cur_n": _cur_n,
+                "cur_gb": round(_cur_gb, 1),
+                "reuse_gb": round(_reuse_gb, 1),
+                "disk_gb": round(_disk_gb, 1),
+                "at_cap_reason": ("站点做种数上限" if _count_at_cap else "存储上限" if _disk_at_cap else "未达上限"),
+                "threshold": round(float(threshold or 0.0), 4),
+                "protect": (None if protect == float("inf") else round(float(protect or 0.0), 2)),
+                "max_keep": (int(max_keep) if max_keep is not None else None),
+                "managed": _managed_n,
+            })
+        if not at_cap:
+            if threshold and threshold > 0:
+                self._dbg(
+                    f"魔流 [{task.name}] 未达上限（做种 {_cur_n}/{cap_n or '∞'} · "
+                    f"体积 {_cur_gb:.0f}/{_disk_gb:.0f}GB，辅种 {_reuse_gb:.0f}GB 不计）"
+                    f" → 本轮不做低效换种（只清 0 产出垃圾）"
+                )
+            threshold = 0.0
+
         return MagicPolicy(
             min_bonus_per_hour=threshold,
             bonus_protect_threshold=protect,
@@ -2150,7 +2286,8 @@ class BrushMixin:
             weight_people_factor=1.0,
             weight_size=0.5,
             weight_zero_penalty=2.0,
-            prefer_delete_zero_bonus=True,
+            prefer_delete_zero_bonus=at_cap,
+            prefer_delete_crowded=False,
             prefer_delete_high_ratio=False,
             prefer_delete_large=False,
             protect_perfect=bool(getattr(task, "protect_perfect", True)),

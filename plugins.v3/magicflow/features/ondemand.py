@@ -275,8 +275,15 @@ class OnDemandMixin:
         if not save_path:
             return {"ok": False, "message": "没有可用的保存目录：请在弹窗上方选一个任务，或到「设置 → 下载目录」填「任务保存目录」"}
         tag = tag_for(site_name, STATE_SILENT, SUB_RESOURCE) if site_name else ""
+        # ★ 10.2.0 下载即开账：只传域名（绝不传展示名），拿不到就留空
         try:
-            hs, err = dl.add_torrent(content=content, download_dir=save_path, tag=tag)
+            _dom = self._site_domain_by_name(site_name) or ""
+        except Exception:  # noqa: BLE001
+            _dom = ""
+        try:
+            hs, err = dl.add_torrent(content=content, download_dir=save_path, tag=tag,
+                                     site_domain=_dom,
+                                     hit_and_run=bool(row.get("hit_and_run")))
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "message": f"添加失败: {e}"}
         if not hs:

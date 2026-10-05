@@ -167,6 +167,13 @@ class MagicPolicy:
 
     # 删种偏好
     prefer_delete_zero_bonus: bool = True   # 优先删除零魔种子
+    # ★ 「站内做种人数过多」独立删种规则：**默认关**。
+    #   理由：人数因子本来就已经算进 bonus_per_hour，「低于门槛」那条已经覆盖了「人多→产出低」；
+    #   再挂一条独立的硬阈值等于「Ni≥4 就删」（旧代码写死 people_factor<1.5），
+    #   会把大量**产出仍然很高**的种子（几十 GB、官种×2、成熟老种）一起误杀。
+    #   真需要时再打开，并用**站点公式**的人数因子比对（crowded_people_factor，默认 1.05≈几乎不触发）。
+    prefer_delete_crowded: bool = False     # 站内做种人数过多 → 删（默认关）
+    crowded_people_factor: float = 1.05     # 人数因子低于此值才算「过多」（仅 prefer_delete_crowded=True 时生效）
     prefer_delete_high_ratio: bool = False  # 优先删除高分享率种子（与 BrushFlow 相反）
     prefer_delete_large: bool = False       # 优先删除大文件
 
@@ -847,11 +854,17 @@ def decide_deletions(
             reasons.append("零魔种子（权重 0.2）")
             priority = max(priority, 100)
 
-        # 站内做种人数过多 → 人数因子被摊销
-        people_factor = calc_people_factor(torrent.seeders)
-        if people_factor < 1.5:
-            reasons.append(f"站内做种人数 {torrent.seeders} 过多，魔力被打折")
-            priority = max(priority, 80)
+        # 站内做种人数过多 → 人数因子被摊销。
+        # ★ 默认关（prefer_delete_crowded=False）：该口径已由「低于魔力门槛」覆盖；
+        #   作为独立硬阈值会误删高产种（旧代码写死 people_factor<1.5 ⇒ Ni≥4 就删）。
+        #   开启时用**站点公式算出的人数因子**（torrent.people_factor），不再用默认 n0 重算。
+        if policy.prefer_delete_crowded:
+            _pf = float(getattr(torrent, "people_factor", 0.0) or 0.0)
+            if _pf <= 0.0:
+                _pf = calc_people_factor(torrent.seeders)
+            if _pf < policy.crowded_people_factor:
+                reasons.append(f"站内做种人数 {torrent.seeders} 过多（人数因子 {_pf:.3f}）")
+                priority = max(priority, 80)
 
         # 大文件效率低（可选）
         if policy.prefer_delete_large and torrent.size_gb > 20:

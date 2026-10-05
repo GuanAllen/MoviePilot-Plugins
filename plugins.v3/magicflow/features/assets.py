@@ -4,9 +4,15 @@
 （由原 `__init__.py` 拆分为 mixin，逐字搬运，行为不变。）
 """
 
+import re
 import time
 from datetime import datetime
 from typing import Any, Dict, List
+
+
+# ★ 10.0.0：合法「完整特征码」= sha1 十六进制（32~64 位）。写坏成 ``|2.0`` 这种体积档的
+#   假码一律当「无特征码」—— 身份不够强，就不配当资源。
+_FP_OK = re.compile(r"^[0-9a-f]{32,64}$")
 
 
 from ..crossseed import (
@@ -240,16 +246,20 @@ class AssetsMixin:
                 "changed": changed, "ledger": len(data)}
 
     def _resource_gid(self, title: Any, size_gb: Any, fp: Any = "") -> str:
-        """资源 ID：**优先用文件特征码**（同内容 = 同资源），没有特征码时退回「关键词|体积档」。"""
-        _fp = str(fp or "").strip()
-        if _fp:
-            return f"fp:{_fp}"
-        t = search_key(title, 40).lower()
-        try:
-            sz = round(float(size_gb or 0.0), 1)
-        except (TypeError, ValueError):
-            sz = 0.0
-        return f"{t}|{sz}"
+        """资源 ID：**只用完整文件特征码**（同内容 = 同资源）。
+
+        ★ 10.0.0（Master 2026-10-05「相同资源要避免下载；如果下载了，算两个资源」）：
+        **没有（合法）特征码 → 不建资源**（返回 ``""``）。旧版退回「关键词|体积档」，导致体积
+        相同、内容完全不同的种被并成一条资源（实测 71 条弱资源吃进 113 个种，还把 CARPT 的
+        H&R 债来源记成「咖啡」→ 低效换种误删 24 个）。身份不够强，就不配当资源。
+
+        合法特征码 = ``fingerprint.py`` 产出的 sha1 十六进制（32~64 位）。历史上被写坏成
+        ``|2.0`` 这种「体积档」假码 → 同样当**无特征码**处理。
+        """
+        _fp = str(fp or "").strip().lower()
+        if not _FP_OK.match(_fp):
+            return ""
+        return f"fp:{_fp}"
 
     def sync_resources(self, *, apply: bool = False) -> Dict[str, Any]:
         """★ 建/刷 资源账本（Master 20:38 模型）：资源 1 : N 种子。
@@ -270,7 +280,8 @@ class AssetsMixin:
             rec = ledger.get(hh)
             if not rec:
                 continue
-            title = getattr(t, "name", "") or rec.get("title") or ""
+            # ★ 10.0.0：TorrentInfo 字段是 ``title``（旧代码写 ``name`` → 恒空 → 退化成「|体积档」）
+            title = getattr(t, "title", "") or getattr(t, "name", "") or rec.get("title") or ""
             size = float(getattr(t, "size_gb", 0) or rec.get("size_gb") or 0.0)
             try:
                 prog = float(getattr(t, "progress", 1.0) or 0.0)
@@ -282,7 +293,10 @@ class AssetsMixin:
             stat["members"] = int(stat["members"]) + 1
             if _fp:
                 stat["with_fp"] = int(stat.get("with_fp") or 0) + 1
-            if apply:
+            else:
+                # ★ 10.0.0：没有完整特征码 → **不建资源**（不拿「体积档」冒充身份）
+                stat["no_fp"] = int(stat.get("no_fp") or 0) + 1
+            if apply and gid:
                 store.add_member(gid, hh, site=rec.get("site") or "", size_gb=size,
                                  downloaded=prog >= 0.999, progress=prog,
                                  state=rec.get("state") or "", fp=_fp)
@@ -299,8 +313,13 @@ class AssetsMixin:
         for sib, srec in (srcs or {}).items():
             if not isinstance(srec, dict):
                 continue
-            _sib_fp = str((ledger.get(str(sib).lower()) or {}).get("fp") or "")
+            _sib_fp = (str((ledger.get(str(sib).lower()) or {}).get("fp") or "").strip()
+                       or str(srec.get("resource_id") or "").strip())
             gid = self._resource_gid(srec.get("title"), srec.get("size_gb"), _sib_fp)
+            if not gid:
+                # ★ 10.0.0：无完整特征码 → 不建资源、不开账单（H&R 靠种子级兜底）
+                stat["sib_no_fp"] = int(stat.get("sib_no_fp") or 0) + 1
+                continue
             _site_group_site = str(srec.get("site_b") or srec.get("site_b_domain") or "")
             a_hash = str(srec.get("a_hash") or "").strip().lower()
             # 来源站优先级：来源份记录 → 种子标签/标题后缀 → 账本站点（账本可能被同站纳管改错）
@@ -325,17 +344,26 @@ class AssetsMixin:
             if apply:
                 store.add_member(gid, str(sib).lower(), site=_site_group_site,
                                  size_gb=float(srec.get("size_gb") or 0.0), downloaded=True,
-                                 fp=str((ledger.get(str(sib).lower()) or {}).get("fp") or ""))
+                                 fp=_sib_fp)
                 if a_hash:
                     store.add_member(gid, a_hash, site=str(srec.get("site_a") or ""),
                                      size_gb=float(srec.get("size_gb") or 0.0), downloaded=True,
-                                     fp=str((ledger.get(a_hash) or {}).get("fp") or ""))
+                                     fp=(str((ledger.get(a_hash) or {}).get("fp") or "").strip() or _sib_fp))
                 store.set_hr(gid, site=_site,
                              required_hours=float(srec.get("hours") or 0.0),
                              need_hours=float(srec.get("need_hours") or 0.0),
                              by_hash=str(sib).lower())
             stat["hr_bills"] = int(stat["hr_bills"]) + 1
         if apply:
+            # ★ 10.0.0 迁徙：清掉「弱身份」（按体积档归的）资源组 —— 幂等，跑完就没有弱组了
+            try:
+                _pw = self._purge_weak_groups(apply=True)
+                if _pw.get("weak"):
+                    stat["weak_purged"] = _pw
+                    self._log(f"资源:弱身份清理 弱组 {_pw.get('weak')} → 迁走 {_pw.get('moved')} · "
+                              f"丢弃 {_pw.get('dropped')}（无特征码）")
+            except Exception as err:  # noqa: BLE001
+                self._dbg(f"弱资源清理异常:{err}")
             try:
                 _pend_n = len(store.pending_library())
                 _flushed = store.flush_pending_library()
@@ -353,15 +381,88 @@ class AssetsMixin:
             stat["in_library"] = sum(
                 1 for r in store.items().values() if (r.get("library") or {}).get("in_library")
             )
-            stat["hr_bills"] = sum(
-                1 for r in store.items().values() if (r.get("hr") or {}).get("by_hash")
-            )
-            stat["hr_settled"] = sum(
-                1 for r in store.items().values() if (r.get("hr") or {}).get("settled")
-            )
+            # ★ 10.0.0：账单分站存 ``hrs``；这里统计「全部账单 / 未结清」
+            _all_bills = [b for r in store.items().values() for b in (r.get("hrs") or {}).values()]
+            if not _all_bills:
+                _all_bills = [(r.get("hr") or {}) for r in store.items().values() if (r.get("hr") or {})]
+            stat["hr_bills"] = len(_all_bills)
+            stat["hr_settled"] = sum(1 for b in _all_bills if (b or {}).get("settled"))
         except Exception:  # noqa: BLE001
             pass
         return stat
+
+    def _purge_weak_groups(self, *, apply: bool = False) -> Dict[str, Any]:
+        """★ 10.0.0 迁徙：清掉「弱身份」资源组（``group_id`` 不以 ``fp:`` 开头）。
+
+        弱组（``|2.0`` / ``关键词|3.4``）是按「体积档」归的，会把**不同内容**并成一条资源
+        → 来源站 / H&R 全串味。处理：能算出完整特征码的成员 → 迁到 ``fp:<fp>`` 组；算不出
+        （不在下载器 / 下载器不给特征码）的 → 随弱组一起消失（种子账本本身不动）。幂等。
+        """
+        try:
+            store = self._tag_groups()
+            items = dict(store.items() or {})
+        except Exception as err:  # noqa: BLE001
+            return {"ok": False, "error": str(err)}
+        weak = [g for g in items if not _FP_OK.match(str(g)[3:] if str(g).startswith("fp:") else str(g))]
+        if not weak:
+            return {"ok": True, "weak": 0, "moved": 0, "dropped": 0}
+        rep: Dict[str, Any] = {"ok": True, "weak": len(weak), "moved": 0, "dropped": 0}
+        if not apply:
+            rep["members"] = sum(len((items[g] or {}).get("members") or {}) for g in weak)
+            return rep
+        try:
+            dl = self._get_downloader()
+        except Exception:  # noqa: BLE001
+            dl = None
+        for gid in weak:
+            rec = dict(items.get(gid) or {})
+            for h, m in (rec.get("members") or {}).items():
+                hh = str(h or "").strip().lower()
+                if not hh:
+                    continue
+                fp = ""
+                try:
+                    if dl is not None and callable(getattr(dl, "get_torrent_fingerprint", None)):
+                        fp = str(dl.get_torrent_fingerprint(hh) or "").strip()
+                except Exception:  # noqa: BLE001
+                    fp = ""
+                if not fp:
+                    rep["dropped"] = int(rep["dropped"]) + 1
+                    # ★ 与弱组**解绑**：否则账本里这粒种仍指着那条弱资源行 → `save_groups` 会因
+                    #   「还有种子指着它」把资源行留下 → 下次重载弱组复活（10.0.0 踩过：8 粒）。
+                    try:
+                        store.remove_member(hh)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    continue
+                try:
+                    store.add_member(
+                        self._resource_gid("", 0.0, fp), hh,
+                        site=str((m or {}).get("site") or ""),
+                        size_gb=float((m or {}).get("size_gb") or rec.get("size_gb") or 0.0),
+                        downloaded=bool((m or {}).get("downloaded", True)),
+                        progress=float((m or {}).get("progress") or 1.0),
+                        state=str((m or {}).get("state") or ""),
+                        fp=fp,
+                    )
+                    rep["moved"] = int(rep["moved"]) + 1
+                except Exception:  # noqa: BLE001
+                    rep["dropped"] = int(rep["dropped"]) + 1
+        # 收尾：弱组若已被搬空（add_member 会自动摘出），直接删掉残留
+        try:
+            data = dict(store.items() or {})
+            changed = False
+            for gid in [g for g in data
+                        if not _FP_OK.match(str(g)[3:] if str(g).startswith("fp:") else str(g))]:
+                data.pop(gid, None)
+                changed = True
+            if changed:
+                store._write(data)
+        except Exception:  # noqa: BLE001
+            pass
+        rep["left"] = len([g for g in (store.items() or {})
+                           if not _FP_OK.match(str(g)[3:] if str(g).startswith("fp:") else str(g))])
+        return rep
 
     def backfill_fingerprints(self, *, limit: int = 0) -> Dict[str, Any]:
         """给托管种补文件特征码（``branding``：资源按特征码归并、辅种配对直接用）。
@@ -376,7 +477,7 @@ class AssetsMixin:
         snap = self._tag_all_torrents()
         todo = [h for h, t in snap.items()
                 if str(h).lower() in ledger
-                and not str((ledger.get(str(h).lower()) or {}).get("fp") or "").strip()]
+                and not _FP_OK.match(str((ledger.get(str(h).lower()) or {}).get("fp") or "").strip().lower())]
         if limit and limit > 0:
             todo = todo[:int(limit)]
         got = fail = 0

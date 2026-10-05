@@ -729,10 +729,17 @@ class FileGroupStore:
     - 资源有 **库记**（是否已整理入库）
     - **只有「下完」的才有资源**；没下完的只有种子
 
+    ★ 10.0.0（Master 2026-10-05「相同资源要避免下载；如果下载了，算两个资源」）：
+
+    - **身份**：``group_id`` = ``fp:<完整文件特征码>``，**没有特征码就不建资源**
+      （旧版退化成「关键词|体积档」→ 体积相同的**不同内容**被并成一条资源）
+    - **账单按站分账**：``hrs = {site: bill}`` —— 同一内容被 A、B 两站各下载一次 →
+      两张账单**互不顶替**（旧版一张账单，后记的站盖掉先记的站 → CARPT 债被「咖啡」顶掉）
+
     存储：``group_id -> {size_gb, files_shared, members:{hash:{site,downloader,added,
-    downloaded,progress,state}}, source_site, source_hash,
-    hr:{site,required_hours,need_hours,seeded_seconds,settled,settled_at,checked_at,by_hash},
-    library:{in_library,first_at,media_id,path}, created, updated}``
+    downloaded,progress,state,fp}}, source_site, source_hash,
+    hrs:{site:{site,required_hours,need_hours,seeded_seconds,settled,settled_at,checked_at,by_hash}},
+    hr:<主账单(兼容)>, library:{in_library,first_at,media_id,path}, created, updated}``
 
     删除纪律（Master 18:54）：
     - 摘掉一个成员 → **只删该站的种**（``delete_files=False``）
@@ -875,23 +882,36 @@ class FileGroupStore:
         by_hash: str = "",
         now: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """挂/更新资源上的 H&R 账单（义务靠来源站那个种子挂种结清）。"""
+        """挂/更新资源上的 H&R 账单（义务靠来源站那个种子挂种结清）。
+
+        ★ 10.0.0（Master 2026-10-05「相同资源要避免下载；如果下载了，算两个资源」）：
+        账单**按来源站分账**（``hrs = {site: bill}``）—— 同一份内容若被 A、B 两个站各下载一次，
+        两张账单**互不顶替**（旧版只有一张账单，后记的站会把先记的站盖掉；实测 CARPT 的债
+        被「咖啡」的账单顶掉 → 误删）。``hr`` 仍是「主账单」（``by_hash`` 命中的那张，否则第一张）。
+        """
         gid = _clean(group_id)
         data = self.items()
         rec = dict(data.get(gid) or {})
         if not gid or not rec:
             return {}
         ts = float(now if now is not None else time.time())
-        hr = dict(rec.get("hr") or {})
+        _site = _clean(site)
+        _by = _clean(by_hash).lower()
+        bills = dict(rec.get("hrs") or {})
+        key = _site or _by or "_"
+        hr = dict(bills.get(key) or {})
         hr.update({
-            "site": _clean(site) or hr.get("site", ""),
+            "site": _site or hr.get("site", ""),
             "required_hours": float(required_hours or hr.get("required_hours") or 0.0),
             "need_hours": float(need_hours or hr.get("need_hours") or 0.0),
-            "by_hash": _clean(by_hash) or hr.get("by_hash", ""),
+            "by_hash": _by or hr.get("by_hash", ""),
             "checked_at": ts,
         })
         hr.setdefault("settled", False)
-        rec["hr"] = hr
+        bills[key] = hr
+        rec["hrs"] = bills
+        _main = next((b for b in bills.values() if _by and _clean(b.get("by_hash")).lower() == _by), None)
+        rec["hr"] = _main or next(iter(bills.values()))
         rec["updated"] = ts
         data[gid] = rec
         self._write(data)
@@ -902,28 +922,49 @@ class FileGroupStore:
         group_id: str,
         *,
         seeded_seconds: float = 0.0,
+        by_hash: str = "",
         now: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """记录来源种挂种进度；挂够要求 → **给资源结清 H&R 账单**。"""
+        """记录来源种挂种进度；挂够要求 → **给资源结清 H&R 账单**。
+
+        ★ 10.0.0：账单分站存 ``hrs``。给了 ``by_hash`` 就只更新它自己那张（该站的债只认该站的名片），
+        否则更新全部账单（旧调用兼容）。
+        """
         gid = _clean(group_id)
         data = self.items()
         rec = dict(data.get(gid) or {})
-        hr = dict(rec.get("hr") or {})
-        if not gid or not rec or not hr:
+        if not gid or not rec:
+            return {}
+        bills = dict(rec.get("hrs") or {})
+        if not bills:
+            _hr0 = dict(rec.get("hr") or {})
+            if _hr0:
+                bills = {_clean(_hr0.get("site")) or "_": _hr0}
+        if not bills:
             return {}
         ts = float(now if now is not None else time.time())
         seeded = float(seeded_seconds or 0.0)
-        hr["seeded_seconds"] = round(seeded, 1)
-        hr["checked_at"] = ts
-        need = max(float(hr.get("required_hours") or 0.0), float(hr.get("need_hours") or 0.0))
-        if not hr.get("settled") and need > 0 and seeded >= need * 3600.0:
-            hr["settled"] = True
-            hr["settled_at"] = ts
-        rec["hr"] = hr
+        _by = _clean(by_hash).lower()
+        _hit = None
+        for key, b in list(bills.items()):
+            b = dict(b)
+            if _by and _clean(b.get("by_hash")).lower() not in ("", _by):
+                continue
+            b["seeded_seconds"] = round(seeded, 1)
+            b["checked_at"] = ts
+            need = max(float(b.get("required_hours") or 0.0), float(b.get("need_hours") or 0.0))
+            if not b.get("settled") and need > 0 and seeded >= need * 3600.0:
+                b["settled"] = True
+                b["settled_at"] = ts
+            bills[key] = b
+            if _by and _clean(b.get("by_hash")).lower() == _by:
+                _hit = b
+        rec["hrs"] = bills
+        rec["hr"] = _hit or next(iter(bills.values()))
         rec["updated"] = ts
         data[gid] = rec
         self._write(data)
-        return hr
+        return rec["hr"]
 
     def set_library(
         self,

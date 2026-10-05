@@ -62,6 +62,16 @@ class SiteOpsMixin:
         except Exception:  # noqa: BLE001
             return None
 
+    def _site_per_torrent_hr(self, domain: str) -> bool:
+        """该站 H&R 是否**逐种开关**（如 YemaPT `hrPunishEnable`）。
+
+        11.7.0：站点级无法评估具体种子的逐种标记 → 补源等「站点级预筛」场景保守排除。
+        """
+        try:
+            return bool(self._site_rules().per_torrent_hr_of(domain))
+        except Exception:  # noqa: BLE001
+            return False
+
     def _site_rules(self) -> SiteRules:
         """站点规则账本(H&R / 保种时长 / 做种上限)，save_data 持久化。
 
@@ -565,6 +575,11 @@ class SiteOpsMixin:
                 row["layer"] = "retired" if (_retired and _src not in ("manual", "welcome")) else _src
             row["hr_trusted"] = str(row.get("source") or "") in ("manual", "welcome")
             row["hr_source"] = str(row.get("source") or "")
+            # ★ 11.7.0：逐种 H&R 站可见（无站点级 H&R，H&R 由发布者逐种开关；补源禁用）
+            try:
+                row["per_torrent_hr"] = bool(store.per_torrent_hr_of(disp))
+            except Exception:  # noqa: BLE001
+                row["per_torrent_hr"] = False
             # ★ 3.41.0：规则地址（从收件箱欢迎短讯捞到并落库）可见
             row["rule_url"] = str(row.get("rule_url") or "")
             row["rule_label"] = str(row.get("rule_label") or "")

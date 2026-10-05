@@ -221,6 +221,8 @@ class TaskState:
     last_phase_detail: str = ""     # 阶段内的细粒度进度（如「取种 14/45」），供前端显示避免「像卡住」
     last_phase_at: float = 0.0
     page_cursor: int = 0            # 站点列表页游标（游标深翻）
+    # ★ 7.15.0 可观测：上一轮「决策轨迹」（换种闸门 at_cap、门槛、删除原因分布、候选过滤原因…）。
+    last_decision: Dict[str, Any] = field(default_factory=dict)
     # 种子详情页映射（hash→details 页 URL）。供「检查」时回站点核对促销/免费状态。
     torrent_pages: Dict[str, str] = field(default_factory=dict)
     # ★ 限时免费到期时刻（hash→unix 秒）。入种时从列表页记下，到点直接清「未下完」的，
@@ -269,6 +271,7 @@ class TaskState:
             "last_phase_detail": self.last_phase_detail,
             "last_phase_at": self.last_phase_at,
             "page_cursor": self.page_cursor,
+            "last_decision": dict(self.last_decision or {}),
             "torrent_pages": dict(self.torrent_pages),
             "torrent_free_until": {str(k).lower(): float(v) for k, v in self.torrent_free_until.items()},
             "brush_upload": {str(k).lower(): dict(v) for k, v in self.brush_upload.items()},
@@ -318,6 +321,7 @@ class TaskState:
             last_phase_detail=d.get("last_phase_detail", ""),
             last_phase_at=d.get("last_phase_at", 0.0),
             page_cursor=d.get("page_cursor", 0),
+            last_decision=dict(d.get("last_decision") or {}),
             torrent_pages={str(k).lower(): str(v) for k, v in (d.get("torrent_pages") or {}).items() if k and v},
             torrent_free_until={str(k).lower(): float(v) for k, v in (d.get("torrent_free_until") or {}).items() if k and v},
             brush_upload={str(k).lower(): dict(v) for k, v in (d.get("brush_upload") or {}).items() if k and isinstance(v, dict)},
@@ -348,6 +352,8 @@ class WorkReport:
     reused: Optional[int] = None
     slow_reused: Optional[int] = None
     scanned: Optional[int] = None
+    # ★ 7.15.0 可观测：「本轮决策轨迹」——回答「为什么没动作」（闸门/门槛/原因分布/候选过滤）。
+    decision: Optional[Dict[str, Any]] = None
 
 
 # ============================================================
@@ -2506,6 +2512,8 @@ class MagicFlowStore:
             state.last_run_reason = report.reason or ""
         if report.duration is not None:
             state.last_run_duration = round(float(report.duration or 0.0), 2)
+        if report.decision is not None:
+            state.last_decision = dict(report.decision or {})
         self.task_states.save(state)
 
     def record_slow_reuse(self, task_id: str, reused: int = 0, scanned: int = 0) -> None:
@@ -2587,6 +2595,7 @@ class MagicFlowStore:
                 "last_phase_detail": "",
                 "last_phase_at": 0.0,
                 "page_cursor": 0,
+                "last_decision": {},
             }
 
         return {
@@ -2617,6 +2626,7 @@ class MagicFlowStore:
             "last_phase_detail": state.last_phase_detail,
             "last_phase_at": state.last_phase_at,
             "page_cursor": state.page_cursor,
+            "last_decision": dict(getattr(state, "last_decision", {}) or {}),
         }
 
 

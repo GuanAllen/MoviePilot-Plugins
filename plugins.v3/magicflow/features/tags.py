@@ -1269,6 +1269,9 @@ class TagsMixin:
         state: str = "",
         site: str = "",
         limit: int = 20,
+        confirm: str = "",
+        reason: str = "",
+        tids: str = "",
     ) -> Response:
         """标签模型：状态账本 / 文件组 / 分拣规则 / 迁移计划。"""
         self._tag_sync_names()
@@ -1480,6 +1483,98 @@ class TagsMixin:
                 "total": plan["total"], "by_state": plan["by_state"],
                 "samples": [{k: s.get(k) for k in ("title", "site", "state", "sub", "source", "remove", "add")} for s in plan["samples"]],
             })
+        # ★ 10.2.0 下载即开账（影子记账）：只读端点
+        if act in ("hrbills", "hr_bills"):
+            info = self._hrbills_stats()
+            return Response(success=True, message=f"H&R 账单 {info.get('total')} 张", data=info)
+        if act in ("hr_dryrun", "hrbills_dryrun"):
+            info = self._hrbills_dryrun()
+            return Response(success=True, message="H&R 账单干跑（只读，不落库）", data=info)
+        # ★ 11.0.0：手动触发账单巡检/存量回填（**写动作**，必须 confirm=1；
+        #   与 syncres 等运维动作同风格，不改任何删除/保护判据本身）
+        if act in ("hr_tick", "hrbills_tick"):
+            if str(confirm or "").strip().lower() not in ("1", "true", "yes"):
+                return Response(success=True, message="需要 confirm=1 才执行账单巡检/回填",
+                                data={"need_confirm": True})
+            info = self._hrbills_tick()
+            return Response(success=True,
+                            message=f"H&R 账单巡检完成：{info}", data=info)
+        # ★ 11.7.0：人工作废账单（摘保护）—— 站点侧免罪 / 确认无 H&R 后的落账口子。
+        #   写动作，必须 confirm=1；hash 逗号分隔可批量。
+        if act in ("hr_void", "hrbills_void"):
+            if str(confirm or "").strip().lower() not in ("1", "true", "yes"):
+                return Response(success=True, message="需要 confirm=1 才作废 H&R 账单",
+                                data={"need_confirm": True})
+            _raw = str(hash or "").strip().lower()
+            _hs = [x.strip() for x in _raw.replace(",", " ").split() if x.strip()]
+            if not _hs:
+                return Response(success=False, message="缺少 hash（可逗号分隔批量）")
+            _reason = str(reason or "manual").strip() or "manual"
+            done, miss = [], []
+            for _h in _hs:
+                try:
+                    _b = self._hrbills_void(_h, _reason)
+                except Exception:  # noqa: BLE001
+                    _b = None
+                (done if _b else miss).append(_h)
+            return Response(success=True,
+                            message=f"账单作废：成功 {len(done)} / 未找到 {len(miss)}（reason={_reason}）",
+                            data={"voided": done, "missing": miss, "reason": _reason})
+        # ★ 11.8.0：站点 myhr 对账（第三视角）。只读报告默认不联网；写动作（同站重下）
+        #   必须 confirm=1，且只处理「站点当前仍欠 + 本机没有」的记录。**只加不删**。
+        if act in ("hr_reconcile", "hrreconcile"):
+            _confirm = str(confirm or "").strip().lower() in ("1", "true", "yes")
+            _site = str(site or "").strip()
+            if not _confirm:
+                if _site:
+                    _plan = self._hr_reconcile_apply(_site, tids=tids, confirm=False)
+                    return Response(success=bool(_plan.get("ok")),
+                                    message=f"站点对账干跑：{_site} 待补种 {_plan.get('would_add', 0)} 条"
+                                            f"（未执行；加 confirm=1 才重下）",
+                                    data=_plan)
+                _rep = self._hr_reconcile_report("")
+                return Response(success=True, message="站点对账报告（只读）", data=_rep)
+            if not _site:
+                return Response(success=False, message="写动作必须带 site=<域名>")
+            _out = self._hr_reconcile_apply(_site, tids=tids, confirm=True)
+            return Response(success=bool(_out.get("ok")),
+                            message=f"站点对账重下：{_site} 新增 {_out.get('added', 0)} 条"
+                                    f"（候选 {_out.get('candidates', 0)}）",
+                            data=_out)
+        # ★ 11.9.0：野马PT 逐种 H&R（站点后台接口）。默认只读报告；写动作（给「本机有+
+        #   站点说欠+账本没记」补开账单）必须 confirm=1，**只增保护**。
+        if act in ("yema", "yema_apply", "yemaapply"):
+            _confirm = str(confirm or "").strip().lower() in ("1", "true", "yes")
+            try:
+                _lim = int(str(limit or "0").strip() or 0)
+            except Exception:  # noqa: BLE001
+                _lim = 0
+            _out = self._yema_apply(confirm=1 if _confirm else 0, limit=_lim)
+            if not _out.get("ok"):
+                return Response(success=False, message=str(_out.get("error") or "野马PT 处理失败"),
+                                data=_out)
+            if _out.get("dry_run"):
+                return Response(success=True,
+                                message=f"野马PT 补开账单干跑：待开 {_out.get('would_open', 0)} 张"
+                                        f"（加 confirm=1 才写）",
+                                data=_out)
+            return Response(success=True,
+                            message=f"野马PT 补开账单：成功 {_out.get('opened', 0)} 张"
+                                    f"（失败 {len(_out.get('failed') or [])}）",
+                            data=_out)
+        # ★ 11.9.0：野马PT「免罪」（写：扣积分、不可逆）。默认干跑，必须 confirm=1；
+        #   tid 用逗号分隔批量（逐条人工点名，不做自动）。
+        if act in ("yema_absolve", "yemaabsolve"):
+            _confirm = str(confirm or "").strip().lower() in ("1", "true", "yes")
+            _tids = [x.strip() for x in str(tids or "").split(",") if x.strip()]
+            if not _tids:
+                return Response(success=False, message="缺少 tids=<torrentId[,tid]>")
+            _res = [self._yema_absolve(_t, confirm=1 if _confirm else 0) for _t in _tids]
+            _ok = sum(1 for r in _res if r.get("written"))
+            _mode = "已写" if _confirm else "干跑"
+            return Response(success=all(bool(r.get("ok")) for r in _res),
+                            message=f"野马PT 免罪（{_mode}）：{len(_tids)} 条；写入 {_ok} 条",
+                            data={"mode": _mode, "results": _res})
         # default: status
         items = store.items()
         snap = store.snapshots()
@@ -1594,5 +1689,34 @@ class TagsMixin:
                 info = store.snapshot()
                 self._tag_last_snapshot = now
                 self._dbg(f"魔流:标签维护:状态账本快照完成（{info.get('count')} 条）")
+            # ★ 10.2.0 下载即开账：影子账单巡检（作废/结清，只改账单状态，不影响删除/保护）
+            try:
+                _hrb = self._hrbills_tick()
+                if (_hrb or {}).get("bills"):
+                    self._dbg(f"魔流:H&R账单巡检 {_hrb.get('bills')} 张 · 转活跃 {_hrb.get('activated')}"
+                              f" · 作废 {_hrb.get('voided')} · 结清 {_hrb.get('settled')}")
+            except Exception as _hrb_err:  # noqa: BLE001
+                self._log(f"H&R账单巡检失败:{_hrb_err}", "warning")
+            # ★ 11.8.0 站点 myhr 对账（第三视角）：**独立于 tick**（tick 是便宜幂等的状态机，
+            #   本步是联网重活）→ 自带周期节流 + 每站退避 + 硬时间预算；失败只记不抛。
+            #   **只读 + 只报**：绝不自动重下、绝不改账单状态（写动作要 confirm=1）。
+            try:
+                _rec = self._hr_reconcile_round()
+                if (_rec or {}).get("reports"):
+                    self._dbg(f"魔流:站点 H&R 对账 {_rec.get('sites')} 站"
+                              f" · 需补种 {_rec.get('missing_total')} 条")
+            except Exception as _rec_err:  # noqa: BLE001
+                self._log(f"站点 H&R 对账失败:{_rec_err}", "warning")
+            # ★ 11.9.0 野马PT 逐种 H&R 对账（站点后台接口，cookie 鉴权）：同样**独立于 tick**，
+            #   自带 6h 周期门 + 失败零写入；只读 + 只增保护（写动作要 confirm=1）。
+            try:
+                _ym = self._yema_round()
+                if (_ym or {}).get("rows_total"):
+                    self._dbg(f"魔流:野马PT 逐种 H&R 对账 种 {_ym.get('rows_total')}"
+                              f" · 义务 {_ym.get('obligations_total')}"
+                              f" · 漏挂 {len(_ym.get('missing_local') or [])}"
+                              f" · 漏记 {len(_ym.get('present_no_bill') or [])}")
+            except Exception as _ym_err:  # noqa: BLE001
+                self._log(f"野马PT 逐种 H&R 对账失败:{_ym_err}", "warning")
         except Exception as err:  # noqa: BLE001
             self._log(f"标签维护异常:{err}", "warning")

@@ -437,6 +437,31 @@ class DebugMixin:
         except Exception as e:  # noqa: BLE001
             return Response(success=False, message=str(e))
 
+    def debug_delete_gate(self, hashes: str = "") -> Response:
+        """诊断:查询**删除闸门** —— 传 ``hashes``（逗号分隔）返回其中被硬保护拦截的子集。
+
+        用途（Master 2026-10-05「删除令出一门」）：删前/排障时直接问一句
+        「这几个 hash 能不能删、为什么不能」。
+        """
+        hs = [h.strip().lower() for h in str(hashes or "").split(",") if h.strip()]
+        try:
+            why = self._delete_gate_detail(hs)
+        except Exception as e:  # noqa: BLE001
+            return Response(success=False, message=f"闸门计算失败: {e}", data={})
+        blocked = sorted(why.keys())
+        _bs = set(blocked)
+        return Response(
+            success=True,
+            message=f"删除闸门: 输入 {len(hs)} 个 → 硬保护拦截 {len(blocked)} 个",
+            data={
+                "input": hs,
+                "blocked": blocked,
+                "why": why,
+                "allowed": [h for h in hs if h not in _bs],
+                "log_path": str(self._deletions_log_path() or ""),
+            },
+        )
+
     def debug_swap(self, task_id: str = "", apply: int = 0, force: int = 0) -> Response:
         """诊断:自动换种干跑（``apply=0`` 只出计划，不落盘；``force=1`` 忽略开关/触发/冷却，仅干跑）。"""
         _force = bool(force)
@@ -983,6 +1008,77 @@ class DebugMixin:
             return Response(success=True, message="ok", data=self._jsonable(c.observe()))
         except Exception as err:  # noqa: BLE001
             return Response(success=False, message=f"读取失败: {err}")
+
+    def debug_np_main(self, site_id: int = 15, pages: int = 3) -> Response:
+        """临时诊断：同一页在 browse 通道 / debug 通道 抓到的内容与自解析结果对比。"""
+        try:
+            return self._debug_np_main_inner(site_id, pages)
+        except Exception as _e:  # noqa: BLE001
+            import traceback as _tb
+
+            return Response(success=False, message=f"{type(_e).__name__}: {_e}\n{_tb.format_exc()[-1200:]}")
+
+    def _debug_np_main_inner(self, site_id: int = 15, pages: int = 3) -> Response:
+        """临时诊断：同一页在 browse 通道 / debug 通道 抓到的内容与自解析结果对比。"""
+        c = self._collect_ref()
+        if c is None:
+            return Response(success=False, message="采集模块未就绪")
+        sid = int(site_id or 0)
+        site = self._get_site(sid)
+        if not site:
+            return Response(success=False, message="站点不存在")
+        base = (getattr(site, "url", "") or f"https://{getattr(site, 'domain', '')}").rstrip("/")
+        from ..fetcher import SiteFetcher as _SF
+
+        fetcher = _SF()
+        cli = c.http.client(sid, kind="browse")
+        rows = []
+        for p in range(max(int(pages), 1)):
+            url = f"{base}/torrents.php?incldead=1&page={p}"
+            r1 = cli.get_res(url)
+            t1 = str(getattr(r1, "text", "") or "")
+            f2 = c.http.text(sid, url, kind="debug", ttl=0.0)
+            t2 = str(getattr(f2, "text", "") or "")
+            dom = getattr(site, "domain", "") or base
+            p1 = fetcher._parse_np_rows(t1, dom, base, getattr(site, "cookie", None), getattr(site, "ua", None))
+            p2 = fetcher._parse_np_rows(t2, dom, base, getattr(site, "cookie", None), getattr(site, "ua", None))
+            rows.append({
+                "page": p,
+                "browse_len": len(t1), "browse_free_cls": t1.count("pro_free"),
+                "browse_50cls": t1.count("pro_50pctdown"),
+                "browse_parsed": len(p1), "browse_nonfree": sum(1 for x in p1 if not x.is_free),
+                "debug_len": len(t2), "debug_free_cls": t2.count("pro_free"),
+                "debug_50cls": t2.count("pro_50pctdown"),
+                "debug_parsed": len(p2), "debug_nonfree": sum(1 for x in p2 if not x.is_free),
+            })
+        import inspect as _ins
+
+        _src = ""
+        try:
+            _src = _ins.getsource(type(fetcher)._parse_np_rows)
+        except Exception:  # noqa: BLE001
+            pass
+        _p2 = fetcher._parse_np_rows(t2, dom, base, getattr(site, "cookie", None), getattr(site, "ua", None))
+        import sys as _sys
+
+        _F = _sys.modules.get(type(fetcher).__module__)
+        _diag = {
+            "module_file": getattr(_F, "__file__", "") or type(fetcher).__module__,
+            "has_50pctdown": "pro_50pctdown" in getattr(_F, "_NP_PRO_CLASSES", {}),
+            "src_has_daoxiangyu": "剩余时间" in _src,
+            "src_has_rule_verdict": "promo_rule_verdict" in _src,
+            "rules_count": len(getattr(_F, "_SITE_FREE_RULES", {}) or {}),
+            "rules_keys": list(getattr(_F, "_SITE_FREE_RULES", {}).keys())[:30],
+            "rules_for_dstudio": getattr(_F, "_site_free_rules_for", lambda _d: "NOFUNC")("dstudio.me"),
+            "verdict_sample": getattr(_F, "promo_rule_verdict", lambda *a, **k: "NOFUNC")(
+                "dstudio.me", 2.5, "Kians Bizarre B and B 2025 S02E08 1080p NF W"
+            ),
+            "sample_p2": [
+                {"t": x.title[:40], "dv": x.downloadvolumefactor, "vf": x.volume_factor, "free": x.is_free}
+                for x in _p2[:3]
+            ],
+        }
+        return Response(success=True, data={"site_id": sid, "diag": _diag, "rows": rows})
 
     def debug_candidates(self, site_id: int = 9, pages: int = 1) -> Response:
         """★ 3.44.0 诊断：API 站（馒头）候选列表（标题/大小/免费/做种人数）。"""

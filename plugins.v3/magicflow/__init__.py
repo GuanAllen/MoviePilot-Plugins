@@ -9,6 +9,9 @@ MagicFlow 魔流插件
 from .common import (
     BROWSE_PAGES,
     BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT,
+    CLAIM_BATCH,
+    CLAIM_DAILY_PER_SITE,
+    CLAIM_INTERVAL_SEC,
     CLOUD_INTERVAL_MINUTES,
     CLOUD_SCAN_MAX,
     MagicFlowTaskConfig,
@@ -36,13 +39,19 @@ from .persistence import MagicFlowStore
 from .features.core import CoreMixin
 from .features.runtime import RuntimeMixin
 from .features.api import ApiMixin
+from .features.agentapi import AgentApiMixin
+from .features.agentledger import AgentLedgerMixin
+from .features.rescue import RescueMixin
 from .features.settings import SettingsMixin
 from .features.status import StatusMixin
 from .features.tasks import TasksMixin
 from .features.brush import BrushMixin
 from .features.formula import FormulaMixin
 from .features.protection import ProtectionMixin
+from .features.deletegate import DeleteGateMixin
 from .features.hr import HrMixin
+from .features.hrbills import HrBillsMixin
+from .features.yema import YemaHrMixin
 from .features.assets import AssetsMixin
 from .features.services import ServicesMixin
 from .features.reseed import ReSeedMixin
@@ -65,11 +74,15 @@ from .features.ondemand import OnDemandMixin
 from .features.debug import DebugMixin
 from .features.registry import RegistryMixin
 from .features.migrate import MigrateMixin
+from .features.claim import ClaimMixin
+from .features.trend import TrendMixin
+from .features.health import HealthMixin
+from .features.eventlog import EventLogMixin
 
 from .dupgate import DupGateMixin
 
 
-class MagicFlow(DupGateMixin, CoreMixin, RuntimeMixin, ApiMixin, SettingsMixin, StatusMixin, TasksMixin, BrushMixin, FormulaMixin, ProtectionMixin, HrMixin, AssetsMixin, ServicesMixin, ReuseMixin, ReSeedMixin, CleanupMixin, SwapMixin, CrossSeedMixin, TagsMixin, SilentMixin, RecommendMixin, LiveMixin, ExamMixin, PoolMixin, CloudMixin, SiteOpsMixin, EventsMixin, ActionsMixin, DeckMixin, OnDemandMixin, DebugMixin, RegistryMixin, MigrateMixin, _PluginBase):
+class MagicFlow(DupGateMixin, CoreMixin, RuntimeMixin, AgentApiMixin, AgentLedgerMixin, ApiMixin, RescueMixin, SettingsMixin, StatusMixin, TasksMixin, BrushMixin, FormulaMixin, ProtectionMixin, DeleteGateMixin, HrMixin, HrBillsMixin, YemaHrMixin, AssetsMixin, ServicesMixin, ReuseMixin, ReSeedMixin, CleanupMixin, SwapMixin, CrossSeedMixin, TagsMixin, SilentMixin, RecommendMixin, LiveMixin, ExamMixin, PoolMixin, CloudMixin, SiteOpsMixin, EventsMixin, ActionsMixin, DeckMixin, OnDemandMixin, DebugMixin, RegistryMixin, MigrateMixin, ClaimMixin, TrendMixin, HealthMixin, EventLogMixin, _PluginBase):
     """魔流插件主类。"""
 
     plugin_name = "魔流"
@@ -115,6 +128,18 @@ class MagicFlow(DupGateMixin, CoreMixin, RuntimeMixin, ApiMixin, SettingsMixin, 
     _iyuu_token: str = ""
     _iyuu_sites: Dict[str, Dict[str, str]] = {}
     _iyuu_client: Optional[IyuuCloud] = None
+    # 认领(claim):把「我们在做种」的种在站点侧认领掉,换站点权益(CARPT:达标种魔力×2)。
+    #   ★ 写动作有真实代价(不达标 −100 / 放弃 −500) → 默认关 + 默认干跑 + 写动作必须 confirm。
+    _claim_enabled: bool = False
+    _claim_dry: bool = True                 # True=只预览不写
+    _claim_sites: list = []                 # 白名单(域名);空=全部支持的站
+    _claim_daily: int = CLAIM_DAILY_PER_SITE
+    _claim_batch: int = CLAIM_BATCH
+    _claim_interval_sec: float = CLAIM_INTERVAL_SEC
+    _claim_min_age_days: float = 0.0        # 0=按站点 profile
+    _claim_require_seeders: int = 0         # 安全阀:做种人数下限,0=不限
+    _claim_min_size_gb: float = 0.0         # 安全阀:体积下限,0=不限
+    _claim_exclude_zero_bonus: bool = True  # 零魔种不认领(无收益)
     # 元数据兜底(多源识别 + 补 NFO)
     _fallback_cfg: Dict[str, Any] = {}
     _fallback_engine: Optional[Any] = None
