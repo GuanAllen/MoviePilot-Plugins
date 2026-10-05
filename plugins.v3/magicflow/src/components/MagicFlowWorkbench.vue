@@ -377,6 +377,7 @@ const MF_PAGES = [
   { key: 'crossseed', label: '跨站取种', icon: 'mdi-swap-horizontal-bold', scope: 'global' },
   { key: 'claim', label: '认领', icon: 'mdi-seal-variant', scope: 'global' },
   { key: 'silent', label: '静默池', icon: 'mdi-pool', scope: 'global' },
+  { key: 'sitereport', label: '站点报表', icon: 'mdi-table-large', scope: 'view' },
   { key: 'ceiling', label: '站点容量', icon: 'mdi-gauge', scope: 'view' },
   { key: 'ops', label: '操作记录', icon: 'mdi-history', scope: 'view' },
   { key: 'settings', label: '插件设置', icon: 'mdi-tune-variant', scope: 'global' },
@@ -392,6 +393,7 @@ function mfOpenPage(page) {
     case 'crossseed': return showCrossseed()
     case 'claim': return openClaim()
     case 'silent': return openSilent()
+    case 'sitereport': return openSiteReport()
     case 'ceiling': return openCeiling()
     case 'ops': return openOperations('all')
     case 'settings': return openSettings()
@@ -409,6 +411,7 @@ const TILE_OPTIONS = [
   { key: 'crossseed', label: '跨站取种', icon: 'mdi-swap-horizontal-bold' },
   { key: 'claim', label: '认领', icon: 'mdi-seal-variant' },
   { key: 'silent', label: '静默池', icon: 'mdi-pool' },
+  { key: 'sitereport', label: '站点报表', icon: 'mdi-table-large' },
   { key: 'ondemand', label: '点播', icon: 'mdi-cloud-download-outline' },
   { key: 'ceiling', label: '站点容量', icon: 'mdi-gauge' },
   { key: 'ops', label: '操作记录', icon: 'mdi-history' },
@@ -554,6 +557,54 @@ const siteCeilingRows = computed(() => {
 })
 const ceilingOpen = ref(false)
 function openCeiling() { ceilingOpen.value = true }
+// ── 站点报表（11.10.0）：站点级逐条种子状态 ─────────────────────
+const siteReportOpen = ref(false)
+const siteReportSite = ref('')
+const siteReportLive = ref(false)
+const siteReportLoading = ref(false)
+const siteReport = ref({ site: {}, items: [], summary: {}, hr: {}, available_sites: [] })
+const siteReportSites = computed(() => (siteReport.value.available_sites || []))
+const siteReportItems = computed(() => siteReport.value.items || [])
+const siteReportSummary = computed(() => siteReport.value.summary || {})
+const SITE_REPORT_BUCKETS = [
+  { key: '欠H&R', color: 'error' },
+  { key: '未完成', color: 'amber' },
+  { key: '暂停', color: 'grey' },
+  { key: '静默', color: 'blue-grey' },
+  { key: '保护', color: 'teal' },
+  { key: '普通', color: 'primary' },
+]
+function siteReportBucketColor(b) {
+  const hit = SITE_REPORT_BUCKETS.find(x => x.key === b)
+  return hit ? hit.color : 'grey'
+}
+function siteReportItemSub(it) {
+  const parts = []
+  if (it.state) parts.push(it.state)
+  if (it.progress != null && it.progress < 0.999) parts.push(`${Math.round(it.progress * 100)}%`)
+  if (it.hr && it.hr.need_left) parts.push(`还需 ${it.hr.need_left}`)
+  if (it.bill && it.bill.state) parts.push(`账单 ${it.bill.state}${it.bill.rule ? '/' + it.bill.rule : ''}`)
+  return parts.join(' · ')
+}
+function openSiteReport() { siteReportOpen.value = true; loadSiteReport() }
+async function loadSiteReport(liveOverride) {
+  siteReportLoading.value = true
+  try {
+    const q = new URLSearchParams()
+    if (siteReportSite.value) q.set('site', siteReportSite.value)
+    if (liveOverride === true || (liveOverride === undefined && siteReportLive.value)) q.set('live', '1')
+    const data = unwrapResponse(await props.api.get(`${pluginBase.value}/site/seeds?${q.toString()}`)) || {}
+    siteReport.value = data
+    if (!siteReportSite.value && siteReportSites.value.length) {
+      siteReportSite.value = siteReportSites.value[0].domain || siteReportSites.value[0].name || ''
+      await loadSiteReport()
+    }
+  } catch (e) {
+    error.value = `站点报表加载失败：${e}`
+  } finally {
+    siteReportLoading.value = false
+  }
+}
 // 站点折叠：多任务行可展开
 const mhSiteOpen = ref({})
 function siteMulti(s) { return s.tasks.length > 1 }
@@ -3637,6 +3688,15 @@ onUnmounted(() => {
           title="死种补源：停滞欠 H&R 的种 → 他站无 H&R 站补下同 Release"
           @click="openRescue"
         />
+        <VBtn
+          v-if="tileVisible('sitereport')"
+          class="magicflow-sitereport-btn"
+          icon="mdi-table-large"
+          variant="text"
+          aria-label="站点报表"
+          title="站点报表：逐条种子状态（分类/保护/账单/qB）"
+          @click="openSiteReport"
+        />
         <!-- ★ 桌面：详情磁贴（推荐/云盘/跨站/豆瓣/点播/考核/补源）与「设置」分两档 → 中间加一条竖分隔 -->
         <span class="magicflow-hdr-sep" aria-hidden="true" />
         <VBtn
@@ -3702,6 +3762,13 @@ onUnmounted(() => {
               @click="openExam"
             />
             <VListItem prepend-icon="mdi-lifebuoy" title="死种补源" subtitle="停滞欠 H&R 的种 → 无 H&R 站补源" @click="openRescue" />
+            <VListItem
+              v-if="tileVisible('sitereport')"
+              prepend-icon="mdi-table-large"
+              title="站点报表"
+              subtitle="站点逐条种子状态（分类/保护/账单）"
+              @click="openSiteReport"
+            />
             <!-- ★ 上面是「详情」，下面是「设置」：分隔开，别混成一串 -->
             <VDivider class="my-1" />
             <VListItem prepend-icon="mdi-tune-variant" title="插件设置" @click="openSettings()" />
@@ -4817,6 +4884,70 @@ onUnmounted(() => {
               </div>
             </div>
             <div v-if="!siteCeilingRows.length" class="magicflow-ceiling-empty">暂无数据（任务尚未产出统计）</div>
+          </div>
+        </div>
+      </VCard>
+    </VDialog>
+
+    <VDialog v-model="siteReportOpen" max-width="48rem" scrollable :fullscreen="isNarrow">
+      <VCard class="magicflow-dialog magicflow-sitereport-dialog">
+        <header class="magicflow-settings-dialog__head">
+          <span class="magicflow-settings-dialog__title">站点报表</span>
+          <VChip v-if="siteReportLoading" size="x-small" color="grey" variant="tonal">加载中</VChip>
+          <span class="magicflow-ops-dialog__spacer" />
+          <VBtn icon="mdi-refresh" size="small" variant="text" aria-label="刷新" :loading="siteReportLoading" @click="loadSiteReport(false)" />
+          <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="siteReportOpen = false" />
+        </header>
+        <div class="magicflow-ops-dialog__sub magicflow-sitereport__bar">
+          <VSelect
+            v-model="siteReportSite"
+            :items="siteReportSites.map(s => ({ title: `${s.name || s.domain}${s.domain ? ' · ' + s.domain : ''}`, value: s.domain || s.name }))"
+            density="compact"
+            variant="outlined"
+            hide-details
+            class="magicflow-sitereport__site"
+            @update:model-value="loadSiteReport()"
+          />
+          <VBtn
+            size="small"
+            variant="tonal"
+            :prepend-icon="siteReportLive ? 'mdi-radar' : 'mdi-cloud-download-outline'"
+            :loading="siteReportLoading"
+            @click="loadSiteReport(true)"
+          >H&R 现抓</VBtn>
+        </div>
+        <div class="magicflow-ops-dialog__body">
+          <div class="magicflow-sitereport__stats">
+            <div class="magicflow-sitereport__stat"><b>{{ siteReportSummary.total || 0 }}</b><span>挂种</span></div>
+            <div class="magicflow-sitereport__stat"><b>{{ (siteReportSummary.size_gb || 0).toFixed(1) }}</b><span>GB</span></div>
+            <div class="magicflow-sitereport__stat is-danger"><b>{{ siteReportSummary.hr_owed || 0 }}</b><span>欠 H&amp;R</span></div>
+            <div class="magicflow-sitereport__stat is-danger"><b>{{ siteReportSummary.hr_missing || 0 }}</b><span>缺挂</span></div>
+          </div>
+          <div class="magicflow-sitereport__chips">
+            <VChip
+              v-for="b in SITE_REPORT_BUCKETS"
+              :key="b.key"
+              size="small"
+              :color="b.color"
+              variant="tonal"
+            >{{ b.key }} {{ (siteReportSummary.by_bucket || {})[b.key] || 0 }}</VChip>
+          </div>
+          <div v-if="siteReport.hr && siteReport.hr.error" class="magicflow-sitereport__err">
+            H&amp;R 对账（{{ siteReport.hr.source }}）：{{ siteReport.hr.error }}
+          </div>
+          <div v-else-if="siteReport.hr && siteReport.hr.records_total != null" class="magicflow-sitereport__note">
+            H&amp;R 对账（{{ siteReport.hr.source }}）：站点欠 {{ siteReport.hr.records_total }} 条，本机缺挂 {{ siteReport.hr.missing }} 条{{ siteReport.hr.hash_coverage_complete ? '' : '（部分未覆盖）' }}
+          </div>
+          <div class="magicflow-sitereport__list">
+            <div v-for="it in siteReportItems" :key="it.hash" class="magicflow-sitereport__row">
+              <VChip size="x-small" :color="siteReportBucketColor(it.bucket)" variant="tonal" class="magicflow-sitereport__row-b">{{ it.bucket }}</VChip>
+              <div class="magicflow-sitereport__row-main">
+                <div class="magicflow-sitereport__row-t" :title="it.title">{{ it.title || it.hash }}</div>
+                <div class="magicflow-sitereport__row-s">{{ siteReportItemSub(it) }}</div>
+              </div>
+              <span class="magicflow-sitereport__row-size">{{ (it.size_gb || 0).toFixed(2) }}G</span>
+            </div>
+            <div v-if="!siteReportLoading && !siteReportItems.length" class="magicflow-ceiling-empty">该站点暂无挂种（或未选择站点）</div>
           </div>
         </div>
       </VCard>
@@ -11082,6 +11213,7 @@ onUnmounted(() => {
   .magicflow-page__actions .magicflow-health-btn,
   .magicflow-page__actions .magicflow-ondemand-btn,
   .magicflow-page__actions .magicflow-rescue-btn,
+  .magicflow-page__actions .magicflow-sitereport-btn,
   .magicflow-page__actions .magicflow-settings-btn,
   .magicflow-page__actions .magicflow-hdr-sep,
   .magicflow-page__actions .magicflow-close-btn {
@@ -11640,6 +11772,30 @@ onUnmounted(() => {
 .magicflow-ceiling-bar i.is-full { background: linear-gradient(90deg, rgb(var(--v-theme-warning)), rgb(var(--v-theme-error))); }
 .magicflow-ceiling-row__foot { display: flex; justify-content: space-between; margin-block-start: 5px; font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
 .magicflow-ceiling-empty { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); text-align: center; padding: 20px 0; }
+/* ── 站点报表（11.10.0）：站点级逐条种子状态 ──────────────── */
+.magicflow-sitereport__bar { display: flex; align-items: center; gap: 10px; }
+.magicflow-sitereport__site { flex: 1 1 auto; max-width: 22rem; }
+.magicflow-sitereport__stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-block-end: 10px; }
+.magicflow-sitereport__stat { background: rgba(var(--v-theme-on-surface), 0.04); border-radius: 10px; padding: 8px 10px; text-align: center; }
+.magicflow-sitereport__stat b { display: block; font-size: 20px; font-weight: 700; line-height: 1.15; }
+.magicflow-sitereport__stat span { font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
+.magicflow-sitereport__stat.is-danger b { color: rgb(var(--v-theme-error)); }
+.magicflow-sitereport__chips { display: flex; flex-wrap: wrap; gap: 6px; margin-block-end: 10px; }
+.magicflow-sitereport__note { font-size: 12px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); margin-block-end: 8px; }
+.magicflow-sitereport__err { font-size: 12px; color: rgb(var(--v-theme-error)); margin-block-end: 8px; }
+.magicflow-sitereport__list { display: flex; flex-direction: column; gap: 2px; }
+.magicflow-sitereport__row { display: flex; align-items: center; gap: 9px; padding: 7px 4px; border-radius: 8px; }
+.magicflow-sitereport__row:hover { background: rgba(var(--v-theme-on-surface), 0.04); }
+.magicflow-sitereport__row-b { flex: 0 0 auto; }
+.magicflow-sitereport__row-main { flex: 1 1 auto; min-width: 0; }
+.magicflow-sitereport__row-t { font-size: 13px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.magicflow-sitereport__row-s { font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.magicflow-sitereport__row-size { flex: 0 0 auto; font-size: 12px; font-weight: 600; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
+@media (max-width: 959px) {
+  .magicflow-sitereport__stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .magicflow-sitereport__bar { flex-wrap: wrap; }
+  .magicflow-sitereport__site { max-width: none; }
+}
 @media (max-width: 959px) {
   .magicflow-ops-dialog__body { padding: 4px 14px 18px; }
 }

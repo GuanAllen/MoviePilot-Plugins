@@ -1,0 +1,332 @@
+# -*- coding: utf-8 -*-
+"""魔流 · sitereport —— 站点级种子报表（AI 入口 + UI 共用）。
+
+回答一类问题：**「某站点上，我们现在挂着的各种种子分别处于什么状态？」**
+一次调用给出：逐条种子（hash / 标题 / 体积 / 保存目录 / qB 状态 / 进度 / 比例 /
+保护 / 账单 / H&R 需做种时间）+ 分类汇总 + H&R 对账摘要。
+
+只读真值源（**不新增 / 不缓存真值**，全部现读）：
+  - 下载器快照：``_tag_all_torrents()``（按标签 / tracker 归属站点）
+  - 保护：各任务 ``store.get_protected_torrents``（= 手动保留 ∪ H&R ∪ 未完成 ∪ 认领）
+  - 账本：``_hrbills_store()``（账单 state / rule）
+  - H&R 对账：``_hr_reconcile_site()``（``live=1`` 现抓）或
+    ``_hr_reconcile_cache().get_report()``（默认读上一轮缓存）
+
+契约：见 ``docs/AGENT-API.md``（``GET /agent/site/seeds``）+ ``GET /site/seeds``。
+本模块**只读**：不写下载器 / 账本 / 热层，不含任何写动作。
+"""
+
+from __future__ import annotations
+
+import time
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from app.schemas import Response
+
+from ..tags import STATE_SILENT, parse_tag
+from .hrbills import BILL_STATE_ACTIVE, RULE_HIT_AND_RUN, RULE_SITE_HR
+
+# 分类桶（主状态，互斥；优先级见 _site_seed_report 排序）
+BUCKET_HR = "欠H&R"
+BUCKET_DOWNLOADING = "未完成"
+BUCKET_PAUSED = "暂停"
+BUCKET_SILENT = "静默"
+BUCKET_PROTECTED = "保护"
+BUCKET_NORMAL = "普通"
+
+_BUCKET_ORDER = (BUCKET_HR, BUCKET_DOWNLOADING, BUCKET_PAUSED,
+                 BUCKET_SILENT, BUCKET_PROTECTED, BUCKET_NORMAL)
+
+_HR_RULES = (RULE_SITE_HR, RULE_HIT_AND_RUN)
+
+# 分页/裁剪上限（逐条列表）
+MAX_ITEMS = 4000
+
+
+class SiteReportMixin:
+    """站点级种子报表（只读）。"""
+
+    # ------------------------------------------------------------------ 站点解析
+    def _site_report_resolve(self, site: str) -> Dict[str, Any]:
+        """把 ``site``（域名 / 短名 / id）解析成 ``{id, name, domain, sites}``。
+
+        ``sites`` 始终带上（供前端选择器）；解析不到就按原样当 name/domain 用。
+        """
+        raw = str(site or "").strip()
+        try:
+            sites = self._list_sites() or []
+        except Exception:  # noqa: BLE001
+            sites = []
+        if not raw:
+            return {"id": 0, "name": "", "domain": "", "sites": sites}
+        needle = raw.lower()
+        for it in sites:
+            iid = str(it.get("id") or "")
+            name = str(it.get("name") or "")
+            dom = str(it.get("domain") or "")
+            if needle in (iid.lower(), name.lower(), dom.lower()):
+                return {"id": it.get("id") or 0, "name": name, "domain": dom, "sites": sites}
+        for t in (getattr(self, "_task_configs", None) or {}).values():
+            name = str(getattr(t, "site_name", "") or "")
+            dom = str(getattr(t, "site_domain", "") or "")
+            if needle in (name.lower(), dom.lower()):
+                return {"id": getattr(t, "site_id", 0) or 0, "name": name, "domain": dom, "sites": sites}
+        return {"id": 0, "name": raw, "domain": raw if "." in raw else "", "sites": sites}
+
+    # ------------------------------------------------------------------ 只读小助手
+    def _site_report_protected(self) -> set:
+        """保护 hash 并集（跨所有任务 + 历史空 task_id），与 ``_delete_gate_detail`` 同源。"""
+        out: set = set()
+        try:
+            store = getattr(self, "_store", None)
+            if store is None:
+                return out
+            tids = list((getattr(self, "_task_configs", None) or {}).keys())
+            tids.append("")
+            for tid in tids:
+                try:
+                    out |= set(store.get_protected_torrents(tid) or set())
+                except Exception:  # noqa: BLE001
+                    continue
+        except Exception:  # noqa: BLE001
+            pass
+        return {str(h).strip().lower() for h in out}
+
+    def _site_report_bills_store(self):
+        try:
+            return self._hrbills_store()
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _site_report_snapshot(self) -> Dict[str, Any]:
+        """展示用下载器快照（hash→TorrentInfo）。
+
+        走 ``_tag_snapshot_view``（stale-while-revalidate）——报表是**只读展示**，
+        不该为 qB 全量拉取买单；实在拿不到再回退阻塞式。
+        """
+        try:
+            groups = self._tag_snapshot_view()
+        except Exception:  # noqa: BLE001
+            try:
+                return self._tag_all_torrents() or {}
+            except Exception:  # noqa: BLE001
+                return {}
+        out: Dict[str, Any] = {}
+        for rows in (groups or {}).values():
+            for t in rows or []:
+                h = str(getattr(t, "hash", "") or "").lower()
+                if h:
+                    out[h] = t
+        return out
+
+    @staticmethod
+    def _site_report_is_paused(state: str) -> bool:
+        st = str(state or "").strip().lower()
+        return st.startswith("paused") or st.startswith("stopped")
+
+    @staticmethod
+    def _site_report_torrent_site(t: Any, known: set) -> str:
+        """单种站点短名（不自调 ``_tag_site_names()``，由调用方预算好 ``known`` 集合）。"""
+        tagset = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
+        for x in tagset:
+            if x in known:
+                return x
+        for x in tagset:
+            p = parse_tag(x)
+            if p and p.get("site"):
+                return str(p["site"])
+        return ""
+
+    def _site_report_match(self, info: Dict[str, Any], t: Any, known: set) -> bool:
+        """种子是否属于该站：标签站点短名匹配 或 tracker 域名匹配。"""
+        name = str(info.get("name") or "").strip().lower()
+        dom = ""
+        try:
+            dom = self._hrbills_norm_domain(str(info.get("domain") or ""))
+        except Exception:  # noqa: BLE001
+            dom = str(info.get("domain") or "").strip().lower()
+        tsn = self._site_report_torrent_site(t, known).strip().lower()
+        if name and tsn == name:
+            return True
+        tr = str(getattr(t, "tracker", "") or "").strip().lower()
+        if dom and (dom in tr or tr.endswith(dom)):
+            return True
+        return False
+
+    @staticmethod
+    def _site_report_is_silent(t: Any) -> bool:
+        try:
+            for tg in (getattr(t, "tags", None) or []):
+                p = parse_tag(str(tg))
+                if p and p.get("state") == STATE_SILENT:
+                    return True
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+    def _site_report_bucket(self, t: Any, state: str, progress: float,
+                            is_hr: bool, is_prot: bool) -> str:
+        if is_hr:
+            return BUCKET_HR
+        if progress < 0.999:
+            return BUCKET_DOWNLOADING
+        if self._site_report_is_paused(state):
+            return BUCKET_PAUSED
+        if self._site_report_is_silent(t):
+            return BUCKET_SILENT
+        if is_prot:
+            return BUCKET_PROTECTED
+        return BUCKET_NORMAL
+
+    def _site_report_hr(self, domain: str, live: int, snap: Any) -> Dict[str, Any]:
+        """H&R 对账结果：``live=1`` 现抓一轮；否则读上一轮缓存。"""
+        dom = ""
+        try:
+            dom = self._hrbills_norm_domain(domain or "")
+        except Exception:  # noqa: BLE001
+            dom = str(domain or "").strip().lower()
+        if not dom:
+            return {}
+        if live:
+            try:
+                return self._hr_reconcile_site(dom, snap) or {}
+            except Exception:  # noqa: BLE001
+                return {}
+        try:
+            return self._hr_reconcile_cache().get_report(dom) or {}
+        except Exception:  # noqa: BLE001
+            return {}
+
+    # ------------------------------------------------------------------ 报表主体
+    def _site_seed_report(self, site: str = "", live: int = 0) -> Dict[str, Any]:
+        info = self._site_report_resolve(site)
+        available = [
+            {"id": it.get("id"), "name": it.get("name"), "domain": it.get("domain")}
+            for it in (info.get("sites") or [])
+        ]
+        at = datetime.now().astimezone().isoformat(timespec="seconds")
+        if not str(site or "").strip():
+            # 无参 = 只回站点清单（供选择器）
+            return {"site": {}, "at": at, "live": bool(live),
+                    "summary": {"total": 0}, "items": [], "hr": {},
+                    "available_sites": available}
+
+        name = str(info.get("name") or "")
+        dom = str(info.get("domain") or "")
+        try:
+            snap = self._site_report_snapshot()
+        except Exception:  # noqa: BLE001
+            snap = {}
+        protected = self._site_report_protected()
+        store = self._site_report_bills_store()
+        hr_rep = self._site_report_hr(dom, live, snap)
+
+        # 站点 H&R 欠账：tid→infohash→need_left（reconcile 逐条 records，见 hrbills 11.10.0）
+        owed: Dict[str, str] = {}
+        for rec in (hr_rep.get("records") or []):
+            if not isinstance(rec, dict):
+                continue
+            hh = str(rec.get("infohash") or "").strip().lower()
+            if hh:
+                owed[hh] = str(rec.get("need_left") or "")
+
+        # 归属筛选：标签/tracker 命中该站 或 在站点 H&R 欠账名单里
+        try:
+            known = set(self._tag_site_names())
+        except Exception:  # noqa: BLE001
+            known = set()
+        scope: Dict[str, Any] = {}
+        for h, t in (snap or {}).items():
+            hh = str(h or "").strip().lower()
+            if not hh:
+                continue
+            if hh in owed or self._site_report_match(info, t, known):
+                scope[hh] = t
+
+        items: List[Dict[str, Any]] = []
+        for hh, t in scope.items():
+            bill = None
+            if store is not None:
+                try:
+                    bill = store.get(hh)
+                except Exception:  # noqa: BLE001
+                    bill = None
+            bill_state = str((bill or {}).get("state") or "")
+            bill_rule = str((bill or {}).get("rule") or "")
+            state = str(getattr(t, "state", "") or "")
+            progress = round(float(getattr(t, "progress", 0) or 0), 4)
+            is_prot = hh in protected
+            is_hr = (hh in owed) or (bill_state == BILL_STATE_ACTIVE and bill_rule in _HR_RULES)
+            items.append({
+                "hash": hh,
+                "title": str(getattr(t, "title", "") or "")[:160],
+                "size_gb": round(float(getattr(t, "size_gb", 0) or 0), 3),
+                "save_path": str(getattr(t, "save_path", "") or ""),
+                "state": state,
+                "progress": progress,
+                "ratio": round(float(getattr(t, "ratio", 0) or 0), 3),
+                "uploaded": round(float(getattr(t, "uploaded", 0) or 0)),
+                "bucket": self._site_report_bucket(t, state, progress, is_hr, is_prot),
+                "protected": bool(is_prot),
+                "bill": ({"state": bill_state, "rule": bill_rule} if bill else None),
+                "hr": ({"owed": True, "need_left": owed.get(hh, "")} if is_hr else None),
+            })
+
+        order = {b: i for i, b in enumerate(_BUCKET_ORDER)}
+        items.sort(key=lambda x: (order.get(x["bucket"], 99), -float(x["size_gb"] or 0)))
+        items = items[:MAX_ITEMS]
+
+        # 汇总
+        by_bucket: Dict[str, int] = {}
+        by_state: Dict[str, int] = {}
+        total_size = 0.0
+        prot_n = 0
+        for it in items:
+            by_bucket[it["bucket"]] = by_bucket.get(it["bucket"], 0) + 1
+            stk = it["state"] or "?"
+            by_state[stk] = by_state.get(stk, 0) + 1
+            total_size += float(it["size_gb"] or 0)
+            if it["protected"]:
+                prot_n += 1
+        recs = list(hr_rep.get("records") or [])
+        hr_owed = len(recs) if recs else int(hr_rep.get("records_total") or 0)
+        hr_missing = len(hr_rep.get("missing_local") or [])
+        summary = {
+            "total": len(items),
+            "size_gb": round(total_size, 2),
+            "protected": prot_n,
+            "by_bucket": by_bucket,
+            "by_state": by_state,
+            "hr_owed": hr_owed,
+            "hr_in_qb": sum(1 for r in recs if isinstance(r, dict) and r.get("in_qb")),
+            "hr_missing": hr_missing,
+        }
+        return {
+            "site": {"id": info.get("id"), "name": name, "domain": dom},
+            "at": at,
+            "live": bool(live),
+            "summary": summary,
+            "items": items,
+            "hr": {
+                "source": "live" if live else "cache",
+                "ok": bool(hr_rep.get("ok")),
+                "partial": bool(hr_rep.get("partial")),
+                "error": str(hr_rep.get("error") or ""),
+                "records_total": int(hr_rep.get("records_total") or 0),
+                "missing": hr_missing,
+                "present_no_bill": len(hr_rep.get("present_no_bill") or []),
+                "hash_coverage_complete": bool(hr_rep.get("hash_coverage_complete")),
+            },
+            "available_sites": available,
+        }
+
+    # ------------------------------------------------------------------ 端点
+    def get_site_seeds(self, site: str = "", live: int = 0) -> Response:
+        """``GET /site/seeds``：站点级种子报表（只读）。"""
+        try:
+            data = self._site_seed_report(site, live)
+            return Response(success=True, message="ok", data=data)
+        except Exception as e:  # noqa: BLE001
+            self._log(f"站点报表失败: {e}", "error")
+            return Response(success=False, message=str(e))

@@ -1066,6 +1066,7 @@ class HrBillsMixin:
             "missing_local": [], "present_no_bill": [], "safe_rotate_candidate": [],
             "cache_hits": 0, "torrents_fetched": 0, "hash_coverage_complete": False,
             "deferred": 0,
+            "records": [],
             "took_ms": 0,
         }
         site_id = self._hr_reconcile_site_id(dom)
@@ -1120,6 +1121,7 @@ class HrBillsMixin:
         coverage = True
         deferred = 0
         conn: Dict[str, Any] = {}
+        rec_detail: List[Dict[str, Any]] = []   # 逐条明细（供 /agent/site/seeds 等站点级报表）
         for rec in records:
             tid = str(rec.get("tid") or "").strip()
             if not tid:
@@ -1157,6 +1159,13 @@ class HrBillsMixin:
                     claimed.add(str(hit).strip().lower())
             if not hit:
                 coverage = False
+                rec_detail.append({
+                    "tid": tid, "infohash": "", "title": str(rec.get("title") or "")[:160],
+                    "size_gb": round(float(rec.get("size_gb") or 0.0), 3),
+                    "need_left": str(rec.get("need_left") or ""),
+                    "in_qb": False, "billed": False, "bill_state": "", "bill_rule": "",
+                    "resolved": False,
+                })
                 continue
             rec_hashes.add(str(hit).strip().lower())
             hh = str(hit).strip().lower()
@@ -1166,6 +1175,15 @@ class HrBillsMixin:
                 bill = store.get(hh) if store is not None else None
             except Exception:  # noqa: BLE001
                 bill = None
+            rec_detail.append({
+                "tid": tid, "infohash": hh, "title": str(rec.get("title") or "")[:160],
+                "size_gb": round(float(rec.get("size_gb") or 0.0), 3),
+                "need_left": str(rec.get("need_left") or ""),
+                "in_qb": bool(present), "billed": bool(bill is not None),
+                "bill_state": str((bill or {}).get("state") or ""),
+                "bill_rule": str((bill or {}).get("rule") or ""),
+                "resolved": True,
+            })
             if not present:
                 rep["missing_local"].append({
                     "tid": tid, "infohash": hh, "title": str(rec.get("title") or "")[:120],
@@ -1187,6 +1205,7 @@ class HrBillsMixin:
                 })
         rep["hash_coverage_complete"] = bool(coverage)
         rep["deferred"] = int(deferred)
+        rep["records"] = rec_detail
         if coverage:
             for hh, t in local.items():
                 if hh in rec_hashes:
