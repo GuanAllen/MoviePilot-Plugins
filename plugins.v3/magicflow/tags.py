@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 __all__ = [
     "PREFIX",
@@ -96,6 +96,78 @@ def is_library_asset(rec: Any) -> bool:
     """
     r = rec or {}
     return bool(r.get("in_library")) or str(r.get("sub") or "").strip() == SUB_RESOURCE
+
+
+def resource_of_hash(groups: Any, hash_string: str) -> str:
+    """种子所属的资源 id（``ResourceLedgerStore.group_of``）；查不到 → ``""``。"""
+    if groups is None:
+        return ""
+    try:
+        return _clean(groups.group_of(hash_string))
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def resource_is_asset(groups: Any, group_id: str) -> bool:
+    """资源级「库内资产」真值：``mf_resource.in_library`` 或资源身份「资源」。"""
+    gid = _clean(group_id)
+    if not gid or groups is None:
+        return False
+    try:
+        rec = dict(((groups.items() or {}).get(gid) or {}))
+    except Exception:  # noqa: BLE001
+        return False
+    if _clean(rec.get("asset_recheck")) == "fail":
+        return False                      # 推荐复核不达标（已降级）不再享受资产保护
+    if bool((rec.get("library") or {}).get("in_library")):
+        return True
+    return _clean(rec.get("identity")) == SUB_RESOURCE
+
+
+def resource_asset_hash(groups: Any, hash_string: str, rec: Any = None) -> bool:
+    """★ 13.0.0（Master「辅种应该按资源的身份打标签」）：**副本跟随资源身份**。
+
+    真值源 = 资源账本：同一份内容（同特征码/同数据）的多个种共享一条资源；只要该资源是
+    库内资产（``in_library``）或身份「资源」，它的**每个副本**都按「资源」对待 ——
+    打资源身份标签、**不参与静默池清理/删除**。
+
+    只看种子自己的记录（``rec``）会漏掉副本：副本的 ``sub`` 往往还是「新」（它进池时
+    资源还没入库，或它压根没进资源成员表），但它的资源早就是库内资产了
+    —— 2026-10-07 凌晨误删 10 个他站辅种份就是这么来的。
+    """
+    if is_library_asset(rec):
+        return True
+    return resource_is_asset(groups, resource_of_hash(groups, hash_string))
+
+
+def asset_member_hashes(groups: Any) -> Set[str]:
+    """所有「库内资产」资源的成员 hash 集合（清理/删除路径的统一保护清单）。
+
+    覆盖两类：① 资源库记 ``in_library``；② 资源身份「资源」（含刚推荐入库、还没落库记的）。
+    """
+    out: Set[str] = set()
+    if groups is None:
+        return out
+    try:
+        items = groups.items() or {}
+    except Exception:  # noqa: BLE001
+        return out
+    for _gid, rec in items.items():
+        try:
+            _r = dict(rec or {})
+            if _clean(_r.get("asset_recheck")) == "fail":
+                continue                      # 推荐复核不达标（已降级）不再享受资产保护
+            lib = bool((_r.get("library") or {}).get("in_library"))
+            ident = _clean(_r.get("identity")) == SUB_RESOURCE
+            if not (lib or ident):
+                continue
+            for h in (dict(rec or {}).get("members") or {}):
+                hh = _clean(h).lower()
+                if hh:
+                    out.add(hh)
+        except Exception:  # noqa: BLE001
+            continue
+    return out
 
 
 # ---------------------------------------------------------------- 命名

@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "12.7.1"
+__version__ = "13.0.0"
 
 import bisect
 import re
@@ -342,6 +342,23 @@ def _has_media_asset_tag(torrent: Any, extra_tags: Any = None) -> bool:
 def _torrent_hash(torrent: Any) -> str:
     """取种子 infohash(小写)。"""
     return str(getattr(torrent, "hash", "") or "").strip().lower()
+
+
+def torrent_data_key(torrent: Any) -> str:
+    """种子「数据路径」key（判「同数据 / 共用目录」的**唯一口径**）：优先 qB ``content_path``，
+    退回 ``save_path/标题``。
+
+    ★ 坑（2026-10-07 修）：``TorrentInfo`` **没有 ``name`` 字段**（qB 的 ``name`` 映射到
+    ``title``）→ 取 ``getattr(t, "name", "")`` **恒空** ⇒ ① 「共用目录 → 只删条目、不删文件」
+    的护栏形同虚设（会连别人正在用的文件一起删）；② 资产目录兜底匹配退化成「同 save_path
+    就算」→ 同目录下所有种都被误判成「库内资产」（静默池清理候选凭空消失）。
+    """
+    cp = str(getattr(torrent, "content_path", "") or "").strip().rstrip("/")
+    if cp:
+        return cp
+    sp = str(getattr(torrent, "save_path", "") or "").rstrip("/")
+    nm = str(getattr(torrent, "title", "") or getattr(torrent, "name", "") or "").strip()
+    return (sp + "/" + nm) if (sp and nm) else ""
 
 
 class _SizeIndex:

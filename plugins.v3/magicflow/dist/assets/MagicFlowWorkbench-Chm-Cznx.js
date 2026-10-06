@@ -6238,47 +6238,47 @@ function silentHrText(it) {
 const SILENT_SUB_LABEL = { 新: '静默-新', 资源: '静默-资源', 普通: '静默-普通' };
 function silentSubLabel(sub) { return SILENT_SUB_LABEL[String(sub || '')] || `静默-${sub || '?'}` }
 
-// ── 静默池「阶段 2 迁出」（★ 12.4.0）：默认干跑，真写二次确认 ──────────────
-const relocateOpen = ref(false);
-const relocateAsk = ref(false);
-const relocateLoading = ref(false);
-const relocateActing = ref('');          // '' | 'dry' | 'apply'
-const relocateBatch = ref(50);
-const relocateSub = ref('普通');          // '' | 普通 | 新 | 资源（阶段2 保守默认只迁「普通」）
-const relocateScopeOptions = [
+// ── 静默池「清理（删除）」（★ 13.0.0）：默认干跑，真写二次确认 ──────────────
+const purgeOpen = ref(false);
+const purgeAsk = ref(false);
+const purgeLoading = ref(false);
+const purgeActing = ref('');          // '' | 'dry' | 'apply'
+const purgeBatch = ref(50);
+const purgeSub = ref('普通');          // '' | 普通 | 新 | 资源（保守默认只删「普通」）
+const purgeScopeOptions = [
   { label: '仅静默-普通（保守）', value: '普通' },
   { label: '仅静默-新', value: '新' },
   { label: '全部（含静默-新）', value: '' },
 ];
-const relocateData = ref({ counts: {}, by_site: {}, blocked_items: [] });
-const relocateCounts = computed(() => relocateData.value.counts || {});
-const relocateBlocked = computed(() => relocateData.value.blocked_items || []);
-const relocateBySite = computed(() => Object.entries(relocateData.value.by_site || {})
+const purgeData = ref({ counts: {}, by_site: {}, blocked_items: [] });
+const purgeCounts = computed(() => purgeData.value.counts || {});
+const purgeBlocked = computed(() => purgeData.value.blocked_items || []);
+const purgeBySite = computed(() => Object.entries(purgeData.value.by_site || {})
   .map(([site, v]) => ({ site, ...(v || {}) }))
   .sort((a, b) => Number(b.delete || 0) - Number(a.delete || 0)));
-async function loadRelocate(confirm = 0) {
-  relocateActing.value = confirm ? 'apply' : 'dry';
-  relocateLoading.value = true;
+async function loadPurge(confirm = 0) {
+  purgeActing.value = confirm ? 'apply' : 'dry';
+  purgeLoading.value = true;
   try {
-    const url = `${pluginBase.value}/silent/relocate?confirm=${confirm ? 1 : 0}&batch=${Number(relocateBatch.value) || 50}&sub=${encodeURIComponent(relocateSub.value)}`;
+    const url = `${pluginBase.value}/silent/purge?confirm=${confirm ? 1 : 0}&batch=${Number(purgeBatch.value) || 50}&sub=${encodeURIComponent(purgeSub.value)}`;
     const res = unwrapResponse(await props.api.get(url)) || {};
-    relocateData.value = res;
-    notify(res.message || (confirm ? '已迁出' : '干跑完成'));
+    purgeData.value = res;
+    notify(res.message || (confirm ? '已删除' : '干跑完成'));
     if (confirm) loadSilent();
   } catch (err) {
-    notify(`静默池迁出失败：${err?.message || err}`, 'error');
+    notify(`静默池清理失败：${err?.message || err}`, 'error');
   } finally {
-    relocateActing.value = '';
-    relocateLoading.value = false;
+    purgeActing.value = '';
+    purgeLoading.value = false;
   }
 }
-function openRelocate() {
-  relocateOpen.value = true;
-  loadRelocate(0);
+function openPurge() {
+  purgeOpen.value = true;
+  loadPurge(0);
 }
-async function runRelocate() {
-  relocateAsk.value = false;
-  await loadRelocate(1);
+async function runPurge() {
+  purgeAsk.value = false;
+  await loadPurge(1);
 }
 // ── 静默不变量收敛（★ 12.7.1）：账本静默但 qB 没停 → 补 pause（只 pause，不删种、不动文件）──
 const enforceLoading = ref(false);
@@ -6292,7 +6292,7 @@ async function loadEnforce(confirm = 0) {
     const res = unwrapResponse(await props.api.get(url)) || {};
     enforceData.value = res;
     notify(res.message || (confirm ? '已补 pause' : '干跑完成'));
-    if (confirm) loadRelocate(0);
+    if (confirm) loadPurge(0);
   } catch (err) {
     notify(`静默不变量收敛失败：${err?.message || err}`, 'error');
   } finally {
@@ -17194,10 +17194,10 @@ return (_ctx, _cache) => {
                   color: "warning",
                   size: "small",
                   "prepend-icon": "mdi-delete-sweep",
-                  onClick: openRelocate
+                  onClick: openPurge
                 }, {
                   default: _withCtx(() => [...(_cache[772] || (_cache[772] = [
-                    _createTextVNode("阶段2迁出", -1)
+                    _createTextVNode("清理（删除）", -1)
                   ]))]),
                   _: 1
                 }),
@@ -17559,8 +17559,8 @@ return (_ctx, _cache) => {
       _: 1
     }, 8, ["model-value"]),
     _createVNode(_component_VDialog, {
-      modelValue: relocateOpen.value,
-      "onUpdate:modelValue": _cache[284] || (_cache[284] = $event => ((relocateOpen).value = $event)),
+      modelValue: purgeOpen.value,
+      "onUpdate:modelValue": _cache[284] || (_cache[284] = $event => ((purgeOpen).value = $event)),
       "max-width": "46rem",
       scrollable: "",
       fullscreen: isNarrow.value
@@ -17569,22 +17569,22 @@ return (_ctx, _cache) => {
         _createVNode(_component_VCard, { class: "magicflow-dialog" }, {
           default: _withCtx(() => [
             _createElementVNode("header", _hoisted_628, [
-              _cache[784] || (_cache[784] = _createElementVNode("span", { class: "magicflow-settings-dialog__title" }, "静默池 · 阶段2 迁出", -1)),
+              _cache[784] || (_cache[784] = _createElementVNode("span", { class: "magicflow-settings-dialog__title" }, "静默池 · 清理（删除）", -1)),
               _createElementVNode("div", _hoisted_629, [
                 _createVNode(_component_VBtn, {
                   icon: "mdi-refresh",
                   size: "small",
                   variant: "text",
                   "aria-label": "干跑刷新",
-                  loading: relocateLoading.value,
-                  onClick: _cache[274] || (_cache[274] = $event => (loadRelocate()))
+                  loading: purgeLoading.value,
+                  onClick: _cache[274] || (_cache[274] = $event => (loadPurge()))
                 }, null, 8, ["loading"]),
                 _createVNode(_component_VBtn, {
                   icon: "mdi-close",
                   size: "small",
                   variant: "text",
                   "aria-label": "关闭",
-                  onClick: _cache[275] || (_cache[275] = $event => (relocateOpen.value = false))
+                  onClick: _cache[275] || (_cache[275] = $event => (purgeOpen.value = false))
                 })
               ])
             ]),
@@ -17593,23 +17593,23 @@ return (_ctx, _cache) => {
               default: _withCtx(() => [
                 _createElementVNode("div", _hoisted_630, [
                   _createVNode(_component_VSelect, {
-                    modelValue: relocateSub.value,
+                    modelValue: purgeSub.value,
                     "onUpdate:modelValue": [
-                      _cache[276] || (_cache[276] = $event => ((relocateSub).value = $event)),
-                      _cache[277] || (_cache[277] = $event => (loadRelocate(0)))
+                      _cache[276] || (_cache[276] = $event => ((purgeSub).value = $event)),
+                      _cache[277] || (_cache[277] = $event => (loadPurge(0)))
                     ],
-                    items: relocateScopeOptions,
+                    items: purgeScopeOptions,
                     "item-title": "label",
                     "item-value": "value",
                     density: "compact",
                     "hide-details": "",
                     variant: "outlined",
                     style: {"max-width":"14rem"},
-                    label: "迁出范围（默认只迁静默-普通）"
+                    label: "清理范围（默认只删静默-普通）"
                   }, null, 8, ["modelValue"]),
                   _createVNode(_component_VTextField, {
-                    modelValue: relocateBatch.value,
-                    "onUpdate:modelValue": _cache[278] || (_cache[278] = $event => ((relocateBatch).value = $event)),
+                    modelValue: purgeBatch.value,
+                    "onUpdate:modelValue": _cache[278] || (_cache[278] = $event => ((purgeBatch).value = $event)),
                     modelModifiers: { number: true },
                     type: "number",
                     density: "compact",
@@ -17621,52 +17621,61 @@ return (_ctx, _cache) => {
                 ]),
                 _createElementVNode("div", _hoisted_631, [
                   _createElementVNode("div", _hoisted_632, [
-                    _createElementVNode("b", null, _toDisplayString(relocateCounts.value.delete || 0), 1),
-                    _cache[785] || (_cache[785] = _createElementVNode("span", null, "迁出候选", -1))
+                    _createElementVNode("b", null, _toDisplayString(purgeCounts.value.delete || 0), 1),
+                    _cache[785] || (_cache[785] = _createElementVNode("span", null, "清理候选", -1))
                   ]),
                   _createElementVNode("div", _hoisted_633, [
-                    _createElementVNode("b", null, _toDisplayString(relocateCounts.value.keep || 0), 1),
-                    _cache[786] || (_cache[786] = _createElementVNode("span", null, "保护不迁", -1))
+                    _createElementVNode("b", null, _toDisplayString(purgeCounts.value.keep || 0), 1),
+                    _cache[786] || (_cache[786] = _createElementVNode("span", null, "保护不删", -1))
                   ]),
                   _createElementVNode("div", _hoisted_634, [
-                    _createElementVNode("b", null, _toDisplayString(relocateCounts.value.pause || 0), 1),
+                    _createElementVNode("b", null, _toDisplayString(purgeCounts.value.pause || 0), 1),
                     _cache[787] || (_cache[787] = _createElementVNode("span", null, "违背不变量", -1))
                   ]),
                   _createElementVNode("div", _hoisted_635, [
-                    _createElementVNode("b", null, _toDisplayString(relocateCounts.value.missing || 0), 1),
+                    _createElementVNode("b", null, _toDisplayString(purgeCounts.value.missing || 0), 1),
                     _cache[788] || (_cache[788] = _createElementVNode("span", null, "不在下载器", -1))
                   ])
                 ]),
-                _cache[796] || (_cache[796] = _createElementVNode("div", { class: "magicflow-settings-hint mt-2" }, [
-                  _createTextVNode(" 迁出 = 删种"),
-                  _createElementVNode("strong", null, "留文件"),
-                  _createTextVNode("（不在岗、不欠债、非资产、非保护）；保护类只列不动； 删前过删除闸门（含「库内资产」硬拦）。"),
-                  _createElementVNode("strong", null, "默认干跑，不写任何东西。")
-                ], -1)),
+                _createVNode(_component_VAlert, {
+                  type: "error",
+                  variant: "tonal",
+                  density: "compact",
+                  class: "mt-2"
+                }, {
+                  default: _withCtx(() => [...(_cache[789] || (_cache[789] = [
+                    _createElementVNode("strong", null, "会删除 qB 条目 + 磁盘文件，不可逆。", -1),
+                    _createTextVNode("清理 = 删条目", -1),
+                    _createElementVNode("strong", null, "+ 删文件", -1),
+                    _createTextVNode(" （不在岗、不欠债、非资产、非保护）；保护类只列不动；删前过删除闸门（含「库内资产」硬拦）。 ", -1),
+                    _createElementVNode("strong", null, "默认干跑，不写任何东西。", -1)
+                  ]))]),
+                  _: 1
+                }),
                 _createElementVNode("div", _hoisted_636, [
-                  _cache[791] || (_cache[791] = _createElementVNode("strong", null, "补暂停", -1)),
-                  _cache[792] || (_cache[792] = _createTextVNode("（★ 12.7.1）：设计口径「静默池本意就是暂停不上传」——账本已是静默、 但下载器里没停的种一律补 pause（幂等，", -1)),
-                  _cache[793] || (_cache[793] = _createElementVNode("strong", null, "只暂停、不删种、不动文件", -1)),
-                  _cache[794] || (_cache[794] = _createTextVNode("）。 ", -1)),
+                  _cache[792] || (_cache[792] = _createElementVNode("strong", null, "补暂停", -1)),
+                  _cache[793] || (_cache[793] = _createTextVNode("（★ 12.7.1）：设计口径「静默池本意就是暂停不上传」——账本已是静默、 但下载器里没停的种一律补 pause（幂等，", -1)),
+                  _cache[794] || (_cache[794] = _createElementVNode("strong", null, "只暂停、不删种、不动文件", -1)),
+                  _cache[795] || (_cache[795] = _createTextVNode("）。 ", -1)),
                   (enforceCounts.value.violations)
                     ? (_openBlock(), _createElementBlock("span", _hoisted_637, [
-                        _cache[789] || (_cache[789] = _createTextVNode("当前违背不变量 ", -1)),
+                        _cache[790] || (_cache[790] = _createTextVNode("当前违背不变量 ", -1)),
                         _createElementVNode("b", null, _toDisplayString(enforceCounts.value.violations), 1),
-                        _cache[790] || (_cache[790] = _createTextVNode(" 个。", -1))
+                        _cache[791] || (_cache[791] = _createTextVNode(" 个。", -1))
                       ]))
                     : (_openBlock(), _createElementBlock("span", _hoisted_638, "当前不变量成立（全 paused）。"))
                 ]),
-                (relocateBySite.value.length)
+                (purgeBySite.value.length)
                   ? (_openBlock(), _createElementBlock("table", _hoisted_639, [
-                      _cache[795] || (_cache[795] = _createElementVNode("thead", null, [
+                      _cache[796] || (_cache[796] = _createElementVNode("thead", null, [
                         _createElementVNode("tr", null, [
                           _createElementVNode("th", null, "站点"),
                           _createElementVNode("th", null, "总数"),
-                          _createElementVNode("th", null, "迁出候选")
+                          _createElementVNode("th", null, "清理候选")
                         ])
                       ], -1)),
                       _createElementVNode("tbody", null, [
-                        (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(relocateBySite.value, (r) => {
+                        (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(purgeBySite.value, (r) => {
                           return (_openBlock(), _createElementBlock("tr", {
                             key: r.site
                           }, [
@@ -17678,10 +17687,10 @@ return (_ctx, _cache) => {
                       ])
                     ]))
                   : _createCommentVNode("", true),
-                (relocateBlocked.value.length)
+                (purgeBlocked.value.length)
                   ? (_openBlock(), _createElementBlock("div", _hoisted_640, [
-                      _createTextVNode(" 闸门拦截 " + _toDisplayString(relocateBlocked.value.length) + " 个： ", 1),
-                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(relocateBlocked.value.slice(0, 20), (b) => {
+                      _createTextVNode(" 闸门拦截 " + _toDisplayString(purgeBlocked.value.length) + " 个： ", 1),
+                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(purgeBlocked.value.slice(0, 20), (b) => {
                         return (_openBlock(), _createElementBlock("span", {
                           key: b.hash
                         }, _toDisplayString(b.hash) + "（" + _toDisplayString(b.reason) + "）· ", 1))
@@ -17697,7 +17706,7 @@ return (_ctx, _cache) => {
                 _createVNode(_component_VSpacer),
                 _createVNode(_component_VBtn, {
                   variant: "text",
-                  onClick: _cache[279] || (_cache[279] = $event => (relocateOpen.value = false))
+                  onClick: _cache[279] || (_cache[279] = $event => (purgeOpen.value = false))
                 }, {
                   default: _withCtx(() => [...(_cache[797] || (_cache[797] = [
                     _createTextVNode("关闭", -1)
@@ -17729,8 +17738,8 @@ return (_ctx, _cache) => {
                 _createVNode(_component_VBtn, {
                   variant: "tonal",
                   color: "warning",
-                  loading: relocateActing.value === 'dry',
-                  onClick: _cache[282] || (_cache[282] = $event => (loadRelocate()))
+                  loading: purgeActing.value === 'dry',
+                  onClick: _cache[282] || (_cache[282] = $event => (loadPurge()))
                 }, {
                   default: _withCtx(() => [...(_cache[800] || (_cache[800] = [
                     _createTextVNode("干跑", -1)
@@ -17740,11 +17749,11 @@ return (_ctx, _cache) => {
                 _createVNode(_component_VBtn, {
                   variant: "flat",
                   color: "error",
-                  loading: relocateActing.value === 'apply',
-                  onClick: _cache[283] || (_cache[283] = $event => (relocateAsk.value = true))
+                  loading: purgeActing.value === 'apply',
+                  onClick: _cache[283] || (_cache[283] = $event => (purgeAsk.value = true))
                 }, {
                   default: _withCtx(() => [...(_cache[801] || (_cache[801] = [
-                    _createTextVNode("执行迁出", -1)
+                    _createTextVNode("执行清理", -1)
                   ]))]),
                   _: 1
                 }, 8, ["loading"])
@@ -17758,35 +17767,37 @@ return (_ctx, _cache) => {
       _: 1
     }, 8, ["modelValue", "fullscreen"]),
     _createVNode(_component_VDialog, {
-      "model-value": relocateAsk.value,
+      "model-value": purgeAsk.value,
       "max-width": "32rem",
       persistent: "",
-      "onUpdate:modelValue": _cache[287] || (_cache[287] = v => { if (!v) relocateAsk.value = false; })
+      "onUpdate:modelValue": _cache[287] || (_cache[287] = v => { if (!v) purgeAsk.value = false; })
     }, {
       default: _withCtx(() => [
         _createVNode(_component_VCard, { class: "magicflow-dialog" }, {
           default: _withCtx(() => [
             _createVNode(_component_VCardTitle, { class: "text-subtitle-1 pt-4" }, {
               default: _withCtx(() => [...(_cache[802] || (_cache[802] = [
-                _createTextVNode("确认执行阶段2迁出", -1)
+                _createTextVNode("确认执行静默池清理", -1)
               ]))]),
               _: 1
             }),
             _createVNode(_component_VCardText, { class: "text-body-2" }, {
               default: _withCtx(() => [
-                _cache[803] || (_cache[803] = _createTextVNode(" 将对 ", -1)),
-                _createElementVNode("strong", null, _toDisplayString(relocateCounts.value.delete || 0), 1),
-                _cache[804] || (_cache[804] = _createTextVNode(" 个「迁出候选」删种（", -1)),
-                _cache[805] || (_cache[805] = _createElementVNode("strong", null, "留文件", -1)),
-                _cache[806] || (_cache[806] = _createTextVNode("）， 保护类（欠 H&R / 库内资产 / 跨站来源份 / 认领 / 手动保留）不动。 ", -1)),
+                _cache[805] || (_cache[805] = _createTextVNode(" 将对 ", -1)),
+                _createElementVNode("strong", null, _toDisplayString(purgeCounts.value.delete || 0), 1),
+                _cache[806] || (_cache[806] = _createTextVNode(" 个「清理候选」", -1)),
+                _cache[807] || (_cache[807] = _createElementVNode("strong", null, "删除 qB 条目 + 磁盘文件", -1)),
+                _cache[808] || (_cache[808] = _createTextVNode("， 保护类（欠 H&R / 库内资产 / 跨站来源份 / 认领 / 手动保留）不动。 ", -1)),
                 _createVNode(_component_VAlert, {
-                  type: "warning",
+                  type: "error",
                   variant: "tonal",
                   density: "compact",
                   class: "mt-3"
                 }, {
                   default: _withCtx(() => [
-                    _createTextVNode(" 删种不可逆（文件保留）。会先对违背不变量的种补 pause；每批上限 " + _toDisplayString(relocateBatch.value) + " 个。 ", 1)
+                    _cache[803] || (_cache[803] = _createTextVNode(" 删条目 + 删文件，", -1)),
+                    _cache[804] || (_cache[804] = _createElementVNode("strong", null, "不可逆", -1)),
+                    _createTextVNode("（同目录另有完成种则只删条目保留文件）。会先对违背不变量的种补 pause；每批上限 " + _toDisplayString(purgeBatch.value) + " 个。 ", 1)
                   ]),
                   _: 1
                 })
@@ -17799,10 +17810,10 @@ return (_ctx, _cache) => {
                 _createVNode(_component_VSpacer),
                 _createVNode(_component_VBtn, {
                   variant: "text",
-                  disabled: relocateActing.value === 'apply',
-                  onClick: _cache[285] || (_cache[285] = $event => (relocateAsk.value = false))
+                  disabled: purgeActing.value === 'apply',
+                  onClick: _cache[285] || (_cache[285] = $event => (purgeAsk.value = false))
                 }, {
-                  default: _withCtx(() => [...(_cache[807] || (_cache[807] = [
+                  default: _withCtx(() => [...(_cache[809] || (_cache[809] = [
                     _createTextVNode("取消", -1)
                   ]))]),
                   _: 1
@@ -17810,11 +17821,11 @@ return (_ctx, _cache) => {
                 _createVNode(_component_VBtn, {
                   variant: "flat",
                   color: "error",
-                  loading: relocateActing.value === 'apply',
-                  onClick: _cache[286] || (_cache[286] = $event => (runRelocate()))
+                  loading: purgeActing.value === 'apply',
+                  onClick: _cache[286] || (_cache[286] = $event => (runPurge()))
                 }, {
-                  default: _withCtx(() => [...(_cache[808] || (_cache[808] = [
-                    _createTextVNode("确认迁出", -1)
+                  default: _withCtx(() => [...(_cache[810] || (_cache[810] = [
+                    _createTextVNode("确认清理", -1)
                   ]))]),
                   _: 1
                 }, 8, ["loading"])
@@ -17837,23 +17848,23 @@ return (_ctx, _cache) => {
         _createVNode(_component_VCard, { class: "magicflow-dialog" }, {
           default: _withCtx(() => [
             _createVNode(_component_VCardTitle, { class: "text-subtitle-1 pt-4" }, {
-              default: _withCtx(() => [...(_cache[809] || (_cache[809] = [
+              default: _withCtx(() => [...(_cache[811] || (_cache[811] = [
                 _createTextVNode("确认补暂停", -1)
               ]))]),
               _: 1
             }),
             _createVNode(_component_VCardText, { class: "text-body-2" }, {
               default: _withCtx(() => [
-                _cache[811] || (_cache[811] = _createTextVNode(" 将对「账本已静默、但下载器里还在跑」的种补 pause（预计 ", -1)),
+                _cache[813] || (_cache[813] = _createTextVNode(" 将对「账本已静默、但下载器里还在跑」的种补 pause（预计 ", -1)),
                 _createElementVNode("strong", null, _toDisplayString(enforceCounts.value.violations || 0), 1),
-                _cache[812] || (_cache[812] = _createTextVNode(" 个）。 ", -1)),
+                _cache[814] || (_cache[814] = _createTextVNode(" 个）。 ", -1)),
                 _createVNode(_component_VAlert, {
                   type: "info",
                   variant: "tonal",
                   density: "compact",
                   class: "mt-3"
                 }, {
-                  default: _withCtx(() => [...(_cache[810] || (_cache[810] = [
+                  default: _withCtx(() => [...(_cache[812] || (_cache[812] = [
                     _createTextVNode(" 只暂停：", -1),
                     _createElementVNode("strong", null, "不删种、不动文件、不 resume", -1),
                     _createTextVNode("；幂等可重跑。 ", -1)
@@ -17872,7 +17883,7 @@ return (_ctx, _cache) => {
                   disabled: enforceLoading.value,
                   onClick: _cache[288] || (_cache[288] = $event => (enforceAsk.value = false))
                 }, {
-                  default: _withCtx(() => [...(_cache[813] || (_cache[813] = [
+                  default: _withCtx(() => [...(_cache[815] || (_cache[815] = [
                     _createTextVNode("取消", -1)
                   ]))]),
                   _: 1
@@ -17883,7 +17894,7 @@ return (_ctx, _cache) => {
                   loading: enforceLoading.value,
                   onClick: _cache[289] || (_cache[289] = $event => {enforceAsk.value = false; loadEnforce(1);})
                 }, {
-                  default: _withCtx(() => [...(_cache[814] || (_cache[814] = [
+                  default: _withCtx(() => [...(_cache[816] || (_cache[816] = [
                     _createTextVNode("确认补暂停", -1)
                   ]))]),
                   _: 1
@@ -17902,6 +17913,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-df287649"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-ca1c9614"]]);
 
 export { MagicFlowWorkbench as M };
