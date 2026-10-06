@@ -3,7 +3,7 @@
         "name": "魔流",
         "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
         "labels": "站点,做种,魔力,刷流",
-        "version": "13.0.2",
+        "version": "13.0.3",
         "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
         "author": "GuanAllen",
         "level": 1,
@@ -396,9 +396,10 @@
             "12.7.1": "12.7.1：静默不变量周期收敛（silent_host 第⑪步「不变量收敛」+ /agent/silent/enforce + UI「补暂停」；relocate 步骤① 不再按 sub 过滤）",
             "13.0.0": "13.0.0：去「迁出」→ 只有删除（静默池 purge：删条目+删文件；共用目录只删条目保文件）；副本跟随资源身份（辅种份一律「静默-资源」、永不进清理候选）；修 TorrentInfo 无 name 字段导致的共用判据失效/资产误判（唯一口径 common.torrent_data_key，content_path 优先）",
             "13.0.1": "13.0.1：撤掉 13.0.0 新造的 purge（第二套删除口径，会把「静默-新」当垃圾删）→ 回归原有清除程序为唯一清理入口（_silent_purge_incomplete 未下完直接删 + _silent_plain_sweep 低效普通清扫 + 推荐过期降级）；删 AI 端点 /agent/silent/purge（清单 50→49）、UI 路由与入口；保留 .name 字段修复（common.torrent_data_key 唯一口径）与副本跟随资源身份；新增 tools/test_silent_cleanup.py 19 断言",
-            "13.0.2": "13.0.2：静默池判据统一成「身份」（_silent_identity_ctx/_silent_identity_protected：跨站来源账本/已认领/资源成员/库内资源/同数据副本），不再按 魔流-跨站/魔流-辅种/已整理 标签；新增「入池即判」_silent_drop_incomplete_now —— 没下完的种刚进静默池就删（放行：身份保护/欠 H&R/手动/同数据副本），不再等 60min 轮次；周期兜底 _silent_purge_incomplete 保留且不限 sub"
+            "13.0.2": "13.0.2：静默池判据统一成「身份」（_silent_identity_ctx/_silent_identity_protected：跨站来源账本/已认领/资源成员/库内资源/同数据副本），不再按 魔流-跨站/魔流-辅种/已整理 标签；新增「入池即判」_silent_drop_incomplete_now —— 没下完的种刚进静默池就删（放行：身份保护/欠 H&R/手动/同数据副本），不再等 60min 轮次；周期兜底 _silent_purge_incomplete 保留且不限 sub",
+            "13.0.3": "13.0.3：入池口统一「先过 H&R 分诊」——_tag_settle_idle（停止旁路 _settle_task_idle_safe / 删任务 settle=idle）改走 _split_release（欠 H&R → 保种 __hr_host__；其余 → 静默），不再直通静默；测试 test_silent_cleanup 38 断言（+[11] 源码级护栏）"
         }
     },
-    "version": "13.0.2",
+    "version": "13.0.3",
     "history": {}
 }

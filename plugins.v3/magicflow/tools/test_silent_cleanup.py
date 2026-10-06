@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import types
 from pathlib import Path
@@ -343,6 +344,27 @@ def main() -> int:
     _ok(h._silent_drop_incomplete_now("i5") is False, "欠 H&R（保种义务）→ 不删")
     h = Harness({"i6": _rec(sub=SUB_NEW, manual_paused=True)}, {"i6": _torrent("i6", progress=0.4, title="m")})
     _ok(h._silent_drop_incomplete_now("i6") is False, "手动保护 → 不删")
+
+    # ---- ⑪ 源码级护栏：入池前先过 H&R 分诊 + 入池即判钩子在位 ----
+    print("\n[11] 源码级护栏：所有入池口都先过 H&R 分诊；未下完的入池即判")
+    import re as _re
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _src = lambda f: open(os.path.join(_root, "features", f), encoding="utf-8").read()
+    _tags, _tasks, _sil = _src("tags.py"), _src("tasks.py"), _src("silent.py")
+    _settle = _tasks[_tasks.index("def _tag_settle_idle"):]
+    _settle = _settle[:_settle.index("def ", 10)]
+    _ok("_split_release(" in _settle and "_tag_release(" not in _settle,
+        "`_tag_settle_idle`（停止旁路/删任务退回静默）走 `_split_release` 先过 H&R 分诊")
+    _rel = _tags[_tags.index("def _tag_release"):]
+    _rel = _rel[:_rel.index("def ", 10)]
+    _ok("_silent_drop_incomplete_now(" in _rel, "`_tag_release`（退回静默=入池）挂入池即判")
+    _asm = _tags[_tags.index("def _tag_assign"):]
+    _asm = _asm[:_asm.index("def ", 10)]
+    _ok("_silent_drop_incomplete_now(" in _asm, "`_tag_assign`（归入静默）挂入池即判")
+    _pc = _sil[(_sil.index("def _silent_purge_incomplete")):]
+    _pc = _pc[:_pc.index("\n    def ", 10)]
+    _ok("SUB_PLAIN" not in _pc, "`_silent_purge_incomplete` 不再有 sub=普通 限定（未下完不分身份都删）")
+    _ok("_silent_identity_protected(" in _pc, "周期兜底仍走身份保护（不再用标签判据）")
 
     print("\n" + "=" * 64)
     print(f"✅ PASS —— 共 {CHECKS} 项全过")
