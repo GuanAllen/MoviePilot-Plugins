@@ -463,6 +463,13 @@ class ApiMixin:
                 "summary": "健康自检:任务失败/卡死·时魔下滑·磁盘贴上限(按严重度排序)",
             },
             {
+                "path": "/health/scan",
+                "endpoint": self.health_scan,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "挂种健康度自检(只读):逐文件核盘找空转/缺文件的种 + 其中欠 H&R 的风险",
+            },
+            {
                 "path": "/trend",
                 "endpoint": self.get_trend,
                 "methods": ["GET"],
