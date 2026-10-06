@@ -129,7 +129,6 @@ DEBUG_WRITE_PATHS: Dict[str, str] = {
     "/debug/store": "action=flush（落盘）/ drop-hot（清热层键）",
     "/debug/cache": "drop / prefix（丢站点抓取缓存）",
     "/debug/crossseed": "add=true（真的在他站发起下载）",
-    "/debug/swap": "apply=1（换种真落盘）",
     "/debug/seedlimit": "给我们管控的种套单档限速（改 qB）",
     "/debug/emit-transfer": "投递/直调 TransferComplete，clear=1 清库记",
     "/debug/cloud-put": "往 OpenList 真写测试文件",
@@ -581,76 +580,6 @@ class DebugMixin:
                 "log_path": str(self._deletions_log_path() or ""),
             },
         )
-
-    def debug_swap(self, task_id: str = "", apply: int = 0, force: int = 0, confirm: int = 0) -> Response:
-        """诊断:自动换种干跑（``apply=0`` 只出计划，不落盘；``force=1`` 忽略开关/触发/冷却，仅干跑）。
-
-        ★ 12.7.0：``apply=1``（真落盘）需再加 ``confirm=1``。
-        """
-        _force = bool(force)
-        if _force:
-            apply = 0   # 强制只用于观察，绝不落盘
-        if apply:
-            _g = _dbg_guard_write("debug_swap(apply=1)", confirm)
-            if _g is not None:
-                return _g
-        try:
-            ids = [task_id] if task_id else list(self._task_configs.keys())
-        except Exception:  # noqa: BLE001
-            ids = []
-        rows: List[Dict[str, Any]] = []
-        for tid in ids:
-            task = self._get_task_config(tid)
-            if not task:
-                continue
-            try:
-                dl = self._get_downloader(task.downloader)
-                if not dl or not dl.is_available:
-                    rows.append({"task": task.name, "id": tid, "error": "下载器不可用"})
-                    continue
-                plan = self._swap_round(task, dl, apply=bool(apply), force=_force)
-            except Exception as e:  # noqa: BLE001
-                rows.append({"task": task.name, "id": tid, "error": f"{type(e).__name__}: {e}"})
-                continue
-            rows.append({
-                "task": task.name,
-                "id": tid,
-                "type": getattr(task, "task_type", ""),
-                "mode": getattr(task, "run_mode", ""),
-                "ok": bool(plan.get("ok")),
-                "reason": plan.get("reason"),
-                "trigger": plan.get("trigger"),
-                "triggered": bool(plan.get("triggered")),
-                "active": plan.get("active"),
-                "hard_n": plan.get("hard_n"),
-                "soft_n": plan.get("soft_n"),
-                "skipped_big": plan.get("skipped_big"),
-                "resumed": plan.get("resumed"),
-                "a_total": plan.get("a_total"),
-                "net": plan.get("net"),
-                "applied": plan.get("applied"),
-                "pairs": [
-                    {
-                        "in": str(getattr(p["cand"], "title", ""))[:90],
-                        "in_size": round(float(getattr(p["cand"], "size_gb", 0) or 0), 2),
-                        "in_seeders": int(getattr(p["cand"], "seeders", 0) or 0),
-                        "out": str(getattr(p["victim"], "title", ""))[:90],
-                        "out_size": round(float(getattr(p["victim"], "size_gb", 0) or 0), 2),
-                        "out_seeders": int(getattr(p["victim"], "seeders", 0) or 0),
-                        "k": int(p.get("k") or 1),
-                        "outs": [
-                            {
-                                "title": str(getattr(x, "title", ""))[:90],
-                                "size": round(float(getattr(x, "size_gb", 0) or 0), 2),
-                            }
-                            for x in (p.get("victims") or ([p["victim"]] if p.get("victim") else []))
-                        ],
-                        "net": round(float(p["net"]), 3),
-                    }
-                    for p in (plan.get("pairs") or [])
-                ],
-            })
-        return Response(success=True, data={"apply": bool(apply), "tasks": rows})
 
     def debug_qb_torrents(self, downloader: str = "qbittorrent") -> Response:
         """诊断:列出指定下载器的全部种子并按标签分组(只读)。"""

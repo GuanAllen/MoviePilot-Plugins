@@ -82,7 +82,6 @@ from ..common import (
     TORRENT_FETCH_DEADLINE,
     TORRENT_FETCH_PER_TIMEOUT,
     TORRENT_FETCH_WORKERS,
-    _SizeIndex,
     task_is_participating,
     task_is_running,
     enabled_of_run_mode,
@@ -570,6 +569,10 @@ class BrushMixin:
     def brush(self, task_id: str) -> None:
         """抓取站点候选并补充优质魔力种子(刷流,带并发保护)。"""
         task = self._get_task_config(task_id)
+        # ★ 14.0.0：「跨站取种」全局任务不抓站点列表（零 browse PV），落种由各站刷流任务发起；
+        #   本任务只在 Check 周期承接/分诊。Brush 周期直接空转。
+        if task is not None and str(getattr(task, "task_type", "") or "").strip().lower() == "crossseed":
+            return
         self._apply_task_traffic_limit()
         self._apply_seed_upload_limit()
         if task and self._maybe_autostop_for_goal(task):
@@ -1202,19 +1205,7 @@ class BrushMixin:
             flat_gain = _flat if (not _cap_n or base_cnt < _cap_n) else 0.0
             _min_seeders = max(int(getattr(filter_policy, "min_seeders", 0) or 0), 1)
 
-            # ★ 存量复用索引提前建立:辅种(复用)要在「全量候选」里找,不受 TopN 魔力排名限制。
-            local_index: Dict[str, TorrentInfo] = {}
-            local_by_size: "_SizeIndex" = _SizeIndex([])
-            fp_cache: Dict[str, Optional[str]] = {}
-            if task.reuse_existing:
-                try:
-                    local_index, local_by_size = self._local_reuse_index(downloader)
-                    self._log(f"魔流 [{task.name}] 本机已有种子 {len(local_index)} 个,启用存量复用")
-                except Exception as e:
-                    self._log(f"建立本机资源索引失败:{e}", "warning")
-
             scored: List[Tuple[TorrentBonusInfo, SiteCandidateTorrent]] = []
-            reuse_pool: List[Tuple[TorrentBonusInfo, SiteCandidateTorrent]] = []
             skipped_seen = 0
             skipped_dead = 0
             skipped_low = 0
@@ -1259,20 +1250,12 @@ class BrushMixin:
                 )
                 if not sc.viable:
                     skipped_nosrc += 1
-                    # 无做种源 ≠ 不能辅种:本机已有同一资源就能直接辅(免下载)。
-                    # 但刷流任务只辅助「排名内」的种子,不做非 TopN 的额外复用扫描。
-                    if not _brush_crawl and task.reuse_existing and local_by_size.near(int(getattr(c, "size", 0) or 0)):
-                        reuse_pool.append((bonus, c))
                     continue
                 setattr(c, "_score", sc)
                 setattr(c, "_value", sc.value)
                 setattr(c, "_eff", sc.efficiency)
                 if min_bonus and bonus.bonus_per_hour < min_bonus:
                     skipped_low += 1
-                    # 魔力偏低 ≠ 不能辅种;免下载的依然是白得的魔力。
-                    # 刷流任务不做非 TopN 的额外复用扫描。
-                    if not _brush_crawl and task.reuse_existing and local_by_size.near(int(getattr(c, "size", 0) or 0)):
-                        reuse_pool.append((bonus, c))
                     continue
                 scored.append((bonus, c))
 
@@ -1287,7 +1270,7 @@ class BrushMixin:
                     len(candidates),
                     len(scored),
                 )
-            if not scored and not (task.reuse_existing and reuse_pool):
+            if not scored:
                 self._log(f"魔力任务 [{task.name}] 洗池后无可用候选(过滤通过 {len(filtered)})")
                 self._invalidate_summary()
                 self._set_phase(task.id, "done")
@@ -1319,16 +1302,11 @@ class BrushMixin:
                 f"(disk_left={_disk_left} count_left={_count_left})"
             )
 
-            # ★ 复用/辅种已从主流程切出,交给独立的「辅种慢扫」worker 处理(见 reuse_scan)。
-            #   主流程只针对 TopN 取种下单;已取回的 TopN 种仍会「顺带」做一次复用判定(零额外请求)。
-
-            # ---------- 4 分类:下载候选 TopN(顺带复用已取回的种)----------
+            # ---------- 4 分类:下载候选 TopN ----------
+            #   ★ 14.0.0：复用/辅种已彻底切出，交给独立的「全站辅种」worker（reseed_scan）。
+            #     主流程只针对 TopN 取种下单，不再做任何本机复用判定（零额外取种请求）。
             self._set_phase(task.id, "classify")
-            group_a: List[Tuple[TorrentBonusInfo, SiteCandidateTorrent, str, TorrentInfo]] = []
             group_b: List[Tuple[TorrentBonusInfo, SiteCandidateTorrent]] = []
-
-            # ★ 辅种不参与魔力排名:只要「体积邻近本机种子」就纳入扫描(免下载 = 白得的魔力)。
-            #   TopN 只决定「要下载哪些」;可复用的额外候选即便魔力排不进 TopN 也一起取回判定。
 
             def _ckey_of(pair: Any) -> str:
                 c = pair[1]
@@ -1340,7 +1318,6 @@ class BrushMixin:
                 k = _ckey_of(pair)
                 _topn_keys.add(k)
                 _fetch_map[k] = pair
-            _reuse_extra = 0
             fetch_list = list(_fetch_map.values())
             # ★ 只为「能真正用上的名额」取种:空闲槽位不足时,多余取种是纯无效请求(还会触发站点流控)。
             #   刷流任务尤其重要:有 N 个空位就只取 N 个,不再一次取满 TopN。
@@ -1477,25 +1454,6 @@ class BrushMixin:
                     "warning",
                 )
 
-            # ★ IYUU 云端辅种:一次批量查询本轮候选 → 他站同资源 infohash(补齐本地匹配;
-            #   只在填了 Token 时启用,否则完全退回内置特征码方案)。
-            _iyuu_map: Dict[str, List[str]] = {}
-            if task.reuse_existing and self._iyuu_enabled() and fetch_list:
-                _cand_hashes = [c.real_hash for _, c in fetch_list if getattr(c, "real_hash", None)]
-                if _cand_hashes and self._iyuu_client is not None:
-                    try:
-                        _iyuu_map = self._iyuu_client.sibling_hashes(_cand_hashes)
-                    except Exception as err:  # noqa: BLE001
-                        self._log(f"魔流 [{task.name}] IYUU 查询失败:{err}", "warning")
-                    if _iyuu_map:
-                        self._log(
-                            f"魔流 [{task.name}] IYUU 云端命中:{len(_iyuu_map)}/{len(_cand_hashes)} "
-                            f"个候选存在他站同资源"
-                        )
-
-            _cross_near = 0
-            _cross_hit = 0
-            _iyuu_hit = 0
             for bonus, cand in fetch_list:
                 ckey = _ckey_of((bonus, cand))
                 _in_topn = ckey in _topn_keys
@@ -1504,43 +1462,20 @@ class BrushMixin:
                     if _in_topn:
                         group_b.append((bonus, cand))
                     continue
-                h = cand.real_hash
-                local = local_index.get(h) if (h and h in local_index) else None
-                # 半成品:本机同 hash 但仍在下载 → 不能做种,跳过
-                if local and str(getattr(local, "state", "") or "").lower() in QB_DOWNLOADING_STATES:
+                if not _in_topn:
                     continue
-                # ★ 取种统一入口（docs/MODULES.md X7）：本机同 hash → 本机同 Release → IYUU
-                _astats: Dict[str, int] = {"near": 0, "fp": 0, "iyuu": 0}
-                mode, linfo = self._acquire_existing(
-                    task, cand, downloader,
-                    local_index=local_index, local_by_size=local_by_size,
-                    fp_cache=fp_cache, iyuu_map=_iyuu_map,
-                    raw=getattr(cand, "raw", None), stats=_astats,
-                )
-                _cross_near += int(_astats.get("near", 0))
-                _cross_hit += int(_astats.get("fp", 0))
-                _iyuu_hit += int(_astats.get("iyuu", 0))
-                if mode and linfo is not None:
-                    group_a.append((bonus, cand, mode, linfo))
-                elif _in_topn:
-                    # 仅 TopN 候选参与「下载」排队;为复用而额外取回的候选不可复用则丢弃。
-                    # ★ 全局（跨任务）去重：该资源已被其它任务下载/在飞 → 不再排队下载。
-                    #   · 对方「在飞」→ 只让位本轮（**不打 seen**）：下轮本机有副本 → 走辅种；
-                    #   · 对方「已下过」且本机无副本 → 真没得辅，终局跳过（记 seen 防反复抓）。
-                    _gkeys = self._dup_keys(h, fingerprint(raw) if raw else None)
-                    _cst = self._dup_conflict_states(task.id, keys=_gkeys) if _gkeys else {}
-                    if _cst:
-                        skipped_dup_global += 1
-                        if ckey and all(v == "done" for v in _cst.values()):
-                            self._store.seen.mark(task.id, [f"cand:{ckey}"])
-                        continue
-                    group_b.append((bonus, cand))
-            if task.reuse_existing:
-                self._log(
-                    f"魔流 [{task.name}] 存量复用扫描:复用命中 {len(group_a)} 个"
-                    f"(体积邻近比对 {_cross_near} / 特征码命中 {_cross_hit} / IYUU 命中 {_iyuu_hit},"
-                    f"另扫非 TopN {_reuse_extra} 个)"
-                )
+                # ★ 全局（跨任务）去重：该资源已被其它任务下载/在飞 → 不再排队下载。
+                #   · 对方「在飞」→ 只让位本轮（**不打 seen**）：下轮本机有副本 → 走辅种；
+                #   · 对方「已下过」且本机无副本 → 真没得辅，终局跳过（记 seen 防反复抓）。
+                h = cand.real_hash
+                _gkeys = self._dup_keys(h, fingerprint(raw) if raw else None)
+                _cst = self._dup_conflict_states(task.id, keys=_gkeys) if _gkeys else {}
+                if _cst:
+                    skipped_dup_global += 1
+                    if ckey and all(v == "done" for v in _cst.values()):
+                        self._store.seen.mark(task.id, [f"cand:{ckey}"])
+                    continue
+                group_b.append((bonus, cand))
 
             # ★ 与洗池同一套排序键:名额受限→边际 value 降序;仅磁盘受限→每 GB 效率 efficiency 降序。
             # (修 bug:原此处用旧的「单种魔力」bonus_per_hour 重排,把洗池的边际排序又覆盖回去了)
@@ -1560,17 +1495,15 @@ class BrushMixin:
                     return (getattr(_c, "_eff", 0.0), getattr(_c, "_value", 0.0))
                 return (getattr(_c, "_value", 0.0), getattr(_c, "_eff", 0.0))
 
-            # ★ 辅种不参与魔力排名:group_a 保持发现顺序直接加(免下载)
             group_b.sort(key=_rank_key, reverse=True)
-            ordered: List[Any] = list(group_a) + list(group_b)
+            ordered: List[Any] = list(group_b)
             self._log(
-                f"魔流 [{task.name}] Top{len(topn)} 排序:复用 {len(group_a)} / 下载 {len(group_b)}"
+                f"魔流 [{task.name}] Top{len(topn)} 排序:下载 {len(group_b)}"
             )
 
-            # ---------- 5 处理循环(A 复用优先,其后 B 下载)----------
+            # ---------- 5 处理循环(下载候选)----------
             self._set_phase(task.id, "process")
             added = 0
-            reused = 0
             new_pub: Dict[str, float] = {}
             new_pages: Dict[str, str] = {}  # hash→详情页 URL(供「已非免费→清理」核对)
             new_free: Dict[str, float] = {}  # hash→促销到期时刻(unix),供「到期即清」
@@ -1578,19 +1511,13 @@ class BrushMixin:
             skipped_dup = 0
             skipped_quota = 0
             skipped_expiring = 0
-            skipped_reuse_limit = 0
             skipped_rate = 0
-            tagged_reuse = 0
             crossseed_started = 0  # ★ 3.9.0 跨站免费取种发起数
             _cs_max = max(int(getattr(task, "crossseed_max_per_round", 3) or 3), 1)
             _cs_max_size = float(getattr(task, "crossseed_max_size_gb", 20.0) or 20.0)
             detail_items: List[OperationItem] = []  # 逐条明细(供操作流水展开)
             for item in ordered:
-                is_reuse = len(item) == 4
-                if is_reuse:
-                    bonus, cand, mode, linfo = item
-                else:
-                    bonus, cand = item
+                bonus, cand = item
                 h = (getattr(cand, "real_hash", "") or "").lower()
                 _cand_h = h  # 原始候选 hash（跨站辅种后 h 会被换成兄弟种 hash）
                 ckey = self._candidate_key(cand)
@@ -1626,111 +1553,6 @@ class BrushMixin:
                     or (disk_gb and (base_size + add_size + size_gb) > disk_gb)
                 )
 
-                if is_reuse:
-                    # 辅种/复用并不总是「零下载」:本地同 hash 但未完成、或跨站辅种未开校验时,
-                    # 都会触发补下载 → 这类按下载名额(并发/单轮名额)计,避免并发被绕过。
-                    if mode == "hash":
-                        local_progress = float(getattr(linfo, "progress", 0) or 0)
-                        reuse_downloads = local_progress < 0.999
-                    else:
-                        reuse_downloads = not task.reuse_verify
-                    # ★ 兜底闸门:确需补下载时,若促销快到期也不补(下不完=白烧流量)。
-                    if reuse_downloads and not free_time_ok(cand)[0]:
-                        _ok, _need, _remain = free_time_ok(cand)
-                        skipped_expiring += 1
-                        self._log(
-                            f"跳过·免费剩余不足({int(_remain / 60)}分 < 需 "
-                            f"{int(_need / 60)}分):{cand.title}",
-                            "warning",
-                        )
-                        if self._store and ckey:
-                            self._store.dead.mark(task.id, [f"cand:{ckey}"])
-                        continue
-                    # ★ 辅种(免下载)不参与配额/排名限制:直接加(白得的魔力)。
-                    #   (仅当确需补下载时才受下载名额/预算约束,见下)
-                    if over_quota:
-                        self._log(
-                            f"辅种超出配额仍直接复用(免下载):{cand.title}"
-                        )
-                    if reuse_downloads:
-                        if dl_concurrent >= dl_limit:
-                            skipped_reuse_limit += 1
-                            self._log(
-                                f"复用跳过·下载并发已满({dl_concurrent}/{dl_limit}):{cand.title}"
-                            )
-                            continue
-                        if dl_budget <= 0:
-                            break
-                    ok = False
-                    _rerr = ""
-                    if mode == "hash":
-                        ok = self._tag_assign(task, [h], reason="同 hash 复用") > 0
-                        st = str(getattr(linfo, "state", "") or "").lower()
-                        if st in (QB_PAUSED_STATES | {"error", "missingfiles"}):
-                            downloader.resume_torrent(h)
-                        if ok:
-                            tagged_reuse += 1
-                    else:  # 跨站辅种
-                        hs, err = downloader.add_torrent_reuse(
-                            torrent_bytes=cand.raw,
-                            save_path=(getattr(linfo, "save_path", "") or task.save_path or ""),
-                            tag=self._task_tag(task),
-                            verify=task.reuse_verify,
-                        )
-                        ok = bool(hs)
-                        if ok and hs:
-                            h = hs.lower()
-                            self._tag_assign(task, [h], reason="跨站辅种")
-                        if not ok and err:
-                            _rerr = str(err)
-                            self._log(f"辅种失败:{cand.title}({err})", "warning")
-                    if not ok:
-                        detail_items.append(OperationItem(
-                            hash=h or "", title=cand.title,
-                            reason=f"辅种失败:{_rerr or '校验不通过/未匹配'}",
-                            size_gb=size_gb, source="reuse-fail",
-                        ))
-                        if self._store and ckey:
-                            self._store.dead.mark(task.id, [f"cand:{ckey}"])
-                        continue
-                    reused += 1
-                    # ★ 复用/辅种成功 = 资源已在本地 → 登记闸门 done，免得别的任务再从零下一份
-                    self._dup_finish(
-                        task.id,
-                        keys=self._dup_keys(
-                            _cand_h, fingerprint(cand.raw) if getattr(cand, "raw", None) else None
-                        ),
-                    )
-                    add_cnt += 1
-                    add_size += size_gb
-                    pub_ts = self._pubdate_ts(getattr(cand, "pubdate", None))
-                    if pub_ts and h:
-                        new_pub[h] = pub_ts
-                    if h and getattr(cand, "page_url", ""):
-                        new_pages[h] = str(cand.page_url)
-                    _fu = float(getattr(cand, "free_remaining_sec", -1.0) or -1.0)
-                    if h and _fu >= 0:
-                        new_free[h] = time.time() + _fu
-                    if reuse_downloads:
-                        dl_budget -= 1
-                        dl_concurrent += 1
-                    if h:
-                        managed_hashes.add(h)
-                    if self._store:
-                        keys = [f"hash:{h}"] if h else []
-                        if ckey:
-                            keys.append(f"cand:{ckey}")
-                        if keys:
-                            self._store.seen.mark(task.id, keys)
-                    self._log(f"复用入库{'(补下载)' if reuse_downloads else ''}:{cand.title}")
-                    detail_items.append(OperationItem(
-                        hash=h or "", title=cand.title,
-                        reason="复用·补下载" if reuse_downloads else "复用",
-                        size_gb=size_gb, source="reuse",
-                        seeders=int(getattr(cand, "seeders", 0) or 0),
-                    ))
-                    continue
-
                 # B:需下载
                 if dl_concurrent >= dl_limit:
                     continue
@@ -1753,7 +1575,7 @@ class BrushMixin:
                     continue
                 # ★ 3.9.0 跨站免费取种：A 站这颗**不免费**（下了就烧流量/拉低分享率）
                 #   → 先去任意他站（B/C/D…）找「免费且同一 Release」的副本下回来，
-                #   下完由「跨站回辅」worker 把它辅回 A（零下载纯做种）。
+                #   下完由全局任务「跨站取种」分诊（挂回 A 交「全站辅种」）。
                 if (
                     getattr(task, "crossseed_enabled", False)
                     and not bool(getattr(cand, "is_free", False))
@@ -1762,7 +1584,7 @@ class BrushMixin:
                 ):
                     _sib = None
                     try:
-                        # 契约②：取种只走统一入口（本机/IYUU 已在前面试过 → 这里等价于只发第 ④ 跳）
+                        # 契约②：取种只走统一入口（14.0.0 起刷流不再建本机索引 → 等价于只发第 ④ 跳）
                         _sib = (self._acquire_source(
                             task, cand, downloader, allow_cross_site=True,
                         ).get("sib_hash") or None)
@@ -1875,45 +1697,18 @@ class BrushMixin:
             if self._store and new_free:
                 self._store.note_torrent_free_until(task.id, new_free)
 
-            if reused and self._store:
-                self._store.journal.record(
-                    task_id=task.id,
-                    kind="reseed",
-                    items=[OperationItem(hash="", title=f"存量复用 {reused} 个", reason="辅种")],
-                )
-            if tagged_reuse and self._store:
-                try:
-                    self._store.journal.record(
-                        task_id=task.id,
-                        kind="tag",
-                        items=[OperationItem(
-                            hash="", title=f"复用·补标签 {tagged_reuse} 个",
-                            reason=f"→「{task.brush_tag}」", source="reuse",
-                            tags=f"→{task.brush_tag}",
-                        )],
-                    )
-                except Exception as _jerr:
-                    self._log(f"记录复用标签事件失败:{_jerr}", "warning")
-
-            # 游标推进判定:并发满时,只有本轮复用成功才推进;零复用视为空转不推进。
+            # 游标推进判定:并发满即无下载可发起（复用线已删），视为空转不推进。
             if concurrency_full:
-                if reused > 0:
-                    if self._store:
-                        self._store.set_page_cursor(task.id, next_cursor)
-                    self._log(
-                        f"魔流 [{task.name}] 并发满但本轮复用 {reused} 个,游标 {cursor}→{next_cursor}"
-                    )
-                else:
-                    self._log(
-                        f"魔流 [{task.name}] 并发满且本轮无复用产出,判定空转,游标保持 {cursor} 不推进"
-                    )
+                self._log(
+                    f"魔流 [{task.name}] 并发满,本轮无产出,判定空转,游标保持 {cursor} 不推进"
+                )
             cursor_note = (
                 f"{cursor}→{next_cursor}"
-                if (not concurrency_full or reused > 0)
+                if not concurrency_full
                 else f"{cursor}(空转未推进)"
             )
 
-            # ---------- 5.5 跨站免费取种：本站不免费的候选 → 去他站免费下 → 下完回辅本站 ----------
+            # ---------- 5.5 跨站免费取种：本站不免费的候选 → 去他站免费下 → 下完由「跨站取种」分诊 ----------
             if _cs_pool and crossseed_started < _cs_max:
                 try:
                     _cs_started = self._crossseed_round(
@@ -1933,20 +1728,19 @@ class BrushMixin:
             self._invalidate_summary()
             self._set_phase(task.id, "done")
             detail = (
-                f"(复用 {reused} / 新增 {added} / 跨站 {crossseed_started} / 去重 {skipped_dup}"
+                f"(新增 {added} / 跨站 {crossseed_started} / 去重 {skipped_dup}"
                 f" / 跨任务去重 {skipped_dup_global}"
-                f" / 配额满 {skipped_quota} / 复用限并发 {skipped_reuse_limit} / 流控 {skipped_rate}"
+                f" / 配额满 {skipped_quota} / 流控 {skipped_rate}"
                 f" / 免费到期 {skipped_expiring} / 失败 {add_failed})"
             )
             self._log(
                 f"魔流 [{task.name}] 候选 {len(candidates)}→洗池 {len(scored)}→Top{len(topn)} | "
-                f"新增 {added} / 复用 {reused}(当前托管 {len(managed_hashes)},游标 {cursor_note}){detail}"
+                f"新增 {added}(当前托管 {len(managed_hashes)},游标 {cursor_note}){detail}"
             )
             return {
                 "status": "done",
                 "reason": f"候选 {len(candidates)}→洗池 {len(scored)}",
                 "added": added,
-                "reused": reused,
                 "deleted": 0,
                 "kept": len(managed_hashes),
                 "candidates": len(candidates),
@@ -1961,10 +1755,17 @@ class BrushMixin:
             return {"status": "failed", "reason": str(e)}
 
     def check(self, task_id: str) -> None:
-        """执行魔力优化一轮(评估并删除低魔力产出种子)。"""
+        """执行魔力优化一轮(评估并删除低魔力产出种子)。
+
+        ★ 14.0.0：全局真任务「跨站取种」的 Check 走 ``_crossseed_tick``（流量兜底 + 取种生命周期分诊），
+        不做魔力优化。
+        """
+        task = self._get_task_config(task_id)
+        if task is not None and str(getattr(task, "task_type", "") or "").strip().lower() == "crossseed":
+            self._crossseed_tick()
+            return
         self._apply_task_traffic_limit()
         self._apply_seed_upload_limit()
-        task = self._get_task_config(task_id)
         if task and self._maybe_autostop_for_goal(task):
             return
         self._run_check(task_id)
@@ -2078,28 +1879,7 @@ class BrushMixin:
 
             r = self._cleanup_round(task, downloader)
             _dec = dict((r or {}).get("decision") or {})
-            # ★ 自动换种：名额/磁盘/站点上限吃紧时，按边际魔力换掉低价值种（程序自主决策）
-            _sw: Dict[str, Any] = {}
-            try:
-                _sw = self._swap_round(task, downloader)
-                if _sw.get("applied"):
-                    r = dict(r or {})
-                    r["swapped"] = int(_sw.get("applied", 0) or 0)
-                    r["deleted"] = int(r.get("deleted", 0) or 0) + int(_sw.get("applied") or 0)
-                elif _sw.get("reason") and _sw.get("trigger"):
-                    self._dbg(f"魔流 [{task.name}] 换种未执行：{_sw.get('reason')}")
-            except Exception as _swe:  # noqa: BLE001
-                self._log(f"魔流 [{task.name}] 自动换种异常: {_swe}", "warning")
-            try:
-                _dec["swap"] = {
-                    "triggered": bool(_sw.get("triggered")),
-                    "trigger": str(_sw.get("trigger", "") or ""),
-                    "reason": str(_sw.get("reason", "") or ""),
-                    "applied": int(_sw.get("applied", 0) or 0),
-                    "net": round(float(_sw.get("net") or 0.0), 2),
-                }
-            except Exception:  # noqa: BLE001
-                pass
+            # ★ 14.0.0：自动换种线已删除（与全站辅种/删除闸门重复）。
             self._note_decision(task.id, _dec)
             self._trend_sample_task(task, {**(r or {}), "decision": _dec})
             # ★ §5.2 满魔套牌存档：把当前在岗套牌写回（变了就更新；连续 N 轮不变 → 满魔冻结）
@@ -2338,7 +2118,6 @@ class BrushMixin:
         resumed = 0
         skipped = 0
         manual_paused = self._store.get_manual_paused(task.id) if self._store else set()
-        swap_paused = self._store.get_swap_paused(task.id) if self._store else set()
         for t in managed or []:
             state = str(getattr(t, "state", "") or "").lower()
             if state not in QB_PAUSED_STATES:
@@ -2346,10 +2125,6 @@ class BrushMixin:
             h = getattr(t, "hash", "") or ""
             # 用户手动暂停的种子不自动恢复(尊重人工干预,需界面上点「恢复做种」)
             if h and (h or "").lower() in manual_paused:
-                skipped += 1
-                continue
-            # 换种下线的种子同理：换出只是不再拉它做种，等站点腾出空间时由换回逻辑恢复
-            if h and (h or "").lower() in swap_paused:
                 skipped += 1
                 continue
             if float(getattr(t, "progress", 0) or 0) < 0.999:

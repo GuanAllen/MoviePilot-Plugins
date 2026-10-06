@@ -48,7 +48,7 @@ KIND_META: Dict[str, tuple] = {
     "deletion": ("warning", "删除种子"),
     "delete": ("warning", "删除种子"),
     "unprotection": ("warning", "解除保护"),
-    "swap": ("warning", "自动换种"),
+    "swap": ("warning", "[旧] 自动换种"),
     "state": ("warning", "任务状态变更"),
     "pause": ("info", "暂停做种"),
     "resume": ("info", "恢复做种"),

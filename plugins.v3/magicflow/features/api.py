@@ -96,7 +96,7 @@ class ApiMixin:
                 "endpoint": self.get_crossseed,
                 "methods": ["GET", "POST"],
                 "auth": "bear",
-                "summary": "跨站免费取种:待回辅队列 + 启用任务(action=clear 清空队列)",
+                "summary": "跨站免费取种:取种台账（在飞）+ 启用任务(action=clear 清空台账)",
             },
             {
                 "path": "/deck",
@@ -153,13 +153,6 @@ class ApiMixin:
                 "methods": ["GET"],
                 "auth": "bear",
                 "summary": "诊断:查询删除闸门(hashes 逗号分隔 → 返回被硬保护拦截的子集)",
-            },
-            {
-                "path": "/debug/swap",
-                "endpoint": self.debug_swap,
-                "methods": ["GET"],
-                "auth": "bear",
-                "summary": "诊断:自动换种干跑(不落盘;task_id=空则全任务)",
             },
             {
                 "path": "/debug/traffic",

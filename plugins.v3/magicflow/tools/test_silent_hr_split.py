@@ -334,7 +334,6 @@ def main() -> int:
                 self.protected_torrents = {"aaaa", "bbbb"}
                 self.adopted_hashes = {"aaaa", "cccc"}
                 self.manual_paused = {"aaaa"}
-                self.swap_paused = set()
                 self.torrent_free_until = {}
         st = _TS()
         _ok("aaaa" in st.protected_torrents and "aaaa" in st.adopted_hashes, "初始有保护 + 纳管记录")

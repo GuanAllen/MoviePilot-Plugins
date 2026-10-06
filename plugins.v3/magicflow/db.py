@@ -137,7 +137,7 @@ class CrossSeedRow(Base):
     backfilled: Mapped[bool | None] = mapped_column(Boolean)
     done: Mapped[bool | None] = mapped_column(Boolean)
     extra: Mapped[Any | None] = mapped_column(_JSON, default=dict)   # 映射后仍未覆盖的键（resource_id/need_hours/pool 等）
-    # ★ 12.2.0：跨站「待回辅」账本（crossseed_pending kv → 本列；含 .torrent 落盘路径 a_torrent）
+    # ★ 12.2.0：跨站「取种台账」（crossseed_pending kv → 本列；14.0.0 起不再回辅/不落 A 站种子）
     pending: Mapped[Any | None] = mapped_column(_JSON, default=dict)
     created: Mapped[float | None] = mapped_column(Float)
     updated: Mapped[float | None] = mapped_column(Float)

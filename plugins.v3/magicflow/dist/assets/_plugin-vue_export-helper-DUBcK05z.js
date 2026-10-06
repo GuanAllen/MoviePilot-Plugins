@@ -37,8 +37,6 @@ const taskDefaults = {
   max_download_concurrent: 10,
   top_n: 30,
   browse_pages: 3,
-  reuse_existing: true,
-  reuse_verify: true,
   crossseed_enabled: false,
   crossseed_max_per_round: 3,
   crossseed_max_size_gb: 20,
@@ -149,8 +147,6 @@ function normalizeTask(task) {
   result.max_download_concurrent = Number(result.max_download_concurrent || 10);
   result.top_n = Number(result.top_n || 30);
   result.browse_pages = Number(result.browse_pages || 3);
-  result.reuse_existing = Boolean(result.reuse_existing ?? true);
-  result.reuse_verify = Boolean(result.reuse_verify ?? true);
   result.crossseed_enabled = Boolean(result.crossseed_enabled ?? false);
   result.crossseed_max_per_round = Number(result.crossseed_max_per_round || 3);
   result.crossseed_max_size_gb = Number(result.crossseed_max_size_gb || 20);
@@ -423,8 +419,6 @@ function normalizeDefaults(raw = {}) {
     seen_cooldown_hours: Math.max(0, num(raw.seen_cooldown_hours, 24)),
     brush_seed_days: Math.max(0, Math.round(num(raw.brush_seed_days, 2))),
     refill_when_empty: raw.refill_when_empty !== false,
-    reuse_existing: raw.reuse_existing !== false,
-    reuse_verify: raw.reuse_verify !== false,
     crossseed_enabled: raw.crossseed_enabled === true,
     crossseed_max_per_round: Math.max(1, Math.round(num(raw.crossseed_max_per_round, 3))),
     crossseed_max_size_gb: Math.max(0.1, num(raw.crossseed_max_size_gb, 20)),

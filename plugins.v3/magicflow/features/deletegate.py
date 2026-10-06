@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """魔流 · deletegate —— 删除唯一入口（Master 2026-10-05：「删除令出一门」）。
 
-背景：删种调用点原本散布在 cleanup / silent / crossseed / swap / recommend / actions…
+背景：删种调用点原本散布在 cleanup / silent / crossseed / recommend / actions…
 多个模块，各写各的日志；每次排障都得回各模块翻，且保护口径容易分叉（实测事故：CARPT 37 个
 H&R 补种被任务「超保留上限」路径删掉，因为该路径的保护集合与删除候选口径不一致）。
 

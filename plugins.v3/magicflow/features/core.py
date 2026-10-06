@@ -52,7 +52,6 @@ from ..common import (
     BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT,
     CLOUD_INTERVAL_MINUTES,
     CLOUD_SCAN_MAX,
-    CROSSSEED_INTERVAL_MINUTES,
     CROSSSEED_SEED_HOURS_DEFAULT,
     CROSSSEED_SITE_HOURS_DEFAULT,
     DELETE_GATE_FAIL_CLOSED,
@@ -74,7 +73,6 @@ from ..common import (
     RESEED_DAILY_PER_SITE,
     RESEED_INTERVAL_MINUTES,
     RESEED_MIN_SIZE_GB,
-    REUSE_INTERVAL_MINUTES,
     RULES_INTERVAL_MINUTES,
     SEED_UP_LIMIT_APPLY_INTERVAL,
     SEED_UP_LIMIT_KBPS_DEFAULT,
@@ -82,11 +80,14 @@ from ..common import (
     SIGNIN_QUEUE,
     SIGNIN_RETRY_KEYWORD,
     SIGNIN_TICK_MINUTES,
+    HR_HOST_INTERVAL_MINUTES,
     SILENT_HOST_INTERVAL_MINUTES,
     SILENT_HR_SPLIT_ENABLED,
     _MF_ACTIVE,
     _cs_parse_site_hours,
+    RUN_MODE_STOPPED,
     begin_decision_round,
+    run_mode_of,
     decision_round_stats,
     end_decision_round,
     note_snapshot_pull,
@@ -160,6 +161,7 @@ class CoreMixin:
             "show_qb_tags": bool(raw_config.get("show_qb_tags", True)),
             "new_timeout": max(0.0, float(raw_config.get("tag_silent_new_timeout_hours", 24.0) or 0)) * 3600.0,
             "host_interval": max(5.0, float(raw_config.get("silent_host_interval_minutes", 60.0) or 60.0)),
+            "hr_host_interval": max(5.0, float(raw_config.get("hr_host_interval_minutes", HR_HOST_INTERVAL_MINUTES) or HR_HOST_INTERVAL_MINUTES)),
             "rules": _sr or [dict(r) for r in DEFAULT_SORT_RULES],
         }
         # IYUU 云端辅种配置(Token 为空 = 不启用)
@@ -630,6 +632,12 @@ class CoreMixin:
                 task.brush_tag = f"魔流-{task.name or task.id}"
             self._task_configs[task.id] = task
 
+        # ★ 14.0.0：确保存在「跨站取种」全局真任务（承接刷流任务发起的取种下载）
+        try:
+            self._ensure_crossseed_task()
+        except Exception as _cst_err:  # noqa: BLE001
+            logger.error(f"魔流:创建「跨站取种」任务失败:{_cst_err}")
+
         # 回写规范化配置
         self._save_config()
 
@@ -772,26 +780,7 @@ class CoreMixin:
                     "func_kwargs": {"task_id": task.id},
                 }
             )
-        # ★ 辅种慢扫:插件级**单 worker**(在循环外注册一次;一个服务,遍历所有符合条件的魔力任务)。
-        #   每轮只处理一个任务 → 服务数不随任务数增长,天然错峰/限流,避免几十个任务
-        #   同时取种撞站点流控。刷流任务只辅助「排名内」的种子(主流程顺带做),不纳入。
-        if any(
-            getattr(t, "enabled", False) and getattr(t, "reuse_existing", False)
-            and str(getattr(t, "task_type", "bonus") or "bonus").strip().lower() != "brush"
-            for t in self._task_configs.values()
-        ):
-            services.append(
-                {
-                    "id": "Reuse",
-                    "name": "辅种慢扫",
-                    "trigger": "interval",
-                    "func": self.reuse_scan,
-                    "kwargs": {
-                        "minutes": REUSE_INTERVAL_MINUTES,
-                        "jitter": self._jitter_seconds(REUSE_INTERVAL_MINUTES),
-                    },
-                }
-            )
+        # ★ 14.0.0：删除「辅种慢扫」(Reuse worker) 服务——与「全站辅种」(ReSeed) 效果重复。
         # ★ 全站辅种（本机驱动）：插件级单 worker。开关在设置里；没开就不注册。
         if bool(getattr(self, "_reseed_enabled", False)) or bool(
                 (self.get_data("reseed_cfg") or {}).get("enabled")):
@@ -827,24 +816,9 @@ class CoreMixin:
                     },
                 }
             )
-        # ★ 3.9.0 跨站回辅:插件级单 worker。他站下完的种子 → 指向同一批文件辅回目标站。
-        #   只需有一个任务开了跨站取种就跑(一个服务,遍历全部待回辅记录)。
-        if any(
-            getattr(t, "enabled", False) and getattr(t, "crossseed_enabled", False)
-            for t in self._task_configs.values()
-        ) or self._crossseed_pending().items():
-            services.append(
-                {
-                    "id": "CrossSeed",
-                    "name": "跨站回辅",
-                    "trigger": "interval",
-                    "func": self.crossseed_scan,
-                    "kwargs": {
-                        "minutes": CROSSSEED_INTERVAL_MINUTES,
-                        "jitter": self._jitter_seconds(CROSSSEED_INTERVAL_MINUTES),
-                    },
-                }
-            )
+        # ★ 14.0.0：跨站「回辅」worker 已删（挂回 A 站交「全站辅种」）。
+        #   取种的「承接 + 生命周期分诊」改由全局真任务「跨站取种」的 Check 周期执行
+        #   （features/crossseed.py::_crossseed_tick，30min，见下面任务循环自动注册）。
         # ★ 元数据兜底:插件级单 worker(多源识别 + 给缺 NFO 的集补最小 NFO)。
         if bool(getattr(self, "_fallback_cfg", {}).get("enabled", True)):
             _fb_min = float(getattr(self, "_fallback_cfg", {}).get("interval", 30.0) or 30.0)
@@ -923,6 +897,8 @@ class CoreMixin:
         #   清理未下完 / 保挂（恢复做种）/ H&R 统一管理 / 辅种校验 / 分拣 / 静默-新超时 / 资产刷新。
         #   常驻（reload 即注册，不随任务增减开关），低频（默认 60min，可用 silent_host_interval_minutes 调）。
         _sh_min = float(getattr(self, "_tags_cfg", {}).get("host_interval") or SILENT_HOST_INTERVAL_MINUTES)
+        # ★ 14.0.0：H&R 保种宿主周期单独可调（默认 15min；不跟随静默托管的 60min）
+        _hr_min = float(getattr(self, "_tags_cfg", {}).get("hr_host_interval") or HR_HOST_INTERVAL_MINUTES)
         services.append(
             {
                 "id": "SilentHost",
@@ -936,7 +912,7 @@ class CoreMixin:
             }
         )
         # ★ H&R 保种宿主（__hr_host__ 常驻 worker，11.11.0）：保挂欠 H&R 的种 + 结清释放。
-        #   常驻、低频（同静默托管 60min）。SILENT_HR_SPLIT_ENABLED=False 时 hr_host() 直接 no-op。
+        #   ★ 14.0.0：周期 60→15min（`hr_host_interval_minutes` 可调）。SILENT_HR_SPLIT_ENABLED=False 时直接 no-op。
         services.append(
             {
                 "id": "HrHost",
@@ -944,8 +920,8 @@ class CoreMixin:
                 "trigger": "interval",
                 "func": self.hr_host,
                 "kwargs": {
-                    "minutes": _sh_min,
-                    "jitter": self._jitter_seconds(_sh_min),
+                    "minutes": _hr_min,
+                    "jitter": self._jitter_seconds(_hr_min),
                 },
             }
         )
@@ -1725,10 +1701,14 @@ class CoreMixin:
         return round(v / 1024.0, 1)
 
     def _settle_task_idle_safe(self, task_id: str) -> None:
-        """任务被**停止**（未启用）→ 名下种子退回静默（保文件、可逆）。"""
+        """任务被**停止**（`run_mode=stopped`）→ 名下种子退回静默（保文件、可逆）。
+
+        ★ 14.0.0：守卫改用真源 `run_mode`——「做种中」(seeding) = **在岗**，不退静默。
+        （旧代码看派生字段 `enabled`，会把 seeding 任务误判为「已停止」而遣散其种。）
+        """
         try:
             task = self._get_task_config(task_id)
-            if not task or bool(getattr(task, "enabled", False)):
+            if not task or run_mode_of(task) != RUN_MODE_STOPPED:
                 return
             _keeper = self._same_site_state_live(task)
             if _keeper:

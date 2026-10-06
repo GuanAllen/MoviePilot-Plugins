@@ -129,10 +129,6 @@ const TASK_PRESETS = [
       upload_min_kbps: 200,
       except_subscribe: true,
       refill_when_empty: true,
-      auto_swap: false,
-      swap_allow_download: false,
-      reuse_existing: true,
-      reuse_verify: true,
       cleanup_no_progress: true,
       cleanup_slow_progress: true,
       purge_unfree_incomplete: true,
@@ -145,16 +141,12 @@ const TASK_PRESETS = [
     key: 'bonus',
     icon: 'mdi-star-four-points-outline',
     title: '刷魔力',
-    desc: '挂种产出魔力最大化；复用本机资源、自动换种',
+    desc: '挂种产出魔力最大化',
     share: 1,
     patch: {
       task_type: 'bonus',
       except_subscribe: true,
       refill_when_empty: true,
-      auto_swap: true,
-      swap_allow_download: false,
-      reuse_existing: true,
-      reuse_verify: true,
       cleanup_no_progress: true,
       cleanup_slow_progress: true,
       purge_unfree_incomplete: true,
@@ -180,10 +172,6 @@ const TASK_PRESETS = [
       except_subscribe: true,
       refill_when_empty: true,
       max_add_per_run: 8,
-      auto_swap: false,
-      swap_allow_download: false,
-      reuse_existing: true,
-      reuse_verify: true,
       cleanup_no_progress: true,
       cleanup_slow_progress: false,
       purge_unfree_incomplete: true,
@@ -205,10 +193,6 @@ const TASK_PRESETS = [
       browse_pages: 1,
       except_subscribe: true,
       refill_when_empty: false,
-      auto_swap: false,
-      swap_allow_download: false,
-      reuse_existing: true,
-      reuse_verify: true,
       cleanup_no_progress: true,
       cleanup_slow_progress: true,
       purge_unfree_incomplete: true,
@@ -753,16 +737,12 @@ function confirmSaveWithoutGoal() {
               <section class="editor-section">
                 <header class="editor-section__head">
                   <div>
-                    <div class="text-subtitle-1 font-weight-medium">复用与清理</div>
-                    <div class="text-body-2 text-medium-emphasis">优先复用本机已有资源；做种满天数 / 促销失效的种子清理</div>
+                    <div class="text-subtitle-1 font-weight-medium">清理</div>
+                    <div class="text-body-2 text-medium-emphasis">做种满天数 / 促销失效 / 停滞的种子清理</div>
                   </div>
                 </header>
                 <div class="editor-switches">
                   <VSwitch v-model="localTask.refill_when_empty" label="清理后主动补种" color="primary" hide-details inset />
-                  <VSwitch v-model="localTask.reuse_existing" label="复用本机已有资源（辅种）" color="primary" hide-details inset />
-                  <VSwitch v-model="localTask.reuse_verify" :disabled="!localTask.reuse_existing" label="辅种前先校验（不匹配自动撤销）" color="primary" hide-details inset />
-                  <VSwitch v-model="localTask.auto_swap" label="自动换种（名额/磁盘/站点接近上限时，按边际魔力把低价值种下线、换入更优种）" color="primary" hide-details inset />
-                  <VSwitch v-model="localTask.swap_allow_download" :disabled="!localTask.auto_swap" label="换种允许「取种换入」（默认关；开启后只走免费渠道：本站免费，或去兄弟站免费取同一 Release 的副本；两条都不通就跳过，绝不付费下载）" color="warning" hide-details inset />
                   <VSwitch v-model="localTask.cleanup_no_progress" label="清理无进度种子（停滞/出错且进度为 0）" color="primary" hide-details inset />
                   <VSwitch v-model="localTask.cleanup_slow_progress" label="清理下载过慢的种子（长期下不完腾名额）" color="primary" hide-details inset />
                   <VSwitch v-model="localTask.purge_unfree_incomplete" label="清理「已不再免费且未下完」的种子" color="primary" hide-details inset />
@@ -778,27 +758,6 @@ function confirmSaveWithoutGoal() {
                       persistent-hint
                       clearable
                     />
-                  </VCol>
-                </VRow>
-                <VRow>
-                  <VCol cols="12" md="6">
-                    <VTextField v-model.number="localTask.swap_max_in_gb" type="number" min="0" label="换入体积上限（GB，0 = 不限）" hint="换入候选不超过该体积；防止为几个魔力换来巨物（炸磁盘/流量）" persistent-hint clearable />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField v-model.number="localTask.swap_min_gain_pct" type="number" min="5" max="500" label="换种净收益门槛（%）" hint="净增魔力 ≥ 被换出种边际的该比例（库内/自有种按 2 倍）" persistent-hint />
-                  </VCol>
-                </VRow>
-                <VRow>
-                  <VCol cols="12" md="6">
-                    <VTextField v-model.number="localTask.swap_daily_dl_gb" :disabled="!localTask.swap_allow_download" type="number" min="0" label="每日换种下载上限（GB，0 = 不限）" hint="按「实际下载量」计（本站免费 + 跨站免费都算）；关闭「取种换入」时此项无效" persistent-hint />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField v-model.number="localTask.swap_min_gain_per_gb" :disabled="!localTask.swap_allow_download" type="number" min="0" step="0.01" label="每 GB 下载的魔力门槛（/h）" hint="净增魔力 ≥ 下载GB × 该值；过滤「几十 GB 换零点几/h」的赔本买卖" persistent-hint />
-                  </VCol>
-                </VRow>
-                <VRow>
-                  <VCol cols="12" md="6">
-                    <VTextField v-model.number="localTask.swap_min_in_seeders" :disabled="!localTask.swap_allow_download" type="number" min="1" label="换入候选最少做种人数" hint="老种候选中位魔力高但常常没源；人数不够就不拉（零下载辅种 / 跨站取种不受此限）" persistent-hint />
                   </VCol>
                 </VRow>
                 <VRow v-if="localTask.cleanup_no_progress">
@@ -932,36 +891,6 @@ function confirmSaveWithoutGoal() {
                 <div class="editor-switches">
                   <VSwitch v-model="localTask.refill_when_empty" label="清理后主动补种" color="primary" hide-details inset />
                   <VSwitch
-                    v-model="localTask.reuse_existing"
-                    label="复用本机已有资源（辅种）"
-                    color="primary"
-                    hide-details
-                    inset
-                  />
-                  <VSwitch
-                    v-model="localTask.reuse_verify"
-                    :disabled="!localTask.reuse_existing"
-                    label="辅种前先校验（不匹配自动撤销）"
-                    color="primary"
-                    hide-details
-                    inset
-                  />
-                  <VSwitch
-                    v-model="localTask.auto_swap"
-                    label="自动换种（名额/磁盘/站点接近上限时，按边际魔力把低价值种下线、换入更优种）"
-                    color="primary"
-                    hide-details
-                    inset
-                  />
-                  <VSwitch
-                    v-model="localTask.swap_allow_download"
-                    :disabled="!localTask.auto_swap"
-                    label="换种允许「取种换入」（默认关；开启后只走免费渠道：本站免费，或去兄弟站免费取同一 Release 的副本；两条都不通就跳过，绝不付费下载）"
-                    color="warning"
-                    hide-details
-                    inset
-                  />
-                  <VSwitch
                     v-model="localTask.cleanup_no_progress"
                     label="每次运行清理无进度种子（停滞/出错且进度为 0）"
                     color="primary"
@@ -1090,27 +1019,6 @@ function confirmSaveWithoutGoal() {
                       persistent-hint
                       clearable
                     />
-                  </VCol>
-                </VRow>
-                <VRow>
-                  <VCol cols="12" md="6">
-                    <VTextField v-model.number="localTask.swap_max_in_gb" type="number" min="0" label="换入体积上限（GB，0 = 不限）" hint="换入候选不超过该体积；防止为几个魔力换来巨物（炸磁盘/流量）" persistent-hint clearable />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField v-model.number="localTask.swap_min_gain_pct" type="number" min="5" max="500" label="换种净收益门槛（%）" hint="净增魔力 ≥ 被换出种边际的该比例（库内/自有种按 2 倍）" persistent-hint />
-                  </VCol>
-                </VRow>
-                <VRow>
-                  <VCol cols="12" md="6">
-                    <VTextField v-model.number="localTask.swap_daily_dl_gb" :disabled="!localTask.swap_allow_download" type="number" min="0" label="每日换种下载上限（GB，0 = 不限）" hint="按「实际下载量」计（本站免费 + 跨站免费都算）；关闭「取种换入」时此项无效" persistent-hint />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField v-model.number="localTask.swap_min_gain_per_gb" :disabled="!localTask.swap_allow_download" type="number" min="0" step="0.01" label="每 GB 下载的魔力门槛（/h）" hint="净增魔力 ≥ 下载GB × 该值；过滤「几十 GB 换零点几/h」的赔本买卖" persistent-hint />
-                  </VCol>
-                </VRow>
-                <VRow>
-                  <VCol cols="12" md="6">
-                    <VTextField v-model.number="localTask.swap_min_in_seeders" :disabled="!localTask.swap_allow_download" type="number" min="1" label="换入候选最少做种人数" hint="老种候选中位魔力高但常常没源；人数不够就不拉（零下载辅种 / 跨站取种不受此限）" persistent-hint />
                   </VCol>
                 </VRow>
               </section>

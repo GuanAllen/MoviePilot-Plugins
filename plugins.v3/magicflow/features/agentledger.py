@@ -192,7 +192,7 @@ def _columns() -> Dict[str, List[Dict[str, Any]]]:
             _col("task_name", "string"),
             _col("backfilled", "bool", desc="历史回填"),
             _col("done", "bool", desc="H&R 义务已履行"),
-            _col("pending", "json", desc="跨站待回辅（{sib_hash: rec}，12.2.0 由 kv 迁入）"),
+            _col("pending", "json", desc="跨站取种台账·在飞（{sib_hash: rec}，14.0.0 起不再回辅）"),
             _col("created", "float", unit="s"),
             _col("updated", "float", unit="s"),
         ],
@@ -742,14 +742,34 @@ class AgentLedgerMixin:
             data["state_error"] = str(e)
         return self._agent_ok(data, t0)
 
-    def agent_tasks(self) -> Dict[str, Any]:
-        """``GET /agent/tasks`` —— 任务列表（含 enabled/run_mode/site/统计，复用 UI 同源）。"""
+    def agent_tasks(self, type: str = "") -> Dict[str, Any]:
+        """``GET /agent/tasks`` —— 任务列表（含 enabled/run_mode/site/统计，复用 UI 同源）。
+
+        ``type`` 过滤（★ 14.0.0）：
+          - ``all``（默认）：全部（含**伪任务**：``task_type=host`` 的「静默托管」/「H&R保种」）；
+          - ``real``：只留真任务（= 刷流/魔力/**跨站取种**，可启停、有 run_mode）；
+          - ``host``：只看伪任务（常驻 worker 的只读卡片，不可启动/停止/删）。
+        ``is_host`` 逐条标注，便于 agent 端不把伪任务当真任务操作。
+        """
         t0 = time.time()
+        want = str(type or "").strip().lower()
+        if want and want not in ("all", "real", "host"):
+            return self._agent_err("bad_param", "type 必须为 all|real|host", t0, field="type")
         try:
             tasks = self._build_task_list() or []
         except Exception as e:  # noqa: BLE001
             return self._agent_err("internal", f"任务列表失败:{e}", t0, trace_id=str(e))
-        return self._agent_ok({"tasks": tasks, "total": len(tasks)}, t0)
+        for t in tasks:
+            if isinstance(t, dict):
+                t["is_host"] = str(t.get("task_type") or "").strip().lower() == "host"
+        host_total = sum(1 for t in tasks if t.get("is_host"))
+        if want == "real":
+            tasks = [t for t in tasks if not t.get("is_host")]
+        elif want == "host":
+            tasks = [t for t in tasks if t.get("is_host")]
+        return self._agent_ok(
+            {"tasks": tasks, "total": len(tasks), "host_total": host_total,
+             "filter": want or "all"}, t0)
 
     def agent_task_detail(self, id: str = "") -> Dict[str, Any]:
         """``GET /agent/tasks/{id}`` —— 任务详情（含完整配置）+ 候选/种子/操作记录摘要。"""
@@ -1006,7 +1026,7 @@ class AgentLedgerMixin:
 
     def agent_crossseed(self) -> Dict[str, Any]:
         t0 = time.time()
-        return self._agent_call_read(t0, "get_crossseed() → 跨站待回辅队列(kv)", self.get_crossseed)
+        return self._agent_call_read(t0, "get_crossseed() → 跨站取种台账(kv)", self.get_crossseed)
 
     def agent_reseed(self) -> Dict[str, Any]:
         t0 = time.time()
@@ -1233,7 +1253,7 @@ def _agent_type_schemas() -> Dict[str, Dict[str, Any]]:
             "total": _f("int"),
         },
         "CrossseedReport": {
-            "pending": _f("array", desc="待回辅队列"),
+            "pending": _f("array", desc="取种台账·在飞（待分诊）"),
             "sources": _f("array", desc="来源站统计"),
             "tasks": _f("array", desc="启用跨站的任务"),
         },

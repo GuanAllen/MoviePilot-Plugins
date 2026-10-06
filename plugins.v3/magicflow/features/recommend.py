@@ -26,6 +26,7 @@ from ..common import (
     MagicFlowTaskConfig,
     RECOMMEND_LIVE_LIBRARY_CHECK,
     RECOMMEND_SCAN_MAX,
+    task_is_participating,
 )
 
 
@@ -251,7 +252,7 @@ class RecommendMixin:
         cfg = getattr(self, "_recommend_cfg", {}) or {}
         if not cfg.get("enabled", True):
             return
-        eligible = [t for t in self._task_configs.values() if getattr(t, "enabled", False)]
+        eligible = [t for t in self._task_configs.values() if task_is_participating(t)]
         if not eligible:
             # ★ 观测：不再静默空跑——无启用任务时每 6h 记一条（不刷屏）
             _now = time.time()
@@ -280,7 +281,7 @@ class RecommendMixin:
         """对单个任务做一轮推荐甄别(识别 + 推荐/临时判定 + 生命周期清理)。"""
         task_id = str(task.id)
         cfg = getattr(self, "_recommend_cfg", {}) or {}
-        if not cfg.get("enabled", True) or not getattr(task, "enabled", False):
+        if not cfg.get("enabled", True) or not task_is_participating(task):
             return
         store = getattr(self._store, "recommend", None) if self._store else None
         if store is None:

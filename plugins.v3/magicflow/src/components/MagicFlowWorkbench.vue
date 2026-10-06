@@ -799,7 +799,6 @@ const detailStats = computed(() => detail.value || taskConfig.value)
 
 // ★ 可观测：本轮决策轨迹（Why-not） + 每小时趋势序列（sparkline）
 const decision = computed(() => detailStats.value?.last_decision || {})
-const decisionSwap = computed(() => decision.value.swap || {})
 const decisionReasons = computed(() =>
   Object.entries(decision.value.deleted_by_reason || {})
     .map(([label, count]) => ({ label, count: Number(count) || 0 }))
@@ -955,7 +954,7 @@ function notify(message, color = 'success') {
   }
 }
 
-const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reseed: '辅种', reuse: '存量复用(旧)', crossseed: '跨站取种(旧)', swap: '换种', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止', state: '运行状态', tag: '标签变更', fallback: '元数据兜底', cloud: '云盘归档' }
+const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reseed: '辅种', reuse: '存量复用(旧)', crossseed: '跨站取种(旧)', swap: '换种(旧)', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止', state: '运行状态', tag: '标签变更', fallback: '元数据兜底', cloud: '云盘归档' }
 const STATE_TEXT = { submitting: '提交中', accepted: '已受理', completed: '已完成', failed: '失败' }
 const KIND_ICON = {
   run: 'mdi-play-circle-outline',
@@ -1872,7 +1871,7 @@ function crossseedStateText(it) {
   const st = String(it?.state || '')
   const p = it?.progress
   if (st && /paused|stopped|暂停/i.test(st)) return '已暂停'
-  if (Number.isFinite(Number(p)) && Number(p) >= 0.999) return '已下载完（回辅中）'
+  if (Number.isFinite(Number(p)) && Number(p) >= 0.999) return '已下载完（待分诊）'
   if (Number.isFinite(Number(p)) && Number(p) > 0) return `下载中 ${(Number(p) * 100).toFixed(1)}%`
   if (p === null || p === undefined) return '下载器中无此种'
   return '等待下载'
@@ -1925,7 +1924,7 @@ async function clearCrossseed() {
   crossseedActing.value = 'clear'
   try {
     const res = unwrapResponse(await props.api.post(`${pluginBase.value}/crossseed?action=clear`, {})) || {}
-    notify(res.message || '已清空待回辅队列', 'success')
+    notify(res.message || '已清空取种台账', 'success')
     await loadCrossseed()
   } catch (err) {
     notify(err?.message || '清空失败', 'error')
@@ -2444,7 +2443,6 @@ async function examConfirmRun() {
 //   真值源 = 标签账本 tag_state（state=静默）+ 下载器快照；H&R 倒计时来自跨站来源份账本。
 //   ★ 关系：跨站「下完」的来源份 → 移交静默池（跨站页只留未下完的列车）。
 const silentData = ref({ summary: {}, items: [], records: [], host: {}, settings: {} })
-const stage1ZeroDelete = computed(() => silentData.value.pool_cleanup === false)
 const silentOpen = ref(false)
 const silentLoading = ref(false)
 const silentView = ref('pool')   // 'pool' | 'records'
@@ -3562,7 +3560,7 @@ onMounted(() => {
   refreshTimer = window.setInterval(loadStatus, 30000)
   // 推荐列表是全局的，低频刷新一下角标计数
   recommendTimer = window.setInterval(loadRecommend, 60000)
-  // 跨站免费取种待回辅队列（低频刷角标）
+  // 跨站免费取种台账（在飞取种 · 低频刷角标）
   loadCrossseed()
   crossseedTimer = window.setInterval(loadCrossseed, 120000)
   // 豆瓣评分服务（库容量 + 慢爬进度，低频刷）
@@ -4263,15 +4261,6 @@ onUnmounted(() => {
                       零魔淘汰 {{ decision.zero_bonus_delete ? '开' : '关' }}
                     </strong>
                   </div>
-                  <div class="mf-obs__row">
-                    <span>自动换种</span>
-                    <strong>
-                      {{ decisionSwap.triggered ? '触发' : '未触发' }}
-                      <template v-if="decisionSwap.trigger">（{{ decisionSwap.trigger }}）</template>
-                      <template v-if="decisionSwap.reason"> · {{ decisionSwap.reason }}</template>
-                      · 实际换 {{ decisionSwap.applied || 0 }} 个 · 净收益 {{ decisionSwap.net || 0 }}/h
-                    </strong>
-                  </div>
                   <div v-if="decisionReasons.length" class="mf-obs__row">
                     <span>删除原因</span>
                     <div class="mf-obs__chips">
@@ -4338,7 +4327,6 @@ onUnmounted(() => {
                       <div><dt>完美种保护</dt><dd>{{ taskConfig.protect_perfect === false ? '关闭' : `开启（≤${taskConfig.perfect_max_seeders ?? 3}人 · ≥${taskConfig.perfect_min_weeks ?? 4}周）` }}</dd></div>
                     </template>
                     <div><dt>自动补种</dt><dd>{{ taskConfig.refill_when_empty ? '开启' : '关闭' }}</dd></div>
-                    <div><dt>存量复用</dt><dd>{{ taskConfig.reuse_existing ? '开启' : '关闭' }}</dd></div>
                     <div><dt>无进度清理</dt><dd>{{ taskConfig.cleanup_no_progress ? `开启（${taskConfig.no_progress_minutes ?? 30} 分钟）` : '关闭' }}</dd></div>
                     <div><dt>慢速清理</dt><dd>{{ taskConfig.cleanup_slow_progress === false ? '关闭' : `开启（> ${taskConfig.slow_progress_max_hours ?? 48}h 下不完即清）` }}</dd></div>
                     <div><dt>促销失效清理</dt><dd>{{ taskConfig.purge_unfree_incomplete === false ? '关闭' : '开启（已非免费且未下完→清）' }}</dd></div>
@@ -4404,7 +4392,6 @@ onUnmounted(() => {
                     <div><span>本次耗时</span><strong>{{ formatDurationSeconds(detailStats.last_run_duration) }}</strong></div>
                     <div><span>本次新增 / 复用</span><strong>{{ detailStats.last_added || 0 }} / {{ detailStats.last_reused || 0 }}</strong></div>
                     <div><span>本次删除</span><strong>{{ detailStats.last_deleted || 0 }}</strong></div>
-                    <div><span>慢扫辅种（累计 / 本次）</span><strong>{{ detailStats.cumulative_slow_reused || 0 }} / {{ detailStats.last_slow_reused || 0 }}</strong></div>
                     <div><span>当前托管 / 受保护</span><strong>{{ detailStats.last_kept || 0 }} / {{ detailStats.protected_count || 0 }}</strong></div>
                   </div>
                   <VAlert v-if="detailStats.last_run_reason" type="info" variant="tonal" density="compact" class="mb-2">
@@ -4832,7 +4819,6 @@ onUnmounted(() => {
                     <div><dt>每轮参评候选</dt><dd>{{ taskConfig.top_n ?? 30 }} 个</dd></div>
                     <div><dt>每轮翻页数</dt><dd>{{ taskConfig.browse_pages ?? 3 }} 页</dd></div>
                     <div><dt>自动补种</dt><dd>{{ taskConfig.refill_when_empty ? '开启' : '关闭' }}</dd></div>
-                    <div><dt>存量复用</dt><dd>{{ taskConfig.reuse_existing ? (taskConfig.reuse_verify ? '开启（校验）' : '开启（跳过校验）') : '关闭' }}</dd></div>
                     <div><dt>无进度清理</dt><dd>{{ taskConfig.cleanup_no_progress ? `开启（${taskConfig.no_progress_minutes ?? 30} 分钟）` : '关闭' }}</dd></div>
                     <div><dt>慢速清理</dt><dd>{{ taskConfig.cleanup_slow_progress === false ? '关闭' : `开启（> ${taskConfig.slow_progress_max_hours ?? 48}h 下不完即清）` }}</dd></div>
                     <div><dt>促销失效清理</dt><dd>{{ taskConfig.purge_unfree_incomplete === false ? '关闭' : '开启（已非免费且未下完→清）' }}</dd></div>
@@ -6081,8 +6067,6 @@ onUnmounted(() => {
             </div>
             <div class="magicflow-settings-switches">
               <VSwitch v-model="defaultsDraft.refill_when_empty" label="清理后自动补种" color="primary" hide-details inset />
-              <VSwitch v-model="defaultsDraft.reuse_existing" label="复用本机已有资源（辅种）" color="primary" hide-details inset />
-              <VSwitch v-model="defaultsDraft.reuse_verify" label="辅种前校验" color="primary" hide-details inset />
               <VSwitch v-model="defaultsDraft.cleanup_no_progress" label="清理无进度种子" color="primary" hide-details inset />
               <VSwitch v-model="defaultsDraft.cleanup_slow_progress" label="清理过慢种子" color="primary" hide-details inset />
               <VSwitch v-model="defaultsDraft.purge_unfree_incomplete" label="清理「已非免费」未下完种子" color="primary" hide-details inset />
@@ -6610,8 +6594,9 @@ onUnmounted(() => {
 
           <div v-else-if="settingsTab === 'crossseed'" class="magicflow-settings-form">
             <p class="magicflow-settings-hint">
-              跨站免费取种：本站<strong>非免费</strong>的候选（或本地没有的免费种）→ 去<strong>兄弟站免费下</strong>，
-              下完再把目标站的种子指向同一批文件回辅（校验通过才保留）。
+              跨站免费取种：本站<strong>非免费</strong>的候选 → 去<strong>兄弟站免费下</strong>，
+              落种由全局任务「<strong>跨站取种</strong>」承接（下载中=在岗）；下载完过 H&amp;R 判定：
+              欠 → 交保种，不欠 → 入静默池（摘任务标、留身份）。<strong>回辅由「全站辅种」负责</strong>。
               <br />
               本页只管「<strong>怎么取种</strong>」：
               <strong>流量兜底</strong>（含取种期间核对来源站）已在「<strong>站点监控 → 流量兜底</strong>」统一配置；
@@ -7467,15 +7452,15 @@ onUnmounted(() => {
         </header>
         <VDivider />
         <VCardText class="magicflow-crossseed-dialog__body">
-          <!-- 核心统计：待回辅 / 运行任务 / 保种来源份 -->
+          <!-- 核心统计：在飞取种 / 取种任务 / 已转静默 -->
           <div class="magicflow-cs-stats">
             <div class="magicflow-cs-stat">
               <b>{{ crossseedStats.pending }}</b>
-              <span>待回辅</span>
+              <span>在飞取种</span>
             </div>
             <div class="magicflow-cs-stat">
               <b>{{ crossseedStats.tasks }}</b>
-              <span>运行任务</span>
+              <span>取种任务</span>
             </div>
             <div class="magicflow-cs-stat">
               <b>{{ crossseedSilentCount }}</b>
@@ -7545,10 +7530,10 @@ onUnmounted(() => {
             >静默池</VBtn>
           </div>
 
-          <!-- 待回辅队列（有才出现） -->
+          <!-- 取种台账（在飞取种；有才出现） -->
           <section v-if="crossseedPending.length" class="magicflow-cs-pending">
             <header class="magicflow-cs-pending__head">
-              <span>待回辅队列</span>
+              <span>取种台账（在飞）</span>
               <VBtn
                 size="x-small"
                 variant="text"
@@ -7560,7 +7545,7 @@ onUnmounted(() => {
             <article v-for="it in crossseedPending" :key="it.sib_hash" class="magicflow-cs-card">
               <div class="magicflow-cs-card__name" :title="it.title || it.sib_hash">{{ it.title || it.sib_hash }}</div>
               <div class="magicflow-cs-card__meta">
-                <span class="magicflow-cs-card__site">从 {{ it.site_b || '?' }} 取 → 辅回 {{ it.site_a || '?' }}</span>
+                <span class="magicflow-cs-card__site">从 {{ it.site_b || '?' }} 取 → 下完分诊（{{ it.site_a || '?' }}）</span>
                 <span class="magicflow-cs-card__size">{{ gbText(it.size_gb) }}</span>
                 <VChip size="x-small" variant="flat" color="info">{{ crossseedStateText(it) }}</VChip>
                 <VSpacer />
@@ -7579,12 +7564,12 @@ onUnmounted(() => {
           <!-- ★ 来源份（他站那份 · 保种中）：来源站 → 目标站 明示（7.19.3） -->
           <section v-if="crossseedSources.length" class="magicflow-cs-pending">
             <header class="magicflow-cs-pending__head">
-              <span>来源份（他站那份 · 保种中）</span>
+              <span>来源份（他站那份 · 源站保种中）</span>
             </header>
             <article v-for="s in crossseedSources" :key="s.sib_hash" class="magicflow-cs-card">
               <div class="magicflow-cs-card__name" :title="s.title || s.sib_hash">{{ s.title || s.sib_hash }}</div>
               <div class="magicflow-cs-card__meta">
-                <span class="magicflow-cs-card__site">来自 {{ s.site_b || '?' }} → 辅回 {{ s.site_a || '?' }}</span>
+                <span class="magicflow-cs-card__site">来自 {{ s.site_b || '?' }}（源站保种中）</span>
                 <span class="magicflow-cs-card__size">{{ gbText(s.size_gb) }}</span>
                 <VChip
                   v-if="Number(s.progress ?? 1) < 0.999"
@@ -7597,7 +7582,7 @@ onUnmounted(() => {
             </article>
           </section>
           <div v-if="crossseedLegacyCount" class="magicflow-cs-status__dim">
-            另有 {{ crossseedLegacyCount }} 条旧回填来源份（无来源/目标站信息）未在此列出 ——
+            另有 {{ crossseedLegacyCount }} 条旧回填来源份（无来源站信息）未在此列出 ——
             <a class="magicflow-cs-link" @click.prevent="openOperations('all')">见操作记录</a>
           </div>
 
@@ -7605,10 +7590,10 @@ onUnmounted(() => {
           <details class="magicflow-cs-rules">
             <summary>查看完整规则</summary>
             <div class="magicflow-cs-rules__body">
-              <p><strong>取种原理</strong>：在他站<strong>免费</strong>下载 → 下完把目标站的种子指向同一批文件回辅（校验通过才保留）。本站判为「非免费」的候选只走跨站，<strong>绝不在本站下载</strong>。</p>
+              <p><strong>取种原理</strong>：在他站<strong>免费</strong>下载同一资源。落种由全局任务「<strong>跨站取种</strong>」承接；本站判为「非免费」的候选只走跨站，<strong>绝不在本站下载</strong>。把资源挂回本站的工作由「<strong>全站辅种</strong>」负责，本线不再回辅。</p>
               <p><strong>流量兜底</strong>：判「免费」可能出错 → 取种期间核对来源站的免费状态与下载量增量；发现其实不免费，立即<strong>删种 + 拉黑该站</strong>（需人工确认后解除）。</p>
-              <p><strong>来源份 H&amp;R 保种</strong>：他站那份下完（无论回辅成功或失败）都要留在来源站挂种，否则算 H&amp;R —— 保种期内任何任务都不会删它、也不会改它的标签。</p>
-              <p><strong>待回辅队列</strong>：他站下完 → 自动回辅目标站；超过 6 小时未完成会放弃。未下载完不会转资源、不会整理入库。</p>
+              <p><strong>来源份 H&amp;R 保种</strong>：他站那份下完即做分诊 —— 欠 H&amp;R 交保种（保种期内任何任务都不会删它、也不会改它的标签），不欠则入静默池。</p>
+              <p><strong>取种台账</strong>：他站下载中=在岗；下完 → 过 H&amp;R 判定分诊并销账。超过 6 小时未下完/停滞会放弃。未下载完不会转资源、不会整理入库。</p>
               <p><strong>保种时长</strong>：默认 {{ crossseedGuard.seed_hours_default ?? 24 }} 小时；优先级 种子自带 H&amp;R 标记 &gt; 站点规则库 &gt; 默认值。站点自定义：{{ (crossseedGuard.site_hours || []).join('、') || '无' }}。</p>
               <p><strong>期满回收</strong>：{{ crossseedGuard.reclaim ? '已开启——保种期满后允许被任务删种回收空间。' : '未开启——保种期满的种也不会被自动删除。' }}</p>
             </div>
@@ -8208,7 +8193,7 @@ onUnmounted(() => {
           <div class="magicflow-settings-hint mt-2">
             静默池 = 「无主」种的池子：跨站取种下完的来源份、任务退下来的种、待分拣的新种都在这。
             H&R 保挂 / 未下完清理 / 超时降级（新→普通）/ 分拣（推荐&rarr;资源）由常驻「静默托管」自动跑。
-            当前：静默-新超时 {{ silentData.settings?.new_timeout_hours ?? '—' }} 小时{{ stage1ZeroDelete ? ' · 阶段1 零删除（清理暂停）' : '' }}。
+            当前：静默-新超时 {{ silentData.settings?.new_timeout_hours ?? '—' }} 小时。
           </div>
         </VCardText>
       </VCard>

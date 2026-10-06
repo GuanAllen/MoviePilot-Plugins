@@ -10,7 +10,7 @@
   1) ``tags.asset_member_hashes`` / ``resource_asset_hash`` / ``resource_is_asset``：
      资源成员/资源身份 → 资产判定；``asset_recheck=fail``（已降级）不再享受；
   2) ``SilentMixin._silent_audit``：副本（成员 或 同保存目录/种名）→ 归类 ``library_asset``（永不删），
-     无关的静默-新 仍是 ``relocate``；
+     无关的静默-新 仍是 ``cleanup``；
   3) ``AssetsMixin.sync_tag_assets``：副本的 qB 标签被改写成「静默-资源」。
 
 用法：``python3 tools/test_asset_copies.py``（退出码 0=PASS / 1=FAIL）。
@@ -237,7 +237,7 @@ def main() -> None:
     cls = {it["hash"]: it["class"] for it in audit["items"]}
     _ok(cls.get(ASSET_HASH) == "library_asset", "资产份 → library_asset")
     _ok(cls.get(COPY_HASH) == "library_asset", "★ 副本（同资源成员）→ library_asset（不再当清理候选）")
-    _ok(cls.get(OTHER_HASH) == "relocate", "无关静默-新 → 仍是清理候选")
+    _ok(cls.get(OTHER_HASH) == "cleanup", "无关静默-新 → 仍是清理候选")
     _ok(audit["counts"]["library_asset"] == 2, "库内资产计数 2（资产份 + 副本）")
 
     print("== 2b) 同保存目录/种名（成员表没记上）也按资产 ==")
