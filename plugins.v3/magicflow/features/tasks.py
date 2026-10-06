@@ -465,9 +465,15 @@ class TasksMixin:
         return {"ok": True, "moved": moved, "failed": failed, "skipped": skipped, "target_tag": target}
 
     def _tag_settle_idle(self, task: Any, hashes: Any = None) -> Dict[str, Any]:
-        """把任务名下种子退回静默池（保文件、可逆），并清掉账本占用。"""
+        """把任务名下种子退回静默池（保文件、可逆），并清掉账本占用。
+
+        ★ 13.0.3：**入池前先过 H&R 分诊** —— 统一走 ``_split_release``（欠 H&R → 保种
+        ``__hr_host__``；其余 → 静默），不再「一律直通静默」。这条旁路（停止后另起的
+        ``_settle_task_idle_safe``、删任务 ``settle=idle``）此前绕过 `_split_release`，
+        欠债种要靠 `hr_host()` 下一轮统一迁移才归位。
+        """
         _targets = (list(hashes) if hashes else self._task_managed_hashes(task))
-        n = self._tag_release(task, _targets, reason="退回静默")
+        n = self._split_release(task, _targets, reason="退回静默")
         return {"ok": True, "settled": n}
 
     def get_task_handover(self, task_id: str) -> Response:
