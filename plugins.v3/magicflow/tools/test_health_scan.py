@@ -394,6 +394,22 @@ def main() -> int:
             and d7["hr_at_risk"][0]["hash"] == "g-a",
             f"hr_at_risk 只收 active/breached（ghost 2 / risk 1，实际 {d7['counts']['ghost']}/{len(d7['hr_at_risk'])}）")
 
+        # 13) hr_at_risk 也要纳入 incomplete（只在临时目录、`.!qB` 未完成 → 同样无法做种）
+        snap5 = {
+            "i-a": FakeTorrent("i-a", "IncActive", save_path=save,
+                               content_path=os.path.join(save, "MissInc"), size_gb=1.0, tags=[carpt]),
+        }
+        dl6 = FakeDl(files={"i-a": [("IncOnly/IncOnly.mkv", 100)]})
+        bills5 = {"i-a": {"state": "active", "rule": "site_hr", "site": "carpt.net",
+                           "need_h": 24.0, "seeded_h": 5.0}}
+        # 注意：需带 temp_path 才看得到 `.!qB`
+        dl6._prefs = {"temp_path": tempdir, "temp_path_enabled": True}
+        p6 = Plug(snap=snap5, dl=dl6, bills=bills5, site_map=site_map)
+        d8 = _scan(p6)
+        _ok(d8["counts"]["incomplete"] == 1 and len(d8["hr_at_risk"]) == 1
+            and d8["hr_at_risk"][0]["bucket"] == "incomplete",
+            f"hr_at_risk 纳入 incomplete（{d8['counts']} risk={len(d8['hr_at_risk'])}）")
+
     print("=" * 60)
     print(f"✅ PASS —— 共 {CHECKS} 项全过")
     return 0
