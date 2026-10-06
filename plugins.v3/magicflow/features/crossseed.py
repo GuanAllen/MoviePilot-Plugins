@@ -54,6 +54,7 @@ from ..common import (
     MagicFlowTaskConfig,
     _torrent_entries_digest,
 )
+from ..sitestore import get_site_store
 
 
 class CrossSeedMixin:
@@ -70,9 +71,11 @@ class CrossSeedMixin:
         """来源站份的保护账本（H&R 保种期内不得被任何任务删除/改标签）。"""
         obj = getattr(self, "_crossseed_src_obj", None)
         if obj is None:
+            _st = get_site_store(self)
+            _get, _save = _st.callbacks("crossseed_sources")
             obj = self._crossseed_src_obj = CrossSeedSources(
-                get_data=self.get_data,
-                save_data=self.save_data,
+                get_data=_get,
+                save_data=_save,
                 log=self._log,
             )
         return obj

@@ -100,6 +100,43 @@ class SiteRow(Base):
     rule_src: Mapped[str | None] = mapped_column(String(200))
     rule_mail_id: Mapped[str | None] = mapped_column(String(80))
     rule_mail_subject: Mapped[str | None] = mapped_column(String(300))
+    # ★ 12.1.0 WS2：site_rules kv → mf_site 真列（新增 3 列 + 兜底 JSON）
+    note: Mapped[str | None] = mapped_column(Text)
+    exam_evidence: Mapped[str | None] = mapped_column(Text)
+    per_torrent_hr: Mapped[bool | None] = mapped_column(Boolean)
+    rules_extra: Mapped[Any | None] = mapped_column(_JSON, default=dict)  # 映射后仍未覆盖的键（防丢字段）
+    caps: Mapped[Any | None] = mapped_column(_JSON, default=dict)         # site_caps 探测缓存（整条 rec）
+    created: Mapped[float | None] = mapped_column(Float)
+    updated: Mapped[float | None] = mapped_column(Float)
+
+
+class CrossSeedRow(Base):
+    """跨站来源份（他站那份）的 H&R 保种保护账本表（★ 12.1.0 WS2）。
+
+    原来持久化在 plugindata kv ``crossseed_sources``；12.1.0 起并入表（唯一真值源）。
+    不复用 ``mf_seed``（避免「来源份」被当成种子账本成员 → 污染静默池/审计）。
+    """
+
+    __tablename__ = "mf_crossseed"
+
+    sib_hash: Mapped[str] = mapped_column(String(64), primary_key=True)   # 他站那份的 infohash
+    site_b_domain: Mapped[str | None] = mapped_column(String(200), index=True)  # 来源站域名
+    site_a: Mapped[str | None] = mapped_column(String(40))          # 目标站名
+    site_b: Mapped[str | None] = mapped_column(String(40))          # 来源站名
+    a_hash: Mapped[str | None] = mapped_column(String(64))          # 目标站那份 hash
+    title: Mapped[str | None] = mapped_column(String(400))
+    size_gb: Mapped[float | None] = mapped_column(Float)
+    hit_and_run: Mapped[bool | None] = mapped_column(Boolean)
+    hours: Mapped[float | None] = mapped_column(Float)
+    seed_until: Mapped[float | None] = mapped_column(Float)
+    downloader: Mapped[str | None] = mapped_column(String(80))
+    seeded_sec: Mapped[float | None] = mapped_column(Float)
+    files_shared: Mapped[bool | None] = mapped_column(Boolean)
+    task_id: Mapped[str | None] = mapped_column(String(64))
+    task_name: Mapped[str | None] = mapped_column(String(200))
+    backfilled: Mapped[bool | None] = mapped_column(Boolean)
+    done: Mapped[bool | None] = mapped_column(Boolean)
+    extra: Mapped[Any | None] = mapped_column(_JSON, default=dict)   # 映射后仍未覆盖的键（resource_id/need_hours/pool 等）
     created: Mapped[float | None] = mapped_column(Float)
     updated: Mapped[float | None] = mapped_column(Float)
 
@@ -207,4 +244,4 @@ class DeckRow(Base):
     updated: Mapped[float | None] = mapped_column(Float)
 
 
-ALL_MODELS: List[type] = [SiteRow, ResourceRow, SeedRow, IdentityRow, TaskRow, DeckRow]
+ALL_MODELS: List[type] = [SiteRow, ResourceRow, SeedRow, IdentityRow, TaskRow, DeckRow, CrossSeedRow]

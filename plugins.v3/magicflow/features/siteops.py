@@ -35,6 +35,7 @@ from ..common import (
     RULES_PROBE_DELAY,
     SITE_FORMULA_TTL,
 )
+from ..sitestore import get_site_store
 
 
 class SiteOpsMixin:
@@ -102,17 +103,21 @@ class SiteOpsMixin:
             if obj is not None and not isinstance(obj, SiteRules):
                 obj = None
             if obj is None:
+                _st = get_site_store(self)
+                _get, _save = _st.callbacks("site_rules")
                 obj = SiteRules(
-                    get_data=self.get_data,
-                    save_data=self.save_data,
+                    get_data=_get,
+                    save_data=_save,
                     log=self._log,
                     framework_of=self._framework_of,
                 )
                 mod.instances["site_rules"] = obj
         except Exception:  # noqa: BLE001
+            _st = get_site_store(self)
+            _get, _save = _st.callbacks("site_rules")
             obj = SiteRules(
-                get_data=self.get_data,
-                save_data=self.save_data,
+                get_data=_get,
+                save_data=_save,
                 log=self._log,
                 framework_of=self._framework_of,
             )

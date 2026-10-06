@@ -624,7 +624,7 @@ def parse_hr_from_mail(body_text: str, framework: str = "nexusphp") -> Dict[str,
 # 规则账本
 # ============================================================
 class SiteRules:
-    """站点规则账本（``save_data`` 持久化，重装不丢）。
+    """站点规则账本（12.1.0 起存 ``mf_site`` 表，经 ``SiteStore`` 回调读写；重装不丢）。
 
     记录形如::
 
