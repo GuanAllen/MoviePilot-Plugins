@@ -101,15 +101,6 @@ def _load_agentledger():
     return _load(PKG + ".features.agentledger", "features/agentledger.py")
 
 
-class _Harness:
-    """最小插件实例：真实继承 AgentApiMixin + ApiMixin，缺的方法用 dummy 顶。"""
-
-    def __getattr__(self, name):
-        def _dummy(*args, **kwargs):
-            return None
-        return _dummy
-
-
 def _make_harness(AgentApiMixin, ApiMixin, RescueMixin=None, AgentLedgerMixin=None):
     bases = [AgentApiMixin, ApiMixin]
     if RescueMixin is not None:

@@ -8,9 +8,6 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 
-from ..recommend import recognize
-
-
 class ApiMixin:
     """api 功能集（原 MagicFlow 方法原样搬入）。"""
 
@@ -522,20 +519,6 @@ class ApiMixin:
                 "summary": "认领:诊断(能力探测/可认领/账本/适配器)",
             },
             {
-                "path": "/migrate",
-                "endpoint": self.get_migrate,
-                "methods": ["GET"],
-                "auth": "bear",
-                "summary": "账本迁移:状态(完成戳/游标/阶段计划)",
-            },
-            {
-                "path": "/migrate",
-                "endpoint": self.run_migrate,
-                "methods": ["POST"],
-                "auth": "bear",
-                "summary": "账本迁移:推一块(force=true 忽略完成戳重推)",
-            },
-            {
                 "path": "/recommend",
                 "endpoint": self.get_recommend_list,
                 "methods": ["GET"],
@@ -751,13 +734,6 @@ class ApiMixin:
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "手动设置种子状态（改标签 + 写账本）",
-            },
-            {
-                "path": "/tags/migrate",
-                "endpoint": self.migrate_tags,
-                "methods": ["POST"],
-                "auth": "bear",
-                "summary": "老标签迁移到新命名（默认 dry-run）",
             },
             {
                 "path": "/debug/candidates",

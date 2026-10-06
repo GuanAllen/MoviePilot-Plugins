@@ -14,7 +14,6 @@ from typing import Any, Dict, List, Optional
 from ..bonus import (
     BonusParams,
     TorrentBonusInfo,
-    aggregate_breakdown,
     calc_torrent_bonus,
 )
 from ..downloader_ops import (
@@ -30,7 +29,6 @@ from ..recommend import _norm
 from ..dtier import TierCache
 from ..sites import get_formula_params, register_formula_preset
 from ..sites.formula_fetch import (
-    FormulaCapture,
     fetch_site_formula,
     fetch_seeding_list,
     fetch_official_titles,
@@ -237,7 +235,7 @@ class FormulaMixin:
     def _register_formula_params(self, domain: str, cap: Any, name: str = "") -> None:
         """把公式参数注册进站点预设（纯内存、零请求）。
 
-        旧版叫 refresh_site_preset，它会**再 fetch 一次**（双倍站点请求）；这里改成只
+        旧版实现会**再 fetch 一次**（双倍站点请求）；这里改成只
         消费已经拿到的 cap，不再触网。
         """
         overrides = {

@@ -11,7 +11,7 @@
 实现上复用既有链路：``_mp_search_title``（MP 自带搜索）取候选、``_crossseed_torrent_bytes``
 取 .torrent 字节、``downloader.add_torrent`` 落盘，最后只把「身份」这一步从自动扫描
 换成手动指定 —— 下载中的 hash 记进 ``ondemand_pending``，一旦形成资源组
-（``FileGroupStore``）就 ``set_identity(资源)`` 并摘掉待办；在此期间分拣
+（``ResourceLedgerStore``）就 ``set_identity(资源)`` 并摘掉待办；在此期间分拣
 （``_silent_triage``）**跳过**这些种，保证「不观察、不分拣」。
 """
 

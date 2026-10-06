@@ -11,7 +11,6 @@ from typing import Any, Dict, List
 
 from app.schemas import Response
 
-from ..live_stats import LiveStats
 from ..dtier import PvLedger, TierCache
 
 

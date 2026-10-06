@@ -26,7 +26,6 @@ from ..crossseed import (
     title_like,
 )
 from ..recommend import _norm
-from ..dtier import TierCache
 
 
 from .. import common  # noqa: F401
@@ -385,9 +384,13 @@ class DebugMixin:
 
     def debug_douban(self, name: str = "", year: str = "", keyword: str = "", count: int = 6,
                      action: str = "", flush_snapshot: bool = False) -> Response:
-        """诊断:直接查豆瓣评分源（自带 frodo 客户端）。
+        """诊断:直接查豆瓣评分源。
 
-        - ``name``+``year``：走正式查询（带缓存/限速/匹配），返回命中结果；
+        ★ 12.0.0 口径：豆瓣评分走**外挂容器** ``magicflow-douban:18789``（同 MP 网络），
+        插件内只是 HTTP 客户端（``douban.py``），**没有插件侧缓存**；抓取/风控/缓存都在服务端。
+        旧的「插件内自带 frodo 客户端 + 本地快照」（v3.22.x）已于 v3.23.0 拆走。
+
+        - ``name``+``year``：走正式查询（命中服务端库/限速/匹配），返回命中结果；
         - ``keyword``：原样列候选（调试匹配规则用）。
         """
         try:

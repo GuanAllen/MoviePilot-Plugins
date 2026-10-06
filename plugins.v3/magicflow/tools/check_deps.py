@@ -67,14 +67,6 @@ def mod_name(rel: str) -> str:
     return rel.replace("/", ".")
 
 
-def module_of_rel(rel: str) -> str:
-    """相对路径 → 可以被 import 的点号名（相对 magicflow 包）：features/x.py → magicflow.features.x"""
-    base = rel[:-3] if rel.endswith(".py") else rel
-    if base.endswith("/__init__"):
-        base = base[: -len("/__init__")]
-    return SELF + "." + base.replace("/", ".")
-
-
 def resolve(cur_mod: str, target: str, level: int, is_pkg: bool = False) -> str | None:
     """把相对 import 解析成绝对模块名（以 magicflow 为根）。
 

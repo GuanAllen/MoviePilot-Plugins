@@ -16,7 +16,7 @@ CARPT：达标种子魔力奖励 = 正常值 ×2；代价是「不达标 −100 
 
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from app.schemas import Response
 from app.sdk.logging import logger

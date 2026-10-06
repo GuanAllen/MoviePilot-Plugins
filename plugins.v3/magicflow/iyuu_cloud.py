@@ -22,7 +22,7 @@ import json
 import re
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
 IYUU_BASE = "https://2025.iyuu.cn"

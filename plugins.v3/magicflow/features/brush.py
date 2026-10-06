@@ -20,7 +20,6 @@ from app.sdk.logging import logger
 from ..bonus import (
     MagicPolicy,
     TorrentBonusInfo,
-    DEFAULT_CANDIDATE_REF_WEEKS,
     candidate_ref_weeks,
     site_ceiling,
     score_candidate,
@@ -77,7 +76,6 @@ from ..common import (
     FREE_INDEX_PAGES,
     MAX_PAGE_CURSOR,
     MagicFlowTaskConfig,
-    REUSE_SCAN_MAX,
     SITE_FETCH_BACKOFF,
     SITE_FETCH_TTL,
     TORRENT_DL_RETRIES,
@@ -1331,7 +1329,6 @@ class BrushMixin:
 
             # ★ 辅种不参与魔力排名:只要「体积邻近本机种子」就纳入扫描(免下载 = 白得的魔力)。
             #   TopN 只决定「要下载哪些」;可复用的额外候选即便魔力排不进 TopN 也一起取回判定。
-            #   (扫描上限 REUSE_SCAN_MAX 见模块顶部常量)
 
             def _ckey_of(pair: Any) -> str:
                 c = pair[1]

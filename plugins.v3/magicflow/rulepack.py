@@ -5,7 +5,7 @@
 所以「读不到规则包」永远不会让插件起不来。
 
 对外只有几件事：
-    · :func:`load_pack` / :func:`reload_pack` —— 读（带缓存）/ 重读
+    · :func:`load_pack` —— 读（带缓存）
     · :func:`framework_cfg` —— 某个框架的完整配置（含 defaults 合并）
     · :func:`framework_names` —— 有哪些框架
     · :func:`builtin_domains` —— 已知域名 → 框架
@@ -48,11 +48,6 @@ def load_pack(force: bool = False) -> Dict[str, Any]:
         _CACHE = data
         _RX_CACHE.clear()
         return _CACHE
-
-
-def reload_pack() -> Dict[str, Any]:
-    """强制重读（改完 YAML 调一次，不用重启插件）。"""
-    return load_pack(force=True)
 
 
 def pack_ok() -> bool:

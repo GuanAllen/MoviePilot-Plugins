@@ -147,12 +147,6 @@ class FakeJournal:
         return [r for r in self.records if r["task_id"] == task_id][:limit]
 
 
-class FakeTaskState:
-    def __init__(self, task_id, protected):
-        self.task_id = task_id
-        self.protected_torrents = set(protected)
-
-
 class FakeTaskStates:
     def __init__(self, states):
         self.states = list(states)

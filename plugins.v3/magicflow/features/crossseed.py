@@ -40,6 +40,7 @@ from ..tags import (
     STATE_SILENT,
     SUB_NEW,
     SUB_RESOURCE,
+    is_library_asset,
     is_magicflow_tag,
     tag_for,
 )
@@ -859,7 +860,7 @@ class CrossSeedMixin:
             cur = {}
         # 已有「资源」身份（库内资产/辅种）→ 保留资源子类，只做「入静默池」这件事
         _sub = SUB_RESOURCE if (str(cur.get("sub") or "") == SUB_RESOURCE
-                                or bool(cur.get("asset"))) else SUB_NEW
+                                or is_library_asset(cur)) else SUB_NEW
         #（已在静默池的判定见下方：账本 + 标签双就位才算）
         tags = getattr(info, "tags", None) or []
         if isinstance(tags, str):

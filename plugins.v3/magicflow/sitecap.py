@@ -38,7 +38,6 @@ FW_NEXUS = "nexusphp"
 FW_GAZELLE = "gazelle"
 FW_UNIT3D = "unit3d"
 FW_MTEAM = "mteam"
-FW_CUSTOM = "custom"      # 自有框架 / 魔改（判不出但已知不是上面几个）
 FW_UNKNOWN = "unknown"    # 还没识别过
 
 # 特征串（小写匹配）。命中即判定，多个命中取第一个命中的框架。

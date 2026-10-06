@@ -15,15 +15,12 @@ from typing import Any, Dict, List
 _FP_OK = re.compile(r"^[0-9a-f]{32,64}$")
 
 
-from ..crossseed import (
-    search_key,
-)
 from ..tags import (
     is_asset_tags,
+    is_library_asset,
     STATE_SILENT,
     SUB_NEW,
     SUB_RESOURCE,
-    is_magicflow_tag,
 )
 
 
@@ -216,7 +213,7 @@ class AssetsMixin:
 
         证据 = 种子上 MP 写的 ``已整理`` / ``辅种`` 标签（本部署 MP 的
         downloadhistory / transferhistory / downloadfiles 三张表都是 0 行，不可依赖）。
-        资产 → 账本 ``asset=True`` 且 ``origin_sub=资源``；非资产 → ``asset=False``。
+        库内资产 → 身份「资源」（落 ``mf_resource.identity`` / ``in_library``）。
         """
         store = self._tag_state()
         snap = self._tag_all_torrents()
@@ -233,15 +230,15 @@ class AssetsMixin:
             else:
                 non += 1
             rec = data.get(hh) or {}
-            if bool(rec.get("asset")) == is_a:
+            if is_library_asset(rec) == is_a:
                 continue
-            # ★ 标签主权（Master 2026-09-29）：真值源已迁到魔流账本；
+            # ★ 标签主权（Master 2026-09-29）：真值源在魔流账本；
             #   MP 标签只是「证据输入」之一 → **只升不降**（摘掉标签后不会把库内身份抹掉）。
-            if not is_a and bool(rec.get("asset")):
+            if not is_a and is_library_asset(rec):
                 continue
             changed += 1
             if apply:
-                store.set_asset(hh, is_a, sub=(SUB_RESOURCE if is_a else SUB_NEW))
+                store.set_asset(hh, sub=(SUB_RESOURCE if is_a else SUB_NEW))
         return {"ok": True, "applied": bool(apply), "asset": asset, "non_asset": non,
                 "changed": changed, "ledger": len(data)}
 
@@ -300,10 +297,10 @@ class AssetsMixin:
                 store.add_member(gid, hh, site=rec.get("site") or "", size_gb=size,
                                  downloaded=prog >= 0.999, progress=prog,
                                  state=rec.get("state") or "", fp=_fp)
-                if (is_asset_tags(tags) or bool(rec.get("asset"))) and store.set_library(gid, True):
+                if (is_asset_tags(tags) or is_library_asset(rec)) and store.set_library(gid, True):
                     stat["in_library"] = int(stat["in_library"]) + 1
                 # ★ 资源身份（Master 2026-09-30）：入库/推荐过 → 资源；种子身份跟它走
-                if is_asset_tags(tags) or bool(rec.get("asset")):
+                if is_asset_tags(tags) or is_library_asset(rec):
                     store.set_identity(gid, SUB_RESOURCE, by="sync")
         # 来源站 + H&R 账单：跨站来源份账本里的义务挂到「资源」上
         try:

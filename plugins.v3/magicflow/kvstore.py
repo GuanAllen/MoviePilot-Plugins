@@ -1,19 +1,22 @@
 """
-魔流 · 在线热层（走 MoviePilot 缓存适配器；JSON 文件作冷备份/权威副本）
+魔流 · 在线热层（走 MoviePilot 缓存适配器）
 
-Master 2026-09-27 09:16 定调：
+★ 12.0.0 口径（Master 2026-10-06 定）：
+  · **唯一真值源 = 5 张表**（postgres schema ``plugin_magicflow_*``：``mf_seed``/``mf_resource``/
+    ``mf_site``/``mf_identity``/``mf_task`` + ``mf_deck``）。存账不走 kv。
+  · **Redis = 唯一缓存层**：可丢、可回灌、带校验戳；丢了最多慢一轮，不影响正确性。
+  · **kv（``plugindata``）只留设置 / 缓存 / 日志**，不再承担任何账本职责。
+    （历史遗留的 ``ledger._mirror_legacy`` 双写已于 12.0.0 删除。）
+
+Master 2026-09-27 09:16 定调（仍有效）：
   这是**开源插件**，不能假设用户装了 Redis、更不能假设他们会单独建库。
   所以**必须走 MoviePilot 自己的缓存配置**：
     · MP 配了 Redis → 我们拿到 `RedisBackend`，热层生效（增量写、不落盘、快）；
-    · MP 没配 Redis（文件/内存后端）→ **判定"无热层"**，完全走原来的 JSON 文件（不重复写、行为不变）；
+    · MP 没配 Redis（文件/内存后端）→ **判定“无热层”**，直读直写 5 张表（不重复写、行为不变）；
     · 用户想启用 → 在 MP 里改缓存配置 + 重载插件即可（我们不需要任何自己的 Redis 配置项）。
 
-  · **JSON 文件 = 权威冷备份**：每 60s（脏了才写）+ 插件 stop 时落一次。
-  · Redis 数据丢了（重启/清缓存/LRU 淘汰）→ 重载时从 JSON **回灌**热层。
-
-为什么不用自建 Redis 连接：用户不一定有 Redis、也不一定愿意建库（Master 定）。
 代价（认了）：走 MP 的 Redis 就得接受 MP 的 `maxmemory=256mb + allkeys-lru`（key 可能被淘汰）
-和「清空缓存」的 `flushdb()` —— 所以**权威永远在 JSON 文件**，热层只是加速。
+和「清空缓存」的 `flushdb()` —— 所以**真值永远在 5 张表**，热层只是加速，丢了从表重建。
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ import time
 from typing import Any, Callable, Dict, Optional
 
 REGION = "magicflow"
-# 我们自己的 key 有效期（秒）：一年。JSON 文件才是权威，这里过期最多让热层回灌一次。
+# 缓存 key 有效期（秒）：一年。真值在 5 张表，这里过期最多让热层从表重建一次。
 KEY_TTL = 365 * 24 * 60 * 60
 # 逻辑名前缀（用于从 items() 里挑出属于某个 Store 的键）
 _PREFIX = "mf:"

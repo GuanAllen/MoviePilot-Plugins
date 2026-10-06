@@ -3,7 +3,7 @@
         "name": "魔流",
         "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
         "labels": "站点,做种,魔力,刷流",
-        "version": "11.13.0",
+        "version": "12.0.0",
         "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
         "author": "GuanAllen",
         "level": 1,
@@ -382,9 +382,10 @@
             "11.12.0": "11.12.0：违约自动核对 + 删除断言/熔断 + 代码字典接口 + H&R 口径修正（含 11.11.1）",
             "11.12.1": "11.12.1：站点报表明细按桶筛选（修复「明细只有暂停的」）+ 前端构建接入部署流程（dist 之前从未重建，UI 一直是旧的）",
             "11.12.2": "11.12.2：站点报表用词去歧义（挂种→本站种子、缺挂→本机缺失）",
-            "11.13.0": "11.13.0：H&R 安全垫（additional_seed_time，结清需 need_h+margin）+ 临近到期预警（hr_deadline_days，at_risk 只读）+ AI/UI/设置三件套"
+            "11.13.0": "11.13.0：H&R 安全垫（additional_seed_time，结清需 need_h+margin）+ 临近到期预警（hr_deadline_days，at_risk 只读）+ AI/UI/设置三件套",
+            "12.0.0": "12.0.0：旧账本架构彻底退役 + 死代码清扫（MAJOR）"
         }
     },
-    "version": "11.13.0",
+    "version": "12.0.0",
     "history": {}
 }

@@ -29,7 +29,6 @@ from __future__ import annotations
 import ast
 import os
 import re
-import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)

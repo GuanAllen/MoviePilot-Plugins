@@ -11,9 +11,6 @@ from typing import Any, Dict, List, Optional
 
 from app.schemas import Response
 
-from ..downloader_ops import (
-    QB_DOWNLOADING_STATES,
-)
 from ..live_stats import title_match
 from ..persistence import OperationItem
 from ..sitecap import (
@@ -30,7 +27,6 @@ from ..common import (
     LIVE_INTERVAL_MINUTES,
     LIVE_RATIO_TARGET,
     enabled_of_run_mode,
-    RUN_MODE_STOPPED,
     RUN_MODE_SEEDING,
     task_is_running,
     run_mode_of,

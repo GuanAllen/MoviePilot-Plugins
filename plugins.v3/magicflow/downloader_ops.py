@@ -7,7 +7,6 @@ MagicFlow 下载器操作模块
 复用 brushflow 的下载器逻辑，适配 MagicFlow 的魔力评分需求。
 """
 
-import math
 import base64
 import json
 import logging
@@ -18,7 +17,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-from .fingerprint import Entry, entries_fingerprint, info_hash, load_torrent_entries
+from .fingerprint import Entry, entries_fingerprint, info_hash
 
 # ★ 辅种/复用标记（与 tags.MARK_REUSE 保持一致；此模块不反向依赖 tags，避免循环导入）
 REUSE_MARK = "魔流-辅种"
@@ -489,14 +488,6 @@ def seed_hours_for_hr(torrent: Any, now: float = 0.0) -> float:
             _now = time.time()
         sec = min(sec, max(0.0, _now - comp))
     return max(0.0, sec) / 3600.0
-
-
-@dataclass
-class DownloaderResult:
-    """下载器操作结果。"""
-    success: bool
-    message: str
-    data: Optional[Any] = None
 
 
 # ============================================================
@@ -2171,41 +2162,6 @@ class DownloaderAdapter:
         except Exception as e:
             logger.error(f"写入 qBittorrent 全局参数失败: {e}")
             return False, str(e)
-
-
-# ============================================================
-# 便捷函数
-# ============================================================
-
-def get_downloader_adapter(name: str = "qbittorrent") -> DownloaderAdapter:
-    """
-    获取下载器适配器。
-
-    Args:
-        name: 下载器名称
-
-    Returns:
-        DownloaderAdapter 实例
-    """
-    return DownloaderAdapter(downloader_name=name)
-
-
-def sync_task_torrents(
-    downloader_name: str,
-    tag: str,
-) -> Tuple[List[TorrentInfo], Optional[str]]:
-    """
-    同步任务的做种种子列表。
-
-    Args:
-        downloader_name: 下载器名称
-        tag: 任务标签
-
-    Returns:
-        (做种列表, 错误信息)
-    """
-    adapter = DownloaderAdapter(downloader_name=downloader_name)
-    return adapter.get_seeding_torrents(tag=tag)
 
 
 # ============================================================

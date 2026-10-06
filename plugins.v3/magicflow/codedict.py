@@ -44,7 +44,7 @@ GLOSSARY: List[Dict[str, Any]] = [
         ["职务 `STATE_*`：`刷流`(STATE_BRUSH) / `魔力`(STATE_BONUS) / `静默`(STATE_SILENT) / "
          "`推荐`(STATE_RECOMMEND) / `保种`(**STATE_HR，不可手设**，只由 `_hr_obligation` 派生）。"],
         ["身份 `SUB_*`：`新`(SUB_NEW) / `资源`(SUB_RESOURCE) / `普通`(SUB_PLAIN)。"],
-        ["状态账本真值源：`TagStateStore`（`tags.py`，键 `STATE_KEY='tag_state'`）。"],
+        ["状态账本真值源：`SeedLedgerStore`（`ledger.py`，5 表后端）。"],
     ]},
     {"title": "H&R 账单（`features/hrbills.py`；真值源 `hr_bills.json`）", "head": None, "rows": [
         ["状态 `BILL_STATE_*`：`active` / `pending` / `settled` / `void` / `breached`。"],
@@ -68,8 +68,8 @@ GLOSSARY: List[Dict[str, Any]] = [
     ]},
     {"title": "真值源清单（改前先认这个，**不造第二份**）", "head": ["真值源", "位置"], "rows": [
         ["账本 5 表（site/resource/identity/task/seed…）", "`ledger.py`"],
-        ["资源账（一份内容 = 一条资源）", "`FileGroupStore`（`tags.py`）"],
-        ["标签状态账本", "`TagStateStore`（`tags.py`）"],
+        ["资源账（一份内容 = 一条资源）", "`ResourceLedgerStore`（`ledger.py`，5 表后端）"],
+        ["标签状态账本", "`SeedLedgerStore`（`ledger.py`，5 表后端）"],
         ["H&R 账单", "`features/hrbills.py` → `hr_bills.json`"],
         ["删除**唯一**出口（闸门）", "`DownloaderAdapter.delete_torrents` + `features/deletegate.py`"],
         ["外部取数**唯一**出口", "`collect.py`"],

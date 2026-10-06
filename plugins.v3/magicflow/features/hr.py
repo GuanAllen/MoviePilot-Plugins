@@ -17,11 +17,10 @@ from ..tags import (
     SUB_RESOURCE,
     SUB_NEW,
     DUTY_STATES,
-    STATE_BRUSH,
-    STATE_BONUS,
     STATE_HR,
     STATE_SILENT,
     identity_of,
+    is_library_asset,
     is_reuse_copy,
     retag,
     tag_for,
@@ -31,7 +30,6 @@ from .hrbills import (
     BILL_STATE_ACTIVE,
     BILL_STATE_SETTLED,
     BILL_STATE_VOID,
-    BILL_STATE_BREACHED,
     RULE_SITE_HR,
     RULE_HIT_AND_RUN,
 )
@@ -580,7 +578,7 @@ class HrMixin:
             cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
             _i_site, _i_sub = identity_of(cur)
             _sub = str(_rec0.get("sub") or "") or _i_sub \
-                or (SUB_RESOURCE if bool(_rec0.get("asset")) else SUB_NEW)
+                or (SUB_RESOURCE if is_library_asset(_rec0) else SUB_NEW)
             _sub = _sub or SUB_NEW
             _site = str(_rec0.get("site") or "") or _i_site or self._torrent_site_name(cur, "")
             new_tags = retag(cur, site=_site, state=STATE_HR, sub=_sub) \

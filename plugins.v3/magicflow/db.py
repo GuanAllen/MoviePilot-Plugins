@@ -19,7 +19,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, List
 
 from sqlalchemy import JSON as _JSON
 from sqlalchemy import Boolean, Float, Integer, String, Text
@@ -126,12 +126,12 @@ class ResourceRow(Base):
     lib_updated: Mapped[float | None] = mapped_column(Float)
     lib_path: Mapped[str | None] = mapped_column(String(500))
     lib_media_id: Mapped[str | None] = mapped_column(String(64))
-    # --- 影子（6.1.0 起只写不读，7.0.0 保留作兜底）---
-    #    ⚠️ 这三列**不删**：_rec_from_resource 仍读 extra/library 作「影子打底」（历史兜底），
-    #       rating 仍读作资源评分兜底。删了会 SELECT 报错。
-    extra: Mapped[Any | None] = mapped_column(_JSON, default=dict)
-    library: Mapped[Any | None] = mapped_column(_JSON, default=dict)
+    # --- 评分（豆瓣，活列）---
     rating: Mapped[float | None] = mapped_column(Float)
+    # --- 推荐复核结论（★ 12.0.0 由幽灵字段转真列：随资源记，重启不丢）---
+    #    旧写法只 put 进种子内存 rec（seed_row 不落它）→ 重启即丢。
+    asset_recheck: Mapped[str | None] = mapped_column(String(20))
+    asset_recheck_at: Mapped[float | None] = mapped_column(Float)
     created: Mapped[float | None] = mapped_column(Float)
     updated: Mapped[float | None] = mapped_column(Float)
 
@@ -149,8 +149,8 @@ class SeedRow(Base):
     vfy_miss: Mapped[int] = mapped_column(Integer, default=0)             # 巡检连续未命中
     # ★ 7.0.0 标签退役：之前 6.1.0 的台账/组员/影子真列（state/title/reason/asset/taken_*/verify_*/
     #   crossseed/downloader/ts/created/in_group/m_*/mmbr/rt）统一退役 → 状态走 resource.identity，
-    #   体积/H&R 走 resource，发布进度/算职/状态走下载器实况。ledger._RETIRED_COLS + _ensure_columns
-    #   启动时 DROP COLUMN 老库。
+    #   体积/H&R 走 resource，发布进度/算职/状态走下载器实况。老库残留列 ORM 不声明 → 不 SELECT，
+    #   无害（需清理跑 tools/cleanup_legacy_ledger.py）。
     updated: Mapped[float | None] = mapped_column(Float)
 
 
@@ -208,14 +208,3 @@ class DeckRow(Base):
 
 
 ALL_MODELS: List[type] = [SiteRow, ResourceRow, SeedRow, IdentityRow, TaskRow, DeckRow]
-
-
-def table_names() -> Dict[str, str]:
-    return {
-        "site": SiteRow.__tablename__,
-        "resource": ResourceRow.__tablename__,
-        "seed": SeedRow.__tablename__,
-        "identity": IdentityRow.__tablename__,
-        "task": TaskRow.__tablename__,
-        "deck": DeckRow.__tablename__,
-    }

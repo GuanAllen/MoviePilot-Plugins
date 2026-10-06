@@ -19,7 +19,7 @@ Master 口径（2026-10-02 11:10）：**不装 Prometheus、不暴露 /metrics**
 """
 
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from app.schemas import Response
 

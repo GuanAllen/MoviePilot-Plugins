@@ -26,7 +26,7 @@ from __future__ import annotations
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from .collect import parse_signin
@@ -34,7 +34,6 @@ from .persistence import OperationItem
 from .sites.keepalive_presets import keepalive_rule
 
 SIGNIN_PAGE = "attendance.php"
-HOME_PAGE = "index.php"
 KEEP_DAYS = 7
 
 # ★ 7.17.0 账号保活（站点「多久不登入删号」规则）——
@@ -42,8 +41,6 @@ KEEP_DAYS = 7
 #   绝不替主人「保活」：站点口径是「第三方工具间接存取不算登入」。
 KEEPALIVE_KEY = "signin_keepalive"
 KEEPALIVE_TTL = 6 * 3600.0        # 快照有效期（保活是「天」粒度，没必要勤刷）
-KEEPALIVE_ALERT_KEY = "keepalive_alert_day"
-DEFAULT_RETRY_KEYWORD = "错误|失败"
 DEFAULT_QUEUE = 5
 # ★ 失败重试（按我们的 PV 节奏，不是隔壁的「失败立刻再打」）：
 #   - 每天每站最多 2 次尝试（首次 + 1 次重试）→ 与 collect.KIND_DAY_CAP["signin"] 对齐；
@@ -59,7 +56,6 @@ LOGIN_HINT_RE = re.compile(
 )
 SIGNED_RE = re.compile(r"签到已得\s*([0-9][0-9,]*(?:\.[0-9]+)?)")
 SIGNED_TEXTS = ("已签到", "签到已得", "每日签到", "签到成功", "簽到成功", "已经签到", "已签")
-LOGGED_IN_RE = re.compile(r"logout|mybonus|usercp|userdetails", re.I)
 PV_LIMIT_RE = re.compile(r"访问次数已达上限|已达今日上限|每日访问次数|今日访问")
 API_SITE_DOMAINS = ("m-team", "mteam", "api.")
 

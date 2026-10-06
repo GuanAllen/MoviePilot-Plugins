@@ -27,20 +27,8 @@ from .common import ADD_GATE_DONE_TTL, ADD_GATE_INFLIGHT_TTL, dup_gate_keys
 from .persistence import AddGateStore, get_gate_store
 
 __all__ = [
-    "gate_for",
-    "keys_of",
     "DupGateMixin",
 ]
-
-
-def gate_for(data_dir: Any, kv: Any = None) -> AddGateStore:
-    """取/建全局闸门实例（进程级单例，见 ``persistence.get_gate_store``）。"""
-    return get_gate_store(data_dir, kv)
-
-
-def keys_of(info_hash: Any = None, fingerprint: Any = None) -> List[str]:
-    """资源身份的去重键（``h:<infohash>`` / ``fp:<完整特征码>``，只取非空者）。"""
-    return dup_gate_keys(info_hash, fingerprint)
 
 
 class DupGateMixin:

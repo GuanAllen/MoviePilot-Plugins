@@ -36,20 +36,13 @@ from ..live_stats import LiveStats
 from ..collect import Collect
 from ..cloud_archive import ArchiveEngine, DEFAULT_TARGET_TEMPLATE as CLOUD_TARGET_TEMPLATE
 from ..persistence import MagicFlowStore, OperationItem, WorkReport, KV_FILE_FLUSH_SEC
-from ..crossseed import (
-    CROSSSEED_TAG,
-)
 from ..kvstore import MpHotStore
 from ..signin import SigninEngine
 from ..recommend import RecommendEngine
-from ..dtier import TierCache
-from ..sites import BonusCalculator, get_calculator
 from ..tags import (
     DEFAULT_SORT_RULES,
-    STATES_WITH_SUB,
     STATE_BRUSH,
     is_magicflow_tag,
-    tag_for,
 )
 
 
@@ -98,8 +91,6 @@ from ..common import (
     note_snapshot_pull,
     task_is_participating,
 )
-from .migrate import MIGRATE_INTERVAL_MINUTES
-from .pool import POOL_THRESHOLD
 
 
 class CoreMixin:
@@ -122,18 +113,9 @@ class CoreMixin:
         self._status_heavy_at: float = 0.0
         self._status_refreshing: bool = False
         self._enabled = bool(raw_config.get("enabled", False))
-        # ★ 6.0.0 升级闸门：<6.0 直跳 6.1+ / 6.0 的迁移没做好 → 不让升（插件不干活）。
-        self._gate_blocked: Optional[Dict[str, Any]] = None
-        try:
-            _gate = self.migrate_gate()
-            if _gate.get("blocked"):
-                self._gate_blocked = _gate
-                self._enabled = False
-                logger.error(f"魔流升级闸门:{_gate.get('reason')}")
-            else:
-                self.migrate_record_version()
-        except Exception as _gate_err:  # noqa: BLE001
-            logger.warning(f"魔流升级闸门检查失败:{_gate_err}")
+        # ★ 12.0.0：升级闸门（migrate_gate / migrate_record_version）随 features/migrate.py 一并退役。
+        #   表是唯一真值源；新装库在此幂等灌入身份表种子（原 migrate worker 的 _stage_identity 职责）。
+        self._seed_identities()
         self._show_sidebar_nav = bool(raw_config.get("show_sidebar_nav", True))
         self._debug_log = bool(raw_config.get("debug_log", False))
         self._compact_mode = bool(raw_config.get("compact_mode", False))
@@ -176,11 +158,9 @@ class CoreMixin:
             "enabled": bool(raw_config.get("tag_model_enabled", True)),
             "show_qb_tags": bool(raw_config.get("show_qb_tags", True)),
             "new_timeout": max(0.0, float(raw_config.get("tag_silent_new_timeout_hours", 24.0) or 0)) * 3600.0,
-            "snapshot_interval": max(0.0, float(raw_config.get("tag_snapshot_interval_hours", 6.0) or 0)) * 3600.0,
             "host_interval": max(5.0, float(raw_config.get("silent_host_interval_minutes", 60.0) or 60.0)),
             "rules": _sr or [dict(r) for r in DEFAULT_SORT_RULES],
         }
-        self._tag_last_snapshot = 0.0
         # IYUU 云端辅种配置(Token 为空 = 不启用)
         self._iyuu_token = str(raw_config.get("iyuu_token") or "").strip()
         if not self._iyuu_token:
@@ -658,6 +638,26 @@ class CoreMixin:
         except Exception:
             pass
 
+    def _seed_identities(self) -> None:
+        """幂等灌入身份表种子（12.0.0：migrate worker 退役后由这里兜底）。
+
+        只在 ``mf_identity`` 空表时插入一次 ``tables.DEFAULT_IDENTITIES``；
+        已迁移的库（含线上 3 行）不受影响。原职责在 ``features/migrate.py::_stage_identity``。
+        """
+        try:
+            from sqlalchemy import func, select as _select
+            from .. import db as _db
+            from .. import tables as _tables
+            _db.Base.metadata.create_all(self.get_database().engine)  # 幂等：缺表才建
+            with self.get_database().session() as _sess:
+                if int(_sess.execute(_select(func.count()).select_from(_db.IdentityRow)).scalar() or 0) > 0:
+                    return
+                for _row in _tables.DEFAULT_IDENTITIES:
+                    _sess.add(_db.IdentityRow(**dict(_row)))
+                _sess.commit()
+        except Exception as _seed_err:  # noqa: BLE001
+            logger.warning(f"魔流身份表种子灌入失败:{_seed_err}")
+
     # ---------------------------------------------------------
     # 插件契约
     # ---------------------------------------------------------
@@ -723,8 +723,6 @@ class CoreMixin:
         """
         if not self.get_state():
             return []
-        if getattr(self, "_gate_blocked", None):
-            return []          # ★ 升级闸门未通过：不注册任何 worker（插件 inert）
         services: List[Dict[str, Any]] = []
         for task in self._task_configs.values():
             _mode = self._normalize_run_mode(task.run_mode)
@@ -808,21 +806,7 @@ class CoreMixin:
                     },
                 }
             )
-        # ★ 6.0.0 账本结构自迁移：一次性 worker。完成戳存在就不注册（后续版本整块下线）。
-        #   开工前旧键原样备份，只增不删；失败保留旧键，旧代码照跑。
-        try:
-            if self.migrate_pending():
-                services.append(
-                    {
-                        "id": "Migrate",
-                        "name": "账本迁移",
-                        "trigger": "interval",
-                        "func": self.migrate_scan,
-                        "kwargs": {"minutes": MIGRATE_INTERVAL_MINUTES},
-                    }
-                )
-        except Exception:  # noqa: BLE001
-            pass
+        # ★ 12.0.0：「账本迁移」一次性 worker 已随 features/migrate.py 退役（三戳已落、migrate_pending 恒 False）。
         # ★ 3.7.1:删除「候选预取」worker。
         #   实测它**不省 PV**——省 PV 靠的是站点级缓存 TTL(已拉长到 1h)+ 缓存持久化;
         #   预取只是把「同一份抓取」换个时间点做,任务数×频率并没有下降,反而多一条线程。
@@ -1045,7 +1029,6 @@ class CoreMixin:
             "tag_model_enabled": bool(self._tags_cfg.get("enabled", True)),
             "show_qb_tags": bool(self._tags_cfg.get("show_qb_tags", True)),
             "tag_silent_new_timeout_hours": round(float(self._tags_cfg.get("new_timeout") or 0) / 3600.0, 3),
-            "tag_snapshot_interval_hours": round(float(self._tags_cfg.get("snapshot_interval") or 0) / 3600.0, 3),
             "sort_rules": [dict(r) for r in (self._tags_cfg.get("rules") or [])],
             "iyuu_token": str(getattr(self, "_iyuu_token", "") or ""),
             "iyuu_sites": dict(getattr(self, "_iyuu_sites", {}) or {}),
