@@ -484,6 +484,13 @@ class ApiMixin:
                 "summary": "静默池全局视图（概览/按站/条目/记录，只读）",
             },
             {
+                "path": "/silent/relocate",
+                "endpoint": self.silent_relocate,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "静默池阶段2迁出:补 pause + 迁出候选删种留文件（默认干跑；confirm=1 才写）",
+            },
+            {
                 "path": "/claim",
                 "endpoint": self.get_claim_state,
                 "methods": ["GET"],

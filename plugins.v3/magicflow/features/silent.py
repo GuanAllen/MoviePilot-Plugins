@@ -313,6 +313,35 @@ class SilentMixin:
         cache["data"] = out
         return out
 
+    def silent_relocate(self, confirm: Any = 0, batch: Any = 50, site: Any = "", sub: Any = "") -> Response:
+        """★ 12.4.0 静默池「阶段 2：清旧 + 迁出」（UI 入口）——默认干跑。
+
+        真写需 ``confirm=1``；``batch`` 每批上限（默认 50）；``site`` 可按站点分批；
+        ``sub`` 可按身份分批（``普通`` / ``新`` / ``资源``；空=全部）。
+        真写时：① 对违背不变量的先补 pause；② 迁出候选删种**留文件**（过删除闸门）。
+        """
+        try:
+            _c = 1 if bool(self._as_bool_arg(confirm)) else 0
+        except Exception:  # noqa: BLE001
+            _c = 1 if str(confirm or "").strip().lower() in ("1", "true", "yes", "on") else 0
+        try:
+            _b = int(batch or 50)
+        except (TypeError, ValueError):
+            _b = 50
+        try:
+            rep = self._silent_relocate(confirm=_c, batch=_b, site=str(site or ""), sub=str(sub or ""))
+        except Exception as e:  # noqa: BLE001
+            return Response(success=False, message=f"静默池迁出失败: {e}", data={})
+        c = rep.get("counts") or {}
+        if not _c:
+            msg = (f"干跑：迁出候选 {c.get('delete', 0)} 个（待迁）、"
+                   f"保护不迁 {c.get('keep', 0)} 个、补 pause {c.get('pause', 0)} 个"
+                   f"（未发任何写请求）")
+        else:
+            msg = (f"已迁出 {rep.get('deleted', 0)} 个（删种留文件）· 闸门拦截 {rep.get('blocked', 0)} 个"
+                   f"· 补 pause {rep.get('paused', 0)} 个")
+        return Response(success=True, message=msg, data=rep)
+
     def silent_pool(self, limit: Any = 400, records: Any = 60) -> Response:
         """★ 静默池全局视图（7.16.0，只读）：概览 / 按站 / 条目 / 记录。
 
@@ -1117,6 +1146,151 @@ class SilentMixin:
                 f"魔流:静默池清理:未下完直接删 {rep['deleted']} 个（不计 H&R；"
                 f"其中只删种 {rep['torrent_only']} 个）"
             )
+        return rep
+
+    def _silent_relocate(self, confirm: int = 0, batch: int = 50, site: str = "",
+                         sub: str = "") -> Dict[str, Any]:
+        """★ 12.4.0 静默池「阶段 2：清旧 + 迁出」——唯一写入口（默认干跑）。
+
+        Master 2026-10-06「阶段2」（前置：12.3.0 删除闸门补「库内资产」硬拦）。
+
+        做什么（两次到位，一次调用答一类问题）：
+          1) **补 pause**：违背「静默全 paused」不变量的（``stalled_violation``）一律先 pause；
+          2) **迁出**：``class=relocate`` 的种（不在岗、不欠债、非资产、非跨站来源份、非认领/手动保护）
+             从池里迁出 —— 删种**留文件**（``delete_file=False``，11.9TB 先不动）；
+          3) **保护类只列不动**：owed_hr / library_asset / crossseed / claim / manual。
+
+        安全约束（每条都有对应护栏，不造第二真值源）：
+          - 类判据 = ``_silent_audit``（与 ``_delete_gate`` 同源）；
+          - 删前再过一次 `_delete_gate`（含 12.3.0 库内资产硬拦）→ ``blocked`` ⟂ ``ok`` 分开报；
+          - ``batch`` 每批上限；``site`` 可按站点分批；
+          - ``confirm=0``（默认）= **只出计划，零写入**。
+        """
+        rep: Dict[str, Any] = {
+            "confirm": bool(confirm), "batch": int(batch or 0), "site": str(site or ""),
+            "sub": str(sub or ""),
+            "counts": {"delete": 0, "keep": 0, "missing": 0, "pause": 0},
+            "deleted": 0, "blocked": 0, "paused": 0, "failed": 0,
+            "items": [], "by_site": {}, "blocked_items": [], "reason": "",
+        }
+        audit = self._silent_audit(limit=0)
+        snap = self._tag_all_torrents() or {}
+        _site_f = str(site or "").strip()
+        _sub_f = str(sub or "").strip()
+        _cap = int(batch or 0)
+        _KEEP_LABEL = {"owed_hr": "欠 H&R（保种）", "library_asset": "库内资产（永不删）",
+                       "crossseed": "跨站来源份（保种期）", "claim": "已认领（保种承诺）",
+                       "manual": "手动保留"}
+        to_delete: List[str] = []
+        for it in (audit.get("items") or []):
+            hh = str(it.get("hash") or "").strip().lower()
+            if not hh:
+                continue
+            _site = str(it.get("site") or "")
+            if _site_f and _site != _site_f:
+                continue
+            if _sub_f and str(it.get("sub") or "") != _sub_f:
+                continue
+            cls = str(it.get("class") or "")
+            stalled = bool(it.get("stalled_violation"))
+            if stalled:
+                rep["counts"]["pause"] = int(rep["counts"]["pause"]) + 1
+            if cls != "relocate":
+                rep["counts"]["keep"] = int(rep["counts"]["keep"]) + 1
+                continue
+            if hh not in snap:
+                rep["counts"]["missing"] = int(rep["counts"]["missing"]) + 1
+                continue
+            rep["counts"]["delete"] = int(rep["counts"]["delete"]) + 1
+            to_delete.append(hh)
+        _by: Dict[str, Dict[str, int]] = {}
+        for it in (audit.get("items") or []):
+            if not it.get("hash"):
+                continue
+            if _sub_f and str(it.get("sub") or "") != _sub_f:
+                continue
+            _s = str(it.get("site") or "—")
+            if _site_f and _s != _site_f:
+                continue
+            d = _by.setdefault(_s, {"total": 0, "delete": 0, "keep": 0, "missing": 0})
+            d["total"] = int(d["total"]) + 1
+            if str(it.get("class") or "") == "relocate" and str(it.get("hash") or "").lower() in snap:
+                d["delete"] = int(d["delete"]) + 1
+            else:
+                d["keep"] = int(d["keep"]) + 1
+        rep["by_site"] = _by
+        _plan = to_delete[:(_cap or len(to_delete))]
+        rep["plan"] = [{"hash": h[:12]} for h in _plan]
+        rep["plan_truncated"] = max(0, len(to_delete) - len(_plan))
+        # 闸门预检（只读）：干跑也报「会拦下哪些」，供干跑评审
+        _blk: Dict[str, str] = {}
+        if _plan:
+            try:
+                _blk = dict(self._delete_gate_detail(_plan) or {})
+            except Exception as err:  # noqa: BLE001
+                rep["failed"] = int(rep["failed"]) + 1
+                rep["reason"] = f"闸门异常（fail-closed）：{err}"
+                return rep
+        rep["blocked"] = len(_blk)
+        rep["blocked_items"] = [{"hash": h[:12], "reason": r} for h, r in sorted(_blk.items())]
+        if not confirm:
+            rep["reason"] = "干跑（confirm=0）：零写入；确认后加 confirm=1"
+            return rep
+
+        # —— ① 补 pause（不变量）：全部 stalled（含保护类）——
+        _stalled = [str(it.get("hash") or "").lower()
+                    for it in (audit.get("items") or [])
+                    if it.get("stalled_violation") and it.get("hash")
+                    and (not _site_f or str(it.get("site") or "") == _site_f)
+                    and (not _sub_f or str(it.get("sub") or "") == _sub_f)]
+        if _stalled:
+            _pr = self._silent_pause_gate(_stalled)
+            rep["paused"] = int((_pr or {}).get("paused") or 0)
+            if rep["paused"]:
+                self._log(f"魔流:静默池迁出:补 pause {rep['paused']} 个（不变量）")
+
+        # —— ② 迁出（删种留文件，过闸门）——
+        if not _plan:
+            rep["reason"] = "无迁出候选"
+            return rep
+        _ok_list = [h for h in _plan if h not in _blk]
+        _store = self._tag_state()
+        _by_task: Dict[str, List[Any]] = {}
+        for h in _ok_list:
+            try:
+                dl = self._get_downloader("qbittorrent")
+                if dl is None:
+                    rep["failed"] = int(rep["failed"]) + 1
+                    continue
+                cnt, err = dl.delete_torrents(
+                    hashes=[h], delete_file=False,
+                    reason="静默池阶段2迁出", source="silent_relocate",
+                )
+                if cnt:
+                    rep["deleted"] = int(rep["deleted"]) + 1
+                    _t = snap.get(h)
+                    try:
+                        _sz = float(getattr(_t, "size", 0) or 0) / 1073741824.0
+                    except (TypeError, ValueError):
+                        _sz = 0.0
+                    _rec = dict((_store.items() or {}).get(h) or {})
+                    _by_task.setdefault(str(_rec.get("taken_by") or SILENT_HOST_TASK_ID), []).append(
+                        OperationItem(hash=h, title=str(getattr(_t, "title", "") or ""),
+                                      reason="静默池阶段2迁出（留文件）", size_gb=round(_sz, 3),
+                                      source="silent"))
+                    try:
+                        _store.drop(h)
+                    except Exception:  # noqa: BLE001
+                        pass
+                else:
+                    rep["failed"] = int(rep["failed"]) + 1
+                    self._log(f"静默池迁出:删除失败 {h[:12]}:{err}", "warning")
+            except Exception as err:  # noqa: BLE001
+                rep["failed"] = int(rep["failed"]) + 1
+                self._log(f"静默池迁出:删除异常 {h[:12]}:{err}", "warning")
+        self._journal_deletions(_by_task, log_prefix="静默池迁出")
+        if rep["deleted"]:
+            self._log(f"魔流:静默池迁出:阶段2 迁出 {rep['deleted']} 个（删种留文件；拦截 {rep['blocked']} 个）")
         return rep
 
     def _recommend_downgrade_expired(self, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
