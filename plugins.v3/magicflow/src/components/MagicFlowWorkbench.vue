@@ -380,6 +380,7 @@ const MF_PAGES = [
   { key: 'silent', label: '静默池', icon: 'mdi-pool', scope: 'global' },
   { key: 'sitereport', label: '站点报表', icon: 'mdi-table-large', scope: 'view' },
   { key: 'hrbills', label: 'H&R账单', icon: 'mdi-file-alert-outline', scope: 'view' },
+  { key: 'seedhealth', label: '挂种健康', icon: 'mdi-file-find-outline', scope: 'view' },
   { key: 'ceiling', label: '站点容量', icon: 'mdi-gauge', scope: 'view' },
   { key: 'ops', label: '操作记录', icon: 'mdi-history', scope: 'view' },
   { key: 'settings', label: '插件设置', icon: 'mdi-tune-variant', scope: 'global' },
@@ -397,6 +398,7 @@ function mfOpenPage(page) {
     case 'silent': return openSilent()
     case 'sitereport': return openSiteReport()
     case 'hrbills': return openHrBills()
+    case 'seedhealth': return openSeedHealth()
     case 'ceiling': return openCeiling()
     case 'ops': return openOperations('all')
     case 'settings': return openSettings()
@@ -416,6 +418,7 @@ const TILE_OPTIONS = [
   { key: 'silent', label: '静默池', icon: 'mdi-pool' },
   { key: 'sitereport', label: '站点报表', icon: 'mdi-table-large' },
   { key: 'hrbills', label: 'H&R账单', icon: 'mdi-file-alert-outline' },
+  { key: 'seedhealth', label: '挂种健康', icon: 'mdi-file-find-outline' },
   { key: 'ondemand', label: '点播', icon: 'mdi-cloud-download-outline' },
   { key: 'ceiling', label: '站点容量', icon: 'mdi-gauge' },
   { key: 'ops', label: '操作记录', icon: 'mdi-history' },
@@ -649,6 +652,47 @@ async function loadHrBills(liveOverride) {
     error.value = `H&R 账单加载失败：${e}`
   } finally {
     hrBillsLoading.value = false
+  }
+}
+// ★ 12.5.0 挂种健康度自检（只读）：逐文件核盘找空转/缺文件 + 欠 H&R 风险
+const seedHealthOpen = ref(false)
+const seedHealthLoading = ref(false)
+const seedHealthOnly = ref('all')   // 'all' | 'ghost' | 'partial'
+const seedHealth = ref({ counts: {}, bytes: {}, by_site: [], hr_at_risk: [], items: [], scanned: 0, candidates: 0, site_filter: '' })
+const seedHealthCounts = computed(() => seedHealth.value.counts || {})
+const seedHealthBytes = computed(() => seedHealth.value.bytes || {})
+const seedHealthSites = computed(() => seedHealth.value.by_site || {})
+const seedHealthAtRisk = computed(() => seedHealth.value.hr_at_risk || [])
+const seedHealthItems = computed(() => {
+  const only = seedHealthOnly.value
+  const all = seedHealth.value.items || []
+  return only === 'all' ? all : all.filter(it => it.bucket === only)
+})
+const SEED_HEALTH_BUCKETS = [
+  { key: 'ghost', label: '空转', color: 'error' },
+  { key: 'partial', label: '缺文件', color: 'warning' },
+  { key: 'normal', label: '正常', color: 'grey' },
+]
+function seedHealthBucketColor(b) {
+  const hit = SEED_HEALTH_BUCKETS.find(x => x.key === b)
+  return hit ? hit.color : 'grey'
+}
+function seedHealthBucketLabel(b) {
+  const hit = SEED_HEALTH_BUCKETS.find(x => x.key === b)
+  return hit ? hit.label : (b || '?')
+}
+function openSeedHealth() { seedHealthOpen.value = true; loadSeedHealth() }
+async function loadSeedHealth() {
+  seedHealthLoading.value = true
+  try {
+    const q = new URLSearchParams()
+    if (seedHealthOnly.value && seedHealthOnly.value !== 'all') q.set('only', seedHealthOnly.value)
+    const data = unwrapResponse(await props.api.get(`${pluginBase.value}/health/scan?${q.toString()}`)) || {}
+    seedHealth.value = data
+  } catch (e) {
+    error.value = `挂种健康度自检加载失败：${e}`
+  } finally {
+    seedHealthLoading.value = false
   }
 }
 // 站点折叠：多任务行可展开
@@ -3788,6 +3832,15 @@ onUnmounted(() => {
           title="站点报表：逐条种子状态（分类/保护/账单/qB）"
           @click="openSiteReport"
         />
+        <VBtn
+          v-if="tileVisible('seedhealth')"
+          class="magicflow-seedhealth-btn"
+          icon="mdi-file-find-outline"
+          variant="text"
+          aria-label="挂种健康"
+          title="挂种健康：逐文件核盘找空转/缺文件的种 + 欠 H&R 风险"
+          @click="openSeedHealth"
+        />
         <!-- ★ 桌面：详情磁贴（推荐/云盘/跨站/豆瓣/点播/考核/补源）与「设置」分两档 → 中间加一条竖分隔 -->
         <span class="magicflow-hdr-sep" aria-hidden="true" />
         <VBtn
@@ -3859,6 +3912,13 @@ onUnmounted(() => {
               title="站点报表"
               subtitle="站点逐条种子状态（分类/保护/账单）"
               @click="openSiteReport"
+            />
+            <VListItem
+              v-if="tileVisible('seedhealth')"
+              prepend-icon="mdi-file-find-outline"
+              title="挂种健康"
+              :subtitle="Number(seedHealthCounts.ghost || 0) + Number(seedHealthCounts.partial || 0) > 0 ? `${Number(seedHealthCounts.ghost || 0) + Number(seedHealthCounts.partial || 0)} 个异常` : '逐文件核盘自检'"
+              @click="openSeedHealth"
             />
             <!-- ★ 上面是「详情」，下面是「设置」：分隔开，别混成一串 -->
             <VDivider class="my-1" />
@@ -5100,6 +5160,84 @@ onUnmounted(() => {
               </div>
             </div>
             <div v-if="!hrBillsLoading && !hrBillsSites.length" class="magicflow-ceiling-empty">暂无 H&amp;R 账单（无欠债站）</div>
+          </div>
+        </div>
+      </VCard>
+    </VDialog>
+
+    <VDialog v-model="seedHealthOpen" max-width="48rem" scrollable :fullscreen="isNarrow">
+      <VCard class="magicflow-dialog magicflow-seedhealth-dialog">
+        <header class="magicflow-settings-dialog__head">
+          <span class="magicflow-settings-dialog__title">挂种健康度自检</span>
+          <VChip v-if="seedHealthLoading" size="x-small" color="grey" variant="tonal">加载中</VChip>
+          <VChip v-else-if="seedHealthAtRisk.length" size="x-small" color="error" variant="tonal">{{ seedHealthAtRisk.length }} 风险</VChip>
+          <span class="magicflow-ops-dialog__spacer" />
+          <VBtn icon="mdi-refresh" size="small" variant="text" aria-label="刷新" :loading="seedHealthLoading" @click="loadSeedHealth()" />
+          <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="seedHealthOpen = false" />
+        </header>
+        <div class="magicflow-ops-dialog__body">
+          <div class="magicflow-sitereport__stats">
+            <div class="magicflow-sitereport__stat"><b>{{ seedHealth.scanned || 0 }}</b><span>qB 种子</span></div>
+            <div class="magicflow-sitereport__stat is-danger"><b>{{ seedHealthCounts.ghost || 0 }}</b><span>空转</span></div>
+            <div class="magicflow-sitereport__stat is-danger"><b>{{ seedHealthCounts.partial || 0 }}</b><span>缺文件</span></div>
+            <div class="magicflow-sitereport__stat"><b>{{ (seedHealthBytes.ghost_gb || 0).toFixed(1) }}</b><span>空转 GB</span></div>
+            <div class="magicflow-sitereport__stat" :class="seedHealthCounts.not_in_qb ? 'is-danger' : ''"><b>{{ seedHealthCounts.not_in_qb || 0 }}</b><span>已消失</span></div>
+          </div>
+          <div class="magicflow-sitereport__chips">
+            <VChip
+              size="small"
+              :color="seedHealthOnly === 'all' ? 'primary' : 'grey'"
+              :variant="seedHealthOnly === 'all' ? 'flat' : 'tonal'"
+              style="cursor: pointer"
+              @click="seedHealthOnly = 'all'"
+            >全部 {{ (seedHealthCounts.ghost || 0) + (seedHealthCounts.partial || 0) + (seedHealthCounts.normal || 0) }}</VChip>
+            <VChip
+              size="small"
+              color="error"
+              :variant="seedHealthOnly === 'ghost' ? 'flat' : 'tonal'"
+              style="cursor: pointer"
+              @click="seedHealthOnly = seedHealthOnly === 'ghost' ? 'all' : 'ghost'"
+            >空转 {{ seedHealthCounts.ghost || 0 }}</VChip>
+            <VChip
+              size="small"
+              color="warning"
+              :variant="seedHealthOnly === 'partial' ? 'flat' : 'tonal'"
+              style="cursor: pointer"
+              @click="seedHealthOnly = seedHealthOnly === 'partial' ? 'all' : 'partial'"
+            >缺文件 {{ seedHealthCounts.partial || 0 }}</VChip>
+          </div>
+          <div v-if="seedHealth.probe_truncated" class="magicflow-ops-dialog__sub">
+            候选过多，已截断逐文件核盘（未核 {{ seedHealth.probe_truncated }} 个）；先看已命中的异常。
+          </div>
+          <div v-if="seedHealthAtRisk.length" class="magicflow-hrbills__list">
+            <div class="magicflow-ops-dialog__sub">⚠ 空转且仍欠 H&amp;R（有删除/清理风险）：</div>
+            <div v-for="it in seedHealthAtRisk" :key="it.hash" class="magicflow-sitereport__row">
+              <VChip size="x-small" color="error" variant="tonal" class="magicflow-sitereport__row-b">欠H&amp;R</VChip>
+              <div class="magicflow-sitereport__row-main">
+                <div class="magicflow-sitereport__row-t" :title="it.title">{{ it.title || it.hash }}</div>
+                <div class="magicflow-sitereport__row-s">{{ it.site }} · 还需 {{ it.need_left }}h（账单 {{ it.state }}/{{ it.rule }}）</div>
+              </div>
+              <span class="magicflow-sitereport__row-size">{{ (it.size_gb || 0).toFixed(2) }}G</span>
+            </div>
+          </div>
+          <div class="magicflow-ops-dialog__sub">
+            明细 {{ seedHealthItems.length }} / {{ (seedHealth.value.items || []).length }}<template v-if="seedHealth.site_filter"> · 只看 {{ seedHealth.site_filter }}</template>
+          </div>
+          <div class="magicflow-sitereport__list">
+            <div v-for="it in seedHealthItems" :key="it.hash" class="magicflow-sitereport__row">
+              <VChip size="x-small" :color="seedHealthBucketColor(it.bucket)" variant="tonal" class="magicflow-sitereport__row-b">{{ seedHealthBucketLabel(it.bucket) }}</VChip>
+              <div class="magicflow-sitereport__row-main">
+                <div class="magicflow-sitereport__row-t" :title="it.title">{{ it.title || it.hash }}</div>
+                <div class="magicflow-sitereport__row-s">
+                  {{ it.site }} · {{ it.qb_state }}
+                  <template v-if="it.files_exist != null"> · 文件 {{ it.files_exist }}/{{ it.files_total }}</template>
+                  <template v-if="it.hr"> · 欠H&amp;R 还需 {{ it.hr.need_left }}h</template>
+                  <template v-if="(it.protected || []).length"> · 保护 {{ it.protected.join('/') }}</template>
+                </div>
+              </div>
+              <span class="magicflow-sitereport__row-size">{{ (it.size_gb || 0).toFixed(2) }}G</span>
+            </div>
+            <div v-if="!seedHealthLoading && !seedHealthItems.length" class="magicflow-ceiling-empty">没有命中条件的种子</div>
           </div>
         </div>
       </VCard>

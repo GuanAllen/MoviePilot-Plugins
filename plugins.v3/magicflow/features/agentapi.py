@@ -259,6 +259,13 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
                     "full": "1=回全部（大，慎用）"},
          "returns": "CodeDict", "version": AGENT_ENDPOINT_VERSION,
          "summary": "★代码字典（符号级索引）：一次调用答「某常量/函数/端点/口径在哪个文件哪一行」"},
+        # ---- 12.5.0 挂种健康度自检（只读）----
+        {"path": "/agent/seeds/health", "method": "GET", "handler": "agent_seeds_health",
+         "write": False,
+         "params": {"site": "域名/短名/id（可空=全站）", "only": "ghost|partial|all（默认 all）",
+                    "limit": "int（默认 200，0=不限）"},
+         "returns": "SeedsHealthReport", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "★挂种健康度自检（逐文件核盘）：空转/缺文件 + 体积 + 其中欠 H&R 的风险；只读"},
     ]
 
 
@@ -879,3 +886,23 @@ class AgentApiMixin:
         return self._agent_report(
             dict(data or {}), t0,
             "features/yema.py::_yema_absolve → POST /api/userTorrent/absolve（干跑/写）")
+
+    # ---------------------------------------------------- 12.5.0 挂种健康度自检（只读）
+    def agent_seeds_health(self, site: str = "", only: str = "", limit: int = 200) -> Dict[str, Any]:
+        """``GET /agent/seeds/health`` —— ★ **挂种健康度自检**（只读）。
+
+        一次调用答：**「哪些挂种在空转 / 缺文件、占多少体积、其中哪些还欠 H&R（风险）」**。
+        两段式：顶层 listing 粗筛 → 逐文件 ``os.path.exists`` 精确（含 qB 临时路径）。
+        与 UI ``GET /health/scan`` **同源**（同一个 ``_health_scan``，人机同源）。
+        零写入：不 recheck / 不改 qB / 不写账本 / 不动文件。
+        """
+        t0 = time.time()
+        try:
+            data = self._health_scan(str(site or ""), str(only or ""), int(limit or 200))
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"挂种健康度自检失败:{e}", t0, trace_id=str(e))
+        return self._agent_report(
+            data, t0,
+            ("features/health._health_scan() → qB 快照 + torrents/files（逐文件 os.path.exists）"
+             " + hr_bills.json（只读）"),
+            inputs={"site": str(site or ""), "only": str(only or ""), "limit": limit})

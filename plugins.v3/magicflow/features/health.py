@@ -18,12 +18,20 @@ Master 口径（2026-10-02 11:10）：**不装 Prometheus、不暴露 /metrics**
   H5 没有启用的任务（全局）
 """
 
+import os
 import time
-from typing import Any, Dict, List
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Set
 
 from app.schemas import Response
 
 from ..common import task_is_running
+from .hrbills import (
+    BILL_STATE_ACTIVE,
+    BILL_STATE_BREACHED,
+    RULE_HIT_AND_RUN,
+    RULE_SITE_HR,
+)
 
 # H4 阈值：占用达到存储上限的多少比例算「贴上限」
 DISK_NEAR_PCT = 95.0
@@ -261,3 +269,361 @@ class HealthMixin:
             )
         except Exception:  # noqa: BLE001
             pass
+
+    # ------------------------------------------------------------
+    # ★ 挂种健康度自检（12.5.0，只读）
+    # ------------------------------------------------------------
+    #
+    # 回答一类问题：「哪些挂种在空转 / 缺文件、占多少体积、其中哪些还欠 H&R（风险）」
+    # 两段式（性能关键，见 docs/TASK-1250-HEALTH.md）：
+    #   第 1 段粗筛：顶层 listing（按目录缓存，只列一次）比 `content_path` 的候选名；
+    #   第 2 段精确：只对候选调 `torrents/files` 逐文件 `os.path.exists`（含临时路径）。
+    # 零写入：不 recheck / 不改 qB / 不写账本 / 不动文件。真值源：qB 快照 + 文件系统 +
+    #   hr_bills.json（只读）。
+
+    # 逐文件核盘的候选上限（防爆盘；超限截断并在输出标 probe_truncated）
+    MAX_PROBE_DEFAULT = 300
+
+    def _health_manual_hashes(self) -> Set[str]:
+        """手动保留 hash 并集（跨所有任务 + 历史空 task_id），与 ``_delete_gate_detail`` 同源。"""
+        out: Set[str] = set()
+        try:
+            store = getattr(self, "_store", None)
+            if store is None:
+                return out
+            tids = list((getattr(self, "_task_configs", None) or {}).keys())
+            tids.append("")
+            for tid in tids:
+                try:
+                    out |= set(store.get_protected_torrents(tid) or set())
+                except Exception:  # noqa: BLE001
+                    continue
+        except Exception:  # noqa: BLE001
+            pass
+        return {str(h).strip().lower() for h in out}
+
+    @staticmethod
+    def _health_norm_domain(raw: Any) -> str:
+        """tracker/URL → 裸域名（小写）。"""
+        s = str(raw or "").strip().lower()
+        s = s.split("://")[-1]
+        s = s.split("/")[0]
+        s = s.split(":")[0]
+        return s.strip()
+
+    def _health_torrent_domain(self, t: Any) -> str:
+        """单种 → 站点域名（短名 → 域名；回退 tracker 域名；再回退短名原样）。"""
+        short = ""
+        try:
+            short = str(self._torrent_site_name(getattr(t, "tags", None)) or "").strip()
+        except Exception:  # noqa: BLE001
+            short = ""
+        if short:
+            try:
+                dom = self._site_domain_by_name(short)
+            except Exception:  # noqa: BLE001
+                dom = ""
+            if dom:
+                return self._health_norm_domain(dom)
+        tr = self._health_norm_domain(getattr(t, "tracker", ""))
+        if tr:
+            return tr
+        return short
+
+    @staticmethod
+    def _health_coarse_names(cp: str) -> Set[str]:
+        """候选名集合 = {basename(content_path), basename(dirname(content_path))}（rstrip '/' 后）。"""
+        c = str(cp or "").strip().rstrip("/")
+        if not c or c == "/":
+            return set()
+        names = {os.path.basename(c)}
+        d = os.path.dirname(c)
+        if d and d not in ("/", "."):
+            b = os.path.basename(d)
+            if b:
+                names.add(b)
+        names.discard("")
+        names.discard("/")
+        return names
+
+    def _health_scan(self, site: str = "", only: str = "", limit: int = 200,
+                     max_probe: int = 0) -> Dict[str, Any]:
+        """挂种健康度自检核心（只读，人机同源）。UI ``GET /health/scan`` 与
+        AI ``GET /agent/seeds/health`` 都走这里。
+
+        - ``site``：域名 / 短名 / id（可空=全站）；
+        - ``only``：``ghost``（只回无数据）/ ``partial``（只回缺文件）/ ``all``（默认）；
+        - ``limit``：``items`` 条数上限（默认 200，0=不限）；
+        - ``max_probe``：逐文件核盘的候选上限（默认 300，超限截断标 ``probe_truncated``）。
+        """
+        at = datetime.now().astimezone().isoformat(timespec="seconds")
+        try:
+            snap = self._tag_all_torrents() or {}
+        except Exception:  # noqa: BLE001
+            snap = {}
+
+        only = str(only or "").strip().lower()
+        if only not in ("ghost", "partial", "all"):
+            only = "all"
+        try:
+            limit = int(limit or 200)
+        except (TypeError, ValueError):
+            limit = 200
+        if limit < 0:
+            limit = 0
+        try:
+            max_probe = int(max_probe or self.MAX_PROBE_DEFAULT)
+        except (TypeError, ValueError):
+            max_probe = self.MAX_PROBE_DEFAULT
+        if max_probe <= 0:
+            max_probe = self.MAX_PROBE_DEFAULT
+
+        dl = None
+        try:
+            dl = self._get_downloader()
+        except Exception:  # noqa: BLE001
+            dl = None
+        temp_path = ""
+        try:
+            prefs, _err = (dl.get_app_preferences() if dl is not None else (None, "no-dl"))
+            if bool((prefs or {}).get("temp_path_enabled")):
+                temp_path = str((prefs or {}).get("temp_path") or "").strip()
+        except Exception:  # noqa: BLE001
+            temp_path = ""
+
+        filter_dom = ""
+        if str(site or "").strip():
+            raw = str(site).strip()
+            try:
+                filter_dom = self._site_domain_by_name(raw) or raw.lower()
+            except Exception:  # noqa: BLE001
+                filter_dom = raw.lower()
+            filter_dom = self._health_norm_domain(filter_dom)
+
+        bill_store = None
+        try:
+            bill_store = self._hrbills_store()
+        except Exception:  # noqa: BLE001
+            bill_store = None
+
+        listing_cache: Dict[str, Set[str]] = {}
+
+        def _listing(path: str) -> Set[str]:
+            p = str(path or "").strip()
+            if not p:
+                return set()
+            if p not in listing_cache:
+                try:
+                    listing_cache[p] = {n for n in os.listdir(p)}
+                except Exception:  # noqa: BLE001
+                    listing_cache[p] = set()
+            return listing_cache[p]
+
+        manual = self._health_manual_hashes()
+
+        # ---- 第 1 段：粗筛（廉价，只列目录） ----
+        suspicious: List[str] = []
+        rows: Dict[str, Dict[str, Any]] = {}
+        for h, t in snap.items():
+            hh = str(h or "").strip().lower()
+            if not hh:
+                continue
+            dom = self._health_torrent_domain(t)
+            if filter_dom and dom != filter_dom:
+                continue
+            save_path = str(getattr(t, "save_path", "") or "").strip()
+            cp = str(getattr(t, "content_path", "") or "").strip().rstrip("/")
+            title = str(getattr(t, "title", "") or "")[:160]
+            state = str(getattr(t, "state", "") or "")
+            try:
+                progress = round(float(getattr(t, "progress", 0) or 0), 4)
+            except (TypeError, ValueError):
+                progress = 0.0
+            size_gb = round(float(getattr(t, "size_gb", 0) or 0), 3)
+            rows[hh] = {
+                "hash": hh, "title": title, "site": dom, "qb_state": state,
+                "progress": progress, "save_path": save_path,
+                "size_gb": size_gb, "files_total": None, "files_exist": None,
+                "bucket": "normal", "hr": None, "protected": [],
+                "bill": None,
+            }
+            if not save_path:
+                # 无保存路径元数据 → 无法粗筛/核盘，按正常跳过（不误报 ghost）
+                continue
+            names = self._health_coarse_names(cp)
+            present = bool(names & (_listing(save_path) | _listing(temp_path)))
+            if not names or not present:
+                suspicious.append(hh)
+
+        # ---- 第 2 段：精确（只对候选，逐文件核） ----
+        probe_truncated = 0
+        probed = 0
+        for hh in suspicious:
+            if probed >= max_probe:
+                probe_truncated = len(suspicious) - probed
+                break
+            t = snap.get(hh)
+            if t is None:
+                continue
+            probed += 1
+            save_path = str(getattr(t, "save_path", "") or "").strip()
+            entries = []
+            try:
+                entries = list(dl.get_file_entries(hh) or []) if dl is not None else []
+            except Exception:  # noqa: BLE001
+                entries = []
+            exist = 0
+            for rel, _sz in entries:
+                rel = str(rel or "").strip()
+                if not rel:
+                    continue
+                found = False
+                for base in (save_path, temp_path):
+                    if not base:
+                        continue
+                    try:
+                        if os.path.exists(os.path.join(base, rel)):
+                            found = True
+                            break
+                    except Exception:  # noqa: BLE001
+                        continue
+                if found:
+                    exist += 1
+            total = len(entries)
+            r = rows.get(hh)
+            if r is None:
+                continue
+            r["files_total"] = total
+            r["files_exist"] = exist
+            if total <= 0:
+                r["bucket"] = "normal"
+            elif exist <= 0:
+                r["bucket"] = "ghost"
+            elif exist < total:
+                r["bucket"] = "partial"
+            else:
+                r["bucket"] = "normal"
+
+        # ---- 汇总 + H&R 关联 + 保护 -------
+        counts = {"normal": 0, "ghost": 0, "partial": 0, "not_in_qb": 0}
+        bytes_agg = {"ghost_gb": 0.0, "partial_gb": 0.0}
+        by_site: Dict[str, Dict[str, Any]] = {}
+        items: List[Dict[str, Any]] = []
+        hr_at_risk: List[Dict[str, Any]] = []
+
+        def _site_bucket(dom: str) -> Dict[str, Any]:
+            if dom not in by_site:
+                by_site[dom] = {"ghost": 0, "partial": 0, "gb": 0.0}
+            return by_site[dom]
+
+        for hh, r in rows.items():
+            bill = None
+            if bill_store is not None:
+                try:
+                    bill = bill_store.get(hh)
+                except Exception:  # noqa: BLE001
+                    bill = None
+            bill_state = str((bill or {}).get("state") or "")
+            bill_rule = str((bill or {}).get("rule") or "")
+            scopes: List[str] = []
+            if bill_state in (BILL_STATE_ACTIVE, BILL_STATE_BREACHED) \
+                    and bill_rule in (RULE_SITE_HR, RULE_HIT_AND_RUN):
+                scopes.append("hr_bill")
+            if hh in manual:
+                scopes.append("manual")
+            r["protected"] = scopes
+            if bill:
+                need_h = float(bill.get("need_h") or 0.0)
+                seeded_h = float(bill.get("seeded_h") or 0.0)
+                r["hr"] = {
+                    "state": bill_state, "rule": bill_rule,
+                    "need_h": round(need_h, 1),
+                    "seeded_h": round(seeded_h, 2),
+                    "need_left": round(max(0.0, need_h - seeded_h), 2),
+                }
+            bucket = r["bucket"]
+            counts[bucket] = counts.get(bucket, 0) + 1
+            dom = r["site"] or "?"
+            sb = _site_bucket(dom)
+            if bucket == "ghost":
+                bytes_agg["ghost_gb"] += r["size_gb"]
+                sb["ghost"] += 1
+                sb["gb"] = round(sb["gb"] + r["size_gb"], 3)
+                if r["hr"]:
+                    hr_at_risk.append({
+                        "hash": hh, "title": r["title"], "site": dom,
+                        "state": r["hr"]["state"], "rule": r["hr"]["rule"],
+                        "need_h": r["hr"]["need_h"], "need_left": r["hr"]["need_left"],
+                        "save_path": r["save_path"], "size_gb": r["size_gb"],
+                    })
+            elif bucket == "partial":
+                bytes_agg["partial_gb"] += r["size_gb"]
+                sb["partial"] += 1
+                sb["gb"] = round(sb["gb"] + r["size_gb"], 3)
+            r.pop("bill", None)
+            items.append(r)
+
+        # H&R 账单在册但 qB 里没有的种（active/breached，已从下载器消失）
+        try:
+            all_bills = bill_store.all() if bill_store is not None else {}
+        except Exception:  # noqa: BLE001
+            all_bills = {}
+        for hh, b in all_bills.items():
+            if not isinstance(b, dict):
+                continue
+            st = str(b.get("state") or "")
+            if st not in (BILL_STATE_ACTIVE, BILL_STATE_BREACHED):
+                continue
+            if hh in snap:
+                continue
+            dom = self._health_norm_domain(b.get("site"))
+            if filter_dom and dom != filter_dom:
+                continue
+            counts["not_in_qb"] = int(counts.get("not_in_qb") or 0) + 1
+
+        # only 过滤（只作用于 items；counts/by_site/bytes 始终全量）
+        if only in ("ghost", "partial"):
+            items = [x for x in items if x["bucket"] == only]
+
+        # 排序：ghost(先欠 H&R) > partial > normal，同桶按体积降序
+        _rank = {"ghost": 0, "partial": 1, "normal": 2}
+        items.sort(key=lambda x: (
+            _rank.get(x["bucket"], 9),
+            0 if x["hr"] else 1,
+            -float(x["size_gb"] or 0),
+        ))
+        if limit > 0:
+            items = items[:limit]
+
+        return {
+            "at": at,
+            "scanned": len(snap),
+            "candidates": len(suspicious),
+            "probed": probed,
+            "probe_truncated": probe_truncated,
+            "site_filter": filter_dom,
+            "counts": counts,
+            "bytes": {"ghost_gb": round(bytes_agg["ghost_gb"], 2),
+                       "partial_gb": round(bytes_agg["partial_gb"], 2)},
+            "by_site": {k: {"ghost": v["ghost"], "partial": v["partial"],
+                            "gb": round(v["gb"], 2)}
+                        for k, v in sorted(by_site.items(),
+                                           key=lambda kv: -kv[1]["gb"])},
+            "hr_at_risk": hr_at_risk,
+            "items": items,
+            "write": False,
+            "source_of_truth": [
+                "qB torrents/info + files（逐文件存在性）",
+                "文件系统 os.listdir / os.path.exists",
+                "hr_bills.json（只读）",
+            ],
+        }
+
+    def health_scan(self, site: str = "", only: str = "", limit: int = 200) -> Response:
+        """``GET /health/scan``：挂种健康度自检（只读）。"""
+        try:
+            data = self._health_scan(site, only, limit)
+            return Response(success=True, message="ok", data=data)
+        except Exception as e:  # noqa: BLE001
+            self._log(f"挂种健康度自检失败: {e}", "error")
+            return Response(success=False, message=str(e))
