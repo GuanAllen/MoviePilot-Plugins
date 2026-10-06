@@ -16,10 +16,12 @@ from app.sdk.logging import logger
 from ..fallback import FallbackEngine, DEFAULT_SOURCES as FALLBACK_SOURCES
 from ..cloud_archive import ArchiveEngine
 from ..persistence import OperationItem
+from ..kvstore import cache_set
 
 
 from ..common import (
     FALLBACK_SCAN_MAX,
+    CACHE_TTL_REPORT,
 )
 
 
@@ -289,7 +291,7 @@ class CloudMixin:
                 report = engine.run(limit=limit, dry_run=dry, delete_local=dele)
                 st = report.get("stats") or {}
                 try:
-                    self.save_data(key="cloud_report", value=report)
+                    cache_set(self, "cloud", "cloud_report", report, CACHE_TTL_REPORT)
                 except Exception:  # noqa: BLE001
                     pass
                 self._log(
@@ -311,7 +313,7 @@ class CloudMixin:
         try:
             store = getattr(self._store, "cloud", None)
             n = store.clear() if store is not None else 0
-            self.save_data(key="cloud_report", value={})
+            cache_set(self, "cloud", "cloud_report", {}, CACHE_TTL_REPORT)
             return Response(success=True, message=f"已清空 {n} 条归档记录", data={"cleared": n})
         except Exception as err:  # noqa: BLE001
             return Response(success=False, message=str(err))

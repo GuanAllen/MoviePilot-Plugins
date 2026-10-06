@@ -409,3 +409,43 @@ class MpHotStore:
         for name in keys:
             ok = self.delete(name) and ok
         return {"success": ok, "deleted": len(keys)}
+
+
+# ============================================================
+# 缓存位（★ 12.6.0）：外部模块（live_stats / collect / fallback / sitestore …）
+# 的便捷入口 —— 它们手里只有插件实例（``self._plugin`` / ``self._p``），
+# 走这两个函数即可把「原 kv 缓存键」写进热层，**不再落 plugindata**。
+# 插件实例不支持（测试桩等）→ 静默降级（读 None / 写丢弃），行为=“缓存未命中”。
+# ============================================================
+
+def cache_get(plugin: Any, region: str, key: str, ttl: float) -> Any:
+    """读热层缓存；拿不到返回 None（=缓存未命中，调用方自行回源）。"""
+    fn = getattr(plugin, "_cache_get", None)
+    if not callable(fn):
+        return None
+    try:
+        return fn(region, key, ttl)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def cache_set(plugin: Any, region: str, key: str, value: Any, ttl: float) -> None:
+    """写热层缓存；失败静默（缓存丢了不影响正确性）。"""
+    fn = getattr(plugin, "_cache_set", None)
+    if not callable(fn):
+        return
+    try:
+        fn(region, key, value, ttl)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def cache_del(plugin: Any, region: str, key: str) -> None:
+    """删热层缓存键；失败静默。"""
+    fn = getattr(plugin, "_cache_del", None)
+    if not callable(fn):
+        return
+    try:
+        fn(region, key)
+    except Exception:  # noqa: BLE001
+        pass

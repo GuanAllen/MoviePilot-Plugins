@@ -30,6 +30,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from .kvstore import cache_get, cache_set
+from .common import CACHE_TTL_COUNTER
+
 # ── 采集类型白名单（配额分账用；新增类型必须显式登记）────────────────────────
 SCOPE_SITE = "site"        # 吃站点 PV
 SCOPE_SERVICE = "service"  # 外部服务配额（豆瓣/IYUU/OpenList）
@@ -417,10 +420,7 @@ class Budget:
     def day_used(self, site_id: Any, kind: str) -> int:
         sid = str(int(site_id or 0))
         day = self._day()
-        try:
-            data = self._p.get_data("collect_day") or {}
-        except Exception:  # noqa: BLE001
-            data = {}
+        data = cache_get(self._p, "collect", "collect_day", CACHE_TTL_COUNTER) or {}
         if not isinstance(data, dict):
             data = {}
         data.update(self._mem)
@@ -440,14 +440,14 @@ class Budget:
             for stale in sorted(self._mem.keys())[:-2]:
                 self._mem.pop(stale, None)
         try:
-            data = self._p.get_data("collect_day") or {}
+            data = cache_get(self._p, "collect", "collect_day", CACHE_TTL_COUNTER) or {}
             if not isinstance(data, dict):
                 data = {}
             for stale in sorted(data.keys())[:-7]:
                 data.pop(stale, None)
             site = data.setdefault(day, {}).setdefault(sid, {})
             site[str(kind)] = int(site.get(str(kind), 0) or 0) + max(int(n), 1)
-            self._p.save_data(key="collect_day", value=data)
+            cache_set(self._p, "collect", "collect_day", data, CACHE_TTL_COUNTER)
         except Exception:  # noqa: BLE001
             pass
 

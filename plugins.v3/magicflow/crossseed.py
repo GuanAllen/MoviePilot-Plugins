@@ -207,7 +207,7 @@ def pick_source(
 class CrossSeedPending:
     """跨站取种的「待回辅」账本。
 
-    - **权威持久化**走 `save_data(PENDING_KEY)`（PluginData 表，随 MP 备份，重装不丢）；
+    - **权威持久化**走站点槽位（``slot_callbacks(self, "crossseed_pending")`` → ``mf_site`` 表）；
     - 目标站 A 的 `.torrent` 字节**落盘**到 `<data_dir>/crossseed/<a_hash>.torrent`
       （种子文件动辄几万字节，塞进 PluginData 会把整表撑大）。
     """

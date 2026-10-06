@@ -7,8 +7,9 @@ Master 口径（2026-10-02 11:10）：**不装 Prometheus、不暴露 /metrics �
 设计：
   * **采样**：每小时一个点（bucket = 整点）。同一个小时内重复采样只更新不追加。
   * **保留**：环形，每序列最近 ``TREND_KEEP`` 个点（默认 168 = 7 天）。
-  * **存储**：插件 KV（``plugindata``，key=``trend_v1``）——一次采样 flush 一次，
-    写入极稀（每任务每小时 1 次），不碰 Redis 热层、不引入新依赖。
+  * **存储**：热层（``dtier.TierCache`` → 内存 + FileCache/Redis，region=``cache-trend``）
+    —— 一次采样 flush 一次，写入极稀（每任务每小时 1 次）。★ 12.6.0 从 kv 搬入热层：
+    趋势是**可重取值**（丢了最多少一段历史），不该占 kv。
   * **序列名**：``task:<task_id>``（任务口径） / ``site:<site_id>``（站点口径，多任务同站只记一份）。
   * **单点字段**：``t``(整点时间戳) / ``bonus``(站点口径时魔) / ``seeds``(托管做种数) /
     ``gb``(自身体积，不含辅种) / ``reuse_gb``(辅种体积) / ``bonus_now``(站点当前魔力存量)。
@@ -23,7 +24,10 @@ from typing import Any, Dict, List, Optional
 
 from app.schemas import Response
 
-TREND_KEY = "trend_v1"          # 插件 KV 里的键（plugindata）
+from ..common import CACHE_TTL_HISTORY
+from ..kvstore import cache_get, cache_set
+
+TREND_KEY = "trend_v1"          # 热层里的逻辑键（★ 12.6.0 起不再落 kv）
 TREND_KEEP = 168                # 每序列保留的点数（7 天 × 24）
 DEFAULT_HOURS = 72              # 前端默认拉取窗口
 
@@ -41,7 +45,7 @@ class TrendMixin:
         if cache is None:
             cache = {}
             try:
-                raw = self.get_data(TREND_KEY)
+                raw = cache_get(self, "trend", TREND_KEY, CACHE_TTL_HISTORY)
                 if isinstance(raw, dict):
                     cache = raw
             except Exception:  # noqa: BLE001
@@ -50,11 +54,11 @@ class TrendMixin:
         return cache
 
     def _trend_flush(self) -> bool:
-        """把内存趋势落盘（插件 KV）。写失败不抛，返回是否成功。"""
+        """把内存趋势写进热层（可丢缓存）。写失败不抛，返回是否成功。"""
         if not getattr(self, "_trend_dirty", False):
             return True
         try:
-            self.save_data(key=TREND_KEY, value=self._trend_data())
+            cache_set(self, "trend", TREND_KEY, self._trend_data(), CACHE_TTL_HISTORY)
             self._trend_dirty = False
             return True
         except Exception:  # noqa: BLE001

@@ -24,6 +24,8 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 from . import db as mfdb
+from .kvstore import cache_get
+from .common import CACHE_TTL_REPORT
 from .ledger import get_backend
 from .persistence import _shared
 
@@ -656,7 +658,7 @@ class SiteStore:
         cache = None
         try:
             plugin = getattr(self, "_plugin", None)
-            cache = plugin.get_data("iyuu_cache") if plugin is not None else None
+            cache = cache_get(plugin, "iyuu", "iyuu_cache", CACHE_TTL_REPORT) if plugin is not None else None
         except Exception:  # noqa: BLE001
             cache = None
         for nick, item in ((cache or {}).get("sites") or {}).items():
