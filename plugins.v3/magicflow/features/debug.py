@@ -58,6 +58,86 @@ def _jsonable(value: Any, depth: int = 0) -> Any:
                 pass
     return str(value)
 
+
+# ── ★ 12.7.0 安全面：debug 读路径归一 + 写操作统一门 ─────────────────────────
+# 只读读文件：先 realpath 归一**再**判前缀（防 `/app/../../etc/passwd` 这类穿越），
+# 且拒敏感文件（app.env / *.env / token / cookie / *.pem / *.key …）。
+_DBG_READ_ROOTS = ("/app", "/config", "/core")
+_DBG_SENSITIVE = re.compile(
+    r"(^|/)(\.env|app\.env|id_rsa|id_ed25519[^/]*|[^/]*\.(pem|key|p12|pfx|crt)|[^/]*"
+    r"(token|passwd|password|secret|credential|apikey|api_key|cookie)[^/]*)$",
+    re.IGNORECASE,
+)
+
+
+def _dbg_real(p: str) -> str:
+    """realpath 归一（解析 `..` 与符号链接；失败回退原串）。"""
+    import os as _os
+
+    try:
+        return _os.path.realpath(str(p or "").strip()) or ""
+    except Exception:  # noqa: BLE001
+        return str(p or "").strip()
+
+
+def _dbg_sensitive(p: str) -> bool:
+    """路径是否命中敏感文件模式（按归一后的真实路径判）。"""
+    return bool(_DBG_SENSITIVE.search(str(p or "")))
+
+
+def _dbg_safe_read_path(p: str):
+    """校验「可读文件」路径：→ (真实路径, 拒绝原因)。只允许 `_DBG_READ_ROOTS` 之下的普通文件。"""
+    import os as _os
+
+    raw = str(p or "").strip()
+    if not raw:
+        return None, "缺少 path"
+    rp = _dbg_real(raw)
+    if not any(rp == r or rp.startswith(r + "/") for r in _DBG_READ_ROOTS):
+        return None, "路径不在白名单(" + " ".join(_DBG_READ_ROOTS) + ")"
+    if _dbg_sensitive(rp):
+        return None, "敏感文件不在读取范围内"
+    try:
+        if not _os.path.isfile(rp):
+            return None, "不是文件或不存在"
+    except Exception as err:  # noqa: BLE001
+        return None, f"路径不可用:{err}"
+    return rp, ""
+
+
+def _dbg_guard_write(name: str, confirm: int = 0):
+    """写操作统一闸门：必须显式 ``confirm=1``。返回 ``None`` = 放行；否则返回拒绝 Response。
+
+    目的：① 防误触（GET 顺手改状态）；② debug 写面**只有一个门**，与「唯一入口」口径一致。
+    """
+    try:
+        ok = int(confirm or 0) == 1
+    except (TypeError, ValueError):
+        ok = False
+    if ok:
+        return None
+    return Response(
+        success=False,
+        message=f"{name}：写操作需显式 confirm=1（默认拒绝）",
+        data={"endpoint": name, "requires_confirm": True},
+    )
+
+
+# ★ 12.7.0：debug 面里**会写**的端点（写门真值源；`/agent/debug/surface` 读它）。
+# 键 = 路由路径（与 `features/api.py` 的 `/debug*` 路由对齐），值 = 哪种参数会写。
+DEBUG_WRITE_PATHS: Dict[str, str] = {
+    "/debug/store": "action=flush（落盘）/ drop-hot（清热层键）",
+    "/debug/cache": "drop / prefix（丢站点抓取缓存）",
+    "/debug/crossseed": "add=true（真的在他站发起下载）",
+    "/debug/swap": "apply=1（换种真落盘）",
+    "/debug/seedlimit": "给我们管控的种套单档限速（改 qB）",
+    "/debug/emit-transfer": "投递/直调 TransferComplete，clear=1 清库记",
+    "/debug/cloud-put": "往 OpenList 真写测试文件",
+    "/debug/recommend-reset": "清空推荐甄别结果",
+    "/debug/douban": "action=purge_neg（清服务端负缓存）/ flush_snapshot",
+}
+
+
 class DebugMixin:
     """debug 功能集（原 MagicFlow 方法原样搬入）。"""
     _jsonable = staticmethod(_jsonable)  # 模块级函数别名
@@ -72,8 +152,11 @@ class DebugMixin:
         except Exception as err:  # noqa: BLE001
             return Response(success=False, message=str(err))
 
-    def debug_cloud_put(self, path: str = "", size: int = 1024) -> Response:
-        """诊断:容器内直接 PUT 到 OpenList,返回各变体结果。"""
+    def debug_cloud_put(self, path: str = "", size: int = 1024, confirm: int = 0) -> Response:
+        """诊断:容器内直接 PUT 到 OpenList（**写**；需 ``confirm=1``）。"""
+        _g = _dbg_guard_write("debug_cloud_put", confirm)
+        if _g is not None:
+            return _g
         try:
             return Response(success=True, data=self._get_cloud_engine().client().debug_put(path, size))
         except Exception as err:  # noqa: BLE001
@@ -143,14 +226,20 @@ class DebugMixin:
         info["sample"] = rows[:10]
         return Response(success=True, message="OK", data=info)
 
-    def debug_cache(self, drop: str = "", prefix: str = "", dump: str = "") -> Response:
+    def debug_cache(self, drop: str = "", prefix: str = "", dump: str = "", confirm: int = 0) -> Response:
         """诊断/维护:查看或丢弃**站点抓取缓存**(TierCache region=cands)。
 
         - ``GET /debug/cache``               → 列出当前热层里的 key
-        - ``GET /debug/cache?drop=<key>``    → 丢弃该 key(下一轮强制重抓)
-        - ``GET /debug/cache?prefix=hdfans.org|`` → 丢弃同前缀的 key
+        - ``GET /debug/cache?drop=<key>&confirm=1``    → 丢弃该 key(下一轮强制重抓)
+        - ``GET /debug/cache?prefix=hdfans.org|&confirm=1`` → 丢弃同前缀的 key
         - ``GET /debug/cache?dump=<key>``    → 看该 key 命中的条数 + 前 5 条摘要
+
+        ★ 12.7.0：丢弃（drop/prefix）为**写操作**，缺 ``confirm=1`` 直接拒。
         """
+        if (drop or prefix):
+            _g = _dbg_guard_write("debug_cache(drop/prefix)", confirm)
+            if _g is not None:
+                return _g
         cache = self._cache_cands()
         hot = getattr(cache, "_hot", {}) or {}
         keys = sorted(str(k) for k in list(hot.keys()))
@@ -187,7 +276,7 @@ class DebugMixin:
 
     def debug_crossseed(
         self, task: str = "", n: int = 3, add: bool = False, force_main: bool = True,
-        dump: bool = False,
+        dump: bool = False, confirm: int = 0,
     ) -> Response:
         """诊断:拿某任务的候选**当成「本站非免费」**跑一遍跨站选源链路(dry-run)。
 
@@ -197,8 +286,12 @@ class DebugMixin:
           - 每个候选在本站取 1 次 .torrent（1 PV）→ 算特征码
           - 调 MP 搜索到各候选源站 → 免费且有源的行
           - 算「同一 Release」→ 命中哪站、特征码对不对
-        ``add=true`` 才真的发起他站下载（默认只报告，不动下载器）。
+        ``add=true`` 才真的发起他站下载（默认只报告，不动下载器）；``add=true`` 属**写操作**，需再加 ``confirm=1``。
         """
+        if add:
+            _g = _dbg_guard_write("debug_crossseed(add=true)", confirm)
+            if _g is not None:
+                return _g
         tid = str(task or "").strip()
         if not tid:
             return Response(success=False, message="task 必填(任务 id)")
@@ -383,7 +476,7 @@ class DebugMixin:
             return Response(success=False, message=str(e))
 
     def debug_douban(self, name: str = "", year: str = "", keyword: str = "", count: int = 6,
-                     action: str = "", flush_snapshot: bool = False) -> Response:
+                     action: str = "", flush_snapshot: bool = False, confirm: int = 0) -> Response:
         """诊断:直接查豆瓣评分源。
 
         ★ 12.0.0 口径：豆瓣评分走**外挂容器** ``magicflow-douban:18789``（同 MP 网络），
@@ -398,6 +491,10 @@ class DebugMixin:
         except Exception as err:  # noqa: BLE001
             return Response(success=False, message=f"豆瓣模块不可用:{err}")
         cli = get_client(self)
+        if str(action or "") == "purge_neg" or flush_snapshot:
+            _g = _dbg_guard_write("debug_douban(purge/flush)", confirm)
+            if _g is not None:
+                return _g
         try:
             if str(action or "") == "purge_neg":
                 n = cli.purge_negatives()
@@ -485,11 +582,18 @@ class DebugMixin:
             },
         )
 
-    def debug_swap(self, task_id: str = "", apply: int = 0, force: int = 0) -> Response:
-        """诊断:自动换种干跑（``apply=0`` 只出计划，不落盘；``force=1`` 忽略开关/触发/冷却，仅干跑）。"""
+    def debug_swap(self, task_id: str = "", apply: int = 0, force: int = 0, confirm: int = 0) -> Response:
+        """诊断:自动换种干跑（``apply=0`` 只出计划，不落盘；``force=1`` 忽略开关/触发/冷却，仅干跑）。
+
+        ★ 12.7.0：``apply=1``（真落盘）需再加 ``confirm=1``。
+        """
         _force = bool(force)
         if _force:
             apply = 0   # 强制只用于观察，绝不落盘
+        if apply:
+            _g = _dbg_guard_write("debug_swap(apply=1)", confirm)
+            if _g is not None:
+                return _g
         try:
             ids = [task_id] if task_id else list(self._task_configs.keys())
         except Exception:  # noqa: BLE001
@@ -588,13 +692,16 @@ class DebugMixin:
             return Response(success=False, message=str(err))
 
     def debug_emit_transfer(self, hash: str = "", path: str = "", media_id: str = "", ok: int = 1,
-                            clear: int = 0, via: str = "bus") -> Response:
-        """诊断：投递/直调 TransferComplete（验证事件订阅 + 库记落地）。
+                            clear: int = 0, via: str = "bus", confirm: int = 0) -> Response:
+        """诊断：投递/直调 TransferComplete（验证事件订阅 + 库记落地）。**写操作**，需 ``confirm=1``。
 
         - ``via=bus``（默认）经事件总线投递；``via=direct`` 直接调用处理器
         - ``clear=1`` 清掉该 hash 所属资源的库记（测试还原用）
         - ``media_id=__inspect__`` 查看订阅状态（处理器、活跃实例、收到次数）
         """
+        _g = _dbg_guard_write("debug_emit_transfer", confirm)
+        if _g is not None:
+            return _g
         if not _MF_EVENTS_READY or _mf_eventmanager is None or _MFEventType is None:
             return Response(success=False, message="事件总线不可用")
         _h = str(hash or "").strip().lower()
@@ -672,14 +779,16 @@ class DebugMixin:
 
     def debug_read_file(self, path: str = "", grep: str = "", limit: int = 200000,
                         offset: int = 0) -> Response:
-        """诊断：只读读取容器内文本文件（白名单前缀），可选按行 grep。"""
+        """诊断：只读读取容器内文本文件（白名单目录，**已 realpath 归一防穿越**），可选按行 grep。"""
         import os as _os
 
         p2 = str(path or "").strip()
         if not p2:
             return Response(success=False, message="缺少 path")
-        if not any(p2.startswith(x) for x in ("/app/", "/config/", "/core/")):
-            return Response(success=False, message="路径不在白名单(/app /config /core)")
+        rp, why = _dbg_safe_read_path(p2)
+        if rp is None:
+            return Response(success=False, message=why)
+        p2 = rp
         try:
             if not _os.path.isfile(p2):
                 return Response(success=False, message="不是文件或不存在")
@@ -711,6 +820,9 @@ class DebugMixin:
             p2 = str(pp or "")
             if not p2:
                 return {}
+            p2 = _dbg_real(p2)          # ★ 12.7.0：归一后再判敏感文件
+            if _dbg_sensitive(p2):
+                return {"path": p2, "denied": "敏感文件不在读取范围内"}
             info: Dict[str, Any] = {"path": p2}
             try:
                 st = _os.stat(p2)
@@ -752,8 +864,14 @@ class DebugMixin:
             f" / 未知 {len(data.get('unknown') or [])}（其中在上传 {_u}）"
         ), data=data)
 
-    def debug_seed_limit(self) -> Response:
-        """诊断：立即给**我们管控的**种套单种限速（按档），其他种不动；回报前后档位分布。"""
+    def debug_seed_limit(self, confirm: int = 0) -> Response:
+        """诊断：立即给**我们管控的**种套单种限速（按档），其他种不动；回报前后档位分布。
+
+        ★ 12.7.0：会真改 qB 限速（**写**）→ 需 ``confirm=1``。
+        """
+        _g = _dbg_guard_write("debug_seed_limit", confirm)
+        if _g is not None:
+            return _g
         downloader = self._get_downloader()
         before: Dict[str, Any] = {}
         after: Dict[str, Any] = {}
@@ -1311,8 +1429,11 @@ class DebugMixin:
             "text": text[: max(0, int(limit))],
         })
 
-    def debug_recommend_reset(self) -> Response:
-        """诊断:清空推荐甄别结果(仅测试/重置用)。"""
+    def debug_recommend_reset(self, confirm: int = 0) -> Response:
+        """诊断:清空推荐甄别结果(仅测试/重置用)。**写操作**，需 ``confirm=1``。"""
+        _g = _dbg_guard_write("debug_recommend_reset", confirm)
+        if _g is not None:
+            return _g
         store = getattr(self._store, "recommend", None) if self._store else None
         if store is None:
             return Response(success=False, message="推荐存储不可用")

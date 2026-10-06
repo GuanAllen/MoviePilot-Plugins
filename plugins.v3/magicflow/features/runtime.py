@@ -269,15 +269,21 @@ class RuntimeMixin:
             pass
         return out
 
-    def debug_store(self, action: str = "") -> Response:
+    def debug_store(self, action: str = "", confirm: int = 0) -> Response:
         """诊断/维护状态存储。
 
         action:
           · 空        → 热层 + 冷备份健康度
-          · flush     → 把内存快照写进热层 + JSON 冷备份
-          · drop-hot  → **只清我们自己的热层键**（用于验证「热层丢 → 从 JSON 回灌」）
+          · flush     → 把内存快照写进热层 + JSON 冷备份（**写**：需 ``confirm=1``）
+          · drop-hot  → **只清我们自己的热层键**（用于验证「热层丢 → 从 JSON 回灌」；**写**：需 ``confirm=1``）
         """
+        from .debug import _dbg_guard_write  # noqa: WPS433
+
         action = str(action or "").strip().lower()
+        if action in ("flush", "drop-hot", "drop", "clear-hot"):
+            _g = _dbg_guard_write(f"debug_store({action})", confirm)
+            if _g is not None:
+                return _g
         store = getattr(self, "_store", None)
         hot = getattr(self, "_hot", None)
         if action == "flush":

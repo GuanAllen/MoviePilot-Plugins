@@ -266,6 +266,13 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
                     "limit": "int（默认 200，0=不限）"},
          "returns": "SeedsHealthReport", "version": AGENT_ENDPOINT_VERSION,
          "summary": "★挂种健康度自检（逐文件核盘）：空转/缺文件 + 体积 + 其中欠 H&R 的风险；只读"},
+        # ---- 12.7.0 调试面自描述（只读）----
+        {"path": "/agent/debug/surface", "method": "GET", "handler": "agent_debug_surface",
+         "write": False,
+         "params": {},
+         "returns": "DebugSurface",
+         "version": AGENT_ENDPOINT_VERSION,
+         "summary": "★调试面自描述：有哪些 /debug 端点 / 哪些会写 / 写操作需 confirm=1 / 读文件白名单与敏感文件黑名单；只读"},
     ]
 
 
@@ -906,3 +913,51 @@ class AgentApiMixin:
             ("features/health._health_scan() → qB 快照 + torrents/files（逐文件 os.path.exists）"
              " + hr_bills.json（只读）"),
             inputs={"site": str(site or ""), "only": str(only or ""), "limit": limit})
+
+    # ---------------------------------------- 12.7.0 调试面自描述（只读）
+    def agent_debug_surface(self) -> Dict[str, Any]:
+        """``GET /agent/debug/surface`` —— ★ **调试面自描述**（只读）。
+
+        一次调用答：「有哪些 ``/debug`` 端点 / 哪些会写 / 写操作要求什么 / 读文件白名单与敏感文件黑名单」。
+        真值源 = **路由表**（``get_api()`` 的 ``/debug*`` 子集）+ **写标记表**（``DEBUG_WRITE_PATHS``）；
+        不另建一份清单。零写入。
+        """
+        t0 = time.time()
+        try:
+            from .debug import DEBUG_WRITE_PATHS, _DBG_READ_ROOTS  # noqa: WPS433
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"调试面不可用:{e}", t0, trace_id=str(e))
+        try:
+            routes = super().get_api() or []
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"路由表不可用:{e}", t0, trace_id=str(e))
+        items: List[Dict[str, Any]] = []
+        for r in routes:
+            p = str(r.get("path") or "")
+            if not p.startswith("/debug"):
+                continue
+            note = str(DEBUG_WRITE_PATHS.get(p) or "")
+            items.append({
+                "path": p,
+                "endpoint": str(getattr(r.get("endpoint"), "__name__", "") or ""),
+                "methods": [str(m) for m in (r.get("methods") or [])],
+                "summary": str(r.get("summary") or ""),
+                "write": bool(note),
+                "write_note": note,
+                "confirm_param": "confirm=1" if note else "",
+            })
+        items.sort(key=lambda x: x["path"])
+        data = {
+            "count": len(items),
+            "write_count": sum(1 for i in items if i["write"]),
+            "items": items,
+            "policy": {
+                "confirm": "所有写操作需显式 confirm=1，缺省直接拒绝（防误触 / 防 GET 副作用）",
+                "read_roots": list(_DBG_READ_ROOTS),
+                "sensitive_deny": "app.env / *.env / *token* / *cookie* / *.pem / *.key / id_rsa … 一律不可读",
+            },
+        }
+        return self._agent_report(
+            data, t0,
+            "features/api.get_api()（/debug* 冒牌子集） + features/debug.DEBUG_WRITE_PATHS（写标记）",
+            inputs={})
