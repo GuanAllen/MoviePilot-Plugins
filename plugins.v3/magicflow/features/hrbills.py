@@ -31,6 +31,10 @@ from ..tags import MARK_REUSE, RESCUE_TAG, is_reuse_copy
 from ..fingerprint import fingerprint, info_hash
 from ..downloader_ops import seed_hours_for_hr
 from ..persistence import _shared
+from ..common import (
+    HR_DEADLINE_WARN_HOURS_DEFAULT,
+    HR_SEED_MARGIN_HOURS_DEFAULT,
+)
 
 # ★ 11.0.0 第二阶段：账单接入保护。
 #   一键回退：把本常量改回 ``False`` 即恢复「不接保护」（账单照记、回填照跑，只是
@@ -332,6 +336,79 @@ class HrBillsMixin:
         if need <= 0:
             need = float(HR_NEED_HOURS_DEFAULT)
         return need
+
+    # ---------------------------------------------------------- 11.13.0 安全垫 / 到期预警
+    def _hr_margin_hours(self) -> float:
+        """★ 11.13.0 **结清冗余安全垫**（小时，默认 ``HR_SEED_MARGIN_HOURS_DEFAULT``）。
+
+        判定结清时用 ``need_h + margin`` 而不是 ``need_h``——挂久一点（免费种不花流量），
+        避开「站点计时/我们计时」的偏差与最后一秒开销。设置面板可改；0 = 不留垫。
+        """
+        try:
+            v = float(getattr(self, "_hr_seed_margin_hours", HR_SEED_MARGIN_HOURS_DEFAULT) or 0.0)
+        except (TypeError, ValueError):
+            v = float(HR_SEED_MARGIN_HOURS_DEFAULT)
+        return max(0.0, v)
+
+    def _hr_warn_hours(self) -> float:
+        """★ 11.13.0 临近到期预警阈值（小时，默认 48）。"""
+        try:
+            v = float(getattr(self, "_hr_deadline_warn_hours", HR_DEADLINE_WARN_HOURS_DEFAULT) or 0.0)
+        except (TypeError, ValueError):
+            v = float(HR_DEADLINE_WARN_HOURS_DEFAULT)
+        return max(0.0, v)
+
+    def _hr_window_hours(self, dom: str) -> float:
+        """站点 H&R **考核窗口**（小时）：多久之内要做满 ``need_h``。取不到 → 0（= 无窗口信息）。
+
+        链：``_crossseed_seed_window_hours``（规则库 ``seed_window_hours`` → ``seed_hours`` 保护期 → 内置表）。
+        """
+        try:
+            return float(self._crossseed_seed_window_hours(dom) or 0.0)
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    def _hr_deadline(self, bill: Any, now: Optional[float] = None) -> Dict[str, Any]:
+        """★ 11.13.0 账单**到期信息**（只读推导，不落库、不造第二真值）。
+
+        真值源 = 站点窗口（``_hr_window_hours``）+ 账单 ``opened_at`` + 当前做种进度。
+        ``at_risk`` = 未达标 且 距窗口到期 ≤ ``_hr_warn_hours()``（含已逾期）—— 预警≠违约。
+        """
+        b = bill if isinstance(bill, dict) else {}
+        _now = float(now if now is not None else time.time())
+        dom = str(b.get("site") or "")
+        margin = self._hr_margin_hours()
+        try:
+            need_h = float(b.get("need_h") or 0.0)
+        except (TypeError, ValueError):
+            need_h = 0.0
+        try:
+            seeded_h = float(b.get("seeded_h") or 0.0)
+        except (TypeError, ValueError):
+            seeded_h = 0.0
+        due_h = round(need_h + margin, 3)
+        window_h = self._hr_window_hours(dom)
+        out: Dict[str, Any] = {"window_h": round(window_h, 3), "due_h": due_h,
+                               "deadline_at": None, "hours_left": None, "at_risk": False}
+        if window_h <= 0:
+            return out
+        try:
+            opened = float(b.get("opened_at") or 0.0)
+        except (TypeError, ValueError):
+            opened = 0.0
+        if opened <= 0:
+            return out
+        deadline_at = opened + window_h * 3600.0
+        hours_left = (deadline_at - _now) / 3600.0
+        state = str(b.get("state") or "")
+        out["deadline_at"] = deadline_at
+        out["hours_left"] = round(hours_left, 2)
+        out["at_risk"] = bool(
+            state in (BILL_STATE_ACTIVE, BILL_STATE_PENDING)
+            and (seeded_h + 1e-9) < due_h
+            and hours_left <= self._hr_warn_hours()
+        )
+        return out
 
     def _hrbills_store(self) -> HrBillsStore:
         try:
@@ -642,9 +719,10 @@ class HrBillsMixin:
                 if cur_state == BILL_STATE_PENDING:
                     fields["state"] = BILL_STATE_ACTIVE
                     activated += 1
-                # ④ 挂够 → settled
+                # ④ 挂够 → settled（★ 11.13.0：达到线额外加冗余安全垫 ``_hr_margin_hours()``）
                 need_h = float(b.get("need_h") or 24.0)
-                if cur_state not in (BILL_STATE_SETTLED, BILL_STATE_VOID) and seeded_h >= need_h:
+                due_h = need_h + self._hr_margin_hours()
+                if cur_state not in (BILL_STATE_SETTLED, BILL_STATE_VOID) and seeded_h >= due_h:
                     fields["state"] = BILL_STATE_SETTLED
                     settled += 1
                 fields["last_progress"] = progress
@@ -871,14 +949,31 @@ class HrBillsMixin:
         except Exception:  # noqa: BLE001
             pass
         breaches: List[Dict[str, Any]] = []
+        at_risk: List[Dict[str, Any]] = []  # ★ 11.13.0：种还在、但快到期且未达标
         for h, b in (store.all() or {}).items():
             if not isinstance(b, dict):
                 continue
             st = str(b.get("state") or "")
             hh = str(h or "").strip().lower()
-            if hh in snap:
-                continue
             if st not in (BILL_STATE_ACTIVE, BILL_STATE_BREACHED):
+                continue
+            if hh in snap:
+                # ★ 11.13.0：种还在 qB（未违约）→ 看它是否「临近到期」
+                _dl = self._hr_deadline(b)
+                if _dl.get("at_risk"):
+                    at_risk.append({
+                        "hash": hh, "site": str(b.get("site") or ""),
+                        "title": str(b.get("title") or "")[:120],
+                        "bill_state": st, "rule": str(b.get("rule") or ""),
+                        "need_h": round(float(b.get("need_h") or 0.0), 2),
+                        "due_h": _dl.get("due_h"),
+                        "seeded_h": round(float(b.get("seeded_h") or 0.0), 2),
+                        "window_h": _dl.get("window_h"),
+                        "hours_left": _dl.get("hours_left"),
+                        "deadline_at": _dl.get("deadline_at"),
+                        "severity": "warning",
+                        "rescue_hint": "GET /agent/hr/bills?site=" + str(b.get("site") or "") + "&live=1",
+                    })
                 continue
             attr = "plugin_deleted" if hh in deleted_ok else "external_deleted"
             gate_bug = attr == "plugin_deleted"
@@ -893,11 +988,19 @@ class HrBillsMixin:
                 "breached_at": b.get("breached_at") or 0,
                 "rescue_hint": "GET /tags?action=hr_reconcile&site=" + str(b.get("site") or "") + "&confirm=1",
             })
+        at_risk = sorted(at_risk, key=lambda x: (x.get("hours_left") if x.get("hours_left") is not None else 1e9))[:50]
         return {
             "at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "totals": {"breached": len(breaches),
-                       "critical": sum(1 for x in breaches if x.get("gate_bug"))},
+                       "critical": sum(1 for x in breaches if x.get("gate_bug")),
+                       "at_risk": len(at_risk)},
             "breaches": breaches,
+            "at_risk": at_risk,
+            "policy": {
+                "deadline_warn_hours": round(float(self._hr_warn_hours() or 0.0), 2),
+                "seed_margin_hours": round(float(self._hr_margin_hours() or 0.0), 2),
+                "rule": "at_risk = 种还在 qB、未达标、距站点考核窗口到期 ≤ warn 小时数（预警≠违约）",
+            },
             "source_of_truth": ["hr_bills.json", "deletions.jsonl", "_tag_all_torrents()"],
             "write": {
                 "reseed": "GET /tags?action=hr_reconcile&site=<dom>&confirm=1",

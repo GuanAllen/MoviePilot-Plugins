@@ -372,7 +372,7 @@ class SiteReportMixin:
         filter_dom = _norm(site) if site else ""
         by_site: Dict[str, Dict[str, Any]] = {}
         totals = {"sites": 0, "bills": 0, "active": 0, "pending": 0, "settled": 0,
-                  "void": 0, "breached": 0, "owed": 0, "missing": 0}
+                  "void": 0, "breached": 0, "owed": 0, "missing": 0, "at_risk": 0}
 
         def _bucket(dom: str) -> Dict[str, Any]:
             if dom in by_site:
@@ -402,8 +402,13 @@ class SiteReportMixin:
                 "hr_flag": hr_flag, "rule_source": rule_source, "need_h": round(need_h, 1),
                 "bills": {"total": 0, "active": 0, "pending": 0, "settled": 0,
                           "void": 0, "breached": 0},
-                "owed": 0, "in_qb": 0, "missing": 0, "items": [],
+                "owed": 0, "in_qb": 0, "missing": 0, "at_risk": 0, "items": [],
             }
+            # ★ 11.13.0 考核窗口（小时；取不到 = 无窗口信息，不预警）
+            try:
+                by_site[dom]["window_h"] = round(float(self._hr_window_hours(dom) or 0.0), 1)
+            except Exception:  # noqa: BLE001
+                by_site[dom]["window_h"] = 0.0
             return by_site[dom]
 
         bills = store.all() if store is not None else {}
@@ -437,7 +442,12 @@ class SiteReportMixin:
                 "need_h": round(float(b.get("need_h") or 0.0), 2),
                 "in_qb": in_qb, "opened_by": str(b.get("opened_by") or ""),
                 "breached_at": b.get("breached_at") or 0,
+                # ★ 11.13.0 到期/预警（只读推导）：due_h = need_h + 安全垫
+                **(self._hr_deadline(b) or {}),
             })
+            if g["items"][-1].get("at_risk"):
+                g["at_risk"] += 1
+                totals["at_risk"] += 1
         # 站点视角 missing_local（对账缓存，只读）
         for dom in list(by_site.keys()):
             rep = {}
@@ -460,6 +470,12 @@ class SiteReportMixin:
             "live": bool(live),
             "totals": totals,
             "sites": sites,
+            "policy": {  # ★ 11.13.0 H&R 策略旋钮（设置面板可改）
+                "seed_margin_hours": round(float(self._hr_margin_hours() or 0.0), 2),
+                "deadline_warn_hours": round(float(self._hr_warn_hours() or 0.0), 2),
+                "settle_rule": "seeded_h >= need_h + seed_margin_hours",
+                "at_risk_rule": "未达标 且 距站点考核窗口到期 ≤ deadline_warn_hours",
+            },
             "source_of_truth": ["hr_bills.json", "myhr.php(对账)", "_tag_all_torrents()", "_site_rules()"],
             "write": {
                 "void": "GET /tags?action=hrbills_void&hash=<h>&reason=..&confirm=1",

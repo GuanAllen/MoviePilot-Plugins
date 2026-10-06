@@ -123,6 +123,40 @@ class CrossSeedMixin:
         except Exception:  # noqa: BLE001
             return 0.0
 
+    def _crossseed_seed_window_hours(self, domain: str) -> float:
+        """站点 H&R 的**考核窗口**（小时）：多久之内要做满 ``seed_need_hours``；取不到 → 0。
+
+        取值链（高 → 低）：
+          ① 规则库 ``seed_window_hours``（探测时从原文「10 天内做种 20 小时」拆出来的窗口）；
+          ② 规则库 ``seed_hours``（保护期长，如学校 240h，本身就含窗口语义）；
+          ③ 内置表同名键。
+        """
+        dom = str(domain or "").strip().lower()
+        dom = re.sub(r"^https?://", "", dom).split("/")[0].strip()
+        try:
+            rec = dict(self._site_rules().get(dom) or {})
+        except Exception:  # noqa: BLE001
+            rec = {}
+        for key in ("seed_window_hours", "seed_hours"):
+            try:
+                val = float(rec.get(key) or 0.0)
+            except (TypeError, ValueError):
+                val = 0.0
+            if val > 0:
+                return val
+        try:
+            b = dict(BUILTIN_RULES.get(dom) or {})
+        except Exception:  # noqa: BLE001
+            b = {}
+        for key in ("seed_window_hours", "seed_hours"):
+            try:
+                val = float(b.get(key) or 0.0)
+            except (TypeError, ValueError):
+                val = 0.0
+            if val > 0:
+                return val
+        return 0.0
+
     def _crossseed_hr_decision(
         self, domain: str, torrent_hr: Any = None
     ) -> Tuple[bool, float, str]:

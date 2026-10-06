@@ -211,6 +211,8 @@ const settingsDraft = ref({
   crossseed_seed_hours_default: 24,
   crossseed_site_hours: ['pt.btschool.club=10'],
   crossseed_reclaim: false,
+  hr_seed_margin_hours: 2,
+  hr_deadline_warn_hours: 48,
   reseed_enabled: false,
   reseed_dry: true,
   reseed_sites: [],
@@ -625,6 +627,16 @@ const hrBillsSites = computed(() => hrBills.value.sites || [])
 const hrBillsTotals = computed(() => hrBills.value.totals || {})
 function hrBillStateColor(st) {
   return ({ active: 'error', breached: 'deep-orange', pending: 'amber', settled: 'success', void: 'grey' })[st] || 'grey'
+}
+// ★ 11.13.0 H&R 临近到期：只列该站 at_risk 的账单（最多 5 条，详情看 AI 端点）
+function hrBillsAtRisk(s) { return ((s && s.items) || []).filter(x => x.at_risk).slice(0, 5) }
+function fmtHoursLeft(h) {
+  if (h === null || h === undefined) return '—'
+  const v = Number(h)
+  if (!isFinite(v)) return '—'
+  if (v <= 0) return '已逾期'
+  if (v < 48) return Math.round(v) + 'h'
+  return (v / 24).toFixed(1) + 'd'
 }
 function openHrBills() { hrBillsOpen.value = true; loadHrBills() }
 async function loadHrBills(liveOverride) {
@@ -1214,6 +1226,8 @@ async function loadStatus() {
       sort_rules: normalizeSortRules(status.value.sort_rules),
       iyuu_token: status.value.iyuu_token,
       iyuu_sites: status.value.iyuu_sites,
+      hr_seed_margin_hours: status.value.hr_seed_margin_hours ?? 2,
+      hr_deadline_warn_hours: status.value.hr_deadline_warn_hours ?? 48,
       ...(status.value.crossseed ? {
         crossseed_guard: status.value.crossseed.guard,
         crossseed_guard_pct: status.value.crossseed.guard_pct,
@@ -5007,6 +5021,7 @@ onUnmounted(() => {
           <span class="magicflow-settings-dialog__title">H&amp;R 账单</span>
           <VChip v-if="hrBillsLoading" size="x-small" color="grey" variant="tonal">加载中</VChip>
           <VChip v-else-if="hrBillsTotals.breached" size="x-small" color="deep-orange" variant="tonal">{{ hrBillsTotals.breached }} 违约</VChip>
+          <VChip v-if="hrBillsTotals.at_risk" size="x-small" color="warning" variant="tonal">{{ hrBillsTotals.at_risk }} 临近到期</VChip>
           <span class="magicflow-ops-dialog__spacer" />
           <VBtn icon="mdi-refresh" size="small" variant="text" aria-label="刷新" :loading="hrBillsLoading" @click="loadHrBills(false)" />
           <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="hrBillsOpen = false" />
@@ -5017,6 +5032,7 @@ onUnmounted(() => {
             <div class="magicflow-sitereport__stat is-danger"><b>{{ hrBillsTotals.active || 0 }}</b><span>欠债</span></div>
             <div class="magicflow-sitereport__stat is-danger"><b>{{ hrBillsTotals.breached || 0 }}</b><span>违约</span></div>
             <div class="magicflow-sitereport__stat is-danger"><b>{{ hrBillsTotals.missing || 0 }}</b><span>本机缺失</span></div>
+            <div class="magicflow-sitereport__stat" :class="hrBillsTotals.at_risk ? 'is-danger' : ''"><b>{{ hrBillsTotals.at_risk || 0 }}</b><span>临近到期</span></div>
           </div>
           <div class="magicflow-hrbills__list">
             <div v-for="s in hrBillsSites" :key="s.domain" class="magicflow-hrbills__card">
@@ -5025,7 +5041,7 @@ onUnmounted(() => {
                 <VChip v-if="s.per_torrent_hr" size="x-small" color="purple" variant="tonal">逐种</VChip>
                 <VChip v-if="s.rule_source" size="x-small" color="grey" variant="tonal">{{ s.rule_source }}</VChip>
                 <span class="magicflow-ops-dialog__spacer" />
-                <span class="magicflow-hrbills__nums">欠 {{ s.owed }} · 在qb {{ s.in_qb }} · 缺 {{ s.missing }}</span>
+                <span class="magicflow-hrbills__nums">欠 {{ s.owed }} · 在qb {{ s.in_qb }} · 缺 {{ s.missing }}<template v-if="s.at_risk"> · ⚠临期 {{ s.at_risk }}</template></span>
               </div>
               <div class="magicflow-hrbills__chips">
                 <VChip
@@ -5035,6 +5051,11 @@ onUnmounted(() => {
                   :color="hrBillStateColor(st)"
                   variant="tonal"
                 >{{ st }} {{ n }}</VChip>
+                <VChip v-if="s.window_h" size="x-small" color="blue-grey" variant="tonal">窗口 {{ (s.window_h / 24).toFixed(1) }}d</VChip>
+              </div>
+              <div v-if="s.at_risk" class="magicflow-ops-dialog__sub">
+                临近到期：
+                <span v-for="(it, i) in hrBillsAtRisk(s)" :key="it.hash">{{ i ? '、' : '' }}{{ it.title || it.hash.slice(0, 8) }}（剩 {{ fmtHoursLeft(it.hours_left) }} / 需 {{ it.due_h }}h）</span>
               </div>
             </div>
             <div v-if="!hrBillsLoading && !hrBillsSites.length" class="magicflow-ceiling-empty">暂无 H&amp;R 账单（无欠债站）</div>
@@ -6248,6 +6269,28 @@ onUnmounted(() => {
                 step="1"
                 label="默认最短保种时长（小时）"
                 hint="未收录站点的 H&R 保种时长，默认 24h"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="settingsDraft.hr_seed_margin_hours"
+                type="number"
+                step="0.5"
+                min="0"
+                label="H&amp;R 结清安全垫（小时）"
+                hint="实际做种需 ≥ 站点要求 + 该值才判结清（默认 2，0 = 不留垫）"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="settingsDraft.hr_deadline_warn_hours"
+                type="number"
+                step="1"
+                min="0"
+                label="H&amp;R 临近到期预警（小时）"
+                hint="距站点考核窗口到期低于该值且未达标 → 预警（默认 48）"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"

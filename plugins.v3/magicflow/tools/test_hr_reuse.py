@@ -47,6 +47,36 @@ def _load(name: str, rel: str):
 _pkg(PKG, ROOT)
 _pkg(PKG + ".features", ROOT / "features")
 
+# ★ 11.13.0：hrbills 现在 import ..common（安全垫/预警常量）→ 离线桩必须先把
+#   app.* / bonus 这些底层依赖注册上（否则 ModuleNotFoundError）。
+for _n, _attrs in (
+    ("app", {}),
+    ("app.plugins", {"_PluginBase": type("_PluginBase", (), {})}),
+    ("app.schemas", {"Response": type("Response", (), {})}),
+    ("app.schemas.types", {"EventType": type("EventType", (), {})}),
+    ("app.sdk", {}),
+    ("app.sdk.events", {"eventmanager": types.SimpleNamespace()}),
+    ("app.sdk.logging", {"logger": types.SimpleNamespace(**{k: (lambda *a, **kw: None) for k in
+        ("info", "warning", "error", "debug", "exception")})}),
+):
+    _m = sys.modules.get(_n)
+    if _m is None:
+        _m = types.ModuleType(_n)
+        sys.modules[_n] = _m
+    _m.__path__ = []
+    for _k, _v in _attrs.items():
+        setattr(_m, _k, _v)
+_bonus = sys.modules.get(PKG + ".bonus")
+if _bonus is None:
+    _bonus = types.ModuleType(PKG + ".bonus")
+    sys.modules[PKG + ".bonus"] = _bonus
+_bonus.TorrentBonusInfo = type("TorrentBonusInfo", (), {})
+_fetcher = sys.modules.get(PKG + ".fetcher")
+if _fetcher is None:
+    _fetcher = types.ModuleType(PKG + ".fetcher")
+    sys.modules[PKG + ".fetcher"] = _fetcher
+_fetcher.SiteCandidateTorrent = type("SiteCandidateTorrent", (), {})
+
 tags = _load(PKG + ".tags", "tags.py")
 fingerprint = _load(PKG + ".fingerprint", "fingerprint.py")
 crossseed = _load(PKG + ".crossseed", "crossseed.py")
