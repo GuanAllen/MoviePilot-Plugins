@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "13.0.3"
+__version__ = "14.0.0"
 
 import bisect
 import re
@@ -112,11 +112,6 @@ def dup_gate_keys(info_hash: Any, fingerprint: Any = None) -> List[str]:
 # 分类阶段「单次取种」硬超时(秒):若在飞请求连续这么久都没有任何完成(典型=请求卡死/站点限速),
 # 则放弃等待剩余候选、立即进入处理阶段,避免个别慢请求把整段拖满。
 TORRENT_FETCH_PER_TIMEOUT = 20.0
-# ★ 辅种慢扫(独立 worker):把「复用/辅种」从主刷流流程里切出来,单独低频跑。
-#   - 间隔(分钟):比刷流间隔长很多,慢慢扫,避免短时间大量取种触发站点流控。
-#   - 每轮批量:一次只取这么多个候选的 .torrent 做辅种判定。
-REUSE_INTERVAL_MINUTES = 15
-
 # ★ 5.12.0 全站辅种（本机驱动）：本机已有文件 → 去各站找同一 Release 落户 + 登记「辅种」职务。
 #   与「跨站取种」相反方向：那个是「本机没有 → 去他站免费下」，这个是「本机已有 → 零下载去各站挂」。
 RESEED_INTERVAL_MINUTES = 15      # worker 周期（分钟；低频，慢慢喂）
@@ -152,7 +147,10 @@ CLAIM_INTERVAL_SEC = 8.0                     # 两次认领之间的最小间隔
 CLAIM_FAIL_TTL = 24 * 3600.0                 # 失败/名额满/不达标 → 24h 内不重试
 CLAIM_SOFT_CAP = 200                         # 单站账本软上限（仅提示，不强制）
 SILENT_HOST_INTERVAL_MINUTES = 60  # ⭐「静默托管」常驻 worker 周期(分钟，低频)
+HR_HOST_INTERVAL_MINUTES = 15  # ⭐ 14.0.0：H&R 保种宿主 worker 周期（60→15min，Master 03:17）
 SILENT_HOST_TASK_ID = "__silent_host__"  # ⭐「静默托管」常驻任务在任务列表里的只读条目 id
+CROSSSEED_TASK_ID = "__crossseed__"  # ⭐ 14.0.0「跨站取种」全局真任务 id（承接取种下载；非伪任务）
+CROSSSEED_TASK_NAME = "跨站取种"
 HR_HOST_TASK_ID = "__hr_host__"  # ⭐「H&R 保种」常驻伪任务 id（欠 H&R 的种归它挂，不归静默池）
 SILENT_HR_SPLIT_ENABLED = True  # ⭐ 11.11.0 回退开关：静默池=全 paused + H&R 拆到 __hr_host__（False=退回旧行为）
 # ★ 11.12.0 删除熔断 + 账单一致性断言（Master 2026-10-06：「bug 别再删很多次」；「消违约是正常动作」）
@@ -166,8 +164,10 @@ HR_BREACH_RECONCILE_ENABLED = True
 #   additional_seed_time / hr_deadline_days，但口径仍是「站点真值 + 账单状态机」）。
 HR_SEED_MARGIN_HOURS_DEFAULT = 2.0   # 结清冗余：实际做种需 ≥ need_h + 该值（小时；0=不留垫）
 HR_DEADLINE_WARN_HOURS_DEFAULT = 48.0  # 距站点窗口到期 < 该小时数且未达标 → at_risk 预警（小时）
-# 跨站免费取种的「回辅」轮询周期(分钟)：B/C/D… 站点下完后，尽快把它辅回目标站。
+# 跨站免费取种的旧「回辅」轮询周期(分钟，context 保留)：B/C/D… 站点下完后尽快挂回目标站（现由「跨站取种」分诊 + 全站辅种承接）。
 CROSSSEED_INTERVAL_MINUTES = 5
+CROSSSEED_TASK_INTERVAL_MINUTES = 30  # ⭐ 14.0.0「跨站取种」全局真任务的 Check 周期（流量兜底 + 生命周期分诊）
+CROSSSEED_PV_DAILY_CAP_DEFAULT = 20  # ⭐ 14.0.0 单站「取种」日 PV 上限（0=不限）
 # 跨站检索结果的缓存 TTL(秒)：同一关键词 6 小时内不重复检索(省 PV)。
 CROSSSEED_CACHE_TTL = 6 * 3600
 # 跨站候选池：每轮最多把几个「本站非免费但其他条件合格」的候选拿去跨站取种。
@@ -228,7 +228,6 @@ def _cs_parse_site_hours(raw: Any) -> Dict[str, float]:
         out[dom] = max(0.0, min(720.0, val))
     return out
 
-REUSE_WORKER_BATCH = 5
 # ★ 推荐甄别(刷流种价值生命周期):独立低频 worker,同样插件级单 worker + 轮转。
 RECOMMEND_INTERVAL_MINUTES = 60
 RECOMMEND_SCAN_MAX = 15
@@ -248,7 +247,7 @@ PV_BUDGET_RESERVE = 20
 # ★ 免费索引每轮翻页数：免费池很小且每小时只动几条，稳态 1 页就够。
 #   主列表的 browse_pages（任务配置）只用于「非 NexusPHP / 拿不到免费索引」的回退路径。
 FREE_INDEX_PAGES = 1          # 预算预留:接近上限时提前收手,给实时/签到留额度
-# ★ 全局并发闸门:插件级限制「同时在飞」的 worker 数(刷流/检查/辅种慢扫合计)。
+# ★ 全局并发闸门:插件级限制「同时在飞」的 worker 数(刷流/检查/全站辅种合计)。
 #   几十个任务若同刻开火,会一起抢线程池 + 集中打站点 → 撞流控;这里做全局封顶。
 GLOBAL_WORKER_LIMIT = 6
 # 站点抓取失败后的冷却(秒):失败站点在此时窗内不再重试抓取(共享给同站所有任务)。
@@ -448,19 +447,9 @@ class MagicFlowTaskConfig:
     browse_pages: int = 3                        # 每轮站点列表翻页数(游标深翻)
 
     # 存量复用(辅种)
-    reuse_existing: bool = True                  # 复用本机已有资源,避免重复下载
-    reuse_verify: bool = True                    # 辅种前先校验,不匹配自动撤销
     # ★ 自动换种:名额/磁盘/站点上限吃紧时,按边际魔力把低价值托管种换成高价值候选(程序自己决定换哪个)
     #   3.36.0 起**默认关**;且换入默认只做「零下载辅种」——绝不为几个魔力下载几十 GB 流量。
-    auto_swap: bool = False                      # 开关(默认关)
-    swap_allow_download: bool = False            # 允许「取种换入」(默认关;开启后只走免费渠道:本站免费/跨站免费副本,绝不付费下载)
-    swap_ceiling_pct: float = 70.0               # 站点魔力占用 ≥ 该值 → 视为接近上限,参与换种
-    swap_min_gain_pct: float = 25.0              # 净收益 ≥ 被撤种边际的该比例才动手
-    swap_max_in_gb: Optional[float] = 30.0       # 换入候选单个体积上限(GB;0=不限)——不拿全盘换几个魔力
-    swap_daily_dl_gb: float = 20.0               # 每任务每日换种「实际下载」上限(GB;按真实下载量计)
-    swap_min_gain_per_gb: float = 0.05           # 每 GB 下载至少要换回的魔力(/h)
-    swap_min_in_seeders: int = 3                 # 下载换入候选的最少做种人数(没源就下不动)
-    # 跨站免费取种（3.9.0）：目标站的种子若不免费，去他站找免费同一 Release 下回来，再回辅目标站
+    # 跨站免费取种（3.9.0）：目标站的种子若不免费，去他站找免费同一 Release 下回来（下完由「跨站取种」分诊）
     crossseed_enabled: bool = False              # 开关（默认关，开了才会走跨站）
     crossseed_max_per_round: int = 3             # 每轮最多发起几个跨站取种
     crossseed_max_size_gb: float = 20.0          # 单个种子大小上限（GB）
@@ -571,16 +560,6 @@ class MagicFlowTaskConfig:
             "max_download_concurrent": self.max_download_concurrent,
             "top_n": self.top_n,
             "browse_pages": self.browse_pages,
-            "reuse_existing": self.reuse_existing,
-            "reuse_verify": self.reuse_verify,
-            "auto_swap": bool(getattr(self, "auto_swap", False)),
-            "swap_allow_download": bool(getattr(self, "swap_allow_download", False)),
-            "swap_ceiling_pct": getattr(self, "swap_ceiling_pct", 70.0),
-            "swap_min_gain_pct": getattr(self, "swap_min_gain_pct", 25.0),
-            "swap_max_in_gb": getattr(self, "swap_max_in_gb", 30.0),
-            "swap_daily_dl_gb": getattr(self, "swap_daily_dl_gb", 20.0),
-            "swap_min_gain_per_gb": getattr(self, "swap_min_gain_per_gb", 0.05),
-            "swap_min_in_seeders": int(getattr(self, "swap_min_in_seeders", 3) or 3),
             "crossseed_enabled": self.crossseed_enabled,
             "crossseed_max_per_round": self.crossseed_max_per_round,
             "crossseed_max_size_gb": self.crossseed_max_size_gb,

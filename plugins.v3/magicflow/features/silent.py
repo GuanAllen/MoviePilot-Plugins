@@ -540,8 +540,6 @@ class SilentMixin:
                 "new_timeout_hours": round(new_timeout_h, 2),
                 "hr_default_hours": 0.0,
             },
-            "stage": "active",
-            "pool_cleanup": True,
             "generated_at": now,
         }
         try:
@@ -570,10 +568,10 @@ class SilentMixin:
           - crossseed：``_crossseed_source_hashes``（跨站来源份 H&R 保种期）；
           - claim / manual：``_claim_protected_hashes`` / ``store.protected_torrents``（承诺）；
           - stalled_violation：qB 态不在 paused/stopped/queued（= 违背「静默全 paused」不变量）；
-          - 其余 → relocate（清理候选）。
+          - 其余 → cleanup（清理候选）。
         """
         counts = {"owed_hr": 0, "library_asset": 0, "crossseed": 0, "claim": 0,
-                  "manual": 0, "stalled_violation": 0, "relocate": 0, "total": 0}
+                  "manual": 0, "stalled_violation": 0, "cleanup": 0, "total": 0}
         items: List[Dict[str, Any]] = []
         try:
             led = dict(self._tag_state().items() or {})
@@ -664,7 +662,7 @@ class SilentMixin:
             elif hh in manual:
                 cls = "manual"
             else:
-                cls = "relocate"
+                cls = "cleanup"
             counts[cls] = int(counts.get(cls) or 0) + 1
             if stalled:
                 counts["stalled_violation"] = int(counts["stalled_violation"]) + 1
@@ -679,15 +677,13 @@ class SilentMixin:
             })
         return {
             "at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "stage": "active",
-            "pool_cleanup": True,
             "counts": counts,
             "items": items,
             "source_of_truth": ["tag_state(账本)", "_tag_all_torrents()", "_hr_obligation",
                                 "_crossseed_source_hashes", "_claim_protected_hashes",
                                 "store.protected_torrents"],
             "note": ("静默池全 paused 硬不变量：stalled_violation = 违背不变量的种；"
-                     "owed_hr 应由 hr_host 迁到保种（池里不该有）；relocate = 清理候选（删条目+删文件，过删除闸门）。"),
+                     "owed_hr 应由 hr_host 迁到保种（池里不该有）；cleanup = 清理候选（删条目+删文件，过删除闸门）。"),
         }
 
     # ---------------------------------------------------------
@@ -726,8 +722,13 @@ class SilentMixin:
             seeded = seed_hours_for_hr(torrent) * 3600.0
         except Exception:  # noqa: BLE001
             seeded = 0.0
-        if seeded >= need * 3600.0:
-            return True, f"已挂{seeded / 3600.0:.1f}h/{need:.0f}h"
+        # ★ 14.0.0：与账单状态机同源（need + 安全垫），避免「账单还 active 就判已做满」
+        try:
+            _due = float(self._hr_due_hours(need))
+        except Exception:  # noqa: BLE001
+            _due = float(need)
+        if seeded >= _due * 3600.0:
+            return True, f"已挂{seeded / 3600.0:.1f}h/{_due:.1f}h"
         return False, f"挂{seeded / 3600.0:.1f}h/{need:.0f}h"
 
     def _silent_to_plain(self, h: str) -> bool:

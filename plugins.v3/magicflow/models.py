@@ -60,20 +60,10 @@ class MagicFlowTaskPayload(BaseModel):
     browse_pages: int = Field(3, ge=1, le=50, description="每轮站点列表翻页数(游标深翻,从上次游标处继续)")
 
     # 存量复用(辅种):优先复用下载器/本机已有资源,避免重复下载
-    reuse_existing: bool = Field(True, description="复用本机已有资源(辅种):同 hash 直接打标签、同文件列表直接做种,不重复下载")
-    reuse_verify: bool = Field(True, description="辅种前先校验已有文件;校验不通过自动撤销(避免误下载)")
 
     # 自动换种(3.35.0;3.36.0 默认关 + 换入默认只做「零下载辅种」):名额/磁盘/站点接近上限时,
     # 按边际魔力把低价值种「下线」(暂停做种、不删种)换入更优种。★ 换入默认**不下载流量**:
     # 只有本机已有同资源(辅种)才换,绝不为几个魔力烧几十 GB(3.35.x 的教训)。
-    auto_swap: bool = Field(False, description="自动换种(默认关):名额/磁盘/站点接近上限时,按边际魔力把低价值种下线(暂停做种、不删种)换入更优种")
-    swap_allow_download: bool = Field(False, description="换种允许「取种换入」(默认关):开启后换入只走免费渠道——本站免费,或去兄弟站免费取同一 Release 的副本(跨站免费取种);两条都不通就跳过,绝不付费下载")
-    swap_ceiling_pct: float = Field(70.0, ge=0, le=100, description="站点魔力占用 ≥ 该值视为接近上限,参与换种")
-    swap_min_gain_pct: float = Field(25.0, ge=0, le=1000, description="换种净收益 ≥ 被换出种边际的该比例才动手(库内/自有种按 2 倍)")
-    swap_max_in_gb: Optional[float] = Field(30.0, ge=0, description="换入候选单个体积上限(GB,0=不限)--不拿全盘换几个魔力")
-    swap_daily_dl_gb: float = Field(20.0, ge=0, description="每任务每日换种「取种下载」上限(GB,0=不限);按真实下载量计(本站免费+跨站免费都算),非磁盘增量")
-    swap_min_gain_per_gb: float = Field(0.05, ge=0, description="每 GB 换种下载至少要换回的魔力（/h）：net ≥ 下载GB × 该值，过滤「几十GB换零点几/h」")
-    swap_min_in_seeders: int = Field(3, ge=1, description="换种「下载换入」候选的最少做种人数:老种候选常常没源,人在才拉得动(零下载辅种不受此限)")
 
     # 跨站免费取种(3.9.0):目标站的种子若不免费(下载要烧流量),去任意他站找「免费且同一 Release」的副本下回来,再回辅目标站--对目标站是零下载纯做种
     crossseed_enabled: bool = Field(False, description="跨站免费取种:目标站不免费的种子,改从他站免费副本下载后回辅(默认关)")
@@ -539,8 +529,6 @@ class MagicFlowDefaultsPayload(BaseModel):
     seen_cooldown_hours: float = Field(24.0, ge=0, le=8760, description="候选去重冷却(小时)")
     brush_seed_days: int = Field(2, ge=0, le=365, description="默认刷流保种天数(0=按无上传判定)")
     refill_when_empty: bool = True
-    reuse_existing: bool = True
-    reuse_verify: bool = True
     crossseed_enabled: bool = False
     crossseed_max_per_round: int = 3
     crossseed_max_size_gb: float = 20.0

@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from app.schemas import Response
 
-from ..common import task_is_running
+from ..common import task_is_participating, CROSSSEED_TASK_ID
 
 SCOPE_GLOBAL = "global"   # 全局单例能力（有自己的开关）
 SCOPE_VIEW = "view"       # 只读视图（无开关，随时可看）
@@ -134,10 +134,18 @@ class RegistryMixin:
         )
 
     def _crossseed_feature_enabled(self) -> bool:
-        """「跨站取种」是按任务开的：有启用中的任务开了它就算在用。"""
+        """「跨站取种」是否在用（14.0.0）。
+
+        两个来源（任一为真）：
+          · **全局真任务**「跨站取种」（``__crossseed__``）在岗 —— 它是承接方，常驻；
+          · 任一任务开了 ``crossseed_enabled`` 且在岗 —— 它们是发起方（刷流任务）。
+        """
         try:
+            cs = (self._task_configs or {}).get(CROSSSEED_TASK_ID)
+            if cs is not None and task_is_participating(cs):
+                return True
             for task in (self._task_configs or {}).values():
-                if getattr(task, "crossseed_enabled", False) and task_is_running(task):
+                if getattr(task, "crossseed_enabled", False) and task_is_participating(task):
                     return True
         except Exception:  # noqa: BLE001
             return False

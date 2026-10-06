@@ -1,4 +1,4 @@
-"""魔流 · 跨站免费取种 + 回辅目标站（3.9.0）
+"""魔流 · 跨站免费取种（3.9.0；★ 14.0.0 起「下完分诊」，回辅目标站交「全站辅种」）
 
 **玩法**：目标站 A 上「下载量大」的种子若在 A **不免费**，就别在 A 下（烧流量/拉低分享率）。
 改去**任意他站**（B / C / D / E …）找**同一 Release 且免费**的副本下下来，
@@ -26,9 +26,9 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from .fingerprint import fingerprint
 
-# 下载器里给「跨站取种」打的标签（回辅完成后仍在，用于甄别与统计）
+# 下载器里给「跨站取种」打的标签（完成后仍在，用于甄别与统计）
 CROSSSEED_TAG = "魔流-跨站"
-# 待回辅记录（PluginData 持久化；重启/重装不丢）
+# 取种台账（PluginData 持久化；重启/重装不丢）
 PENDING_KEY = "crossseed_pending"
 # ★ 来源站份(他站那份)的保护名单:H&R 保种期内任何任务不得删除/改标签
 SOURCES_KEY = "crossseed_sources"
@@ -202,14 +202,14 @@ def pick_source(
     return None
 
 
-# --------------------------------------------------------------------------- 待回辅账本
+# --------------------------------------------------------------------------- 取种台账
 
 class CrossSeedPending:
-    """跨站取种的「待回辅」账本。
+    """跨站取种的「取种台账」（★ 14.0.0 起不再回辅，仅记录在飞取种的生命周期）。
 
     - **权威持久化**走站点槽位（``slot_callbacks(self, "crossseed_pending")`` → ``mf_site`` 表）；
-    - 目标站 A 的 `.torrent` 字节**落盘**到 `<data_dir>/crossseed/<a_hash>.torrent`
-      （种子文件动辄几万字节，塞进 PluginData 会把整表撑大）。
+    - 每条 = 一次跨站取种（他站 B 的 sib_hash + 来源站/H&R 判定/去重基线），
+      由全局真任务「跨站取种」的 Check 周期（``_crossseed_tick``）负责分诊销账。
     """
 
     def __init__(
@@ -241,7 +241,7 @@ class CrossSeedPending:
         try:
             self._save_data(PENDING_KEY, data)
         except Exception as err:  # noqa: BLE001
-            _log(self._log, f"跨站:待回辅账本写入失败:{err}", "error")
+            _log(self._log, f"跨站:取种台账写入失败:{err}", "error")
 
     def add(self, rec: Dict[str, Any]) -> None:
         sib = str(rec.get("sib_hash") or "").lower()
@@ -266,7 +266,7 @@ class CrossSeedPending:
         return n
 
     def prune(self, now: Optional[float] = None, ttl: float = PENDING_TTL) -> List[str]:
-        """清掉超时/种子文件丢失的记录，返回被清掉的 hash 列表。"""
+        """清掉超时记录，返回被清掉的 hash 列表。"""
         ts = float(now if now is not None else time.time())
         data = self.items()
         dead: List[str] = []
@@ -275,41 +275,12 @@ class CrossSeedPending:
                 created = float(rec.get("created") or 0)
             except Exception:  # noqa: BLE001
                 created = 0.0
-            path = str(rec.get("a_torrent") or "")
-            if (created and (ts - created) > ttl) or (path and not Path(path).exists()):
+            if created and (ts - created) > ttl:
                 dead.append(sib)
                 data.pop(sib, None)
         if dead:
             self._write(data)
         return dead
-
-    # ---- A 的 .torrent 落盘
-    def put_torrent(self, a_hash: str, raw: bytes) -> str:
-        try:
-            self.dir.mkdir(parents=True, exist_ok=True)
-            path = self.dir / f"{str(a_hash or 'x').lower()}.torrent"
-            tmp = path.with_suffix(".torrent.tmp")
-            tmp.write_bytes(raw or b"")
-            tmp.replace(path)
-            return str(path)
-        except Exception as err:  # noqa: BLE001
-            _log(self._log, f"跨站:A 站种子落盘失败:{err}", "error")
-            return ""
-
-    def read_torrent(self, path: str) -> Optional[bytes]:
-        try:
-            return Path(path).read_bytes()
-        except Exception as err:  # noqa: BLE001
-            _log(self._log, f"跨站:读取 A 站种子失败 {path}:{err}", "warning")
-            return None
-
-    def cleanup_torrent(self, path: str) -> None:
-        try:
-            p = Path(path)
-            if p.exists():
-                p.unlink()
-        except Exception:  # noqa: BLE001
-            pass
 
 
 class CrossSeedSources:

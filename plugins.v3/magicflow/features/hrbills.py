@@ -926,6 +926,7 @@ class HrBillsMixin:
         except Exception:  # noqa: BLE001
             snap = {}
         deleted_ok: Set[str] = set()
+        deleted_rows: Dict[str, Dict[str, Any]] = {}
         try:
             _path = self._deletions_log_path()
             if _path is not None and _path.exists():
@@ -938,7 +939,10 @@ class HrBillsMixin:
                     except Exception:  # noqa: BLE001
                         continue
                     if _row.get("ok") and not _row.get("blocked"):
-                        deleted_ok.add(str(_row.get("hash") or "").strip().lower())
+                        _dh = str(_row.get("hash") or "").strip().lower()
+                        if _dh:
+                            deleted_ok.add(_dh)
+                            deleted_rows[_dh] = _row
         except Exception:  # noqa: BLE001
             pass
         breaches: List[Dict[str, Any]] = []
@@ -970,13 +974,33 @@ class HrBillsMixin:
                 continue
             attr = "plugin_deleted" if hh in deleted_ok else "external_deleted"
             gate_bug = attr == "plugin_deleted"
+            # ★ 14.0.0 归因细分：删除时账单是否已在册？在册却放行 = **闸门漏**（gate_miss）；
+            #   删除早于开账 = 账单/口径后置（口径差，rule_drift）——margin 口径统一正收敛这一类。
+            gate_bug_kind = ""
+            _del_row: Dict[str, Any] = deleted_rows.get(hh) or {}
+            _del_ts = 0.0
+            if _del_row:
+                try:
+                    _del_ts = float(_del_row.get("ts") or 0.0)
+                except (TypeError, ValueError):
+                    _del_ts = 0.0
+            if gate_bug:
+                try:
+                    _opened = float(b.get("opened_at") or 0.0)
+                except (TypeError, ValueError):
+                    _opened = 0.0
+                gate_bug_kind = "gate_miss" if (_opened and _del_ts and _opened <= _del_ts) else "rule_drift"
             breaches.append({
                 "hash": hh, "site": str(b.get("site") or ""),
                 "title": str(b.get("title") or "")[:120],
                 "bill_state": st, "rule": str(b.get("rule") or ""),
                 "need_h": round(float(b.get("need_h") or 0.0), 2),
                 "seeded_h": round(float(b.get("seeded_h") or 0.0), 2),
+                "opened_at": float(b.get("opened_at") or 0.0),
                 "attribution": attr, "gate_bug": gate_bug,
+                "gate_bug_kind": gate_bug_kind,
+                "delete_source": str(_del_row.get("source") or ""),
+                "deleted_at": _del_ts,
                 "severity": "critical" if gate_bug else "high",
                 "breached_at": b.get("breached_at") or 0,
                 "rescue_hint": "GET /tags?action=hr_reconcile&site=" + str(b.get("site") or "") + "&confirm=1",
@@ -986,6 +1010,8 @@ class HrBillsMixin:
             "at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "totals": {"breached": len(breaches),
                        "critical": sum(1 for x in breaches if x.get("gate_bug")),
+                       "gate_miss": sum(1 for x in breaches if x.get("gate_bug_kind") == "gate_miss"),
+                       "rule_drift": sum(1 for x in breaches if x.get("gate_bug_kind") == "rule_drift"),
                        "at_risk": len(at_risk)},
             "breaches": breaches,
             "at_risk": at_risk,
@@ -993,6 +1019,7 @@ class HrBillsMixin:
                 "deadline_warn_hours": round(float(self._hr_warn_hours() or 0.0), 2),
                 "seed_margin_hours": round(float(self._hr_margin_hours() or 0.0), 2),
                 "rule": "at_risk = 种还在 qB、未达标、距站点考核窗口到期 ≤ warn 小时数（预警≠违约）",
+                "gate_bug_kind": "gate_miss=删除时账单已在册（闸门当班漏判）；rule_drift=删除早于开账/口径差",
             },
             "source_of_truth": ["hr_bills.json", "deletions.jsonl", "_tag_all_torrents()"],
             "write": {

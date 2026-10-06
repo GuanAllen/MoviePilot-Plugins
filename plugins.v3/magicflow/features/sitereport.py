@@ -23,7 +23,7 @@ from typing import Any, Dict, List
 
 from app.schemas import Response
 
-from ..tags import STATE_SILENT, RESCUE_TAG, is_reuse_copy, parse_tag
+from ..tags import DUTY_STATES, STATE_SILENT, RESCUE_TAG, is_reuse_copy, parse_tag
 from .hrbills import (
     BILL_STATE_ACTIVE,
     BILL_STATE_BREACHED,
@@ -161,14 +161,27 @@ class SiteReportMixin:
 
     @staticmethod
     def _site_report_is_silent(t: Any) -> bool:
+        """★ 14.0.0：静默 = **有身份标签 且 没有职务标签**。
+
+        身份轴（``魔流-<站点>-静默-<新|资源|普通>``）天生带「静默」两字，**不能**单看
+        「标签里有 state==静默」——那会把所有在岗做种的种全误判成静默。唯一口径：
+        有身份、且职务轴（刷流 / 魔力 / 保种）缺位 ⇒ 静默（不在任何任务名下）。
+        """
+        has_identity = False
+        has_duty = False
         try:
             for tg in (getattr(t, "tags", None) or []):
                 p = parse_tag(str(tg))
-                if p and p.get("state") == STATE_SILENT:
-                    return True
+                if not p:
+                    continue
+                st = str(p.get("state") or "")
+                if st == STATE_SILENT:
+                    has_identity = True
+                elif st in DUTY_STATES:
+                    has_duty = True
         except Exception:  # noqa: BLE001
             pass
-        return False
+        return has_identity and not has_duty
 
     def _site_report_bucket(self, t: Any, state: str, progress: float,
                             is_hr: bool, is_prot: bool) -> str:

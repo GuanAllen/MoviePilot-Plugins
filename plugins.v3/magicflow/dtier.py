@@ -105,6 +105,14 @@ class PvLedger:
             return 0
         return int(sum(int(v or 0) for v in site.values()))
 
+    def today_kind(self, site_id: Any, kind: str = "other") -> int:
+        """某站点今日**某类型**的累计次数（用于「单站单类日上限」，如取种 crossseed）。"""
+        sid = str(int(site_id or 0))
+        site = (self._load().get(self.today()) or {}).get(sid)
+        if not isinstance(site, dict):
+            return 0
+        return int(site.get(str(kind or "other"), 0) or 0)
+
     def snapshot(self, days: int = 7, name_of: Optional[Callable[[str], str]] = None) -> Dict[str, Any]:
         """返回最近若干天的账本快照，供 `/pv` 端点与看板使用。"""
         data = self._load()

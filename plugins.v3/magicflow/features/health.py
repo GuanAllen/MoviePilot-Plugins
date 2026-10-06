@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from app.schemas import Response
 
-from ..common import task_is_running
+from ..common import task_is_participating, task_is_running
 from .hrbills import (
     BILL_STATE_ACTIVE,
     BILL_STATE_BREACHED,
@@ -60,6 +60,7 @@ class HealthMixin:
         except Exception:  # noqa: BLE001
             tasks = []
         running = [t for t in tasks if task_is_running(t)]
+        participating = [t for t in tasks if task_is_participating(t)]
 
         # H1 / H2：任务维度
         for t in running:
@@ -185,11 +186,11 @@ class HealthMixin:
             })
 
         # H5 全局：一个启用的任务都没有
-        if tasks and not running:
+        if tasks and not participating:
             issues.append({
                 "key": "H5:global",
                 "level": "info",
-                "title": "没有启用中的任务",
+                "title": "没有在岗的任务",
                 "detail": f"共 {len(tasks)} 个任务，全部处于「已停止」",
                 "task_id": "",
             })

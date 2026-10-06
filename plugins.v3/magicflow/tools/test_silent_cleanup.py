@@ -366,6 +366,31 @@ def main() -> int:
     _ok("SUB_PLAIN" not in _pc, "`_silent_purge_incomplete` 不再有 sub=普通 限定（未下完不分身份都删）")
     _ok("_silent_identity_protected(" in _pc, "周期兜底仍走身份保护（不再用标签判据）")
 
+    print("\n[12] 源码级护栏：14.0.0 收线 / 判据同源 / 全局真任务")
+    _hr = _src("hr.py")
+    _common = open(os.path.join(_root, "common.py"), encoding="utf-8").read()
+    _cs = _src("crossseed.py")
+    _sr = _src("sitereport.py")
+    _reg = _src("registry.py")
+    _ob = _hr[_hr.index("def _hr_obligation"):]
+    _ob = _ob[:_ob.index("\n    def ", 10)]
+    _ok("_hr_due_hours(" in _ob,
+        "`_hr_obligation` 与账单同源：用 `_hr_due_hours`（need+margin）而非裸 need_h")
+    _ok("def _hr_due_hours" in _hr and "_hr_margin_hours(" in _hr.split("def _hr_due_hours", 1)[1][:900],
+        "`_hr_due_hours` = need + margin（唯一口径）")
+    _ok("DUTY_STATES" in _sr and "STATE_SILENT" in _sr,
+        "站点报表静默判据 = 有身份标签 且 无职务标签（sitereport）")
+    _ok('"stage"' not in _sil and "pool_cleanup" not in _sil,
+        "静默盘点已去观测残留（无 stage / pool_cleanup）")
+    _ok('"relocate"' not in _sil and '"cleanup"' in _sil,
+        "清理候选分类改名 relocate → cleanup")
+    _ok("CROSSSEED_TASK_ID" in _common and "CROSSSEED_PV_DAILY_CAP_DEFAULT" in _common,
+        "全局真任务「跨站取种」常量 + 单站 PV 上限已入 common")
+    _ok("def _crossseed_tick" in _cs and "def crossseed_scan" not in _cs,
+        "跨站线：worker `crossseed_scan` 已删，改 `_crossseed_tick`（全局任务 Check）")
+    _ok("CROSSSEED_TASK_ID" in _reg,
+        "registry 特性开关把全局「跨站取种」任务算作启用中")
+
     print("\n" + "=" * 64)
     print(f"✅ PASS —— 共 {CHECKS} 项全过")
     return 0

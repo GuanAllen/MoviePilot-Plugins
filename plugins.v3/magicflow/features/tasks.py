@@ -42,7 +42,12 @@ from ..sites.formula_fetch import (
 
 from ..common import (
     BROWSE_PAGES,
+    CROSSSEED_TASK_INTERVAL_MINUTES,
+    CROSSSEED_TASK_ID,
+    CROSSSEED_TASK_NAME,
     MagicFlowTaskConfig,
+    RUN_MODE_RUNNING,
+    RUN_MODE_STOPPED,
     SILENT_HOST_TASK_ID,
     normalize_run_mode,
     enabled_of_run_mode,
@@ -129,20 +134,6 @@ class TasksMixin:
             max_download_concurrent=getattr(payload, "max_download_concurrent", 10) or 10,
             top_n=getattr(payload, "top_n", 30) or 30,
             browse_pages=getattr(payload, "browse_pages", 3) or 3,
-            reuse_existing=payload.reuse_existing,
-            reuse_verify=payload.reuse_verify,
-            auto_swap=bool(getattr(payload, "auto_swap", False)),
-            swap_allow_download=bool(getattr(payload, "swap_allow_download", False)),
-            swap_ceiling_pct=float(getattr(payload, "swap_ceiling_pct", 70.0) or 70.0),
-            swap_min_gain_pct=float(getattr(payload, "swap_min_gain_pct", 25.0) or 25.0),
-            swap_max_in_gb=(
-                float(payload.swap_max_in_gb)
-                if getattr(payload, "swap_max_in_gb", None) not in (None, "")
-                else None
-            ),
-            swap_daily_dl_gb=float(getattr(payload, "swap_daily_dl_gb", 20.0) or 0.0),
-            swap_min_gain_per_gb=float(getattr(payload, "swap_min_gain_per_gb", 0.05) or 0.0),
-            swap_min_in_seeders=int(getattr(payload, "swap_min_in_seeders", 3) or 3),
             crossseed_enabled=bool(getattr(payload, "crossseed_enabled", False)),
             crossseed_max_per_round=int(getattr(payload, "crossseed_max_per_round", 3) or 3),
             crossseed_max_size_gb=float(getattr(payload, "crossseed_max_size_gb", 20.0) or 20.0),
@@ -254,20 +245,7 @@ class TasksMixin:
         task.max_download_concurrent = getattr(payload, "max_download_concurrent", 10) or 10
         task.top_n = getattr(payload, "top_n", 30) or 30
         task.browse_pages = getattr(payload, "browse_pages", 3) or 3
-        task.reuse_existing = payload.reuse_existing
-        task.reuse_verify = payload.reuse_verify
         # ★ 3.35.0 自动换种（同样必须显式赋值，漏一个前端开关就白开）；3.36.0 默认关 + 默认只做零下载辅种
-        task.auto_swap = bool(getattr(payload, "auto_swap", False))
-        task.swap_allow_download = bool(getattr(payload, "swap_allow_download", False))
-        _scp = getattr(payload, "swap_ceiling_pct", None)
-        task.swap_ceiling_pct = float(_scp) if _scp not in (None, "") else 70.0
-        _smg = getattr(payload, "swap_min_gain_pct", None)
-        task.swap_min_gain_pct = float(_smg) if _smg not in (None, "") else 25.0
-        _smi = getattr(payload, "swap_max_in_gb", None)
-        task.swap_max_in_gb = float(_smi) if _smi not in (None, "") else None
-        task.swap_daily_dl_gb = float(getattr(payload, "swap_daily_dl_gb", 20.0) or 0.0)
-        task.swap_min_gain_per_gb = float(getattr(payload, "swap_min_gain_per_gb", 0.05) or 0.0)
-        task.swap_min_in_seeders = int(getattr(payload, "swap_min_in_seeders", 3) or 3)
         # ★ 3.9.0 跨站免费取种（EditForm 显式赋值；漏一个就等于前端开关不生效）
         task.crossseed_enabled = bool(getattr(payload, "crossseed_enabled", False))
         task.crossseed_max_per_round = max(int(getattr(payload, "crossseed_max_per_round", 3) or 3), 1)
@@ -309,7 +287,9 @@ class TasksMixin:
         self._apply_seed_upload_limit()
         if _run_mode != _prev_mode:
             self._spawn_run_mode_apply(task, _run_mode)
-            if not enabled_of_run_mode(_run_mode):
+            # ★ 14.0.0：只有「停止」(stopped) 才遣散退回静默；「做种中」(seeding) = **在岗**，
+            #   名下种继续挂着（欠 H&R 的照挂），不得退回静默池。
+            if _run_mode == RUN_MODE_STOPPED:
                 # ★ 停止＝退回静默（保文件、可逆；重新启用会被同站纳管再接管回来）
                 threading.Thread(
                     target=self._settle_task_idle_safe, args=(task.id,), daemon=True
@@ -349,6 +329,36 @@ class TasksMixin:
         except Exception:  # noqa: BLE001
             return []
         return [snap[h] for h in hashes if h in snap]
+
+    def _ensure_crossseed_task(self) -> None:
+        """★ 14.0.0：确保存在「跨站取种」**全局真任务**（不是伪任务）。
+
+        - 真实 task 行：出现在任务列表 / ``/agent/tasks``，可启停、有 run_mode；
+        - 无站点（site_id=0、站点名空）：落的是**他站**种子，归属由分诊决定；
+        - 职责：只做「承接 + 生命周期分诊」（``crossseed._crossseed_tick``），
+          **不抓任何站点列表 → 零 browse PV**。
+        """
+        tid = CROSSSEED_TASK_ID
+        if tid in self._task_configs:
+            return
+        task = MagicFlowTaskConfig(
+            id=tid,
+            name=CROSSSEED_TASK_NAME,
+            task_type="crossseed",
+            enabled=True,
+            run_mode=RUN_MODE_RUNNING,
+            brush_interval=float(CROSSSEED_TASK_INTERVAL_MINUTES),
+            check_interval=float(CROSSSEED_TASK_INTERVAL_MINUTES),
+            site_id=0,
+            site_name="",
+            site_domain="",
+        )
+        try:
+            task.brush_tag = CROSSSEED_TAG
+        except Exception:  # noqa: BLE001
+            pass
+        self._task_configs[tid] = task
+        self._log(f"魔流:已创建全局任务「{CROSSSEED_TASK_NAME}」(id={tid})")
 
     def _task_managed_hashes(self, task: Any) -> List[str]:
         """任务名下种子 hash：按站点（tracker 域名）识别（标签/归属已退役）。"""

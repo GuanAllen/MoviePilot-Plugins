@@ -16,26 +16,15 @@ from ..downloader_ops import (
     TorrentInfo,
     TorrentFetchFlowControl,
     QB_DOWNLOADING_STATES,
-    QB_PAUSED_STATES,
 )
-from ..fingerprint import fingerprint, info_hash
-from ..fetcher import (
-    SiteFetcher,
-    filter_candidates,
-)
-from ..persistence import OperationItem, WorkReport
+from ..fingerprint import fingerprint
 from ..sites.formula_fetch import (
     fetch_torrent_promotion,
     fetch_user_torrent_urls,
 )
-
-
 from ..common import (
-    BROWSE_PAGES,
     MagicFlowTaskConfig,
-    REUSE_WORKER_BATCH,
     _SizeIndex,
-    task_is_running,
 )
 
 
@@ -53,227 +42,17 @@ def _reuse_local_complete(local: Any) -> bool:
 
 
 class ReuseMixin:
-    """reuse 功能集（原 MagicFlow 方法原样搬入）。"""
+    """复用取种助手集（本机/IYUU/MP 搜索）。
 
-    # ------------------------------------------------------------------ 辅种慢扫
-    def reuse_scan(self) -> None:
-        """辅种慢扫(插件级**单 worker**,低频)。
+    ★ 14.0.0：原「辅种慢扫」(reuse_scan) 工作线已删除，此处只保留被
+    brush / crossseed / reseed / cleanup / tasks 复用的通用助手。
+    """
 
-        不再每任务注册服务,而是**一个插件级服务**遍历所有符合条件的魔力任务,
-        每轮只处理其中**一个**(round-robin)→ 服务数不随任务数增长,天然错峰/限流,
-        避免几十个任务在同一时刻一起取种、撞站点流控。
-        刷流任务只辅助「排名内」的种子(主流程顺带做),不纳入。
-        """
-        eligible = [
-            t for t in self._task_configs.values()
-            if getattr(t, "enabled", False) and getattr(t, "reuse_existing", False)
-            and str(getattr(t, "task_type", "bonus") or "bonus").strip().lower() != "brush"
-        ]
-        if not eligible:
-            return
-        eligible.sort(key=lambda t: str(t.id))
-        ids = [str(t.id) for t in eligible]
-        last = str(getattr(self, "_reuse_cursor", "") or "")
-        start = (ids.index(last) + 1) % len(eligible) if last in ids else 0
-        task = eligible[start]
-        self._reuse_cursor = str(task.id)
-        if not self._acquire_worker_slot("辅种慢扫"):
-            return
-        try:
-            try:
-                self._reuse_scan_task(task)
-            except Exception as e:  # noqa: BLE001
-                import traceback
-                logger.error(f"魔流 辅种慢扫 调度异常: {e}\n{traceback.format_exc()}")
-        finally:
-            self._release_worker_slot()
+    # ★ 14.0.0：删除「辅种慢扫」（Reuse worker）+ 任务级「存量复用」开关 + 刷流复用分支
+    #   ——与「全站辅种」(reseed) 效果重复，只保留全站辅种。本模块只保留**取种助手**：
+    #   `_local_reuse_index` / `_detect_crosssite_reuse` / `_acquire_existing` / `_acquire_source`，
+    #   仍被 brush（取种第④跳）/ crossseed / reseed / cleanup 使用。
 
-    def _reuse_scan_task(self, task: MagicFlowTaskConfig) -> None:
-        """对单个任务做一轮辅种慢扫(内部实现)。"""
-        task_id = str(task.id)
-        if not task_is_running(task) or not task.reuse_existing:
-            return
-        if str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush":
-            return
-        if not self._try_begin_run(task_id):
-            self._log(f"魔流 [{task.name}] 辅种慢扫:上一轮仍在执行,跳过")
-            return
-        started = time.time()
-        reused = 0
-        scanned = 0
-        try:
-            downloader = self._get_downloader(task.downloader)
-            if not downloader or not downloader.is_available:
-                self._log(f"魔流 [{task.name}] 辅种慢扫:下载器不可用", "warning")
-                return
-            if not task.site_domain:
-                site = self._get_site(task.site_id)
-                if site:
-                    task.site_domain = getattr(site, "domain", "") or task.site_domain
-                    # ★ 规范职务标签要用站点短名（_task_tag），别用可能为空的旧字段 brush_tag
-                    if not getattr(task, "site_name", ""):
-                        task.site_name = getattr(site, "name", "") or getattr(task, "site_name", "")
-            try:
-                local_index, local_by_size = self._local_reuse_index(downloader)
-            except Exception as _le:  # noqa: BLE001
-                self._log(f"魔流 [{task.name}] 辅种慢扫:建本机索引失败 {_le}", "warning")
-                return
-            if not local_index:
-                return
-
-            fetcher = SiteFetcher()
-            if not fetcher.is_available:
-                return
-            pages = max(int(task.browse_pages or BROWSE_PAGES), 1)
-            # 站点级共享抓取:同站多任务共用一份候选(single-flight + 短 TTL)
-            candidates = self._fetch_site_candidates(task, pages=pages, start_page=0)
-            if not candidates:
-                return
-            filter_policy = self._build_filter_policy(task)
-            # ★ 7.9.0：辅种是**零下载**复用（暂停→校验→不匹配自动撤销），不吃站点流量，
-            #   所以不受「只下免费」硬规则约束；关掉校验（允许补下载）时仍只挑免费。
-            if getattr(task, "reuse_verify", True):
-                filter_policy.free_only = False
-            filtered, _rc = filter_candidates(candidates, filter_policy)
-
-            # 选「体积邻近本机」且尚未由本 worker 处理过的候选
-            pool = []
-            for c in filtered:
-                if not getattr(c, "enclosure", "") and not getattr(c, "api_tid", ""):
-                    continue
-                ckey = self._candidate_key(c)
-                if not ckey:
-                    continue
-                if self._store and self._store.seen.is_seen(task.id, f"reuse:{ckey}", 0):
-                    continue
-                if not local_by_size.near(int(getattr(c, "size", 0) or 0)):
-                    continue
-                pool.append(c)
-            if not pool:
-                return
-            pool = pool[: max(int(REUSE_WORKER_BATCH), 1)]
-            scanned = len(pool)
-
-            fp_cache: Dict[str, Optional[str]] = {}
-            # ★ 用**规范职务标签**（站点级 `魔流-<站>-<魔力|刷流>`），不是 task.brush_tag：
-            #   brush_tag 是旧字段、可能为空 → 裸 set 会把种子贴上空的脏标签。
-            tag = self._task_tag(task) or str(getattr(task, "brush_tag", "") or "")
-            for c in pool:
-                ckey = self._candidate_key(c)
-                raw = None
-                # ★ 3.44.0 API 站候选：现场取签名直链
-                if not getattr(c, "enclosure", ""):
-                    try:
-                        self._cand_enclosure(c)
-                    except Exception:  # noqa: BLE001
-                        pass
-                if not getattr(c, "enclosure", ""):
-                    continue
-                try:
-                    raw = downloader.fetch_torrent_bytes(
-                        c.enclosure,
-                        cookie=getattr(c, "site_cookie", None),
-                        user_agent=getattr(c, "site_ua", None),
-                        referer=getattr(c, "page_url", "") or None,
-                    )
-                except TorrentFetchFlowControl as _fe:
-                    self._log(f"魔流 [{task.name}] 辅种慢扫:站点流控,本轮中止({_fe})", "warning")
-                    break
-                except Exception:  # noqa: BLE001
-                    raw = None
-                if self._store and ckey:
-                    self._store.seen.mark(task.id, [f"reuse:{ckey}"])
-                if not raw:
-                    continue
-                try:
-                    c.raw = raw
-                    h = (info_hash(raw) or "").lower()
-                except Exception:  # noqa: BLE001
-                    h = ""
-
-                mode, linfo = "", None
-                if h and h in local_index:
-                    _loc = local_index[h]
-                    if str(getattr(_loc, "state", "") or "").lower() not in QB_DOWNLOADING_STATES:
-                        mode, linfo = "hash", _loc
-                if not mode:
-                    mode, linfo = self._detect_crosssite_reuse(downloader, c, local_by_size, fp_cache, raw=raw)
-                if not mode or linfo is None:
-                    continue
-
-                if mode == "hash":
-                    # ★ 本机同 hash 但**已带本任务标签** = 早在管了，不是「本轮救回来」的：
-                    #   ① 不重复计命中（否则统计虚高）；② 不重复写账（免得账本 churn）；
-                    #   ③ 不动它的暂停状态（静默池的种本来就是暂停挂着，别被我们无意唤醒）。
-                    _already = tag in [str(t or "") for t in (getattr(linfo, "tags", None) or [])]
-                    if _already:
-                        self._dbg(f"辅种慢扫·本机已带本任务标签，不计命中:{c.title}")
-                    else:
-                        # ★ 走正式归户（贴职务 + 保留身份 + **写账本/拿租约**），别裸调 downloader：
-                        #   裸 set 只动 qB 标签、不落账 → 账本与 qB 漂移（这粒种在账本里仍是无主）。
-                        ok = self._tag_assign(task, [h], reason="辅种慢扫·复用(本机同 hash)") > 0
-                        st = str(getattr(linfo, "state", "") or "").lower()
-                        if ok and st in (QB_PAUSED_STATES | {"error", "missingfiles"}):
-                            downloader.resume_torrent(h)
-                        if ok:
-                            reused += 1
-                            self._dup_finish(
-                                task.id,
-                                keys=self._dup_keys(h, fingerprint(raw) if raw else None),
-                            )
-                            self._log(f"魔流 [{task.name}] 辅种慢扫·复用(本机同 hash):{c.title}")
-                else:
-                    hs, err = downloader.add_torrent_reuse(
-                        torrent_bytes=raw,
-                        save_path=(getattr(linfo, "save_path", "") or task.save_path or ""),
-                        tag=tag,
-                        verify=task.reuse_verify,
-                    )
-                    if hs:
-                        # ★ 同 brush：加完补一次正式归户（写账本/租约 + 规范化标签）
-                        try:
-                            self._tag_assign(task, [hs], reason="辅种慢扫·跨站辅种")
-                        except Exception as _ae:  # noqa: BLE001
-                            self._dbg(f"辅种慢扫·归户失败:{_ae}")
-                        reused += 1
-                        self._dup_finish(
-                            task.id,
-                            keys=self._dup_keys(
-                                getattr(c, "real_hash", None), fingerprint(raw) if raw else None
-                            ),
-                        )
-                        self._log(f"魔流 [{task.name}] 辅种慢扫·跨站辅种:{c.title}")
-                    elif err:
-                        self._log(f"魔流 [{task.name}] 辅种慢扫·辅种失败:{c.title}({err})", "warning")
-
-            self._log(
-                f"魔流 [{task.name}] 辅种慢扫完成:命中 {reused} 个(本轮扫 {scanned} 个候选,"
-                f"耗时 {time.time() - started:.1f}s)"
-            )
-            # 分账:慢扫走独立命名空间(slow_reused),不碰刷流/检查的 last_* 字段
-            self._settle(WorkReport(
-                task_id=task_id,
-                source="reuse",
-                status="done",
-                slow_reused=reused,
-                scanned=scanned,
-                duration=time.time() - started,
-            ))
-            if self._store:
-                self._store.journal.add(
-                    task_id=task_id,
-                    kind="reseed",
-                    items=[OperationItem(
-                        hash="", title=f"辅种慢扫:命中 {reused} / 扫 {scanned}",
-                        reason="复用(本机已有资源)", source="reuse",
-                    )],
-                )
-        except Exception as e:  # noqa: BLE001
-            import traceback
-            logger.error(f"魔流 辅种慢扫异常: {e}\n{traceback.format_exc()}")
-            self._log(f"魔流 [{task.name}] 辅种慢扫异常:{e}", "warning")
-        finally:
-            self._end_run(task_id)
 
     def _seen_page_pairs(self, task_id: str) -> Dict[str, str]:
         """从 seen 记录重建 hash→详情页 URL。
@@ -378,70 +157,6 @@ class ReuseMixin:
         index = downloader.get_all_torrents_index()
         return index, _SizeIndex(list(index.values()), tol=0.05)
 
-    def _try_reuse_candidate(
-        self,
-        downloader: DownloaderAdapter,
-        cand: Any,
-        local_by_size: "_SizeIndex",
-        fp_cache: Dict[str, Optional[str]],
-        task: MagicFlowTaskConfig,
-        raw: Optional[bytes] = None,
-    ) -> Tuple[bool, str]:
-        """
-        尝试把候选种子辅到本机已有文件上。
-
-        仅当「文件列表特征码」(路径 + 大小,含根目录名)完全一致时才辅种,
-        避免误指向导致下载器白下载。返回 (是否成功, 信息);信息为 "skip" 表示未命中。
-        """
-        size = int(cand.size or 0)
-        if size <= 0:
-            return False, "skip"
-        same_size = local_by_size.near(size)
-        if not same_size:
-            return False, "skip"
-
-        if raw is None:
-            try:
-                raw = downloader.fetch_torrent_bytes(
-                    cand.enclosure, cookie=cand.site_cookie, user_agent=cand.site_ua
-                )
-            except TorrentFetchFlowControl:
-                return "", None
-        if not raw:
-            return False, "skip"
-        cand_fp = fingerprint(raw)
-        if not cand_fp:
-            return False, "skip"
-
-        for local in same_size:
-            if not _reuse_local_complete(local):
-                continue  # ★ 11.2.1：未下完的本机种不能当辅种源（避免无效 ADD-REUSE 空转）
-            local_hash = (local.hash or "").lower()
-            if not local_hash:
-                continue
-            if local_hash not in fp_cache:
-                fp_cache[local_hash] = downloader.get_torrent_fingerprint(local.hash)
-            if fp_cache.get(local_hash) != cand_fp:
-                continue
-
-            hash_string, error = downloader.add_torrent_reuse(
-                torrent_bytes=raw,
-                save_path=local.save_path or task.save_path or "",
-                tag=(self._task_tag(task) or str(getattr(task, "brush_tag", "") or "")),
-                verify=task.reuse_verify,
-            )
-            if hash_string:
-                self._log(f"辅种成功:{cand.title} ← 复用「{local.title}」")
-                self._dup_finish(
-                    task.id,
-                    keys=self._dup_keys(
-                        getattr(cand, "real_hash", None), fingerprint(raw) if raw else None
-                    ),
-                )
-                return True, ""
-            return False, error or "辅种失败"
-        return False, "skip"
-
     def _detect_crosssite_reuse(
         self,
         downloader: DownloaderAdapter,
@@ -495,7 +210,6 @@ class ReuseMixin:
         iyuu_map: Optional[Dict[str, List[str]]] = None,
         raw: Optional[bytes] = None,
         stats: Optional[Dict[str, int]] = None,
-        respect_task_flag: bool = True,
     ) -> Tuple[str, Optional[TorrentInfo]]:
         """★ **取种统一入口**：按成本从低到高找「本机已有的同一 Release」。
 
@@ -506,11 +220,8 @@ class ReuseMixin:
 
         返回 (mode, info)：mode ∈ {"hash", "cross", ""}；info 为命中的本机种子。
         `stats`（可选）累计 {"near","fp","iyuu"} 供调用方日志。
-        `respect_task_flag=False` 用于「换种」这类**本就以复用为先**的场景（不受任务 reuse_existing 约束）。
         """
         if cand is None or downloader is None:
-            return "", None
-        if respect_task_flag and not bool(getattr(task, "reuse_existing", True)):
             return "", None
         if fp_cache is None:
             fp_cache = {}
@@ -564,7 +275,7 @@ class ReuseMixin:
     #    ① hash     本机下载器已有同 hash（不限 tag）→ 改标签复用（零下载）
     #    ② cross    本机同 Release（完整特征码，含根目录名）→ 指向其目录辅种（零下载）
     #    ③ iyuu     IYUU 云端反查的兄弟站同资源、且本机已完成 → 复用（零下载）
-    #    ④ crossseed 兄弟站「免费且同一 Release」副本 → 下回来回辅本站（**仅免费**；拿不到免费额就整单跳过）
+    #    ④ crossseed 兄弟站「免费且同一 Release」副本 → 下回来（**仅免费**；拿不到免费额就整单跳过）
     #  ★ 铁律：任何「真下载」只能由第 ④ 跳发起，且**必须先确认免费**；否则返回空、由调用方跳过。
     #  ★ 调用方（刷流 / 换种 / 跨站 / 调试）**只能**走本入口，不得再直接调 `_crossseed_start`
 
@@ -580,7 +291,6 @@ class ReuseMixin:
         iyuu_map: Optional[Dict[str, List[str]]] = None,
         raw: Optional[bytes] = None,
         stats: Optional[Dict[str, int]] = None,
-        respect_task_flag: bool = True,
         allow_cross_site: bool = False,
         cross_site_guard: Optional[Any] = None,
     ) -> Dict[str, Any]:
@@ -597,7 +307,7 @@ class ReuseMixin:
         mode, info = self._acquire_existing(
             task, cand, downloader,
             local_index=local_index, local_by_size=local_by_size, fp_cache=fp_cache,
-            iyuu_map=iyuu_map, raw=raw, stats=stats, respect_task_flag=respect_task_flag,
+            iyuu_map=iyuu_map, raw=raw, stats=stats,
         )
         if mode and info is not None:
             result.update({"source": mode, "info": info})

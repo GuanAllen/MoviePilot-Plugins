@@ -129,6 +129,20 @@ class HrMixin:
         except Exception:  # noqa: BLE001
             return ""
 
+    def _hr_due_hours(self, need: float) -> float:
+        """★ 14.0.0 **统一口径**：H&R「做满」阈值 = ``need_h + 安全垫(margin)``。
+
+        账单状态机（``features/hrbills.py::_hr_bill_deadline``/结清判定）用 ``need_h + margin`` 判结清；
+        闸门 / 清种候选 / 静默结清（本文件 ``_hr_obligation*`` + ``silent._silent_hr_clear``）
+        必须**同源**——否则会出现「账单仍 active（欠 H&R）、闸门已判不欠 → 删种」的假违约
+        （2026-10-07 CARPT 3 条 ``plugin_deleted`` + ``gate_bug`` 的根因）。
+        """
+        try:
+            margin = float(self._hr_margin_hours() or 0.0)
+        except Exception:  # noqa: BLE001
+            margin = 0.0
+        return float(need or 0.0) + max(0.0, margin)
+
     def _hr_obligation_by_seed(self, site: str, torrent: Any) -> Tuple[bool, float, float, str]:
         """种子级兜底：该种**自己所在站点**明确有 H&R → 按它自己的做种时长判。
 
@@ -171,7 +185,7 @@ class HrMixin:
             seeded = seed_hours_for_hr(torrent)
         except Exception:  # noqa: BLE001
             seeded = 0.0
-        return (seeded + 1e-6 < need), float(need), seeded, f"本站规则({dom})"
+        return (seeded + 1e-6 < self._hr_due_hours(need)), float(need), seeded, f"本站规则({dom})"
 
     def _hr_obligation(self, site: str, torrent: Any, snap: Any = None) -> Tuple[bool, float, float, str]:
         """该种是否**欠 H&R**：``(欠?, 要求小时, 已挂小时, 来源)``。
@@ -190,6 +204,9 @@ class HrMixin:
         站点规则未知 → 不猜（两种口径都不猜）。
 
         ★ 11.11.1：复用/补源副本（非真实下载）→ 三路（资源/账单/种子级）全部短路，不欠。
+
+        ★ 14.0.0：所有四路的「做满」比较统一走 ``_hr_due_hours(need) = need + margin``，
+        与账单状态机同源（避免「账单还欠、闸门已放行」的假违约）。
         """
         # ★ 11.11.1：复用/补源副本不继承资源的来源站 H&R 债（副本自己不是真实下载）。
         try:
@@ -244,7 +261,7 @@ class HrMixin:
                 except Exception:  # noqa: BLE001
                     seeded = 0.0
                 if need > 0:
-                    _r = (seeded + 1e-6 < need, float(need), seeded, f"来源站/{src}")
+                    _r = (seeded + 1e-6 < self._hr_due_hours(need), float(need), seeded, f"来源站/{src}")
             else:
                 _r = (False, 0.0, 0.0, src)
         if _r[0]:
@@ -268,7 +285,7 @@ class HrMixin:
                 if _bneed <= 0:
                     _bneed = 24.0
                 _bseed = float(_b.get("seeded_seconds") or 0.0) / 3600.0
-                if _bseed + 1e-6 < _bneed:
+                if _bseed + 1e-6 < self._hr_due_hours(_bneed):
                     return True, float(_bneed), float(_bseed), f"账单({_bs})/{_bsrc}"
             except Exception:  # noqa: BLE001
                 continue
@@ -284,7 +301,7 @@ class HrMixin:
                         and str(_hrbill.get("rule") or "") in (RULE_SITE_HR, RULE_HIT_AND_RUN):
                     _bneed = float(_hrbill.get("need_h") or 24.0)
                     _bseed = float(_hrbill.get("seeded_h") or 0.0)
-                    if _bseed + 1e-6 < _bneed:
+                    if _bseed + 1e-6 < self._hr_due_hours(_bneed):
                         return True, _bneed, _bseed, "hrbill"
             except Exception:  # noqa: BLE001
                 pass
@@ -751,7 +768,7 @@ class HrMixin:
 
         与 ``__silent_host__`` 的 ``_silent_host_card`` 同构：只读展示，不接受候选/清理/换种。
         """
-        from ..common import HR_HOST_TASK_ID, SILENT_HOST_INTERVAL_MINUTES  # 惰性导入
+        from ..common import HR_HOST_TASK_ID, HR_HOST_INTERVAL_MINUTES  # 惰性导入
         n_hr = 0
         by_site: Dict[str, int] = {}
         try:
@@ -763,9 +780,9 @@ class HrMixin:
         except Exception:  # noqa: BLE001
             pass
         try:
-            _min = float(getattr(self, "_tags_cfg", {}).get("host_interval") or SILENT_HOST_INTERVAL_MINUTES)
+            _min = float(getattr(self, "_tags_cfg", {}).get("hr_host_interval") or HR_HOST_INTERVAL_MINUTES)
         except Exception:  # noqa: BLE001
-            _min = float(SILENT_HOST_INTERVAL_MINUTES)
+            _min = float(HR_HOST_INTERVAL_MINUTES)
         return {
             "id": HR_HOST_TASK_ID, "name": "H&R保种", "builtin": True, "enabled": True,
             "run_mode": "running", "task_type": "host", "state": "running",

@@ -3,7 +3,7 @@
 设计（Master 2026-09-29 定稿，见 ``docs/PLAN-collect.md``）：
 
     采集（传输）  →  事实  →  裁决（规则/标签/评分）  →  决策（各功能）
-    collect.py        facts        rules/tags/bonus         brush/swap/crossseed
+    collect.py        facts        rules/tags/bonus         brush/crossseed
 
 五条铁律：
 

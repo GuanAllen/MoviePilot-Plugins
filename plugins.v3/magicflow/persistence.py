@@ -178,14 +178,10 @@ class TaskState:
     cumulative_deleted: int = 0
     cumulative_kept: int = 0
     cumulative_reused: int = 0
-    # 慢扫（辅种慢扫 worker）独立命名空间计数：与刷流/检查分开，避免并发 worker 互相覆盖
-    cumulative_slow_reused: int = 0
     last_added: int = 0
     last_deleted: int = 0
     last_kept: int = 0
     last_reused: int = 0
-    last_slow_reused: int = 0
-    last_slow_scanned: int = 0
     last_run_status: str = ""
     last_run_reason: str = ""
     last_run_duration: float = 0.0
@@ -208,7 +204,6 @@ class TaskState:
     manual_paused: Set[str] = field(default_factory=set)
     # 「换种」被下线（暂停做种、**不删种**）的种子 hash（小写）。换种只是不再拉它做种，
     # 种子与文件全部保留；站点腾出空间后会按需恢复（换回）。
-    swap_paused: Set[str] = field(default_factory=set)
     enabled: bool = True
     revision: int = 0  # 配置版本号，用于 optimistic locking
     # 「考核下载」模式：进入该模式时记录「站点下载量基线」（byte），用于计算本站下载增量。
@@ -245,13 +240,10 @@ class TaskState:
             "cumulative_deleted": self.cumulative_deleted,
             "cumulative_kept": self.cumulative_kept,
             "cumulative_reused": self.cumulative_reused,
-            "cumulative_slow_reused": self.cumulative_slow_reused,
             "last_added": self.last_added,
             "last_deleted": self.last_deleted,
             "last_kept": self.last_kept,
             "last_reused": self.last_reused,
-            "last_slow_reused": self.last_slow_reused,
-            "last_slow_scanned": self.last_slow_scanned,
             "last_run_status": self.last_run_status,
             "last_run_reason": self.last_run_reason,
             "last_run_duration": self.last_run_duration,
@@ -263,7 +255,6 @@ class TaskState:
             "pub_tz": self.pub_tz,
             "adopted_hashes": list(self.adopted_hashes),
             "manual_paused": list(self.manual_paused),
-            "swap_paused": list(getattr(self, "swap_paused", set()) or set()),
             "enabled": self.enabled,
             "revision": self.revision,
             "last_phase": self.last_phase,
@@ -291,13 +282,10 @@ class TaskState:
             cumulative_deleted=d.get("cumulative_deleted", 0),
             cumulative_kept=d.get("cumulative_kept", 0),
             cumulative_reused=d.get("cumulative_reused", 0),
-            cumulative_slow_reused=d.get("cumulative_slow_reused", 0),
             last_added=d.get("last_added", 0),
             last_deleted=d.get("last_deleted", 0),
             last_kept=d.get("last_kept", 0),
             last_reused=d.get("last_reused", 0),
-            last_slow_reused=d.get("last_slow_reused", 0),
-            last_slow_scanned=d.get("last_slow_scanned", 0),
             last_run_status=d.get("last_run_status", ""),
             last_run_reason=d.get("last_run_reason", ""),
             last_run_duration=d.get("last_run_duration", 0.0),
@@ -309,7 +297,6 @@ class TaskState:
             pub_tz=float(d.get("pub_tz", 0.0) or 0.0),
             adopted_hashes=set(d.get("adopted_hashes", []) or []),
             manual_paused=set(d.get("manual_paused", []) or []),
-            swap_paused=set(d.get("swap_paused", []) or []),
             enabled=d.get("enabled", True),
             revision=d.get("revision", 0),
             exam_download_base=(
@@ -338,11 +325,11 @@ class WorkReport:
     """一个 worker（刷流/检查/慢扫）一轮工作的「工作报告」。
 
     设计：worker **只回报告**，由核心 ``_settle`` 统一分账到 TaskState —— 不同 source
-    走不同命名空间，避免并发 worker 互相覆盖（尤其：慢扫不能覆盖刷流/检查的 last_* 字段）。
+    走不同命名空间，避免并发 worker 互相覆盖。
     计数器默认 ``None`` = 「本报告不涉及该计数」（不覆盖旧值），避免把字段清零。
     """
     task_id: str
-    source: str = "brush"          # brush|check|reuse
+    source: str = "brush"          # brush|check
     status: str = ""               # done|noop|skipped|failed
     reason: str = ""
     duration: Optional[float] = None
@@ -350,7 +337,6 @@ class WorkReport:
     deleted: Optional[int] = None
     kept: Optional[int] = None
     reused: Optional[int] = None
-    slow_reused: Optional[int] = None
     scanned: Optional[int] = None
     # ★ 7.15.0 可观测：「本轮决策轨迹」——回答「为什么没动作」（闸门/门槛/原因分布/候选过滤）。
     decision: Optional[Dict[str, Any]] = None
@@ -2001,20 +1987,6 @@ class MagicFlowStore:
         state.exam_download_note = str(note or "")
         self.task_states.save(state)
 
-    # -------------------- 自动换种：被下线（暂停做种、不删种）的种子 --------------------
-
-    def get_swap_paused(self, task_id: str) -> Set[str]:
-        """读取本任务被「换种」下线（暂停做种）的种子 hash 集合。"""
-        return self.task_states.get_swap_paused(task_id)
-
-    def mark_swap_paused(self, task_id: str, hashes: Any) -> int:
-        """登记被「换种」下线的种子 hash（返回新增数量）。"""
-        return self.task_states.mark_swap_paused(task_id, hashes)
-
-    def clear_swap_paused(self, task_id: str, hashes: Any) -> int:
-        """销销换种下线登记（站点腾出空间后换回，返回移除数量）。"""
-        return self.task_states.clear_swap_paused(task_id, hashes)
-
     # -------------------- 种子详情页映射（hash→details URL） --------------------
 
     def get_torrent_pages(self, task_id: str) -> Dict[str, str]:
@@ -2234,12 +2206,6 @@ class MagicFlowStore:
                 h for h in mp
                 if (h or "").strip().lower() not in keys
             }
-        sp = getattr(state, "swap_paused", None)
-        if sp:
-            state.swap_paused = {
-                h for h in sp
-                if (h or "").strip().lower() not in keys
-            }
         fu = getattr(state, "torrent_free_until", None)
         if fu:
             fu2 = {
@@ -2292,12 +2258,6 @@ class MagicFlowStore:
         if mp:
             state.manual_paused = {
                 h for h in mp
-                if (h or "").strip().lower() in live
-            }
-        sp = getattr(state, "swap_paused", None)
-        if sp:
-            state.swap_paused = {
-                h for h in sp
                 if (h or "").strip().lower() in live
             }
         after = len(state.protected_torrents) + len(getattr(state, "adopted_hashes", set()) or set())
@@ -2356,44 +2316,6 @@ class MagicFlowStore:
         if len(state.manual_paused) != before:
             self.task_states.save(state)
         return before - len(state.manual_paused)
-
-    # -------------------- 自动换种：换出（暂停做种）记录 --------------------
-
-    def get_swap_paused(self, task_id: str) -> Set[str]:
-        """获取被「换种」下线的种子 hash 集合（暂停做种但保留文件）。"""
-        state = self.task_states.get(task_id)
-        if not state:
-            return set()
-        return set(getattr(state, "swap_paused", set()) or set())
-
-    def mark_swap_paused(self, task_id: str, hashes: Any) -> int:
-        """记录被换种下线的种子（不再自动恢复做种，直到换回）。"""
-        state = self.task_states.get(task_id)
-        if not state:
-            state = self.task_states.create(task_id)
-        keys = {(h or "").strip().lower() for h in (hashes or []) if (h or "").strip()}
-        if not keys:
-            return 0
-        before = len(getattr(state, "swap_paused", set()) or set())
-        state.swap_paused = set(getattr(state, "swap_paused", set()) or set()) | keys
-        if len(state.swap_paused) != before:
-            self.task_states.save(state)
-        return len(state.swap_paused) - before
-
-    def clear_swap_paused(self, task_id: str, hashes: Any) -> int:
-        """取消换种下线标记（换回做种，或种子已不在下载器里）。"""
-        state = self.task_states.get(task_id)
-        if not state:
-            return 0
-        keys = {(h or "").strip().lower() for h in (hashes or []) if (h or "").strip()}
-        if not keys:
-            return 0
-        cur = set(getattr(state, "swap_paused", set()) or set())
-        before = len(cur)
-        state.swap_paused = {h for h in cur if (h or "").strip().lower() not in keys}
-        if len(state.swap_paused) != before:
-            self.task_states.save(state)
-        return before - len(state.swap_paused)
 
     # -------------------- 同站纳管 --------------------
 
@@ -2469,8 +2391,6 @@ class MagicFlowStore:
     def settle(self, report: "WorkReport") -> None:
         """核心分账：把一个 worker 的 WorkReport 归入对应命名空间的 TaskState。
 
-        - ``source == "reuse"``（辅种慢扫）：只动 ``cumulative_slow_reused`` / ``last_slow_*``，
-          **绝不**覆盖刷流/检查的 last_* 字段；
         - ``source in {brush, check}``：更新本轮字段（二者通过 ``_try_begin_run`` 互斥，不并发）。
         计数器为 ``None`` 时跳过（不清零），所以「失败/无计数」的报告只更新状态/原因。
         """
@@ -2479,14 +2399,6 @@ class MagicFlowStore:
         state = self.task_states.get(report.task_id)
         if not state:
             state = self.task_states.create(report.task_id)
-        src = (report.source or "brush").strip().lower()
-        if src == "reuse":
-            sr = int(report.slow_reused or 0)
-            state.cumulative_slow_reused += sr
-            state.last_slow_reused = sr
-            state.last_slow_scanned = int(report.scanned or 0)
-            self.task_states.save(state)
-            return
         has_counts = any(
             v is not None for v in (report.added, report.deleted, report.kept, report.reused)
         )
@@ -2515,10 +2427,6 @@ class MagicFlowStore:
         if report.decision is not None:
             state.last_decision = dict(report.decision or {})
         self.task_states.save(state)
-
-    def record_slow_reuse(self, task_id: str, reused: int = 0, scanned: int = 0) -> None:
-        """兼容入口：记录一轮辅种慢扫命中（独立命名空间，不碰刷流/检查字段）。"""
-        self.settle(WorkReport(task_id=task_id, source="reuse", slow_reused=reused, scanned=scanned))
 
     def record_filter_stats(
         self,
@@ -2576,13 +2484,10 @@ class MagicFlowStore:
                 "cumulative_deleted": 0,
                 "cumulative_kept": 0,
                 "cumulative_reused": 0,
-                "cumulative_slow_reused": 0,
                 "last_added": 0,
                 "last_deleted": 0,
                 "last_kept": 0,
                 "last_reused": 0,
-                "last_slow_reused": 0,
-                "last_slow_scanned": 0,
                 "last_run_status": "",
                 "last_run_reason": "",
                 "last_run_duration": 0.0,
@@ -2607,13 +2512,10 @@ class MagicFlowStore:
             "cumulative_deleted": state.cumulative_deleted,
             "cumulative_kept": state.cumulative_kept,
             "cumulative_reused": state.cumulative_reused,
-            "cumulative_slow_reused": getattr(state, "cumulative_slow_reused", 0),
             "last_added": state.last_added,
             "last_deleted": state.last_deleted,
             "last_kept": state.last_kept,
             "last_reused": state.last_reused,
-            "last_slow_reused": getattr(state, "last_slow_reused", 0),
-            "last_slow_scanned": getattr(state, "last_slow_scanned", 0),
             "last_run_status": state.last_run_status,
             "last_run_reason": state.last_run_reason,
             "last_run_duration": state.last_run_duration,
