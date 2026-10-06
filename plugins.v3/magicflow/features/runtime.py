@@ -12,6 +12,7 @@ from typing import Any, Dict, List
 from app.schemas import Response
 
 from ..dtier import PvLedger, TierCache
+from ..sitestore import slot_callbacks
 
 
 from ..common import (
@@ -56,12 +57,13 @@ class RuntimeMixin:
         return cache
 
     def _pv_ledger(self) -> PvLedger:
-        """PV 账本(持久层:save_data → PluginData 表,随卸载保留/重装继承)。"""
+        """PV 账本（持久层：表 mf_site.pv_usage，随卸载保留/重装继承）。"""
         led = getattr(self, "_pv_ledger_obj", None)
         if led is None:
+            _get, _save = slot_callbacks(self, "pv_usage")
             led = self._pv_ledger_obj = PvLedger(
-                getter=lambda k: self.get_data(k),
-                setter=lambda k, v: self.save_data(key=k, value=v),
+                getter=lambda k: _get(),
+                setter=lambda k, v: _save(value=v),
             )
         return led
 
@@ -186,7 +188,7 @@ class RuntimeMixin:
                         except (TypeError, ValueError):
                             continue
                     self._pv_budget_cfg = cfg
-                self.save_data(key="pv_budget", value=dict(self._pv_budget_cfg))
+                slot_callbacks(self, "pv_budget")[1](value=dict(self._pv_budget_cfg))
             return Response(success=True, data={
                 "default": self._pv_default_budget,
                 "sites": dict(self._pv_budget_cfg),

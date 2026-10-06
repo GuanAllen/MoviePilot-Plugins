@@ -31,6 +31,7 @@ from .collect import (  # noqa: E402
     parse_uid,
     parse_user_bar,
 )
+from .sitestore import slot_callbacks
 
 # 采样历史：每站保留多少个点（按 240s 一点 ≈ 8 小时）
 SAMPLE_MAX = 120
@@ -817,7 +818,7 @@ class LiveStats:
             return
         self._pv_loaded = True
         try:
-            data = self._plugin.get_data("live_pv_block")
+            data = slot_callbacks(self._plugin, "live_pv_block")[0]()
         except Exception:  # noqa: BLE001
             data = None
         if isinstance(data, dict):
@@ -840,7 +841,7 @@ class LiveStats:
         until = next_day_ts()
         self._pv_block[str(int(site_id))] = until
         try:
-            self._plugin.save_data("live_pv_block", dict(self._pv_block))
+            slot_callbacks(self._plugin, "live_pv_block")[1](value=dict(self._pv_block))
         except Exception:  # noqa: BLE001
             pass
         self._log(

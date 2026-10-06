@@ -12,6 +12,7 @@ from app.schemas import Response
 from app.sdk.logging import logger
 
 from ..iyuu_cloud import IyuuCloud
+from ..sitestore import slot_callbacks
 from ..models import (
     MagicFlowDefaultsPayload,
     MagicFlowDownloaderPathsPayload,
@@ -99,7 +100,7 @@ class SettingsMixin:
                 for k, v in raw_sites.items()
                 if isinstance(v, dict) and str(k).strip()
             }
-        self.save_data(key="iyuu_sites", value=dict(self._iyuu_sites))
+        slot_callbacks(self, "iyuu_sites")[1](value=dict(self._iyuu_sites))
         if self._iyuu_client is None:
             self._iyuu_client = self._build_iyuu_client(self._iyuu_token)
         else:

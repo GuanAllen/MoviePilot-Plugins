@@ -45,6 +45,10 @@ LEDGER_TABLES: Tuple[str, ...] = (
     "site", "resource", "identity", "task", "seed", "deck", "crossseed",
     # 运行台账
     "bills", "deletions", "journal", "protected", "rescue_actions",
+    # ★ 12.2.0：剩余 kv 收口（全站辅种账本 + 全局运行标量）
+    "reseed", "run",
+    # ★ 12.2.0 subG：认领账本
+    "claim",
 )
 
 
@@ -86,6 +90,8 @@ def _columns() -> Dict[str, List[Dict[str, Any]]]:
             _col("published_at", "float", unit="s", desc="站点口径发布时间(unix)"),
             _col("identity_at", "float", unit="s", desc="身份定稿时间"),
             _col("miss", "int", desc="巡检连续未命中"),
+            _col("rescue", "json", desc="死种补源停滞起算（{hash: ts}，12.2.0 由 kv 迁入）"),
+            _col("pending", "json", desc="点播待办（{hash: {…}}，12.2.0 由 kv 迁入）"),
             _col("updated", "float", unit="s"),
         ],
         "resource": [
@@ -184,6 +190,7 @@ def _columns() -> Dict[str, List[Dict[str, Any]]]:
             _col("task_name", "string"),
             _col("backfilled", "bool", desc="历史回填"),
             _col("done", "bool", desc="H&R 义务已履行"),
+            _col("pending", "json", desc="跨站待回辅（{sib_hash: rec}，12.2.0 由 kv 迁入）"),
             _col("created", "float", unit="s"),
             _col("updated", "float", unit="s"),
         ],
@@ -243,6 +250,36 @@ def _columns() -> Dict[str, List[Dict[str, Any]]]:
             _col("created_at", "float", unit="s"),
             _col("resolved_at", "float", unit="s"),
             _col("duration", "float", unit="s"),
+        ],
+        # ★ 12.2.0：剩余 kv 收口新增真值表
+        "reseed": [
+            _col("key", "string", desc="<iyuu_sid>:<hash>", nullable=False),
+            _col("site_id", "int", desc="IYUU sid"),
+            _col("hash", "hex40", desc="目标 infohash（小写）"),
+            _col("st", "enum", enum=["miss", "fail", "ok"], desc="最近一次尝试结果"),
+            _col("note", "string", desc="结果备注"),
+            _col("created", "float", unit="s"),
+            _col("updated", "float", unit="s", desc="最近一次触碰（= 旧 kv ts）"),
+        ],
+        "run": [
+            _col("key", "string", desc="signin_last_full|signin_retry|signin_keepalive", nullable=False),
+            _col("value", "json", desc="运行标量/快照"),
+            _col("created", "float", unit="s"),
+            _col("updated", "float", unit="s"),
+        ],
+        "claim": [
+            _col("key", "string", desc="<site_id>:<hash>", nullable=False),
+            _col("site_id", "int", desc="站点 id"),
+            _col("hash", "hex40", desc="种子 infohash（小写）"),
+            _col("tid", "string", desc="站点侧种子 id"),
+            _col("st", "enum", enum=["ok", "already", "full", "unmet", "fail", "abandoned"],
+                 desc="认领结果（ok/already 永久保留，其余走 TTL）"),
+            _col("benefit", "string", desc="站点给的权益描述"),
+            _col("note", "string", desc="结果备注"),
+            _col("task_id", "string", desc="认领发起归属任务（空=手动/伪任务）"),
+            _col("title", "string", desc="种子标题"),
+            _col("created", "float", unit="s"),
+            _col("updated", "float", unit="s", desc="最近一次触碰（= 旧 kv ts）"),
         ],
     }
 
@@ -358,6 +395,52 @@ class AgentLedgerMixin:
                 "task_name": getattr(r, "task_name", None),
                 "backfilled": getattr(r, "backfilled", None),
                 "done": getattr(r, "done", None),
+                "created": getattr(r, "created", None),
+                "updated": getattr(r, "updated", None),
+            })
+        return out
+
+    def _agent_db_reseed_rows(self) -> List[Dict[str, Any]]:
+        """mf_reseed 行（全站辅种账本）。"""
+        out: List[Dict[str, Any]] = []
+        for r in self._agent_db_rows("ReseedRow"):
+            out.append({
+                "key": getattr(r, "key", None),
+                "site_id": getattr(r, "site_id", None),
+                "hash": getattr(r, "hash", None),
+                "st": getattr(r, "st", None),
+                "note": getattr(r, "note", None),
+                "created": getattr(r, "created", None),
+                "updated": getattr(r, "updated", None),
+            })
+        return out
+
+    def _agent_db_run_rows(self) -> List[Dict[str, Any]]:
+        """mf_run 行（全局运行标量）。"""
+        out: List[Dict[str, Any]] = []
+        for r in self._agent_db_rows("RunRow"):
+            out.append({
+                "key": getattr(r, "key", None),
+                "value": getattr(r, "value", None),
+                "created": getattr(r, "created", None),
+                "updated": getattr(r, "updated", None),
+            })
+        return out
+
+    def _agent_db_claim_rows(self) -> List[Dict[str, Any]]:
+        """mf_claim 行（认领账本）。"""
+        out: List[Dict[str, Any]] = []
+        for r in self._agent_db_rows("ClaimRow"):
+            out.append({
+                "key": getattr(r, "key", None),
+                "site_id": getattr(r, "site_id", None),
+                "hash": getattr(r, "hash", None),
+                "tid": getattr(r, "tid", None),
+                "st": getattr(r, "st", None),
+                "benefit": getattr(r, "benefit", None),
+                "note": getattr(r, "note", None),
+                "task_id": getattr(r, "task_id", None),
+                "title": getattr(r, "title", None),
                 "created": getattr(r, "created", None),
                 "updated": getattr(r, "updated", None),
             })
@@ -506,6 +589,12 @@ class AgentLedgerMixin:
                     return []
             if t == "crossseed":
                 return self._agent_db_crossseed_rows()
+            if t == "reseed":
+                return self._agent_db_reseed_rows()
+            if t == "run":
+                return self._agent_db_run_rows()
+            if t == "claim":
+                return self._agent_db_claim_rows()
             if t == "bills":
                 out = []
                 for h, b in (self._hrbills_store().all() or {}).items():
@@ -542,6 +631,12 @@ class AgentLedgerMixin:
             return str(row.get("deck_id") or "") + "|" + str(row.get("seed_id") or "")
         if t == "crossseed":
             return str(row.get("sib_hash") or "")
+        if t == "reseed":
+            return str(row.get("key") or "")
+        if t == "run":
+            return str(row.get("key") or "")
+        if t == "claim":
+            return str(row.get("key") or "")
         if t == "deletions":
             return str(row.get("ts") or "") + "|" + str(row.get("hash") or "")
         if t in ("journal", "rescue_actions"):

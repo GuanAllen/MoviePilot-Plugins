@@ -133,7 +133,9 @@ class RescueMixin:
             return obj
         raw: Dict[str, Any] = {}
         try:
-            raw = self.get_data("rescue_stall") or {}
+            from ..sitestore import slot_callbacks  # noqa: WPS433
+
+            raw = slot_callbacks(self, "rescue_stall")[0]() or {}
         except Exception:  # noqa: BLE001
             raw = {}
         if not isinstance(raw, dict):
@@ -146,7 +148,9 @@ class RescueMixin:
 
     def _rescue_stall_save(self) -> None:
         try:
-            self.save_data(key="rescue_stall", value=self._rescue_stall_kv())
+            from ..sitestore import slot_callbacks  # noqa: WPS433
+
+            slot_callbacks(self, "rescue_stall")[1](value=self._rescue_stall_kv())
         except Exception:  # noqa: BLE001
             pass
 

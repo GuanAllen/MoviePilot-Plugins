@@ -38,6 +38,7 @@ from ..cloud_archive import ArchiveEngine, DEFAULT_TARGET_TEMPLATE as CLOUD_TARG
 from ..persistence import MagicFlowStore, OperationItem, WorkReport, KV_FILE_FLUSH_SEC
 from ..kvstore import MpHotStore
 from ..signin import SigninEngine
+from ..sitestore import slot_callbacks
 from ..recommend import RecommendEngine
 from ..tags import (
     DEFAULT_SORT_RULES,
@@ -171,7 +172,7 @@ class CoreMixin:
                 self._iyuu_token = ""
         _iyuu_sites = raw_config.get("iyuu_sites")
         if not isinstance(_iyuu_sites, dict):
-            _iyuu_sites = self.get_data("iyuu_sites") or {}
+            _iyuu_sites = slot_callbacks(self, "iyuu_sites")[0]() or {}
         self._iyuu_sites = {
             str(k).strip().lower(): dict(v)
             for k, v in (_iyuu_sites or {}).items()
@@ -181,7 +182,7 @@ class CoreMixin:
         # PV 预算(3.7.1):0=不限。「站点覆盖」优先于全局默认;存 save_data(跨重装保留)。
         _pv_budget = raw_config.get("pv_budget")
         if not isinstance(_pv_budget, dict):
-            _pv_budget = self.get_data("pv_budget") or {}
+            _pv_budget = slot_callbacks(self, "pv_budget")[0]() or {}
         _pv_cfg: Dict[str, int] = {}
         for _k, _v in (_pv_budget or {}).items():
             try:

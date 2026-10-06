@@ -54,7 +54,7 @@ from ..common import (
     MagicFlowTaskConfig,
     _torrent_entries_digest,
 )
-from ..sitestore import get_site_store
+from ..sitestore import get_site_store, slot_callbacks
 
 
 class CrossSeedMixin:
@@ -212,8 +212,8 @@ class CrossSeedMixin:
             except Exception:  # noqa: BLE001
                 base = None
             obj = self._crossseed_obj = CrossSeedPending(
-                get_data=self.get_data,
-                save_data=self.save_data,
+                get_data=slot_callbacks(self, "crossseed_pending")[0],
+                save_data=slot_callbacks(self, "crossseed_pending")[1],
                 dir_path=base if base is not None else "crossseed",
                 log=self._log,
             )
@@ -595,7 +595,7 @@ class CrossSeedMixin:
 
     def _cs_ban_map(self) -> Dict[str, Dict[str, Any]]:
         try:
-            data = self.get_data("crossseed_ban") or {}
+            data = slot_callbacks(self, "crossseed_ban")[0]() or {}
         except Exception:  # noqa: BLE001
             return {}
         if not isinstance(data, dict):
@@ -609,7 +609,7 @@ class CrossSeedMixin:
         data = self._cs_ban_map()
         data[dom] = {"ts": time.time(), "reason": str(reason or "")[:200]}
         try:
-            self.save_data(key="crossseed_ban", value=data)
+            slot_callbacks(self, "crossseed_ban")[1](value=data)
         except Exception as err:  # noqa: BLE001
             self._log(f"跨站:黑名单写入失败:{err}", "error")
 
@@ -622,7 +622,7 @@ class CrossSeedMixin:
             n = len(data)
             data = {}
         try:
-            self.save_data(key="crossseed_ban", value=data)
+            slot_callbacks(self, "crossseed_ban")[1](value=data)
         except Exception as err:  # noqa: BLE001
             self._log(f"跨站:黑名单清理失败:{err}", "error")
         return n
