@@ -74,19 +74,6 @@ class DupGateMixin:
         except Exception:  # noqa: BLE001
             return []
 
-    def _dup_peek(self, task_id: str, *, keys: List[str]) -> List[str]:
-        """只看冲突、不占用（用于提前跳过，避免占用下载槽/无效请求）。"""
-        ks = [k for k in (keys or []) if k]
-        if not ks:
-            return []
-        gate = self._dup_gate()
-        if not gate:
-            return []
-        try:
-            return gate.peek(ks, task_id, ADD_GATE_INFLIGHT_TTL, ADD_GATE_DONE_TTL)
-        except Exception:  # noqa: BLE001
-            return []
-
     def _dup_conflict_states(self, task_id: str, *, keys: List[str]) -> Dict[str, str]:
         """返回冲突键 → 状态（``inflight``/``done``）。
 

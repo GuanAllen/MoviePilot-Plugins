@@ -3,7 +3,7 @@
         "name": "魔流",
         "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
         "labels": "站点,做种,魔力,刷流",
-        "version": "12.6.0",
+        "version": "12.7.0",
         "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
         "author": "GuanAllen",
         "level": 1,
@@ -391,9 +391,10 @@
             "12.4.0": "12.4.0：Stage 2 本体——静默池清旧+迁出（/agent/silent/relocate，干跑也预检闸门；新增 sub 范围参数；UI 弹窗）；线上方案A迁出「静默-普通」101 个（删种留文件，库内资产 535 未动）；豆瓣外挂修 0.3.1（最近异常成功即清空）",
             "12.5.0": "12.5.0：挂种健康度自检（只读）——GET /health/scan + GET /agent/seeds/health（清单47→48）；两段式判定逐文件核盘，识别空转/缺文件种 + H&R 风险关联",
             "12.5.1": "12.5.1：修挂种健康自检——①宿主路径未映射致全站假ghost（经 normalize_path 映射）②临时目录同名目录掩盖真ghost（粗筛只看保存目录 + 新增 incomplete 桶 + hr_at_risk 收 ghost+incomplete 且账单 active/breached）；测试 23 项",
-            "12.6.0": "12.6.0：组 E 收口——kv 缓存/日志 10 键（trend_v1/eventlog_v1/live_samples/collect_day/iyuu_cache/reseed_day/reseed_cloud/fallback_report/cloud_report + 孤儿 crossseed_pending/douban_rating_cache）搬进热层（TierCache，按 region）；kv 19→9（只剩设置+凭证）；新增 kvstore.cache_get/set/del + runtime._cache_tier/_cache_get/_cache_set/_cache_del + common CACHE_TTL_HISTORY/COUNTER/REPORT；check_self_calls 零新增；含 tools/cleanup_kv_cache_1260.sh（默认干跑/备份 0600）"
+            "12.6.0": "12.6.0：组 E 收口——kv 缓存/日志 10 键（trend_v1/eventlog_v1/live_samples/collect_day/iyuu_cache/reseed_day/reseed_cloud/fallback_report/cloud_report + 孤儿 crossseed_pending/douban_rating_cache）搬进热层（TierCache，按 region）；kv 19→9（只剩设置+凭证）；新增 kvstore.cache_get/set/del + runtime._cache_tier/_cache_get/_cache_set/_cache_del + common CACHE_TTL_HISTORY/COUNTER/REPORT；check_self_calls 零新增；含 tools/cleanup_kv_cache_1260.sh（默认干跑/备份 0600）",
+            "12.7.0": "12.7.0：安全面收口——① /debug/file 读路径 realpath 归一 + 路径边界白名单 + 敏感文件黑名单（修 /app/../../etc/passwd 穿越与 /config/app.env 直读）；debug_fs 同样归一+拒敏感。② 9 个会写的 /debug* 端点统一 confirm=1 门（缺省拒绝）。③ 新增只读 AI 入口 GET /agent/debug/surface（调试面自描述，清单 48→49）。④ 清死代码 dupgate._dup_peek。含 tools/test_debug_safety.py（45 断言，含写标记表登记自洽）"
         }
     },
-    "version": "12.6.0",
+    "version": "12.7.0",
     "history": {}
 }
