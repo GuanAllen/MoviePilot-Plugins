@@ -20,6 +20,8 @@ import json
 import os
 
 from .persistence import OperationItem
+from .kvstore import cache_get
+from .common import CACHE_TTL_REPORT
 import re
 import threading
 import time
@@ -783,12 +785,9 @@ class ArchiveEngine:
     def last_report(self) -> Dict[str, Any]:
         if self._last_report:
             return dict(self._last_report)
-        try:
-            data = self.plugin.get_data("cloud_report") or {}
-            if isinstance(data, dict):
-                return data
-        except Exception:  # noqa: BLE001
-            pass
+        data = cache_get(self.plugin, "cloud", "cloud_report", CACHE_TTL_REPORT) or {}
+        if isinstance(data, dict):
+            return data
         return {}
 
     def state(self) -> Dict[str, Any]:

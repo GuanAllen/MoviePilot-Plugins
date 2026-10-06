@@ -49,6 +49,38 @@ class RuntimeMixin:
         """采集模块（可能因启动早期未就绪而为 None）。"""
         return getattr(self, "collect", None)
 
+    # ★ 12.6.0：原 kv（plugindata）的「缓存 / 日志」键 → 热层（按 region 分缓存位）。
+    #   不是真值：丢了最多重建一次；MP 配了 Redis 就走 Redis，否则退化为内存/文件冷层。
+    def _cache_tier(self, region: str) -> TierCache:
+        """取（懒建）某个缓存位的 TierCache。"""
+        boxes = getattr(self, "_tier_misc", None)
+        if not isinstance(boxes, dict):
+            boxes = self._tier_misc = {}
+        name = str(region or "misc")
+        cache = boxes.get(name)
+        if cache is None:
+            cache = TierCache(f"cache-{name}", base=self._cache_base())
+            boxes[name] = cache
+        return cache
+
+    def _cache_get(self, region: str, key: str, ttl: float) -> Any:
+        try:
+            return self._cache_tier(region).get(key, ttl)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _cache_set(self, region: str, key: str, value: Any, ttl: float) -> None:
+        try:
+            self._cache_tier(region).set(key, value, ttl)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _cache_del(self, region: str, key: str) -> None:
+        try:
+            self._cache_tier(region).delete(key)
+        except Exception:  # noqa: BLE001
+            pass
+
     def _cache_collect(self) -> TierCache:
         """采集模块的规范化 URL 缓存（一轮一抓：同一 URL 全模块共享一份）。"""
         cache = getattr(self, "_tier_collect_obj", None)

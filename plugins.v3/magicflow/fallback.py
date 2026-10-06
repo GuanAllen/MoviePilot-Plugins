@@ -27,6 +27,9 @@ import xml.sax.saxutils as _sax
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from .kvstore import cache_get, cache_set
+from .common import CACHE_TTL_REPORT
+
 DEFAULT_SOURCES = ("themoviedb", "bangumi", "douban")
 SOURCE_LABELS = {
     "themoviedb": "TMDB",
@@ -730,7 +733,7 @@ class FallbackEngine:
         with self._lock:
             self._last_report = report
         try:
-            self.plugin.save_data("fallback_report", report)
+            cache_set(self.plugin, "fallback", "fallback_report", report, CACHE_TTL_REPORT)
         except Exception:  # noqa: BLE001
             pass
         return report
@@ -739,16 +742,13 @@ class FallbackEngine:
     # 对外
     # ------------------------------------------------------------------
     def last_report(self) -> Optional[Dict[str, Any]]:
-        """最近一次扫描报告；**内存没了就从插件数据里读**（热重载不丢）。"""
+        """最近一次扫描报告；**内存没了就从热层读**（热重载不丢）。"""
         with self._lock:
             if self._last_report is not None:
                 return self._last_report
-        try:
-            data = self.plugin.get_data("fallback_report")
-            if isinstance(data, dict):
-                with self._lock:
-                    self._last_report = data
-                return data
-        except Exception:  # noqa: BLE001
-            pass
+        data = cache_get(self.plugin, "fallback", "fallback_report", CACHE_TTL_REPORT)
+        if isinstance(data, dict):
+            with self._lock:
+                self._last_report = data
+            return data
         return self._last_report

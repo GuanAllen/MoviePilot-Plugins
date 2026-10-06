@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "12.5.1"
+__version__ = "12.6.0"
 
 import bisect
 import re
@@ -131,6 +131,13 @@ RESEED_LEDGER_KEY = "reseed_ledger"
 RESEED_DAY_KEY = "reseed_day"
 RESEED_CLOUD_KEY = "reseed_cloud"
 RESEED_PASSKEY_KEY = "reseed_passkeys"
+
+# ---------------------------------------------------------------- 缓存/日志 TTL
+# ★ 12.6.0：原 kv（plugindata）里的「缓存 / 日志」键全部搬进热层（TierCache：内存 + FileCache/Redis）。
+#   这些值**不是真值**：丢了最多重建一次，不影响任何判定（Master 2026-10-06 20:50「一次性结束」）。
+CACHE_TTL_HISTORY = 90 * 86400.0   # 趋势 / 事件日志 / 采样历史
+CACHE_TTL_COUNTER = 30 * 86400.0   # 每日子计数（采集 / 补种）
+CACHE_TTL_REPORT = 7 * 86400.0     # 「最近一次结果」类报告 / 站点表缓存
 # ---------------------------------------------------------------- 认领（claim）
 # 把「我们在做种」的种在站点侧认领掉，换站点权益。CARPT：达标种魔力 ×2；
 # 代价：不达标 −100 / 主动放弃 −500。→ 默认关 + 默认干跑 + 写动作必须 confirm。

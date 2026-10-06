@@ -6,7 +6,7 @@ Master 口径（2026-10-02 11:10）：不装 Prometheus、不暴露 /metrics →
 **不做第二份日志**：已有的「操作日志」（`persistence.OperationJournal`，热层 Redis + 冷备 JSON）
 本来就是结构化的「发生了什么」流水（选种/删种/辅种/保护/标签/换种/认领/签到/推荐…）。
 本模块把它**读成一条统一事件流**，并补上 journal 里没有的事件（健康告警、任务执行失败等，
-落在本模块自己的小环形缓冲 `eventlog_v1`）。
+落在本模块自己的小环形缓冲 —— ★ 12.6.0 起存热层 ``cache-eventlog``，不再落 kv）。
 
 事件统一 schema：
     {
@@ -36,7 +36,10 @@ from typing import Any, Dict, List, Optional
 
 from app.schemas import Response
 
-EVENTLOG_KEY = "eventlog_v1"
+from ..common import CACHE_TTL_HISTORY
+from ..kvstore import cache_get, cache_set
+
+EVENTLOG_KEY = "eventlog_v1"    # 热层逻辑键（★ 12.6.0 起不再落 kv）
 EVENTLOG_KEEP = 300
 FLUSH_MIN_INTERVAL = 2.0
 
@@ -99,7 +102,7 @@ class EventLogMixin:
         if cache is None:
             cache = {"seq": 0, "rows": []}
             try:
-                raw = self.get_data(EVENTLOG_KEY)
+                raw = cache_get(self, "eventlog", EVENTLOG_KEY, CACHE_TTL_HISTORY)
                 if isinstance(raw, dict):
                     cache = {"seq": int(raw.get("seq") or 0), "rows": list(raw.get("rows") or [])}
             except Exception:  # noqa: BLE001
@@ -113,7 +116,7 @@ class EventLogMixin:
         if not force and now - last < FLUSH_MIN_INTERVAL:
             return
         try:
-            self.save_data(key=EVENTLOG_KEY, value=self._eventlog_data())
+            cache_set(self, "eventlog", EVENTLOG_KEY, self._eventlog_data(), CACHE_TTL_HISTORY)
             self._eventlog_flushed_at = now
         except Exception:  # noqa: BLE001
             pass

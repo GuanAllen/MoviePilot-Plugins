@@ -21,6 +21,7 @@ from ..models import (
     DOWNLOADER_PREF_RECOMMENDED,
 )
 from ..fallback import DEFAULT_SOURCES as FALLBACK_SOURCES
+from ..kvstore import cache_get, cache_set
 from ..cloud_archive import DEFAULT_TARGET_TEMPLATE as CLOUD_TARGET_TEMPLATE
 from ..signin import SigninEngine
 from ..tags import (
@@ -30,6 +31,7 @@ from ..tags import (
 
 from ..common import (
     BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT,
+    CACHE_TTL_REPORT,
     CLAIM_CFG_KEY,
     CLOUD_INTERVAL_MINUTES,
     CLOUD_SCAN_MAX,
@@ -386,8 +388,8 @@ class SettingsMixin:
         return IyuuCloud(
             token,
             logger=self._log,
-            cache_loader=lambda: self.get_data("iyuu_cache"),
-            cache_saver=lambda cache: self.save_data(key="iyuu_cache", value=cache),
+            cache_loader=lambda: cache_get(self, "iyuu", "iyuu_cache", CACHE_TTL_REPORT),
+            cache_saver=lambda cache: cache_set(self, "iyuu", "iyuu_cache", cache, CACHE_TTL_REPORT),
         )
 
     def get_iyuu_sites(self) -> Response:

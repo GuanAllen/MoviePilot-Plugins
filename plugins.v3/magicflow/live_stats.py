@@ -32,6 +32,8 @@ from .collect import (  # noqa: E402
     parse_user_bar,
 )
 from .sitestore import slot_callbacks
+from .kvstore import cache_get, cache_set
+from .common import CACHE_TTL_HISTORY
 
 # 采样历史：每站保留多少个点（按 240s 一点 ≈ 8 小时）
 SAMPLE_MAX = 120
@@ -923,7 +925,7 @@ class LiveStats:
             return
         self._loaded = True
         try:
-            data = self._plugin.get_data("live_samples")
+            data = cache_get(self._plugin, "live", "live_samples", CACHE_TTL_HISTORY)
         except Exception:  # noqa: BLE001
             data = None
         if isinstance(data, dict):
@@ -940,10 +942,8 @@ class LiveStats:
                         self._samples[str(k)] = cleaned
 
     def _save_samples(self) -> None:
-        try:
-            self._plugin.save_data("live_samples", {k: v[-SAMPLE_MAX:] for k, v in self._samples.items()})
-        except Exception:  # noqa: BLE001
-            pass
+        cache_set(self._plugin, "live", "live_samples",
+                  {k: v[-SAMPLE_MAX:] for k, v in self._samples.items()}, CACHE_TTL_HISTORY)
 
     def _push_sample(self, key: str, res: Dict[str, Any]) -> None:
         self._load_samples()

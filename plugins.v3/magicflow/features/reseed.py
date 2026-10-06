@@ -36,9 +36,12 @@ from ..iyuu_cloud import (
 )
 from ..tags import STATE_SILENT, SUB_NEW, SUB_PLAIN, SUB_RESOURCE, tag_for
 from ..sitestore import slot_callbacks
+from ..kvstore import cache_get, cache_set
 
 
 from ..common import (
+    CACHE_TTL_COUNTER,
+    CACHE_TTL_REPORT,
     RESEED_BATCH,
     RESEED_CLOUD_KEY,
     RESEED_CLOUD_TTL,
@@ -135,7 +138,7 @@ class ReSeedMixin:
     # --------------------------------------------------------------- 每日计数
     def _reseed_day(self) -> Dict[str, Any]:
         today = time.strftime("%Y-%m-%d", time.localtime())
-        raw = self.get_data(RESEED_DAY_KEY)
+        raw = cache_get(self, "reseed", RESEED_DAY_KEY, CACHE_TTL_COUNTER)
         if not isinstance(raw, dict) or str(raw.get("day") or "") != today:
             raw = {"day": today, "sites": {}}
         if not isinstance(raw.get("sites"), dict):
@@ -147,7 +150,7 @@ class ReSeedMixin:
         key = str(int(sid))
         day["sites"][key] = int(day["sites"].get(key) or 0) + 1
         try:
-            self.save_data(key=RESEED_DAY_KEY, value=day)
+            cache_set(self, "reseed", RESEED_DAY_KEY, day, CACHE_TTL_COUNTER)
         except Exception:  # noqa: BLE001
             pass
 
@@ -331,7 +334,7 @@ class ReSeedMixin:
     # --------------------------------------------------------------- 云端反查
     def _reseed_cloud_map(self, local_hashes: List[str]) -> Dict[str, Any]:
         """本机全量种 → IYUU 反查「他站也有同资源」（带 TTL 缓存；只声明我们的 sid）。"""
-        raw = self.get_data(RESEED_CLOUD_KEY)
+        raw = cache_get(self, "reseed", RESEED_CLOUD_KEY, CACHE_TTL_REPORT)
         data = raw if isinstance(raw, dict) else {}
         now = time.time()
         want = sorted({str(h).strip().lower() for h in local_hashes if h})
@@ -362,7 +365,7 @@ class ReSeedMixin:
                 time.sleep(3.2)  # IYUU 云端限流：批次间留间隔
         data = {"ts": now, "hashes": want, "by_hash": by_hash, "sids": sids}
         try:
-            self.save_data(key=RESEED_CLOUD_KEY, value=data)
+            cache_set(self, "reseed", RESEED_CLOUD_KEY, data, CACHE_TTL_REPORT)
         except Exception:  # noqa: BLE001
             pass
         self._log(f"全站辅种:云端反查完成 —— {len(by_hash)}/{len(want)} 颗本机种在他站有同资源"
@@ -607,7 +610,7 @@ class ReSeedMixin:
         """全站辅种状态（供接口/看板）。"""
         cfg = self._reseed_cfg()
         day = self._reseed_day()
-        cloud = self.get_data(RESEED_CLOUD_KEY)
+        cloud = cache_get(self, "reseed", RESEED_CLOUD_KEY, CACHE_TTL_REPORT)
         cloud = cloud if isinstance(cloud, dict) else {}
         ledger = self._reseed_ledger()
         pk = slot_callbacks(self, RESEED_PASSKEY_KEY)[0]()
