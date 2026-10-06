@@ -2494,48 +2494,6 @@ function silentHrText(it) {
 const SILENT_SUB_LABEL = { 新: '静默-新', 资源: '静默-资源', 普通: '静默-普通' }
 function silentSubLabel(sub) { return SILENT_SUB_LABEL[String(sub || '')] || `静默-${sub || '?'}` }
 
-// ── 静默池「清理（删除）」（★ 13.0.0）：默认干跑，真写二次确认 ──────────────
-const purgeOpen = ref(false)
-const purgeAsk = ref(false)
-const purgeLoading = ref(false)
-const purgeActing = ref('')          // '' | 'dry' | 'apply'
-const purgeBatch = ref(50)
-const purgeSub = ref('普通')          // '' | 普通 | 新 | 资源（保守默认只删「普通」）
-const purgeScopeOptions = [
-  { label: '仅静默-普通（保守）', value: '普通' },
-  { label: '仅静默-新', value: '新' },
-  { label: '全部（含静默-新）', value: '' },
-]
-const purgeData = ref({ counts: {}, by_site: {}, blocked_items: [] })
-const purgeCounts = computed(() => purgeData.value.counts || {})
-const purgeBlocked = computed(() => purgeData.value.blocked_items || [])
-const purgeBySite = computed(() => Object.entries(purgeData.value.by_site || {})
-  .map(([site, v]) => ({ site, ...(v || {}) }))
-  .sort((a, b) => Number(b.delete || 0) - Number(a.delete || 0)))
-async function loadPurge(confirm = 0) {
-  purgeActing.value = confirm ? 'apply' : 'dry'
-  purgeLoading.value = true
-  try {
-    const url = `${pluginBase.value}/silent/purge?confirm=${confirm ? 1 : 0}&batch=${Number(purgeBatch.value) || 50}&sub=${encodeURIComponent(purgeSub.value)}`
-    const res = unwrapResponse(await props.api.get(url)) || {}
-    purgeData.value = res
-    notify(res.message || (confirm ? '已删除' : '干跑完成'))
-    if (confirm) loadSilent()
-  } catch (err) {
-    notify(`静默池清理失败：${err?.message || err}`, 'error')
-  } finally {
-    purgeActing.value = ''
-    purgeLoading.value = false
-  }
-}
-function openPurge() {
-  purgeOpen.value = true
-  loadPurge(0)
-}
-async function runPurge() {
-  purgeAsk.value = false
-  await loadPurge(1)
-}
 // ── 静默不变量收敛（★ 12.7.1）：账本静默但 qB 没停 → 补 pause（只 pause，不删种、不动文件）──
 const enforceLoading = ref(false)
 const enforceAsk = ref(false)
@@ -2548,7 +2506,7 @@ async function loadEnforce(confirm = 0) {
     const res = unwrapResponse(await props.api.get(url)) || {}
     enforceData.value = res
     notify(res.message || (confirm ? '已补 pause' : '干跑完成'))
-    if (confirm) loadPurge(0)
+    if (confirm) loadSilent()
   } catch (err) {
     notify(`静默不变量收敛失败：${err?.message || err}`, 'error')
   } finally {
@@ -8122,7 +8080,7 @@ onUnmounted(() => {
           <span class="magicflow-settings-dialog__title">静默池</span>
           <div class="magicflow-recommend-dialog__head-actions">
             <VChip size="small" variant="tonal" color="primary">全局 · 跨站/跨任务的「无主」种</VChip>
-            <VBtn variant="text" color="warning" size="small" prepend-icon="mdi-delete-sweep" @click="openPurge">清理（删除）</VBtn>
+            <VBtn variant="text" color="info" size="small" prepend-icon="mdi-pause-octagon" @click="invariantOpen = true; loadEnforce(0)">违背不变量</VBtn>
             <VBtn variant="text" color="primary" size="small" prepend-icon="mdi-history" @click="openOperations('all')">操作记录</VBtn>
             <VBtn icon="mdi-refresh" size="small" variant="text" aria-label="刷新" :loading="silentLoading" @click="loadSilent" />
             <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="silentOpen = false" />
@@ -8287,98 +8245,30 @@ onUnmounted(() => {
       </VCard>
     </VDialog>
     <!-- 静默池「清理（删除）」（★ 13.0.0）：默认干跑，真写二次确认 -->
-    <VDialog v-model="purgeOpen" max-width="46rem" scrollable :fullscreen="isNarrow">
+    <VDialog v-model="invariantOpen" max-width="46rem" scrollable :fullscreen="isNarrow">
       <VCard class="magicflow-dialog">
         <header class="magicflow-settings-dialog__head">
-          <span class="magicflow-settings-dialog__title">静默池 · 清理（删除）</span>
+          <span class="magicflow-settings-dialog__title">静默池 · 不变量收敛</span>
           <div class="magicflow-recommend-dialog__head-actions">
-            <VBtn icon="mdi-refresh" size="small" variant="text" aria-label="干跑刷新" :loading="purgeLoading" @click="loadPurge()" />
-            <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="purgeOpen = false" />
+            <VBtn icon="mdi-refresh" size="small" variant="text" aria-label="刷新" :loading="enforceLoading" @click="loadEnforce(0)" />
+            <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="invariantOpen = false" />
           </div>
         </header>
         <VDivider />
         <VCardText class="text-body-2">
-          <div class="d-flex flex-wrap align-center gap-2 mb-2">
-            <VSelect
-              v-model="purgeSub"
-              :items="purgeScopeOptions"
-              item-title="label"
-              item-value="value"
-              density="compact"
-              hide-details
-              variant="outlined"
-              style="max-width: 14rem"
-              label="清理范围（默认只删静默-普通）"
-              @update:model-value="loadPurge(0)"
-            />
-            <VTextField
-              v-model.number="purgeBatch"
-              type="number"
-              density="compact"
-              hide-details
-              variant="outlined"
-              style="max-width: 9rem"
-              label="每批上限"
-            />
-          </div>
-          <div class="magicflow-cs-stats">
-            <div class="magicflow-cs-stat"><b>{{ purgeCounts.delete || 0 }}</b><span>清理候选</span></div>
-            <div class="magicflow-cs-stat"><b>{{ purgeCounts.keep || 0 }}</b><span>保护不删</span></div>
-            <div class="magicflow-cs-stat"><b>{{ purgeCounts.pause || 0 }}</b><span>违背不变量</span></div>
-            <div class="magicflow-cs-stat"><b>{{ purgeCounts.missing || 0 }}</b><span>不在下载器</span></div>
-          </div>
-          <VAlert type="error" variant="tonal" density="compact" class="mt-2">
-            <strong>会删除 qB 条目 + 磁盘文件，不可逆。</strong>清理 = 删条目<strong>+ 删文件</strong>
-            （不在岗、不欠债、非资产、非保护）；保护类只列不动；删前过删除闸门（含「库内资产」硬拦）。
-            <strong>默认干跑，不写任何东西。</strong>
-          </VAlert>
           <div class="magicflow-settings-hint mt-2">
             <strong>补暂停</strong>（★ 12.7.1）：设计口径「静默池本意就是暂停不上传」——账本已是静默、
             但下载器里没停的种一律补 pause（幂等，<strong>只暂停、不删种、不动文件</strong>）。
             <span v-if="enforceCounts.violations">当前违背不变量 <b>{{ enforceCounts.violations }}</b> 个。</span>
             <span v-else>当前不变量成立（全 paused）。</span>
           </div>
-          <table v-if="purgeBySite.length" class="magicflow-table mt-2">
-            <thead><tr><th>站点</th><th>总数</th><th>清理候选</th></tr></thead>
-            <tbody>
-              <tr v-for="r in purgeBySite" :key="r.site">
-                <td>{{ r.site }}</td><td>{{ r.total }}</td><td>{{ r.delete }}</td>
-              </tr>
-            </tbody>
-          </table>
-          <div v-if="purgeBlocked.length" class="magicflow-settings-hint mt-2">
-            闸门拦截 {{ purgeBlocked.length }} 个：
-            <span v-for="b in purgeBlocked.slice(0, 20)" :key="b.hash">{{ b.hash }}（{{ b.reason }}）· </span>
-          </div>
         </VCardText>
         <VDivider />
         <VCardActions>
           <VSpacer />
-          <VBtn variant="text" @click="purgeOpen = false">关闭</VBtn>
+          <VBtn variant="text" @click="invariantOpen = false">关闭</VBtn>
           <VBtn variant="tonal" color="info" :loading="enforceLoading" @click="loadEnforce(0)">查违背不变量</VBtn>
           <VBtn variant="tonal" color="warning" :loading="enforceLoading" @click="enforceAsk = true">补暂停</VBtn>
-          <VBtn variant="tonal" color="warning" :loading="purgeActing === 'dry'" @click="loadPurge()">干跑</VBtn>
-          <VBtn variant="flat" color="error" :loading="purgeActing === 'apply'" @click="purgeAsk = true">执行清理</VBtn>
-        </VCardActions>
-      </VCard>
-    </VDialog>
-
-    <!-- 清理（删除）二次确认（真删条目 + 文件） -->
-    <VDialog :model-value="purgeAsk" max-width="32rem" persistent @update:model-value="v => { if (!v) purgeAsk = false }">
-      <VCard class="magicflow-dialog">
-        <VCardTitle class="text-subtitle-1 pt-4">确认执行静默池清理</VCardTitle>
-        <VCardText class="text-body-2">
-          将对 <strong>{{ purgeCounts.delete || 0 }}</strong> 个「清理候选」<strong>删除 qB 条目 + 磁盘文件</strong>，
-          保护类（欠 H&R / 库内资产 / 跨站来源份 / 认领 / 手动保留）不动。
-          <VAlert type="error" variant="tonal" density="compact" class="mt-3">
-            删条目 + 删文件，<strong>不可逆</strong>（同目录另有完成种则只删条目保留文件）。会先对违背不变量的种补 pause；每批上限 {{ purgeBatch }} 个。
-          </VAlert>
-        </VCardText>
-        <VDivider />
-        <VCardActions>
-          <VSpacer />
-          <VBtn variant="text" :disabled="purgeActing === 'apply'" @click="purgeAsk = false">取消</VBtn>
-          <VBtn variant="flat" color="error" :loading="purgeActing === 'apply'" @click="runPurge()">确认清理</VBtn>
         </VCardActions>
       </VCard>
     </VDialog>

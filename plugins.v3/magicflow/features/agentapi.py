@@ -193,11 +193,6 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
         {"path": "/agent/silent/audit", "method": "GET", "handler": "agent_silent_audit", "write": False,
          "params": {"limit": "int（默认 1000；0=全量）"}, "returns": "SilentAudit", "version": AGENT_ENDPOINT_VERSION,
          "summary": "★静默池盘点（四类分类 + stalled_violation 违背不变量 + 清理候选）；只读"},
-        {"path": "/agent/silent/purge", "method": "GET", "handler": "agent_silent_purge", "write": True,
-         "params": {"confirm": "1=真删除（默认干跑）", "batch": "int 每批上限（默认 50）",
-                    "site": "站点过滤（可空=全站）", "sub": "身份过滤（普通/新/资源；可空=全部）"},
-         "returns": "SilentPurge", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★静默池清理(删除)（补 pause + 清理候选删条目+删文件，过删除闸门）：默认干跑，confirm=1 才写"},
         {"path": "/agent/silent/enforce", "method": "GET", "handler": "agent_silent_enforce",
          "write": True,
          "params": {"confirm": "1=真补 pause（默认干跑）"},
@@ -830,26 +825,6 @@ class AgentApiMixin:
             data, t0,
             ("features/silent._silent_audit() → tag_state(账本) + 下载器快照 + "
              "_hr_obligation + 保护集（只读）"))
-
-    def agent_silent_purge(self, confirm: int = 0, batch: int = 50, site: str = "",
-                           sub: str = "") -> Dict[str, Any]:
-        """``GET /agent/silent/purge`` —— ★ **静默池清理（删除）**（写；默认干跑）。
-
-        一次调用答：**「清理要删哪些（删条目+删文件）、拦下了哪些、补 pause 几个」**。
-        ``confirm=0``（默认）= 只出计划零写入；``confirm=1`` = 真写（补 pause + 删条目+删文件，过删除闸门）。
-        ``sub`` 可按身份分批（``普通`` / ``新`` / ``资源``）。
-        """
-        t0 = time.time()
-        try:
-            data = self._silent_purge(confirm=1 if int(confirm or 0) else 0,
-                                      batch=int(batch or 50), site=str(site or ""),
-                                      sub=str(sub or ""))
-        except Exception as e:  # noqa: BLE001
-            return self._agent_err("internal", f"静默池清理失败:{e}", t0, trace_id=str(e))
-        return self._agent_report(
-            data, t0,
-            ("features/silent._silent_purge() → _silent_audit(分类) + _silent_pause_gate(补 pause) + "
-             "_delete_gate_detail(硬拦) + DownloaderAdapter.delete_torrents(delete_file=not shared)"))
 
     def agent_silent_enforce(self, confirm: int = 0) -> Dict[str, Any]:
         """``GET /agent/silent/enforce`` —— ★★ **静默不变量收敛**（写；默认干跑）。
