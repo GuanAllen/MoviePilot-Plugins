@@ -582,7 +582,7 @@ class HealthMixin:
                 bytes_agg[bucket + "_gb"] += r["size_gb"]
                 sb[bucket] += 1
                 sb["gb"] = round(sb["gb"] + r["size_gb"], 3)
-                if bucket == "ghost" and r["hr"] and r["hr"]["state"] in (BILL_STATE_ACTIVE, BILL_STATE_BREACHED):
+                if bucket in ("ghost", "incomplete") and r["hr"] and r["hr"]["state"] in (BILL_STATE_ACTIVE, BILL_STATE_BREACHED):
                     hr_at_risk.append({
                         "hash": hh, "title": r["title"], "site": dom, "bucket": bucket,
                         "state": r["hr"]["state"], "rule": r["hr"]["rule"],
