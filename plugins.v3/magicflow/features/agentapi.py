@@ -182,6 +182,17 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
                     "live": "1 = 现抓站点 H&R 对账（同 /agent/hr/reconcile）"},
          "returns": "SiteSeedsReport", "version": AGENT_ENDPOINT_VERSION,
          "summary": "★站点级种子报表：逐条种子状态（分类/保护/账单/qB） + H&R 摘要"},
+        # ---- 11.11.0 H&R 账单按站 + 违约告警（只读）----
+        {"path": "/agent/hr/bills", "method": "GET", "handler": "agent_hr_bills", "write": False,
+         "params": {"site": "域名（可空=全站）", "live": "1=现抓对账（默认读缓存）"},
+         "returns": "HrBillsBySite", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "★H&R 账单按站分组（欠债/状态分布/need_left/in_qb/missing/per_torrent_hr/规则来源）；只读"},
+        {"path": "/agent/hr/breaches", "method": "GET", "handler": "agent_hr_breaches", "write": False,
+         "params": {}, "returns": "HrBreaches", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "★H&R 违约告警清单（欠债种消失：归因 plugin/external + gate_bug 升级 + 补源提示）；只读"},
+        {"path": "/agent/silent/audit", "method": "GET", "handler": "agent_silent_audit", "write": False,
+         "params": {"limit": "int（默认 1000；0=全量）"}, "returns": "SilentAudit", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "★静默池盘点（四类分类 + stalled_violation 违背不变量 + 迁出候选）；只读"},
         # ---- P1.5c：功能域只读（AI ⊇ 前端，收编 19 个只读豁免域）----
         {"path": "/agent/tasks/{id}/bonus", "method": "GET", "handler": "agent_task_bonus", "write": False,
          "params": {"id": "任务 id 路径参数"}, "returns": "TaskBonusReport",
@@ -705,6 +716,63 @@ class AgentApiMixin:
             payload, t0,
             ("features/sitereport._site_seed_report() → 下载器快照 + hr_bills.json + "
              "站点 myhr.php（经 _hr_reconcile_site）"))
+
+    # ---------------------------------------------------- 11.11.0 H&R 账单按站 + 违约告警（只读）
+    def agent_hr_bills(self, site: str = "", live: int = 0) -> Dict[str, Any]:
+        """``GET /agent/hr/bills`` —— ★ **H&R 账单按站分组**（只读）。
+
+        一次调用答：**「各站欠多少债 / 账单状态分布 / 有没有种在 qB / 缺了没」**。
+        只读：欠债数 / 状态分布(active/pending/settled/void/breached) / need_left / in_qb /
+        missing / per_torrent_hr 站标 / 规则来源。与 ``GET /hr/bills`` 同源（人机同源）。
+        """
+        t0 = time.time()
+        try:
+            data = self._hr_bills_by_site(str(site or ""), int(live or 0))
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"H&R账单失败:{e}", t0, trace_id=str(e))
+        payload = dict(data or {})
+        payload["write"] = {
+            "void": "GET /tags?action=hrbills_void&hash=<h>&reason=..&confirm=1",
+            "reconcile": "GET /agent/hr/reconcile?site=<dom>&live=1",
+            "breaches": "GET /agent/hr/breaches",
+        }
+        return self._agent_report(
+            payload, t0,
+            ("features/sitereport._hr_bills_by_site() → hr_bills.json + 下载器快照 + "
+             "_site_rules() + 对账缓存（只读）"))
+
+    def agent_hr_breaches(self) -> Dict[str, Any]:
+        """``GET /agent/hr/breaches`` —— ★ **H&R 违约告警清单**（只读）。
+
+        一次调用答：**「哪些欠 H&R 的种从下载器消失了，谁删的（本插件/外部）」**。
+        归因：deletions.jsonl 命中 ok=true → 本插件删（gate bug 升级 critical）；否则外部删。
+        只读：不写任何账单/账本；补回走 write.reseed / write.rescue（需 confirm=1）。
+        """
+        t0 = time.time()
+        try:
+            data = self._hr_breaches()
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"H&R违约清单失败:{e}", t0, trace_id=str(e))
+        return self._agent_report(
+            data, t0,
+            ("features/hrbills._hr_breaches() → hr_bills.json + deletions.jsonl + "
+             "下载器快照（只读，归因不造第二真值）"))
+
+    def agent_silent_audit(self, limit: int = 0) -> Dict[str, Any]:
+        """``GET /agent/silent/audit`` —— ★ **静默池盘点**（只读）。
+
+        一次调用答：**「静默池里各种怎么分类（欠H&R/资产/跨站/认领/手动/迁出候选）+ 谁违背不变量」**。
+        纯只读，判据与 ``_delete_gate`` 同源（``_hr_obligation`` + 保护集）。
+        """
+        t0 = time.time()
+        try:
+            data = self._silent_audit(int(limit or 0))
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"静默池盘点失败:{e}", t0, trace_id=str(e))
+        return self._agent_report(
+            data, t0,
+            ("features/silent._silent_audit() → tag_state(账本) + 下载器快照 + "
+             "_hr_obligation + 保护集（只读）"))
 
     # ---------------------------------------------------- 11.9.0 野马PT 逐种 H&R（只读 + 免罪写）
     def agent_yema(self, live: int = 0, force: int = 0) -> Dict[str, Any]:

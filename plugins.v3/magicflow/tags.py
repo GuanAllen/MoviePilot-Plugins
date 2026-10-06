@@ -25,6 +25,7 @@ __all__ = [
     "STATE_BONUS",
     "STATE_SILENT",
     "STATE_RECOMMEND",
+    "STATE_HR",
     "DUTY_STATES",
     "SUB_NEW",
     "SUB_RESOURCE",
@@ -59,14 +60,16 @@ STATE_BRUSH = "刷流"
 STATE_BONUS = "魔力"
 STATE_SILENT = "静默"
 STATE_RECOMMEND = "推荐"
+STATE_HR = "保种"  # ★ 11.11.0：H&R 保种职务（归 __hr_host__ 伪任务；只由 _hr_obligation 派生，不可手动设）
 
 SUB_NEW = "新"
 SUB_RESOURCE = "资源"
 SUB_PLAIN = "普通"
 
-STATES = (STATE_BRUSH, STATE_BONUS, STATE_SILENT, STATE_RECOMMEND)
+STATES = (STATE_BRUSH, STATE_BONUS, STATE_SILENT, STATE_RECOMMEND, STATE_HR)
 # 职务轴（上班贴 / 下班摘）：辅种不单列职务 —— 它只给**身份**，之后由该站任务照常让它上班。
-DUTY_STATES = (STATE_BRUSH, STATE_BONUS)
+# 保种也是职务（__hr_host__ 的「上班」= 保挂 H&R），但**不可手动设**（set_tag_state 不含它）。
+DUTY_STATES = (STATE_BRUSH, STATE_BONUS, STATE_HR)
 SUBS = (SUB_NEW, SUB_RESOURCE, SUB_PLAIN)
 
 # 只有「静默」有子类
@@ -97,6 +100,7 @@ _TIER = {
     STATE_BONUS: "seed",
     STATE_SILENT: "seed",
     STATE_RECOMMEND: "seed",
+    STATE_HR: "seed",
 }
 
 

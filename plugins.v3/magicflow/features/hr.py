@@ -15,11 +15,22 @@ from ..tags import (
     MARK_HR,
     SUB_PLAIN,
     SUB_RESOURCE,
+    SUB_NEW,
     DUTY_STATES,
+    STATE_BRUSH,
+    STATE_BONUS,
+    STATE_HR,
+    STATE_SILENT,
+    identity_of,
+    retag,
+    tag_for,
 )
 from .hrbills import (
     HR_BILLS_ENFORCE,
     BILL_STATE_ACTIVE,
+    BILL_STATE_SETTLED,
+    BILL_STATE_VOID,
+    BILL_STATE_BREACHED,
     RULE_SITE_HR,
     RULE_HIT_AND_RUN,
 )
@@ -349,6 +360,7 @@ class HrMixin:
                                "obligated": 0, "tagged": 0, "resumed": 0,
                                "cleared": 0, "released": 0, "failed": 0,
                                "items": [], "release": []}
+        from ..common import HR_HOST_TASK_ID  # 惰性导入（离线测试不碰 common）
         # ★ P0：本轮只拉一次 qB 快照（同一轮内复用）；不传则自拉并计数（向后兼容）
         _beg = getattr(self, "_decision_round_begin", None)
         if callable(_beg):
@@ -368,10 +380,6 @@ class HrMixin:
             ledger = dict(self._tag_state().items() or {})
         except Exception:  # noqa: BLE001
             ledger = {}
-        try:
-            cssrc = dict(self._crossseed_sources().items() or {})
-        except Exception:  # noqa: BLE001
-            cssrc = {}
         # ★ 「家人已有身份」→ 不贴（Master 2026-09-30 01:34）：
         #   同**资源**在本池已经有拿到身份的（资源/普通）→ 新来的跟家人走，不隔离。
         fam_gids: set = set()
@@ -388,7 +396,10 @@ class HrMixin:
                     fam_gids.add(_g2)
         except Exception:  # noqa: BLE001
             pass
-        scope = set(ledger) | set(cssrc)
+        # ★ 11.11.0：只处理 __hr_host__（职务 保种）的种；跨站来源份由 _crossseed_sources_tick 管，
+        #   静默池全 paused（无 H&R 例外），不再扫 ledger 全量。
+        scope = [h for h, _r in ledger.items()
+                 if str((_r or {}).get("taken_by") or "") == HR_HOST_TASK_ID]
         cap = int(limit or 0)
         to_tag: List[str] = []
         to_start: List[str] = []
@@ -441,7 +452,9 @@ class HrMixin:
                     to_clear.append(hh)
                 continue
             # ★ 账本判在岗（职务=刷流/魔力）；标签只作展示投影
-            if str(rec.get("state") or "") in DUTY_STATES and not has_tag:
+            #   ★ 11.11.0：保种( STATE_HR )是 __hr_host__ 的职务，欠债要强挂，**不能**当「在岗」跳过
+            _duty = str(rec.get("state") or "")
+            if _duty in DUTY_STATES and _duty != STATE_HR and not has_tag:
                 rep["on_duty"] = int(rep.get("on_duty") or 0) + 1
                 continue
             rep["items"].append({
@@ -517,3 +530,234 @@ class HrMixin:
         if callable(_end):
             _end()
         return rep
+
+    # ------------------------------------------------------- 11.11.0 H&R 保种宿主 __hr_host__
+
+    def _hr_host_assign(self, hashes: Any, *, reason: str = "") -> int:
+        """把欠 H&R 的种挂到 __hr_host__（职务 保种）：贴职务标签 + 写账本（taken_by=__hr_host__）。
+
+        幂等：已 taken_by=__hr_host__ 的种不重复写。不 force_start（保挂由 hr_host()/ _hr_guard_tick 负责）。
+        """
+        from ..common import HR_HOST_TASK_ID, SILENT_HR_SPLIT_ENABLED  # 惰性导入（离线测试不碰 common）
+        if not SILENT_HR_SPLIT_ENABLED:
+            return 0
+        hs = [hashes] if isinstance(hashes, str) else list(hashes or [])
+        hs = [str(h or "").strip().lower() for h in hs if str(h or "").strip()]
+        if not hs:
+            return 0
+        downloader = self._get_downloader()
+        if downloader is None or not getattr(downloader, "is_available", False):
+            return 0
+        store = self._tag_state()
+        fn = getattr(downloader, "replace_torrent_tags", None)
+        snap = self._tag_all_torrents()
+        n = 0
+        _now = time.time()
+        for h in hs:
+            hh = str(h or "").strip().lower()
+            _rec0 = store.get(hh) or {}
+            if str(_rec0.get("taken_by") or "") == HR_HOST_TASK_ID:
+                continue  # 已在保种宿主
+            live = (snap or {}).get(hh)
+            cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
+            _i_site, _i_sub = identity_of(cur)
+            _sub = str(_rec0.get("sub") or "") or _i_sub \
+                or (SUB_RESOURCE if bool(_rec0.get("asset")) else SUB_NEW)
+            _sub = _sub or SUB_NEW
+            _site = str(_rec0.get("site") or "") or _i_site or self._torrent_site_name(cur, "")
+            new_tags = retag(cur, site=_site, state=STATE_HR, sub=_sub) \
+                if cur else [tag_for(_site, STATE_HR, _sub)]
+            try:
+                done = fn(hh, new_tags) if callable(fn) else downloader.set_torrent_tags(hh, new_tags)
+            except Exception:  # noqa: BLE001
+                done = False
+            if not done:
+                continue
+            try:
+                store.put(hh, {
+                    "site": _site, "state": STATE_HR, "sub": _sub,
+                    "taken_by": HR_HOST_TASK_ID, "task": "H&R保种",
+                    "taken_at": _now, "lease_until": 0,
+                    "title": str(getattr(live, "title", "") or "") if live is not None else "",
+                })
+            except Exception:  # noqa: BLE001
+                pass
+            n += 1
+        # ★ 挂上即做种（保挂 H&R）：入池即暂停的种被迁进保种宿主，立即 force_start 继续挂
+        if n:
+            try:
+                _fn2 = getattr(downloader, "force_start_torrents", None)
+                if callable(_fn2):
+                    _fn2(hs)
+                else:
+                    downloader.resume_torrents(hs)
+            except Exception as err:  # noqa: BLE001
+                self._log(f"H&R保种:强挂失败:{err}", "warning")
+        return n
+
+    def _hr_host_release(self, hashes: Any, *, reason: str = "") -> int:
+        """结清/作废/规则不欠后，把种从 __hr_host__ 释放回静默（退保种职务 + pause）。"""
+        from ..common import HR_HOST_TASK_ID  # 惰性导入（离线测试不碰 common）
+        hs = [hashes] if isinstance(hashes, str) else list(hashes or [])
+        hs = [str(h or "").strip().lower() for h in hs if str(h or "").strip()]
+        if not hs:
+            return 0
+        downloader = self._get_downloader()
+        if downloader is None or not getattr(downloader, "is_available", False):
+            return 0
+        store = self._tag_state()
+        fn = getattr(downloader, "replace_torrent_tags", None)
+        snap = self._tag_all_torrents()
+        n = 0
+        _now = time.time()
+        for h in hs:
+            hh = str(h or "").strip().lower()
+            _rec = store.get(hh) or {}
+            if str(_rec.get("taken_by") or "") not in ("", HR_HOST_TASK_ID):
+                continue
+            live = (snap or {}).get(hh)
+            cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
+            _sub = str(_rec.get("sub") or "") or SUB_PLAIN
+            _site = str(_rec.get("site") or "") or self._torrent_site_name(cur, "")
+            new_tags = retag(cur, site=_site, state=STATE_SILENT, sub=_sub) \
+                if cur else [tag_for(_site, STATE_SILENT, _sub)]
+            try:
+                done = fn(hh, new_tags) if callable(fn) else downloader.set_torrent_tags(hh, new_tags)
+            except Exception:  # noqa: BLE001
+                done = False
+            if not done:
+                continue
+            try:
+                store.put(hh, {"site": _site, "state": STATE_SILENT, "sub": _sub,
+                               "taken_by": "", "lease_until": 0,
+                               "hr_released_at": _now, "hr_released_reason": str(reason or "")})
+            except Exception:  # noqa: BLE001
+                pass
+            n += 1
+        if n:
+            try:
+                self._silent_pause_gate(hs)
+            except Exception:  # noqa: BLE001
+                pass
+        return n
+
+    def hr_host(self) -> Dict[str, Any]:
+        """★ 11.11.0：__hr_host__ 常驻 worker —— 保挂 H&R + 结清释放。
+
+        只处理 taken_by=__hr_host__（职务 保种）的种：
+        ① 欠 H&R → force_start（保挂）；② 已结清（seed 时长达标）/ 账单 settled/void → 释放回静默（pause）。
+        种消失的违约由 ``_hrbills_tick`` 转 breached，这里不重复处理。
+        """
+        from ..common import SILENT_HR_SPLIT_ENABLED, HR_HOST_TASK_ID  # 惰性导入（离线测试不碰 common）
+        if not SILENT_HR_SPLIT_ENABLED:
+            return {"enabled": False}
+        rep: Dict[str, Any] = {"assigned": 0, "migrated": 0, "resumed": 0, "released": 0}
+        try:
+            snap = self._tag_all_torrents() or {}
+        except Exception:  # noqa: BLE001
+            return rep
+        try:
+            ledger = dict(self._tag_state().items() or {})
+        except Exception:  # noqa: BLE001
+            ledger = {}
+        store = None
+        try:
+            store = self._hrbills_store()
+        except Exception:  # noqa: BLE001
+            store = None
+        # ① 统一迁移（堵洞）：账本里欠 H&R、不在岗（非刷流/魔力）、未 taken_by=__hr_host__ → 保种。
+        #    覆盖 reseed/ondemand/crossseed 等入池口只补了 pause 的欠债种，保证「静默全 paused」∧「欠债照挂」。
+        to_migrate: List[str] = []
+        for hh, rec in ledger.items():
+            _st = str((rec or {}).get("state") or "")
+            if _st in DUTY_STATES and _st != STATE_HR:
+                continue  # 在岗（刷流/魔力）→ 任务在挂，不迁移
+            if str((rec or {}).get("taken_by") or "") == HR_HOST_TASK_ID:
+                continue  # 已在保种宿主
+            t = snap.get(hh)
+            if t is None:
+                continue
+            site = str((rec or {}).get("site") or "") or self._torrent_site_name(getattr(t, "tags", None), "")
+            try:
+                if bool(self._hr_obligation(site, t, snap=snap)[0]):
+                    to_migrate.append(hh)
+            except Exception:  # noqa: BLE001
+                continue
+        if to_migrate:
+            rep["migrated"] = int(self._hr_host_assign(to_migrate, reason="欠 H&R 迁移") or 0)
+        to_resume: List[str] = []
+        to_release: List[str] = []
+        for hh, rec in ledger.items():
+            if str(rec.get("state") or "") != STATE_HR:
+                continue
+            rep["assigned"] = int(rep["assigned"]) + 1
+            t = snap.get(hh)
+            if t is None:
+                continue  # 消失 → 由 _hrbills_tick 违约；账本稍后对账
+            site = str(rec.get("site") or "") or self._torrent_site_name(getattr(t, "tags", None), "")
+            try:
+                obl = bool(self._hr_obligation(site, t, snap=snap)[0])
+            except Exception:  # noqa: BLE001
+                obl = False
+            bstate = ""
+            if store is not None:
+                try:
+                    bstate = str((store.get(hh) or {}).get("state") or "")
+                except Exception:  # noqa: BLE001
+                    bstate = ""
+            if not obl or bstate in (BILL_STATE_SETTLED, BILL_STATE_VOID):
+                to_release.append(hh)
+                continue
+            st = str(getattr(t, "state", "") or "").strip().lower()
+            if st.startswith("paused") or st.startswith("stopped") or st.startswith("queued"):
+                to_resume.append(hh)
+        if to_release:
+            rep["released"] = int(self._hr_host_release(to_release, reason="结清/作废/规则不欠") or 0)
+        if to_resume:
+            try:
+                dl = self._get_downloader("qbittorrent")
+                fn = getattr(dl, "force_start_torrents", None) if dl is not None else None
+                if callable(fn):
+                    cnt, err = fn(to_resume)
+                elif dl is not None:
+                    cnt, err = dl.resume_torrents(to_resume)
+                else:
+                    cnt, err = 0, "无下载器"
+                rep["resumed"] = int(cnt or 0)
+                if err:
+                    self._log(f"H&R保种:强挂失败 {err}", "warning")
+            except Exception as err:  # noqa: BLE001
+                self._log(f"H&R保种:强挂异常:{err}", "warning")
+        return rep
+
+    def _hr_host_card(self) -> Dict[str, Any]:
+        """★ 11.11.0：__hr_host__（H&R 保种）常驻任务在任务列表里的只读条目。
+
+        与 ``__silent_host__`` 的 ``_silent_host_card`` 同构：只读展示，不接受候选/清理/换种。
+        """
+        from ..common import HR_HOST_TASK_ID, SILENT_HOST_INTERVAL_MINUTES  # 惰性导入
+        n_hr = 0
+        by_site: Dict[str, int] = {}
+        try:
+            for _h, _rec in (self._tag_state().items() or {}).items():
+                if str((_rec or {}).get("state") or "") == STATE_HR:
+                    n_hr += 1
+                    _s = str((_rec or {}).get("site") or "未知")
+                    by_site[_s] = int(by_site.get(_s) or 0) + 1
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            _min = float(getattr(self, "_tags_cfg", {}).get("host_interval") or SILENT_HOST_INTERVAL_MINUTES)
+        except Exception:  # noqa: BLE001
+            _min = float(SILENT_HOST_INTERVAL_MINUTES)
+        return {
+            "id": HR_HOST_TASK_ID, "name": "H&R保种", "builtin": True, "enabled": True,
+            "run_mode": "running", "task_type": "host", "state": "running",
+            "site_id": 0, "site_domain": "", "site_name": "全部站点（H&R 保种）",
+            "downloader": "所有下载器", "brush_tag": "魔流-<站点>-保种", "save_path": "",
+            "seeding_count": n_hr, "hr_count": n_hr, "nonhr_count": 0,
+            "active_seeding_count": n_hr, "downloading_count": 0, "paused_count": 0,
+            "classify": {"by_site": by_site},
+            "host_interval_minutes": round(_min, 1),
+            "host_last_run": "—",
+        }

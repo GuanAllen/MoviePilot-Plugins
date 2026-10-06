@@ -33,6 +33,7 @@ from ..common import (
     RESEED_MIN_SIZE_GB,
     SEED_UP_LIMIT_KBPS_DEFAULT,
     SILENT_HOST_TASK_ID,
+    HR_HOST_TASK_ID,
     STATS_TTL,
     STATUS_TTL,
     run_mode_of,
@@ -279,6 +280,8 @@ class StatusMixin:
         """构建任务详情(含统计信息)。"""
         if str(task_id or "") == SILENT_HOST_TASK_ID:
             return self._silent_host_card()
+        if str(task_id or "") == HR_HOST_TASK_ID:
+            return self._hr_host_card()
         task = self._get_task_config(task_id)
         if not task:
             return None
@@ -386,6 +389,10 @@ class StatusMixin:
             tasks.append(self._silent_host_card())
         except Exception:  # noqa: BLE001
             pass
+        try:
+            tasks.append(self._hr_host_card())
+        except Exception:  # noqa: BLE001
+            pass
         return tasks
 
     # ---------------------------------------------------------
@@ -436,6 +443,10 @@ class StatusMixin:
             total, enabled, tasks = 0, 0, []
         try:
             tasks.append(self._silent_host_card())
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            tasks.append(self._hr_host_card())
         except Exception:  # noqa: BLE001
             pass
         summary = {

@@ -25,7 +25,15 @@ from typing import Any, Dict, List, Optional
 from app.schemas import Response
 
 from ..tags import STATE_SILENT, parse_tag
-from .hrbills import BILL_STATE_ACTIVE, RULE_HIT_AND_RUN, RULE_SITE_HR
+from .hrbills import (
+    BILL_STATE_ACTIVE,
+    BILL_STATE_PENDING,
+    BILL_STATE_SETTLED,
+    BILL_STATE_VOID,
+    BILL_STATE_BREACHED,
+    RULE_HIT_AND_RUN,
+    RULE_SITE_HR,
+)
 
 # 分类桶（主状态，互斥；优先级见 _site_seed_report 排序）
 BUCKET_HR = "欠H&R"
@@ -329,4 +337,132 @@ class SiteReportMixin:
             return Response(success=True, message="ok", data=data)
         except Exception as e:  # noqa: BLE001
             self._log(f"站点报表失败: {e}", "error")
+            return Response(success=False, message=str(e))
+
+    # ------------------------------------------------------------------ 11.11.0 H&R 账单按站
+    def _hr_bills_by_site(self, site: str = "", live: int = 0) -> Dict[str, Any]:
+        """★ H&R 账单按站分组（只读）：欠债/状态分布/need_left/in_qb/missing/per_torrent_hr/规则来源。
+
+        真值源：账单 store + 下载器快照 + 站点规则 + 对账缓存（只读，不缓存新真值）。
+        """
+        store = self._site_report_bills_store()
+        try:
+            snap = self._tag_all_torrents() or {}
+        except Exception:  # noqa: BLE001
+            snap = {}
+        hr_cache = None
+        try:
+            hr_cache = self._hr_reconcile_cache()
+        except Exception:  # noqa: BLE001
+            hr_cache = None
+        try:
+            _norm = self._hrbills_norm_domain
+        except Exception:  # noqa: BLE001
+            _norm = lambda d: str(d or "").strip().lower()  # noqa: E731
+        filter_dom = _norm(site) if site else ""
+        by_site: Dict[str, Dict[str, Any]] = {}
+        totals = {"sites": 0, "bills": 0, "active": 0, "pending": 0, "settled": 0,
+                  "void": 0, "breached": 0, "owed": 0, "missing": 0}
+
+        def _bucket(dom: str) -> Dict[str, Any]:
+            if dom in by_site:
+                return by_site[dom]
+            per_torrent = False
+            hr_flag = None
+            rule_source = ""
+            need_h = 24.0
+            try:
+                per_torrent = bool(self._site_per_torrent_hr(dom))
+            except Exception:  # noqa: BLE001
+                per_torrent = False
+            try:
+                hr_flag = self._site_hr_flag(dom)
+            except Exception:  # noqa: BLE001
+                hr_flag = None
+            try:
+                _rules = self._site_rules() or {}
+                _rec = dict((_rules.items() or {}).get(dom) or {})
+                rule_source = str(_rec.get("source") or "")
+                need_h = float(_rec.get("seed_hours") or 24.0)
+            except Exception:  # noqa: BLE001
+                rule_source = ""
+                need_h = 24.0
+            by_site[dom] = {
+                "domain": dom, "name": dom, "per_torrent_hr": per_torrent,
+                "hr_flag": hr_flag, "rule_source": rule_source, "need_h": round(need_h, 1),
+                "bills": {"total": 0, "active": 0, "pending": 0, "settled": 0,
+                          "void": 0, "breached": 0},
+                "owed": 0, "in_qb": 0, "missing": 0, "items": [],
+            }
+            return by_site[dom]
+
+        bills = store.all() if store is not None else {}
+        for h, b in bills.items():
+            if not isinstance(b, dict):
+                continue
+            dom = _norm(str(b.get("site") or ""))
+            if not dom:
+                continue
+            if filter_dom and dom != filter_dom:
+                continue
+            g = _bucket(dom)
+            st = str(b.get("state") or "")
+            hh = str(h or "").strip().lower()
+            in_qb = hh in snap
+            g["bills"]["total"] += 1
+            totals["bills"] += 1
+            if st in g["bills"]:
+                g["bills"][st] += 1
+            if st in totals:
+                totals[st] += 1
+            if in_qb:
+                g["in_qb"] += 1
+            if st in (BILL_STATE_ACTIVE, BILL_STATE_BREACHED):
+                g["owed"] += 1
+                totals["owed"] += 1
+            g["items"].append({
+                "hash": hh, "title": str(b.get("title") or "")[:120],
+                "state": st, "rule": str(b.get("rule") or ""),
+                "seeded_h": round(float(b.get("seeded_h") or 0.0), 2),
+                "need_h": round(float(b.get("need_h") or 0.0), 2),
+                "in_qb": in_qb, "opened_by": str(b.get("opened_by") or ""),
+                "breached_at": b.get("breached_at") or 0,
+            })
+        # 站点视角 missing_local（对账缓存，只读）
+        for dom in list(by_site.keys()):
+            rep = {}
+            if hr_cache is not None:
+                try:
+                    rep = hr_cache.get_report(dom) or {}
+                except Exception:  # noqa: BLE001
+                    rep = {}
+            missing = int(len(rep.get("missing_local") or []))
+            by_site[dom]["missing"] = missing
+            totals["missing"] += missing
+            by_site[dom]["items"] = sorted(
+                by_site[dom]["items"],
+                key=lambda x: (0 if x["state"] in (BILL_STATE_ACTIVE, BILL_STATE_BREACHED) else 1),
+            )[:200]
+        sites = [by_site[k] for k in sorted(by_site, key=lambda d: -by_site[d]["owed"])]
+        totals["sites"] = len(sites)
+        return {
+            "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "live": bool(live),
+            "totals": totals,
+            "sites": sites,
+            "source_of_truth": ["hr_bills.json", "myhr.php(对账)", "_tag_all_torrents()", "_site_rules()"],
+            "write": {
+                "void": "GET /tags?action=hrbills_void&hash=<h>&reason=..&confirm=1",
+                "reconcile": "GET /agent/hr/reconcile?site=<dom>&live=1",
+                "reseed_missing": "GET /tags?action=hr_reconcile&site=<dom>&confirm=1",
+            },
+        }
+
+    def get_hr_bills(self, site: str = "", live: int = 0) -> Response:
+        """``GET /hr/bills``：H&R 账单按站分组（只读）。"""
+        try:
+            data = self._hr_bills_by_site(site, live)
+            return Response(success=True, message="ok", data=data)
+        except Exception as e:  # noqa: BLE001
+            self._log(f"H&R账单报表失败: {e}", "error")
             return Response(success=False, message=str(e))

@@ -87,6 +87,7 @@ from ..common import (
     SIGNIN_RETRY_KEYWORD,
     SIGNIN_TICK_MINUTES,
     SILENT_HOST_INTERVAL_MINUTES,
+    SILENT_HR_SPLIT_ENABLED,
     _MF_ACTIVE,
     _cs_parse_site_hours,
     begin_decision_round,
@@ -942,6 +943,20 @@ class CoreMixin:
                 },
             }
         )
+        # ★ H&R 保种宿主（__hr_host__ 常驻 worker，11.11.0）：保挂欠 H&R 的种 + 结清释放。
+        #   常驻、低频（同静默托管 60min）。SILENT_HR_SPLIT_ENABLED=False 时 hr_host() 直接 no-op。
+        services.append(
+            {
+                "id": "HrHost",
+                "name": "H&R保种",
+                "trigger": "interval",
+                "func": self.hr_host,
+                "kwargs": {
+                    "minutes": _sh_min,
+                    "jitter": self._jitter_seconds(_sh_min),
+                },
+            }
+        )
         # ★ 站点签到 / 模拟登录:插件级单 worker(借鉴「站点自动签到」插件,多选站点)。
         #   ★ 调度节拍 = min(签到间隔, 15min)：全量跑仍由「签到间隔」把关（signin_last_full），
         #     多出来的轻量 tick 只为了「按 PV 节奏补失败重试」（空闲 tick 不发请求）。
@@ -1305,6 +1320,53 @@ class CoreMixin:
                 self._log(f"魔流 [{task.name}] 应用运行状态失败:{err}", "warning")
         threading.Thread(target=_worker, daemon=True).start()
 
+    def _split_release(self, task: MagicFlowTaskConfig, hashes: Any, *, reason: str = "") -> int:
+        """★ 11.11.0 遣散分诊：欠 H&R → 保种(__hr_host__)；否则 → 静默（退标签 + pause）。
+
+        退回旧行为：``SILENT_HR_SPLIT_ENABLED=False`` → 直接 ``_tag_release``。
+        只清本任务的占用，不影响其它任务的保护集。
+        """
+        hs = [hashes] if isinstance(hashes, str) else list(hashes or [])
+        hs = [str(h or "").strip().lower() for h in hs if str(h or "").strip()]
+        if not hs:
+            return 0
+        if not SILENT_HR_SPLIT_ENABLED:
+            return int(self._tag_release(task, hs, reason=reason) or 0)
+        try:
+            snap = self._tag_all_torrents() or {}
+        except Exception:  # noqa: BLE001
+            snap = {}
+        hr_hashes: List[str] = []
+        silent_hashes: List[str] = []
+        for h in hs:
+            t = snap.get(h)
+            if t is None:
+                silent_hashes.append(h)
+                continue
+            try:
+                owed = bool(self._hr_obligation("", t, snap=snap)[0])
+            except Exception:  # noqa: BLE001
+                owed = False
+            if owed:
+                hr_hashes.append(h)
+            else:
+                silent_hashes.append(h)
+        n = 0
+        if hr_hashes:
+            try:
+                n += int(self._hr_host_assign(hr_hashes, reason=reason) or 0)
+            except Exception as err:  # noqa: BLE001
+                self._log(f"魔流 [{getattr(task, 'name', '')}] 遣散分诊:保种失败:{err}", "warning")
+        if silent_hashes:
+            n += int(self._tag_release(task, silent_hashes, reason=reason) or 0)
+        # ★ 释放本任务对这些已退出种的陈旧保护/纳管记录（只清本任务）
+        try:
+            if self._store is not None:
+                self._store.forget_torrents(str(getattr(task, "id", "") or ""), hs)
+        except Exception:  # noqa: BLE001
+            pass
+        return n
+
     def _apply_run_mode(self, task: MagicFlowTaskConfig, mode: str) -> Dict[str, int]:
         """按运行状态操作托管种子(只动本任务标签内的种子,保文件、可逆)。
 
@@ -1376,17 +1438,12 @@ class CoreMixin:
             try:
                 _rls = [h for h in (getattr(t, "hash", "") or "" for t in managed) if h]
                 out["released"] = int(
-                    self._tag_release(task, _rls, reason="任务已停止→遣散（退回静默仓库）") or 0
+                    self._split_release(task, _rls, reason="任务已停止→遣散（退回静默仓库）") or 0
                 )
             except Exception as err:  # noqa: BLE001
                 self._log(f"魔流 [{task.name}] 遣散退回静默失败:{err}", "warning")
-            # ★ 5.0.0：回池的种**当场**过一遍 H&R 闸门
-            #   （欠工时 → 打「H&R」隔离标 + 强挂保种；没欠的保持不动）
-            if out.get("released"):
-                try:
-                    self._hr_guard_tick(apply=True)
-                except Exception as err:  # noqa: BLE001
-                    self._log(f"魔流 [{task.name}] 遣散后 H&R 闸门失败:{err}", "warning")
+            # ★ 11.11.0：欠 H&R 的种已由 _split_release 交给 __hr_host__（保种 + 强挂），
+            #   不再在静默托管里过 H&R 闸门（hr_host worker 兜底）。
         mode_label = {
             "running": "运行中（上班+招人）",
             "seeding": "做种中（上班）",
@@ -1708,14 +1765,27 @@ class CoreMixin:
             # ★ 4.6.0 口径：只有 run_mode=stopped 才「遣散」；「做种中」(enabled 派生为 False) 不退。
             if task_is_participating(t):
                 continue
+            tid = str(getattr(t, "id", "") or "")
             try:
                 hs = list(self._task_managed_hashes(t))
             except Exception:  # noqa: BLE001
                 hs = []
+            # ★ 11.11.0 释放陈旧保护：stopped 任务名下种早已退回静默，职务态对不上 → managed 空。
+            #   直接取 store 里的陈旧占用（protected ∪ adopted），并入遣散 + forget（释放 611 陈旧保护）。
+            stale: List[str] = []
+            try:
+                if self._store is not None:
+                    stale = sorted({str(x).strip().lower() for x in (
+                        set(self._store.get_protected_torrents(tid) or set())
+                        | set(self._store.get_adopted(tid) or set())
+                    ) if str(x).strip()})
+            except Exception:  # noqa: BLE001
+                stale = []
+            hs = sorted(set(hs) | set(stale))
             if not hs:
                 continue
             _keeper = self._same_site_state_live(t)
-            if _keeper:
+            if _keeper and not stale:
                 report["skipped_live"] += 1
                 report["tasks"].append({"task": str(getattr(t, "name", "") or ""),
                                         "hashes": len(hs), "keeper": _keeper})
@@ -1724,15 +1794,11 @@ class CoreMixin:
                 report["pending"] += len(hs)
                 report["tasks"].append({"task": str(getattr(t, "name", "") or ""), "hashes": len(hs)})
                 continue
-            n = self._tag_release(t, hs, reason="任务已停止→遣散（退回静默仓库）")
+            n = self._split_release(t, hs, reason="任务已停止→遣散（退回静默仓库）")
             report["settled"] += n
             report["tasks"].append({"task": str(getattr(t, "name", "") or ""), "settled": n})
-        # ★ 5.0.0：遣散完**当场**过一遍 H&R 闸门（回池的种该隔离就隔离）
-        if apply and report.get("settled"):
-            try:
-                report["hr"] = self._hr_guard_tick(apply=True)
-            except Exception as err:  # noqa: BLE001
-                self._log(f"遣散后 H&R 闸门失败:{err}", "warning")
+        # ★ 11.11.0：欠 H&R 的种已由 _split_release 交给 __hr_host__，不再在遣散后过 H&R 闸门
+        #   （hr_host worker 兜底）。
         # ★ 5.0.3：遣散改变了职务标签 → 单种限速要按新档位重算（否则停在刷流 5120）
         if apply and report.get("settled"):
             try:
