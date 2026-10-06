@@ -491,13 +491,6 @@ class ApiMixin:
                 "summary": "静默池全局视图（概览/按站/条目/记录，只读）",
             },
             {
-                "path": "/silent/purge",
-                "endpoint": self.silent_purge,
-                "methods": ["GET"],
-                "auth": "bear",
-                "summary": "静默池清理(删除):补 pause + 清理候选删条目+删文件（默认干跑；confirm=1 才写）",
-            },
-            {
                 "path": "/silent/enforce",
                 "endpoint": self.silent_enforce,
                 "methods": ["GET"],

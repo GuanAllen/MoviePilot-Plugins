@@ -232,20 +232,18 @@ def t2_apply_all_subs():
     return h
 
 
-def t3_relocate_global_scope():
-    print("③ _silent_purge 步骤①：sub=普通 也要收敛 资源 的违背（12.7.1 修正）")
-    led, snap = _mk(SPEC)
-    h = Harness(led, snap)
-    rep = h._silent_purge(confirm=1, batch=50, site="", sub="普通")
-    _ok("a" * 40 in h.pause_calls and "b" * 40 in h.pause_calls,
-        "资源 的违背项也被 pause（旧版会被 sub 过滤漏掉）")
-    _ok(rep["counts"]["pause"] == 3, f"干跑/报告口径 counts.pause=违背总数 3（实测 {rep['counts']['pause']}）")
-    _ok(rep.get("paused_violations") == 3, f"回显 paused_violations=3（实测 {rep.get('paused_violations')}）")
-    # 清理（删条目+删文件）只动 sub=普通 的 relocate 候选；无共用目录 → delete_file=True
-    _ok(all(df is True for _hs, df in h.delete_calls), "无共用目录 → 删条目+删文件（delete_file=True）")
-    _ok(all(x == "c" * 40 for hs, _df in h.delete_calls for x in hs),
-        "只删 sub=普通 的迁出候选（资源/资产不迁）")
-    return h
+def t3_purge_removed():
+    print("③ 13.0.1：purge 已撤除（源码级护栏 —— 防再引入「第二套删除口径」）")
+    _s = (ROOT / "features/silent.py").read_text(encoding="utf-8")
+    _ok("def _silent_purge(" not in _s, "silent.py 无 _silent_purge 方法")
+    _ok("def silent_purge(" not in _s, "silent.py 无 silent_purge UI handler")
+    _a = (ROOT / "features/agentapi.py").read_text(encoding="utf-8")
+    _ok('"/agent/silent/purge"' not in _a, "AI 清单无 /agent/silent/purge（清单 50→49）")
+    _b = (ROOT / "features/api.py").read_text(encoding="utf-8")
+    _ok('"/silent/purge"' not in _b, "UI 路由无 /silent/purge")
+    _v = (ROOT / "src/components/MagicFlowWorkbench.vue").read_text(encoding="utf-8")
+    _ok("silent/purge" not in _v, "前端无 silent/purge 调用")
+    return None
 
 
 def t4_disabled_switch():
@@ -273,7 +271,7 @@ def t5_host_wiring():
 def main():
     t1_dry_run()
     t2_apply_all_subs()
-    t3_relocate_global_scope()
+    t3_purge_removed()
     t4_disabled_switch()
     t5_host_wiring()
     print(f"\n✅ PASS —— 静默不变量收敛：{CHECKS} 条断言全过")
