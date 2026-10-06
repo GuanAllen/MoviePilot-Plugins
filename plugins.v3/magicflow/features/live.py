@@ -18,7 +18,7 @@ from ..sitecap import (
     SiteCapRegistry,
     norm_domain,
 )
-from ..sitestore import get_site_store
+from ..sitestore import get_site_store, slot_callbacks
 
 
 from ..common import (
@@ -261,7 +261,7 @@ class LiveMixin:
         if not sites:
             return
         try:
-            seen = self.get_data("live_alerts") or {}
+            seen = slot_callbacks(self, "live_alerts")[0]() or {}
         except Exception:  # noqa: BLE001
             seen = {}
         if not isinstance(seen, dict):
@@ -387,7 +387,7 @@ class LiveMixin:
                         self._log(f"自动止损应用失败:{err}", "warning")
         if changed:
             try:
-                self.save_data("live_alerts", seen)
+                slot_callbacks(self, "live_alerts")[1](value=seen)
             except Exception:  # noqa: BLE001
                 pass
 

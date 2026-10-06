@@ -137,6 +137,8 @@ class CrossSeedRow(Base):
     backfilled: Mapped[bool | None] = mapped_column(Boolean)
     done: Mapped[bool | None] = mapped_column(Boolean)
     extra: Mapped[Any | None] = mapped_column(_JSON, default=dict)   # 映射后仍未覆盖的键（resource_id/need_hours/pool 等）
+    # ★ 12.2.0：跨站「待回辅」账本（crossseed_pending kv → 本列；含 .torrent 落盘路径 a_torrent）
+    pending: Mapped[Any | None] = mapped_column(_JSON, default=dict)
     created: Mapped[float | None] = mapped_column(Float)
     updated: Mapped[float | None] = mapped_column(Float)
 
@@ -188,6 +190,9 @@ class SeedRow(Base):
     #   crossseed/downloader/ts/created/in_group/m_*/mmbr/rt）统一退役 → 状态走 resource.identity，
     #   体积/H&R 走 resource，发布进度/算职/状态走下载器实况。老库残留列 ORM 不声明 → 不 SELECT，
     #   无害（需清理跑 tools/cleanup_legacy_ledger.py）。
+    # ★ 12.2.0：种子面剩余 kv → 薄列（rescue_stall / ondemand_pending）
+    rescue: Mapped[Any | None] = mapped_column(_JSON, default=dict)   # {hash: ts}（停滞起算时间）
+    pending: Mapped[Any | None] = mapped_column(_JSON, default=dict)  # {hash: {…}}（点播待办）
     updated: Mapped[float | None] = mapped_column(Float)
 
 
@@ -244,4 +249,60 @@ class DeckRow(Base):
     updated: Mapped[float | None] = mapped_column(Float)
 
 
-ALL_MODELS: List[type] = [SiteRow, ResourceRow, SeedRow, IdentityRow, TaskRow, DeckRow, CrossSeedRow]
+class ReseedRow(Base):
+    """全站辅种账本表（★ 12.2.0：``reseed_ledger`` kv → 表）。
+
+    主键 ``key`` = ``"<iyuu_sid>:<hash>"``（已试过的「站点:目标 hash」对）；``st`` ∈ miss/fail/ok，
+    ``ts`` → ``updated``（最近一次触碰）。miss/fail 按 TTL 过期即丢（读侧过滤，见 features/reseed.py）。
+    """
+
+    __tablename__ = "mf_reseed"
+
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    site_id: Mapped[int | None] = mapped_column(Integer, index=True)   # IYUU sid
+    hash: Mapped[str | None] = mapped_column(String(64), index=True)   # 目标 infohash（小写）
+    st: Mapped[str | None] = mapped_column(String(24))
+    note: Mapped[str | None] = mapped_column(String(200))
+    created: Mapped[float | None] = mapped_column(Float)
+    updated: Mapped[float | None] = mapped_column(Float)
+
+
+class RunRow(Base):
+    """运行标量表（★ 12.2.0：无实体归属的全局运行态 kv → 表）。
+
+    ``key`` 主键（signin_last_full / signin_retry / signin_keepalive / keepalive_alert_day /
+    crossseed_ban 等）+ ``value`` JSON + ``updated``。
+    """
+
+    __tablename__ = "mf_run"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[Any | None] = mapped_column(_JSON, default=None)
+    created: Mapped[float | None] = mapped_column(Float)
+    updated: Mapped[float | None] = mapped_column(Float)
+
+
+class ClaimRow(Base):
+    """认领账本表（★ 12.2.0：``claim_ledger`` kv → 表）。
+
+    主键 ``key`` = ``"<site_id>:<hash>"``；``st`` ∈ ok/already/full/unmet/fail/abandoned，
+    ``ts`` → ``updated``（最近一次触碰）。ok/already 永久保留，full/unmet/fail 走 TTL 过期
+    （读侧过滤在 features/claim.py::_claim_ledger，本表**原样**存，不做过滤）。
+    """
+
+    __tablename__ = "mf_claim"
+
+    key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    site_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    hash: Mapped[str | None] = mapped_column(String(64), index=True)
+    tid: Mapped[str | None] = mapped_column(String(64))
+    st: Mapped[str | None] = mapped_column(String(16))
+    benefit: Mapped[str | None] = mapped_column(String(200))
+    note: Mapped[str | None] = mapped_column(String(200))
+    task_id: Mapped[str | None] = mapped_column(String(64))
+    title: Mapped[str | None] = mapped_column(String(300))
+    created: Mapped[float | None] = mapped_column(Float)
+    updated: Mapped[float | None] = mapped_column(Float)
+
+
+ALL_MODELS: List[type] = [SiteRow, ResourceRow, SeedRow, IdentityRow, TaskRow, DeckRow, CrossSeedRow, ReseedRow, RunRow, ClaimRow]

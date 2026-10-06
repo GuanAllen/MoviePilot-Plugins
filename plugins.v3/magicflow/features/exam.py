@@ -26,6 +26,18 @@ from ..common import (
     RUN_MODE_SEEDING,
 )
 
+from ..sitestore import slot_callbacks
+
+
+def _keepalive_day_of(value: Any) -> str:
+    """从 ``mf_run.value``（字符串日期或 ``{"day": ...}``）里取出日期串。
+
+    兼容旧 kv 值（裸字符串）与新 dict 形态；读侧据此判断「今日是否已提醒」。
+    """
+    if isinstance(value, dict):
+        return str(value.get("day") or "")
+    return str(value or "")
+
 
 class ExamMixin:
     """exam 功能集（原 MagicFlow 方法原样搬入）。"""
@@ -235,7 +247,7 @@ class ExamMixin:
                 # ② 全量：距上次全量跑够「签到间隔」才跑
                 now = time.time()
                 try:
-                    last_full = float(self.get_data("signin_last_full") or 0)
+                    last_full = float(slot_callbacks(self, "signin_last_full")[0]() or 0)
                 except Exception:  # noqa: BLE001
                     last_full = 0.0
                 gap = float(cfg.get("interval") or SIGNIN_INTERVAL_MINUTES) * 60.0
@@ -244,7 +256,10 @@ class ExamMixin:
                         engine.run(kind="sign")
                     if cfg.get("login_sites"):
                         engine.run(kind="login")
-                    self.save_data(key="signin_last_full", value=now)
+                    try:
+                        slot_callbacks(self, "signin_last_full")[1](value=now)
+                    except Exception:  # noqa: BLE001
+                        pass
                     # ★ 7.17.0 账号保活：站点「多久不登入删号」临近 → 当日提醒一次（快照 6h 内零请求）
                     try:
                         self._alert_keepalive(engine)
@@ -267,9 +282,9 @@ class ExamMixin:
             return
         day = datetime.now().strftime("%Y-%m-%d")
         try:
-            if str(self.get_data("keepalive_alert_day") or "") == day:
+            if _keepalive_day_of(slot_callbacks(self, "keepalive_alert_day")[0]()) == day:
                 return
-            self.save_data(key="keepalive_alert_day", value=day)
+            slot_callbacks(self, "keepalive_alert_day")[1](value=day)
         except Exception:  # noqa: BLE001
             return
         lines = [

@@ -35,6 +35,7 @@ from ..common import (
 )
 from ..persistence import OperationItem
 from ..sites.claim_presets import preset_for
+from ..sitestore import slot_callbacks
 
 _ID_RE = None
 try:
@@ -107,7 +108,7 @@ class ClaimMixin:
         if site is None:
             return {"supported": False, "source": "none", "reason": "站点不存在"}
         sid = str(getattr(site, "id", "") or "")
-        cache = self.get_data(CLAIM_PROFILE_KEY)
+        cache = slot_callbacks(self, CLAIM_PROFILE_KEY)[0]()
         cache = dict(cache) if isinstance(cache, dict) else {}
         hit = cache.get(sid)
         if hit and not refresh and (time.time() - float(hit.get("at") or 0)) < CLAIM_PROFILE_TTL:
@@ -115,7 +116,7 @@ class ClaimMixin:
         prof = self._probe_claim_profile(site)
         cache[sid] = {"profile": prof, "at": time.time()}
         try:
-            self.save_data(key=CLAIM_PROFILE_KEY, value=cache)
+            slot_callbacks(self, CLAIM_PROFILE_KEY)[1](value=cache)
         except Exception as err:  # noqa: BLE001
             logger.debug(f"认领能力缓存写入失败：{err}")
         return prof
@@ -168,7 +169,7 @@ class ClaimMixin:
 
         过期只丢「失败/名额满」类；``ok/already`` 是**承诺**，永久保留（还进硬保护）。
         """
-        raw = self.get_data(CLAIM_LEDGER_KEY)
+        raw = slot_callbacks(self, CLAIM_LEDGER_KEY)[0]()
         if not isinstance(raw, dict):
             return {}
         now = time.time()
@@ -224,7 +225,7 @@ class ClaimMixin:
                     continue
                 led.pop(k, None)
         try:
-            self.save_data(key=CLAIM_LEDGER_KEY, value=led)
+            slot_callbacks(self, CLAIM_LEDGER_KEY)[1](value=led)
         except Exception as err:  # noqa: BLE001
             self._log(f"认领账本写入失败：{err}", "warning")
 

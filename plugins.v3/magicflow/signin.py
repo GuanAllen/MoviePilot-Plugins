@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .collect import parse_signin
 from .persistence import OperationItem
 from .sites.keepalive_presets import keepalive_rule
+from .sitestore import slot_callbacks
 
 SIGNIN_PAGE = "attendance.php"
 KEEP_DAYS = 7
@@ -203,7 +204,7 @@ class SigninEngine:
     def keepalive_snapshot(self) -> Dict[str, Any]:
         """上次算好的保活快照（只读插件数据，**零请求**；给面板 / 健康自检用）。"""
         try:
-            d = self._plugin.get_data(KEEPALIVE_KEY) or {}
+            d = slot_callbacks(self._plugin, KEEPALIVE_KEY)[0]() or {}
         except Exception:  # noqa: BLE001
             d = {}
         return d if isinstance(d, dict) else {}
@@ -289,7 +290,7 @@ class SigninEngine:
             "warnings": [r for r in rows if r.get("warn")],
         }
         try:
-            self._plugin.save_data(KEEPALIVE_KEY, out)
+            slot_callbacks(self._plugin, KEEPALIVE_KEY)[1](value=out)
         except Exception as err:  # noqa: BLE001
             self._log(f"保活快照落库失败：{err}", "debug")
         return out
@@ -310,7 +311,7 @@ class SigninEngine:
     # ---------------------------------------------------------------- 记录
     def records(self) -> Dict[str, Any]:
         try:
-            data = self._plugin.get_data("signin_records") or {}
+            data = slot_callbacks(self._plugin, "signin_records")[0]() or {}
         except Exception:  # noqa: BLE001
             data = {}
         return data if isinstance(data, dict) else {}
@@ -323,7 +324,7 @@ class SigninEngine:
         except Exception:  # noqa: BLE001
             pass
         try:
-            self._plugin.save_data("signin_records", data)
+            slot_callbacks(self._plugin, "signin_records")[1](value=data)
         except Exception as err:  # noqa: BLE001
             self._log(f"签到结果落库失败：{err}", "warning")
 
@@ -512,7 +513,7 @@ class SigninEngine:
     # ---------------------------------------------------------------- 重试计划
     def _retry_state(self) -> Dict[str, Any]:
         try:
-            data = self._plugin.get_data(RETRY_KEY) or {}
+            data = slot_callbacks(self._plugin, RETRY_KEY)[0]() or {}
         except Exception:  # noqa: BLE001
             data = {}
         return data if isinstance(data, dict) else {}
@@ -520,7 +521,7 @@ class SigninEngine:
     def _save_retry_state(self, bucket: Dict[str, Any]) -> None:
         """只留今天——重试计划天然是「当日」的。"""
         try:
-            self._plugin.save_data(RETRY_KEY, {_now_date(): dict(bucket or {})})
+            slot_callbacks(self._plugin, RETRY_KEY)[1](value={_now_date(): dict(bucket or {})})
         except Exception as err:  # noqa: BLE001
             self._log(f"重试计划落库失败：{err}", "debug")
 

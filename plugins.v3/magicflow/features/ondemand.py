@@ -27,6 +27,7 @@ from app.schemas import Response
 from ..recommend import recognize
 from ..persistence import OperationItem
 from ..tags import SUB_RESOURCE, STATE_SILENT, tag_for
+from ..sitestore import slot_callbacks
 
 _DOUBAN_RE = re.compile(r"movie\.douban\.com/subject/(\d+)")
 _TMDB_RE = re.compile(r"themoviedb\.org/(?:movie|tv)/(\d+)")
@@ -80,7 +81,7 @@ class OnDemandMixin:
 
     def _ondemand_all(self) -> Dict[str, Dict[str, Any]]:
         try:
-            rows = self.get_data(_OD_KEY) or {}
+            rows = slot_callbacks(self, _OD_KEY)[0]() or {}
             return {str(k).lower(): dict(v or {}) for k, v in rows.items()}
         except Exception:  # noqa: BLE001
             return {}
@@ -92,7 +93,7 @@ class OnDemandMixin:
         rows = self._ondemand_all()
         rows[str(h or "").lower()] = dict(info or {}, ts=time.time())
         try:
-            self.save_data(key=_OD_KEY, value=rows)
+            slot_callbacks(self, _OD_KEY)[1](value=rows)
         except Exception as e:  # noqa: BLE001
             self._log(f"点播:待办落盘失败 {e}", "warning")
 
@@ -100,7 +101,7 @@ class OnDemandMixin:
         rows = self._ondemand_all()
         if rows.pop(str(h or "").lower(), None) is not None:
             try:
-                self.save_data(key=_OD_KEY, value=rows)
+                slot_callbacks(self, _OD_KEY)[1](value=rows)
             except Exception:  # noqa: BLE001
                 pass
 

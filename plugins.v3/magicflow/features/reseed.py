@@ -35,6 +35,7 @@ from ..iyuu_cloud import (
     resolve_link_vars,
 )
 from ..tags import STATE_SILENT, SUB_NEW, SUB_PLAIN, SUB_RESOURCE, tag_for
+from ..sitestore import slot_callbacks
 
 
 from ..common import (
@@ -100,7 +101,8 @@ class ReSeedMixin:
     # ------------------------------------------------------------------ 账本
     def _reseed_ledger(self) -> Dict[str, Any]:
         """已试过的「站点:目标hash」→ 状态（过期即丢；成功不靠它去重，靠本机实况）。"""
-        raw = self.get_data(RESEED_LEDGER_KEY)
+        _get, _save = slot_callbacks(self, RESEED_LEDGER_KEY)
+        raw = _get()
         if not isinstance(raw, dict):
             return {}
         now = time.time()
@@ -126,7 +128,7 @@ class ReSeedMixin:
             for k in sorted(led, key=lambda x: float(led[x].get("ts") or 0))[: len(led) - 4000]:
                 led.pop(k, None)
         try:
-            self.save_data(key=RESEED_LEDGER_KEY, value=led)
+            slot_callbacks(self, RESEED_LEDGER_KEY)[1](value=led)
         except Exception:  # noqa: BLE001
             pass
 
@@ -237,7 +239,7 @@ class ReSeedMixin:
     def _reseed_passkey(self, sid: int, base_url: str, is_https: int, site_id: int,
                         cookie: Any) -> str:
         """站点 passkey：抓浏览页抽「密钥」（两种形态）→ 落缓存，后续直接用模板拼链。"""
-        cache = self.get_data(RESEED_PASSKEY_KEY)
+        cache = slot_callbacks(self, RESEED_PASSKEY_KEY)[0]()
         cache = dict(cache) if isinstance(cache, dict) else {}
         key = str(int(sid))
         if cache.get(key):
@@ -273,7 +275,7 @@ class ReSeedMixin:
         if got:
             cache[key] = got
             try:
-                self.save_data(key=RESEED_PASSKEY_KEY, value=cache)
+                slot_callbacks(self, RESEED_PASSKEY_KEY)[1](value=cache)
             except Exception:  # noqa: BLE001
                 pass
         else:
@@ -608,7 +610,7 @@ class ReSeedMixin:
         cloud = self.get_data(RESEED_CLOUD_KEY)
         cloud = cloud if isinstance(cloud, dict) else {}
         ledger = self._reseed_ledger()
-        pk = self.get_data(RESEED_PASSKEY_KEY)
+        pk = slot_callbacks(self, RESEED_PASSKEY_KEY)[0]()
         pk = pk if isinstance(pk, dict) else {}
         site_map = self._reseed_site_map()
         rows = []
