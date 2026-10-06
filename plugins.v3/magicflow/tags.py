@@ -39,12 +39,19 @@ __all__ = [
     "SILENT_NEW_TIMEOUT",
     "LEASE_TTL",
     "SNAPSHOT_KEEP",
+    "MARK_REUSE",
+    "MARK_HR",
+    "RESCUE_TAG",
+    "EXTERNAL_TAG",
+    "NON_DOWNLOAD_TAGS",
     "state_tier",
     "tag_for",
     "parse_tag",
     "is_magicflow_tag",
     "identity_of",
     "duty_of",
+    "is_reuse_copy",
+    "is_external_candidate",
     "KEEP_FOREIGN_TAGS",
     "retag",
     "TagStateStore",
@@ -215,9 +222,38 @@ MARK_REUSE = "魔流-辅种"
 # ★ H&R 统一管理标记（Master 2026-09-28 01:37：「tag 打上 h&r 统一管理
 #   没到时间暂停强行拉起来」）：欠 H&R 的种统一打这个标 → 由插件统一保挂/结清。
 MARK_HR = "魔流-H&R"
+# ★ 11.11.1 死种补源副本标记：从「无 H&R 的他站」补下的同 Release 副本（区别于 复用辅种 MARK_REUSE）。
+#   来源站被 rescue_source_blocked 保证 ``hr != False`` 一律禁用 → 副本自己**不涉及站点 H&R**。
+RESCUE_TAG = "魔流-补源"
+# ★ 11.11.1 外部来源标记：插件外（手动 / MP 下载器 / 订阅）加进来的种，已被归流纳管。
+#   「预期标记」：表明这是已知纳管的外部来源，不是异常。只打标，不做别的处置。
+EXTERNAL_TAG = "魔流-外部"
 
 # ★ 「全局特殊标签」：不属于某站点某状态，重贴标签时必须保留（否则会打断其它子系统）
-SPECIAL_TAGS = ("魔流-推荐", "魔流-跨站", MARK_REUSE, MARK_HR)
+SPECIAL_TAGS = ("魔流-推荐", "魔流-跨站", MARK_REUSE, MARK_HR, RESCUE_TAG, EXTERNAL_TAG)
+
+# ★ 11.11.1：复用/补源副本（指向已有文件、非真实下载）→ H&R 一律不判。
+#   （跨站来源份 CROSSSEED_TAG 是真实下载，H&R 由 assets.py 资源账记，不在此列）
+NON_DOWNLOAD_TAGS = (MARK_REUSE, RESCUE_TAG)
+
+
+def is_reuse_copy(tags: Any) -> bool:
+    """复用/补源副本（非真实下载）→ 不判 H&R（不继承资源的来源站 H&R 债）。"""
+    return any(str(x).strip() in NON_DOWNLOAD_TAGS for x in (tags or []))
+
+
+def is_external_candidate(tags: Any) -> bool:
+    """★ 11.11.1「非插件加进来的种」判据（纯函数）：
+
+    带 MP 下载器标记 ``MOVIEPILOT``（= 走 MP 下载接口/订阅加进来，非插件 add_torrent 路径）
+    且已被归流纳管（有魔流标签）且尚未打 ``魔流-外部`` 标 → 应打「预期标记」识别其来源。
+    """
+    ts = [str(x).strip() for x in (tags or [])]
+    if "MOVIEPILOT" not in ts:
+        return False
+    if EXTERNAL_TAG in ts:
+        return False
+    return any(is_magicflow_tag(x) for x in ts)
 
 
 def identity_of(tags: Any) -> Tuple[str, str]:

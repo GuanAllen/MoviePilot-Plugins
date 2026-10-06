@@ -32,6 +32,7 @@ L0 = {
     "kvstore.py", "fingerprint.py", "models.py", "persistence.py",
     "douban.py", "rulepack.py", "sitecap.py", "dtier.py",
     "db.py", "tables.py",   # 插件自有表（SQLAlchemy 模型）—— 纯基础设施
+    "codedict.py",          # 代码字典：纯 ast 解析自身源码（11.12.0）
 }
 L1 = {
     "bonus.py", "collect.py", "fetcher.py", "live_stats.py", "fallback.py",

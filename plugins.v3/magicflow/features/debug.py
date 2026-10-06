@@ -445,9 +445,27 @@ class DebugMixin:
         """
         hs = [h.strip().lower() for h in str(hashes or "").split(",") if h.strip()]
         try:
-            why = self._delete_gate_detail(hs)
+            why = dict(self._delete_gate_detail(hs))
         except Exception as e:  # noqa: BLE001
             return Response(success=False, message=f"闸门计算失败: {e}", data={})
+        # ★ 11.12.0：把「账单直查断言」也算进硬拦（与物理删除同口径：不只是闸门推导链）
+        _ba: Dict[str, str] = {}
+        try:
+            _bad = getattr(self, "_delete_bill_assert", None)
+            if callable(_bad):
+                _ba = dict(_bad(hs) or {})
+        except Exception as e:  # noqa: BLE001
+            _ba = {h: f"账单断言异常:{e}" for h in hs}
+        for h, r in _ba.items():
+            why.setdefault(h, r)
+        # ★ 11.12.0：熔断状态（只读探针，不消耗窗口）
+        _brk: Dict[str, Any] = {}
+        try:
+            _bk = getattr(self, "_delete_breaker_check", None)
+            if callable(_bk):
+                _, _brk = _bk([], reason="debug_probe", source="debug")
+        except Exception as e:  # noqa: BLE001
+            _brk = {"error": str(e)}
         blocked = sorted(why.keys())
         _bs = set(blocked)
         return Response(
@@ -457,6 +475,8 @@ class DebugMixin:
                 "input": hs,
                 "blocked": blocked,
                 "why": why,
+                "bill_assert": _ba,
+                "breaker": _brk,
                 "allowed": [h for h in hs if h not in _bs],
                 "log_path": str(self._deletions_log_path() or ""),
             },

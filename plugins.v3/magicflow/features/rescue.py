@@ -44,6 +44,8 @@ from app.schemas import Response
 # crossseed 依赖——离线加载 / 依赖方向都要更干净）。
 _CROSSSEED_TAG = "魔流-跨站"
 # 补源专用标签（下回来的副本打这个标，与「魔流-跨站」区分）。
+# ★ 11.11.1：与 tags.py 的 `RESCUE_TAG` 同值（tags.py 是特殊标签体系的登记处，这里
+#   内联字符串只为避免拉进 tags 依赖、保持离线测试纯净）；两边必须保持一致。
 RESCUE_TAG = "魔流-补源"
 
 
