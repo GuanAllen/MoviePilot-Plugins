@@ -3,7 +3,7 @@
         "name": "魔流",
         "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
         "labels": "站点,做种,魔力,刷流",
-        "version": "12.5.0",
+        "version": "12.5.1",
         "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
         "author": "GuanAllen",
         "level": 1,
@@ -389,9 +389,10 @@
             "12.2.1": "12.2.1：站点表 AI 列补 mp_site_id/iyuu_sid（两套号不可互换；补种账本 site_id=IYUU sid）",
             "12.3.0": "12.3.0：删除闸门新增「库内资产（已入库）」硬拦（Stage 2 前置）——真值源 mf_resource.in_library / 身份「资源」，所有删种路径一把闸",
             "12.4.0": "12.4.0：Stage 2 本体——静默池清旧+迁出（/agent/silent/relocate，干跑也预检闸门；新增 sub 范围参数；UI 弹窗）；线上方案A迁出「静默-普通」101 个（删种留文件，库内资产 535 未动）；豆瓣外挂修 0.3.1（最近异常成功即清空）",
-            "12.5.0": "12.5.0：挂种健康度自检（只读）——GET /health/scan + GET /agent/seeds/health（清单47→48）；两段式判定逐文件核盘，识别空转/缺文件种 + H&R 风险关联"
+            "12.5.0": "12.5.0：挂种健康度自检（只读）——GET /health/scan + GET /agent/seeds/health（清单47→48）；两段式判定逐文件核盘，识别空转/缺文件种 + H&R 风险关联",
+            "12.5.1": "12.5.1：修挂种健康自检两处——①宿主路径未映射致全站假ghost（经normalize_path映射）②临时目录同名目录掩盖真ghost（粗筛只看保存目录 + 新增 incomplete 桶 + hr_at_risk 只收 active/breached）；测试 22 项"
         }
     },
-    "version": "12.5.0",
+    "version": "12.5.1",
     "history": {}
 }

@@ -278,6 +278,7 @@ class HealthMixin:
     # 两段式（性能关键，见 docs/TASK-1250-HEALTH.md）：
     #   第 1 段粗筛：顶层 listing（按目录缓存，只列一次）比 `content_path` 的候选名；
     #   第 2 段精确：只对候选调 `torrents/files` 逐文件 `os.path.exists`（含临时路径）。
+    # 桶位：normal / partial（不全）/ incomplete（只在临时目录且未完成 `.!qB`）/ ghost（一点都没有）。
     # 零写入：不 recheck / 不改 qB / 不写账本 / 不动文件。真值源：qB 快照 + 文件系统 +
     #   hr_bills.json（只读）。
 
@@ -363,7 +364,7 @@ class HealthMixin:
             snap = {}
 
         only = str(only or "").strip().lower()
-        if only not in ("ghost", "partial", "all"):
+        if only not in ("ghost", "partial", "incomplete", "all"):
             only = "all"
         try:
             limit = int(limit or 200)
@@ -383,11 +384,30 @@ class HealthMixin:
             dl = self._get_downloader()
         except Exception:  # noqa: BLE001
             dl = None
+        def _local(p: str) -> str:
+            """下载器（宿主）路径 → 插件（容器）可访问路径。
+
+            ★ 必须做这层映射：qB 给的是宿主机路径（如 ``/vol6/1000/movie/刷流``），
+            插件进程在容器里只能看到挂载后的 ``/movie/刷流``；直接用原始路径
+            ``os.listdir/os.path.exists`` 会**全部判不存在**（假 ghost 满屏）。
+            """
+            raw = str(p or "").strip()
+            if not raw:
+                return ""
+            try:
+                if dl is not None:
+                    norm = dl.normalize_path(raw)
+                    if norm:
+                        return str(norm).rstrip("/") or "/"
+            except Exception:  # noqa: BLE001
+                pass
+            return raw
+
         temp_path = ""
         try:
             prefs, _err = (dl.get_app_preferences() if dl is not None else (None, "no-dl"))
             if bool((prefs or {}).get("temp_path_enabled")):
-                temp_path = str((prefs or {}).get("temp_path") or "").strip()
+                temp_path = _local(str((prefs or {}).get("temp_path") or ""))
         except Exception:  # noqa: BLE001
             temp_path = ""
 
@@ -444,6 +464,7 @@ class HealthMixin:
                 "hash": hh, "title": title, "site": dom, "qb_state": state,
                 "progress": progress, "save_path": save_path,
                 "size_gb": size_gb, "files_total": None, "files_exist": None,
+                "files_incomplete": None,
                 "bucket": "normal", "hr": None, "protected": [],
                 "bill": None,
             }
@@ -451,7 +472,9 @@ class HealthMixin:
                 # 无保存路径元数据 → 无法粗筛/核盘，按正常跳过（不误报 ghost）
                 continue
             names = self._health_coarse_names(cp)
-            present = bool(names & (_listing(save_path) | _listing(temp_path)))
+            # 粗筛只看**保存目录**：临时目录里同名目录不一定属于这个种（可能只是别人的
+            # 未完成副本）→ 交给第 2 段逐文件核，宁多核不漏。
+            present = bool(names & _listing(_local(save_path)))
             if not names or not present:
                 suspicious.append(hh)
 
@@ -466,54 +489,64 @@ class HealthMixin:
             if t is None:
                 continue
             probed += 1
-            save_path = str(getattr(t, "save_path", "") or "").strip()
+            save_path = _local(str(getattr(t, "save_path", "") or "").strip())
             entries = []
             try:
                 entries = list(dl.get_file_entries(hh) or []) if dl is not None else []
             except Exception:  # noqa: BLE001
                 entries = []
             exist = 0
+            incom = 0
             for rel, _sz in entries:
                 rel = str(rel or "").strip()
                 if not rel:
                     continue
-                found = False
+                done = False
+                part = False
                 for base in (save_path, temp_path):
                     if not base:
                         continue
                     try:
                         if os.path.exists(os.path.join(base, rel)):
-                            found = True
+                            done = True
                             break
+                        # qB 未完成文件会带 `.!qB` 后缀（数据在临时目录、还没搬完）
+                        if os.path.exists(os.path.join(base, rel + ".!qB")):
+                            part = True
                     except Exception:  # noqa: BLE001
                         continue
-                if found:
+                if done:
                     exist += 1
+                elif part:
+                    incom += 1
             total = len(entries)
             r = rows.get(hh)
             if r is None:
                 continue
             r["files_total"] = total
             r["files_exist"] = exist
+            r["files_incomplete"] = incom
             if total <= 0:
                 r["bucket"] = "normal"
-            elif exist <= 0:
-                r["bucket"] = "ghost"
-            elif exist < total:
-                r["bucket"] = "partial"
-            else:
+            elif exist >= total:
                 r["bucket"] = "normal"
+            elif exist > 0:
+                r["bucket"] = "partial"
+            elif incom > 0:
+                r["bucket"] = "incomplete"
+            else:
+                r["bucket"] = "ghost"
 
         # ---- 汇总 + H&R 关联 + 保护 -------
-        counts = {"normal": 0, "ghost": 0, "partial": 0, "not_in_qb": 0}
-        bytes_agg = {"ghost_gb": 0.0, "partial_gb": 0.0}
+        counts = {"normal": 0, "ghost": 0, "partial": 0, "incomplete": 0, "not_in_qb": 0}
+        bytes_agg = {"ghost_gb": 0.0, "partial_gb": 0.0, "incomplete_gb": 0.0}
         by_site: Dict[str, Dict[str, Any]] = {}
         items: List[Dict[str, Any]] = []
         hr_at_risk: List[Dict[str, Any]] = []
 
         def _site_bucket(dom: str) -> Dict[str, Any]:
             if dom not in by_site:
-                by_site[dom] = {"ghost": 0, "partial": 0, "gb": 0.0}
+                by_site[dom] = {"ghost": 0, "partial": 0, "incomplete": 0, "gb": 0.0}
             return by_site[dom]
 
         for hh, r in rows.items():
@@ -545,13 +578,13 @@ class HealthMixin:
             counts[bucket] = counts.get(bucket, 0) + 1
             dom = r["site"] or "?"
             sb = _site_bucket(dom)
-            if bucket == "ghost":
-                bytes_agg["ghost_gb"] += r["size_gb"]
-                sb["ghost"] += 1
+            if bucket in ("ghost", "incomplete"):
+                bytes_agg[bucket + "_gb"] += r["size_gb"]
+                sb[bucket] += 1
                 sb["gb"] = round(sb["gb"] + r["size_gb"], 3)
-                if r["hr"]:
+                if bucket == "ghost" and r["hr"] and r["hr"]["state"] in (BILL_STATE_ACTIVE, BILL_STATE_BREACHED):
                     hr_at_risk.append({
-                        "hash": hh, "title": r["title"], "site": dom,
+                        "hash": hh, "title": r["title"], "site": dom, "bucket": bucket,
                         "state": r["hr"]["state"], "rule": r["hr"]["rule"],
                         "need_h": r["hr"]["need_h"], "need_left": r["hr"]["need_left"],
                         "save_path": r["save_path"], "size_gb": r["size_gb"],
@@ -582,11 +615,11 @@ class HealthMixin:
             counts["not_in_qb"] = int(counts.get("not_in_qb") or 0) + 1
 
         # only 过滤（只作用于 items；counts/by_site/bytes 始终全量）
-        if only in ("ghost", "partial"):
+        if only in ("ghost", "partial", "incomplete"):
             items = [x for x in items if x["bucket"] == only]
 
-        # 排序：ghost(先欠 H&R) > partial > normal，同桶按体积降序
-        _rank = {"ghost": 0, "partial": 1, "normal": 2}
+        # 排序：ghost（先欠 H&R）> incomplete > partial > normal，同桶按体积降序
+        _rank = {"ghost": 0, "incomplete": 1, "partial": 2, "normal": 3}
         items.sort(key=lambda x: (
             _rank.get(x["bucket"], 9),
             0 if x["hr"] else 1,
@@ -604,9 +637,10 @@ class HealthMixin:
             "site_filter": filter_dom,
             "counts": counts,
             "bytes": {"ghost_gb": round(bytes_agg["ghost_gb"], 2),
-                       "partial_gb": round(bytes_agg["partial_gb"], 2)},
+                       "partial_gb": round(bytes_agg["partial_gb"], 2),
+                       "incomplete_gb": round(bytes_agg["incomplete_gb"], 2)},
             "by_site": {k: {"ghost": v["ghost"], "partial": v["partial"],
-                            "gb": round(v["gb"], 2)}
+                            "incomplete": v["incomplete"], "gb": round(v["gb"], 2)}
                         for k, v in sorted(by_site.items(),
                                            key=lambda kv: -kv[1]["gb"])},
             "hr_at_risk": hr_at_risk,
