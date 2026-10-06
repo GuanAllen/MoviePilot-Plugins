@@ -8,6 +8,7 @@
 #   sg docker -c "sh tools/deploy.sh --dry-run"
 #
 # ── 选项 ──
+#   --no-build         不重建前端（默认会 npm run build）
 #   --no-preflight     跳过 preflight 自检
 #   --no-market        不同步「监控源」目录
 #   --no-container     不更新容器副本（只同步监控源 → 触发 monitor 自动安装）
@@ -30,10 +31,11 @@ CPATH="/app/app/plugins/magicflow"
 PLUGIN="MagicFlow"
 API="http://127.0.0.1:3000/api/v1/plugin"
 
-DO_PREFLIGHT=1; DO_MARKET=1; DO_CONTAINER=1; DO_RELOAD=1; DO_VERIFY=1; DRY=0
+DO_BUILD=1; DO_PREFLIGHT=1; DO_MARKET=1; DO_CONTAINER=1; DO_RELOAD=1; DO_VERIFY=1; DRY=0
 SYMBOLS=""
 for a in "$@"; do
   case "$a" in
+    --no-build) DO_BUILD=0;;
     --no-preflight) DO_PREFLIGHT=0;;
     --no-market) DO_MARKET=0;;
     --no-container) DO_CONTAINER=0;;
@@ -57,15 +59,27 @@ if [ "$DO_CONTAINER" = 1 ] && [ "$DRY" = 0 ]; then
   fi
 fi
 
-# 1) preflight
+# 1) 前端构建（★ 2026-10-06：dist 之前从不重建 → 部署的 UI 是旧的）
+#    源码 src/ 改动必须 vite build 才会进 dist/，而 dist/ 才是真正部署的产物。
+if [ "$DO_BUILD" = 1 ]; then
+  echo "── 1) 前端构建（vite build）──"
+  if [ "$DRY" = 1 ]; then
+    echo "  (dry-run) npm run build"
+  else
+    ( cd "$DEV" && npm run build 2>&1 | tail -3 )
+    echo "  ▸ dist 已重建"
+  fi
+fi
+
+# 2) preflight
 if [ "$DO_PREFLIGHT" = 1 ]; then
-  echo "── 1) preflight ──"
+  echo "── 2) preflight ──"
   if [ "$DRY" = 1 ]; then echo "  (dry-run) sh tools/preflight.sh"; else sh "$DEV/tools/preflight.sh"; fi
 fi
 
 # 2) 同步监控源（monitor 会据此自动安装）
 if [ "$DO_MARKET" = 1 ]; then
-  echo "── 2) 同步监控源 → $MARKET_DIR ──"
+  echo "── 3) 同步监控源 → $MARKET_DIR ──"
   if [ "$DRY" = 1 ]; then
     echo "  (dry-run) rsync -a --delete <excl> \"$DEV/\" \"$MARKET_DIR/\""
   else
@@ -83,10 +97,13 @@ fi
 
 # 3) 更新容器副本（tar 流过去，避开逐文件 docker cp）
 if [ "$DO_CONTAINER" = 1 ]; then
-  echo "── 3) 更新容器副本 → $CONTAINER:$CPATH ──"
+  echo "── 4) 更新容器副本 → $CONTAINER:$CPATH ──"
   if [ "$DRY" = 1 ]; then
     echo "  (dry-run) tar ... | docker exec -i $CONTAINER tar -C $CPATH -xf -"
   else
+    # ★ 先清容器里过期的 dist（tar 只覆盖不删 → 旧 MagicFlowWorkbench-*.js 会残留；
+    #   浏览器若还拿着旧 remoteEntry 就会加载旧 UI）。dist 是全量发布的，直接整目录换。
+    docker exec "$CONTAINER" sh -c "rm -rf $CPATH/dist" >/dev/null 2>&1 || true
     tar -C "$DEV" \
       --exclude='__pycache__' --exclude='*.pyc' --exclude='node_modules' \
       --exclude='.git' --exclude='docs' --exclude='preview' --exclude='screenshots' \
@@ -102,7 +119,7 @@ if [ "$DO_RELOAD" = 1 ] && [ "$DRY" = 0 ]; then
         | tr -d '\r\n' | sed "s/^[\"']//; s/[\"']\$//")"
 fi
 if [ "$DO_RELOAD" = 1 ]; then
-  echo "── 4) reload 插件 ──"
+  echo "── 5) reload 插件 ──"
   if [ "$DRY" = 1 ]; then
     echo "  (dry-run) POST $API/reload/$PLUGIN"
   else
@@ -112,7 +129,7 @@ fi
 
 # 5) 校验：/agent 版本 + 端点计数 + 容器内符号
 if [ "$DO_VERIFY" = 1 ] && [ "$DRY" = 0 ]; then
-  echo "── 5) 校验 ──"
+  echo "── 6) 校验 ──"
   sleep 2
   docker exec "$CONTAINER" sh -c "curl -s '$API/$PLUGIN/agent?token=$TOK'" > /tmp/mf_agent.json 2>/dev/null || true
   VER="$VER" python3 - <<'PY'

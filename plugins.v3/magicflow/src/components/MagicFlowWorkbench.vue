@@ -567,7 +567,13 @@ const siteReportLive = ref(false)
 const siteReportLoading = ref(false)
 const siteReport = ref({ site: {}, items: [], summary: {}, hr: {}, available_sites: [] })
 const siteReportSites = computed(() => (siteReport.value.available_sites || []))
-const siteReportItems = computed(() => siteReport.value.items || [])
+const siteReportItems = computed(() => {
+  const all = siteReport.value.items || []
+  return siteReportFilter.value ? all.filter(it => it.bucket === siteReportFilter.value) : all
+})
+// ★ 12.x：明细按桶筛选（默认全部）。旧版列表按桶排序 → 首屏全是「暂停」，「静默」要滚很远，
+//   被误读成「明细只有暂停的」。现在点上方分类标签即可只看该桶。
+const siteReportFilter = ref('')
 const siteReportSummary = computed(() => siteReport.value.summary || {})
 const SITE_REPORT_BUCKETS = [
   { key: '欠H&R', color: 'error' },
@@ -599,6 +605,7 @@ async function loadSiteReport(liveOverride) {
     if (liveOverride === true || (liveOverride === undefined && siteReportLive.value)) q.set('live', '1')
     const data = unwrapResponse(await props.api.get(`${pluginBase.value}/site/seeds?${q.toString()}`)) || {}
     siteReport.value = data
+    siteReportFilter.value = ''
     if (!siteReportSite.value && siteReportSites.value.length) {
       siteReportSite.value = siteReportSites.value[0].domain || siteReportSites.value[0].name || ''
       await loadSiteReport()
@@ -4954,12 +4961,24 @@ onUnmounted(() => {
           </div>
           <div class="magicflow-sitereport__chips">
             <VChip
+              size="small"
+              :color="siteReportFilter ? 'grey' : 'primary'"
+              :variant="siteReportFilter ? 'tonal' : 'flat'"
+              style="cursor: pointer"
+              @click="siteReportFilter = ''"
+            >全部 {{ siteReportSummary.total || 0 }}</VChip>
+            <VChip
               v-for="b in SITE_REPORT_BUCKETS"
               :key="b.key"
               size="small"
               :color="b.color"
-              variant="tonal"
+              :variant="siteReportFilter === b.key ? 'flat' : 'tonal'"
+              style="cursor: pointer"
+              @click="siteReportFilter = siteReportFilter === b.key ? '' : b.key"
             >{{ b.key }} {{ (siteReportSummary.by_bucket || {})[b.key] || 0 }}</VChip>
+          </div>
+          <div class="magicflow-ops-dialog__sub">
+            明细 {{ siteReportItems.length }} / {{ siteReportSummary.total || 0 }}{{ siteReportFilter ? ' · 只看「' + siteReportFilter + '」' : ' · 点分类可筛选' }}
           </div>
           <div v-if="siteReport.hr && siteReport.hr.error" class="magicflow-sitereport__err">
             H&amp;R 对账（{{ siteReport.hr.source }}）：{{ siteReport.hr.error }}
