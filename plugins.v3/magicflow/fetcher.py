@@ -315,11 +315,6 @@ def set_browse_debug(flag: Any) -> None:
     _BROWSE_DEBUG = bool(flag)
 
 
-def get_request_interval() -> float:
-    """读取当前站点请求最小间隔（秒）。"""
-    return _REQUEST_INTERVAL
-
-
 def _ensure_sdk():
     """延迟导入 MoviePilot SDK。"""
     global logger, TorrentsChain
@@ -478,8 +473,6 @@ _NP_PROMO_FACTORS: Dict[str, Tuple[float, float]] = {
     "thirtypercent": (0.7, 1.0),
     "twoup": (1.0, 2.0),
 }
-
-_NP_ROW_RE = re.compile(r"<tr\s+data=(\d+)>", re.IGNORECASE)
 
 # ★ 皮肤差异：CHD / 新版 Tailwind 系（hdtime、cspt 等）不用 promotion class，
 #   而是 <img class="pro_free"> / <img class="pro_free2up"> 标促销 —— 映射到同一套系数。
@@ -1462,57 +1455,6 @@ def get_default_brush_filter_policy() -> FilterPolicy:
 
 
 # ============================================================
-# 发行时间抓取
-# ============================================================
-
-def fetch_torrent_pubdates(
-    site_domain: str,
-    torrents: List[SiteCandidateTorrent],
-    site_cookie: Optional[str] = None,
-    site_ua: Optional[str] = None,
-) -> Dict[str, float]:
-    """
-    批量抓取种子的发行时间。
-
-    Args:
-        site_domain: 站点域名
-        torrents: 种子列表
-        site_cookie: 站点 Cookie
-        site_ua: User-Agent
-
-    Returns:
-        {hash: age_weeks} 字典
-    """
-    _ensure_sdk()
-
-    if not TorrentsChain:
-        return {}
-
-    result = {}
-    # 限制批量抓取数量
-    for torrent in torrents[:20]:
-        if not torrent.page_url:
-            continue
-
-        try:
-            # 使用站点详情页获取精确发布时间
-            # 这里简化处理，实际可能需要解析页面
-            if torrent.pubdate:
-                # 已有 pubdate，直接计算
-                fetcher = SiteFetcher()
-                age = fetcher._calc_age_weeks(torrent.pubdate)
-                result[torrent.hash] = age
-            else:
-                result[torrent.hash] = 0.0
-
-        except Exception as e:
-            logger.warning(f"抓取 {torrent.title} 发行时间失败: {e}")
-            result[torrent.hash] = 0.0
-
-    return result
-
-
-# ============================================================
 # 便捷函数
 # ============================================================
 
@@ -1529,31 +1471,6 @@ def browse_site(domain: str, rss: bool = False) -> List[SiteCandidateTorrent]:
     """
     fetcher = SiteFetcher()
     return fetcher.browse_site(domain, rss_support=rss)
-
-
-def browse_and_filter(
-    domain: str,
-    policy: Optional[FilterPolicy] = None,
-    rss: bool = False,
-) -> Tuple[List[SiteCandidateTorrent], Dict[str, int]]:
-    """
-    抓取并过滤站点候选（便捷函数）。
-
-    Args:
-        domain: 站点域名
-        policy: 过滤策略（默认使用 MagicFlow 策略）
-        rss: 是否使用 RSS 模式
-
-    Returns:
-        (过滤后的候选, 过滤原因统计)
-    """
-    fetcher = SiteFetcher()
-    candidates = fetcher.browse_site(domain, rss_support=rss)
-
-    if not policy:
-        policy = get_default_filter_policy()
-
-    return filter_candidates(candidates, policy)
 
 
 # ============================================================

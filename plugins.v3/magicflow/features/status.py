@@ -513,7 +513,6 @@ class StatusMixin:
         data.update({
             "enabled": self.get_state(),
             "version": __version__,
-            "gate_blocked": getattr(self, "_gate_blocked", None),
             "warming": warming,
             "show_sidebar_nav": bool(getattr(self, "_show_sidebar_nav", True)),
             "debug_log": bool(getattr(self, "_debug_log", False)),
@@ -528,7 +527,6 @@ class StatusMixin:
             "tag_model_enabled": bool(self._tags_cfg.get("enabled", True)),
             "show_qb_tags": bool(self._tags_cfg.get("show_qb_tags", True)),
             "tag_silent_new_timeout_hours": round(float(self._tags_cfg.get("new_timeout") or 0) / 3600.0, 3),
-            "tag_snapshot_interval_hours": round(float(self._tags_cfg.get("snapshot_interval") or 0) / 3600.0, 3),
             "sort_rules": [dict(r) for r in (self._tags_cfg.get("rules") or [])],
             "iyuu_token": str(getattr(self, "_iyuu_token", "") or ""),
             "iyuu_sites": dict(getattr(self, "_iyuu_sites", {}) or {}),

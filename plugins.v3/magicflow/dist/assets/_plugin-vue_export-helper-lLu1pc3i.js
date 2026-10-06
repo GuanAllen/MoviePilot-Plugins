@@ -202,7 +202,6 @@ function normalizeSettings(settings = {}) {
     tag_model_enabled: settings.tag_model_enabled === undefined ? true : Boolean(settings.tag_model_enabled),
     show_qb_tags: settings.show_qb_tags === undefined ? true : Boolean(settings.show_qb_tags),
     tag_silent_new_timeout_hours: Math.max(0, num(settings.tag_silent_new_timeout_hours, 24)),
-    tag_snapshot_interval_hours: Math.max(0, num(settings.tag_snapshot_interval_hours, 6)),
     sort_rules: normalizeSortRules(settings.sort_rules),
     iyuu_token: String(settings.iyuu_token || ''),
     iyuu_clear: !!settings.iyuu_clear,

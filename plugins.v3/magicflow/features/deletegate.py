@@ -59,7 +59,7 @@ class DeleteGateMixin:
         手动保留 / 跨站来源份（H&R 保种期）/ 已认领（保种承诺）/ 欠 H&R 义务。
 
         ``force_error=True``：**故障注入**——强制抛异常，供离线测试与线上自检
-        验证删除入口的 fail-closed 兜底（见模块级 ``gate_self_test``）。
+        验证删除入口的 fail-closed 兜底。
         """
         # ★ 故障注入入口（仅用于测试 / 自检，不影响正常调用）：
         #   删种入口拿到闸门异常 → fail-closed 会全阻断。用它可验证「拦得住」。
@@ -342,25 +342,3 @@ import collections as _collections
 
 _DELETE_WINDOW = _collections.deque()  # 元素：实际放行删除的时间戳（float）
 
-
-# ---------------------------------------------------------------------------
-# 闸门故障注入自检（模块级；供离线测试与线上自检使用，**不新增任何写动作路由**）
-# ---------------------------------------------------------------------------
-def gate_self_test(owner) -> "Dict[str, Any]":
-    """闸门「故障注入」自检：确认 ``owner._delete_gate_detail(..., force_error=True)``
-    确实会抛异常 —— 据此可验证删除入口的 fail-closed 兜底是否真的拦得住。
-
-    Args:
-        owner: 插件实例（需带 DeleteGateMixin 的 ``_delete_gate_detail``）。
-
-    Returns:
-        ``{"ok": bool, "raised": str}``（ok=True 表示故障可被注入）。
-    """
-    detail = getattr(owner, "_delete_gate_detail", None)
-    if not callable(detail):
-        return {"ok": False, "raised": "", "reason": "owner 无 _delete_gate_detail"}
-    try:
-        detail(["__gate_self_test__"], force_error=True)
-    except Exception as e:  # noqa: BLE001
-        return {"ok": True, "raised": f"{type(e).__name__}: {e}"}
-    return {"ok": False, "raised": "", "reason": "force_error 未触发异常"}

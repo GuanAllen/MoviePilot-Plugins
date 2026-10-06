@@ -26,10 +26,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # ★ 解析归采集（docs/PLAN-collect.md）：这些解析器本体在 collect，这里只做 re-export
 from .collect import (  # noqa: E402
-    is_pv_limited,
     next_day_ts,
     parse_leeching_rows,
-    parse_size,
     parse_uid,
     parse_user_bar,
 )

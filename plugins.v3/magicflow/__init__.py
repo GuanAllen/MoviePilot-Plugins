@@ -7,31 +7,20 @@ MagicFlow 魔流插件
 
 
 from .common import (
-    BROWSE_PAGES,
-    BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT,
     CLAIM_BATCH,
     CLAIM_DAILY_PER_SITE,
     CLAIM_INTERVAL_SEC,
-    CLOUD_INTERVAL_MINUTES,
-    CLOUD_SCAN_MAX,
     MagicFlowTaskConfig,
     __version__,
 )
 
 import re
-import threading
 from datetime import datetime
 from typing import Any, Dict, Optional
 
 
 from app.plugins import _PluginBase
-from app.scheduler import Scheduler
-from app.schemas.types import EventType
 
-from .bonus import (
-    DEFAULT_CANDIDATE_REF_WEEKS,
-    candidate_ref_weeks,
-)
 from .iyuu_cloud import IyuuCloud
 from .persistence import MagicFlowStore
 
@@ -73,7 +62,6 @@ from .features.deck import DeckMixin
 from .features.ondemand import OnDemandMixin
 from .features.debug import DebugMixin
 from .features.registry import RegistryMixin
-from .features.migrate import MigrateMixin
 from .features.claim import ClaimMixin
 from .features.trend import TrendMixin
 from .features.health import HealthMixin
@@ -83,7 +71,7 @@ from .features.sitereport import SiteReportMixin
 from .dupgate import DupGateMixin
 
 
-class MagicFlow(DupGateMixin, CoreMixin, RuntimeMixin, AgentApiMixin, AgentLedgerMixin, ApiMixin, RescueMixin, SettingsMixin, StatusMixin, TasksMixin, BrushMixin, FormulaMixin, ProtectionMixin, DeleteGateMixin, HrMixin, HrBillsMixin, YemaHrMixin, AssetsMixin, ServicesMixin, ReuseMixin, ReSeedMixin, CleanupMixin, SwapMixin, CrossSeedMixin, TagsMixin, SilentMixin, RecommendMixin, LiveMixin, ExamMixin, PoolMixin, CloudMixin, SiteOpsMixin, EventsMixin, ActionsMixin, DeckMixin, OnDemandMixin, DebugMixin, RegistryMixin, MigrateMixin, ClaimMixin, TrendMixin, HealthMixin, EventLogMixin, SiteReportMixin, _PluginBase):
+class MagicFlow(DupGateMixin, CoreMixin, RuntimeMixin, AgentApiMixin, AgentLedgerMixin, ApiMixin, RescueMixin, SettingsMixin, StatusMixin, TasksMixin, BrushMixin, FormulaMixin, ProtectionMixin, DeleteGateMixin, HrMixin, HrBillsMixin, YemaHrMixin, AssetsMixin, ServicesMixin, ReuseMixin, ReSeedMixin, CleanupMixin, SwapMixin, CrossSeedMixin, TagsMixin, SilentMixin, RecommendMixin, LiveMixin, ExamMixin, PoolMixin, CloudMixin, SiteOpsMixin, EventsMixin, ActionsMixin, DeckMixin, OnDemandMixin, DebugMixin, RegistryMixin, ClaimMixin, TrendMixin, HealthMixin, EventLogMixin, SiteReportMixin, _PluginBase):
     """魔流插件主类。"""
 
     plugin_name = "魔流"
@@ -124,7 +112,6 @@ class MagicFlow(DupGateMixin, CoreMixin, RuntimeMixin, AgentApiMixin, AgentLedge
     _last_up_limit_bps: Optional[int] = None
     # 标签模型
     _tags_cfg: Dict[str, Any] = {}
-    _tag_last_snapshot: float = 0.0
     # IYUU 云端辅种(可选)
     _iyuu_token: str = ""
     _iyuu_sites: Dict[str, Dict[str, str]] = {}

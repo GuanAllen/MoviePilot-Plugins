@@ -5,11 +5,9 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "11.13.0"
+__version__ = "12.0.0"
 
 import bisect
-import copy
-import random
 import re
 import time
 from dataclasses import dataclass
@@ -17,25 +15,15 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 
-from app.plugins import _PluginBase
-from app.schemas import Response
 from app.schemas.types import EventType
 from app.sdk.events import eventmanager
 
-from .bonus import (
-    TorrentBonusInfo,
-)
 from .fingerprint import (
     fingerprint,
     inner_fingerprint,
     load_torrent_entries,
     total_size,
 )
-from .fetcher import (
-    SiteCandidateTorrent,
-)
-
-
 # ============================================================
 # 以下由 __init__.py 原样搬出（常量 / 工具 / 模型）
 
@@ -98,10 +86,8 @@ SWAP_MIN_GAIN_PER_GB = 0.05  # 每 GB 下载至少要换回的魔力(/h):过滤�
 MAX_PAGE_CURSOR = 60
 # 分类阶段并发预取 .torrent 的线程数(原为逐个串行,TopN=100 会耗时数分钟)。
 # 注意:部分站点(如 PT时间)对下载接口有流控(429),并发过高会大面积失败,
-# 故并发与最小间隔共同限速(见 TORRENT_DL_MIN_INTERVAL)。
+# 故并发限速。
 TORRENT_FETCH_WORKERS = 3
-# 下载 .torrent 的最小间隔(秒,全局串行限速)与单种子重试次数。
-TORRENT_DL_MIN_INTERVAL = 1.0
 TORRENT_DL_RETRIES = 3
 # 分类阶段「取种」整段时长上限(秒):超过则不再等待剩余候选(个别请求可能卡死),
 # 本轮跳过、下轮重试;避免把整轮拖到运行超时(600s)而触发「判定为卡死」。
@@ -126,10 +112,6 @@ def dup_gate_keys(info_hash: Any, fingerprint: Any = None) -> List[str]:
 # 分类阶段「单次取种」硬超时(秒):若在飞请求连续这么久都没有任何完成(典型=请求卡死/站点限速),
 # 则放弃等待剩余候选、立即进入处理阶段,避免个别慢请求把整段拖满。
 TORRENT_FETCH_PER_TIMEOUT = 20.0
-# 复用扫描上限:TopN 之外额外取回「体积邻近本机」候选做辅种判定的最大数量。
-# 原为 60,会让单轮取种数达到 TopN+60(如 30+55≈85),叠加站点 .torrent 限速后
-# 单轮分类阶段动辄上百秒,正是「任务卡在分类排序」的主因之一;收敛到 15。
-REUSE_SCAN_MAX = 15
 # ★ 辅种慢扫(独立 worker):把「复用/辅种」从主刷流流程里切出来,单独低频跑。
 #   - 间隔(分钟):比刷流间隔长很多,慢慢扫,避免短时间大量取种触发站点流控。
 #   - 每轮批量:一次只取这么多个候选的 .torrent 做辅种判定。
@@ -203,8 +185,7 @@ SEED_UP_LIMIT_KBPS_DEFAULT = 200.0
 BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT = 5120.0
 SEED_UP_LIMIT_APPLY_INTERVAL = 600.0      # 最快多久重扫一次（秒），避免频繁全量写
 
-# ★ 标签模型（3.13.0）：状态账本 + 文件组账本 + 快照
-TAG_SNAPSHOT_INTERVAL = 6 * 3600.0        # 账本快照间隔（秒）
+# ★ 标签模型（3.13.0）：状态账本 + 文件组账本
 TAG_NEW_TIMEOUT = 24 * 3600.0             # 「静默-新」超时自动归「静默-普通」
 
 
@@ -735,16 +716,6 @@ def task_is_participating(task: Any) -> bool:
 def task_is_running(task: Any) -> bool:
     """任务是否「运行中」（会跑刷流/补种/清理流程）。"""
     return run_mode_of(task) == RUN_MODE_RUNNING
-
-
-def task_is_seeding_only(task: Any) -> bool:
-    """任务是否「只做种」（停调度但仍纳管/盯站）。"""
-    return run_mode_of(task) == RUN_MODE_SEEDING
-
-
-def task_watches_site(task: Any) -> bool:
-    """任务是否应参与站点观测（running + seeding 都要盯站，只有 stopped 不盯）。"""
-    return run_mode_of(task) != RUN_MODE_STOPPED
 
 
 # ============================================================

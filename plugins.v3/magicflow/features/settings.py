@@ -179,7 +179,6 @@ class SettingsMixin:
             "enabled": bool(getattr(payload, "tag_model_enabled", True)),
             "show_qb_tags": bool(getattr(payload, "show_qb_tags", True)),
             "new_timeout": max(0.0, _rf(getattr(payload, "tag_silent_new_timeout_hours", 24.0), 24.0)) * 3600.0,
-            "snapshot_interval": max(0.0, _rf(getattr(payload, "tag_snapshot_interval_hours", 6.0), 6.0)) * 3600.0,
             "rules": [dict(r) for r in _sr if isinstance(r, dict)] if isinstance(_sr, list) and _sr else [dict(r) for r in DEFAULT_SORT_RULES],
         }
         self._sync_free_rules()

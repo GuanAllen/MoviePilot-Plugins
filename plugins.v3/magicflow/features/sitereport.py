@@ -18,18 +18,14 @@
 
 from __future__ import annotations
 
-import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from app.schemas import Response
 
 from ..tags import STATE_SILENT, RESCUE_TAG, is_reuse_copy, parse_tag
 from .hrbills import (
     BILL_STATE_ACTIVE,
-    BILL_STATE_PENDING,
-    BILL_STATE_SETTLED,
-    BILL_STATE_VOID,
     BILL_STATE_BREACHED,
     RULE_HIT_AND_RUN,
     RULE_SITE_HR,

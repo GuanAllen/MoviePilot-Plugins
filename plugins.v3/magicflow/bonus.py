@@ -21,7 +21,7 @@ MagicFlow 魔力评分引擎
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 # ============================================================
 # 魔力公式参数
@@ -72,11 +72,6 @@ class BonusParams:
 
 DEFAULT_PARAMS = BonusParams()
 
-# 兼容旧引用的模块级常量（等价于 DEFAULT_PARAMS）
-T0 = DEFAULT_PARAMS.t0
-N0 = DEFAULT_PARAMS.n0
-B0 = DEFAULT_PARAMS.b0
-L = DEFAULT_PARAMS.l
 SQRT2 = math.sqrt(2)
 
 
@@ -315,39 +310,6 @@ def calc_bonus_per_hour(
     return bonus
 
 
-def calc_aggregate_bonus_per_hour(
-    torrents: List["TorrentBonusInfo"],
-    params: Optional[BonusParams] = None,
-    official_coef: Optional[float] = None,
-    harem_hourly: float = 0.0,
-    harem_coef: Optional[float] = None,
-    seeding_count: int = 0,
-) -> float:
-    """站点口径的「每小时合计魔力」。
-
-    站点公式对**合计 A** 只取一次 arctan，而不是对每个种子分别 arctan 再相加：
-        B = B0 * 2/π * arctan(A_total / L)
-    官方/后宫加成按站点规则分别计算：
-        合计 = 基础 + 官种(仅官种 A 算一次, ×official_coef) + 后宫(harem_hourly × harem_coef)
-
-    Args:
-        torrents: 做种列表（TorrentBonusInfo）
-        params: 公式参数
-        official_coef / harem_coef: 覆盖系数（None 用 params 里的值）
-        harem_hourly: 后宫成员时魔之和（外部提供，无则 0）
-
-    Returns:
-        每小时合计魔力
-    """
-    return aggregate_breakdown(
-        torrents, params,
-        official_coef=official_coef,
-        harem_hourly=harem_hourly,
-        harem_coef=harem_coef,
-        seeding_count=seeding_count,
-    )["total"]
-
-
 def aggregate_breakdown(
     torrents: List["TorrentBonusInfo"],
     params: Optional[BonusParams] = None,
@@ -392,10 +354,6 @@ def aggregate_breakdown(
 
 
 DEFAULT_CANDIDATE_REF_WEEKS = 4.0
-# 「成熟参考周数」与站点公式 T0 的比值：默认 4.0/5.0 = 0.8
-#   —— 原写死 4 周其实隐含假设 t0=5（NexusPHP 默认）：tf(4/5)=1-10^-0.8=0.84≈「养熟」。
-#   站点 t0 不同（如 CARPT t0=50）时 4 周只到 tf=0.17，必须按 T0 等比缩放。
-CANDIDATE_REF_T0_RATIO = DEFAULT_CANDIDATE_REF_WEEKS / 5.0
 
 
 def candidate_ref_weeks(params: Optional["BonusParams"] = None) -> float:
@@ -421,46 +379,6 @@ def site_ceiling(params: Optional[BonusParams] = None) -> float:
     """
     p = BonusParams.normalized(params)
     return p.b0 + p.per_torrent_flat * max(int(p.seeding_count_cap or 0), 0)
-
-
-def seeds_for_coverage(
-    params: Optional[BonusParams] = None,
-    a_avg: float = 0.0,
-    coverage: float = 0.95,
-) -> int:
-    """达到 B0 的 ``coverage``（0~1）所需的「种子数」估算。
-
-    B = B0·2/π·arctan(A/L) → 目标 A* = L·tan(coverage·π/2)；
-    按平均单种 A 贡献 a_avg 折算 N* = A*/a_avg。用于判断「保到多少个就已经够用」。
-    """
-    p = BonusParams.normalized(params)
-    if a_avg <= 0 or coverage <= 0 or coverage >= 1:
-        return 0
-    a_target = p.l * math.tan(coverage * math.pi / 2.0)
-    if a_target <= 0:
-        return 0
-    return max(int(math.ceil(a_target / a_avg)), 1)
-
-
-def calc_candidate_bonus_per_hour(
-    size_gb: float,
-    seeders: int,
-    age_weeks: float,
-    is_zero_bonus: bool = False,
-    ref_weeks: Optional[float] = None,
-    params: Optional[BonusParams] = None,
-    is_official: bool = False,
-) -> float:
-    """候选种子「预计魔力/时」。
-
-    站点浏览（browse）只能拿到最新种子，实际年龄 Ti≈0，
-    直接代入公式恒为 ~0/h → 排序失去意义。
-    这里把年龄下限抬到 ``ref_weeks``（缺省 = 0.8×站点 T0，NexusPHP 默认 t0=5 时即 4 周），
-    用「稳定期产出」给候选排序，体现大小 / 做种人数 / 权重（含官种加成）差异。
-    """
-    _ref = float(ref_weeks) if ref_weeks is not None else candidate_ref_weeks(params)
-    eff = max(float(age_weeks or 0.0), max(_ref, 0.0))
-    return calc_bonus_per_hour(size_gb, seeders, eff, is_zero_bonus, params, is_official=is_official)
 
 
 # ============================================================
@@ -559,45 +477,6 @@ def score_candidate(
         seeders_eff=ni_eff,
         reason="" if viable else f"站内做种人数 {ni} < {min_seeders}（无源，下不动）",
     )
-
-
-def select_optimal(
-    items: List[Tuple[Any, "CandidateScore"]],
-    disk_left_gb: Optional[float] = None,
-    count_left: Optional[int] = None,
-) -> List[Tuple[Any, "CandidateScore"]]:
-    """在「磁盘 / 名额」双预算下挑出最优子集（贪心，返回按优先级排好的列表）。
-
-    - 名额受限（count_left 有值）→ 按 ``value`` 降序（每个名额收益最大）；
-    - 磁盘受限（disk_left_gb 有值且 count_left 为 None）→ 按 ``efficiency`` 降序；
-    - 两者都有限 → 按 ``value`` 降序为主、``efficiency`` 为次（先装满名额）。
-    装入时同时遵守两个预算（装不下的跳过，继续试更小的）。
-    """
-    def _size(obj: Any) -> float:
-        try:
-            return float(getattr(obj, "size_gb", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            return 0.0
-
-    ranked = [kv for kv in (items or []) if kv[1].viable]
-    if disk_left_gb is not None and count_left is None:
-        ranked.sort(key=lambda kv: (kv[1].efficiency, kv[1].value), reverse=True)
-    else:
-        ranked.sort(key=lambda kv: (kv[1].value, kv[1].efficiency), reverse=True)
-
-    picked: List[Tuple[Any, "CandidateScore"]] = []
-    used_size = 0.0
-    used_cnt = 0
-    for obj, sc in ranked:
-        if count_left is not None and used_cnt >= count_left:
-            break
-        sz = _size(obj)
-        if disk_left_gb is not None and (used_size + sz) > disk_left_gb:
-            continue
-        picked.append((obj, sc))
-        used_size += sz
-        used_cnt += 1
-    return picked
 
 
 def calc_torrent_bonus(
@@ -992,30 +871,6 @@ def preview_deletions(
             for t in result.to_keep
         ],
     }
-
-
-def calc_age_weeks(pubdate: Optional[str]) -> float:
-    """
-    从发布时间计算生存周数。
-
-    Args:
-        pubdate: 发布时间字符串（ISO 格式或站点特定格式）
-
-    Returns:
-        生存周数
-    """
-    if not pubdate:
-        return 0.0
-
-    try:
-        from datetime import datetime, timezone
-        # 尝试解析 ISO 格式
-        dt = datetime.fromisoformat(pubdate.replace('Z', '+00:00'))
-        now = datetime.now(timezone.utc)
-        age_hours = (now - dt).total_seconds() / 3600
-        return max(0.0, age_hours / (7 * 24))
-    except Exception:
-        return 0.0
 
 
 # ============================================================

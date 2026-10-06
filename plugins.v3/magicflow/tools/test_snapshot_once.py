@@ -48,11 +48,9 @@ fingerprint = _load(PKG + ".fingerprint", "fingerprint.py")
 crossseed = _load(PKG + ".crossseed", "crossseed.py")
 persistence = _load(PKG + ".persistence", "persistence.py")
 tags = _load(PKG + ".tags", "tags.py")
-hrbills = _load(PKG + ".features.hrbills", "features/hrbills.py")
-hr = _load(PKG + ".features.hr", "features/hr.py")
 
-HrMixin = hr.HrMixin
-HrBillsMixin = hrbills.HrBillsMixin
+HrMixin = None  # 延后到 app.* 桩建好之后再加载（见下）
+HrBillsMixin = None
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +73,7 @@ def _load_common():
             setattr(m, k, v)
     for modname, attrs in (
         ("bonus", ("TorrentBonusInfo",)),
-        ("fingerprint", ("fingerprint", "inner_fingerprint", "load_torrent_entries", "total_size")),
+        ("fingerprint", ("fingerprint", "inner_fingerprint", "info_hash", "Entry", "entries_fingerprint", "load_torrent_entries", "total_size")),
         ("fetcher", ("SiteCandidateTorrent",)),
     ):
         m = types.ModuleType(PKG + "." + modname)
@@ -86,6 +84,13 @@ def _load_common():
 
 
 common = _load_common()
+
+# ★ ``features/hrbills.py`` / ``features/hr.py`` 经 ``..common`` 顶层 import ``app.*``，
+#   所以必须在上面把 app.* 桩建好之后才能加载（否则 ModuleNotFoundError: app.plugins）。
+hrbills = _load(PKG + ".features.hrbills", "features/hrbills.py")
+hr = _load(PKG + ".features.hr", "features/hr.py")
+HrMixin = hr.HrMixin
+HrBillsMixin = hrbills.HrBillsMixin
 
 
 def _torrent(hash_string="", progress=0.0, seed_time=0.0, hit_and_run=False,

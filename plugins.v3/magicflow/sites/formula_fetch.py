@@ -688,12 +688,6 @@ def fetch_user_torrent_urls(
     return out
 
 
-def acquire_site_params(site: Any, base: Optional[BonusParams] = None) -> BonusParams:
-    """抓取站点公式并返回解析后的 ``BonusParams``（失败则回落 base/默认）。"""
-    cap = fetch_site_formula(site)
-    return cap.to_params(base) if cap.ok else (base or BonusParams())
-
-
 # ============================================================
 # 用户做种列表 → 每种子「发布时间」（用于 Ti 发布时长口径 / 存量回填）
 # ============================================================
@@ -745,11 +739,6 @@ def parse_seeding_list(html_text: str) -> list:
     return out
 
 
-def parse_seeding_list_pubdates(html_text: str) -> Dict[str, str]:
-    """兼容旧接口：返回 {规范化标题: 'YYYY-MM-DD HH:MM:SS'}。"""
-    return {r['title_norm']: r['pubdate'] for r in parse_seeding_list(html_text)}
-
-
 def fetch_seeding_list(site: Any, userid: Any, timeout: int = 25) -> list:
     """抓取用户做种列表页，返回 ``parse_seeding_list`` 的结果。cookie/UA 取自站点配置。"""
     domain = (getattr(site, "domain", "") or "").strip()
@@ -786,11 +775,6 @@ def fetch_seeding_list(site: Any, userid: Any, timeout: int = 25) -> list:
         except Exception:
             pass
     return parse_seeding_list(text)
-
-
-def fetch_seeding_pubdates(site: Any, userid: Any, timeout: int = 25) -> Dict[str, str]:
-    """兼容旧接口：抓取并返回 {规范化标题: 发布时间字符串}。"""
-    return {r['title_norm']: r['pubdate'] for r in fetch_seeding_list(site, userid, timeout)}
 
 
 # ============================================================
@@ -896,28 +880,3 @@ def fetch_official_titles(site: Any, pages: int = 2, timeout: int = 25) -> list:
                 seen.add(t)
                 titles.append(t)
     return titles
-
-
-def refresh_site_preset(site: Any) -> FormulaCapture:
-    """
-    抓取站点公式并写入 ``sites`` 参数预设缓存（供 ``get_formula_params`` 命中）。
-
-    以域名（及名称）为键注册，后续 ``get_formula_params(domain=...)`` 即返回本站参数。
-    """
-    cap = fetch_site_formula(site)
-    if cap.ok:
-        from . import register_formula_preset
-
-        keys = {
-            (getattr(site, "domain", "") or "").strip().lower(),
-            (getattr(site, "name", "") or "").strip().lower(),
-        }
-        overrides = {
-            k: cap.params[k]
-            for k in ("t0", "n0", "b0", "l", "zero_weight", "normal_weight")
-            if k in cap.params
-        }
-        for key in keys:
-            if key:
-                register_formula_preset(key, **overrides)
-    return cap

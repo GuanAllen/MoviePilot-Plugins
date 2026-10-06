@@ -8,11 +8,6 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 
-from ..downloader_ops import (
-    TorrentInfo,
-)
-
-
 class ProtectionMixin:
     """protection 功能集（原 MagicFlow 方法原样搬入）。"""
 

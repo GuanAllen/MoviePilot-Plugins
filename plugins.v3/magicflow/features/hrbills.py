@@ -90,13 +90,6 @@ def _skip_hr_bill(tags: Any) -> bool:
     """该种是否**不该**在本账单口径开账（跨站/复用/补源副本）。"""
     return any(str(x).strip() in _SKIP_BILL_TAGS for x in (tags or []))
 
-# 账单字段（schema，对齐 REVIEW-10.1.0.joint.md §③）
-_BILL_FIELDS = (
-    "site", "rule", "state", "need_h", "seeded_h", "fp", "title",
-    "opened_at", "last_progress", "last_progress_at", "progress",
-    "opened_by",  # "open" = 下载即开账 / "backfill" = 存量回填补账
-)
-
 
 class HrBillsStore:
     """纯数据存储：``hash -> 账单 dict``。零业务逻辑。
@@ -1914,7 +1907,6 @@ _HR_SIZE_RE = re.compile(r"([\d.]+)\s*(TB|TiB|GB|GiB|MB|MiB|KB|KiB)", re.I)
 #   ``H:MM:SS`` → 把 <1h 的行判成「布局不兼容」→ 整站 ``myhr`` 对账整页跳过。
 #   放宽为「可选第三段」，两种都收。
 _HR_NEED_RE = re.compile(r"^(\d+):([0-5]\d)(?::([0-5]\d))?$")
-_HR_ROW_RE = re.compile(r"<tr[^>]*>(.*?)</tr>", re.S | re.I)
 _HR_TID_RE = re.compile(r"details\.php\?id=(\d+)", re.I)
 _HR_ID_RE = re.compile(r"<td[^>]*>\s*(\d{5,})\s*</td>", re.I)
 _HR_MARKERS = ("myhr", "h&r", "hit and run", "hit-and-run", "details.php", "hr.php")

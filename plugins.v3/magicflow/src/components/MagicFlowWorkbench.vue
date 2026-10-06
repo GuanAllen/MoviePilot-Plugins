@@ -161,7 +161,6 @@ const settingsDraft = ref({
   tag_model_enabled: true,
   show_qb_tags: true,
   tag_silent_new_timeout_hours: 24,
-  tag_snapshot_interval_hours: 6,
   sort_rules: [],
   iyuu_token: '',
   iyuu_clear: false,
@@ -1222,7 +1221,6 @@ async function loadStatus() {
       tag_model_enabled: status.value.tag_model_enabled !== false,
       show_qb_tags: status.value.show_qb_tags !== false,
       tag_silent_new_timeout_hours: status.value.tag_silent_new_timeout_hours ?? 24,
-      tag_snapshot_interval_hours: status.value.tag_snapshot_interval_hours ?? 6,
       sort_rules: normalizeSortRules(status.value.sort_rules),
       iyuu_token: status.value.iyuu_token,
       iyuu_sites: status.value.iyuu_sites,
@@ -6386,9 +6384,6 @@ onUnmounted(() => {
             <div class="magicflow-settings-grid">
               <VTextField v-model.number="settingsDraft.tag_silent_new_timeout_hours" type="number" min="0" step="1"
                 label="「静默-新」超时(小时)" hint="超过该时长未分拣自动归「静默-普通」，0 = 不超时"
-                persistent-hint variant="outlined" density="comfortable" />
-              <VTextField v-model.number="settingsDraft.tag_snapshot_interval_hours" type="number" min="0" step="1"
-                label="账本快照间隔(小时)" hint="滚动保留最近 3 份，用于精确回滚；0 = 不快照"
                 persistent-hint variant="outlined" density="comfortable" />
             </div>
 

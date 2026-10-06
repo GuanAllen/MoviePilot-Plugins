@@ -13,9 +13,7 @@ R2 运行状态：不得拿 run_mode 与字面量做比较（== / !=），一律
 """
 from __future__ import annotations
 
-import ast
 import json
-import os
 import re
 import sys
 from pathlib import Path

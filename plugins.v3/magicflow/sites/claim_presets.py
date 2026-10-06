@@ -71,8 +71,3 @@ def preset_for(domain: Any) -> Optional[Dict[str, Any]]:
         if d.endswith("." + key) or key.endswith("." + d):
             return dict(val)
     return None
-
-
-def known_domains() -> list:
-    """已知支持认领的站点域名（诊断/报表用）。"""
-    return sorted(CLAIM_PRESETS.keys())

@@ -46,7 +46,6 @@ DEFAULT_EXCLUDE_PATHS = ("/movie/刷流", "/movie/下载")
 
 DEFAULT_TARGET_TEMPLATE = "/quark/movie/{rel}"
 
-CATEGORY_DIRS = ("电影", "电视剧")
 
 _RE_YEAR = re.compile(r"\((\d{4})\)")
 

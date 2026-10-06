@@ -13,7 +13,7 @@
 #
 # 判定「已签」：签到页出现 `is-pending` / 「待签到」= 未签；否则视为已签。
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Tuple
 
 from app.core.config import settings
 from app.log import logger

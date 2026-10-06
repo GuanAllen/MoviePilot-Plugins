@@ -28,7 +28,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # ── 采集类型白名单（配额分账用；新增类型必须显式登记）────────────────────────
 SCOPE_SITE = "site"        # 吃站点 PV
@@ -86,7 +86,6 @@ _MAIL_TIME_RE = re.compile(
 
 # ── API 鉴权站（通道表驱动）────────────────────────────────────────────
 # ★ 3.42.0 馒头接入；★ 3.45.0 抽成「通道表」（conf/frameworks.yml → api_channels）。
-API_SITE_MARKERS = ("m-team",)  # 兼容旧调用；真值源是通道表
 
 
 def _api_channels() -> Dict[str, Any]:

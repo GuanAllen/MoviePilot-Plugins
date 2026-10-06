@@ -67,27 +67,26 @@ def _columns() -> Dict[str, List[Dict[str, Any]]]:
     hex40 = dict(type="hex40", unit="", desc="种子 infohash（小写）", nullable=False)
     return {
         # ---------------------------------------------------------------- 账本六表
+        # ★ 12.0.0：列字典与真值源对齐 —— 旧稿列了 7.0.0 已退役的幽灵列
+        #   （asset/title/taken_at/lease_until/downloader/reason/ts），它们既不是 DB 列也不在
+        #   ``_read_seeds`` 输出里 → 一并删掉；库内资产看 ``in_library``（顺 mf_resource）。
         "seed": [
             _col("hash", "hex40", desc="种子 infohash（小写）", nullable=False),
             _col("site", "string", desc="站点名"),
-            _col("state", "enum", enum=["bonus", "brush", "silent"], desc="职务（刷魔力/刷流/静默）"),
-            _col("sub", "enum", enum=["新", "资源", "普通"], desc="身份"),
-            _col("task", "string", desc="所属任务 id"),
-            _col("fp", "string", desc="资源特征码（文件组 id）"),
-            _col("size_gb", "float", unit="GB"),
+            _col("state", "enum", enum=["刷流", "魔力", "静默", "推荐", "保种"],
+                 desc="职务（由 task_id 推导）"),
+            _col("sub", "enum", enum=["新", "资源", "普通"], desc="身份（顺 mf_resource.identity）"),
+            _col("task", "string", desc="所属任务名（空=静默不在岗）"),
+            _col("taken_by", "string", desc="占用任务 id（空=不在岗）"),
+            _col("fp", "string", desc="资源特征码（mf_resource.resource_id）"),
+            _col("size_gb", "float", unit="GB", desc="顺资源表"),
+            _col("rating", "float", desc="豆瓣评分（顺资源表）"),
+            _col("in_library", "bool", desc="库内资产（mf_resource.in_library）"),
+            _col("asset_recheck", "string", desc="推荐复核结论 keep/fail（mf_resource）"),
             _col("published_at", "float", unit="s", desc="站点口径发布时间(unix)"),
-            _col("updated", "float", unit="s"),
+            _col("identity_at", "float", unit="s", desc="身份定稿时间"),
             _col("miss", "int", desc="巡检连续未命中"),
-            _col("rating", "float"),
-            _col("asset", "bool", desc="库内资产标记"),
-            _col("title", "string"),
-            _col("group_id", "string"),
-            _col("taken_by", "string"),
-            _col("taken_at", "float", unit="s"),
-            _col("lease_until", "float", unit="s"),
-            _col("downloader", "string"),
-            _col("reason", "string"),
-            _col("ts", "float", unit="s"),
+            _col("updated", "float", unit="s"),
         ],
         "resource": [
             _col("group_id", "string", desc="fp:<资源特征码>", nullable=False),
@@ -99,6 +98,9 @@ def _columns() -> Dict[str, List[Dict[str, Any]]]:
             _col("identity", "enum", enum=["新", "资源", "普通"]),
             _col("hrs", "json", desc="按站分账 H&R 账单"),
             _col("library", "json", desc="库记（入库状态）"),
+            _col("asset_recheck", "enum", enum=["keep", "fail"],
+                 desc="推荐复核结论（★ 12.0.0 真列 mf_resource.asset_recheck；fail=不再算库内资产）"),
+            _col("asset_recheck_at", "float", unit="s", desc="复核时间"),
             _col("rating", "float"),
             _col("created", "float", unit="s"),
             _col("updated", "float", unit="s"),

@@ -260,12 +260,6 @@ class MagicFlowTagStatePayload(BaseModel):
     site: str = Field("", max_length=60, description="站点短名(通常自动识别)")
 
 
-class MagicFlowTagMigratePayload(BaseModel):
-    """老标签 → 新命名(魔流-<站点>-<状态>)迁移。"""
-
-    apply: bool = Field(False, description="false = 只预演(dry-run),true = 真正改标签")
-
-
 class MagicFlowSettingsPayload(BaseModel):
     """魔流插件全局设置请求模型"""
 
@@ -388,7 +382,6 @@ class MagicFlowSettingsPayload(BaseModel):
     tag_model_enabled: bool = Field(True, description="启用标签模型(状态账本 + 魔流-<站点>-<状态> 标签)")
     show_qb_tags: bool = Field(True, description="往 qB 写标签(状态账本才是真值源,关=纯账本模式)")
     tag_silent_new_timeout_hours: float = Field(24.0, ge=0, le=720, description="「静默-新」超过该小时数未分拣自动归「静默-普通」,0 = 不超时")
-    tag_snapshot_interval_hours: float = Field(6.0, ge=0, le=168, description="状态账本快照间隔(小时),0 = 不快照")
     sort_rules: List[Dict[str, Any]] = Field(
         default_factory=lambda: [dict(r) for r in DEFAULT_SORT_RULES],
         description="静默分拣规则(订阅/库内资产/豆瓣评分/年份/站点/分类),支持 dry-run 预演",

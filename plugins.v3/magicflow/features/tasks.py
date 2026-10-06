@@ -5,16 +5,14 @@
 """
 
 import threading
-import time
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 
 from app.schemas import Response
 
 from ..bonus import (
-    DEFAULT_CANDIDATE_REF_WEEKS,
     candidate_ref_weeks,
     calc_torrent_bonus,
     preview_deletions,
@@ -33,9 +31,6 @@ from ..crossseed import (
     CROSSSEED_TAG,
 )
 from ..tags import (
-    LEASE_TTL,
-    STATE_BONUS,
-    STATE_SILENT,
     SUB_NEW,
     retag,
     tag_for,
@@ -51,8 +46,6 @@ from ..common import (
     SILENT_HOST_TASK_ID,
     normalize_run_mode,
     enabled_of_run_mode,
-    RUN_MODE_RUNNING,
-    RUN_MODE_STOPPED,
 )
 
 

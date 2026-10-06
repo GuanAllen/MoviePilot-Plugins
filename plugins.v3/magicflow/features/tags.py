@@ -13,30 +13,20 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.schemas import Response
 
-from ..downloader_ops import (
-    TorrentInfo,
-)
 from ..fingerprint import fingerprint
 from ..models import (
-    MagicFlowTagMigratePayload,
     MagicFlowTagStatePayload,
-)
-from ..crossseed import (
-    CROSSSEED_TAG,
 )
 from ..tags import (
     ASSET_TAGS,
     DUTY_STATES,
     EXTERNAL_TAG,
-    FileGroupStore,
     KEEP_FOREIGN_TAGS,
     LEASE_TTL,
-    MARK_HR,
-    MARK_REUSE,
-    asset_origin_sub,
     identity_of,
     is_asset_tags,
     is_external_candidate,
+    is_library_asset,
     STATE_BONUS,
     STATE_BRUSH,
     STATE_RECOMMEND,
@@ -44,7 +34,6 @@ from ..tags import (
     SUB_NEW,
     SUB_PLAIN,
     SUB_RESOURCE,
-    TagStateStore,
     is_magicflow_tag,
     parse_tag,
     retag,
@@ -55,16 +44,14 @@ from ..tags import (
 
 from ..common import (
     MEDIA_ASSET_HISTORY_TTL,
-    MEDIA_ASSET_TAGS,
-    MagicFlowTaskConfig,
     TAG_NEW_TIMEOUT,
-    TAG_SNAPSHOT_INTERVAL,
     TAG_SNAPSHOT_TTL,
     TAG_SNAPSHOT_STALE_MAX,
     HR_BREACH_RECONCILE_ENABLED,
     _has_media_asset_tag,
     _torrent_hash,
 )
+from ..ledger import ResourceLedgerStore, SeedLedgerStore, get_backend
 
 
 class TagsMixin:
@@ -108,7 +95,7 @@ class TagsMixin:
             # ★ 账本库记（魔流自己的真值源）：MP 标签被清理/被别的插件改坏也不丢库内身份
             try:
                 _rec = _ledger.get(str(h).lower()) or {}
-                if bool(_rec.get("asset")) and str(_rec.get("asset_recheck") or "") != "fail":
+                if is_library_asset(_rec) and str(_rec.get("asset_recheck") or "") != "fail":
                     hashes.add(h)
             except Exception:  # noqa: BLE001
                 pass
@@ -220,27 +207,15 @@ class TagsMixin:
     # 标签模型（3.13.0）
     # ---------------------------------------------------------
 
-    def _new_tag_state(self) -> TagStateStore:
-        """建状态账本对象：账本已迁到 5 表的部署走插件库，否则继续用旧 kv。"""
-        try:
-            from ..ledger import SeedLedgerStore, get_backend, ledger_ready
-            if ledger_ready(self):
-                return SeedLedgerStore(get_backend(self), log=self._log)
-        except Exception as err:  # noqa: BLE001
-            self._log(f"标签:5 表后端不可用，回退旧 kv:{err}", "warning")
-        return TagStateStore(get_data=self.get_data, save_data=self.save_data, log=self._log)
+    def _new_tag_state(self) -> SeedLedgerStore:
+        """建状态账本对象：★ 12.0.0 起 **只有 5 表后端**（"标签账本"不再经 kv）。"""
+        return SeedLedgerStore(get_backend(self), log=self._log)
 
-    def _new_tag_groups(self) -> FileGroupStore:
-        """建资源账本对象：同上。"""
-        try:
-            from ..ledger import ResourceLedgerStore, get_backend, ledger_ready
-            if ledger_ready(self):
-                return ResourceLedgerStore(get_backend(self), log=self._log)
-        except Exception as err:  # noqa: BLE001
-            self._log(f"标签:5 表后端不可用，回退旧 kv:{err}", "warning")
-        return FileGroupStore(get_data=self.get_data, save_data=self.save_data, log=self._log)
+    def _new_tag_groups(self) -> ResourceLedgerStore:
+        """建资源账本对象：同上（只有 5 表后端）。"""
+        return ResourceLedgerStore(get_backend(self), log=self._log)
 
-    def _tag_state(self) -> TagStateStore:
+    def _tag_state(self) -> SeedLedgerStore:
         """状态账本（真值源）。★ 进程级单例，与 ``_site_rules`` 同款防热重载整表覆盖。"""
         obj = getattr(self, "_tag_state_obj", None)
         if obj is not None:
@@ -259,20 +234,20 @@ class TagsMixin:
             for _attr, _factory in (("instances", dict), ("counters", dict), ("lock", threading.Lock)):
                 if not hasattr(mod, _attr):
                     setattr(mod, _attr, _factory())
-            obj = mod.instances.get("tag_state")
+            obj = mod.instances.get("seed_ledger")
             # ★ 热重载后模块里是「新的类」，但单例还是「旧类的实例」→ 方法可能缺失。
             #   校验过类型，不匹配就重建（否则新加的方法永远 AttributeError）。
-            if obj is not None and not isinstance(obj, TagStateStore):
+            if obj is not None and not isinstance(obj, SeedLedgerStore):
                 obj = None
             if obj is None:
                 obj = self._new_tag_state()
-                mod.instances["tag_state"] = obj
+                mod.instances["seed_ledger"] = obj
         except Exception:  # noqa: BLE001
             obj = self._new_tag_state()
         self._tag_state_obj = obj
         return obj
 
-    def _tag_groups(self) -> FileGroupStore:
+    def _tag_groups(self) -> ResourceLedgerStore:
         """文件组账本（多站引用计数）。进程级单例，同上。"""
         obj = getattr(self, "_tag_groups_obj", None)
         if obj is not None:
@@ -291,12 +266,12 @@ class TagsMixin:
             for _attr, _factory in (("instances", dict), ("counters", dict), ("lock", threading.Lock)):
                 if not hasattr(mod, _attr):
                     setattr(mod, _attr, _factory())
-            obj = mod.instances.get("tag_groups")
-            if obj is not None and not isinstance(obj, FileGroupStore):
+            obj = mod.instances.get("resource_ledger")
+            if obj is not None and not isinstance(obj, ResourceLedgerStore):
                 obj = None
             if obj is None:
                 obj = self._new_tag_groups()
-                mod.instances["tag_groups"] = obj
+                mod.instances["resource_ledger"] = obj
         except Exception:  # noqa: BLE001
             obj = self._new_tag_groups()
         self._tag_groups_obj = obj
@@ -369,7 +344,7 @@ class TagsMixin:
             # ★ 身份：现网标签 → 账本 → （库内资产 ? 资源 : 新）
             _i_site, _i_sub = identity_of(cur)
             _ident = str(sub or "") or _i_sub or str(_rec0.get("sub") or "") \
-                or (SUB_RESOURCE if (bool(_rec0.get("asset")) or is_asset_tags(cur)) else SUB_NEW)
+                or (SUB_RESOURCE if (is_library_asset(_rec0) or is_asset_tags(cur)) else SUB_NEW)
             _ident = _ident or SUB_NEW
             target_site = site or _i_site
             target = tag_for(target_site, state)
@@ -429,7 +404,7 @@ class TagsMixin:
             cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
             _i_site, _i_sub = identity_of(cur)
             sub = str(rec.get("sub") or "") or _i_sub \
-                or (SUB_RESOURCE if bool(rec.get("asset")) else SUB_PLAIN)
+                or (SUB_RESOURCE if is_library_asset(rec) else SUB_PLAIN)
             site = str(rec.get("site") or "") or _i_site or self._torrent_site_name(cur)
             target = tag_for(site, STATE_SILENT, sub)
             new_tags = retag(cur, site=site, state=STATE_SILENT, sub=sub) if cur else [target]
@@ -450,57 +425,6 @@ class TagsMixin:
             self._dbg(f"标签模型:任务「{getattr(task, 'name', '')}」退下 {n} 个（{reason}）")
         return n
 
-    def rehome_verdicts(self, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
-        """★ 归位：把「账本里已有分拣结论、身份却还停在『新』」的种按结论归位。
-
-        起因（Master 2026-09-30 00:48「去上个班回来身份还变了」）：
-        旧代码在占位上班时把回退目标 origin 写成默认「新」，把分拣已下的结论覆盖了。
-        身份/职务分离（5.0.0）后不再会产生这种漂移 —— 本方法只用于**一次性修数据**。
-        """
-        store = self._tag_state()
-        snap = self._tag_all_torrents() or {}
-        dl = self._get_downloader()
-        rep: Dict[str, Any] = {"apply": bool(apply), "scanned": 0, "pending": 0,
-                               "moved": 0, "failed": 0, "items": []}
-        cap = int(limit or 0)
-        for h, rec in list((store.items() or {}).items()):
-            hh = str(h or "").strip().lower()
-            if str(rec.get("state") or "") != STATE_SILENT:
-                continue
-            if str(rec.get("sub") or "") != SUB_NEW:
-                continue
-            _reason = str(rec.get("reason") or "")
-            if "分拣" not in _reason and not bool(rec.get("asset")):
-                continue
-            _target = SUB_RESOURCE if (bool(rec.get("asset")) or "资源" in _reason) else SUB_PLAIN
-            rep["scanned"] = int(rep["scanned"]) + 1
-            rep["pending"] = int(rep["pending"]) + 1
-            if len(rep["items"]) < 20:
-                rep["items"].append({"hash": hh[:12], "site": rec.get("site") or "",
-                                     "to": _target, "reason": _reason[:40]})
-            if not apply:
-                continue
-            if cap and int(rep["moved"]) >= cap:
-                continue
-            live = snap.get(hh)
-            cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
-            site = str(rec.get("site") or "") or self._torrent_site_name(cur)
-            try:
-                if cur:
-                    _new = retag(cur, site=site, state=STATE_SILENT, sub=_target)
-                    fn = getattr(dl, "replace_torrent_tags", None) if dl is not None else None
-                    if callable(fn) and not fn(hh, _new):
-                        rep["failed"] = int(rep["failed"]) + 1
-                        continue
-                store.put(hh, {"site": site, "state": STATE_SILENT, "sub": _target,
-                               "reason": _reason + "｜归位", "rehomed_at": time.time()})
-                rep["moved"] = int(rep["moved"]) + 1
-            except Exception as err:  # noqa: BLE001
-                rep["failed"] = int(rep["failed"]) + 1
-                self._log(f"归位失败 {hh[:12]}:{err}", "warning")
-        if apply and rep["moved"]:
-            self._log(f"魔流:身份归位:{rep['moved']} 个（原有分拣结论、身份却停在『新』）")
-        return rep
 
     def _tag_site_names(self) -> List[str]:
         """已知站点短名（用于解析 ``魔流-<站点>-<状态>`` 里带连字符的站点）。"""
@@ -555,148 +479,6 @@ class TagsMixin:
                     out[h] = t
         return out
 
-    def _tag_migration_plan(self) -> Dict[str, Any]:
-        """算出「老标签 → 新标签」的迁移计划（不落盘）。"""
-        self._tag_sync_names()
-        torrents = self._tag_all_torrents()
-        task_tag_map: Dict[str, Dict[str, str]] = {}
-        for task in self._task_configs.values():
-            tag = str(getattr(task, "brush_tag", "") or "").strip()
-            if not tag:
-                continue
-            tier = "brush" if str(getattr(task, "task_type", "bonus") or "bonus").lower() == "brush" else "bonus"
-            task_tag_map[tag] = {
-                "site": str(getattr(task, "site_name", "") or "").strip(),
-                "state": STATE_BRUSH if tier == "brush" else STATE_BONUS,
-                "task": str(getattr(task, "name", "") or ""),
-            }
-        rec_tag = str(self._recommend_cfg.get("tag", "魔流-推荐") or "魔流-推荐")
-        # ★ 特殊标签不动：跨站来源份沿用 CROSSSEED_TAG（H&R 保护账本认它），推荐沿用 recommend 的 tag。
-        try:
-            cs_hashes = set(self._crossseed_source_hashes() or set())
-        except Exception:  # noqa: BLE001
-            cs_hashes = set()
-        plan: List[Dict[str, Any]] = []
-        for h, t in torrents.items():
-            tags = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
-            mf_tags = [x for x in tags if is_magicflow_tag(x)]
-            if not mf_tags:
-                continue
-            site = self._torrent_site_name(tags)
-            state, sub, src = "", "", ""
-            for x in mf_tags:
-                hit = task_tag_map.get(x)
-                if hit:
-                    state, src = hit["state"], f"任务「{hit['task']}」"
-                    site = site or hit["site"]
-                    break
-            if h in cs_hashes:
-                state, sub, src = STATE_SILENT, SUB_RESOURCE, "跨站来源份"
-                remove = [x for x in mf_tags if x != CROSSSEED_TAG]
-                if CROSSSEED_TAG in tags and not remove:
-                    continue
-                plan.append({
-                    "hash": h,
-                    "title": str(getattr(t, "title", "") or "")[:120],
-                    "site": site,
-                    "state": state,
-                    "sub": sub,
-                    "source": src,
-                    "special": "crossseed",
-                    "remove": remove,
-                    "add": CROSSSEED_TAG,
-                    "tags": tags,
-                })
-                continue
-            keep_extra = [t for t in (rec_tag, MARK_REUSE, MARK_HR) if t in mf_tags]
-            if not state and CROSSSEED_TAG in mf_tags:
-                state, sub, src = STATE_SILENT, SUB_RESOURCE, "跨站来源份"
-            if not state:
-                # ★ 5.0.0：身份 + 职务两标签并存 → **职务优先**（否则会把在岗的种当成静默）
-                parsed = None
-                for x in mf_tags:
-                    _pp = parse_tag(x)
-                    if _pp and _pp.get("state") in DUTY_STATES:
-                        parsed = _pp
-                        break
-                if parsed is None:
-                    for x in mf_tags:
-                        parsed = parse_tag(x)
-                        if parsed and parsed.get("state"):
-                            break
-                if parsed and parsed.get("state"):
-                    state, sub, src = parsed["state"], parsed.get("sub", ""), "已是新标签"
-                else:
-                    state, sub, src = STATE_BONUS, "", "老魔力标签"
-            if not site:
-                state, src = (state, src)
-            new_tag = tag_for(site, state, sub)
-            old_new = [x for x in mf_tags if x != new_tag and x not in keep_extra]
-            if not old_new and new_tag in tags:
-                continue
-            plan.append({
-                "hash": h,
-                "title": str(getattr(t, "title", "") or "")[:120],
-                "site": site,
-                "state": state,
-                "sub": sub,
-                "source": src,
-                "remove": old_new,
-                "add": new_tag,
-                "tags": tags,
-            })
-        by_state: Dict[str, int] = {}
-        for p in plan:
-            key = p["state"] + (f"-{p['sub']}" if p["sub"] else "")
-            by_state[key] = by_state.get(key, 0) + 1
-        return {"total": len(plan), "by_state": by_state, "samples": plan[:20], "plan": plan}
-
-    def _tag_migrate_apply(self, plan: Any, *, limit: int = 0) -> Dict[str, Any]:
-        """执行迁移：改标签 + 写状态账本。"""
-        downloader = self._get_downloader()
-        if downloader is None or not getattr(downloader, "is_available", False):
-            return {"ok": False, "error": "下载器不可用"}
-        store = self._tag_state()
-        done = 0
-        failed = 0
-        for item in plan or []:
-            if limit and done >= limit:
-                break
-            h = str(item.get("hash") or "").lower()
-            if not h:
-                continue
-            tags = [str(x).strip() for x in (item.get("tags") or [])]
-            new_tags = [x for x in tags if x not in set(item.get("remove") or [])]
-            add = str(item.get("add") or "")
-            if add and add not in new_tags:
-                new_tags.append(add)
-            try:
-                fn = getattr(downloader, "replace_torrent_tags", None)
-                ok = fn(h, new_tags) if callable(fn) else downloader.set_torrent_tags(h, new_tags)
-                if not ok:
-                    failed += 1
-                    continue
-            except Exception:  # noqa: BLE001
-                failed += 1
-                continue
-            _tags_now = [str(x).strip() for x in (item.get("tags") or [])]
-            _is_asset = is_asset_tags(_tags_now)
-            store.put(h, {
-                "site": item.get("site") or "",
-                "state": item.get("state") or STATE_SILENT,
-                "sub": item.get("sub") or asset_origin_sub(_tags_now),
-                "asset": _is_asset,
-                "title": item.get("title") or "",
-                "migrated": True,
-            })
-            done += 1
-        return {"ok": True, "migrated": done, "failed": failed}
-
-    # ---------------------------------------------------------
-    # 魔流化（Master 2026-09-29 23:07）：存量「非魔流」种一次性归入魔流标签
-    #   规则：全部走**推荐标准** → 魔流-<站点>-静默-<资源|普通>；旧站点/刷流标签摘掉。
-    #   「推荐推的是资源，不是种」→ 同一**资源**（文件组）一起判定、一起打标。
-    # ---------------------------------------------------------
 
     def _mp_source_promote(self) -> Dict[str, Any]:
         """★ MP 来源的种若被归成「普通」→ 提为「资源」。
@@ -939,7 +721,10 @@ class TagsMixin:
             _ws = [x for x in tags if x and x != x.strip()]   # ★ 带前后空白的标签（写坏的名字）→ 重写到干净名
             if not foreign and not _ws:
                 continue
-            _is_asset = any(str(x).strip() in ASSET_TAGS for x in foreign)
+            # ★ 12.0.0 口径：库内资产 = 带 MP 资产标签（即将被摘）**或**账本已认（in_library/身份「资源」）。
+            _asset_rec = ledger.get(hh) or {}
+            _is_asset = (any(str(x).strip() in ASSET_TAGS for x in foreign)
+                         or is_library_asset(_asset_rec))
             if _is_asset:
                 assets += 1
             if cap and len(items) >= cap:
@@ -973,7 +758,7 @@ class TagsMixin:
                 continue
             if it.get("asset"):  # ★ 先保身份：记进魔流账本
                 try:
-                    st.set_asset(hh, True, sub=SUB_RESOURCE)
+                    st.set_asset(hh, sub=SUB_RESOURCE)
                     rep["asset_adopted"] = int(rep["asset_adopted"]) + 1
                 except Exception:  # noqa: BLE001
                     pass
@@ -1227,7 +1012,7 @@ class TagsMixin:
                     continue  # 已就位
                 _items.append({"hash": hh, "site": _site2, "add": _add2, "remove": _remove,
                                "tags": tags, "new_tags": _new,
-                               "asset": is_asset_tags(tags),
+                               "asset": is_library_asset(cur),
                                "in_ledger": bool(cur)})
                 key = "%s|%s" % (_site2 or "-", sub)
                 stats["sites"][key] = int(stats["sites"].get(key) or 0) + 1
@@ -1285,7 +1070,6 @@ class TagsMixin:
                     "site": item.get("site") or "",
                     "state": STATE_SILENT,
                     "sub": sub,
-                    "asset": bool(item.get("asset")),
                     "title": str(res.get("title") or "")[:200],
                     "magicized": True,
                     "magicized_at": time.time(),
@@ -1348,7 +1132,7 @@ class TagsMixin:
             items = store.items()
             return Response(success=True, message="ok", data={
                 "total": len(hs),
-                "items": [{ "hash": h, **{k: items[h].get(k) for k in ("site", "state", "sub", "taken_by", "origin_sub", "title", "size_gb", "asset")}} for h in hs[:max(1, int(limit or 20))]],
+                "items": [{ "hash": h, **{k: items[h].get(k) for k in ("site", "state", "sub", "taken_by", "origin_sub", "title", "size_gb", "in_library")}} for h in hs[:max(1, int(limit or 20))]],
             })
         if act == "resource":
             if str(hash or "").strip():
@@ -1451,14 +1235,6 @@ class TagsMixin:
                          f"释放 {info.get('released', 0)}（保种 {info.get('assigned', 0)}）"),
                 data=info,
             )
-        if act in ("rehome", "rehome_apply"):
-            _ap2 = act == "rehome_apply"
-            _ri = self.rehome_verdicts(apply=_ap2, limit=int(limit or 0))
-            return Response(
-                success=True,
-                message=(f"身份归位 {_ri.get('moved')} 个" if _ap2 else f"待归位 {_ri.get('pending')} 个"),
-                data=_ri,
-            )
         if act in ("fp", "fingerprint"):
             _lim = int(limit) if str(limit).isdigit() else 0
             return Response(success=True, message="特征码补录完成", data=self.backfill_fingerprints(limit=_lim))
@@ -1492,9 +1268,6 @@ class TagsMixin:
         if act == "expire":
             moved = store.expire_new(timeout=float(self._tags_cfg.get("new_timeout") or TAG_NEW_TIMEOUT))
             return Response(success=True, message=f"静默-新超时归普通 {len(moved)} 个", data={"moved": moved})
-        if act == "snapshot":
-            info = store.snapshot()
-            return Response(success=True, message="已落快照", data=info)
         if act in ("magicize", "magicize_plan", "magicize_apply"):
             _ap = act == "magicize_apply"
             info = self._magicize_plan(limit=limit, site_filter=site)
@@ -1552,12 +1325,6 @@ class TagsMixin:
                          f"，记入库内账本 {res.get('asset_adopted')}）"),
                 data={"plan_summary": {k: v for k, v in info.items() if k != "plan"}, "applied": res},
             )
-        if act == "migrate":
-            plan = self._tag_migration_plan()
-            return Response(success=True, message=f"待迁移 {plan['total']} 个", data={
-                "total": plan["total"], "by_state": plan["by_state"],
-                "samples": [{k: s.get(k) for k in ("title", "site", "state", "sub", "source", "remove", "add")} for s in plan["samples"]],
-            })
         # ★ 10.2.0 下载即开账（影子记账）：只读端点
         if act in ("hrbills", "hr_bills"):
             info = self._hrbills_stats()
@@ -1682,21 +1449,19 @@ class TagsMixin:
                             data={"mode": _mode, "results": _res})
         # default: status
         items = store.items()
-        snap = store.snapshots()
         return Response(success=True, message="ok", data={
             "enabled": bool(self._tags_cfg.get("enabled", True)),
             "new_timeout_hours": round(float(self._tags_cfg.get("new_timeout") or 0) / 3600.0, 2),
-            "snapshot_interval_hours": round(float(self._tags_cfg.get("snapshot_interval") or 0) / 3600.0, 2),
             "ledger_count": len(items),
             "by_state": store.stats(),
             "stale": store.stale_count(),
             "unowned": sum(1 for r in items.values()
                            if not str(r.get("taken_by") or "")
                            and str(r.get("state") or "") in DUTY_STATES),
-            "assets": {"count": sum(1 for r in items.values() if r.get("asset")),
-                       "size_gb": round(sum(float(r.get("size_gb") or 0) for r in items.values() if r.get("asset")), 2)},
+            "assets": {"count": sum(1 for r in items.values() if is_library_asset(r)),
+                       "size_gb": round(sum(float(r.get("size_gb") or 0)
+                                            for r in items.values() if is_library_asset(r)), 2)},
             "groups": groups.stats(),
-            "snapshots": [{"ts": s.get("ts"), "count": s.get("count")} for s in snap],
             "site_names": self._tag_site_names(),
             "sort_rules": [dict(r) for r in (self._tags_cfg.get("rules") or [])],
             "states": [STATE_BRUSH, STATE_BONUS, STATE_SILENT, STATE_RECOMMEND],
@@ -1742,16 +1507,6 @@ class TagsMixin:
             "hash": h, "site": site, "state": state, "sub": sub, "tags": new_tags,
         })
 
-    def migrate_tags(self, payload: MagicFlowTagMigratePayload) -> Response:
-        """老标签迁移到新命名（默认 dry-run，``apply=true`` 才落盘）。"""
-        plan = self._tag_migration_plan()
-        if not bool(getattr(payload, "apply", False)):
-            return Response(success=True, message=f"预演：待迁移 {plan['total']} 个（未执行）", data={
-                "dry_run": True, "total": plan["total"], "by_state": plan["by_state"],
-                "samples": [{k: s.get(k) for k in ("title", "site", "state", "sub", "source", "remove", "add")} for s in plan["samples"]],
-            })
-        res = self._tag_migrate_apply(plan["plan"])
-        return Response(success=bool(res.get("ok")), message=f"迁移完成：{res.get('migrated')} 个（失败 {res.get('failed')}）", data=res)
 
     def tags_watch(self) -> None:
         """标签账本维护（worker）：状态账本快照/对账 · 资源账本 · 特征码补录 · 停止任务退静默。
@@ -1788,12 +1543,6 @@ class TagsMixin:
                               f"（多样 {rinfo.get('multi')} · 入库 {rinfo.get('in_library')} · H&R 账单 {rinfo.get('hr_bills')}）")
             except Exception as err:  # noqa: BLE001
                 self._log(f"标签维护:资源同步失败:{err}", "warning")
-            interval = float(self._tags_cfg.get("snapshot_interval") or TAG_SNAPSHOT_INTERVAL)
-            now = time.time()
-            if interval > 0 and (now - float(getattr(self, "_tag_last_snapshot", 0) or 0)) >= interval:
-                info = store.snapshot()
-                self._tag_last_snapshot = now
-                self._dbg(f"魔流:标签维护:状态账本快照完成（{info.get('count')} 条）")
             # ★ 10.2.0 下载即开账：影子账单巡检（作废/结清，只改账单状态，不影响删除/保护）
             try:
                 _hrb = self._hrbills_tick()

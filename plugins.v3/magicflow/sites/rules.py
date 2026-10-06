@@ -290,21 +290,6 @@ def parse_hr_generic(html_text: str, framework: str = "unknown") -> Dict[str, An
     return out
 
 
-def framework_parsers() -> Dict[str, Any]:
-    """框架 → 解析器（**惰性构造**：``parse_hr_from_html`` 在本文件后面才定义）。
-
-    新站接进来「探测一次」即出规则，不用人工写。
-    """
-    return {
-        "nexusphp": parse_hr_from_html,
-        "mteam": parse_hr_generic,
-        "gazelle": parse_hr_generic,
-        "unit3d": parse_hr_generic,
-        "custom": parse_hr_generic,
-        "unknown": parse_hr_generic,
-    }
-
-
 def parser_for_framework(framework: str):
     """按框架取解析器：**nexus 引擎** 或 **通用引擎（绑定该框架的 token）**。
 
@@ -345,8 +330,6 @@ except Exception:  # noqa: BLE001
 # 兜底默认（YAML 缺失/缺项时使用；与 3.39.x 的常量完全一致）
 _D_HOURS = r"(\d+(?:\.\d+)?)\s*(?:个)?\s*(?:小时|小時|個小時|hours?|hrs?|h\b)"
 _D_DAYS = r"(\d+(?:\.\d+)?)\s*(?:天|日|days?)"
-_D_HR = r"H\s*&\s*R|hit\s*[&a]nd\s*run|Hit\s*and\s*Run|做种率|H&R"
-_D_SEED_CTX = r"(?:做种|保种|挂种|seeding|seed|share\s*time)[^\u4e00-\u9fffA-Za-z0-9]{0,12}"
 _D_CAP = r"(?:最多|上限|同时|做种数|seeding)[^\d]{0,12}(\d{1,4})\s*(?:个|個|条|種|种)?"
 _D_EXCLUDE = (
     r"考核|达标|魔力|奖励|捐赠|申诉|免罪|警告|相册|邀请|邮箱|注册|每月|月做种|新人|"
@@ -408,11 +391,6 @@ _SEG_REJECT_PROMO_RE = _rx(f"{_NEXUS}:seg_reject_promo", str(_fire(_NEXUS, "seg_
 
 _HOURS_RE = _rx(f"{_NEXUS}:hours", str(_fire(_NEXUS, "hours") or _D_HOURS))
 _DAYS_RE = _rx(f"{_NEXUS}:days", str(_fire(_NEXUS, "days")))
-# H&R 关键词
-# ★ 3.40.0：以下全部来自 conf/frameworks.yml（nexusphp 段），代码里只留兜底默认。
-_HR_WORD_RE = _rx(f"{_NEXUS}:hr_word", str(_fire(_NEXUS, "hr") and _D_HR or _D_HR))
-# 「需要做种/挂种 ... 」的上下文
-_SEED_CTX_RE = _rx(f"{_NEXUS}:seed_ctx", _D_SEED_CTX)
 # 做种数上限
 _CAP_RE = _rx(f"{_NEXUS}:cap", str(_fire(_NEXUS, "cap") or _D_CAP))
 

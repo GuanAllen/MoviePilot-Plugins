@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from check_deps import L0, L1, L2_PREFIX, L3, ROOT, SELF, collect, layer_of, mod_name  # noqa: E402
+from check_deps import ROOT, collect, layer_of, mod_name  # noqa: E402
 
 OUT = ROOT / "docs" / "MODULES-REGISTRY.md"
 SKIP_DIRS = {"_backup", "tools", "__pycache__", "dist", "node_modules", ".git"}

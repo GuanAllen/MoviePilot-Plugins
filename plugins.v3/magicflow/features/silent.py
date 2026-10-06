@@ -24,8 +24,6 @@ from ..tags import (
     SUB_NEW,
     SUB_PLAIN,
     SUB_RESOURCE,
-    duty_of,
-    is_magicflow_tag,
     retag,
     tag_for,
 )
@@ -511,7 +509,8 @@ class SilentMixin:
 
         四类判据（真值源同源，不造第二真值源）：
           - owed_hr：``_hr_obligation`` 真值（欠 H&R）——注意：欠债种应由 hr_host 迁到保种，池里不该有；
-          - library_asset：静默-资源 / ``is_asset_tags``（库内资产，永不删）；
+          - library_asset：库内资产（★ 12.0.0 真值 = ``mf_resource.in_library`` 随资源回填的
+            ``rec["in_library"]`` 或身份「资源」；永不删）；
           - crossseed：``_crossseed_source_hashes``（跨站来源份 H&R 保种期）；
           - claim / manual：``_claim_protected_hashes`` / ``store.protected_torrents``（承诺）；
           - stalled_violation：qB 态不在 paused/stopped/queued（= 违背「静默全 paused」不变量）；
@@ -566,7 +565,10 @@ class SilentMixin:
                     owed = bool(self._hr_obligation(site, t, snap=snap)[0])
                 except Exception:  # noqa: BLE001
                     owed = False
-            asset = bool(str((rec or {}).get("asset") or "") or is_asset_tags(tags))
+            # ★ 12.0.0：库内资产真值 = 资源库记（``mf_resource.in_library``，随资源回填）或身份「资源」。
+            #   旧判据 ``rec["asset"]`` 是 7.0.0 已退役的幽灵字段（恒空）；``is_asset_tags`` 也因
+            #   「标签主权」摘掉了 qB 的 已整理/辅种 而失效 —— 两条都不可再用。
+            asset = bool((rec or {}).get("in_library")) or (sub == SUB_RESOURCE)
             stalled = False
             if t is not None:
                 st = str(getattr(t, "state", "") or "").strip().lower()
@@ -767,7 +769,7 @@ class SilentMixin:
             ok = False
         if ok:
             try:
-                self._tag_state().put(hh, {"sub": SUB_RESOURCE, "asset": True,
+                self._tag_state().put(hh, {"sub": SUB_RESOURCE,
                                            "reason": "静默分拣:资源已入库→静默-资源"})
             except Exception:  # noqa: BLE001
                 pass
@@ -886,7 +888,7 @@ class SilentMixin:
                 done = float(getattr(t, "progress", 0) or 0) >= 0.999
             except (TypeError, ValueError):
                 done = False
-            reuse = (MARK_REUSE in tags) or is_asset_tags(tags)
+            reuse = (MARK_REUSE in tags) or is_asset_tags(tags) or bool(rec.get("in_library"))
             if not done and not reuse:
                 rep["skipped_incomplete"] = int(rep["skipped_incomplete"]) + 1
                 continue
@@ -950,7 +952,7 @@ class SilentMixin:
             if t is None:
                 continue
             tags = [str(x) for x in (getattr(t, "tags", None) or [])]
-            if not (MARK_REUSE in tags or is_asset_tags(tags)):
+            if not (MARK_REUSE in tags or is_asset_tags(tags) or bool(rec.get("in_library"))):
                 continue
             try:
                 prog = float(getattr(t, "progress", 1.0) or 0.0)
@@ -1054,7 +1056,8 @@ class SilentMixin:
             # 跨站来源份 / 推荐中 / 库内资产 / **辅种复用种**（它们停在 pausedDL 是等校验，
             # 不是「没下完的下载」Master 2026-09-28）→ 都不在「未下完直接删」范围内
             if ("魔流-跨站" in tags or "魔流-推荐" in tags
-                    or MARK_REUSE in tags or is_asset_tags(tags)):
+                    or MARK_REUSE in tags or is_asset_tags(tags)
+                    or bool(rec.get("in_library"))):
                 continue
             try:
                 prog = float(getattr(t, "progress", 1.0) or 0.0)
