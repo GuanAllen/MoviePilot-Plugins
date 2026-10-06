@@ -327,6 +327,15 @@ class MagicFlowSettingsPayload(BaseModel):
         6.0, ge=0, le=720,
         description="死种补源:未下完且 0 速停滞超过该小时数才纳入补源(默认 6,越小越灵敏)"
     )
+    # ★ 11.13.0 H&R 安全垫 + 临近到期预警
+    hr_seed_margin_hours: float = Field(
+        2.0, ge=0, le=168,
+        description="H&R 结清安全垫(小时):实际做种需 ≥ 站点要求 + 该值才判结清(默认 2,0 = 不留垫)"
+    )
+    hr_deadline_warn_hours: float = Field(
+        48.0, ge=0, le=1680,
+        description="H&R 临近到期预警阈值(小时):距站点窗口到期低于该值且未达标 → 预警(默认 48)"
+    )
     rescue_max_candidates: int = Field(
         3, ge=1, le=10,
         description="死种补源:每个目标最多列几个他站候选(默认 3;只选无 H&R 的站)"

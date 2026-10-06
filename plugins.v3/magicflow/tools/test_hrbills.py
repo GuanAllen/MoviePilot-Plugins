@@ -84,6 +84,13 @@ class Harness(HrBillsMixin):
         self.torrents: dict = {}      # hash -> SimpleNamespace
         self.ledger: dict = {}        # hash -> rec dict
         self.name2dom: dict = {}      # 站名 -> 域名
+        # ★ 11.13.0：默认把安全垫置 0（保留「need_h 即达标」的旧断言），
+        #   安全垫 / 到期预警单独在 [7b] 里开 2.0 验证。
+        self._hr_seed_margin_hours = 0.0
+        self._hr_deadline_warn_hours = 48.0
+
+    def _crossseed_seed_window_hours(self, dom):
+        return 0.0
 
     def get_data_path(self):
         return self._data_dir
@@ -236,6 +243,23 @@ def main() -> int:
     t7.seed_time = 21.0 * 3600.0  # 挂够 21h > 20h
     h._hrbills_tick()
     _ok(store.get("abab")["state"] == "settled", f"挂够 need_h → settled（{store.get('abab')['state']}）")
+
+    # ---- 7b) ★ 11.13.0 安全垫：need_h + margin 才算结清 ----
+    print("\n[7b] 安全垫：seeded_h ≥ need_h + margin 才结清")
+    t7b = _torrent(progress=1.0, title="安全垫种", tracker="hdfans.org")
+    t7b.hash = "abab2"
+    h.torrents["abab2"] = t7b
+    h._hrbills_open("abab2", "hdfans.org", "魔流-hdfans-刷流", _torrent_bytes("h"))
+    h._hr_seed_margin_hours = 2.0          # 需 20 + 2 = 22h
+    t7b.seed_time = 21.0 * 3600.0          # 21 < 22 → 不结清
+    h._hrbills_tick()
+    _ok(store.get("abab2")["state"] == "active",
+        f"21h < need 20 + margin 2 → 仍未结清（{store.get('abab2')['state']}）")
+    t7b.seed_time = 22.5 * 3600.0          # 22.5 ≥ 22 → 结清
+    h._hrbills_tick()
+    _ok(store.get("abab2")["state"] == "settled",
+        f"22.5h ≥ 20 + 2 → 结清（{store.get('abab2')['state']}）")
+    h._hr_seed_margin_hours = 0.0
 
     # ---- 8) 磁力链（无特征码）→ fp="" ----
     print("\n[8] 磁力链（无特征码）→ fp=''")

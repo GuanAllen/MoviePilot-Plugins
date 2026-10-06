@@ -67,6 +67,8 @@ from ..common import (
     CLAIM_INTERVAL_SEC,
     FALLBACK_SCAN_MAX,
     GLOBAL_WORKER_LIMIT,
+    HR_DEADLINE_WARN_HOURS_DEFAULT,
+    HR_SEED_MARGIN_HOURS_DEFAULT,
     LIVE_DEFAULT_TTL,
     LIVE_DOWNLOAD_ALERT_MB,
     LIVE_INTERVAL_MINUTES,
@@ -251,6 +253,11 @@ class CoreMixin:
             "stall_hours": _rf(raw_config.get("rescue_stall_hours"), 6.0),
             "max_candidates": int(_rf(raw_config.get("rescue_max_candidates"), 3.0)),
         }
+        # ★ 11.13.0 H&R 安全垫 + 临近到期预警（设置面可改；常量在 common.py）
+        self._hr_seed_margin_hours = _rf(raw_config.get("hr_seed_margin_hours"),
+                                         HR_SEED_MARGIN_HOURS_DEFAULT)
+        self._hr_deadline_warn_hours = _rf(raw_config.get("hr_deadline_warn_hours"),
+                                           HR_DEADLINE_WARN_HOURS_DEFAULT)
         # ★ 3.22.4 一次性迁移：Master 2026-09-28 09:42「还是别走豆瓣了吧」→ 默认回到 TMDB。
         #   存量配置里若还写着 douban（旧默认被自动落盘的），只在这一版强制改回 tmdb 并落盘；
         #   之后 Master 在设置里手动选「豆瓣优先」不会再被覆盖（标记已置位）。
@@ -1055,6 +1062,10 @@ class CoreMixin:
             "recommend_douban_max_per_run": int(self._recommend_cfg.get("douban_max_per_run", 30) or 0),
             "recommend_douban_service_url": str(self._recommend_cfg.get("douban_service_url", "") or ""),
             "rescue_stall_hours": float(getattr(self, "_rescue_cfg", {}).get("stall_hours") or 6.0),
+            "hr_seed_margin_hours": float(getattr(self, "_hr_seed_margin_hours",
+                                                  HR_SEED_MARGIN_HOURS_DEFAULT) or 0.0),
+            "hr_deadline_warn_hours": float(getattr(self, "_hr_deadline_warn_hours",
+                                                    HR_DEADLINE_WARN_HOURS_DEFAULT) or 0.0),
             "rescue_max_candidates": int(getattr(self, "_rescue_cfg", {}).get("max_candidates") or 3),
             "crossseed_guard": bool(getattr(self, "_cs_cfg", {}).get("guard", True)),
             "crossseed_guard_pct": float(getattr(self, "_cs_cfg", {}).get("guard_pct") or 5.0),

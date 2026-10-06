@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "11.12.2"
+__version__ = "11.13.0"
 
 import bisect
 import copy
@@ -173,6 +173,10 @@ DELETE_BREAKER_WINDOW_S = 600.0  # 熔断滚动窗口（秒）
 DELETE_BILL_ASSERT = True       # 删除前账单直查：state∈{active,breached} → 硬拦（独立于闸门推导链）
 # ★ 11.12.0 违约自动核对：对 breached 账单拉站点真值 → 站点不欠自动清账 / 站点欠自动补种
 HR_BREACH_RECONCILE_ENABLED = True
+# ★ 11.13.0 H&R 安全垫 + 临近到期预警（Master 2026-10-06 13:02 批准；借鉴「H&R助手」的
+#   additional_seed_time / hr_deadline_days，但口径仍是「站点真值 + 账单状态机」）。
+HR_SEED_MARGIN_HOURS_DEFAULT = 2.0   # 结清冗余：实际做种需 ≥ need_h + 该值（小时；0=不留垫）
+HR_DEADLINE_WARN_HOURS_DEFAULT = 48.0  # 距站点窗口到期 < 该小时数且未达标 → at_risk 预警（小时）
 # 跨站免费取种的「回辅」轮询周期(分钟)：B/C/D… 站点下完后，尽快把它辅回目标站。
 CROSSSEED_INTERVAL_MINUTES = 5
 # 跨站检索结果的缓存 TTL(秒)：同一关键词 6 小时内不重复检索(省 PV)。

@@ -151,6 +151,12 @@ class SettingsMixin:
             self.save_data(key=RESEED_CFG_KEY, value={})
         except Exception:  # noqa: BLE001
             pass
+        # ★ 11.13.0 H&R 安全垫 + 临近到期预警（设置面为权威）
+        try:
+            self._hr_seed_margin_hours = _rf(getattr(payload, "hr_seed_margin_hours", 2.0), 2.0)
+            self._hr_deadline_warn_hours = _rf(getattr(payload, "hr_deadline_warn_hours", 48.0), 48.0)
+        except Exception:  # noqa: BLE001
+            pass
         # ★ 认领（claim，7.14.0）：设置面为权威，同样清掉 plugin-data 覆盖
         try:
             self._claim_enabled = bool(getattr(payload, "claim_enabled", False))
