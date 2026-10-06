@@ -4954,10 +4954,10 @@ onUnmounted(() => {
         </div>
         <div class="magicflow-ops-dialog__body">
           <div class="magicflow-sitereport__stats">
-            <div class="magicflow-sitereport__stat"><b>{{ siteReportSummary.total || 0 }}</b><span>挂种</span></div>
+            <div class="magicflow-sitereport__stat" title="该站点在本机下载器里的全部种子（含做种/下载中/暂停/静默）"><b>{{ siteReportSummary.total || 0 }}</b><span>本站种子</span></div>
             <div class="magicflow-sitereport__stat"><b>{{ (siteReportSummary.size_gb || 0).toFixed(1) }}</b><span>GB</span></div>
             <div class="magicflow-sitereport__stat is-danger"><b>{{ siteReportSummary.hr_owed || 0 }}</b><span>欠 H&amp;R</span></div>
-            <div class="magicflow-sitereport__stat is-danger"><b>{{ siteReportSummary.hr_missing || 0 }}</b><span>缺挂</span></div>
+            <div class="magicflow-sitereport__stat is-danger"><b>{{ siteReportSummary.hr_missing || 0 }}</b><span>本机缺失</span></div>
           </div>
           <div class="magicflow-sitereport__chips">
             <VChip
@@ -4984,7 +4984,7 @@ onUnmounted(() => {
             H&amp;R 对账（{{ siteReport.hr.source }}）：{{ siteReport.hr.error }}
           </div>
           <div v-else-if="siteReport.hr && siteReport.hr.records_total != null" class="magicflow-sitereport__note">
-            H&amp;R 对账（{{ siteReport.hr.source }}）：站点欠 {{ siteReport.hr.records_total }} 条，本机缺挂 {{ siteReport.hr.missing }} 条{{ siteReport.hr.hash_coverage_complete ? '' : '（部分未覆盖）' }}
+            H&amp;R 对账（{{ siteReport.hr.source }}）：站点欠 {{ siteReport.hr.records_total }} 条，本机缺失 {{ siteReport.hr.missing }} 条{{ siteReport.hr.hash_coverage_complete ? '' : '（部分未覆盖）' }}
           </div>
           <div class="magicflow-sitereport__list">
             <div v-for="it in siteReportItems" :key="it.hash" class="magicflow-sitereport__row">
@@ -4995,7 +4995,7 @@ onUnmounted(() => {
               </div>
               <span class="magicflow-sitereport__row-size">{{ (it.size_gb || 0).toFixed(2) }}G</span>
             </div>
-            <div v-if="!siteReportLoading && !siteReportItems.length" class="magicflow-ceiling-empty">该站点暂无挂种（或未选择站点）</div>
+            <div v-if="!siteReportLoading && !siteReportItems.length" class="magicflow-ceiling-empty">该站点暂无种子（或未选择站点）</div>
           </div>
         </div>
       </VCard>
@@ -5016,7 +5016,7 @@ onUnmounted(() => {
             <div class="magicflow-sitereport__stat"><b>{{ hrBillsTotals.bills || 0 }}</b><span>账单</span></div>
             <div class="magicflow-sitereport__stat is-danger"><b>{{ hrBillsTotals.active || 0 }}</b><span>欠债</span></div>
             <div class="magicflow-sitereport__stat is-danger"><b>{{ hrBillsTotals.breached || 0 }}</b><span>违约</span></div>
-            <div class="magicflow-sitereport__stat is-danger"><b>{{ hrBillsTotals.missing || 0 }}</b><span>缺挂</span></div>
+            <div class="magicflow-sitereport__stat is-danger"><b>{{ hrBillsTotals.missing || 0 }}</b><span>本机缺失</span></div>
           </div>
           <div class="magicflow-hrbills__list">
             <div v-for="s in hrBillsSites" :key="s.domain" class="magicflow-hrbills__card">

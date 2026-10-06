@@ -2988,7 +2988,10 @@ const _hoisted_165 = { class: "magicflow-settings-dialog__head" };
 const _hoisted_166 = { class: "magicflow-ops-dialog__sub magicflow-sitereport__bar" };
 const _hoisted_167 = { class: "magicflow-ops-dialog__body" };
 const _hoisted_168 = { class: "magicflow-sitereport__stats" };
-const _hoisted_169 = { class: "magicflow-sitereport__stat" };
+const _hoisted_169 = {
+  class: "magicflow-sitereport__stat",
+  title: "该站点在本机下载器里的全部种子（含做种/下载中/暂停/静默）"
+};
 const _hoisted_170 = { class: "magicflow-sitereport__stat" };
 const _hoisted_171 = { class: "magicflow-sitereport__stat is-danger" };
 const _hoisted_172 = { class: "magicflow-sitereport__stat is-danger" };
@@ -10234,7 +10237,7 @@ return (_ctx, _cache) => {
               _createElementVNode("div", _hoisted_168, [
                 _createElementVNode("div", _hoisted_169, [
                   _createElementVNode("b", null, _toDisplayString(siteReportSummary.value.total || 0), 1),
-                  _cache[435] || (_cache[435] = _createElementVNode("span", null, "挂种", -1))
+                  _cache[435] || (_cache[435] = _createElementVNode("span", null, "本站种子", -1))
                 ]),
                 _createElementVNode("div", _hoisted_170, [
                   _createElementVNode("b", null, _toDisplayString((siteReportSummary.value.size_gb || 0).toFixed(1)), 1),
@@ -10246,7 +10249,7 @@ return (_ctx, _cache) => {
                 ]),
                 _createElementVNode("div", _hoisted_172, [
                   _createElementVNode("b", null, _toDisplayString(siteReportSummary.value.hr_missing || 0), 1),
-                  _cache[438] || (_cache[438] = _createElementVNode("span", null, "缺挂", -1))
+                  _cache[438] || (_cache[438] = _createElementVNode("span", null, "本机缺失", -1))
                 ])
               ]),
               _createElementVNode("div", _hoisted_173, [
@@ -10282,7 +10285,7 @@ return (_ctx, _cache) => {
               (siteReport.value.hr && siteReport.value.hr.error)
                 ? (_openBlock(), _createElementBlock("div", _hoisted_175, " H&R 对账（" + _toDisplayString(siteReport.value.hr.source) + "）：" + _toDisplayString(siteReport.value.hr.error), 1))
                 : (siteReport.value.hr && siteReport.value.hr.records_total != null)
-                  ? (_openBlock(), _createElementBlock("div", _hoisted_176, " H&R 对账（" + _toDisplayString(siteReport.value.hr.source) + "）：站点欠 " + _toDisplayString(siteReport.value.hr.records_total) + " 条，本机缺挂 " + _toDisplayString(siteReport.value.hr.missing) + " 条" + _toDisplayString(siteReport.value.hr.hash_coverage_complete ? '' : '（部分未覆盖）'), 1))
+                  ? (_openBlock(), _createElementBlock("div", _hoisted_176, " H&R 对账（" + _toDisplayString(siteReport.value.hr.source) + "）：站点欠 " + _toDisplayString(siteReport.value.hr.records_total) + " 条，本机缺失 " + _toDisplayString(siteReport.value.hr.missing) + " 条" + _toDisplayString(siteReport.value.hr.hash_coverage_complete ? '' : '（部分未覆盖）'), 1))
                   : _createCommentVNode("", true),
               _createElementVNode("div", _hoisted_177, [
                 (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(siteReportItems.value, (it) => {
@@ -10312,7 +10315,7 @@ return (_ctx, _cache) => {
                   ]))
                 }), 128)),
                 (!siteReportLoading.value && !siteReportItems.value.length)
-                  ? (_openBlock(), _createElementBlock("div", _hoisted_182, "该站点暂无挂种（或未选择站点）"))
+                  ? (_openBlock(), _createElementBlock("div", _hoisted_182, "该站点暂无种子（或未选择站点）"))
                   : _createCommentVNode("", true)
               ])
             ])
@@ -10392,7 +10395,7 @@ return (_ctx, _cache) => {
                 ]),
                 _createElementVNode("div", _hoisted_189, [
                   _createElementVNode("b", null, _toDisplayString(hrBillsTotals.value.missing || 0), 1),
-                  _cache[445] || (_cache[445] = _createElementVNode("span", null, "缺挂", -1))
+                  _cache[445] || (_cache[445] = _createElementVNode("span", null, "本机缺失", -1))
                 ])
               ]),
               _createElementVNode("div", _hoisted_190, [
@@ -17074,6 +17077,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-775274ca"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-ae9d418a"]]);
 
 export { MagicFlowWorkbench as M };
