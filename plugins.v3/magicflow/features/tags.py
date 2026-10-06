@@ -373,6 +373,12 @@ class TagsMixin:
                 except Exception:  # noqa: BLE001
                     pass
             ok_n += 1
+            if state == STATE_SILENT:
+                # ★ 13.0.2：直接归入静默池 → 入池即判（没下完的当场删）
+                try:
+                    self._silent_drop_incomplete_now(hh, t=live, reason="入池即删·归入静默未下完")
+                except Exception as _derr:  # noqa: BLE001
+                    self._log(f"入池即判失败 {hh[:8]}:{_derr}", "warning")
         if ok_n and reason:
             self._dbg(f"标签模型:任务「{getattr(task, 'name', '')}」接管 {ok_n} 个 → {target}（{reason}）")
         if skipped:
@@ -421,6 +427,12 @@ class TagsMixin:
                 except Exception as _rerr:  # noqa: BLE001
                     self._log(f"标签账本释放失败 {hh[:8]}:{_rerr}", "warning")
                 n += 1
+                # ★ 13.0.2 入池即判（Master 01:30「没下完的新进入静默池的那一刻就应该被删除」）：
+                #   退回静默=入池；没下完的直接删（身份保护/欠 H&R/手动/同数据副本 会放行）
+                try:
+                    self._silent_drop_incomplete_now(hh, t=live, reason="入池即删·任务退下未下完")
+                except Exception as _derr:  # noqa: BLE001
+                    self._log(f"入池即判失败 {hh[:8]}:{_derr}", "warning")
         if n and reason:
             self._dbg(f"标签模型:任务「{getattr(task, 'name', '')}」退下 {n} 个（{reason}）")
         return n
