@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from app.schemas import Response
 
-from ..tags import STATE_SILENT, parse_tag
+from ..tags import STATE_SILENT, RESCUE_TAG, is_reuse_copy, parse_tag
 from .hrbills import (
     BILL_STATE_ACTIVE,
     BILL_STATE_PENDING,
@@ -37,13 +37,14 @@ from .hrbills import (
 
 # 分类桶（主状态，互斥；优先级见 _site_seed_report 排序）
 BUCKET_HR = "欠H&R"
+BUCKET_RESCUE = "补源"
 BUCKET_DOWNLOADING = "未完成"
 BUCKET_PAUSED = "暂停"
 BUCKET_SILENT = "静默"
 BUCKET_PROTECTED = "保护"
 BUCKET_NORMAL = "普通"
 
-_BUCKET_ORDER = (BUCKET_HR, BUCKET_DOWNLOADING, BUCKET_PAUSED,
+_BUCKET_ORDER = (BUCKET_HR, BUCKET_RESCUE, BUCKET_DOWNLOADING, BUCKET_PAUSED,
                  BUCKET_SILENT, BUCKET_PROTECTED, BUCKET_NORMAL)
 
 _HR_RULES = (RULE_SITE_HR, RULE_HIT_AND_RUN)
@@ -175,6 +176,13 @@ class SiteReportMixin:
 
     def _site_report_bucket(self, t: Any, state: str, progress: float,
                             is_hr: bool, is_prot: bool) -> str:
+        # ★ 11.11.1：补源副本（魔流-补源）独立桶，且不判 H&R。
+        try:
+            _tags = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
+        except Exception:  # noqa: BLE001
+            _tags = []
+        if RESCUE_TAG in _tags:
+            return BUCKET_RESCUE
         if is_hr:
             return BUCKET_HR
         if progress < 0.999:
@@ -265,7 +273,9 @@ class SiteReportMixin:
             state = str(getattr(t, "state", "") or "")
             progress = round(float(getattr(t, "progress", 0) or 0), 4)
             is_prot = hh in protected
-            is_hr = (hh in owed) or (bill_state == BILL_STATE_ACTIVE and bill_rule in _HR_RULES)
+            # ★ 11.11.1：复用/补源副本（非真实下载）不判 H&R（不把辅种算进「欠H&R」桶）。
+            _reuse_copy = is_reuse_copy(getattr(t, "tags", None))
+            is_hr = (not _reuse_copy) and ((hh in owed) or (bill_state == BILL_STATE_ACTIVE and bill_rule in _HR_RULES))
             items.append({
                 "hash": hh,
                 "title": str(getattr(t, "title", "") or "")[:160],

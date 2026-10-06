@@ -1634,6 +1634,43 @@ class DownloaderAdapter:
             self._emit_delete_log([], delete_file, reason, source, None, _blocked)
             return 0, None
 
+        # ★★ 11.12.0：删除前「账单直查断言」+「滚动窗口熔断」（独立于闸门推导链，fail-closed）。
+        #   目的：防「闸门推导链被 bug 绕过」把真欠 H&R 的种删掉（2026-10-05 事故根因），
+        #   并防失控循环把同一批种反复删除。任一抛异常 → 全阻断（不删）。
+        try:
+            _ba = getattr(self, "_delete_bill_assert", None)
+            _bill_why = _ba(list(hashes)) if callable(_ba) else {}
+        except Exception as _ba_err:  # noqa: BLE001
+            _bill_why = {str(h or "").strip().lower(): f"账单断言异常:{_ba_err}" for h in hashes}
+        _brk_why: Dict[str, str] = {}
+        try:
+            _bk = getattr(self, "_delete_breaker_check", None)
+            if callable(_bk):
+                _brk_blocked, _brk_info = _bk(
+                    hashes, delete_file=delete_file, reason=reason, source=source)
+                for h in (_brk_blocked or set()):
+                    _brk_why[str(h).strip().lower()] = str(_brk_info.get("reason") or "删除熔断")
+        except Exception as _brk_err:  # noqa: BLE001
+            _brk_why = {str(h or "").strip().lower(): f"删除熔断异常:{_brk_err}" for h in hashes}
+        _assert_why: Dict[str, str] = {**_bill_why, **_brk_why}
+        if _assert_why:
+            _eb = [h for h in hashes if str(h or "").strip().lower() in _assert_why]
+            if _eb:
+                _blocked.extend(_eb)
+                hashes = [h for h in hashes if str(h or "").strip().lower() not in _assert_why]
+                _first = next(iter(_assert_why.values()), "")
+                logger.warning(
+                    f"[删除断言/熔断] 阻断 {len(_eb)} 个种子（{_first}）"
+                )
+                try:
+                    self._emit_delete_log([], delete_file, reason, source,
+                                          None, list(_eb), blocked_by="bill_assert/breaker")
+                except Exception:  # noqa: BLE001
+                    pass
+        if not hashes:
+            self._emit_delete_log([], delete_file, reason, source, None, _blocked)
+            return 0, "删除被账单断言/熔断阻断"
+
         # ★ 删种前先向 tracker 报到一次：站点更快把状态从「下载中/做种中」更新为已停止，
         #   对症「站点一直显示下载中」。尽力而为，失败仅记日志、不阻断删除。
         try:

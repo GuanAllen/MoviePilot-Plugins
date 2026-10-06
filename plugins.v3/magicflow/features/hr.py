@@ -22,6 +22,7 @@ from ..tags import (
     STATE_HR,
     STATE_SILENT,
     identity_of,
+    is_reuse_copy,
     retag,
     tag_for,
 )
@@ -135,7 +136,15 @@ class HrMixin:
 
         ★ 只有站点规则**明确 True**（或种子自带 H&R 标记）才算；站点规则未知 → **绝不猜**
         （2026-10-05：YemaPT 那种误判就是「未知保守」造出来的）。
+
+        ★ 11.11.1：复用/补源副本（非真实下载）→ 本站不欠 H&R。
         """
+        try:
+            _tags = [str(x) for x in (getattr(torrent, "tags", None) or [])]
+            if is_reuse_copy(_tags):
+                return False, 0.0, 0.0, "复用/补源副本(非真实下载)"
+        except Exception:  # noqa: BLE001
+            pass
         dom = self._hr_domain(site, torrent)
         if not dom:
             return False, 0.0, 0.0, "站点未知"
@@ -181,7 +190,16 @@ class HrMixin:
         记成了「咖啡」→ 判不欠 → 被刷魔「低效换种」删掉，而站点 myhr 页明确列它欠 H&R）。
         所以：**资源级说欠 → 欠**；否则再按**该种自己所在站点**明确有 H&R 且自己没挂够 → 也欠。
         站点规则未知 → 不猜（两种口径都不猜）。
+
+        ★ 11.11.1：复用/补源副本（非真实下载）→ 三路（资源/账单/种子级）全部短路，不欠。
         """
+        # ★ 11.11.1：复用/补源副本不继承资源的来源站 H&R 债（副本自己不是真实下载）。
+        try:
+            _tags = [str(x) for x in (getattr(torrent, "tags", None) or [])]
+            if is_reuse_copy(_tags):
+                return False, 0.0, 0.0, "复用/补源副本(非真实下载)"
+        except Exception:  # noqa: BLE001
+            pass
         _h = str(getattr(torrent, "hash", "") or "").strip().lower()
         src_site, src_hash, settled = "", "", False
         _bills: List[Dict[str, Any]] = []

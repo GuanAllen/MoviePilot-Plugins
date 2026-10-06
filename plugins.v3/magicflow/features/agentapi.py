@@ -247,6 +247,13 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
         {"path": "/agent/tags", "method": "GET", "handler": "agent_tags", "write": False,
          "params": {"action": "只读动作（默认 status）"}, "returns": "TagsReport",
          "version": AGENT_ENDPOINT_VERSION, "summary": "标签模型总览（= /tags status）"},
+        # ---- 11.12.0 代码字典（符号级索引，只读）----
+        {"path": "/agent/code-dict", "method": "GET", "handler": "agent_code_dict", "write": False,
+         "params": {"q": "子串模糊查（符号/常量/端点/模块职责/口径）",
+                    "section": "endpoints|constants|symbols|modules|glossary（取整节）",
+                    "full": "1=回全部（大，慎用）"},
+         "returns": "CodeDict", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "★代码字典（符号级索引）：一次调用答「某常量/函数/端点/口径在哪个文件哪一行」"},
     ]
 
 
@@ -716,6 +723,32 @@ class AgentApiMixin:
             payload, t0,
             ("features/sitereport._site_seed_report() → 下载器快照 + hr_bills.json + "
              "站点 myhr.php（经 _hr_reconcile_site）"))
+
+    # ---------------------------------------------------- 11.12.0 代码字典（只读）
+    def agent_code_dict(self, q: str = "", section: str = "", full: int = 0) -> Dict[str, Any]:
+        """``GET /agent/code-dict`` —— ★ **代码字典**（符号级索引，只读）。
+
+        一次调用答：**「某常量 / 函数 / 端点 / 口径在哪个文件哪一行」**，排查/运维不必翻源码。
+
+        - 默认 → 概览（各节计数 + 用法）；
+        - ``q=<子串>`` → 模糊匹配（符号 / 常量 / 端点 / 模块职责 / 口径）；
+        - ``section=endpoints|constants|symbols|modules|glossary`` → 回该整节；
+        - ``full=1`` → 回全部（大，慎用）。
+
+        真值源：**插件自身源码**（运行时 ``ast`` 现算，永远与线上代码一致）+ ``codedict.GLOSSARY``
+        （手维护口径）。本端点**只读**：不写任何 json / 账本 / 热层。
+        """
+        t0 = time.time()
+        try:
+            from ..codedict import build_dict as _build, plugin_root as _proot
+            data = _build(_proot(), endpoints=_agent_endpoints(),
+                          q=str(q or ""), section=str(section or ""),
+                          full=bool(int(full or 0)))
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"代码字典失败:{e}", t0, trace_id=str(e))
+        return self._agent_report(
+            data, t0,
+            ("插件自身源码（ast 现算）+ codedict.GLOSSARY（手维护口径）"))
 
     # ---------------------------------------------------- 11.11.0 H&R 账单按站 + 违约告警（只读）
     def agent_hr_bills(self, site: str = "", live: int = 0) -> Dict[str, Any]:

@@ -571,6 +571,7 @@ const siteReportItems = computed(() => siteReport.value.items || [])
 const siteReportSummary = computed(() => siteReport.value.summary || {})
 const SITE_REPORT_BUCKETS = [
   { key: '欠H&R', color: 'error' },
+  { key: '补源', color: 'purple' },
   { key: '未完成', color: 'amber' },
   { key: '暂停', color: 'grey' },
   { key: '静默', color: 'blue-grey' },

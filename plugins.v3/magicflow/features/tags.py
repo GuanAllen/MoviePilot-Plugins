@@ -27,6 +27,7 @@ from ..crossseed import (
 from ..tags import (
     ASSET_TAGS,
     DUTY_STATES,
+    EXTERNAL_TAG,
     FileGroupStore,
     KEEP_FOREIGN_TAGS,
     LEASE_TTL,
@@ -35,6 +36,7 @@ from ..tags import (
     asset_origin_sub,
     identity_of,
     is_asset_tags,
+    is_external_candidate,
     STATE_BONUS,
     STATE_BRUSH,
     STATE_RECOMMEND,
@@ -59,6 +61,7 @@ from ..common import (
     TAG_SNAPSHOT_INTERVAL,
     TAG_SNAPSHOT_TTL,
     TAG_SNAPSHOT_STALE_MAX,
+    HR_BREACH_RECONCILE_ENABLED,
     _has_media_asset_tag,
     _torrent_hash,
 )
@@ -748,6 +751,52 @@ class TagsMixin:
                 self._dbg(f"MP来源提资源:账本写入失败 {hh[:12]}:{err}")
         return rep
 
+    def _external_mark_round(self, *, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
+        """★ 11.11.1：识别「非插件加进来的种」→ 打 `魔流-外部` 预期标记（只打标，不做别的处置）。
+
+        判定：种子上带 MP 下载器标记 `MOVIEPILOT`（= 走 MP 下载接口/订阅/手动经 MP 加进来，
+        非插件 ``add_torrent`` 路径）且已被归流纳管（带魔流标签）→ 属「插件外来源、已知纳管」，
+        打 `魔流-外部` 标记其来源。**只打标**：不改状态/职务/保护，不删种。
+        默认干跑（apply=False）只报清单；apply=True 才改 qB 标签。
+        """
+        try:
+            snap = self._tag_all_torrents() or {}
+        except Exception:  # noqa: BLE001
+            snap = {}
+        targets: List[Dict[str, Any]] = []
+        cap = int(limit or 0)
+        for h, t in (snap or {}).items():
+            hh = str(h or "").strip().lower()
+            tags = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
+            if not is_external_candidate(tags):
+                continue
+            targets.append({
+                "hash": hh,
+                "title": str(getattr(t, "title", "") or "")[:120],
+                "tags": tags,
+                "new_tags": list(tags) + [EXTERNAL_TAG],
+            })
+            if cap and len(targets) >= cap:
+                break
+        marked = failed = 0
+        if apply and targets:
+            try:
+                dl = self._get_downloader()
+            except Exception:  # noqa: BLE001
+                dl = None
+            fn = getattr(dl, "replace_torrent_tags", None) if dl is not None else None
+            for it in targets:
+                try:
+                    if callable(fn) and fn(it["hash"], it["new_tags"]):
+                        marked += 1
+                    else:
+                        failed += 1
+                except Exception:  # noqa: BLE001
+                    failed += 1
+        return {"ok": True, "dry_run": not bool(apply), "count": len(targets),
+                "marked": marked, "failed": failed, "targets": targets,
+                "note": "只给「MOVIEPILOT（MP 下载器）+ 已纳管」的种打 `魔流-外部` 预期标记；不做别的处置"}
+
     def traffic_audit(self) -> Dict[str, Any]:
         """★ 未知流量审计（Master 2026-09-30 00:01「不能有未知流量」）。
 
@@ -1268,12 +1317,18 @@ class TagsMixin:
         hash: str = "",
         state: str = "",
         site: str = "",
-        limit: int = 20,
+        limit: int = 0,
         confirm: str = "",
         reason: str = "",
         tids: str = "",
     ) -> Response:
-        """标签模型：状态账本 / 文件组 / 分拣规则 / 迁移计划。"""
+        """标签模型：状态账本 / 文件组 / 分拣规则 / 迁移计划。
+
+        ★ 11.12.0：``limit`` 默认 **0 = 不限**（与下游 `_xxx(limit=0)` 的 `cap=int(limit or 0)` 口径一致）。
+        旧默认 20 会把「不限」暗中变成「限 20」——`hrbills_void_reuse` 等查询会**静默截断**
+        （曾致 dry-run 只报 20、漏掉 226 条，误判为「漏检 bug」）。需要限额的展示动作各自
+        自带兜底（如 ``list`` 用 ``limit or 20``、``resources`` 用 ``50``）。
+        """
         self._tag_sync_names()
         store = self._tag_state()
         groups = self._tag_groups()
@@ -1468,6 +1523,18 @@ class TagsMixin:
                          f" · MP 来源提资源 {info.get('promoted')}（失败 {info.get('failed')}）"),
                 data=info,
             )
+        # ★ 11.11.1：识别「非插件加进来的种」（MP 下载器 `MOVIEPILOT` + 已纳管）→ 打 `魔流-外部` 预期标记。
+        #   只打标，不做别的处置；默认干跑，apply 才写 qB 标签。
+        if act in ("external_mark", "external_mark_plan", "external_mark_apply"):
+            _ap = act == "external_mark_apply"
+            info = self._external_mark_round(apply=_ap, limit=int(limit or 0))
+            return Response(
+                success=bool(info.get("ok")),
+                message=(f"外部来源标记：识别 {info.get('count')} 个「非插件加进来的种」"
+                         f" → 打标 {info.get('marked')} 个（失败 {info.get('failed')}）"
+                         + ("" if _ap else "（干跑，未改 qB；加 action=external_mark_apply 才打标）")),
+                data=info,
+            )
         if act in ("clean", "clean_plan", "clean_apply"):
             _ap = act == "clean_apply"
             info = self._tag_clean_plan(limit=int(limit or 0))
@@ -1528,6 +1595,21 @@ class TagsMixin:
             return Response(success=True,
                             message=f"账单作废：成功 {len(done)} / 未找到 {len(miss)}（reason={_reason}）",
                             data={"voided": done, "missing": miss, "reason": _reason})
+        # ★ 11.11.1：存量「active 辅种账单」作废（辅种≠真实下载）。默认干跑；confirm=1 才写。
+        #   只作废账单、不删种（辅种仍受保护）。
+        if act in ("hrbills_void_reuse", "hr_void_reuse"):
+            _confirm = str(confirm or "").strip().lower() in ("1", "true", "yes")
+            try:
+                _lim = int(str(limit or "0").strip() or 0)
+            except Exception:  # noqa: BLE001
+                _lim = 0
+            info = self._hrbills_void_reuse(confirm=_confirm, limit=_lim)
+            return Response(
+                success=True,
+                message=(f"辅种账单作废：待作废 {info.get('count')} 张"
+                         + (f" · 已作废 {info.get('voided')} 张" if _confirm else "（干跑；加 confirm=1 才写）")),
+                data=info,
+            )
         # ★ 11.8.0：站点 myhr 对账（第三视角）。只读报告默认不联网；写动作（同站重下）
         #   必须 confirm=1，且只处理「站点当前仍欠 + 本机没有」的记录。**只加不删**。
         if act in ("hr_reconcile", "hrreconcile"):
@@ -1549,6 +1631,21 @@ class TagsMixin:
                             message=f"站点对账重下：{_site} 新增 {_out.get('added', 0)} 条"
                                     f"（候选 {_out.get('candidates', 0)}）",
                             data=_out)
+        # ★ 11.12.0 违约自动核对：对每张 breached 账单拉站点真值 → 站点不欠→清账 / 站点欠→补种。
+        #   默认干跑；confirm=1 真写（清账 + 重下补种）。可带 site 只处理单站。
+        if act in ("breach_reconcile", "breachreconcile"):
+            _confirm = str(confirm or "").strip().lower() in ("1", "true", "yes")
+            _info = self._hrbills_breach_reconcile(site=str(site or ""), confirm=_confirm)
+            _t = (_info.get("totals") or {})
+            return Response(
+                success=True,
+                message=(f"违约核对：{_t.get('breached', 0)} 张 · 待清账 {_t.get('will_void', 0)}"
+                         f" · 待补种 {_t.get('will_reseed', 0)}"
+                         f" · 未验证 {_t.get('unverified', 0)}"
+                         + (f" · 已清账 {_t.get('voided', 0)} / 已补种 {_t.get('reseeded', 0)}"
+                            if _confirm else "（干跑；加 confirm=1 才写）")),
+                data=_info,
+            )
         # ★ 11.9.0：野马PT 逐种 H&R（站点后台接口）。默认只读报告；写动作（给「本机有+
         #   站点说欠+账本没记」补开账单）必须 confirm=1，**只增保护**。
         if act in ("yema", "yema_apply", "yemaapply"):
@@ -1714,7 +1811,20 @@ class TagsMixin:
                     self._dbg(f"魔流:站点 H&R 对账 {_rec.get('sites')} 站"
                               f" · 需补种 {_rec.get('missing_total')} 条")
             except Exception as _rec_err:  # noqa: BLE001
+                _rec = {}
                 self._log(f"站点 H&R 对账失败:{_rec_err}", "warning")
+            # ★ 11.12.0 违约自动核对：站点不欠→自动清账 / 站点欠→自动补种（复用本轮对账报告，避免重复联网）
+            if HR_BREACH_RECONCILE_ENABLED:
+                try:
+                    _brec = self._hrbills_breach_reconcile(
+                        confirm=True, reports=(_rec or {}).get("reports"))
+                    _bt = (_brec or {}).get("totals") or {}
+                    if _bt.get("breached"):
+                        self._dbg(f"魔流:违约自动核对 {_bt.get('breached')} 张 · "
+                                  f"清账 {_bt.get('voided')} · 补种 {_bt.get('reseeded')} · "
+                                  f"未验证 {_bt.get('unverified')}")
+                except Exception as _brec_err:  # noqa: BLE001
+                    self._log(f"违约自动核对失败:{_brec_err}", "warning")
             # ★ 11.9.0 野马PT 逐种 H&R 对账（站点后台接口，cookie 鉴权）：同样**独立于 tick**，
             #   自带 6h 周期门 + 失败零写入；只读 + 只增保护（写动作要 confirm=1）。
             try:

@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from ..crossseed import CROSSSEED_TAG
+from ..tags import MARK_REUSE, RESCUE_TAG, is_reuse_copy
 from ..fingerprint import fingerprint, info_hash
 from ..downloader_ops import seed_hours_for_hr
 from ..persistence import _shared
@@ -68,6 +69,22 @@ BILL_STATE_BREACHED = "breached"  # ★ 11.11.0：欠 H&R 的种消失（违约/
 RULE_HIT_AND_RUN = "hit_and_run"
 RULE_SITE_HR = "site_hr"
 RULE_UNKNOWN = "unknown"
+
+# ★ 11.11.1：站点「实际做种达标小时」的保守兜底（站点规则 seed_need_hours 取不到时）。
+#   与 common.CROSSSEED_SEED_HOURS_DEFAULT 同值；不引 common（其拉进 MP 依赖，会破坏离线测试）。
+HR_NEED_HOURS_DEFAULT = 24.0
+
+# ★ 11.11.1：辅种（复用/跨站/补源）都不是「本账单口径的真实下载」→ 开账/回填一律跳过。
+#   - MARK_REUSE(魔流-辅种)：复用副本（add_torrent_reuse，paused+recheck）→ 无真实下载。
+#   - CROSSSEED_TAG(魔流-跨站)：跨站来源份，H&R 由 assets.py 资源账记（不走本账单）。
+#   - RESCUE_TAG(魔流-补源)：死种补源副本，来源站被 rescue_source_blocked 保证 hr=False。
+#   MP 写的「已整理/辅种」(ASSET_TAGS) 是**真实下载被整理**，仍欠 H&R → 不跳过。
+_SKIP_BILL_TAGS = (CROSSSEED_TAG, MARK_REUSE, RESCUE_TAG)
+
+
+def _skip_hr_bill(tags: Any) -> bool:
+    """该种是否**不该**在本账单口径开账（跨站/复用/补源副本）。"""
+    return any(str(x).strip() in _SKIP_BILL_TAGS for x in (tags or []))
 
 # 账单字段（schema，对齐 REVIEW-10.1.0.joint.md §③）
 _BILL_FIELDS = (
@@ -297,6 +314,25 @@ class HrBillsMixin:
         dom = re.sub(r"^https?://", "", dom).split("/")[0].strip()
         return dom
 
+    def _hr_need_hours(self, dom: str) -> float:
+        """★ 11.11.1 站点「实际做种达标小时」取值链（不再写死 24）：
+
+        ① 站点规则库 ``seed_need_hours``（如学校 20h）—— ``_crossseed_seed_need_hours``
+           （rule → 内置表 BUILTIN_RULES，取到 >0 即用）；
+        ② 取不到 → 保守默认 ``HR_NEED_HOURS_DEFAULT``（24h，挂久点不要紧）。
+
+        说明：站点对账 myhr 的 ``need_left`` 是「剩余做种时间」而非「总要求」，只在
+        ``_hr_reconcile_site`` / ``_hr_bills_by_site`` 里作**逐条展示/人工核对**用，
+        **不**反推改写账单 ``need_h``（避免账单口径与站点口径漂移）。
+        """
+        try:
+            need = float(self._crossseed_seed_need_hours(dom) or 0.0)
+        except Exception:  # noqa: BLE001
+            need = 0.0
+        if need <= 0:
+            need = float(HR_NEED_HOURS_DEFAULT)
+        return need
+
     def _hrbills_store(self) -> HrBillsStore:
         try:
             data_dir = self.get_data_path()
@@ -331,7 +367,8 @@ class HrBillsMixin:
         hs = str(hash_string or "").strip().lower()
         if not hs:
             return None
-        if CROSSSEED_TAG and CROSSSEED_TAG in str(tag or ""):
+        # ★ 11.11.1：辅种（跨站/复用/补源副本）不是本账单口径的真实下载 → 不开账。
+        if _skip_hr_bill([str(tag or "")]):
             return None
         store = self._hrbills_store()
         _existing = store.get(hs)
@@ -359,13 +396,7 @@ class HrBillsMixin:
         elif thr is True:
             rule = RULE_HIT_AND_RUN
         state = BILL_STATE_ACTIVE if rule != RULE_UNKNOWN else BILL_STATE_PENDING
-        need_h = 24.0
-        try:
-            _n = float(self._crossseed_seed_need_hours(dom) or 0.0)
-            if _n > 0:
-                need_h = _n
-        except Exception:  # noqa: BLE001
-            pass
+        need_h = self._hr_need_hours(dom)
         fp = ""
         try:
             _fp = fingerprint(content)
@@ -467,7 +498,7 @@ class HrBillsMixin:
                 _tags = []
             if not any("魔流" in x for x in _tags):
                 continue
-            if any(CROSSSEED_TAG in x for x in _tags):
+            if _skip_hr_bill(_tags):
                 continue
             _hh = str(_h or "").strip().lower()
             if _hh and _hh not in ledger:
@@ -488,8 +519,8 @@ class HrBillsMixin:
                 continue  # 快照里没有 → 这轮不补（下轮可能补上）
             try:
                 _tags = [str(x) for x in (getattr(t, "tags", None) or [])]
-                if any(CROSSSEED_TAG in x for x in _tags):
-                    continue  # 跨站种自己记账（assets 路径），不重复开
+                if _skip_hr_bill(_tags):
+                    continue  # 跨站/复用/补源副本：不重复开（各自口径自己记账/不判 H&R）
             except Exception:  # noqa: BLE001
                 pass
             rec = rec or {}
@@ -511,13 +542,7 @@ class HrBillsMixin:
             state = BILL_STATE_ACTIVE if rule != RULE_UNKNOWN else BILL_STATE_PENDING
             if not dom:
                 no_site += 1
-            need_h = 24.0
-            try:
-                _n = float(self._crossseed_seed_need_hours(dom) or 0.0)
-                if _n > 0:
-                    need_h = _n
-            except Exception:  # noqa: BLE001
-                pass
+            need_h = self._hr_need_hours(dom)
             try:
                 progress = float(getattr(t, "progress", 0) or 0)
             except (TypeError, ValueError):
@@ -703,9 +728,9 @@ class HrBillsMixin:
                 continue
             known = (site_hr is True) or thr
             try:
-                need = float(self._crossseed_seed_need_hours(dom) or 0.0) or 24.0
+                need = self._hr_need_hours(dom)
             except Exception:  # noqa: BLE001
-                need = 24.0
+                need = float(HR_NEED_HOURS_DEFAULT)
             try:
                 seeded_h = seed_hours_for_hr(t)
             except Exception:  # noqa: BLE001
@@ -878,7 +903,102 @@ class HrBillsMixin:
                 "reseed": "GET /tags?action=hr_reconcile&site=<dom>&confirm=1",
                 "rescue": "POST /plugin/MagicFlow/rescue?confirm=1",
                 "void": "GET /tags?action=hrbills_void&hash=<h>&reason=..&confirm=1",
+                "breach_reconcile": "GET /tags?action=breach_reconcile&confirm=1（站点不欠→自动清账 / 站点欠→自动补种）",
             },
+        }
+
+    # ---------------------------------------------------------- 违约自动核对（11.12.0）
+    def _hrbills_breach_reconcile(self, site: str = "", confirm: bool = False,
+                                  reports: Any = None) -> Dict[str, Any]:
+        """★ 11.12.0 违约自动核对：对每张 breached 账单拉站点真值 → **站点不欠→清账 / 站点欠→补种**。
+
+        Master 2026-10-06：「消违约也是正常动作」/「站点不欠自动清账、站点欠自动补种」——把
+        「逐笔人工核对」变成周期性自动动作。
+
+        真值源：站点 ``myhr.php``（经 ``_hr_reconcile_site``，可传 ``reports`` 复用本轮报告
+        避免重复联网）+ ``hr_bills.json``。判定依据链（逐张账单）：
+          ① 站点对账 ``ok`` 且 ``hash_coverage_complete``（否则 **fail-closed**：不验证、不动）；
+          ② 本账单 hash 是否在站点「仍欠」集合（``records[].resolved``）：
+             - 在  → 站点仍欠 → 走 ``_hr_reconcile_apply`` 重下补种；
+             - 不在 → 站点已不欠 → ``_hrbills_void(reason=site_no_longer_owed)``。
+
+        ``confirm=False``（默认）只出计划不落库；``confirm=True`` 真写（作废 + 重下）。
+        """
+        store = self._hrbills_store()
+        dom_filter = self._hrbills_norm_domain(site) if site else ""
+        by_site: Dict[str, List[str]] = {}
+        for h, b in (store.all() or {}).items():
+            if not isinstance(b, dict):
+                continue
+            if str(b.get("state") or "") != BILL_STATE_BREACHED:
+                continue
+            dom = self._hrbills_norm_domain(str(b.get("site") or ""))
+            if not dom:
+                continue
+            if dom_filter and dom != dom_filter:
+                continue
+            by_site.setdefault(dom, []).append(str(h).strip().lower())
+        rep_map: Dict[str, Any] = {}
+        try:
+            for _r in (reports or []):
+                if isinstance(_r, dict) and _r.get("site"):
+                    rep_map[self._hrbills_norm_domain(str(_r.get("site")))] = _r
+        except Exception:  # noqa: BLE001
+            rep_map = {}
+        out_sites: List[Dict[str, Any]] = []
+        voided: List[str] = []
+        reseeded = 0
+        unverified = 0
+        for dom, hashes in by_site.items():
+            rep = rep_map.get(dom)
+            if rep is None:
+                try:
+                    rep = self._hr_reconcile_site(dom)
+                except Exception as e:  # noqa: BLE001
+                    rep = {"site": dom, "ok": False, "error": str(e)}
+            if not rep.get("ok") or not rep.get("hash_coverage_complete"):
+                unverified += len(hashes)
+                out_sites.append({"site": dom, "breached": len(hashes), "verified": False,
+                                  "error": str(rep.get("error") or "站点对账覆盖不完整（fail-closed）"),
+                                  "will_void": [], "will_reseed": []})
+                continue
+            owed = {str(r.get("infohash") or "").strip().lower()
+                    for r in (rep.get("records") or []) if r.get("resolved")}
+            will_void = [h for h in hashes if h not in owed]
+            will_reseed = [h for h in hashes if h in owed]
+            if confirm and will_void:
+                for h in will_void:
+                    try:
+                        if self._hrbills_void(h, "site_no_longer_owed"):
+                            voided.append(h)
+                    except Exception:  # noqa: BLE001
+                        pass
+            if confirm and will_reseed:
+                try:
+                    _want = set(will_reseed)
+                    tids = [str(r.get("tid")) for r in (rep.get("records") or [])
+                            if r.get("tid") and not r.get("in_qb")
+                            and str(r.get("infohash") or "").strip().lower() in _want]
+                    _out = self._hr_reconcile_apply(dom, tids=tids, confirm=True)
+                    reseeded += int(_out.get("added") or 0)
+                except Exception:  # noqa: BLE001
+                    pass
+            out_sites.append({"site": dom, "breached": len(hashes), "verified": True,
+                              "will_void": will_void, "will_reseed": will_reseed})
+        return {
+            "ok": True, "dry_run": not confirm,
+            "at": time.strftime("%Y-%m-%d %H:%M:%S"), "sites": out_sites,
+            "totals": {
+                "sites": len(out_sites),
+                "breached": sum(len(v) for v in by_site.values()),
+                "will_void": sum(len(s["will_void"]) for s in out_sites if s.get("verified")),
+                "will_reseed": sum(len(s["will_reseed"]) for s in out_sites if s.get("verified")),
+                "unverified": unverified,
+                "voided": len(voided), "reseeded": reseeded,
+            },
+            "source_of_truth": ["hr_bills.json", "站点 myhr.php(经 _hr_reconcile_site)",
+                                "_tag_all_torrents()"],
+            "write": {"run": "GET /tags?action=breach_reconcile&confirm=1"},
         }
 
     # ---------------------------------------------------------- 人工作废（11.7.0）
@@ -900,6 +1020,62 @@ class HrBillsMixin:
         return store.patch(hs, state=BILL_STATE_VOID,
                            void_reason=str(reason or "manual")[:60],
                            voided_at=float(time.time()), voided_by="manual")
+
+    # ---------------------------------------------------------- 存量：辅种账单作废（11.11.1）
+    def _hrbills_void_reuse(self, confirm: bool = False, limit: int = 0) -> Dict[str, Any]:
+        """★ 存量：把「active 辅种账单」作废（辅种≠真实下载 → 不该有 H&R 账单）。
+
+        辅种 = 带 ``MARK_REUSE``（魔流-辅种）/ ``RESCUE_TAG``（魔流-补源）标签的种。
+        这些种历史上被 ``_hrbills_backfill`` 误开成 active 账单（11.11.0 只跳了跨站、
+        没跳辅种）→ 现在把**已在账本里的 active 辅种账单**作废（void_reason="reuse_not_hr"）。
+
+        默认干跑（confirm=False）：只返回待作废清单（供分批核对）；
+        confirm=True：逐张 void（幂等；settled/void 不动）。**只作废账单、不删种**。
+        """
+        store = self._hrbills_store()
+        try:
+            snap = self._tag_all_torrents() or {}
+        except Exception:  # noqa: BLE001
+            snap = {}
+        targets: List[Dict[str, Any]] = []
+        cap = int(limit or 0)
+        _capped = False
+        for h, b in (store.all() or {}).items():
+            if not isinstance(b, dict):
+                continue
+            if str(b.get("state") or "") != BILL_STATE_ACTIVE:
+                continue  # 只处理 active（欠债中的辅种）；settled/void/pending 不动
+            hh = str(h or "").strip().lower()
+            t = (snap or {}).get(hh)
+            if t is None:
+                continue  # 种已不在下载器 → 交给 _hrbills_tick 违约/作废，这里不碰
+            try:
+                _tags = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
+            except Exception:  # noqa: BLE001
+                _tags = []
+            if not is_reuse_copy(_tags):
+                continue  # 非辅种 → 不碰（真欠 H&R）
+            row = {"hash": hh, "site": str(b.get("site") or ""),
+                   "title": str(b.get("title") or "")[:120],
+                   "rule": str(b.get("rule") or ""), "need_h": b.get("need_h"),
+                   "seeded_h": b.get("seeded_h")}
+            targets.append(row)
+            if cap and len(targets) >= cap:
+                _capped = True
+                break
+        voided: List[str] = []
+        if confirm:
+            for row in targets:
+                try:
+                    if self._hrbills_void(row["hash"], "reuse_not_hr"):
+                        voided.append(row["hash"])
+                except Exception:  # noqa: BLE001
+                    pass
+        return {"dry_run": not bool(confirm), "targets": targets,
+                "count": len(targets), "limit": cap, "capped": _capped,
+                "voided": len(voided),
+                "void_reason": "reuse_not_hr",
+                "note": "只作废「active 且带 魔流-辅种/魔流-补源」的账单；辅种仍受保护、绝不删种"}
 
     # ------------------------------------------------- H&R 盲区（旁路加种）
     def _hr_blindspot_scan(self, limit: int = 50) -> Dict[str, Any]:

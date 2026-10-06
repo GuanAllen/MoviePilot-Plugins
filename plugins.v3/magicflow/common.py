@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "11.11.0"
+__version__ = "11.12.0"
 
 import bisect
 import copy
@@ -166,6 +166,13 @@ SILENT_HOST_INTERVAL_MINUTES = 60  # ⭐「静默托管」常驻 worker 周期(�
 SILENT_HOST_TASK_ID = "__silent_host__"  # ⭐「静默托管」常驻任务在任务列表里的只读条目 id
 HR_HOST_TASK_ID = "__hr_host__"  # ⭐「H&R 保种」常驻伪任务 id（欠 H&R 的种归它挂，不归静默池）
 SILENT_HR_SPLIT_ENABLED = True  # ⭐ 11.11.0 回退开关：静默池=全 paused + H&R 拆到 __hr_host__（False=退回旧行为）
+# ★ 11.12.0 删除熔断 + 账单一致性断言（Master 2026-10-06：「bug 别再删很多次」；「消违约是正常动作」）
+DELETE_BREAKER_ENABLED = True   # 滚动窗口内删除数超阈 → 阻断 + 报警（防失控循环/重复删）
+DELETE_BREAKER_MAX = 30         # 滚动窗口内允许的最大删除数（超出即熔断）
+DELETE_BREAKER_WINDOW_S = 600.0  # 熔断滚动窗口（秒）
+DELETE_BILL_ASSERT = True       # 删除前账单直查：state∈{active,breached} → 硬拦（独立于闸门推导链）
+# ★ 11.12.0 违约自动核对：对 breached 账单拉站点真值 → 站点不欠自动清账 / 站点欠自动补种
+HR_BREACH_RECONCILE_ENABLED = True
 # 跨站免费取种的「回辅」轮询周期(分钟)：B/C/D… 站点下完后，尽快把它辅回目标站。
 CROSSSEED_INTERVAL_MINUTES = 5
 # 跨站检索结果的缓存 TTL(秒)：同一关键词 6 小时内不重复检索(省 PV)。
