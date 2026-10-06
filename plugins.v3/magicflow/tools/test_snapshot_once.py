@@ -197,7 +197,7 @@ def _build_harness() -> Harness:
     tgt = _torrent(hash_string="bbbb", progress=1.0, seed_time=5.0 * 3600.0)
     h.torrents["aaaa"] = src
     h.torrents["bbbb"] = tgt
-    h.ledger["bbbb"] = {"site": "hdfans.org", "state": "brush", "sub": "resource"}
+    h.ledger["bbbb"] = {"site": "hdfans.org", "state": "保种", "sub": "resource", "taken_by": "__hr_host__"}
     h.ridx["bbbb"] = ("hdfans.org", "aaaa", False, [])
     return h
 

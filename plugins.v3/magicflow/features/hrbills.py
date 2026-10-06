@@ -62,6 +62,7 @@ BILL_STATE_ACTIVE = "active"
 BILL_STATE_PENDING = "pending"
 BILL_STATE_SETTLED = "settled"
 BILL_STATE_VOID = "void"
+BILL_STATE_BREACHED = "breached"  # ★ 11.11.0：欠 H&R 的种消失（违约/待处理）——不是 void，保护不解除
 
 # 账单规则来源
 RULE_HIT_AND_RUN = "hit_and_run"
@@ -574,21 +575,27 @@ class HrBillsMixin:
         if not bills:
             store.flush()
             return {"bills": 0, "activated": 0, "voided": 0, "settled": 0,
-                    "backfilled": backfilled, "no_site": no_site}
+                    "breached": 0, "backfilled": backfilled, "no_site": no_site}
         now = time.time()
-        activated = voided = settled = 0
+        activated = voided = settled = breached = 0
         for h, b in list(bills.items()):
             if not isinstance(b, dict):
                 continue
             t = (snap or {}).get(h)
             if t is None:
-                # ③ 消失且从未完成 → 立即作废
+                # ③ 消失：拆两路（Master 2026-10-06 08:24）
                 completed = (float(b.get("progress") or 0) >= 0.999
                              or float(b.get("last_progress") or 0) >= 0.999)
-                if not completed and str(b.get("state") or "") != BILL_STATE_VOID:
+                cur_state = str(b.get("state") or "")
+                if not completed and cur_state not in (BILL_STATE_VOID, BILL_STATE_BREACHED):
+                    # 从未完成（无 H&R 义务）→ 立即作废（无害）
                     store.patch(h, save=False, state=BILL_STATE_VOID,
                                 void_reason="disappeared_uncompleted", voided_at=now)
                     voided += 1
+                elif cur_state == BILL_STATE_ACTIVE:
+                    # 有 active 账单（欠 H&R）→ 违约：转 breached（不 void，保护不解除）
+                    store.patch(h, save=False, state=BILL_STATE_BREACHED, breached_at=now)
+                    breached += 1
                 continue
             try:
                 progress = float(getattr(t, "progress", 0) or 0)
@@ -600,6 +607,11 @@ class HrBillsMixin:
                 seeded_h = float(b.get("seeded_h") or 0)
             cur_state = str(b.get("state") or "")
             fields: Dict[str, Any] = {"progress": progress, "seeded_h": seeded_h}
+            # ★ 种重新出现（breached → 恢复 active，复欠重进继续挂）
+            if cur_state == BILL_STATE_BREACHED:
+                fields["state"] = BILL_STATE_ACTIVE
+                fields["breached_at"] = None
+                activated += 1
             if progress >= 0.999:
                 # ① 完成 → active
                 if cur_state == BILL_STATE_PENDING:
@@ -628,7 +640,8 @@ class HrBillsMixin:
             store.patch(h, save=False, **fields)
         store.flush()
         return {"bills": len(bills), "activated": activated, "voided": voided,
-                "settled": settled, "backfilled": backfilled, "no_site": no_site}
+                "settled": settled, "breached": breached,
+                "backfilled": backfilled, "no_site": no_site}
 
     # ---------------------------------------------------------- 干跑（只读，不落库）
     def _hrbills_dryrun(self) -> Dict[str, Any]:
@@ -802,6 +815,70 @@ class HrBillsMixin:
                       "可能漏记逐种标记 → 建议用站点 API 核对后作废或升级；"
                       "href=GET /agent/blindspot 看旁路盲区；"
                       "人工作废：GET /tags?action=hrbills_void&hash=<h>&reason=resolved_no_hr&confirm=1"),
+        }
+
+    # ---------------------------------------------------------- 违约清单（11.11.0）
+    def _hr_breaches(self) -> Dict[str, Any]:
+        """★ H&R 违约清单（只读）：active/breached 账单 + 种已从下载器消失。
+
+        归因：deletions.jsonl（唯一删除台账）命中 `ok=true` → 本插件删（gate bug 升级 critical）；
+        否则 → 外部删。只读，不写任何账本/账单。
+        """
+        store = self._hrbills_store()
+        try:
+            snap = self._tag_all_torrents() or {}
+        except Exception:  # noqa: BLE001
+            snap = {}
+        deleted_ok: Set[str] = set()
+        try:
+            _path = self._deletions_log_path()
+            if _path is not None and _path.exists():
+                for _line in _path.read_text(encoding="utf-8").splitlines():
+                    _line = _line.strip()
+                    if not _line:
+                        continue
+                    try:
+                        _row = json.loads(_line)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if _row.get("ok") and not _row.get("blocked"):
+                        deleted_ok.add(str(_row.get("hash") or "").strip().lower())
+        except Exception:  # noqa: BLE001
+            pass
+        breaches: List[Dict[str, Any]] = []
+        for h, b in (store.all() or {}).items():
+            if not isinstance(b, dict):
+                continue
+            st = str(b.get("state") or "")
+            hh = str(h or "").strip().lower()
+            if hh in snap:
+                continue
+            if st not in (BILL_STATE_ACTIVE, BILL_STATE_BREACHED):
+                continue
+            attr = "plugin_deleted" if hh in deleted_ok else "external_deleted"
+            gate_bug = attr == "plugin_deleted"
+            breaches.append({
+                "hash": hh, "site": str(b.get("site") or ""),
+                "title": str(b.get("title") or "")[:120],
+                "bill_state": st, "rule": str(b.get("rule") or ""),
+                "need_h": round(float(b.get("need_h") or 0.0), 2),
+                "seeded_h": round(float(b.get("seeded_h") or 0.0), 2),
+                "attribution": attr, "gate_bug": gate_bug,
+                "severity": "critical" if gate_bug else "high",
+                "breached_at": b.get("breached_at") or 0,
+                "rescue_hint": "GET /tags?action=hr_reconcile&site=" + str(b.get("site") or "") + "&confirm=1",
+            })
+        return {
+            "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "totals": {"breached": len(breaches),
+                       "critical": sum(1 for x in breaches if x.get("gate_bug"))},
+            "breaches": breaches,
+            "source_of_truth": ["hr_bills.json", "deletions.jsonl", "_tag_all_torrents()"],
+            "write": {
+                "reseed": "GET /tags?action=hr_reconcile&site=<dom>&confirm=1",
+                "rescue": "POST /plugin/MagicFlow/rescue?confirm=1",
+                "void": "GET /tags?action=hrbills_void&hash=<h>&reason=..&confirm=1",
+            },
         }
 
     # ---------------------------------------------------------- 人工作废（11.7.0）

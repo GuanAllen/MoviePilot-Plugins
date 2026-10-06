@@ -984,12 +984,16 @@ class DownloaderAdapter:
         cookie: Optional[str] = None,
         verify: bool = True,
         timeout: int = 120,
+        start: bool = True,
     ) -> Tuple[Optional[str], Optional[str]]:
         """
         辅种：把候选种子指向本机已有文件添加做种。
 
         流程：以**暂停**方式添加（不下载）→ recheck → 校验通过后开始做种；
         校验不通过（文件对不上）则**撤销**该种子（未下载任何数据）。
+
+        ``start=False``：校验通过后**不启动**（停在 paused，交由静默闸 / 任务纳管决定）——
+        用于「入池即暂停」不变量（11.11.0）。
 
         Returns:
             (种子 hash, 错误信息)
@@ -1122,11 +1126,12 @@ class DownloaderAdapter:
                 # 文件不匹配 → 撤销，避免白白下载
                 return None, _delete_added(f"文件不匹配（校验 {progress:.1%}），已撤销")
 
-        # 开始做种
-        try:
-            self._downloader.start_torrents(hash_string)
-        except Exception as e:
-            logger.warning(f"启动做种失败 {hash_string}: {e}")
+        # 开始做种（start=False 时保持暂停，入池即暂停）
+        if start:
+            try:
+                self._downloader.start_torrents(hash_string)
+            except Exception as e:
+                logger.warning(f"启动做种失败 {hash_string}: {e}")
         return hash_string, None
 
     def get_torrent_info(self, hash_string: str) -> Optional[TorrentInfo]:

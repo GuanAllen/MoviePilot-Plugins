@@ -32,6 +32,13 @@ class ApiMixin:
                 "summary": "站点级种子报表（逐条种子状态：分类/保护/账单/qB）",
             },
             {
+                "path": "/hr/bills",
+                "endpoint": self.get_hr_bills,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "H&R 账单按站分组（欠债/状态分布/need_left/in_qb/missing/per_torrent_hr/规则来源）",
+            },
+            {
                 "path": "/status",
                 "endpoint": self.get_status,
                 "methods": ["GET"],

@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "11.10.0"
+__version__ = "11.11.0"
 
 import bisect
 import copy
@@ -164,6 +164,8 @@ CLAIM_FAIL_TTL = 24 * 3600.0                 # 失败/名额满/不达标 → 24
 CLAIM_SOFT_CAP = 200                         # 单站账本软上限（仅提示，不强制）
 SILENT_HOST_INTERVAL_MINUTES = 60  # ⭐「静默托管」常驻 worker 周期(分钟，低频)
 SILENT_HOST_TASK_ID = "__silent_host__"  # ⭐「静默托管」常驻任务在任务列表里的只读条目 id
+HR_HOST_TASK_ID = "__hr_host__"  # ⭐「H&R 保种」常驻伪任务 id（欠 H&R 的种归它挂，不归静默池）
+SILENT_HR_SPLIT_ENABLED = True  # ⭐ 11.11.0 回退开关：静默池=全 paused + H&R 拆到 __hr_host__（False=退回旧行为）
 # 跨站免费取种的「回辅」轮询周期(分钟)：B/C/D… 站点下完后，尽快把它辅回目标站。
 CROSSSEED_INTERVAL_MINUTES = 5
 # 跨站检索结果的缓存 TTL(秒)：同一关键词 6 小时内不重复检索(省 PV)。

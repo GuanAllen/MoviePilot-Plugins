@@ -25,9 +25,9 @@ from sqlalchemy import delete, func, inspect as sa_inspect, select, text, update
 
 from . import db as mfdb
 from . import tables as T
-from .tags import (GROUPS_KEY, STATE_BONUS, STATE_BRUSH, STATE_KEY, STATE_SILENT,
+from .tags import (GROUPS_KEY, STATE_BONUS, STATE_BRUSH, STATE_HR, STATE_KEY, STATE_SILENT,
                    FileGroupStore, TagStateStore)
-from .common import task_is_participating
+from .common import HR_HOST_TASK_ID, task_is_participating
 
 
 # ★ 10.0.0：合法「完整特征码」= sha1 十六进制（32~64 位）。不是这个样子的 group/rid 就是
@@ -237,16 +237,24 @@ class LedgerBackend:
         return sid
 
     def _task_name(self, task_id: Any) -> str:
-        cfg = (getattr(self.plugin, "_task_configs", {}) or {}).get(str(task_id or ""))
+        tid = str(task_id or "")
+        # ★ 11.11.0：__hr_host__（H&R 保种）伪任务可寻址（不在 _task_configs / mf_task 里）
+        if tid == HR_HOST_TASK_ID:
+            return "H&R保种"
+        cfg = (getattr(self.plugin, "_task_configs", {}) or {}).get(tid)
         return str(getattr(cfg, "name", "") or "") if cfg is not None else ""
 
     def _task_state(self, task_id: Any) -> str:
-        """任务 id → 职务（刷流/魔力/静默）。7.0.0 退役 state 列后，职务由任务推导。
+        """任务 id → 职务（刷流/魔力/保种/静默）。7.0.0 退役 state 列后，职务由任务推导。
 
         ★ 关键：任务被停止（遣散）→ 静默，不看 task_type。只有 running/seeding
           （participating）才算在岗（刷流/魔力）。否则 stopped 任务的种会被误算成在岗。
+        ★ 11.11.0：__hr_host__（伪任务）→ 保种（H&R 保挂职务）。
         """
-        cfg = (getattr(self.plugin, "_task_configs", {}) or {}).get(str(task_id or ""))
+        tid = str(task_id or "")
+        if tid == HR_HOST_TASK_ID:
+            return STATE_HR
+        cfg = (getattr(self.plugin, "_task_configs", {}) or {}).get(tid)
         if cfg is None:
             return STATE_SILENT
         if not task_is_participating(cfg):
@@ -257,6 +265,9 @@ class LedgerBackend:
         key = str(name or "").strip().lower()
         if not key:
             return None
+        # ★ 11.11.0：__hr_host__ / H&R保种 伪任务名 → __hr_host__（不在 _task_configs 里，但账本可寻址）
+        if key in ("__hr_host__", "h&r保种", "hr保种", "保种"):
+            return HR_HOST_TASK_ID
         for tid, cfg in (getattr(self.plugin, "_task_configs", {}) or {}).items():
             if str(tid).lower() == key or str(getattr(cfg, "name", "") or "").strip().lower() == key:
                 return str(tid)

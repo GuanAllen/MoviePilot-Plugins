@@ -1388,6 +1388,14 @@ class TagsMixin:
         if act == "settle_plan":
             info = self._settle_disabled_tasks(apply=False)
             return Response(success=True, message=f"待遣散 {info.get('pending')} 个", data=info)
+        if act in ("hrhost_run", "hrhost"):
+            info = self.hr_host()
+            return Response(
+                success=True,
+                message=(f"H&R保种:迁移 {info.get('migrated', 0)} · 保挂 {info.get('resumed', 0)} · "
+                         f"释放 {info.get('released', 0)}（保种 {info.get('assigned', 0)}）"),
+                data=info,
+            )
         if act in ("rehome", "rehome_apply"):
             _ap2 = act == "rehome_apply"
             _ri = self.rehome_verdicts(apply=_ap2, limit=int(limit or 0))

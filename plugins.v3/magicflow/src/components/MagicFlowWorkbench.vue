@@ -378,6 +378,7 @@ const MF_PAGES = [
   { key: 'claim', label: '认领', icon: 'mdi-seal-variant', scope: 'global' },
   { key: 'silent', label: '静默池', icon: 'mdi-pool', scope: 'global' },
   { key: 'sitereport', label: '站点报表', icon: 'mdi-table-large', scope: 'view' },
+  { key: 'hrbills', label: 'H&R账单', icon: 'mdi-file-alert-outline', scope: 'view' },
   { key: 'ceiling', label: '站点容量', icon: 'mdi-gauge', scope: 'view' },
   { key: 'ops', label: '操作记录', icon: 'mdi-history', scope: 'view' },
   { key: 'settings', label: '插件设置', icon: 'mdi-tune-variant', scope: 'global' },
@@ -394,6 +395,7 @@ function mfOpenPage(page) {
     case 'claim': return openClaim()
     case 'silent': return openSilent()
     case 'sitereport': return openSiteReport()
+    case 'hrbills': return openHrBills()
     case 'ceiling': return openCeiling()
     case 'ops': return openOperations('all')
     case 'settings': return openSettings()
@@ -412,6 +414,7 @@ const TILE_OPTIONS = [
   { key: 'claim', label: '认领', icon: 'mdi-seal-variant' },
   { key: 'silent', label: '静默池', icon: 'mdi-pool' },
   { key: 'sitereport', label: '站点报表', icon: 'mdi-table-large' },
+  { key: 'hrbills', label: 'H&R账单', icon: 'mdi-file-alert-outline' },
   { key: 'ondemand', label: '点播', icon: 'mdi-cloud-download-outline' },
   { key: 'ceiling', label: '站点容量', icon: 'mdi-gauge' },
   { key: 'ops', label: '操作记录', icon: 'mdi-history' },
@@ -603,6 +606,30 @@ async function loadSiteReport(liveOverride) {
     error.value = `站点报表加载失败：${e}`
   } finally {
     siteReportLoading.value = false
+  }
+}
+// ★ 11.11.0 H&R 账单按站
+const hrBillsOpen = ref(false)
+const hrBillsLive = ref(false)
+const hrBillsLoading = ref(false)
+const hrBills = ref({ totals: {}, sites: [], source_of_truth: [], write: {} })
+const hrBillsSites = computed(() => hrBills.value.sites || [])
+const hrBillsTotals = computed(() => hrBills.value.totals || {})
+function hrBillStateColor(st) {
+  return ({ active: 'error', breached: 'deep-orange', pending: 'amber', settled: 'success', void: 'grey' })[st] || 'grey'
+}
+function openHrBills() { hrBillsOpen.value = true; loadHrBills() }
+async function loadHrBills(liveOverride) {
+  hrBillsLoading.value = true
+  try {
+    const q = new URLSearchParams()
+    if (liveOverride === true || (liveOverride === undefined && hrBillsLive.value)) q.set('live', '1')
+    const data = unwrapResponse(await props.api.get(`${pluginBase.value}/hr/bills?${q.toString()}`)) || {}
+    hrBills.value = data
+  } catch (e) {
+    error.value = `H&R 账单加载失败：${e}`
+  } finally {
+    hrBillsLoading.value = false
   }
 }
 // 站点折叠：多任务行可展开
@@ -2353,6 +2380,7 @@ async function examConfirmRun() {
 //   真值源 = 标签账本 tag_state（state=静默）+ 下载器快照；H&R 倒计时来自跨站来源份账本。
 //   ★ 关系：跨站「下完」的来源份 → 移交静默池（跨站页只留未下完的列车）。
 const silentData = ref({ summary: {}, items: [], records: [], host: {}, settings: {} })
+const stage1ZeroDelete = computed(() => silentData.value.pool_cleanup === false)
 const silentOpen = ref(false)
 const silentLoading = ref(false)
 const silentView = ref('pool')   // 'pool' | 'records'
@@ -4948,6 +4976,48 @@ onUnmounted(() => {
               <span class="magicflow-sitereport__row-size">{{ (it.size_gb || 0).toFixed(2) }}G</span>
             </div>
             <div v-if="!siteReportLoading && !siteReportItems.length" class="magicflow-ceiling-empty">该站点暂无挂种（或未选择站点）</div>
+          </div>
+        </div>
+      </VCard>
+    </VDialog>
+
+    <VDialog v-model="hrBillsOpen" max-width="48rem" scrollable :fullscreen="isNarrow">
+      <VCard class="magicflow-dialog magicflow-hrbills-dialog">
+        <header class="magicflow-settings-dialog__head">
+          <span class="magicflow-settings-dialog__title">H&amp;R 账单</span>
+          <VChip v-if="hrBillsLoading" size="x-small" color="grey" variant="tonal">加载中</VChip>
+          <VChip v-else-if="hrBillsTotals.breached" size="x-small" color="deep-orange" variant="tonal">{{ hrBillsTotals.breached }} 违约</VChip>
+          <span class="magicflow-ops-dialog__spacer" />
+          <VBtn icon="mdi-refresh" size="small" variant="text" aria-label="刷新" :loading="hrBillsLoading" @click="loadHrBills(false)" />
+          <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="hrBillsOpen = false" />
+        </header>
+        <div class="magicflow-ops-dialog__body">
+          <div class="magicflow-sitereport__stats">
+            <div class="magicflow-sitereport__stat"><b>{{ hrBillsTotals.bills || 0 }}</b><span>账单</span></div>
+            <div class="magicflow-sitereport__stat is-danger"><b>{{ hrBillsTotals.active || 0 }}</b><span>欠债</span></div>
+            <div class="magicflow-sitereport__stat is-danger"><b>{{ hrBillsTotals.breached || 0 }}</b><span>违约</span></div>
+            <div class="magicflow-sitereport__stat is-danger"><b>{{ hrBillsTotals.missing || 0 }}</b><span>缺挂</span></div>
+          </div>
+          <div class="magicflow-hrbills__list">
+            <div v-for="s in hrBillsSites" :key="s.domain" class="magicflow-hrbills__card">
+              <div class="magicflow-hrbills__head">
+                <span class="magicflow-hrbills__name">{{ s.name || s.domain }}</span>
+                <VChip v-if="s.per_torrent_hr" size="x-small" color="purple" variant="tonal">逐种</VChip>
+                <VChip v-if="s.rule_source" size="x-small" color="grey" variant="tonal">{{ s.rule_source }}</VChip>
+                <span class="magicflow-ops-dialog__spacer" />
+                <span class="magicflow-hrbills__nums">欠 {{ s.owed }} · 在qb {{ s.in_qb }} · 缺 {{ s.missing }}</span>
+              </div>
+              <div class="magicflow-hrbills__chips">
+                <VChip
+                  v-for="(n, st) in s.bills"
+                  :key="st"
+                  size="x-small"
+                  :color="hrBillStateColor(st)"
+                  variant="tonal"
+                >{{ st }} {{ n }}</VChip>
+              </div>
+            </div>
+            <div v-if="!hrBillsLoading && !hrBillsSites.length" class="magicflow-ceiling-empty">暂无 H&amp;R 账单（无欠债站）</div>
           </div>
         </div>
       </VCard>
@@ -7921,7 +7991,7 @@ onUnmounted(() => {
           <div class="magicflow-settings-hint mt-2">
             静默池 = 「无主」种的池子：跨站取种下完的来源份、任务退下来的种、待分拣的新种都在这。
             H&R 保挂 / 未下完清理 / 超时降级（新→普通）/ 分拣（推荐&rarr;资源）由常驻「静默托管」自动跑。
-            当前：静默-新超时 {{ silentData.settings?.new_timeout_hours ?? '—' }} 小时。
+            当前：静默-新超时 {{ silentData.settings?.new_timeout_hours ?? '—' }} 小时{{ stage1ZeroDelete ? ' · 阶段1 零删除（清理暂停）' : '' }}。
           </div>
         </VCardText>
       </VCard>

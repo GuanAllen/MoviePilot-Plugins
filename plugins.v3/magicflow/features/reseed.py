@@ -49,6 +49,7 @@ from ..common import (
     RESEED_MIN_SIZE_GB,
     RESEED_MISS_TTL,
     RESEED_PASSKEY_KEY,
+    SILENT_HR_SPLIT_ENABLED,
 )
 
 
@@ -503,6 +504,7 @@ class ReSeedMixin:
         try:
             h, err = downloader.add_torrent_reuse(
                 torrent_bytes=raw, save_path=save_path, tag=tag, verify=True,
+                start=not SILENT_HR_SPLIT_ENABLED,
             )
         except Exception as ex:  # noqa: BLE001
             h, err = None, str(ex)

@@ -338,6 +338,11 @@ class OnDemandMixin:
             # ★ 2026-10-01：点播是「我要看这部片」→ 转资源后**顺手整理入库**
             #   （MP 手动整理：transfer_type=link → 硬链接进媒体库，种子照旧做种，不删不移）
             self._ondemand_import(h, gid, _title)
+            # ★ 11.11.0：转资源后入池即暂停（静默硬不变量；任务纳管时才做种）
+            try:
+                self._silent_pause_gate(h)
+            except Exception:  # noqa: BLE001
+                pass
         return {"settled": done}
 
     def _ondemand_import(self, h: str, gid: str = "", title: str = "") -> bool:

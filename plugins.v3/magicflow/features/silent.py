@@ -35,6 +35,7 @@ from ..common import (
     RECOMMEND_SCAN_MAX,
     SILENT_HOST_INTERVAL_MINUTES,
     SILENT_HOST_TASK_ID,
+    SILENT_HR_SPLIT_ENABLED,
     TAG_NEW_TIMEOUT,
     begin_decision_round,
     note_snapshot_pull,
@@ -103,17 +104,11 @@ class SilentMixin:
                 return ""
 
             def _s2() -> str:
-                i = self._silent_resume_tick(apply=True, limit=0)
-                if i.get("resumed"):
-                    self._log(f"魔流:静默托管:H&R 保挂强制挂种 {i.get('resumed')} 个")
-                    return f"强制挂种 {i.get('resumed')} 个（欠H&R {i.get('hr_pending')} / 非H&R {i.get('nonhr')} 不动）"
-                return f"欠H&R {i.get('hr_pending')} 个均已挂种"
+                # ★ 11.11.0：静默池全 paused，H&R 保挂已拆到 __hr_host__（hr_host worker）。本步退役。
+                return ""
 
             def _s3() -> str:
-                i = self._hr_guard_tick(apply=True, limit=0, snap=_round_snap)
-                if i.get("tagged") or i.get("resumed") or i.get("cleared") or i.get("released"):
-                    self._log(f"魔流:静默托管:H&R 管理:打标 {i.get('tagged')} · 拉起 {i.get('resumed')} · 摘标 {i.get('cleared')} · 松绑 {i.get('released')}")
-                    return f"打标 {i.get('tagged')} · 拉起 {i.get('resumed')} · 摘标 {i.get('cleared')} · 松绑 {i.get('released')}"
+                # ★ 11.11.0：H&R 统一管理已迁移到 hr_host() worker，不再由静默托管负责。本步退役。
                 return ""
 
             def _s4() -> str:
@@ -163,6 +158,9 @@ class SilentMixin:
 
             def _s10() -> str:
                 # ★ 7.6.0: 文件已不在的托管种 → 认出即清（只删种不删文件）
+                # ★ 11.11.0 阶段1 零删除：空壳清理也跳过（静默池不删任何种）。
+                if SILENT_HR_SPLIT_ENABLED:
+                    return ""
                 i = self._missing_files_tick(apply=True, snap=_round_snap)
                 if i.get("deleted"):
                     return f"空壳种清理 {i.get('deleted')} 个（标称 {i.get('size_gb')}GB）"
@@ -359,7 +357,12 @@ class SilentMixin:
             tags = [str(x) for x in (getattr(t, "tags", None) or [])]
             sub = str(rec.get("sub") or SUB_NEW)
             site = str(rec.get("site") or "") or self._torrent_site_name(tags, "") or "未知"
-            ishr = bool(MARK_HR in tags)
+            # ★ 11.11.0：owed_hr = _hr_obligation 真值（弃退役标签 MARK_HR 的假信号）
+            ishr = False
+            try:
+                ishr = bool(self._hr_obligation(site, t, snap=torrents)[0])
+            except Exception:  # noqa: BLE001
+                ishr = False
             try:
                 size_gb = float(rec.get("size_gb") or getattr(t, "size_gb", 0) or 0.0)
             except (TypeError, ValueError):
@@ -412,6 +415,7 @@ class SilentMixin:
                 "site": site,
                 "sub": sub,
                 "hr": ishr,
+                "owed_hr": ishr,
                 "size_gb": round(size_gb, 2),
                 "progress": round(progress, 4),
                 "state": str(getattr(t, "state", "") or ""),
@@ -482,6 +486,8 @@ class SilentMixin:
                 "new_timeout_hours": round(new_timeout_h, 2),
                 "hr_default_hours": 0.0,
             },
+            "stage": ("stage1_zero_delete" if SILENT_HR_SPLIT_ENABLED else "active"),
+            "pool_cleanup": (not SILENT_HR_SPLIT_ENABLED),
             "generated_at": now,
         }
         try:
@@ -499,6 +505,111 @@ class SilentMixin:
             return [r.to_dict() if hasattr(r, "to_dict") else dict(r) for r in rows]
         except Exception:  # noqa: BLE001
             return []
+
+    def _silent_audit(self, limit: int = 1000) -> Dict[str, Any]:
+        """★ 11.11.0：静默池盘点（只读）——一次调用答「池里 704 个怎么分类、谁违背不变量」。
+
+        四类判据（真值源同源，不造第二真值源）：
+          - owed_hr：``_hr_obligation`` 真值（欠 H&R）——注意：欠债种应由 hr_host 迁到保种，池里不该有；
+          - library_asset：静默-资源 / ``is_asset_tags``（库内资产，永不删）；
+          - crossseed：``_crossseed_source_hashes``（跨站来源份 H&R 保种期）；
+          - claim / manual：``_claim_protected_hashes`` / ``store.protected_torrents``（承诺）；
+          - stalled_violation：qB 态不在 paused/stopped/queued（= 违背「静默全 paused」不变量）；
+          - 其余 → relocate（迁出候选）。
+        """
+        counts = {"owed_hr": 0, "library_asset": 0, "crossseed": 0, "claim": 0,
+                  "manual": 0, "stalled_violation": 0, "relocate": 0, "total": 0}
+        items: List[Dict[str, Any]] = []
+        try:
+            led = dict(self._tag_state().items() or {})
+        except Exception:  # noqa: BLE001
+            led = {}
+        try:
+            snap = self._tag_all_torrents() or {}
+        except Exception:  # noqa: BLE001
+            snap = {}
+        try:
+            cssrc = {str(x).strip().lower() for x in (self._crossseed_source_hashes() or set())}
+        except Exception:  # noqa: BLE001
+            cssrc = set()
+        try:
+            claim = {str(x).strip().lower() for x in (self._claim_protected_hashes() or set())}
+        except Exception:  # noqa: BLE001
+            claim = set()
+        try:
+            manual = set()
+            store = getattr(self, "_store", None)
+            if store is not None:
+                _tids = list((getattr(self, "_task_configs", None) or {}).keys())
+                _tids.append("")
+                for _tid in _tids:
+                    try:
+                        manual |= set(store.get_protected_torrents(_tid) or set())
+                    except Exception:  # noqa: BLE001
+                        continue
+            manual = {str(x).strip().lower() for x in manual}
+        except Exception:  # noqa: BLE001
+            manual = set()
+        _lim = int(limit or 0)
+        for h, rec in list(led.items()):
+            hh = str(h or "").strip().lower()
+            if str((rec or {}).get("state") or "") != STATE_SILENT:
+                continue
+            counts["total"] += 1
+            t = snap.get(hh)
+            tags = [str(x) for x in (getattr(t, "tags", None) or [])] if t is not None else []
+            site = str((rec or {}).get("site") or "") or self._torrent_site_name(tags, "")
+            sub = str((rec or {}).get("sub") or SUB_NEW)
+            owed = False
+            if t is not None:
+                try:
+                    owed = bool(self._hr_obligation(site, t, snap=snap)[0])
+                except Exception:  # noqa: BLE001
+                    owed = False
+            asset = bool(str((rec or {}).get("asset") or "") or is_asset_tags(tags))
+            stalled = False
+            if t is not None:
+                st = str(getattr(t, "state", "") or "").strip().lower()
+                stalled = not (st.startswith("paused") or st.startswith("stopped")
+                               or st.startswith("queued"))
+            if owed:
+                cls = "owed_hr"
+            elif asset:
+                cls = "library_asset"
+            elif hh in cssrc:
+                cls = "crossseed"
+            elif hh in claim:
+                cls = "claim"
+            elif hh in manual:
+                cls = "manual"
+            else:
+                cls = "relocate"
+            counts[cls] = int(counts.get(cls) or 0) + 1
+            if stalled:
+                counts["stalled_violation"] = int(counts["stalled_violation"]) + 1
+            if _lim and len(items) >= _lim:
+                continue
+            items.append({
+                "hash": hh, "site": site, "sub": sub,
+                "class": cls, "owed_hr": bool(owed),
+                "stalled_violation": bool(stalled),
+                "state": str(getattr(t, "state", "") or "") if t is not None else "",
+                "size_gb": round(float((rec or {}).get("size_gb") or (getattr(t, "size_gb", 0) or 0.0)), 2),
+            })
+        return {
+            "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "stage": ("stage1_zero_delete" if SILENT_HR_SPLIT_ENABLED else "active"),
+            "pool_cleanup": (not SILENT_HR_SPLIT_ENABLED),
+            "counts": counts,
+            "items": items,
+            "source_of_truth": ["tag_state(账本)", "_tag_all_torrents()", "_hr_obligation",
+                                "_crossseed_source_hashes", "_claim_protected_hashes",
+                                "store.protected_torrents"],
+            "note": ("静默池全 paused 硬不变量：stalled_violation = 违背不变量的种；"
+                     "owed_hr 应由 hr_host 迁到保种（池里不该有）；relocate = 迁出候选（阶段 2 清旧）。"
+                     + ("阶段1 零删除：池清理（未下完/低效普通/空壳）已 gate，不删任何种。"
+                        if SILENT_HR_SPLIT_ENABLED else "")),
+        }
 
     # ---------------------------------------------------------
     # 静默池分拣（3.14.0）：静默-新 --(挂种完成 H&R)--> 推荐 → 整理入库 → 静默-资源
@@ -578,7 +689,10 @@ class SilentMixin:
                 self._tag_state().put(hh, {"sub": SUB_PLAIN, "reason": "静默分拣:未达标→普通"})
             except Exception:  # noqa: BLE001
                 pass
+        if ok:
+            self._silent_pause_gate(hh)
         return ok
+
 
     def _promote_resource(self, gid: str) -> int:
         """★ 资源已入库 → **立刻**把该资源的「静默」成员转「静默-资源」。
@@ -657,7 +771,42 @@ class SilentMixin:
                                            "reason": "静默分拣:资源已入库→静默-资源"})
             except Exception:  # noqa: BLE001
                 pass
+        if ok:
+            self._silent_pause_gate(hh)
         return ok
+
+    def _silent_pause_gate(self, hashes: Any) -> Dict[str, Any]:
+        """★ 静默硬不变量（11.11.0）：任何 ``state=静默`` 的种子一律 pause（**无 H&R 例外**）。
+
+        H&R 保种已拆到 ``__hr_host__``（职务 ``保种``），静默池不再 resume 任何种。
+        所有写 ``state=静默`` 的路径，写完账本后**立即**调它。幂等（已暂停的不重复写）。
+        """
+        rep: Dict[str, Any] = {"paused": 0, "failed": 0}
+        if not SILENT_HR_SPLIT_ENABLED:
+            rep["disabled"] = True
+            return rep
+        hs = [hashes] if isinstance(hashes, str) else list(hashes or [])
+        hs = [str(h or "").strip().lower() for h in hs if str(h or "").strip()]
+        if not hs:
+            return rep
+        try:
+            snap = self._tag_all_torrents() or {}
+        except Exception:  # noqa: BLE001
+            snap = {}
+        live = [h for h in hs if h in snap]
+        if not live:
+            return rep
+        try:
+            dl = self._get_downloader("qbittorrent")
+            if dl is not None:
+                n, _e = dl.pause_torrents(live)
+                rep["paused"] = int(n or 0)
+                if _e:
+                    rep["failed"] = int(rep.get("failed") or 0) + 1
+        except Exception as err:  # noqa: BLE001
+            rep["failed"] = int(rep.get("failed") or 0) + 1
+            self._log(f"静默闸:暂停失败:{err}", "warning")
+        return rep
 
     def _silent_hr_pending(self, snap: Optional[Dict[str, Any]] = None) -> Set[str]:
         """仍欠 H&R（没挂满）的「静默-新」hash：不许被超时降级成「普通」。"""
@@ -704,7 +853,13 @@ class SilentMixin:
         """
         rep: Dict[str, Any] = {"apply": bool(apply), "checked": 0, "silent": 0, "hr_pending": 0,
                                "nonhr": 0, "resumed": 0, "skipped_manual": 0,
-                               "skipped_incomplete": 0, "failed": 0, "items": [], "sites": {}}
+                               "skipped_incomplete": 0, "failed": 0, "items": [], "sites": []}
+        # ★ 11.11.0：静默池全 paused（硬不变量，无 H&R 例外）。H&R 保挂已拆到 __hr_host__
+        #   （hr_host() worker 负责）。本 tick 退役：不再对静默种 force_start。
+        if SILENT_HR_SPLIT_ENABLED:
+            rep["retired"] = True
+            rep["reason"] = "静默池已全 paused；H&R 保挂由 __hr_host__（hr_host worker）承担，本 tick 退役"
+            return rep
         snap = self._tag_all_torrents() or {}
         if not snap:
             rep["reason"] = "无快照"
@@ -860,6 +1015,9 @@ class SilentMixin:
         """
         rep: Dict[str, Any] = {"apply": bool(apply), "pending": 0, "deleted": 0,
                                "torrent_only": 0, "failed": 0, "items": []}
+        # ★ 11.11.0 阶段1 零删除：静默池清理（未下完）在 SILENT_HR_SPLIT_ENABLED 下**不落实删除**，
+        #   但仍扫描算出 pending（供审计/预演）；apply=False 照旧。删除只走 delete_torrents 单闸门。
+        _zero_delete = bool(SILENT_HR_SPLIT_ENABLED)
         _by_task: Dict[str, List[Any]] = {}
         try:
             store = self._tag_state()
@@ -908,7 +1066,7 @@ class SilentMixin:
             rep["pending"] += 1
             rep["items"].append({"hash": h[:12], "title": str(getattr(t, "title", "") or "")[:60],
                                  "progress": round(prog * 100.0, 1), "state": state_name})
-            if not apply or (cap and rep["deleted"] >= cap):
+            if not apply or _zero_delete or (cap and rep["deleted"] >= cap):
                 continue
             _k = _rkey(t)
             shared = bool(_k and done_keys.get(_k) and done_keys.get(_k) != h)
@@ -947,6 +1105,10 @@ class SilentMixin:
                 rep["failed"] += 1
                 self._log(f"静默池清理:删除异常 {h[:12]}:{err}", "warning")
         self._journal_deletions(_by_task, log_prefix="静默池清理")
+        if apply and _zero_delete and rep["pending"]:
+            rep["skipped"] = rep["pending"]
+            rep["reason"] = "阶段1 零删除"
+            self._log(f"静默托管:阶段1 零删除，跳过清理（未下完）{rep['pending']} 个")
         if apply and rep["deleted"]:
             self._log(
                 f"魔流:静默池清理:未下完直接删 {rep['deleted']} 个（不计 H&R；"
@@ -1185,6 +1347,9 @@ class SilentMixin:
         rep: Dict[str, Any] = {"apply": bool(apply), "pending": 0, "deleted": 0,
                                "torrent_only": 0, "failed": 0, "sites": {},
                                "skipped_site": 0, "items": []}
+        # ★ 11.11.0 阶段1 零删除：静默池清理（低效普通）在 SILENT_HR_SPLIT_ENABLED 下**不落实删除**，
+        #   但仍扫描算出 pending（供审计/预演）；apply=False 照旧。删除只走 delete_torrents 单闸门。
+        _zero_delete = bool(SILENT_HR_SPLIT_ENABLED)
         _by_task: Dict[str, List[Any]] = {}
         cfg = getattr(self, "_silent_cfg", {}) or {}
         if not cfg.get("sweep", True):
@@ -1388,7 +1553,7 @@ class SilentMixin:
                     "hash": hh[:12], "site": site, "title": str(getattr(t, "title", "") or "")[:50],
                     "per_hour": round(out_h, 2), "median": round(med, 2),
                 })
-                if not apply or (cap and rep["deleted"] >= cap):
+                if not apply or _zero_delete or (cap and rep["deleted"] >= cap):
                     continue
                 _k = _rkey(t)
                 shared = bool(_k and done_keys.get(_k) and done_keys.get(_k) != hh)
@@ -1434,6 +1599,10 @@ class SilentMixin:
                     rep["failed"] = int(rep["failed"]) + 1
                     self._log(f"静默普通清理:删除异常 {hh[:12]}:{err}", "warning")
         self._journal_deletions(_by_task, log_prefix="静默普通清理")
+        if apply and _zero_delete and rep["pending"]:
+            rep["skipped"] = rep["pending"]
+            rep["reason"] = "阶段1 零删除"
+            self._log(f"静默托管:阶段1 零删除，跳过清理（低效普通）{rep['pending']} 个")
         if apply and rep["deleted"]:
             self._log(
                 f"魔流:静默普通清理:删掉 {rep['deleted']} 个低效普通种（魔力达标/磁盘压力）"
