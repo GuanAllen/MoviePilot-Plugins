@@ -73,7 +73,7 @@ WRITE_REASON = "写端点 → L4 /agent/act 控制面（P1.5 只读阶段不收�
 
 # 真值源覆盖（目标）：账本六表 + 运行台账五表
 REQUIRED_TABLES = (
-    "site", "resource", "identity", "task", "seed", "deck",
+    "site", "resource", "identity", "task", "seed", "deck", "crossseed",
     "bills", "deletions", "journal", "protected", "rescue_actions",
 )
 
@@ -297,7 +297,7 @@ def main() -> int:
     print("✅ 对齐校验通过：")
     print(f"  前端覆盖（下限）：GET 覆盖 {covered_n} / 只读豁免 {whitelisted_n} / 写豁免 {write_n} / 未覆盖 0")
     print(f"  真值源覆盖（目标）：{len(tables)} 张真值表全部由 /agent/ledger/{{table}} 直出"
-          f"（账本六表 + 运行台账五表）")
+          f"（账本七表 + 运行台账五表）")
     return 0
 
 

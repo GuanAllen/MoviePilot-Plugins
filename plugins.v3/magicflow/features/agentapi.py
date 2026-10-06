@@ -117,7 +117,7 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
          "summary": "★ 真正可用的补源候选（IYUU 指纹索引 + 拉 .torrent 校验文件清单特征码）；不写下载器"},
         # ---- P1.5b：真值源直出 + 字段字典 + 报表层首批（handler 在 AgentLedgerMixin）----
         {"path": "/agent/ledger/{table}", "method": "GET", "handler": "agent_ledger", "write": False,
-         "params": {"table": "site|resource|identity|task|seed|deck|bills|deletions|journal|protected|rescue_actions",
+         "params": {"table": "site|resource|identity|task|seed|deck|crossseed|bills|deletions|journal|protected|rescue_actions",
                     "limit": "int（默认 50，0=全量）", "cursor": "str", "filter": "k=v 逗号分隔（如 site=/state=/rule=）",
                     "fields": "逗号分隔字段投影"}, "returns": "LedgerPage",
          "version": AGENT_ENDPOINT_VERSION,

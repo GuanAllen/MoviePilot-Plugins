@@ -42,7 +42,7 @@ _HEX = set("0123456789abcdef")
 # ---------------------------------------------------------------------------
 # 账本六表（其中 seed/resource 走 ledger 进程级 store；site/identity/task/deck 走插件自有库）
 LEDGER_TABLES: Tuple[str, ...] = (
-    "site", "resource", "identity", "task", "seed", "deck",
+    "site", "resource", "identity", "task", "seed", "deck", "crossseed",
     # 运行台账
     "bills", "deletions", "journal", "protected", "rescue_actions",
 )
@@ -109,11 +109,23 @@ def _columns() -> Dict[str, List[Dict[str, Any]]]:
             _col("site_id", "int", nullable=False),
             _col("name", "string"),
             _col("domain", "string"),
+            _col("framework", "string", desc="站点框架（实真值源：12.1.0 起由 site_rules kv 迁入）"),
             _col("hr", "bool", desc="有无 H&R"),
             _col("hr_src", "string", desc="H&R 判定来源（builtin/override/unknown）"),
             _col("seed_hours", "float", unit="h", desc="保种时长"),
             _col("seed_need_hours", "float", unit="h", desc="需保种小时"),
+            _col("seed_hours_retired", "float", unit="h", desc="已退役的保种时长（历史值）"),
+            _col("seed_window_hours", "float", unit="h", desc="规则窗口（保守保护期）"),
             _col("seed_cap", "int", desc="做种上限"),
+            _col("exam_avg_hours", "float", unit="h", desc="考核平均保种小时"),
+            _col("free_over_gb", "float", unit="GB", desc="体积≥该值自动免费"),
+            _col("free_original", "bool", desc="原盘/原抓免费"),
+            _col("free_ep1", "bool", desc="首集免费"),
+            _col("per_torrent_hr", "bool", desc="逐种 H&R 站（站点级无法评估）"),
+            _col("note", "string", desc="规则备注"),
+            _col("rule_url", "string", desc="规则依据 URL"),
+            _col("probed_at", "float", unit="s", desc="探测时间"),
+            _col("caps", "json", desc="站点能力/免费探测缓存（原 site_caps kv）"),
             _col("pv_budget", "int", desc="PV 日预算"),
             _col("source", "string", desc="规则来源"),
             _col("confidence", "string"),
@@ -151,6 +163,27 @@ def _columns() -> Dict[str, List[Dict[str, Any]]]:
             _col("size_gb", "float", unit="GB"),
             _col("frozen", "bool", desc="满魔冻结"),
             _col("frozen_at", "float", unit="s"),
+            _col("created", "float", unit="s"),
+            _col("updated", "float", unit="s"),
+        ],
+        "crossseed": [
+            _col("sib_hash", "hex40", desc="他站那份的 infohash（小写）", nullable=False),
+            _col("site_b_domain", "string", desc="来源站域名"),
+            _col("site_a", "string", desc="目标站名"),
+            _col("site_b", "string", desc="来源站名"),
+            _col("a_hash", "hex40", desc="目标站那份 hash"),
+            _col("title", "string"),
+            _col("size_gb", "float", unit="GB"),
+            _col("hit_and_run", "bool", desc="来源站是否有 H&R"),
+            _col("hours", "float", unit="h", desc="H&R 保种窗口(小时)"),
+            _col("seed_until", "float", unit="s", desc="保种到期(unix)"),
+            _col("downloader", "string"),
+            _col("seeded_sec", "float", unit="s", desc="实测做种秒数"),
+            _col("files_shared", "bool", desc="文件是否与目标站共用"),
+            _col("task_id", "string"),
+            _col("task_name", "string"),
+            _col("backfilled", "bool", desc="历史回填"),
+            _col("done", "bool", desc="H&R 义务已履行"),
             _col("created", "float", unit="s"),
             _col("updated", "float", unit="s"),
         ],
@@ -267,21 +300,64 @@ class AgentLedgerMixin:
             return []
 
     def _agent_db_site_rows(self) -> List[Dict[str, Any]]:
-        """mf_site 行（★ 剥掉 ``credential`` 密文与证据链噪声）。"""
+        """mf_site 行（★ 剥掉 ``credential`` 密文与证据链噪声）。
+
+        ★ 12.1.0：站点规则/能力已由 kv 迁入本表（``site_rules`` → 真列、``site_caps`` → ``caps``），
+        这里同步把新字段摆出来，AI 一次调用即可看全「某站规则 + 免费能力」。
+        """
         out: List[Dict[str, Any]] = []
         for r in self._agent_db_rows("SiteRow"):
             out.append({
                 "site_id": getattr(r, "site_id", None),
                 "name": getattr(r, "name", None),
                 "domain": getattr(r, "domain", None),
+                "framework": getattr(r, "framework", None),
                 "hr": getattr(r, "hr", None),
                 "hr_src": getattr(r, "hr_src", None),
                 "seed_hours": getattr(r, "seed_hours", None),
                 "seed_need_hours": getattr(r, "seed_need_hours", None),
+                "seed_hours_retired": getattr(r, "seed_hours_retired", None),
+                "seed_window_hours": getattr(r, "seed_window_hours", None),
                 "seed_cap": getattr(r, "seed_cap", None),
+                "exam_avg_hours": getattr(r, "exam_avg_hours", None),
+                "free_over_gb": getattr(r, "free_over_gb", None),
+                "free_original": getattr(r, "free_original", None),
+                "free_ep1": getattr(r, "free_ep1", None),
+                "per_torrent_hr": getattr(r, "per_torrent_hr", None),
+                "note": getattr(r, "note", None),
+                "rule_url": getattr(r, "rule_url", None),
+                "probed_at": getattr(r, "probed_at", None),
+                "caps": getattr(r, "caps", None),
                 "pv_budget": getattr(r, "pv_budget", None),
                 "source": getattr(r, "source", None),
                 "confidence": getattr(r, "confidence", None),
+                "created": getattr(r, "created", None),
+                "updated": getattr(r, "updated", None),
+            })
+        return out
+
+    def _agent_db_crossseed_rows(self) -> List[Dict[str, Any]]:
+        """mf_crossseed 行（跨站来源份 H&R 保护账本）。"""
+        out: List[Dict[str, Any]] = []
+        for r in self._agent_db_rows("CrossSeedRow"):
+            out.append({
+                "sib_hash": getattr(r, "sib_hash", None),
+                "site_b_domain": getattr(r, "site_b_domain", None),
+                "site_a": getattr(r, "site_a", None),
+                "site_b": getattr(r, "site_b", None),
+                "a_hash": getattr(r, "a_hash", None),
+                "title": getattr(r, "title", None),
+                "size_gb": getattr(r, "size_gb", None),
+                "hit_and_run": getattr(r, "hit_and_run", None),
+                "hours": getattr(r, "hours", None),
+                "seed_until": getattr(r, "seed_until", None),
+                "downloader": getattr(r, "downloader", None),
+                "seeded_sec": getattr(r, "seeded_sec", None),
+                "files_shared": getattr(r, "files_shared", None),
+                "task_id": getattr(r, "task_id", None),
+                "task_name": getattr(r, "task_name", None),
+                "backfilled": getattr(r, "backfilled", None),
+                "done": getattr(r, "done", None),
                 "created": getattr(r, "created", None),
                 "updated": getattr(r, "updated", None),
             })
@@ -428,6 +504,8 @@ class AgentLedgerMixin:
                     return self._deck_rows() or []
                 except Exception:  # noqa: BLE001
                     return []
+            if t == "crossseed":
+                return self._agent_db_crossseed_rows()
             if t == "bills":
                 out = []
                 for h, b in (self._hrbills_store().all() or {}).items():
@@ -462,6 +540,8 @@ class AgentLedgerMixin:
             return str(row.get("task_id") or row.get("id") or "")
         if t == "deck":
             return str(row.get("deck_id") or "") + "|" + str(row.get("seed_id") or "")
+        if t == "crossseed":
+            return str(row.get("sib_hash") or "")
         if t == "deletions":
             return str(row.get("ts") or "") + "|" + str(row.get("hash") or "")
         if t in ("journal", "rescue_actions"):

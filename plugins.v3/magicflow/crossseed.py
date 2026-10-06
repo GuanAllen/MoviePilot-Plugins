@@ -322,6 +322,7 @@ class CrossSeedSources:
 
     这里持久化它：``{sib_hash: {title, site_b_domain, site_a, a_hash, created,
     seed_until, hours, hit_and_run, downloader, files_shared, ...}}``，
+    （12.1.0 起存 ``mf_crossseed`` 表，经 ``SiteStore`` 回调读写），
     清理逻辑（``_media_asset_hashes`` 闸门同一处）会并入保护集合。
     """
 

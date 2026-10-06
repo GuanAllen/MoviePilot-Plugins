@@ -18,7 +18,7 @@
 2. **已知域名表**（内置少量 + 运行期学到的）
 3. **探针**：抓一次站点页面，按特征串判定（消耗 1 次请求，结果长期缓存）
 
-结果持久化在插件数据 ``site_caps``（走 MoviePilot 的 ``save_data`` → ``PluginData`` 表，
+结果持久化在 ``mf_site.caps``（表真列，12.1.0 起由 kv 迁入；经 ``SiteStore`` 回调读写，
 卸载保留、重装继承），进程内另有热缓存；冷层拿不到就退化为「仅内存」，不影响功能。
 """
 
@@ -225,15 +225,25 @@ class SiteCapRegistry:
 
     典型用法::
 
-        caps = SiteCapRegistry(plugin)
+        _get, _save = get_site_store(plugin).callbacks("site_caps")
+        caps = SiteCapRegistry(get_data=_get, save_data=_save,
+                               override=over, fetch_provider=plugin)
         cap = caps.get(site.domain)          # 只查表，不联网
         cap = caps.ensure(site, probe=True)  # 缺失才探一次（联网）
     """
 
     DATA_KEY = "site_caps"
 
-    def __init__(self, plugin: Any = None, override: Optional[Dict[str, Any]] = None) -> None:
-        self._plugin = plugin
+    def __init__(
+        self,
+        get_data: Any = None,
+        save_data: Any = None,
+        override: Optional[Dict[str, Any]] = None,
+        fetch_provider: Any = None,
+    ) -> None:
+        self._get_data = get_data
+        self._save_data = save_data
+        self._fetch_provider = fetch_provider
         self._override: Dict[str, Dict[str, Any]] = dict(override or {})
         self._caps: Dict[str, SiteCap] = {}
         self._lock = threading.Lock()
@@ -245,9 +255,9 @@ class SiteCapRegistry:
             return
         self._loaded = True
         raw = None
-        if self._plugin is not None:
+        if self._get_data is not None:
             try:
-                raw = self._plugin.get_data(self.DATA_KEY)
+                raw = self._get_data(self.DATA_KEY)
             except Exception:  # noqa: BLE001
                 raw = None
         if isinstance(raw, dict):
@@ -257,10 +267,10 @@ class SiteCapRegistry:
                     self._caps[norm_domain(dom)] = cap
 
     def _save(self) -> None:
-        if self._plugin is None:
+        if self._save_data is None:
             return
         try:
-            self._plugin.save_data(
+            self._save_data(
                 key=self.DATA_KEY,
                 value={k: v.to_dict() for k, v in self._caps.items()},
             )
@@ -427,7 +437,7 @@ class SiteCapRegistry:
         cookie = str(getattr(site, "cookie", None) or "").strip() or None
         ua = str(getattr(site, "ua", None) or "").strip() or None   # ★ 前导空白 → httpx 判非法头
 
-        _c = getattr(getattr(self, "_plugin", None), "collect", None)
+        _c = getattr(getattr(self, "_fetch_provider", None), "collect", None)
         _sid = int(getattr(site, "id", 0) or 0)
         if _c is not None and _sid:
             try:

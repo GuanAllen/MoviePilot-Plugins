@@ -18,6 +18,7 @@ from ..sitecap import (
     SiteCapRegistry,
     norm_domain,
 )
+from ..sitestore import get_site_store
 
 
 from ..common import (
@@ -391,17 +392,24 @@ class LiveMixin:
                 pass
 
     def sitecaps(self) -> SiteCapRegistry:
-        """站点类型/能力注册表(懒加载;识别结果持久化在 ``save_data("site_caps")``)。"""
+        """站点类型/能力注册表(懒加载;识别结果持久化在 ``mf_site.caps``)。"""
         reg = getattr(self, "_site_cap_reg", None)
         if reg is None:
+            _st = get_site_store(self)
+            _get, _save = _st.callbacks("site_caps")
             over: Dict[str, Any] = {}
             try:
-                raw = self.get_data("sitecap_override")
+                raw = _st.get("sitecap_override")
                 if isinstance(raw, dict):
                     over = raw
             except Exception:  # noqa: BLE001
                 over = {}
-            reg = self._site_cap_reg = SiteCapRegistry(self, override=over)
+            reg = self._site_cap_reg = SiteCapRegistry(
+                get_data=_get,
+                save_data=_save,
+                override=over,
+                fetch_provider=self,
+            )
         return reg
 
     def _site_cap(self, site_id: int, probe: bool = False) -> SiteCap:

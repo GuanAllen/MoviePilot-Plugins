@@ -39,6 +39,7 @@ L1 = {
     "downloader_ops.py", "cloud_archive.py", "crossseed.py", "iyuu_cloud.py",
     "recommend.py", "signin.py", "tags.py",
     "ledger.py",   # 种子/资源台账（SQLAlchemy 后端，依赖 tags/common）
+    "sitestore.py",  # 站点/能力/跨站来源 三套 kv 账本 → 表（12.1.0 WS2 桥接层）
 }
 L2_PREFIX = "features/"
 L1_PREFIXES = ("sites/", "signin_sites/", "claim_sites/")   # L1 域的包（站点解析 / 站点签到适配器 / 站点认领写动作）
