@@ -14,9 +14,9 @@ H&R 补种被任务「超保留上限」路径删掉，因为该路径的保护�
   排查「谁删了 X」→ 只读这一个文件，按 hash grep。
 
 闸门硬拦（**任何路径都不得删**，全局口径、不依赖单任务）：
-  手动保留 / 跨站来源份（H&R 保种期）/ 已认领（保种承诺）/ 欠 H&R 义务。
+  手动保留 / 跨站来源份（H&R 保种期）/ 已认领（保种承诺）/ 欠 H&R 义务 / **库内资产（★ 12.3.0）**。
 
-（「未下完」「库内资产」「推荐中」属于各清理路径的**策略性**保护，仍由各行其责；
+（「未下完」「推荐中」属于各清理路径的**策略性**保护，仍由各行其责；
   换种（暂停不删）也走这里做硬拦，但台账记 ``delete_file`` 与来源。）
 
 要新增一类「永不删」→ 只改本文件的 ``_delete_gate``。
@@ -35,6 +35,7 @@ from ..common import (
     DELETE_BREAKER_WINDOW_S,
     DELETE_BILL_ASSERT,
 )
+from ..tags import is_library_asset
 
 
 class DeleteGateMixin:
@@ -131,6 +132,37 @@ class DeleteGateMixin:
                     owed, _need, _seeded, _src = False, 0.0, 0.0, ""
                 if owed:
                     why[h] = f"欠 H&R 义务（{_src or '来源站未知'}·未挂满 {_seeded:.1f}/{_need:.1f}h）"
+
+        # 5) ★ 12.3.0 库内资产（已入库）——**任何路径都不许删**。
+        #    这是「静默池阶段2清旧」的前置硬拦：库内资产一旦被清理路径误删，媒体库里
+        #    的文件就没了宿主（qB 数据被删）。真值源 = 资源库 ``in_library`` / 身份「资源」
+        #    （``is_library_asset``）——qB 的 已整理/辅种 标签会因「标签主权」被摘，不能当判据。
+        _rest = [h for h in hs if h not in why]
+        if _rest:
+            _led: Dict[str, Any] = {}
+            try:
+                _led = dict((self._tag_state() or {}).items() or {})
+            except Exception:  # noqa: BLE001
+                _led = {}
+            _groups = None
+            for h in _rest:
+                rec = _led.get(h) or {}
+                try:
+                    if is_library_asset(rec):
+                        why[h] = "库内资产（已入库，永不删）"
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass
+                try:  # 兜底：种子账本没带 in_library 时，回资源库查它所属资源组
+                    if _groups is None:
+                        _groups = self._tag_groups()
+                    gid = _groups.group_of(h)
+                    if gid:
+                        grp = (_groups.items() or {}).get(gid) or {}
+                        if bool((grp.get("library") or {}).get("in_library")):
+                            why[h] = "库内资产（已入库，永不删）"
+                except Exception:  # noqa: BLE001
+                    pass
         return why
 
     # -------------------- ★ 11.12.0：账单一致性断言 + 删除熔断 --------------------
