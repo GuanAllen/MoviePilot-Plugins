@@ -122,10 +122,15 @@ class _WriteGuard:
 
 
 class FakeDl(_WriteGuard):
-    def __init__(self, files=None, prefs=None):
+    def __init__(self, files=None, prefs=None, path_map=None):
         super().__init__()
         self._files = dict(files or {})
         self._prefs = dict(prefs or {})
+        self._path_map = dict(path_map or {})
+
+    def normalize_path(self, p):
+        """宿主路径 → 容器路径（与下载器适配器同名同语义）。"""
+        return self._path_map.get(str(p), str(p))
 
     def get_file_entries(self, h):
         return list(self._files.get(h, []))
@@ -219,6 +224,12 @@ def main() -> int:
             f.write(b"z" * 100)
         with open(os.path.join(tempdir, "TempOnly.mkv"), "wb") as f:
             f.write(b"w" * 100)
+        # 临时目录里的「未完成」副本（qB 给未完成文件加 `.!qB` 后缀）
+        os.makedirs(os.path.join(tempdir, "IncOnly"), exist_ok=True)
+        with open(os.path.join(tempdir, "IncOnly", "IncOnly.mkv.!qB"), "wb") as f:
+            f.write(b"i" * 100)
+        # 临时目录里只有个**同名空目录**（别人的未完成副本）——不得因此判 normal
+        os.makedirs(os.path.join(tempdir, "FakeInTemp"), exist_ok=True)
 
         carpt = "carpt"
         hdfans = "hdfans"
@@ -237,6 +248,12 @@ def main() -> int:
             "h-temp": FakeTorrent("h-temp", "TempOnly", save_path=save,
                                   content_path=os.path.join(save, "TempOnly.mkv"),
                                   size_gb=2.0, tags=[carpt]),
+            "h-inc": FakeTorrent("h-inc", "IncOnly", save_path=save,
+                                 content_path=os.path.join(save, "IncOnly"),
+                                 size_gb=2.5, tags=[carpt]),
+            "h-fakename": FakeTorrent("h-fakename", "FakeInTemp", save_path=save,
+                                      content_path=os.path.join(save, "FakeInTemp"),
+                                      size_gb=4.0, tags=[hdfans]),
         }
 
         files = {
@@ -244,6 +261,8 @@ def main() -> int:
             "h-ghost": [("gone_a.mkv", 100), ("gone_b.mkv", 200), ("gone_c.mkv", 300)],
             "h-partial": [("ep01.mkv", 100), ("ep02.mkv", 200)],  # ep01 在、ep02 不在
             "h-temp": [("TempOnly.mkv", 100)],
+            "h-inc": [("IncOnly/IncOnly.mkv", 100)],
+            "h-fakename": [("FakeInTemp.mkv", 100)],
         }
         dl = FakeDl(files=files, prefs={"temp_path": tempdir, "temp_path_enabled": True})
         bills = {
@@ -259,7 +278,7 @@ def main() -> int:
         items = {it["hash"]: it for it in data["items"]}
 
         _ok(data["write"] is False, "响应声明 write=false")
-        _ok(data["scanned"] == 4, f"scanned=4（实际 {data['scanned']}）")
+        _ok(data["scanned"] == 6, f"scanned=6（实际 {data['scanned']}）")
 
         # 1) 正常种
         n = items["h-normal"]
@@ -276,17 +295,28 @@ def main() -> int:
         _ok(pt["bucket"] == "partial" and pt["files_total"] == 2 and pt["files_exist"] == 1,
             f"partial：1/2 文件（{pt['bucket']} {pt['files_exist']}/{pt['files_total']}）")
 
-        # 4) 数据在临时目录 → 不算 ghost
+        # 4) 数据在临时目录（完整）→ 不算 ghost
         tp = items["h-temp"]
-        _ok(tp["bucket"] == "normal", f"临时目录数据不算 ghost（{tp['bucket']}）")
+        _ok(tp["bucket"] == "normal", f"临时目录完整数据不算 ghost（{tp['bucket']}）")
+
+        # 4b) 临时目录里只有 `.!qB` 未完成 → incomplete（不是 ghost）
+        inc = items["h-inc"]
+        _ok(inc["bucket"] == "incomplete" and inc["files_incomplete"] == 1,
+            f"临时目录未完成 → incomplete（{inc['bucket']} inc={inc['files_incomplete']}）")
+
+        # 4c) 临时目录只有同名空目录 → 仍判 ghost（CARPT 那种：别被临时目录同名欺骗）
+        fk = items["h-fakename"]
+        _ok(fk["bucket"] == "ghost", f"临时目录同名空目录不掩盖 ghost（{fk['bucket']}）")
 
         # 5) 汇总 / 体积 / by_site
         c = data["counts"]
-        _ok(c["ghost"] == 1 and c["partial"] == 1 and c["normal"] == 2,
-            f"counts：ghost=1 partial=1 normal=2（实际 {c}）")
-        _ok(data["bytes"]["ghost_gb"] == 6.0 and data["bytes"]["partial_gb"] == 3.0,
-            f"体积：ghost 6G / partial 3G（实际 {data['bytes']}）")
+        _ok(c["ghost"] == 2 and c["partial"] == 1 and c["normal"] == 2 and c["incomplete"] == 1,
+            f"counts：ghost=2 partial=1 normal=2 incomplete=1（实际 {c}）")
+        _ok(data["bytes"]["ghost_gb"] == 10.0 and data["bytes"]["partial_gb"] == 3.0
+            and data["bytes"]["incomplete_gb"] == 2.5,
+            f"体积：ghost 10G / partial 3G / incomplete 2.5G（实际 {data['bytes']}）")
         _ok(data["by_site"]["carpt.net"]["ghost"] == 1
+            and data["by_site"]["carpt.net"]["incomplete"] == 1
             and data["by_site"]["hdfans.org"]["partial"] == 1,
             f"by_site 正确（{data['by_site']}）")
 
@@ -299,13 +329,17 @@ def main() -> int:
         d2 = _scan(p, site="carpt.net")
         _ok(all(it["site"] == "carpt.net" for it in d2["items"]),
             "site=carpt.net 只回 carpt")
-        _ok(d2["counts"]["ghost"] == 1 and d2["counts"]["partial"] == 0,
+        _ok(d2["counts"]["ghost"] == 1 and d2["counts"]["partial"] == 0
+            and d2["counts"]["incomplete"] == 1,
             "site 过滤后 counts 也收敛")
 
         # 8) only 过滤
         d3 = _scan(p, only="ghost")
-        _ok(all(it["bucket"] == "ghost" for it in d3["items"]) and len(d3["items"]) == 1,
+        _ok(all(it["bucket"] == "ghost" for it in d3["items"]) and len(d3["items"]) == 2,
             "only=ghost 只回 ghost")
+        d3b = _scan(p, only="incomplete")
+        _ok(all(it["bucket"] == "incomplete" for it in d3b["items"]) and len(d3b["items"]) == 1,
+            "only=incomplete 只回 incomplete")
 
         # 9) 零写调用
         _ok(dl.write_log == [] and p._bills.write_log == [] and p._store.write_log == [],
@@ -324,6 +358,41 @@ def main() -> int:
         d4 = _scan(p2, max_probe=2)
         _ok(d4["probed"] == 2 and d4["probe_truncated"] == 1,
             f"候选上限截断（probed={d4['probed']} truncated={d4['probe_truncated']}）")
+
+        # 11) ★ 宿主路径 → 容器路径映射（不做这层映射会全站假 ghost：qB 给 /vol6/…，
+        #     插件在容器里只看得到 /movie/…）
+        host_save = "/host/movie/刷流"
+        snap3 = {"h-map": FakeTorrent("h-map", "Mapped", save_path=host_save,
+                                      content_path=os.path.join(host_save, "Normal.mkv"),
+                                      size_gb=1.0, tags=[carpt])}
+        dl3 = FakeDl(files={"h-map": [("Normal.mkv", 100)]}, path_map={host_save: save})
+        p3 = Plug(snap=snap3, dl=dl3, site_map=site_map)
+        d5 = _scan(p3)
+        _ok(d5["items"][0]["bucket"] == "normal",
+            f"宿主路径经 normalize_path 映射后不误报 ghost（{d5['items'][0]['bucket']}）")
+        dl4 = FakeDl(files={"h-map": [("Normal.mkv", 100)]})  # 无映射 = 反例
+        p4 = Plug(snap=snap3, dl=dl4, site_map=site_map)
+        d6 = _scan(p4)
+        _ok(d6["items"][0]["bucket"] == "ghost",
+            f"无映射时确实判 ghost（反例对照，{d6['items'][0]['bucket']}）")
+
+        # 12) hr_at_risk 只收 active/breached（settled 的 ghost 不算风险）
+        snap4 = {
+            "g-a": FakeTorrent("g-a", "ActiveGhost", save_path=save,
+                               content_path=os.path.join(save, "MissA"), size_gb=1.0, tags=[carpt]),
+            "g-s": FakeTorrent("g-s", "SettledGhost", save_path=save,
+                               content_path=os.path.join(save, "MissS"), size_gb=2.0, tags=[carpt]),
+        }
+        dl5 = FakeDl(files={"g-a": [("a.mkv", 1)], "g-s": [("s.mkv", 1)]})
+        bills4 = {
+            "g-a": {"state": "active", "rule": "site_hr", "site": "carpt.net", "need_h": 24.0, "seeded_h": 1.0},
+            "g-s": {"state": "settled", "rule": "site_hr", "site": "carpt.net", "need_h": 24.0, "seeded_h": 24.0},
+        }
+        p5 = Plug(snap=snap4, dl=dl5, bills=bills4, site_map=site_map)
+        d7 = _scan(p5)
+        _ok(d7["counts"]["ghost"] == 2 and len(d7["hr_at_risk"]) == 1
+            and d7["hr_at_risk"][0]["hash"] == "g-a",
+            f"hr_at_risk 只收 active/breached（ghost 2 / risk 1，实际 {d7['counts']['ghost']}/{len(d7['hr_at_risk'])}）")
 
     print("=" * 60)
     print(f"✅ PASS —— 共 {CHECKS} 项全过")
