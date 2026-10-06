@@ -2449,6 +2449,49 @@ function silentHrText(it) {
 }
 const SILENT_SUB_LABEL = { 新: '静默-新', 资源: '静默-资源', 普通: '静默-普通' }
 function silentSubLabel(sub) { return SILENT_SUB_LABEL[String(sub || '')] || `静默-${sub || '?'}` }
+
+// ── 静默池「阶段 2 迁出」（★ 12.4.0）：默认干跑，真写二次确认 ──────────────
+const relocateOpen = ref(false)
+const relocateAsk = ref(false)
+const relocateLoading = ref(false)
+const relocateActing = ref('')          // '' | 'dry' | 'apply'
+const relocateBatch = ref(50)
+const relocateSub = ref('普通')          // '' | 普通 | 新 | 资源（阶段2 保守默认只迁「普通」）
+const relocateScopeOptions = [
+  { label: '仅静默-普通（保守）', value: '普通' },
+  { label: '仅静默-新', value: '新' },
+  { label: '全部（含静默-新）', value: '' },
+]
+const relocateData = ref({ counts: {}, by_site: {}, blocked_items: [] })
+const relocateCounts = computed(() => relocateData.value.counts || {})
+const relocateBlocked = computed(() => relocateData.value.blocked_items || [])
+const relocateBySite = computed(() => Object.entries(relocateData.value.by_site || {})
+  .map(([site, v]) => ({ site, ...(v || {}) }))
+  .sort((a, b) => Number(b.delete || 0) - Number(a.delete || 0)))
+async function loadRelocate(confirm = 0) {
+  relocateActing.value = confirm ? 'apply' : 'dry'
+  relocateLoading.value = true
+  try {
+    const url = `${pluginBase.value}/silent/relocate?confirm=${confirm ? 1 : 0}&batch=${Number(relocateBatch.value) || 50}&sub=${encodeURIComponent(relocateSub.value)}`
+    const res = unwrapResponse(await props.api.get(url)) || {}
+    relocateData.value = res
+    notify(res.message || (confirm ? '已迁出' : '干跑完成'))
+    if (confirm) loadSilent()
+  } catch (err) {
+    notify(`静默池迁出失败：${err?.message || err}`, 'error')
+  } finally {
+    relocateActing.value = ''
+    relocateLoading.value = false
+  }
+}
+function openRelocate() {
+  relocateOpen.value = true
+  loadRelocate(0)
+}
+async function runRelocate() {
+  relocateAsk.value = false
+  await loadRelocate(1)
+}
 // 兼容 秒 / 毫秒 / ISO 字符串
 function tsText(ts) {
   if (ts === null || ts === undefined || ts === '') return '—'
@@ -7263,7 +7306,7 @@ onUnmounted(() => {
                 ⚠ 触发限流/退避，暂停 {{ doubanCrawl.blocked_for }} 秒后继续
               </div>
               <div v-else-if="doubanCrawl.last_error" class="magicflow-douban-crawl__warn">
-                最近异常：{{ doubanCrawl.last_error }}
+                最近异常：{{ doubanCrawl.last_error }}<template v-if="doubanCrawl.last_error_at"> · {{ fmtTs(doubanCrawl.last_error_at) }}</template>
               </div>
               <div class="magicflow-douban-crawl__actions">
                 <VBtn
@@ -7922,6 +7965,7 @@ onUnmounted(() => {
           <span class="magicflow-settings-dialog__title">静默池</span>
           <div class="magicflow-recommend-dialog__head-actions">
             <VChip size="small" variant="tonal" color="primary">全局 · 跨站/跨任务的「无主」种</VChip>
+            <VBtn variant="text" color="warning" size="small" prepend-icon="mdi-delete-sweep" @click="openRelocate">阶段2迁出</VBtn>
             <VBtn variant="text" color="primary" size="small" prepend-icon="mdi-history" @click="openOperations('all')">操作记录</VBtn>
             <VBtn icon="mdi-refresh" size="small" variant="text" aria-label="刷新" :loading="silentLoading" @click="loadSilent" />
             <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="silentOpen = false" />
@@ -8082,6 +8126,93 @@ onUnmounted(() => {
           <VSpacer />
           <VBtn variant="text" :disabled="!!claimActing" @click="claimConfirm = null">取消</VBtn>
           <VBtn :color="claimConfirm && claimConfirm.kind === 'abandon' ? 'error' : 'primary'" variant="flat" :loading="!!claimActing" @click="claimConfirmRun">确认</VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
+    <!-- 静默池「阶段 2 迁出」（★ 12.4.0）：默认干跑，真写二次确认 -->
+    <VDialog v-model="relocateOpen" max-width="46rem" scrollable :fullscreen="isNarrow">
+      <VCard class="magicflow-dialog">
+        <header class="magicflow-settings-dialog__head">
+          <span class="magicflow-settings-dialog__title">静默池 · 阶段2 迁出</span>
+          <div class="magicflow-recommend-dialog__head-actions">
+            <VBtn icon="mdi-refresh" size="small" variant="text" aria-label="干跑刷新" :loading="relocateLoading" @click="loadRelocate()" />
+            <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="relocateOpen = false" />
+          </div>
+        </header>
+        <VDivider />
+        <VCardText class="text-body-2">
+          <div class="d-flex flex-wrap align-center gap-2 mb-2">
+            <VSelect
+              v-model="relocateSub"
+              :items="relocateScopeOptions"
+              item-title="label"
+              item-value="value"
+              density="compact"
+              hide-details
+              variant="outlined"
+              style="max-width: 14rem"
+              label="迁出范围（默认只迁静默-普通）"
+              @update:model-value="loadRelocate(0)"
+            />
+            <VTextField
+              v-model.number="relocateBatch"
+              type="number"
+              density="compact"
+              hide-details
+              variant="outlined"
+              style="max-width: 9rem"
+              label="每批上限"
+            />
+          </div>
+          <div class="magicflow-cs-stats">
+            <div class="magicflow-cs-stat"><b>{{ relocateCounts.delete || 0 }}</b><span>迁出候选</span></div>
+            <div class="magicflow-cs-stat"><b>{{ relocateCounts.keep || 0 }}</b><span>保护不迁</span></div>
+            <div class="magicflow-cs-stat"><b>{{ relocateCounts.pause || 0 }}</b><span>补 pause</span></div>
+            <div class="magicflow-cs-stat"><b>{{ relocateCounts.missing || 0 }}</b><span>不在下载器</span></div>
+          </div>
+          <div class="magicflow-settings-hint mt-2">
+            迁出 = 删种<strong>留文件</strong>（不在岗、不欠债、非资产、非保护）；保护类只列不动；
+            删前过删除闸门（含「库内资产」硬拦）。<strong>默认干跑，不写任何东西。</strong>
+          </div>
+          <table v-if="relocateBySite.length" class="magicflow-table mt-2">
+            <thead><tr><th>站点</th><th>总数</th><th>迁出候选</th></tr></thead>
+            <tbody>
+              <tr v-for="r in relocateBySite" :key="r.site">
+                <td>{{ r.site }}</td><td>{{ r.total }}</td><td>{{ r.delete }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-if="relocateBlocked.length" class="magicflow-settings-hint mt-2">
+            闸门拦截 {{ relocateBlocked.length }} 个：
+            <span v-for="b in relocateBlocked.slice(0, 20)" :key="b.hash">{{ b.hash }}（{{ b.reason }}）· </span>
+          </div>
+        </VCardText>
+        <VDivider />
+        <VCardActions>
+          <VSpacer />
+          <VBtn variant="text" @click="relocateOpen = false">关闭</VBtn>
+          <VBtn variant="tonal" color="warning" :loading="relocateActing === 'dry'" @click="loadRelocate()">干跑</VBtn>
+          <VBtn variant="flat" color="error" :loading="relocateActing === 'apply'" @click="relocateAsk = true">执行迁出</VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
+
+    <!-- 阶段2 迁出二次确认（真删种） -->
+    <VDialog :model-value="relocateAsk" max-width="32rem" persistent @update:model-value="v => { if (!v) relocateAsk = false }">
+      <VCard class="magicflow-dialog">
+        <VCardTitle class="text-subtitle-1 pt-4">确认执行阶段2迁出</VCardTitle>
+        <VCardText class="text-body-2">
+          将对 <strong>{{ relocateCounts.delete || 0 }}</strong> 个「迁出候选」删种（<strong>留文件</strong>），
+          保护类（欠 H&R / 库内资产 / 跨站来源份 / 认领 / 手动保留）不动。
+          <VAlert type="warning" variant="tonal" density="compact" class="mt-3">
+            删种不可逆（文件保留）。会先对违背不变量的种补 pause；每批上限 {{ relocateBatch }} 个。
+          </VAlert>
+        </VCardText>
+        <VDivider />
+        <VCardActions>
+          <VSpacer />
+          <VBtn variant="text" :disabled="relocateActing === 'apply'" @click="relocateAsk = false">取消</VBtn>
+          <VBtn variant="flat" color="error" :loading="relocateActing === 'apply'" @click="runRelocate()">确认迁出</VBtn>
         </VCardActions>
       </VCard>
     </VDialog>

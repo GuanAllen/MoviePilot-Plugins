@@ -193,6 +193,11 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
         {"path": "/agent/silent/audit", "method": "GET", "handler": "agent_silent_audit", "write": False,
          "params": {"limit": "int（默认 1000；0=全量）"}, "returns": "SilentAudit", "version": AGENT_ENDPOINT_VERSION,
          "summary": "★静默池盘点（四类分类 + stalled_violation 违背不变量 + 迁出候选）；只读"},
+        {"path": "/agent/silent/relocate", "method": "GET", "handler": "agent_silent_relocate", "write": True,
+         "params": {"confirm": "1=真迁出（默认干跑）", "batch": "int 每批上限（默认 50）",
+                    "site": "站点过滤（可空=全站）", "sub": "身份过滤（普通/新/资源；可空=全部）"},
+         "returns": "SilentRelocate", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "★静默池阶段2迁出（补 pause + 迁出候选删种留文件，过删除闸门）：默认干跑，confirm=1 才写"},
         # ---- P1.5c：功能域只读（AI ⊇ 前端，收编 19 个只读豁免域）----
         {"path": "/agent/tasks/{id}/bonus", "method": "GET", "handler": "agent_task_bonus", "write": False,
          "params": {"id": "任务 id 路径参数"}, "returns": "TaskBonusReport",
@@ -806,6 +811,26 @@ class AgentApiMixin:
             data, t0,
             ("features/silent._silent_audit() → tag_state(账本) + 下载器快照 + "
              "_hr_obligation + 保护集（只读）"))
+
+    def agent_silent_relocate(self, confirm: int = 0, batch: int = 50, site: str = "",
+                              sub: str = "") -> Dict[str, Any]:
+        """``GET /agent/silent/relocate`` —— ★ **静默池阶段 2 迁出**（写；默认干跑）。
+
+        一次调用答：**「阶段 2 要迁出哪些、拦下了哪些、补 pause 几个」**。
+        ``confirm=0``（默认）= 只出计划零写入；``confirm=1`` = 真写（补 pause + 删种留文件，过删除闸门）。
+        ``sub`` 可按身份分批（``普通`` / ``新`` / ``资源``）。
+        """
+        t0 = time.time()
+        try:
+            data = self._silent_relocate(confirm=1 if int(confirm or 0) else 0,
+                                        batch=int(batch or 50), site=str(site or ""),
+                                        sub=str(sub or ""))
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"静默池迁出失败:{e}", t0, trace_id=str(e))
+        return self._agent_report(
+            data, t0,
+            ("features/silent._silent_relocate() → _silent_audit(分类) + _silent_pause_gate(补 pause) + "
+             "_delete_gate_detail(硬拦) + DownloaderAdapter.delete_torrents(delete_file=False)"))
 
     # ---------------------------------------------------- 11.9.0 野马PT 逐种 H&R（只读 + 免罪写）
     def agent_yema(self, live: int = 0, force: int = 0) -> Dict[str, Any]:

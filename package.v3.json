@@ -3,7 +3,7 @@
         "name": "魔流",
         "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
         "labels": "站点,做种,魔力,刷流",
-        "version": "12.3.0",
+        "version": "12.4.0",
         "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
         "author": "GuanAllen",
         "level": 1,
@@ -387,9 +387,10 @@
             "12.1.0": "12.1.0：WS2 最后三套账本型 kv 并入表（site_rules/site_caps/crossseed_sources）+ 新表 mf_crossseed + /agent/ledger/crossseed",
             "12.2.0": "12.2.0：余下账本/状态型 kv 并入表（14 键 → mf_site 槽/mf_reseed/mf_run/mf_claim；kv 39→19；修站点 id 双命名空间合成行 bug）",
             "12.2.1": "12.2.1：站点表 AI 列补 mp_site_id/iyuu_sid（两套号不可互换；补种账本 site_id=IYUU sid）",
-            "12.3.0": "12.3.0：删除闸门新增「库内资产（已入库）」硬拦（Stage 2 前置）——真值源 mf_resource.in_library / 身份「资源」，所有删种路径一把闸"
+            "12.3.0": "12.3.0：删除闸门新增「库内资产（已入库）」硬拦（Stage 2 前置）——真值源 mf_resource.in_library / 身份「资源」，所有删种路径一把闸",
+            "12.4.0": "12.4.0：Stage 2 本体——静默池清旧+迁出（/agent/silent/relocate，干跑也预检闸门；新增 sub 范围参数；UI 弹窗）；线上方案A迁出「静默-普通」101 个（删种留文件，库内资产 535 未动）；豆瓣外挂修 0.3.1（最近异常成功即清空）"
         }
     },
-    "version": "12.3.0",
+    "version": "12.4.0",
     "history": {}
 }
