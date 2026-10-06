@@ -3,7 +3,7 @@
         "name": "魔流",
         "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
         "labels": "站点,做种,魔力,刷流",
-        "version": "11.12.0",
+        "version": "11.12.1",
         "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
         "author": "GuanAllen",
         "level": 1,
@@ -379,9 +379,10 @@
             "11.9.2": "站点 myhr 对账解析修复（PATCH）：CARPT 的「还需做种时间」列在剩余 <1h 时渲染成 MM:SS（如 48:00），而 features/hrbills.py::_HR_NEED_RE 只认 H:MM:SS → 这些行识别不出 → 候选行(50) > 解析行(40) → 整页被守门判「布局不兼容」→ 整站 myhr 对账跳过（GET /agent/hr/reconcile 对 carpt 直接失败）；放宽正则为「可选第三段」同时接受 MM:SS 与 H:MM:SS。need_left 仅作字符串透传、无时间运算，口径不变。",
             "11.10.0": "11.10.0：**站点级报表**（新功能页 + AI 入口）——回答「某站点上我们挂的各种种子现在分别是什么状态」。一次调用给出逐条种子（hash/标题/体积/保存目录/qB状态/进度/比例/上传）+ 分类桶（欠H&R / 未完成 / 暂停 / 静默 / 保护 / 普通）+ 汇总（按桶/按状态计数 + 体积 + H&R 欠账 owed/in_qb/missing）。真值源只读：下载器快照 + hr_bills.json + 站点 myhr.php（经 _hr_reconcile_site；其逐条 records 由本条一并抽出）。新增 `GET /site/seeds`（UI）+ `GET /agent/site/seeds`（AI，清单 41→42）；`_hr_reconcile_site` 输出补 `records`（逐条 tid/infohash/title/need_left/in_qb/billed/bill_state/bill_rule）供站点级聚合。不写下载器/账本，不新增缓存。",
             "11.11.0": "11.11.0：静默池全 paused 硬不变量 + H&R 拆 __hr_host__(保种) + 违约告警 + H&R 账单按站 + 阶段1零删除 + 账本可寻址",
-            "11.12.0": "11.12.0：违约自动核对 + 删除断言/熔断 + 代码字典接口 + H&R 口径修正（含 11.11.1）"
+            "11.12.0": "11.12.0：违约自动核对 + 删除断言/熔断 + 代码字典接口 + H&R 口径修正（含 11.11.1）",
+            "11.12.1": "11.12.1：站点报表明细按桶筛选（修复「明细只有暂停的」）+ 前端构建接入部署流程（dist 之前从未重建，UI 一直是旧的）"
         }
     },
-    "version": "11.12.0",
+    "version": "11.12.1",
     "history": {}
 }
