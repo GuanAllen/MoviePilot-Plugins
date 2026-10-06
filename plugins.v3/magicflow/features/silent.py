@@ -171,6 +171,15 @@ class SilentMixin:
                     return f"资产标记刷新 {i.get('changed')} 个（资产 {i.get('asset')}）"
                 return ""
 
+            def _s11() -> str:
+                # ★ 12.7.1 静默不变量**周期收敛**：账本 state=静默 但 qB 没停的 → 补 pause
+                #   （设计口径 11.11.0「静默池本意就是暂停不上传」；只 pause、不删、不 resume）
+                i = self._silent_enforce_pause(apply=True)
+                if i.get("paused") or i.get("failed"):
+                    return (f"补暂停 {i.get('paused')} 个（违背不变量 {i.get('violations')}，"
+                            f"失败 {i.get('failed')}）")
+                return ""
+
             _step("purge", "①池清理", _s1)
             _step("hr_keep", "②H&R保挂", _s2)
             _step("hr_guard", "③H&R管理", _s3)
@@ -181,6 +190,7 @@ class SilentMixin:
             _step("expire", "⑧超时归位", _s8)
             _step("assets", "⑨资产刷新", _s9)
             _step("missing", "⑩空壳清理", _s10)
+            _step("pause", "⑪不变量收敛", _s11)
 
             self._silent_host_last = time.time()
             self._decision_round_end()
@@ -340,6 +350,29 @@ class SilentMixin:
         else:
             msg = (f"已迁出 {rep.get('deleted', 0)} 个（删种留文件）· 闸门拦截 {rep.get('blocked', 0)} 个"
                    f"· 补 pause {rep.get('paused', 0)} 个")
+        return Response(success=True, message=msg, data=rep)
+
+    def silent_enforce(self, confirm: Any = 0) -> Response:
+        """★ 12.7.1 静默不变量收敛（UI 入口）——把「账本静默、qB 没停」的种补 pause。
+
+        默认干跑（``confirm=0``）；真写需 ``confirm=1``。幂等、只 pause（不删种、不动文件）。
+        职责：存量自愈（设计口径「静默池本意就是暂停不上传」，11.11.0 07:55）。
+        """
+        try:
+            _c = 1 if bool(self._as_bool_arg(confirm)) else 0
+        except Exception:  # noqa: BLE001
+            _c = 1 if str(confirm or "").strip().lower() in ("1", "true", "yes", "on") else 0
+        try:
+            rep = self._silent_enforce_pause(apply=bool(_c))
+        except Exception as e:  # noqa: BLE001
+            return Response(success=False, message=f"静默不变量收敛失败: {e}", data={})
+        _n = int(rep.get("violations") or 0)
+        if not _c:
+            msg = f"干跑：违背不变量 {_n} 个（未发任何写请求）"
+        else:
+            msg = f"已补 pause {rep.get('paused', 0)} 个（违背 {_n}，失败 {rep.get('failed', 0)}）"
+        if rep.get("disabled"):
+            msg = "静默拆分未启用（SILENT_HR_SPLIT_ENABLED=False），已跳过"
         return Response(success=True, message=msg, data=rep)
 
     def silent_pool(self, limit: Any = 400, records: Any = 60) -> Response:
@@ -839,6 +872,49 @@ class SilentMixin:
             self._log(f"静默闸:暂停失败:{err}", "warning")
         return rep
 
+    def _silent_enforce_pause(self, apply: bool = True, limit: int = 0) -> Dict[str, Any]:
+        """★ 12.7.1 静默不变量**周期收敛**：把「账本 state=静默、qB 里却没停」的种补 pause。
+
+        Master 2026-10-06 22:53「之前设计怎么做的呀」→ 设计原话（11.11.0）07:55
+        「**静默池本意就是暂停不上传**」：任何 ``state=静默`` 的种一律 pause，**无例外**；
+        「库内资产」只保证**永不删**（12.3.0 删除闸门第 5 类硬拦），**不保证在做种**。
+
+        为什么要这一步：``_silent_pause_gate`` 只在**写状态那一刻**调用，「补 pause」又只在手动跑
+        阶段 2 迁出时**按 sub 过滤**顺带做 → **存量违背无人收敛**（2026-10-06 实测 36 个：
+        35 个 ``stalledUP`` + 1 个 ``uploading``，都是 sub=资源/新 的库内资产/迁出候选）。
+
+        真值源：``_silent_audit`` 的 ``stalled_violation``（与 ``_delete_gate`` 同源，不造第二真值源）。
+        幂等：已 paused 的不会再写；**只 pause，不删种、不动文件、不 resume**。
+        调用点：① ``silent_host`` 周期步（自动收敛）② ``GET /agent/silent/enforce``（手动，默认干跑）。
+        """
+        rep: Dict[str, Any] = {"apply": bool(apply), "scanned": 0, "violations": 0,
+                              "paused": 0, "failed": 0, "items": [], "note": ""}
+        if not SILENT_HR_SPLIT_ENABLED:
+            rep["disabled"] = True
+            return rep
+        audit = self._silent_audit(limit=0)
+        rep["scanned"] = int((audit.get("counts") or {}).get("total") or 0)
+        bad = [str(it.get("hash") or "").strip().lower()
+               for it in (audit.get("items") or [])
+               if it.get("stalled_violation") and str(it.get("hash") or "").strip()]
+        rep["violations"] = len(bad)
+        rep["items"] = bad[:50]
+        if not bad:
+            rep["note"] = "静默池全 paused（不变量成立）"
+            return rep
+        if limit:
+            bad = bad[:int(limit)]
+        if not apply:
+            rep["note"] = "干跑（confirm=0）：零写入；确认后加 confirm=1"
+            return rep
+        r = self._silent_pause_gate(bad)
+        rep["paused"] = int((r or {}).get("paused") or 0)
+        rep["failed"] = int((r or {}).get("failed") or 0)
+        if rep["paused"] or rep["failed"]:
+            self._log(f"魔流:静默闸:补暂停收敛 {rep['paused']} 个"
+                      f"（违背不变量 {rep['violations']}，失败 {rep['failed']}）")
+        return rep
+
     def _silent_hr_pending(self, snap: Optional[Dict[str, Any]] = None) -> Set[str]:
         """仍欠 H&R（没挂满）的「静默-新」hash：不许被超时降级成「普通」。"""
         out: Set[str] = set()
@@ -1178,6 +1254,12 @@ class SilentMixin:
         _site_f = str(site or "").strip()
         _sub_f = str(sub or "").strip()
         _cap = int(batch or 0)
+        # ★ 12.7.1：补 pause 是**全局不变量**（不受 site/sub 过滤）——存量收敛；
+        #   旧版把 pause 也算在过滤后的循环里，跑了 sub=普通 就漏掉 资源/新 那批。
+        rep["counts"]["pause"] = sum(
+            1 for it in (audit.get("items") or [])
+            if it.get("stalled_violation") and it.get("hash")
+        )
         _KEEP_LABEL = {"owed_hr": "欠 H&R（保种）", "library_asset": "库内资产（永不删）",
                        "crossseed": "跨站来源份（保种期）", "claim": "已认领（保种承诺）",
                        "manual": "手动保留"}
@@ -1192,9 +1274,6 @@ class SilentMixin:
             if _sub_f and str(it.get("sub") or "") != _sub_f:
                 continue
             cls = str(it.get("class") or "")
-            stalled = bool(it.get("stalled_violation"))
-            if stalled:
-                rep["counts"]["pause"] = int(rep["counts"]["pause"]) + 1
             if cls != "relocate":
                 rep["counts"]["keep"] = int(rep["counts"]["keep"]) + 1
                 continue
@@ -1237,17 +1316,12 @@ class SilentMixin:
             rep["reason"] = "干跑（confirm=0）：零写入；确认后加 confirm=1"
             return rep
 
-        # —— ① 补 pause（不变量）：全部 stalled（含保护类）——
-        _stalled = [str(it.get("hash") or "").lower()
-                    for it in (audit.get("items") or [])
-                    if it.get("stalled_violation") and it.get("hash")
-                    and (not _site_f or str(it.get("site") or "") == _site_f)
-                    and (not _sub_f or str(it.get("sub") or "") == _sub_f)]
-        if _stalled:
-            _pr = self._silent_pause_gate(_stalled)
-            rep["paused"] = int((_pr or {}).get("paused") or 0)
-            if rep["paused"]:
-                self._log(f"魔流:静默池迁出:补 pause {rep['paused']} 个（不变量）")
+        # —— ① 补 pause（不变量）：★ 12.7.1 改为**全局**收敛（不受 site/sub 过滤）——
+        _pr = self._silent_enforce_pause(apply=True)
+        rep["paused"] = int((_pr or {}).get("paused") or 0)
+        rep["paused_violations"] = int((_pr or {}).get("violations") or 0)
+        if rep["paused"]:
+            self._log(f"魔流:静默池迁出:补 pause {rep['paused']} 个（不变量）")
 
         # —— ② 迁出（删种留文件，过闸门）——
         if not _plan:

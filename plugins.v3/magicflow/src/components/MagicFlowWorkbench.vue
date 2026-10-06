@@ -2536,6 +2536,25 @@ async function runRelocate() {
   relocateAsk.value = false
   await loadRelocate(1)
 }
+// ── 静默不变量收敛（★ 12.7.1）：账本静默但 qB 没停 → 补 pause（只 pause，不删种、不动文件）──
+const enforceLoading = ref(false)
+const enforceAsk = ref(false)
+const enforceData = ref({ scanned: 0, violations: 0, paused: 0, failed: 0, items: [] })
+const enforceCounts = computed(() => enforceData.value || {})
+async function loadEnforce(confirm = 0) {
+  enforceLoading.value = true
+  try {
+    const url = `${pluginBase.value}/silent/enforce?confirm=${confirm ? 1 : 0}`
+    const res = unwrapResponse(await props.api.get(url)) || {}
+    enforceData.value = res
+    notify(res.message || (confirm ? '已补 pause' : '干跑完成'))
+    if (confirm) loadRelocate(0)
+  } catch (err) {
+    notify(`静默不变量收敛失败：${err?.message || err}`, 'error')
+  } finally {
+    enforceLoading.value = false
+  }
+}
 // 兼容 秒 / 毫秒 / ISO 字符串
 function tsText(ts) {
   if (ts === null || ts === undefined || ts === '') return '—'
@@ -8305,12 +8324,18 @@ onUnmounted(() => {
           <div class="magicflow-cs-stats">
             <div class="magicflow-cs-stat"><b>{{ relocateCounts.delete || 0 }}</b><span>迁出候选</span></div>
             <div class="magicflow-cs-stat"><b>{{ relocateCounts.keep || 0 }}</b><span>保护不迁</span></div>
-            <div class="magicflow-cs-stat"><b>{{ relocateCounts.pause || 0 }}</b><span>补 pause</span></div>
+            <div class="magicflow-cs-stat"><b>{{ relocateCounts.pause || 0 }}</b><span>违背不变量</span></div>
             <div class="magicflow-cs-stat"><b>{{ relocateCounts.missing || 0 }}</b><span>不在下载器</span></div>
           </div>
           <div class="magicflow-settings-hint mt-2">
             迁出 = 删种<strong>留文件</strong>（不在岗、不欠债、非资产、非保护）；保护类只列不动；
             删前过删除闸门（含「库内资产」硬拦）。<strong>默认干跑，不写任何东西。</strong>
+          </div>
+          <div class="magicflow-settings-hint mt-2">
+            <strong>补暂停</strong>（★ 12.7.1）：设计口径「静默池本意就是暂停不上传」——账本已是静默、
+            但下载器里没停的种一律补 pause（幂等，<strong>只暂停、不删种、不动文件</strong>）。
+            <span v-if="enforceCounts.violations">当前违背不变量 <b>{{ enforceCounts.violations }}</b> 个。</span>
+            <span v-else>当前不变量成立（全 paused）。</span>
           </div>
           <table v-if="relocateBySite.length" class="magicflow-table mt-2">
             <thead><tr><th>站点</th><th>总数</th><th>迁出候选</th></tr></thead>
@@ -8329,6 +8354,8 @@ onUnmounted(() => {
         <VCardActions>
           <VSpacer />
           <VBtn variant="text" @click="relocateOpen = false">关闭</VBtn>
+          <VBtn variant="tonal" color="info" :loading="enforceLoading" @click="loadEnforce(0)">查违背不变量</VBtn>
+          <VBtn variant="tonal" color="warning" :loading="enforceLoading" @click="enforceAsk = true">补暂停</VBtn>
           <VBtn variant="tonal" color="warning" :loading="relocateActing === 'dry'" @click="loadRelocate()">干跑</VBtn>
           <VBtn variant="flat" color="error" :loading="relocateActing === 'apply'" @click="relocateAsk = true">执行迁出</VBtn>
         </VCardActions>
@@ -8351,6 +8378,25 @@ onUnmounted(() => {
           <VSpacer />
           <VBtn variant="text" :disabled="relocateActing === 'apply'" @click="relocateAsk = false">取消</VBtn>
           <VBtn variant="flat" color="error" :loading="relocateActing === 'apply'" @click="runRelocate()">确认迁出</VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
+
+    <!-- 补暂停二次确认（★ 12.7.1：只 pause，不删种） -->
+    <VDialog :model-value="enforceAsk" max-width="32rem" persistent @update:model-value="v => { if (!v) enforceAsk = false }">
+      <VCard class="magicflow-dialog">
+        <VCardTitle class="text-subtitle-1 pt-4">确认补暂停</VCardTitle>
+        <VCardText class="text-body-2">
+          将对「账本已静默、但下载器里还在跑」的种补 pause（预计 <strong>{{ enforceCounts.violations || 0 }}</strong> 个）。
+          <VAlert type="info" variant="tonal" density="compact" class="mt-3">
+            只暂停：<strong>不删种、不动文件、不 resume</strong>；幂等可重跑。
+          </VAlert>
+        </VCardText>
+        <VDivider />
+        <VCardActions>
+          <VSpacer />
+          <VBtn variant="text" :disabled="enforceLoading" @click="enforceAsk = false">取消</VBtn>
+          <VBtn variant="flat" color="warning" :loading="enforceLoading" @click="enforceAsk = false; loadEnforce(1)">确认补暂停</VBtn>
         </VCardActions>
       </VCard>
     </VDialog>

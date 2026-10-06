@@ -198,6 +198,11 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
                     "site": "站点过滤（可空=全站）", "sub": "身份过滤（普通/新/资源；可空=全部）"},
          "returns": "SilentRelocate", "version": AGENT_ENDPOINT_VERSION,
          "summary": "★静默池阶段2迁出（补 pause + 迁出候选删种留文件，过删除闸门）：默认干跑，confirm=1 才写"},
+        {"path": "/agent/silent/enforce", "method": "GET", "handler": "agent_silent_enforce",
+         "write": True,
+         "params": {"confirm": "1=真补 pause（默认干跑）"},
+         "returns": "SilentEnforce", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "★★静默不变量收敛（12.7.1）：账本静默但 qB 没停的种补 pause（幂等、只 pause 不删）；默认干跑"},
         # ---- P1.5c：功能域只读（AI ⊇ 前端，收编 19 个只读豁免域）----
         {"path": "/agent/tasks/{id}/bonus", "method": "GET", "handler": "agent_task_bonus", "write": False,
          "params": {"id": "任务 id 路径参数"}, "returns": "TaskBonusReport",
@@ -845,6 +850,24 @@ class AgentApiMixin:
             data, t0,
             ("features/silent._silent_relocate() → _silent_audit(分类) + _silent_pause_gate(补 pause) + "
              "_delete_gate_detail(硬拦) + DownloaderAdapter.delete_torrents(delete_file=False)"))
+
+    def agent_silent_enforce(self, confirm: int = 0) -> Dict[str, Any]:
+        """``GET /agent/silent/enforce`` —— ★★ **静默不变量收敛**（写；默认干跑）。
+
+        一次调用答：**「静默池里有多少种违背『全 paused』不变量、这次补了几个 pause」**。
+        设计口径（11.11.0）：「静默池本意就是暂停不上传」；「库内资产」只保证**永不删**（删除闸门
+        第 5 类硬拦），**不保证在做种**。收敛是幂等的、只 pause（不删种、不动文件、不 resume）。
+        ``confirm=0``（默认）= 只清单零写入；``confirm=1`` = 真补 pause。
+        """
+        t0 = time.time()
+        try:
+            data = self._silent_enforce_pause(apply=bool(int(confirm or 0)))
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"静默不变量收敛失败:{e}", t0, trace_id=str(e))
+        return self._agent_report(
+            data, t0,
+            ("features/silent._silent_enforce_pause() → _silent_audit(stalled_violation, 只读) + "
+             "_silent_pause_gate → DownloaderAdapter.pause_torrents(只 pause，不删)"))
 
     # ---------------------------------------------------- 11.9.0 野马PT 逐种 H&R（只读 + 免罪写）
     def agent_yema(self, live: int = 0, force: int = 0) -> Dict[str, Any]:

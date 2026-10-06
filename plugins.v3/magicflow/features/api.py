@@ -498,6 +498,13 @@ class ApiMixin:
                 "summary": "静默池阶段2迁出:补 pause + 迁出候选删种留文件（默认干跑；confirm=1 才写）",
             },
             {
+                "path": "/silent/enforce",
+                "endpoint": self.silent_enforce,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "静默不变量收敛:账本静默但 qB 没停的种补 pause（默认干跑；confirm=1 才写）",
+            },
+            {
                 "path": "/claim",
                 "endpoint": self.get_claim_state,
                 "methods": ["GET"],
