@@ -7,6 +7,10 @@
    —— 它是静默池唯一自动执行的「删除」步（``silent_host`` 每轮 ``_s1``），
    ``_silent_plain_sweep``（低效普通清扫）另见 ``test_silent_hr_split.py``。
 
+★ 13.0.2（Master「统一成身份就好」）：静默池保护的判据**统一成身份**口径
+   （`_silent_identity_ctx` / `_silent_identity_protected`：跨站来源账本 / 已认领 / 资源成员 /
+   库内资源 / 同数据副本），**不再看 `魔流-跨站`/`魔流-辅种`/`已整理·辅种` 标签**。
+
 覆盖：
   1) 数据路径口径 ``common.torrent_data_key``（content_path 优先 / 退回 save_path+title）
      + 真 ``TorrentInfo`` 护栏（**无 name 字段**、有 content_path —— 取 .name 恒空曾致共用判据失效）；
@@ -118,14 +122,43 @@ class _Ledger:
         self._d.pop(str(h or "").lower(), None)
 
 
+class _Groups:
+    """资源账本桩：`items()`（gid → 资源记录）+ `group_of(hash)`。"""
+
+    def __init__(self, items=None):
+        self._items = dict(items or {})
+
+    def items(self):
+        return dict(self._items)
+
+    def group_of(self, h):
+        for gid, rec in self._items.items():
+            if str(h or "").lower() in {str(k).lower() for k in (rec.get("members") or {})}:
+                return gid
+        return ""
+
+
 class Harness(silent.SilentMixin):
     """在真 SilentMixin 上挂桩：真跑 `_silent_purge_incomplete` 的编排（分类输入可控）。"""
 
-    def __init__(self, ledger, snap):
+    def __init__(self, ledger, snap, groups=None, crossseed=None, claim=None):
         self.ledger = {str(k).lower(): dict(v or {}) for k, v in (ledger or {}).items()}
         self.torrents = {str(k).lower(): v for k, v in (snap or {}).items()}
+        self.groups = groups
+        self.cs_src = set(crossseed or ())
+        self.claim = set(claim or ())
         self.delete_calls = []
         self.journal = None
+
+    # ---- 身份真值源桩（★ 13.0.2：清理只在「身份」上判，不再看标签）----
+    def _tag_groups(self):
+        return self.groups
+
+    def _crossseed_source_hashes(self):
+        return set(self.cs_src)
+
+    def _claim_protected_hashes(self):
+        return set(self.claim)
 
     def _tag_state(self):
         return _Ledger(self.ledger)
@@ -142,6 +175,13 @@ class Harness(silent.SilentMixin):
     def _log(self, msg, level=None):
         pass
 
+    # ---- 入池即判 所需桩 ----
+    def _hr_obligation(self, site, t, snap=None):
+        return (bool(getattr(self, "hr_owed", False)), 0.0, 0.0, "test")
+
+    def _torrent_site_name(self, tags, fallback=""):
+        return fallback or "site"
+
     def get_data_path(self):
         return ROOT
 
@@ -157,10 +197,13 @@ class _DL:
 
 
 SIL = tags.STATE_SILENT
+SUB_PLAIN = tags.SUB_PLAIN
+SUB_NEW = tags.SUB_NEW
+SUB_RESOURCE = tags.SUB_RESOURCE
 
 
 def _rec(**kw):
-    d = {"state": SIL}
+    d = {"state": SIL, "sub": SUB_PLAIN}
     d.update(kw)
     return d
 
@@ -219,24 +262,87 @@ def main() -> int:
     _ok(rep["torrent_only"] == 1, f"torrent_only=1（{rep['torrent_only']}）")
     _ok("a1" not in h.ledger and "a2" not in h.ledger, "删成功的从账本摘掉（drop）")
 
-    # ---- ⑤ 保护类不删 ----
-    print("\n[5] 保护类（跨站来源 / 推荐中 / 辅种复用 / 库内资产）不删")
+    # ---- ⑤ 身份保护（★ 13.0.2 统一口径）----
+    print("\n[5] 身份保护：跨站来源账本 / 资源成员 / 库内资源 / 同数据副本 / 推荐在途 不删")
     h = Harness(
-        {"p1": _rec(), "p2": _rec(), "p3": _rec(), "p4": _rec(in_library=True)},
-        {"p1": _torrent("p1", progress=0.4, tags=["魔流-跨站"], title="x1"),
-         "p2": _torrent("p2", progress=0.4, tags=["魔流-推荐"], title="x2"),
-         "p3": _torrent("p3", progress=0.4, tags=["魔流-辅种"], title="x3"),
-         "p4": _torrent("p4", progress=0.4, title="x4")},
+        {"s1": _rec(), "s2": _rec(), "s3": _rec(), "s4": _rec(in_library=True),
+         "s5": _rec(), "s6": _rec()},
+        {"s1": _torrent("s1", progress=0.4, title="cs", tags=["魔流-跨站"]),
+         "s2": _torrent("s2", progress=0.4, title="mem", tags=["魔流-辅种"]),
+         "s3": _torrent("s3", progress=0.4, title="copy", save="/lib"),
+         "s4": _torrent("s4", progress=0.4, title="lib"),
+         "s5": _torrent("s5", progress=0.4, title="rec", tags=["魔流-推荐"]),
+         "s6": _torrent("s6", progress=0.4, title="bare")},
+        groups=_Groups({"g1": {"library": {"in_library": True}, "members": {"s2": {}}}}),
+        crossseed={"s1"},
     )
+    # s3 与库内成员 s2 同一个 content_path → 同数据副本（副本跟随资源身份）
+    h.torrents["s2"].content_path = "/lib/copy"
     rep = h._silent_purge_incomplete(apply=True)
-    _ok(rep["pending"] == 0 and h.delete_calls == [],
-        "跨站/推荐/辅种复用/库内资产 都不在「未下完直接删」范围")
+    deleted = [x[0][0] for x in h.delete_calls]
+    _ok(rep["pending"] == 1, f"只有 1 个进「未下完」范围（实测 {rep['pending']}）")
+    _ok(deleted == ["s6"], f"只删 s6（无身份/无推荐）；实测删 {deleted}")
+    _ok(h.delete_calls[0][1] is True, "s6 独享数据 → 删条目+删文件")
+    _ok("s6" not in h.ledger and "s1" in h.ledger, "删成功的（s6）摘掉；被保护的（s1）保留")
 
-    # ---- ⑥ 已完成种不在范围 ----
-    print("\n[6] 已完成种（progress≈1 且非 DL 态）不在「未下完」范围")
+    # ---- ⑥ 标签不再是判据（对照：只有标签、没有身份 → 不再豁免）----
+    print("\n[6] ★ 标签判据已删：只有 `魔流-辅种`/`已整理` 标签、无身份 → 照删")
+    h = Harness({"t9": _rec()},
+                {"t9": _torrent("t9", progress=0.4, title="z", tags=["魔流-辅种", "已整理"])})
+    rep = h._silent_purge_incomplete(apply=True)
+    _ok(rep["pending"] == 1 and [x[0][0] for x in h.delete_calls] == ["t9"],
+        "裸标签不再豁免（旧版按 MARK_REUSE/is_asset_tags 放行 —— 已统一成身份）")
+
+    # ---- ⑦ 周期兜底：未下完的不分 sub 都删（身份保护者除外）----
+    print("\n[7] 周期兜底：未下完的不分身份都删（「资源」等由**身份保护**挡住）")
+    h = Harness({"n1": _rec(sub=SUB_NEW), "r1": _rec(sub=SUB_RESOURCE), "p1": _rec()},
+                {"n1": _torrent("n1", progress=0.3, title="new"),
+                 "r1": _torrent("r1", progress=0.3, title="res"),
+                 "p1": _torrent("p1", progress=0.3, title="plain")})
+    rep = h._silent_purge_incomplete(apply=True)
+    _ok(sorted(x[0][0] for x in h.delete_calls) == ["n1", "p1"],
+        "「新/普通」没下完都删（不限 sub）；「资源」被身份保护挡住（实测 "
+        f"{sorted(x[0][0] for x in h.delete_calls)}）")
+
+    # ---- ⑧ 已完成种不在范围 ----
+    print("\n[8] 已完成种（progress≈1 且非 DL 态）不在「未下完」范围")
     h = Harness({"d1": _rec()}, {"d1": _torrent("d1", progress=1.0, state="pausedUP", title="done")})
     rep = h._silent_purge_incomplete(apply=True)
     _ok(rep["pending"] == 0 and h.delete_calls == [], "已完成且非 DL → 不处理（归 plain_sweep/分拣管）")
+
+    # ---- ⑧ 身份口径助手自检 ----
+    print("\n[9] `_silent_identity_ctx` 口径自检")
+    h = Harness({"a": _rec(in_library=True), "b": _rec()},
+                {"a": _torrent("a", title="A"), "b": _torrent("b", title="B")},
+                groups=_Groups({"g1": {"identity": "资源", "members": {"b": {}}}}),
+                crossseed={"c1"}, claim={"c2"})
+    ctx = h._silent_identity_ctx(h.torrents)
+    _ok({"a", "b"} <= ctx["members"] or {"b"} <= ctx["members"],
+        "资源成员（identity=资源）进 members")
+    _ok(ctx["crossseed"] == {"c1"} and ctx["claim"] == {"c2"}, "跨站来源/已认领 真值源透传")
+    _ok("/x/A" in ctx["asset_keys"] and "/x/B" in ctx["asset_keys"],
+        "库内/成员份的 content_path 进 asset_keys（同数据副本判据）")
+
+    # ---- ⑩ 入池即判（Master 01:30）----
+    print("\n[10] 入池即判 `_silent_drop_incomplete_now`：没下完的刚入池就删")
+    h = Harness({"i1": _rec(sub=SUB_NEW)}, {"i1": _torrent("i1", progress=0.3, title="inc")})
+    _ok(h._silent_drop_incomplete_now("i1") is True
+        and [x[0][0] for x in h.delete_calls] == ["i1"] and h.delete_calls[0][1] is True,
+        "没下完的「新」当场删（删条目+删文件）")
+    h = Harness({"i2": _rec(sub=SUB_NEW)}, {"i2": _torrent("i2", progress=1.0, state="pausedUP", title="ok")})
+    _ok(h._silent_drop_incomplete_now("i2") is False and not h.delete_calls, "已完成的入池不动")
+    h = Harness({"i3": _rec(sub=SUB_NEW)}, {"i3": _torrent("i3", progress=0.4, title="cs")},
+                crossseed={"i3"})
+    _ok(h._silent_drop_incomplete_now("i3") is False, "身份保护（跨站来源）→ 不删")
+    h = Harness({"i4": _rec(sub=SUB_NEW), "j4": _rec()},
+                {"i4": _torrent("i4", progress=0.4, title="cp"),
+                 "j4": _torrent("j4", progress=1.0, state="pausedUP", title="cp")})
+    _ok(h._silent_drop_incomplete_now("i4") is False, "同数据另有种（辅种副本等校验）→ 不删")
+    h = Harness({"i5": _rec(sub=SUB_NEW)}, {"i5": _torrent("i5", progress=0.4, title="hr")})
+    h.hr_owed = True
+    _ok(h._silent_drop_incomplete_now("i5") is False, "欠 H&R（保种义务）→ 不删")
+    h = Harness({"i6": _rec(sub=SUB_NEW, manual_paused=True)}, {"i6": _torrent("i6", progress=0.4, title="m")})
+    _ok(h._silent_drop_incomplete_now("i6") is False, "手动保护 → 不删")
 
     print("\n" + "=" * 64)
     print(f"✅ PASS —— 共 {CHECKS} 项全过")

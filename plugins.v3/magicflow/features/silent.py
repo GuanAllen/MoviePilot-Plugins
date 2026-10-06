@@ -18,6 +18,7 @@ from ..persistence import OperationItem
 from ..tags import (
     asset_member_hashes,
     is_asset_tags,
+    is_library_asset,
     MARK_REUSE,
     SPECIAL_TAGS,
     MARK_HR,
@@ -1048,6 +1049,150 @@ class SilentMixin:
                       f"（静默 {rep['silent']} · 欠H&R {rep['hr_pending']} · 非H&R{rep['nonhr']}不动）")
         return rep
 
+    def _silent_identity_ctx(self, snap: "Dict[str, Any] | None" = None) -> Dict[str, Any]:
+        """★ 13.0.2：静默池「身份保护」的**唯一口径**（只读现成账本/资源组，不另存真值）。
+
+        Master 2026-10-07 01:21「统一成身份就好」——取代过去「按 ``魔流-跨站`` / ``魔流-辅种``
+        / ``已整理·辅种`` 标签各自硬豁免」的多套判据（那正是「各自保护各自」的分叉之源）。
+        身份真值源（全部只读）：
+          ① 跨站来源份 ← ``_crossseed_source_hashes()``（来源账本 active，已剔除义务已履行）
+          ② 已认领     ← ``_claim_protected_hashes()``
+          ③ 资源成员   ← ``asset_member_hashes(self._tag_groups())``（资源份本体 + 其副本）
+          ④ 同数据副本 ← 「资产份（身份=资源 / 库记 ``in_library`` / 资源成员）」的
+                          ``content_path`` 集合（``content_path`` 是唯一「同数据」口径）
+        """
+        snap = snap if snap is not None else (self._tag_all_torrents() or {})
+        try:
+            members = set(asset_member_hashes(self._tag_groups()) or set())
+        except Exception:  # noqa: BLE001
+            members = set()
+        try:
+            crossseed = set(self._crossseed_source_hashes() or set())
+        except Exception:  # noqa: BLE001
+            crossseed = set()
+        try:
+            claim = set(self._claim_protected_hashes() or set())
+        except Exception:  # noqa: BLE001
+            claim = set()
+        try:
+            ledger = dict(self._tag_state().items() or {})
+        except Exception:  # noqa: BLE001
+            ledger = {}
+        asset_keys: Set[str] = set()
+        for _h, _t in (snap or {}).items():
+            _hh = str(_h or "").strip().lower()
+            if not (is_library_asset(ledger.get(_hh)) or _hh in members):
+                continue
+            _k = _data_key(_t)
+            if _k:
+                asset_keys.add(_k)
+        return {"members": members, "crossseed": crossseed, "claim": claim,
+                "asset_keys": asset_keys}
+
+    def _silent_identity_protected(self, h: str, rec: Dict[str, Any], t: Any,
+                                   ctx: Dict[str, Any]) -> str:
+        """该种是否受**身份**保护 → 命中原因（``crossseed``/``claim``/``resource``/
+        ``in_library``/``resource_copy``）；未命中 ``""``。
+
+        ★ 跨站来源份 / 已认领**优先**：那是欠**他站**的 H&R 保种责任，跟自家资源评级无关，
+        不受 ``asset_recheck=fail``（推荐复核不达标）影响；资产/副本类则尊重该 fail 标记
+        （与 13.0.0 口径一致：不达标就不再享受资产保护）。
+        """
+        hh = str(h or "").strip().lower()
+        if hh in (ctx.get("crossseed") or set()):
+            return "crossseed"
+        if hh in (ctx.get("claim") or set()):
+            return "claim"
+        if str((rec or {}).get("asset_recheck") or "") == "fail":
+            return ""
+        if hh in (ctx.get("members") or set()):
+            return "resource"
+        if is_library_asset(rec):
+            return "in_library"
+        _k = _data_key(t)
+        if _k and _k in (ctx.get("asset_keys") or set()):
+            return "resource_copy"
+        return ""
+
+    def _silent_drop_incomplete_now(self, h: str, rec: Any = None, t: Any = None,
+                                    *, reason: str = "入池即删·未下完") -> bool:
+        """★ 13.0.2：**入池即判** —— 「没下完」的种刚进静默池就删（Master 2026-10-07 01:30）。
+
+        「没下完的新进入静默池的那一刻就应该被删除」—— 不必等 `silent_host`（默认 60min）那轮。
+
+        放行（不删）四类，任一命中即不动：
+          ① **身份保护**（跨站来源份 / 已认领 / 资源份 / 同数据副本）—— `_silent_identity_protected`；
+          ② **欠 H&R**（保种义务，绝不删；判不准 → fail-closed 不删）；
+          ③ **手动保护**（``manual_paused``）；
+          ④ **同数据另有种**（辅种/复用副本在等校验：数据在本机，不是「真下载」）。
+        删除走**单闸门** ``DownloaderAdapter.delete_torrents``（内含欠 H&R / 跨站来源 / 已认领 /
+        手动保留硬拦 + 删除账单断言 + 熔断），并登记操作流水。
+        """
+        hh = str(h or "").strip().lower()
+        if not hh:
+            return False
+        try:
+            if t is None:
+                t = (self._tag_all_torrents() or {}).get(hh)
+            if t is None:
+                return False
+            if rec is None:
+                rec = dict(self._tag_state().get(hh) or {})
+            if str((rec or {}).get("state") or "") != STATE_SILENT:
+                return False
+            if (rec or {}).get("manual_paused"):
+                return False
+            try:
+                prog = float(getattr(t, "progress", 1.0) or 0.0)
+            except (TypeError, ValueError):
+                prog = 1.0
+            if prog >= 0.999:
+                return False
+            _ctx = self._silent_identity_ctx()
+            if self._silent_identity_protected(hh, rec, t, _ctx):
+                return False
+            tags = [str(x) for x in (getattr(t, "tags", None) or [])]
+            site = str((rec or {}).get("site") or "").strip() or self._torrent_site_name(tags, "")
+            try:
+                if self._hr_obligation(site, t)[0]:
+                    return False
+            except Exception:  # noqa: BLE001
+                return False                     # fail-closed：判不准就不删
+            # ④ 同数据另有种 → 是副本/等校验，不是「真下载」
+            _key = _data_key(t)
+            if _key:
+                for _h2, _t2 in (self._tag_all_torrents() or {}).items():
+                    if str(_h2 or "").strip().lower() != hh and _data_key(_t2) == _key:
+                        return False
+            dl = self._get_downloader(str((rec or {}).get("downloader") or "qbittorrent"))
+            if dl is None:
+                return False
+            cnt, err = dl.delete_torrents(hashes=[hh], delete_file=True,
+                                          reason=reason, source="silent.enter")
+            if not cnt:
+                if err:
+                    self._log(f"入池即删:删除失败 {hh[:12]}:{err}", "warning")
+                return False
+            try:
+                self._tag_state().drop(hh)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                _sz = round(float(getattr(t, "size", 0) or 0) / 1073741824.0, 3)
+            except (TypeError, ValueError):
+                _sz = 0.0
+            self._journal_deletions(
+                {SILENT_HOST_TASK_ID: [OperationItem(
+                    hash=hh, title=str(getattr(t, "title", "") or ""),
+                    reason=f"{reason}({prog * 100:.1f}%)", size_gb=_sz, source="silent")]},
+                log_prefix="静默池",
+            )
+            self._log(f"魔流:静默池:入池即删（未下完 {prog * 100:.1f}%）{hh[:12]}")
+            return True
+        except Exception as err:  # noqa: BLE001
+            self._log(f"入池即删:异常 {hh[:12]}:{err}", "warning")
+            return False
+
     def _silent_verify_marks(self, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
         """★ 静默池「辅种/复用种」校验：停在 pausedDL 是**等校验**，不是没下完。
 
@@ -1063,6 +1208,7 @@ class SilentMixin:
             return rep
         snap = self._tag_all_torrents() or {}
         cap = int(limit or 0)
+        _ictx = self._silent_identity_ctx(snap)
         for h, rec in list(data.items()):
             hh = str(h or "").lower()
             if str(rec.get("state") or "") != STATE_SILENT:
@@ -1070,8 +1216,9 @@ class SilentMixin:
             t = snap.get(hh)
             if t is None:
                 continue
-            tags = [str(x) for x in (getattr(t, "tags", None) or [])]
-            if not (MARK_REUSE in tags or is_asset_tags(tags) or bool(rec.get("in_library"))):
+            # ★ 13.0.2：选种同「身份」口径（跨站来源份 / 资源份 / 同数据副本）—— 这类种停在
+            #   pausedDL 是**等校验**，不是「没下完」（旧版按 `魔流-辅种`/`已整理·辅种` 标签判）
+            if not self._silent_identity_protected(hh, rec, t, _ictx):
                 continue
             try:
                 prog = float(getattr(t, "progress", 1.0) or 0.0)
@@ -1129,7 +1276,7 @@ class SilentMixin:
     def _silent_purge_incomplete(self, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
         """★ 静默池「未下完」清理：没下完的直接删，**不计 H&R**（Master 2026-09-28 00:16）。
 
-        - 只扫静默池（``魔流-<站点>-静默[-子类]``）
+        - 只扫静默池**「没下完」**的种（不分身份；「资源/来源/副本」等由身份保护挡住）（★ 13.0.2）
         - 排除：跨站来源份（``魔流-跨站``：数据已下、正在校验）、推荐待确认（``魔流-推荐``）、
           库内资产（已整理/辅种）—— 这些都不是「没下完的半成品」
         - 删文件策略：同目录还有别的**已完成**种子在用 → 只删种子；否则连文件一起删
@@ -1144,6 +1291,7 @@ class SilentMixin:
             return rep
         snap = self._tag_all_torrents() or {}
         cap = int(limit or 0)
+        _ictx = self._silent_identity_ctx(snap)
         # ★ 同「Release 目录」保护：另一个**已完成**种子占着同一个
         #   `save_path/name`（典型：跨站辅种同一发布）→ 只删种子、不删文件。
         #   注意 qB 的 save_path 是**根目录**（几百个种共用），不能拿它当判据。
@@ -1167,11 +1315,10 @@ class SilentMixin:
             if t is None:
                 continue
             tags = [str(x) for x in (getattr(t, "tags", None) or [])]
-            # 跨站来源份 / 推荐中 / 库内资产 / **辅种复用种**（它们停在 pausedDL 是等校验，
-            # 不是「没下完的下载」Master 2026-09-28）→ 都不在「未下完直接删」范围内
-            if ("魔流-跨站" in tags or "魔流-推荐" in tags
-                    or MARK_REUSE in tags or is_asset_tags(tags)
-                    or bool(rec.get("in_library"))):
+            # ★ 13.0.2：保护 = **身份**（跨站来源份 / 已认领 / 资源份 / 同数据副本，
+            #   它们停在 pausedDL 是等校验，不是「没下完」）+ 推荐在途
+            #   （旧版按 `魔流-跨站`/`魔流-辅种`/`已整理·辅种` 标签判 → 已删标签判据）
+            if "魔流-推荐" in tags or self._silent_identity_protected(h, rec, t, _ictx):
                 continue
             try:
                 prog = float(getattr(t, "progress", 1.0) or 0.0)
@@ -1516,61 +1663,13 @@ class SilentMixin:
                         done_keys.setdefault(_k, set()).add(str(_h).lower())
             except Exception:  # noqa: BLE001
                 continue
-        try:
-            files = self._tag_groups()
-        except Exception:  # noqa: BLE001
-            files = None
-        _lib_cache: Dict[str, bool] = {}
-
-        def _in_lib(_h: str) -> bool:
-            """该种所属**资源**是否已入库（★ 库记挂资源，不挂种子 —— P1-6）。"""
-            if files is None:
-                return False
-            try:
-                _g = files.group_of(_h)
-            except Exception:  # noqa: BLE001
-                return False
-            if not _g:
-                return False
-            if _g in _lib_cache:
-                return _lib_cache[_g]
-            try:
-                _v = bool((files.items().get(_g) or {}).get("library", {}).get("in_library"))
-            except Exception:  # noqa: BLE001
-                _v = False
-            _lib_cache[_g] = _v
-            return _v
+        # ★ 13.0.2：身份保护统一口径（资源成员 / 库记 / 同数据副本 / 跨站来源 / 已认领）
+        _ictx = self._silent_identity_ctx(snap)
 
         by_site: Dict[str, List[Tuple[str, Any, float, Dict[str, Any]]]] = {}
         protected = 0
-        _pwhy = {"asset": 0, "recommend": 0, "in_library": 0, "hr": 0,
-                 "crossseed": 0, "claim": 0, "resource_copy": 0}
-        # ★ 13.0.0：副本跟随资源身份 —— 资源成员 / 同目录的，一样受保护
-        try:
-            _asset_members2 = set(asset_member_hashes(self._tag_groups()) or set())
-        except Exception:  # noqa: BLE001
-            _asset_members2 = set()
-        _asset_keys2 = set()
-        for _h2, _t2 in (snap or {}).items():
-            _hh2 = str(_h2 or "").strip().lower()
-            _r2 = (ledger or {}).get(_hh2) or {}
-            if not (bool(_r2.get("in_library")) or str(_r2.get("sub") or "") == SUB_RESOURCE
-                    or _hh2 in _asset_members2):
-                continue
-            _k2 = _rkey(_t2)
-            if _k2:
-                _asset_keys2.add(_k2)
-        # ★ 7.21.1：与 X3 真值源同源 —— 跨站来源份 / 已认领 同属「永不删」硬保护。
-        #   静默清理是全局口径（无单任务），无法直接调 `_protection_sets`，
-        #   这里手工补齐与其 hard 集合等价的类别，避免「各自保护各自」再分叉。
-        try:
-            _cs_src = set(self._crossseed_source_hashes() or set())
-        except Exception:  # noqa: BLE001
-            _cs_src = set()
-        try:
-            _claim_p = set(self._claim_protected_hashes() or set())
-        except Exception:  # noqa: BLE001
-            _claim_p = set()
+        _pwhy = {"resource": 0, "resource_copy": 0, "in_library": 0, "crossseed": 0,
+                 "claim": 0, "recommend": 0, "hr": 0}
         for h, rec in list(ledger.items()):
             hh = str(h or "").lower()
             if (str(rec.get("state") or "") != STATE_SILENT
@@ -1580,36 +1679,17 @@ class SilentMixin:
             if t is None:
                 continue
             tags = [str(x) for x in (getattr(t, "tags", None) or [])]
-            # 保护 = MP 资产标 / 推荐中 / **资源已入库** / 欠 H&R
-            # ★ 不再按「魔流-跨站」「魔流-辅种」硬豁免 —— 它们「跟资源走」：
-            #   资源在库里 → 上面 in_library 保护；不在库里 → 该考核就考核（否则跨站没法收口）
-            # ★ 推荐流程复核「不达标」的（asset_recheck=fail）→ 不再享受资产/库记保护
-            _rc = str(rec.get("asset_recheck") or "")
-            if _rc != "fail":
-                if hh in _asset_members2 or (_rkey(t) and _rkey(t) in _asset_keys2):
-                    protected += 1
-                    _pwhy["resource_copy"] = int(_pwhy.get("resource_copy") or 0) + 1
-                    continue
-                if is_asset_tags(tags):
-                    protected += 1
-                    _pwhy["asset"] = int(_pwhy.get("asset") or 0) + 1
-                    continue
-                if _in_lib(hh):
-                    protected += 1
-                    _pwhy["in_library"] = int(_pwhy.get("in_library") or 0) + 1
-                    continue
+            # ★ 13.0.2：保护 = **身份**（跨站来源份 / 已认领 / 资源份 / 同数据副本）+ 推荐在途；
+            #   **不再按标签**（`魔流-跨站`/`魔流-辅种`/`已整理·辅种`）各自硬豁免
+            #   （Master 2026-10-07 01:21「统一成身份就好」）。
+            _iw = self._silent_identity_protected(hh, rec, t, _ictx)
+            if _iw:
+                protected += 1
+                _pwhy[_iw] = int(_pwhy.get(_iw) or 0) + 1
+                continue
             if "魔流-推荐" in tags:
                 protected += 1
                 _pwhy["recommend"] = int(_pwhy.get("recommend") or 0) + 1
-                continue
-            # ★ 7.21.1：跨站来源份（别的站的 H&R 保种责任种）/ 已认领 → 永不删
-            if hh in _cs_src:
-                protected += 1
-                _pwhy["crossseed"] = int(_pwhy.get("crossseed") or 0) + 1
-                continue
-            if hh in _claim_p:
-                protected += 1
-                _pwhy["claim"] = int(_pwhy.get("claim") or 0) + 1
                 continue
             site = str(rec.get("site") or "").strip() or self._torrent_site_name(tags, "")
             done_hr, _why = self._silent_hr_done(site, t)
@@ -1740,7 +1820,8 @@ class SilentMixin:
         - 同一资源（文件特征码/文件组）下的静默成员**一起判定、一起打标**：
           达标 → 全部成员都打 ``魔流-推荐``（入库后由库记统一转 ``静默-资源``）；
           不达标 → 全部成员一起转 ``静默-普通``；
-        - ★ 资源身份 = ``is_asset_tags`` + 推荐过（Master 2026-09-28 14:47）：
+        - ★ 资源身份 = **资源组库记** ``library.in_library``（不是种上的 ``已整理/辅种`` 标签）
+          + 推荐过（Master 2026-09-28 14:47；13.0.2 起口径统一为「身份」）：
           - 库内 + 推荐过 → ``静默-资源``（资产永不删）
           - 库内但推荐没过 → ``静默-普通``（即使已入库，没过推荐也不算合格资源）
         - 该资源**已有推荐记录**（推荐中/待确认/已确认）→ 整组不重复甄别、不重复通知；
@@ -1823,7 +1904,7 @@ class SilentMixin:
             rep["scanned"] += 1
             h_list = [x[0] for x in members]
             r_h, r_rec, r_t = _pick(members)
-            # ---- 2) 资源身份 = is_asset_tags + 推荐过（Master 2026-09-28 14:47）。
+            # ---- 2) 资源身份 = 资源组库记 in_library + 推荐过（Master 2026-09-28 14:47）。
             # 库内 + 推荐过 → 静默-资源；库内但推荐没过 → 静默-普通。
             in_lib = False
             if files is not None and not str(gid).startswith("h:"):
@@ -1844,7 +1925,7 @@ class SilentMixin:
                 if _rcf:
                     rep["recheck_fail"] = int(rep.get("recheck_fail") or 0) + 1
                     continue
-                # ★ 补闸门：库内 + 推荐过 = 资源。仅 ``is_asset_tags`` 不够，必须过推荐（Master 2026-09-28 14:47）。
+                # ★ 补闸门：库内 + 推荐过 = 资源。仅库记不够，必须过推荐（Master 2026-09-28 14:47）。
                 _in_lib_like: Dict[str, Any] = {"recognized": False}
                 _in_lib_title: str = str(getattr(r_t, "title", "") or "")
                 if _in_lib_title:
