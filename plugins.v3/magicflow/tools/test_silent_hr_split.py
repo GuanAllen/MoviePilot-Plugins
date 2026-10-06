@@ -274,6 +274,31 @@ class CoreHarness(silent.SilentMixin, hr.HrMixin):
         return set()
 
 
+class PlainSweepHarness(CoreHarness):
+    """在 CoreHarness 上补 `_silent_plain_sweep` 所需的桩：魔力达标 + 低效可删。"""
+
+    def _silent_hr_done(self, site, torrent):
+        return (True, "done")
+
+    def _magic_out_per_hour(self, t, n):
+        return 0.5
+
+    def _qb_num_complete(self):
+        return {}
+
+    def _pool_dirs(self):
+        return []
+
+    def _match_pool(self, sp, dirs):
+        return ("/x", "/x")
+
+    def _usage(self, ct):
+        return {"pct": 80.0}
+
+    def _site_magic_enough(self, site):
+        return (True, "达标")
+
+
 def main() -> int:
     print("=" * 64)
     print("魔流 · 11.11.0 静默全 paused + H&R 拆 __hr_host__ 回归测试")
@@ -426,17 +451,18 @@ def main() -> int:
     _ok(hc4.ledger["aaaa"].get("taken_by") == "__hr_host__", "迁移后 taken_by=__hr_host__")
     _ok("aaaa" in hc4.dl.force_started, "迁移后立即 force_start（保挂 H&R）")
 
-    # ---- ⑫ 阶段1 零删除 gate（SILENT_HR_SPLIT_ENABLED）----
-    print("\n[12] 阶段1 零删除（SILENT_HR_SPLIT_ENABLED gate）")
-    _ok(silent.SILENT_HR_SPLIT_ENABLED is True, "SILENT_HR_SPLIT_ENABLED = True")
+    # ---- ⑫ 解除「零删除」gate：apply=True 恢复真删除（13.0.0）----
+    print("\n[12] 解除零删除 gate：apply=True 恢复真删除")
+    _ok(silent.SILENT_HR_SPLIT_ENABLED is True, "SILENT_HR_SPLIT_ENABLED = True（拆分语义保留，零删除语义已解除）")
     hc5 = CoreHarness()
     t12 = _torrent(progress=0.5, tracker="hdfans.org"); t12.hash = "aaaa"; t12.tags = ["魔流-hdfans-静默-普通"]
     hc5.torrents["aaaa"] = t12
     hc5.ledger["aaaa"] = {"site": "hdfans.org", "state": "静默", "sub": "普通"}
     r_on = hc5._silent_purge_incomplete(apply=True, limit=10)
-    _ok(r_on.get("pending", 0) >= 1, f"flag on：apply=True 仍算出 pending（{r_on.get('pending')}）")
-    _ok(not hc5.dl.deleted, "flag on：apply=True 未删（delete 未调用）")
-    _ok(r_on.get("skipped", 0) >= 1 and r_on.get("reason") == "阶段1 零删除", "返回 skipped + reason")
+    _ok(r_on.get("pending", 0) >= 1, f"apply=True 算出 pending（{r_on.get('pending')}）")
+    _ok("aaaa" in hc5.dl.deleted, "apply=True 真删（delete 被调用，零删除 gate 已解除）")
+    _ok(r_on.get("deleted", 0) >= 1, f"返回 deleted={r_on.get('deleted')}")
+    _ok(r_on.get("skipped", 0) == 0 and r_on.get("reason") != "阶段1 零删除", "不再返回 skipped + 阶段1 零删除")
     hc6 = CoreHarness()
     t13 = _torrent(progress=0.5); t13.hash = "aaaa"; t13.tags = ["魔流-hdfans-静默-普通"]
     hc6.torrents["aaaa"] = t13
@@ -444,16 +470,18 @@ def main() -> int:
     r_dry = hc6._silent_purge_incomplete(apply=False, limit=10)
     _ok(r_dry.get("pending", 0) >= 1, f"apply=False 照旧算出 pending（{r_dry.get('pending')}）")
     _ok(not hc6.dl.deleted, "apply=False 不删")
-    silent.SILENT_HR_SPLIT_ENABLED = False
-    try:
-        hc7 = CoreHarness()
-        t14 = _torrent(progress=0.5); t14.hash = "aaaa"; t14.tags = ["魔流-hdfans-静默-普通"]
-        hc7.torrents["aaaa"] = t14
-        hc7.ledger["aaaa"] = {"site": "hdfans.org", "state": "静默", "sub": "普通"}
-        r_off = hc7._silent_purge_incomplete(apply=True, limit=10)
-        _ok("aaaa" in hc7.dl.deleted, "flag off：apply=True 正常删（delete 被调用）")
-    finally:
-        silent.SILENT_HR_SPLIT_ENABLED = True
+
+    # ---- ⑬ 解除零删除 gate：低效普通清理 apply=True 真删（13.0.0）----
+    print("\n[13] 低效普通清理（_silent_plain_sweep）ungate 后真删")
+    hp = PlainSweepHarness()
+    tp = _torrent(progress=1.0, tracker="hdfans.org"); tp.hash = "aaaa"; tp.tags = []
+    hp.torrents["aaaa"] = tp
+    hp.ledger["aaaa"] = {"site": "hdfans.org", "state": "静默", "sub": "普通"}
+    rp = hp._silent_plain_sweep(apply=True, limit=10)
+    _ok(rp.get("pending", 0) >= 1, f"低效普通算出 pending（{rp.get('pending')}）")
+    _ok("aaaa" in hp.dl.deleted, "低效普通 apply=True 真删（delete 被调用）")
+    _ok(rp.get("deleted", 0) >= 1, f"返回 deleted={rp.get('deleted')}")
+    _ok(rp.get("skipped", 0) == 0 and rp.get("reason") != "阶段1 零删除", "不再返回 skipped + 阶段1 零删除")
 
     print("\n" + "=" * 64)
     print(f"✅ 全部通过：{CHECKS} 项断言")

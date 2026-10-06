@@ -12,7 +12,7 @@
   1) ``_silent_enforce_pause(apply=False)``：只报违背数，**零写入**；
   2) ``apply=True``：**全部**违背（不分 sub/site）都补 pause，且**只 pause**（无 delete/resume）；
   3) 幂等：pause 后再跑，违背 0、paused 0；
-  4) ``_silent_relocate`` 步骤① 改为**全局**收敛 —— 即使 ``sub=普通``，``资源`` 的违背也会被 pause；
+  4) ``_silent_purge`` 步骤① 改为**全局**收敛 —— 即使 ``sub=普通``，``资源`` 的违背也会被 pause；
   5) ``silent_host`` 挂上「⑪不变量收敛」步（源码级冒烟）。
 
 用法：``python3 tools/test_silent_enforce_pause.py``（退出码 0=PASS / 1=FAIL）。
@@ -94,7 +94,7 @@ def _ok(cond: bool, msg: str) -> None:
 def _torrent(h, state="pausedUP", size=1 << 30, tags=None):
     return types.SimpleNamespace(hash=h, title=h[:8], state=state, size=size,
                                  tags=list(tags or []), progress=1.0,
-                                 save_path="/x", name=h[:8])
+                                 save_path="/x", content_path=f"/x/{h}")
 
 
 class _Ledger:
@@ -233,16 +233,16 @@ def t2_apply_all_subs():
 
 
 def t3_relocate_global_scope():
-    print("③ _silent_relocate 步骤①：sub=普通 也要收敛 资源 的违背（12.7.1 修正）")
+    print("③ _silent_purge 步骤①：sub=普通 也要收敛 资源 的违背（12.7.1 修正）")
     led, snap = _mk(SPEC)
     h = Harness(led, snap)
-    rep = h._silent_relocate(confirm=1, batch=50, site="", sub="普通")
+    rep = h._silent_purge(confirm=1, batch=50, site="", sub="普通")
     _ok("a" * 40 in h.pause_calls and "b" * 40 in h.pause_calls,
         "资源 的违背项也被 pause（旧版会被 sub 过滤漏掉）")
     _ok(rep["counts"]["pause"] == 3, f"干跑/报告口径 counts.pause=违背总数 3（实测 {rep['counts']['pause']}）")
     _ok(rep.get("paused_violations") == 3, f"回显 paused_violations=3（实测 {rep.get('paused_violations')}）")
-    # 迁出（删种）只动 sub=普通 的 relocate 候选，且恒 delete_file=False
-    _ok(all(df is False for _hs, df in h.delete_calls), "删除恒为「删种留文件」（delete_file=False）")
+    # 清理（删条目+删文件）只动 sub=普通 的 relocate 候选；无共用目录 → delete_file=True
+    _ok(all(df is True for _hs, df in h.delete_calls), "无共用目录 → 删条目+删文件（delete_file=True）")
     _ok(all(x == "c" * 40 for hs, _df in h.delete_calls for x in hs),
         "只删 sub=普通 的迁出候选（资源/资产不迁）")
     return h

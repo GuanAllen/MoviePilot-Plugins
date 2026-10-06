@@ -3,13 +3,13 @@
 # 一次做完：版本一致性 → 本地市场索引 → 公共市场仓 → 私有备份仓 → 留痕检查。
 #
 # ── 用法 ──
-#   sh tools/release.sh --note "11.11.0：静默池重设计（全 paused 硬不变量 + H&R 宿主拆分）"
-#   sh tools/release.sh --version 11.11.0 --note "..." [--no-push]
-#   sh tools/release.sh --dry-run --note "..."
+#   sh tools/release.sh --note="11.11.0：静默池重设计（全 paused 硬不变量 + H&R 宿主拆分）"
+#   sh tools/release.sh --version=11.11.0 --note="..." [--no-push]
+#   sh tools/release.sh --dry-run --note="..."
 #
 # ── 选项 ──
 #   --version X      指定版本（默认读 package.json）；会把 common.py/package.json/市场索引强制同步到 X
-#   --note "..."     history / commit 说明（缺省会告警并写占位）
+#   --note=...     history / commit 说明（缺省会告警并写占位；★ 必须带 =，空格形式会报「未知参数」）
 #   --no-push        只提交不推送
 #   --skip-public    跳过公共市场仓
 #   --skip-private   跳过私有备份仓

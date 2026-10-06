@@ -3,7 +3,7 @@
         "name": "魔流",
         "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
         "labels": "站点,做种,魔力,刷流",
-        "version": "12.7.1",
+        "version": "13.0.0",
         "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
         "author": "GuanAllen",
         "level": 1,
@@ -393,9 +393,10 @@
             "12.5.1": "12.5.1：修挂种健康自检——①宿主路径未映射致全站假ghost（经 normalize_path 映射）②临时目录同名目录掩盖真ghost（粗筛只看保存目录 + 新增 incomplete 桶 + hr_at_risk 收 ghost+incomplete 且账单 active/breached）；测试 23 项",
             "12.6.0": "12.6.0：组 E 收口——kv 缓存/日志 10 键（trend_v1/eventlog_v1/live_samples/collect_day/iyuu_cache/reseed_day/reseed_cloud/fallback_report/cloud_report + 孤儿 crossseed_pending/douban_rating_cache）搬进热层（TierCache，按 region）；kv 19→9（只剩设置+凭证）；新增 kvstore.cache_get/set/del + runtime._cache_tier/_cache_get/_cache_set/_cache_del + common CACHE_TTL_HISTORY/COUNTER/REPORT；check_self_calls 零新增；含 tools/cleanup_kv_cache_1260.sh（默认干跑/备份 0600）",
             "12.7.0": "12.7.0：安全面收口——① /debug/file 读路径 realpath 归一 + 路径边界白名单 + 敏感文件黑名单（修 /app/../../etc/passwd 穿越与 /config/app.env 直读）；debug_fs 同样归一+拒敏感。② 9 个会写的 /debug* 端点统一 confirm=1 门（缺省拒绝）。③ 新增只读 AI 入口 GET /agent/debug/surface（调试面自描述，清单 48→49）。④ 清死代码 dupgate._dup_peek。含 tools/test_debug_safety.py（45 断言，含写标记表登记自洽）",
-            "12.7.1": "12.7.1：静默不变量周期收敛（silent_host 第⑪步「不变量收敛」+ /agent/silent/enforce + UI「补暂停」；relocate 步骤① 不再按 sub 过滤）"
+            "12.7.1": "12.7.1：静默不变量周期收敛（silent_host 第⑪步「不变量收敛」+ /agent/silent/enforce + UI「补暂停」；relocate 步骤① 不再按 sub 过滤）",
+            "13.0.0": "13.0.0：去「迁出」→ 只有删除（静默池 purge：删条目+删文件；共用目录只删条目保文件）；副本跟随资源身份（辅种份一律「静默-资源」、永不进清理候选）；修 TorrentInfo 无 name 字段导致的共用判据失效/资产误判（唯一口径 common.torrent_data_key，content_path 优先）"
         }
     },
-    "version": "12.7.1",
+    "version": "13.0.0",
     "history": {}
 }

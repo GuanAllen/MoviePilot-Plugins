@@ -16,8 +16,10 @@ _FP_OK = re.compile(r"^[0-9a-f]{32,64}$")
 
 
 from ..tags import (
+    asset_member_hashes,
     is_asset_tags,
     is_library_asset,
+    retag,
     STATE_SILENT,
     SUB_NEW,
     SUB_RESOURCE,
@@ -26,6 +28,7 @@ from ..tags import (
 
 from ..common import (
     MEDIA_ASSET_TAGS,
+    torrent_data_key,
 )
 
 
@@ -218,13 +221,31 @@ class AssetsMixin:
         store = self._tag_state()
         snap = self._tag_all_torrents()
         data = store.items()
-        asset = non = changed = 0
+        asset = non = changed = tag_synced = 0
+        # ★ 13.0.0（Master「辅种应该按资源的身份打标签」）：副本跟随资源身份 ——
+        #   库内资产的**成员**（含同保存目录/种名的副本）一并按「资源」打标，不靠 MP 的 已整理/辅种。
+        try:
+            _asset_members = set(asset_member_hashes(self._tag_groups()) or set())
+        except Exception:  # noqa: BLE001
+            _asset_members = set()
+        _asset_keys = set()
+        for _ah in _asset_members:
+            _at = snap.get(_ah)
+            if _at is None:
+                continue
+            _ak = torrent_data_key(_at)
+            if _ak:
+                _asset_keys.add(_ak)
+        _dl = None
+        _dl_fn = None
         for h, t in snap.items():
             hh = str(h or "").strip().lower()
             tags = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
             if hh not in data:
                 continue
-            is_a = is_asset_tags(tags)
+            _dk = torrent_data_key(t)
+            is_a = (is_asset_tags(tags) or hh in _asset_members
+                    or bool(_dk and _dk in _asset_keys))
             if is_a:
                 asset += 1
             else:
@@ -239,8 +260,22 @@ class AssetsMixin:
             changed += 1
             if apply:
                 store.set_asset(hh, sub=(SUB_RESOURCE if is_a else SUB_NEW))
+                # 副本的 qB 标签也要跟着资源身份走（老标签可能是「静默-新」）
+                if is_a and tags:
+                    _site = str(rec.get("site") or "") or self._torrent_site_name(tags, "")
+                    _state = str(rec.get("state") or STATE_SILENT)
+                    _new = retag(tags, site=_site, state=_state, sub=SUB_RESOURCE)
+                    if sorted(_new) != sorted(tags):
+                        if _dl is None:
+                            _dl = self._get_downloader()
+                            _dl_fn = getattr(_dl, "replace_torrent_tags", None) if _dl is not None else None
+                        try:
+                            if callable(_dl_fn) and _dl_fn(hh, _new):
+                                tag_synced += 1
+                        except Exception:  # noqa: BLE001
+                            pass
         return {"ok": True, "applied": bool(apply), "asset": asset, "non_asset": non,
-                "changed": changed, "ledger": len(data)}
+                "changed": changed, "tag_synced": tag_synced, "ledger": len(data)}
 
     def _resource_gid(self, title: Any, size_gb: Any, fp: Any = "") -> str:
         """资源 ID：**只用完整文件特征码**（同内容 = 同资源）。
@@ -271,7 +306,29 @@ class AssetsMixin:
         ledger = self._tag_state().items()
         snap = self._tag_all_torrents()
         stat: Dict[str, Any] = {"ok": True, "applied": bool(apply), "resources": 0,
-                                "members": 0, "multi": 0, "in_library": 0, "hr_bills": 0}
+                                "members": 0, "multi": 0, "in_library": 0, "hr_bills": 0,
+                                "joined_by_dir": 0}
+
+        def _dirkey(_t: Any) -> str:
+            """数据路径 key（同一 Release = 同一份内容；也是「共用目录」判据用的 key）。
+
+            ★ 与 `features/silent.py::_data_key` 同口径：优先 ``content_path``，退回 ``save_path/标题``
+            —— ``TorrentInfo`` 没有 ``name`` 字段（qB 的 name 映射到 title），取 ``.name`` 恒空。
+            """
+            return torrent_data_key(_t)
+
+        # ★ 13.0.0（Master「辅种应该按资源的身份打标签」）：副本要**进资源成员表**，身份才能跟着资源走。
+        #   有特征码的种子先建组；没有特征码的（旧种/别路径加进来的），按**同一保存目录/种名**归到那个组。
+        _key2gid: Dict[str, str] = {}
+        for _h0, _t0 in snap.items():
+            _h0 = str(_h0 or "").strip().lower()
+            _r0 = ledger.get(_h0) or {}
+            _g0 = self._resource_gid(getattr(_t0, "title", "") or getattr(_t0, "name", ""),
+                                     float(getattr(_t0, "size_gb", 0) or _r0.get("size_gb") or 0.0),
+                                     str(_r0.get("fp") or ""))
+            _k0 = _dirkey(_t0)
+            if _g0 and _k0:
+                _key2gid.setdefault(_k0, _g0)
         for h, t in snap.items():
             hh = str(h or "").strip().lower()
             rec = ledger.get(hh)
@@ -291,8 +348,13 @@ class AssetsMixin:
             if _fp:
                 stat["with_fp"] = int(stat.get("with_fp") or 0) + 1
             else:
-                # ★ 10.0.0：没有完整特征码 → **不建资源**（不拿「体积档」冒充身份）
+                # ★ 10.0.0：没有完整特征码 → **不拿「体积档」冒充身份**；
+                #   ★ 13.0.0：但若它和某个已有资源**同一个保存目录/种名**，就归到那个资源（副本归户）。
                 stat["no_fp"] = int(stat.get("no_fp") or 0) + 1
+                _k = _dirkey(t)
+                if _k and _k in _key2gid:
+                    gid = _key2gid[_k]
+                    stat["joined_by_dir"] = int(stat.get("joined_by_dir") or 0) + 1
             if apply and gid:
                 store.add_member(gid, hh, site=rec.get("site") or "", size_gb=size,
                                  downloaded=prog >= 0.999, progress=prog,
