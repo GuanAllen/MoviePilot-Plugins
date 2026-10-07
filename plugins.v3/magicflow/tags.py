@@ -208,6 +208,31 @@ def set_site_names(names: Any) -> None:
     _SITE_NAMES = out
 
 
+# ---------------------------------------------------------------------------
+# ★ 15.8.0 音乐线（Master 2026-10-07：「音乐单独一条线，不与刷流抢」）
+#   音乐种（qB 分类 = 「音乐」）**不进魔力/刷流任务**（不打任务标签、不参与任务清理与账本），
+#   但仍走 PT 规则（H&R / 静默池 / 唯一删除闸门 / 站点报表）。
+#   放在本模块：纯 stdlib → 离线单测（无 MoviePilot）也能加载。
+# ---------------------------------------------------------------------------
+MUSIC_CATEGORY = "音乐"
+
+
+def is_music_line(torrent: Any) -> bool:
+    """该种是否属于「音乐线」（qB 分类 = ``音乐``）。
+
+    ★ 纯函数（不依赖 ``self``）——清理 / 纳管 / 任务种子集都要用；
+    兼容 ``TorrentInfo`` 对象与 qB 原始 dict。
+    """
+    try:
+        if isinstance(torrent, dict):
+            return str(torrent.get("category") or "").strip() == MUSIC_CATEGORY
+        if hasattr(torrent, "category"):
+            return str(getattr(torrent, "category", "") or "").strip() == MUSIC_CATEGORY
+    except Exception:  # noqa: BLE001
+        return False
+    return False
+
+
 def parse_tag(tag: str) -> Optional[Dict[str, str]]:
     """解析魔流标签 → ``{site, state, sub}``；不是魔流标签返回 ``None``。
 

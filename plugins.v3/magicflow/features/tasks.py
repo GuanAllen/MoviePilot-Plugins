@@ -32,6 +32,7 @@ from ..crossseed import (
 )
 from ..tags import (
     SUB_NEW,
+    is_music_line,
     retag,
     tag_for,
 )
@@ -332,7 +333,7 @@ class TasksMixin:
         # ★ 15.8.0 音乐线：音乐种（qB 分类「音乐」）不属于任何魔力/刷流任务
         #   → 从任务种子集中整条剔除（清理 / 账本 / 展示一并生效）。
         try:
-            out = [t for t in out if not self._is_music_line(t)]
+            out = [t for t in out if not is_music_line(t)]
         except Exception:  # noqa: BLE001
             pass
         return out
