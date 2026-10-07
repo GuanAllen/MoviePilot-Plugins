@@ -27,6 +27,8 @@ from ..common import __version__  # noqa: F401
 from ..common import (
     BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT,
     CROSSSEED_SEED_HOURS_DEFAULT,
+    CROSSSEED_TASK_ID,
+    CROSSSEED_TASK_INTERVAL_MINUTES,
     MagicFlowTaskConfig,
     RESEED_BATCH,
     RESEED_DAILY_PER_SITE,
@@ -282,6 +284,9 @@ class StatusMixin:
             return self._silent_host_card()
         if str(task_id or "") == HR_HOST_TASK_ID:
             return self._hr_host_card()
+        # ★ 14.0.0-2：「跨站取种」host 卡片（取代真任务 __crossseed__）。
+        if str(task_id or "") == CROSSSEED_TASK_ID:
+            return self._crossseed_host_card()
         task = self._get_task_config(task_id)
         if not task:
             return None
@@ -393,6 +398,11 @@ class StatusMixin:
             tasks.append(self._hr_host_card())
         except Exception:  # noqa: BLE001
             pass
+        # ★ 14.0.0-2：「跨站取种」host 卡片（与 __silent_host__/__hr_host__ 同构；task_type=host）
+        try:
+            tasks.append(self._crossseed_host_card())
+        except Exception:  # noqa: BLE001
+            pass
         return tasks
 
     # ---------------------------------------------------------
@@ -447,6 +457,11 @@ class StatusMixin:
             pass
         try:
             tasks.append(self._hr_host_card())
+        except Exception:  # noqa: BLE001
+            pass
+        # ★ 14.0.0-2：「跨站取种」host 卡片（与 __silent_host__/__hr_host__ 同构）
+        try:
+            tasks.append(self._crossseed_host_card())
         except Exception:  # noqa: BLE001
             pass
         summary = {

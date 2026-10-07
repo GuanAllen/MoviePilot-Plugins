@@ -1757,12 +1757,17 @@ class BrushMixin:
     def check(self, task_id: str) -> None:
         """执行魔力优化一轮(评估并删除低魔力产出种子)。
 
-        ★ 14.0.0：全局真任务「跨站取种」的 Check 走 ``_crossseed_tick``（流量兜底 + 取种生命周期分诊），
-        不做魔力优化。
+        ★ 14.0.0-2：「跨站取种」已降为常驻 worker（``core.py::get_service()`` 的 CrossSeed），
+        不会以 task_id 形式被 ``check`` 调用——该分支退役，但保留 ``brush()`` 的 crossseed
+        防御早退（任务库清理时若还有残留 crossseed 任务，brush 直接空转不抓站）。
         """
         task = self._get_task_config(task_id)
+        # ★ 退役后此处不该收到跨站任务；保留只读告警，便于存量配置/人工触发时定位。
         if task is not None and str(getattr(task, "task_type", "") or "").strip().lower() == "crossseed":
-            self._crossseed_tick()
+            self._log(
+                f"check() 收到退役的跨站任务 id={task_id}（请跑 _retire_crossseed_task）",
+                "warning",
+            )
             return
         self._apply_task_traffic_limit()
         self._apply_seed_upload_limit()

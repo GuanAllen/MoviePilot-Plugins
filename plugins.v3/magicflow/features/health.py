@@ -59,7 +59,11 @@ class HealthMixin:
             tasks = list((getattr(self, "_task_configs", {}) or {}).values())
         except Exception:  # noqa: BLE001
             tasks = []
-        running = [t for t in tasks if task_is_running(t)]
+        # ★ 14.0.0-2：防御——「host」伪任务（__silent_host__ / __hr_host__ / __crossseed__）
+        #   本身不在 _task_configs（以 host 卡片呈现），本不应被 H1/H2 看到；
+        #   若以后某 host 被错放进来也不会被判卡死（它们是常驻 worker，不是 Check 调度对象）。
+        running = [t for t in tasks if task_is_running(t)
+                   and str(getattr(t, "task_type", "") or "").strip().lower() != "host"]
         participating = [t for t in tasks if task_is_participating(t)]
 
         # H1 / H2：任务维度

@@ -55,8 +55,10 @@ GLOSSARY: List[Dict[str, Any]] = [
         ["站点对账（myhr.php，只判「还欠」不产 settled）：`_hr_reconcile_site`。"],
     ]},
     {"title": "站点报表分类桶（`features/sitereport.py`）", "head": None, "rows": [
-        ["`BUCKET_HR` 欠H&R / `BUCKET_RESCUE` 补源 / `BUCKET_SILENT` 静默 / "
-         "`BUCKET_PROTECTED` 保护 / `BUCKET_NORMAL` 普通（顺序见 `_BUCKET_ORDER`）。"],
+        ["★ 两轴分级：第一级六桶 `BUCKET_BRUSH` 刷流 / `BUCKET_BONUS` 魔力 / `BUCKET_HR` 保种（欠H&R挂补） / "
+         "`BUCKET_SILENT` 静默（含 新/资源/普通 三子桶）/ `BUCKET_RESCUE` 补源 / `BUCKET_EXTERNAL` 外部（顺序见 `_BUCKET_ORDER`）。"],
+        ["第二级传输三态：`TRANSPORT_DOWNLOADING` 未完成 / `TRANSPORT_PAUSED` 暂停 / `TRANSPORT_SEEDING` 做种中（不单独成桶）。"],
+        ["债务/账本只作列字段（`item.hr`/`item.bill`），不再当桶。"],
     ]},
     {"title": "静默池 / H&R 保种宿主（11.11.0）", "head": None, "rows": [
         ["静默宿主任务 `SILENT_HOST_TASK_ID='__silent_host__'`；H&R 保种宿主任务 "

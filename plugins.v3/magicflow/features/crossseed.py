@@ -51,10 +51,12 @@ from ..common import (
     CROSSSEED_PV_DAILY_CAP_DEFAULT,
     CROSSSEED_TASK_ID,
     CROSSSEED_TASK_NAME,
+    CROSSSEED_TASK_INTERVAL_MINUTES,
     CROSSSEED_CACHE_TTL,
     CROSSSEED_EXTRA_SCAN,
     CROSSSEED_SEED_HOURS_DEFAULT,
     MagicFlowTaskConfig,
+    RUN_MODE_RUNNING,
     _torrent_entries_digest,
     task_is_participating,
 )
@@ -1143,19 +1145,43 @@ class CrossSeedMixin:
             },
         }
 
-    # ------------------------------------------------ 全局真任务「跨站取种」的 Check 周期（30min）
+    # ------------------------------------------------ 常驻 worker「跨站取种」（14.0.0-2；取代旧全局真任务）
 
     def _crossseed_tick(self) -> Dict[str, Any]:
-        """★ 14.0.0：全局真任务「跨站取种」的 Check（每 30min 一次）。
+        """★ 14.0.0-2：常驻 worker「跨站取种」（每 30min 一次，core.py::get_service 注册）。
 
-        **回辅已删**：把资源挂回 A 站由「全站辅种」(reseed) 负责，本任务只管两件事：
+        **14.0.0-2 改造**：原 14.0 「全局真任务 ``__crossseed__``」退役 →
+        本函数从 worker（与 ``silent_host`` / ``hr_host`` 同构）被调，与 ``_task_configs`` 解耦。
+        依赖 ``_crossseed_feature_enabled()`` 判定「是否在用」，为空时直接 no-op。
+
+        **职责**（同 14.0.0）：
           ① **流量兜底**：核对来源站是否真免费（判错即止损：删种 + 拉黑）；
           ② **取种生命周期分诊**（Master 02:50 规格）：
              · 下载中 → 在岗（等待，任务视同运行）；
              · 已下完 → 过 H&R 判定 → 欠 → 交 ``__hr_host__`` 保种；
                不欠 → 入静默池（**摘任务标、留身份 ``静默-新``**）并销账。
+
+        销账后的 journal 流水归到 ``__silent_host__``（与下完分诊同语义——任务标原本就是
+        虚的、owner 是静默池）。
         """
-        cs_task = self._task_configs.get(CROSSSEED_TASK_ID)
+        # ★ 14.0.0-2：启用判据改为 registry 统一口径（pending 非空 OR 有跨站发起任务）。
+        if not self._crossseed_feature_enabled():
+            return {"checked": 0, "waiting": 0, "settled": 0, "dropped": 0,
+                    "violations": 0, "skipped": "feature_disabled"}
+        # ★ 14.0.0-2：原「真任务 __crossseed__」已退役，但 _split_release 仍需 task 参数。
+        #   这里构造一个不入 _task_configs 的虚拟任务（id=__crossseed__），只用于
+        #   ``_split_release`` 内部的 ``forget_torrents(task_id)`` + ``_tag_release`` taken_by 检查；
+        #   不会落账本、不会注册 scheduler。
+        cs_task = MagicFlowTaskConfig(
+            id=CROSSSEED_TASK_ID,
+            name=CROSSSEED_TASK_NAME,
+            task_type="crossseed",
+            enabled=False,
+            run_mode=RUN_MODE_RUNNING,
+            site_id=0,
+            site_name="",
+            site_domain="",
+        )
         res: Dict[str, Any] = {"checked": 0, "waiting": 0, "settled": 0, "dropped": 0,
                                "violations": 0}
         pend = self._crossseed_pending()
@@ -1236,20 +1262,21 @@ class CrossSeedMixin:
                 })
             except Exception as err:  # noqa: BLE001
                 self._dbg(f"跨站取种:分诊预置账本失败:{err}")
-            if cs_task is not None:
-                try:
-                    self._split_release(
-                        cs_task, [sib_hash], reason="跨站取种下载完成→分诊（欠H&R保种/否则入静默）"
-                    )
-                except Exception as err:  # noqa: BLE001
-                    self._log(f"跨站取种:分诊异常 {sib_hash[:12]}:{err}", "warning")
-                    continue
+            # ★ 14.0.0-2：cs_task 现在是 worker 内部构造的虚拟任务（id=__crossseed__），
+            #   始终非空 → 直接走分诊。退役后 journal task_id 统一指 __silent_host__。
+            try:
+                self._split_release(
+                    cs_task, [sib_hash], reason="跨站取种下载完成→分诊（欠H&R保种/否则入静默）"
+                )
+            except Exception as err:  # noqa: BLE001
+                self._log(f"跨站取种:分诊异常 {sib_hash[:12]}:{err}", "warning")
+                continue
             pend.drop(sib_hash)
             res["settled"] += 1
             if self._store:
                 try:
                     self._store.journal.record(
-                        task_id=CROSSSEED_TASK_ID,
+                        task_id=SILENT_HOST_TASK_ID,
                         kind="reseed",
                         items=[OperationItem(
                             hash=sib_hash,
@@ -1267,6 +1294,75 @@ class CrossSeedMixin:
         if res["settled"]:
             self._invalidate_summary()
         return res
+
+    def _crossseed_host_card(self) -> Dict[str, Any]:
+        """★ 14.0.0-2：「跨站取种」常驻 worker 在**任务列表**里的只读卡片。
+
+        与 ``_silent_host_card`` / ``_hr_host_card`` 同构：``task_type="host"``、``is_host=True``，
+        agent 端据此不把它当真任务操作（参见 ``agentledger.agent_tasks``）。
+        """
+        # 数值从现有真值源读，避免再造一份（轻量；不拉 qB 全量快照）
+        n_pen = 0
+        n_wait = 0
+        n_violations = 0
+        try:
+            pend = self._crossseed_pending()
+            items = pend.items() if pend else {}
+            n_pen = len(items)
+            for _rec in (items or {}).values():
+                try:
+                    _p = _rec.get("progress")
+                except Exception:  # noqa: BLE001
+                    _p = None
+                if _p is None or float(_p or 0) < 0.999:
+                    n_wait += 1
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            n_violations = int(len(self._cs_ban_map() or {}))
+        except Exception:  # noqa: BLE001
+            n_violations = 0
+        last = float(getattr(self, "_crossseed_host_last", 0) or 0)
+        try:
+            _rows = self._store.journal.list_by_task(SILENT_HOST_TASK_ID, kind="reseed", limit=20)
+            if _rows:
+                _t = float(
+                    getattr(_rows[0], "resolved_at", None)
+                    or getattr(_rows[0], "created_at", 0)
+                    or 0
+                )
+                if _t > last:
+                    last = _t
+        except Exception:  # noqa: BLE001
+            pass
+        return {
+            "id": CROSSSEED_TASK_ID,
+            "name": CROSSSEED_TASK_NAME,
+            "builtin": True,
+            "enabled": True,
+            "run_mode": "running",
+            "task_type": "host",
+            "state": "running",
+            "site_id": 0,
+            "site_domain": "",
+            "site_name": "全部站点（跨站承接）",
+            "downloader": "所有下载器",
+            "brush_tag": "魔流-<站点>-跨站",
+            "save_path": "",
+            "seeding_count": 0,
+            "hr_count": 0,
+            "nonhr_count": 0,
+            "active_seeding_count": 0,
+            "downloading_count": n_wait,
+            "paused_count": 0,
+            "classify": {
+                "pending_total": n_pen,
+                "pending_inflight": n_wait,
+                "violations": n_violations,
+            },
+            "host_interval_minutes": round(float(CROSSSEED_TASK_INTERVAL_MINUTES), 1),
+            "host_last_run": (time.strftime("%m-%d %H:%M", time.localtime(last)) if last else "—"),
+        }
 
     def get_crossseed(self, action: str = "", hash: str = "", site: str = "") -> Response:
         """跨站免费取种（全局任务「跨站取种」）：取种台账 + 启用该功能的任务。

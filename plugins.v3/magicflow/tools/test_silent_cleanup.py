@@ -378,8 +378,8 @@ def main() -> int:
         "`_hr_obligation` 与账单同源：用 `_hr_due_hours`（need+margin）而非裸 need_h")
     _ok("def _hr_due_hours" in _hr and "_hr_margin_hours(" in _hr.split("def _hr_due_hours", 1)[1][:900],
         "`_hr_due_hours` = need + margin（唯一口径）")
-    _ok("DUTY_STATES" in _sr and "STATE_SILENT" in _sr,
-        "站点报表静默判据 = 有身份标签 且 无职务标签（sitereport）")
+    _ok("duty_of(" in _sr and "identity_of(" in _sr and "STATE_HR" in _sr,
+        "站点报表两轴分级 = 职务轴 duty_of + 身份轴 identity_of（sitereport）")
     _ok('"stage"' not in _sil and "pool_cleanup" not in _sil,
         "静默盘点已去观测残留（无 stage / pool_cleanup）")
     _ok('"relocate"' not in _sil and '"cleanup"' in _sil,

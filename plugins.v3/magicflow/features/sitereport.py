@@ -3,7 +3,13 @@
 
 回答一类问题：**「某站点上，我们现在挂着的各种种子分别处于什么状态？」**
 一次调用给出：逐条种子（hash / 标题 / 体积 / 保存目录 / qB 状态 / 进度 / 比例 /
-保护 / 账单 / H&R 需做种时间）+ 分类汇总 + H&R 对账摘要。
+保护 / 账单 / H&R 需做种时间）+ **两轴分级**分类汇总 + H&R 对账摘要。
+
+★ 两轴分级（见 ``docs/DESIGN-CURRENT.md`` 与 ``docs/AGENT-API.md``）：
+  - **第一级（职务 / 身份轴）**：六桶 —— 刷流 / 魔力 / 保种（欠 H&R 挂补）/ 静默
+    （含 新 / 资源 / 普通 三子桶）/ 补源 / 外部；
+  - **第二级（传输轴）**：每桶内按 未完成 / 暂停 / 做种中 三态统计，不单独成桶；
+  - **账本 / 债务只作列字段**（``bill`` / ``hr``），不再当桶。
 
 只读真值源（**不新增 / 不缓存真值**，全部现读）：
   - 下载器快照：``_tag_all_torrents()``（按标签 / tracker 归属站点）
@@ -23,7 +29,20 @@ from typing import Any, Dict, List
 
 from app.schemas import Response
 
-from ..tags import DUTY_STATES, STATE_SILENT, RESCUE_TAG, is_reuse_copy, parse_tag
+from ..tags import (
+    RESCUE_TAG,
+    EXTERNAL_TAG,
+    STATE_BRUSH,
+    STATE_BONUS,
+    STATE_HR,
+    SUB_NEW,
+    SUB_RESOURCE,
+    SUB_PLAIN,
+    duty_of,
+    identity_of,
+    is_reuse_copy,
+    parse_tag,
+)
 from .hrbills import (
     BILL_STATE_ACTIVE,
     BILL_STATE_BREACHED,
@@ -31,17 +50,24 @@ from .hrbills import (
     RULE_SITE_HR,
 )
 
-# 分类桶（主状态，互斥；优先级见 _site_seed_report 排序）
-BUCKET_HR = "欠H&R"
-BUCKET_RESCUE = "补源"
-BUCKET_DOWNLOADING = "未完成"
-BUCKET_PAUSED = "暂停"
-BUCKET_SILENT = "静默"
-BUCKET_PROTECTED = "保护"
-BUCKET_NORMAL = "普通"
+# 第一级分类桶（职务 / 身份轴，互斥；优先级见 ``_site_report_bucket``）
+BUCKET_BRUSH = "刷流"
+BUCKET_BONUS = "魔力"
+BUCKET_HR = "保种"          # 欠 H&R 挂补（__hr_host__ 保种 ∪ 仍欠债）
+BUCKET_SILENT = "静默"      # 无职务（身份轴：新 / 资源 / 普通 三子桶）
+BUCKET_RESCUE = "补源"      # 死种补源副本（``魔流-补源``）
+BUCKET_EXTERNAL = "外部"    # 插件外来源、已纳管（``魔流-外部``）
 
-_BUCKET_ORDER = (BUCKET_HR, BUCKET_RESCUE, BUCKET_DOWNLOADING, BUCKET_PAUSED,
-                 BUCKET_SILENT, BUCKET_PROTECTED, BUCKET_NORMAL)
+_BUCKET_ORDER = (BUCKET_RESCUE, BUCKET_HR, BUCKET_BRUSH, BUCKET_BONUS,
+                 BUCKET_EXTERNAL, BUCKET_SILENT)
+
+# 静默三子桶（身份轴，仅静默桶使用）
+SILENT_SUBS = (SUB_NEW, SUB_RESOURCE, SUB_PLAIN)
+
+# 第二级传输轴（每桶内三态，不单独成桶）
+TRANSPORT_DOWNLOADING = "未完成"
+TRANSPORT_PAUSED = "暂停"
+TRANSPORT_SEEDING = "做种中"
 
 _HR_RULES = (RULE_SITE_HR, RULE_HIT_AND_RUN)
 
@@ -160,49 +186,50 @@ class SiteReportMixin:
         return False
 
     @staticmethod
-    def _site_report_is_silent(t: Any) -> bool:
-        """★ 14.0.0：静默 = **有身份标签 且 没有职务标签**。
+    def _site_report_transport(state: str, progress: float) -> str:
+        """第二级传输轴（三态互斥）：未完成 / 暂停 / 做种中。"""
+        if progress < 0.999:
+            return TRANSPORT_DOWNLOADING
+        if SiteReportMixin._site_report_is_paused(state):
+            return TRANSPORT_PAUSED
+        return TRANSPORT_SEEDING
 
-        身份轴（``魔流-<站点>-静默-<新|资源|普通>``）天生带「静默」两字，**不能**单看
-        「标签里有 state==静默」——那会把所有在岗做种的种全误判成静默。唯一口径：
-        有身份、且职务轴（刷流 / 魔力 / 保种）缺位 ⇒ 静默（不在任何任务名下）。
-        """
-        has_identity = False
-        has_duty = False
+    @staticmethod
+    def _site_report_sub(t: Any, bucket: str) -> str:
+        """静默桶的「身份子桶」→ 新 / 资源 / 普通；非静默桶返回 ``""``。"""
+        if bucket != BUCKET_SILENT:
+            return ""
         try:
-            for tg in (getattr(t, "tags", None) or []):
-                p = parse_tag(str(tg))
-                if not p:
-                    continue
-                st = str(p.get("state") or "")
-                if st == STATE_SILENT:
-                    has_identity = True
-                elif st in DUTY_STATES:
-                    has_duty = True
+            _isite, sub = identity_of(getattr(t, "tags", None) or [])
         except Exception:  # noqa: BLE001
-            pass
-        return has_identity and not has_duty
+            return SUB_PLAIN
+        return sub if sub in SILENT_SUBS else SUB_PLAIN
 
     def _site_report_bucket(self, t: Any, state: str, progress: float,
                             is_hr: bool, is_prot: bool) -> str:
-        # ★ 11.11.1：补源副本（魔流-补源）独立桶，且不判 H&R。
+        """第一级桶（职务 / 身份轴，6 桶互斥）。
+
+        优先级：补源（特殊持有）→ 保种（欠 H&R 挂补：职务=保种 或 仍欠债）→ 刷流 →
+        魔力 → 外部（特殊来源，无职务时）→ 静默（无职务）。
+        账本 / 债务不再当桶（``is_hr`` 只并入「保种」，明细看 item 的 ``bill``/``hr`` 列）；
+        传输三态（未完成/暂停/做种中）也**不单独成桶**（见 ``_site_report_transport``）。
+        """
         try:
             _tags = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
         except Exception:  # noqa: BLE001
             _tags = []
         if RESCUE_TAG in _tags:
             return BUCKET_RESCUE
-        if is_hr:
+        _dsite, duty = duty_of(_tags)
+        if duty == STATE_HR or is_hr:
             return BUCKET_HR
-        if progress < 0.999:
-            return BUCKET_DOWNLOADING
-        if self._site_report_is_paused(state):
-            return BUCKET_PAUSED
-        if self._site_report_is_silent(t):
-            return BUCKET_SILENT
-        if is_prot:
-            return BUCKET_PROTECTED
-        return BUCKET_NORMAL
+        if duty == STATE_BRUSH:
+            return BUCKET_BRUSH
+        if duty == STATE_BONUS:
+            return BUCKET_BONUS
+        if EXTERNAL_TAG in _tags:
+            return BUCKET_EXTERNAL
+        return BUCKET_SILENT
 
     def _site_report_hr(self, domain: str, live: int, snap: Any) -> Dict[str, Any]:
         """H&R 对账结果：``live=1`` 现抓一轮；否则读上一轮缓存。"""
@@ -285,6 +312,7 @@ class SiteReportMixin:
             # ★ 11.11.1：复用/补源副本（非真实下载）不判 H&R（不把辅种算进「欠H&R」桶）。
             _reuse_copy = is_reuse_copy(getattr(t, "tags", None))
             is_hr = (not _reuse_copy) and ((hh in owed) or (bill_state == BILL_STATE_ACTIVE and bill_rule in _HR_RULES))
+            bucket = self._site_report_bucket(t, state, progress, is_hr, is_prot)
             items.append({
                 "hash": hh,
                 "title": str(getattr(t, "title", "") or "")[:160],
@@ -294,7 +322,9 @@ class SiteReportMixin:
                 "progress": progress,
                 "ratio": round(float(getattr(t, "ratio", 0) or 0), 3),
                 "uploaded": round(float(getattr(t, "uploaded", 0) or 0)),
-                "bucket": self._site_report_bucket(t, state, progress, is_hr, is_prot),
+                "bucket": bucket,
+                "sub": self._site_report_sub(t, bucket),
+                "transport": self._site_report_transport(state, progress),
                 "protected": bool(is_prot),
                 "bill": ({"state": bill_state, "rule": bill_rule} if bill else None),
                 "hr": ({"owed": True, "need_left": owed.get(hh, "")} if is_hr else None),
@@ -304,15 +334,23 @@ class SiteReportMixin:
         items.sort(key=lambda x: (order.get(x["bucket"], 99), -float(x["size_gb"] or 0)))
         items = items[:MAX_ITEMS]
 
-        # 汇总
+        # 汇总（两轴：第一级桶 6 + 第二级传输 3 + 静默三子桶；账本/债务不进桶）
         by_bucket: Dict[str, int] = {}
-        by_state: Dict[str, int] = {}
+        by_transport: Dict[str, int] = {}
+        bucket_transport: Dict[str, Dict[str, int]] = {}
+        silent_by_sub: Dict[str, int] = {}
         total_size = 0.0
         prot_n = 0
         for it in items:
-            by_bucket[it["bucket"]] = by_bucket.get(it["bucket"], 0) + 1
-            stk = it["state"] or "?"
-            by_state[stk] = by_state.get(stk, 0) + 1
+            b = it["bucket"]
+            tr = it["transport"]
+            by_bucket[b] = by_bucket.get(b, 0) + 1
+            by_transport[tr] = by_transport.get(tr, 0) + 1
+            _bt = bucket_transport.setdefault(b, {})
+            _bt[tr] = _bt.get(tr, 0) + 1
+            if b == BUCKET_SILENT:
+                s = it["sub"] or SUB_PLAIN
+                silent_by_sub[s] = silent_by_sub.get(s, 0) + 1
             total_size += float(it["size_gb"] or 0)
             if it["protected"]:
                 prot_n += 1
@@ -324,7 +362,9 @@ class SiteReportMixin:
             "size_gb": round(total_size, 2),
             "protected": prot_n,
             "by_bucket": by_bucket,
-            "by_state": by_state,
+            "by_transport": by_transport,
+            "bucket_transport": bucket_transport,
+            "silent_by_sub": silent_by_sub,
             "hr_owed": hr_owed,
             "hr_in_qb": sum(1 for r in recs if isinstance(r, dict) and r.get("in_qb")),
             "hr_missing": hr_missing,

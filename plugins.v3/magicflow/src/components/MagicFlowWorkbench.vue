@@ -380,7 +380,6 @@ const MF_PAGES = [
   { key: 'silent', label: '静默池', icon: 'mdi-pool', scope: 'global' },
   { key: 'sitereport', label: '站点报表', icon: 'mdi-table-large', scope: 'view' },
   { key: 'hrbills', label: 'H&R账单', icon: 'mdi-file-alert-outline', scope: 'view' },
-  { key: 'seedhealth', label: '挂种健康', icon: 'mdi-file-find-outline', scope: 'view' },
   { key: 'ceiling', label: '站点容量', icon: 'mdi-gauge', scope: 'view' },
   { key: 'ops', label: '操作记录', icon: 'mdi-history', scope: 'view' },
   { key: 'settings', label: '插件设置', icon: 'mdi-tune-variant', scope: 'global' },
@@ -398,7 +397,6 @@ function mfOpenPage(page) {
     case 'silent': return openSilent()
     case 'sitereport': return openSiteReport()
     case 'hrbills': return openHrBills()
-    case 'seedhealth': return openSeedHealth()
     case 'ceiling': return openCeiling()
     case 'ops': return openOperations('all')
     case 'settings': return openSettings()
@@ -418,7 +416,6 @@ const TILE_OPTIONS = [
   { key: 'silent', label: '静默池', icon: 'mdi-pool' },
   { key: 'sitereport', label: '站点报表', icon: 'mdi-table-large' },
   { key: 'hrbills', label: 'H&R账单', icon: 'mdi-file-alert-outline' },
-  { key: 'seedhealth', label: '挂种健康', icon: 'mdi-file-find-outline' },
   { key: 'ondemand', label: '点播', icon: 'mdi-cloud-download-outline' },
   { key: 'ceiling', label: '站点容量', icon: 'mdi-gauge' },
   { key: 'ops', label: '操作记录', icon: 'mdi-history' },
@@ -564,39 +561,63 @@ const siteCeilingRows = computed(() => {
 })
 const ceilingOpen = ref(false)
 function openCeiling() { ceilingOpen.value = true }
-// ── 站点报表（11.10.0）：站点级逐条种子状态 ─────────────────────
+// ── 站点报表（11.10.0）：站点级逐条种子状态（★ 两轴分级）─────────────────────
 const siteReportOpen = ref(false)
 const siteReportSite = ref('')
 const siteReportLive = ref(false)
 const siteReportLoading = ref(false)
 const siteReport = ref({ site: {}, items: [], summary: {}, hr: {}, available_sites: [] })
 const siteReportSites = computed(() => (siteReport.value.available_sites || []))
+// ★ 两轴筛选：第一级=职务/身份桶、第二级=传输三态、静默桶再按身份子桶细分
+const siteReportFilter = ref('')
+const siteReportTransport = ref('')
+const siteReportSub = ref('')
 const siteReportItems = computed(() => {
   const all = siteReport.value.items || []
-  return siteReportFilter.value ? all.filter(it => it.bucket === siteReportFilter.value) : all
+  return all.filter(it =>
+    (!siteReportFilter.value || it.bucket === siteReportFilter.value) &&
+    (!siteReportTransport.value || it.transport === siteReportTransport.value) &&
+    (!siteReportSub.value || it.sub === siteReportSub.value)
+  )
 })
-// ★ 12.x：明细按桶筛选（默认全部）。旧版列表按桶排序 → 首屏全是「暂停」，「静默」要滚很远，
-//   被误读成「明细只有暂停的」。现在点上方分类标签即可只看该桶。
-const siteReportFilter = ref('')
 const siteReportSummary = computed(() => siteReport.value.summary || {})
 const SITE_REPORT_BUCKETS = [
-  { key: '欠H&R', color: 'error' },
-  { key: '补源', color: 'purple' },
+  { key: '刷流', color: 'indigo' },
+  { key: '魔力', color: 'purple' },
+  { key: '保种', color: 'deep-orange' },
+  { key: '静默', color: 'blue-grey' },
+  { key: '补源', color: 'teal' },
+  { key: '外部', color: 'grey' },
+]
+const SITE_REPORT_TRANSPORT = [
   { key: '未完成', color: 'amber' },
   { key: '暂停', color: 'grey' },
-  { key: '静默', color: 'blue-grey' },
-  { key: '保护', color: 'teal' },
-  { key: '普通', color: 'primary' },
+  { key: '做种中', color: 'success' },
+]
+const SITE_REPORT_SILENT_SUBS = [
+  { key: '新', color: 'info' },
+  { key: '资源', color: 'success' },
+  { key: '普通', color: 'blue-grey' },
 ]
 function siteReportBucketColor(b) {
   const hit = SITE_REPORT_BUCKETS.find(x => x.key === b)
   return hit ? hit.color : 'grey'
 }
+// 传输三态计数：选中某桶时看该桶内三态（bucket_transport），否则看全局（by_transport）
+function siteReportTransportCount(trKey) {
+  const s = siteReportSummary.value || {}
+  if (siteReportFilter.value && (s.bucket_transport || {})[siteReportFilter.value]) {
+    return (s.bucket_transport[siteReportFilter.value][trKey] || 0)
+  }
+  return (s.by_transport || {})[trKey] || 0
+}
+// 明细副标题 = 列字段：传输 / 身份子桶 / qB 状态 / 债务 / 账单（不再当桶）
 function siteReportItemSub(it) {
   const parts = []
+  if (it.sub) parts.push(it.sub)
+  if (it.transport) parts.push(it.transport)
   if (it.state) parts.push(it.state)
-  if (it.progress != null && it.progress < 0.999) parts.push(`${Math.round(it.progress * 100)}%`)
-  if (it.hr && it.hr.need_left) parts.push(`还需 ${it.hr.need_left}`)
+  if (it.hr && it.hr.need_left) parts.push(`欠H&R 还需 ${it.hr.need_left}h`)
   if (it.bill && it.bill.state) parts.push(`账单 ${it.bill.state}${it.bill.rule ? '/' + it.bill.rule : ''}`)
   return parts.join(' · ')
 }
@@ -610,6 +631,8 @@ async function loadSiteReport(liveOverride) {
     const data = unwrapResponse(await props.api.get(`${pluginBase.value}/site/seeds?${q.toString()}`)) || {}
     siteReport.value = data
     siteReportFilter.value = ''
+    siteReportTransport.value = ''
+    siteReportSub.value = ''
     if (!siteReportSite.value && siteReportSites.value.length) {
       siteReportSite.value = siteReportSites.value[0].domain || siteReportSites.value[0].name || ''
       await loadSiteReport()
@@ -632,11 +655,14 @@ function hrBillStateColor(st) {
 }
 // ★ 11.13.0 H&R 临近到期：只列该站 at_risk 的账单（最多 5 条，详情看 AI 端点）
 function hrBillsAtRisk(s) { return ((s && s.items) || []).filter(x => x.at_risk).slice(0, 5) }
-function fmtHoursLeft(h) {
+// ★ 14.0.0-2：窗口归零 ≠ 违约。hours_left 只是「站点 H&R 窗口倒计时」；
+// 违约与否看 state（breached 才是真违约）。窗口小于达标线（如窗口 24h / 需 26h）
+// 时 hours_left 先归零，此时账单通常仍是 active —— 文案必须区分，别一律喊「已逾期」。
+function fmtHoursLeft(h, state) {
   if (h === null || h === undefined) return '—'
   const v = Number(h)
   if (!isFinite(v)) return '—'
-  if (v <= 0) return '已逾期'
+  if (v <= 0) return String(state || '') === 'breached' ? '已违约' : '窗口已过'
   if (v < 48) return Math.round(v) + 'h'
   return (v / 24).toFixed(1) + 'd'
 }
@@ -652,47 +678,6 @@ async function loadHrBills(liveOverride) {
     error.value = `H&R 账单加载失败：${e}`
   } finally {
     hrBillsLoading.value = false
-  }
-}
-// ★ 12.5.0 挂种健康度自检（只读）：逐文件核盘找空转/缺文件 + 欠 H&R 风险
-const seedHealthOpen = ref(false)
-const seedHealthLoading = ref(false)
-const seedHealthOnly = ref('all')   // 'all' | 'ghost' | 'partial'
-const seedHealth = ref({ counts: {}, bytes: {}, by_site: [], hr_at_risk: [], items: [], scanned: 0, candidates: 0, site_filter: '' })
-const seedHealthCounts = computed(() => seedHealth.value.counts || {})
-const seedHealthBytes = computed(() => seedHealth.value.bytes || {})
-const seedHealthSites = computed(() => seedHealth.value.by_site || {})
-const seedHealthAtRisk = computed(() => seedHealth.value.hr_at_risk || [])
-const seedHealthItems = computed(() => {
-  const only = seedHealthOnly.value
-  const all = seedHealth.value.items || []
-  return only === 'all' ? all : all.filter(it => it.bucket === only)
-})
-const SEED_HEALTH_BUCKETS = [
-  { key: 'ghost', label: '空转', color: 'error' },
-  { key: 'partial', label: '缺文件', color: 'warning' },
-  { key: 'normal', label: '正常', color: 'grey' },
-]
-function seedHealthBucketColor(b) {
-  const hit = SEED_HEALTH_BUCKETS.find(x => x.key === b)
-  return hit ? hit.color : 'grey'
-}
-function seedHealthBucketLabel(b) {
-  const hit = SEED_HEALTH_BUCKETS.find(x => x.key === b)
-  return hit ? hit.label : (b || '?')
-}
-function openSeedHealth() { seedHealthOpen.value = true; loadSeedHealth() }
-async function loadSeedHealth() {
-  seedHealthLoading.value = true
-  try {
-    const q = new URLSearchParams()
-    if (seedHealthOnly.value && seedHealthOnly.value !== 'all') q.set('only', seedHealthOnly.value)
-    const data = unwrapResponse(await props.api.get(`${pluginBase.value}/health/scan?${q.toString()}`)) || {}
-    seedHealth.value = data
-  } catch (e) {
-    error.value = `挂种健康度自检加载失败：${e}`
-  } finally {
-    seedHealthLoading.value = false
   }
 }
 // 站点折叠：多任务行可展开
@@ -3807,15 +3792,6 @@ onUnmounted(() => {
           title="站点报表：逐条种子状态（分类/保护/账单/qB）"
           @click="openSiteReport"
         />
-        <VBtn
-          v-if="tileVisible('seedhealth')"
-          class="magicflow-seedhealth-btn"
-          icon="mdi-file-find-outline"
-          variant="text"
-          aria-label="挂种健康"
-          title="挂种健康：逐文件核盘找空转/缺文件的种 + 欠 H&R 风险"
-          @click="openSeedHealth"
-        />
         <!-- ★ 桌面：详情磁贴（推荐/云盘/跨站/豆瓣/点播/考核/补源）与「设置」分两档 → 中间加一条竖分隔 -->
         <span class="magicflow-hdr-sep" aria-hidden="true" />
         <VBtn
@@ -3887,13 +3863,6 @@ onUnmounted(() => {
               title="站点报表"
               subtitle="站点逐条种子状态（分类/保护/账单）"
               @click="openSiteReport"
-            />
-            <VListItem
-              v-if="tileVisible('seedhealth')"
-              prepend-icon="mdi-file-find-outline"
-              title="挂种健康"
-              :subtitle="Number(seedHealthCounts.ghost || 0) + Number(seedHealthCounts.partial || 0) > 0 ? `${Number(seedHealthCounts.ghost || 0) + Number(seedHealthCounts.partial || 0)} 个异常` : '逐文件核盘自检'"
-              @click="openSeedHealth"
             />
             <!-- ★ 上面是「详情」，下面是「设置」：分隔开，别混成一串 -->
             <VDivider class="my-1" />
@@ -5055,8 +5024,46 @@ onUnmounted(() => {
               @click="siteReportFilter = siteReportFilter === b.key ? '' : b.key"
             >{{ b.key }} {{ (siteReportSummary.by_bucket || {})[b.key] || 0 }}</VChip>
           </div>
+          <div class="magicflow-sitereport__chips magicflow-sitereport__chips--l2">
+            <span class="magicflow-sitereport__chip-label">传输</span>
+            <VChip
+              size="small"
+              :color="siteReportTransport ? 'grey' : 'primary'"
+              :variant="siteReportTransport ? 'tonal' : 'flat'"
+              style="cursor: pointer"
+              @click="siteReportTransport = ''"
+            >全部</VChip>
+            <VChip
+              v-for="tr in SITE_REPORT_TRANSPORT"
+              :key="tr.key"
+              size="small"
+              :color="tr.color"
+              :variant="siteReportTransport === tr.key ? 'flat' : 'tonal'"
+              style="cursor: pointer"
+              @click="siteReportTransport = siteReportTransport === tr.key ? '' : tr.key"
+            >{{ tr.key }} {{ siteReportTransportCount(tr.key) }}</VChip>
+          </div>
+          <div v-if="siteReportFilter === '静默'" class="magicflow-sitereport__chips magicflow-sitereport__chips--l2">
+            <span class="magicflow-sitereport__chip-label">身份</span>
+            <VChip
+              size="small"
+              :color="siteReportSub ? 'grey' : 'primary'"
+              :variant="siteReportSub ? 'tonal' : 'flat'"
+              style="cursor: pointer"
+              @click="siteReportSub = ''"
+            >全部</VChip>
+            <VChip
+              v-for="s in SITE_REPORT_SILENT_SUBS"
+              :key="s.key"
+              size="small"
+              :color="s.color"
+              :variant="siteReportSub === s.key ? 'flat' : 'tonal'"
+              style="cursor: pointer"
+              @click="siteReportSub = siteReportSub === s.key ? '' : s.key"
+            >{{ s.key }} {{ (siteReportSummary.silent_by_sub || {})[s.key] || 0 }}</VChip>
+          </div>
           <div class="magicflow-ops-dialog__sub">
-            明细 {{ siteReportItems.length }} / {{ siteReportSummary.total || 0 }}{{ siteReportFilter ? ' · 只看「' + siteReportFilter + '」' : ' · 点分类可筛选' }}
+            明细 {{ siteReportItems.length }} / {{ siteReportSummary.total || 0 }}{{ (siteReportFilter || siteReportTransport || siteReportSub) ? ' · 已筛选' : ' · 点分类可筛选' }}
           </div>
           <div v-if="siteReport.hr && siteReport.hr.error" class="magicflow-sitereport__err">
             H&amp;R 对账（{{ siteReport.hr.source }}）：{{ siteReport.hr.error }}
@@ -5119,88 +5126,10 @@ onUnmounted(() => {
               </div>
               <div v-if="s.at_risk" class="magicflow-ops-dialog__sub">
                 临近到期：
-                <span v-for="(it, i) in hrBillsAtRisk(s)" :key="it.hash">{{ i ? '、' : '' }}{{ it.title || it.hash.slice(0, 8) }}（剩 {{ fmtHoursLeft(it.hours_left) }} / 需 {{ it.due_h }}h）</span>
+                <span v-for="(it, i) in hrBillsAtRisk(s)" :key="it.hash">{{ i ? '、' : '' }}{{ it.title || it.hash.slice(0, 8) }}（剩 {{ fmtHoursLeft(it.hours_left, it.state) }} / 需 {{ it.due_h }}h）</span>
               </div>
             </div>
             <div v-if="!hrBillsLoading && !hrBillsSites.length" class="magicflow-ceiling-empty">暂无 H&amp;R 账单（无欠债站）</div>
-          </div>
-        </div>
-      </VCard>
-    </VDialog>
-
-    <VDialog v-model="seedHealthOpen" max-width="48rem" scrollable :fullscreen="isNarrow">
-      <VCard class="magicflow-dialog magicflow-seedhealth-dialog">
-        <header class="magicflow-settings-dialog__head">
-          <span class="magicflow-settings-dialog__title">挂种健康度自检</span>
-          <VChip v-if="seedHealthLoading" size="x-small" color="grey" variant="tonal">加载中</VChip>
-          <VChip v-else-if="seedHealthAtRisk.length" size="x-small" color="error" variant="tonal">{{ seedHealthAtRisk.length }} 风险</VChip>
-          <span class="magicflow-ops-dialog__spacer" />
-          <VBtn icon="mdi-refresh" size="small" variant="text" aria-label="刷新" :loading="seedHealthLoading" @click="loadSeedHealth()" />
-          <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="seedHealthOpen = false" />
-        </header>
-        <div class="magicflow-ops-dialog__body">
-          <div class="magicflow-sitereport__stats">
-            <div class="magicflow-sitereport__stat"><b>{{ seedHealth.scanned || 0 }}</b><span>qB 种子</span></div>
-            <div class="magicflow-sitereport__stat is-danger"><b>{{ seedHealthCounts.ghost || 0 }}</b><span>空转</span></div>
-            <div class="magicflow-sitereport__stat is-danger"><b>{{ seedHealthCounts.partial || 0 }}</b><span>缺文件</span></div>
-            <div class="magicflow-sitereport__stat"><b>{{ (seedHealthBytes.ghost_gb || 0).toFixed(1) }}</b><span>空转 GB</span></div>
-            <div class="magicflow-sitereport__stat" :class="seedHealthCounts.not_in_qb ? 'is-danger' : ''"><b>{{ seedHealthCounts.not_in_qb || 0 }}</b><span>已消失</span></div>
-          </div>
-          <div class="magicflow-sitereport__chips">
-            <VChip
-              size="small"
-              :color="seedHealthOnly === 'all' ? 'primary' : 'grey'"
-              :variant="seedHealthOnly === 'all' ? 'flat' : 'tonal'"
-              style="cursor: pointer"
-              @click="seedHealthOnly = 'all'"
-            >全部 {{ (seedHealthCounts.ghost || 0) + (seedHealthCounts.partial || 0) + (seedHealthCounts.normal || 0) }}</VChip>
-            <VChip
-              size="small"
-              color="error"
-              :variant="seedHealthOnly === 'ghost' ? 'flat' : 'tonal'"
-              style="cursor: pointer"
-              @click="seedHealthOnly = seedHealthOnly === 'ghost' ? 'all' : 'ghost'"
-            >空转 {{ seedHealthCounts.ghost || 0 }}</VChip>
-            <VChip
-              size="small"
-              color="warning"
-              :variant="seedHealthOnly === 'partial' ? 'flat' : 'tonal'"
-              style="cursor: pointer"
-              @click="seedHealthOnly = seedHealthOnly === 'partial' ? 'all' : 'partial'"
-            >缺文件 {{ seedHealthCounts.partial || 0 }}</VChip>
-          </div>
-          <div v-if="seedHealth.probe_truncated" class="magicflow-ops-dialog__sub">
-            候选过多，已截断逐文件核盘（未核 {{ seedHealth.probe_truncated }} 个）；先看已命中的异常。
-          </div>
-          <div v-if="seedHealthAtRisk.length" class="magicflow-hrbills__list">
-            <div class="magicflow-ops-dialog__sub">⚠ 空转且仍欠 H&amp;R（有删除/清理风险）：</div>
-            <div v-for="it in seedHealthAtRisk" :key="it.hash" class="magicflow-sitereport__row">
-              <VChip size="x-small" color="error" variant="tonal" class="magicflow-sitereport__row-b">欠H&amp;R</VChip>
-              <div class="magicflow-sitereport__row-main">
-                <div class="magicflow-sitereport__row-t" :title="it.title">{{ it.title || it.hash }}</div>
-                <div class="magicflow-sitereport__row-s">{{ it.site }} · 还需 {{ it.need_left }}h（账单 {{ it.state }}/{{ it.rule }}）</div>
-              </div>
-              <span class="magicflow-sitereport__row-size">{{ (it.size_gb || 0).toFixed(2) }}G</span>
-            </div>
-          </div>
-          <div class="magicflow-ops-dialog__sub">
-            明细 {{ seedHealthItems.length }} / {{ (seedHealth.value.items || []).length }}<template v-if="seedHealth.site_filter"> · 只看 {{ seedHealth.site_filter }}</template>
-          </div>
-          <div class="magicflow-sitereport__list">
-            <div v-for="it in seedHealthItems" :key="it.hash" class="magicflow-sitereport__row">
-              <VChip size="x-small" :color="seedHealthBucketColor(it.bucket)" variant="tonal" class="magicflow-sitereport__row-b">{{ seedHealthBucketLabel(it.bucket) }}</VChip>
-              <div class="magicflow-sitereport__row-main">
-                <div class="magicflow-sitereport__row-t" :title="it.title">{{ it.title || it.hash }}</div>
-                <div class="magicflow-sitereport__row-s">
-                  {{ it.site }} · {{ it.qb_state }}
-                  <template v-if="it.files_exist != null"> · 文件 {{ it.files_exist }}/{{ it.files_total }}</template>
-                  <template v-if="it.hr"> · 欠H&amp;R 还需 {{ it.hr.need_left }}h</template>
-                  <template v-if="(it.protected || []).length"> · 保护 {{ it.protected.join('/') }}</template>
-                </div>
-              </div>
-              <span class="magicflow-sitereport__row-size">{{ (it.size_gb || 0).toFixed(2) }}G</span>
-            </div>
-            <div v-if="!seedHealthLoading && !seedHealthItems.length" class="magicflow-ceiling-empty">没有命中条件的种子</div>
           </div>
         </div>
       </VCard>
@@ -12100,6 +12029,8 @@ onUnmounted(() => {
 .magicflow-sitereport__stat span { font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
 .magicflow-sitereport__stat.is-danger b { color: rgb(var(--v-theme-error)); }
 .magicflow-sitereport__chips { display: flex; flex-wrap: wrap; gap: 6px; margin-block-end: 10px; }
+.magicflow-sitereport__chips--l2 { margin-block-end: 8px; }
+.magicflow-sitereport__chip-label { align-self: center; font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); margin-inline-end: 2px; }
 .magicflow-sitereport__note { font-size: 12px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); margin-block-end: 8px; }
 .magicflow-sitereport__err { font-size: 12px; color: rgb(var(--v-theme-error)); margin-block-end: 8px; }
 .magicflow-sitereport__list { display: flex; flex-direction: column; gap: 2px; }
