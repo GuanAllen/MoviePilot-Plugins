@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from .fingerprint import Entry, entries_fingerprint, info_hash
+from .qbsync import QB_SYNC_INCREMENTAL, get_qb_sync_store
 
 # ★ 辅种/复用标记（与 tags.MARK_REUSE 保持一致；此模块不反向依赖 tags，避免循环导入）
 REUSE_MARK = "魔流-辅种"
@@ -635,6 +636,11 @@ class DownloaderAdapter:
         if not self._downloader:
             return [], "下载器不可用"
 
+        # ★ 15.3.0：qB 走增量快照（/sync/maindata?rid=），本地过滤；不可用则回退全量。
+        snap = self._snapshot_torrent_infos(tags=tags, status=status)
+        if snap is not None:
+            return snap, None
+
         try:
             torrents, error = self._downloader.get_torrents()
             if error:
@@ -697,10 +703,70 @@ class DownloaderAdapter:
     # 存量复用（辅种）支持
     # ---------------------------------------------------------
 
+    def _snapshot_torrent_infos(
+        self,
+        tags: Optional[List[str]] = None,
+        status: Optional[str] = None,
+    ) -> Optional[List[TorrentInfo]]:
+        """由 qB **增量快照**本地过滤出 TorrentInfo 列表；不可用返回 None（调用方回退全量）。
+
+        数据源 = ``qbsync.QbSyncStore``（``/sync/maindata?rid=`` 增量合并，纯内存）。
+        返回的每行字段与 ``torrents_info()`` 一致（``hash`` 已注入）→ 语义等价。
+        """
+        if not QB_SYNC_INCREMENTAL or self.downloader_name != "qbittorrent":
+            return None
+        qbc = self._qb_client()
+        if qbc is None:
+            return None
+        try:
+            rows = get_qb_sync_store(self.downloader_name).torrents(qbc)
+        except Exception as err:  # noqa: BLE001
+            logger.debug(f"qB 增量快照不可用（回退全量）: {err}")
+            return None
+        if rows is None:
+            return None
+        out: List[TorrentInfo] = []
+        for row in rows:
+            if tags:
+                row_tags = _split_tags(_kv(row, "tags", ""))
+                if not any(t in row_tags for t in tags):
+                    continue
+            if status:
+                st = str(_kv(row, "state", "") or "").strip().lower()
+                if status == "seeding" and st not in QB_SEEDING_STATES:
+                    continue
+                if status == "downloading" and st not in QB_DOWNLOADING_STATES:
+                    continue
+                if status == "paused" and st not in QB_PAUSED_STATES:
+                    continue
+            try:
+                out.append(self._parse_torrent_info(row))
+            except Exception:  # noqa: BLE001
+                continue
+        return out
+
+    def qb_sync_stats(self) -> Dict[str, Any]:
+        """qB 增量快照观测（``/agent/qb/snapshot``）：全量/增量/无变化次数 + 上次增量规模。"""
+        try:
+            return get_qb_sync_store(self.downloader_name).stats()
+        except Exception as err:  # noqa: BLE001
+            return {"downloader": self.downloader_name, "error": str(err)}
+
     def get_raw_torrents(self) -> List[Any]:
         """获取下载器中**全部**种子（不限标签）。"""
         if not self._downloader:
             return []
+        # ★ 15.3.0：qB 增量快照（字段齐全的行，含 hash）；不可用则回退全量。
+        if QB_SYNC_INCREMENTAL and self.downloader_name == "qbittorrent":
+            qbc = self._qb_client()
+            if qbc is not None:
+                try:
+                    rows = get_qb_sync_store(self.downloader_name).torrents(qbc)
+                except Exception as err:  # noqa: BLE001
+                    logger.debug(f"qB 增量快照不可用（回退全量）: {err}")
+                    rows = None
+                if rows is not None:
+                    return list(rows)
         try:
             torrents, error = self._downloader.get_torrents()
             if error:
