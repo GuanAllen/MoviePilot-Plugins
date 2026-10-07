@@ -27,6 +27,8 @@ from ..tags import (
     is_asset_tags,
     is_external_candidate,
     is_library_asset,
+    is_reuse_copy,
+    MARK_REUSE,
     STATE_BONUS,
     STATE_BRUSH,
     STATE_RECOMMEND,
@@ -384,6 +386,161 @@ class TagsMixin:
         if skipped:
             self._dbg(f"标签模型:任务「{getattr(task, 'name', '')}」跳过 {skipped} 个（归别人）")
         return ok_n
+
+    def _tag_ledger_reconcile(
+        self,
+        *,
+        apply: bool = False,
+        adopt_reseed: bool = False,
+        limit: int = 0,
+    ) -> Dict[str, Any]:
+        """★ 15.2.0 标签 ↔ 账本 **对账**（身份轴 + 职务轴自愈；只写 qB 标签，**不改种子账本**）。
+
+        真值源：种子账本（`mf_seed`：谁在岗 / 职务 / 身份）。qB 标签只是它的**镜像**；
+        `retag()` 的「身份轴永久保留」只有**写得进去**才算数 —— 2026-10-07 实测有 47 个
+        `魔流-<站>-魔力` 缺身份轴、2 个账本说「保种」标签却没职务 → 这里按账本补回。
+
+        口径（不破 15.0/15.1）：
+        - **账本有、qB 有**：期望 = ``retag(cur, site=账本.site, state=账本.state, sub=账本.sub)``；
+          与现网不一致 → 补写（治「有职务缺身份」「身份与账本打架」）。
+          **只补「缺的轴」**（``missing_identity``/``missing_duty``）——纯「身份子桶与账本不一致」
+          （``sub_drift``，新↔资源↔普通）**只报不写**（sub 会随生命周期变，真值待单独拍板）。
+        - **账本没有、qB 有静默身份**（`tag_only`）：**一律不动**（15.1.0 口径：不定罪、不写账本）；
+          `adopt_reseed=True` 时把其中带 `魔流-辅种` 的**无主辅种副本**补登进 `mf_reseed`。
+        - **只写 qB 标签 / 补登辅种账**；不删除、不暂停、不 resume、不动 `mf_seed`、不碰 H&R。
+        """
+        downloader = self._get_downloader()
+        if downloader is None or not getattr(downloader, "is_available", False):
+            return {"disabled": True, "reason": "下载器不可用", "checked": 0,
+                    "repaired": 0, "items": [], "adopted": 0, "adopt_items": []}
+        store = self._tag_state()
+        snap = self._tag_all_torrents()
+        fn = getattr(downloader, "replace_torrent_tags", None)
+
+        def _tags_of(live: Any) -> List[str]:
+            return [str(x).strip() for x in (getattr(live, "tags", None) or [])]
+
+        def _has_duty(cur: List[str]) -> bool:
+            for t in cur:
+                p = parse_tag(t)
+                if p and str(p.get("state") or "") in DUTY_STATES:
+                    return True
+            return False
+
+        def _has_ident(cur: List[str]) -> bool:
+            for t in cur:
+                p = parse_tag(t)
+                if p and str(p.get("state") or "") == STATE_SILENT and p.get("sub"):
+                    return True
+            return False
+
+        rows = list((store.items() or {}).items())
+        if limit and limit > 0:
+            rows = rows[:limit]
+        checked = 0
+        repaired = 0
+        items: List[Dict[str, Any]] = []
+        drift: List[Dict[str, Any]] = []
+        for h, rec in rows:
+            if not isinstance(rec, dict):
+                continue
+            state = str(rec.get("state") or "")
+            if state not in DUTY_STATES:
+                continue  # 只管在岗（职务轴）；静默身份由 _silent_to_* 负责
+            site = str(rec.get("site") or "").strip()
+            if not site:
+                continue
+            live = snap.get(h)
+            if live is None:
+                continue  # qB 里没有 → 不管（空壳清理另有其人）
+            cur = _tags_of(live)
+            checked += 1
+            exp = retag(cur, site=site, state=state, sub=str(rec.get("sub") or ""))
+            if set(exp) == set(cur):
+                continue
+            _miss_id = bool(not _has_ident(cur))
+            _miss_duty = bool(not _has_duty(cur))
+            hit: Dict[str, Any] = {
+                "hash": h, "site": site, "state": state, "sub": str(rec.get("sub") or ""),
+                "missing_identity": _miss_id,
+                "missing_duty": _miss_duty,
+                "was": cur, "will": exp,
+            }
+            if not (_miss_id or _miss_duty):
+                # 纯身份子桶漂移（身份/职务都在，只是 sub 与账本不同）→ **只报不写**
+                # （sub 会随生命周期变：新 → 资源；哪个是真值需单独拍板，不在此自动改写）
+                hit["kind"] = "sub_drift"
+                drift.append(hit)
+                continue
+            hit["kind"] = "missing_identity" if _miss_id else "missing_duty"
+            if apply:
+                try:
+                    ok = bool(fn(h, exp)) if callable(fn) else bool(downloader.set_torrent_tags(h, exp))
+                except Exception:  # noqa: BLE001
+                    ok = False
+                hit["ok"] = ok
+                if ok:
+                    repaired += 1
+            items.append(hit)
+
+        # ---- 无主辅种副本：有 `魔流-辅种`、两本账都没登记 → 补登进 mf_reseed ----
+        adopted = 0
+        adopt_items: List[Dict[str, Any]] = []
+        if adopt_reseed:
+            try:
+                reseed_led = self._reseed_ledger() if hasattr(self, "_reseed_ledger") else {}
+            except Exception:  # noqa: BLE001
+                reseed_led = {}
+            name2sid: Dict[str, int] = {}
+            try:
+                for _sid, _info in (self._reseed_site_map() or {}).items():
+                    _nm = str((_info or {}).get("name") or "").strip()
+                    if _nm:
+                        name2sid[_nm] = int(_sid)
+            except Exception:  # noqa: BLE001
+                name2sid = {}
+            for h, live in (snap or {}).items():
+                cur = _tags_of(live)
+                if MARK_REUSE not in cur or _has_duty(cur):
+                    continue
+                if store.get(h):
+                    continue  # 账本已有 → 不是无主
+                _site, _sub = identity_of(cur)
+                _site = str(_site or "").strip()
+                _sid = name2sid.get(_site)
+                if not _sid:
+                    # 该站没接 IYUU sid → 无法成键，只报不登（供人工收编/清理）
+                    adopt_items.append({"hash": h, "site": _site, "sid": 0, "key": "",
+                                        "state": str(getattr(live, "state", "") or ""),
+                                        "note": "该站无 IYUU sid，无法成键"})
+                    continue
+                key = f"{int(_sid)}:{str(h).lower()}"
+                if reseed_led and key in reseed_led:
+                    continue
+                hit2 = {"hash": h, "site": _site, "sid": int(_sid), "key": key,
+                        "state": str(getattr(live, "state", "") or "")}
+                if apply and hasattr(self, "_reseed_ledger_put"):
+                    try:
+                        self._reseed_ledger_put(key, "ok", "无主辅种副本补登（15.2.0 对账）")
+                        adopted += 1
+                        hit2["ok"] = True
+                    except Exception:  # noqa: BLE001
+                        hit2["ok"] = False
+                adopt_items.append(hit2)
+
+        if apply and (repaired or adopted):
+            self._log(f"魔流:标签对账:补标签 {repaired} 个、补登辅种副本 {adopted} 个")
+        return {
+            "apply": bool(apply),
+            "checked": checked,
+            "repaired": repaired,
+            "items": items[:50],
+            "items_total": len(items),
+            "drift": drift[:50],
+            "drift_total": len(drift),
+            "adopted": adopted,
+            "adopt_items": adopt_items[:50],
+        }
 
     def _tag_release(self, task: Any, hashes: Any, *, reason: str = "") -> int:
         """★ 任务退下 → **只摘职务标签**（身份原样保留），返回成功数。
@@ -1117,6 +1274,7 @@ class TagsMixin:
         confirm: str = "",
         reason: str = "",
         tids: str = "",
+        adopt_reseed: str = "",
     ) -> Response:
         """标签模型：状态账本 / 文件组 / 分拣规则 / 迁移计划。
 
@@ -1156,6 +1314,22 @@ class TagsMixin:
                 "count": len(groups.items()), "multi": groups.stats().get("multi_site_groups", 0),
                 "items": rows[: max(1, int(limit)) if str(limit).isdigit() and int(limit) > 0 else 50],
             })
+        if act in ("reconcile", "tag_reconcile", "reconcile_apply"):
+            # ★ 15.2.0 标签 ↔ 账本对账（人机同源，与 /agent/tags/reconcile 同一实现）
+            _ap = act == "reconcile_apply" or str(confirm or "").strip().lower() in ("1", "true", "yes", "on")
+            info = self._tag_ledger_reconcile(
+                apply=_ap, adopt_reseed=bool(int(adopt_reseed or 0)) if str(adopt_reseed or "").strip().isdigit()
+                else str(adopt_reseed or "").strip().lower() in ("1", "true", "yes", "on"),
+                limit=int(limit or 0),
+            )
+            return Response(
+                success=True,
+                message=(f"标签对账：查 {info.get('checked')} 个在岗种 → 待补 {info.get('items_total', len(info.get('items') or []))} 个"
+                         + (f"（已补 {info.get('repaired')}）" if _ap else "（干跑）")
+                         + (f"；无主辅种副本补登 {info.get('adopted')} 个" if info.get('adopt_items') else "")
+                         + (f"；身份子桶漂移 {info.get('drift_total')} 个（只报不写）" if info.get("drift_total") else "")),
+                data=info,
+            )
         if act in ("triage", "silent", "triage_apply"):
             _ap = act == "triage_apply"
             info = self._silent_triage(apply=_ap, limit=int(limit or 0))

@@ -206,6 +206,14 @@ class SilentMixin:
                             f"失败 {i.get('failed')}）")
                 return ""
 
+            def _s12() -> str:
+                # ★ 15.2.0 标签 ↔ 账本对账：账本说在岗（魔力/刷流/保种）但 qB 标签缺身份轴/缺职务 →
+                #   按账本补标签（只写 qB 标签，不改账本）；带「魔流-辅种」的无主辅种副本一并补登。
+                i = self._tag_ledger_reconcile(apply=True, adopt_reseed=True)
+                if i.get("repaired") or i.get("adopted"):
+                    return f"标签对账：补标签 {i.get('repaired')} 个、补登辅种副本 {i.get('adopted')} 个"
+                return ""
+
             _step("purge", "①池清理", _s1)
             _step("hr_keep", "②H&R保挂", _s2)
             _step("hr_guard", "③H&R管理", _s3)
@@ -217,6 +225,7 @@ class SilentMixin:
             _step("assets", "⑨资产刷新", _s9)
             _step("missing", "⑩空壳清理", _s10)
             _step("pause", "⑪不变量收敛", _s11)
+            _step("tag_reconcile", "⑫标签对账", _s12)
 
             self._silent_host_last = time.time()
             self._decision_round_end()

@@ -64,6 +64,13 @@ _BUCKET_ORDER = (BUCKET_RESCUE, BUCKET_HR, BUCKET_BRUSH, BUCKET_BONUS,
 # 静默三子桶（身份轴，仅静默桶使用）
 SILENT_SUBS = (SUB_NEW, SUB_RESOURCE, SUB_PLAIN)
 
+# ★ 15.2.0 静默桶再拆「出身轴」（与身份轴正交，仅静默桶使用）：
+#   池 = 种子账本（mf_seed）在册；辅种副本 = 全站辅种账（mf_reseed）在册；无主 = 两本都没有。
+ORIGIN_POOL = "池"
+ORIGIN_RESEED = "辅种副本"
+ORIGIN_NONE = "无主"
+_ORIGIN_ORDER = (ORIGIN_POOL, ORIGIN_RESEED, ORIGIN_NONE)
+
 # 第二级传输轴（每桶内三态，不单独成桶）
 TRANSPORT_DOWNLOADING = "未完成"
 TRANSPORT_PAUSED = "暂停"
@@ -274,6 +281,18 @@ class SiteReportMixin:
         store = self._site_report_bills_store()
         hr_rep = self._site_report_hr(dom, live, snap)
 
+        # ★ 15.2.0 静默桶「出身轴」真值源：种子账本（池）∪ 全站辅种账（辅种副本）∪ 其余（无主）
+        try:
+            _seed_led = self._tag_state()
+        except Exception:  # noqa: BLE001
+            _seed_led = {}
+        _reseed_hashes: set = set()
+        try:
+            for _k in (self._reseed_ledger() or {}):
+                _reseed_hashes.add(str(_k).split(":", 1)[-1].lower())
+        except Exception:  # noqa: BLE001
+            _reseed_hashes = set()
+
         # 站点 H&R 欠账：tid→infohash→need_left（reconcile 逐条 records，见 hrbills 11.10.0）
         owed: Dict[str, str] = {}
         for rec in (hr_rep.get("records") or []):
@@ -313,6 +332,14 @@ class SiteReportMixin:
             _reuse_copy = is_reuse_copy(getattr(t, "tags", None))
             is_hr = (not _reuse_copy) and ((hh in owed) or (bill_state == BILL_STATE_ACTIVE and bill_rule in _HR_RULES))
             bucket = self._site_report_bucket(t, state, progress, is_hr, is_prot)
+            _origin = ""
+            if bucket == BUCKET_SILENT:
+                try:
+                    _in_seed = bool(_seed_led.get(hh))
+                except Exception:  # noqa: BLE001
+                    _in_seed = False
+                _origin = (ORIGIN_POOL if _in_seed
+                           else (ORIGIN_RESEED if hh in _reseed_hashes else ORIGIN_NONE))
             items.append({
                 "hash": hh,
                 "title": str(getattr(t, "title", "") or "")[:160],
@@ -324,6 +351,7 @@ class SiteReportMixin:
                 "uploaded": round(float(getattr(t, "uploaded", 0) or 0)),
                 "bucket": bucket,
                 "sub": self._site_report_sub(t, bucket),
+                "origin": _origin,
                 "transport": self._site_report_transport(state, progress),
                 "protected": bool(is_prot),
                 "bill": ({"state": bill_state, "rule": bill_rule} if bill else None),
@@ -339,6 +367,7 @@ class SiteReportMixin:
         by_transport: Dict[str, int] = {}
         bucket_transport: Dict[str, Dict[str, int]] = {}
         silent_by_sub: Dict[str, int] = {}
+        silent_origin: Dict[str, int] = {}
         total_size = 0.0
         prot_n = 0
         for it in items:
@@ -351,6 +380,8 @@ class SiteReportMixin:
             if b == BUCKET_SILENT:
                 s = it["sub"] or SUB_PLAIN
                 silent_by_sub[s] = silent_by_sub.get(s, 0) + 1
+                _o = it.get("origin") or ORIGIN_NONE
+                silent_origin[_o] = silent_origin.get(_o, 0) + 1
             total_size += float(it["size_gb"] or 0)
             if it["protected"]:
                 prot_n += 1
@@ -365,6 +396,7 @@ class SiteReportMixin:
             "by_transport": by_transport,
             "bucket_transport": bucket_transport,
             "silent_by_sub": silent_by_sub,
+            "silent_origin": silent_origin,
             "hr_owed": hr_owed,
             "hr_in_qb": sum(1 for r in recs if isinstance(r, dict) and r.get("in_qb")),
             "hr_missing": hr_missing,
