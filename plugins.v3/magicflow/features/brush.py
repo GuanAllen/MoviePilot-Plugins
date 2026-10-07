@@ -708,6 +708,10 @@ class BrushMixin:
                     host = _m.group(1) if _m else ""
                 except Exception:  # noqa: BLE001
                     host = ""
+            # 与 DownloaderAdapter.tracker_domain() 同口径：去 tracker./www. 前缀
+            for _pre in ("tracker.", "www."):
+                if host.startswith(_pre) and len(host) > len(_pre) + 3:
+                    host = host[len(_pre):]
             if not host:
                 # 逐 hash 兜底（qB tracker 字段常为空）
                 try:
