@@ -134,6 +134,13 @@ class ApiMixin:
                 "summary": "点播（§1 权威来源 1）：片名/豆瓣·TMDB·IMDB 链接 → 选源（免费优先）→ 下载 → 直接转「资源」",
             },
             {
+                "path": "/ondemand/items",
+                "endpoint": self.ondemand_items,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "点播清单（只读）：进行中（含下载进度/速度/ETA）+ 已完成历史（结果现况回查）",
+            },
+            {
                 "path": "/debug/store",
                 "endpoint": self.debug_store,
                 "methods": ["GET", "POST"],

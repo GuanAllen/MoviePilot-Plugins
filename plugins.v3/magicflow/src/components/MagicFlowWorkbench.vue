@@ -1765,6 +1765,7 @@ function openOndemand() {
   ondemandOpen.value = true
   ondemandResult.value = null
   ondemandError.value = ''
+  loadOndemandItems()
 }
 
 function fmtSizeGb(bytes) {
@@ -1800,11 +1801,74 @@ async function runOndemand(apply, pick = '') {
     if (pick) params.push(`pick=${encodeURIComponent(pick)}`)
     const res = unwrapResponse(await props.api.post(`${pluginBase.value}/ondemand?${params.join('&')}`, {}))
     if (res) ondemandResult.value = res
+    if (apply) loadOndemandItems()   // ★ 15.4.0：下完马上刷新清单（进度/历史可见）
   } catch (err) {
     ondemandError.value = err?.message || String(err)
   } finally {
     ondemandBusy.value = ''
   }
+}
+
+// ★ 15.4.0：点播清单（进行中带进度 + 历史）。真值源：后端 ondemand_pending × qB 快照 + journal。
+const ondemandItems = ref({ inflight: [], history: [], totals: {} })
+const ondemandItemsBusy = ref(false)
+let ondemandItemsTimer = null
+const odInflight = computed(() => (Array.isArray(ondemandItems.value?.inflight) ? ondemandItems.value.inflight : []))
+const odHistory = computed(() => (Array.isArray(ondemandItems.value?.history) ? ondemandItems.value.history : []))
+
+async function loadOndemandItems() {
+  ondemandItemsBusy.value = true
+  try {
+    const res = unwrapResponse(await props.api.get(`${pluginBase.value}/ondemand/items?limit=50`))
+    if (res) ondemandItems.value = res
+  } catch (err) {
+    // 清单是增强信息，失败不打断搜索/下载主流程
+  } finally {
+    ondemandItemsBusy.value = false
+  }
+}
+function startOndemandItemsPolling() {
+  stopOndemandItemsPolling()
+  ondemandItemsTimer = window.setInterval(loadOndemandItems, 10000)
+}
+function stopOndemandItemsPolling() {
+  if (ondemandItemsTimer) {
+    window.clearInterval(ondemandItemsTimer)
+    ondemandItemsTimer = null
+  }
+}
+watch(ondemandOpen, (v) => {
+  if (v) {
+    loadOndemandItems()
+    startOndemandItemsPolling()
+  } else {
+    stopOndemandItemsPolling()
+  }
+})
+
+// 进度百分比 / 速度 / 剩余时间 / 阶段配色（点播清单用）
+function odPct(row) {
+  return Math.max(0, Math.min(100, Number(row?.progress || 0) * 100))
+}
+function odSpeed(bps) {
+  const v = Number(bps || 0)
+  if (!v) return ''
+  if (v >= 1024 * 1024) return `${(v / 1024 / 1024).toFixed(1)} MB/s`
+  if (v >= 1024) return `${(v / 1024).toFixed(0)} KB/s`
+  return `${v.toFixed(0)} B/s`
+}
+function odEtaText(sec) {
+  const s = Number(sec || 0)
+  if (!s || s <= 0) return ''
+  if (s < 60) return `剩 ${Math.round(s)} 秒`
+  if (s < 3600) return `剩 ${Math.round(s / 60)} 分`
+  return `剩 ${(s / 3600).toFixed(1)} 小时`
+}
+function odStageColor(stage) {
+  if (stage === 'downloading') return 'primary'
+  if (stage === 'resource') return 'success'
+  if (stage === 'pending_settle') return 'info'
+  return 'warning'   // gone
 }
 
 // ── 跨站辅种：队列 / 流量兜底（3.11.0）────────────────────────────────
@@ -3617,6 +3681,7 @@ onUnmounted(() => {
   if (liveTimer) window.clearInterval(liveTimer)
   if (warmingTimer) window.clearTimeout(warmingTimer)
   if (cloudPollTimer) window.clearInterval(cloudPollTimer)
+  if (ondemandItemsTimer) window.clearInterval(ondemandItemsTimer)
 })
 </script>
 
@@ -7222,6 +7287,72 @@ onUnmounted(() => {
           <VAlert v-if="ondemandError" type="error" variant="tonal" density="compact" class="mt-2">
             {{ ondemandError }}
           </VAlert>
+
+          <!-- ★ 15.4.0：点播清单（进行中带进度 + 历史）——先看见自己点播的东西，再看搜索结果 -->
+          <div class="magicflow-od-inventory mt-3">
+            <div class="magicflow-od-inventory__head">
+              <span class="magicflow-od-inventory__title">点播清单</span>
+              <VChip size="x-small" variant="tonal" color="primary">进行中 {{ odInflight.length }}</VChip>
+              <VChip size="x-small" variant="tonal">已完成 {{ odHistory.length }}</VChip>
+              <VSpacer />
+              <VBtn
+                icon="mdi-refresh"
+                size="x-small"
+                variant="text"
+                aria-label="刷新点播清单"
+                :loading="ondemandItemsBusy"
+                @click="loadOndemandItems"
+              />
+            </div>
+            <div v-if="!odInflight.length && !odHistory.length" class="magicflow-od-inventory__empty">
+              还没有点播记录。搜一部片开始吧。
+            </div>
+            <article v-for="row in odInflight" :key="'od-i-' + row.hash" class="magicflow-od-row">
+              <div class="magicflow-od-row__title" :title="row.title">
+                {{ row.title || row.hash.slice(0, 12) }}<template v-if="row.year"> ({{ row.year }})</template>
+              </div>
+              <div class="magicflow-od-row__meta">
+                <VChip size="x-small" variant="tonal">{{ row.site || '—' }}</VChip>
+                <VChip v-if="row.free" size="x-small" variant="tonal" color="success">免费</VChip>
+                <VChip v-if="row.hit_and_run" size="x-small" variant="tonal" color="warning">H&R</VChip>
+                <span v-if="row.size_gb">{{ row.size_gb.toFixed(2) }} GB</span>
+                <span v-if="row.stage === 'downloading' && row.speed">{{ odSpeed(row.speed) }}</span>
+                <span v-if="row.eta_s">{{ odEtaText(row.eta_s) }}</span>
+              </div>
+              <VProgressLinear
+                :model-value="odPct(row)"
+                height="6"
+                rounded
+                :color="row.stage === 'downloading' ? 'primary' : 'success'"
+                class="mt-1"
+              />
+              <div class="magicflow-od-row__stage">
+                <VChip size="x-small" variant="flat" :color="odStageColor(row.stage)">{{ row.stage_text }}</VChip>
+                <span v-if="row.stage === 'downloading'" class="magicflow-od-row__pct">{{ odPct(row).toFixed(1) }}%</span>
+                <span class="magicflow-od-row__hash">{{ row.hash.slice(0, 12) }}</span>
+              </div>
+            </article>
+            <article
+              v-for="row in odHistory"
+              :key="'od-h-' + row.hash"
+              class="magicflow-od-row magicflow-od-row--done"
+            >
+              <div class="magicflow-od-row__title" :title="row.title">
+                {{ row.title || row.hash.slice(0, 12) }}
+              </div>
+              <div class="magicflow-od-row__meta">
+                <VChip size="x-small" variant="tonal">{{ row.site || '—' }}</VChip>
+                <span v-if="row.size_gb">{{ row.size_gb.toFixed(2) }} GB</span>
+                <span class="magicflow-od-row__ts">{{ fmtTs(row.ts) }}</span>
+              </div>
+              <div class="magicflow-od-row__stage">
+                <VChip size="x-small" variant="tonal" :color="row.result === 'resource' ? 'success' : (row.result === 'downloading' ? 'primary' : '') ">
+                  {{ row.result_text }}
+                </VChip>
+                <span class="magicflow-od-row__hash">{{ row.hash.slice(0, 12) }}</span>
+              </div>
+            </article>
+          </div>
           <template v-if="ondemandResult">
             <div class="magicflow-recommend-dialog__summary mt-2">
               <VChip size="small" :color="ondemandResult.resource?.recognized ? 'success' : 'warning'" variant="tonal">
@@ -12043,6 +12174,20 @@ onUnmounted(() => {
 .magicflow-ondemand-item__act { display: flex; justify-content: flex-end; margin-top: 6px; }
 .magicflow-ondemand-item__title { font-size: 0.8rem; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
 .magicflow-ondemand-item__meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; font-size: 0.74rem; color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); }
+/* ★ 15.4.0 点播清单：进行中（带进度条）+ 历史 */
+.magicflow-od-inventory { border: 1px solid rgba(var(--v-theme-on-surface), 0.12); border-radius: 10px; padding: 8px 10px; background: rgba(var(--v-theme-on-surface), 0.03); }
+.magicflow-od-inventory__head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.magicflow-od-inventory__title { font-size: 0.84rem; font-weight: 600; margin-right: 2px; }
+.magicflow-od-inventory__empty { font-size: 0.78rem; opacity: 0.7; padding: 6px 2px; }
+.magicflow-od-row { border-top: 1px solid rgba(var(--v-theme-on-surface), 0.07); padding: 6px 2px; }
+.magicflow-od-row:first-of-type { border-top: none; }
+.magicflow-od-row__title { font-size: 0.8rem; line-height: 1.45; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.magicflow-od-row__meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 3px; font-size: 0.72rem; color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); }
+.magicflow-od-row__stage { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.magicflow-od-row__pct { font-size: 0.72rem; font-variant-numeric: tabular-nums; opacity: 0.85; }
+.magicflow-od-row__hash { font-size: 0.7rem; opacity: 0.55; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.magicflow-od-row__ts { font-variant-numeric: tabular-nums; opacity: 0.75; }
+.magicflow-od-row--done .magicflow-od-row__title { color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); }
 /* ★ §4.1 辅种流水单表 */
 .magicflow-reseed { display: flex; flex-direction: column; font-size: 12px; }
 .magicflow-reseed__head, .magicflow-reseed__row { display: grid; grid-template-columns: 8.5em minmax(0, 0.8fr) 5.2em minmax(0, 2fr) 4.2em 4.2em; gap: 8px; align-items: center; padding: 5px 2px; }
