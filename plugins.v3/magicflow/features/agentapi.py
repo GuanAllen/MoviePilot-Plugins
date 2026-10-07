@@ -220,6 +220,14 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
          "params": {"hash": "str（点播种 infohash）", "action": "pause | resume | remove"},
          "returns": "OnDemandAct", "version": AGENT_ENDPOINT_VERSION,
          "summary": "点播行内操作：pause 暂停 / resume 继续 / remove 移除（**走唯一删除闸门**，欠 H&R 硬拦并如实回传 blocked 原因）"},
+        # ---- 15.7.0 歌单→选种计划（只读干跑）----
+        {"path": "/agent/music/plan", "method": "GET", "handler": "agent_music_plan", "write": False,
+         "params": {"text": "歌单（每行一条：`艺人 - 歌名` / `歌名` / `歌名@站id,站id`）",
+                    "sites": "逗号分隔站点 id（空=全部已配置站点）",
+                    "per_item": "int 每首保留候选数（默认 3）",
+                    "limit": "int 歌单条数上限（默认 40）"},
+         "returns": "MusicPlan", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "★歌单→选种计划（只读）：逐条 MP 搜索(mtype=music) → 硬过滤视频/MV → 打分（无损/位深/分轨/免费/做种/体积）→ 选中 + 逐条判定依据链"},
         # ---- P1.5c：功能域只读（AI ⊇ 前端，收编 19 个只读豁免域）----
         {"path": "/agent/tasks/{id}/bonus", "method": "GET", "handler": "agent_task_bonus", "write": False,
          "params": {"id": "任务 id 路径参数"}, "returns": "TaskBonusReport",
@@ -955,6 +963,22 @@ class AgentApiMixin:
              "remove 过唯一删除闸门（deletegate）——欠 H&R / 跨站来源份 / 已认领 / 手动保留一律硬拦"))
 
     # ---------------------------------------------------- 11.9.0 野马PT 逐种 H&R（只读 + 免罪写）
+
+    def agent_music_plan(self, text: str = "", sites: str = "",
+                         per_item: int = 3, limit: int = 40) -> Dict[str, Any]:
+        """``GET /agent/music/plan`` —— 歌单 → 选种计划（只读干跑，15.7.0）。
+
+        判定链见 ``features/musicgrab.py``；本处只做参数校验与信封。
+        """
+        t0 = time.time()
+        if not str(text or "").strip():
+            return self._agent_err("bad_request", "缺少歌单文本 text（每行一条：`艺人 - 歌名` / `歌名`）", t0)
+        try:
+            data = self._music_plan(text, sites=sites, per_item=per_item, limit=limit)
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal_error", f"计划失败: {e}", t0)
+        return self._agent_ok(data, t0)
+
     def agent_yema(self, live: int = 0, force: int = 0) -> Dict[str, Any]:
         """``GET /agent/yema`` —— ★ **野马PT 逐种 H&R 对账**（站点 × 本机 × 账本；只读）。
 
