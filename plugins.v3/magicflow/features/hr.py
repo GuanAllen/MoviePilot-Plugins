@@ -34,6 +34,7 @@ from .hrbills import (
     RULE_HIT_AND_RUN,
 )
 from ..downloader_ops import seed_hours_for_hr
+from ..common import hr_incomplete
 
 
 class HrMixin:
@@ -151,6 +152,9 @@ class HrMixin:
 
         ★ 11.11.1：复用/补源副本（非真实下载）→ 本站不欠 H&R。
         """
+        # ★ 15.5.0（Master 16:19「没有下完的内容没有 h&r」）：未完成 → 无 H&R 义务。
+        if hr_incomplete(torrent):
+            return False, 0.0, 0.0, "未下载完成(无 H&R 义务)"
         try:
             _tags = [str(x) for x in (getattr(torrent, "tags", None) or [])]
             if is_reuse_copy(_tags):
@@ -208,6 +212,10 @@ class HrMixin:
         ★ 14.0.0：所有四路的「做满」比较统一走 ``_hr_due_hours(need) = need + margin``，
         与账单状态机同源（避免「账单还欠、闸门已放行」的假违约）。
         """
+        # ★ 15.5.0（Master 16:19「没有下完的内容没有 h&r」）：未完成 → 无 H&R 义务。
+        #   未下载完成 = 未达站点 H&R 触发阈，三/四路都不算欠（删/清不受阻）。
+        if hr_incomplete(torrent):
+            return False, 0.0, 0.0, "未下载完成(无 H&R 义务)"
         # ★ 11.11.1：复用/补源副本不继承资源的来源站 H&R 债（副本自己不是真实下载）。
         try:
             _tags = [str(x) for x in (getattr(torrent, "tags", None) or [])]

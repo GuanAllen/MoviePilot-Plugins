@@ -1871,6 +1871,35 @@ function odStageColor(stage) {
   return 'warning'   // gone
 }
 
+// ★ 15.5.0：筛选（进行中 / 已完成）+ 行内操作（暂停 / 继续 / 移除）
+const ondemandTab = ref('inflight')   // 'inflight' | 'done'
+const odActing = ref('')
+const odMsg = ref('')
+function odIsPaused(row) {
+  const s = String(row?.state || '')
+  return s === 'pausedUP' || s === 'pausedDL' || s === 'stoppedUP' || s === 'stoppedDL' || s === 'paused'
+}
+async function actOndemand(row, action) {
+  const h = String(row?.hash || '')
+  if (!h) return
+  if (action === 'remove') {
+    const _t = row?.title || h.slice(0, 12)
+    if (!confirm(`确认移除「${_t}」？\n\n· 从下载器删除该种 + 文件\n· 欠 H&R / 受保护的种会被闸门拦下`)) return
+  }
+  odMsg.value = ''
+  odActing.value = `${h}:${action}`
+  try {
+    const res = unwrapResponse(await props.api.post(
+      `${pluginBase.value}/ondemand/act?hash=${encodeURIComponent(h)}&action=${encodeURIComponent(action)}`, {}))
+    odMsg.value = res?.message || '已执行'
+  } catch (err) {
+    odMsg.value = `❌ ${err?.message || String(err)}`
+  } finally {
+    odActing.value = ''
+    loadOndemandItems()
+  }
+}
+
 // ── 跨站辅种：队列 / 流量兜底（3.11.0）────────────────────────────────
 const crossseedOpen = ref(false)
 const crossseedActing = ref('')
@@ -7288,12 +7317,24 @@ onUnmounted(() => {
             {{ ondemandError }}
           </VAlert>
 
-          <!-- ★ 15.4.0：点播清单（进行中带进度 + 历史）——先看见自己点播的东西，再看搜索结果 -->
+          <!-- ★ 15.4.0/15.5.0：点播清单（筛选 + 行内操作）——先看见自己点播的东西，再看搜索结果 -->
           <div class="magicflow-od-inventory mt-3">
             <div class="magicflow-od-inventory__head">
               <span class="magicflow-od-inventory__title">点播清单</span>
-              <VChip size="x-small" variant="tonal" color="primary">进行中 {{ odInflight.length }}</VChip>
-              <VChip size="x-small" variant="tonal">已完成 {{ odHistory.length }}</VChip>
+              <VChip
+                size="x-small"
+                :variant="ondemandTab === 'inflight' ? 'flat' : 'tonal'"
+                :color="ondemandTab === 'inflight' ? 'primary' : ''"
+                class="magicflow-od-tab"
+                @click="ondemandTab = 'inflight'"
+              >进行中 {{ odInflight.length }}</VChip>
+              <VChip
+                size="x-small"
+                :variant="ondemandTab === 'done' ? 'flat' : 'tonal'"
+                :color="ondemandTab === 'done' ? 'primary' : ''"
+                class="magicflow-od-tab"
+                @click="ondemandTab = 'done'"
+              >已完成 {{ odHistory.length }}</VChip>
               <VSpacer />
               <VBtn
                 icon="mdi-refresh"
@@ -7304,54 +7345,95 @@ onUnmounted(() => {
                 @click="loadOndemandItems"
               />
             </div>
-            <div v-if="!odInflight.length && !odHistory.length" class="magicflow-od-inventory__empty">
-              还没有点播记录。搜一部片开始吧。
-            </div>
-            <article v-for="row in odInflight" :key="'od-i-' + row.hash" class="magicflow-od-row">
-              <div class="magicflow-od-row__title" :title="row.title">
-                {{ row.title || row.hash.slice(0, 12) }}<template v-if="row.year"> ({{ row.year }})</template>
+            <VAlert
+              v-if="odMsg"
+              :type="odMsg.startsWith('❌') ? 'warning' : 'info'"
+              variant="tonal"
+              density="compact"
+              closable
+              class="mb-2"
+              @click:close="odMsg = ''"
+            >{{ odMsg }}</VAlert>
+            <!-- 进行中 -->
+            <template v-if="ondemandTab === 'inflight'">
+              <div v-if="!odInflight.length" class="magicflow-od-inventory__empty">
+                没有进行中的点播。搜一部片开始吧。
               </div>
-              <div class="magicflow-od-row__meta">
-                <VChip size="x-small" variant="tonal">{{ row.site || '—' }}</VChip>
-                <VChip v-if="row.free" size="x-small" variant="tonal" color="success">免费</VChip>
-                <VChip v-if="row.hit_and_run" size="x-small" variant="tonal" color="warning">H&R</VChip>
-                <span v-if="row.size_gb">{{ row.size_gb.toFixed(2) }} GB</span>
-                <span v-if="row.stage === 'downloading' && row.speed">{{ odSpeed(row.speed) }}</span>
-                <span v-if="row.eta_s">{{ odEtaText(row.eta_s) }}</span>
-              </div>
-              <VProgressLinear
-                :model-value="odPct(row)"
-                height="6"
-                rounded
-                :color="row.stage === 'downloading' ? 'primary' : 'success'"
-                class="mt-1"
-              />
-              <div class="magicflow-od-row__stage">
-                <VChip size="x-small" variant="flat" :color="odStageColor(row.stage)">{{ row.stage_text }}</VChip>
-                <span v-if="row.stage === 'downloading'" class="magicflow-od-row__pct">{{ odPct(row).toFixed(1) }}%</span>
-                <span class="magicflow-od-row__hash">{{ row.hash.slice(0, 12) }}</span>
-              </div>
-            </article>
-            <article
-              v-for="row in odHistory"
-              :key="'od-h-' + row.hash"
-              class="magicflow-od-row magicflow-od-row--done"
-            >
-              <div class="magicflow-od-row__title" :title="row.title">
-                {{ row.title || row.hash.slice(0, 12) }}
-              </div>
-              <div class="magicflow-od-row__meta">
-                <VChip size="x-small" variant="tonal">{{ row.site || '—' }}</VChip>
-                <span v-if="row.size_gb">{{ row.size_gb.toFixed(2) }} GB</span>
-                <span class="magicflow-od-row__ts">{{ fmtTs(row.ts) }}</span>
-              </div>
-              <div class="magicflow-od-row__stage">
-                <VChip size="x-small" variant="tonal" :color="row.result === 'resource' ? 'success' : (row.result === 'downloading' ? 'primary' : '') ">
-                  {{ row.result_text }}
-                </VChip>
-                <span class="magicflow-od-row__hash">{{ row.hash.slice(0, 12) }}</span>
-              </div>
-            </article>
+              <article v-for="row in odInflight" :key="'od-i-' + row.hash" class="magicflow-od-row">
+                <div class="magicflow-od-row__title" :title="row.title">
+                  {{ row.title || row.hash.slice(0, 12) }}<template v-if="row.year"> ({{ row.year }})</template>
+                </div>
+                <div class="magicflow-od-row__meta">
+                  <VChip size="x-small" variant="tonal">{{ row.site || '—' }}</VChip>
+                  <VChip v-if="row.free" size="x-small" variant="tonal" color="success">免费</VChip>
+                  <VChip v-if="row.hit_and_run" size="x-small" variant="tonal" color="warning">H&R</VChip>
+                  <span v-if="row.size_gb">{{ row.size_gb.toFixed(2) }} GB</span>
+                  <span v-if="row.stage === 'downloading' && row.speed">{{ odSpeed(row.speed) }}</span>
+                  <span v-if="row.eta_s">{{ odEtaText(row.eta_s) }}</span>
+                </div>
+                <VProgressLinear
+                  :model-value="odPct(row)"
+                  height="6"
+                  rounded
+                  :color="odIsPaused(row) ? 'warning' : (row.stage === 'downloading' ? 'primary' : 'success')"
+                  class="mt-1"
+                />
+                <div class="magicflow-od-row__stage">
+                  <VChip size="x-small" variant="flat" :color="odIsPaused(row) ? 'warning' : odStageColor(row.stage)">
+                    {{ odIsPaused(row) ? '已暂停' : row.stage_text }}
+                  </VChip>
+                  <span v-if="row.stage === 'downloading' && !odIsPaused(row)" class="magicflow-od-row__pct">{{ odPct(row).toFixed(1) }}%</span>
+                  <span class="magicflow-od-row__hash">{{ row.hash.slice(0, 12) }}</span>
+                  <VSpacer />
+                  <VBtn
+                    v-if="!odIsPaused(row)"
+                    size="x-small"
+                    variant="tonal"
+                    :loading="odActing === row.hash + ':pause'"
+                    @click="actOndemand(row, 'pause')"
+                  >暂停</VBtn>
+                  <VBtn
+                    v-else
+                    size="x-small"
+                    variant="tonal"
+                    color="primary"
+                    :loading="odActing === row.hash + ':resume'"
+                    @click="actOndemand(row, 'resume')"
+                  >继续</VBtn>
+                  <VBtn
+                    size="x-small"
+                    variant="tonal"
+                    color="error"
+                    :loading="odActing === row.hash + ':remove'"
+                    @click="actOndemand(row, 'remove')"
+                  >移除</VBtn>
+                </div>
+              </article>
+            </template>
+            <!-- 已完成 -->
+            <template v-else>
+              <div v-if="!odHistory.length" class="magicflow-od-inventory__empty">还没有已完成的点播。</div>
+              <article
+                v-for="row in odHistory"
+                :key="'od-h-' + row.hash"
+                class="magicflow-od-row magicflow-od-row--done"
+              >
+                <div class="magicflow-od-row__title" :title="row.title">
+                  {{ row.title || row.hash.slice(0, 12) }}
+                </div>
+                <div class="magicflow-od-row__meta">
+                  <VChip size="x-small" variant="tonal">{{ row.site || '—' }}</VChip>
+                  <span v-if="row.size_gb">{{ row.size_gb.toFixed(2) }} GB</span>
+                  <span class="magicflow-od-row__ts">{{ fmtTs(row.ts) }}</span>
+                </div>
+                <div class="magicflow-od-row__stage">
+                  <VChip size="x-small" variant="tonal" :color="row.result === 'resource' ? 'success' : (row.result === 'downloading' ? 'primary' : '')">
+                    {{ row.result_text }}
+                  </VChip>
+                  <span class="magicflow-od-row__hash">{{ row.hash.slice(0, 12) }}</span>
+                </div>
+              </article>
+            </template>
           </div>
           <template v-if="ondemandResult">
             <div class="magicflow-recommend-dialog__summary mt-2">
@@ -12179,6 +12261,7 @@ onUnmounted(() => {
 .magicflow-od-inventory__head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
 .magicflow-od-inventory__title { font-size: 0.84rem; font-weight: 600; margin-right: 2px; }
 .magicflow-od-inventory__empty { font-size: 0.78rem; opacity: 0.7; padding: 6px 2px; }
+.magicflow-od-tab { cursor: pointer; user-select: none; }
 .magicflow-od-row { border-top: 1px solid rgba(var(--v-theme-on-surface), 0.07); padding: 6px 2px; }
 .magicflow-od-row:first-of-type { border-top: none; }
 .magicflow-od-row__title { font-size: 0.8rem; line-height: 1.45; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -215,6 +215,11 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
          "params": {"limit": "int（历史条数上限，默认 50，最大 200）"},
          "returns": "OnDemandItems", "version": AGENT_ENDPOINT_VERSION,
          "summary": "★点播清单：进行中（下载进度/速度/ETA/阶段）+ 已完成历史（结果=已转资源·已入库·已移出，现况回查）"},
+        {"path": "/agent/ondemand/act", "method": "POST", "handler": "agent_ondemand_act",
+         "write": True,
+         "params": {"hash": "str（点播种 infohash）", "action": "pause | resume | remove"},
+         "returns": "OnDemandAct", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "点播行内操作：pause 暂停 / resume 继续 / remove 移除（**走唯一删除闸门**，欠 H&R 硬拦并如实回传 blocked 原因）"},
         # ---- P1.5c：功能域只读（AI ⊇ 前端，收编 19 个只读豁免域）----
         {"path": "/agent/tasks/{id}/bonus", "method": "GET", "handler": "agent_task_bonus", "write": False,
          "params": {"id": "任务 id 路径参数"}, "returns": "TaskBonusReport",
@@ -927,6 +932,27 @@ class AgentApiMixin:
             data, t0,
             ("进行中 = ondemand_pending(mf_seed.pending) × qB 快照(progress/state/dl_speed)；"
              "历史 = journal(items[].source=ondemand) + SeedLedgerStore(state/sub/in_library/identity_at)——只读回查"))
+
+    # ---------------------------------------------------- 15.5.0 点播行内操作（写）
+    def agent_ondemand_act(self, hash: str = "", action: str = "") -> Dict[str, Any]:
+        """``POST /agent/ondemand/act`` —— 点播行内操作（pause / resume / remove）。
+
+        ``remove`` **走唯一删除闸门**（不绕过）：欠 H&R / 跨站来源份 / 已认领 / 手动保留 一律硬拦，
+        被拦时 ``ok=false`` + ``blocked=true`` + 原因，如实回传。
+        """
+        t0 = time.time()
+        try:
+            rep = self._ondemand_act(hash=hash, action=action)
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"点播操作失败:{e}", t0, trace_id=str(e))
+        if not rep.get("ok"):
+            code = "blocked" if rep.get("blocked") else "invalid"
+            return self._agent_err(code, str(rep.get("message") or "操作未生效"), t0,
+                                   trace_id=str(action))
+        return self._agent_report(
+            rep, t0,
+            ("写操作 → DownloaderAdapter.pause_torrents/resume_torrents/delete_torrents；"
+             "remove 过唯一删除闸门（deletegate）——欠 H&R / 跨站来源份 / 已认领 / 手动保留一律硬拦"))
 
     # ---------------------------------------------------- 11.9.0 野马PT 逐种 H&R（只读 + 免罪写）
     def agent_yema(self, live: int = 0, force: int = 0) -> Dict[str, Any]:

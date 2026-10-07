@@ -141,6 +141,13 @@ class ApiMixin:
                 "summary": "点播清单（只读）：进行中（含下载进度/速度/ETA）+ 已完成历史（结果现况回查）",
             },
             {
+                "path": "/ondemand/act",
+                "endpoint": self.ondemand_act,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "点播行内操作（进行中）：pause 暂停 / resume 继续 / remove 移除（走唯一删除闸门，欠 H&R 硬拦）",
+            },
+            {
                 "path": "/debug/store",
                 "endpoint": self.debug_store,
                 "methods": ["GET", "POST"],

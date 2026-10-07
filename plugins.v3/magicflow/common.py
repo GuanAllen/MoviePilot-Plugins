@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "15.4.0"
+__version__ = "15.5.0"
 
 import bisect
 import re
@@ -723,6 +723,32 @@ def task_is_participating(task: Any) -> bool:
 def task_is_running(task: Any) -> bool:
     """任务是否「运行中」（会跑刷流/补种/清理流程）。"""
     return run_mode_of(task) == RUN_MODE_RUNNING
+
+
+# ============================================================
+# ★ 未完成下载无 H&R 义务（Master 2026-10-07 16:19「没有下完的内容没有 h&r 我可以删除」）
+# ============================================================
+def hr_incomplete(torrent: Any) -> bool:
+    """该种是否**尚未下载完成**（``progress < 0.999``）—— 未完成 ⇒ **无 H&R 义务**。
+
+    Master 拍板：未下完的内容在站上不计（未达 H&R 触发阈），所以清理面/删除闸门
+    对「未完成」的种不应以 H&R 为由硬拦。
+
+    **fail-safe**：progress 读不到 / 非法 / 为 None → 返回 ``False``（当作已完成，**不豁免**）。
+
+    ★ 单一真值源：H&R 判定链（``features/hr.py::_hr_obligation[_by_seed]``）与
+    删除断言（``features/deletegate.py::_delete_bill_assert``）共用本函数。
+    """
+    try:
+        p = getattr(torrent, "progress", None)
+    except Exception:  # noqa: BLE001
+        return False
+    if p is None:
+        return False
+    try:
+        return float(p) < 0.999
+    except (TypeError, ValueError):
+        return False
 
 
 # ============================================================

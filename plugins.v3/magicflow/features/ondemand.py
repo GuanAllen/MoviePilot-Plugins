@@ -522,7 +522,65 @@ class OnDemandMixin:
             },
         }
 
+    # ------------------------------------------------------------ 操作（行内：暂停/继续/移除）
+
+    _OD_ACTS = ("pause", "resume", "remove")
+
+    def _ondemand_act(self, hash: str = "", action: str = "") -> Dict[str, Any]:
+        """点播「进行中」的行内操作：``pause`` / ``resume`` / ``remove``（只读清单之外的唯一写口）。
+
+        ``remove`` **走唯一删除闸门**（``DownloaderAdapter.delete_torrents``）：欠 H&R /
+        跨站来源份 / 已认领 / 手动保留 **一律硬拦**（fail-closed，不绕过）——被拦时
+        ``ok=false``、``blocked=true`` 并附原因，前端如实展示。
+        删种**同时删文件**（未完成的下载无保留价值，避免又添孤儿文件）。
+        """
+        h = str(hash or "").strip().lower()
+        act = str(action or "").strip().lower()
+        if not h:
+            return {"ok": False, "message": "缺少 hash"}
+        if act not in self._OD_ACTS:
+            return {"ok": False, "message": f"未知操作:{action}"}
+        pend = self._ondemand_all()
+        if h not in pend:
+            return {"ok": False, "message": "该种不在点播进行中（可能已完成/已移除）"}
+        try:
+            dl = self._get_downloader("qbittorrent")
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "message": f"下载器不可用:{e}"}
+        if dl is None or not getattr(dl, "is_available", False):
+            return {"ok": False, "message": "下载器不可用"}
+        if act in ("pause", "resume"):
+            try:
+                n, err = (dl.pause_torrents([h]) if act == "pause" else dl.resume_torrents([h]))
+            except Exception as e:  # noqa: BLE001
+                return {"ok": False, "message": f"{act} 失败:{e}"}
+            if err or not n:
+                return {"ok": False, "message": f"{act} 失败:{err or '未命中'}"}
+            self._log(f"点播:{'暂停' if act == 'pause' else '继续'} {h[:12]}")
+            return {"ok": True, "hash": h, "action": act,
+                    "message": "已暂停" if act == "pause" else "已继续"}
+        # ---- remove：唯一删除闸门（不绕过）
+        try:
+            n, err = dl.delete_torrents(hashes=[h], delete_file=True,
+                                        reason="点播移除（进行中）", source="ondemand")
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "message": f"移除失败:{e}"}
+        if not n:
+            return {"ok": False, "blocked": True,
+                    "message": err or "被删除闸门拦下（欠 H&R / 受保护），未移除"}
+        self._ondemand_unmark(h)
+        self._log(f"点播:移除 {h[:12]}（删种+删文件）")
+        return {"ok": True, "hash": h, "action": "remove", "message": "已移除（删种+删文件）"}
+
     # ------------------------------------------------------------ API
+
+    def ondemand_act(self, hash: str = "", action: str = "") -> Response:
+        """``POST /ondemand/act`` —— 点播行内操作（pause / resume / remove）。"""
+        try:
+            rep = self._ondemand_act(hash=hash, action=action)
+            return Response(success=bool(rep.get("ok")), message=str(rep.get("message") or ""), data=rep)
+        except Exception as e:  # noqa: BLE001
+            return Response(success=False, message=f"点播操作失败:{e}")
 
     def ondemand_items(self, limit: int = 50) -> Response:
         """``GET /ondemand/items`` —— 点播清单（进行中带进度 + 历史）。只读。"""
