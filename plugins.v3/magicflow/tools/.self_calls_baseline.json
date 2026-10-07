@@ -314,7 +314,7 @@
   "hrbills.py::_site_domain_by_name": 3,
   "hrbills.py::_site_hr_flag": 5,
   "hrbills.py::_site_per_torrent_hr": 1,
-  "hrbills.py::_site_rules": 2,
+  "hrbills.py::_site_rules": 3,
   "hrbills.py::_tag_all_torrents": 10,
   "hrbills.py::_tag_groups": 1,
   "hrbills.py::_tag_state": 2,

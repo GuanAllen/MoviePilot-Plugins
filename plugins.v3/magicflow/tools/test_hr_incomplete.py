@@ -125,7 +125,16 @@ class _Ratio:
         return 0.5
 
 
-ok(common.hr_complete_ratio_of(_Ratio()) == 0.5, "hr_complete_ratio_of：读 _hr_complete_ratio()")
+ok(common.hr_complete_ratio_of(_Ratio()) == 0.5, "hr_complete_ratio_of：读 _hr_complete_ratio(dom)")
+
+
+class _RatioDom:
+    def _hr_complete_ratio(self, dom=""):
+        return 0.2 if dom else 0.999
+
+
+ok(common.hr_complete_ratio_of(_RatioDom(), "cspt.top") == 0.2, "站点覆盖：cspt.top → 0.2")
+ok(common.hr_complete_ratio_of(_RatioDom(), "") == 0.999, "无站点 → 全局默认")
 ok(common.HR_COMPLETE_RATIO_DEFAULT == 0.999, "默认阈值常量 = 0.999")
 
 
@@ -151,7 +160,7 @@ class Fake(dg.DeleteGateMixin):
     def _hrbills_store(self):
         return self._bills
 
-    def _hr_complete_ratio(self):
+    def _hr_complete_ratio(self, dom=""):
         if self._ratio is None:
             raise AttributeError("no ratio")
         return self._ratio
@@ -183,13 +192,17 @@ ok(HD in why, "不可验证 → 不豁免、照拦")
 # ---------------------------------------------------------------- [5] 源码护栏
 print("[5] 源码护栏")
 hr_src = (ROOT / "features" / "hr.py").read_text(encoding="utf-8")
-ok(hr_src.count("hr_incomplete(torrent, hr_complete_ratio_of(self))") >= 2, "hr.py 两处（_hr_obligation / _by_seed）都短路")
+ok(hr_src.count("self._hr_incomplete_of(site, torrent)") >= 2, "hr.py 两处（_hr_obligation / _by_seed）都短路")
 ok("from ..common import hr_incomplete, hr_complete_ratio_of" in hr_src, "hr.py 走 common 同一真值源")
 dg_src = (ROOT / "features" / "deletegate.py").read_text(encoding="utf-8")
-ok("hr_incomplete(_t, hr_complete_ratio_of(self))" in dg_src, "deletegate 账单断言走 hr_incomplete")
+ok("hr_incomplete(_t, hr_complete_ratio_of(self, str(b.get(\"site\") or \"\")))" in dg_src,
+   "deletegate 账单断言走 hr_incomplete（按账单站点取阈值）")
 hb_src = (ROOT / "features" / "hrbills.py").read_text(encoding="utf-8")
-ok("def _hr_complete_ratio" in hb_src, "hrbills 提供 _hr_complete_ratio() 读取设置")
+ok("def _hr_complete_ratio" in hb_src, "hrbills 提供 _hr_complete_ratio(dom) 读取设置")
+ok('get("complete_ratio")' in hb_src, "★ 站点级覆盖：读规则库 complete_ratio")
 ok("0.999" not in hb_src.split("def _hrbills_tick")[1].split("def ")[0], "tick 不再硬编码 0.999")
+so_src = (ROOT / "features" / "siteops.py").read_text(encoding="utf-8")
+ok('act in ("set_ratio", "ratio")' in so_src, "siteops 提供 /rules?action=set_ratio")
 
 # ---------------------------------------------------------------- [6] 阈值生效于断言
 print("[6] 完成度阈值生效于删除断言")

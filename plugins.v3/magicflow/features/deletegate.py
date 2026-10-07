@@ -201,20 +201,24 @@ class DeleteGateMixin:
         if store is None:
             return why
         for h in hs:
-            _t = _snap.get(h)
-            if _t is not None:
-                try:
-                    if hr_incomplete(_t, hr_complete_ratio_of(self)):
-                        continue
-                except Exception:  # noqa: BLE001
-                    pass
             try:
                 b = store.get(h)
             except Exception:  # noqa: BLE001
                 b = None
-            if isinstance(b, dict) and str(b.get("state") or "") in ("active", "breached"):
-                why[h] = (f"欠 H&R 账单（直查 state={b.get('state')}·rule={b.get('rule')}·"
-                          f"site={b.get('site')}）")
+            if not (isinstance(b, dict) and str(b.get("state") or "") in ("active", "breached")):
+                continue
+            # ★ 15.5.0/15.5.1：未达完成度的种无 H&R 义务 → 不拦。
+            #   阈值 = 站点覆盖 > 全局默认；真值源 = qB 快照 progress
+            #   （读不到 / 不在下载器 → 不豁免，fail-safe）。
+            _t = _snap.get(h)
+            if _t is not None:
+                try:
+                    if hr_incomplete(_t, hr_complete_ratio_of(self, str(b.get("site") or ""))):
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass
+            why[h] = (f"欠 H&R 账单（直查 state={b.get('state')}·rule={b.get('rule')}·"
+                      f"site={b.get('site')}）")
         return why
 
     def _delete_breaker_check(self, hashes: Iterable[str], delete_file: bool = False,

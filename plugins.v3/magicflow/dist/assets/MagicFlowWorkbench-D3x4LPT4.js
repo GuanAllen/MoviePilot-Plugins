@@ -6793,6 +6793,15 @@ async function setRuleHours(row, hours) {
   await loadRules();
 }
 
+// ★ 15.6.0：站点级完成度阈值（留空 = 跟全局默认）
+async function setRuleRatio(row, ratio) {
+  const dom = row?.domain;
+  if (!dom) return
+  const v = String(ratio ?? '').trim();
+  await props.api.get(`rules?action=set_ratio&site=${encodeURIComponent(dom)}&ratio=${encodeURIComponent(v)}`);
+  await loadRules();
+}
+
 async function refreshRules() {
   const res = await props.api.get('rules?action=refresh');
   siteRules.value = res?.data?.rules || [];
@@ -13006,8 +13015,8 @@ return (_ctx, _cache) => {
                                                 step: "0.001",
                                                 min: "0",
                                                 max: "1",
-                                                label: "H&R 完成度阈值",
-                                                hint: "下载进度 ≥ 该值才算「完成」、才计 H&R 义务（默认 0.999 = 下满；某站下载中即计 H&R 可调低）",
+                                                label: "H&R 完成度阈值（全局默认）",
+                                                hint: "下载进度 ≥ 该值才算「完成」、才计 H&R 义务（默认 0.999 = 下满）。某站不同 → 改下表该站的「完成度」列",
                                                 "persistent-hint": "",
                                                 variant: "outlined",
                                                 density: "comfortable"
@@ -13075,6 +13084,7 @@ return (_ctx, _cache) => {
                                                 _createElementVNode("span", null, "站点"),
                                                 _createElementVNode("span", null, "H&R"),
                                                 _createElementVNode("span", null, "保种(h)"),
+                                                _createElementVNode("span", null, "完成度"),
                                                 _createElementVNode("span", null, "做种上限"),
                                                 _createElementVNode("span", null, "来源"),
                                                 _createElementVNode("span", null, "操作")
@@ -13198,6 +13208,22 @@ return (_ctx, _cache) => {
                                                       onChange: $event => (setRuleHours(row, $event.target.value))
                                                     }, null, 8, ["model-value", "onChange"])
                                                   ]),
+                                                  _createElementVNode("span", null, [
+                                                    _createVNode(_component_VTextField, {
+                                                      "model-value": row.complete_ratio,
+                                                      type: "number",
+                                                      min: "0",
+                                                      max: "1",
+                                                      step: "0.001",
+                                                      density: "compact",
+                                                      variant: "outlined",
+                                                      "hide-details": "",
+                                                      placeholder: "跟全局",
+                                                      style: {"max-width":"6rem"},
+                                                      title: row.complete_ratio == null ? '未覆盖 → 跟设置里的全局「H&R 完成度阈值」' : '站点级覆盖（下载进度 ≥ 该值才计 H&R）',
+                                                      onChange: $event => (setRuleRatio(row, $event.target.value))
+                                                    }, null, 8, ["model-value", "title", "onChange"])
+                                                  ]),
                                                   _createElementVNode("span", null, _toDisplayString(row.seed_cap || '-'), 1),
                                                   _createElementVNode("span", {
                                                     class: "magicflow-rules-row__src",
@@ -13252,7 +13278,13 @@ return (_ctx, _cache) => {
                                                 ]))
                                               }), 128))
                                             ]),
-                                            _cache[569] || (_cache[569] = _createElementVNode("p", { class: "magicflow-settings-hint" }, " 「保种(h)」直接改 = 写入手填覆盖（最高优先级：手填 > 探测 > 内置 > 全局默认）。 ", -1))
+                                            _cache[569] || (_cache[569] = _createElementVNode("p", { class: "magicflow-settings-hint" }, [
+                                              _createTextVNode(" 「保种(h)」直接改 = 写入手填覆盖（最高优先级：手填 > 探测 > 内置 > 全局默认）。 「"),
+                                              _createElementVNode("strong", null, "完成度"),
+                                              _createTextVNode("」= 该站的 H&R 完成度阈值："),
+                                              _createElementVNode("strong", null, "留空 = 跟全局默认"),
+                                              _createTextVNode("； 正常站用全局 0.999（下满才算），某站若说「下载中即计 H&R」→ 在该站填 0.2 之类。 ")
+                                            ], -1))
                                           ]))
                                         : (settingsTab.value === 'tags')
                                           ? (_openBlock(), _createElementBlock("div", _hoisted_375, [
@@ -17653,6 +17685,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-9fd21bda"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-32540db0"]]);
 
 export { MagicFlowWorkbench as M };
