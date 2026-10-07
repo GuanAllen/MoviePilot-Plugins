@@ -61,6 +61,7 @@ COVERED = {
     "/iyuu/test": "/agent/iyuu",
     "/events": "/agent/events",
     "/site/seeds": "/agent/site/seeds",
+    "/ondemand/items": "/agent/ondemand",
     "/hr/bills": "/agent/hr/bills",
     "/health/scan": "/agent/seeds/health",
 }

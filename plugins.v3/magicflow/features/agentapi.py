@@ -210,6 +210,11 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
          "write": False,
          "params": {}, "returns": "QbSnapshot", "version": AGENT_ENDPOINT_VERSION,
          "summary": "qB 增量同步观测（/sync/maindata?rid=）：全量/增量/无变化次数 + rid + 上次增量条数/字节（纯内存，只读）"},
+        {"path": "/agent/ondemand", "method": "GET", "handler": "agent_ondemand",
+         "write": False,
+         "params": {"limit": "int（历史条数上限，默认 50，最大 200）"},
+         "returns": "OnDemandItems", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "★点播清单：进行中（下载进度/速度/ETA/阶段）+ 已完成历史（结果=已转资源·已入库·已移出，现况回查）"},
         # ---- P1.5c：功能域只读（AI ⊇ 前端，收编 19 个只读豁免域）----
         {"path": "/agent/tasks/{id}/bonus", "method": "GET", "handler": "agent_task_bonus", "write": False,
          "params": {"id": "任务 id 路径参数"}, "returns": "TaskBonusReport",
@@ -903,6 +908,25 @@ class AgentApiMixin:
             data, t0,
             ("DownloaderAdapter.qb_sync_stats() → qbsync.QbSyncStore.stats()"
              "（/sync/maindata?rid= 增量合并；纯内存计数，不写 Redis/不落盘）"))
+
+    # ---------------------------------------------------- 15.4.0 点播清单（只读）
+    def agent_ondemand(self, limit: int = 50) -> Dict[str, Any]:
+        """``GET /agent/ondemand`` —— 点播清单（只读）。
+
+        一次调用答：**「我点播了哪些片、下到哪了、结果如何」**。
+        真值源：进行中 = ``ondemand_pending``（``mf_seed.pending``）× qB 快照；
+        历史 = journal（``items[].source == "ondemand"``）＋ 种子账本（state/sub/in_library）。
+        不新增任何真值源，结果列全为**现况回查**。
+        """
+        t0 = time.time()
+        try:
+            data = self._ondemand_items(limit=limit)
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"读取点播清单失败:{e}", t0, trace_id=str(e))
+        return self._agent_report(
+            data, t0,
+            ("进行中 = ondemand_pending(mf_seed.pending) × qB 快照(progress/state/dl_speed)；"
+             "历史 = journal(items[].source=ondemand) + SeedLedgerStore(state/sub/in_library/identity_at)——只读回查"))
 
     # ---------------------------------------------------- 11.9.0 野马PT 逐种 H&R（只读 + 免罪写）
     def agent_yema(self, live: int = 0, force: int = 0) -> Dict[str, Any]:

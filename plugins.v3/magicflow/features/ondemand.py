@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 import time
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from app.schemas import Response
 
@@ -364,7 +364,172 @@ class OnDemandMixin:
         )
         return bool(ok)
 
+    # ------------------------------------------------------------ 清单（进度 + 历史）
+
+    def _ondemand_snapshot(self) -> Dict[str, Any]:
+        """qB 快照（hash → TorrentInfo）；拿不到就退化为空（清单不报错）。"""
+        try:
+            return self._tag_all_torrents() or {}
+        except Exception:  # noqa: BLE001
+            return {}
+
+    def _ondemand_seed_rec(self, h: str) -> Dict[str, Any]:
+        """读种子账本行（真值源 ``SeedLedgerStore``）：state/sub/in_library/identity_at。"""
+        try:
+            return self._tag_state().get(str(h or "").lower()) or {}
+        except Exception:  # noqa: BLE001
+            return {}
+
+    @staticmethod
+    def _ondemand_hist_title(title: str) -> str:
+        """历史行的展示名：把 journal 里的「点播 xxx」前缀去掉。"""
+        t = str(title or "").strip()
+        if t.startswith("点播"):
+            t = t[len("点播"):].strip()
+        return t
+
+    @staticmethod
+    def _ondemand_hist_site(reason: str) -> str:
+        """从 journal 的 reason（如「源 财神·免费」）回填站点名——种已被删、账本无行时的兜底。"""
+        r = str(reason or "").strip()
+        if r.startswith("源"):
+            r = r[len("源"):].strip()
+        for sep in ("·", " ", "，", ","):
+            if sep in r:
+                r = r.split(sep)[0].strip()
+                break
+        return r
+
+    def _ondemand_inflight_row(self, h: str, info: Dict[str, Any], t: Any, rec: Dict[str, Any]) -> Dict[str, Any]:
+        """进行中一行：基本信息 + qB 进度（progress/state/speed/剩余/ETA）。"""
+        row: Dict[str, Any] = {
+            "hash": h,
+            "title": str(info.get("title") or info.get("media") or ""),
+            "year": str(info.get("year") or ""),
+            "site": str(info.get("site") or ""),
+            "free": bool(info.get("free")),
+            "hit_and_run": bool(info.get("hit_and_run")),
+            "added_at": float(info.get("ts") or 0.0),
+            "in_qb": t is not None,
+            "progress": 0.0, "state": "", "size_gb": 0.0, "left_gb": 0.0,
+            "speed": 0.0, "eta_s": None, "ratio": 0.0,
+            "stage": "gone", "stage_text": "已不在下载器",
+        }
+        if t is None:
+            return row
+        prog = float(getattr(t, "progress", 0) or 0.0)
+        size_gb = float(getattr(t, "size_gb", 0) or 0.0)
+        spd = float(getattr(t, "download_speed", 0) or 0.0)
+        left_gb = max(0.0, size_gb * (1.0 - prog))
+        row.update({
+            "progress": round(prog, 4),
+            "state": str(getattr(t, "state", "") or ""),
+            "size_gb": round(size_gb, 3),
+            "left_gb": round(left_gb, 3),
+            "speed": round(spd, 1),
+            "ratio": round(float(getattr(t, "ratio", 0) or 0.0), 3),
+        })
+        if prog < 0.999:
+            row["stage"] = "downloading"
+            row["stage_text"] = "下载中"
+            if spd > 0:
+                row["eta_s"] = int(left_gb * (1024 ** 3) / spd)
+        elif str((rec or {}).get("sub") or "") == SUB_RESOURCE:
+            row["stage"] = "resource"
+            row["stage_text"] = "已转「资源」"
+        else:
+            row["stage"] = "pending_settle"
+            row["stage_text"] = "已下完，待转「资源」"
+        return row
+
+    def _ondemand_hist_row(self, h: str, it: Any, rec_op: Any, t: Any, rec: Dict[str, Any]) -> Dict[str, Any]:
+        """历史一行：journal 的点播记录 + **现况回查**（不新增真值源）。"""
+        sub = str((rec or {}).get("sub") or "")
+        inlib = bool((rec or {}).get("in_library"))
+        row: Dict[str, Any] = {
+            "hash": h,
+            "title": self._ondemand_hist_title(str(getattr(it, "title", "") or "")),
+            "site": str((rec or {}).get("site") or "") or self._ondemand_hist_site(getattr(it, "reason", "")),
+            "reason": str(getattr(it, "reason", "") or ""),
+            "size_gb": round(float(getattr(it, "size_gb", 0) or 0.0), 3),
+            "ts": float(getattr(rec_op, "created_at", 0) or 0.0),
+            "in_qb": t is not None,
+            "in_library": inlib,
+            "sub": sub,
+            "settled_at": float((rec or {}).get("identity_at") or 0.0),
+            "progress": 0.0,
+            "result": "gone", "result_text": "已移出下载器",
+        }
+        if t is None:
+            return row
+        prog = float(getattr(t, "progress", 0) or 0.0)
+        row["progress"] = round(prog, 4)
+        row["state"] = str(getattr(t, "state", "") or "")
+        if prog < 0.999:
+            row["result"], row["result_text"] = "downloading", "下载中"
+        elif sub == SUB_RESOURCE or inlib:
+            row["result"] = "resource"
+            row["result_text"] = "已转「资源」" + ("·已入库" if inlib else "")
+        else:
+            row["result"], row["result_text"] = "settling", "已下完，待转「资源」"
+        return row
+
+    def _ondemand_items(self, limit: int = 50) -> Dict[str, Any]:
+        """点播清单：进行中（带下载进度）+ 已完成（历史 + 现况）。
+
+        真值源（只读，不新造）：
+          - 进行中 = ``ondemand_pending``（``mf_seed.pending``）× qB 快照（进度/状态/速度）；
+          - 历史 = journal（``items[].source == "ondemand"``）＋ 种子账本（state/sub/in_library）。
+        """
+        try:
+            cap = max(1, min(int(limit or 50), 200))
+        except (TypeError, ValueError):
+            cap = 50
+        pend = self._ondemand_all()
+        snap = self._ondemand_snapshot()
+        inflight: List[Dict[str, Any]] = []
+        for h, info in pend.items():
+            inflight.append(self._ondemand_inflight_row(h, info, snap.get(h), self._ondemand_seed_rec(h)))
+        inflight.sort(key=lambda r: float(r.get("added_at") or 0.0), reverse=True)
+        history: List[Dict[str, Any]] = []
+        seen: Set[str] = set(pend.keys())
+        try:
+            recs = self._store.journal.list_recent(limit=5000) if self._store is not None else []
+        except Exception:  # noqa: BLE001
+            recs = []
+        for r in recs:
+            for it in (getattr(r, "items", None) or []):
+                if str(getattr(it, "source", "") or "") != "ondemand":
+                    continue
+                h = str(getattr(it, "hash", "") or "").lower()
+                if not h or h in seen:
+                    continue
+                seen.add(h)
+                history.append(self._ondemand_hist_row(h, it, r, snap.get(h), self._ondemand_seed_rec(h)))
+                if len(history) >= cap:
+                    break
+            if len(history) >= cap:
+                break
+        history.sort(key=lambda r: float(r.get("ts") or 0.0), reverse=True)
+        return {
+            "inflight": inflight,
+            "history": history,
+            "totals": {
+                "inflight": len(inflight),
+                "downloading": sum(1 for r in inflight if r.get("stage") == "downloading"),
+                "history": len(history),
+                "left_gb": round(sum(float(r.get("left_gb") or 0.0) for r in inflight), 3),
+            },
+        }
+
     # ------------------------------------------------------------ API
+
+    def ondemand_items(self, limit: int = 50) -> Response:
+        """``GET /ondemand/items`` —— 点播清单（进行中带进度 + 历史）。只读。"""
+        try:
+            return Response(success=True, data=self._ondemand_items(limit=limit))
+        except Exception as e:  # noqa: BLE001
+            return Response(success=False, message=f"读取点播清单失败:{e}")
 
     def on_demand(
         self,
