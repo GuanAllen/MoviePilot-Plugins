@@ -488,7 +488,7 @@ class ApiMixin:
                 "endpoint": self.silent_enforce,
                 "methods": ["GET"],
                 "auth": "bear",
-                "summary": "静默不变量收敛:账本静默但 qB 没停的种补 pause（默认干跑；confirm=1 才写）",
+                "summary": "静默不变量收敛:账本/标签静默但 qB 没停的种补 pause（默认干跑；confirm=1 才写）",
             },
             {
                 "path": "/claim",

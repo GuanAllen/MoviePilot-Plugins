@@ -8171,10 +8171,11 @@ onUnmounted(() => {
         <VDivider />
         <VCardText class="text-body-2">
           <div class="magicflow-settings-hint mt-2">
-            <strong>补暂停</strong>（★ 12.7.1）：设计口径「静默池本意就是暂停不上传」——账本已是静默、
+            <strong>补暂停</strong>（★ 12.7.1 / 15.1.0）：设计口径「静默池本意就是暂停不上传」——账本（或标签）已是静默、
             但下载器里没停的种一律补 pause（幂等，<strong>只暂停、不删种、不动文件</strong>）。
             <span v-if="enforceCounts.violations">当前违背不变量 <b>{{ enforceCounts.violations }}</b> 个。</span>
             <span v-else>当前不变量成立（全 paused）。</span>
+            <span v-if="enforceCounts.tag_only">（其中 <b>{{ enforceCounts.tag_only }}</b> 个是「只打了静默标签、不在账本」的——多为全站辅种副本，15.1.0 起一并纳入收敛。）</span>
           </div>
         </VCardText>
         <VDivider />
@@ -8192,7 +8193,7 @@ onUnmounted(() => {
       <VCard class="magicflow-dialog">
         <VCardTitle class="text-subtitle-1 pt-4">确认补暂停</VCardTitle>
         <VCardText class="text-body-2">
-          将对「账本已静默、但下载器里还在跑」的种补 pause（预计 <strong>{{ enforceCounts.violations || 0 }}</strong> 个）。
+          将对「账本或标签已是静默、但下载器里还在跑」的种补 pause（预计 <strong>{{ enforceCounts.violations || 0 }}</strong> 个）。
           <VAlert type="info" variant="tonal" density="compact" class="mt-3">
             只暂停：<strong>不删种、不动文件、不 resume</strong>；幂等可重跑。
           </VAlert>
