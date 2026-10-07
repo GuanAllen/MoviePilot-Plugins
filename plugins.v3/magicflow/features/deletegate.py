@@ -35,6 +35,7 @@ from ..common import (
     DELETE_BREAKER_WINDOW_S,
     DELETE_BILL_ASSERT,
 )
+from ..common import hr_incomplete
 from ..tags import is_library_asset
 
 
@@ -185,6 +186,13 @@ class DeleteGateMixin:
         hs = [str(h or "").strip().lower() for h in (hashes or []) if str(h or "").strip()]
         if not hs:
             return why
+        # ★ 15.5.0：未下载完成的种无 H&R 义务 → 不拦（Master 2026-10-07 16:19）。
+        #   真值源：qB 快照 progress（读不到 / 不在下载器 → 不豁免，fail-safe）。
+        _snap: Dict[str, Any] = {}
+        try:
+            _snap = self._tag_all_torrents() or {}
+        except Exception:  # noqa: BLE001
+            _snap = {}
         store = None
         try:
             store = self._hrbills_store()
@@ -193,6 +201,13 @@ class DeleteGateMixin:
         if store is None:
             return why
         for h in hs:
+            _t = _snap.get(h)
+            if _t is not None:
+                try:
+                    if hr_incomplete(_t):
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass
             try:
                 b = store.get(h)
             except Exception:  # noqa: BLE001
