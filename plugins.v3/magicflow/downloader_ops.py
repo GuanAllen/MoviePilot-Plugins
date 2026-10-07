@@ -28,8 +28,42 @@ logger = logging.getLogger("magicflow")
 DownloaderHelper = None
 
 # hash -> (ts, domain)；空 tracker 种的归属兜底缓存（announce 域名几乎不变）
+# ★ 15.3.1：缓存本身挂到 persistence._shared() 进程级单例上（热重载不丢），兜底用模块级 dict。
+_TRACKER_DOMAIN_KEY = "tracker_domain_cache"
 _TRACKER_DOMAIN_CACHE: Dict[str, Tuple[float, str]] = {}
 _TRACKER_DOMAIN_TTL = 1800.0
+_TRACKER_DOMAIN_MAX = 4000  # 软上限：超过就淘汰最旧的一半（防跨重载长期膨胀）
+
+
+def _tracker_domain_cache() -> Dict[str, Tuple[float, str]]:
+    """取/建「hash → (ts, domain)」缓存（跨热重载共享的进程级单例）。
+
+    模块级 dict 会在插件热重载时被清空 → 冷启动要对每个种子逐 hash 调
+    ``torrents_trackers``（~1368 次 ≈ 27s）。挂到 ``persistence._shared().singletons``
+    后重载不丢；**纯内存**（不写 Redis、不落盘）。取不到共享容器时退化为模块级。
+    """
+    try:
+        from .persistence import _shared  # noqa: PLC0415
+        sh = _shared()
+        with sh.lock:
+            cache = sh.singletons.get(_TRACKER_DOMAIN_KEY)
+            if not isinstance(cache, dict):
+                cache = {}
+                sh.singletons[_TRACKER_DOMAIN_KEY] = cache
+        return cache
+    except Exception:  # noqa: BLE001
+        return _TRACKER_DOMAIN_CACHE
+
+
+def _tracker_domain_store(cache: Dict[str, Tuple[float, str]], h: str, ts: float, host: str) -> None:
+    """写缓存 + 软上限淘汰（超 _TRACKER_DOMAIN_MAX 丢最旧的一半）。"""
+    try:
+        if len(cache) >= _TRACKER_DOMAIN_MAX and h not in cache:
+            for k in sorted(cache, key=lambda k: cache[k][0])[: len(cache) // 2]:
+                cache.pop(k, None)
+        cache[h] = (ts, host)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -803,8 +837,9 @@ class DownloaderAdapter:
         h = str(hash_string or "").strip().lower()
         if not h:
             return ""
+        _cache = _tracker_domain_cache()
         _now = time.time()
-        _hit = _TRACKER_DOMAIN_CACHE.get(h)
+        _hit = _cache.get(h)
         if _hit and (_now - _hit[0]) < _TRACKER_DOMAIN_TTL:
             return _hit[1]
         try:
@@ -822,9 +857,9 @@ class DownloaderAdapter:
                 if host.startswith(pre) and len(host) > len(pre) + 3:
                     host = host[len(pre):]
             if host:
-                _TRACKER_DOMAIN_CACHE[h] = (_now, host)
+                _tracker_domain_store(_cache, h, _now, host)
                 return host
-        _TRACKER_DOMAIN_CACHE[h] = (_now, "")
+        _tracker_domain_store(_cache, h, _now, "")
         return ""
 
     def get_torrents_by_tag(self) -> Tuple[Dict[str, List[TorrentInfo]], Optional[str]]:
@@ -1321,6 +1356,7 @@ class DownloaderAdapter:
             added_on=added_on,
             last_activity=last_activity,
             completion_on=completion_on,
+            tracker=str(_kv(torrent, "tracker", "") or ""),
             is_zero_bonus=is_zero_bonus,
             is_free=is_free,
             is_double_free=is_double_free,

@@ -3,7 +3,7 @@
         "name": "魔流",
         "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
         "labels": "站点,做种,魔力,刷流",
-        "version": "15.3.0",
+        "version": "15.3.1",
         "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
         "author": "GuanAllen",
         "level": 1,
@@ -403,9 +403,10 @@
             "15.1.0": "15.1.0：静默不变量对账（盘点/收敛面并入 qB 标签：只带静默身份、不在主管种账本的辅种副本也纳入；带职务的在岗种不入面防误伤）+ 存量 189 个补暂停（8 站 ≈3TB）",
             "15.2.0": "15.2.0：静默桶拆「出身轴」（池/辅种副本/无主）+ 标签↔账本对账（新增 /agent/tags/reconcile，清单 50）：44 缺身份轴/6 缺职务按账本补全、3 无主辅种副本补登",
             "15.2.1": "15.2.1：站点上报时魔「直读缓存（Redis）+ 抓取写回」——stale-while-revalidate，首次打开不再闪 0（Master 11:32）",
-            "15.3.0": "15.3.0：qB 增量同步（/sync/maindata?rid=）——全量 2.27MB/0.51s → 增量 ~15KB/0.03s；纯内存单例（不写 Redis/不落盘）；新增 /agent/qb/snapshot（清单 51）"
+            "15.3.0": "15.3.0：qB 增量同步（/sync/maindata?rid=）——全量 2.27MB/0.51s → 增量 ~15KB/0.03s；纯内存单例（不写 Redis/不落盘）；新增 /agent/qb/snapshot（清单 51）",
+            "15.3.1": "15.3.1：热重载后首次 /status 从 27s → ~1.5s——修 _parse_torrent_info 丢失 tracker 字段（逐种兜底 qB）+ tracker 缓存挪进 _shared() 进程级单例（纯内存，不写 Redis/不落盘）"
         }
     },
-    "version": "15.3.0",
+    "version": "15.3.1",
     "history": {}
 }
