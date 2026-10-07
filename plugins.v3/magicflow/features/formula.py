@@ -40,6 +40,7 @@ from ..common import (
     MagicFlowTaskConfig,
     OFFICIAL_PAGES,
     SITE_FORMULA_RETRY,
+    SITE_FORMULA_STALE_MAX,
     SITE_FORMULA_TTL,
     SITE_FORMULA_ZERO_TTL,
     SITE_OFFICIAL_STALE_TTL,
@@ -200,37 +201,56 @@ class FormulaMixin:
 
     def _acquire_site_formula(self, task: MagicFlowTaskConfig):
         """
-        自动抓取站点魔力公式(带 TTL 缓存)。
+        取站点上报的魔力公式。
 
-        命中缓存直接返回;否则用 MoviePilot SDK 抓 ``mybonus.php`` 解析。
-        失败也短暂缓存(``SITE_FORMULA_RETRY``)以避免频繁打网络。
-        返回 ``FormulaCapture`` 或 None。
+        ★ 2026-10-07（Master 口径）：**缓存（Redis）里的「最近值」直接读、抓取时写回 Redis**；
+        读路径不因 TTL 过期就当作「没有」——否则每到 1h 过期瞬间 UI 会闪一下 0/缺
+        （就是「总是有缺时魔的情况」）。
+
+        四条规则：
+          1. 非零值：STALE_MAX 窗口内**有就先给** UI；只有新鲜度 < SITE_FORMULA_TTL 才算
+             fresh、不触发重抓；过旧则仍返回旧值 + 后台重抓并**写回 Redis**；
+          2. 「时魔 = 0」：0 不可信（站点可能还没把我们的种算进魔力页），只认 ZERO_TTL 短窗口，
+             超过就当作「无」并**尽快重抓**（别让 UI 钉 0 一小时）；
+          3. 只有**启用中**的任务才值得为重抓打站点（停用任务有值就就着旧值用，不白打请求）；
+          4. 连 STALE_MAX 窗口里都没有值 → 后台单飞抓取，本次返回 None（非阻塞）。
+
+        后台抓取失败有短冷却（``SITE_FORMULA_RETRY``）。返回 ``FormulaCapture`` 或 None。
         """
         domain = (getattr(task, "site_domain", "") or "").strip().lower()
         if not domain:
             return None
         cache = self._cache_formula()
-        cached = cache.get(domain, SITE_FORMULA_TTL)
-        if cached is not None and not self._formula_report_empty(cached):
+        # ★ 直接读缓存里的「最近值」：窗口放宽到 STALE_MAX（Redis 里的冷层也按此保留）
+        latest = cache.get(domain, SITE_FORMULA_STALE_MAX)
+        age = cache.age(domain)
+        # 记下这份值的年龄（域 → 秒），供 _site_reported 拼「判定依据链」（同文件、零额外查询）
+        ages = getattr(self, "_formula_age_by_domain", None)
+        if ages is None:
+            ages = self._formula_age_by_domain = {}
+        ages[domain] = age
+        _enabled = bool(getattr(task, "enabled", False))
+
+        def _use(cap):
             # 顺手把命中的参数回注预设(纯内存、零请求),否则热重载后预设会空一轮。
-            self._register_formula_params(domain, cached, getattr(task, "site_name", "") or "")
-            return cached
-        # ★ 7.8.1：站点上报「时魔 = 0」不认 1h 长缓存，只认 ZERO_TTL 短缓存；
-        #   过短窗口就后台重抓（单飞 + 失败冷却）——否则刚下种后 UI 会钉 0 一个小时。
-        # 只有**启用中**的任务才值得为零值重抓（停用任务没在跑，白打站点请求）。
-        _zero_ok = bool(getattr(task, "enabled", False))
-        if cached is not None and _zero_ok:
-            _short = cache.get(domain, SITE_FORMULA_ZERO_TTL)
-            if _short is not None and not self._formula_report_empty(_short):
-                self._register_formula_params(domain, _short, getattr(task, "site_name", "") or "")
-                return _short
-        if cached is not None and not _zero_ok:
-            self._register_formula_params(domain, cached, getattr(task, "site_name", "") or "")
-            return cached
-        # 未命中/已过期:不阻塞当前请求--后台单飞抓取,本次先返回旧值(可能为 None)。
+            self._register_formula_params(domain, cap, getattr(task, "site_name", "") or "")
+            return cap
+
+        if latest is not None:
+            if self._formula_report_empty(latest):
+                # 规则②：「时魔 = 0」短窗口外就当作没有，尽快重抓，别钉 0
+                if _enabled and (age is None or age > SITE_FORMULA_ZERO_TTL):
+                    self._schedule_formula_fetch(task, domain, cache)
+                    return None
+                return latest
+            # 规则①：非零值先给（哪怕是旧的）；只有过旧才需要后台重抓
+            if _enabled and (age is None or age >= SITE_FORMULA_TTL):
+                self._schedule_formula_fetch(task, domain, cache)
+            return _use(latest)
+        # 规则④：连最近值都没有——不阻塞当前请求，后台单飞抓取，本次返回 None。
         # 这样 /status、总览等永远不会因站点 mybonus.php 卡顿/超时而拖慢。
         self._schedule_formula_fetch(task, domain, cache)
-        return (cache.get(domain, SITE_FORMULA_ZERO_TTL) if (cached is not None and _zero_ok) else None) or cached
+        return None
 
     def _register_formula_params(self, domain: str, cap: Any, name: str = "") -> None:
         """把公式参数注册进站点预设（纯内存、零请求）。
@@ -288,7 +308,8 @@ class FormulaMixin:
                     cap = None
                 if cap and cap.ok:
                     self._register_formula_params(domain, cap, getattr(site, "name", "") or "")
-                    cache.set(domain, cap, SITE_FORMULA_TTL)
+                    # ★ 2026-10-07：按 STALE_MAX 写回（Redis 键活这么久）——读路径才能「先给旧值再后台刷新」
+                    cache.set(domain, cap, SITE_FORMULA_STALE_MAX)
                     self._log(f"站点公式已获取 [{domain}] {cap.note} params={cap.params} extra={cap.extra}")
                 else:
                     fails[domain] = time.time() + SITE_FORMULA_RETRY
@@ -660,6 +681,8 @@ class FormulaMixin:
             "harem_hourly": 0.0,
             "table": [],
             "source": "",
+            "age_s": None,
+            "stale": False,
             "site_domain": getattr(task, "site_domain", "") or "",
             "site_name": getattr(task, "site_name", "") or "",
             "user": {},
@@ -682,6 +705,14 @@ class FormulaMixin:
                 out["harem_hourly"] = float(extra.get("harem_hourly") or 0)
                 out["table"] = extra.get("bonus_table") or []
                 out["source"] = getattr(cap, "source", "") or ""
+                # ★ 判定依据链：这份值是刚从站点抓的、还是缓存（Redis）里的旧值？
+                try:
+                    _dom = str(getattr(task, "site_domain", "") or "").strip().lower()
+                    _age = (getattr(self, "_formula_age_by_domain", None) or {}).get(_dom)
+                    out["age_s"] = round(float(_age), 1) if _age is not None else None
+                    out["stale"] = bool(_age is not None and _age >= SITE_FORMULA_TTL)
+                except Exception:
+                    pass
         except Exception as err:
             self._log(f"读取站点上报魔力失败: {err}", "warning")
         user = self._site_user_stats(task.site_id)
