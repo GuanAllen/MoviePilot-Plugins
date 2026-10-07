@@ -74,6 +74,8 @@ class StatusMixin:
             "site_bonus_per_hour": 0.0,
             "site_bonus_a": 0.0,
             "site_bonus_ok": False,
+            "site_bonus_age_s": None,
+            "site_bonus_stale": False,
             "site_current_bonus": 0.0,
             "site_ceiling": 0.0,
             "site_seed_cap": 0,
@@ -100,6 +102,9 @@ class StatusMixin:
             stats["site_current_bonus"] = round(float(rep.get("current_bonus") or 0.0), 2)
             # 站点账号真实数据(上传/下载/分享率/做种/下载数)
             stats["site_user"] = rep.get("user") or {}
+            # ★ 2026-10-07：时魔值的「新鲜度」（直读缓存旧值 vs 刚抓），供 UI/AI 判定依据链
+            stats["site_bonus_age_s"] = rep.get("age_s")
+            stats["site_bonus_stale"] = bool(rep.get("stale"))
         except Exception as err:
             self._log(f"统计任务 [{task.name}] 站点魔力失败: {err}", "warning")
         _t_site = time.time()

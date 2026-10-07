@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "15.2.0"
+__version__ = "15.2.1"
 
 import bisect
 import re
@@ -258,6 +258,10 @@ SITE_FORMULA_RETRY = 30 * 60
 # ★ 7.8.1：站点上报「时魔 = 0」时只认这么久的缓存——0 基本都是「站点还没把我们的种
 #   算进魔力页」（刚建号 / 刚下种 / 页面缓存），钉 1h 会让 UI 长时间显示 0。
 SITE_FORMULA_ZERO_TTL = 300.0
+# ★ 2026-10-07（Master 口径）：读路径「直接读缓存里的最近值」——缓存（Redis）里 rete 时魔
+#   站点上报时魔最长保留这么久；读到后先给前台展示，后台异步重抓并写回 Redis（stale-while-revalidate）。
+#   以前抓到 > TTL(1h) 就当作「无」→ UI 闪 0/缺；现在只要 ≤ STALE_MAX 就先把旧值给 UI。
+SITE_FORMULA_STALE_MAX = 6 * 3600
 # /status 实时统计(每任务一次下载器查询)缓存 TTL(秒):
 # 同一请求内「总览」与「任务列表」会各算一次,缓存可去重;也令 30s 轮询与二次进入更廉价。
 STATS_TTL = 20

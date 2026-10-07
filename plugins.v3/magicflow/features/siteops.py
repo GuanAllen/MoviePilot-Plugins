@@ -33,7 +33,7 @@ from ..sites.formula_fetch import (
 
 from ..common import (
     RULES_PROBE_DELAY,
-    SITE_FORMULA_TTL,
+    SITE_FORMULA_STALE_MAX,
 )
 from ..sitestore import get_site_store
 
@@ -764,7 +764,7 @@ class SiteOpsMixin:
                 _dom = (getattr(site, "domain", "") or "").strip().lower()
                 self._register_formula_params(_dom, cap, getattr(site, "name", "") or "")
                 if _dom:
-                    self._cache_formula().set(_dom, cap, SITE_FORMULA_TTL)
+                    self._cache_formula().set(_dom, cap, SITE_FORMULA_STALE_MAX)
         except Exception as err:
             return Response(success=False, message=f"抓取失败: {err}")
         self._log(

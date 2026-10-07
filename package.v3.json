@@ -3,7 +3,7 @@
         "name": "魔流",
         "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
         "labels": "站点,做种,魔力,刷流",
-        "version": "15.2.0",
+        "version": "15.2.1",
         "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
         "author": "GuanAllen",
         "level": 1,
@@ -401,9 +401,10 @@
             "14.0.0": "14.0.0：结构性重构（MAJOR）——① 删「自动换种」线（swap.py）；② 删「辅种慢扫/复用」线（reuse_existing/reuse_verify 开关 + brush 复用块，保留 _acquire_source 承接原语）；③ 跨站线改造：删「跨站回辅」worker，新增全局真任务「跨站取种」(__crossseed__，task_type=crossseed，Check 30min：流量兜底 + 下完分诊，挂回目标站交全站辅种）；④ 站点报表静默判据改「有身份且无职务」；⑤ H&R need_h+margin 闸门/账单同源（修 CARPT 假违约根因）+ gate_bug 细分 gate_miss/rule_drift；⑥ 收尾：静默盘点去 stage/pool_cleanup 观测残留、relocate→cleanup、HrHost 60→15min、取种单站日 PV 上限 20、/agent/tasks 增 type=real|host + is_host。preflight 11/11；容器 23 套测试全绿；endpoints 49。",
             "15.0.0": "15.0.0：跨站取种真任务降为常驻 worker（方案 A：H2 假阳性 / agent 误操作 / 门面恒真三修）+ 站点报表两轴分级 + 「窗口归零≠违约」口径 + preflight 12/12 模板 ref 护栏",
             "15.1.0": "15.1.0：静默不变量对账（盘点/收敛面并入 qB 标签：只带静默身份、不在主管种账本的辅种副本也纳入；带职务的在岗种不入面防误伤）+ 存量 189 个补暂停（8 站 ≈3TB）",
-            "15.2.0": "15.2.0：静默桶拆「出身轴」（池/辅种副本/无主）+ 标签↔账本对账（新增 /agent/tags/reconcile，清单 50）：44 缺身份轴/6 缺职务按账本补全、3 无主辅种副本补登"
+            "15.2.0": "15.2.0：静默桶拆「出身轴」（池/辅种副本/无主）+ 标签↔账本对账（新增 /agent/tags/reconcile，清单 50）：44 缺身份轴/6 缺职务按账本补全、3 无主辅种副本补登",
+            "15.2.1": "15.2.1：站点上报时魔「直读缓存（Redis）+ 抓取写回」——stale-while-revalidate，首次打开不再闪 0（Master 11:32）"
         }
     },
-    "version": "15.2.0",
+    "version": "15.2.1",
     "history": {}
 }
