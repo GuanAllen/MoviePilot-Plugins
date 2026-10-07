@@ -595,6 +595,12 @@ class SiteOpsMixin:
                 row["framework_default"] = ""
             if g.get("manual") is not None:
                 row["manual_hours"] = g["manual"]
+            # ★ 15.6.0：站点级完成度阈值（覆盖全局；null/空 = 跟全局）
+            try:
+                _cr = (store.get(disp) or {}).get("complete_ratio")
+                row["complete_ratio"] = None if _cr in (None, "") else float(_cr)
+            except Exception:  # noqa: BLE001
+                row["complete_ratio"] = None
             row["in_library"] = bool(g["rec"])
             try:
                 fr = self._site_rules().free_rules(disp)
@@ -644,17 +650,38 @@ class SiteOpsMixin:
             logger.warning(f"促销规则同步失败: {e}")
             return 0
 
-    def get_site_rules(self, action: str = "", site: str = "", hours: str = "", hr: str = "") -> Response:
+    def get_site_rules(self, action: str = "", site: str = "", hours: str = "", hr: str = "",
+                       ratio: str = "") -> Response:
         """站点规则库读写。
 
         - ``GET /rules``：列表（含生效保种时长与来源）；
         - ``GET /rules?action=refresh``：按 MP 配置 + 内置表补全（**不触网**）；
         - ``GET /rules?action=probe&site=<id|domain>``：抓页面探测（1~2 请求/站）；
-        - ``GET /rules?action=set&site=<domain>&hours=<n>``：手填覆盖（写进「站点保种时长」）。
+        - ``GET /rules?action=set&site=<domain>&hours=<n>``：手填覆盖（写进「站点保种时长」）；
+        - ``GET /rules?action=set_ratio&site=<domain>&ratio=<0~1>``：★ 15.6.0 站点级**完成度阈值**
+          （空 / 1 = 清掉覆盖，回全局默认）。
         """
         try:
             act = str(action or "").strip().lower()
             store = self._site_rules()
+            if act in ("set_ratio", "ratio"):
+                dom = str(site or "").strip().lower().replace("https://", "").replace("http://", "").strip("/")
+                if not dom:
+                    return Response(success=False, message="缺少 site(域名)")
+                _rv = str(ratio or "").strip()
+                if _rv == "":
+                    store.put(dom, {"complete_ratio": None})
+                    return Response(success=True, message=f"{dom} 完成度阈值已清掉（回全局默认）",
+                                    data={"rules": self._rules_view()})
+                try:
+                    rv = float(_rv)
+                except (TypeError, ValueError):
+                    return Response(success=False, message="ratio 必须是数字(0~1)")
+                rv = min(1.0, max(0.0, rv))
+                store.put(dom, {"complete_ratio": rv})
+                return Response(success=True,
+                                message=f"{dom} 完成度阈值已设为 {rv:g}（下载进度 ≥ 该值才计 H&R）",
+                                data={"rules": self._rules_view()})
             if act == "set":
                 dom = str(site or "").strip().lower().replace("https://", "").replace("http://", "").strip("/")
                 if not dom:

@@ -144,6 +144,20 @@ class HrMixin:
             margin = 0.0
         return float(need or 0.0) + max(0.0, margin)
 
+    def _hr_incomplete_of(self, site: str, torrent: Any) -> bool:
+        """★ 15.5.1：该种「未达完成度」？（阈值 = 站点覆盖 > 全局默认；见 ``common.hr_incomplete``）。
+
+        站点域从 ``_hr_domain(site, torrent)`` 推（推不出来 → 用全局默认）。
+        """
+        try:
+            dom = self._hr_domain(site, torrent)
+        except Exception:  # noqa: BLE001
+            dom = ""
+        try:
+            return hr_incomplete(torrent, hr_complete_ratio_of(self, dom))
+        except Exception:  # noqa: BLE001
+            return False
+
     def _hr_obligation_by_seed(self, site: str, torrent: Any) -> Tuple[bool, float, float, str]:
         """种子级兜底：该种**自己所在站点**明确有 H&R → 按它自己的做种时长判。
 
@@ -153,7 +167,7 @@ class HrMixin:
         ★ 11.11.1：复用/补源副本（非真实下载）→ 本站不欠 H&R。
         """
         # ★ 15.5.0（Master 16:19「没有下完的内容没有 h&r」）：未完成 → 无 H&R 义务。
-        if hr_incomplete(torrent, hr_complete_ratio_of(self)):
+        if self._hr_incomplete_of(site, torrent):
             return False, 0.0, 0.0, "未下载完成(无 H&R 义务)"
         try:
             _tags = [str(x) for x in (getattr(torrent, "tags", None) or [])]
@@ -213,8 +227,8 @@ class HrMixin:
         与账单状态机同源（避免「账单还欠、闸门已放行」的假违约）。
         """
         # ★ 15.5.0（Master 16:19「没有下完的内容没有 h&r」）：未完成 → 无 H&R 义务。
-        #   未下载完成 = 未达站点 H&R 触发阈，三/四路都不算欠（删/清不受阻）。
-        if hr_incomplete(torrent, hr_complete_ratio_of(self)):
+        #   未下载完成 = 未达站点 H&R 触发阈（阈值可站点级覆盖），三/四路都不算欠。
+        if self._hr_incomplete_of(site, torrent):
             return False, 0.0, 0.0, "未下载完成(无 H&R 义务)"
         # ★ 11.11.1：复用/补源副本不继承资源的来源站 H&R 债（副本自己不是真实下载）。
         try:

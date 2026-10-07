@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "15.5.1"
+__version__ = "15.6.0"
 
 import bisect
 import re
@@ -758,19 +758,23 @@ def hr_incomplete(torrent: Any, ratio: Any = None) -> bool:
         return False
 
 
-def hr_complete_ratio_of(obj: Any, default: Any = None) -> float:
-    """从插件实例取「完成度阈值」设置（``obj._hr_complete_ratio()``）；取不到 → 默认常量。
+def hr_complete_ratio_of(obj: Any, dom: Any = "", default: Any = None) -> float:
+    """从插件实例取「完成度阈值」（``obj._hr_complete_ratio(dom)``）；取不到 → 默认常量。
 
-    给 ``hr_incomplete(t, hr_complete_ratio_of(self))`` 用 —— 让设置面成为口径真值源。
+    ★ 站点覆盖 > 全局默认：某站「下载中即计 H&R」（例：20%）→ 站点规则库给
+    ``complete_ratio=0.2`` 即可（正常站继续走全局 0.999）。
     """
     _d = HR_COMPLETE_RATIO_DEFAULT if default is None else default
     try:
-        return float(obj._hr_complete_ratio())
+        return float(obj._hr_complete_ratio(dom))
     except Exception:  # noqa: BLE001
         try:
-            return float(_d)
-        except (TypeError, ValueError):
-            return HR_COMPLETE_RATIO_DEFAULT
+            return float(obj._hr_complete_ratio())
+        except Exception:  # noqa: BLE001
+            try:
+                return float(_d)
+            except (TypeError, ValueError):
+                return HR_COMPLETE_RATIO_DEFAULT
 
 
 # ============================================================

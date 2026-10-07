@@ -85,6 +85,7 @@ class Harness(HrBillsMixin):
         self.torrents: dict = {}      # hash -> SimpleNamespace
         self.ledger: dict = {}        # hash -> rec dict
         self.name2dom: dict = {}      # 站名 -> 域名
+        self.site_ratios: dict = {}   # ★ 15.6.0 站点级完成度覆盖 dom -> ratio
         # ★ 11.13.0：默认把安全垫置 0（保留「need_h 即达标」的旧断言），
         #   安全垫 / 到期预警单独在 [7b] 里开 2.0 验证。
         self._hr_seed_margin_hours = 0.0
@@ -107,6 +108,17 @@ class Harness(HrBillsMixin):
 
     def _tag_all_torrents(self):
         return dict(self.torrents)
+
+    # ★ 15.6.0：站点级完成度覆盖（模拟规则库）
+    def _site_rules(self):
+        _d = self.site_ratios
+
+        class _SR:
+            def get(self, dom):
+                v = _d.get(str(dom or "").strip().lower())
+                return {} if v is None else {"complete_ratio": v}
+
+        return _SR()
 
     def _tag_state(self):
         class _S:
@@ -308,6 +320,25 @@ def main() -> int:
     h._hrbills_tick()
     _ok(store.get("c0c0")["state"] == "pending",
         f"回调 0.999：60% 未完成 → 降回 pending（{store.get('c0c0')['state']}）")
+
+    # ---- 8d) ★ 15.6.0 站点级完成度覆盖（正常站 0.999，某站 0.5）----
+    print("\n[8d] 站点级完成度覆盖（cspt.top=0.5）")
+    h.site_hr["cspt.top"] = True
+    h.need_hours["cspt.top"] = 24.0
+    _td = _torrent(progress=0.6, title="站点覆盖种", tracker="cspt.top")
+    _td.hash = "d0d0"
+    h.torrents["d0d0"] = _td
+    h._hrbills_open("d0d0", "cspt.top", "魔流-cspt-刷流", _torrent_bytes("dd"))
+    h._hrbills_tick()
+    _ok(store.get("d0d0")["state"] == "pending", "全局 0.999：60% → pending")
+    h.site_ratios["cspt.top"] = 0.5
+    h._hrbills_tick()
+    _ok(store.get("d0d0")["state"] == "active",
+        f"★ 站点覆盖 0.5：60% 算完成 → active（{store.get('d0d0')['state']}）")
+    h.site_ratios.clear()
+    h._hrbills_tick()
+    _ok(store.get("d0d0")["state"] == "pending",
+        f"清掉覆盖 → 回全局 0.999 → pending（{store.get('d0d0')['state']}）")
 
     # ---- 9) 干跑 + 统计 ----
     print("\n[9] 干跑 + 统计")

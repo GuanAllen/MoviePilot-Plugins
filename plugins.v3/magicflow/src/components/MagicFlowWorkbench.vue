@@ -3367,6 +3367,15 @@ async function setRuleHours(row, hours) {
   await loadRules()
 }
 
+// ★ 15.6.0：站点级完成度阈值（留空 = 跟全局默认）
+async function setRuleRatio(row, ratio) {
+  const dom = row?.domain
+  if (!dom) return
+  const v = String(ratio ?? '').trim()
+  await props.api.get(`rules?action=set_ratio&site=${encodeURIComponent(dom)}&ratio=${encodeURIComponent(v)}`)
+  await loadRules()
+}
+
 async function refreshRules() {
   const res = await props.api.get('rules?action=refresh')
   siteRules.value = res?.data?.rules || []
@@ -6526,8 +6535,8 @@ onUnmounted(() => {
                 step="0.001"
                 min="0"
                 max="1"
-                label="H&amp;R 完成度阈值"
-                hint="下载进度 ≥ 该值才算「完成」、才计 H&amp;R 义务（默认 0.999 = 下满；某站下载中即计 H&amp;R 可调低）"
+                label="H&amp;R 完成度阈值（全局默认）"
+                hint="下载进度 ≥ 该值才算「完成」、才计 H&amp;R 义务（默认 0.999 = 下满）。某站不同 → 改下表该站的「完成度」列"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
@@ -6548,7 +6557,7 @@ onUnmounted(() => {
             <p v-if="rulesProbing" class="magicflow-settings-hint">正在逐站抓取规则页（每站 1~2 个请求，站间随机歇 1.5~3.5 秒）…</p>
             <div class="magicflow-rules-table">
               <div class="magicflow-rules-row magicflow-rules-row--head">
-                <span>站点</span><span>H&amp;R</span><span>保种(h)</span><span>做种上限</span><span>来源</span><span>操作</span>
+                <span>站点</span><span>H&amp;R</span><span>保种(h)</span><span>完成度</span><span>做种上限</span><span>来源</span><span>操作</span>
               </div>
               <div v-for="row in siteRules" :key="row.domain" class="magicflow-rules-row">
                 <span class="magicflow-rules-row__name" :title="row.domain">
@@ -6583,6 +6592,22 @@ onUnmounted(() => {
                     @change="setRuleHours(row, $event.target.value)"
                   />
                 </span>
+                <span>
+                  <VTextField
+                    :model-value="row.complete_ratio"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.001"
+                    density="compact"
+                    variant="outlined"
+                    hide-details
+                    placeholder="跟全局"
+                    style="max-width: 6rem"
+                    :title="row.complete_ratio == null ? '未覆盖 → 跟设置里的全局「H&amp;R 完成度阈值」' : '站点级覆盖（下载进度 ≥ 该值才计 H&amp;R）'"
+                    @change="setRuleRatio(row, $event.target.value)"
+                  />
+                </span>
                 <span>{{ row.seed_cap || '-' }}</span>
                 <span class="magicflow-rules-row__src" :title="row.evidence || ''">
                   {{ ruleSourceText(row) }}
@@ -6606,6 +6631,8 @@ onUnmounted(() => {
             </div>
             <p class="magicflow-settings-hint">
               「保种(h)」直接改 = 写入手填覆盖（最高优先级：手填 &gt; 探测 &gt; 内置 &gt; 全局默认）。
+              「<strong>完成度</strong>」= 该站的 H&amp;R 完成度阈值：<strong>留空 = 跟全局默认</strong>；
+              正常站用全局 0.999（下满才算），某站若说「下载中即计 H&amp;R」→ 在该站填 0.2 之类。
             </p>
           </div>
 
@@ -8930,7 +8957,7 @@ onUnmounted(() => {
 
 .magicflow-rules-row {
   display: grid;
-  grid-template-columns: minmax(8rem, 1.6fr) 5rem 7rem 6rem 6rem 4.5rem;
+  grid-template-columns: minmax(8rem, 1.6fr) 5rem 7rem 6rem 6rem 6rem 4.5rem;
   align-items: center;
   gap: 0.5rem;
   padding: 0.25rem 0.5rem;
