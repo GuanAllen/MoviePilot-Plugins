@@ -242,10 +242,11 @@ class CrossSeedMixin:
             cache = self._tier_cross_obj = TierCache("cross", base=self._cache_base())
         return cache
 
-    def _mp_search_title(self, keyword: str, sites: List[int]) -> List[Any]:
+    def _mp_search_title(self, keyword: str, sites: List[int], mtype: str = "") -> List[Any]:
         """调 MoviePilot 自带搜索（`SearchChain.search_by_title`），**兼容不同版签名**。
 
         只搜指定的站（`sites`）；若该版本不支持 `sites` 就不搜（不能限制就宁可不动 —— 不然会搜到全站、白烧 PV）。
+        ``mtype``（15.7.0）：`music` = 只搜音乐类（影视默认为空）。老版本不支持则忽略。
         """
         from app.chain.search import SearchChain  # noqa: WPS433
 
@@ -268,6 +269,13 @@ class CrossSeedMixin:
             kwargs["rule_groups"] = []      # ★ 空列表 = 不套用用户的搜索过滤规则
         if "cache_local" in params:
             kwargs["cache_local"] = False
+        if mtype and "mtype" in params:
+            try:
+                from app.schemas.types import MediaType  # noqa: WPS433
+
+                kwargs["mtype"] = MediaType.MUSIC if str(mtype).lower() == "music" else MediaType.from_agent(mtype)
+            except Exception:  # noqa: BLE001
+                pass
         res = fn(keyword, **kwargs) or []
         out: List[Any] = []
         for ctx in res:

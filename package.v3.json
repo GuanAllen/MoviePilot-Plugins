@@ -3,7 +3,7 @@
         "name": "魔流",
         "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
         "labels": "站点,做种,魔力,刷流",
-        "version": "15.6.0",
+        "version": "15.7.0",
         "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
         "author": "GuanAllen",
         "level": 1,
@@ -408,9 +408,10 @@
             "15.4.0": "15.4.0：点播清单（进行中进度+历史，AI 入口 /agent/ondemand，清单 52）",
             "15.5.0": "15.5.0：点播清单可筛选+行内操作（暂停/继续/移除，走唯一闸门）；未完成=无H&R（common.hr_incomplete）；AI 入口 /agent/ondemand/act，清单 53",
             "15.5.1": "15.5.1：H&R 义务自「下载完成」起算（开账 pending→完成转 active；历史 active 自动降级）；完成度阈值可设置 hr_complete_ratio（默认0.999）；/status 暴露 hr_* 设置",
-            "15.6.0": "15.6.0：H&R 完成度阈值改为「全局默认 + 站点覆盖」（站点规则页新增『完成度』列；GET /rules?action=set_ratio&site=&ratio=）；默认 0.999，某站 20% 就填 0.2"
+            "15.6.0": "15.6.0：H&R 完成度阈值改为「全局默认 + 站点覆盖」（站点规则页新增『完成度』列；GET /rules?action=set_ratio&site=&ratio=）；默认 0.999，某站 20% 就填 0.2",
+            "15.7.0": "15.7.0：歌单→选种计划（音乐线 AI 端先行·只读干跑）；GET /agent/music/plan；features/musicgrab.py + _music_score 判定链；清单 53→54"
         }
     },
-    "version": "15.6.0",
+    "version": "15.7.0",
     "history": {}
 }
