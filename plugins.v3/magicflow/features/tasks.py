@@ -328,7 +328,14 @@ class TasksMixin:
             hashes = self._same_site_torrents(task, snap=snap)
         except Exception:  # noqa: BLE001
             return []
-        return [snap[h] for h in hashes if h in snap]
+        out = [snap[h] for h in hashes if h in snap]
+        # ★ 15.8.0 音乐线：音乐种（qB 分类「音乐」）不属于任何魔力/刷流任务
+        #   → 从任务种子集中整条剔除（清理 / 账本 / 展示一并生效）。
+        try:
+            out = [t for t in out if not self._is_music_line(t)]
+        except Exception:  # noqa: BLE001
+            pass
+        return out
 
     def _retire_crossseed_task(self) -> None:
         """★ 14.0.0-2：退役「跨站取种」**真任务** → 改为常驻 worker（与 __silent_host__/__hr_host__ 同构）。

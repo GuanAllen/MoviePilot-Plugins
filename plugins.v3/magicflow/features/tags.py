@@ -1511,6 +1511,17 @@ class TagsMixin:
                          f"，记入库内账本 {res.get('asset_adopted')}）"),
                 data={"plan_summary": {k: v for k, v in info.items() if k != "plan"}, "applied": res},
             )
+        # ★ 15.8.0 音乐线：摘掉音乐种上的「魔力/刷流」职务标签（默认干跑；apply 才写 qB）。
+        if act in ("music_untag", "music_untag_plan", "music_untag_apply"):
+            _ap = act == "music_untag_apply"
+            info = self._music_untag_duty(apply=_ap, limit=int(limit or 0))
+            return Response(
+                success=bool(info.get("ok")),
+                message=(f"音乐线职务标签：扫音乐种 {info.get('scanned')} · 待摘 {info.get('candidates')}"
+                         + (f" · 已摘 {info.get('cleaned')}（失败 {info.get('failed')}）" if _ap
+                            else "（干跑；加 action=music_untag_apply 才摘）")),
+                data=info,
+            )
         # ★ 10.2.0 下载即开账（影子记账）：只读端点
         if act in ("hrbills", "hr_bills"):
             info = self._hrbills_stats()
@@ -1772,5 +1783,13 @@ class TagsMixin:
                               f" · 漏记 {len(_ym.get('present_no_bill') or [])}")
             except Exception as _ym_err:  # noqa: BLE001
                 self._log(f"野马PT 逐种 H&R 对账失败:{_ym_err}", "warning")
+            # ★ 15.8.0 音乐线：摘掉音乐种上的「魔力/刷流」职务标签（幂等；音乐不属任何刷流任务）。
+            try:
+                _mu = self._music_untag_duty(apply=True)
+                if _mu.get("cleaned"):
+                    self._log(f"魔流:音乐线摘职务标签 {_mu.get('cleaned')} 个"
+                              f"（扫音乐种 {_mu.get('scanned')}）")
+            except Exception as _mu_err:  # noqa: BLE001
+                self._log(f"音乐线摘职务标签失败:{_mu_err}", "warning")
         except Exception as err:  # noqa: BLE001
             self._log(f"标签维护异常:{err}", "warning")
