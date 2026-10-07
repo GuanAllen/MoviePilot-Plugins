@@ -111,6 +111,23 @@ ok(hr_incomplete(SimpleNamespace(progress=None)) is False, "progress=None → �
 ok(hr_incomplete(SimpleNamespace()) is False, "缺字段 → 不豁免（fail-safe）")
 ok(hr_incomplete(SimpleNamespace(progress="bad")) is False, "非数值 → 不豁免（fail-safe）")
 
+# ---------------------------------------------------------------- [1b] 可设置完成度阈值
+print("[1b] 完成度阈值可设置")
+ok(hr_incomplete(SimpleNamespace(progress=0.6), 0.5) is False, "ratio=0.5：0.6 → 算完成")
+ok(hr_incomplete(SimpleNamespace(progress=0.4), 0.5) is True, "ratio=0.5：0.4 → 未完成")
+ok(hr_incomplete(SimpleNamespace(progress=0.6), None) is True, "ratio=None → 用默认 0.999：0.6 未完成")
+ok(common.hr_complete_ratio_of(SimpleNamespace()) == common.HR_COMPLETE_RATIO_DEFAULT,
+   "hr_complete_ratio_of：无设置 → 默认常量")
+
+
+class _Ratio:
+    def _hr_complete_ratio(self):
+        return 0.5
+
+
+ok(common.hr_complete_ratio_of(_Ratio()) == 0.5, "hr_complete_ratio_of：读 _hr_complete_ratio()")
+ok(common.HR_COMPLETE_RATIO_DEFAULT == 0.999, "默认阈值常量 = 0.999")
+
 
 class _Bills:
     def __init__(self, d):
@@ -123,15 +140,21 @@ class _Bills:
 class Fake(dg.DeleteGateMixin):
     """只提供 `_delete_bill_assert` 需要的最小依赖。"""
 
-    def __init__(self, snap, bills):
+    def __init__(self, snap, bills, ratio=None):
         self._snap = dict(snap or {})
         self._bills = _Bills(bills or {})
+        self._ratio = ratio
 
     def _tag_all_torrents(self):
         return dict(self._snap)
 
     def _hrbills_store(self):
         return self._bills
+
+    def _hr_complete_ratio(self):
+        if self._ratio is None:
+            raise AttributeError("no ratio")
+        return self._ratio
 
 
 ACTIVE = {"state": "active", "rule": "site_hr", "site": "carpt.net"}
@@ -160,10 +183,20 @@ ok(HD in why, "不可验证 → 不豁免、照拦")
 # ---------------------------------------------------------------- [5] 源码护栏
 print("[5] 源码护栏")
 hr_src = (ROOT / "features" / "hr.py").read_text(encoding="utf-8")
-ok(hr_src.count("if hr_incomplete(torrent):") >= 2, "hr.py 两处（_hr_obligation / _by_seed）都短路")
-ok("from ..common import hr_incomplete" in hr_src, "hr.py 走 common.hr_incomplete（同一真值源）")
+ok(hr_src.count("hr_incomplete(torrent, hr_complete_ratio_of(self))") >= 2, "hr.py 两处（_hr_obligation / _by_seed）都短路")
+ok("from ..common import hr_incomplete, hr_complete_ratio_of" in hr_src, "hr.py 走 common 同一真值源")
 dg_src = (ROOT / "features" / "deletegate.py").read_text(encoding="utf-8")
-ok("hr_incomplete(_t)" in dg_src, "deletegate 账单断言走 hr_incomplete")
+ok("hr_incomplete(_t, hr_complete_ratio_of(self))" in dg_src, "deletegate 账单断言走 hr_incomplete")
+hb_src = (ROOT / "features" / "hrbills.py").read_text(encoding="utf-8")
+ok("def _hr_complete_ratio" in hb_src, "hrbills 提供 _hr_complete_ratio() 读取设置")
+ok("0.999" not in hb_src.split("def _hrbills_tick")[1].split("def ")[0], "tick 不再硬编码 0.999")
+
+# ---------------------------------------------------------------- [6] 阈值生效于断言
+print("[6] 完成度阈值生效于删除断言")
+f = Fake(snap={HB: SimpleNamespace(progress=0.6, hash=HB)}, bills={HB: dict(ACTIVE)}, ratio=0.5)
+ok(f._delete_bill_assert([HB]) != {}, "ratio=0.5 + progress=0.6 → 算完成 → 照拦")
+f = Fake(snap={HB: SimpleNamespace(progress=0.4, hash=HB)}, bills={HB: dict(ACTIVE)}, ratio=0.5)
+ok(f._delete_bill_assert([HB]) == {}, "ratio=0.5 + progress=0.4 → 未完成 → 放行")
 
 print()
 if FAILS:

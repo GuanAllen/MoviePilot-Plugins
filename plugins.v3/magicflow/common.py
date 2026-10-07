@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "15.5.0"
+__version__ = "15.5.1"
 
 import bisect
 import re
@@ -164,6 +164,9 @@ HR_BREACH_RECONCILE_ENABLED = True
 #   additional_seed_time / hr_deadline_days，但口径仍是「站点真值 + 账单状态机」）。
 HR_SEED_MARGIN_HOURS_DEFAULT = 2.0   # 结清冗余：实际做种需 ≥ need_h + 该值（小时；0=不留垫）
 HR_DEADLINE_WARN_HOURS_DEFAULT = 48.0  # 距站点窗口到期 < 该小时数且未达标 → at_risk 预警（小时）
+# ★ 15.5.1（Master 2026-10-07 16:35「完成度改成可设置」）：“下载完成”的**完成度阈值**。
+#   下载进度 ≥ 该值才计 H&R 义务（默认 0.999 = 下满）。若某站「下载中即计 H&R」，调低即可（如 0.5）。
+HR_COMPLETE_RATIO_DEFAULT = 0.999
 # 跨站免费取种的旧「回辅」轮询周期(分钟，context 保留)：B/C/D… 站点下完后尽快挂回目标站（现由「跨站取种」分诊 + 全站辅种承接）。
 CROSSSEED_INTERVAL_MINUTES = 5
 CROSSSEED_TASK_INTERVAL_MINUTES = 30  # ⭐ 14.0.0「跨站取种」全局真任务的 Check 周期（流量兜底 + 生命周期分诊）
@@ -728,11 +731,15 @@ def task_is_running(task: Any) -> bool:
 # ============================================================
 # ★ 未完成下载无 H&R 义务（Master 2026-10-07 16:19「没有下完的内容没有 h&r 我可以删除」）
 # ============================================================
-def hr_incomplete(torrent: Any) -> bool:
-    """该种是否**尚未下载完成**（``progress < 0.999``）—— 未完成 ⇒ **无 H&R 义务**。
+def hr_incomplete(torrent: Any, ratio: Any = None) -> bool:
+    """该种是否**尚未达到「完成」完成度**（``progress < ratio``）—— 未完成 ⇒ **无 H&R 义务**。
 
     Master 拍板：未下完的内容在站上不计（未达 H&R 触发阈），所以清理面/删除闸门
     对「未完成」的种不应以 H&R 为由硬拦。
+
+    ``ratio``：“完成”的**完成度阈值**（0~1；``None`` → ``HR_COMPLETE_RATIO_DEFAULT``）。
+    Master 2026-10-07 16:35：「完成度改成可设置，如果真有那种，我们加个完成度的判定就好了」
+    → 若某站「下载中即计 H&R」，把设置里的阈值调低（如 0.5）即可。
 
     **fail-safe**：progress 读不到 / 非法 / 为 None → 返回 ``False``（当作已完成，**不豁免**）。
 
@@ -746,9 +753,24 @@ def hr_incomplete(torrent: Any) -> bool:
     if p is None:
         return False
     try:
-        return float(p) < 0.999
+        return float(p) < float(ratio if ratio is not None else HR_COMPLETE_RATIO_DEFAULT)
     except (TypeError, ValueError):
         return False
+
+
+def hr_complete_ratio_of(obj: Any, default: Any = None) -> float:
+    """从插件实例取「完成度阈值」设置（``obj._hr_complete_ratio()``）；取不到 → 默认常量。
+
+    给 ``hr_incomplete(t, hr_complete_ratio_of(self))`` 用 —— 让设置面成为口径真值源。
+    """
+    _d = HR_COMPLETE_RATIO_DEFAULT if default is None else default
+    try:
+        return float(obj._hr_complete_ratio())
+    except Exception:  # noqa: BLE001
+        try:
+            return float(_d)
+        except (TypeError, ValueError):
+            return HR_COMPLETE_RATIO_DEFAULT
 
 
 # ============================================================

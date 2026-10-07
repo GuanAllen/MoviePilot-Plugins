@@ -35,7 +35,7 @@ from ..common import (
     DELETE_BREAKER_WINDOW_S,
     DELETE_BILL_ASSERT,
 )
-from ..common import hr_incomplete
+from ..common import hr_incomplete, hr_complete_ratio_of
 from ..tags import is_library_asset
 
 
@@ -204,7 +204,7 @@ class DeleteGateMixin:
             _t = _snap.get(h)
             if _t is not None:
                 try:
-                    if hr_incomplete(_t):
+                    if hr_incomplete(_t, hr_complete_ratio_of(self)):
                         continue
                 except Exception:  # noqa: BLE001
                     pass

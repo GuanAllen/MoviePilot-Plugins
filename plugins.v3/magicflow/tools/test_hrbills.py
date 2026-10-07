@@ -5,6 +5,7 @@
 覆盖 ``features/hrbills.py`` 的第一阶段（影子记账）行为：
   - 开账去重（同 hash 不重复开）
   - 未知站 → pending（不保护不罚）
+  - ★ 15.5.1：开账恒 pending（H&R 自「下载完成」起算）；完成 → active；未完成的历史 active 自动降回 pending
   - crossseed tag → 跳过（crossseed 自己记账）
   - 7 天无进度 → void
   - 消失且未完成 → 立即 void
@@ -171,7 +172,8 @@ def main() -> int:
     _ok(len(store.all()) == 1, f"store 里只有 1 张账单（实际 {len(store.all())}）")
     _ok(b1["site"] == "hdfans.org", f"账单 site=domain（{b1['site']}）")
     _ok(b1["rule"] == "site_hr", f"规则 = site_hr（{b1['rule']}）")
-    _ok(b1["state"] == "active", f"状态 = active（{b1['state']}）")
+    _ok(b1["state"] == "pending",
+        f"★ 15.5.1：开账恒 pending（H&R 自完成起算）（{b1['state']}）")
     _ok(abs(b1["need_h"] - 20.0) < 1e-9, f"need_h = 20.0（{b1['need_h']}）")
     _ok(bool(b1["fp"]) and len(b1["fp"]) == 40, f"fp 已算出（{b1['fp'][:12]}…）")
     _ok(b1["title"] == "样本A", f"title = 样本A（{b1['title']}）")
@@ -239,7 +241,9 @@ def main() -> int:
     t7.hash = "abab"
     h.torrents["abab"] = t7
     h._hrbills_open("abab", "hdfans.org", "魔流-hdfans-刷流", _torrent_bytes("g"))
-    _ok(store.get("abab")["state"] == "active", "初始 active（已知站）")
+    _ok(store.get("abab")["state"] == "pending", "开账 pending（已知站，未完成）")
+    h._hrbills_tick()
+    _ok(store.get("abab")["state"] == "active", "已完成 → 转 active")
     t7.seed_time = 21.0 * 3600.0  # 挂够 21h > 20h
     h._hrbills_tick()
     _ok(store.get("abab")["state"] == "settled", f"挂够 need_h → settled（{store.get('abab')['state']}）")
@@ -270,6 +274,40 @@ def main() -> int:
                          "magnet:?xt=urn:btih:cdcd&dn=x")
     _ok(b8 is not None, "磁力链也开账")
     _ok(b8["fp"] == "", f"磁力链无特征码 → fp=''（{b8['fp']!r}）")
+
+    # ---- 8b) ★ 15.5.1 未完成 = 无 H&R：历史 active 降回 pending，完成再升 active ----
+    print("\n[8b] 未完成 = 无 H&R（active → pending；完成 → active）")
+    t11 = _torrent(progress=0.4, title="未完成虚欠", tracker="hdfans.org")
+    t11.hash = "e5e5"
+    h.torrents["e5e5"] = t11
+    h._hrbills_open("e5e5", "hdfans.org", "魔流-hdfans-刷流", _torrent_bytes("i"))
+    store.patch("e5e5", state="active")  # 模拟 15.5.1 之前「下载即 active」开出的账单
+    r11 = h._hrbills_tick()
+    _ok(store.get("e5e5")["state"] == "pending",
+        f"未完成的 active → 降回 pending（{store.get('e5e5')['state']}）")
+    _ok(int(r11.get("demoted") or 0) >= 1, f"tick 报 demoted={r11.get('demoted')}")
+    t11.progress = 1.0
+    h._hrbills_tick()
+    _ok(store.get("e5e5")["state"] == "active",
+        f"下载完成 → 重新 active（{store.get('e5e5')['state']}）")
+
+    # ---- 8c) ★ 15.5.1 完成度阈值可设置（默认 0.999）----
+    print("\n[8c] 完成度阈值可设置（默认 0.999）")
+    _tc = _torrent(progress=0.6, title="半程种", tracker="hdfans.org")
+    _tc.hash = "c0c0"
+    h.torrents["c0c0"] = _tc
+    h._hrbills_open("c0c0", "hdfans.org", "魔流-hdfans-刷流", _torrent_bytes("co"))
+    h._hrbills_tick()
+    _ok(store.get("c0c0")["state"] == "pending",
+        "默认 0.999：60% 未完成 → pending（不计 H&R）")
+    h._hr_complete_ratio_v = 0.5
+    h._hrbills_tick()
+    _ok(store.get("c0c0")["state"] == "active",
+        f"阈值 0.5：60% 算完成 → active（{store.get('c0c0')['state']}）")
+    h._hr_complete_ratio_v = 0.999
+    h._hrbills_tick()
+    _ok(store.get("c0c0")["state"] == "pending",
+        f"回调 0.999：60% 未完成 → 降回 pending（{store.get('c0c0')['state']}）")
 
     # ---- 9) 干跑 + 统计 ----
     print("\n[9] 干跑 + 统计")
@@ -352,7 +390,11 @@ def main() -> int:
     _b12 = store.get("e1200")
     _ok(_b12 and _b12.get("rule") == "hit_and_run",
         f"带标记的候选 → 账单 rule=hit_and_run（实得 {(_b12 or {}).get('rule')}）")
-    _ok(_b12 and _b12.get("state") == "active", "带标记 → active（受保护）")
+    _ok(_b12 and _b12.get("state") == "pending",
+        f"★ 15.5.1：开账 pending（H&R 自完成起算）（实得 {(_b12 or {}).get('state')}）")
+    h._hrbills_tick()
+    _b12 = store.get("e1200")
+    _ok(_b12 and _b12.get("state") == "active", "完成（tick 后）→ active（受保护）")
     # 12.2 无标记（默认）→ 逐种站无站点级 H&R → unknown（不保护不罚）
     _t12b = _torrent(progress=1.0, seed_time=2 * 3600, tracker="www.yemapt.org")
     _t12b.hash = "e1201"
