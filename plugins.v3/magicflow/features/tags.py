@@ -1734,7 +1734,8 @@ class TagsMixin:
                 _hrb = self._hrbills_tick()
                 if (_hrb or {}).get("bills"):
                     self._dbg(f"魔流:H&R账单巡检 {_hrb.get('bills')} 张 · 转活跃 {_hrb.get('activated')}"
-                              f" · 作废 {_hrb.get('voided')} · 结清 {_hrb.get('settled')}")
+                              f" · 作废 {_hrb.get('voided')} · 结清 {_hrb.get('settled')}"
+                              f" · 降级 {_hrb.get('demoted')}")
             except Exception as _hrb_err:  # noqa: BLE001
                 self._log(f"H&R账单巡检失败:{_hrb_err}", "warning")
             # ★ 11.8.0 站点 myhr 对账（第三视角）：**独立于 tick**（tick 是便宜幂等的状态机，

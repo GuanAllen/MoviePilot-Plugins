@@ -158,6 +158,9 @@ class SettingsMixin:
         try:
             self._hr_seed_margin_hours = _rf(getattr(payload, "hr_seed_margin_hours", 2.0), 2.0)
             self._hr_deadline_warn_hours = _rf(getattr(payload, "hr_deadline_warn_hours", 48.0), 48.0)
+            # ★ 15.5.1 完成度阈值（clamp 0~1；非法→0.999）
+            _hcr = _rf(getattr(payload, "hr_complete_ratio", 0.999), 0.999)
+            self._hr_complete_ratio_v = min(1.0, max(0.0, _hcr))
         except Exception:  # noqa: BLE001
             pass
         # ★ 认领（claim，7.14.0）：设置面为权威，同样清掉 plugin-data 覆盖

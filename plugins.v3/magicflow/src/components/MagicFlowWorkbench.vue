@@ -212,6 +212,7 @@ const settingsDraft = ref({
   crossseed_reclaim: false,
   hr_seed_margin_hours: 2,
   hr_deadline_warn_hours: 48,
+  hr_complete_ratio: 0.999,
   reseed_enabled: false,
   reseed_dry: true,
   reseed_sites: [],
@@ -1264,6 +1265,7 @@ async function loadStatus() {
       iyuu_sites: status.value.iyuu_sites,
       hr_seed_margin_hours: status.value.hr_seed_margin_hours ?? 2,
       hr_deadline_warn_hours: status.value.hr_deadline_warn_hours ?? 48,
+      hr_complete_ratio: status.value.hr_complete_ratio ?? 0.999,
       ...(status.value.crossseed ? {
         crossseed_guard: status.value.crossseed.guard,
         crossseed_guard_pct: status.value.crossseed.guard_pct,
@@ -6514,6 +6516,18 @@ onUnmounted(() => {
                 min="0"
                 label="H&amp;R 临近到期预警（小时）"
                 hint="距站点考核窗口到期低于该值且未达标 → 预警（默认 48）"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VTextField
+                v-model.number="settingsDraft.hr_complete_ratio"
+                type="number"
+                step="0.001"
+                min="0"
+                max="1"
+                label="H&amp;R 完成度阈值"
+                hint="下载进度 ≥ 该值才算「完成」、才计 H&amp;R 义务（默认 0.999 = 下满；某站下载中即计 H&amp;R 可调低）"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"

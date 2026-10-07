@@ -362,8 +362,10 @@ def main() -> int:
     t_act.hash = "a111"
     h.torrents["a111"] = t_act
     h._hrbills_open("a111", "hdfans.org", "魔流-hdfans-刷流", _torrent_bytes("a"))
-    _ok(h._hrbills_store().get("a111")["state"] == "active", "初始 active（已完成欠债）")
-    h._hrbills_tick()  # 先 tick 一次：把 bill.progress 刷到 1.0（种已完成）
+    _ok(h._hrbills_store().get("a111")["state"] == "pending",
+        "★ 15.5.1：开账 pending（H&R 自完成起算）")
+    h._hrbills_tick()  # 先 tick 一次：把 bill.progress 刷到 1.0（种已完成）→ 转 active
+    _ok(h._hrbills_store().get("a111")["state"] == "active", "已完成 → 转 active（欠债）")
     _ok(h._hrbills_store().get("a111")["progress"] >= 0.999, "tick 后 bill.progress 刷到 1.0")
     h.torrents.pop("a111")  # 从下载器消失
     h._hrbills_tick()

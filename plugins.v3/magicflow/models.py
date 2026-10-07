@@ -320,6 +320,10 @@ class MagicFlowSettingsPayload(BaseModel):
         48.0, ge=0, le=1680,
         description="H&R 临近到期预警阈值(小时):距站点窗口到期低于该值且未达标 → 预警(默认 48)"
     )
+    hr_complete_ratio: float = Field(
+        0.999, ge=0, le=1,
+        description="H&R 完成度阈值:下载进度 ≥ 该值才算「完成」、才计 H&R 义务(默认 0.999=下满;若某站下载中即计 H&R 可调低)"
+    )
     rescue_max_candidates: int = Field(
         3, ge=1, le=10,
         description="死种补源:每个目标最多列几个他站候选(默认 3;只选无 H&R 的站)"

@@ -62,6 +62,7 @@ from ..common import (
     FALLBACK_SCAN_MAX,
     GLOBAL_WORKER_LIMIT,
     HR_DEADLINE_WARN_HOURS_DEFAULT,
+    HR_COMPLETE_RATIO_DEFAULT,
     HR_SEED_MARGIN_HOURS_DEFAULT,
     LIVE_DEFAULT_TTL,
     LIVE_DOWNLOAD_ALERT_MB,
@@ -242,6 +243,9 @@ class CoreMixin:
                                          HR_SEED_MARGIN_HOURS_DEFAULT)
         self._hr_deadline_warn_hours = _rf(raw_config.get("hr_deadline_warn_hours"),
                                            HR_DEADLINE_WARN_HOURS_DEFAULT)
+        # ★ 15.5.1「完成度阈值」（设置面可改；默认 0.999=下满）
+        self._hr_complete_ratio_v = _rf(raw_config.get("hr_complete_ratio"),
+                                        HR_COMPLETE_RATIO_DEFAULT)
         # ★ 3.22.4 一次性迁移：Master 2026-09-28 09:42「还是别走豆瓣了吧」→ 默认回到 TMDB。
         #   存量配置里若还写着 douban（旧默认被自动落盘的），只在这一版强制改回 tmdb 并落盘；
         #   之后 Master 在设置里手动选「豆瓣优先」不会再被覆盖（标记已置位）。
@@ -1045,6 +1049,8 @@ class CoreMixin:
                                                   HR_SEED_MARGIN_HOURS_DEFAULT) or 0.0),
             "hr_deadline_warn_hours": float(getattr(self, "_hr_deadline_warn_hours",
                                                     HR_DEADLINE_WARN_HOURS_DEFAULT) or 0.0),
+            "hr_complete_ratio": float(getattr(self, "_hr_complete_ratio_v",
+                                               HR_COMPLETE_RATIO_DEFAULT)),
             "rescue_max_candidates": int(getattr(self, "_rescue_cfg", {}).get("max_candidates") or 3),
             "crossseed_guard": bool(getattr(self, "_cs_cfg", {}).get("guard", True)),
             "crossseed_guard_pct": float(getattr(self, "_cs_cfg", {}).get("guard_pct") or 5.0),

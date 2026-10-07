@@ -32,6 +32,7 @@ from ..fingerprint import fingerprint, info_hash
 from ..downloader_ops import seed_hours_for_hr
 from ..persistence import _shared
 from ..common import (
+    HR_COMPLETE_RATIO_DEFAULT,
     HR_DEADLINE_WARN_HOURS_DEFAULT,
     HR_SEED_MARGIN_HOURS_DEFAULT,
 )
@@ -343,6 +344,19 @@ class HrBillsMixin:
             v = float(HR_SEED_MARGIN_HOURS_DEFAULT)
         return max(0.0, v)
 
+    def _hr_complete_ratio(self) -> float:
+        """★ 15.5.1 **完成度阈值**（“下载完成”判据，默认 ``HR_COMPLETE_RATIO_DEFAULT`` = 0.999）。
+
+        下载进度 ≥ 该值才算「完成」、才计 H&R 义务（见 ``common.hr_incomplete``）。
+        Master 2026-10-07 16:35：「完成度改成可设置」—— 若某站「下载中即计 H&R」，调低即可。
+        设置面板可改；非法 / 越界 → 回退默认（clamp 到 0~1）。
+        """
+        try:
+            v = float(getattr(self, "_hr_complete_ratio_v", HR_COMPLETE_RATIO_DEFAULT))
+        except (TypeError, ValueError):
+            v = float(HR_COMPLETE_RATIO_DEFAULT)
+        return min(1.0, max(0.0, v))
+
     def _hr_warn_hours(self) -> float:
         """★ 11.13.0 临近到期预警阈值（小时，默认 48）。"""
         try:
@@ -465,7 +479,11 @@ class HrBillsMixin:
             rule = RULE_SITE_HR
         elif thr is True:
             rule = RULE_HIT_AND_RUN
-        state = BILL_STATE_ACTIVE if rule != RULE_UNKNOWN else BILL_STATE_PENDING
+        # ★ 15.5.1（Master 2026-10-07 16:33「1 的话我删了，你账不是还欠着」）：
+        #   刚加入下载 → 必然未完成。**H&R 义务自「下载完成」起算**，故开账只挂
+        #   观测（pending：不算欠、不拦删、不进 owed）；完成那一刻由 ``_hrbills_tick``
+        #   ① 转 active 开始计 need_h。与 ``common.hr_incomplete`` 同一口径。
+        state = BILL_STATE_PENDING
         need_h = self._hr_need_hours(dom)
         fp = ""
         try:
@@ -609,14 +627,16 @@ class HrBillsMixin:
                 rule = RULE_SITE_HR
             elif thr is True:
                 rule = RULE_HIT_AND_RUN
-            state = BILL_STATE_ACTIVE if rule != RULE_UNKNOWN else BILL_STATE_PENDING
-            if not dom:
-                no_site += 1
-            need_h = self._hr_need_hours(dom)
             try:
                 progress = float(getattr(t, "progress", 0) or 0)
             except (TypeError, ValueError):
                 progress = 0.0
+            # ★ 15.5.1：H&R 义务自「下载完成」起算 —— 未完成 → 只挂 pending（不算欠）。
+            state = (BILL_STATE_ACTIVE if (rule != RULE_UNKNOWN and progress >= self._hr_complete_ratio())
+                     else BILL_STATE_PENDING)
+            if not dom:
+                no_site += 1
+            need_h = self._hr_need_hours(dom)
             try:
                 seeded_h = seed_hours_for_hr(t)
             except Exception:  # noqa: BLE001
@@ -644,7 +664,7 @@ class HrBillsMixin:
         """作废/结清规则（只改账单状态，**不影响删除/保护**）+ 存量回填：
 
         回填：给账本托管种补开账单（幂等，每轮限量 ≤200）。
-        ① ``progress >= 0.999`` → active；
+        ① ``progress >= 完成度阈值`` → active；
         ② 连续 ``HR_BILLS_STALL_DAYS`` 天进度无增长 → void；
         ③ 种子在下载器消失且从未完成 → 立即 void；
         ④ ``seeded_h >= need_h`` → settled。
@@ -670,17 +690,17 @@ class HrBillsMixin:
         if not bills:
             store.flush()
             return {"bills": 0, "activated": 0, "voided": 0, "settled": 0,
-                    "breached": 0, "backfilled": backfilled, "no_site": no_site}
+                    "breached": 0, "demoted": 0, "backfilled": backfilled, "no_site": no_site}
         now = time.time()
-        activated = voided = settled = breached = 0
+        activated = voided = settled = breached = demoted = 0
         for h, b in list(bills.items()):
             if not isinstance(b, dict):
                 continue
             t = (snap or {}).get(h)
             if t is None:
                 # ③ 消失：拆两路（Master 2026-10-06 08:24）
-                completed = (float(b.get("progress") or 0) >= 0.999
-                             or float(b.get("last_progress") or 0) >= 0.999)
+                completed = (float(b.get("progress") or 0) >= self._hr_complete_ratio()
+                             or float(b.get("last_progress") or 0) >= self._hr_complete_ratio())
                 cur_state = str(b.get("state") or "")
                 if not completed and cur_state not in (BILL_STATE_VOID, BILL_STATE_BREACHED):
                     # 从未完成（无 H&R 义务）→ 立即作废（无害）
@@ -707,7 +727,12 @@ class HrBillsMixin:
                 fields["state"] = BILL_STATE_ACTIVE
                 fields["breached_at"] = None
                 activated += 1
-            if progress >= 0.999:
+            # ★ 15.5.1（Master 16:33）：未完成的种不产生 H&R 义务 → active 账单降回 pending。
+            #   兼容 15.5.1 之前「下载即 active」开出的历史账单（下一轮自动清掉虚欠）。
+            elif progress < self._hr_complete_ratio() and cur_state == BILL_STATE_ACTIVE:
+                fields["state"] = BILL_STATE_PENDING
+                demoted += 1
+            if progress >= self._hr_complete_ratio():
                 # ① 完成 → active
                 if cur_state == BILL_STATE_PENDING:
                     fields["state"] = BILL_STATE_ACTIVE
@@ -736,7 +761,7 @@ class HrBillsMixin:
             store.patch(h, save=False, **fields)
         store.flush()
         return {"bills": len(bills), "activated": activated, "voided": voided,
-                "settled": settled, "breached": breached,
+                "settled": settled, "breached": breached, "demoted": demoted,
                 "backfilled": backfilled, "no_site": no_site}
 
     # ---------------------------------------------------------- 干跑（只读，不落库）
