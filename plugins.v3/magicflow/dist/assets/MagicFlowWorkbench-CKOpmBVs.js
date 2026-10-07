@@ -3439,6 +3439,7 @@ const _hoisted_609 = { class: "magicflow-recommend-dialog__head-actions" };
 const _hoisted_610 = { class: "magicflow-settings-hint mt-2" };
 const _hoisted_611 = { key: 0 };
 const _hoisted_612 = { key: 1 };
+const _hoisted_613 = { key: 2 };
 
 const {computed,inject,nextTick,onMounted,onUnmounted,ref,watch} = await importShared('vue');
 
@@ -16978,17 +16979,24 @@ return (_ctx, _cache) => {
             _createVNode(_component_VCardText, { class: "text-body-2" }, {
               default: _withCtx(() => [
                 _createElementVNode("div", _hoisted_610, [
-                  _cache[764] || (_cache[764] = _createElementVNode("strong", null, "补暂停", -1)),
-                  _cache[765] || (_cache[765] = _createTextVNode("（★ 12.7.1）：设计口径「静默池本意就是暂停不上传」——账本已是静默、 但下载器里没停的种一律补 pause（幂等，", -1)),
-                  _cache[766] || (_cache[766] = _createElementVNode("strong", null, "只暂停、不删种、不动文件", -1)),
-                  _cache[767] || (_cache[767] = _createTextVNode("）。 ", -1)),
+                  _cache[766] || (_cache[766] = _createElementVNode("strong", null, "补暂停", -1)),
+                  _cache[767] || (_cache[767] = _createTextVNode("（★ 12.7.1 / 15.1.0）：设计口径「静默池本意就是暂停不上传」——账本（或标签）已是静默、 但下载器里没停的种一律补 pause（幂等，", -1)),
+                  _cache[768] || (_cache[768] = _createElementVNode("strong", null, "只暂停、不删种、不动文件", -1)),
+                  _cache[769] || (_cache[769] = _createTextVNode("）。 ", -1)),
                   (enforceCounts.value.violations)
                     ? (_openBlock(), _createElementBlock("span", _hoisted_611, [
                         _cache[762] || (_cache[762] = _createTextVNode("当前违背不变量 ", -1)),
                         _createElementVNode("b", null, _toDisplayString(enforceCounts.value.violations), 1),
                         _cache[763] || (_cache[763] = _createTextVNode(" 个。", -1))
                       ]))
-                    : (_openBlock(), _createElementBlock("span", _hoisted_612, "当前不变量成立（全 paused）。"))
+                    : (_openBlock(), _createElementBlock("span", _hoisted_612, "当前不变量成立（全 paused）。")),
+                  (enforceCounts.value.tag_only)
+                    ? (_openBlock(), _createElementBlock("span", _hoisted_613, [
+                        _cache[764] || (_cache[764] = _createTextVNode("（其中 ", -1)),
+                        _createElementVNode("b", null, _toDisplayString(enforceCounts.value.tag_only), 1),
+                        _cache[765] || (_cache[765] = _createTextVNode(" 个是「只打了静默标签、不在账本」的——多为全站辅种副本，15.1.0 起一并纳入收敛。）", -1))
+                      ]))
+                    : _createCommentVNode("", true)
                 ])
               ]),
               _: 1
@@ -17001,7 +17009,7 @@ return (_ctx, _cache) => {
                   variant: "text",
                   onClick: _cache[271] || (_cache[271] = $event => (_ctx.invariantOpen = false))
                 }, {
-                  default: _withCtx(() => [...(_cache[768] || (_cache[768] = [
+                  default: _withCtx(() => [...(_cache[770] || (_cache[770] = [
                     _createTextVNode("关闭", -1)
                   ]))]),
                   _: 1
@@ -17012,7 +17020,7 @@ return (_ctx, _cache) => {
                   loading: enforceLoading.value,
                   onClick: _cache[272] || (_cache[272] = $event => (loadEnforce(0)))
                 }, {
-                  default: _withCtx(() => [...(_cache[769] || (_cache[769] = [
+                  default: _withCtx(() => [...(_cache[771] || (_cache[771] = [
                     _createTextVNode("查违背不变量", -1)
                   ]))]),
                   _: 1
@@ -17023,7 +17031,7 @@ return (_ctx, _cache) => {
                   loading: enforceLoading.value,
                   onClick: _cache[273] || (_cache[273] = $event => (enforceAsk.value = true))
                 }, {
-                  default: _withCtx(() => [...(_cache[770] || (_cache[770] = [
+                  default: _withCtx(() => [...(_cache[772] || (_cache[772] = [
                     _createTextVNode("补暂停", -1)
                   ]))]),
                   _: 1
@@ -17047,23 +17055,23 @@ return (_ctx, _cache) => {
         _createVNode(_component_VCard, { class: "magicflow-dialog" }, {
           default: _withCtx(() => [
             _createVNode(_component_VCardTitle, { class: "text-subtitle-1 pt-4" }, {
-              default: _withCtx(() => [...(_cache[771] || (_cache[771] = [
+              default: _withCtx(() => [...(_cache[773] || (_cache[773] = [
                 _createTextVNode("确认补暂停", -1)
               ]))]),
               _: 1
             }),
             _createVNode(_component_VCardText, { class: "text-body-2" }, {
               default: _withCtx(() => [
-                _cache[773] || (_cache[773] = _createTextVNode(" 将对「账本已静默、但下载器里还在跑」的种补 pause（预计 ", -1)),
+                _cache[775] || (_cache[775] = _createTextVNode(" 将对「账本或标签已是静默、但下载器里还在跑」的种补 pause（预计 ", -1)),
                 _createElementVNode("strong", null, _toDisplayString(enforceCounts.value.violations || 0), 1),
-                _cache[774] || (_cache[774] = _createTextVNode(" 个）。 ", -1)),
+                _cache[776] || (_cache[776] = _createTextVNode(" 个）。 ", -1)),
                 _createVNode(_component_VAlert, {
                   type: "info",
                   variant: "tonal",
                   density: "compact",
                   class: "mt-3"
                 }, {
-                  default: _withCtx(() => [...(_cache[772] || (_cache[772] = [
+                  default: _withCtx(() => [...(_cache[774] || (_cache[774] = [
                     _createTextVNode(" 只暂停：", -1),
                     _createElementVNode("strong", null, "不删种、不动文件、不 resume", -1),
                     _createTextVNode("；幂等可重跑。 ", -1)
@@ -17082,7 +17090,7 @@ return (_ctx, _cache) => {
                   disabled: enforceLoading.value,
                   onClick: _cache[275] || (_cache[275] = $event => (enforceAsk.value = false))
                 }, {
-                  default: _withCtx(() => [...(_cache[775] || (_cache[775] = [
+                  default: _withCtx(() => [...(_cache[777] || (_cache[777] = [
                     _createTextVNode("取消", -1)
                   ]))]),
                   _: 1
@@ -17093,7 +17101,7 @@ return (_ctx, _cache) => {
                   loading: enforceLoading.value,
                   onClick: _cache[276] || (_cache[276] = $event => {enforceAsk.value = false; loadEnforce(1);})
                 }, {
-                  default: _withCtx(() => [...(_cache[776] || (_cache[776] = [
+                  default: _withCtx(() => [...(_cache[778] || (_cache[778] = [
                     _createTextVNode("确认补暂停", -1)
                   ]))]),
                   _: 1
@@ -17112,6 +17120,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-dd7e373e"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-024c4d09"]]);
 
 export { MagicFlowWorkbench as M };

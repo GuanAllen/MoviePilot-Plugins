@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""魔流 · 静默不变量收敛（★ 12.7.1）离线回归 —— 真跑 silent.py，不需 MoviePilot。
+"""魔流 · 静默不变量收敛（★ 12.7.1 / 15.1.0）离线回归 —— 真跑 silent.py，不需 MoviePilot。
 
 背景（Master 2026-10-06 22:53「之前设计怎么做的呀」）：
   设计口径（11.11.0）「**静默池本意就是暂停不上传**」→ 任何 ``state=静默`` 的种一律 pause；
@@ -268,12 +268,57 @@ def t5_host_wiring():
     _ok("自愈" in src or "周期收敛" in src, "docstring 标明是周期收敛/自愈")
 
 
+class _HarnessHr(Harness):
+    """欠 H&R 的（hash 前缀 h）→ fail-safe：标签面也不许判违背。"""
+
+    def _hr_obligation(self, site, torrent, snap=None):
+        hh = str(getattr(torrent, "hash", "") or "").lower()
+        if hh.startswith("h"):
+            return (True, 24.0, 100.0, "test:hr")
+        return (False, 24.0, 100.0, "test")
+
+
+def t6_tag_only_reconcile():
+    print("⑥ 15.1.0 对账：只打「静默」标签、不在账本的种也纳入收敛（不漏、欠 H&R 不误伤）")
+    h_led, h_snap = _mk(SPEC)          # 账本面：3 个违背（a/b/c）
+    # 标签面：f 在做种（该补 pause）；g 已暂停（合规）；h 在做种但欠 H&R（不许动）
+    h_snap["f" * 40] = _torrent("f" * 40, state="uploading", tags=["魔流-站点A-静默-普通"])
+    h_snap["g" * 40] = _torrent("g" * 40, state="pausedUP", tags=["魔流-站点A-静默-资源"])
+    h_snap["h" * 40] = _torrent("h" * 40, state="stalledUP", tags=["魔流-站点A-静默-新"])
+    # ★ 身份轴是**永久**的：在岗种（职务=魔力）也带「静默-身份」标签 → **绝不能**当静默种 pause
+    h_snap["k" * 40] = _torrent("k" * 40, state="uploading",
+                                tags=["魔流-站点A-静默-资源", "魔流-站点A-魔力"])
+    h_snap["m" * 40] = _torrent("m" * 40, state="stalledUP",
+                                tags=["魔流-站点A-静默-普通", "魔流-站点A-刷流"])
+    h_snap["n" * 40] = _torrent("n" * 40, state="uploading",
+                                tags=["魔流-站点A-静默-普通", "魔流-推荐"])
+    h = _HarnessHr(h_led, h_snap)
+    dry = h._silent_enforce_pause(apply=False)
+    _ok(dry["tag_only"] == 3, f"标签面识别 3 个（仅无职务身份的，实测 {dry['tag_only']}）")
+    _ok(dry["violations"] == 4, f"违背 = 账本 3 + 标签面 1（实测 {dry['violations']}）")
+    _ok(dry["scanned"] == 8, f"盘点总数含标签面 5+3（实测 {dry['scanned']}）")
+    _ok("k" * 40 not in (dry.get("items") or []) and "m" * 40 not in (dry.get("items") or []),
+        "在岗（有职务）的**不入标签面**（防误 pause 在岗种）")
+    rep = h._silent_enforce_pause(apply=True)
+    _ok(rep["paused"] == 4, f"补 pause 4 个（实测 {rep['paused']}）")
+    _ok("f" * 40 in h.pause_calls and "h" * 40 not in h.pause_calls,
+        "做种的辅种副本被补 pause；欠 H&R 的**没动**（fail-safe）")
+    _ok("k" * 40 not in h.pause_calls and "m" * 40 not in h.pause_calls
+        and "n" * 40 not in h.pause_calls,
+        "在岗（魔力/刷流）与推荐的**一律没动**")
+    _ok("g" * 40 not in h.pause_calls, "已暂停的不重复写")
+    _ok(not h.delete_calls, "只 pause 不删")
+    rep2 = h._silent_enforce_pause(apply=True)
+    _ok(rep2["violations"] == 0 and rep2["paused"] == 0, "幂等：再跑违背 0、paused 0")
+
+
 def main():
     t1_dry_run()
     t2_apply_all_subs()
     t3_purge_removed()
     t4_disabled_switch()
     t5_host_wiring()
+    t6_tag_only_reconcile()
     print(f"\n✅ PASS —— 静默不变量收敛：{CHECKS} 条断言全过")
     return 0
 

@@ -17,15 +17,18 @@ from ..bonus import (
 from ..persistence import OperationItem
 from ..tags import (
     asset_member_hashes,
+    DUTY_STATES,
     is_asset_tags,
     is_library_asset,
     MARK_REUSE,
     SPECIAL_TAGS,
     MARK_HR,
+    STATE_RECOMMEND,
     STATE_SILENT,
     SUB_NEW,
     SUB_PLAIN,
     SUB_RESOURCE,
+    parse_tag,
     retag,
     tag_for,
 )
@@ -571,7 +574,8 @@ class SilentMixin:
           - 其余 → cleanup（清理候选）。
         """
         counts = {"owed_hr": 0, "library_asset": 0, "crossseed": 0, "claim": 0,
-                  "manual": 0, "stalled_violation": 0, "cleanup": 0, "total": 0}
+                  "manual": 0, "stalled_violation": 0, "cleanup": 0, "tag_only": 0,
+                  "total": 0}
         items: List[Dict[str, Any]] = []
         try:
             led = dict(self._tag_state().items() or {})
@@ -675,15 +679,72 @@ class SilentMixin:
                 "state": str(getattr(t, "state", "") or "") if t is not None else "",
                 "size_gb": round(float((rec or {}).get("size_gb") or (getattr(t, "size_gb", 0) or 0.0)), 2),
             })
+        # ★ 15.1.0（Master 2026-10-07 10:46「A」）**对账**：live 标签写「静默」但**账本没记**的种。
+        #   背景：全站辅种副本（`features/reseed.py`）挂上**只给身份**（`魔流-<站>-静默-<身份>`），
+        #   走 `mf_reseed` 辅种账本、**不进主管种账本**；11.11.0 之前挂的（当时 `add_torrent_reuse
+        #   (start=True)` = 挂上即做种）会一直做种，而「静默不变量」只扫账本 → 盘点和收敛器
+        #   **都看不到**（2026-10-07 实测 7 站 ~124 个 ≈ 2.0TB，`audit.stalled_violation` 却报 0）。
+        #   口径：**标签就是职务/身份真值源**（账本只是它的缓存）→ 以标签为准并入盘点（只读，不写账本）。
+        #   fail-safe：欠 H&R / 跨站来源份 / 认领 / 手动保护 → **一律不判违背**（拿不准就不动）。
+        _silent_led = {str(k).strip().lower() for k, _r in (led or {}).items()
+                       if str((_r or {}).get("state") or "") == STATE_SILENT}
+        for _h3, _t3 in (snap or {}).items():
+            _hh3 = str(_h3 or "").strip().lower()
+            if not _hh3 or _hh3 in _silent_led:
+                continue
+            _hit = None
+            _duty = False
+            for _tg in (getattr(_t3, "tags", None) or []):
+                _p = parse_tag(str(_tg))
+                if not _p:
+                    continue
+                _ps = str(_p.get("state") or "")
+                if _ps in DUTY_STATES or _ps == STATE_RECOMMEND:
+                    # ★ 身份轴是**永久**的（`retag` 在贴职务时仍保留 `魔流-*-静默-*`）
+                    #   → 带职务（魔力/刷流/保种）或推荐生命周期的种**不在池**，绝不能当静默种 pause。
+                    _duty = True
+                    break
+                if _ps == STATE_SILENT and _hit is None:
+                    _hit = _p
+            if _duty or not _hit:
+                continue
+            counts["tag_only"] = int(counts.get("tag_only") or 0) + 1
+            counts["total"] = int(counts.get("total") or 0) + 1
+            site = str(_hit.get("site") or "").strip() or self._torrent_site_name(
+                getattr(_t3, "tags", None), ""
+            )
+            sub = str(_hit.get("sub") or "") or SUB_NEW
+            owed = False
+            try:
+                owed = bool(self._hr_obligation(site, _t3, snap=snap)[0])
+            except Exception:  # noqa: BLE001
+                owed = False
+            _st = str(getattr(_t3, "state", "") or "").strip().lower()
+            stalled = not (_st.startswith("paused") or _st.startswith("stopped")
+                           or _st.startswith("queued"))
+            exempt = bool(owed) or _hh3 in cssrc or _hh3 in claim or _hh3 in manual
+            if not exempt and stalled:
+                counts["stalled_violation"] = int(counts["stalled_violation"]) + 1
+            if _lim and len(items) >= _lim:
+                continue
+            items.append({
+                "hash": _hh3, "site": site, "sub": sub,
+                "class": "tag_only", "owed_hr": bool(owed),
+                "stalled_violation": bool(stalled and not exempt),
+                "state": str(getattr(_t3, "state", "") or ""),
+                "size_gb": round(float(getattr(_t3, "size_gb", 0) or 0.0), 2),
+                "tag_only": True,
+            })
         return {
             "at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "counts": counts,
             "items": items,
-            "source_of_truth": ["tag_state(账本)", "_tag_all_torrents()", "_hr_obligation",
-                                "_crossseed_source_hashes", "_claim_protected_hashes",
-                                "store.protected_torrents"],
+            "source_of_truth": ["tag_state(账本)", "_tag_all_torrents()", "parse_tag(qB标签)",
+                                "_hr_obligation", "_crossseed_source_hashes",
+                                "_claim_protected_hashes", "store.protected_torrents"],
             "note": ("静默池全 paused 硬不变量：stalled_violation = 违背不变量的种；"
-                     "owed_hr 应由 hr_host 迁到保种（池里不该有）；cleanup = 清理候选（删条目+删文件，过删除闸门）。"),
+                     "owed_hr 应由 hr_host 迁到保种（池里不该有）；cleanup = 清理候选（删条目+删文件，过删除闸门）；"
+                     "tag_only = 打了「静默」标签但不在账本的种（15.1.0 对账并入，多为全站辅种副本）。"),
         }
 
     # ---------------------------------------------------------
@@ -900,16 +961,20 @@ class SilentMixin:
         35 个 ``stalledUP`` + 1 个 ``uploading``，都是 sub=资源/新 的库内资产/迁出候选）。
 
         真值源：``_silent_audit`` 的 ``stalled_violation``（与 ``_delete_gate`` 同源，不造第二真值源）。
+        ★ 15.1.0：真值源含**标签面**（``tag_only``）—— 只打了「静默」标签、不在账本的种
+        （多为全站辅种副本）现在也纳入收敛，不再因「不在账本」而漏。
         幂等：已 paused 的不会再写；**只 pause，不删种、不动文件、不 resume**。
         调用点：① ``silent_host`` 周期步（自动收敛）② ``GET /agent/silent/enforce``（手动，默认干跑）。
         """
         rep: Dict[str, Any] = {"apply": bool(apply), "scanned": 0, "violations": 0,
-                              "paused": 0, "failed": 0, "items": [], "note": ""}
+                              "tag_only": 0, "paused": 0, "failed": 0, "items": [], "note": ""}
         if not SILENT_HR_SPLIT_ENABLED:
             rep["disabled"] = True
             return rep
         audit = self._silent_audit(limit=0)
-        rep["scanned"] = int((audit.get("counts") or {}).get("total") or 0)
+        _cnts = audit.get("counts") or {}
+        rep["scanned"] = int(_cnts.get("total") or 0)
+        rep["tag_only"] = int(_cnts.get("tag_only") or 0)
         bad = [str(it.get("hash") or "").strip().lower()
                for it in (audit.get("items") or [])
                if it.get("stalled_violation") and str(it.get("hash") or "").strip()]
@@ -928,7 +993,7 @@ class SilentMixin:
         rep["failed"] = int((r or {}).get("failed") or 0)
         if rep["paused"] or rep["failed"]:
             self._log(f"魔流:静默闸:补暂停收敛 {rep['paused']} 个"
-                      f"（违背不变量 {rep['violations']}，失败 {rep['failed']}）")
+                      f"（违背不变量 {rep['violations']}，标签面 {rep['tag_only']}，失败 {rep['failed']}）")
         return rep
 
     def _silent_hr_pending(self, snap: Optional[Dict[str, Any]] = None) -> Set[str]:
