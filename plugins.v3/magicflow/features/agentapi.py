@@ -199,6 +199,13 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
          "params": {"confirm": "1=真补 pause（默认干跑）"},
          "returns": "SilentEnforce", "version": AGENT_ENDPOINT_VERSION,
          "summary": "★★静默不变量收敛（12.7.1 / 15.1.0）：账本/标签静默但 qB 没停的种补 pause（幂等、只 pause 不删）；默认干跑"},
+        {"path": "/agent/tags/reconcile", "method": "GET", "handler": "agent_tags_reconcile",
+         "write": True,
+         "params": {"confirm": "1=真写（默认干跑只报数）",
+                    "adopt_reseed": "1=顺带把「无主辅种副本」补登进 mf_reseed",
+                    "limit": "int（0=不限）"},
+         "returns": "TagReconcileReport", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "★标签↔账本对账（身份轴/职务轴自愈）：账本在岗但 qB 标签缺身份/缺职务 → 按账本补标签（不改账本、不删不暂停）；纯身份子桶漂移只报不写；默认干跑"},
         # ---- P1.5c：功能域只读（AI ⊇ 前端，收编 19 个只读豁免域）----
         {"path": "/agent/tasks/{id}/bonus", "method": "GET", "handler": "agent_task_bonus", "write": False,
          "params": {"id": "任务 id 路径参数"}, "returns": "TaskBonusReport",
@@ -846,6 +853,30 @@ class AgentApiMixin:
             data, t0,
             ("features/silent._silent_enforce_pause() → _silent_audit(stalled_violation, 只读) + "
              "_silent_pause_gate → DownloaderAdapter.pause_torrents(只 pause，不删)"))
+
+    # ---------------------------------------------------- 15.2.0 标签 ↔ 账本对账
+    def agent_tags_reconcile(self, confirm: int = 0, adopt_reseed: int = 0,
+                             limit: int = 0) -> Dict[str, Any]:
+        """``GET /agent/tags/reconcile`` —— ★ **标签 ↔ 账本对账**（写；默认干跑）。
+
+        一次调用答：**「账本说在岗的种里，哪些 qB 标签缺身份轴 / 缺职务轴（该补）」**。
+        真值源 = 种子账本（`mf_seed`）；qB 标签只是镜像。只写 qB 标签 + （可选）补登辅种账；
+        **不改种子账本、不删种、不暂停、不 resume、不碰 H&R**。
+        ``confirm=0``（默认）= 只报数零写入；``confirm=1`` = 真补标签。
+        """
+        t0 = time.time()
+        try:
+            data = self._tag_ledger_reconcile(
+                apply=bool(int(confirm or 0)),
+                adopt_reseed=bool(int(adopt_reseed or 0)),
+                limit=self._agent_int(limit, 0),
+            )
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"标签↔账本对账失败:{e}", t0, trace_id=str(e))
+        return self._agent_report(
+            data, t0,
+            ("features/tags._tag_ledger_reconcile() → SeedLedgerStore.items()(真值源) + "
+             "_tag_all_torrents(qB 快照) + retag(qB标签) → DownloaderAdapter.set_torrent_tags(只补标签)"))
 
     # ---------------------------------------------------- 11.9.0 野马PT 逐种 H&R（只读 + 免罪写）
     def agent_yema(self, live: int = 0, force: int = 0) -> Dict[str, Any]:

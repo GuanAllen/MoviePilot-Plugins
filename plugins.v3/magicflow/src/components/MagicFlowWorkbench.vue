@@ -572,12 +572,14 @@ const siteReportSites = computed(() => (siteReport.value.available_sites || []))
 const siteReportFilter = ref('')
 const siteReportTransport = ref('')
 const siteReportSub = ref('')
+const siteReportOrigin = ref('')
 const siteReportItems = computed(() => {
   const all = siteReport.value.items || []
   return all.filter(it =>
     (!siteReportFilter.value || it.bucket === siteReportFilter.value) &&
     (!siteReportTransport.value || it.transport === siteReportTransport.value) &&
-    (!siteReportSub.value || it.sub === siteReportSub.value)
+    (!siteReportSub.value || it.sub === siteReportSub.value) &&
+    (!siteReportOrigin.value || it.origin === siteReportOrigin.value)
   )
 })
 const siteReportSummary = computed(() => siteReport.value.summary || {})
@@ -599,6 +601,12 @@ const SITE_REPORT_SILENT_SUBS = [
   { key: '资源', color: 'success' },
   { key: '普通', color: 'blue-grey' },
 ]
+// ★ 15.2.0 静默桶「出身轴」：池（种子账本）/ 辅种副本（mf_reseed）/ 无主
+const SITE_REPORT_ORIGINS = [
+  { key: '池', color: 'blue-grey' },
+  { key: '辅种副本', color: 'teal' },
+  { key: '无主', color: 'warning' },
+]
 function siteReportBucketColor(b) {
   const hit = SITE_REPORT_BUCKETS.find(x => x.key === b)
   return hit ? hit.color : 'grey'
@@ -615,6 +623,7 @@ function siteReportTransportCount(trKey) {
 function siteReportItemSub(it) {
   const parts = []
   if (it.sub) parts.push(it.sub)
+  if (it.origin) parts.push(it.origin)
   if (it.transport) parts.push(it.transport)
   if (it.state) parts.push(it.state)
   if (it.hr && it.hr.need_left) parts.push(`欠H&R 还需 ${it.hr.need_left}h`)
@@ -633,6 +642,7 @@ async function loadSiteReport(liveOverride) {
     siteReportFilter.value = ''
     siteReportTransport.value = ''
     siteReportSub.value = ''
+    siteReportOrigin.value = ''
     if (!siteReportSite.value && siteReportSites.value.length) {
       siteReportSite.value = siteReportSites.value[0].domain || siteReportSites.value[0].name || ''
       await loadSiteReport()
@@ -2482,6 +2492,37 @@ const enforceLoading = ref(false)
 const enforceAsk = ref(false)
 const enforceData = ref({ scanned: 0, violations: 0, paused: 0, failed: 0, items: [] })
 const enforceCounts = computed(() => enforceData.value || {})
+// ★ 15.2.0 标签 ↔ 账本对账（与 /agent/tags/reconcile 同一实现，人机同源）
+const tagReconLoading = ref(false)
+const tagReconAsk = ref(false)
+const tagReconPending = ref(0)
+async function runTagReconcile(confirm = false) {
+  tagReconLoading.value = true
+  try {
+    const url = `${pluginBase.value}/tags?action=${confirm ? 'reconcile_apply' : 'reconcile'}` +
+      `${confirm ? '&confirm=1&adopt_reseed=1' : ''}`
+    const res = unwrapResponse(await props.api.get(url)) || {}
+    const pend = res.items_total ?? (res.items || []).length
+    tagReconPending.value = pend
+    const drift = res.drift_total ?? (res.drift || []).length
+    if (confirm) {
+      tagReconAsk.value = false
+      notify(`标签对账：已补 ${res.repaired ?? 0} 个标签` +
+        (res.adopted ? `、补登辅种副本 ${res.adopted} 个` : '') +
+        (drift ? `（另有身份子桶漂移 ${drift} 个，只报不写）` : ''))
+      if (silentOpen.value) loadSilent()
+    } else if (pend) {
+      tagReconAsk.value = true
+    } else {
+      notify(`标签对账（干跑）：无需修复` + (drift ? `（身份子桶漂移 ${drift} 个，只报不写）` : ''))
+    }
+  } catch (err) {
+    notify(`标签对账失败：${err?.message || err}`, 'error')
+  } finally {
+    tagReconLoading.value = false
+  }
+}
+
 async function loadEnforce(confirm = 0) {
   enforceLoading.value = true
   try {
@@ -5062,8 +5103,27 @@ onUnmounted(() => {
               @click="siteReportSub = siteReportSub === s.key ? '' : s.key"
             >{{ s.key }} {{ (siteReportSummary.silent_by_sub || {})[s.key] || 0 }}</VChip>
           </div>
+          <div v-if="siteReportFilter === '静默'" class="magicflow-sitereport__chips magicflow-sitereport__chips--l2">
+            <span class="magicflow-sitereport__chip-label">出身</span>
+            <VChip
+              size="small"
+              :color="siteReportOrigin ? 'grey' : 'primary'"
+              :variant="siteReportOrigin ? 'tonal' : 'flat'"
+              style="cursor: pointer"
+              @click="siteReportOrigin = ''"
+            >全部</VChip>
+            <VChip
+              v-for="s in SITE_REPORT_ORIGINS"
+              :key="s.key"
+              size="small"
+              :color="s.color"
+              :variant="siteReportOrigin === s.key ? 'flat' : 'tonal'"
+              style="cursor: pointer"
+              @click="siteReportOrigin = siteReportOrigin === s.key ? '' : s.key"
+            >{{ s.key }} {{ (siteReportSummary.silent_origin || {})[s.key] || 0 }}</VChip>
+          </div>
           <div class="magicflow-ops-dialog__sub">
-            明细 {{ siteReportItems.length }} / {{ siteReportSummary.total || 0 }}{{ (siteReportFilter || siteReportTransport || siteReportSub) ? ' · 已筛选' : ' · 点分类可筛选' }}
+            明细 {{ siteReportItems.length }} / {{ siteReportSummary.total || 0 }}{{ (siteReportFilter || siteReportTransport || siteReportSub || siteReportOrigin) ? ' · 已筛选' : ' · 点分类可筛选' }}
           </div>
           <div v-if="siteReport.hr && siteReport.hr.error" class="magicflow-sitereport__err">
             H&amp;R 对账（{{ siteReport.hr.source }}）：{{ siteReport.hr.error }}
@@ -7995,6 +8055,7 @@ onUnmounted(() => {
           <div class="magicflow-recommend-dialog__head-actions">
             <VChip size="small" variant="tonal" color="primary">全局 · 跨站/跨任务的「无主」种</VChip>
             <VBtn variant="text" color="info" size="small" prepend-icon="mdi-pause-octagon" @click="invariantOpen = true; loadEnforce(0)">违背不变量</VBtn>
+            <VBtn variant="text" color="warning" size="small" prepend-icon="mdi-tag-check" :loading="tagReconLoading" @click="runTagReconcile(false)">标签对账</VBtn>
             <VBtn variant="text" color="primary" size="small" prepend-icon="mdi-history" @click="openOperations('all')">操作记录</VBtn>
             <VBtn icon="mdi-refresh" size="small" variant="text" aria-label="刷新" :loading="silentLoading" @click="loadSilent" />
             <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="silentOpen = false" />
@@ -8203,6 +8264,25 @@ onUnmounted(() => {
           <VSpacer />
           <VBtn variant="text" :disabled="enforceLoading" @click="enforceAsk = false">取消</VBtn>
           <VBtn variant="flat" color="warning" :loading="enforceLoading" @click="enforceAsk = false; loadEnforce(1)">确认补暂停</VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
+
+    <!-- ★ 15.2.0 标签对账 二次确认（只补 qB 标签，不改账本、不删不暂停） -->
+    <VDialog :model-value="tagReconAsk" max-width="32rem" persistent @update:model-value="v => { if (!v) tagReconAsk = false }">
+      <VCard class="magicflow-dialog">
+        <VCardTitle class="text-subtitle-1 pt-4">确认标签对账</VCardTitle>
+        <VCardText class="text-body-2">
+          账本说在岗（魔力/刷流/保种）、但 qB 标签缺身份轴（<code>魔流-&lt;站&gt;-静默-*</code>）或缺职务的种，将按<b>账本</b>补标签（预计 <strong>{{ tagReconPending }}</strong> 个）。
+          <VAlert type="info" variant="tonal" density="compact" class="mt-3">
+            只写 qB 标签：<strong>不改种子账本、不删种、不暂停、不 resume</strong>；附带把「有 <code>魔流-辅种</code> 标记、两本账都没登记」的无主辅种副本补登进辅种账。
+          </VAlert>
+        </VCardText>
+        <VDivider />
+        <VCardActions>
+          <VSpacer />
+          <VBtn variant="text" :disabled="tagReconLoading" @click="tagReconAsk = false">取消</VBtn>
+          <VBtn variant="flat" color="warning" :loading="tagReconLoading" @click="runTagReconcile(true)">确认补标签</VBtn>
         </VCardActions>
       </VCard>
     </VDialog>

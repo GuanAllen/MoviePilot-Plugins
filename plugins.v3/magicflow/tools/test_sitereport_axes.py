@@ -157,6 +157,13 @@ class Plug(sitereport.SiteReportMixin):
     def _tag_site_names(self):
         return list(self._site_map.keys())
 
+    # ★ 15.2.0 出身轴真值源（池=种子账本 / 辅种副本=mf_reseed）
+    def _tag_state(self):
+        return {"silent-new": {"state": "静默", "site": SITE, "sub": "新"}}
+
+    def _reseed_ledger(self):
+        return {"7:silent-res": {"st": "ok"}}
+
     def _hrbills_norm_domain(self, dom):
         return str(dom or "").strip().lower().replace("http://", "").replace("https://", "").rstrip("/")
 
@@ -284,6 +291,12 @@ def main() -> int:
     _ok(ss.get("新") == 1 and ss.get("资源") == 1 and ss.get("普通") == 1,
         f"silent_by_sub 三子桶（实际 {ss}）")
 
+    # ★ 15.2.0：静默桶「出身轴」池 / 辅种副本 / 无主
+    so = s["silent_origin"]
+    _ok(so.get(SR.ORIGIN_POOL) == 1 and so.get(SR.ORIGIN_RESEED) == 1
+        and so.get(SR.ORIGIN_NONE) == 1,
+        f"silent_origin 出身轴三桶（实际 {so}）")
+
     # item 字段
     items = {it["hash"]: it for it in data["items"]}
     _ok(items["brush"]["bucket"] == BUCKET_BRUSH and items["brush"]["transport"] == TRANSPORT_SEEDING
@@ -296,6 +309,11 @@ def main() -> int:
         and items["hr-debt"]["hr"]["owed"] is True,
         "item（欠 H&R）bucket=保种 + hr 列字段（债务不再当桶）")
     _ok(items["hr-dut"]["hr"] is None, "item（保种职务未违约）hr 列为 None")
+    _ok(items["silent-new"]["origin"] == SR.ORIGIN_POOL
+        and items["silent-res"]["origin"] == SR.ORIGIN_RESEED
+        and items["silent-plain"]["origin"] == SR.ORIGIN_NONE,
+        "item.origin：静默桶逐条出身（池/辅种副本/无主）")
+    _ok(items["brush"]["origin"] == "", "非静默桶 origin 为空")
 
     # 排序：保种（桶序 1）应排在刷流/魔力（桶序 2/3）之前
     ordered = [it["bucket"] for it in data["items"]]
