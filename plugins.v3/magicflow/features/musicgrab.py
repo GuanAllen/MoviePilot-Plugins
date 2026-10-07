@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 
 from ..fingerprint import info_hash
 from ..persistence import OperationItem
-from ..tags import SUB_RESOURCE, STATE_SILENT, tag_for
+from ..tags import MUSIC_CATEGORY, SUB_RESOURCE, STATE_SILENT, is_music_line, tag_for
 
 # ---------------------------------------------------------------------------
 # 常量（打分口径，集中在这里，便于以后做成可配权重）
@@ -30,7 +30,7 @@ MUSIC_PLAN_PER_ITEM_DEFAULT = 3      # 每首保留候选条数
 MUSIC_PLAN_LIMIT_DEFAULT = 40        # 歌单条数上限
 MUSIC_FREE_RATIO = 0.0               # downloadvolumefactor <= 0 → 免费
 MUSIC_SAVE_PATH_DEFAULT = "/vol6/1000/music"   # 音乐落盘目录（qB 宿主路径）
-MUSIC_CATEGORY = "音乐"                        # qB 分类
+#: qB 分类 = ``音乐``（常量与判定在 ``common.py``：清理/纳管/任务也要用，必须是纯函数）
 MUSIC_GRAB_SLEEP = 1.0               # 两次加种之间的小间隔（别猛打站点/下载器）
 
 #: ★ 音乐线职务标签（不许出现在音乐种上）：音乐单独一条线，**不进魔力/刷流任务**
@@ -366,22 +366,12 @@ class MusicGrabMixin:
     # 音乐线隔离（★15.8.0）：音乐种不进任何魔力/刷流任务
     # ------------------------------------------------------------------
     def _is_music_line(self, obj: Any) -> bool:
-        """该种是否属于「音乐线」（qB 分类 = ``音乐``）。
+        """该种是否属于「音乐线」（qB 分类 = ``音乐``）——委托 ``common.is_music_line``。
 
         Master 口径：**音乐单独一条线，不与刷流抢** —— 音乐种不纳管进魔力/刷流任务、
         不参与其清理与账本（否则「无进度 / 无上传」会把它当低效种删掉）。
-        兼容 ``TorrentInfo`` 对象与 qB 原始 dict。
         """
-        try:
-            if isinstance(obj, dict):
-                if str(obj.get("category") or "").strip() == MUSIC_CATEGORY:
-                    return True
-                return False
-            if str(getattr(obj, "category", "") or "").strip() == MUSIC_CATEGORY:
-                return True
-        except Exception:  # noqa: BLE001
-            return False
-        return False
+        return is_music_line(obj)
 
     def _music_untag_duty(self, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
         """摘掉音乐种上的「魔力 / 刷流」职务标签（幂等；默认干跑）。

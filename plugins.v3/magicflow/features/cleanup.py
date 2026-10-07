@@ -20,6 +20,7 @@ from ..downloader_ops import (
     seed_hours_for_hr,
 )
 from ..persistence import OperationItem
+from ..tags import is_music_line
 from ..sites.formula_fetch import (
     _norm_title as normalize_title,
 )
@@ -243,7 +244,7 @@ class CleanupMixin:
             except Exception:
                 _st = []
             _tt = [t for t in (_st or [])
-                   if task.brush_tag in t.tags and not self._is_music_line(t)]
+                   if task.brush_tag in t.tags and not is_music_line(t)]
             _aged = int(out.get("aged", 0))
             _noupl = int(out.get("no_upload", 0))
             _rot = int(out.get("rotated", 0))
@@ -267,7 +268,7 @@ class CleanupMixin:
             return out
 
         task_torrents = [t for t in seeding_torrents
-                         if task.brush_tag in t.tags and not self._is_music_line(t)]
+                         if task.brush_tag in t.tags and not is_music_line(t)]
         if not task_torrents:
             self._log(f"任务 [{task.name}] 没有管理的种子", "info")
             return out

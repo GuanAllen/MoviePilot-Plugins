@@ -700,7 +700,7 @@ class HrBillsMixin:
             return {"bills": 0, "activated": 0, "voided": 0, "settled": 0,
                     "breached": 0, "demoted": 0, "backfilled": backfilled, "no_site": no_site}
         now = time.time()
-        activated = voided = settled = breached = demoted = 0
+        activated = voided = settled = breached = demoted = titles_filled = 0
         for h, b in list(bills.items()):
             if not isinstance(b, dict):
                 continue
@@ -730,6 +730,12 @@ class HrBillsMixin:
                 seeded_h = float(b.get("seeded_h") or 0)
             cur_state = str(b.get("state") or "")
             fields: Dict[str, Any] = {"progress": progress, "seeded_h": seeded_h}
+            # ★ 15.8.1：补空标题（开账时快照可能还没这个种，如刚加的音乐种；只在能取到时补）。
+            if not str(b.get("title") or "").strip():
+                _tt = str(getattr(t, "title", "") or "").strip()
+                if _tt:
+                    fields["title"] = _tt[:200]
+                    titles_filled += 1
             # ★ 种重新出现（breached → 恢复 active，复欠重进继续挂）
             if cur_state == BILL_STATE_BREACHED:
                 fields["state"] = BILL_STATE_ACTIVE
@@ -770,6 +776,7 @@ class HrBillsMixin:
         store.flush()
         return {"bills": len(bills), "activated": activated, "voided": voided,
                 "settled": settled, "breached": breached, "demoted": demoted,
+                "titles_filled": titles_filled,
                 "backfilled": backfilled, "no_site": no_site}
 
     # ---------------------------------------------------------- 干跑（只读，不落库）
