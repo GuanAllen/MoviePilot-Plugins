@@ -33,6 +33,7 @@ L0 = {
     "douban.py", "rulepack.py", "sitecap.py", "dtier.py",
     "db.py", "tables.py",   # 插件自有表（SQLAlchemy 模型）—— 纯基础设施
     "codedict.py",          # 代码字典：纯 ast 解析自身源码（11.12.0）
+    "qbsync.py",            # qB 增量同步快照（/sync/maindata?rid=，纯内存，15.3.0）
 }
 L1 = {
     "bonus.py", "collect.py", "fetcher.py", "live_stats.py", "fallback.py",

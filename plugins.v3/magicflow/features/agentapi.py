@@ -206,6 +206,10 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
                     "limit": "int（0=不限）"},
          "returns": "TagReconcileReport", "version": AGENT_ENDPOINT_VERSION,
          "summary": "★标签↔账本对账（身份轴/职务轴自愈）：账本在岗但 qB 标签缺身份/缺职务 → 按账本补标签（不改账本、不删不暂停）；纯身份子桶漂移只报不写；默认干跑"},
+        {"path": "/agent/qb/snapshot", "method": "GET", "handler": "agent_qb_snapshot",
+         "write": False,
+         "params": {}, "returns": "QbSnapshot", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "qB 增量同步观测（/sync/maindata?rid=）：全量/增量/无变化次数 + rid + 上次增量条数/字节（纯内存，只读）"},
         # ---- P1.5c：功能域只读（AI ⊇ 前端，收编 19 个只读豁免域）----
         {"path": "/agent/tasks/{id}/bonus", "method": "GET", "handler": "agent_task_bonus", "write": False,
          "params": {"id": "任务 id 路径参数"}, "returns": "TaskBonusReport",
@@ -877,6 +881,28 @@ class AgentApiMixin:
             data, t0,
             ("features/tags._tag_ledger_reconcile() → SeedLedgerStore.items()(真值源) + "
              "_tag_all_torrents(qB 快照) + retag(qB标签) → DownloaderAdapter.set_torrent_tags(只补标签)"))
+
+    # ---------------------------------------------------- 15.3.0 qB 增量同步观测
+    def agent_qb_snapshot(self) -> Dict[str, Any]:
+        """``GET /agent/qb/snapshot`` —— qB **增量同步**观测（只读）。
+
+        一次调用答：**「qB 快照现在是增量还是全量、省了多少、rid 走到哪」**。
+        真值源 = ``qbsync.QbSyncStore``（``/sync/maindata?rid=`` 增量合并，**纯内存**，
+        不写 Redis / 不落盘）。计数：``full_pulls``（全量建表）/``delta_pulls``（增量合并）/
+        ``unchanged_pulls``（无变化）/``errors``，加 ``last_delta_n``/``last_delta_bytes``。
+        """
+        t0 = time.time()
+        try:
+            dl = self._get_downloader("qbittorrent")
+            if dl is None or not hasattr(dl, "qb_sync_stats"):
+                return self._agent_err("unavailable", "下载器不可用", t0, trace_id="qb")
+            data = dl.qb_sync_stats()
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"读取 qB 增量快照观测失败:{e}", t0, trace_id=str(e))
+        return self._agent_report(
+            data, t0,
+            ("DownloaderAdapter.qb_sync_stats() → qbsync.QbSyncStore.stats()"
+             "（/sync/maindata?rid= 增量合并；纯内存计数，不写 Redis/不落盘）"))
 
     # ---------------------------------------------------- 11.9.0 野马PT 逐种 H&R（只读 + 免罪写）
     def agent_yema(self, live: int = 0, force: int = 0) -> Dict[str, Any]:

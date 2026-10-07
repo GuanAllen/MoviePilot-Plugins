@@ -1548,10 +1548,18 @@ class SilentMixin:
         out: Dict[str, int] = {}
         try:
             dl = self._get_downloader("qbittorrent")
-            qbc = getattr(dl, "_qb_client", lambda: None)() if dl is not None else None
-            if qbc is None:
+            if dl is None:
                 return out
-            for x in (qbc.torrents_info() or []):
+            # ★ 15.3.0：优先走 qB 增量快照（避免每次全量 torrents_info）
+            rows = None
+            try:
+                rows = dl.get_raw_torrents()
+            except Exception:  # noqa: BLE001
+                rows = None
+            if not rows:
+                qbc = getattr(dl, "_qb_client", lambda: None)()
+                rows = (qbc.torrents_info() if qbc is not None else None) or []
+            for x in rows:
                 try:
                     _h = str(x.get("hash") or "").lower()
                 except Exception:  # noqa: BLE001
