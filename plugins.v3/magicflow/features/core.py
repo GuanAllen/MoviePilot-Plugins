@@ -54,6 +54,7 @@ from ..common import (
     CLOUD_SCAN_MAX,
     CROSSSEED_SEED_HOURS_DEFAULT,
     CROSSSEED_SITE_HOURS_DEFAULT,
+    CROSSSEED_TASK_INTERVAL_MINUTES,
     DELETE_GATE_FAIL_CLOSED,
     CLAIM_BATCH,
     CLAIM_DAILY_PER_SITE,
@@ -632,11 +633,13 @@ class CoreMixin:
                 task.brush_tag = f"魔流-{task.name or task.id}"
             self._task_configs[task.id] = task
 
-        # ★ 14.0.0：确保存在「跨站取种」全局真任务（承接刷流任务发起的取种下载）
+        # ★ 14.0.0-2：「跨站取种」降为常驻 worker（与 __silent_host__/__hr_host__ 同构）→
+        #   真任务 __crossseed__ 退役；改由 ``get_service()`` 注册的 CrossSeed worker + host 卡片承载。
+        #   退役流程（清理存量 ``__crossseed__``）走 ``_retire_crossseed_task()``，幂等。
         try:
-            self._ensure_crossseed_task()
-        except Exception as _cst_err:  # noqa: BLE001
-            logger.error(f"魔流:创建「跨站取种」任务失败:{_cst_err}")
+            self._retire_crossseed_task()
+        except Exception as _rst_err:  # noqa: BLE001
+            logger.error(f"魔流:退役「跨站取种」任务失败:{_rst_err}")
 
         # 回写规范化配置
         self._save_config()
@@ -922,6 +925,22 @@ class CoreMixin:
                 "kwargs": {
                     "minutes": _hr_min,
                     "jitter": self._jitter_seconds(_hr_min),
+                },
+            }
+        )
+        # ★ 14.0.0-2：「跨站取种」常驻 worker —— 流量兜底 + 取种生命周期分诊
+        #   取代 14.0 的「全局真任务 __crossseed__」（详见 tasks.py::_retire_crossseed_task）。
+        #   无开关（与 SilentHost/HrHost 同语义：常驻、不可关闭）；空闲时函数内部早退
+        #   （pending 为空且无 crossseed_enabled 任务在岗）。
+        services.append(
+            {
+                "id": "CrossSeed",
+                "name": "跨站取种",
+                "trigger": "interval",
+                "func": self._crossseed_tick,
+                "kwargs": {
+                    "minutes": float(CROSSSEED_TASK_INTERVAL_MINUTES),
+                    "jitter": self._jitter_seconds(float(CROSSSEED_TASK_INTERVAL_MINUTES)),
                 },
             }
         )

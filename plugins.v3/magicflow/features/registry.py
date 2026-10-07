@@ -66,11 +66,9 @@ FEATURES: tuple = (
     FeatureSpec("silent", "静默池", SCOPE_GLOBAL, api="/silent/pool",
                 note="无主种池：静默-新/资源/普通 + H&R 保挂 + 记录（由常驻「静默托管」worker 承担）"),
     FeatureSpec("sitereport", "站点报表", SCOPE_VIEW, api="/site/seeds",
-                note="站点级种子报表：逐条种子状态（分类/保护/账单/qB）+ H&R 摘要（只读视图）"),
+                note="站点级种子报表：两轴分级（职务/身份六桶 + 传输三态）+ 债务列字段 + H&R 摘要（只读视图）"),
     FeatureSpec("hrbills", "H&R账单", SCOPE_VIEW, api="/hr/bills",
                 note="H&R 账单按站分组：欠债/状态分布/need_left/in_qb/missing/per_torrent_hr/规则来源（只读）"),
-    FeatureSpec("seedhealth", "挂种健康", SCOPE_VIEW, api="/health/scan",
-                note="挂种健康度自检：逐文件核盘找空转/缺文件的种 + 其中欠 H&R 的风险（只读）"),
     FeatureSpec("ceiling", "站点容量", SCOPE_VIEW, api="/status",
                 note="各站魔力上限占用（只读视图）"),
     FeatureSpec("ops", "操作记录", SCOPE_VIEW, api="/operations",
@@ -134,16 +132,22 @@ class RegistryMixin:
         )
 
     def _crossseed_feature_enabled(self) -> bool:
-        """「跨站取种」是否在用（14.0.0）。
+        """「跨站取种」是否在用（14.0.0-2）。
 
         两个来源（任一为真）：
-          · **全局真任务**「跨站取种」（``__crossseed__``）在岗 —— 它是承接方，常驻；
+          · **取种台账非空**（``__crossseed__`` 上有 pending 在飞或已下完待分诊）——承接方（常驻 worker）有事可做；
           · 任一任务开了 ``crossseed_enabled`` 且在岗 —— 它们是发起方（刷流任务）。
+
+        14.0.0 的「全局真任务 ``__crossseed__`` 在岗」判定已退役（详见 ``tasks._retire_crossseed_task``），
+        改为读台账真值源（pending）。若空且无发起方 → 跨站 worker 内部早退（避免记「本周六交班」空流水）。
         """
         try:
-            cs = (self._task_configs or {}).get(CROSSSEED_TASK_ID)
-            if cs is not None and task_is_participating(cs):
-                return True
+            try:
+                pend = self._crossseed_pending()
+                if pend and bool(pend.items()):
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
             for task in (self._task_configs or {}).values():
                 if getattr(task, "crossseed_enabled", False) and task_is_participating(task):
                     return True

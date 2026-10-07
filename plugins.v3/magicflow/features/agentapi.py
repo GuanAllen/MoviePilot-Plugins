@@ -182,7 +182,7 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
          "params": {"site": "站点域名 / 短名 / id（可空 = 只回站点清单）",
                     "live": "1 = 现抓站点 H&R 对账（同 /agent/hr/reconcile）"},
          "returns": "SiteSeedsReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★站点级种子报表：逐条种子状态（分类/保护/账单/qB） + H&R 摘要"},
+         "summary": "★站点级种子报表（两轴分级）：职务/身份六桶（刷流/魔力/保种/静默[含新/资源/普通]/补源/外部）+ 传输三态 + 债务列字段 + H&R 摘要"},
         # ---- 11.11.0 H&R 账单按站 + 违约告警（只读）----
         {"path": "/agent/hr/bills", "method": "GET", "handler": "agent_hr_bills", "write": False,
          "params": {"site": "域名（可空=全站）", "live": "1=现抓对账（默认读缓存）"},
@@ -715,14 +715,16 @@ class AgentApiMixin:
 
     # ---------------------------------------------------- 11.10.0 站点级种子报表（只读）
     def agent_site_seeds(self, site: str = "", live: int = 0) -> Dict[str, Any]:
-        """``GET /agent/site/seeds`` —— ★ **站点级种子报表**（只读）。
+        """``GET /agent/site/seeds`` —— ★ **站点级种子报表**（只读，两轴分级）。
 
         一次调用答：**「某站点上，我们挂的各种种子现在都是什么状态」**。
 
-        - 逐条种子：hash / 标题 / 体积 / 保存目录 / qB 状态 / 进度 / 比例 / 上传 / 分类桶 /
-          是否保护 / 账单 / H&R 需做种时间；
-        - 分类桶：欠H&R / 未完成 / 暂停 / 静默 / 保护 / 普通；
-        - 汇总：按桶 / 按 qB 状态计数 + 体积 + H&R 欠账摘要（owed / in_qb / missing）；
+        - 逐条种子：hash / 标题 / 体积 / 保存目录 / qB 状态 / 进度 / 比例 / 上传 /
+          第一级桶（职务/身份轴）+ 身份子桶（静默桶的 新/资源/普通）+ 传输三态 / 保护 /
+          账单 / H&R 需做种时间（债务列字段，不再当桶）；
+        - 第一级桶：刷流 / 魔力 / 保种（欠 H&R 挂补）/ 静默 / 补源 / 外部（互斥）；
+        - 第二级传输轴：未完成 / 暂停 / 做种中（每桶内三态统计，不单独成桶）；
+        - 汇总：by_bucket + by_transport + bucket_transport + silent_by_sub + 体积 + H&R 欠账摘要；
         - ``site`` 可空 → 只回 ``available_sites``（供选择器）；
         - ``live=1`` → 现抓站点 H&R 对账（否则读上一轮缓存）。
 

@@ -330,35 +330,69 @@ class TasksMixin:
             return []
         return [snap[h] for h in hashes if h in snap]
 
-    def _ensure_crossseed_task(self) -> None:
-        """★ 14.0.0：确保存在「跨站取种」**全局真任务**（不是伪任务）。
+    def _retire_crossseed_task(self) -> None:
+        """★ 14.0.0-2：退役「跨站取种」**真任务** → 改为常驻 worker（与 __silent_host__/__hr_host__ 同构）。
 
-        - 真实 task 行：出现在任务列表 / ``/agent/tasks``，可启停、有 run_mode；
-        - 无站点（site_id=0、站点名空）：落的是**他站**种子，归属由分诊决定；
-        - 职责：只做「承接 + 生命周期分诊」（``crossseed._crossseed_tick``），
-          **不抓任何站点列表 → 零 browse PV**。
+        14.0.0 把「跨站取种」做成真任务 ``__crossseed__`` 出现 H2 假阳性（Check 不走
+        ``_run_check`` → ``last_run_at`` 永远 0）。本方法：
+
+        1. 从 ``_task_configs`` 移除 ``__crossseed__``（若存在）；
+        2. 清 ``task_states["__crossseed__"]``（TaskStateStore.delete，幂等）；
+        3. journal 里 ``task_id="__crossseed__"`` 老流水批量改指 ``__silent_host__``
+           （冷 JSON + 热 Redis 同步写，幂等：再跑没有未迁移记录就直接 no-op）；
+        4. 持久化 ``_task_configs``（``_save_config()``）。
+
+        幂等：重复跑 0 副作用；任何步骤失败不中断（每个步骤独立 try）。
         """
         tid = CROSSSEED_TASK_ID
-        if tid in self._task_configs:
-            return
-        task = MagicFlowTaskConfig(
-            id=tid,
-            name=CROSSSEED_TASK_NAME,
-            task_type="crossseed",
-            enabled=True,
-            run_mode=RUN_MODE_RUNNING,
-            brush_interval=float(CROSSSEED_TASK_INTERVAL_MINUTES),
-            check_interval=float(CROSSSEED_TASK_INTERVAL_MINUTES),
-            site_id=0,
-            site_name="",
-            site_domain="",
-        )
+        _did = False
+        # 1. _task_configs
         try:
-            task.brush_tag = CROSSSEED_TAG
-        except Exception:  # noqa: BLE001
-            pass
-        self._task_configs[tid] = task
-        self._log(f"魔流:已创建全局任务「{CROSSSEED_TASK_NAME}」(id={tid})")
+            if tid in self._task_configs:
+                self._task_configs.pop(tid, None)
+                _did = True
+        except Exception as err:  # noqa: BLE001
+            self._log(f"魔流:退役跨站任务-从 _task_configs 移除失败:{err}", "warning")
+        # 2. task_states（真值源 TaskStateStore.delete，幂等）
+        try:
+            if self._store is not None and getattr(self._store, "task_states", None) is not None:
+                if self._store.task_states.delete(tid):
+                    _did = True
+        except Exception as err:  # noqa: BLE001
+            self._log(f"魔流:退役跨站任务-清 task_states 失败:{err}", "warning")
+        # 3. journal 流水迁移到 __silent_host__（幂等：当前已是 __silent_host__ 的不动）
+        try:
+            if self._store is not None and getattr(self._store, "journal", None) is not None:
+                j = self._store.journal
+                moved = 0
+                with j._lock:  # 并发安全：与 add/_prune_task 同锁
+                    for _op in list(j._operations.values()):
+                        if str(getattr(_op, "task_id", "") or "") == tid:
+                            _op.task_id = SILENT_HOST_TASK_ID
+                            # 刷新热层指纹（_kv_apply 看到指纹变化才会重写）
+                            try:
+                                j._kv_written.pop(_op.operation_id, None)
+                            except Exception:  # noqa: BLE001
+                                pass
+                            moved += 1
+                if moved:
+                    _did = True
+                    try:
+                        j._save()
+                    except Exception as err:  # noqa: BLE001
+                        self._log(f"魔流:退役跨站任务-journal 落盘失败:{err}", "warning")
+                    self._log(f"魔流:退役跨站任务-journal 已迁移 {moved} 条到「{SILENT_HOST_TASK_ID}」")
+        except Exception as err:  # noqa: BLE001
+            self._log(f"魔流:退役跨站任务-journal 迁移失败:{err}", "warning")
+        # 4. 持久化（_save_config 才会把删后的 _task_configs 写回 plugininstance.config_data）
+        if _did:
+            try:
+                self._save_config()
+            except Exception as err:  # noqa: BLE001
+                self._log(f"魔流:退役跨站任务-持久化配置失败:{err}", "warning")
+            # ★ 同步刷新调度（让宿主重建服务列表、移除 Task___crossseed__*）
+            self._refresh_scheduler()
+            self._log(f"魔流:已退役「跨站取种」真任务（id={tid}）→ 常驻 worker 承载")
 
     def _task_managed_hashes(self, task: Any) -> List[str]:
         """任务名下种子 hash：按站点（tracker 域名）识别（标签/归属已退役）。"""
