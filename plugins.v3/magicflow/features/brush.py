@@ -775,6 +775,10 @@ class BrushMixin:
                 continue
             if not h:
                 continue
+            # ★ 15.8.0 音乐线：音乐种（qB 分类「音乐」）不纳管进魔力/刷流任务
+            #   （不打任务标签、不进自有资源保护、不参与任务清理）。
+            if self._is_music_line(t):
+                continue
             matched += 1
             tags = _kv(t, "tags", "") or []
             if isinstance(tags, str):

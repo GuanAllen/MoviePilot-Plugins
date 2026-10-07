@@ -16,7 +16,12 @@
 
 import re
 import time
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
+
+from ..fingerprint import info_hash
+from ..persistence import OperationItem
+from ..tags import SUB_RESOURCE, STATE_SILENT, tag_for
 
 # ---------------------------------------------------------------------------
 # 常量（打分口径，集中在这里，便于以后做成可配权重）
@@ -24,6 +29,13 @@ from typing import Any, Dict, List, Optional
 MUSIC_PLAN_PER_ITEM_DEFAULT = 3      # 每首保留候选条数
 MUSIC_PLAN_LIMIT_DEFAULT = 40        # 歌单条数上限
 MUSIC_FREE_RATIO = 0.0               # downloadvolumefactor <= 0 → 免费
+MUSIC_SAVE_PATH_DEFAULT = "/vol6/1000/music"   # 音乐落盘目录（qB 宿主路径）
+MUSIC_CATEGORY = "音乐"                        # qB 分类
+MUSIC_GRAB_SLEEP = 1.0               # 两次加种之间的小间隔（别猛打站点/下载器）
+
+#: ★ 音乐线职务标签（不许出现在音乐种上）：音乐单独一条线，**不进魔力/刷流任务**
+#: 匹配形如 ``魔流-<站点>-魔力`` / ``魔流-<站点>-刷流``（任务标签）。
+_MUSIC_DUTY_STRIP_RE = re.compile(r"^魔流-.+-(魔力|刷流)$")
 
 #: 视频 / 录像特征（命中即**硬排除**：我们要的是音频）
 _MUSIC_VIDEO_TOKENS = (
@@ -152,6 +164,12 @@ class MusicGrabMixin:
                 "downloadvolumefactor": dv,
                 "uploadvolumefactor": uv,
                 "hit_and_run": bool(getattr(ti, "hit_and_run", False)),
+                # ↓ 加种（grab）要用；plan 输出会剔除
+                "enclosure": url,
+                "page_url": str(getattr(ti, "page_url", "") or ""),
+                "site_cookie": getattr(ti, "site_cookie", None),
+                "site_ua": getattr(ti, "site_ua", None),
+                "site_proxy": bool(getattr(ti, "site_proxy", False)),
             })
         self._log(f"音乐计划:搜「{kw}」{len(allowed)} 站 → 候选 {len(rows)} 条")
         return rows
@@ -185,9 +203,10 @@ class MusicGrabMixin:
 
         score = 0
 
-        # R1 无损 / 有损
+        # R1 无损 / 有损（★ 高解析但标题没写 FLAC 的，按无损算 —— 如 “24bit96khz”）
         lossless = [t for t in _MUSIC_LOSSLESS_TOKENS if t in title]
         lossy = [t for t in _MUSIC_LOSSY_TOKENS if t in title]
+        hires = [t for t in _MUSIC_HIRES_TOKENS if t in title]
         if lossless and not lossy:
             score += _MUSIC_W_LOSSLESS
             _r("music.format", f"+{_MUSIC_W_LOSSLESS}", {"lossless": lossless})
@@ -198,12 +217,15 @@ class MusicGrabMixin:
         elif lossy:
             score += _MUSIC_W_LOSSY
             _r("music.format", f"+{_MUSIC_W_LOSSY}", {"lossy": lossy})
+        elif hires:
+            score += _MUSIC_W_LOSSLESS
+            _r("music.format", f"+{_MUSIC_W_LOSSLESS}", {"hires": hires,
+                                                         "note": "只有高解析字样没写格式 → 按无损"})
         else:
             _r("music.format", "+0", {"note": "未识别格式字样"})
 
         # R2 高解析（位深/采样率）
-        hires = [t for t in _MUSIC_HIRES_TOKENS if t in title]
-        if hires:
+        if hires and not lossy:
             score += _MUSIC_W_HIRES
             _r("music.hires", f"+{_MUSIC_W_HIRES}", {"hit": hires})
 
@@ -269,6 +291,14 @@ class MusicGrabMixin:
                 n_chosen += 1
             else:
                 n_empty += 1
+            excluded: List[Dict[str, Any]] = []
+            if not cands:
+                for r in rows[:per_item]:
+                    s = self._music_score(r)
+                    if s["excluded"]:
+                        excluded.append({"title": r.get("title") or "",
+                                         "site_name": r.get("site_name") or "",
+                                         "reason": s["exclude_reason"]})
             items.append({
                 "query": kw,
                 "raw": ent["raw"],
@@ -287,6 +317,8 @@ class MusicGrabMixin:
                     "size_gb": c["size_gb"], "seeders": c["seeders"],
                     "downloadvolumefactor": c["downloadvolumefactor"], "score": c["score"],
                 } for c in cands],
+                "excluded": excluded,          # 被硬过滤的（只给前 per_item 条，便于排查）
+                "_chosen_row": (dict(chosen) if chosen else None),   # 内部：grab 用，对外剔除
                 "empty_reason": ("" if chosen else ("无候选（站点没搜到）" if not rows else "候选全被硬过滤（视频/MV）")),
             })
         return {
@@ -304,4 +336,188 @@ class MusicGrabMixin:
             },
         }
 
-    # ------------------------------------------------------------------ AI 端点
+    # ------------------------------------------------------------------ 对外（剔除内部行）
+    @staticmethod
+    def _music_public_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
+        """去掉 ``_chosen_row``（带 cookie）后的对外计划。"""
+        out = dict(plan or {})
+        items = []
+        for it in out.get("items") or []:
+            it = dict(it)
+            it.pop("_chosen_row", None)
+            items.append(it)
+        out["items"] = items
+        return out
+
+    # ------------------------------------------------------------------ 加种（写）
+    def _music_save_path(self, override: str = "") -> str:
+        """音乐保存目录：入参 > 设置 > 默认 ``/vol6/1000/music``。
+
+        ★ 坑：设置项属性名为 ``_music_save_dir``（**不能**同方法同名，
+        否则 ``getattr(self, "_music_save_path")`` 拿到的是本方法自身）。
+        """
+        override = str(override or "").strip()
+        if override:
+            return override
+        cfg = str(getattr(self, "_music_save_dir", "") or "").strip()
+        return cfg or MUSIC_SAVE_PATH_DEFAULT
+
+    # ------------------------------------------------------------------
+    # 音乐线隔离（★15.8.0）：音乐种不进任何魔力/刷流任务
+    # ------------------------------------------------------------------
+    def _is_music_line(self, obj: Any) -> bool:
+        """该种是否属于「音乐线」（qB 分类 = ``音乐``）。
+
+        Master 口径：**音乐单独一条线，不与刷流抢** —— 音乐种不纳管进魔力/刷流任务、
+        不参与其清理与账本（否则「无进度 / 无上传」会把它当低效种删掉）。
+        兼容 ``TorrentInfo`` 对象与 qB 原始 dict。
+        """
+        try:
+            if isinstance(obj, dict):
+                if str(obj.get("category") or "").strip() == MUSIC_CATEGORY:
+                    return True
+                return False
+            if str(getattr(obj, "category", "") or "").strip() == MUSIC_CATEGORY:
+                return True
+        except Exception:  # noqa: BLE001
+            return False
+        return False
+
+    def _music_untag_duty(self, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
+        """摘掉音乐种上的「魔力 / 刷流」职务标签（幂等；默认干跑）。
+
+        音乐种被魔力任务当同站种纳管过 → 会带上 ``魔流-<站点>-魔力``，从而
+        暴露给任务的清理。本方法只摘这一种职务标签，其它标签一律不动。
+        """
+        rep: Dict[str, Any] = {"ok": True, "applied": bool(apply), "scanned": 0,
+                              "candidates": 0, "cleaned": 0, "failed": 0, "samples": []}
+        try:
+            dl = self._get_downloader("qbittorrent")
+            idx = dl.get_all_torrents_index() if dl is not None else {}
+        except Exception as err:  # noqa: BLE001
+            return {**rep, "ok": False, "error": str(err)}
+        cap = int(limit or 0)
+        for h, t in (idx or {}).items():
+            if not self._is_music_line(t):
+                continue
+            rep["scanned"] = int(rep["scanned"]) + 1
+            tags = [str(x).strip() for x in (getattr(t, "tags", None) or []) if str(x).strip()]
+            removed = [x for x in tags if _MUSIC_DUTY_STRIP_RE.match(x)]
+            if not removed:
+                continue
+            rep["candidates"] = int(rep["candidates"]) + 1
+            if cap and int(rep["candidates"]) > cap:
+                continue
+            keep = [x for x in tags if x not in removed]
+            if len(rep["samples"]) < 10:
+                rep["samples"].append({"hash": str(h)[:12], "removed": removed, "keep": keep})
+            if not apply:
+                continue
+            try:
+                if callable(getattr(dl, "replace_torrent_tags", None)) and dl.replace_torrent_tags(str(h), keep):
+                    rep["cleaned"] = int(rep["cleaned"]) + 1
+                else:
+                    rep["failed"] = int(rep["failed"]) + 1
+            except Exception as err:  # noqa: BLE001
+                rep["failed"] = int(rep["failed"]) + 1
+                self._log(f"音乐线:摘职务标签失败 {str(h)[:12]}:{err}", "warning")
+        return rep
+
+    def _music_grab_one(self, row: Dict[str, Any], save_path: str,
+                        existing: Optional[set] = None) -> Dict[str, Any]:
+        """加一颗音乐种（走现有词子：取 .torrent → 下载器加种 → H&R 开账）。
+
+        tag = ``魔流-<站>-静默-资源``（同点播）→ 后续自动进账本 / 静默池 / H&R / 闸门 / 报表。
+        幂等：本地先算 infohash，已在下载器 → ``skipped``，不重复加。
+        """
+        dl = self._get_downloader("qbittorrent")
+        if dl is None or not getattr(dl, "is_available", False):
+            return {"ok": False, "message": "下载器不可用"}
+        sid = int(row.get("site") or 0)
+        if sid and (self._pv_block_reason(sid) or not self._pv_allow(sid, "crossseed", want=1)):
+            return {"ok": False, "message": "PV 闸门拦截（站点预算不足/被封，稍后再试）"}
+        content = self._crossseed_torrent_bytes(SimpleNamespace(**row))
+        if not content:
+            return {"ok": False, "message": "取 .torrent 失败（站点拒绝/种子已删，换一条候选）"}
+        try:
+            h0 = str(info_hash(content)).lower()
+        except Exception:  # noqa: BLE001
+            h0 = ""
+        if h0 and existing and h0 in existing:
+            return {"ok": True, "hash": h0, "skipped": True, "message": "已在下载器"}
+        site_name = str(row.get("site_name") or "")
+        tag = tag_for(site_name, STATE_SILENT, SUB_RESOURCE) if site_name else ""
+        try:
+            dom = self._site_domain_by_name(site_name) or ""
+        except Exception:  # noqa: BLE001
+            dom = ""
+        try:
+            hs, err = dl.add_torrent(content=content, download_dir=save_path, tag=tag,
+                                     category=MUSIC_CATEGORY, site_domain=dom,
+                                     hit_and_run=bool(row.get("hit_and_run")))
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "message": f"添加失败: {e}"}
+        if not hs:
+            return {"ok": False, "message": f"添加失败: {err or '未知'}"}
+        h = str(hs[0] if isinstance(hs, (list, tuple)) else hs).lower()
+        return {"ok": True, "hash": h, "tag": tag, "save_path": save_path}
+
+    def _music_grab(self, text: str, sites: str = "",
+                    per_item: int = MUSIC_PLAN_PER_ITEM_DEFAULT,
+                    limit: int = MUSIC_PLAN_LIMIT_DEFAULT,
+                    save_path: str = "") -> Dict[str, Any]:
+        """歌单 → 计划 → 逐首加种（写）。本方法假定调用方已确认 ``confirm``。"""
+        plan = self._music_plan(text, sites=sites, per_item=per_item, limit=limit)
+        sp = self._music_save_path(save_path)
+        try:
+            existing = {str(k).lower() for k in (self._tag_all_torrents() or {})}
+        except Exception:  # noqa: BLE001
+            existing = set()
+        added: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
+        failed: List[Dict[str, Any]] = []
+        for it in plan.get("items") or []:
+            row = it.get("_chosen_row")
+            q = str(it.get("query") or "")
+            if not row:
+                skipped.append({"query": q, "reason": it.get("empty_reason") or "无候选"})
+                continue
+            res = self._music_grab_one(row, sp, existing=existing)
+            if res.get("ok") and res.get("hash"):
+                existing.add(str(res["hash"]).lower())
+                rec = {"query": q, "title": row.get("title") or "", "hash": res["hash"],
+                       "site": row.get("site") or 0, "site_name": row.get("site_name") or "",
+                       "size_gb": round(float(row.get("size") or 0) / 1024 ** 3, 2),
+                       "free": _music_is_free(row.get("downloadvolumefactor"))}
+                if res.get("skipped"):
+                    rec["reason"] = res.get("message") or "已在下载器"
+                    skipped.append(rec)
+                else:
+                    added.append(rec)
+            else:
+                failed.append({"query": q, "title": row.get("title") or "",
+                               "message": str(res.get("message") or "添加失败")})
+            time.sleep(MUSIC_GRAB_SLEEP)
+        if added:
+            try:
+                self._store.journal.record(
+                    task_id="", kind="selection",
+                    items=[OperationItem(hash=a["hash"], title=f"音乐 {a['title']}",
+                                         reason=f"源 {a['site_name']}" + ("·免费" if a.get("free") else ""),
+                                         source="music") for a in added],
+                )
+            except Exception as e:  # noqa: BLE001
+                self._log(f"音乐:journal 落盘失败 {e}", "warning")
+        self._log(f"音乐:歌单 {len(plan.get('items') or [])} 条 → 新增 {len(added)} / 跳过 {len(skipped)} / 失败 {len(failed)}")
+        return {
+            "applied": True,
+            "save_path": sp,
+            "category": MUSIC_CATEGORY,
+            "added": added,
+            "skipped": skipped,
+            "failed": failed,
+            "summary": {"entries": len(plan.get("items") or []), "added": len(added),
+                        "skipped": len(skipped), "failed": len(failed)},
+            "plan": self._music_public_plan(plan),
+            "policy": plan.get("policy"),
+        }

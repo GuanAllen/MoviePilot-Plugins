@@ -242,7 +242,8 @@ class CleanupMixin:
                 _st, _st_err = downloader.get_seeding_torrents(tag=task.brush_tag)
             except Exception:
                 _st = []
-            _tt = [t for t in (_st or []) if task.brush_tag in t.tags]
+            _tt = [t for t in (_st or [])
+                   if task.brush_tag in t.tags and not self._is_music_line(t)]
             _aged = int(out.get("aged", 0))
             _noupl = int(out.get("no_upload", 0))
             _rot = int(out.get("rotated", 0))
@@ -265,7 +266,8 @@ class CleanupMixin:
             self._log(f"做种列表为空或获取失败: {error}", "warning")
             return out
 
-        task_torrents = [t for t in seeding_torrents if task.brush_tag in t.tags]
+        task_torrents = [t for t in seeding_torrents
+                         if task.brush_tag in t.tags and not self._is_music_line(t)]
         if not task_torrents:
             self._log(f"任务 [{task.name}] 没有管理的种子", "info")
             return out

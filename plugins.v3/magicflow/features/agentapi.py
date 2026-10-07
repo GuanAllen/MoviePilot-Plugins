@@ -228,6 +228,15 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
                     "limit": "int 歌单条数上限（默认 40）"},
          "returns": "MusicPlan", "version": AGENT_ENDPOINT_VERSION,
          "summary": "★歌单→选种计划（只读）：逐条 MP 搜索(mtype=music) → 硬过滤视频/MV → 打分（无损/位深/分轨/免费/做种/体积）→ 选中 + 逐条判定依据链"},
+        {"path": "/agent/music/grab", "method": "POST", "handler": "agent_music_grab", "write": True,
+         "params": {"text": "歌单（每行一条：`艺人 - 歌名` / `歌名` / `歌名@站id,站id`）",
+                    "sites": "逗号分隔站点 id（空=全部已配置站点）",
+                    "per_item": "int 每首保留候选数（默认 3）",
+                    "limit": "int 歌单条数上限（默认 40）",
+                    "save_path": "覆盖保存目录（默认 /vol6/1000/music）",
+                    "confirm": "1=真加种；否则只回计划（干跑）"},
+         "returns": "MusicGrab", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "★歌单→加种（写）：按计划把选中的音乐种加进下载器（tag=魔流-<站>-静默-资源，category=音乐），自动进账本/H&R/闸门；confirm 缺省=干跑"},
         # ---- P1.5c：功能域只读（AI ⊇ 前端，收编 19 个只读豁免域）----
         {"path": "/agent/tasks/{id}/bonus", "method": "GET", "handler": "agent_task_bonus", "write": False,
          "params": {"id": "任务 id 路径参数"}, "returns": "TaskBonusReport",
@@ -977,7 +986,38 @@ class AgentApiMixin:
             data = self._music_plan(text, sites=sites, per_item=per_item, limit=limit)
         except Exception as e:  # noqa: BLE001
             return self._agent_err("internal_error", f"计划失败: {e}", t0)
-        return self._agent_ok(data, t0)
+        return self._agent_ok(self._music_public_plan(data), t0)
+
+    def agent_music_grab(self, text: str = "", sites: str = "",
+                         per_item: int = 3, limit: int = 40,
+                         save_path: str = "", confirm: str = "") -> Dict[str, Any]:
+        """``POST /agent/music/grab`` —— 歌单 → 加种（写，15.7.0）。
+
+        ``confirm`` 缺省（或非 1）→ **只回计划（干跑）**；``confirm=1`` 才真加种。
+        加种走现有下载词子（tag = ``魔流-<站>-静默-资源``，qB 分类 ``音乐``）→
+        自动进账本 / 静默池 / H&R / 删除闸门 / 站点报表（音乐就是资源）。
+        """
+        t0 = time.time()
+        if not str(text or "").strip():
+            return self._agent_err("bad_request", "缺少歌单文本 text（每行一条：`艺人 - 歌名` / `歌名`）", t0)
+        _ok = str(confirm).strip().lower() in ("1", "true", "yes", "y", "on")
+        if not _ok:
+            try:
+                data = self._music_plan(text, sites=sites, per_item=per_item, limit=limit)
+            except Exception as e:  # noqa: BLE001
+                return self._agent_err("internal_error", f"计划失败: {e}", t0)
+            return self._agent_ok({"applied": False, "dry_run": True, "note": "干跑（confirm 未置 1，未加任何种）",
+                                   "save_path": self._music_save_path(save_path),
+                                   "plan": self._music_public_plan(data), "policy": data.get("policy")},
+                                  t0)
+        try:
+            data = self._music_grab(text, sites=sites, per_item=per_item, limit=limit,
+                                    save_path=save_path)
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal_error", f"加种失败: {e}", t0)
+        return self._agent_report(data, t0,
+                                  ("写操作 → _crossseed_torrent_bytes 取种 + DownloaderAdapter.add_torrent；"
+                                   "tag=魔流-<站>-静默-资源，category=音乐；下载即开 H&R 账（走现有账本/闸门/报表）"))
 
     def agent_yema(self, live: int = 0, force: int = 0) -> Dict[str, Any]:
         """``GET /agent/yema`` —— ★ **野马PT 逐种 H&R 对账**（站点 × 本机 × 账本；只读）。
