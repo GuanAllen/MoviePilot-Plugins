@@ -21,7 +21,11 @@
   [4] _ondemand_duty_reconcile：pending 未挂→补挂；挂了但已不 pending→释放；
   [5] 服务端接线：_ondemand_download 调 _od_assign；_ondemand_settle 调 reconcile + release；
   [6] 真值源锚点：common.py 常量、ledger.py 的 _task_state/_task_name/_task_id、agentledger 状态枚举；
-  [7] 静默两闸都以 state==静默 为前提（点播 state≠静默 ⇒ 免疫）。
+  [7] 静默两闸都以 state==静默 为前提（点播 state≠静默 ⇒ 免疫）；
+  [8] ★ 15.8.5：删除闸门的「库内资产」硬拦豁免「在途点播」（state=点播 / taken_by=__ondemand__）——
+      否则 ``_od_assign`` 打的 ``sub=资源`` 会让「点播移除」被自己硬拦（死结）；结算后仍照常保护；
+  [9] ★ 15.8.6：_od_assign 幂等改为「账本已挂 **且** qB 职务标签在位」；对账把
+      「账本挂了但标签缺」（加种抢先于 qB 登记）也纳入补挂。
 
 用法：``python3 tools/test_ondemand_task.py``（退出码 0=PASS / 1=FAIL）。
 """
@@ -82,6 +86,15 @@ sys.modules[PKG + ".sitestore"] = _site
 _common = types.ModuleType(PKG + ".common")
 _common.ONDEMAND_TASK_ID = "__ondemand__"
 _common.ONDEMAND_TASK_NAME = "点播"
+# [8] 删除闸门（deletegate）离线所需的最小桩：
+_common.begin_decision_round = lambda *a, **k: None
+_common.note_snapshot_pull = lambda *a, **k: 0
+_common.DELETE_BREAKER_ENABLED = True
+_common.DELETE_BREAKER_MAX = 30
+_common.DELETE_BREAKER_WINDOW_S = 600.0
+_common.DELETE_BILL_ASSERT = True
+_common.hr_incomplete = lambda *a, **k: False
+_common.hr_complete_ratio_of = lambda *a, **k: 1.0
 sys.modules[PKG + ".common"] = _common
 
 # 真 persistence.py（stdlib，提供 OperationItem）
@@ -132,11 +145,18 @@ class _Store:
 class _DL:
     is_available = True
 
-    def __init__(self):
+    def __init__(self, snap=None):
         self.calls = []
+        self.snap = snap
 
     def replace_torrent_tags(self, h, new):
         self.calls.append((str(h).lower(), list(new)))
+        # 回写快照，模拟 qB 真的改了标签（否则幂等判定看不到第一次的结果）
+        if self.snap is not None:
+            hh = str(h).lower()
+            t = self.snap.get(hh)
+            if t is not None:
+                t.tags = list(new)
         return True
 
 
@@ -145,7 +165,7 @@ class Fake(OnDemandMixin):
         self._pend = dict(pend or {})
         self._snap = dict(snap or {})
         self._store = _Store(ledger)
-        self._dl = _DL()
+        self._dl = _DL(self._snap)
         self.logs = []
         self.gate = None
 
@@ -255,6 +275,66 @@ _sl = (ROOT / "features" / "silent.py").read_text()
 ok("STATE_SILENT" in _sl and "_silent_purge_incomplete" in _sl, "silent.py 有 _silent_purge_incomplete")
 _tg = (ROOT / "features" / "tags.py").read_text()
 ok("_silent_drop_incomplete_now" in _tg, "tags.py 有 _silent_drop_incomplete_now")
+
+# ---------------------------------------------------------------- [8] 删除闸门：在途点播不算「库内资产」
+print("[8] 删除闸门：在途点播(state=点播)豁免「库内资产」硬拦 → 点播移除不被自己卡死")
+_dg = _load(PKG + ".features.deletegate", "features/deletegate.py")
+
+
+class GateFake(Fake):
+    def _crossseed_source_hashes(self):
+        return set()
+
+    def _claim_protected_hashes(self, site_id=None):
+        return set()
+
+    def _resource_source_index(self):
+        return {}
+
+    def _hr_obligation(self, *a, **k):
+        return (False, 0.0, 0.0, "")
+
+    def _tag_groups(self):
+        return SimpleNamespace(group_of=lambda h: "", items=lambda: {})
+
+    _delete_gate_detail = _dg.DeleteGateMixin._delete_gate_detail
+
+
+g = GateFake(ledger={
+    H1: {"state": STATE_ONDEMAND, "taken_by": "__ondemand__", "sub": SUB_RESOURCE},
+    H2: {"state": STATE_SILENT, "sub": SUB_RESOURCE},
+    H3: {"state": STATE_SILENT, "taken_by": "任务A", "sub": ""},
+})
+_why = g._delete_gate_detail([H1, H2, H3])
+ok(H1 not in _why, "在途点播(state=点播) 不再被「库内资产」硬拦")
+ok(_why.get(H2) == "库内资产（已入库，永不删）", "已结算资源(静默-资源) 仍受库内资产硬保护")
+ok(H3 not in _why, "普通静默种(非资源) 不误伤")
+
+_src_g = (ROOT / "features" / "deletegate.py").read_text()
+ok("== STATE_ONDEMAND" in _src_g and "== ONDEMAND_TASK_ID" in _src_g,
+   "deletegate 源码含 在途点播豁免（STATE_ONDEMAND / ONDEMAND_TASK_ID）")
+
+# ---------------------------------------------------------------- [9] 加种抢跑：缺标签补挂
+print("[9] ★ 15.8.6：账本已挂但 qB 缺「点播」职务标签 → 补挂（治加种抢先于 qB 登记）")
+_PEND = {H1: {"title": "x", "site": SITE}}
+_LED = {H1: {"state": STATE_ONDEMAND, "taken_by": "__ondemand__", "site": SITE,
+             "sub": SUB_RESOURCE}}
+f3 = Fake(pend=dict(_PEND), snap={H1: _bt(["魔流-红豆饭-静默-资源"])}, ledger=dict(_LED))
+n3 = f3._od_assign([H1], site=SITE, sub=SUB_RESOURCE, reason="补挂")
+ok(n3 == 1, f"账本已挂但标签缺 → 补挂（返回 {n3}）")
+_t3 = f3._dl.calls[-1][1]
+ok(tags.tag_for(SITE, STATE_ONDEMAND) in _t3, "补上了 魔流-红豆饭-点播")
+
+f4 = Fake(pend=dict(_PEND),
+          snap={H1: _bt(["魔流-红豆饭-静默-资源", tags.tag_for(SITE, STATE_ONDEMAND)])},
+          ledger=dict(_LED))
+_b4 = len(f4._dl.calls)
+n4 = f4._od_assign([H1], site=SITE, sub=SUB_RESOURCE)
+ok(n4 == 0 and len(f4._dl.calls) == _b4, "标签已在位 → 幂等不动作")
+
+f5 = Fake(pend=dict(_PEND), snap={H1: _bt(["魔流-红豆饭-静默-资源"])}, ledger=dict(_LED))
+rc5 = f5._ondemand_duty_reconcile()
+ok(rc5.get("assigned") == 1, f"reconcile 把「账本挂了但标签缺」纳入补挂（{rc5}）")
 
 print()
 if FAILS:

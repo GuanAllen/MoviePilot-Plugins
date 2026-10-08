@@ -1,6 +1,6 @@
 <script setup>
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import TaskEditorDialog from './TaskEditorDialog.vue'
+import TaskEditorDialog from '../../components/TaskEditorDialog.vue'
 import {
   cloneTask,
   formatBonus,
@@ -24,7 +24,41 @@ import {
   runStatusText,
   taskStateMeta,
   unwrapResponse,
-} from '../utils'
+} from '../../utils'
+import {
+  ratingSourceItems,
+  MF_PAGES,
+  TILE_OPTIONS,
+  MF_SETTINGS_TABS,
+  SITE_REPORT_BUCKETS,
+  SITE_REPORT_TRANSPORT,
+  SITE_REPORT_SILENT_SUBS,
+  SITE_REPORT_ORIGINS,
+  MF_DETAIL_ENTRIES,
+  FLOW_STEPS_BONUS,
+  FLOW_STEPS_BRUSH,
+  MF_TABS,
+  KIND_TEXT,
+  STATE_TEXT,
+  KIND_ICON,
+  EVENT_LEVELS,
+  OPS_KIND_FILTERS,
+  ITEM_SOURCE_TEXT,
+  RESEED_KINDS,
+  TORRENT_STATE_TEXT,
+  TORRENT_TRANSIENT_STATES,
+  TORRENT_PAUSED_STATES,
+  SIGNIN_STATUS_TEXT,
+  SIGNIN_FAIL_STATUS,
+  SIGNIN_ORDER,
+  EXAM_KIND_TEXT,
+  EXAM_KIND_ICON,
+  EXAM_ACTIONABLE,
+  SILENT_SUB_LABEL,
+  TORRENT_ACTION_LABEL,
+  BATCH_LABEL,
+} from './constants'
+import { createApi } from '../../api/request'
 
 const props = defineProps({
   api: { type: Object, default: () => ({}) },
@@ -124,7 +158,7 @@ async function confirmTransfer() {
     const body = transferTarget.value === 'idle'
       ? { mode: 'idle', hashes }
       : { mode: 'handover', target_task_id: transferTarget.value, hashes }
-    const res = await props.api.post(`${pluginBase.value}/tasks/${selectedTask.value.id}/handover`, body)
+    const res = await api.tasks.handover(selectedTask.value.id, body)
     if (res?.success === false) throw new Error(res?.message || '转移失败')
     notify(res?.message || '已转移')
     transferDialog.value = false
@@ -140,10 +174,6 @@ async function confirmTransfer() {
 const selectedHashes = computed(() =>
   (selectedRows.value || []).map(row => row?.hash).filter(Boolean),
 )
-const ratingSourceItems = [
-  { title: '只用 TMDB（默认）', value: 'tmdb' },
-  { title: '豆瓣优先（拿不到回退 TMDB · 易被豆瓣限流）', value: 'douban' },
-]
 const settingsDialog = ref(false)
 const settingsTab = ref('general')
 const settingsPane = ref('form') // 手机端设置：'dir' = 分类目录页 / 'form' = 分类表单页
@@ -300,7 +330,7 @@ async function loadSiteIcon(siteId) {
   if (!id || siteIcons.value[id] !== undefined || siteIconPending.has(id)) return
   siteIconPending.add(id)
   try {
-    const data = unwrapResponse(await props.api.get(`site/icon/${id}`))
+    const data = unwrapResponse(await api.features.siteIcon(id))
     siteIcons.value = { ...siteIcons.value, [id]: (data && data.icon) || '' }
   } catch (err) {
     siteIcons.value = { ...siteIcons.value, [id]: '' }
@@ -310,6 +340,8 @@ async function loadSiteIcon(siteId) {
 }
 
 const pluginBase = computed(() => `plugin/${props.pluginId || 'MagicFlow'}`)
+// P2：接口层（按域分组；函数返回原始响应，调用点自行 unwrapResponse）
+const api = createApi(props.api, props.pluginId)
 const tasks = computed(() => status.value.tasks || [])
 const defaultSavePath = computed(() => (status.value.defaults || {}).save_path || '')
 /** 保存目录候选：所有任务用过的目录（+ 设置里的默认）——“填一次就能选到”。 */
@@ -375,25 +407,6 @@ function taskSwitchSubtitle(task) {
   }
   return site ? `${site} · ${sc} 种` : `${sc} 种`
 }
-// ── ★ 页面注册表（数据驱动，新增功能页只改这个数组，不必动布局）──────────────
-// key 与 open* 处理函数一一对应；后续接入手机端导航 / 底栏 / 更多菜单时统一从这里取。
-// scope='global' = 插件级单例（不按任务配）；'view' = 只读视图。
-// ★ 权责口径见 docs/MODULES.md：全局单例的功能页必须显式标注，避免被当成「任务级」。
-const MF_PAGES = [
-  { key: 'recommend', label: '推荐', icon: 'mdi-movie-star-outline', scope: 'global' },
-  { key: 'exam', label: '新手考核', icon: 'mdi-school-outline', scope: 'global' },
-  { key: 'signin', label: '签到', icon: 'mdi-calendar-check-outline', scope: 'global' },
-  { key: 'cloud', label: '云盘归档', icon: 'mdi-cloud-upload-outline', scope: 'global' },
-  { key: 'douban', label: '豆瓣评分', icon: 'mdi-database-search-outline', scope: 'global' },
-  { key: 'crossseed', label: '跨站取种', icon: 'mdi-swap-horizontal-bold', scope: 'global' },
-  { key: 'claim', label: '认领', icon: 'mdi-seal-variant', scope: 'global' },
-  { key: 'silent', label: '静默池', icon: 'mdi-pool', scope: 'global' },
-  { key: 'sitereport', label: '站点报表', icon: 'mdi-table-large', scope: 'view' },
-  { key: 'hrbills', label: 'H&R账单', icon: 'mdi-file-alert-outline', scope: 'view' },
-  { key: 'ceiling', label: '站点容量', icon: 'mdi-gauge', scope: 'view' },
-  { key: 'ops', label: '操作记录', icon: 'mdi-history', scope: 'view' },
-  { key: 'settings', label: '插件设置', icon: 'mdi-tune-variant', scope: 'global' },
-]
 // 统一分发：新增功能页只改 MF_PAGES + 这里加一行
 function mfOpenPage(page) {
   switch (page.key) {
@@ -413,23 +426,6 @@ function mfOpenPage(page) {
   }
 }
 const opsOpen = ref(false)
-// ★ 顶栏功能磁贴显隐（7.10.1）：纯界面层开关，存「隐藏」白名单（空 = 全部显示）。
-//   功能本体各有各的开关，这里只管「顶栏/手机功能格要不要显示入口」。
-const TILE_OPTIONS = [
-  { key: 'recommend', label: '推荐', icon: 'mdi-movie-star-outline' },
-  { key: 'exam', label: '新手考核', icon: 'mdi-school-outline' },
-  { key: 'signin', label: '签到', icon: 'mdi-calendar-check-outline' },
-  { key: 'cloud', label: '云盘归档', icon: 'mdi-cloud-upload-outline' },
-  { key: 'douban', label: '豆瓣评分', icon: 'mdi-database-search-outline' },
-  { key: 'crossseed', label: '跨站取种', icon: 'mdi-swap-horizontal-bold' },
-  { key: 'claim', label: '认领', icon: 'mdi-seal-variant' },
-  { key: 'silent', label: '静默池', icon: 'mdi-pool' },
-  { key: 'sitereport', label: '站点报表', icon: 'mdi-table-large' },
-  { key: 'hrbills', label: 'H&R账单', icon: 'mdi-file-alert-outline' },
-  { key: 'ondemand', label: '点播', icon: 'mdi-cloud-download-outline' },
-  { key: 'ceiling', label: '站点容量', icon: 'mdi-gauge' },
-  { key: 'ops', label: '操作记录', icon: 'mdi-history' },
-]
 // 已保存的隐藏集合（来自 /status）→ 顶栏/菜单/功能格据此显隐。保存后 loadStatus 刷新。
 const hiddenTiles = computed(() => (Array.isArray(status.value.hidden_tiles) ? status.value.hidden_tiles : []))
 function tileVisible(key) { return !hiddenTiles.value.includes(key) }
@@ -454,24 +450,6 @@ function openOperations(scope = 'all') {
   else if (selectedTaskId.value) loadOperations(selectedTaskId.value)
   else operationData.value = { operations: [], total: 0 }
 }
-// 设置页目录（手机端：标签栏 → 目录列表；桌面端仍用标签栏）
-const MF_SETTINGS_TABS = [
-  { key: 'general', label: '常规', icon: 'mdi-cog-outline' },
-  { key: 'downloader', label: '下载与目录', icon: 'mdi-download-network-outline' },
-  { key: 'template', label: '默认任务模板', icon: 'mdi-file-document-outline' },
-  { key: 'iyuu', label: 'IYUU 辅种', icon: 'mdi-sync' },
-  { key: 'reseed', label: '全站辅种', icon: 'mdi-content-duplicate' },
-  { key: 'fallback', label: '元数据兜底', icon: 'mdi-database-search-outline' },
-  { key: 'cloud', label: '云盘归档', icon: 'mdi-cloud-upload-outline' },
-  { key: 'exam', label: '考核', icon: 'mdi-school-outline' },
-  { key: 'signin', label: '签到', icon: 'mdi-calendar-check-outline' },
-  { key: 'live', label: '站点监控', icon: 'mdi-monitor-eye' },
-  { key: 'recommend', label: '推荐', icon: 'mdi-movie-star-outline' },
-  { key: 'crossseed', label: '跨站', icon: 'mdi-swap-horizontal-bold' },
-  { key: 'claim', label: '认领', icon: 'mdi-seal-variant' },
-  { key: 'rules', label: '站点规则', icon: 'mdi-shield-check-outline' },
-  { key: 'tags', label: '标签管理', icon: 'mdi-tag-multiple-outline' },
-]
 
 // ── 手机端首页（任务列表）导航状态 ────────────────────────────────────────
 // 桌面端无需该状态：相关显隐全部由 @media (max-width: 959px) 的 CSS 控制。
@@ -593,30 +571,6 @@ const siteReportItems = computed(() => {
   )
 })
 const siteReportSummary = computed(() => siteReport.value.summary || {})
-const SITE_REPORT_BUCKETS = [
-  { key: '刷流', color: 'indigo' },
-  { key: '魔力', color: 'purple' },
-  { key: '保种', color: 'deep-orange' },
-  { key: '静默', color: 'blue-grey' },
-  { key: '补源', color: 'teal' },
-  { key: '外部', color: 'grey' },
-]
-const SITE_REPORT_TRANSPORT = [
-  { key: '未完成', color: 'amber' },
-  { key: '暂停', color: 'grey' },
-  { key: '做种中', color: 'success' },
-]
-const SITE_REPORT_SILENT_SUBS = [
-  { key: '新', color: 'info' },
-  { key: '资源', color: 'success' },
-  { key: '普通', color: 'blue-grey' },
-]
-// ★ 15.2.0 静默桶「出身轴」：池（种子账本）/ 辅种副本（mf_reseed）/ 无主
-const SITE_REPORT_ORIGINS = [
-  { key: '池', color: 'blue-grey' },
-  { key: '辅种副本', color: 'teal' },
-  { key: '无主', color: 'warning' },
-]
 function siteReportBucketColor(b) {
   const hit = SITE_REPORT_BUCKETS.find(x => x.key === b)
   return hit ? hit.color : 'grey'
@@ -647,7 +601,7 @@ async function loadSiteReport(liveOverride) {
     const q = new URLSearchParams()
     if (siteReportSite.value) q.set('site', siteReportSite.value)
     if (liveOverride === true || (liveOverride === undefined && siteReportLive.value)) q.set('live', '1')
-    const data = unwrapResponse(await props.api.get(`${pluginBase.value}/site/seeds?${q.toString()}`)) || {}
+    const data = unwrapResponse(await api.poolstats.siteSeeds(q.toString())) || {}
     siteReport.value = data
     siteReportFilter.value = ''
     siteReportTransport.value = ''
@@ -692,7 +646,7 @@ async function loadHrBills(liveOverride) {
   try {
     const q = new URLSearchParams()
     if (liveOverride === true || (liveOverride === undefined && hrBillsLive.value)) q.set('live', '1')
-    const data = unwrapResponse(await props.api.get(`${pluginBase.value}/hr/bills?${q.toString()}`)) || {}
+    const data = unwrapResponse(await api.poolstats.hrBills(q.toString())) || {}
     hrBills.value = data
   } catch (e) {
     error.value = `H&R 账单加载失败：${e}`
@@ -723,13 +677,6 @@ function mobileRowNum(t) {
   if (t.site_bonus_ok && t.site_bonus_per_hour != null) return formatBonus(t.site_bonus_per_hour)
   return ''
 }
-// ── 手机端任务详情：紧凑块（三个数 + 策略一行 + 次级入口）──────────────
-const MF_DETAIL_ENTRIES = [
-  { key: 'diagnostics', label: '运行诊断', icon: 'mdi-stethoscope' },
-  { key: 'pool', label: '种子池', icon: 'mdi-seed-outline' },
-  { key: 'config', label: '任务配置', icon: 'mdi-tune-variant' },
-  { key: 'ops', label: '操作记录', icon: 'mdi-history', action: 'ops' },
-]
 function mobileDetailEntry(entry) {
   const e = typeof entry === 'string' ? { key: entry } : entry
   if (e.action === 'ops') return openOperations('task')
@@ -824,7 +771,7 @@ const decisionCapText = computed(() => {
 const trendSeries = ref({})
 async function loadTrend(taskId) {
   try {
-    const data = unwrapResponse(await props.api.get(`${pluginBase.value}/trend?scope=all&hours=72`)) || {}
+    const data = unwrapResponse(await api.tasks.trend()) || {}
     trendSeries.value = data.series || {}
   } catch (err) {
     trendSeries.value = {}
@@ -882,30 +829,8 @@ const candidateRawTotal = computed(() => {
   return (candidateData.value.candidates || []).length + rejected
 })
 
-// 运行诊断流程链（v5 阶段）—— 骨架五阶段两模式共用，但每阶段实做不同，文案按类型分显
-const FLOW_STEPS_BONUS = [
-  { key: 'entry', label: '入口检查' },
-  { key: 'fetch', label: '抓取候选' },
-  { key: 'wash', label: '洗池过滤' },
-  { key: 'classify', label: '魔力排序' },
-  { key: 'process', label: '保种入库' },
-]
-const FLOW_STEPS_BRUSH = [
-  { key: 'entry', label: '入口检查' },
-  { key: 'fetch', label: '抓取候选' },
-  { key: 'wash', label: '免费筛选' },
-  { key: 'classify', label: '下载人数排序' },
-  { key: 'process', label: '复用·入库' },
-]
 const flowSteps = computed(() => (taskIsBrush.value ? FLOW_STEPS_BRUSH : FLOW_STEPS_BONUS))
 
-// 工作台标签（预览图：分段式标签卡）
-const MF_TABS = [
-  { value: 'overview', label: '任务概览' },
-  { value: 'diagnostics', label: '运行诊断' },
-  { value: 'pool', label: '种子池' },
-  { value: 'config', label: '任务配置' },
-]
 const flowNodes = computed(() => {
   const phase = detail.value?.last_phase || ''
   const active = !!detail.value?.run_active
@@ -959,27 +884,6 @@ function notify(message, color = 'success') {
   }
 }
 
-const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reseed: '辅种', reuse: '存量复用(旧)', crossseed: '跨站取种(旧)', swap: '换种(旧)', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止', state: '运行状态', tag: '标签变更', fallback: '元数据兜底', cloud: '云盘归档' }
-const STATE_TEXT = { submitting: '提交中', accepted: '已受理', completed: '已完成', failed: '失败' }
-const KIND_ICON = {
-  run: 'mdi-play-circle-outline',
-  selection: 'mdi-download-outline',
-  deletion: 'mdi-delete-outline',
-  reseed: 'mdi-content-duplicate',
-  reuse: 'mdi-content-duplicate',
-  swap: 'mdi-swap-horizontal-circle-outline',
-  protection: 'mdi-shield-check-outline',
-  unprotection: 'mdi-shield-off-outline',
-  pause: 'mdi-pause-circle-outline',
-  resume: 'mdi-play-circle-outline',
-  recheck: 'mdi-sync',
-  goal: 'mdi-flag-checkered',
-  state: 'mdi-power',
-  tag: 'mdi-tag-outline',
-  fallback: 'mdi-file-xml-box',
-  cloud: 'mdi-cloud-upload-outline',
-}
-
 function operationKindText(kind) {
   return KIND_TEXT[kind] || kind
 }
@@ -1009,22 +913,16 @@ const expandedOps = ref({})
 const eventRows = ref([])
 const eventsLoading = ref(false)
 const eventLevel = ref('')
-const EVENT_LEVELS = [
-  { value: '', label: '全部级别' },
-  { value: 'error', label: '仅错误' },
-  { value: 'warning', label: '警告以上' },
-  { value: 'info', label: '仅普通' },
-]
 async function loadEventRows() {
   eventsLoading.value = true
   try {
     const q = ['limit=200', 'min_level='].join('&')
-    let url = `${pluginBase.value}/events?${q}`
-    if (eventLevel.value === 'error') url += '&level=error'
-    if (eventLevel.value === 'warning') url += '&min_level=warning'
-    if (eventLevel.value === 'info') url += '&level=info'
-    if (opsScope.value === 'task' && selectedTaskId.value) url += `&task_id=${encodeURIComponent(selectedTaskId.value)}`
-    const data = unwrapResponse(await props.api.get(url)) || {}
+    let qs = `${q}`
+    if (eventLevel.value === 'error') qs += '&level=error'
+    if (eventLevel.value === 'warning') qs += '&min_level=warning'
+    if (eventLevel.value === 'info') qs += '&level=info'
+    if (opsScope.value === 'task' && selectedTaskId.value) qs += `&task_id=${encodeURIComponent(selectedTaskId.value)}`
+    const data = unwrapResponse(await api.pool.events(qs)) || {}
     eventRows.value = (data.events || []).slice().reverse()
   } catch (err) {
     eventRows.value = []
@@ -1050,16 +948,6 @@ function opDetailItems(record) {
 
 /** ★ 操作记录按类型筛选（Master 2026-10-01 18:10）。'' = 全部。 */
 const opsKind = ref('')
-const OPS_KIND_FILTERS = [
-  { value: '', label: '全部', icon: 'mdi-format-list-bulleted' },
-  { value: 'deletion', label: '删种清理', icon: 'mdi-delete-outline' },
-  { value: 'selection', label: '选种加入', icon: 'mdi-download-outline' },
-  { value: 'reseed', label: '辅种', icon: 'mdi-content-duplicate' },
-  { value: 'protection', label: '手动保留', icon: 'mdi-shield-check-outline' },
-  { value: 'unprotection', label: '取消保留', icon: 'mdi-shield-off-outline' },
-  { value: 'tag', label: '标签变更', icon: 'mdi-tag-outline' },
-  { value: 'run', label: '执行', icon: 'mdi-play-circle-outline' },
-]
 const opsKindItems = computed(() => {
   // ★ 下拉里只放短标签（不带条数）：手机端窄，带条数会被省略号截断
   return OPS_KIND_FILTERS.map((k) => ({ value: k.value, label: k.label }))
@@ -1089,13 +977,6 @@ function toggleOpDetail(opId) {
 }
 
 /** 明细行的短标签（来源/动作）。 */
-const ITEM_SOURCE_TEXT = {
-  add: '新增', 'add-fail': '失败', reuse: '复用', 'reuse-fail': '辅种失败',
-  adopt: '纳管', watchdog: '看门狗', run: '汇总',
-  // ★ 清理类（Master 要求「清理逻辑必须有操作记录 + 详情」）
-  missing: '空壳种', silent: '静默池', live: '站点监控', crossseed: '跨站',
-  selection: '选种', deletion: '删种', tag: '标签', protection: '保留', unprotection: '取消保留',
-}
 
 function itemSourceText(src) {
   return ITEM_SOURCE_TEXT[src] || ''
@@ -1106,7 +987,6 @@ const opsView = ref('flow') // 'flow'=全部流水 · 'reseed'=辅种流水 · '
 watch(opsView, (v) => {
   if (v === 'timeline') loadEventRows()
 })
-const RESEED_KINDS = ['reseed', 'reuse', 'crossseed']
 function isReseedRecord(record) {
   return !!record && RESEED_KINDS.includes(record.kind)
 }
@@ -1154,13 +1034,6 @@ function operationSummary(record) {
   return count ? `${count} 个条目` : ''
 }
 
-const TORRENT_STATE_TEXT = {
-  uploading: '做种中', stalledup: '做种中·无流量', forcedup: '做种中', queuedup: '排队做种',
-  downloading: '下载中', forceddl: '下载中', queueddl: '排队下载', metadl: '获取元数据', checkingdl: '校验中',
-  stalleddl: '下载停滞', pausedup: '已暂停', pauseddl: '已暂停', stoppedup: '已停止', stoppeddl: '已停止',
-  error: '出错', missingfiles: '文件缺失', unknown: '未知',
-}
-
 function stateLabel(state) {
   const key = String(state || '').toLowerCase()
   return TORRENT_STATE_TEXT[key] || (key ? state : '托管中')
@@ -1174,19 +1047,6 @@ function stateColor(state) {
   if (['error', 'missingfiles'].includes(key)) return 'error'
   return 'grey'
 }
-
-// 托管种子状态文本：做种 / 下载 X% / 暂停 / 整理中（参考 BrushFlow）
-// 注意：progress=100 不等于「做种中」——已暂停/停止、整理中、校验中的种子要显示真实状态，
-// 否则会出现「状态列写作种中、筛选却归到已暂停」的口径不一致。
-const TORRENT_TRANSIENT_STATES = {
-  moving: '整理中',
-  allocating: '分配空间',
-  checkingup: '校验中',
-  checkingdl: '校验中',
-  checkingresumedata: '校验中',
-  forcedmetadl: '获取元数据',
-}
-const TORRENT_PAUSED_STATES = ['pausedup', 'pauseddl', 'stoppedup', 'stoppeddl']
 
 function torrentStateText(item) {
   const key = String(item?.state || '').toLowerCase()
@@ -1253,7 +1113,7 @@ const torrentStatusOptions = computed(() => {
 async function loadStatus() {
   loading.value = true
   try {
-    status.value = unwrapResponse(await props.api.get(`${pluginBase.value}/status`)) || status.value
+    status.value = unwrapResponse(await api.tasks.status()) || status.value
     settingsDraft.value = normalizeSettings({
       enabled: status.value.enabled,
       show_sidebar_nav: status.value.show_sidebar_nav,
@@ -1389,7 +1249,7 @@ function scheduleWarmingRetry() {
 // 加载任务详情统计。
 async function loadDetail(taskId) {
   try {
-    detail.value = unwrapResponse(await props.api.get(`${pluginBase.value}/tasks/${taskId}`))
+    detail.value = unwrapResponse(await api.tasks.detail(taskId))
   } catch (err) {
     error.value = err?.message || String(err)
   }
@@ -1401,7 +1261,7 @@ async function loadDetail(taskId) {
 async function loadBonus(taskId, { silent = false } = {}) {
   if (!silent) taskLoading.value = true
   try {
-    const data = unwrapResponse(await props.api.get(`${pluginBase.value}/tasks/${taskId}/bonus`)) || bonusData.value
+    const data = unwrapResponse(await api.tasks.bonus(taskId)) || bonusData.value
     bonusData.value = data
     bonusCache[taskId] = data
     bonusLoadedFor.value = taskId
@@ -1418,7 +1278,7 @@ async function backfillPages() {
   if (!taskId || backfilling.value) return
   backfilling.value = true
   try {
-    const data = unwrapResponse(await props.api.post(`${pluginBase.value}/tasks/${taskId}/backfill-pages`)) || {}
+    const data = unwrapResponse(await api.tasks.backfillPages(taskId)) || {}
     notify(`已回填 ${data.resolved || 0} 个详情页链接${data.unresolved ? `（${data.unresolved} 个未匹配）` : ''}`)
   } catch (err) {
     notify(err?.response?.data?.message || err?.message || '回填失败', 'error')
@@ -1431,7 +1291,7 @@ async function backfillPages() {
 async function loadCandidates(taskId) {
   taskLoading.value = true
   try {
-    candidateData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/tasks/${taskId}/candidates`)) || {
+    candidateData.value = unwrapResponse(await api.tasks.candidates(taskId)) || {
       candidates: [],
       total: 0,
       reason_counts: {},
@@ -1456,7 +1316,7 @@ function opsQuery() {
 async function loadOperations(taskId) {
   try {
     operationData.value = unwrapResponse(
-      await props.api.get(`${pluginBase.value}/tasks/${taskId}/operations${opsQuery()}`),
+      await api.tasks.taskOperations(taskId, opsQuery()),
     ) || {
       operations: [],
       total: 0,
@@ -1470,7 +1330,7 @@ async function loadOperations(taskId) {
 async function loadOperationsAll() {
   opsLoadingAll.value = true
   try {
-    operationData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/operations${opsQuery()}`)) || {
+    operationData.value = unwrapResponse(await api.pool.operations(opsQuery())) || {
       operations: [],
       total: 0,
     }
@@ -1553,7 +1413,7 @@ const pendingCount = computed(() => (recommendData.value.items || []).filter(i =
 
 async function loadRecommend() {
   try {
-    recommendData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/recommend`)) || { items: [], total: 0 }
+    recommendData.value = unwrapResponse(await api.features.recommend()) || { items: [], total: 0 }
   } catch (err) {
     error.value = err?.message || String(err)
   }
@@ -1561,7 +1421,7 @@ async function loadRecommend() {
 
 async function loadCrossseed() {
   try {
-    crossseedData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/crossseed`))
+    crossseedData.value = unwrapResponse(await api.features.crossseed())
       || { count: 0, pending: [], enabled_tasks: [] }
   } catch (err) {
     // 跨站取种是增强信息，失败不打断界面
@@ -1586,7 +1446,7 @@ async function loadMusicPlan() {
     const params = new URLSearchParams()
     params.set('text', musicText.value)
     if (musicSites.value && musicSites.value.trim()) params.set('sites', musicSites.value)
-    const data = unwrapResponse(await props.api.get(`${pluginBase.value}/agent/music/plan?${params.toString()}`))
+    const data = unwrapResponse(await api.features.musicPlan(params.toString()))
       || { items: [] }
     musicResult.value = data
   } catch (err) {
@@ -1607,7 +1467,7 @@ async function runMusicGrab() {
     if (musicSites.value && musicSites.value.trim()) params.set('sites', musicSites.value)
     params.set('confirm', '1')
     if (musicSavePath.value && musicSavePath.value.trim()) params.set('save_path', musicSavePath.value)
-    const data = unwrapResponse(await props.api.post(`${pluginBase.value}/agent/music/grab?${params.toString()}`, {}))
+    const data = unwrapResponse(await api.features.musicGrab(params.toString()))
       || {}
     musicResult.value = data.plan || musicResult.value
     musicGrabReport.value = data
@@ -1634,7 +1494,7 @@ const rescueSkippedSites = computed(() => (Array.isArray(rescueData.value?.skipp
 
 async function loadRescue() {
   try {
-    rescueData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/rescue?action=scan`)) || null
+    rescueData.value = unwrapResponse(await api.features.rescueScan()) || null
   } catch (err) {
     // 补源是增强信息，失败不打断界面
   }
@@ -1664,7 +1524,7 @@ async function runRescueApply(confirm) {
     const params = [`action=apply`, `hashes=${encodeURIComponent(hashes.join(','))}`]
     if (confirm) params.push('confirm=1')
     else params.push('dry_run=1')
-    const res = unwrapResponse(await props.api.post(`${pluginBase.value}/rescue?${params.join('&')}`, {})) || {}
+    const res = unwrapResponse(await api.features.rescueRun(params.join('&'))) || {}
     if (confirm) {
       notify(`死种补源：已补 ${res.added ?? 0} 个副本`)
     } else {
@@ -1691,7 +1551,7 @@ const reseedSiteOptions = computed(() =>
 )
 async function loadReseed() {
   try {
-    reseedState.value = unwrapResponse(await props.api.get(`${pluginBase.value}/reseed`)) || null
+    reseedState.value = unwrapResponse(await api.pool.reseed()) || null
   } catch (err) {
     // 全站辅种是增强信息，失败不打断界面
   }
@@ -1704,7 +1564,7 @@ async function runReseed(forceReal = false) {
   reseedRunning.value = true
   try {
     const dry = forceReal ? 0 : (settingsDraft.value.reseed_dry ? 1 : 0)
-    const rep = unwrapResponse(await props.api.post(`${pluginBase.value}/reseed/run?dry=${dry}`, {})) || {}
+    const rep = unwrapResponse(await api.pool.reseedRun(dry)) || {}
     const parts = []
     if (rep.plan != null) parts.push(`计划 ${rep.plan}`)
     if (rep.would) parts.push(`可挂 ${rep.would}`)
@@ -1739,7 +1599,7 @@ const doubanCrawlProgress = computed(() => {
 
 async function loadDoubanService() {
   try {
-    doubanServiceData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/douban_service`))
+    doubanServiceData.value = unwrapResponse(await api.features.doubanService())
       || { ok: false, records: 0, cache: {}, crawl: {} }
   } catch (err) {
     // 豆瓣服务是增强信息，失败不打断界面
@@ -1754,7 +1614,7 @@ function openDoubanService() {
 async function doubanCrawlAction(action) {
   doubanServiceActing.value = action
   try {
-    const res = unwrapResponse(await props.api.post(`${pluginBase.value}/douban_service?action=${action}`, {}))
+    const res = unwrapResponse(await api.features.doubanAction(action))
     if (res) doubanServiceData.value = res
   } catch (err) {
     // 静默
@@ -1787,7 +1647,7 @@ const healthLabel = computed(() => {
 })
 async function loadHealth() {
   try {
-    healthData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/health`))
+    healthData.value = unwrapResponse(await api.pool.health())
       || { level: 'ok', ok: true, counts: {}, issues: [] }
   } catch (err) {
     // 自检是增强信息，失败不打断界面
@@ -1860,7 +1720,7 @@ async function runOndemand(apply, pick = '') {
     const _sites = (Array.isArray(ondemandSiteIds.value) ? ondemandSiteIds.value : []).map(String).filter(Boolean)
     if (_sites.length) params.push(`site_ids=${encodeURIComponent(_sites.join(','))}`)
     if (pick) params.push(`pick=${encodeURIComponent(pick)}`)
-    const res = unwrapResponse(await props.api.post(`${pluginBase.value}/ondemand?${params.join('&')}`, {}))
+    const res = unwrapResponse(await api.features.ondemandSearch(params.join('&')))
     if (res) ondemandResult.value = res
     if (apply) loadOndemandItems()   // ★ 15.4.0：下完马上刷新清单（进度/历史可见）
   } catch (err) {
@@ -1880,7 +1740,7 @@ const odHistory = computed(() => (Array.isArray(ondemandItems.value?.history) ? 
 async function loadOndemandItems() {
   ondemandItemsBusy.value = true
   try {
-    const res = unwrapResponse(await props.api.get(`${pluginBase.value}/ondemand/items?limit=50`))
+    const res = unwrapResponse(await api.features.ondemandItems())
     if (res) ondemandItems.value = res
   } catch (err) {
     // 清单是增强信息，失败不打断搜索/下载主流程
@@ -1950,8 +1810,7 @@ async function actOndemand(row, action) {
   odMsg.value = ''
   odActing.value = `${h}:${action}`
   try {
-    const res = unwrapResponse(await props.api.post(
-      `${pluginBase.value}/ondemand/act?hash=${encodeURIComponent(h)}&action=${encodeURIComponent(action)}`, {}))
+    const res = unwrapResponse(await api.features.ondemandAct(h, action))
     odMsg.value = res?.message || '已执行'
   } catch (err) {
     odMsg.value = `❌ ${err?.message || String(err)}`
@@ -2030,9 +1889,7 @@ async function dropCrossseed(h) {
   if (!h) return
   crossseedActing.value = `drop:${h}`
   try {
-    const res = unwrapResponse(await props.api.post(
-      `${pluginBase.value}/crossseed?action=drop&hash=${encodeURIComponent(h)}`, {}
-    )) || {}
+    const res = unwrapResponse(await api.features.crossseedDrop(h)) || {}
     notify(res.message || '已删除跨站种', 'success')
     await loadCrossseed()
   } catch (err) {
@@ -2045,8 +1902,7 @@ async function dropCrossseed(h) {
 async function unbanCrossseed(domain = '') {
   crossseedActing.value = `unban:${domain}`
   try {
-    const q = domain ? `?action=unban&site=${encodeURIComponent(domain)}` : '?action=unban'
-    const res = unwrapResponse(await props.api.post(`${pluginBase.value}/crossseed${q}`, {})) || {}
+    const res = unwrapResponse(await api.features.crossseedUnban(domain)) || {}
     notify(res.message || '已解除来源站黑名单', 'success')
     await loadCrossseed()
   } catch (err) {
@@ -2059,7 +1915,7 @@ async function unbanCrossseed(domain = '') {
 async function runCrossseedGuard() {
   crossseedActing.value = 'guard'
   try {
-    const res = unwrapResponse(await props.api.post(`${pluginBase.value}/crossseed?action=guard`, {})) || {}
+    const res = unwrapResponse(await api.features.crossseedGuard()) || {}
     if (res) crossseedData.value = res
     notify(res.message || '流量兜底核对完成', 'success')
   } catch (err) {
@@ -2072,7 +1928,7 @@ async function runCrossseedGuard() {
 async function clearCrossseed() {
   crossseedActing.value = 'clear'
   try {
-    const res = unwrapResponse(await props.api.post(`${pluginBase.value}/crossseed?action=clear`, {})) || {}
+    const res = unwrapResponse(await api.features.crossseedClear()) || {}
     notify(res.message || '已清空取种台账', 'success')
     await loadCrossseed()
   } catch (err) {
@@ -2087,7 +1943,7 @@ async function loadLive() {
   const sid = Number(selectedTask.value?.site_id || 0)
   liveLoading.value = true
   try {
-    liveState.value = unwrapResponse(await props.api.get(`${pluginBase.value}/live${sid ? `?site_id=${sid}` : ''}`)) || liveState.value
+    liveState.value = unwrapResponse(await api.poolstats.live(sid)) || liveState.value
   } catch (err) {
     // 站点实时数据是增强信息，失败不打断界面
   } finally {
@@ -2142,11 +1998,11 @@ async function runSigninNow(kind = 'sign') {
   try {
     // ★ 插件 API 的 POST 参数只从 query 绑定（body 不生效）→ 参数拼在 URL 上
     const query = new URLSearchParams({ kind: String(kind) }).toString()
-    const res = unwrapResponse(await props.api.post(`${pluginBase.value}/signin/run?${query}`, {})) || {}
+    const res = unwrapResponse(await api.features.signinRun(query)) || {}
     const s = res.summary || {}
     notify(`${kind === 'sign' ? '签到' : '登录'}完成：成功 ${s.ok || 0} / 失败 ${s.fail || 0}`)
     // 只刷新 status（不重载 settingsDraft，避免把正在编辑的设置冲掉）
-    status.value = unwrapResponse(await props.api.get(`${pluginBase.value}/status`)) || status.value
+    status.value = unwrapResponse(await api.tasks.status()) || status.value
     if (signinOpen.value) loadSigninReport()
   } catch (err) {
     notify(`执行失败：${err?.message || err}`, 'error')
@@ -2161,7 +2017,7 @@ const signinReportLoading = ref(false)
 async function loadSigninReport() {
   signinReportLoading.value = true
   try {
-    signinReport.value = unwrapResponse(await props.api.get(`${pluginBase.value}/signin?days=7`)) || signinReport.value
+    signinReport.value = unwrapResponse(await api.features.signinReport()) || signinReport.value
   } catch (err) {
     notify(`签到报表读取失败：${err?.message || err}`, 'error')
   } finally {
@@ -2175,9 +2031,6 @@ function openSignin() {
 // ---------------- 报表（按「几十个站」的规模设计） ----------------
 const signinFilter = ref('all')
 const signinSearch = ref('')
-const SIGNIN_STATUS_TEXT = { ok: '成功', fail: '都失败', signfail: '签到失败', loginfail: '登录失败', pending: '待执行', skip: '跳过', none: '无记录' }
-// 失败类（三种颜色）：signfail=签到✗登录✓（红） / loginfail=签到✓登录✗（橙） / fail=都✗（深红）
-const SIGNIN_FAIL_STATUS = ['fail', 'signfail', 'loginfail']
 function signinStatusText(s) {
   return SIGNIN_STATUS_TEXT[s] || s
 }
@@ -2242,7 +2095,6 @@ const signinFilterItems = computed(() => {
     { value: 'ok', label: `成功 ${c.ok}`, color: 'success' },
   ]
 })
-const SIGNIN_ORDER = { fail: 0, signfail: 1, loginfail: 2, pending: 3, ok: 4, skip: 5 }
 const signinTodayList = computed(() => {
   const ord = SIGNIN_ORDER
   const q = String(signinSearch.value || '').trim().toLowerCase()
@@ -2355,7 +2207,7 @@ async function actRecommend(hash, action, label) {
   if (!hash || recommendActing.value) return
   recommendActing.value = hash + action
   try {
-    const data = unwrapResponse(await props.api.post(`${pluginBase.value}/recommend/${hash}/${action}`, {})) || {}
+    const data = unwrapResponse(await api.features.recommendAct(hash, action)) || {}
     notify(data.message || `${label}完成`)
     await loadRecommend()
   } catch (err) {
@@ -2398,7 +2250,7 @@ async function batchImportRecommend(useAll) {
   recBatchActing.value = true
   try {
     const qs = useAll ? 'all=1' : `hashes=${encodeURIComponent(list.join(','))}`
-    const data = unwrapResponse(await props.api.post(`${pluginBase.value}/recommend/batch_import?${qs}`, {})) || {}
+    const data = unwrapResponse(await api.features.recommendBatchImport(qs)) || {}
     notify(data.message || '批量入库完成')
     recSelected.value = {}
     await loadRecommend()
@@ -2436,16 +2288,6 @@ const examUrgentWeek = computed(() => examRows.value.filter(r => Number(((r.exam
 const examPendingItems = computed(() =>
   examRows.value.reduce((n, r) => n + (((r.exam || {}).items || []).filter(i => !i.pass).length), 0)
 )
-const EXAM_KIND_TEXT = { upload: '刷上传', download: '下载考核', bonus: '攒魔力', hold: '保持做种', info: '下载考核' }
-const EXAM_KIND_ICON = {
-  upload: 'mdi-upload',
-  download: 'mdi-download',
-  bonus: 'mdi-star-four-points-outline',
-  hold: 'mdi-pause-circle-outline',
-  info: 'mdi-download',
-}
-// ★ 可一键起任务的只有「刷上传 / 攒魔力」；下载类我们不做（Master 2026-09-30），只作提示
-const EXAM_ACTIONABLE = ['upload', 'bonus']
 function examDaysShort(row) {
   const d = Number(((row || {}).exam || {}).days_left)
   if (!isFinite(d)) return '—'
@@ -2534,7 +2376,7 @@ function examActions(row) {
 }
 async function loadExam() {
   try {
-    examData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/exam`)) || examData.value
+    examData.value = unwrapResponse(await api.features.exam()) || examData.value
   } catch (err) {
     // 考核是增强信息，失败不打断界面
   }
@@ -2576,11 +2418,11 @@ async function examConfirmRun() {
   try {
     // ★ 插件 API 的 POST 参数只在 query 绑定
     const q = new URLSearchParams({ site_id: String(ctx.row.site_id), kind: String(ctx.kind), confirm: 'true' }).toString()
-    const res = unwrapResponse(await props.api.post(`${pluginBase.value}/exam/act?${q}`, {})) || {}
+    const res = unwrapResponse(await api.features.examAct(q)) || {}
     notify(res.message || '已执行')
     examConfirm.value = null
     await loadExam()
-    status.value = unwrapResponse(await props.api.get(`${pluginBase.value}/status`)) || status.value
+    status.value = unwrapResponse(await api.tasks.status()) || status.value
   } catch (err) {
     notify(`执行失败：${err?.message || err}`, 'error')
   } finally {
@@ -2616,7 +2458,7 @@ const silentItems = computed(() => {
 async function loadSilent() {
   silentLoading.value = true
   try {
-    silentData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/silent/pool`)) || silentData.value
+    silentData.value = unwrapResponse(await api.poolstats.silentPool()) || silentData.value
   } catch (err) {
     notify(`读取静默池失败：${err?.message || err}`, 'error')
   } finally {
@@ -2638,7 +2480,6 @@ function silentHrText(it) {
   if (rem === null || rem === undefined) return it?.hr ? 'H&R 中' : ''
   return `剩 ${formatRemain(rem)}`
 }
-const SILENT_SUB_LABEL = { 新: '静默-新', 资源: '静默-资源', 普通: '静默-普通' }
 function silentSubLabel(sub) { return SILENT_SUB_LABEL[String(sub || '')] || `静默-${sub || '?'}` }
 
 // ── 静默不变量收敛（★ 12.7.1）：账本静默但 qB 没停 → 补 pause（只 pause，不删种、不动文件）──
@@ -2653,9 +2494,7 @@ const tagReconPending = ref(0)
 async function runTagReconcile(confirm = false) {
   tagReconLoading.value = true
   try {
-    const url = `${pluginBase.value}/tags?action=${confirm ? 'reconcile_apply' : 'reconcile'}` +
-      `${confirm ? '&confirm=1&adopt_reseed=1' : ''}`
-    const res = unwrapResponse(await props.api.get(url)) || {}
+    const res = unwrapResponse(await api.settings.tagReconcile(confirm)) || {}
     const pend = res.items_total ?? (res.items || []).length
     tagReconPending.value = pend
     const drift = res.drift_total ?? (res.drift || []).length
@@ -2680,8 +2519,7 @@ async function runTagReconcile(confirm = false) {
 async function loadEnforce(confirm = 0) {
   enforceLoading.value = true
   try {
-    const url = `${pluginBase.value}/silent/enforce?confirm=${confirm ? 1 : 0}`
-    const res = unwrapResponse(await props.api.get(url)) || {}
+    const res = unwrapResponse(await api.poolstats.silentEnforce(confirm)) || {}
     enforceData.value = res
     notify(res.message || (confirm ? '已补 pause' : '干跑完成'))
     if (confirm) loadSilent()
@@ -2723,7 +2561,7 @@ async function loadClaim() {
   claimLoading.value = true
   try {
     const q = claimSiteFilter.value ? `?site_id=${claimSiteFilter.value}` : ''
-    claimData.value = unwrapResponse(await props.api.get(`${pluginBase.value}/claim${q}`)) || claimData.value
+    claimData.value = unwrapResponse(await api.features.claim(q)) || claimData.value
   } catch (err) {
     notify(`读取认领状态失败：${err?.message || err}`, 'error')
   } finally {
@@ -2750,7 +2588,7 @@ async function claimScanRun() {
   if (claimActing.value) return
   claimActing.value = 'run'
   try {
-    const res = unwrapResponse(await props.api.post(`${pluginBase.value}/claim/run?dry=1`, {})) || {}
+    const res = unwrapResponse(await api.features.claimRun()) || {}
     notify(res.message || '已扫描')
     await loadClaim()
   } catch (err) {
@@ -2771,15 +2609,15 @@ async function claimConfirmRun() {
     let url = ''
     if (ctx.kind === 'batch') {
       const q = new URLSearchParams({ write: '1', confirm: '1' }).toString()
-      url = `${pluginBase.value}/claim/run?${q}`
+      url = `claim/run?${q}`
     } else if (ctx.kind === 'do') {
       const q = new URLSearchParams({ site_id: String(row.site_id), hash: String(row.hash), confirm: '1' }).toString()
-      url = `${pluginBase.value}/claim/do?${q}`
+      url = `claim/do?${q}`
     } else {
       const q = new URLSearchParams({ site_id: String(row.site_id), hash: String(row.hash), confirm: '1' }).toString()
-      url = `${pluginBase.value}/claim/abandon?${q}`
+      url = `claim/abandon?${q}`
     }
-    const res = unwrapResponse(await props.api.post(url, {})) || {}
+    const res = unwrapResponse(await api.post(url, {})) || {}
     notify(res.message || '已执行', res.success === false ? 'error' : undefined)
     claimConfirm.value = null
     await loadClaim()
@@ -2831,7 +2669,7 @@ async function runOperation() {
   const taskId = selectedTask.value.id
   saving.value = true
   try {
-    unwrapResponse(await props.api.post(`${pluginBase.value}/tasks/${taskId}/run`, {}))
+    unwrapResponse(await api.tasks.run(taskId))
     notify('已提交执行请求，稍候刷新结果')
     emit('action')
     window.setTimeout(() => loadStatus(), 1500)
@@ -2856,7 +2694,7 @@ async function setRunMode(mode) {
   saving.value = true
   try {
     unwrapResponse(
-      await props.api.post(`${pluginBase.value}/tasks/${selectedTask.value.id}/state`, { mode: target }),
+      await api.tasks.setState(selectedTask.value.id, target),
     )
     notify(`运行状态已切换为「${runModeMeta(target).text}」`)
     await loadStatus()
@@ -2887,10 +2725,10 @@ async function saveTask(payload) {
   try {
     const normalized = normalizeTask(payload)
     if (normalized.id) {
-      unwrapResponse(await props.api.put(`${pluginBase.value}/tasks/${normalized.id}`, normalized))
+      unwrapResponse(await api.tasks.update(normalized.id, normalized))
     } else {
       delete normalized.id
-      unwrapResponse(await props.api.post(`${pluginBase.value}/tasks`, normalized))
+      unwrapResponse(await api.tasks.create(normalized))
     }
     editorOpen.value = false
     notify('任务已保存')
@@ -2926,7 +2764,7 @@ async function onDeleteDialog(open) {
   if (!selectedTask.value) return
   handoverLoading.value = true
   try {
-    handover.value = unwrapResponse(await props.api.get(`${pluginBase.value}/tasks/${selectedTask.value.id}/handover`)) || null
+    handover.value = unwrapResponse(await api.tasks.handoverInfo(selectedTask.value.id)) || null
     // ★ 默认退回静默池（正常就该这样）；要指定交棒得自己选 —— 同标签任务本来就会自动接管，无需交棒
     handoverTarget.value = 'idle'
   } catch (err) {
@@ -2944,7 +2782,7 @@ async function confirmDeleteTask() {
     const q = handoverTarget.value === 'idle'
       ? '?settle=idle'
       : `?handover_to=${encodeURIComponent(handoverTarget.value)}`
-    const res = await props.api.delete(`${pluginBase.value}/tasks/${selectedTask.value.id}${q}`)
+    const res = await api.tasks.remove(selectedTask.value.id, q)
     if (res?.success === false) throw new Error(res?.message || '删除失败')
     notify(res?.message || '任务已删除')
     deleteDialog.value = false
@@ -2956,16 +2794,6 @@ async function confirmDeleteTask() {
   } finally {
     saving.value = false
   }
-}
-
-// 对托管种子执行 保留 / 取消保留 / 暂停 / 恢复 / 强制校验 / 删除。
-const TORRENT_ACTION_LABEL = {
-  protect: '已保留种子',
-  unprotect: '已取消保留',
-  pause: '已暂停种子（不会被自动恢复）',
-  resume: '已恢复做种',
-  recheck: '已开始重新校验',
-  delete: '已删除种子',
 }
 
 // 提示文案随种子状态变化：下载中的是「暂停 / 继续下载」，已完成的才是「暂停 / 恢复做种」，
@@ -2983,7 +2811,7 @@ async function torrentAction(torrent, action) {
   saving.value = true
   try {
     unwrapResponse(
-      await props.api.post(`${pluginBase.value}/tasks/${selectedTask.value.id}/torrents/${torrent.hash}/${action}`, {}),
+      await api.tasks.torrentAction(selectedTask.value.id, torrent.hash, action),
     )
     notify(torrentActionMessage(torrent, action))
     await Promise.all([loadBonus(selectedTask.value.id), loadDetail(selectedTask.value.id)])
@@ -3014,23 +2842,13 @@ async function confirmTorrentDelete() {
   pendingTorrentDelete.value = null
 }
 
-// ---------------- 批量操作 ----------------
-const BATCH_LABEL = {
-  protect: '批量保留',
-  unprotect: '批量取消保留',
-  pause: '批量暂停',
-  resume: '批量恢复',
-  recheck: '批量校验',
-  delete: '批量删除',
-}
-
 async function batchAction(action) {
   const hashes = selectedHashes.value
   if (!hashes.length || !selectedTask.value) return
   batchBusy.value = true
   try {
     const res = unwrapResponse(
-      await props.api.post(`${pluginBase.value}/tasks/${selectedTask.value.id}/torrents/batch`, { action, hashes }),
+      await api.tasks.torrentsBatch(selectedTask.value.id, { action, hashes }),
     )
     const done = Number(res?.success_count ?? hashes.length)
     notify(`${BATCH_LABEL[action] || '批量操作'}完成：${done} 个`)
@@ -3150,7 +2968,7 @@ function backToSettingsDir() {
 // ── 标签模型 ─────────────────────────────────────────────
 async function loadTags() {
   try {
-    const res = await props.api.get(`${pluginBase.value}/tags`)
+    const res = await api.settings.tags()
     tagInfo.value = res?.data || null
   } catch (err) {
     error.value = err?.message || String(err)
@@ -3186,7 +3004,7 @@ function removeSortRule(i) {
 async function previewTagMigrate() {
   tagMigrating.value = true
   try {
-    const res = await props.api.get(`${pluginBase.value}/tags?action=migrate`)
+    const res = await api.settings.tagMigratePlan()
     tagMigratePlan.value = res?.data || null
     await loadTags()
   } catch (err) {
@@ -3202,7 +3020,7 @@ async function applyTagMigrate() {
   if (!confirm(`确认把 ${total} 个托管种子的老标签迁移到「魔流-站点-状态」新命名？\n（保留 已整理/辅种 等外来标签）`)) return
   tagMigrating.value = true
   try {
-    const res = await props.api.post(`${pluginBase.value}/tags/migrate`, { apply: true })
+    const res = await api.settings.tagMigrateApply()
     notify(res?.message || '迁移完成')
     tagMigratePlan.value = null
     await loadTags()
@@ -3218,7 +3036,7 @@ async function applyTagMigrate() {
 async function loadCloud() {
   cloudLoading.value = true
   try {
-    cloudState.value = unwrapResponse(await props.api.get(`${pluginBase.value}/cloud`))
+    cloudState.value = unwrapResponse(await api.features.cloud())
     if (!cloudPlanStats.value) cloudPlanStats.value = (cloudState.value?.plan_stats || null)
   } catch (err) {
     error.value = err?.message || String(err)
@@ -3231,7 +3049,7 @@ async function testCloud() {
   cloudTesting.value = true
   cloudTestMsg.value = ''
   try {
-    const res = unwrapResponse(await props.api.get(`${pluginBase.value}/cloud/test`))
+    const res = unwrapResponse(await api.features.cloudTest())
     cloudTestOk.value = Boolean(res?.ok)
     cloudTestMsg.value = res?.ok
       ? `连通正常 · 源挂载 ${res.source_items ?? '?'} 项 · strm 视图 ${res.strm_items ?? '?'} 项`
@@ -3247,7 +3065,7 @@ async function testCloud() {
 async function planCloud() {
   cloudPlanning.value = true
   try {
-    const res = unwrapResponse(await props.api.post(`${pluginBase.value}/cloud/plan?limit=${cloudLimit.value || 50}`))
+    const res = unwrapResponse(await api.features.cloudPlan(cloudLimit.value || 50))
     cloudPlanItems.value = res?.items || []
     cloudPlanStats.value = res?.stats || null
   } catch (err) {
@@ -3261,9 +3079,7 @@ async function uploadCloudOne(item) {
   if (!item?.path) return
   cloudUploadingPath.value = item.path
   try {
-    const res = unwrapResponse(await props.api.post(
-      `${pluginBase.value}/cloud/upload?dry_run=false&path=${encodeURIComponent(item.path)}`,
-    ))
+    const res = unwrapResponse(await api.features.cloudUpload(item.path))
     item.status = res?.status || 'uploading'
     item.message = res?.message || ''
     notify(item.message || '已开始上传')
@@ -3299,9 +3115,7 @@ function cloudRecordFor(item) {
 async function runCloud(dryRun = true) {
   cloudRunning.value = true
   try {
-    const res = unwrapResponse(await props.api.post(
-      `${pluginBase.value}/cloud/run?dry_run=${dryRun ? 'true' : 'false'}&limit=${cloudLimit.value || 50}`,
-    ))
+    const res = unwrapResponse(await api.features.cloudRun(dryRun, cloudLimit.value || 50))
     notify(res?.message || (dryRun ? '归档演练已开始' : '归档任务已开始'))
     setTimeout(() => { loadCloud() }, 3000)
   } catch (err) {
@@ -3355,7 +3169,7 @@ function addFallbackSource() {
 async function loadFallback() {
   fallbackLoading.value = true
   try {
-    fallbackState.value = unwrapResponse(await props.api.get(`${pluginBase.value}/fallback?resolve_paths=true`))
+    fallbackState.value = unwrapResponse(await api.features.fallback())
   } catch (err) {
     error.value = err?.message || String(err)
   } finally {
@@ -3368,7 +3182,7 @@ async function runFallback(dryRun = false) {
   fallbackRunning.value = true
   try {
     unwrapResponse(
-      await props.api.post(`${pluginBase.value}/fallback/run?dry_run=${dryRun ? 'true' : 'false'}`),
+      await api.features.fallbackRun(dryRun),
     )
     notify(dryRun ? '演练扫描已开始（不会写 NFO）' : '元数据兜底已开始')
     setTimeout(() => { loadFallback() }, 3000)
@@ -3383,7 +3197,7 @@ async function runFallback(dryRun = false) {
 async function loadRules() {
   rulesLoading.value = true
   try {
-    const res = await props.api.get('rules')
+    const res = await api.settings.rules()
     siteRules.value = res?.data?.rules || []
   } catch (e) {
     siteRules.value = []
@@ -3396,7 +3210,7 @@ async function probeRules(site) {
   rulesProbing.value = true
   try {
     const q = site ? `&site=${encodeURIComponent(site)}` : ''
-    const res = await props.api.get(`rules?action=probe${q}`)
+    const res = await api.settings.rulesProbe(q)
     if (res?.success === false) throw new Error(res?.message || '探测失败')
     siteRules.value = res?.data?.rules || siteRules.value
     return res
@@ -3408,9 +3222,7 @@ async function probeRules(site) {
 async function setRuleHr(row, hr) {
   if (!row?.domain) return
   try {
-    const res = await props.api.get(
-      `rules?action=hr&site=${encodeURIComponent(row.domain)}&hr=${encodeURIComponent(hr)}`,
-    )
+    const res = await api.settings.setRuleHr(row.domain, hr)
     if (res?.success === false) throw new Error(res?.message || '失败')
     siteRules.value = res?.data?.rules || siteRules.value
     await loadRules()
@@ -3422,7 +3234,7 @@ async function setRuleHr(row, hr) {
 async function setRuleHours(row, hours) {
   const dom = row?.domain
   if (!dom) return
-  await props.api.get(`rules?action=set&site=${encodeURIComponent(dom)}&hours=${encodeURIComponent(hours)}`)
+  await api.settings.setRuleHours(dom, hours)
   await loadRules()
 }
 
@@ -3431,12 +3243,12 @@ async function setRuleRatio(row, ratio) {
   const dom = row?.domain
   if (!dom) return
   const v = String(ratio ?? '').trim()
-  await props.api.get(`rules?action=set_ratio&site=${encodeURIComponent(dom)}&ratio=${encodeURIComponent(v)}`)
+  await api.settings.setRuleRatio(dom, v)
   await loadRules()
 }
 
 async function refreshRules() {
-  const res = await props.api.get('rules?action=refresh')
+  const res = await api.settings.refreshRules()
   siteRules.value = res?.data?.rules || []
 }
 
@@ -3451,7 +3263,7 @@ function ruleSourceText(row) {
 async function loadIyuuSites() {
   iyuuLoading.value = true
   try {
-    const data = unwrapResponse(await props.api.get(`${pluginBase.value}/iyuu/sites`))
+    const data = unwrapResponse(await api.settings.iyuuSites())
     iyuuStatus.value = data || null
     const draftFill = normalizeIyuuSites(settingsDraft.value.iyuu_sites)
     iyuuSites.value = (data?.sites || []).map(row => {
@@ -3495,7 +3307,7 @@ async function testIyuu() {
   iyuuTesting.value = true
   try {
     syncIyuuToDraft()
-    const data = unwrapResponse(await props.api.get(`${pluginBase.value}/iyuu/test`))
+    const data = unwrapResponse(await api.settings.iyuuTest())
     notify(`IYUU Token 有效（账号 ${data?.username || data?.id || '-'}，站点表 ${data?.sites ?? 0} 条）`)
   } catch (err) {
     notify(err?.message || String(err))
@@ -3520,7 +3332,7 @@ async function saveIyuu() {
   saving.value = true
   try {
     syncIyuuToDraft()
-    unwrapResponse(await props.api.post(`${pluginBase.value}/settings`, normalizeSettings(settingsDraft.value)))
+    unwrapResponse(await api.settings.saveSettings(normalizeSettings(settingsDraft.value)))
     notify('IYUU 设置已保存')
     await loadStatus()
     await loadIyuuSites()
@@ -3536,7 +3348,7 @@ async function saveIyuu() {
 async function loadDownloaderPrefs() {
   downloaderPrefsLoading.value = true
   try {
-    const data = unwrapResponse(await props.api.get(`${pluginBase.value}/downloader/prefs`))
+    const data = unwrapResponse(await api.settings.downloaderPrefs())
     if (data && data.available) {
       downloaderPrefsDraft.value = normalizeDownloaderPrefs(data)
       downloaderPathsDraft.value = normalizeDownloaderPaths(data)
@@ -3563,7 +3375,7 @@ async function saveDownloaderPrefs() {
   saving.value = true
   try {
     const data = unwrapResponse(
-      await props.api.post(`${pluginBase.value}/downloader/prefs`, normalizeDownloaderPrefs(downloaderPrefsDraft.value)),
+      await api.settings.saveDownloaderPrefs(normalizeDownloaderPrefs(downloaderPrefsDraft.value)),
     )
     if (data && data.available) {
       downloaderPrefsDraft.value = normalizeDownloaderPrefs(data)
@@ -3583,7 +3395,7 @@ async function saveDownloaderPaths() {
   saving.value = true
   try {
     const data = unwrapResponse(
-      await props.api.post(`${pluginBase.value}/downloader/paths`, normalizeDownloaderPaths(downloaderPathsDraft.value)),
+      await api.settings.saveDownloaderPaths(normalizeDownloaderPaths(downloaderPathsDraft.value)),
     )
     if (data && data.available) {
       downloaderPathsDraft.value = normalizeDownloaderPaths(data)
@@ -3602,7 +3414,7 @@ async function saveDownloaderPaths() {
 async function loadDefaults() {
   defaultsLoading.value = true
   try {
-    const data = unwrapResponse(await props.api.get(`${pluginBase.value}/defaults`))
+    const data = unwrapResponse(await api.settings.defaults())
     defaultsDraft.value = normalizeDefaults(data || {})
   } catch (err) {
     error.value = err?.message || String(err)
@@ -3615,7 +3427,7 @@ async function loadDefaults() {
 async function saveDefaults() {
   saving.value = true
   try {
-    unwrapResponse(await props.api.post(`${pluginBase.value}/defaults`, normalizeDefaults(defaultsDraft.value)))
+    unwrapResponse(await api.settings.saveDefaults(normalizeDefaults(defaultsDraft.value)))
     notify('默认任务模板已保存')
     await loadStatus()
     emit('action')
@@ -3649,16 +3461,16 @@ async function saveDownloaderAndPaths() {
   saving.value = true
   try {
     const data = unwrapResponse(
-      await props.api.post(`${pluginBase.value}/downloader/prefs`, normalizeDownloaderPrefs(downloaderPrefsDraft.value)),
+      await api.settings.saveDownloaderPrefs(normalizeDownloaderPrefs(downloaderPrefsDraft.value)),
     )
     if (data && data.available) {
       downloaderPrefsDraft.value = normalizeDownloaderPrefs(data)
       downloaderPrefsRaw.value = data.raw || null
     }
     unwrapResponse(
-      await props.api.post(`${pluginBase.value}/downloader/paths`, normalizeDownloaderPaths(downloaderPathsDraft.value)),
+      await api.settings.saveDownloaderPaths(normalizeDownloaderPaths(downloaderPathsDraft.value)),
     )
-    unwrapResponse(await props.api.post(`${pluginBase.value}/defaults`, normalizeDefaults(defaultsDraft.value)))
+    unwrapResponse(await api.settings.saveDefaults(normalizeDefaults(defaultsDraft.value)))
     notify('下载与目录已保存')
     await loadStatus()
     emit('action')
@@ -3674,9 +3486,9 @@ async function savePathsTab() {
   saving.value = true
   try {
     unwrapResponse(
-      await props.api.post(`${pluginBase.value}/downloader/paths`, normalizeDownloaderPaths(downloaderPathsDraft.value)),
+      await api.settings.saveDownloaderPaths(normalizeDownloaderPaths(downloaderPathsDraft.value)),
     )
-    unwrapResponse(await props.api.post(`${pluginBase.value}/defaults`, normalizeDefaults(defaultsDraft.value)))
+    unwrapResponse(await api.settings.saveDefaults(normalizeDefaults(defaultsDraft.value)))
     notify('下载目录已保存')
     await loadStatus()
     emit('action')
@@ -3690,7 +3502,7 @@ async function savePathsTab() {
 // 保存全局设置。
 async function saveSettings() {  saving.value = true
   try {
-    unwrapResponse(await props.api.post(`${pluginBase.value}/settings`, normalizeSettings(settingsDraft.value)))
+    unwrapResponse(await api.settings.saveSettings(normalizeSettings(settingsDraft.value)))
     notify('设置已保存')
     await loadStatus()
     emit('action')
@@ -4952,7 +4764,6 @@ onUnmounted(() => {
               </template>
             </VWindowItem>
 
-
             <VWindowItem value="config">
               <div class="magicflow-config-grid">
                 <VSheet tag="section" class="magicflow-panel app-surface-static">
@@ -5965,7 +5776,6 @@ onUnmounted(() => {
               density="comfortable"
             />
           </div>
-
 
           <div v-else-if="settingsTab === 'iyuu'" class="magicflow-settings-form">
             <p class="magicflow-settings-hint">
@@ -10098,7 +9908,6 @@ onUnmounted(() => {
 .magicflow-signin-legend .magicflow-signin-cell {
   margin-inline: 0;
 }
-
 
 .magicflow-settings-actions {
   display: grid;

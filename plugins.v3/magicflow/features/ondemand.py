@@ -26,7 +26,7 @@ from app.schemas import Response
 
 from ..recommend import recognize
 from ..persistence import OperationItem
-from ..tags import SUB_NEW, SUB_RESOURCE, STATE_ONDEMAND, STATE_SILENT, identity_of, retag, tag_for
+from ..tags import SUB_NEW, SUB_RESOURCE, STATE_ONDEMAND, STATE_SILENT, duty_of, identity_of, retag, tag_for
 from ..sitestore import slot_callbacks
 
 _DOUBAN_RE = re.compile(r"movie\.douban\.com/subject/(\d+)")
@@ -143,14 +143,17 @@ class OnDemandMixin:
         for h in hs:
             hh = str(h or "").strip().lower()
             _rec0 = store.get(hh) or {}
-            if str(_rec0.get("taken_by") or "") == ONDEMAND_TASK_ID:
-                continue  # 已挂点播宿主
             live = (snap or {}).get(hh)
             cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
             _i_site, _i_sub = identity_of(cur)
             _sub = str(sub or "") or str(_rec0.get("sub") or "") or _i_sub or SUB_RESOURCE
             _site = str(site or "") or str(_rec0.get("site") or "") or _i_site \
                 or self._torrent_site_name(cur, "")
+            # ★ 15.8.6：幂等 = 账本已挂 **且** qB 职务标签在位。
+            #   只看账本会在「加种 ↔ qB 登记」抢跑时漏写标签、事后又永不补回。
+            if str(_rec0.get("taken_by") or "") == ONDEMAND_TASK_ID \
+                    and duty_of(cur)[1] == STATE_ONDEMAND:
+                continue  # 已挂点播宿主且标签在位
             if cur:
                 new_tags = retag(cur, site=_site, state=STATE_ONDEMAND, sub=_sub)
             else:
@@ -240,8 +243,9 @@ class OnDemandMixin:
             items = self._tag_state().items() or {}
         except Exception:  # noqa: BLE001
             return {"assigned": 0, "released": 0}
-        to_assign = [h for h in pend
-                     if str((items.get(h) or {}).get("taken_by") or "") != ONDEMAND_TASK_ID]
+        # ★ 15.8.6：把**所有** pending 交给 ``_od_assign``——它按「账本已挂 **且** qB 职务标签
+        #   在位」幂等过滤（治「加种抢先于 qB 登记」的漏标），本函数不再自带快照。
+        to_assign = list(pend)
         to_release = [th for th, rec in items.items()
                       if str((rec or {}).get("taken_by") or "") == ONDEMAND_TASK_ID and th not in pend]
         a = self._od_assign(to_assign, reason="对账补挂") if to_assign else 0
@@ -418,7 +422,14 @@ class OnDemandMixin:
             save_path = self._ondemand_default_save_path()
         if not save_path:
             return {"ok": False, "message": "没有可用的保存目录：请在弹窗上方选一个任务，或到「设置 → 下载目录」填「任务保存目录」"}
-        tag = tag_for(site_name, STATE_SILENT, SUB_RESOURCE) if site_name else ""
+        # ★ 15.8.6：**加种时就同时打「身份 + 职务」两个标签**——否则紧随其后的
+        #   ``_od_assign`` 会在「qB 还没登记这颗新种」时写标签失败（竞态），
+        #   「点播」职务标签要等下一轮对账才补上。
+        if site_name:
+            tag = ", ".join([tag_for(site_name, STATE_SILENT, SUB_RESOURCE),
+                             tag_for(site_name, STATE_ONDEMAND)])
+        else:
+            tag = ""
         # ★ 10.2.0 下载即开账：只传域名（绝不传展示名），拿不到就留空
         try:
             _dom = self._site_domain_by_name(site_name) or ""
