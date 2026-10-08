@@ -1,5 +1,5 @@
 <script setup>
-import MagicFlowWorkbench from './MagicFlowWorkbench.vue'
+import MagicFlowWorkbench from '../views/magicflow/index.vue'
 
 defineProps({
   api: { type: Object, default: () => ({}) },

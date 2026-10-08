@@ -1,6 +1,6 @@
 <script setup>
 import { onMounted } from 'vue'
-import MagicFlowWorkbench from './MagicFlowWorkbench.vue'
+import MagicFlowWorkbench from '../views/magicflow/index.vue'
 
 defineProps({
   initialConfig: { type: Object, default: () => ({}) },

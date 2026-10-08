@@ -15,7 +15,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 REGISTRY = ROOT / "features" / "registry.py"
-VUE = ROOT / "src" / "components" / "MagicFlowWorkbench.vue"
+# 前端 MF_PAGES 注册表：P1 拆分后从 views/magicflow/index.vue 外提到 constants.js
+PAGES = ROOT / "src" / "views" / "magicflow" / "constants.js"
 
 
 def backend_keys() -> list[str]:
@@ -27,10 +28,10 @@ def backend_keys() -> list[str]:
 
 
 def frontend_keys() -> list[str]:
-    src = VUE.read_text(encoding="utf-8")
+    src = PAGES.read_text(encoding="utf-8")
     block = re.search(r"const MF_PAGES = \[(.*?)\n\]", src, re.S)
     if not block:
-        raise SystemExit("❌ 未能在 MagicFlowWorkbench.vue 里找到 MF_PAGES")
+        raise SystemExit("❌ 未能在 views/magicflow/constants.js 里找到 MF_PAGES")
     return re.findall(r"key:\s*'([a-z0-9_]+)'", block.group(1))
 
 

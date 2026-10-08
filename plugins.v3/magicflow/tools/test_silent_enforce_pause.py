@@ -241,7 +241,11 @@ def t3_purge_removed():
     _ok('"/agent/silent/purge"' not in _a, "AI 清单无 /agent/silent/purge（清单 50→49）")
     _b = (ROOT / "features/api.py").read_text(encoding="utf-8")
     _ok('"/silent/purge"' not in _b, "UI 路由无 /silent/purge")
-    _v = (ROOT / "src/components/MagicFlowWorkbench.vue").read_text(encoding="utf-8")
+    _v = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted((ROOT / "src").rglob("*"))
+        if p.is_file() and p.suffix in (".vue", ".js")
+    )
     _ok("silent/purge" not in _v, "前端无 silent/purge 调用")
     return None
 

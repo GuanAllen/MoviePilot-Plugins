@@ -34,9 +34,10 @@ from ..common import (
     DELETE_BREAKER_MAX,
     DELETE_BREAKER_WINDOW_S,
     DELETE_BILL_ASSERT,
+    ONDEMAND_TASK_ID,
 )
 from ..common import hr_incomplete, hr_complete_ratio_of
-from ..tags import is_library_asset
+from ..tags import is_library_asset, STATE_ONDEMAND
 
 
 class DeleteGateMixin:
@@ -148,6 +149,13 @@ class DeleteGateMixin:
             _groups = None
             for h in _rest:
                 rec = _led.get(h) or {}
+                # ★ 15.8.5：**在途点播**（state=点播 / taken_by=__ondemand__）尚未结算入库，
+                #   只是「将成为资源」——不算库内资产。否则它被 ``_od_assign`` 打上的
+                #   ``sub=资源`` 会让「点播移除」被本闸门自己硬拦（15.8.4 引入的死结）。
+                #   结算（``_od_release`` → state=静默）后才按资源身份受本闸门保护。
+                if str(rec.get("state") or "") == STATE_ONDEMAND \
+                        or str(rec.get("taken_by") or "") == ONDEMAND_TASK_ID:
+                    continue
                 try:
                     if is_library_asset(rec):
                         why[h] = "库内资产（已入库，永不删）"

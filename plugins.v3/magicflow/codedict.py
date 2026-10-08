@@ -218,6 +218,103 @@ def _flat_consts(mods: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+# ------------------------------------------------------------------ 前端（.vue / .js）
+# 前端不是 Python，不能用 ast；用轻量正则抽「块边界 + 顶层声明」。
+# 目的同 Python 侧：让「某常量/函数/组件在哪个文件哪一行」一次调用就能答。
+FE_SUFFIXES = (".vue", ".js")
+
+
+def scan_frontend(root: Path) -> List[str]:
+    """前端源码（``src/**/*.vue`` + ``src/**/*.js``），跳过 SKIP_DIRS。"""
+    base = root / "src"
+    if not base.exists():
+        return []
+    out: List[str] = []
+    for p in sorted(base.rglob("*")):
+        if not p.is_file() or p.suffix not in FE_SUFFIXES:
+            continue
+        rel = p.relative_to(root)
+        if any(part in SKIP_DIRS for part in rel.parts):
+            continue
+        out.append(rel.as_posix())
+    return out
+
+
+def _blocks_vue(text: str) -> Dict[str, List[List[int]]]:
+    """SFC 块边界（1 基行号）：script / template / styles（可多段）。"""
+    res: Dict[str, List[List[int]]] = {"script": [], "template": [], "style": []}
+    for tag in ("script", "template", "style"):
+        # 只认顶格（col 0）的开/闭标签——SFC 顶层块必在 col 0，嵌套块有缩进。
+        open_re = re.compile(r"^<" + tag + r"\b[^>]*>", re.M)
+        close_re = re.compile(r"^</" + tag + r">", re.M)
+        for m in open_re.finditer(text):
+            cm = close_re.search(text, m.end())
+            if not cm:
+                continue
+            res[tag].append([text[:m.start()].count(chr(10)) + 1,
+                             text[:cm.start()].count(chr(10)) + 1])
+    return res
+
+
+_FE_DECL_PATTERNS = (
+    (r"^(?:export\s+)?const\s+([\w$]+)\s*=\s*(?:ref|shallowRef)\b", "ref"),
+    (r"^(?:export\s+)?const\s+([\w$]+)\s*=\s*reactive\b", "reactive"),
+    (r"^(?:export\s+)?const\s+([\w$]+)\s*=\s*computed\b", "computed"),
+    (r"^(?:export\s+)?const\s+([\w$]+)\s*=\s*(?:defineProps|defineEmits|defineModel|defineExpose)\b", "api"),
+    (r"^(?:export\s+)?const\s+([\w$]+)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>", "fn"),
+    (r"^(?:export\s+)?(?:async\s+)?function\s+([\w$]+)", "function"),
+    (r"^(?:export\s+)?const\s+([\w$]+)\s*=", "const"),
+    (r"^(?:export\s+)?let\s+([\w$]+)", "let"),
+    (r"^(?:watch|watchEffect)\(", "watch"),
+    (r"^on(?:Mounted|Unmounted|BeforeUnmount|Activated|Deactivated)\(", "hook"),
+)
+
+
+def _fe_decl(line: str) -> Optional[tuple]:
+    """顶层声明识别（只看顶格行——SFC/js 顶层声明都在 col 0）。"""
+    if not line or line != line.lstrip():
+        return None
+    for pat, kind in _FE_DECL_PATTERNS:
+        m = re.match(pat, line)
+        if m:
+            return (kind, m.group(1) if m.groups() else "")
+    return None
+
+
+def _parse_frontend(root: Path, rel: str) -> Dict[str, Any]:
+    text = (root / rel).read_text(encoding="utf-8")
+    lines = text.splitlines()
+    lang = "vue" if rel.endswith(".vue") else "js"
+    blocks: Dict[str, Any] = {"script": None, "template": None, "styles": []}
+    if lang == "vue":
+        b = _blocks_vue(text)
+        if b["script"]:
+            blocks["script"] = b["script"][0]
+        if b["template"]:
+            blocks["template"] = b["template"][0]
+        blocks["styles"] = b["style"]
+        s = b["script"][0] if b["script"] else None
+        region = [(i + 1, lines[i]) for i in range(s[0], s[1] - 1)] if s else []
+    else:
+        region = [(i + 1, ln) for i, ln in enumerate(lines)]
+    decls: List[Dict[str, Any]] = []
+    for ln, raw in region:
+        d = _fe_decl(raw)
+        if d:
+            decls.append({"name": d[1], "kind": d[0], "line": ln})
+    return {"file": rel, "lang": lang, "lines": len(lines),
+            "blocks": blocks, "decls": decls}
+
+
+def _flat_fe(mods: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for m in mods:
+        for d in m["decls"]:
+            out.append({"name": d["name"], "kind": d["kind"], "lang": m["lang"],
+                        "file": m["file"], "line": d["line"]})
+    return out
+
+
 def _match(needle: str, *hay: object) -> bool:
     n = needle.lower()
     return any(n in str(h or "").lower() for h in hay)
@@ -239,15 +336,21 @@ def build_dict(root: Path, *, endpoints: Optional[List[Dict[str, Any]]] = None,
     consts = _flat_consts(mods)
     total_lines = sum(m["lines"] for m in mods)
     eps = list(endpoints or [])
+    fe_rels = scan_frontend(root)
+    fe_mods = [_parse_frontend(root, rel) for rel in fe_rels]
+    fe_decls = _flat_fe(fe_mods)
+    fe_lines = sum(m["lines"] for m in fe_mods)
 
     overview = {
         "counts": {"modules": len(mods), "lines": total_lines,
                    "symbols": len(symbols), "constants": len(consts),
-                   "endpoints": len(eps)},
-        "sections": ["endpoints", "constants", "symbols", "modules", "glossary"],
+                   "endpoints": len(eps), "fe_files": len(fe_mods),
+                   "fe_lines": fe_lines, "fe_decls": len(fe_decls)},
+        "sections": ["endpoints", "constants", "symbols", "modules", "frontend",
+                     "glossary"],
         "usage": {
-            "q": "子串模糊查（符号/常量/端点/模块职责）",
-            "section": "endpoints|constants|symbols|modules|glossary 取整节",
+            "q": "子串模糊查（符号/常量/端点/模块职责/前端声明）",
+            "section": "endpoints|constants|symbols|modules|frontend|glossary 取整节",
             "full": "1=回全部（大）",
         },
     }
@@ -255,13 +358,14 @@ def build_dict(root: Path, *, endpoints: Optional[List[Dict[str, Any]]] = None,
         overview["hint"] = "加 q=<关键词> 精确查，或 section=<节名> 取整节。"
         return {"overview": overview}
 
+    ALL = {"endpoints", "constants", "symbols", "modules", "frontend", "glossary"}
     want = set()
     if section:
         want = {section.strip().lower()}
     elif full:
-        want = {"endpoints", "constants", "symbols", "modules", "glossary"}
+        want = set(ALL)
     else:  # q
-        want = {"endpoints", "constants", "symbols", "modules", "glossary"}
+        want = set(ALL)
 
     out: Dict[str, Any] = {"overview": overview, "query": {"q": q, "section": section,
                                                           "full": bool(full)}}
@@ -292,6 +396,23 @@ def build_dict(root: Path, *, endpoints: Optional[List[Dict[str, Any]]] = None,
         if q:
             rows = [m for m in mods if _match(q, m["file"], m["doc"])]
         out["modules"] = rows[:cap] if (q and not full) else rows
+
+    if "frontend" in want:
+        rows = fe_mods
+        if q:
+            keep: List[Dict[str, Any]] = []
+            for m in rows:
+                hit_file = _match(q, m["file"])
+                ds = [d for d in m["decls"] if _match(q, d["name"], d["kind"])]
+                if hit_file or ds:
+                    mm = dict(m)
+                    mm["decls"] = m["decls"] if hit_file else ds
+                    keep.append(mm)
+            rows = keep
+        out["frontend"] = rows[:cap] if (q and not full) else rows
+        if q and not full:
+            out["frontend_decls"] = [d for d in fe_decls
+                                     if _match(q, d["name"], d["kind"], d["file"])][:cap]
 
     if "glossary" in want:
         rows = GLOSSARY

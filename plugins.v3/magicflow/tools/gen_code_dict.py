@@ -82,7 +82,8 @@ def build() -> str:
     L.append("> **逻辑真值源**：`codedict.py`（与插件接口 `GET /agent/code-dict` 同一份）；"
              "口径速查在 `codedict.GLOSSARY`。")
     L.append(f"> 模块 **{c['modules']}** / 行数 **{c['lines']}** / 符号 **{c['symbols']}** / "
-             f"常量 **{c['constants']}** / 端点 **{c['endpoints']}**。\n")
+             f"常量 **{c['constants']}** / 端点 **{c['endpoints']}** / "
+             f"前端文件 **{c.get('fe_files', 0)}**（声明 **{c.get('fe_decls', 0)}**）。\n")
     L.append("**怎么用**：`grep -ni \"关键词\" docs/CODE-DICT.md` 一次拿到 file:line；"
              "线上可直接 `GET /agent/code-dict?q=关键词`。\n")
 
@@ -159,6 +160,34 @@ def build() -> str:
         else:
             for row in g["rows"]:
                 L.append(f"- {row[0]}")
+        L.append("")
+
+    # 6. 前端明细（src/**/*.vue + src/**/*.js）
+    fe = data.get("frontend", [])
+    L.append("## 6. 前端明细（`src/` 下 .vue / .js）\n")
+    L.append("| 文件 | 行数 | script | template | 声明数 |")
+    L.append("|---|---|---|---|---|")
+    for m in fe:
+        b = m.get("blocks") or {}
+        sc = b.get("script")
+        tp = b.get("template")
+        L.append(f"| `{m['file']}` | {m['lines']} | "
+                 f"{('L%d-%d' % tuple(sc)) if sc else '—'} | "
+                 f"{('L%d-%d' % tuple(tp)) if tp else '—'} | {len(m['decls'])} |")
+    L.append("")
+    for m in fe:
+        b = m.get("blocks") or {}
+        seg = []
+        if b.get("script"):
+            seg.append("script L%d-%d" % tuple(b["script"]))
+        if b.get("template"):
+            seg.append("template L%d-%d" % tuple(b["template"]))
+        if b.get("styles"):
+            seg.append("style " + "/".join("L%d-%d" % tuple(s) for s in b["styles"]))
+        L.append(f"### `{m['file']}` （{m['lines']} 行"
+                 + ("；" + "、".join(seg) if seg else "") + "）")
+        for d in sorted(m["decls"], key=lambda x: x["line"]):
+            L.append(f"- `{d['name'] or '—'}` · {d['kind']} · L{d['line']}")
         L.append("")
     return "\n".join(L) + "\n"
 
