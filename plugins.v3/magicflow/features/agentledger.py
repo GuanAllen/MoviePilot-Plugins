@@ -77,8 +77,8 @@ def _columns() -> Dict[str, List[Dict[str, Any]]]:
         "seed": [
             _col("hash", "hex40", desc="种子 infohash（小写）", nullable=False),
             _col("site", "string", desc="站点名"),
-            _col("state", "enum", enum=["刷流", "魔力", "静默", "推荐", "保种"],
-                 desc="职务（由 task_id 推导）"),
+            _col("state", "enum", enum=["刷流", "魔力", "静默", "推荐", "保种", "点播"],
+                 desc="职务（由 task_id 推导；点播=__ondemand__ 在途）"),
             _col("sub", "enum", enum=["新", "资源", "普通"], desc="身份（顺 mf_resource.identity）"),
             _col("task", "string", desc="所属任务名（空=静默不在岗）"),
             _col("taken_by", "string", desc="占用任务 id（空=不在岗）"),
