@@ -3,7 +3,7 @@
         "name": "魔流",
         "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
         "labels": "站点,做种,魔力,刷流",
-        "version": "15.8.6",
+        "version": "15.8.7",
         "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
         "author": "GuanAllen",
         "level": 1,
@@ -415,9 +415,10 @@
             "15.8.3": "15.8.3：点播 inflight 不进静默闸（PATCH：bug 修复）",
             "15.8.4": "15.8.4：点播在途挂真伪任务 __ondemand__（职务=点播）——修「点播没下完被静默池清理闸误删」（实锤 10-08 17:31 删 SEED/SEED Freedom/鬼灭S05）。加种即 _od_assign（贴 魔流-<站>-点播 + 账本 taken_by=__ondemand__）→ state≠静默 → 暂停闸+清理闸双免疫；结算 _od_release 退役；_ondemand_duty_reconcile 每轮对账。测试 test_ondemand_task 35 断言。",
             "15.8.5": "点播在途豁免「库内资产」硬拦 —— 删除唯一闸门不再把在途点播当库内资产，`/ondemand/act?action=remove` 对在途点播由「拦」变「可删」。",
-            "15.8.6": "15.8.6：点播加种即挂「身份+职务」双标签（原子），对账只当兜底（含 15.8.5 删除闸门豁免在途点播）"
+            "15.8.6": "15.8.6：点播加种即挂「身份+职务」双标签（原子），对账只当兜底（含 15.8.5 删除闸门豁免在途点播）",
+            "15.8.7": "15.8.7：Vue 前端 P3 拆分收官（index.vue 12827→11799，11 个 composable）+ 修两个历史死 UI（invariantOpen 不弹窗 / claimProfile 白屏）+ 修 useTagModel 白屏 bug + 护栏 14/14"
         }
     },
-    "version": "15.8.6",
+    "version": "15.8.7",
     "history": {}
 }
