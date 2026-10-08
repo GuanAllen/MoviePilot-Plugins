@@ -70,7 +70,7 @@ const _hoisted_48$1 = { class: "magicflow-facts magicflow-facts--two" };
 const _hoisted_49$1 = { class: "d-flex align-center mb-2" };
 const _hoisted_50$1 = { class: "text-body-2 text-medium-emphasis" };
 
-const {computed: computed$b,ref: ref$c,watch: watch$2} = await importShared('vue');
+const {computed: computed$c,ref: ref$d,watch: watch$2} = await importShared('vue');
 
 const {useDisplay} = await importShared('vuetify');
 
@@ -97,13 +97,13 @@ const props = __props;
 
 const emit = __emit;
 const display = useDisplay();
-const formRef = ref$c(null);
-const activeTab = ref$c('base');
-const localTask = ref$c(cloneTask());
+const formRef = ref$d(null);
+const activeTab = ref$d('base');
+const localTask = ref$d(cloneTask());
 
 // 刷流模式：做种满设定天数即清理换新（保种天数），不套用魔力门槛。
-const isBrush = computed$b(() => localTask.value.task_type === 'brush');
-const dialogTitle = computed$b(() => {
+const isBrush = computed$c(() => localTask.value.task_type === 'brush');
+const dialogTitle = computed$c(() => {
   const kind = isBrush.value ? '刷流任务' : '魔力任务';
   const full = localTask.value.id ? `编辑${kind}` : `新建${kind}`;
   // 手机端标题栏窄（还要放「保存任务」按钮）→ 用短标题，避免被截成「新建魔...」
@@ -111,7 +111,7 @@ const dialogTitle = computed$b(() => {
   return full
 });
 // 编辑器标签页随类型切换：刷流隐藏「魔力托管/魔力公式」，改显「刷流运维」。
-const editorTabs = computed$b(() =>
+const editorTabs = computed$c(() =>
   isBrush.value
     ? [
         { value: 'base', icon: 'mdi-calendar-clock', label: '基础与调度' },
@@ -127,11 +127,11 @@ const editorTabs = computed$b(() =>
         { value: 'advanced', icon: 'mdi-tune-variant', label: '高级' },
       ],
 );
-const siteName = computed$b(() => {
+const siteName = computed$c(() => {
   const site = props.sites.find(item => Number(item.value ?? item.id) === Number(localTask.value.site_id));
   return site?.title || site?.name || '未选择'
 });
-const scheduleText = computed$b(() => localTask.value.cron_expression || `每 ${localTask.value.brush_interval || 5} 分钟`);
+const scheduleText = computed$c(() => localTask.value.cron_expression || `每 ${localTask.value.brush_interval || 5} 分钟`);
 // 刷流「上传速率门槛」可选档（KB/s）：低于该平均速率即判「无上传」。
 const uploadRateOptions = [
   { title: '温和 · 100 KB/s（≈ 60 MB / 10 分钟）', value: 100 },
@@ -141,7 +141,7 @@ const uploadRateOptions = [
 ];
 // 保存目录候选：**填过一次就记住**（localStorage）+ 已有任务用过的目录 + 设置里的默认目录 + 任务当前值。
 // 用户手输过的目录会立刻落进 localStorage，下次新建/编辑就能从下拉里选到。
-const savePathHistory = ref$c([]);
+const savePathHistory = ref$d([]);
 // 清理候选：去重 + **丢掉「别人的前缀」**（如 /vol3/1000/med 是 /vol3/1000/media 的前缀）
 // —— 用户逐字打路径时 v-model 每敲一个字就变一次，不做这步会存一堆半截路径。
 function cleanSavePaths(list) {
@@ -180,7 +180,7 @@ function rememberSavePath(value) {
     /* 隐私模式等场景忽略 */
   }
 }
-const savePathOptions = computed$b(() => {
+const savePathOptions = computed$c(() => {
   const set = new Set();
   for (const item of savePathHistory.value) set.add(item);
   for (const item of props.savePaths || []) if (item) set.add(String(item));
@@ -288,15 +288,15 @@ const TASK_PRESETS = [
     patch: {},
   },
 ];
-const presetKey = ref$c('bonus');
-const simpleMode = computed$b(() => presetKey.value !== 'custom');
-const presetInfo = computed$b(() => TASK_PRESETS.find(p => p.key === presetKey.value) || TASK_PRESETS[1]);
+const presetKey = ref$d('bonus');
+const simpleMode = computed$c(() => presetKey.value !== 'custom');
+const presetInfo = computed$c(() => TASK_PRESETS.find(p => p.key === presetKey.value) || TASK_PRESETS[1]);
 // 磁盘状态（**按目录分盘**，只看任务自己那块盘；80% 阈值 → 本任务可占体积）
 // ★ 不能用 MP 仪表板的「本地存储」：那是把多个目录加起来的总数（例如 /movie + /media），
 //   任务写不到别的池里，拿总和算阈值会严重高估。
-const pool = ref$c(null);
-const poolError = ref$c('');
-const poolLoading = ref$c(false);
+const pool = ref$d(null);
+const poolError = ref$d('');
+const poolLoading = ref$d(false);
 async function loadPool() {
   if (!props.api) {
     poolError.value = '未接入宿主 API，无法读取磁盘空间';
@@ -328,16 +328,16 @@ async function loadPool() {
     poolLoading.value = false;
   }
 }
-const poolOver = computed$b(() => !!pool.value && pool.value.pct >= POOL_THRESHOLD * 100);
+const poolOver = computed$c(() => !!pool.value && pool.value.pct >= POOL_THRESHOLD * 100);
 // 可拉的百分比：占「磁盘剩余可用空间（到 80% 阈值）」的比例（0~100），拉条实时显示折合 GB
-const poolPct = ref$c(100);
-const poolBudgetGb = computed$b(() => {
+const poolPct = ref$d(100);
+const poolBudgetGb = computed$c(() => {
   if (!pool.value) return 0
   return Math.round(pool.value.budget_gb * (Number(poolPct.value) || 0) / 100 * 10) / 10
 });
-const poolBudgetText = computed$b(() => (poolBudgetGb.value > 0 ? `${poolBudgetGb.value} GB` : '不限'));
-const poolFreeText = computed$b(() => (pool.value ? formatBytes(pool.value.budget_gb * 1024 ** 3) : '—'));
-const presetPatchCount = computed$b(() => Object.keys(presetInfo.value.patch || {}).length + (poolBudgetGb.value > 0 ? 1 : 0));
+const poolBudgetText = computed$c(() => (poolBudgetGb.value > 0 ? `${poolBudgetGb.value} GB` : '不限'));
+const poolFreeText = computed$c(() => (pool.value ? formatBytes(pool.value.budget_gb * 1024 ** 3) : '—'));
+const presetPatchCount = computed$c(() => Object.keys(presetInfo.value.patch || {}).length + (poolBudgetGb.value > 0 ? 1 : 0));
 // 选模板 → 只覆盖「程序可决定」的参数（用户已填的站点/目录/目标/名称不动）
 function applyPreset(key) {
   presetKey.value = key;
@@ -353,7 +353,7 @@ function applyPreset(key) {
   if (key === 'custom') activeTab.value = 'base';
 }
 // 任务名自动填「站点·模板名」；换站点/换模板都会跟着变（用户手改过才不动）
-const autoNameSet = computed$b(() => {
+const autoNameSet = computed$c(() => {
   const set = new Set();
   for (const site of props.sites) {
     const sname = site?.title || site?.name || '';
@@ -373,9 +373,9 @@ function autoFillName(force = true) {
 // ★ 下载器标签：和任务名同规矩 —— **推荐默认值 + 强制统一**。
 //   永远按「站点 + 任务类型」派生（刷流任务 → 刷流，其余 → 魔力）；
 //   字段里展示的就是推荐值，手填了不统一的内容也会在换站点/换类型/保存时被纠正。
-const tagState = computed$b(() => (String(localTask.value.task_type || 'bonus').toLowerCase() === 'brush' ? '刷流' : '魔力'));
+const tagState = computed$c(() => (String(localTask.value.task_type || 'bonus').toLowerCase() === 'brush' ? '刷流' : '魔力'));
 // siteName 已在上面定义（未选择站点时为「未选择」）
-const autoTag = computed$b(() => {
+const autoTag = computed$c(() => {
   const n = String(siteName.value || '').trim();
   return n && n !== '未选择' ? `魔流-${n}-${tagState.value}` : ''
 });
@@ -425,7 +425,7 @@ function closeDialog() {
 }
 
 // 未填「任务目标」时的提醒弹窗
-const goalWarning = ref$c(false);
+const goalWarning = ref$d(false);
 
 // 是否已填写有效的任务目标（>0）
 function hasGoal() {
@@ -2957,19 +2957,19 @@ function fmtTs(ts) {
 // 职责：点播弹窗状态 + 搜索（干跑 / 落地）+ 在途清单轮询 + 行内操作 + 展示格式化。
 // 依赖注入：api（createApi 客户端）。★ 真值源仍在后端（/ondemand、/ondemand/items），
 // 本层只持有 UI 状态，不缓存真值。
-const {computed: computed$a,ref: ref$b,watch: watch$1} = await importShared('vue');
+const {computed: computed$b,ref: ref$c,watch: watch$1} = await importShared('vue');
 
 function useOndemand(api) {
   // ── 点播（§1 权威来源 1 · 7.1.0）────────────────────────────────────
-  const ondemandOpen = ref$b(false);
-  const ondemandQuery = ref$b('');
-  const ondemandTaskId = ref$b('');
+  const ondemandOpen = ref$c(false);
+  const ondemandQuery = ref$c('');
+  const ondemandTaskId = ref$c('');
   // ★ 站点多选（勾选框）：不勾 = 全部站点；勾了就只搜勾中的（点播不再依赖任务）
-  const ondemandSiteIds = ref$b([]);
-  const ondemandBusy = ref$b('');
-  const ondemandResult = ref$b(null);
-  const ondemandError = ref$b('');
-  const ondemandCandidates = computed$a(() => {
+  const ondemandSiteIds = ref$c([]);
+  const ondemandBusy = ref$c('');
+  const ondemandResult = ref$c(null);
+  const ondemandError = ref$c('');
+  const ondemandCandidates = computed$b(() => {
     const rows = ondemandResult.value?.candidates;
     return Array.isArray(rows) ? rows : []
   });
@@ -3023,11 +3023,11 @@ function useOndemand(api) {
   }
 
   // ★ 15.4.0：点播清单（进行中带进度 + 历史）。真值源：后端 ondemand_pending × qB 快照 + journal。
-  const ondemandItems = ref$b({ inflight: [], history: [], totals: {} });
-  const ondemandItemsBusy = ref$b(false);
+  const ondemandItems = ref$c({ inflight: [], history: [], totals: {} });
+  const ondemandItemsBusy = ref$c(false);
   let ondemandItemsTimer = null;
-  const odInflight = computed$a(() => (Array.isArray(ondemandItems.value?.inflight) ? ondemandItems.value.inflight : []));
-  const odHistory = computed$a(() => (Array.isArray(ondemandItems.value?.history) ? ondemandItems.value.history : []));
+  const odInflight = computed$b(() => (Array.isArray(ondemandItems.value?.inflight) ? ondemandItems.value.inflight : []));
+  const odHistory = computed$b(() => (Array.isArray(ondemandItems.value?.history) ? ondemandItems.value.history : []));
 
   async function loadOndemandItems() {
     ondemandItemsBusy.value = true;
@@ -3085,9 +3085,9 @@ function useOndemand(api) {
   }
 
   // ★ 15.5.0：筛选（进行中 / 已完成）+ 行内操作（暂停 / 继续 / 移除）
-  const ondemandTab = ref$b('inflight');   // 'inflight' | 'done'
-  const odActing = ref$b('');
-  const odMsg = ref$b('');
+  const ondemandTab = ref$c('inflight');   // 'inflight' | 'done'
+  const odActing = ref$c('');
+  const odMsg = ref$c('');
   function odIsPaused(row) {
     const s = String(row?.state || '');
     return s === 'pausedUP' || s === 'pausedDL' || s === 'stoppedUP' || s === 'stoppedDL' || s === 'paused'
@@ -3127,17 +3127,17 @@ function useOndemand(api) {
 // 职责：死种补源弹窗状态 + 扫描 / 干跑 / 落地 + 目标与跳过站点派生。
 // 依赖注入：api（createApi 客户端）、notify（提示）、error（全局错误 ref，仅失败时写）。
 // ★ 真值源仍在后端（/rescue），本层只持有 UI 状态。
-const {computed: computed$9,ref: ref$a} = await importShared('vue');
+const {computed: computed$a,ref: ref$b} = await importShared('vue');
 
 function useRescue({ api, notify, error }) {
   // ── 死种补源（rescue）：停滞欠 H&R 的种 → 他站「无 H&R」站补下同 Release ────────
-  const rescueOpen = ref$a(false);
-  const rescueData = ref$a(null);
-  const rescueScanning = ref$a(false);
-  const rescueBusy = ref$a(false);
-  const rescueBusyType = ref$a('');
-  const rescueTargets = computed$9(() => (Array.isArray(rescueData.value?.targets) ? rescueData.value.targets : []));
-  const rescueSkippedSites = computed$9(() => (Array.isArray(rescueData.value?.skipped_sites) ? rescueData.value.skipped_sites : []));
+  const rescueOpen = ref$b(false);
+  const rescueData = ref$b(null);
+  const rescueScanning = ref$b(false);
+  const rescueBusy = ref$b(false);
+  const rescueBusyType = ref$b('');
+  const rescueTargets = computed$a(() => (Array.isArray(rescueData.value?.targets) ? rescueData.value.targets : []));
+  const rescueSkippedSites = computed$a(() => (Array.isArray(rescueData.value?.skipped_sites) ? rescueData.value.skipped_sites : []));
 
   async function loadRescue() {
     try {
@@ -3200,13 +3200,13 @@ function useRescue({ api, notify, error }) {
 // 依赖注入：api、notify、settingsDraft（只读 reseed_dry）、loadStatus（跑完刷总览）、error（错误横幅）。
 // ★ 真值源仍在后端（/reseed、/reseed/run）；站点映射（IYUU 站点表）由后端给，前端只展示。
 // ★ fmtTs（秒时间戳 → 本地字符串）是通用格式化 → 已提到 ../format.js。
-const {computed: computed$8,ref: ref$9} = await importShared('vue');
+const {computed: computed$9,ref: ref$a} = await importShared('vue');
 
 function useReseed({ api, notify, settingsDraft, loadStatus, error }) {
-  const reseedState = ref$9(null);
-  const reseedRunning = ref$9(false);
+  const reseedState = ref$a(null);
+  const reseedRunning = ref$a(false);
   // 目标站候选：来自 /reseed 的站点映射（只有 IYUU 站点表里有的站才能当目标），值用域名（后端白名单按域名/名称匹配）
-  const reseedSiteOptions = computed$8(() =>
+  const reseedSiteOptions = computed$9(() =>
     ((reseedState.value && reseedState.value.sites) || []).map(s => ({
       title: `${s.name || s.domain}${s.passkey_ok ? ' · passkey ✓' : ''}`,
       value: String(s.domain || s.name || s.sid),
@@ -3257,15 +3257,15 @@ function useReseed({ api, notify, settingsDraft, loadStatus, error }) {
 // ★ 真值源仍在后端（/recommend/batch-import）；本域只放勾选态。
 // ★ 说明：recommend* 三件套属于「推荐」域（尚未拆），本域先按参数注入，
 //   等推荐域抽成 composable 后再换成「composable 之间调用」。
-const {computed: computed$7,ref: ref$8} = await importShared('vue');
+const {computed: computed$8,ref: ref$9} = await importShared('vue');
 
 function useRecImport({ api, notify, recommendItems, recommendActionable, loadRecommend }) {
-  const recSelected = ref$8({});        // hash -> true
-  const recBatchActing = ref$8(false);
+  const recSelected = ref$9({});        // hash -> true
+  const recBatchActing = ref$9(false);
   // 可勾选/入库的行 = 可手动确认的那些
-  const recSelectable = computed$7(() => recommendItems.value.filter(r => recommendActionable(r)));
-  const recSelectedList = computed$7(() => recSelectable.value.filter(r => recSelected.value[r.hash]).map(r => r.hash));
-  const recAllChecked = computed$7(() => recSelectable.value.length > 0 && recSelectedList.value.length === recSelectable.value.length);
+  const recSelectable = computed$8(() => recommendItems.value.filter(r => recommendActionable(r)));
+  const recSelectedList = computed$8(() => recSelectable.value.filter(r => recSelected.value[r.hash]).map(r => r.hash));
+  const recAllChecked = computed$8(() => recSelectable.value.length > 0 && recSelectedList.value.length === recSelectable.value.length);
   function toggleRec(hash) {
     recSelected.value = { ...recSelected.value, [hash]: !recSelected.value[hash] };
   }
@@ -3305,13 +3305,13 @@ function useRecImport({ api, notify, recommendItems, recommendActionable, loadRe
 //      ③ 老标签 →「魔流-站点-状态」新命名的迁移（预演 / 应用）。
 // 依赖注入：api、notify、error、settingsDraft（排序规则草稿）、emit（迁完通知父组件 action）。
 // ★ 真值源：后端 /tags 与 /tags/migrate/*；本域只放标签相关 UI 状态。
-const {ref: ref$7} = await importShared('vue');
+const {ref: ref$8} = await importShared('vue');
 
 function useTagModel({ api, notify, error, settingsDraft, emit }) {
-  const tagInfo = ref$7(null);
-  const tagMigratePlan = ref$7(null);
-  const tagMigrating = ref$7(false);
-  const newRuleType = ref$7('subscribe');
+  const tagInfo = ref$8(null);
+  const tagMigratePlan = ref$8(null);
+  const tagMigrating = ref$8(false);
+  const newRuleType = ref$8('subscribe');
   const sortRuleTypeOptions = SORT_RULE_TYPES;
   // ── 标签模型 ─────────────────────────────────────────────
   async function loadTags() {
@@ -3382,6 +3382,130 @@ function useTagModel({ api, notify, error, settingsDraft, emit }) {
 
   return {
     tagInfo, tagMigratePlan, tagMigrating, newRuleType, sortRuleTypeOptions, loadTags, sortRuleText, sortRuleNeedsMin, addSortRule, removeSortRule, previewTagMigrate, applyTagMigrate,
+  }
+}
+
+// MagicFlow 前端 · 「推荐（批量入库候选）」域 composable
+// P3 拆分：自 views/magicflow/index.vue **纯搬家**（无行为变更）。
+//
+// 职责：推荐列表（/features/recommend）取数 → 排序 / 去重 / 可操作判定（recWorthShowing、recommendItems、
+//      recommendActionable）、确认 / 忽略 / 打开弹窗（actRecommend、confirmRecommend、dismissRecommend、
+//      openRecommend），以及 60s 低频谱刷新角标的定时器（随域自管生命周期）。
+// 依赖注入：api、notify、error。★ 真值源仍然后端；本域只放推荐相关 UI 状态。
+const {computed: computed$7,onMounted: onMounted$2,onUnmounted: onUnmounted$2,ref: ref$7} = await importShared('vue');
+
+function useRecommend({ api, notify, error }) {
+const recommendData = ref$7({ items: [], total: 0, recommended: 0, enabled: true });
+const recommendOpen = ref$7(false);
+const recommendActing = ref$7('');
+let recommendTimer = null;
+
+  const showAllRecs = ref$7(false);
+  // 列表默认只显示「真·命中推荐」的生命周期项；未达门槛/未识别的临时种默认隐藏（「显示全部」才展开）。
+  function recWorthShowing(rec) {
+    if (!rec) return false
+    const st = String(rec.status || '').toLowerCase();
+    return st === 'recommended' || st === 'confirmed' || st === 'dismissed' || st === 'deleted'
+  }
+  // 展示名：优先「媒体标题 (年份)」；不显示原始下载文件名（文件名只进 tooltip 属性）。
+  function recName(rec) {
+    if (!rec) return ''
+    const m = rec.media || {};
+    const t = m.title || '';
+    if (t) return m.year ? `${t} (${m.year})` : t
+    return rec.title || rec.hash || ''
+  }
+  const recommendItems = computed$7(() => {
+    const order = { recommended: 0, pending: 1, confirmed: 2, dismissed: 3, deleted: 4 };
+    let items = [...(recommendData.value.items || [])];
+    if (!showAllRecs.value) items = items.filter(recWorthShowing);
+    items.sort((a, b) => {
+      const oa = order[a.status] ?? 9;
+      const ob = order[b.status] ?? 9;
+      if (oa !== ob) return oa - ob
+      return (b.updated_at || 0) - (a.updated_at || 0)
+    });
+    // 同一部作品（media_key）只保留最靠前的一条（去重：同片多发布/多版本）
+    const seen = new Set();
+    const out = [];
+    for (const it of items) {
+      const k = it.media_key || it.hash;
+      if (k && seen.has(k)) continue
+      if (k) seen.add(k);
+      out.push(it);
+    }
+    return out
+  });
+  const hiddenRecCount = computed$7(() => (recommendData.value.items || []).filter(i => !recWorthShowing(i)).length);
+  const confirmedCount = computed$7(() => (recommendData.value.items || []).filter(i => i.status === 'confirmed').length);
+  // 可手动确认的行：命中推荐（待确认），或「待核实」里非「已在库 / 重复」的临时种。
+  function recommendActionable(rec) {
+    if (!rec) return false
+    const st = String(rec.status || '').toLowerCase();
+    if (st === 'recommended') return true
+    if (st === 'pending') {
+      const r = String(rec.reason || '');
+      return !r.includes('已在影视库') && !r.includes('重复推荐')
+    }
+    return false
+  }
+  const pendingCount = computed$7(() => (recommendData.value.items || []).filter(i => i.status === 'pending').length);
+
+  async function loadRecommend() {
+    try {
+      recommendData.value = unwrapResponse(await api.features.recommend()) || { items: [], total: 0 };
+    } catch (err) {
+      error.value = err?.message || String(err);
+    }
+  }
+
+  async function actRecommend(hash, action, label) {
+    if (!hash || recommendActing.value) return
+    recommendActing.value = hash + action;
+    try {
+      const data = unwrapResponse(await api.features.recommendAct(hash, action)) || {};
+      notify(data.message || `${label}完成`);
+      await loadRecommend();
+    } catch (err) {
+      notify(err?.response?.data?.message || err?.message || `${label}失败`, 'error');
+    } finally {
+      recommendActing.value = '';
+    }
+  }
+  function confirmRecommend(hash) {
+    return actRecommend(hash, 'confirm', '确认')
+  }
+  function dismissRecommend(hash) {
+    return actRecommend(hash, 'dismiss', '忽略')
+  }
+  function openRecommend() {
+    recommendOpen.value = true;
+    loadRecommend();
+  }
+  onMounted$2(() => {
+    recommendTimer = window.setInterval(loadRecommend, 60000);
+  });
+  onUnmounted$2(() => {
+    if (recommendTimer) window.clearInterval(recommendTimer);
+  });
+
+  return {
+    recommendData,
+    recommendOpen,
+    recommendActing,
+    showAllRecs,
+    recommendItems,
+    hiddenRecCount,
+    confirmedCount,
+    pendingCount,
+    recWorthShowing,
+    recName,
+    recommendActionable,
+    loadRecommend,
+    actRecommend,
+    confirmRecommend,
+    dismissRecommend,
+    openRecommend,
   }
 }
 
@@ -5165,11 +5289,7 @@ const bonusCache = {};
 const candidateData = ref({ candidates: [], total: 0, reason_counts: {} });
 const candidateLoadedAt = ref(0);
 const operationData = ref({ operations: [], total: 0 });
-const recommendData = ref({ items: [], total: 0, recommended: 0, enabled: true });
 const crossseedData = ref({ count: 0, pending: [], enabled_tasks: [] });
-const recommendOpen = ref(false);
-const recommendActing = ref('');
-let recommendTimer = null;
 // 15.8.2：音乐薄弹窗（歌单 → 选种计划 / 加种）
 const musicOpen = ref(false);
 const musicText = ref('');
@@ -6417,64 +6537,14 @@ function taskLabel(taskId) {
 }
 
 // ---- 推荐甄别（价值生命周期） ----
-const showAllRecs = ref(false);
-// 列表默认只显示「真·命中推荐」的生命周期项；未达门槛/未识别的临时种默认隐藏（「显示全部」才展开）。
-function recWorthShowing(rec) {
-  if (!rec) return false
-  const st = String(rec.status || '').toLowerCase();
-  return st === 'recommended' || st === 'confirmed' || st === 'dismissed' || st === 'deleted'
-}
-// 展示名：优先「媒体标题 (年份)」；不显示原始下载文件名（文件名只进 tooltip 属性）。
-function recName(rec) {
-  if (!rec) return ''
-  const m = rec.media || {};
-  const t = m.title || '';
-  if (t) return m.year ? `${t} (${m.year})` : t
-  return rec.title || rec.hash || ''
-}
-const recommendItems = computed(() => {
-  const order = { recommended: 0, pending: 1, confirmed: 2, dismissed: 3, deleted: 4 };
-  let items = [...(recommendData.value.items || [])];
-  if (!showAllRecs.value) items = items.filter(recWorthShowing);
-  items.sort((a, b) => {
-    const oa = order[a.status] ?? 9;
-    const ob = order[b.status] ?? 9;
-    if (oa !== ob) return oa - ob
-    return (b.updated_at || 0) - (a.updated_at || 0)
-  });
-  // 同一部作品（media_key）只保留最靠前的一条（去重：同片多发布/多版本）
-  const seen = new Set();
-  const out = [];
-  for (const it of items) {
-    const k = it.media_key || it.hash;
-    if (k && seen.has(k)) continue
-    if (k) seen.add(k);
-    out.push(it);
-  }
-  return out
-});
-const hiddenRecCount = computed(() => (recommendData.value.items || []).filter(i => !recWorthShowing(i)).length);
-const confirmedCount = computed(() => (recommendData.value.items || []).filter(i => i.status === 'confirmed').length);
-// 可手动确认的行：命中推荐（待确认），或「待核实」里非「已在库 / 重复」的临时种。
-function recommendActionable(rec) {
-  if (!rec) return false
-  const st = String(rec.status || '').toLowerCase();
-  if (st === 'recommended') return true
-  if (st === 'pending') {
-    const r = String(rec.reason || '');
-    return !r.includes('已在影视库') && !r.includes('重复推荐')
-  }
-  return false
-}
-const pendingCount = computed(() => (recommendData.value.items || []).filter(i => i.status === 'pending').length);
-
-async function loadRecommend() {
-  try {
-    recommendData.value = unwrapResponse(await api.features.recommend()) || { items: [], total: 0 };
-  } catch (err) {
-    error.value = err?.message || String(err);
-  }
-}
+// ── 推荐（批量入库候选）──────────────────────────────────
+// P3：状态 / 取数 / 排序去重 / 动作 已抽到 ./composables/useRecommend.js（纯搬家）；60s 定时器随域自管。
+const {
+  recommendData, recommendOpen, recommendActing, showAllRecs,
+  recommendItems, hiddenRecCount, confirmedCount, pendingCount,
+  recName, recommendActionable,
+  loadRecommend, confirmRecommend, dismissRecommend, openRecommend,
+} = useRecommend({ api, notify, error });
 
 async function loadCrossseed() {
   try {
@@ -6748,29 +6818,7 @@ const siteAccount = computed(() => {
   return { ...mp, source: mp.ok ? 'mp' : '', sampledAt: '' }
 });
 
-async function actRecommend(hash, action, label) {
-  if (!hash || recommendActing.value) return
-  recommendActing.value = hash + action;
-  try {
-    const data = unwrapResponse(await api.features.recommendAct(hash, action)) || {};
-    notify(data.message || `${label}完成`);
-    await loadRecommend();
-  } catch (err) {
-    notify(err?.response?.data?.message || err?.message || `${label}失败`, 'error');
-  } finally {
-    recommendActing.value = '';
-  }
-}
-function confirmRecommend(hash) {
-  return actRecommend(hash, 'confirm', '确认')
-}
-function dismissRecommend(hash) {
-  return actRecommend(hash, 'dismiss', '忽略')
-}
-function openRecommend() {
-  recommendOpen.value = true;
-  loadRecommend();
-}
+
 
 // ── 批量入库（Master 2026-09-28 07:00）────────────────────────────
 // P3：勾选态 / 动作已抽到 ./composables/useRecImport.js（纯搬家）
@@ -7713,7 +7761,6 @@ onMounted(() => {
   loadRecommend();
   refreshTimer = window.setInterval(loadStatus, 30000);
   // 推荐列表是全局的，低频刷新一下角标计数
-  recommendTimer = window.setInterval(loadRecommend, 60000);
   // 跨站免费取种台账（在飞取种 · 低频刷角标）
   loadCrossseed();
   crossseedTimer = window.setInterval(loadCrossseed, 120000);
@@ -7734,7 +7781,6 @@ onMounted(() => {
 onUnmounted(() => {
   if (refreshTimer) window.clearInterval(refreshTimer);
   if (phaseTimer) window.clearInterval(phaseTimer);
-  if (recommendTimer) window.clearInterval(recommendTimer);
   if (crossseedTimer) window.clearInterval(crossseedTimer);
   if (doubanServiceTimer) window.clearInterval(doubanServiceTimer);
   if (healthTimer) window.clearInterval(healthTimer);
@@ -7898,11 +7944,11 @@ return (_ctx, _cache) => {
           ]))]),
           _: 1
         }),
-        (tileVisible('recommend') && recommendData.value.enabled !== false && (recommendData.value.recommended || 0) > 0)
+        (tileVisible('recommend') && _unref(recommendData).enabled !== false && (_unref(recommendData).recommended || 0) > 0)
           ? (_openBlock(), _createBlock(_component_VBadge, {
               key: 2,
               class: "magicflow-recommend-wrap",
-              content: recommendData.value.recommended,
+              content: _unref(recommendData).recommended,
               color: "error",
               location: "top end",
               "offset-x": "6",
@@ -7914,8 +7960,8 @@ return (_ctx, _cache) => {
                   icon: "mdi-movie-star-outline",
                   variant: "text",
                   "aria-label": "推荐",
-                  onClick: openRecommend
-                })
+                  onClick: _unref(openRecommend)
+                }, null, 8, ["onClick"])
               ]),
               _: 1
             }, 8, ["content"]))
@@ -7926,8 +7972,8 @@ return (_ctx, _cache) => {
                 icon: "mdi-movie-star-outline",
                 variant: "text",
                 "aria-label": "推荐",
-                onClick: openRecommend
-              }))
+                onClick: _unref(openRecommend)
+              }, null, 8, ["onClick"]))
             : _createCommentVNode("", true),
         (tileVisible('cloud'))
           ? (_openBlock(), _createBlock(_component_VBtn, {
@@ -8123,14 +8169,14 @@ return (_ctx, _cache) => {
               "min-width": "228"
             }, {
               default: _withCtx(() => [
-                (tileVisible('recommend') && recommendData.value.enabled !== false)
+                (tileVisible('recommend') && _unref(recommendData).enabled !== false)
                   ? (_openBlock(), _createBlock(_component_VListItem, {
                       key: 0,
                       "prepend-icon": "mdi-movie-star-outline",
                       title: "推荐",
-                      subtitle: (recommendData.value.recommended || 0) > 0 ? `${recommendData.value.recommended} 个待确认` : '影视推荐甄别',
-                      onClick: openRecommend
-                    }, null, 8, ["subtitle"]))
+                      subtitle: (_unref(recommendData).recommended || 0) > 0 ? `${_unref(recommendData).recommended} 个待确认` : '影视推荐甄别',
+                      onClick: _unref(openRecommend)
+                    }, null, 8, ["subtitle", "onClick"]))
                   : _createCommentVNode("", true),
                 (tileVisible('cloud'))
                   ? (_openBlock(), _createBlock(_component_VListItem, {
@@ -16741,8 +16787,8 @@ return (_ctx, _cache) => {
       _: 1
     }, 8, ["modelValue", "fullscreen"]),
     _createVNode(_component_VDialog, {
-      modelValue: recommendOpen.value,
-      "onUpdate:modelValue": _cache[253] || (_cache[253] = $event => ((recommendOpen).value = $event)),
+      modelValue: _unref(recommendOpen),
+      "onUpdate:modelValue": _cache[253] || (_cache[253] = $event => (_isRef(recommendOpen) ? (recommendOpen).value = $event : null)),
       "max-width": "46rem",
       scrollable: "",
       fullscreen: isNarrow.value
@@ -16758,13 +16804,13 @@ return (_ctx, _cache) => {
                   color: "primary",
                   size: "small",
                   "prepend-icon": "mdi-refresh",
-                  onClick: loadRecommend
+                  onClick: _unref(loadRecommend)
                 }, {
                   default: _withCtx(() => [...(_cache[732] || (_cache[732] = [
                     _createTextVNode("刷新", -1)
                   ]))]),
                   _: 1
-                }),
+                }, 8, ["onClick"]),
                 _createVNode(_component_VBtn, {
                   icon: "mdi-close",
                   size: "small",
@@ -16779,34 +16825,34 @@ return (_ctx, _cache) => {
               default: _withCtx(() => [
                 _createElementVNode("div", _hoisted_530, [
                   _createElementVNode("span", null, [
-                    _createElementVNode("strong", null, _toDisplayString(recommendData.value.recommended || 0), 1),
+                    _createElementVNode("strong", null, _toDisplayString(_unref(recommendData).recommended || 0), 1),
                     _cache[734] || (_cache[734] = _createTextVNode(" 待确认", -1))
                   ]),
                   _cache[737] || (_cache[737] = _createElementVNode("i", null, "·", -1)),
                   _createElementVNode("span", null, [
-                    _createElementVNode("strong", null, _toDisplayString(confirmedCount.value), 1),
+                    _createElementVNode("strong", null, _toDisplayString(_unref(confirmedCount)), 1),
                     _cache[735] || (_cache[735] = _createTextVNode(" 已入库", -1))
                   ]),
                   _cache[738] || (_cache[738] = _createElementVNode("i", null, "·", -1)),
                   _createElementVNode("span", null, [
-                    _createElementVNode("strong", null, _toDisplayString(pendingCount.value), 1),
+                    _createElementVNode("strong", null, _toDisplayString(_unref(pendingCount)), 1),
                     _cache[736] || (_cache[736] = _createTextVNode(" 未达门槛", -1))
                   ]),
                   _cache[739] || (_cache[739] = _createElementVNode("i", null, "·", -1)),
-                  _createElementVNode("span", null, "共 " + _toDisplayString(recommendData.value.total || 0) + " 条", 1),
+                  _createElementVNode("span", null, "共 " + _toDisplayString(_unref(recommendData).total || 0) + " 条", 1),
                   _cache[740] || (_cache[740] = _createElementVNode("i", null, "·", -1)),
-                  _createElementVNode("span", null, "标签 " + _toDisplayString(recommendData.value.tag || '魔流-推荐'), 1)
+                  _createElementVNode("span", null, "标签 " + _toDisplayString(_unref(recommendData).tag || '魔流-推荐'), 1)
                 ]),
                 _createElementVNode("div", _hoisted_531, [
-                  _createTextVNode(" 评分 > " + _toDisplayString(recommendData.value.min_rating ?? 7.5), 1),
-                  (recommendData.value.require_chart !== false)
+                  _createTextVNode(" 评分 > " + _toDisplayString(_unref(recommendData).min_rating ?? 7.5), 1),
+                  (_unref(recommendData).require_chart !== false)
                     ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
                         _createTextVNode(" 或在榜 / 热映 / 订阅")
                       ], 64))
                     : _createCommentVNode("", true),
-                  _createTextVNode(" · 过期 " + _toDisplayString(recommendData.value.expire_days ?? 7) + " 天 · 磁盘余量下限 " + _toDisplayString(recommendData.value.disk_min_free_gb ?? 50) + "G ", 1)
+                  _createTextVNode(" · 过期 " + _toDisplayString(_unref(recommendData).expire_days ?? 7) + " 天 · 磁盘余量下限 " + _toDisplayString(_unref(recommendData).disk_min_free_gb ?? 50) + "G ", 1)
                 ]),
-                (recommendData.value.enabled === false)
+                (_unref(recommendData).enabled === false)
                   ? (_openBlock(), _createBlock(_component_VAlert, {
                       key: 0,
                       type: "info",
@@ -16877,30 +16923,30 @@ return (_ctx, _cache) => {
                           size: "small",
                           variant: "text",
                           color: "primary",
-                          "prepend-icon": showAllRecs.value ? 'mdi-eye-off-outline' : 'mdi-eye-outline',
-                          onClick: _cache[252] || (_cache[252] = $event => (showAllRecs.value = !showAllRecs.value))
+                          "prepend-icon": _unref(showAllRecs) ? 'mdi-eye-off-outline' : 'mdi-eye-outline',
+                          onClick: _cache[252] || (_cache[252] = $event => (showAllRecs.value = !_unref(showAllRecs)))
                         }, {
                           default: _withCtx(() => [
-                            _createTextVNode(_toDisplayString(showAllRecs.value ? '仅看推荐' : (hiddenRecCount.value ? `显示全部候选 (+${hiddenRecCount.value})` : '显示全部候选')), 1)
+                            _createTextVNode(_toDisplayString(_unref(showAllRecs) ? '仅看推荐' : (_unref(hiddenRecCount) ? `显示全部候选 (+${_unref(hiddenRecCount)})` : '显示全部候选')), 1)
                           ]),
                           _: 1
                         }, 8, ["prepend-icon"])
                       ])
                     ]),
                     _createElementVNode("div", _hoisted_534, [
-                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(recommendItems.value, (rec) => {
+                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_unref(recommendItems), (rec) => {
                         return (_openBlock(), _createElementBlock("article", {
                           key: rec.hash,
-                          class: _normalizeClass(["magicflow-rec", { 'magicflow-rec--sel': recommendActionable(rec) }])
+                          class: _normalizeClass(["magicflow-rec", { 'magicflow-rec--sel': _unref(recommendActionable)(rec) }])
                         }, [
-                          (recommendActionable(rec))
+                          (_unref(recommendActionable)(rec))
                             ? (_openBlock(), _createBlock(_component_VCheckbox, {
                                 key: 0,
                                 "model-value": !!_unref(recSelected)[rec.hash],
                                 density: "compact",
                                 "hide-details": "",
                                 class: "magicflow-rec__check",
-                                "aria-label": `选择 ${recName(rec)}`,
+                                "aria-label": `选择 ${_unref(recName)(rec)}`,
                                 "onUpdate:modelValue": $event => (_unref(toggleRec)(rec.hash))
                               }, null, 8, ["model-value", "aria-label", "onUpdate:modelValue"]))
                             : _createCommentVNode("", true),
@@ -16909,7 +16955,7 @@ return (_ctx, _cache) => {
                               ? (_openBlock(), _createElementBlock("img", {
                                   key: 0,
                                   src: rec.poster,
-                                  alt: recName(rec),
+                                  alt: _unref(recName)(rec),
                                   loading: "lazy",
                                   referrerpolicy: "no-referrer"
                                 }, null, 8, _hoisted_536))
@@ -16922,7 +16968,7 @@ return (_ctx, _cache) => {
                           _createElementVNode("div", _hoisted_537, [
                             _createElementVNode("strong", {
                               title: rec.title || rec.hash
-                            }, _toDisplayString(recName(rec)), 9, _hoisted_538),
+                            }, _toDisplayString(_unref(recName)(rec)), 9, _hoisted_538),
                             _createElementVNode("span", _hoisted_539, [
                               _createVNode(_component_VChip, {
                                 size: "x-small",
@@ -16974,15 +17020,15 @@ return (_ctx, _cache) => {
                                 : _createCommentVNode("", true)
                             ])
                           ]),
-                          (recommendActionable(rec))
+                          (_unref(recommendActionable)(rec))
                             ? (_openBlock(), _createElementBlock("div", _hoisted_541, [
                                 _createVNode(_component_VBtn, {
                                   size: "small",
                                   color: "primary",
                                   variant: "tonal",
                                   "prepend-icon": "mdi-check",
-                                  loading: recommendActing.value === rec.hash + 'confirm',
-                                  onClick: $event => (confirmRecommend(rec.hash))
+                                  loading: _unref(recommendActing) === rec.hash + 'confirm',
+                                  onClick: $event => (_unref(confirmRecommend)(rec.hash))
                                 }, {
                                   default: _withCtx(() => [...(_cache[744] || (_cache[744] = [
                                     _createTextVNode(" 确认入库 ", -1)
@@ -16994,8 +17040,8 @@ return (_ctx, _cache) => {
                                   color: "error",
                                   variant: "text",
                                   "prepend-icon": "mdi-delete-outline",
-                                  loading: recommendActing.value === rec.hash + 'dismiss',
-                                  onClick: $event => (dismissRecommend(rec.hash))
+                                  loading: _unref(recommendActing) === rec.hash + 'dismiss',
+                                  onClick: $event => (_unref(dismissRecommend)(rec.hash))
                                 }, {
                                   default: _withCtx(() => [...(_cache[745] || (_cache[745] = [
                                     _createTextVNode(" 忽略删除 ", -1)
@@ -17006,12 +17052,12 @@ return (_ctx, _cache) => {
                             : _createCommentVNode("", true)
                         ], 2))
                       }), 128)),
-                      (!recommendItems.value.length)
+                      (!_unref(recommendItems).length)
                         ? (_openBlock(), _createElementBlock("div", _hoisted_542, [
-                            _createTextVNode(" 暂无推荐" + _toDisplayString(showAllRecs.value ? '' : '（当前没有同时满足「评分 > ' + (recommendData.value.min_rating ?? 7.5) + ' 且在榜 / 热映 / 订阅」的资源）') + "。 ", 1),
-                            (!showAllRecs.value && hiddenRecCount.value)
+                            _createTextVNode(" 暂无推荐" + _toDisplayString(_unref(showAllRecs) ? '' : '（当前没有同时满足「评分 > ' + (_unref(recommendData).min_rating ?? 7.5) + ' 且在榜 / 热映 / 订阅」的资源）') + "。 ", 1),
+                            (!_unref(showAllRecs) && _unref(hiddenRecCount))
                               ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
-                                  _createTextVNode("可点右上「显示全部候选 (+" + _toDisplayString(hiddenRecCount.value) + ")」看全部评估（含未达门槛的临时种）。", 1)
+                                  _createTextVNode("可点右上「显示全部候选 (+" + _toDisplayString(_unref(hiddenRecCount)) + ")」看全部评估（含未达门槛的临时种）。", 1)
                                 ], 64))
                               : _createCommentVNode("", true)
                           ]))
@@ -18659,6 +18705,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-5ede5f0c"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-385ccec2"]]);
 
 export { MagicFlowWorkbench as M };

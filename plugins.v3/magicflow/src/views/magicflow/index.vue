@@ -64,6 +64,7 @@ import { useRescue } from './composables/useRescue'
 import { useReseed } from './composables/useReseed'
 import { useRecImport } from './composables/useRecImport'
 import { useTagModel } from './composables/useTagModel'
+import { useRecommend } from './composables/useRecommend'
 import { useHealth } from './composables/useHealth'
 import { useSilent } from './composables/useSilent'
 import { useInvariant } from './composables/useInvariant'
@@ -102,11 +103,7 @@ const bonusCache = {}
 const candidateData = ref({ candidates: [], total: 0, reason_counts: {} })
 const candidateLoadedAt = ref(0)
 const operationData = ref({ operations: [], total: 0 })
-const recommendData = ref({ items: [], total: 0, recommended: 0, enabled: true })
 const crossseedData = ref({ count: 0, pending: [], enabled_tasks: [] })
-const recommendOpen = ref(false)
-const recommendActing = ref('')
-let recommendTimer = null
 // 15.8.2：音乐薄弹窗（歌单 → 选种计划 / 加种）
 const musicOpen = ref(false)
 const musicText = ref('')
@@ -1365,64 +1362,14 @@ function taskLabel(taskId) {
 }
 
 // ---- 推荐甄别（价值生命周期） ----
-const showAllRecs = ref(false)
-// 列表默认只显示「真·命中推荐」的生命周期项；未达门槛/未识别的临时种默认隐藏（「显示全部」才展开）。
-function recWorthShowing(rec) {
-  if (!rec) return false
-  const st = String(rec.status || '').toLowerCase()
-  return st === 'recommended' || st === 'confirmed' || st === 'dismissed' || st === 'deleted'
-}
-// 展示名：优先「媒体标题 (年份)」；不显示原始下载文件名（文件名只进 tooltip 属性）。
-function recName(rec) {
-  if (!rec) return ''
-  const m = rec.media || {}
-  const t = m.title || ''
-  if (t) return m.year ? `${t} (${m.year})` : t
-  return rec.title || rec.hash || ''
-}
-const recommendItems = computed(() => {
-  const order = { recommended: 0, pending: 1, confirmed: 2, dismissed: 3, deleted: 4 }
-  let items = [...(recommendData.value.items || [])]
-  if (!showAllRecs.value) items = items.filter(recWorthShowing)
-  items.sort((a, b) => {
-    const oa = order[a.status] ?? 9
-    const ob = order[b.status] ?? 9
-    if (oa !== ob) return oa - ob
-    return (b.updated_at || 0) - (a.updated_at || 0)
-  })
-  // 同一部作品（media_key）只保留最靠前的一条（去重：同片多发布/多版本）
-  const seen = new Set()
-  const out = []
-  for (const it of items) {
-    const k = it.media_key || it.hash
-    if (k && seen.has(k)) continue
-    if (k) seen.add(k)
-    out.push(it)
-  }
-  return out
-})
-const hiddenRecCount = computed(() => (recommendData.value.items || []).filter(i => !recWorthShowing(i)).length)
-const confirmedCount = computed(() => (recommendData.value.items || []).filter(i => i.status === 'confirmed').length)
-// 可手动确认的行：命中推荐（待确认），或「待核实」里非「已在库 / 重复」的临时种。
-function recommendActionable(rec) {
-  if (!rec) return false
-  const st = String(rec.status || '').toLowerCase()
-  if (st === 'recommended') return true
-  if (st === 'pending') {
-    const r = String(rec.reason || '')
-    return !r.includes('已在影视库') && !r.includes('重复推荐')
-  }
-  return false
-}
-const pendingCount = computed(() => (recommendData.value.items || []).filter(i => i.status === 'pending').length)
-
-async function loadRecommend() {
-  try {
-    recommendData.value = unwrapResponse(await api.features.recommend()) || { items: [], total: 0 }
-  } catch (err) {
-    error.value = err?.message || String(err)
-  }
-}
+// ── 推荐（批量入库候选）──────────────────────────────────
+// P3：状态 / 取数 / 排序去重 / 动作 已抽到 ./composables/useRecommend.js（纯搬家）；60s 定时器随域自管。
+const {
+  recommendData, recommendOpen, recommendActing, showAllRecs,
+  recommendItems, hiddenRecCount, confirmedCount, pendingCount,
+  recWorthShowing, recName, recommendActionable,
+  loadRecommend, actRecommend, confirmRecommend, dismissRecommend, openRecommend,
+} = useRecommend({ api, notify, error })
 
 async function loadCrossseed() {
   try {
@@ -1696,29 +1643,7 @@ const siteAccount = computed(() => {
   return { ...mp, source: mp.ok ? 'mp' : '', sampledAt: '' }
 })
 
-async function actRecommend(hash, action, label) {
-  if (!hash || recommendActing.value) return
-  recommendActing.value = hash + action
-  try {
-    const data = unwrapResponse(await api.features.recommendAct(hash, action)) || {}
-    notify(data.message || `${label}完成`)
-    await loadRecommend()
-  } catch (err) {
-    notify(err?.response?.data?.message || err?.message || `${label}失败`, 'error')
-  } finally {
-    recommendActing.value = ''
-  }
-}
-function confirmRecommend(hash) {
-  return actRecommend(hash, 'confirm', '确认')
-}
-function dismissRecommend(hash) {
-  return actRecommend(hash, 'dismiss', '忽略')
-}
-function openRecommend() {
-  recommendOpen.value = true
-  loadRecommend()
-}
+
 
 // ── 批量入库（Master 2026-09-28 07:00）────────────────────────────
 // P3：勾选态 / 动作已抽到 ./composables/useRecImport.js（纯搬家）
@@ -2723,7 +2648,6 @@ onMounted(() => {
   loadRecommend()
   refreshTimer = window.setInterval(loadStatus, 30000)
   // 推荐列表是全局的，低频刷新一下角标计数
-  recommendTimer = window.setInterval(loadRecommend, 60000)
   // 跨站免费取种台账（在飞取种 · 低频刷角标）
   loadCrossseed()
   crossseedTimer = window.setInterval(loadCrossseed, 120000)
@@ -2744,7 +2668,6 @@ onMounted(() => {
 onUnmounted(() => {
   if (refreshTimer) window.clearInterval(refreshTimer)
   if (phaseTimer) window.clearInterval(phaseTimer)
-  if (recommendTimer) window.clearInterval(recommendTimer)
   if (crossseedTimer) window.clearInterval(crossseedTimer)
   if (doubanServiceTimer) window.clearInterval(doubanServiceTimer)
   if (healthTimer) window.clearInterval(healthTimer)
