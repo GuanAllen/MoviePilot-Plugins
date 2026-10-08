@@ -3,7 +3,7 @@
         "name": "魔流",
         "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
         "labels": "站点,做种,魔力,刷流",
-        "version": "15.8.1",
+        "version": "15.8.3",
         "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
         "author": "GuanAllen",
         "level": 1,
@@ -411,9 +411,10 @@
             "15.6.0": "15.6.0：H&R 完成度阈值改为「全局默认 + 站点覆盖」（站点规则页新增『完成度』列；GET /rules?action=set_ratio&site=&ratio=）；默认 0.999，某站 20% 就填 0.2",
             "15.7.0": "15.7.0：歌单→选种计划（音乐线 AI 端先行·只读干跑）；GET /agent/music/plan；features/musicgrab.py + _music_score 判定链；清单 53→54",
             "15.8.0": "15.8.0：歌单→加种（音乐线 AI 端闭环）；POST /agent/music/grab（confirm 干跑/真加种）+ 音乐线隔离（音乐种不进魔力/刷流任务 + 摘职务标签）；清单 55",
-            "15.8.1": "15.8.1：H&R 账单标题自动补空（_hrbills_tick 只补空不覆盖；刚加的种开账时快照还没它 → title 空，本轮自愈）；音乐线隔离改纯函数 is_music_line（tags.py，离线测试可加载）"
+            "15.8.1": "15.8.1：H&R 账单标题自动补空（_hrbills_tick 只补空不覆盖；刚加的种开账时快照还没它 → title 空，本轮自愈）；音乐线隔离改纯函数 is_music_line（tags.py，离线测试可加载）",
+            "15.8.3": "15.8.3：点播 inflight 不进静默闸（PATCH：bug 修复）"
         }
     },
-    "version": "15.8.1",
+    "version": "15.8.3",
     "history": {}
 }
