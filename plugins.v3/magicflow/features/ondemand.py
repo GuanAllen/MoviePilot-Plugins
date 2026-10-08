@@ -86,6 +86,17 @@ class OnDemandMixin:
         except Exception:  # noqa: BLE001
             return {}
 
+    def _od_inflight_set(self) -> Set[str]:
+        """★ 15.8.3（Master「下完之前别暂停」）：点播 in-flight hash 集。
+
+        提供给 ``SilentGateMixin._silent_audit`` / ``_silent_enforce_pause`` 走单点过滤，
+        避免 silent.py 跨域 self 调用（棘轮阻挡）。下完之后移出本集合，恢复静默闸管辖。
+        """
+        try:
+            return {str(k).strip().lower() for k in (self._ondemand_all() or {})}
+        except Exception:  # noqa: BLE001
+            return set()
+
     def _ondemand_is_pending(self, h: str) -> bool:
         return str(h or "").lower() in self._ondemand_all()
 

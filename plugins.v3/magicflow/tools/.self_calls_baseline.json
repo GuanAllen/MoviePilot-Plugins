@@ -459,6 +459,7 @@
   "silent.py::_log": 42,
   "silent.py::_match_pool": 1,
   "silent.py::_missing_files_tick": 1,
+  "silent.py::_od_inflight_set": 1,
   "silent.py::_ondemand_is_pending": 1,
   "silent.py::_ondemand_unmark": 1,
   "silent.py::_pool_dirs": 1,

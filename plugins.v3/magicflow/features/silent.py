@@ -633,10 +633,27 @@ class SilentMixin:
             manual = {str(x).strip().lower() for x in manual}
         except Exception:  # noqa: BLE001
             manual = set()
+        # ★ 15.8.3（Master 2026-10-08 16:21「下完之前别暂停」）：点播 inflight 跳过静默闸。
+        #   背景：点播加种后打「魔流-<站>-静默-资源」标签、账本也写「sub=静默-资源」，
+        #   但**还没下完**（progress<1）就被静默闸补暂停 → qB 永远停着 → 永远完不成。
+        #   解法：判定口径 = 「账本 state=静默 + qB 没 paused」 → 静默闸要 action；点播 inflight
+        #   阶段不属于「应入静默的种」（它是被用户主动加进来下的，没下完不应被强制 paused）。
+        #   真值源 = ``ondemand_pending`` slot（点播加种即写、settle 即摘），由 OnDemandMixin 拥有。
+        #   本文件不跨域 self 调用（棘轮阻挡），改走下方 ``_od_inflight_set()`` 委托（on-demand mixin 自行 mix-in）。
+        #   注意：下完之后 _ondemand_settle → 转资源账本接管 → 重新进入正常静默闸管辖。
+        _od_inflight: Set[str] = set()
+        if hasattr(self, "_od_inflight_set"):
+            try:
+                _od_inflight = self._od_inflight_set() or set()
+            except Exception:  # noqa: BLE001
+                _od_inflight = set()
         _lim = int(limit or 0)
         for h, rec in list(led.items()):
             hh = str(h or "").strip().lower()
             if str((rec or {}).get("state") or "") != STATE_SILENT:
+                continue
+            # ★ 15.8.3：点播 inflight 跳过盘点（不下盘、不计入、不判 stalled_violation）
+            if hh in _od_inflight:
                 continue
             counts["total"] += 1
             t = snap.get(hh)
@@ -700,6 +717,9 @@ class SilentMixin:
         for _h3, _t3 in (snap or {}).items():
             _hh3 = str(_h3 or "").strip().lower()
             if not _hh3 or _hh3 in _silent_led:
+                continue
+            # ★ 15.8.3：点播 inflight 跳过 tag_only 对账（同样不动）
+            if _hh3 in _od_inflight:
                 continue
             _hit = None
             _duty = False
