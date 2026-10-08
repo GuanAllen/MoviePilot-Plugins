@@ -26,13 +26,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import delete, func, inspect as sa_inspect, select, text, update
 
 from . import db as mfdb
-from .common import HR_HOST_TASK_ID, task_is_participating
+from .common import HR_HOST_TASK_ID, ONDEMAND_TASK_ID, ONDEMAND_TASK_NAME, task_is_participating
 from .tags import (
     LEASE_TTL,
     SILENT_NEW_TIMEOUT,
     STATE_BONUS,
     STATE_BRUSH,
     STATE_HR,
+    STATE_ONDEMAND,
     STATE_SILENT,
     STATES_WITH_SUB,
     SUB_NEW,
@@ -199,6 +200,9 @@ class LedgerBackend:
         # ★ 11.11.0：__hr_host__（H&R 保种）伪任务可寻址（不在 _task_configs / mf_task 里）
         if tid == HR_HOST_TASK_ID:
             return "H&R保种"
+        # ★ 15.8.4：__ondemand__（点播在途）伪任务可寻址
+        if tid == ONDEMAND_TASK_ID:
+            return ONDEMAND_TASK_NAME
         cfg = (getattr(self.plugin, "_task_configs", {}) or {}).get(tid)
         return str(getattr(cfg, "name", "") or "") if cfg is not None else ""
 
@@ -212,6 +216,9 @@ class LedgerBackend:
         tid = str(task_id or "")
         if tid == HR_HOST_TASK_ID:
             return STATE_HR
+        # ★ 15.8.4：点播在途伪任务 → 职务「点播」（≠ 静默 → 免疫静默池暂停/清理）
+        if tid == ONDEMAND_TASK_ID:
+            return STATE_ONDEMAND
         cfg = (getattr(self.plugin, "_task_configs", {}) or {}).get(tid)
         if cfg is None:
             return STATE_SILENT
@@ -226,6 +233,9 @@ class LedgerBackend:
         # ★ 11.11.0：__hr_host__ / H&R保种 伪任务名 → __hr_host__（不在 _task_configs 里，但账本可寻址）
         if key in ("__hr_host__", "h&r保种", "hr保种", "保种"):
             return HR_HOST_TASK_ID
+        # ★ 15.8.4：点播在途伪任务名 → __ondemand__（账本可寻址，seed_row 写 task_id 用）
+        if key in ("__ondemand__", "ondemand", "点播", "点播下载"):
+            return ONDEMAND_TASK_ID
         for tid, cfg in (getattr(self.plugin, "_task_configs", {}) or {}).items():
             if str(tid).lower() == key or str(getattr(cfg, "name", "") or "").strip().lower() == key:
                 return str(tid)

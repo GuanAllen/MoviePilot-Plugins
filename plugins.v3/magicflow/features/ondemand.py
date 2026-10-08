@@ -26,7 +26,7 @@ from app.schemas import Response
 
 from ..recommend import recognize
 from ..persistence import OperationItem
-from ..tags import SUB_RESOURCE, STATE_SILENT, tag_for
+from ..tags import SUB_NEW, SUB_RESOURCE, STATE_ONDEMAND, STATE_SILENT, identity_of, retag, tag_for
 from ..sitestore import slot_callbacks
 
 _DOUBAN_RE = re.compile(r"movie\.douban\.com/subject/(\d+)")
@@ -115,6 +115,138 @@ class OnDemandMixin:
                 slot_callbacks(self, _OD_KEY)[1](value=rows)
             except Exception:  # noqa: BLE001
                 pass
+
+    # ------------------------------------------------------------ 15.8.4 点播伪任务（__ondemand__）
+
+    def _od_assign(self, hashes: Any, *, site: str = "", sub: str = "", reason: str = "") -> int:
+        """★ 15.8.4：把「点播在途」的种挂到 ``__ondemand__`` 伪任务（职务=点播）。
+
+        贴职务标签（身份轴 ``魔流-<站>-静默-<子类>`` 永久保留）+ 写账本（``taken_by=__ondemand__``）。
+        效果：账本 ``state=点播`` ≠ 静默 → 静默池的**暂停闸**与**清理闸**
+        （``_silent_purge_incomplete`` / ``_silent_drop_incomplete_now`` / ``_silent_audit``）双双跳过
+        → 「没下完的点播种」不再被当静默半成品删/暂停。**不动下载状态**（正在下，不 pause、不 force_start）。
+        幂等：已 ``taken_by=__ondemand__`` 的跳过。
+        """
+        from ..common import ONDEMAND_TASK_ID, ONDEMAND_TASK_NAME  # 惰性导入（离线测试不碰 common）
+        hs = [hashes] if isinstance(hashes, str) else list(hashes or [])
+        hs = [str(h or "").strip().lower() for h in hs if str(h or "").strip()]
+        if not hs:
+            return 0
+        downloader = self._get_downloader()
+        if downloader is None or not getattr(downloader, "is_available", False):
+            return 0
+        store = self._tag_state()
+        fn = getattr(downloader, "replace_torrent_tags", None)
+        snap = self._tag_all_torrents()
+        n = 0
+        _now = time.time()
+        for h in hs:
+            hh = str(h or "").strip().lower()
+            _rec0 = store.get(hh) or {}
+            if str(_rec0.get("taken_by") or "") == ONDEMAND_TASK_ID:
+                continue  # 已挂点播宿主
+            live = (snap or {}).get(hh)
+            cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
+            _i_site, _i_sub = identity_of(cur)
+            _sub = str(sub or "") or str(_rec0.get("sub") or "") or _i_sub or SUB_RESOURCE
+            _site = str(site or "") or str(_rec0.get("site") or "") or _i_site \
+                or self._torrent_site_name(cur, "")
+            if cur:
+                new_tags = retag(cur, site=_site, state=STATE_ONDEMAND, sub=_sub)
+            else:
+                new_tags = [tag_for(_site, STATE_SILENT, _sub), tag_for(_site, STATE_ONDEMAND)]
+            try:
+                done = fn(hh, new_tags) if callable(fn) else downloader.set_torrent_tags(hh, new_tags)
+            except Exception:  # noqa: BLE001
+                done = False
+            if not done:
+                continue
+            try:
+                store.put(hh, {
+                    "site": _site, "state": STATE_ONDEMAND, "sub": _sub,
+                    "taken_by": ONDEMAND_TASK_ID, "task": ONDEMAND_TASK_NAME,
+                    "taken_at": _now, "lease_until": 0,
+                    "title": str(getattr(live, "title", "") or "") if live is not None else "",
+                })
+            except Exception:  # noqa: BLE001
+                pass
+            n += 1
+        if n:
+            self._log(f"点播:挂 __ondemand__ {n} 个（{reason or '在途'}）")
+        return n
+
+    def _od_release(self, hashes: Any, *, reason: str = "") -> int:
+        """★ 15.8.4：点播结算（下完转资源）后，把种从 ``__ondemand__`` 释放回静默。
+
+        退「点播」职务标签 + 清账本 ``taken_by/task`` → 回静默闸管辖（此后按资源身份入池 paused）。
+        """
+        from ..common import ONDEMAND_TASK_ID  # 惰性导入
+        hs = [hashes] if isinstance(hashes, str) else list(hashes or [])
+        hs = [str(h or "").strip().lower() for h in hs if str(h or "").strip()]
+        if not hs:
+            return 0
+        downloader = self._get_downloader()
+        if downloader is None or not getattr(downloader, "is_available", False):
+            return 0
+        store = self._tag_state()
+        fn = getattr(downloader, "replace_torrent_tags", None)
+        snap = self._tag_all_torrents()
+        n = 0
+        _now = time.time()
+        for h in hs:
+            hh = str(h or "").strip().lower()
+            _rec = store.get(hh) or {}
+            if str(_rec.get("taken_by") or "") not in ("", ONDEMAND_TASK_ID):
+                continue  # 已被别的宿主接管，不抢
+            live = (snap or {}).get(hh)
+            cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
+            _i_site, _i_sub = identity_of(cur)
+            _sub = str(_rec.get("sub") or "") or _i_sub or SUB_RESOURCE
+            _site = str(_rec.get("site") or "") or _i_site or self._torrent_site_name(cur, "")
+            new_tags = retag(cur, site=_site, state=STATE_SILENT, sub=_sub) \
+                if cur else [tag_for(_site, STATE_SILENT, _sub)]
+            try:
+                done = fn(hh, new_tags) if callable(fn) else downloader.set_torrent_tags(hh, new_tags)
+            except Exception:  # noqa: BLE001
+                done = False
+            if not done:
+                continue
+            try:
+                store.put(hh, {
+                    "site": _site, "state": STATE_SILENT, "sub": _sub,
+                    "taken_by": "", "task": "", "lease_until": 0,
+                    "od_released_at": _now, "od_released_reason": str(reason or ""),
+                })
+            except Exception:  # noqa: BLE001
+                pass
+            n += 1
+        if n:
+            try:
+                self._silent_pause_gate(hs)
+            except Exception:  # noqa: BLE001
+                pass
+            self._log(f"点播:释放 __ondemand__ {n} 个（{reason or '结算'}）")
+        return n
+
+    def _ondemand_duty_reconcile(self) -> Dict[str, int]:
+        """★ 15.8.4：点播「点播」职务对账（每 Check 轮一次，廉价）。
+
+        ① pending 里未挂 ``__ondemand__`` 的 → 补挂（防漏）；
+        ② 挂了 ``__ondemand__`` 但已不在 pending（已结算/被移除）的 → 释放回静默（防占）。
+        """
+        from ..common import ONDEMAND_TASK_ID  # 惰性导入
+        pend = set((self._ondemand_all() or {}).keys())
+        try:
+            items = self._tag_state().items() or {}
+        except Exception:  # noqa: BLE001
+            return {"assigned": 0, "released": 0}
+        to_assign = [h for h in pend
+                     if str((items.get(h) or {}).get("taken_by") or "") != ONDEMAND_TASK_ID]
+        to_release = [th for th, rec in items.items()
+                      if str((rec or {}).get("taken_by") or "") == ONDEMAND_TASK_ID and th not in pend]
+        a = self._od_assign(to_assign, reason="对账补挂") if to_assign else 0
+        r = self._od_release(to_release, reason="对账释放") if to_release else 0
+        return {"assigned": a, "released": r}
 
     # ------------------------------------------------------------ 第 1 步：识别
 
@@ -301,6 +433,11 @@ class OnDemandMixin:
         if not hs:
             return {"ok": False, "message": f"添加失败: {err or '未知'}"}
         h = str(hs[0] if isinstance(hs, (list, tuple)) else hs).lower()
+        # ★ 15.8.4：加种即挂 __ondemand__ 伪任务（职务=点播）→ 未下完不被静默池删/暂停
+        try:
+            self._od_assign([h], site=site_name, sub=SUB_RESOURCE, reason="加种")
+        except Exception as _oae:  # noqa: BLE001
+            self._log(f"点播:挂伪任务失败 {h[:12]}: {_oae}", "warning")
         return {
             "ok": True, "hash": h, "tag": tag,
             "site": int(row.get("site") or 0), "save_path": save_path,
@@ -310,6 +447,13 @@ class OnDemandMixin:
 
     def _ondemand_settle(self, task: Any = None) -> Dict[str, int]:
         """把已形成资源组的点播种子**直接转「资源」**（不观察、不分拣）。"""
+        # ★ 15.8.4：先对账「点播」职务（补挂漏的 / 释放已结算的），再干活
+        try:
+            _rc = self._ondemand_duty_reconcile()
+            if _rc.get("assigned") or _rc.get("released"):
+                self._log(f"点播:职务对账 补挂 {_rc.get('assigned')} / 释放 {_rc.get('released')}")
+        except Exception as _rce:  # noqa: BLE001
+            self._log(f"点播:职务对账异常: {_rce}", "warning")
         pend = self._ondemand_all()
         if not pend:
             return {"settled": 0}
@@ -344,6 +488,11 @@ class OnDemandMixin:
                 self._log(f"点播:转资源失败 {h[:12]}: {e}", "warning")
                 continue
             self._ondemand_unmark(h)
+            # ★ 15.8.4：转资源即退「点播」职务 → 交回静默闸管辖
+            try:
+                self._od_release([h], reason="结算转资源")
+            except Exception:  # noqa: BLE001
+                pass
             done += 1
             _title = str(info.get("title") or info.get("media") or "")
             self._log(f"点播:转「资源」 {h[:12]} 「{_title}」")

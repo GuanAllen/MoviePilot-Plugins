@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "15.8.3"
+__version__ = "15.8.4"
 
 import bisect
 import re
@@ -152,6 +152,9 @@ SILENT_HOST_TASK_ID = "__silent_host__"  # ⭐「静默托管」常驻任务在�
 CROSSSEED_TASK_ID = "__crossseed__"  # ⭐ 14.0.0「跨站取种」全局真任务 id（承接取种下载；非伪任务）
 CROSSSEED_TASK_NAME = "跨站取种"
 HR_HOST_TASK_ID = "__hr_host__"  # ⭐「H&R 保种」常驻伪任务 id（欠 H&R 的种归它挂，不归静默池）
+ONDEMAND_TASK_ID = "__ondemand__"  # ⭐ 15.8.4「点播在途」伪任务 id（点播加种即挂、settle 摘）。
+#   目的：让「还没下完的点播种」账本 state=点播 ≠ 静默 → 免疫静默池的暂停闸与清理闸（防误删，Master 18:40 拍板）。
+ONDEMAND_TASK_NAME = "点播"  # 伪任务展示名（写账本 task / _task_id 反查用）
 SILENT_HR_SPLIT_ENABLED = True  # ⭐ 11.11.0 回退开关：静默池=全 paused + H&R 拆到 __hr_host__（False=退回旧行为）
 # ★ 11.12.0 删除熔断 + 账单一致性断言（Master 2026-10-06：「bug 别再删很多次」；「消违约是正常动作」）
 DELETE_BREAKER_ENABLED = True   # 滚动窗口内删除数超阈 → 阻断 + 报警（防失控循环/重复删）
