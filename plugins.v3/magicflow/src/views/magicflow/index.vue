@@ -15,7 +15,6 @@ import {
   normalizeIyuuSites,
   normalizeSettings,
   normalizeSortRules,
-  SORT_RULE_TYPES,
   normalizeTask,
   cloudStatusMeta,
   recommendStatusMeta,
@@ -59,6 +58,18 @@ import {
   BATCH_LABEL,
 } from './constants'
 import { createApi } from '../../api/request'
+import { formatRemain, tsText, fmtTs } from './format'
+import { useOndemand } from './composables/useOndemand'
+import { useRescue } from './composables/useRescue'
+import { useReseed } from './composables/useReseed'
+import { useRecImport } from './composables/useRecImport'
+import { useTagModel } from './composables/useTagModel'
+import { useHealth } from './composables/useHealth'
+import { useSilent } from './composables/useSilent'
+import { useInvariant } from './composables/useInvariant'
+import { useExam } from './composables/useExam'
+import { useSignin } from './composables/useSignin'
+import { useDoubanService } from './composables/useDoubanService'
 
 const props = defineProps({
   api: { type: Object, default: () => ({}) },
@@ -305,12 +316,6 @@ const defaultsLoading = ref(false)
 const iyuuSites = ref([])
 const siteRules = ref([])
 const rulesLoading = ref(false)
-// 标签模型（3.13.0）
-const tagInfo = ref(null)
-const tagMigratePlan = ref(null)
-const tagMigrating = ref(false)
-const newRuleType = ref('subscribe')
-const sortRuleTypeOptions = SORT_RULE_TYPES
 const rulesProbing = ref(false)
 const iyuuLoading = ref(false)
 const iyuuTesting = ref(false)
@@ -1484,183 +1489,33 @@ function musicResetResult() {
 }
 
 // ── 死种补源（rescue）：停滞欠 H&R 的种 → 他站「无 H&R」站补下同 Release ────────
-const rescueOpen = ref(false)
-const rescueData = ref(null)
-const rescueScanning = ref(false)
-const rescueBusy = ref(false)
-const rescueBusyType = ref('')
-const rescueTargets = computed(() => (Array.isArray(rescueData.value?.targets) ? rescueData.value.targets : []))
-const rescueSkippedSites = computed(() => (Array.isArray(rescueData.value?.skipped_sites) ? rescueData.value.skipped_sites : []))
-
-async function loadRescue() {
-  try {
-    rescueData.value = unwrapResponse(await api.features.rescueScan()) || null
-  } catch (err) {
-    // 补源是增强信息，失败不打断界面
-  }
-}
-
-function openRescue() {
-  rescueOpen.value = true
-  rescueData.value = null
-  loadRescue()
-}
-
-async function runRescueScan() {
-  rescueScanning.value = true
-  try {
-    await loadRescue()
-    if (!rescueData.value) notify('死种补源：扫描失败（见后端日志）', 'warning')
-  } finally {
-    rescueScanning.value = false
-  }
-}
-
-async function runRescueApply(confirm) {
-  rescueBusy.value = true
-  rescueBusyType.value = confirm ? 'apply' : 'preview'
-  try {
-    const hashes = rescueTargets.value.map(t => t.hash).filter(Boolean)
-    const params = [`action=apply`, `hashes=${encodeURIComponent(hashes.join(','))}`]
-    if (confirm) params.push('confirm=1')
-    else params.push('dry_run=1')
-    const res = unwrapResponse(await api.features.rescueRun(params.join('&'))) || {}
-    if (confirm) {
-      notify(`死种补源：已补 ${res.added ?? 0} 个副本`)
-    } else {
-      notify(`死种补源（干跑）：将补 ${res.would_add ?? 0} 个副本（未落盘）`)
-    }
-    await loadRescue()
-  } catch (err) {
-    error.value = err?.message || String(err)
-  } finally {
-    rescueBusy.value = false
-    rescueBusyType.value = ''
-  }
-}
+// P3：状态 / 请求 / 动作已抽到 ./composables/useRescue.js（纯搬家，真值源仍在后端）
+const {
+  rescueOpen, rescueData, rescueScanning, rescueBusy, rescueBusyType,
+  rescueTargets, rescueSkippedSites,
+  loadRescue, openRescue, runRescueScan, runRescueApply,
+} = useRescue({ api, notify, error })
 
 // ── ★ 全站辅种（7.10.0）：本机已有资源 → 去各站挂种落户（零下载）──────────────
-const reseedState = ref(null)
-const reseedRunning = ref(false)
-// 目标站候选：来自 /reseed 的站点映射（只有 IYUU 站点表里有的站才能当目标），值用域名（后端白名单按域名/名称匹配）
-const reseedSiteOptions = computed(() =>
-  ((reseedState.value && reseedState.value.sites) || []).map(s => ({
-    title: `${s.name || s.domain}${s.passkey_ok ? ' · passkey ✓' : ''}`,
-    value: String(s.domain || s.name || s.sid),
-  })),
-)
-async function loadReseed() {
-  try {
-    reseedState.value = unwrapResponse(await api.pool.reseed()) || null
-  } catch (err) {
-    // 全站辅种是增强信息，失败不打断界面
-  }
-}
-function fmtTs(ts) {
-  const n = Number(ts || 0)
-  return n > 0 ? new Date(n * 1000).toLocaleString() : '—'
-}
-async function runReseed(forceReal = false) {
-  reseedRunning.value = true
-  try {
-    const dry = forceReal ? 0 : (settingsDraft.value.reseed_dry ? 1 : 0)
-    const rep = unwrapResponse(await api.pool.reseedRun(dry)) || {}
-    const parts = []
-    if (rep.plan != null) parts.push(`计划 ${rep.plan}`)
-    if (rep.would) parts.push(`可挂 ${rep.would}`)
-    if (rep.ok) parts.push(`挂上 ${rep.ok}`)
-    if (rep.have) parts.push(`已有 ${rep.have}`)
-    if (rep.mismatch) parts.push(`不一致 ${rep.mismatch}`)
-    if (rep.nourl) parts.push(`缺链 ${rep.nourl}`)
-    if (rep.pv) parts.push(`缺 PV ${rep.pv}`)
-    if (rep.fail) parts.push(`失败 ${rep.fail}`)
-    notify(`全站辅种${dry ? '（干跑）' : ''}完成：` + (parts.join(' / ') || '无候选') +
-      ((rep.errors && rep.errors.length) ? `｜${rep.errors[0]}` : ''))
-    await Promise.all([loadReseed(), loadStatus()])
-  } catch (err) {
-    error.value = err?.message || String(err)
-  } finally {
-    reseedRunning.value = false
-  }
-}
+// P3：状态 / 请求 / 动作已抽到 ./composables/useReseed.js（纯搬家）；fmtTs → ./format.js
+const {
+  reseedState, reseedRunning, reseedSiteOptions,
+  loadReseed, runReseed,
+} = useReseed({ api, notify, settingsDraft, loadStatus, error })
 
 // ── 豆瓣评分服务（magicflow-douban · 3.23.1）─────────────────────────
-const doubanServiceOpen = ref(false)
-const doubanServiceActing = ref('')
-const doubanServiceData = ref({ ok: false, records: 0, cache: {}, crawl: {} })
-const doubanCrawl = computed(() => (doubanServiceData.value || {}).crawl || {})
-const doubanCrawlProgress = computed(() => {
-  const c = doubanCrawl.value
-  const total = Number(c.spec_total || 0)
-  const idx = Number(c.spec_index || 0)
-  if (!total) return 0
-  return Math.min(100, Math.round((idx / total) * 100))
-})
-
-async function loadDoubanService() {
-  try {
-    doubanServiceData.value = unwrapResponse(await api.features.doubanService())
-      || { ok: false, records: 0, cache: {}, crawl: {} }
-  } catch (err) {
-    // 豆瓣服务是增强信息，失败不打断界面
-  }
-}
-
-function openDoubanService() {
-  doubanServiceOpen.value = true
-  loadDoubanService()
-}
-
-async function doubanCrawlAction(action) {
-  doubanServiceActing.value = action
-  try {
-    const res = unwrapResponse(await api.features.doubanAction(action))
-    if (res) doubanServiceData.value = res
-  } catch (err) {
-    // 静默
-  } finally {
-    doubanServiceActing.value = ''
-  }
-}
+// P3：状态 / 请求 / 动作已抽到 ./composables/useDoubanService.js（纯搬家）
+const {
+  doubanServiceOpen, doubanServiceActing, doubanServiceData, doubanCrawl, doubanCrawlProgress,
+  loadDoubanService, openDoubanService, doubanCrawlAction,
+} = useDoubanService({ api })
 
 // ── 健康自检（可观测③）：零外部请求，只看本地任务状态 + 趋势 ─────────
-const healthOpen = ref(false)
-const healthData = ref({ level: 'ok', ok: true, counts: {}, issues: [] })
-const healthColor = computed(() => {
-  const lv = healthData.value?.level || 'ok'
-  if (lv === 'error') return 'error'
-  if (lv === 'warning') return 'warning'
-  if (lv === 'info') return 'info'
-  return undefined
-})
-const healthBadgeCount = computed(() => {
-  const c = healthData.value?.counts || {}
-  return Number(c.error || 0) + Number(c.warning || 0)
-})
-const healthLabel = computed(() => {
-  const d = healthData.value || {}
-  const c = d.counts || {}
-  if (d.level === 'error') return `健康：${c.error || 0} 项错误`
-  if (d.level === 'warning') return `健康：${c.warning || 0} 项告警`
-  if (d.level === 'info') return `健康：${c.info || 0} 条提示`
-  return '健康：全部正常'
-})
-async function loadHealth() {
-  try {
-    healthData.value = unwrapResponse(await api.pool.health())
-      || { level: 'ok', ok: true, counts: {}, issues: [] }
-  } catch (err) {
-    // 自检是增强信息，失败不打断界面
-  }
-}
-function openHealth() {
-  healthOpen.value = true
-  loadHealth()
-}
-function healthGoto(issue) {
-  if (issue?.task_id) selectTask(issue.task_id)
-  healthOpen.value = false
-}
+// P3：状态 / 请求 / 派生已抽到 ./composables/useHealth.js（纯搬家）
+const {
+  healthOpen, healthData, healthColor, healthBadgeCount, healthLabel,
+  loadHealth, openHealth, healthGoto,
+} = useHealth({ api, selectTask })
 
 function fmtCount(n) {
   const v = Number(n || 0)
@@ -1669,156 +1524,14 @@ function fmtCount(n) {
 }
 
 // ── 点播（§1 权威来源 1 · 7.1.0）────────────────────────────────────
-const ondemandOpen = ref(false)
-const ondemandQuery = ref('')
-const ondemandTaskId = ref('')
-// ★ 站点多选（勾选框）：不勾 = 全部站点；勾了就只搜勾中的（点播不再依赖任务）
-const ondemandSiteIds = ref([])
-const ondemandBusy = ref('')
-const ondemandResult = ref(null)
-const ondemandError = ref('')
-const ondemandCandidates = computed(() => {
-  const rows = ondemandResult.value?.candidates
-  return Array.isArray(rows) ? rows : []
-})
-
-function openOndemand() {
-  ondemandOpen.value = true
-  ondemandResult.value = null
-  ondemandError.value = ''
-  loadOndemandItems()
-}
-
-function fmtSizeGb(bytes) {
-  const v = Number(bytes || 0) / (1024 * 1024 * 1024)
-  return v ? `${v.toFixed(2)} GB` : '—'
-}
-
-// 点播候选的流量标识：dv=下载因子（0=免费，0<dv<1=折扣，1=全额计入）
-function odTraffic(dv) {
-  const v = Number(dv ?? 1)
-  if (!Number.isFinite(v) || v >= 1) return { text: '计流量', color: '' }
-  if (v <= 0) return { text: '免费', color: 'success' }
-  return { text: `流量 ×${Math.round(v * 100)}%`, color: 'warning' }
-}
-
-function isOndemandAuto(row) {
-  return !!row?.enclosure && row.enclosure === ondemandResult.value?.auto_pick
-}
-
-async function runOndemand(apply, pick = '') {
-  const q = String(ondemandQuery.value || '').trim()
-  if (!q) {
-    ondemandError.value = '请输入片名或豆瓣/TMDB/IMDB 链接'
-    return
-  }
-  ondemandBusy.value = apply ? 'apply' : 'preview'
-  ondemandError.value = ''
-  try {
-    const params = [`query=${encodeURIComponent(q)}`, `apply=${apply ? 'true' : 'false'}`]
-    if (ondemandTaskId.value) params.push(`task_id=${encodeURIComponent(ondemandTaskId.value)}`)
-    const _sites = (Array.isArray(ondemandSiteIds.value) ? ondemandSiteIds.value : []).map(String).filter(Boolean)
-    if (_sites.length) params.push(`site_ids=${encodeURIComponent(_sites.join(','))}`)
-    if (pick) params.push(`pick=${encodeURIComponent(pick)}`)
-    const res = unwrapResponse(await api.features.ondemandSearch(params.join('&')))
-    if (res) ondemandResult.value = res
-    if (apply) loadOndemandItems()   // ★ 15.4.0：下完马上刷新清单（进度/历史可见）
-  } catch (err) {
-    ondemandError.value = err?.message || String(err)
-  } finally {
-    ondemandBusy.value = ''
-  }
-}
-
-// ★ 15.4.0：点播清单（进行中带进度 + 历史）。真值源：后端 ondemand_pending × qB 快照 + journal。
-const ondemandItems = ref({ inflight: [], history: [], totals: {} })
-const ondemandItemsBusy = ref(false)
-let ondemandItemsTimer = null
-const odInflight = computed(() => (Array.isArray(ondemandItems.value?.inflight) ? ondemandItems.value.inflight : []))
-const odHistory = computed(() => (Array.isArray(ondemandItems.value?.history) ? ondemandItems.value.history : []))
-
-async function loadOndemandItems() {
-  ondemandItemsBusy.value = true
-  try {
-    const res = unwrapResponse(await api.features.ondemandItems())
-    if (res) ondemandItems.value = res
-  } catch (err) {
-    // 清单是增强信息，失败不打断搜索/下载主流程
-  } finally {
-    ondemandItemsBusy.value = false
-  }
-}
-function startOndemandItemsPolling() {
-  stopOndemandItemsPolling()
-  ondemandItemsTimer = window.setInterval(loadOndemandItems, 10000)
-}
-function stopOndemandItemsPolling() {
-  if (ondemandItemsTimer) {
-    window.clearInterval(ondemandItemsTimer)
-    ondemandItemsTimer = null
-  }
-}
-watch(ondemandOpen, (v) => {
-  if (v) {
-    loadOndemandItems()
-    startOndemandItemsPolling()
-  } else {
-    stopOndemandItemsPolling()
-  }
-})
-
-// 进度百分比 / 速度 / 剩余时间 / 阶段配色（点播清单用）
-function odPct(row) {
-  return Math.max(0, Math.min(100, Number(row?.progress || 0) * 100))
-}
-function odSpeed(bps) {
-  const v = Number(bps || 0)
-  if (!v) return ''
-  if (v >= 1024 * 1024) return `${(v / 1024 / 1024).toFixed(1)} MB/s`
-  if (v >= 1024) return `${(v / 1024).toFixed(0)} KB/s`
-  return `${v.toFixed(0)} B/s`
-}
-function odEtaText(sec) {
-  const s = Number(sec || 0)
-  if (!s || s <= 0) return ''
-  if (s < 60) return `剩 ${Math.round(s)} 秒`
-  if (s < 3600) return `剩 ${Math.round(s / 60)} 分`
-  return `剩 ${(s / 3600).toFixed(1)} 小时`
-}
-function odStageColor(stage) {
-  if (stage === 'downloading') return 'primary'
-  if (stage === 'resource') return 'success'
-  if (stage === 'pending_settle') return 'info'
-  return 'warning'   // gone
-}
-
-// ★ 15.5.0：筛选（进行中 / 已完成）+ 行内操作（暂停 / 继续 / 移除）
-const ondemandTab = ref('inflight')   // 'inflight' | 'done'
-const odActing = ref('')
-const odMsg = ref('')
-function odIsPaused(row) {
-  const s = String(row?.state || '')
-  return s === 'pausedUP' || s === 'pausedDL' || s === 'stoppedUP' || s === 'stoppedDL' || s === 'paused'
-}
-async function actOndemand(row, action) {
-  const h = String(row?.hash || '')
-  if (!h) return
-  if (action === 'remove') {
-    const _t = row?.title || h.slice(0, 12)
-    if (!confirm(`确认移除「${_t}」？\n\n· 从下载器删除该种 + 文件\n· 欠 H&R / 受保护的种会被闸门拦下`)) return
-  }
-  odMsg.value = ''
-  odActing.value = `${h}:${action}`
-  try {
-    const res = unwrapResponse(await api.features.ondemandAct(h, action))
-    odMsg.value = res?.message || '已执行'
-  } catch (err) {
-    odMsg.value = `❌ ${err?.message || String(err)}`
-  } finally {
-    odActing.value = ''
-    loadOndemandItems()
-  }
-}
+// P3：状态 / 请求 / 轮询生命周期已抽到 ./composables/useOndemand.js（纯搬家，真值源仍在后端）
+const {
+  ondemandOpen, ondemandQuery, ondemandTaskId, ondemandSiteIds, ondemandBusy,
+  ondemandResult, ondemandError, ondemandCandidates,
+  ondemandItems, ondemandItemsBusy, ondemandTab, odInflight, odHistory, odActing, odMsg,
+  openOndemand, runOndemand, loadOndemandItems, actOndemand,
+  odTraffic, odPct, odSpeed, odEtaText, odStageColor, odIsPaused, isOndemandAuto, fmtSizeGb,
+} = useOndemand(api)
 
 // ── 跨站辅种：队列 / 流量兜底（3.11.0）────────────────────────────────
 const crossseedOpen = ref(false)
@@ -1843,16 +1556,6 @@ const crossseedSilentCount = computed(
 const crossseedPendingHandoff = computed(() =>
   Math.max(0, crossseedSources.value.length - crossseedSilentCount.value)
 )
-
-function formatRemain(min) {
-  const m = Number(min)
-  if (!Number.isFinite(m) || m <= 0) return '0 分钟'
-  if (m < 60) return `${Math.round(m)} 分钟`
-  const hrs = m / 60
-  if (hrs < 24) return `${hrs.toFixed(hrs < 10 ? 1 : 0)} 小时`
-  return `${(hrs / 24).toFixed(1)} 天`
-}
-
 /** ★ 跨站取种（7.4.0 改版）：顶部三个核心数字 + 极简来源份卡片。 */
 const crossseedStats = computed(() => ({
   pending: Number(crossseedData.value?.count || 0),
@@ -1960,224 +1663,14 @@ const siteLiveCfg = computed(() => (liveState.value || {}).cfg || {})
 const siteLiveAlerts = computed(() => ((siteLive.value || {}).alerts || []))
 
 // ── 签到 / 模拟登录（借鉴 MoviePilot「站点自动签到」插件）──────────────────
-// 站点多选：想签几个签几个（siteSelectItems 直接来自 /status.options.sites）
-const siteSelectItems = computed(() =>
-  (status.value.options?.sites || []).map(s => ({
-    title: s.name || s.domain || String(s.id),
-    value: String(s.id),
-  }))
-)
-const signinCfg = computed(() => status.value.signin || {})
-const signinToday = computed(() => signinCfg.value.today || {})
-const signinTodayRows = computed(() => {
-  const cfg = signinCfg.value || {}
-  const signIds = (cfg.sites || []).map(String)
-  const loginIds = (cfg.login_sites || []).map(String)
-  const rows = []
-  const seen = new Set()
-  ;[...signIds, ...loginIds].forEach(key => {
-    if (seen.has(key)) return
-    seen.add(key)
-    const info = siteSelectItems.value.find(s => s.value === key) || {}
-    const rec = signinToday.value[key] || {}
-    rows.push({
-      site_id: key,
-      site_name: rec.site_name || info.title || key,
-      sign: signIds.includes(key),
-      login: loginIds.includes(key),
-      signin: rec.sign || null,
-      loginResult: rec.login || null,
-    })
-  })
-  return rows
-})
-const signinRunning = ref(false)
-async function runSigninNow(kind = 'sign') {
-  if (signinRunning.value) return
-  signinRunning.value = true
-  try {
-    // ★ 插件 API 的 POST 参数只从 query 绑定（body 不生效）→ 参数拼在 URL 上
-    const query = new URLSearchParams({ kind: String(kind) }).toString()
-    const res = unwrapResponse(await api.features.signinRun(query)) || {}
-    const s = res.summary || {}
-    notify(`${kind === 'sign' ? '签到' : '登录'}完成：成功 ${s.ok || 0} / 失败 ${s.fail || 0}`)
-    // 只刷新 status（不重载 settingsDraft，避免把正在编辑的设置冲掉）
-    status.value = unwrapResponse(await api.tasks.status()) || status.value
-    if (signinOpen.value) loadSigninReport()
-  } catch (err) {
-    notify(`执行失败：${err?.message || err}`, 'error')
-  } finally {
-    signinRunning.value = false
-  }
-}
-// ── 签到报表页（独立的「签到」功能页；设置仍在设置页）─────────────────
-const signinOpen = ref(false)
-const signinReport = ref({ enabled: false, sites: [], records: [], today: '' })
-const signinReportLoading = ref(false)
-async function loadSigninReport() {
-  signinReportLoading.value = true
-  try {
-    signinReport.value = unwrapResponse(await api.features.signinReport()) || signinReport.value
-  } catch (err) {
-    notify(`签到报表读取失败：${err?.message || err}`, 'error')
-  } finally {
-    signinReportLoading.value = false
-  }
-}
-function openSignin() {
-  signinOpen.value = true
-  loadSigninReport()
-}
-// ---------------- 报表（按「几十个站」的规模设计） ----------------
-const signinFilter = ref('all')
-const signinSearch = ref('')
-function signinStatusText(s) {
-  return SIGNIN_STATUS_TEXT[s] || s
-}
-// 日期标签：09/30 → 9/30（窄屏也能完整显示）
-function signinDateLabel(d) {
-  const s = String(d || '')
-  if (s.length < 10) return s
-  return `${Number(s.slice(5, 7))}/${Number(s.slice(8, 10))}`
-}
-// 单站当天要看的动作：只算「设置里勾了」的那几项（登录站不会显示签到结果）
-function _signinWant(r) {
-  const want = []
-  if (r.sign !== false) want.push(['签到', r.signin])
-  if (r.login !== false) want.push(['登录', r.loginResult])
-  return want
-}
-// 单站某天的状态：有失败→fail；缺结果→pending（今天）/none（历史）；全跳过→skip
-function _signinStatus(signin, loginResult, pendingWhenEmpty, cfgSign, cfgLogin) {
-  const want = _signinWant({ sign: cfgSign, login: cfgLogin, signin, loginResult })
-  if (!want.length) return pendingWhenEmpty ? 'pending' : 'none'
-  const vals = want.map(([, x]) => x).filter(Boolean)
-  if (vals.length < want.length) return pendingWhenEmpty ? 'pending' : 'none'
-  if (vals.every(x => x.skipped)) return 'skip'
-  // ★ 失败按「谁失败」分色：签到✗=红、登录✗=橙、都✗=深红
-  const bad = k => want.some(([kk, x]) => kk === k && x && !x.ok && !x.skipped)
-  const signBad = bad('签到')
-  const loginBad = bad('登录')
-  if (signBad && loginBad) return 'fail'
-  if (signBad) return 'signfail'
-  if (loginBad) return 'loginfail'
-  return 'ok'
-}
-const signinReportTodayRows = computed(() => {
-  const sites = signinReport.value.sites || []
-  if (!sites.length) return signinTodayRows.value
-  return sites.map(s => ({
-    site_id: s.site_id,
-    site_name: s.site_name || s.domain || String(s.site_id),
-    sign: !!s.sign,
-    login: !!s.login,
-    signin: s.signin || null,
-    loginResult: s.login_result || null,
-  }))
-})
-// 今日各状态计数 + 过滤后的列表（失败优先，几十个站也一眼看出问题）
-const signinTodayCounts = computed(() => {
-  const c = { all: 0, ok: 0, fail: 0, pending: 0, skip: 0 }
-  ;(signinReportTodayRows.value || []).forEach(r => {
-    const s = _signinStatus(r.signin, r.loginResult, true, r.sign, r.login)
-    c.all++
-    if (SIGNIN_FAIL_STATUS.includes(s)) c.fail++
-    else c[s] = (c[s] || 0) + 1
-  })
-  return c
-})
-const signinFilterItems = computed(() => {
-  const c = signinTodayCounts.value
-  return [
-    { value: 'all', label: `全部 ${c.all}`, color: 'primary' },
-    { value: 'fail', label: `失败 ${c.fail}`, color: 'error' },
-    { value: 'pending', label: `待执行 ${c.pending}`, color: 'warning' },
-    { value: 'ok', label: `成功 ${c.ok}`, color: 'success' },
-  ]
-})
-const signinTodayList = computed(() => {
-  const ord = SIGNIN_ORDER
-  const q = String(signinSearch.value || '').trim().toLowerCase()
-  return (signinReportTodayRows.value || [])
-    .map(r => {
-      const status = _signinStatus(r.signin, r.loginResult, true, r.sign, r.login)
-      const pairs = _signinWant(r)
-      const rt = (signinReport.value.retry || {})[String(r.site_id)]
-      const fails = pairs.filter(([, x]) => x && !x.ok && !x.skipped)
-      let msg
-      if (fails.length) {
-        msg = fails.map(([k, x]) => `${k} ✗ ${x.message || ''}`.trim()).join(' · ')
-      } else {
-        // 全成功 / 待执行：只给简短标记，几十个站也不刷屏（失败才展开原因）
-        msg = pairs.map(([k, x]) => (x ? `${k} ${x.ok ? '✓' : (x.na ? '不支持' : (x.skipped ? '跳过' : '✗'))}` : `${k} ⏳`)).join(' · ')
-      }
-      return { ...r, status, msg: SIGNIN_FAIL_STATUS.includes(status) && rt ? `${msg} · ${rt.next_at} 重试` : msg }
-    })
-    .filter(r => !q || String(r.site_name || '').toLowerCase().includes(q))
-    .filter(r => signinFilter.value === 'all' || (signinFilter.value === 'fail' ? SIGNIN_FAIL_STATUS.includes(r.status) : r.status === signinFilter.value))
-    .sort((a, b) => (ord[a.status] - ord[b.status]) || String(a.site_name || '').localeCompare(String(b.site_name || '')))
-})
-// 近 7 天矩阵：行=站点、列=日期（点阵）；异常在前，支持几十个站滚动查看
-const signinKeepalive = computed(() => ((signinReport.value.keepalive || {}).sites || []))
-const signinKeepaliveNote = computed(() => {
-  const rows = signinKeepalive.value || []
-  return rows.length ? String(rows[0].rule_note || '') : ''
-})
-
-const signinMatrix = computed(() => {
-  const records = signinReport.value.records || []
-  const today = signinReport.value.today || ''
-  // 近 7 天窗口：以今天为锚，缺记录的日期补空点（列固定 7 个，方便竖着对比）
-  const anchor = today || records.map(r => r.date).sort().slice(-1)[0] || ''
-  const dates = []
-  if (anchor) {
-    const base = new Date(`${anchor}T00:00:00`)
-    for (let i = 0; i < 7; i += 1) {
-      const d = new Date(base)
-      d.setDate(base.getDate() - i)
-      dates.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)
-    }
-  }
-  const map = new Map()
-  const ensure = (sid, name) => {
-    const k = String(sid)
-    if (!map.has(k)) map.set(k, { sid: k, name: name || k, cells: {} })
-    else if (name) map.get(k).name = name
-    return map.get(k)
-  }
-  // 先按设置里的勾选取好「该看哪几项」（登录站不算签到）
-  const flags = new Map()
-  ;(signinReport.value.sites || []).forEach(s => {
-    ensure(s.site_id, s.site_name || s.domain || String(s.site_id))
-    flags.set(String(s.site_id), { sign: !!s.sign, login: !!s.login })
-  })
-  records.forEach(r => {
-    Object.keys(r.sites || {}).forEach(sid => {
-      const rec = r.sites[sid] || {}
-      const row = ensure(sid, rec.site_name)
-      const f = flags.get(String(sid)) || {}
-      row.cells[r.date] = _signinStatus(rec.sign, rec.login, false, f.sign, f.login)
-      if (rec.sign) row.sign = true
-      if (rec.login) row.login = true
-    })
-  })
-  ;(signinReport.value.sites || []).forEach(s => {
-    const row = ensure(s.site_id, s.site_name)
-    row.cells[today] = _signinStatus(s.signin, s.login_result, true, s.sign, s.login)
-    row.sign = !!s.sign
-    row.login = !!s.login
-  })
-  const rows = [...map.values()].map(row => {
-    const cells = dates.map(d => ({ date: d, status: row.cells[d] || 'none' }))
-    const failIdx = cells.findIndex(c => c.status === 'fail')
-    return { ...row, cells, failIdx, todayStatus: cells.length ? cells[0].status : 'none' }
-  })
-  const rank = r => (r.todayStatus === 'fail' ? 0 : r.todayStatus === 'pending' ? 1 : r.failIdx >= 0 ? 2 : 3)
-  rows.sort((a, b) => (rank(a) - rank(b)) || (a.failIdx - b.failIdx) || String(a.name).localeCompare(String(b.name)))
-  const stats = { ok: 0, fail: 0 }
-  rows.forEach(r => r.cells.forEach(c => { if (c.status === 'ok') stats.ok++; else if (c.status === 'fail') stats.fail++ }))
-  return { dates, rows, stats }
-})
+//   另含原「签到报表页」整块（独立功能页）。P3：两块的 state/computed/动作已抽到
+//   ./composables/useSignin.js（纯搬家）
+const {
+  siteSelectItems, signinRunning, runSigninNow, signinOpen, signinReport,
+  signinReportLoading, loadSigninReport, openSignin, signinFilter, signinSearch,
+  signinStatusText, signinDateLabel, signinReportTodayRows, signinTodayCounts, signinFilterItems,
+  signinTodayList, signinKeepalive, signinKeepaliveNote, signinMatrix,
+} = useSignin({ api, notify, status })
 const siteLiveLevel = computed(() => (siteLive.value || {}).level || 'ok')
 const siteLiveInfo = computed(() => (siteLive.value || {}).live || {})
 const siteLiveRates = computed(() => (siteLive.value || {}).rates || {})
@@ -2228,317 +1721,41 @@ function openRecommend() {
 }
 
 // ── 批量入库（Master 2026-09-28 07:00）────────────────────────────
-const recSelected = ref({})        // hash -> true
-const recBatchActing = ref(false)
-// 可勾选/入库的行 = 可手动确认的那些
-const recSelectable = computed(() => recommendItems.value.filter(r => recommendActionable(r)))
-const recSelectedList = computed(() => recSelectable.value.filter(r => recSelected.value[r.hash]).map(r => r.hash))
-const recAllChecked = computed(() => recSelectable.value.length > 0 && recSelectedList.value.length === recSelectable.value.length)
-function toggleRec(hash) {
-  recSelected.value = { ...recSelected.value, [hash]: !recSelected.value[hash] }
-}
-function toggleAllRecs() {
-  const flag = !recAllChecked.value
-  const m = { ...recSelected.value }
-  recSelectable.value.forEach(r => { m[r.hash] = flag })
-  recSelected.value = m
-}
-async function batchImportRecommend(useAll) {
-  if (recBatchActing.value) return
-  const list = useAll ? [] : recSelectedList.value
-  if (!useAll && !list.length) return
-  recBatchActing.value = true
-  try {
-    const qs = useAll ? 'all=1' : `hashes=${encodeURIComponent(list.join(','))}`
-    const data = unwrapResponse(await api.features.recommendBatchImport(qs)) || {}
-    notify(data.message || '批量入库完成')
-    recSelected.value = {}
-    await loadRecommend()
-  } catch (err) {
-    notify(err?.response?.data?.message || err?.message || '批量入库失败', 'error')
-  } finally {
-    recBatchActing.value = false
-  }
-}
+// P3：勾选态 / 动作已抽到 ./composables/useRecImport.js（纯搬家）
+const {
+  recSelected, recBatchActing, recSelectable, recSelectedList, recAllChecked,
+  toggleRec, toggleAllRecs, batchImportRecommend,
+} = useRecImport({ api, notify, recommendItems, recommendActionable, loadRecommend })
 
 // ── 新手考核（顶栏入口 + 汇总弹窗 + 一键起任务）────────────────────────
-const examData = ref({ sites: [], count: 0, enabled: true })
-const examOpen = ref(false)
-const examActing = ref('')
-const examConfirm = ref(null)
-let examTimer = null
-const examSites = computed(() => examData.value.sites || [])
-const examBadge = computed(() => (examData.value.enabled === false ? 0 : Number(examData.value.count || 0)))
-const examUrgent = computed(() => examSites.value.filter(s => Number((s.exam || {}).days_left ?? 999) <= 3).length)
-// ── 板面重设（5.5.0）：按剩余天数排序 + 每项进度条 + 同任务合并 + 警告前置
-const examShowPassed = ref({})
-// ★ 排序：**已完成的沉到最下面**；未完成的按剩余天数升序（最紧急的在最上面）
-const examRows = computed(() =>
-  [...(examData.value.sites || [])].sort((a, b) => {
-    const pa = (a.exam || {}).all_pass ? 1 : 0
-    const pb = (b.exam || {}).all_pass ? 1 : 0
-    if (pa !== pb) return pa - pb
-    return Number(((a.exam || {}).days_left ?? 999)) - Number(((b.exam || {}).days_left ?? 999))
-  })
-)
-// 未完成（还有未通过项）的站点数 —— 顶部大数用这个口径，不含已完成的
-const examPendingSites = computed(() => examRows.value.filter(r => !(r.exam || {}).all_pass).length)
-const examNext = computed(() => examRows.value.find(r => !(r.exam || {}).all_pass) || examRows.value[0] || null)
-const examUrgentWeek = computed(() => examRows.value.filter(r => Number(((r.exam || {}).days_left ?? 999)) <= 7).length)
-const examPendingItems = computed(() =>
-  examRows.value.reduce((n, r) => n + (((r.exam || {}).items || []).filter(i => !i.pass).length), 0)
-)
-function examDaysShort(row) {
-  const d = Number(((row || {}).exam || {}).days_left)
-  if (!isFinite(d)) return '—'
-  return `${Math.max(0, Math.ceil(d))} 天`
-}
-function examUrgencyColor(row) {
-  const d = Number(((row || {}).exam || {}).days_left)
-  if (!isFinite(d)) return 'grey'
-  if (d <= 3) return 'error'
-  if (d <= 7) return 'warning'
-  return 'success'
-}
-// 未过的排前面（已过项可折叠）
-function examItems(row) {
-  const its = ((row || {}).exam || {}).items || []
-  return [...its].sort((a, b) => (a.pass ? 1 : 0) - (b.pass ? 1 : 0))
-}
-function examPassedCount(row) {
-  return (((row || {}).exam || {}).items || []).filter(i => i.pass).length
-}
-function examSitePct(row) {
-  const total = (((row || {}).exam || {}).items || []).length || 1
-  return Math.round((examPassedCount(row) * 100) / total)
-}
-function examItemPct(it) {
-  const req = Number((it || {}).req_num) || 0
-  const cur = Number((it || {}).cur_num) || 0
-  if (req <= 0) return it && it.pass ? 100 : 0
-  return Math.max(0, Math.min(100, Math.round((cur * 100) / req)))
-}
-// 还差多少（失败项最关键的信息；后端给了 short_gb/short_num 就用它）
-function examItemGap(it) {
-  const o = it || {}
-  if (o.pass) return ''
-  const fmt = v => (Math.abs(v) >= 100 ? String(Math.round(v)) : String(Math.round(v * 100) / 100))
-  if (Number(o.short_gb) > 0) return `${fmt(Number(o.short_gb))} GB`
-  if (Number(o.short_num) > 0) return `${fmt(Number(o.short_num))}${o.unit ? ` ${o.unit}` : ''}`
-  const d = (Number(o.req_num) || 0) - (Number(o.cur_num) || 0)
-  if (d > 0) return `${fmt(d)}${o.unit ? ` ${o.unit}` : ''}`
-  return ''
-}
-function examVisibleItems(row) {
-  const all = examItems(row)
-  if (examShowPassed.value[row.site_id]) return all
-  const fails = all.filter(i => !i.pass)
-  return fails.length ? fails : all
-}
-function examHiddenPassed(row) {
-  return examItems(row).length - examVisibleItems(row).length
-}
-function examTogglePassed(siteId) {
-  examShowPassed.value = { ...examShowPassed.value, [siteId]: !examShowPassed.value[siteId] }
-}
-// 同一任务只出一个动作（如「魔力增量 / 做种积分增量」都指向 XX-考核魔力）
-function examActions(row) {
-  const out = new Map()
-  ;((row || {}).plan || []).forEach(p => {
-    const key = `${p.kind}|${p.task_name || ''}`
-    if (!out.has(key)) {
-      out.set(key, {
-        key,
-        kind: p.kind,
-        label: EXAM_KIND_TEXT[p.kind] || p.label || '任务',
-        icon: EXAM_KIND_ICON[p.kind] || 'mdi-play-circle-outline',
-        task_name: p.task_name || '',
-        can_run: EXAM_ACTIONABLE.includes(p.kind),
-        notes: [],
-        warn: '',
-      })
-    }
-    const a = out.get(key)
-    ;(p.notes || []).forEach(n => {
-      let s = String(n || '').trim()
-      if (!s) return
-      // 窄屏压缩后端长句：尾巴的泛泛建议没信息量，去掉
-      s = s.replace(/[;；]?\s*(魔力靠多挂种.*|靠多挂种.*)$/, '').replace('达到后自动停', '→ 自动停')
-      // ⚠️ 类提醒（花钱白干/比例掉）前置成警戒条，不能埋在按钮下面
-      if (/^⚠️|不建议|建议等|会低于 1|先补上传/.test(s)) {
-        a.warn = a.warn ? `${a.warn} · ${s}` : s
-        return
-      }
-      if (!a.notes.includes(s)) a.notes.push(s)
-    })
-  })
-  return [...out.values()]
-}
-async function loadExam() {
-  try {
-    examData.value = unwrapResponse(await api.features.exam()) || examData.value
-  } catch (err) {
-    // 考核是增强信息，失败不打断界面
-  }
-}
-function openExam() {
-  examOpen.value = true
-  loadExam()
-}
-function examFailedText(row) {
-  return ((row.exam || {}).failed || []).join(' / ') || '—'
-}
-function examDaysText(row) {
-  const d = (row.exam || {}).days_left
-  if (d === null || d === undefined) return '截止未知'
-  const v = Number(d)
-  return v <= 3 ? `⚠️ 剩 ${v.toFixed(1)} 天` : `剩 ${v.toFixed(1)} 天`
-}
-function examGb(v) {
-  const n = Number(v || 0) / (1024 ** 3)
-  if (!n) return '0'
-  return n >= 1024 ? `${(n / 1024).toFixed(2)}T` : `${n.toFixed(2)}G`
-}
-function examPlan(row, kind) {
-  return (row.plan || []).find(p => p.kind === kind) || null
-}
-function examAct(row, kind) {
-  const item = examPlan(row, kind)
-  if (!item) return
-  if (item.noop || kind === 'hold' || item.kind === 'hold') {
-    notify('该考核项目前无需建任务：保持做种 + 多辅种即可')
-    return
-  }
-  examConfirm.value = { row, item, kind }
-}
-async function examConfirmRun() {
-  const ctx = examConfirm.value
-  if (!ctx || examActing.value) return
-  examActing.value = `${ctx.kind}:${ctx.row.site_id}`
-  try {
-    // ★ 插件 API 的 POST 参数只在 query 绑定
-    const q = new URLSearchParams({ site_id: String(ctx.row.site_id), kind: String(ctx.kind), confirm: 'true' }).toString()
-    const res = unwrapResponse(await api.features.examAct(q)) || {}
-    notify(res.message || '已执行')
-    examConfirm.value = null
-    await loadExam()
-    status.value = unwrapResponse(await api.tasks.status()) || status.value
-  } catch (err) {
-    notify(`执行失败：${err?.message || err}`, 'error')
-  } finally {
-    examActing.value = ''
-  }
-}
+//   含原「板面重设」块（那块其实整块是考核域：站点排序 / 每项进度 / 同任务合并 / 警告前置）。
+// P3：状态 / 派生 / 动作 / 定时器已抽到 ./composables/useExam.js（纯搬家）
+const {
+  examData, examOpen, examActing, examConfirm, examBadge,
+  examUrgent, examShowPassed, examRows, examPendingSites, examNext,
+  examUrgentWeek, examPendingItems, examDaysShort, examUrgencyColor, examPassedCount,
+  examSitePct, examItemPct, examItemGap, examVisibleItems, examHiddenPassed,
+  examTogglePassed, examActions, loadExam, openExam, examAct,
+  examConfirmRun,
+} = useExam({ api, notify, loadStatus })
 
 // ── 静默池（silent，7.16.0）：无主种池（跨站 / 跨任务）的全局视图 ────────────────
 //   真值源 = 标签账本 tag_state（state=静默）+ 下载器快照；H&R 倒计时来自跨站来源份账本。
 //   ★ 关系：跨站「下完」的来源份 → 移交静默池（跨站页只留未下完的列车）。
-const silentData = ref({ summary: {}, items: [], records: [], host: {}, settings: {} })
-const silentOpen = ref(false)
-const silentLoading = ref(false)
-const silentView = ref('pool')   // 'pool' | 'records'
-const silentSub = ref('')        // 子类过滤：'' | 新 | 资源 | 普通
-const silentSite = ref('')       // 站点过滤
-const silentOnlyHr = ref(false)
-const silentQ = ref('')
-const silentSummary = computed(() => silentData.value.summary || {})
-const silentSites = computed(() => silentSummary.value.sites || [])
-const silentSubs = computed(() => silentSummary.value.subs || [])
-const silentRecords = computed(() => silentData.value.records || [])
-const silentItems = computed(() => {
-  const kw = String(silentQ.value || '').trim().toLowerCase()
-  return (silentData.value.items || []).filter(it => {
-    if (silentSub.value && String(it.sub || '') !== silentSub.value) return false
-    if (silentSite.value && String(it.site || '') !== silentSite.value) return false
-    if (silentOnlyHr.value && !it.hr) return false
-    if (kw && !String(it.title || '').toLowerCase().includes(kw)) return false
-    return true
-  })
-})
-async function loadSilent() {
-  silentLoading.value = true
-  try {
-    silentData.value = unwrapResponse(await api.poolstats.silentPool()) || silentData.value
-  } catch (err) {
-    notify(`读取静默池失败：${err?.message || err}`, 'error')
-  } finally {
-    silentLoading.value = false
-  }
-}
-function openSilent() {
-  silentOpen.value = true
-  loadSilent()
-}
-function silentProgressText(it) {
-  const p = Number(it?.progress)
-  if (!Number.isFinite(p) || p < 0) return '—'
-  if (p >= 0.999) return '已完成'
-  return `${(p * 100).toFixed(1)}%`
-}
-function silentHrText(it) {
-  const rem = it?.remain_min
-  if (rem === null || rem === undefined) return it?.hr ? 'H&R 中' : ''
-  return `剩 ${formatRemain(rem)}`
-}
-function silentSubLabel(sub) { return SILENT_SUB_LABEL[String(sub || '')] || `静默-${sub || '?'}` }
+// P3：状态 / 过滤 / 拉取已抽到 ./composables/useSilent.js（纯搬家）
+const {
+  silentData, silentOpen, silentLoading, silentView, silentSub, silentSite, silentOnlyHr, silentQ,
+  silentSummary, silentSites, silentSubs, silentRecords, silentItems,
+  loadSilent, openSilent, silentProgressText, silentHrText, silentSubLabel,
+} = useSilent({ api, notify })
 
 // ── 静默不变量收敛（★ 12.7.1）：账本静默但 qB 没停 → 补 pause（只 pause，不删种、不动文件）──
-const enforceLoading = ref(false)
-const enforceAsk = ref(false)
-const enforceData = ref({ scanned: 0, violations: 0, paused: 0, failed: 0, items: [] })
-const enforceCounts = computed(() => enforceData.value || {})
-// ★ 15.2.0 标签 ↔ 账本对账（与 /agent/tags/reconcile 同一实现，人机同源）
-const tagReconLoading = ref(false)
-const tagReconAsk = ref(false)
-const tagReconPending = ref(0)
-async function runTagReconcile(confirm = false) {
-  tagReconLoading.value = true
-  try {
-    const res = unwrapResponse(await api.settings.tagReconcile(confirm)) || {}
-    const pend = res.items_total ?? (res.items || []).length
-    tagReconPending.value = pend
-    const drift = res.drift_total ?? (res.drift || []).length
-    if (confirm) {
-      tagReconAsk.value = false
-      notify(`标签对账：已补 ${res.repaired ?? 0} 个标签` +
-        (res.adopted ? `、补登辅种副本 ${res.adopted} 个` : '') +
-        (drift ? `（另有身份子桶漂移 ${drift} 个，只报不写）` : ''))
-      if (silentOpen.value) loadSilent()
-    } else if (pend) {
-      tagReconAsk.value = true
-    } else {
-      notify(`标签对账（干跑）：无需修复` + (drift ? `（身份子桶漂移 ${drift} 个，只报不写）` : ''))
-    }
-  } catch (err) {
-    notify(`标签对账失败：${err?.message || err}`, 'error')
-  } finally {
-    tagReconLoading.value = false
-  }
-}
-
-async function loadEnforce(confirm = 0) {
-  enforceLoading.value = true
-  try {
-    const res = unwrapResponse(await api.poolstats.silentEnforce(confirm)) || {}
-    enforceData.value = res
-    notify(res.message || (confirm ? '已补 pause' : '干跑完成'))
-    if (confirm) loadSilent()
-  } catch (err) {
-    notify(`静默不变量收敛失败：${err?.message || err}`, 'error')
-  } finally {
-    enforceLoading.value = false
-  }
-}
-// 兼容 秒 / 毫秒 / ISO 字符串
-function tsText(ts) {
-  if (ts === null || ts === undefined || ts === '') return '—'
-  let d
-  if (typeof ts === 'number') d = new Date(ts > 1e11 ? ts : ts * 1000)
-  else d = new Date(ts)
-  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return '—'
-  const p = n => String(n).padStart(2, '0')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
-}
+// P3：状态 / 动作已抽到 ./composables/useInvariant.js（纯搬家）；tsText → ./format.js
+const {
+  invariantOpen, enforceLoading, enforceAsk, enforceCounts,
+  tagReconLoading, tagReconAsk, tagReconPending,
+  runTagReconcile, loadEnforce,
+} = useInvariant({ api, notify, loadSilent, silentOpen })
 
 // ── 认领（claim，7.14.0）：把「我们在做种」的种在站点侧认领掉，换站点权益 ────────
 //   ★ 写动作不可逆（不达标 −魔力 / 主动放弃 −更多）→ 默认干跑，真写要二次确认。
@@ -2576,6 +1793,11 @@ function claimTotal() { return Number(claimData.value.claimed_total || 0) }
 function claimRequestable() { return Number(claimData.value.claimable_total || 0) }
 function claimAgeText(v) { return (v === null || v === undefined) ? '—' : `${Number(v).toFixed(1)} 天` }
 function claimSeedersText(n) { return (n === undefined || n === null || Number(n) < 0) ? '—' : String(n) }
+// ★ 站点认领画像（后端 sites[].profile：supported / min_age_days / max_claimers /
+//   per_user_cap / benefit(_desc) / penalty / reason）。
+//   ★ 2026-10-08 修：模板 `claimProfile(s)` 被引用但**从未声明** → 认领弹窗「站点能力」
+//   标签渲染时 TypeError（白屏）。同 invariantOpen，构建/控制台都不报错。
+function claimProfile(s) { return (s && s.profile) || {} }
 function claimPenaltyText(prof) {
   const p = (prof || {}).penalty || {}
   const parts = []
@@ -2966,71 +2188,12 @@ function backToSettingsDir() {
 }
 
 // ── 标签模型 ─────────────────────────────────────────────
-async function loadTags() {
-  try {
-    const res = await api.settings.tags()
-    tagInfo.value = res?.data || null
-  } catch (err) {
-    error.value = err?.message || String(err)
-  }
-}
-
-function sortRuleText(r) {
-  return (SORT_RULE_TYPES.find(t => t.value === r?.type)?.text) || r?.type || '-'
-}
-
-function sortRuleNeedsMin(type) {
-  return !!SORT_RULE_TYPES.find(t => t.value === type)?.min
-}
-
-function addSortRule() {
-  const t = newRuleType.value
-  if (!t) return
-  if (!Array.isArray(settingsDraft.value.sort_rules)) settingsDraft.value.sort_rules = []
-  if (settingsDraft.value.sort_rules.some(r => r.type === t)) {
-    notify('该规则已存在')
-    return
-  }
-  const meta = SORT_RULE_TYPES.find(x => x.value === t) || {}
-  const row = { type: t, weight: 50, enabled: true }
-  if (meta.min) row.min = meta.defaultMin ?? 0
-  settingsDraft.value.sort_rules.push(row)
-}
-
-function removeSortRule(i) {
-  if (Array.isArray(settingsDraft.value.sort_rules)) settingsDraft.value.sort_rules.splice(i, 1)
-}
-
-async function previewTagMigrate() {
-  tagMigrating.value = true
-  try {
-    const res = await api.settings.tagMigratePlan()
-    tagMigratePlan.value = res?.data || null
-    await loadTags()
-  } catch (err) {
-    alert(`迁移预演失败: ${err?.message || err}`)
-  } finally {
-    tagMigrating.value = false
-  }
-}
-
-async function applyTagMigrate() {
-  const total = tagMigratePlan.value?.total || 0
-  if (!total) return
-  if (!confirm(`确认把 ${total} 个托管种子的老标签迁移到「魔流-站点-状态」新命名？\n（保留 已整理/辅种 等外来标签）`)) return
-  tagMigrating.value = true
-  try {
-    const res = await api.settings.tagMigrateApply()
-    notify(res?.message || '迁移完成')
-    tagMigratePlan.value = null
-    await loadTags()
-    emit('action')
-  } catch (err) {
-    alert(`迁移失败: ${err?.message || err}`)
-  } finally {
-    tagMigrating.value = false
-  }
-}
+// P3：状态 / 动作已抽到 ./composables/useTagModel.js（纯搬家）
+const {
+  tagInfo, tagMigratePlan, tagMigrating, newRuleType, sortRuleTypeOptions,
+  loadTags, sortRuleText, sortRuleNeedsMin, addSortRule, removeSortRule,
+  previewTagMigrate, applyTagMigrate,
+} = useTagModel({ api, notify, error, settingsDraft, emit })
 
 // ── 云盘归档 ─────────────────────────────────────────────
 async function loadCloud() {
@@ -3569,9 +2732,6 @@ onMounted(() => {
   doubanServiceTimer = window.setInterval(loadDoubanService, 60000)
   healthTimer = window.setInterval(loadHealth, 60000)
   loadHealth()
-  // 新手考核也是全局的（低频刷新角标；关闭时服务端立即返回，零开销）
-  loadExam()
-  examTimer = window.setInterval(loadExam, 300000)
   // 站点实时数据：采样周期 240s，这里 120s 轮询（服务端有缓存，不会重复打站点）
   loadLive()
   liveTimer = window.setInterval(loadLive, 120000)
@@ -3588,7 +2748,6 @@ onUnmounted(() => {
   if (crossseedTimer) window.clearInterval(crossseedTimer)
   if (doubanServiceTimer) window.clearInterval(doubanServiceTimer)
   if (healthTimer) window.clearInterval(healthTimer)
-  if (examTimer) window.clearInterval(examTimer)
   if (liveTimer) window.clearInterval(liveTimer)
   if (warmingTimer) window.clearTimeout(warmingTimer)
   if (cloudPollTimer) window.clearInterval(cloudPollTimer)
@@ -8709,6 +7868,9 @@ onUnmounted(() => {
 .magicflow-silent-dialog .magicflow-recommend-dialog__head-actions {
   flex: 1 1 100%;
   justify-content: flex-end;
+  /* ★ 2026-10-08：窄屏（390px）下 3 个文本按钮 + chip 实测撑到 602px → 横向溢出。允许换行。 */
+  flex-wrap: wrap;
+  row-gap: 4px;
 }
 
 .magicflow-silent-chips {
