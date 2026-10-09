@@ -47,6 +47,7 @@ from ..common import (
     SITE_OFFICIAL_TTL,
     USERDATA_ROW_TTL,
     enabled_of_run_mode,
+    site_guard,
     RUN_MODE_STOPPED,
     task_is_running,
 )
@@ -292,13 +293,16 @@ class FormulaMixin:
         def _worker() -> None:
             try:
                 sid = int(getattr(task, "site_id", 0) or 0)
+                # ★ 站点已被删除的孤儿任务：先判站点再判 PV 预算（不存在的站点不该占预算），
+                #   且只提示一次——否则每轮状态统计都会重排一次抓取、刷一次 WARNING。
+                site = self._get_site(sid) if sid else None
+                if site is None:
+                    site_guard(self).warn(task, sid)
+                    return
+                site_guard(self).clear(task, sid)
                 # ★ 3.7.1 PV 闸门:被封 / 预算将尽时不再抓公式
                 #   (旧版确实漏了这层 → PTT 被封后仍打了 98 次)
                 if self._pv_block_reason(sid) or not self._pv_allow(sid, "formula", want=1):
-                    return
-                site = self._get_site(sid) if sid else None
-                if site is None:
-                    self._log(f"站点公式:未找到站点 {sid},本轮跳过", "warning")
                     return
                 try:
                     # ★ 7.8.1：强制绕过采集页缓存——零值重抓时若命中旧的 0 页面就白跑了。

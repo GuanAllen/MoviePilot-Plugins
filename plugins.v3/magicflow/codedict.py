@@ -295,15 +295,20 @@ def _parse_frontend(root: Path, rel: str) -> Dict[str, Any]:
         blocks["styles"] = b["style"]
         s = b["script"][0] if b["script"] else None
         region = [(i + 1, lines[i]) for i in range(s[0], s[1] - 1)] if s else []
+        script_text = "\n".join(lines[s[0] - 1:s[1]]) if s else ""
+        base_line = s[0] if s else 1
     else:
         region = [(i + 1, ln) for i, ln in enumerate(lines)]
+        script_text = text
+        base_line = 1
     decls: List[Dict[str, Any]] = []
     for ln, raw in region:
         d = _fe_decl(raw)
         if d:
             decls.append({"name": d[1], "kind": d[0], "line": ln})
     return {"file": rel, "lang": lang, "lines": len(lines),
-            "blocks": blocks, "decls": decls}
+            "blocks": blocks, "decls": decls,
+            "contract": _parse_contract(script_text, base_line)}
 
 
 def _flat_fe(mods: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -313,6 +318,163 @@ def _flat_fe(mods: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             out.append({"name": d["name"], "kind": d["kind"], "lang": m["lang"],
                         "file": m["file"], "line": d["line"]})
     return out
+
+
+_STRING_RE = re.compile(r"['\"`]([^'\"`]+)['\"`]")
+
+
+def _balanced(text: str, open_idx: int) -> str:
+    """text[open_idx] 应为 '('，返回与其配平的括号内子串。"""
+    depth = 0
+    i = open_idx
+    quote = None
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in "'\"`":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if depth == 0:
+                return text[open_idx + 1:i]
+        i += 1
+    return text[open_idx + 1:]
+
+
+def _macro_inner(text: str, macro: str) -> Optional[str]:
+    m = re.search(r"\b" + macro + r"\b\s*(?:<[^<>]*>)?\s*\(", text)
+    return _balanced(text, m.end() - 1) if m else None
+
+
+def _dedup_items(seq: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for x in seq:
+        if x["name"] and x["name"] not in seen:
+            seen.add(x["name"])
+            out.append(x)
+    return out
+
+
+def _blank_comments(text: str) -> str:
+    """把 // 与 /* */ 注释**按位用空格抹掉**（保留换行/长度），使行号不偏移。"""
+    a = list(text)
+    i, n = 0, len(text)
+    quote = None
+    while i < n:
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "'\"`":
+            quote = ch
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "/":
+            j = text.find("\n", i)
+            if j == -1:
+                j = n
+            for k in range(i, j):
+                a[k] = " "
+            i = j
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            j = text.find("*/", i + 2)
+            j = (j + 2) if j != -1 else n
+            for k in range(i, j):
+                if a[k] != "\n":
+                    a[k] = " "
+            i = j
+            continue
+        i += 1
+    return "".join(a)
+
+
+def _macro_inner_span(text: str, macro: str):
+    """macro 调用括号内子串 及 其在 text 中的起始偏移（无则 (None,0)）。"""
+    m = re.search(r"\b" + macro + r"\b\s*(?:<[^<>]*>)?\s*\(", text)
+    if not m:
+        return None, 0
+    return _balanced(text, m.end() - 1), m.end()
+
+
+def _obj_items(inner: Optional[str], abs_start: int, ln) -> List[Dict[str, Any]]:
+    """对象字面量顶层键（深度 1）；数组字面量取字符串项。每项带行号。"""
+    if not inner:
+        return []
+    out: List[Dict[str, Any]] = []
+    if inner.lstrip().startswith("["):
+        for s in _STRING_RE.finditer(inner):
+            out.append({"name": s.group(1), "line": ln(abs_start + s.start())})
+        return _dedup_items(out)
+    i, depth, n = 0, 0, len(inner)
+    while i < n:
+        ch = inner[i]
+        if ch in "([{":
+            depth += 1
+            i += 1
+            continue
+        if ch in ")]}":
+            depth -= 1
+            i += 1
+            continue
+        if ch in "'\"`":
+            j = i + 1
+            while j < n and inner[j] != ch:
+                j += 2 if inner[j] == "\\" else 1
+            if depth == 1:
+                k = j + 1
+                while k < n and inner[k] in " \t\r\n":
+                    k += 1
+                if k < n and inner[k] == ":":
+                    out.append({"name": inner[i + 1:j], "line": ln(abs_start + i)})
+            i = j + 1
+            continue
+        if depth == 1 and (ch.isalnum() or ch in "_$"):
+            j = i
+            while j < n and (inner[j].isalnum() or inner[j] in "_$"):
+                j += 1
+            k = j
+            while k < n and inner[k] in " \t\r\n":
+                k += 1
+            if k < n and inner[k] == ":":
+                out.append({"name": inner[i:j], "line": ln(abs_start + i)})
+            i = j
+            continue
+        i += 1
+    return _dedup_items(out)
+
+
+def _parse_contract(script_text: str, base_line: int = 1) -> Dict[str, List[Dict[str, Any]]]:
+    """解析 <script setup> 组件契约，每项带 file 行号：defineModel/defineProps/defineEmits。"""
+    b = _blank_comments(script_text)
+
+    def ln(pos: int) -> int:
+        return base_line + b[:pos].count("\n")
+
+    models: List[Dict[str, Any]] = []
+    for m in re.finditer(r"\bdefineModel\b\s*(?:<[^<>]*>)?\s*\(", b):
+        s = _STRING_RE.search(_balanced(b, m.end() - 1))
+        models.append({"name": s.group(1) if s else "modelValue", "line": ln(m.start())})
+    pspan = _macro_inner_span(b, "defineProps")
+    espan = _macro_inner_span(b, "defineEmits")
+    return {
+        "models": _dedup_items(models),
+        "props": _obj_items(pspan[0], pspan[1], ln),
+        "emits": _obj_items(espan[0], espan[1], ln),
+    }
 
 
 def _match(needle: str, *hay: object) -> bool:
@@ -345,7 +507,10 @@ def build_dict(root: Path, *, endpoints: Optional[List[Dict[str, Any]]] = None,
         "counts": {"modules": len(mods), "lines": total_lines,
                    "symbols": len(symbols), "constants": len(consts),
                    "endpoints": len(eps), "fe_files": len(fe_mods),
-                   "fe_lines": fe_lines, "fe_decls": len(fe_decls)},
+                   "fe_lines": fe_lines, "fe_decls": len(fe_decls),
+                   "fe_models": sum(len(m["contract"]["models"]) for m in fe_mods),
+                   "fe_props": sum(len(m["contract"]["props"]) for m in fe_mods),
+                   "fe_emits": sum(len(m["contract"]["emits"]) for m in fe_mods)},
         "sections": ["endpoints", "constants", "symbols", "modules", "frontend",
                      "glossary"],
         "usage": {
@@ -404,7 +569,10 @@ def build_dict(root: Path, *, endpoints: Optional[List[Dict[str, Any]]] = None,
             for m in rows:
                 hit_file = _match(q, m["file"])
                 ds = [d for d in m["decls"] if _match(q, d["name"], d["kind"])]
-                if hit_file or ds:
+                ct = m.get("contract") or {}
+                hit_ct = any(_match(q, n["name"]) for k in ("models", "props", "emits")
+                             for n in ct.get(k, []))
+                if hit_file or ds or hit_ct:
                     mm = dict(m)
                     mm["decls"] = m["decls"] if hit_file else ds
                     keep.append(mm)

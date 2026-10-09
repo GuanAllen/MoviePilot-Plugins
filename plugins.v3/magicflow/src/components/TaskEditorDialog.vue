@@ -2,6 +2,12 @@
 import { computed, ref, watch } from 'vue'
 import { useDisplay } from 'vuetify'
 import { cloneTask, formatBytes, normalizeTask, unwrapResponse } from '../utils'
+import BasePanel from './taskeditor/BasePanel.vue'
+import BrushPanel from './taskeditor/BrushPanel.vue'
+import MagicPanel from './taskeditor/MagicPanel.vue'
+import FormulaPanel from './taskeditor/FormulaPanel.vue'
+import SelectionPanel from './taskeditor/SelectionPanel.vue'
+import AdvancedPanel from './taskeditor/AdvancedPanel.vue'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -413,880 +419,145 @@ function confirmSaveWithoutGoal() {
 
           <VWindow v-model="activeTab" :touch="false" class="magicflow-editor__window">
             <VWindowItem value="base">
-              <section class="editor-section">
-                <header class="editor-section__head">
-                  <div>
-                    <div class="text-subtitle-1 font-weight-medium">任务模板</div>
-                    <div class="text-body-2 text-medium-emphasis">
-                      选一个就行 —— 选种/清理/限速/复用等参数按模板自动配好，站点·目录·目标自己定
-                    </div>
-                  </div>
-                </header>
-                <div class="editor-presets">
-                  <button
-                    v-for="p in TASK_PRESETS"
-                    :key="p.key"
-                    type="button"
-                    class="editor-preset"
-                    :class="{ 'is-active': presetKey === p.key }"
-                    @click="applyPreset(p.key)"
-                  >
-                    <VIcon :icon="p.icon" size="18" />
-                    <span class="editor-preset__title">{{ p.title }}</span>
-                    <span class="editor-preset__desc">{{ p.desc }}</span>
-                  </button>
-                </div>
-                <div v-if="simpleMode" class="editor-simple-note">
-                  <VIcon icon="mdi-auto-fix" size="14" />
-                  <span>已自动配置 {{ presetPatchCount }} 项专业参数（调度 5 分钟 · 复用辅种 · 清理低效 · 限速两档 · 体积上限）</span>
-                  <button type="button" class="editor-simple-note__link" @click="applyPreset('custom')">展开全部参数</button>
-                </div>
-              </section>
-
-              <section class="editor-section">
-                <header class="editor-section__head">
-                  <div>
-                    <div class="text-subtitle-1 font-weight-medium">任务身份</div>
-                    <div class="text-body-2 text-medium-emphasis">每个任务绑定一个站点和下载器</div>
-                  </div>
-                  <VChip size="small" color="primary" variant="tonal">必填</VChip>
-                </header>
-                <VRow>
-                  <VCol cols="12" md="6">
-                    <VSelect
-                      v-model="localTask.site_id"
-                      :items="sites"
-                      item-title="name"
-                      item-value="id"
-                      label="站点"
-                      :rules="[value => !!value || '请选择站点']"
-                      @update:model-value="onSiteChange"
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model="localTask.name"
-                      label="任务名称"
-                      hint="选站点后自动填「站点·模板名」，可手改"
-                      :rules="[value => !!String(value || '').trim() || '请输入任务名称']"
-                    />
-                  </VCol>
-                  <VCol v-if="downloaders.length > 1" cols="12" md="6">
-                    <VSelect
-                      v-model="localTask.downloader"
-                      :items="downloaders"
-                      label="下载器"
-                      :rules="[value => !!value || '请选择下载器']"
-                    />
-                  </VCol>
-                  <VCol v-if="!simpleMode" cols="12" md="6">
-                    <VTextField
-                      v-model="localTask.brush_tag"
-                      label="下载器标签"
-                      readonly
-                      prepend-inner-icon="mdi-lock-outline"
-                      :hint="`自动：${autoTag || '魔流-站点-职务'}（按站点+任务类型派生，只读）`"
-                      persistent-hint
-                    />
-                  </VCol>
-                  <VCol cols="12">
-                    <VCombobox
-                      v-model="localTask.save_path"
-                      :items="savePathOptions"
-                      label="保存目录"
-                      @update:model-value="onSavePathChange"
-                      @update:focused="focused => { if (!focused) rememberSavePath(localTask.save_path) }"
-                      placeholder="留空使用下载器默认目录"
-                      hint="默认目录可在插件设置「下载目录」中配置"
-                      persistent-hint
-                      clearable
-                      variant="outlined"
-                    />
-                  </VCol>
-                  <VCol cols="12">
-                    <div class="editor-pool" :class="{ 'is-warn': poolOver, 'is-error': !!poolError }">
-                      <VIcon :icon="poolOver ? 'mdi-alert-outline' : 'mdi-harddisk'" size="14" />
-                      <template v-if="pool">
-                        <span>
-                        磁盘 {{ pool.path }} · 已用 {{ pool.pct.toFixed(0) }}%（{{ formatBytes(pool.used_gb * 1024 ** 3) }} / {{ formatBytes(pool.total_gb * 1024 ** 3) }}）· 按 80% 阈值还能再放 {{ poolFreeText }}
-                      </span>
-                        <span v-if="poolOver" class="editor-pool__hint">已超 80%，建议先清理再加种</span>
-                      </template>
-                      <template v-else>
-                        <span>{{ poolLoading ? '正在读取磁盘空间…' : (poolError || '磁盘空间未知') }}</span>
-                      </template>
-                      <button type="button" class="editor-pool__link" @click="loadPool">刷新</button>
-                    </div>
-                    <div v-if="simpleMode && pool" class="editor-quota">
-                      <div class="editor-quota__head">
-                        <span>本任务最多占多少</span>
-                        <strong>{{ poolBudgetText }}</strong>
-                      </div>
-                      <VSlider
-                        v-model="poolPct"
-                        :min="0"
-                        :max="100"
-                        :step="5"
-                        color="primary"
-                        hide-details
-                        density="compact"
-                        :disabled="poolOver"
-                        @update:model-value="onPctChange"
-                      />
-                      <div class="editor-quota__foot">
-                        <span>{{ poolPct }}% · 占磁盘剩余可用（{{ poolFreeText }}）</span>
-                        <span v-if="poolOver" class="editor-pool__hint">磁盘已超 80%，先清理再加种</span>
-                      </div>
-                    </div>
-                  </VCol>
-                </VRow>
-                <div class="editor-switches">
-                  <VSwitch v-model="localTask.enabled" label="启用任务" color="primary" hide-details inset />
-                  <VSwitch v-if="!simpleMode" v-model="localTask.rss_support" label="使用 RSS" color="primary" hide-details inset />
-                </div>
-              </section>
-
-              <section v-if="!simpleMode" class="editor-section">
-                <header class="editor-section__head">
-                  <div>
-                    <div class="text-subtitle-1 font-weight-medium">刷新计划</div>
-                    <div class="text-body-2 text-medium-emphasis">选种刷新和做种检查分别调度</div>
-                  </div>
-                  <span class="text-body-2 text-medium-emphasis">{{ scheduleText }}</span>
-                </header>
-                <VRow>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.brush_interval"
-                      type="number"
-                      min="1"
-                      max="1440"
-                      label="选种刷新周期（分钟）"
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.check_interval"
-                      type="number"
-                      min="1"
-                      max="1440"
-                      label="做种检查周期（分钟）"
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField v-model="localTask.cron_expression" label="CRON 表达式" placeholder="留空使用固定刷新周期" />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField v-model="localTask.active_time_range" label="开启时间段" placeholder="如 00:00-08:00" />
-                  </VCol>
-                </VRow>
-              </section>
-
-              <section class="editor-section">
-                <header class="editor-section__head">
-                  <div>
-                    <div class="text-subtitle-1 font-weight-medium">任务目标</div>
-                    <div class="text-body-2 text-medium-emphasis">
-                      {{ isBrush ? '站点上传量达到目标后，任务自动停止' : '站点魔力值达到目标后，任务自动停止' }}
-                    </div>
-                  </div>
-                  <VChip size="small" color="primary" variant="tonal">建议填写</VChip>
-                </header>
-                <VRow>
-                  <VCol cols="12">
-                    <VTextField
-                      v-model.number="localTask.goal_value"
-                      type="number"
-                      min="0"
-                      step="any"
-                      :label="isBrush ? '目标上传量（GB）' : '目标魔力值'"
-                      clearable
-                    />
-                  </VCol>
-                </VRow>
-              </section>
+              <BasePanel
+                v-model:site-id="localTask.site_id"
+                v-model:name="localTask.name"
+                v-model:downloader="localTask.downloader"
+                v-model:brush-tag="localTask.brush_tag"
+                v-model:save-path="localTask.save_path"
+                v-model:enabled="localTask.enabled"
+                v-model:rss-support="localTask.rss_support"
+                v-model:brush-interval="localTask.brush_interval"
+                v-model:check-interval="localTask.check_interval"
+                v-model:cron-expression="localTask.cron_expression"
+                v-model:active-time-range="localTask.active_time_range"
+                v-model:goal-value="localTask.goal_value"
+                v-model:pool-pct="poolPct"
+                :presets="TASK_PRESETS"
+                :preset-key="presetKey"
+                :simple-mode="simpleMode"
+                :preset-patch-count="presetPatchCount"
+                :sites="sites"
+                :downloaders="downloaders"
+                :auto-tag="autoTag"
+                :save-path-options="savePathOptions"
+                :pool="pool"
+                :pool-over="poolOver"
+                :pool-error="poolError"
+                :pool-loading="poolLoading"
+                :pool-free-text="poolFreeText"
+                :pool-budget-text="poolBudgetText"
+                :schedule-text="scheduleText"
+                :is-brush="isBrush"
+                @apply-preset="applyPreset"
+                @site-change="onSiteChange"
+                @save-path-change="onSavePathChange"
+                @remember-save-path="rememberSavePath"
+                @load-pool="loadPool"
+                @pct-change="onPctChange"
+              />
             </VWindowItem>
 
             <VWindowItem v-if="!simpleMode" value="brush">
-              <VAlert type="info" variant="tonal" density="compact" class="mb-2" icon="mdi-upload-network-outline">
-                刷流模式：<strong>按「上传潜力」运行，有自己的选种标准</strong> —— 只挑<strong>免费（含 2X免费）且有下载者</strong>的种，
-                不设做种人数上限、体积/年龄不限（热门大种才是上传主力）；定期检查每个种子，
-                <strong>做种满设定天数即清理换新的</strong>（默认 2 天）；没下完也算（只要在上传）。
-              </VAlert>
-              <section class="editor-section">
-                <header class="editor-section__head">
-                  <div>
-                    <div class="text-subtitle-1 font-weight-medium">刷流轮换</div>
-                    <div class="text-body-2 text-medium-emphasis">做种满设定天数即清理换新（默认 2 天）</div>
-                  </div>
-                </header>
-                <VRow>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.brush_seed_days"
-                      type="number"
-                      min="0"
-                      max="365"
-                      label="保种天数"
-                      hint="做种满该天数后清理换新；0 = 不按天数，改回「无上传」判定"
-                      suffix="天"
-                      persistent-hint
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.brush_min_leechers"
-                      type="number"
-                      min="0"
-                      label="最小下载人数"
-                      hint="只挑下载人数≥该值的种（有下载需求才值得下）"
-                      persistent-hint
-                    />
-                  </VCol>
-                </VRow>
-                <VRow>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.rotate_upload_gb"
-                      type="number"
-                      min="0"
-                      label="产出换新：单种上传量"
-                      hint="单种已上传达到该 GB 即清理换新；留空 = 不看上传量"
-                      suffix="GB"
-                      clearable
-                      persistent-hint
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.rotate_ratio"
-                      type="number"
-                      min="0"
-                      step="0.1"
-                      label="产出换新：单种分享率"
-                      hint="单种分享率达到该值即清理换新；留空 = 不看分享率"
-                      clearable
-                      persistent-hint
-                    />
-                  </VCol>
-                </VRow>
-                <div class="editor-switches">
-                  <VSwitch v-model="localTask.except_subscribe" label="选种排除订阅命中（不抢主人要看的片）" color="primary" hide-details inset />
-                </div>
-              </section>
-
-              <section class="editor-section">
-                <header class="editor-section__head">
-                  <div>
-                    <div class="text-subtitle-1 font-weight-medium">无上传判定（保种天数 = 0 时启用）</div>
-                    <div class="text-body-2 text-medium-emphasis">保种天数填 0 时不按天数轮换，而是以「平均上传速率」为准清理换新</div>
-                  </div>
-                </header>
-                <VRow>
-                  <VCol cols="12" md="6">
-                    <VSelect
-                      v-model.number="localTask.upload_min_kbps"
-                      label="上传速率门槛"
-                      :items="uploadRateOptions"
-                      hint="窗口内平均上传速率低于该值 → 判「无上传」（连续若干次后删除）"
-                      persistent-hint
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.upload_idle_minutes"
-                      type="number"
-                      min="0"
-                      max="1440"
-                      label="清理时间（无上传判定时长）"
-                      hint="连续多少分钟低于速率门槛就清理（0 = 自动：约 2×检查间隔）"
-                      suffix="分钟"
-                      persistent-hint
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.brush_grace_minutes"
-                      type="number"
-                      min="0"
-                      max="1440"
-                      label="宽容时间（起步宽限）"
-                      hint="新种加入后多少分钟内不判「无上传」"
-                      suffix="分钟"
-                      persistent-hint
-                    />
-                  </VCol>
-                </VRow>
-              </section>
-
-              <section class="editor-section">
-                <header class="editor-section__head">
-                  <div>
-                    <div class="text-subtitle-1 font-weight-medium">抓取与并发</div>
-                    <div class="text-body-2 text-medium-emphasis">刷流只看最新页（免费热种在最新页），不深翻</div>
-                  </div>
-                </header>
-                <VRow>
-                  <VCol cols="12" md="6"><VTextField v-model.number="localTask.max_add_per_run" type="number" min="1" label="单轮最多新增" placeholder="默认 10" suffix="个/轮" clearable /></VCol>
-                  <VCol cols="12" md="6"><VTextField v-model.number="localTask.max_download_concurrent" type="number" min="1" label="同时下载上限" placeholder="默认 10" suffix="个" clearable /></VCol>
-                  <VCol cols="12" md="6"><VTextField v-model.number="localTask.top_n" type="number" min="1" label="每轮参评候选数" placeholder="默认 30" suffix="个" clearable /></VCol>
-                  <VCol cols="12" md="6"><VTextField v-model.number="localTask.browse_pages" type="number" min="1" max="60" label="每轮翻页数" placeholder="默认 3" suffix="页" clearable /></VCol>
-                </VRow>
-              </section>
-
-              <section class="editor-section">
-                <header class="editor-section__head">
-                  <div>
-                    <div class="text-subtitle-1 font-weight-medium">清理</div>
-                    <div class="text-body-2 text-medium-emphasis">做种满天数 / 促销失效 / 停滞的种子清理</div>
-                  </div>
-                </header>
-                <div class="editor-switches">
-                  <VSwitch v-model="localTask.refill_when_empty" label="清理后主动补种" color="primary" hide-details inset />
-                  <VSwitch v-model="localTask.cleanup_no_progress" label="清理无进度种子（停滞/出错且进度为 0）" color="primary" hide-details inset />
-                  <VSwitch v-model="localTask.cleanup_slow_progress" label="清理下载过慢的种子（长期下不完腾名额）" color="primary" hide-details inset />
-                  <VSwitch v-model="localTask.purge_unfree_incomplete" label="清理「已不再免费且未下完」的种子" color="primary" hide-details inset />
-                  <VSwitch v-model="localTask.auto_resume_paused" label="自动恢复被暂停的已完成种子" color="primary" hide-details inset />
-                  <VSwitch v-model="localTask.delete_files" label="删种同时删除文件" color="primary" hide-details inset />
-                </div>
-                <VRow>
-                  <VCol cols="12">
-                    <VTextField
-                      v-model="localTask.delete_except_tags"
-                      label="永不删除的标签（可选，逗号分隔）"
-                      hint="叠加在「已整理 / 辅种」之上：带这些标签的种子删种时永不删除"
-                      persistent-hint
-                      clearable
-                    />
-                  </VCol>
-                </VRow>
-                <VRow v-if="localTask.cleanup_no_progress">
-                  <VCol cols="12" md="6"><VTextField v-model.number="localTask.no_progress_minutes" type="number" min="1" label="无进度判定时长（分钟）" persistent-hint /></VCol>
-                  <VCol cols="12" md="6"><VTextField v-model.number="localTask.seen_cooldown_hours" type="number" min="0" label="已处理去重窗口（小时）" hint="同一候选在该时长内不重复拉取，0 = 不跳过" persistent-hint /></VCol>
-                </VRow>
-                <VRow v-if="localTask.cleanup_slow_progress">
-                  <VCol cols="12" md="6"><VTextField v-model.number="localTask.slow_progress_grace_minutes" type="number" min="1" label="慢种宽限（分钟）" persistent-hint /></VCol>
-                  <VCol cols="12" md="6"><VTextField v-model.number="localTask.slow_progress_max_hours" type="number" min="1" label="预计下完上限（小时）" persistent-hint /></VCol>
-                </VRow>
-              </section>
+              <BrushPanel
+                v-model:brushSeedDays="localTask.brush_seed_days"
+                v-model:brushMinLeechers="localTask.brush_min_leechers"
+                v-model:rotateUploadGb="localTask.rotate_upload_gb"
+                v-model:rotateRatio="localTask.rotate_ratio"
+                v-model:exceptSubscribe="localTask.except_subscribe"
+                v-model:uploadMinKbps="localTask.upload_min_kbps"
+                v-model:uploadIdleMinutes="localTask.upload_idle_minutes"
+                v-model:brushGraceMinutes="localTask.brush_grace_minutes"
+                v-model:maxAddPerRun="localTask.max_add_per_run"
+                v-model:maxDownloadConcurrent="localTask.max_download_concurrent"
+                v-model:topN="localTask.top_n"
+                v-model:browsePages="localTask.browse_pages"
+                v-model:refillWhenEmpty="localTask.refill_when_empty"
+                v-model:cleanupNoProgress="localTask.cleanup_no_progress"
+                v-model:cleanupSlowProgress="localTask.cleanup_slow_progress"
+                v-model:purgeUnfreeIncomplete="localTask.purge_unfree_incomplete"
+                v-model:autoResumePaused="localTask.auto_resume_paused"
+                v-model:deleteFiles="localTask.delete_files"
+                v-model:deleteExceptTags="localTask.delete_except_tags"
+                v-model:noProgressMinutes="localTask.no_progress_minutes"
+                v-model:seenCooldownHours="localTask.seen_cooldown_hours"
+                v-model:slowProgressGraceMinutes="localTask.slow_progress_grace_minutes"
+                v-model:slowProgressMaxHours="localTask.slow_progress_max_hours"
+                :upload-rate-options="uploadRateOptions"
+              />
             </VWindowItem>
 
             <VWindowItem v-if="!simpleMode && !isBrush" value="magic">
-              <section class="editor-section">
-                <header class="editor-section__head">
-                  <div>
-                    <div class="text-subtitle-1 font-weight-medium">魔力门槛（留空 = 自动）</div>
-                    <div class="text-body-2 text-medium-emphasis">留空由公式与实时数据自动推算，手填即覆盖</div>
-                  </div>
-                  <VChip size="small" color="primary" variant="tonal">可自动</VChip>
-                </header>
-                <VRow>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.min_bonus_per_hour"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      label="每小时最低魔力"
-                      placeholder="留空 = 种子魔力中位数 × 0.5"
-                      suffix="/h"
-                      clearable
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.disk_size_gb"
-                      type="number"
-                      min="0"
-                      step="10"
-                      label="保种体积上限"
-                      placeholder="留空 = 不限"
-                      suffix="GB"
-                      clearable
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.max_keep_torrents"
-                      type="number"
-                      min="1"
-                      label="最多保留种子数（覆盖站点上限）"
-                      placeholder="留空 = 按站点上限 → 保种体积 ÷ 平均种子大小"
-                      hint="站点上限来自「设置 · 站点规则」；此处只覆盖当前任务"
-                      persistent-hint
-                      clearable
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.max_add_per_run"
-                      type="number"
-                      min="1"
-                      label="单轮最多新增"
-                      placeholder="默认 10"
-                      suffix="个/轮"
-                      clearable
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.max_download_concurrent"
-                      type="number"
-                      min="1"
-                      label="同时下载上限"
-                      placeholder="默认 10"
-                      suffix="个"
-                      clearable
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.top_n"
-                      type="number"
-                      min="1"
-                      label="每轮参评候选数"
-                      placeholder="默认 30"
-                      suffix="个"
-                      clearable
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.browse_pages"
-                      type="number"
-                      min="1"
-                      max="60"
-                      label="每轮翻页数"
-                      placeholder="默认 3"
-                      suffix="页"
-                      clearable
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.bonus_protect_threshold"
-                      type="number"
-                      min="0"
-                      label="魔力保护阈值"
-                      placeholder="留空 = 站点当前魔力"
-                      clearable
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.min_bonus_to_keep"
-                      type="number"
-                      min="0"
-                      label="最低魔力保底值"
-                      placeholder="留空 = 0（不设保底）"
-                      clearable
-                      :rules="[
-                        value =>
-                          Number(value || 0) < Number(localTask.bonus_protect_threshold || 999999999) ||
-                          '最低魔力保底值应小于魔力保护阈值',
-                      ]"
-                    />
-                  </VCol>
-                </VRow>
-                <div class="editor-switches">
-                  <VSwitch v-model="localTask.refill_when_empty" label="清理后主动补种" color="primary" hide-details inset />
-                  <VSwitch
-                    v-model="localTask.cleanup_no_progress"
-                    label="每次运行清理无进度种子（停滞/出错且进度为 0）"
-                    color="primary"
-                    hide-details
-                    inset
-                  />
-                  <VSwitch
-                    v-model="localTask.cleanup_slow_progress"
-                    label="清理下载过慢的种子（速度÷体积算 ETA，长期下不完的腾名额）"
-                    color="primary"
-                    hide-details
-                    inset
-                  />
-                  <VSwitch
-                    v-model="localTask.purge_unfree_incomplete"
-                    label="检查时清理「已不再免费且未下完」的种子（回站点核对促销）"
-                    color="primary"
-                    hide-details
-                    inset
-                  />
-                  <VSwitch
-                    v-model="localTask.auto_resume_paused"
-                    label="自动恢复被暂停的已完成种子（重新做种）"
-                    color="primary"
-                    hide-details
-                    inset
-                  />
-                </div>
-                <VRow>
-                  <VCol cols="12" md="6">
-                    <VSelect
-                      v-model="localTask.ti_source"
-                      :items="[
-                        { title: '发布时长（站点公式口径，推荐）', value: 'publish' },
-                        { title: '做种时长（qB 统计）', value: 'seed_time' },
-                      ]"
-                      label="Ti 口径（做种时间因子）"
-                      hint="候选排序与做种汇总使用同一口径；取不到发布时间时自动回落做种时长"
-                      persistent-hint
-                    />
-                  </VCol>
-                </VRow>
-                <VRow v-if="localTask.cleanup_no_progress">
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.no_progress_minutes"
-                      type="number"
-                      min="1"
-                      label="无进度判定时长（分钟）"
-                      hint="加入下载器超过该时长仍无进度才清理"
-                      persistent-hint
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.seen_cooldown_hours"
-                      type="number"
-                      min="0"
-                      label="已处理去重窗口（小时）"
-                      hint="同一候选在该时长内不重复拉取，0 = 不跳过"
-                      persistent-hint
-                    />
-                  </VCol>
-                </VRow>
-                <VRow v-if="localTask.cleanup_slow_progress">
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.slow_progress_grace_minutes"
-                      type="number"
-                      min="1"
-                      label="慢种宽限（分钟）"
-                      hint="种子加入后该时长内不判「慢」，给新种起步时间"
-                      persistent-hint
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.slow_progress_max_hours"
-                      type="number"
-                      min="1"
-                      label="预计下完上限（小时）"
-                      hint="按当前速度（速度÷体积）预计还要超过该小时数才下完 → 清理"
-                      persistent-hint
-                    />
-                  </VCol>
-                </VRow>
-              </section>
-
-              <section class="editor-section">
-                <header class="editor-section__head">
-                  <div>
-                    <div class="text-subtitle-1 font-weight-medium">删种保护</div>
-                    <div class="text-body-2 text-medium-emphasis">保护期内、受保护与 H&R 种子永不删除</div>
-                  </div>
-                </header>
-                <VRow>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.min_seed_time"
-                      type="number"
-                      min="0"
-                      label="最短做种时间（小时）"
-                      placeholder="0 = 不设保护期"
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.min_ratio"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      label="最低分享率"
-                      placeholder="0 = 不限"
-                    />
-                  </VCol>
-                </VRow>
-                <div class="editor-switches">
-                  <VSwitch v-model="localTask.delete_files" label="删种同时删除文件" color="primary" hide-details inset />
-                </div>
-                <VRow>
-                  <VCol cols="12">
-                    <VTextField
-                      v-model="localTask.delete_except_tags"
-                      label="永不删除的标签（可选，逗号分隔）"
-                      hint="叠加在「已整理 / 辅种」之上：带这些标签的种子删种时永不删除"
-                      persistent-hint
-                      clearable
-                    />
-                  </VCol>
-                </VRow>
-              </section>
-              <section class="editor-section">
-                <header class="editor-section__head">
-                  <div>
-                    <div class="text-subtitle-1 font-weight-medium">完美种保护</div>
-                    <div class="text-body-2 text-medium-emphasis">优质老种（非零魔 · 做种人数少 · 挂得够老）永久保留，不参与任何清理——魔力靠「养」，越老越肥</div>
-                  </div>
-                </header>
-                <div class="editor-switches">
-                  <VSwitch v-model="localTask.protect_perfect" label="启用完美种保护（满足条件的种子永不清理）" color="primary" hide-details inset />
-                </div>
-                <VRow v-if="localTask.protect_perfect">
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.perfect_max_seeders"
-                      type="number"
-                      min="0"
-                      label="完美种：做种人数上限"
-                      hint="站内做种人数 ≤ 该值才算完美（0 = 不限制）"
-                      suffix="人"
-                      persistent-hint
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.perfect_min_weeks"
-                      type="number"
-                      min="0"
-                      step="0.5"
-                      label="完美种：做种周数下限"
-                      hint="做种周数 ≥ 该值才算完美（0 = 不限制）"
-                      suffix="周"
-                      persistent-hint
-                    />
-                  </VCol>
-                </VRow>
-              </section>
+              <MagicPanel
+                v-model:minBonusPerHour="localTask.min_bonus_per_hour"
+                v-model:diskSizeGb="localTask.disk_size_gb"
+                v-model:maxKeepTorrents="localTask.max_keep_torrents"
+                v-model:maxAddPerRun="localTask.max_add_per_run"
+                v-model:maxDownloadConcurrent="localTask.max_download_concurrent"
+                v-model:topN="localTask.top_n"
+                v-model:browsePages="localTask.browse_pages"
+                v-model:bonusProtectThreshold="localTask.bonus_protect_threshold"
+                v-model:minBonusToKeep="localTask.min_bonus_to_keep"
+                v-model:refillWhenEmpty="localTask.refill_when_empty"
+                v-model:cleanupNoProgress="localTask.cleanup_no_progress"
+                v-model:cleanupSlowProgress="localTask.cleanup_slow_progress"
+                v-model:purgeUnfreeIncomplete="localTask.purge_unfree_incomplete"
+                v-model:autoResumePaused="localTask.auto_resume_paused"
+                v-model:tiSource="localTask.ti_source"
+                v-model:noProgressMinutes="localTask.no_progress_minutes"
+                v-model:seenCooldownHours="localTask.seen_cooldown_hours"
+                v-model:slowProgressGraceMinutes="localTask.slow_progress_grace_minutes"
+                v-model:slowProgressMaxHours="localTask.slow_progress_max_hours"
+                v-model:minSeedTime="localTask.min_seed_time"
+                v-model:minRatio="localTask.min_ratio"
+                v-model:deleteFiles="localTask.delete_files"
+                v-model:deleteExceptTags="localTask.delete_except_tags"
+                v-model:protectPerfect="localTask.protect_perfect"
+                v-model:perfectMaxSeeders="localTask.perfect_max_seeders"
+                v-model:perfectMinWeeks="localTask.perfect_min_weeks"
+              />
             </VWindowItem>
 
             <VWindowItem v-if="!simpleMode && !isBrush" value="formula">
-              <section class="editor-section">
-                <header class="editor-section__head">
-                  <div>
-                    <div class="text-subtitle-1 font-weight-medium">魔力公式参数</div>
-                    <div class="text-body-2 text-medium-emphasis">
-                      留空使用站点预设 / NexusPHP 标准式（T0=5，N0=7，B0=100，L=300）
-                    </div>
-                  </div>
-                  <VChip size="small" color="primary" variant="tonal">高级</VChip>
-                </header>
-                <VRow>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.bonus_t0"
-                      type="number"
-                      min="0.1"
-                      step="0.1"
-                      label="生存时间参数 T0"
-                      placeholder="默认 5"
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.bonus_n0"
-                      type="number"
-                      min="2"
-                      label="做种人数参数 N0"
-                      placeholder="默认 7"
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.bonus_b0"
-                      type="number"
-                      min="0.1"
-                      step="0.1"
-                      label="每小时魔力上限 B0"
-                      placeholder="默认 100"
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.bonus_l"
-                      type="number"
-                      min="0.1"
-                      step="0.1"
-                      label="曲线参数 L"
-                      placeholder="默认 300"
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField
-                      v-model.number="localTask.bonus_zero_weight"
-                      type="number"
-                      min="0"
-                      step="0.05"
-                      label="零魔种子权重"
-                      placeholder="默认 0.2"
-                    />
-                  </VCol>
-                </VRow>
-              </section>
+              <FormulaPanel
+                v-model:bonusT0="localTask.bonus_t0"
+                v-model:bonusN0="localTask.bonus_n0"
+                v-model:bonusB0="localTask.bonus_b0"
+                v-model:bonusL="localTask.bonus_l"
+                v-model:bonusZeroWeight="localTask.bonus_zero_weight"
+              />
             </VWindowItem>
 
             <VWindowItem v-if="!simpleMode" value="selection">
-              <section class="editor-section">
-                <header class="editor-section__head">
-                  <div>
-                    <div class="text-subtitle-1 font-weight-medium">来源与促销</div>
-                    <div class="text-body-2 text-medium-emphasis">{{ isBrush ? '刷流只看站点最新页（免费热种在最新页），不做游标深翻' : '沿用站点列表页或 RSS 获取链路' }}</div>
-                  </div>
-                </header>
-                <VRow>
-                  <VCol cols="12" md="6">
-                    <VSelect
-                      v-if="isBrush"
-                      :model-value="'free'"
-                      label="促销"
-                      :items="[{ title: '免费（含 2X 免费）', value: 'free' }]"
-                      disabled
-                      hint="刷流固定只抓免费种（下载不计量），保障分享率"
-                      persistent-hint
-                    />
-                    <VSelect
-                      v-else
-                      v-model="localTask.freeleech"
-                      label="促销"
-                      :items="[
-                        { title: '免费', value: 'free' },
-                        { title: '2X 免费', value: '2xfree' },
-                      ]"
-                      hint="系统硬规则：只下免费种（非免费不碰）。「免费」含 2X 免费；选「2X 免费」= 只要双倍免费"
-                      persistent-hint
-                    />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VSelect
-                      v-model="localTask.hr"
-                      label="排除 H&R"
-                      :items="[
-                        { title: '是', value: 'yes' },
-                        { title: '否', value: 'no' },
-                      ]"
-                    />
-                  </VCol>
-                </VRow>
-              </section>
-
-              <section class="editor-section">
-                <header class="editor-section__head">
-                  <div>
-                    <div class="text-subtitle-1 font-weight-medium">候选过滤</div>
-                    <div class="text-body-2 text-medium-emphasis">{{ isBrush ? '刷流默认不限人数 / 体积 / 年龄（留空即为不限），如需收敛再填；范围支持单值或「最小值-最大值」' : '范围字段支持单值或「最小值-最大值」' }}</div>
-                  </div>
-                </header>
-                <VRow>
-                  <VCol cols="12" md="4">
-                    <VTextField v-model="localTask.size" label="种子大小（GB）" placeholder="10-80" />
-                  </VCol>
-                  <VCol cols="12" md="4">
-                    <VTextField v-model="localTask.seeder" label="做种人数" placeholder="1-10" />
-                  </VCol>
-                  <VCol cols="12" md="4">
-                    <VTextField v-model="localTask.pubtime" label="发布时间（分钟）" placeholder="5-120" />
-                  </VCol>
-                  <VCol cols="12">
-                    <VTextField v-model="localTask.include" label="包含规则" placeholder="支持正则表达式" />
-                  </VCol>
-                  <VCol cols="12">
-                    <VTextField v-model="localTask.exclude" label="排除规则" placeholder="支持正则表达式" />
-                  </VCol>
-                </VRow>
-                <div class="editor-switches">
-                  <VSwitch
-                    v-if="!isBrush"
-                    v-model="localTask.exclude_zero_bonus"
-                    label="不选零魔种子（Wi=0.2）"
-                    color="primary"
-                    hide-details
-                    inset
-                  />
-                </div>
-              </section>
+              <SelectionPanel
+                v-model:freeleech="localTask.freeleech"
+                v-model:hr="localTask.hr"
+                v-model:size="localTask.size"
+                v-model:seeder="localTask.seeder"
+                v-model:pubtime="localTask.pubtime"
+                v-model:include="localTask.include"
+                v-model:exclude="localTask.exclude"
+                v-model:excludeZeroBonus="localTask.exclude_zero_bonus"
+                :is-brush="isBrush"
+              />
             </VWindowItem>
 
             <VWindowItem v-if="!simpleMode" value="advanced">
-              <section class="editor-section">
-                <header class="editor-section__head">
-                  <div>
-                    <div class="text-subtitle-1 font-weight-medium">跨站免费取种</div>
-                    <div class="text-body-2 text-medium-emphasis">
-                      本站这颗不免费（下了就烧流量、拉低分享率）→ 去任意他站找「免费且同一 Release」的副本下回来，下完自动辅回本站（零下载纯做种）
-                    </div>
-                  </div>
-                </header>
-                <div class="editor-switches">
-                  <VSwitch v-model="localTask.crossseed_enabled" label="启用跨站免费取种" color="primary" hide-details inset />
-                </div>
-                <VRow v-if="localTask.crossseed_enabled">
-                  <VCol cols="12" sm="4">
-                    <VTextField
-                      v-model.number="localTask.crossseed_max_per_round"
-                      type="number"
-                      min="1"
-                      label="每轮跨站名额"
-                      hint="每一轮刷流最多发起几个跨站取种"
-                      persistent-hint
-                    />
-                  </VCol>
-                  <VCol cols="12" sm="4">
-                    <VTextField
-                      v-model.number="localTask.crossseed_max_size_gb"
-                      type="number"
-                      min="0.1"
-                      step="0.1"
-                      label="单种大小上限（GB）"
-                      hint="超过此体积的种子不做跨站取种"
-                      persistent-hint
-                    />
-                  </VCol>
-                  <VCol cols="12" sm="4">
-                    <VTextField
-                      v-model.number="localTask.crossseed_max_sites"
-                      type="number"
-                      min="1"
-                      label="最多探测站点数"
-                      hint="每个候选最多查几个他站（越大越慢/越耗 PV）"
-                      persistent-hint
-                    />
-                  </VCol>
-                </VRow>
-              </section>
-              <section class="editor-section">
-                <header class="editor-section__head">
-                  <div>
-                    <div class="text-subtitle-1 font-weight-medium">单种限速</div>
-                    <div class="text-body-2 text-medium-emphasis">只作用于当前任务新添加的种子</div>
-                  </div>
-                </header>
-                <VRow>
-                  <VCol cols="12" md="6">
-                    <VTextField v-model.number="localTask.up_speed" type="number" min="1" label="上传限速（KB/s）" hint="留空 = 用全局档位（设置 · 常规：魔力 / 刷流上传限速）" persistent-hint />
-                  </VCol>
-                  <VCol cols="12" md="6">
-                    <VTextField v-model.number="localTask.dl_speed" type="number" min="1" label="下载限速（KB/s）" hint="留空 = 用任务类型默认（魔力 1024 / 刷流全局档位）" persistent-hint />
-                  </VCol>
-                </VRow>
-              </section>
-              <section class="editor-section">
-                <header class="editor-section__head">
-                  <div>
-                    <div class="text-subtitle-1 font-weight-medium">生效预览</div>
-                    <div class="text-body-2 text-medium-emphasis">保存后立即写入调度，无需重启插件</div>
-                  </div>
-                </header>
-                <dl class="magicflow-facts magicflow-facts--two">
-                  <div><dt>站点</dt><dd>{{ siteName }}</dd></div>
-                  <div><dt>下载器</dt><dd>{{ localTask.downloader || '未选择' }}</dd></div>
-                  <div><dt>调度</dt><dd>{{ scheduleText }}</dd></div>
-                  <div><dt>开启时段</dt><dd>{{ localTask.active_time_range || '全天' }}</dd></div>
-                  <div>
-                    <dt>任务目标</dt>
-                    <dd>{{ hasGoal() ? (isBrush ? `${localTask.goal_value} GB 上传量` : `${localTask.goal_value} 魔力值`) : '未设置' }}</dd>
-                  </div>
-                </dl>
-              </section>
+              <AdvancedPanel
+                v-model:crossseedEnabled="localTask.crossseed_enabled"
+                v-model:crossseedMaxPerRound="localTask.crossseed_max_per_round"
+                v-model:crossseedMaxSizeGb="localTask.crossseed_max_size_gb"
+                v-model:crossseedMaxSites="localTask.crossseed_max_sites"
+                v-model:upSpeed="localTask.up_speed"
+                v-model:dlSpeed="localTask.dl_speed"
+                :site-name="siteName"
+                :schedule-text="scheduleText"
+                :is-brush="isBrush"
+                :downloader="localTask.downloader"
+                :active-time-range="localTask.active_time_range"
+                :goal-value="localTask.goal_value"
+                :has-goal="hasGoal()"
+              />
             </VWindowItem>
           </VWindow>
         </VForm>
@@ -1352,120 +623,6 @@ function confirmSaveWithoutGoal() {
 .magicflow-editor__window {
   min-inline-size: 0;
   padding: 20px;
-}
-
-/* ★ 5.9.0 任务模板选择（移动端友好：整块可点，一行一个） */
-.editor-presets {
-  display: grid;
-  gap: 8px;
-}
-.editor-preset {
-  display: grid;
-  grid-template-columns: 22px 1fr;
-  grid-template-areas: "icon title" "icon desc";
-  gap: 2px 8px;
-  align-items: center;
-  padding: 10px 12px;
-  text-align: start;
-  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
-  border-radius: 10px;
-  background: rgba(var(--v-theme-surface-variant), 0.35);
-  color: inherit;
-  transition: border-color 0.15s ease, background 0.15s ease;
-}
-.editor-preset > .v-icon {
-  grid-area: icon;
-  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
-}
-.editor-preset__title {
-  grid-area: title;
-  font-weight: 600;
-}
-.editor-preset__desc {
-  grid-area: desc;
-  font-size: 0.75rem;
-  line-height: 1.3;
-  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
-}
-.editor-preset.is-active {
-  border-color: rgb(var(--v-theme-primary));
-  background: rgba(var(--v-theme-primary), 0.08);
-}
-.editor-preset.is-active > .v-icon {
-  color: rgb(var(--v-theme-primary));
-}
-.editor-pool {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 6px;
-  margin-top: 10px;
-  font-size: 0.75rem;
-  line-height: 1.35;
-  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
-}
-.editor-quota {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 2px 0 6px;
-}
-
-.editor-quota__head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  font-size: 12px;
-  opacity: 0.85;
-}
-
-.editor-quota__head strong {
-  font-size: 14px;
-}
-
-.editor-quota__foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 11px;
-  opacity: 0.7;
-}
-
-.editor-pool.is-warn {
-  color: rgb(var(--v-theme-warning));
-}
-.editor-pool.is-error {
-  color: rgb(var(--v-theme-error));
-}
-.editor-pool__hint {
-  font-weight: 600;
-}
-.editor-pool__link {
-  border: 0;
-  background: none;
-  padding: 0;
-  color: rgb(var(--v-theme-primary));
-  text-decoration: underline;
-  cursor: pointer;
-}
-
-.editor-simple-note {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-top: 10px;
-  font-size: 0.75rem;
-  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
-}
-.editor-simple-note__link {
-  border: 0;
-  background: none;
-  padding: 0;
-  color: rgb(var(--v-theme-primary));
-  text-decoration: underline;
-  cursor: pointer;
 }
 
 .editor-section {
@@ -1555,29 +712,5 @@ function confirmSaveWithoutGoal() {
     white-space: normal;
   }
 
-}
-</style>
-<style scoped>
-.magicflow-facts {
-  display: grid;
-  gap: 11px;
-  margin: 18px 0 0;
-}
-.magicflow-facts--two {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-.magicflow-facts > div {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  min-inline-size: 0;
-}
-.magicflow-facts dt {
-  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
-}
-.magicflow-facts dd {
-  margin: 0;
-  text-align: end;
-  overflow-wrap: anywhere;
 }
 </style>

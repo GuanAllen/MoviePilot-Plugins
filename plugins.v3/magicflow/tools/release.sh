@@ -105,6 +105,7 @@ if [ "$DO_PUB" = 1 ]; then
     rsync -a --delete \
       --exclude='__pycache__' --exclude='*.pyc' --exclude='node_modules' \
       --exclude='.git' --exclude='docs' --exclude='preview' --exclude='screenshots' \
+      --exclude='AGENTS.md' \
       "$DEV/" "$PUB/plugins.v3/magicflow/"
     GIT_EXEC_PATH=$GE git -C "$PUB" -c user.name=IronOx -c user.email=guanallen@users.noreply.github.com add -A
     GIT_EXEC_PATH=$GE git -C "$PUB" -c user.name=IronOx -c user.email=guanallen@users.noreply.github.com commit -q -m "magicflow $VER: $NOTE" || echo "  (公共仓无改动)"

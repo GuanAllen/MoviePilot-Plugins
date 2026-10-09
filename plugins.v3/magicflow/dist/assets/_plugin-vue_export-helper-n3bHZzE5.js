@@ -562,4 +562,4 @@ const _export_sfc = (sfc, props) => {
   return target;
 };
 
-export { FALLBACK_SOURCE_OPTIONS as F, RUN_MODES as R, SORT_RULE_TYPES as S, _export_sfc as _, formatBytes as a, normalizeDownloaderPrefs as b, cloneTask as c, normalizeDownloaderPaths as d, normalizeDefaults as e, formatBonus as f, formatDateTime as g, runStatusText as h, formatDurationSeconds as i, cloudStatusMeta as j, recommendStatusMeta as k, normalizeSettings as l, normalizeSortRules as m, normalizeTask as n, formatDuration as o, normalizeIyuuSites as p, runModeMeta as r, taskStateMeta as t, unwrapResponse as u };
+export { FALLBACK_SOURCE_OPTIONS as F, RUN_MODES as R, SORT_RULE_TYPES as S, _export_sfc as _, formatBytes as a, cloudStatusMeta as b, cloneTask as c, formatDateTime as d, formatDurationSeconds as e, formatBonus as f, formatDuration as g, runModeMeta as h, runStatusText as i, normalizeDownloaderPrefs as j, normalizeDownloaderPaths as k, normalizeDefaults as l, normalizeIyuuSites as m, normalizeTask as n, normalizeSettings as o, normalizeSortRules as p, recommendStatusMeta as r, taskStateMeta as t, unwrapResponse as u };

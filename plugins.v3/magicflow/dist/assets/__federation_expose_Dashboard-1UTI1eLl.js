@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { _ as _export_sfc, f as formatBonus, t as taskStateMeta, u as unwrapResponse } from './_plugin-vue_export-helper-DUBcK05z.js';
+import { _ as _export_sfc, f as formatBonus, t as taskStateMeta, u as unwrapResponse } from './_plugin-vue_export-helper-n3bHZzE5.js';
 
 const {createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,unref:_unref,resolveComponent:_resolveComponent,createVNode:_createVNode,renderList:_renderList,Fragment:_Fragment,openBlock:_openBlock,createElementBlock:_createElementBlock,createTextVNode:_createTextVNode,createCommentVNode:_createCommentVNode,createBlock:_createBlock} = await importShared('vue');
 
@@ -96,7 +96,14 @@ return (_ctx, _cache) => {
           }, null, 8, ["icon", "color"]),
           _createElementVNode("div", null, [
             _createElementVNode("strong", null, _toDisplayString(task.name), 1),
-            _createElementVNode("span", null, _toDisplayString(task.site_name) + " · " + _toDisplayString(task.seeding_count || 0) + " 个种子", 1)
+            _createElementVNode("span", null, [
+              _createTextVNode(_toDisplayString(task.site_name || task.site_domain) + " · " + _toDisplayString(task.seeding_count || 0) + " 个种子", 1),
+              (task.site_missing)
+                ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
+                    _createTextVNode(" · 站点已删除")
+                  ], 64))
+                : _createCommentVNode("", true)
+            ])
           ]),
           _createElementVNode("span", null, _toDisplayString(_unref(formatBonus)(task.bonus_per_hour)), 1)
         ]))
@@ -121,6 +128,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Dashboard = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-e14fa69c"]]);
+const Dashboard = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-c9e358f2"]]);
 
 export { Dashboard as default };

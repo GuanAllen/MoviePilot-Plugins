@@ -162,33 +162,28 @@ def build() -> str:
                 L.append(f"- {row[0]}")
         L.append("")
 
-    # 6. 前端明细（src/**/*.vue + src/**/*.js）
+    # 6. 前端索引（给 agent：名字 → kind → 文件:行；按名排序，grep 一步定位）
     fe = data.get("frontend", [])
-    L.append("## 6. 前端明细（`src/` 下 .vue / .js）\n")
-    L.append("| 文件 | 行数 | script | template | 声明数 |")
-    L.append("|---|---|---|---|---|")
+    L.append("## 6. 前端索引（`src/` 下 .vue/.js · 按名字排序）\n")
+    L.append("> **给 agent**：`grep -ni \"<名字>\" docs/CODE-DICT.md` → 得 `文件:行`；"
+             "线上 `GET /agent/code-dict?q=<名字>`。kind：`model`=defineModel 双向字段、"
+             "`prop`=defineProps、`emit`=defineEmits；其余为脚本顶层声明（ref/computed/fn/const…）。\n")
+    entries = []
     for m in fe:
-        b = m.get("blocks") or {}
-        sc = b.get("script")
-        tp = b.get("template")
-        L.append(f"| `{m['file']}` | {m['lines']} | "
-                 f"{('L%d-%d' % tuple(sc)) if sc else '—'} | "
-                 f"{('L%d-%d' % tuple(tp)) if tp else '—'} | {len(m['decls'])} |")
-    L.append("")
-    for m in fe:
-        b = m.get("blocks") or {}
-        seg = []
-        if b.get("script"):
-            seg.append("script L%d-%d" % tuple(b["script"]))
-        if b.get("template"):
-            seg.append("template L%d-%d" % tuple(b["template"]))
-        if b.get("styles"):
-            seg.append("style " + "/".join("L%d-%d" % tuple(s) for s in b["styles"]))
-        L.append(f"### `{m['file']}` （{m['lines']} 行"
-                 + ("；" + "、".join(seg) if seg else "") + "）")
-        for d in sorted(m["decls"], key=lambda x: x["line"]):
-            L.append(f"- `{d['name'] or '—'}` · {d['kind']} · L{d['line']}")
-        L.append("")
+        for d in m["decls"]:
+            if d["kind"] == "api":  # defineModel/Props/Emits 赋值，已由 contract 覆盖
+                continue
+            entries.append((d["name"] or "—", d["kind"], m["file"], d["line"]))
+        ct = m.get("contract") or {}
+        for kind, key in (("model", "models"), ("prop", "props"), ("emit", "emits")):
+            for it in ct.get(key, []):
+                entries.append((it["name"], kind, m["file"], it["line"]))
+    entries.sort(key=lambda e: (e[0].lower(), e[2], e[3]))
+    L.append("| 名字 | kind | 位置 |")
+    L.append("|---|---|---|")
+    for name, kind, file, line in entries:
+        L.append(f"| `{name}` | {kind} | `{file}:{line}` |")
+    L.append(f"\n（{len(entries)} 条）\n")
     return "\n".join(L) + "\n"
 
 

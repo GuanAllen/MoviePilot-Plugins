@@ -7,6 +7,60 @@
 import { computed, ref, watch } from 'vue'
 import { unwrapResponse } from '../../../utils'
 
+// ── 展示用纯函数（无状态）→ module 级具名导出：OndemandDialog.vue 直接复用，单一真值源。
+//    仍保留在下方 useOndemand 的 return 里（index.vue 解构不变 → 护栏⑥ 解构↔return 逐字一致）。
+
+/** 大小文案（GB）。 */
+export function fmtSizeGb(bytes) {
+  const v = Number(bytes || 0) / (1024 * 1024 * 1024)
+  return v ? `${v.toFixed(2)} GB` : '—'
+}
+
+/** 点播候选的流量标识：dv=下载因子（0=免费，0<dv<1=折扣，1=全额计入）。 */
+export function odTraffic(dv) {
+  const v = Number(dv ?? 1)
+  if (!Number.isFinite(v) || v >= 1) return { text: '计流量', color: '' }
+  if (v <= 0) return { text: '免费', color: 'success' }
+  return { text: `流量 ×${Math.round(v * 100)}%`, color: 'warning' }
+}
+
+/** 进度百分比（0–100）。 */
+export function odPct(row) {
+  return Math.max(0, Math.min(100, Number(row?.progress || 0) * 100))
+}
+
+/** 速度文案（B/s → KB/s / MB/s）。 */
+export function odSpeed(bps) {
+  const v = Number(bps || 0)
+  if (!v) return ''
+  if (v >= 1024 * 1024) return `${(v / 1024 / 1024).toFixed(1)} MB/s`
+  if (v >= 1024) return `${(v / 1024).toFixed(0)} KB/s`
+  return `${v.toFixed(0)} B/s`
+}
+
+/** 剩余时间文案。 */
+export function odEtaText(sec) {
+  const s = Number(sec || 0)
+  if (!s || s <= 0) return ''
+  if (s < 60) return `剩 ${Math.round(s)} 秒`
+  if (s < 3600) return `剩 ${Math.round(s / 60)} 分`
+  return `剩 ${(s / 3600).toFixed(1)} 小时`
+}
+
+/** 阶段配色（点播清单用）。 */
+export function odStageColor(stage) {
+  if (stage === 'downloading') return 'primary'
+  if (stage === 'resource') return 'success'
+  if (stage === 'pending_settle') return 'info'
+  return 'warning'   // gone
+}
+
+/** 是否暂停态（暂停 / 停止）。 */
+export function odIsPaused(row) {
+  const s = String(row?.state || '')
+  return s === 'pausedUP' || s === 'pausedDL' || s === 'stoppedUP' || s === 'stoppedDL' || s === 'paused'
+}
+
 export function useOndemand(api) {
   // ── 点播（§1 权威来源 1 · 7.1.0）────────────────────────────────────
   const ondemandOpen = ref(false)
@@ -29,19 +83,8 @@ export function useOndemand(api) {
     loadOndemandItems()
   }
 
-  function fmtSizeGb(bytes) {
-    const v = Number(bytes || 0) / (1024 * 1024 * 1024)
-    return v ? `${v.toFixed(2)} GB` : '—'
-  }
-
-  // 点播候选的流量标识：dv=下载因子（0=免费，0<dv<1=折扣，1=全额计入）
-  function odTraffic(dv) {
-    const v = Number(dv ?? 1)
-    if (!Number.isFinite(v) || v >= 1) return { text: '计流量', color: '' }
-    if (v <= 0) return { text: '免费', color: 'success' }
-    return { text: `流量 ×${Math.round(v * 100)}%`, color: 'warning' }
-  }
-
+  // fmtSizeGb / odTraffic / odPct / odSpeed / odEtaText / odStageColor / odIsPaused
+  //   → 已上提为 module 级具名导出（见文件顶部）；本域只留依赖状态的 isOndemandAuto。
   function isOndemandAuto(row) {
     return !!row?.enclosure && row.enclosure === ondemandResult.value?.auto_pick
   }
@@ -107,39 +150,10 @@ export function useOndemand(api) {
     }
   })
 
-  // 进度百分比 / 速度 / 剩余时间 / 阶段配色（点播清单用）
-  function odPct(row) {
-    return Math.max(0, Math.min(100, Number(row?.progress || 0) * 100))
-  }
-  function odSpeed(bps) {
-    const v = Number(bps || 0)
-    if (!v) return ''
-    if (v >= 1024 * 1024) return `${(v / 1024 / 1024).toFixed(1)} MB/s`
-    if (v >= 1024) return `${(v / 1024).toFixed(0)} KB/s`
-    return `${v.toFixed(0)} B/s`
-  }
-  function odEtaText(sec) {
-    const s = Number(sec || 0)
-    if (!s || s <= 0) return ''
-    if (s < 60) return `剩 ${Math.round(s)} 秒`
-    if (s < 3600) return `剩 ${Math.round(s / 60)} 分`
-    return `剩 ${(s / 3600).toFixed(1)} 小时`
-  }
-  function odStageColor(stage) {
-    if (stage === 'downloading') return 'primary'
-    if (stage === 'resource') return 'success'
-    if (stage === 'pending_settle') return 'info'
-    return 'warning'   // gone
-  }
-
   // ★ 15.5.0：筛选（进行中 / 已完成）+ 行内操作（暂停 / 继续 / 移除）
   const ondemandTab = ref('inflight')   // 'inflight' | 'done'
   const odActing = ref('')
   const odMsg = ref('')
-  function odIsPaused(row) {
-    const s = String(row?.state || '')
-    return s === 'pausedUP' || s === 'pausedDL' || s === 'stoppedUP' || s === 'stoppedDL' || s === 'paused'
-  }
   async function actOndemand(row, action) {
     const h = String(row?.hash || '')
     if (!h) return

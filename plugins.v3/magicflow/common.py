@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "15.8.8"
+__version__ = "15.8.9"
 
 import bisect
 import re
@@ -109,6 +109,106 @@ def dup_gate_keys(info_hash: Any, fingerprint: Any = None) -> List[str]:
     if _fp:
         out.append(f"fp:{_fp}")
     return out
+
+
+# ★ 15.8.9 孤儿站点（任务绑的站点在 MoviePilot 里已被删除）：
+#   典型来路 = 用户在 MP 删站但没删魔流任务；状态统计每轮枚举**全部**任务（含 stopped），
+#   站点相关处理必然落空（旧版每轮重排一次公式抓取 + 刷一条 WARNING）。
+#   判定放这里（叶子层，模块级函数调用）→ 各 feature 不必 `self._` 互调，也不新增隐式耦合。
+SITE_EXISTS_TTL = 60.0  # 站点存在性判定结果的短缓存（秒）
+
+
+class SiteGuard:
+    """站点存在性判定 + 孤儿任务「只提示一次」（跨 feature 共用）。
+
+    * 查库失败一律按**存在**处理：孤儿最多迟一轮被识别，而把一次数据库抖动误判成
+      「站点已删除」会让整排任务集体变孤儿；
+    * 同一 ``(task.id, site_id)`` 只提示一次；站点回来后 ``clear`` 复位（将来再删还能再报）。
+    """
+
+    def __init__(self, log: Any = None):
+        self._log = log
+        self._cache: Dict[int, Tuple[float, bool]] = {}
+        self._warned: set = set()
+
+    def _say(self, msg: str, level: str = "warning") -> None:
+        if callable(self._log):
+            try:
+                self._log(msg, level)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def exists(self, site_id: Any) -> bool:
+        """站点是否仍存在（真值源 = MoviePilot 站点表）。"""
+        try:
+            sid = int(site_id or 0)
+        except (TypeError, ValueError):
+            return False
+        if not sid:
+            return False
+        hit = self._cache.get(sid)
+        now = time.time()
+        if hit and (now - float(hit[0])) < SITE_EXISTS_TTL:
+            return bool(hit[1])
+        try:
+            from app.db.oper.site import SiteOper
+            exists = SiteOper().get(sid) is not None
+        except Exception as err:  # noqa: BLE001
+            self._say(f"站点存在性检查失败(id={sid}):{err}", "warning")
+            return True
+        self._cache[sid] = (now, exists)
+        return exists
+
+    def missing(self, task: Any) -> bool:
+        """任务绑的站点是否已被删除（无 site_id → False，不查库）。"""
+        try:
+            sid = int(getattr(task, "site_id", 0) or 0)
+        except (TypeError, ValueError):
+            return False
+        if not sid:
+            return False
+        return not self.exists(sid)
+
+    def warn(self, task: Any, site_id: Any = None) -> None:
+        """孤儿任务只提示一次（同 task+site），别每轮刷 WARNING。"""
+        try:
+            sid = int(site_id if site_id is not None else getattr(task, "site_id", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        key = f"{getattr(task, 'id', '') or ''}|{sid}"
+        if key in self._warned:
+            return
+        self._warned.add(key)
+        self._say(
+            f"任务 [{getattr(task, 'name', '') or key}] 绑定的站点(id={sid})已不存在，"
+            f"已跳过其站点相关处理；请删除该任务或改绑其他站点",
+            "warning",
+        )
+
+    def clear(self, task: Any, site_id: Any = None) -> None:
+        """站点回来了 → 复位「只提示一次」标记（任务仍在时将来再删还能再报）。"""
+        if not self._warned:
+            return
+        try:
+            sid = int(site_id if site_id is not None else getattr(task, "site_id", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        self._warned.discard(f"{getattr(task, 'id', '') or ''}|{sid}")
+
+
+def site_guard(host: Any) -> SiteGuard:
+    """取（并按需创建）挂在插件实例上的 ``SiteGuard``。
+
+    模块级函数（而非 ``self._xxx``）→ 不触发「禁止新增跨文件 self._ 互调」棘轮。
+    """
+    guard = getattr(host, "_site_guard", None)
+    if not isinstance(guard, SiteGuard):
+        guard = SiteGuard(getattr(host, "_log", None))
+        try:
+            host._site_guard = guard
+        except Exception:  # noqa: BLE001
+            pass
+    return guard
 # 分类阶段「单次取种」硬超时(秒):若在飞请求连续这么久都没有任何完成(典型=请求卡死/站点限速),
 # 则放弃等待剩余候选、立即进入处理阶段,避免个别慢请求把整段拖满。
 TORRENT_FETCH_PER_TIMEOUT = 20.0
