@@ -105,7 +105,7 @@ def strip_literals(s):
             continue
         out.append(ch)
         i += 1
-    return ''.join(out)
+    return ''.join(out).replace('${', ' {')   # 收尾消掉嵌套模板串漏出的 $
 
 
 def collect_locals(src):
@@ -208,6 +208,23 @@ def declared_imports(src):
     return out
 
 
+def module_exports(path):
+    """目标模块的真实导出名集合（找不到模块返回 None）。"""
+    for cand in (path, path + '.js', path + '.vue', os.path.join(path, 'index.js')):
+        if os.path.isfile(cand):
+            t = open(cand, encoding='utf-8').read()
+            out = set()
+            for m in re.finditer(r'export\s+(?:const|let|var|function|async function|class)\s+([A-Za-z_$][\w$]*)', t):
+                out.add(m.group(1))
+            for m in re.finditer(r'export\s*\{([^}]*)\}', t):
+                for x in m.group(1).split(','):
+                    x = x.strip().split(' as ')[-1].strip()
+                    if x:
+                        out.add(x)
+            return out
+    return None
+
+
 def main():
     fails = []
     G = index_globals()
@@ -224,6 +241,19 @@ def main():
         imports = declared_imports(src)
         body = strip_literals(src)
 
+        # ---- D. import 名必须在目标模块真实导出（防「误从 constants 导入」一类）----
+        for m in re.finditer(r"import\s*\{([^}]*)\}\s*from\s*['\"](\.[^'\"]+)['\"]", src):
+            nms = [x.strip().split(' as ')[-1].strip() for x in m.group(1).split(',') if x.strip()]
+            tgt = os.path.normpath(os.path.join(os.path.dirname(path), m.group(2)))
+            exp = module_exports(tgt)
+            if exp is None:
+                fails.append('%s：import 目标模块不存在 → %s' % (name, m.group(2)))
+                continue
+            miss = [x for x in nms if x not in exp]
+            if miss:
+                fails.append('%s：import 了目标模块（%s）未导出的名字 → %s'
+                             % (name, m.group(2), ', '.join(miss)))
+
         # ---- A. 依赖闭环 ----
         missing = set()
         for m in re.finditer(r'\b([A-Za-z_$][\w$]*)\b', body):
@@ -232,9 +262,8 @@ def main():
                 continue
             if re.search(r'\.\s*%s\b' % re.escape(w), body):   # 属性访问
                 continue
-            if re.search(r'[A-Za-z0-9_$]\s*:\s*%s\b' % re.escape(w), body):  # 对象键的值位置
-                continue
-            if re.search(r'(?:^|[{,])\s*%s\s*:' % re.escape(w), body, re.M):   # 对象字面量的键（如 { tasks: ... }）
+            # 对象字面量的键（如 { tasks: … }）——只认「{ 或 , 开头」的键；三元 `? x : y` 不算
+            if re.search(r'(?:^|[{,])\s*%s\s*:' % re.escape(w), body, re.M):
                 continue
             if w in G and w not in imports:
                 missing.add(w)

@@ -1548,22 +1548,56 @@ class CoreMixin:
             return None
 
     def _list_sites(self) -> List[Dict[str, Any]]:
-        """列出可选站点。"""
+        """列出可选站点（SitesHelper 优先，空表/异常回落 MP 站点登记表 SiteOper）。
+
+        ``SitesHelper().get_indexers()`` 依赖 MP「用户认证」（``auth_level >= 2``）：
+        认证失效时它返回空表，站点清单、任务编辑器下拉、站点报表选择器会一起空掉。
+        MP 的站点登记表（``app.db.oper.site.SiteOper``）不过这道闸门，故作为回落
+        ——与 ``features/reseed.py:158 _reseed_mp_sites`` 同口径。
+
+        回落告警按「状态变化」去重（``_site_fallback_note``）：``_list_sites`` 被多条
+        worker 线每轮调用，不去重会把日志刷爆（同 15.8.9 的告警去重思路）。
+        """
+        out: List[Dict[str, Any]] = []
         try:
             from app.sdk.network import SitesHelper
-            out: List[Dict[str, Any]] = []
             for item in SitesHelper().get_indexers() or []:
                 if not isinstance(item, dict):
                     continue
+                dom = str(item.get("domain") or "").strip().lower()
+                sid = item.get("id")
+                if sid is None and not dom:
+                    continue
                 out.append({
-                    "id": item.get("id"),
-                    "name": item.get("name") or item.get("domain") or "",
-                    "domain": item.get("domain") or "",
+                    "id": sid,
+                    "name": item.get("name") or dom or "",
+                    "domain": dom,
                 })
-            return out
         except Exception as err:
             self._log(f"列出站点失败: {err}", "error")
-            return []
+        if out:
+            self._site_fallback_note = False  # 认证恢复 → 下次回落重新告警
+            return out
+        noted = bool(getattr(self, "_site_fallback_note", False))
+        try:
+            from app.db.oper.site import SiteOper
+            for site in SiteOper().list() or []:
+                dom = str(getattr(site, "domain", "") or "").strip().lower()
+                sid = getattr(site, "id", None)
+                if sid is None and not dom:
+                    continue
+                out.append({
+                    "id": sid,
+                    "name": getattr(site, "name", "") or dom,
+                    "domain": dom,
+                })
+            if not noted:
+                self._log(f"站点清单回落站点登记表: {len(out)} 个", "warning")
+        except Exception as err:  # noqa: BLE001
+            if not noted:
+                self._log(f"列出站点失败（站点登记表回落也失败）: {err}", "error")
+        self._site_fallback_note = True
+        return out
 
     def _list_downloaders(self) -> List[Dict[str, Any]]:
         """列出可选下载器。"""
