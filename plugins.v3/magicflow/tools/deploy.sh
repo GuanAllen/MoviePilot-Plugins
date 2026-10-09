@@ -9,7 +9,7 @@
 #
 # ── 选项 ──
 #   --no-build         不重建前端（默认会 npm run build）
-#   --no-preflight     跳过 preflight 自检
+#   --no-preflight     跳过 preflight 自检（preflight 前会自动重生成 CODE-DICT.md / MODULES-REGISTRY.md）
 #   --no-market        不同步「监控源」目录
 #   --no-container     不更新容器副本（只同步监控源 → 触发 monitor 自动安装）
 #   --no-reload        不调用 reload API
@@ -71,10 +71,17 @@ if [ "$DO_BUILD" = 1 ]; then
   fi
 fi
 
-# 2) preflight
+# 2) preflight（★ 先自动重生成代码字典/模块登记，避免手忘导致 preflight --check 失败）
 if [ "$DO_PREFLIGHT" = 1 ]; then
   echo "── 2) preflight ──"
-  if [ "$DRY" = 1 ]; then echo "  (dry-run) sh tools/preflight.sh"; else sh "$DEV/tools/preflight.sh"; fi
+  if [ "$DRY" = 1 ]; then
+    echo "  (dry-run) python3 tools/gen_code_dict.py && python3 tools/gen_modules.py"
+    echo "  (dry-run) sh tools/preflight.sh"
+  else
+    ( cd "$DEV" && python3 tools/gen_code_dict.py >/dev/null && python3 tools/gen_modules.py >/dev/null ) \
+      && echo "  ▸ 代码字典 / 模块登记 已重生成" \
+      && sh "$DEV/tools/preflight.sh"
+  fi
 fi
 
 # 2) 同步监控源（monitor 会据此自动安装）

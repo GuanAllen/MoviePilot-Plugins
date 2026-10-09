@@ -6,7 +6,7 @@
 import { computed, ref } from 'vue'
 import { unwrapResponse } from '../../../utils'
 
-export function useDoubanService({ api }) {
+export function useDouban({ api }) {
   // ── 豆瓣评分服务（magicflow-douban · 3.23.1）─────────────────────────
   const doubanServiceOpen = ref(false)
   const doubanServiceActing = ref('')

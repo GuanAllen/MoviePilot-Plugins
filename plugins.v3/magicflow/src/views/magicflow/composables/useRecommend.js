@@ -8,6 +8,29 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { unwrapResponse } from '../../../utils'
 
+// 展示名：优先「媒体标题 (年份)」；不显示原始下载文件名（文件名只进 tooltip 属性）。
+// （具名导出：RecommendDialog 直接复用，单一真值源。）
+export function recName(rec) {
+  if (!rec) return ''
+  const m = rec.media || {}
+  const t = m.title || ''
+  if (t) return m.year ? `${t} (${m.year})` : t
+  return rec.title || rec.hash || ''
+}
+
+// 可手动确认的行：命中推荐（待确认），或「待核实」里非「已在库 / 重复」的临时种。
+// （具名导出：RecommendDialog 直接复用，单一真值源。）
+export function recommendActionable(rec) {
+  if (!rec) return false
+  const st = String(rec.status || '').toLowerCase()
+  if (st === 'recommended') return true
+  if (st === 'pending') {
+    const r = String(rec.reason || '')
+    return !r.includes('已在影视库') && !r.includes('重复推荐')
+  }
+  return false
+}
+
 export function useRecommend({ api, notify, error }) {
 const recommendData = ref({ items: [], total: 0, recommended: 0, enabled: true })
 const recommendOpen = ref(false)
@@ -20,14 +43,6 @@ let recommendTimer = null
     if (!rec) return false
     const st = String(rec.status || '').toLowerCase()
     return st === 'recommended' || st === 'confirmed' || st === 'dismissed' || st === 'deleted'
-  }
-  // 展示名：优先「媒体标题 (年份)」；不显示原始下载文件名（文件名只进 tooltip 属性）。
-  function recName(rec) {
-    if (!rec) return ''
-    const m = rec.media || {}
-    const t = m.title || ''
-    if (t) return m.year ? `${t} (${m.year})` : t
-    return rec.title || rec.hash || ''
   }
   const recommendItems = computed(() => {
     const order = { recommended: 0, pending: 1, confirmed: 2, dismissed: 3, deleted: 4 }
@@ -52,17 +67,6 @@ let recommendTimer = null
   })
   const hiddenRecCount = computed(() => (recommendData.value.items || []).filter(i => !recWorthShowing(i)).length)
   const confirmedCount = computed(() => (recommendData.value.items || []).filter(i => i.status === 'confirmed').length)
-  // 可手动确认的行：命中推荐（待确认），或「待核实」里非「已在库 / 重复」的临时种。
-  function recommendActionable(rec) {
-    if (!rec) return false
-    const st = String(rec.status || '').toLowerCase()
-    if (st === 'recommended') return true
-    if (st === 'pending') {
-      const r = String(rec.reason || '')
-      return !r.includes('已在影视库') && !r.includes('重复推荐')
-    }
-    return false
-  }
   const pendingCount = computed(() => (recommendData.value.items || []).filter(i => i.status === 'pending').length)
 
   async function loadRecommend() {

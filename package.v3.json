@@ -3,7 +3,7 @@
         "name": "魔流",
         "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
         "labels": "站点,做种,魔力,刷流",
-        "version": "15.8.8",
+        "version": "15.8.9",
         "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
         "author": "GuanAllen",
         "level": 1,
@@ -417,9 +417,10 @@
             "15.8.5": "点播在途豁免「库内资产」硬拦 —— 删除唯一闸门不再把在途点播当库内资产，`/ondemand/act?action=remove` 对在途点播由「拦」变「可删」。",
             "15.8.6": "15.8.6：点播加种即挂「身份+职务」双标签（原子），对账只当兜底（含 15.8.5 删除闸门豁免在途点播）",
             "15.8.7": "15.8.7：Vue 前端 P3 拆分收官（index.vue 12827→11799，11 个 composable）+ 修两个历史死 UI（invariantOpen 不弹窗 / claimProfile 白屏）+ 修 useTagModel 白屏 bug + 护栏 14/14",
-            "15.8.8": "15.8.8：P3 第 8 批 —— 推荐域出 index.vue（useRecommend 125 行/16 导出，含 60s 角标定时器自管）；index.vue 11799→11721；preflight 14/14"
+            "15.8.8": "15.8.8：P3 第 8 批 —— 推荐域出 index.vue（useRecommend 125 行/16 导出，含 60s 角标定时器自管）；index.vue 11799→11721；preflight 14/14",
+            "15.8.9": "15.8.9：孤儿站点（任务绑的站点已被 MP 删除）识别——common.SiteGuard 去重告警 + status.site_missing + 前端「站点已删除」标记"
         }
     },
-    "version": "15.8.8",
+    "version": "15.8.9",
     "history": {}
 }

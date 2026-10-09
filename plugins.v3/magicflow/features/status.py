@@ -42,6 +42,7 @@ from ..common import (
     STATS_TTL,
     STATUS_TTL,
     run_mode_of,
+    site_guard,
     task_is_participating,
     task_is_running,
 )
@@ -92,35 +93,44 @@ class StatusMixin:
             "hr_need_hours": 0.0,
             "bonus_day_delta": None,
             "attention": None,
+            "site_missing": False,
         }
         _t0 = time.time()
-        # 站点上报(黑盒:不再自算模型值)
-        try:
-            rep = self._site_reported(task)
-            stats["bonus_per_hour"] = round(rep["bonus_per_hour"], 4)
-            stats["site_bonus_per_hour"] = round(rep["bonus_per_hour"], 4)
-            stats["site_bonus_a"] = round(rep["a"], 2)
-            stats["site_bonus_ok"] = bool(rep["ok"])
-            # 该站点自己的「当前魔力存量」(不能跨站相加:各站魔力不可通约)
-            stats["site_current_bonus"] = round(float(rep.get("current_bonus") or 0.0), 2)
-            # 站点账号真实数据(上传/下载/分享率/做种/下载数)
-            stats["site_user"] = rep.get("user") or {}
-            # ★ 2026-10-07：时魔值的「新鲜度」（直读缓存旧值 vs 刚抓），供 UI/AI 判定依据链
-            stats["site_bonus_age_s"] = rep.get("age_s")
-            stats["site_bonus_stale"] = bool(rep.get("stale"))
-        except Exception as err:
-            self._log(f"统计任务 [{task.name}] 站点魔力失败: {err}", "warning")
+        # ★ 站点已被删除的孤儿任务：站点相关统计只会读到旧缓存（越看越假）→ 跳过，
+        #   并把 site_missing 交给前端做标记（提示删除任务 / 改绑站点）。
+        site_missing = site_guard(self).missing(task)
+        stats["site_missing"] = site_missing
+        if site_missing:
+            site_guard(self).warn(task, getattr(task, "site_id", 0))
+        else:
+            # 站点上报(黑盒:不再自算模型值)
+            try:
+                rep = self._site_reported(task)
+                stats["bonus_per_hour"] = round(rep["bonus_per_hour"], 4)
+                stats["site_bonus_per_hour"] = round(rep["bonus_per_hour"], 4)
+                stats["site_bonus_a"] = round(rep["a"], 2)
+                stats["site_bonus_ok"] = bool(rep["ok"])
+                # 该站点自己的「当前魔力存量」(不能跨站相加:各站魔力不可通约)
+                stats["site_current_bonus"] = round(float(rep.get("current_bonus") or 0.0), 2)
+                # 站点账号真实数据(上传/下载/分享率/做种/下载数)
+                stats["site_user"] = rep.get("user") or {}
+                # ★ 2026-10-07：时魔值的「新鲜度」（直读缓存旧值 vs 刚抓），供 UI/AI 判定依据链
+                stats["site_bonus_age_s"] = rep.get("age_s")
+                stats["site_bonus_stale"] = bool(rep.get("stale"))
+            except Exception as err:
+                self._log(f"统计任务 [{task.name}] 站点魔力失败: {err}", "warning")
         _t_site = time.time()
         # 站点上限感知:时魔天花板(B0 + 固定奖励封顶)+ 距上限占用
-        try:
-            params = self._build_formula_params(task)
-            ceiling = float(site_ceiling(params))
-            stats["site_ceiling"] = round(ceiling, 2)
-            stats["site_seed_cap"] = int(getattr(params, "seeding_count_cap", 0) or 0)
-            if ceiling > 0:
-                stats["ceiling_pct"] = round(min(stats["site_bonus_per_hour"] / ceiling * 100.0, 999.0), 1)
-        except Exception:
-            pass
+        if not site_missing:
+            try:
+                params = self._build_formula_params(task)
+                ceiling = float(site_ceiling(params))
+                stats["site_ceiling"] = round(ceiling, 2)
+                stats["site_seed_cap"] = int(getattr(params, "seeding_count_cap", 0) or 0)
+                if ceiling > 0:
+                    stats["ceiling_pct"] = round(min(stats["site_bonus_per_hour"] / ceiling * 100.0, 999.0), 1)
+            except Exception:
+                pass
         _t_ceiling = time.time()
         try:
             managed = self._task_managed_torrents(task, view=True)
@@ -252,6 +262,9 @@ class StatusMixin:
                 prewarm[d] = t
         for t in prewarm.values():
             try:
+                # 孤儿任务（站点已被删除）不预热公式：抓不到，只会白刷一次告警
+                if site_guard(self).missing(t):
+                    continue
                 self._acquire_site_formula(t)
             except Exception:
                 pass
@@ -313,6 +326,8 @@ class StatusMixin:
             **self._phase_info(task_id),
             **self._task_goal_status(task),
             "last_decision": _dec,
+            # ★ 孤儿任务标记（站点在 MP 里已删）：前端据此提示删除/改绑
+            "site_missing": site_guard(self).missing(task),
         }
 
     def _compute_summary(self) -> Dict[str, Any]:

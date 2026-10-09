@@ -54,7 +54,7 @@ onUnmounted(() => {
     <div class="magicflow-dashboard__tasks">
       <div v-for="task in enabledTasks" :key="task.id">
         <VIcon :icon="taskStateMeta(task.state, task.enabled).icon" :color="taskStateMeta(task.state, task.enabled).color" size="18" />
-        <div><strong>{{ task.name }}</strong><span>{{ task.site_name }} · {{ task.seeding_count || 0 }} 个种子</span></div>
+        <div><strong>{{ task.name }}</strong><span>{{ task.site_name || task.site_domain }} · {{ task.seeding_count || 0 }} 个种子<template v-if="task.site_missing"> · 站点已删除</template></span></div>
         <span>{{ formatBonus(task.bonus_per_hour) }}</span>
       </div>
       <div v-if="!enabledTasks.length" class="magicflow-dashboard__empty">

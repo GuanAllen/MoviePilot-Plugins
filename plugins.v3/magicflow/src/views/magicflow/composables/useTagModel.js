@@ -8,12 +8,20 @@
 import { ref } from 'vue'
 import { SORT_RULE_TYPES } from '../../../utils'
 
+// ★ P4：纯函数 / 常量提到 module 级具名导出，供 dialogs/SettingsDialog.vue 复用（单一真值源）。
+export const sortRuleTypeOptions = SORT_RULE_TYPES
+export function sortRuleText(r) {
+  return (SORT_RULE_TYPES.find(t => t.value === r?.type)?.text) || r?.type || '-'
+}
+export function sortRuleNeedsMin(type) {
+  return !!SORT_RULE_TYPES.find(t => t.value === type)?.min
+}
+
 export function useTagModel({ api, notify, error, settingsDraft, emit }) {
   const tagInfo = ref(null)
   const tagMigratePlan = ref(null)
   const tagMigrating = ref(false)
   const newRuleType = ref('subscribe')
-  const sortRuleTypeOptions = SORT_RULE_TYPES
   // ── 标签模型 ─────────────────────────────────────────────
   async function loadTags() {
     try {
@@ -22,14 +30,6 @@ export function useTagModel({ api, notify, error, settingsDraft, emit }) {
     } catch (err) {
       error.value = err?.message || String(err)
     }
-  }
-
-  function sortRuleText(r) {
-    return (SORT_RULE_TYPES.find(t => t.value === r?.type)?.text) || r?.type || '-'
-  }
-
-  function sortRuleNeedsMin(type) {
-    return !!SORT_RULE_TYPES.find(t => t.value === type)?.min
   }
 
   function addSortRule() {

@@ -47,11 +47,65 @@ MutationObserver ResizeObserver""".split())
 
 
 def strip_literals(s):
-    s = re.sub(r'//.*', '', s)
-    s = re.sub(r'`[^`]*`', '``', s)          # 模板串（含 ${}，整段去掉）
-    s = re.sub(r"'[^']*'", "''", s)
-    s = re.sub(r'"[^"]*"', '""', s)
-    return s
+    """抹白字符串 / 注释 / 正则；模板串只抹**字面部分**，`` `${expr}` `` 里的表达式原样保留
+    （否则会漏扫模板串里的引用 —— 正是 2026-10-08 「白屏」那一类）。"""
+    out = []
+    i, n = 0, len(s)
+    while i < n:
+        ch = s[i]
+        if ch == '/' and i + 1 < n and s[i + 1] == '/':
+            j = s.find('\n', i)
+            i = n if j < 0 else j
+            continue
+        if ch == '/' and i + 1 < n and s[i + 1] == '*':
+            j = s.find('*/', i + 2)
+            i = n if j < 0 else j + 2
+            continue
+        if ch in ('"', "'"):
+            j = i + 1
+            while j < n:
+                if s[j] == '\\':
+                    j += 2
+                    continue
+                if s[j] == '\n':
+                    break
+                if s[j] == ch:
+                    j += 1
+                    break
+                j += 1
+            out.append(' ' * (j - i))
+            i = j
+            continue
+        if ch == '`':
+            i += 1
+            while i < n:
+                c = s[i]
+                if c == '\\':
+                    i += 2
+                    continue
+                if c == '`':
+                    i += 1
+                    break
+                if c == '$' and i + 1 < n and s[i + 1] == '{':
+                    out.append(' ')          # 抹掉 $
+                    out.append('{')          # 保留花括号
+                    i += 2
+                    depth = 1
+                    while i < n and depth > 0:
+                        c2 = s[i]
+                        if c2 == '{':
+                            depth += 1
+                        elif c2 == '}':
+                            depth -= 1
+                        out.append(c2 if depth > 0 else '}')
+                        i += 1
+                    continue
+                out.append(' ')              # 字面部分抹白
+                i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return ''.join(out)
 
 
 def collect_locals(src):
@@ -75,9 +129,9 @@ def collect_locals(src):
         local.add(m.group(1))
     for m in re.finditer(r'\(([^)]*)\)\s*=>', src):
         for p in m.group(1).split(','):
-            p = p.strip().split('=')[0].strip()
-            if p:
-                local.add(p)
+            ids = re.findall(r'[A-Za-z_$][\w$]*', p)
+            if ids:
+                local.add(ids[-1])
     for m in re.finditer(r'([A-Za-z_$][\w$]*)\s*=>', src):
         local.add(m.group(1))
     for m in re.finditer(r'\bfunction\s*[A-Za-z_$\w]*\s*\(([^)]*)\)', src):
@@ -178,7 +232,9 @@ def main():
                 continue
             if re.search(r'\.\s*%s\b' % re.escape(w), body):   # 属性访问
                 continue
-            if re.search(r'[A-Za-z0-9_$]\s*:\s*%s\b' % re.escape(w), body):  # 对象键
+            if re.search(r'[A-Za-z0-9_$]\s*:\s*%s\b' % re.escape(w), body):  # 对象键的值位置
+                continue
+            if re.search(r'(?:^|[{,])\s*%s\s*:' % re.escape(w), body, re.M):   # 对象字面量的键（如 { tasks: ... }）
                 continue
             if w in G and w not in imports:
                 missing.add(w)
