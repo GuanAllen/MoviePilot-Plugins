@@ -95,12 +95,13 @@ def _ok(cond: bool, msg: str) -> None:
     print(f"  ✅ {msg}")
 
 
-def _torrent(h, state="pausedDL", progress=0.5, title=None, save="/x", tags=None, cp=None):
+def _torrent(h, state="pausedDL", progress=0.5, title=None, save="/x", tags=None, cp=None,
+             category=""):
     """★ 与真 TorrentInfo 同形：**没有 name 字段**（qB 的 name → title），数据路径走 content_path。"""
     import types as _t
     _nm = title or h
     return _t.SimpleNamespace(hash=h, title=_nm, state=state, size=1 << 30,
-                              tags=list(tags or []), progress=progress,
+                              tags=list(tags or []), progress=progress, category=category,
                               save_path=save, content_path=(cp if cp is not None else f"{save}/{_nm}"))
 
 
@@ -305,6 +306,17 @@ def main() -> int:
         "「新/普通」没下完都删（不限 sub）；「资源」被身份保护挡住（实测 "
         f"{sorted(x[0][0] for x in h.delete_calls)}）")
 
+    # ---- ⑦b ★15.8.11：音乐线（分类=音乐）= 资源（同点播）→ 在途也不删 ----
+    print("\n[7b] ★15.8.11 音乐线豁免：在途（没下完）的音乐种不按「半成品」删")
+    h = Harness({"mu1": _rec(sub=SUB_NEW), "mu2": _rec(sub=SUB_PLAIN), "mx1": _rec(sub=SUB_NEW)},
+                {"mu1": _torrent("mu1", progress=0.3, title="song1", category="音乐"),
+                 "mu2": _torrent("mu2", progress=0.3, title="song2", category="音乐"),
+                 "mx1": _torrent("mx1", progress=0.3, title="movie")})
+    rep = h._silent_purge_incomplete(apply=True)
+    _ok([x[0][0] for x in h.delete_calls] == ["mx1"],
+        f"只删非音乐那个（实测 {[x[0][0] for x in h.delete_calls]}）：音乐线按分类豁免，"
+        "不依赖账本身份是否已归位")
+
     # ---- ⑧ 已完成种不在范围 ----
     print("\n[8] 已完成种（progress≈1 且非 DL 态）不在「未下完」范围")
     h = Harness({"d1": _rec()}, {"d1": _torrent("d1", progress=1.0, state="pausedUP", title="done")})
@@ -344,6 +356,15 @@ def main() -> int:
     _ok(h._silent_drop_incomplete_now("i5") is False, "欠 H&R（保种义务）→ 不删")
     h = Harness({"i6": _rec(sub=SUB_NEW, manual_paused=True)}, {"i6": _torrent("i6", progress=0.4, title="m")})
     _ok(h._silent_drop_incomplete_now("i6") is False, "手动保护 → 不删")
+    # ★ 15.8.11 同版补丁（口径 #3「下载未完成不会掉到静默池被删除」）
+    h = Harness({"i7": _rec(sub=SUB_NEW)},
+                {"i7": _torrent("i7", progress=0.3, title="mus", category="音乐")})
+    _ok(h._silent_drop_incomplete_now("i7") is False and not h.delete_calls,
+        "★ 音乐线（分类=音乐）没下完也不走「入池即判」→ 不删")
+    h = Harness({"i8": _rec(sub=SUB_NEW)},
+                {"i8": _torrent("i8", progress=0.3, title="plain", category="")})
+    _ok(h._silent_drop_incomplete_now("i8") is True,
+        "对照：非音乐没下完的仍当场删（豁免不外溢）")
 
     # ---- ⑪ 源码级护栏：入池前先过 H&R 分诊 + 入池即判钩子在位 ----
     print("\n[11] 源码级护栏：所有入池口都先过 H&R 分诊；未下完的入池即判")

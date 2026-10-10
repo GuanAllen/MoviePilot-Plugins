@@ -102,21 +102,48 @@ def _ok(cond: bool, msg: str) -> None:
     print(f"  ✅ {msg}")
 
 
-def _torrent(h, tags, state="stalledUP"):
+def _torrent(h, tags, state="stalledUP", category=""):
     return types.SimpleNamespace(hash=h, title=h, state=state, size=1 << 30,
-                                 tags=list(tags), progress=1.0,
+                                 tags=list(tags), progress=1.0, category=category,
                                  save_path="/x", content_path=f"/x/{h}")
 
 
 class _Store:
     def __init__(self, d):
         self._d = d
+        self.released = []
 
     def items(self):
         return dict(self._d)
 
     def get(self, h):
         return self._d.get(str(h or "").lower()) or {}
+
+    # ★ 15.8.11 同版补丁：``_music_asset_pin`` 要用；语义对齐真 ``SeedLedgerStore.put``
+    #   （``None`` 跳过、只 merge 值）。
+    def put(self, h, patch):
+        k = str(h or "").lower()
+        rec = dict(self._d.get(k) or {})
+        rec.update({str(a): b for a, b in dict(patch or {}).items() if b is not None})
+        self._d[k] = rec
+        return rec
+
+    # ★ 15.8.11：``_music_ledger_release`` 要用；语义对齐真 ``SeedLedgerStore.release``
+    #   （属主保护 + 清 task/taken_by），否则测不出「release 把归属一起带走」。
+    def release(self, h, *, task_id=""):
+        k = str(h or "").lower()
+        rec = dict(self._d.get(k) or {})
+        if not rec:
+            return None
+        owner = str(rec.get("taken_by") or "")
+        if task_id and owner and owner != str(task_id):
+            return None
+        rec.pop("task", None)
+        rec.pop("taken_by", None)
+        rec["state"] = STATE_SILENT
+        self._d[k] = rec
+        self.released.append((k, str(task_id)))
+        return "魔流-静默"
 
 
 class _DL:
@@ -148,16 +175,38 @@ class _DL:
         raise AssertionError("对账绝不应 resume")
 
 
+class _Groups:
+    """资源组库桩（★ 15.8.11 同版补丁：``_music_asset_pin`` 会写身份）。"""
+
+    def __init__(self, gid_of=None):
+        self._gof = gid_of
+        self.identities = []
+
+    def group_of(self, h):
+        return self._gof(str(h or "").lower()) if callable(self._gof) else ""
+
+    def set_identity(self, gid, sub, by=""):
+        self.identities.append((str(gid), str(sub), str(by)))
+        return True
+
+
 class Harness(ftags.TagsMixin):
     """真 TagsMixin + 桩依赖；`_tag_ledger_reconcile` 走**真实现**。"""
 
-    def __init__(self, seed=None, snap=None, reseed=None, site_map=None):
+    def __init__(self, seed=None, snap=None, reseed=None, site_map=None, groups=None):
         self.seed = dict(seed or {})
         self.snap = dict(snap or {})
         self.reseed = dict(reseed or {})
         self.site_map = dict(site_map or {})
+        self.groups = _Groups(groups)
         self.dl = _DL(self.snap)
         self.logs = []
+        self.forgotten = []
+        self._store = types.SimpleNamespace(forget_torrents=self._forget)
+
+    def _forget(self, task_id, hashes):
+        self.forgotten.append((str(task_id), [str(x) for x in (hashes or [])]))
+        return len(hashes or [])
 
     def _get_downloader(self, name="qbittorrent"):
         return self.dl
@@ -167,6 +216,9 @@ class Harness(ftags.TagsMixin):
 
     def _tag_all_torrents(self):
         return dict(self.snap)
+
+    def _tag_groups(self):
+        return self.groups
 
     def _reseed_ledger(self):
         return dict(self.reseed)
@@ -284,6 +336,96 @@ def t7_sub_drift_only_reported():
     _ok(not h.dl.calls, "零写入")
 
 
+def t8_music_exempt():
+    print("⑧ ★15.8.11 音乐线豁免：账本说「魔力」+ qB 分类=音乐 → 不把职务标签补回去")
+    seed = {"m1": {"state": STATE_BONUS, "site": "CARPT", "sub": "新"},
+            "m2": {"state": STATE_HR, "site": "CARPT", "sub": "资源"}}   # 保种照旧补
+    snap = {"m1": _torrent("m1", ["魔流-CARPT-静默-新"], category="音乐"),
+            "m2": _torrent("m2", ["魔流-CARPT-静默-资源"], category="音乐")}
+    h = Harness(seed=seed, snap=snap)
+    rep = h._tag_ledger_reconcile(apply=True)
+    _ok(rep["skipped_music"] == 1, f"跳过 1 个音乐魔力/刷流种（实际 {rep['skipped_music']}）")
+    _ok([c[0] for c in h.dl.calls] == ["m2"], "只写音乐「保种」种，不写音乐「魔力」种")
+    _ok("魔流-CARPT-保种" in h.dl.calls[0][1], "音乐也要走 H&R → 保种职务照补")
+
+
+def t9_music_ledger_release():
+    print("⑨ ★15.8.11 账本归还：账本=魔力/刷流 + qB 分类=音乐 → release（保种/非音乐/已静默不动）")
+    seed = {
+        # 现场那一格：标签早就只剩静默身份了，账本 task_id 还指着 CARPT 任务
+        "m1": {"state": STATE_BONUS, "site": "CARPT", "sub": "新",
+               "task": "CARPT·自定义", "taken_by": "af8177e6dfa2"},
+        "m2": {"state": STATE_HR, "site": "CARPT", "sub": "资源",
+               "taken_by": "__hr_host__"},                      # 保种：音乐也要走 H&R → 不动
+        "m3": {"state": STATE_BONUS, "site": "馒头", "sub": "资源",
+               "taken_by": "6cb4fe6f3f13"},                      # 非音乐：不是音乐线的事
+        "m4": {"state": STATE_SILENT, "site": "CARPT", "sub": "资源"},  # 已静默：真干净
+    }
+    snap = {"m1": _torrent("m1", ["魔流-CARPT-静默-新"], category="音乐"),
+            "m2": _torrent("m2", ["魔流-CARPT-保种"], category="音乐"),
+            "m3": _torrent("m3", ["魔流-馒头-魔力"]),
+            "m4": _torrent("m4", ["魔流-CARPT-静默-资源"], category="音乐")}
+    h = Harness(seed=seed, snap=snap)
+    dry = h._music_ledger_release(apply=False)
+    _ok(dry["candidates"] == 1, f"干跑：只认 1 个「账本在岗的音乐种」（实际 {dry['candidates']}）")
+    _ok(dry["samples"][0]["owner"] == "af8177e6dfa2", "样本带出占用任务 id")
+    _ok(not h._tag_state().released and not h.forgotten, "干跑：账本/qB 零写入")
+    app = h._music_ledger_release(apply=True)
+    _ok(app["released"] == 1 and app["failed"] == 0, "执行：归还 1 笔")
+    st = h._tag_state()
+    _ok(st.get("m1").get("state") == STATE_SILENT, "m1 账本回静默")
+    _ok(not st.get("m1").get("task") and not st.get("m1").get("taken_by"),
+        "m1 归属清空（★ task 名也要清，否则 task_id 会被写回）")
+    _ok(st.get("m2").get("state") == STATE_HR, "m2 保种：一分不动（音乐也走 H&R）")
+    _ok(st.get("m3").get("state") == STATE_BONUS, "m3 非音乐：不动")
+    _ok(h.forgotten == [("af8177e6dfa2", ["m1"])], "任务侧忘种 protected/adopted")
+    again = h._music_ledger_release(apply=True)
+    _ok(again["candidates"] == 0 and again["released"] == 0, "幂等：再跑零动作")
+    # 属主保护：账本说 owner-A，按 owner-B 退 → 不放（return None）
+    h2 = Harness(seed={"z": {"state": STATE_BONUS, "site": "CARPT", "sub": "新",
+                             "taken_by": "owner-A"}},
+                 snap={"z": _torrent("z", ["魔流-CARPT-魔力"], category="音乐")})
+    st2 = h2._tag_state()
+    _ok(st2.release("z", task_id="owner-B") is None, "release 属主不符 → None（不放）")
+    _ok(st2.release("z", task_id="owner-A") is not None, "release 属主相符 → 放行")
+
+
+def t10_music_asset_pin():
+    print("⑩ ★15.8.11 同版补丁 身份钉「资源」：音乐种 → 账本 sub=资源 + 标签静默-资源 + 资源组库记")
+    seed = {
+        "m1": {"state": STATE_SILENT, "site": "CARPT", "sub": "新"},     # 该钉
+        "m2": {"state": STATE_SILENT, "site": "CARPT", "sub": "普通"},   # 该钉（被 ⑦分拣降级的那格）
+        "m3": {"state": STATE_BONUS, "site": "CARPT", "sub": "新"},      # 职务态：不抢
+        "m4": {"state": STATE_SILENT, "site": "馒头", "sub": "资源"},    # 已是资源 → 幂等跳过
+        "m5": {"state": STATE_SILENT, "site": "聆音", "sub": "新"},      # 非音乐 → 不动
+    }
+    snap = {"m1": _torrent("m1", ["魔流-CARPT-静默-新", "魔流-推荐"], category="音乐"),
+            "m2": _torrent("m2", ["魔流-CARPT-静默-普通"], category="音乐"),
+            "m3": _torrent("m3", ["魔流-CARPT-魔力"], category="音乐"),
+            "m4": _torrent("m4", ["魔流-馒头-静默-资源"], category="音乐"),
+            "m5": _torrent("m5", ["魔流-聆音-静默-新"])}
+    h = Harness(seed=seed, snap=snap, groups=lambda g: "fp:" + g)
+    dry = h._music_asset_pin(apply=False)
+    _ok(dry["candidates"] == 2, f"干跑：2 个待钉身份（实际 {dry['candidates']}）")
+    _ok(dry["skipped_duty"] == 1, f"职务态（魔力）不抢 → skipped_duty=1（实际 {dry['skipped_duty']}）")
+    _ok(dry["pinned"] == 0 and not h.dl.calls, "干跑零写入（qB / 账本 / 资源组库都不动）")
+    app = h._music_asset_pin(apply=True)
+    _ok(app["pinned"] == 2 and app["failed"] == 0, f"执行：钉 2 个（实际 {app['pinned']}）")
+    st = h._tag_state()
+    _ok(st.get("m1").get("sub") == "资源" and st.get("m2").get("sub") == "资源",
+        "账本身份 sub → 资源")
+    new = dict(h.dl.calls)
+    _ok("魔流-CARPT-静默-资源" in new.get("m1", []), f"m1 标签重算成静默-资源（{new.get('m1')}）")
+    _ok("魔流-推荐" not in new.get("m1", []),
+        "归资源时「魔流-推荐」生命周期结束（与 _silent_to_resource 同构）")
+    _ok(h.groups.identities == [("fp:m1", "资源", "music"), ("fp:m2", "资源", "music")],
+        f"资源组库记 identity=资源（{h.groups.identities}）")
+    _ok(st.get("m3").get("sub") == "新" and st.get("m5").get("sub") == "新",
+        "职务态 / 非音乐：账本一分不动")
+    again = h._music_asset_pin(apply=True)
+    _ok(again["candidates"] == 0 and again["pinned"] == 0, "幂等：再跑零动作")
+
+
 def main() -> int:
     print("== 标签 ↔ 账本对账（15.2.0）==")
     t1_dry_run()
@@ -293,6 +435,9 @@ def main() -> int:
     t5_adopt_reseed()
     t6_tag_only_untouched()
     t7_sub_drift_only_reported()
+    t8_music_exempt()
+    t9_music_ledger_release()
+    t10_music_asset_pin()
     print("=" * 60)
     print(f"✅ PASS —— 共 {CHECKS} 项全过")
     return 0

@@ -3,7 +3,7 @@
         "name": "魔流",
         "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
         "labels": "站点,做种,魔力,刷流",
-        "version": "15.8.10",
+        "version": "15.8.15",
         "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
         "author": "GuanAllen",
         "level": 1,
@@ -419,9 +419,14 @@
             "15.8.7": "15.8.7：Vue 前端 P3 拆分收官（index.vue 12827→11799，11 个 composable）+ 修两个历史死 UI（invariantOpen 不弹窗 / claimProfile 白屏）+ 修 useTagModel 白屏 bug + 护栏 14/14",
             "15.8.8": "15.8.8：P3 第 8 批 —— 推荐域出 index.vue（useRecommend 125 行/16 导出，含 60s 角标定时器自管）；index.vue 11799→11721；preflight 14/14",
             "15.8.9": "15.8.9：孤儿站点（任务绑的站点已被 MP 删除）识别——common.SiteGuard 去重告警 + status.site_missing + 前端「站点已删除」标记",
-            "15.8.10": "15.8.10：修「魔流站点报表无数据」——MP 用户认证失效时 SitesHelper().get_indexers() 返空，_list_sites 回落 SiteOper().list() 站点登记表（不过认证闸门），告警按状态变化去重；新增 tools/test_site_fallback.py 19 断言"
+            "15.8.10": "15.8.10：修「魔流站点报表无数据」——MP 用户认证失效时 SitesHelper().get_indexers() 返空，_list_sites 回落 SiteOper().list() 站点登记表（不过认证闸门），告警按状态变化去重；新增 tools/test_site_fallback.py 19 断言",
+            "15.8.11": "15.8.11: 音乐线摘职务标签只摘 qB 不销账本 → 与标签对账每小时互打；release 清 task 归属 + 音乐线豁免 ★ 同版补丁：音乐线身份口径对齐点播（下完=资源 / 下载中不暂停不删 / 未下完可手删）",
+            "15.8.12": "15.8.12：纳管 ≠ 手动保留——纳管不再写硬保护 + 历史残留一次性摘除（purge_adopted_protected）+ 单例跨热重载换代",
+            "15.8.13": "15.8.13：孤儿魔流标签不再算「已管控」——判据由「前缀」收紧为「能认出来」（is_managed_tag），流量审计新增 orphan/orphan_samples",
+            "15.8.14": "15.8.14：临时/手工投放通道——临时需求有 API 一等公民入口（POST /agent/inject 与 /agent/inject/release，默认干跑）",
+            "15.8.15": "15.8.15：库内资产手动删除入口——新增独立「库内资产」列表 + 只破「库内资产」一道闸（连文件删 + 二次确认，其余四类照旧硬拦）；同批砍除代码字典机制（docs/CODE-DICT.md 镜像与坐标认领闸门，preflight 16→14 步）"
         }
     },
-    "version": "15.8.10",
+    "version": "15.8.15",
     "history": {}
 }

@@ -116,6 +116,9 @@ class Fake(MusicGrabMixin):
 
     def replace_torrent_tags(self, h, tags):
         self.tag_calls.append((h, list(tags)))
+        _t = self._qb_index.get(h)          # 真下载器会改标签 → 桩也改（否则幂等测不出来）
+        if _t is not None:
+            _t.tags = list(tags)
         return True
 
     def _site_domain_by_name(self, name):
@@ -360,6 +363,23 @@ _calls = dict(f9.tag_calls)
 ok(_calls["a" * 40] == ["魔流-馒头-静默-资源", "魔流-手动"], "只摘 魔力，其它标签保留")
 ok(_calls["b" * 40] == ["魔流-CARPT-静默-新"], "只摘 刷流")
 ok("c" * 40 not in _calls, "非音乐种一律不动")
+
+# ------------------------------------------------- [21] 交回本轮真摘掉的 hash（★15.8.11）
+print("[21] _music_untag_duty 交回 stripped（账本那一半在 TagsMixin，见 test_tag_reconcile ⑨）")
+f10 = Fake()
+f10._qb_index = {
+    "d" * 40: _T("音乐", ["魔流-CARPT-静默-新"]),                 # 没职务标签 → 不在本方法职责内
+    "g" * 40: _T("音乐", ["魔流-馒头-刷流", "魔流-馒头-静默-资源"]),  # 有职务标签 → 摘 + 交回
+    "e" * 40: _T("音乐", ["魔流-CARPT-保种"]),                     # 保种不算魔力/刷流 → 不动
+}
+dry2 = f10._music_untag_duty(apply=False)
+ok(dry2["candidates"] == 1 and dry2["stripped"] == [], "干跑：只认 1 个待摘、stripped 为空")
+app2 = f10._music_untag_duty(apply=True)
+ok(app2["cleaned"] == 1 and app2["stripped"] == ["g" * 40], "执行：交回本轮真摘掉的整串 hash")
+ok(dict(f10.tag_calls).get("g" * 40) == ["魔流-馒头-静默-资源"], "g：只摘职务轴")
+ok(dict(f10.tag_calls).get("d" * 40) is None, "d：标签没职务轴 → 不动 qB（账本另由 TagsMixin 收）")
+again = f10._music_untag_duty(apply=True)
+ok(again["candidates"] == 0 and again["cleaned"] == 0 and again["stripped"] == [], "幂等：再跑零动作")
 
 print()
 if FAILS:

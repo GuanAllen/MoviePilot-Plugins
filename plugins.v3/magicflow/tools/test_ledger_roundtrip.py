@@ -168,6 +168,56 @@ def main() -> int:
             f"mf_resource 行数 +1（{base['mf_resource']}→{mid['mf_resource']}）",
         )
 
+        # ---- 5.5) ★ 15.8.11：release() 必须连「归属」一起清 ----
+        #   为什么用 __hr_host__：``task`` 名是 mf_seed.task_id 的**唯一来源**，而
+        #   任意自造名字 ``_task_id()`` 都反查不到 → task_id 落 NULL，测不出差别。
+        #   ``__hr_host__`` 是不依赖任务配置的伪任务名（common.HR_HOST_TASK_ID），
+        #   既能落出非空 task_id，又能验「保种 → release → 静默」整条推导链。
+        st.put(H, {"task": "__hr_host__"})
+        be3 = ledger.LedgerBackend(p)
+        be3.ensure_schema()
+        rec_hr = ledger.SeedLedgerStore(be3).get(H) or {}
+        _ok(
+            str(rec_hr.get("state") or "") == "保种",
+            f"put task=__hr_host__ → state=保种（实际 {rec_hr.get('state')!r}）",
+        )
+        _ok(
+            str(rec_hr.get("taken_by") or "") == ledger.HR_HOST_TASK_ID,
+            f"put task=__hr_host__ → taken_by={ledger.HR_HOST_TASK_ID}（实际 {rec_hr.get('taken_by')!r}）",
+        )
+        sess = be._session()
+        try:
+            srow = sess.execute(
+                select(mfdb.SeedRow).where(mfdb.SeedRow.hash == H)
+            ).scalars().first()
+        finally:
+            sess.close()
+        _ok(srow is not None and str(srow.task_id or "") == ledger.HR_HOST_TASK_ID,
+            f"直查 mf_seed.task_id == {ledger.HR_HOST_TASK_ID}（实际 {getattr(srow, 'task_id', None)!r}）")
+
+        st.release(H)
+        be4 = ledger.LedgerBackend(p)
+        be4.ensure_schema()
+        rec_rel = ledger.SeedLedgerStore(be4).get(H) or {}
+        _ok(str(rec_rel.get("state") or "") == "静默", f"release 后 state 回静默（实际 {rec_rel.get('state')!r}）")
+        _ok(
+            not str(rec_rel.get("task") or ""),
+            f"★ release 清 task 名（旧代码这里仍留 __hr_host__，实际 {rec_rel.get('task')!r}）",
+        )
+        _ok(
+            not str(rec_rel.get("taken_by") or ""),
+            f"★ release 清归属 taken_by（实际 {rec_rel.get('taken_by')!r}）",
+        )
+        sess = be._session()
+        try:
+            srow2 = sess.execute(
+                select(mfdb.SeedRow).where(mfdb.SeedRow.hash == H)
+            ).scalars().first()
+        finally:
+            sess.close()
+        _ok(srow2 is not None and not str(srow2.task_id or ""),
+            f"★ 直查 mf_seed.task_id 已清空（实际 {getattr(srow2, 'task_id', None)!r}）")
+
         # ---- 6) 删（走 store API）----
         st.drop(H)
         if rid:

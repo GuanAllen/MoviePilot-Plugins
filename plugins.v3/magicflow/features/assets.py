@@ -32,6 +32,15 @@ from ..common import (
 )
 
 
+# ★ 15.8.15（Master「希望增加魔流库内资产手动删除的入口」）：
+#   「库内资产」独立列表入口 + 只破第 5 道闸的手动删除，需要这两个符号。
+from app.schemas import Response
+
+from ..models import MagicFlowAssetDeletePayload
+
+from ..persistence import OperationItem
+
+
 class AssetsMixin:
     """assets 功能集（原 MagicFlow 方法原样搬入）。"""
 
@@ -555,3 +564,232 @@ class AssetsMixin:
         return {"ok": True, "checked": len(todo), "got": got, "failed": fail,
                 "remaining": max(0, len([h for h in snap if str(h).lower() in ledger]) - len(
                     [h for h in ledger if str((ledger.get(h) or {}).get('fp') or "").strip()]) - got)}
+
+    # ------------------------------------------------------------------ ★ 15.8.15
+    # Master：「希望增加魔流库内资产手动删除的入口」——
+    #   「库内资产」独立列表入口 + **只破第 5 道闸**（库内资产）的手动删除。
+    #   其余 4 道硬拦（手动保留 / 跨站来源份 / 已认领 / 欠 H&R）与两条豁免
+    #   （在途点播 / 未下完的音乐线）**照旧硬拦**。
+    # ------------------------------------------------------------------
+
+    def _asset_rows(self, snap: Any = None) -> List[Dict[str, Any]]:
+        """库内资产逐条明细（只读）——「库内资产」列表入口的唯一真值源。
+
+        身份判据与删除闸门第 5 类同口径（``is_library_asset(rec)`` / 资源组
+        ``library.in_library`` / ``asset_member_hashes`` 成员），逐条附
+        ``deletable`` 与 ``block``：``block`` 由 ``_delete_gate_manual``（跳过库内资产那一类）
+        **预演**得到，其余 4 类照拦 —— 列表与真删共用同一套闸门口径，不各写一套。
+
+        ``in_qb=False``（仅账本残留、下载器里已无此种）的条目不进闸门预演，
+        直接标 ``block="不在下载器（仅账本残留）"``。
+        """
+        if snap is None:
+            snap = self._tag_all_torrents() or {}
+        try:
+            led = dict((self._tag_state() or {}).items() or {})
+        except Exception:  # noqa: BLE001
+            led = {}
+        try:
+            groups = self._tag_groups()
+        except Exception:  # noqa: BLE001
+            groups = None
+        try:
+            members = {str(x).lower() for x in (asset_member_hashes(groups) or set())}
+        except Exception:  # noqa: BLE001
+            members = set()
+
+        rows: List[Dict[str, Any]] = []
+        for h in sorted({str(k).lower() for k in led} | {str(k).lower() for k in snap}):
+            rec = led.get(h) or {}
+            try:
+                in_lib = bool(is_library_asset(rec))
+            except Exception:  # noqa: BLE001
+                in_lib = False
+            if not in_lib and h not in members and groups is not None:
+                try:
+                    _gid = groups.group_of(h)
+                    if _gid:
+                        _grec = (groups.items() or {}).get(_gid) or {}
+                        in_lib = bool((_grec.get("library") or {}).get("in_library"))
+                except Exception:  # noqa: BLE001
+                    in_lib = False
+            if not in_lib:
+                continue
+            t = snap.get(h)
+            try:
+                _size_gb = float(getattr(t, "size_gb", 0) or rec.get("size_gb") or 0)
+            except Exception:  # noqa: BLE001
+                _size_gb = 0.0
+            try:
+                _upload_gb = float(getattr(t, "uploaded", 0) or 0) / (1024 ** 3)
+            except Exception:  # noqa: BLE001
+                _upload_gb = 0.0
+            rows.append({
+                "hash": h,
+                "site": str(rec.get("site") or ""),
+                "title": str(getattr(t, "title", "") or rec.get("title") or ""),
+                "size_gb": round(_size_gb, 2),
+                "state": str(rec.get("state") or ""),
+                "sub": str(rec.get("sub") or ""),
+                "in_qb": bool(t),
+                "qb_state": str(getattr(t, "state", "") or "") if t else "",
+                "progress": round(float(getattr(t, "progress", 0) or 0), 4) if t else 0.0,
+                "save_path": str(getattr(t, "save_path", "") or "") if t else "",
+                "tags": [str(x) for x in (getattr(t, "tags", None) or [])] if t else [],
+                "upload_gb": round(_upload_gb, 2),
+                "deletable": False,
+                "block": "",
+            })
+
+        _hs = [r["hash"] for r in rows if r["in_qb"]]
+        why: Dict[str, str] = {}
+        if _hs:
+            try:
+                why = dict(self._delete_gate_detail(_hs, snap=snap, allow_asset=True) or {})
+            except Exception as e:  # noqa: BLE001
+                self._log(f"库内资产列表：闸门预演失败 {e}", "error")
+                why = {h: "闸门不可用（fail-closed）" for h in _hs}
+        for r in rows:
+            if not r["in_qb"]:
+                r["block"] = "不在下载器（仅账本残留）"
+                continue
+            _b = str(why.get(r["hash"]) or "")
+            r["block"] = _b
+            r["deletable"] = not _b
+        return rows
+
+    def assets_library(self, limit: int = 0) -> Response:
+        """★ 15.8.15：「库内资产」列表（只读，独立入口的数据源）。"""
+        try:
+            rows = self._asset_rows()
+            if limit and int(limit) > 0:
+                rows = rows[: int(limit)]
+            by_reason: Dict[str, int] = {}
+            for r in rows:
+                _b = str(r.get("block") or "")
+                if _b:
+                    by_reason[_b] = by_reason.get(_b, 0) + 1
+            counts = {
+                "total": len(rows),
+                "deletable": sum(1 for r in rows if r.get("deletable")),
+                "blocked": sum(1 for r in rows if r.get("block")),
+                "by_reason": by_reason,
+            }
+            return Response(
+                success=True,
+                message=f"库内资产 {counts['total']} 个（可删 {counts['deletable']} / 被拦 {counts['blocked']}）",
+                data={"items": rows, "counts": counts, "scanned_at": time.time()},
+            )
+        except Exception as e:  # noqa: BLE001
+            self._log(f"库内资产列表失败: {e}", "error")
+            return Response(success=False, message=str(e))
+
+    def assets_delete(self, payload: MagicFlowAssetDeletePayload) -> Response:
+        """★ 15.8.15：手动删除库内资产（**唯一**允许突破「库内资产（已入库，永不删）」的入口）。
+
+        安全口径（每一层都 fail-closed）：
+          1. 只受理**在本插件库内资产列表里**的 hash，其余一律拒收（连闸门都不进）；
+          2. 每次真删**重新**跑 ``_delete_gate_manual``（不信任列表快照）——手动保留 /
+             跨站来源份 / 已认领 / 欠 H&R 四类照旧硬拦；
+          3. ``confirm != 1`` → 干跑，**零写入**（不碰下载器、不写冷却、不写 journal）；
+          4. 真删走唯一物理入口 ``delete_torrents(..., allow_library_asset=True)``，
+             文件删否取 ``delete_files``（前端默认勾选「同时删除文件」）。
+        """
+        hashes: List[str] = []
+        for _x in (payload.hashes or []):
+            _h = str(_x or "").strip().lower()
+            if _h and _h not in hashes:
+                hashes.append(_h)
+        if not hashes:
+            return Response(success=False, message="未选择库内资产")
+        confirm = int(payload.confirm or 0) == 1
+        delete_files = int(payload.delete_files or 0) == 1
+        reason = str(payload.reason or "").strip() or "手动删除库内资产"
+        try:
+            snap = self._tag_all_torrents() or {}
+            known = {r["hash"]: r for r in self._asset_rows(snap=snap)}
+            fresh_why: Dict[str, str] = {}
+            _hs = [h for h in hashes if known.get(h) and known[h].get("in_qb")]
+            if confirm and _hs:
+                try:
+                    fresh_why = dict(self._delete_gate_detail(_hs, snap=snap, allow_asset=True) or {})
+                except Exception as e:  # noqa: BLE001
+                    self._log(f"库内资产删除：闸门复检失败 {e}", "error")
+                    fresh_why = {h: f"闸门复检失败（fail-closed）：{e}" for h in _hs}
+
+            results: List[Dict[str, Any]] = []
+            for h in hashes:
+                row = known.get(h)
+                if row is None:
+                    results.append({"hash": h, "ok": False, "deleted": False, "dry_run": not confirm,
+                                    "message": "不是库内资产", "block": "不是库内资产"})
+                    continue
+                if not row.get("in_qb"):
+                    results.append({"hash": h, "ok": False, "deleted": False, "dry_run": not confirm,
+                                    "message": "不在下载器（仅账本残留）", "block": "不在下载器（仅账本残留）"})
+                    continue
+                _blk = str(fresh_why.get(h) or row.get("block") or "") if confirm else str(row.get("block") or "")
+                if _blk:
+                    results.append({"hash": h, "ok": False, "deleted": False, "dry_run": not confirm,
+                                    "message": _blk, "block": _blk})
+                    continue
+                if not confirm:
+                    results.append({"hash": h, "ok": True, "deleted": False, "dry_run": True,
+                                    "message": ("将删除种子及文件" if delete_files else "将删除种子（保留文件）"),
+                                    "block": ""})
+                    continue
+                rec = dict((self._tag_state() or {}).get(h) or {})
+                downloader = self._get_downloader(str(rec.get("downloader") or "qbittorrent"))
+                if downloader is None or not getattr(downloader, "is_available", False):
+                    results.append({"hash": h, "ok": False, "deleted": False, "dry_run": False,
+                                    "message": "下载器不可用", "block": "下载器不可用"})
+                    continue
+                try:
+                    _n, _err = downloader.delete_torrents(
+                        hashes=[h], delete_file=delete_files, reason=reason,
+                        source="assets.assets_delete", allow_library_asset=True,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    _n, _err = 0, str(e)
+                if _n:
+                    _tid = str(rec.get("taken_by") or rec.get("task") or "")
+                    try:
+                        self._note_deleted(_tid, [h])
+                    except Exception as e:  # noqa: BLE001
+                        self._log(f"库内资产删除：冷却记账失败 {e}", "error")
+                    try:
+                        self._store.journal.record(
+                            task_id=_tid, kind="deletion",
+                            items=[OperationItem(hash=h, title=str(row.get("title") or ""), reason=reason)],
+                        )
+                        self._invalidate_summary()
+                    except Exception as e:  # noqa: BLE001
+                        self._log(f"库内资产删除：journal 记账失败 {e}", "error")
+                    results.append({"hash": h, "ok": True, "deleted": True, "dry_run": False,
+                                    "message": ("已删除种子及文件" if delete_files else "已删除种子（保留文件）"),
+                                    "block": ""})
+                else:
+                    results.append({"hash": h, "ok": False, "deleted": False, "dry_run": False,
+                                    "message": str(_err or "删除失败"), "block": ""})
+
+            deleted = sum(1 for r in results if r["deleted"])
+            blocked = sum(1 for r in results if r.get("block"))
+            failed = sum(1 for r in results if not r["ok"] and not r.get("block"))
+            if not confirm:
+                _ok = sum(1 for r in results if r["ok"])
+                return Response(
+                    success=True,
+                    message=f"干跑（未做任何改动）：可删 {_ok} 个 / 被拦 {blocked} 个",
+                    data={"dry_run": True, "deleted": 0, "blocked": blocked, "failed": 0,
+                          "results": results},
+                )
+            return Response(
+                success=bool(deleted > 0 or failed == 0),
+                message=f"已删除 {deleted} 个（含文件：{'是' if delete_files else '否'}）"
+                        f" / 被拦 {blocked} 个 / 失败 {failed} 个",
+                data={"dry_run": False, "deleted": deleted, "blocked": blocked,
+                      "failed": failed, "results": results},
+            )
+        except Exception as e:  # noqa: BLE001
+            self._log(f"库内资产删除失败: {e}", "error")
+            return Response(success=False, message=str(e))

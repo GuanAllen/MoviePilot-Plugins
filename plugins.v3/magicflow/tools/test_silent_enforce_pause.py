@@ -14,6 +14,8 @@
   3) 幂等：pause 后再跑，违背 0、paused 0；
   4) ``_silent_purge`` 步骤① 改为**全局**收敛 —— 即使 ``sub=普通``，``资源`` 的违背也会被 pause；
   5) ``silent_host`` 挂上「⑪不变量收敛」步（源码级冒烟）。
+  6) ★ 15.8.11 同版补丁：音乐线「下载中」（``progress<1``）**不**被暂停（与点播 inflight 同等
+     对待），下完（``progress>=1``）照常收敛；豁免不外溢到非音乐种。
 
 用法：``python3 tools/test_silent_enforce_pause.py``（退出码 0=PASS / 1=FAIL）。
 """
@@ -91,9 +93,9 @@ def _ok(cond: bool, msg: str) -> None:
     print(f"  ✅ {msg}")
 
 
-def _torrent(h, state="pausedUP", size=1 << 30, tags=None):
+def _torrent(h, state="pausedUP", size=1 << 30, tags=None, progress=1.0, category=""):
     return types.SimpleNamespace(hash=h, title=h[:8], state=state, size=size,
-                                 tags=list(tags or []), progress=1.0,
+                                 tags=list(tags or []), progress=progress, category=category,
                                  save_path="/x", content_path=f"/x/{h}")
 
 
@@ -316,6 +318,50 @@ def t6_tag_only_reconcile():
     _ok(rep2["violations"] == 0 and rep2["paused"] == 0, "幂等：再跑违背 0、paused 0")
 
 
+def t7_music_inflight_not_paused():
+    print("⑦ 15.8.11 同版补丁：音乐线「下载中」不暂停（下完才归静默闸管辖）")
+    led = {
+        "u" * 40: {"state": STATE_SILENT, "sub": SUB_RESOURCE, "site": "站点A",
+                   "in_library": False, "size_gb": 1.0, "taken_by": "__silent_host__"},
+        "v" * 40: {"state": STATE_SILENT, "sub": SUB_RESOURCE, "site": "站点A",
+                   "in_library": True, "size_gb": 1.0, "taken_by": "__silent_host__"},
+        "w" * 40: {"state": STATE_SILENT, "sub": SUB_NEW, "site": "站点A",
+                   "in_library": False, "size_gb": 1.0, "taken_by": "__silent_host__"},
+    }
+    snap = {
+        "u" * 40: _torrent("u" * 40, state="downloading", tags=["魔流-站点A-静默-资源"],
+                           progress=0.4, category="音乐"),
+        "v" * 40: _torrent("v" * 40, state="stalledUP", tags=["魔流-站点A-静默-资源"],
+                           progress=1.0, category="音乐"),
+        "w" * 40: _torrent("w" * 40, state="stalledUP", tags=["魔流-站点A-静默-新"],
+                           progress=0.4, category=""),
+    }
+    h = Harness(led, snap)
+    dry = h._silent_enforce_pause(apply=False)
+    _ok(dry["scanned"] == 2, f"音乐 inflight 不计入盘点（实测 scanned={dry['scanned']}）")
+    _ok(dry["violations"] == 2, f"违背 = 下完的音乐 1 + 非音乐下到一半 1（实测 {dry['violations']}）")
+    rep = h._silent_enforce_pause(apply=True)
+    _ok("u" * 40 not in h.pause_calls, "下载中的音乐种**没有**被暂停")
+    _ok("v" * 40 in h.pause_calls, "下完的音乐种照常进静默闸（回归护栏）")
+    _ok("w" * 40 in h.pause_calls, "非音乐的下到一半种照旧被收敛（豁免不外溢）")
+    _ok(not h.delete_calls, "只 pause 不删")
+    # 标签面兜底：不在账本、只有「静默」标签的音乐种，下载中同样不动
+    h2 = Harness({}, {"x" * 40: _torrent("x" * 40, state="downloading",
+                                          tags=["魔流-站点A-静默-资源"],
+                                          progress=0.4, category="音乐")})
+    d2 = h2._silent_enforce_pause(apply=False)
+    _ok(d2["tag_only"] == 0 and d2["violations"] == 0, "标签面：下载中音乐种不入静默闸")
+    # 闸门级兜底：任何直接调 _silent_pause_gate 的路径也不误伤下载中的音乐种
+    h3 = Harness(led, snap)
+    r3 = h3._silent_pause_gate(["u" * 40])
+    _ok(int(r3.get("paused") or 0) == 0 and not h3.pause_calls,
+        "_silent_pause_gate 兜底豁免下载中的音乐种")
+    h4 = Harness(led, snap)
+    r4 = h4._silent_pause_gate(["v" * 40])
+    _ok(int(r4.get("paused") or 0) == 1, "闸门对下完的音乐种照常 pause")
+    return None
+
+
 def main():
     t1_dry_run()
     t2_apply_all_subs()
@@ -323,6 +369,7 @@ def main():
     t4_disabled_switch()
     t5_host_wiring()
     t6_tag_only_reconcile()
+    t7_music_inflight_not_paused()
     print(f"\n✅ PASS —— 静默不变量收敛：{CHECKS} 条断言全过")
     return 0
 

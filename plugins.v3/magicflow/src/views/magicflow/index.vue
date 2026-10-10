@@ -35,6 +35,8 @@ import TaskConfigTab from './components/tabs/TaskConfigTab.vue'
 import JournalTab from './components/tabs/JournalTab.vue'
 import CandidatesTab from './components/tabs/CandidatesTab.vue'
 import SeedingTab from './components/tabs/SeedingTab.vue'
+// ★ 15.8.15：库内资产（全局入口 → 独立列表 + 手动删除）
+import AssetsTab from './components/tabs/AssetsTab.vue'
 import MobileHome from './components/MobileHome.vue'
 import TransferConfirm from './components/confirm/TransferConfirm.vue'
 import {
@@ -266,6 +268,8 @@ async function loadSiteIcon(siteId) {
 const pluginBase = computed(() => `plugin/${props.pluginId || 'MagicFlow'}`)
 // P2：接口层（按域分组；函数返回原始响应，调用点自行 unwrapResponse）
 const api = createApi(props.api, props.pluginId)
+// ★ 15.8.15：库内资产弹窗开关（全局入口，不挂在任务上）
+const assetsDialog = ref(false)
 // ── useMusic（P3 已抽）────────────────────────────────
 // P3：状态 / 取数 / 动作 已抽到 ./composables/useMusic.js（纯搬家）。
 const {
@@ -1427,6 +1431,7 @@ onUnmounted(() => {
       @open-rescue="openRescue"
       @open-sitereport="openSiteReport"
       @open-music="openMusic"
+      @open-assets="assetsDialog = true"
       @open-settings="openSettings"
       @close="emit('close')"
     />
@@ -2183,6 +2188,25 @@ onUnmounted(() => {
       @grab="runMusicGrab"
       @reset="musicResetResult"
     />
+
+    <!-- ★ 15.8.15：库内资产（Master「希望增加魔流库内资产手动删除的入口」）——
+         全局独立入口：列出所有库内资产（跨任务），可手选删除；后端默认干跑、
+         二次确认弹窗默认勾选「同时删除文件（不可恢复）」；只破「库内资产」一道闸。 -->
+    <VDialog v-model="assetsDialog" max-width="1160" scrollable>
+      <VCard class="magicflow-assets-card">
+        <VCardTitle class="d-flex align-center">
+          <VIcon icon="mdi-delete-sweep-outline" class="me-2" />
+          库内资产
+          <VSpacer />
+          <VBtn icon="mdi-close" variant="text" aria-label="关闭" @click="assetsDialog = false" />
+        </VCardTitle>
+        <VDivider />
+        <VCardText class="pa-0">
+          <!-- v-if：每次打开重新挂载 → 重新拉最新列表（VDialog 首次打开后内容常驻） -->
+          <AssetsTab v-if="assetsDialog" :api="api" :reload-key="0" />
+        </VCardText>
+      </VCard>
+    </VDialog>
 
     <!-- 新手考核：汇总弹窗（Layout A，同「推荐」范式）→ P4 已拆到 ExamDialog.vue -->
     <ExamDialog

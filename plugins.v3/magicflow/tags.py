@@ -37,6 +37,8 @@ __all__ = [
     "tag_for",
     "parse_tag",
     "is_magicflow_tag",
+    "is_managed_tag",
+    "needs_magicize",
     "identity_of",
     "duty_of",
     "is_reuse_copy",
@@ -308,6 +310,46 @@ SPECIAL_TAGS = ("魔流-推荐", "魔流-跨站", MARK_REUSE, MARK_HR, RESCUE_TA
 # ★ 11.11.1：复用/补源副本（指向已有文件、非真实下载）→ H&R 一律不判。
 #   （跨站来源份 CROSSSEED_TAG 是真实下载，H&R 由 assets.py 资源账记，不在此列）
 NON_DOWNLOAD_TAGS = (MARK_REUSE, RESCUE_TAG)
+
+# ★ 15.8.13：已知的「非身份」魔流标记（解析不出身份，但确实证明归我们管）。
+_MARK_TAGS = frozenset(_clean(x) for x in SPECIAL_TAGS)
+
+
+def is_managed_tag(tag: str) -> bool:
+    """该 ``魔流-*`` 标签能否**证明「这颗种归魔流管」** —— 解析得出身份，或是已知魔流标记。
+
+    ★ 15.8.13：解析不出、又不在标记表里的 ``魔流-`` 标签是**孤儿标签**。
+    2026-10-10 实证：工作区临时脚本给 10 颗音乐种打了 ``魔流-手动``，于是
+      * ``_magicize_scope`` 只按前缀看「已有魔流标签」→ 永远不接管（归流闸门被占位）；
+      * ``traffic_audit`` 也只按前缀判 ``managed`` → 它们从不进「未知流量」名单，
+        巡逻告警不响 ⇒ 永久孤儿（无账本行、无身份、无 H&R 账）。
+    所以「归我们管」必须由**能认出来的标签**证明：孤儿标签既不该挡住归流接管，
+    也不该让未知流量审计漏报（归流重贴标签时会把它丢弃 —— 见 ``retag`` / ``_magicize_plan``）。
+    """
+    s = _clean(tag)
+    if not s.startswith(PREFIX):
+        return False
+    if parse_tag(s):
+        return True
+    return s in _MARK_TAGS
+
+
+def needs_magicize(tags: Any) -> bool:
+    """**归流判定**（纯函数）：该种是否该被归流接管 → 重贴成 ``魔流-<站>-静默-<子>``。
+
+    - 一个**已知**魔流标签都没有 → 是（含「只有孤儿 ``魔流-`` 标签」与「标签为空」）；
+    - 只有「无站点名的老式静默身份」（如 ``魔流-静默-普通``）→ 是（靠 tracker 补齐站点）；
+    - 已有带站点的魔流标签、或只有 ``魔流-辅种/H&R/补源/外部/推荐/跨站`` 这类标记 → 否，不动。
+    """
+    parsed = [parse_tag(x) for x in (tags or []) if is_managed_tag(x)]
+    if not parsed:
+        return True
+    _hassite = any(p and p.get("site") for p in parsed)
+    _sitelss = any(
+        p and not p.get("site") and p.get("state") == STATE_SILENT and p.get("sub")
+        for p in parsed
+    )
+    return not (_hassite or not _sitelss)
 
 
 def is_reuse_copy(tags: Any) -> bool:

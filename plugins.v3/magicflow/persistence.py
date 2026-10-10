@@ -1790,6 +1790,19 @@ class MagicFlowStore:
                 inst = super().__new__(cls)
                 inst._initialized = False
                 sh.instances[key] = inst
+            elif type(inst) is not cls:
+                # ★ 15.8.12：MP 热重载会清 ``app.plugins.magicflow.*`` 模块缓存 → 本类
+                #   对象换代，但单例注册表（独立模块，跨重载）里还是**旧类**的实例。
+                #   旧类没有本次新增的方法 ⇒ ``purge_adopted_protected`` 抛
+                #   AttributeError 被 ``init_plugin`` 的 try 吞掉、旧 ``note_adopted``
+                #   也继续写 ``protected_torrents``（实测：漏洞在重载后依旧生效）。
+                #   只换 ``__class__``（同一对象、同一内存快照、同一落盘线程、同一热层
+                #   绑定）：重新 ``__init__`` 会丢未落盘的改动并再起一个落盘线程。
+                #   子 Store（journal/task_states/...）方法未变，暂不换代。
+                try:
+                    inst.__class__ = cls
+                except TypeError:  # pragma: no cover - 布局不兼容时退回旧类
+                    pass
             return inst
 
     def __init__(self, data_dir: Path, kv: Any = None):
@@ -2327,18 +2340,61 @@ class MagicFlowStore:
         return set(getattr(state, "adopted_hashes", set()) or set())
 
     def note_adopted(self, task_id: str, hashes: List[str]) -> int:
-        """记录新纳入的「同站纳管」种子 hash（持久化）。返回本次新增数量。"""
+        """记录新纳入的「同站纳管」种子 hash（持久化）。返回本次新增数量。
+
+        ★ 15.8.12：纳管只记 ``adopted_hashes``（软保护），顺手把同一 hash 从
+        ``protected_torrents``（=「手动保留」，硬保护）摘掉 —— 纳管 ≠ 手动保留。
+        历史上两条路径都写，导致删除闸门 / 站点报表 / 静默盘点把纳管种当手动保留。
+        """
         state = self.task_states.get(task_id)
         if not state:
             state = self.task_states.create(task_id)
         before = len(state.adopted_hashes)
+        _unprotected = 0
         for h in hashes:
             hs = (h or "").lower()
-            if hs:
-                state.adopted_hashes.add(hs)
-        if len(state.adopted_hashes) != before:
+            if not hs:
+                continue
+            state.adopted_hashes.add(hs)
+            _hit = {h for h in state.protected_torrents if str(h or "").strip().lower() == hs}
+            if _hit:
+                state.protected_torrents -= _hit
+                _unprotected += len(_hit)
+        if len(state.adopted_hashes) != before or _unprotected:
             self.task_states.save(state)
         return len(state.adopted_hashes) - before
+
+    def purge_adopted_protected(self) -> int:
+        """★ 15.8.12 一次性清理：把所有任务里「既纳管、又被写成手动保留」的 hash
+        从 ``protected_torrents`` 摘除（纳管语义照旧保留在 ``adopted_hashes`` → 软保护）。
+
+        背景：``BrushMixin._adopt_same_site`` 曾在纳管时同时调 ``protect_torrent``，
+        使纳管种被删除闸门（``deletegate`` 第 1 条「手动保留」）/ 站点报表 / 静默盘点
+        当成用户手动保留（线上实测 525 条，其中 520 条来自纳管）；而 ``_protection_sets``
+        本就把纳管从 hard 剥到 soft（``features/protection.py``）⇒ 那些写入是纯污染。
+
+        幂等：可反复调用；返回本次摘除条数（逐任务相加）。
+        """
+        total = 0
+        try:
+            states = list(self.task_states.list_all() or [])
+        except Exception:  # noqa: BLE001
+            return 0
+        for state in states:
+            adopted = {
+                str(h or "").strip().lower()
+                for h in (getattr(state, "adopted_hashes", set()) or set())
+                if str(h or "").strip()
+            }
+            if not adopted:
+                continue
+            hit = {h for h in state.protected_torrents if str(h or "").strip().lower() in adopted}
+            if not hit:
+                continue
+            state.protected_torrents -= hit
+            self.task_states.save(state)
+            total += len(hit)
+        return total
 
     def is_self_added(self, task_id: str, hash_string: str) -> bool:
         """该 hash 是否为本插件自己下载/复用的种子（seen 记录，兼容新旧 key 前缀）。"""

@@ -20,6 +20,7 @@ from ..tags import (
     DUTY_STATES,
     is_asset_tags,
     is_library_asset,
+    is_music_line,
     MARK_REUSE,
     SPECIAL_TAGS,
     MARK_HR,
@@ -169,9 +170,17 @@ class SilentMixin:
                     _hr_wait = self._silent_hr_pending(_snap)
                 except Exception:  # noqa: BLE001
                     _hr_wait = set()
+                # ★ 15.8.11 同版补丁：音乐线身份恒为「资源」（同点播，见
+                #   tags._music_asset_pin）→ 不参与「静默-新 超时归普通」。
+                #   这里按分类兜底，挡住「刚加种、身份还没归位」那一小时的窗口。
+                try:
+                    _music_wait = {str(_h).lower() for _h, _t in (_snap or {}).items()
+                                   if is_music_line(_t)}
+                except Exception:  # noqa: BLE001
+                    _music_wait = set()
                 moved = store.expire_new(
                     timeout=float(self._tags_cfg.get("new_timeout") or TAG_NEW_TIMEOUT),
-                    skip=_hr_wait,
+                    skip=set(_hr_wait) | _music_wait,
                 )
                 if moved:
                     self._log(f"魔流:静默托管:「静默-新」超时归「静默-普通」{len(moved)} 个")
@@ -647,13 +656,26 @@ class SilentMixin:
                 _od_inflight = self._od_inflight_set() or set()
             except Exception:  # noqa: BLE001
                 _od_inflight = set()
+        # ★ 15.8.11 同版补丁（Master 口径：「身份标签的要求要跟点播的资源一样 —— 下载中不会被
+        #   静默池暂停、下载未完成不会掉到静默池被删除」）：音乐线「下载中」与点播 inflight 同等对待。
+        #   真值源 = qB ``progress < 1``（音乐线没有点播那样的 pending slot；下完即 pausedUP）。
+        #   跳过盘点 = 不计入 ``counts``、不判 ``stalled_violation`` → ⑪不变量收敛不会去 pause 它。
+        #   下完之后 progress=1，自动回到正常静默闸管辖（与点播 settle 后转资源账本接管同构）。
+        _music_inflight: Set[str] = set()
+        for _mh, _mt in (snap or {}).items():
+            try:
+                if is_music_line(_mt) and float(getattr(_mt, "progress", 0) or 0) < 0.999:
+                    _music_inflight.add(str(_mh or "").strip().lower())
+            except Exception:  # noqa: BLE001
+                continue
         _lim = int(limit or 0)
         for h, rec in list(led.items()):
             hh = str(h or "").strip().lower()
             if str((rec or {}).get("state") or "") != STATE_SILENT:
                 continue
             # ★ 15.8.3：点播 inflight 跳过盘点（不下盘、不计入、不判 stalled_violation）
-            if hh in _od_inflight:
+            # ★ 15.8.11 同版补丁：音乐线「下载中」同样跳过（口径 #2）
+            if hh in _od_inflight or hh in _music_inflight:
                 continue
             counts["total"] += 1
             t = snap.get(hh)
@@ -719,7 +741,8 @@ class SilentMixin:
             if not _hh3 or _hh3 in _silent_led:
                 continue
             # ★ 15.8.3：点播 inflight 跳过 tag_only 对账（同样不动）
-            if _hh3 in _od_inflight:
+            # ★ 15.8.11 同版补丁：音乐线「下载中」同样跳过（口径 #2）
+            if _hh3 in _od_inflight or _hh3 in _music_inflight:
                 continue
             _hit = None
             _duty = False
@@ -950,6 +973,9 @@ class SilentMixin:
 
         H&R 保种已拆到 ``__hr_host__``（职务 ``保种``），静默池不再 resume 任何种。
         所有写 ``state=静默`` 的路径，写完账本后**立即**调它。幂等（已暂停的不重复写）。
+
+        ★ 15.8.11 同版补丁（口径 #2）：**唯一例外** = 音乐线「下载中」（``progress<1``）不暂停
+        —— 与点播 inflight 同等对待；下完（``progress>=1``）自动回到本方法管辖。
         """
         rep: Dict[str, Any] = {"paused": 0, "failed": 0}
         if not SILENT_HR_SPLIT_ENABLED:
@@ -964,6 +990,20 @@ class SilentMixin:
         except Exception:  # noqa: BLE001
             snap = {}
         live = [h for h in hs if h in snap]
+        # ★ 15.8.11 同版补丁（口径 #2「下载中不会被静默池暂停」）：所有暂停入口统一豁免
+        #   「音乐线 + progress<1」的种。审计端（``_silent_audit``）已跳过它们，这里是兜底 ——
+        #   点播 settle / H&R 分拣 / 分拣归资源等路径直接调本方法时也不会误伤下到一半的音乐种。
+        _inflight = []
+        for _h in live:
+            _t = snap.get(_h)
+            try:
+                if is_music_line(_t) and float(getattr(_t, "progress", 0) or 0) < 0.999:
+                    _inflight.append(_h)
+            except Exception:  # noqa: BLE001
+                continue
+        if _inflight:
+            rep["skipped_music_inflight"] = len(_inflight)
+            live = [h for h in live if h not in _inflight]
         if not live:
             return rep
         try:
@@ -1219,7 +1259,9 @@ class SilentMixin:
           ① **身份保护**（跨站来源份 / 已认领 / 资源份 / 同数据副本）—— `_silent_identity_protected`；
           ② **欠 H&R**（保种义务，绝不删；判不准 → fail-closed 不删）；
           ③ **手动保护**（``manual_paused``）；
-          ④ **同数据另有种**（辅种/复用副本在等校验：数据在本机，不是「真下载」）。
+          ④ **同数据另有种**（辅种/复用副本在等校验：数据在本机，不是「真下载」）；
+          ⑤ ★ 15.8.11 同版补丁：**音乐线**（qB 分类=音乐）—— 音乐=资源（同点播），Master 口径
+             「下载未完成不会掉到静默池被删除」，本「入池即判（没下完当场删）」整块不适用。
         删除走**单闸门** ``DownloaderAdapter.delete_torrents``（内含欠 H&R / 跨站来源 / 已认领 /
         手动保留硬拦 + 删除账单断言 + 熔断），并登记操作流水。
         """
@@ -1234,6 +1276,13 @@ class SilentMixin:
             if rec is None:
                 rec = dict(self._tag_state().get(hh) or {})
             if str((rec or {}).get("state") or "") != STATE_SILENT:
+                return False
+            # ★ 15.8.11 同版补丁：音乐线（qB 分类=音乐）= 资源（同点播），Master 口径
+            #   「下载未完成不会掉到静默池被删除」→ 音乐种**绝不**走「入池即判（没下完当场删）」。
+            #   音乐线不进任何任务的种子集（``features/tasks.py:336``），本方法两处调用
+            #   （``features/tags.py:383``/``:605``）对音乐理论上不可达 → 这里是 fail-safe 兜底，
+            #   只看分类、不看进度（下完的音乐种在 ``prog >= 0.999`` 处本就返回 False）。
+            if is_music_line(t):
                 return False
             if (rec or {}).get("manual_paused"):
                 return False
@@ -1372,6 +1421,7 @@ class SilentMixin:
         """★ 静默池「未下完」清理：没下完的直接删，**不计 H&R**（Master 2026-09-28 00:16）。
 
         - 只扫静默池**「没下完」**的种（不分身份；「资源/来源/副本」等由身份保护挡住）（★ 13.0.2）
+          ★ 15.8.11 起音乐线（分类=音乐）按分类豁免：音乐=资源（同点播），在途也不按半成品删
         - 排除：跨站来源份（``魔流-跨站``：数据已下、正在校验）、推荐待确认（``魔流-推荐``）、
           库内资产（已整理/辅种）—— 这些都不是「没下完的半成品」
         - 删文件策略：同目录还有别的**已完成**种子在用 → 只删种子；否则连文件一起删
@@ -1414,6 +1464,10 @@ class SilentMixin:
             #   它们停在 pausedDL 是等校验，不是「没下完」）+ 推荐在途
             #   （旧版按 `魔流-跨站`/`魔流-辅种`/`已整理·辅种` 标签判 → 已删标签判据）
             if "魔流-推荐" in tags or self._silent_identity_protected(h, rec, t, _ictx):
+                continue
+            # ★ 15.8.11 同版补丁：音乐线（分类=音乐）= 资源（同点播）→ 在途也算「资源份」，
+            #   不按「没下完的半成品」删；按分类兜底，不依赖账本身份是否已归位。
+            if is_music_line(t):
                 continue
             try:
                 prog = float(getattr(t, "progress", 1.0) or 0.0)
@@ -1705,6 +1759,7 @@ class SilentMixin:
           - 目标：池用量 ≤ target_pct（默认 75%）。未到目标水位则**跨过「低效门槛」**
             继续清「中产出」，但**留高产**（默认产出于中位×max_ratio 以上）。
         - 永不删：库内资产 / 推荐中 / 跨站来源份 / 辅种复用种 / 欠 H&R / 手动保护
+          ★ 15.8.11 起音乐线（分类=音乐，同点播）也在永不删名单里（按分类判，不看账本身份）
         - 删文件按「Release 目录」共用判断（同 3.14.1）：有别的已完成种子在用 → 只删种子
         """
         rep: Dict[str, Any] = {"apply": bool(apply), "pending": 0, "deleted": 0,
@@ -1780,6 +1835,10 @@ class SilentMixin:
                 continue
             t = snap.get(hh)
             if t is None:
+                continue
+            # ★ 15.8.11 同版补丁：音乐线（分类=音乐）= 资源（同点播）→ **不参与「低效普通种」
+            #   清理**（永不删名单里加它）；按分类兜底，不依赖账本身份是否已归位。
+            if is_music_line(t):
                 continue
             tags = [str(x) for x in (getattr(t, "tags", None) or [])]
             # ★ 13.0.2：保护 = **身份**（跨站来源份 / 已认领 / 资源份 / 同数据副本）+ 推荐在途；
@@ -1954,6 +2013,10 @@ class SilentMixin:
             t = (snap or {}).get(hh)
             if t is None:
                 continue  # 已不在下载器 → 交给对账
+            # ★ 15.8.11 同版补丁：音乐线身份恒为「资源」（同点播）→ **不参与分拣降级**；
+            #   身份归位由音乐线 worker 做（tags._music_asset_pin），这里按分类兜底。
+            if is_music_line(t):
+                continue
             gid = ""
             try:
                 gid = files.group_of(hh) if files is not None else ""

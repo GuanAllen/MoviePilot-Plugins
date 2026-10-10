@@ -13,6 +13,7 @@ import { makePool } from './pool'
 import { makeSettings } from './settings'
 import { makeFeatures } from './features'
 import { makePoolstats } from './poolstats'
+import { makeAssets } from './assets'
 
 /** 插件 API 基址。 */
 export function pluginBaseOf(pluginId) {
@@ -47,5 +48,6 @@ export function createApi(http, pluginId = 'MagicFlow') {
   c.settings = makeSettings(c)
   c.features = makeFeatures(c)
   c.poolstats = makePoolstats(c)
+  c.assets = makeAssets(c)
   return c
 }

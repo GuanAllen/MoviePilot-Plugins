@@ -378,9 +378,15 @@ class MusicGrabMixin:
 
         音乐种被魔力任务当同站种纳管过 → 会带上 ``魔流-<站点>-魔力``，从而
         暴露给任务的清理。本方法只摘这一种职务标签，其它标签一律不动。
+
+        ★ 15.8.11：本方法**只动 qB 标签**；账本那一半（``mf_seed.task_id`` 归还静默）
+        由 ``TagsMixin._music_ledger_release`` 负责 —— 两者同一轮里先后跑。分开是因为
+        账本真值源在 tags 侧（``_tag_state`` 进程级单例），音乐线这里只认 qB 快照；
+        返回的 ``stripped``（本轮真摘了标签的整串 hash）给调用方做交叉核对。
         """
         rep: Dict[str, Any] = {"ok": True, "applied": bool(apply), "scanned": 0,
-                              "candidates": 0, "cleaned": 0, "failed": 0, "samples": []}
+                               "candidates": 0, "cleaned": 0, "failed": 0,
+                               "stripped": [], "samples": []}
         try:
             dl = self._get_downloader("qbittorrent")
             idx = dl.get_all_torrents_index() if dl is not None else {}
@@ -406,6 +412,7 @@ class MusicGrabMixin:
             try:
                 if callable(getattr(dl, "replace_torrent_tags", None)) and dl.replace_torrent_tags(str(h), keep):
                     rep["cleaned"] = int(rep["cleaned"]) + 1
+                    rep["stripped"].append(str(h).strip().lower())
                 else:
                     rep["failed"] = int(rep["failed"]) + 1
             except Exception as err:  # noqa: BLE001

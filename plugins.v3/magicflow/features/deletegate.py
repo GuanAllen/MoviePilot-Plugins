@@ -15,6 +15,11 @@ H&R 补种被任务「超保留上限」路径删掉，因为该路径的保护�
 
 闸门硬拦（**任何路径都不得删**，全局口径、不依赖单任务）：
   手动保留 / 跨站来源份（H&R 保种期）/ 已认领（保种承诺）/ 欠 H&R 义务 / **库内资产（★ 12.3.0）**。
+  ★ 15.8.11 同版补丁：**音乐线**（qB 分类=音乐）身份=「资源」（同点播），按 Master 口径
+  「身份标签的要求要跟点播的资源一样 / 支持手动删除**未下完**的种子」→ 音乐线**只在「下载中」
+  豁免本第 5 步**（与上面 15.8.5 的在途点播一一对应，Master 明确限定「未下完」）；
+  下完即身份=资源，与其它资源同口径受本闸门保护。顺带：身份改动会让 ⑨资产刷新自动把资源组
+  库记写成 ``in_library=true``，所以在途音乐种若不豁免，就会「身份=资源 → 库内资产 → 删不掉」。
 
 （「未下完」「推荐中」属于各清理路径的**策略性**保护，仍由各行其责；
   换种（暂停不删）也走这里做硬拦，但台账记 ``delete_file`` 与来源。）
@@ -37,7 +42,7 @@ from ..common import (
     ONDEMAND_TASK_ID,
 )
 from ..common import hr_incomplete, hr_complete_ratio_of
-from ..tags import is_library_asset, STATE_ONDEMAND
+from ..tags import is_library_asset, is_music_line, STATE_ONDEMAND
 
 
 class DeleteGateMixin:
@@ -56,13 +61,29 @@ class DeleteGateMixin:
         """
         return set(self._delete_gate_detail(hashes, snap=snap).keys())
 
-    def _delete_gate_detail(self, hashes: Iterable[str], force_error: bool = False, snap: Any = None) -> "Dict[str, str]":
+    def _delete_gate_manual(self, hashes: Iterable[str], snap: Any = None) -> Set[str]:
+        """★ 15.8.15：「手动删除库内资产」专用闸门 —— **只跳过第 5 类（库内资产）**。
+
+        与 ``_delete_gate`` 一字不差地执行 手动保留 / 跨站来源份（H&R 保种期）/ 已认领 /
+        欠 H&R 义务 四类硬拦（以及在途点播、音乐线下中两条豁免）。
+
+        唯一的调用方 = ``DownloaderAdapter.delete_torrents(allow_library_asset=True)``，
+        由「库内资产」列表入口（``features/assets.py::assets_delete``）显式传入；其余任何
+        删种路径都走严格闸门 ``_delete_gate``，本闸门不会自动生效。
+        """
+        return set(self._delete_gate_detail(hashes, snap=snap, allow_asset=True).keys())
+
+    def _delete_gate_detail(self, hashes: Iterable[str], force_error: bool = False, snap: Any = None,
+                            allow_asset: bool = False) -> "Dict[str, str]":
         """返回 ``{hash: 拦截理由}``；未拦截的不出现。理由取值：
 
-        手动保留 / 跨站来源份（H&R 保种期）/ 已认领（保种承诺）/ 欠 H&R 义务。
+        手动保留 / 跨站来源份（H&R 保种期）/ 已认领（保种承诺）/ 欠 H&R 义务 / 库内资产。
 
         ``force_error=True``：**故障注入**——强制抛异常，供离线测试与线上自检
         验证删除入口的 fail-closed 兜底。
+
+        ``allow_asset=True``：★ 15.8.15 **只跳过第 5 类「库内资产」**（库内资产手动删除入口
+        专用），其余 4 类硬拦与两条豁免逐字不变。默认 ``False`` ⇒ 与历史行为完全一致。
         """
         # ★ 故障注入入口（仅用于测试 / 自检，不影响正常调用）：
         #   删种入口拿到闸门异常 → fail-closed 会全阻断。用它可验证「拦得住」。
@@ -139,7 +160,8 @@ class DeleteGateMixin:
         #    这是「静默池阶段2清旧」的前置硬拦：库内资产一旦被清理路径误删，媒体库里
         #    的文件就没了宿主（qB 数据被删）。真值源 = 资源库 ``in_library`` / 身份「资源」
         #    （``is_library_asset``）——qB 的 已整理/辅种 标签会因「标签主权」被摘，不能当判据。
-        _rest = [h for h in hs if h not in why]
+        # ★ 15.8.15：``allow_asset=True`` → **整段跳过第 5 类**（库内资产手动删除的唯一豁免通道）。
+        _rest = [h for h in hs if h not in why] if not allow_asset else []
         if _rest:
             _led: Dict[str, Any] = {}
             try:
@@ -156,6 +178,18 @@ class DeleteGateMixin:
                 if str(rec.get("state") or "") == STATE_ONDEMAND \
                         or str(rec.get("taken_by") or "") == ONDEMAND_TASK_ID:
                     continue
+                # ★ 15.8.11 同版补丁：**音乐线**（qB 分类=音乐）身份也是「资源」（同点播），
+                #   但 Master 口径是「身份标签的要求要跟点播的资源一样 / 支持手动删除**未下完**的
+                #   种子」→ 与上面 15.8.5 的在途点播一一对应，**只豁免「下载中」（progress<1）**：
+                #   未下完的音乐种必须删得掉（否则身份=资源 → 库内资产 → 死结）；下完即身份=资源，
+                #   与其它资源同口径受本闸门保护。
+                #   判据取不到 progress（如快照里没有这个种）→ 不豁免，按 fail-closed 走原硬拦。
+                _mt = (snap or {}).get(h)
+                if is_music_line(_mt):
+                    _mp = _mt.get("progress") if isinstance(_mt, dict) \
+                        else getattr(_mt, "progress", None)
+                    if _mp is not None and float(_mp or 0) < 0.999:
+                        continue
                 try:
                     if is_library_asset(rec):
                         why[h] = "库内资产（已入库，永不删）"

@@ -570,6 +570,22 @@ class CoreMixin:
         except Exception as err:  # noqa: BLE001
             self._log(f"状态落盘间隔设置失败:{err}", "debug")
 
+        # ★ 15.8.12（Master 2026-10-10「纳管任何任务都不需要加保护，我们的清理程序不会
+        #   删资源身份的种子」）：一次性清掉「纳管即保护」的历史残留 —— 把纳管 hash 从
+        #   ``protected_torrents``（手动保留 / 硬保护）摘除；纳管身份仍留在
+        #   ``adopted_hashes``（软保护，``_protection_sets`` 口径不变）。
+        #   线上实测 525 条（5 个魔力任务的并集），其中 520 条是纳管灌进去的。
+        try:
+            _mig6 = dict(self.get_data("rules_migrations") or {})
+            if not _mig6.get("adopt_unprotect_v1"):
+                _n6 = int(self._store.purge_adopted_protected() or 0)
+                _mig6["adopt_unprotect_v1"] = True
+                self.save_data(key="rules_migrations", value=_mig6)
+                if _n6:
+                    logger.info("纳管即保护:历史保护记录已摘除 %d 条(纳管保留在 adopted_hashes)", _n6)
+        except Exception:  # noqa: BLE001
+            pass
+
         # ★ 删除唯一入口（Master 2026-10-05「删除令出一门」补洞）：把「硬保护闸门 + 统一台账」
         #   注册成**进程级安装器** —— 之后任何 ``DownloaderAdapter(...)``（含不经 _get_downloader
         #   的裸构造）在 __init__ 末尾都会自动挂闸门，消除「类属性 _global_gate 至少被设过一次」
@@ -579,8 +595,13 @@ class CoreMixin:
         try:
             def _install_delete_gate(_dl) -> None:
                 _dl.gate = self._delete_gate
+                # ★ 15.8.15（Master「增加魔流库内资产手动删除的入口」）：「手动删除库内资产」
+                #   专用闸门（只跳过第 5 类「库内资产」）—— 只有
+                #   ``delete_torrents(allow_library_asset=True)`` 会取它。
+                _dl.gate_manual = self._delete_gate_manual
                 _dl.deletion_log = self._delete_log_cb
                 type(_dl)._global_gate = self._delete_gate
+                type(_dl)._global_gate_manual = self._delete_gate_manual
                 type(_dl)._global_dlog = self._delete_log_cb
             downloader_ops.set_gate_installer(_install_delete_gate)
             downloader_ops.set_gate_fail_closed(bool(DELETE_GATE_FAIL_CLOSED))
@@ -1696,8 +1717,11 @@ class CoreMixin:
             #   同时打到类属性上，覆盖不走本方法而直接 `DownloaderAdapter(...)` 的调用点。
             try:
                 dl.gate = self._delete_gate
+                # ★ 15.8.15：手动删库内资产专用闸门（只跳过第 5 类库内资产）。
+                dl.gate_manual = self._delete_gate_manual
                 dl.deletion_log = self._delete_log_cb
                 type(dl)._global_gate = self._delete_gate
+                type(dl)._global_gate_manual = self._delete_gate_manual
                 type(dl)._global_dlog = self._delete_log_cb
             except Exception:  # noqa: BLE001
                 pass

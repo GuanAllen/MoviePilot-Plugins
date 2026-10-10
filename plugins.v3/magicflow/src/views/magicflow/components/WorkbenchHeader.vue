@@ -40,6 +40,7 @@ const emit = defineEmits([
   'open-rescue',
   'open-sitereport',
   'open-music',
+  'open-assets',
   'open-settings',
   'close',
 ])
@@ -327,6 +328,14 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
             />
             <!-- ★ 15.8.2：音乐薄弹窗（窄屏也走「更多」菜单） -->
             <VListItem prepend-icon="mdi-music-circle-outline" title="音乐甄别" subtitle="贴歌单 → 选种计划 → 一键加种" @click="emit('open-music')" />
+            <!-- ★ 15.8.15（Master「希望增加魔流库内资产手动删除的入口」）：
+                 全局入口（不挂在任务上 —— 库内资产跨任务）；默认干跑、真删需二次确认 -->
+            <VListItem
+              prepend-icon="mdi-delete-sweep-outline"
+              title="库内资产"
+              subtitle="手动删已入库资产（只破「库内资产」一道闸）"
+              @click="emit('open-assets')"
+            />
             <!-- ★ 上面是「详情」，下面是「设置」：分隔开，别混成一串 -->
             <VDivider class="my-1" />
             <VListItem prepend-icon="mdi-tune-variant" title="插件设置" @click="emit('open-settings')" />

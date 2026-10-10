@@ -9,6 +9,8 @@
   2) 主循环有 `if hh in _od_inflight: continue`
   3) tag_only 对账循环也有 `if _hh3 in _od_inflight: continue`
   4) 注释里写清 Master 口径和时序
+  5) ★ 15.8.11 同版补丁：音乐线「下载中」（progress<1）同点播 inflight 待遇 ——
+     主循环 / tag_only 对账 / 暂停闸三处都跳过（Master 口径原文 `下载中不会被静默池暂停`）
 
 运行：python3 tools/test_silent_filter_inflight.py
 """
@@ -34,14 +36,14 @@ class SilentFilterInflightTest(unittest.TestCase):
     def test_02_main_loop_skips_inflight(self):
         with open(SILENT_PY) as f:
             src = f.read()
-        self.assertIn("if hh in _od_inflight:", src,
-                      "源码应包含主循环 inflight 跳过")
+        self.assertIn("if hh in _od_inflight or hh in _music_inflight:", src,
+                      "源码应包含主循环 inflight 跳过（15.8.11 起含音乐线）")
 
     def test_03_tag_only_loop_skips_inflight(self):
         with open(SILENT_PY) as f:
             src = f.read()
-        self.assertIn("if _hh3 in _od_inflight:", src,
-                      "源码应包含 tag_only 对账 inflight 跳过")
+        self.assertIn("if _hh3 in _od_inflight or _hh3 in _music_inflight:", src,
+                      "源码应包含 tag_only 对账 inflight 跳过（15.8.11 起含音乐线）")
 
     def test_04_doc_marker(self):
         with open(SILENT_PY) as f:
@@ -61,6 +63,15 @@ class SilentFilterInflightTest(unittest.TestCase):
         self.assertIn('"path": "/ondemand"', api)
         self.assertIn('"path": "/ondemand/items"', api)
         self.assertIn('"path": "/ondemand/act"', api)
+
+    # ★ 15.8.11 同版补丁：音乐线「下载中」同点播 inflight 待遇
+    def test_06_music_inflight_source_guard(self):
+        with open(SILENT_PY) as f:
+            src = f.read()
+        self.assertIn("_music_inflight", src, "源码应包含 _music_inflight 过滤变量")
+        self.assertIn('rep["skipped_music_inflight"]', src,
+                      "暂停闸应记录被豁免的音乐线 inflight 数")
+        self.assertIn("下载中不会被静默池暂停", src, "源码应写 Master 口径原文")
 
 
 if __name__ == "__main__":
