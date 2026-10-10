@@ -237,6 +237,43 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
                     "confirm": "1=真加种；否则只回计划（干跑）"},
          "returns": "MusicGrab", "version": AGENT_ENDPOINT_VERSION,
          "summary": "★歌单→加种（写）：按计划把选中的音乐种加进下载器（tag=魔流-<站>-静默-资源，category=音乐），自动进账本/H&R/闸门；confirm 缺省=干跑"},
+        # ---- 15.8.14 临时/手工投放（写；补上 2026-10-10 事故暴露的「手工加种无入口」）----
+        {"path": "/agent/inject", "method": "POST", "handler": "agent_inject", "write": True,
+         "params": {"magnet": "磁力链（magnet:?…）；三选一",
+                    "torrent": "种子字节的 base64（可带 data: 前缀）；三选一",
+                    "url": "远端 .torrent / 磁力的 http(s) 地址（无法预检重复）；三选一",
+                    "save_path": "保存目录（缺省=设置里的任务保存目录）",
+                    "site": "来源标记（缺省 `手工`，不是真实站点，只在报表里单列一个桶）",
+                    "sub": "身份子类：`资源`（缺省，在途受身份保护、永不自动删）/ `普通`（交给静默-普通 清理）",
+                    "category": "下载器分类（如 `音乐`；留空不加分类）",
+                    "confirm": "1=真加种；否则只回计划（干跑）"},
+         "returns": "InjectReport", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "★临时/手工投放（写）：过全局 dup 闸门 → 加种（tag=魔流-<site>-静默-<sub>）→ 写账本 → 归流/静默/清理/报表全部可见；confirm 缺省=干跑"},
+        {"path": "/agent/inject/release", "method": "POST", "handler": "agent_inject_release",
+         "write": True,
+         "params": {"hashes": "逗号/空格分隔的 infohash（只认本通道的投放）",
+                    "mode": "`pause`（缺省，只暂停）/ `delete`（删种）",
+                    "site": "只退场这个来源标记的投放（缺省 `手工`）",
+                    "delete_files": "1=连文件一起删（仅 mode=delete）",
+                    "force": "1=允许删资源身份（先把本通道自己的记录降级为 `普通` 再走唯一删种闸门）",
+                    "apply": "1=真动手；缺省只回计划（干跑）"},
+         "returns": "InjectReleaseReport", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "★临时/手工投放退场（写）：默认只暂停；mode=delete 走唯一删种闸门（库内资产需 force=1，硬拦如实回传）；缺省干跑"},
+        # ---- 15.8.15 库内资产手动删除（Master「希望增加魔流库内资产手动删除的入口」）----
+        #   AI 侧与前端**同口径**：两个 handler 都直接复用 AssetsMixin.assets_library /
+        #   assets_delete（AI ⊇ 前端），不另写一套判定。
+        {"path": "/agent/assets", "method": "GET", "handler": "agent_assets", "write": False,
+         "params": {"limit": "int（默认 0 = 全部）"},
+         "returns": "AssetList", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "库内资产列表（逐条：站点/大小/状态/qB 态/保存路径/标签 + deletable & block=被哪道闸拦住）"},
+        {"path": "/agent/assets/delete", "method": "POST", "handler": "agent_assets_delete",
+         "write": True,
+         "params": {"hashes": "逗号/空格分隔的 infohash（只认库内资产；其余拒收）",
+                    "delete_files": "1=连文件一起删（不可恢复）；缺省 0=只删种保文件",
+                    "confirm": "1=真删；缺省/非 1 = 干跑（零写入）",
+                    "reason": "删除原因（进统一台账 deletions.jsonl）"},
+         "returns": "AssetDeleteReport", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "★手动删除库内资产（写）：**只破「库内资产（已入库，永不删）」这一道闸**；手动保留/跨站来源份/已认领/欠 H&R 四类照旧硬拦；真删前重新过闸门复检；缺省干跑"},
         # ---- P1.5c：功能域只读（AI ⊇ 前端，收编 19 个只读豁免域）----
         {"path": "/agent/tasks/{id}/bonus", "method": "GET", "handler": "agent_task_bonus", "write": False,
          "params": {"id": "任务 id 路径参数"}, "returns": "TaskBonusReport",
@@ -1019,6 +1056,69 @@ class AgentApiMixin:
                                   ("写操作 → _crossseed_torrent_bytes 取种 + DownloaderAdapter.add_torrent；"
                                    "tag=魔流-<站>-静默-资源，category=音乐；下载即开 H&R 账（走现有账本/闸门/报表）"))
 
+    def agent_inject(self, magnet: str = "", torrent: str = "", url: str = "",
+                     save_path: str = "", site: str = "", sub: str = "",
+                     category: str = "", confirm: str = "") -> Dict[str, Any]:
+        """``POST /agent/inject`` —— ★ **临时 / 手工投放**（写，15.8.14）。
+
+        ``confirm`` 缺省（或非 1）→ **只回计划（干跑）**；``confirm=1`` 才真加种。
+
+        加种前先过全局 dup 闸门（同一资源只下一次），落种时打**可识别身份**
+        ``魔流-<site>-静默-<sub>``（缺省 ``手工``/``资源``）并写种子账本 → 归流、静默审计、
+        清理闸门、站点报表全部看得见（对比 2026-10-10 事故：脚本直连 qB 打出的
+        ``魔流-手动`` 是孤儿标签，谁都不认）。
+        """
+        t0 = time.time()
+        _ok = str(confirm).strip().lower() in ("1", "true", "yes", "y", "on")
+        if not _ok:
+            try:
+                data = self._inject_plan(magnet=magnet, torrent=torrent, url=url,
+                                         save_path=save_path, site=site, sub=sub,
+                                         category=category)
+            except Exception as e:  # noqa: BLE001
+                return self._agent_err("internal_error", f"计划失败: {e}", t0)
+            if not data.get("ok"):
+                return self._agent_err("bad_request", str(data.get("error") or "入参不可用"), t0)
+            return self._agent_ok({"applied": False, "dry_run": True,
+                                   "note": "干跑（confirm 未置 1，未加任何种）", "plan": data}, t0)
+        try:
+            data = self._inject_apply(magnet=magnet, torrent=torrent, url=url,
+                                      save_path=save_path, site=site, sub=sub,
+                                      category=category)
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal_error", f"投放失败: {e}", t0)
+        if not data.get("ok"):
+            return self._agent_err("bad_request", str(data.get("error") or "投放失败"), t0)
+        return self._agent_report(data, t0,
+                                  ("写操作 → dup 闸门 claim → DownloaderAdapter.add_torrent → "
+                                   "SeedLedgerStore.put（site=来源标记 / state=静默 / sub=身份）；"
+                                   "归流/静默池/清理闸门/站点报表全部可见"))
+
+    def agent_inject_release(self, hashes: str = "", mode: str = "pause", site: str = "",
+                             delete_files: str = "", force: str = "",
+                             apply: str = "") -> Dict[str, Any]:
+        """``POST /agent/inject/release`` —— ★ **临时 / 手工投放退场**（写，15.8.14）。
+
+        ``apply`` 缺省（或非 1）→ 只回计划（干跑）；``apply=1`` 才真动手。
+
+        ``mode=pause``（缺省）只暂停（保留账本/标签，可再 resume）；``mode=delete`` 删种，
+        走插件唯一删种闸门 ``DownloaderAdapter.delete_torrents``（H&R / 跨站来源 / 已认领 /
+        手动保留 硬拦，库内资产需 ``force=1`` —— 先把**本通道自己**记录降级为 ``普通`` 再删）。
+        只认 ``site``（缺省 ``手工``）的投放，别的种一律拒收（``force=1`` 除外）。
+        """
+        t0 = time.time()
+        try:
+            data = self._inject_release(hashes=hashes, mode=mode, site=site,
+                                        delete_files=delete_files, force=force, apply=apply)
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal_error", f"退场失败: {e}", t0)
+        if data.get("error"):
+            return self._agent_err("bad_request", str(data["error"]), t0)
+        return self._agent_report(data, t0,
+                                  ("写操作 → DownloaderAdapter.pause_torrents / "
+                                   "delete_torrents（唯一删种闸门）+ SeedLedgerStore.drop；"
+                                   "只认本通道（site=来源标记）的投放"))
+
     def agent_yema(self, live: int = 0, force: int = 0) -> Dict[str, Any]:
         """``GET /agent/yema`` —— ★ **野马PT 逐种 H&R 对账**（站点 × 本机 × 账本；只读）。
 
@@ -1133,3 +1233,72 @@ class AgentApiMixin:
             data, t0,
             "features/api.get_api()（/debug* 冒牌子集） + features/debug.DEBUG_WRITE_PATHS（写标记）",
             inputs={})
+
+    # ---------------------------------------------------------------- ★ 15.8.15
+    # Master「希望增加魔流库内资产手动删除的入口」的 AI 侧（AI ⊇ 前端）：
+    #   两个 handler **直接复用** ``AssetsMixin.assets_library`` / ``assets_delete``，
+    #   与前端走同一段代码、同一套闸门口径（不重写判定，避免两边口径漂移）。
+    # ----------------------------------------------------------------
+    def agent_assets(self, limit: str = "") -> Dict[str, Any]:
+        """``GET /agent/assets`` —— 库内资产逐条列表（只读）。
+
+        与前端 ``GET /assets`` **同源同口径**（同一个 ``assets_library``）；
+        每条带 ``deletable`` 与 ``block``（= 被手动保留 / 跨站来源份 / 已认领 / 欠 H&R 中的哪一道拦住）。
+        """
+        t0 = time.time()
+        try:
+            _lim = int(str(limit or "0").strip() or 0)
+        except Exception:  # noqa: BLE001
+            return self._agent_err("bad_request", "limit 必须是整数", t0, field="limit")
+        try:
+            resp = self.assets_library(limit=_lim)
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal_error", f"库内资产列表失败: {e}", t0)
+        if not getattr(resp, "success", False):
+            return self._agent_err("internal_error", str(getattr(resp, "message", "") or "列表失败"), t0)
+        data = getattr(resp, "data", None) or {}
+        return self._agent_ok({
+            "items": data.get("items") or [],
+            "counts": data.get("counts") or {},
+            "scanned_at": data.get("scanned_at"),
+            "message": str(getattr(resp, "message", "") or ""),
+        }, t0)
+
+    def agent_assets_delete(self, hashes: str = "", delete_files: str = "",
+                            confirm: str = "", reason: str = "") -> Dict[str, Any]:
+        """``POST /agent/assets/delete`` —— ★手动删除库内资产（写，15.8.15）。
+
+        **只破「库内资产（已入库，永不删）」这一道闸**；手动保留 / 跨站来源份 / 已认领 /
+        欠 H&R 四类照旧硬拦（真删前还会重新过一遍闸门复检）。``confirm`` 非 1 → 干跑（零写入）。
+        """
+        t0 = time.time()
+        hs = [x for x in str(hashes or "").replace(",", " ").split() if x]
+        if not hs:
+            return self._agent_err("bad_request", "hashes 为空（逗号/空格分隔的 infohash）",
+                                   t0, field="hashes")
+        _truthy = ("1", "true", "yes", "y", "on")
+        try:
+            from ..models import MagicFlowAssetDeletePayload  # noqa: WPS433
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal_error", f"请求模型不可用: {e}", t0)
+        payload = MagicFlowAssetDeletePayload(
+            hashes=hs,
+            delete_files=1 if str(delete_files or "").strip().lower() in _truthy else 0,
+            confirm=1 if str(confirm or "").strip().lower() in _truthy else 0,
+            reason=str(reason or "")[:200],
+        )
+        try:
+            resp = self.assets_delete(payload)
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal_error", f"删除库内资产失败: {e}", t0)
+        data = getattr(resp, "data", None) or {}
+        if not getattr(resp, "success", False):
+            return self._agent_err("bad_request", str(getattr(resp, "message", "") or "删除失败"), t0)
+        return self._agent_ok({
+            "dry_run": bool(data.get("dry_run", True)),
+            "deleted": int(data.get("deleted") or 0),
+            "blocked": int(data.get("blocked") or 0),
+            "failed": int(data.get("failed") or 0),
+            "results": data.get("results") or [],
+            "note": str(getattr(resp, "message", "") or ""),
+        }, t0)

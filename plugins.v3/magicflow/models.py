@@ -549,3 +549,15 @@ class MagicFlowTorrentBatchPayload(BaseModel):
 
     action: Literal["protect", "unprotect", "pause", "resume", "recheck", "delete"]
     hashes: List[str] = Field(default_factory=list, description="待操作的种子 infohash 列表")
+
+
+class MagicFlowAssetDeletePayload(BaseModel):
+    """★ 15.8.15 库内资产手动删除请求模型（Master「希望增加魔流库内资产手动删除的入口」）。
+
+    只对**本插件库内资产列表里**的 hash 生效；``confirm != 1`` 一律干跑（零写入）。
+    """
+
+    hashes: List[str] = Field(default_factory=list, description="待删除的库内资产 infohash 列表")
+    delete_files: int = Field(0, description="1=同时删除文件（不可恢复）；0=仅删种保文件")
+    confirm: int = Field(0, description="1=真删；0=干跑（只回报将发生什么，零写入）")
+    reason: str = Field("", max_length=200, description="删除原因（进统一台账）")

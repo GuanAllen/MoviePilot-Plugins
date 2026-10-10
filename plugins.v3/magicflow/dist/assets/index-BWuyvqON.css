@@ -2547,44 +2547,44 @@
    ★ 共享选择器（magicflow-status-dot / magicflow-task-switch*）在 index.vue 各留一份。 */
 
 /* ── 顶栏：品牌 / 动作区布局 ───────────────────────────── */
-.magicflow-page__header[data-v-d146bb5a],
-.magicflow-page__identity[data-v-d146bb5a],
-.magicflow-page__actions[data-v-d146bb5a] {
+.magicflow-page__header[data-v-94a9fb5b],
+.magicflow-page__identity[data-v-94a9fb5b],
+.magicflow-page__actions[data-v-94a9fb5b] {
   display: flex;
   align-items: center;
 }
-.magicflow-page__header[data-v-d146bb5a] {
+.magicflow-page__header[data-v-94a9fb5b] {
   justify-content: space-between;
 }
-.magicflow-page__header[data-v-d146bb5a] {
+.magicflow-page__header[data-v-94a9fb5b] {
   min-block-size: 48px;
   gap: 16px;
 }
-.magicflow-page__identity[data-v-d146bb5a] {
+.magicflow-page__identity[data-v-94a9fb5b] {
   min-inline-size: 0;
   gap: 12px;
 }
-.magicflow-page__identity h1[data-v-d146bb5a] {
+.magicflow-page__identity h1[data-v-94a9fb5b] {
   margin: 0;
   font-size: 1.35rem;
   font-weight: 600;
   line-height: 1.3;
   letter-spacing: 0;
 }
-.magicflow-page__identity p[data-v-d146bb5a] {
+.magicflow-page__identity p[data-v-94a9fb5b] {
   margin: 2px 0 0;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
   font-size: 0.875rem;
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
-.magicflow-page__actions[data-v-d146bb5a] {
+.magicflow-page__actions[data-v-94a9fb5b] {
   flex-wrap: wrap;
   gap: 8px;
 }
 
 /* ★ 桌面头部：「详情磁贴组」与「设置齿轮」之间的竖分隔（窄屏整组隐藏） */
-.magicflow-page .magicflow-hdr-sep[data-v-d146bb5a] {
+.magicflow-page .magicflow-hdr-sep[data-v-94a9fb5b] {
   display: inline-block;
   inline-size: 1px;
   block-size: 22px;
@@ -2593,40 +2593,40 @@
   background: rgba(var(--v-border-color), 0.45);
   flex: 0 0 auto;
 }
-.magicflow-settings-btn[data-v-d146bb5a] {
+.magicflow-settings-btn[data-v-94a9fb5b] {
   margin-inline-start: 2px;
 }
 
 /* 「更多」⋮ 只在窄屏出现（宽屏直接展开各图标按钮） */
-.magicflow-more-btn[data-v-d146bb5a] {
+.magicflow-more-btn[data-v-94a9fb5b] {
   display: none;
 }
-.magicflow-more-menu .v-list-item[data-v-d146bb5a] {
+.magicflow-more-menu .v-list-item[data-v-94a9fb5b] {
   min-block-size: 44px;
 }
 
 /* ── 状态点（与任务栏共用选择器 → 两处各留一份）────────── */
-.magicflow-status-dot[data-v-d146bb5a] {
+.magicflow-status-dot[data-v-94a9fb5b] {
   inline-size: 8px;
   block-size: 8px;
   flex: 0 0 auto;
   border-radius: 50%;
   background: rgb(var(--v-theme-secondary));
 }
-.magicflow-status-dot--success[data-v-d146bb5a] { background: rgb(var(--v-theme-success));
+.magicflow-status-dot--success[data-v-94a9fb5b] { background: rgb(var(--v-theme-success));
 }
-.magicflow-status-dot--primary[data-v-d146bb5a] { background: rgb(var(--v-theme-primary));
+.magicflow-status-dot--primary[data-v-94a9fb5b] { background: rgb(var(--v-theme-primary));
 }
-.magicflow-status-dot--info[data-v-d146bb5a] { background: rgb(var(--v-theme-info));
+.magicflow-status-dot--info[data-v-94a9fb5b] { background: rgb(var(--v-theme-info));
 }
-.magicflow-status-dot--warning[data-v-d146bb5a] { background: rgb(var(--v-theme-warning));
+.magicflow-status-dot--warning[data-v-94a9fb5b] { background: rgb(var(--v-theme-warning));
 }
-.magicflow-status-dot--error[data-v-d146bb5a] { background: rgb(var(--v-theme-error));
+.magicflow-status-dot--error[data-v-94a9fb5b] { background: rgb(var(--v-theme-error));
 }
 
 /* ── 窄屏（≤959px）：品牌头吸顶 / 折叠 ─────────────────── */
 @media (max-width: 959px) {
-.magicflow-page--compact .magicflow-page__header[data-v-d146bb5a] {
+.magicflow-page--compact .magicflow-page__header[data-v-94a9fb5b] {
     position: sticky;
     top: 0;
     z-index: 4;
@@ -2636,7 +2636,7 @@
     backdrop-filter: blur(var(--transparent-blur, 0px));
     background-color: rgba(var(--v-theme-surface), var(--transparent-opacity-heavy, 1));
 }
-.magicflow-page__header[data-v-d146bb5a] {
+.magicflow-page__header[data-v-94a9fb5b] {
     align-items: flex-start;
 }
 }
@@ -2644,57 +2644,57 @@
 /* ── 窄屏（≤699px）────────────────────────────────────── */
 @media (max-width: 699px) {
   /* 窄屏隐藏顶部「新建任务」，交给移动工具栏的「新建」按钮 */
-.magicflow-page .magicflow-header-create[data-v-d146bb5a] {
+.magicflow-page .magicflow-header-create[data-v-94a9fb5b] {
     display: none;
 }
-.magicflow-page__header[data-v-d146bb5a] {
+.magicflow-page__header[data-v-94a9fb5b] {
     align-items: center;
     flex-direction: row;
 }
-.magicflow-page__identity[data-v-d146bb5a] {
+.magicflow-page__identity[data-v-94a9fb5b] {
     flex: 1 1 auto;
     overflow: hidden;
 }
-.magicflow-page__identity > div[data-v-d146bb5a] {
+.magicflow-page__identity > div[data-v-94a9fb5b] {
     min-inline-size: 0;
 }
-.magicflow-page__identity h1[data-v-d146bb5a],
-  .magicflow-page__identity p[data-v-d146bb5a] {
+.magicflow-page__identity h1[data-v-94a9fb5b],
+  .magicflow-page__identity p[data-v-94a9fb5b] {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.magicflow-page--compact .magicflow-page__header[data-v-d146bb5a] {
+.magicflow-page--compact .magicflow-page__header[data-v-94a9fb5b] {
     align-items: center;
     flex-direction: row;
 }
-.magicflow-page__actions[data-v-d146bb5a],
-  .magicflow-page--compact .magicflow-page__actions[data-v-d146bb5a] {
+.magicflow-page__actions[data-v-94a9fb5b],
+  .magicflow-page--compact .magicflow-page__actions[data-v-94a9fb5b] {
     flex: 0 0 auto;
     flex-wrap: nowrap;
     inline-size: auto;
     margin-inline-start: auto;
 }
-.magicflow-page--compact .magicflow-page__actions[data-v-d146bb5a] >  .v-chip,
-  .magicflow-page--compact .magicflow-page__identity p[data-v-d146bb5a] {
+.magicflow-page--compact .magicflow-page__actions[data-v-94a9fb5b] >  .v-chip,
+  .magicflow-page--compact .magicflow-page__identity p[data-v-94a9fb5b] {
     display: none;
 }
 }
 
 /* ── 超窄（≤419px）────────────────────────────────────── */
 @media (max-width: 419px) {
-.magicflow-page:not(.magicflow-page--compact) .magicflow-page__header[data-v-d146bb5a],
-  .magicflow-page:not(.magicflow-page--compact) .magicflow-page__identity[data-v-d146bb5a] {
+.magicflow-page:not(.magicflow-page--compact) .magicflow-page__header[data-v-94a9fb5b],
+  .magicflow-page:not(.magicflow-page--compact) .magicflow-page__identity[data-v-94a9fb5b] {
     gap: 8px;
 }
 }
 
 /* ── 按预览图对齐：品牌头排版 ─────────────────────────── */
-.magicflow-page .magicflow-page__header[data-v-d146bb5a] {
+.magicflow-page .magicflow-page__header[data-v-94a9fb5b] {
   gap: 12px;
   min-block-size: 44px;
 }
-.magicflow-page .magicflow-logo[data-v-d146bb5a] {
+.magicflow-page .magicflow-logo[data-v-94a9fb5b] {
   inline-size: 38px;
   block-size: 38px;
   flex: 0 0 auto;
@@ -2705,26 +2705,26 @@
   background: linear-gradient(145deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary)));
   box-shadow: 0 6px 20px rgba(var(--v-theme-primary), 0.45), inset 0 1px 0 rgba(var(--v-theme-on-primary), 0.25);
 }
-.magicflow-page .magicflow-page__identity h1[data-v-d146bb5a] {
+.magicflow-page .magicflow-page__identity h1[data-v-94a9fb5b] {
   font-size: 17px;
   font-weight: 700;
   line-height: 1.25;
   letter-spacing: 0.2px;
 }
-.magicflow-page .magicflow-page__identity p[data-v-d146bb5a] {
+.magicflow-page .magicflow-page__identity p[data-v-94a9fb5b] {
   margin-block-start: 2px;
   font-size: 11px;
 }
 
 /* 顶部「新建任务」按钮（桌面端；移动端由工具栏承担，避免重复） */
-.magicflow-page .magicflow-header-create[data-v-d146bb5a] {
+.magicflow-page .magicflow-header-create[data-v-94a9fb5b] {
   text-transform: none;
   letter-spacing: 0;
   font-weight: 600;
 }
 
 /* ── 顶部「当前任务」切换下拉（方案 B，与移动工具栏共用 → 两处各留一份）── */
-.magicflow-page .magicflow-task-switch[data-v-d146bb5a] {
+.magicflow-page .magicflow-task-switch[data-v-94a9fb5b] {
   display: inline-flex;
   align-items: center;
   gap: 9px;
@@ -2738,14 +2738,14 @@
   cursor: pointer;
   box-shadow: 0 6px 18px rgba(var(--v-theme-primary), 0.16);
 }
-.magicflow-page .magicflow-task-switch[data-v-d146bb5a]:hover {
+.magicflow-page .magicflow-task-switch[data-v-94a9fb5b]:hover {
   border-color: rgba(var(--v-theme-primary), 0.42);
 }
-.magicflow-page .magicflow-task-switch[data-v-d146bb5a]:focus-visible {
+.magicflow-page .magicflow-task-switch[data-v-94a9fb5b]:focus-visible {
   outline: 2px solid rgb(var(--v-theme-primary));
   outline-offset: 2px;
 }
-.magicflow-page .magicflow-task-switch__icon[data-v-d146bb5a] {
+.magicflow-page .magicflow-task-switch__icon[data-v-94a9fb5b] {
   inline-size: 26px;
   block-size: 26px;
   flex: 0 0 auto;
@@ -2756,13 +2756,13 @@
   color: rgb(var(--v-theme-on-primary));
   background: linear-gradient(145deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary)));
 }
-.magicflow-page .magicflow-task-switch__icon img[data-v-d146bb5a] {
+.magicflow-page .magicflow-task-switch__icon img[data-v-94a9fb5b] {
   inline-size: 62%;
   block-size: 62%;
   object-fit: contain;
   border-radius: 5px;
 }
-.magicflow-page .magicflow-task-switch__body[data-v-d146bb5a] {
+.magicflow-page .magicflow-task-switch__body[data-v-94a9fb5b] {
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -2770,26 +2770,26 @@
   line-height: 1.15;
   text-align: start;
 }
-.magicflow-page .magicflow-task-switch__k[data-v-d146bb5a] {
+.magicflow-page .magicflow-task-switch__k[data-v-94a9fb5b] {
   font-size: 10px;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
-.magicflow-page .magicflow-task-switch__v[data-v-d146bb5a] {
+.magicflow-page .magicflow-task-switch__v[data-v-94a9fb5b] {
   font-size: 13px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.magicflow-page .magicflow-task-switch__chev[data-v-d146bb5a] {
+.magicflow-page .magicflow-task-switch__chev[data-v-94a9fb5b] {
   flex: 0 0 auto;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
-.magicflow-page .magicflow-task-switch__menu[data-v-d146bb5a] {
+.magicflow-page .magicflow-task-switch__menu[data-v-94a9fb5b] {
   min-inline-size: 15rem;
 }
 /* 任务切换菜单项：站点 + 关键数字 (两行子文字) */
-.magicflow-page .magicflow-task-switch__menu .v-list-item__subtitle[data-v-d146bb5a] {
+.magicflow-page .magicflow-task-switch__menu .v-list-item__subtitle[data-v-94a9fb5b] {
   font-size: 11px !important;
   opacity: 0.85;
   letter-spacing: 0.01em;
@@ -2798,37 +2798,37 @@
 /* ── 窄屏（≤959px）：只留品牌 + 「更多」菜单 ──────────── */
 @media (max-width: 959px) {
   /* 桌面品牌头里的切换胶囊隐藏；移动端由工具栏承担 */
-.magicflow-page__actions .magicflow-task-switch[data-v-d146bb5a] {
+.magicflow-page__actions .magicflow-task-switch[data-v-94a9fb5b] {
     display: none;
 }
 
   /* ★ 窄屏：顶栏只留「魔流」品牌 + 右上角「⋮ 更多」——把**所有**功能入口（推荐/云盘/跨站/豆瓣/
      健康/点播/考核/补源/设置/关闭）都收进这一个菜单，别一边留图标、一边又放菜单（≡ 两边都有）。 */
-.magicflow-page__actions .magicflow-header-create[data-v-d146bb5a],
-  .magicflow-page__actions .magicflow-recommend-wrap[data-v-d146bb5a],
-  .magicflow-page__actions .magicflow-recommend-btn[data-v-d146bb5a],
-  .magicflow-page__actions .magicflow-exam-wrap[data-v-d146bb5a],
-  .magicflow-page__actions .magicflow-exam-btn[data-v-d146bb5a],
-  .magicflow-page__actions .magicflow-cloud-btn[data-v-d146bb5a],
-  .magicflow-page__actions .magicflow-crossseed-wrap[data-v-d146bb5a],
-  .magicflow-page__actions .magicflow-crossseed-btn[data-v-d146bb5a],
-  .magicflow-page__actions .magicflow-douban-btn[data-v-d146bb5a],
-  .magicflow-page__actions .magicflow-health-wrap[data-v-d146bb5a],
-  .magicflow-page__actions .magicflow-health-btn[data-v-d146bb5a],
-  .magicflow-page__actions .magicflow-ondemand-btn[data-v-d146bb5a],
-  .magicflow-page__actions .magicflow-rescue-btn[data-v-d146bb5a],
-  .magicflow-page__actions .magicflow-sitereport-btn[data-v-d146bb5a],
-  .magicflow-page__actions .magicflow-settings-btn[data-v-d146bb5a],
-  .magicflow-page__actions .magicflow-hdr-sep[data-v-d146bb5a],
-  .magicflow-page__actions .magicflow-close-btn[data-v-d146bb5a] {
+.magicflow-page__actions .magicflow-header-create[data-v-94a9fb5b],
+  .magicflow-page__actions .magicflow-recommend-wrap[data-v-94a9fb5b],
+  .magicflow-page__actions .magicflow-recommend-btn[data-v-94a9fb5b],
+  .magicflow-page__actions .magicflow-exam-wrap[data-v-94a9fb5b],
+  .magicflow-page__actions .magicflow-exam-btn[data-v-94a9fb5b],
+  .magicflow-page__actions .magicflow-cloud-btn[data-v-94a9fb5b],
+  .magicflow-page__actions .magicflow-crossseed-wrap[data-v-94a9fb5b],
+  .magicflow-page__actions .magicflow-crossseed-btn[data-v-94a9fb5b],
+  .magicflow-page__actions .magicflow-douban-btn[data-v-94a9fb5b],
+  .magicflow-page__actions .magicflow-health-wrap[data-v-94a9fb5b],
+  .magicflow-page__actions .magicflow-health-btn[data-v-94a9fb5b],
+  .magicflow-page__actions .magicflow-ondemand-btn[data-v-94a9fb5b],
+  .magicflow-page__actions .magicflow-rescue-btn[data-v-94a9fb5b],
+  .magicflow-page__actions .magicflow-sitereport-btn[data-v-94a9fb5b],
+  .magicflow-page__actions .magicflow-settings-btn[data-v-94a9fb5b],
+  .magicflow-page__actions .magicflow-hdr-sep[data-v-94a9fb5b],
+  .magicflow-page__actions .magicflow-close-btn[data-v-94a9fb5b] {
     display: none;
 }
-.magicflow-page__actions .magicflow-more-btn[data-v-d146bb5a] {
+.magicflow-page__actions .magicflow-more-btn[data-v-94a9fb5b] {
     display: inline-flex;
 }
 
   /* 手机端隐藏自相矛盾的运行计数胶囊（信息已由首页大数承担） */
-.magicflow-page .magicflow-enabled-chip[data-v-d146bb5a] { display: none;
+.magicflow-page .magicflow-enabled-chip[data-v-94a9fb5b] { display: none;
 }
 }
 
@@ -5140,6 +5140,261 @@
 }
 }
 
+/* ── 弹窗根：与同目录 confirm 组件同款（共享选择器 `.magicflow-dialog`）。
+      VDialog 会 teleport 到 body，父 scoped 够不到子内部，故须自带。── */
+.magicflow-dialog[data-v-4e36c696] {
+  background: rgb(var(--v-theme-surface)) !important;
+  border: 1px solid var(--magicflow-panel-brd);
+  border-radius: 18px;
+  backdrop-filter: blur(16px) saturate(120%);
+  -webkit-backdrop-filter: blur(16px) saturate(120%);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  color: rgb(var(--v-theme-on-surface));
+}
+.magicflow-asset-confirm-list[data-v-4e36c696] {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  max-block-size: 12rem;
+  overflow-y: auto;
+}
+.magicflow-asset-confirm-list li[data-v-4e36c696] {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-block: 4px;
+  border-block-end: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+}
+.magicflow-asset-confirm-list li strong[data-v-4e36c696] {
+  overflow-wrap: anywhere;
+}
+.magicflow-asset-confirm-list li span[data-v-4e36c696] {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  font-size: 0.75rem;
+}
+.magicflow-asset-confirm-more[data-v-4e36c696] {
+  padding-block-start: 4px;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  font-size: 0.75rem;
+}
+.magicflow-asset-confirm-warn[data-v-4e36c696] {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  background: rgba(var(--v-theme-error), 0.08);
+  border-inline-start: 3px solid rgba(var(--v-theme-error), 0.5);
+}
+.magicflow-asset-confirm-warn p[data-v-4e36c696] {
+  margin: 0;
+}
+.magicflow-asset-confirm-warn p + p[data-v-4e36c696] {
+  margin-block-start: 4px;
+}
+
+/* ── 共享选择器（index.vue / 兄弟 tab 同有，此处复制一份；父页原样保留）──── */
+.magicflow-panel[data-v-6ea8c498] {
+  border: var(--app-surface-border);
+  border-radius: var(--app-surface-radius);
+  min-inline-size: 0;
+  padding: 16px;
+}
+.magicflow-panel__head[data-v-6ea8c498] {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.magicflow-table-empty[data-v-6ea8c498] {
+  padding: 28px 12px;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  text-align: center;
+}
+.magicflow-bulk-bar[data-v-6ea8c498] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-block: 10px 4px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(var(--v-theme-primary), 0.12);
+  box-shadow: inset 0 0 0 1px rgba(var(--v-theme-primary), 0.28);
+}
+.magicflow-bulk-bar__count[data-v-6ea8c498] {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgb(var(--v-theme-primary));
+  margin-inline-end: 4px;
+}
+
+/* ── 本视图专属 ─────────────────────────────────────────────────── */
+.magicflow-assets[data-v-6ea8c498] {
+  margin-block-start: 12px;
+}
+.magicflow-asset-filters[data-v-6ea8c498] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.magicflow-asset-site-filter[data-v-6ea8c498] {
+  inline-size: 13rem;
+  max-inline-size: 100%;
+}
+.magicflow-asset-table[data-v-6ea8c498] {
+  margin-block-start: 8px;
+  background: transparent;
+}
+.magicflow-asset-table th[data-v-6ea8c498]:first-child,
+.magicflow-asset-table td[data-v-6ea8c498]:first-child {
+  padding-inline: 6px;
+}
+.magicflow-asset-title[data-v-6ea8c498] {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-inline-size: 30rem;
+}
+.magicflow-asset-title strong[data-v-6ea8c498],
+.magicflow-asset-title span[data-v-6ea8c498] {
+  overflow-wrap: anywhere;
+}
+.magicflow-asset-title span[data-v-6ea8c498] {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  font-size: 0.78rem;
+}
+.magicflow-asset-progress[data-v-6ea8c498] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.magicflow-asset-progress[data-v-6ea8c498] .v-progress-linear {
+  flex: 1 1 auto;
+  min-inline-size: 56px;
+}
+.magicflow-asset-progress span[data-v-6ea8c498] {
+  flex: 0 0 auto;
+  font-size: 0.78rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+.magicflow-mobile-assets[data-v-6ea8c498] {
+  display: none;
+}
+.magicflow-mobile-asset[data-v-6ea8c498] {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-block: 13px;
+  border-block-end: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+}
+.magicflow-mobile-asset__head[data-v-6ea8c498] {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.magicflow-mobile-asset__check[data-v-6ea8c498] {
+  flex: 0 0 auto;
+  margin-inline-end: 2px;
+}
+.magicflow-mobile-asset__title[data-v-6ea8c498] {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-inline-size: 0;
+}
+.magicflow-mobile-asset__title strong[data-v-6ea8c498] {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.magicflow-mobile-asset__title span[data-v-6ea8c498] {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  font-size: 0.75rem;
+}
+.magicflow-mobile-asset__state[data-v-6ea8c498] {
+  flex: 0 0 auto;
+}
+.magicflow-mobile-asset__bar[data-v-6ea8c498] {
+  margin-block: 2px 4px;
+}
+.magicflow-mobile-asset__grid[data-v-6ea8c498] {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 12px;
+}
+.magicflow-mobile-asset__grid span[data-v-6ea8c498] {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-inline-size: 0;
+  font-size: 0.8rem;
+}
+.magicflow-mobile-asset__grid em[data-v-6ea8c498] {
+  flex: 0 0 auto;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  font-style: normal;
+}
+.magicflow-mobile-asset__grid b[data-v-6ea8c498] {
+  min-inline-size: 0;
+  font-weight: 500;
+  text-align: end;
+  overflow-wrap: anywhere;
+}
+
+/* ── .magicflow-page 级覆盖（同父页；目标元素已在本组件内）────────── */
+.magicflow-page .magicflow-panel[data-v-6ea8c498] {
+  padding: 18px 16px;
+}
+.magicflow-page .magicflow-panel__head .text-subtitle-1[data-v-6ea8c498] {
+  font-size: 14px;
+  font-weight: 600;
+}
+.magicflow-page .magicflow-panel__head .text-body-2[data-v-6ea8c498] {
+  font-size: 11px;
+}
+.magicflow-page .magicflow-asset-title strong[data-v-6ea8c498],
+.magicflow-page .magicflow-mobile-asset__title strong[data-v-6ea8c498] {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+@media (max-width: 699px) {
+.magicflow-panel[data-v-6ea8c498] {
+    padding: 14px;
+}
+.magicflow-panel__head[data-v-6ea8c498] {
+    flex-direction: column;
+    align-items: flex-start;
+    flex-wrap: wrap;
+}
+.magicflow-asset-filters[data-v-6ea8c498] {
+    inline-size: 100%;
+}
+.magicflow-asset-site-filter[data-v-6ea8c498] {
+    inline-size: 100%;
+}
+.magicflow-asset-table[data-v-6ea8c498] {
+    display: none;
+}
+.magicflow-mobile-assets[data-v-6ea8c498] {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin-block-start: 12px;
+}
+}
+
 /* ── ★ 手机端首页（任务列表）内层样式：自 index.vue 的 scoped 块纯搬家 ── */
 /* 说明：保留 `.magicflow-page` 祖先前缀（元素在组件内带本组件 data-v，祖先 .magicflow-page 仍可匹配）。 */
 .magicflow-page .mh-hero[data-v-583480a4] {
@@ -5273,7 +5528,7 @@
   border-inline-start: 3px solid rgba(var(--v-theme-primary), 0.45);
 }
 
-.magicflow-cs-status[data-v-0325621c] {
+.magicflow-cs-status[data-v-e551fbbd] {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -5282,15 +5537,15 @@
 }
 
 /* 弹窗标题行 / 摘要行的「·」分隔符在深浅两色下都偏淡（3.39 / 4.39）→ 提到 0.9 */
-.magicflow-recommend-dialog__summary i[data-v-0325621c],
-.magicflow-settings-dialog__head i[data-v-0325621c] {
+.magicflow-recommend-dialog__summary i[data-v-e551fbbd],
+.magicflow-settings-dialog__head i[data-v-e551fbbd] {
   color: rgba(var(--v-theme-on-surface), 0.9);
 }
-.magicflow-cs-status__dim[data-v-0325621c] {
+.magicflow-cs-status__dim[data-v-e551fbbd] {
   font-size: 12px;
   color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
 }
-.magicflow-cs-card[data-v-0325621c] {
+.magicflow-cs-card[data-v-e551fbbd] {
   display: flex;
   flex-direction: column;
   gap: 7px;
@@ -5299,7 +5554,7 @@
   background: rgba(var(--v-theme-on-surface), 0.035);
   border: 1px solid rgba(var(--v-border-color), 0.16);
 }
-.magicflow-cs-card__name[data-v-0325621c] {
+.magicflow-cs-card__name[data-v-e551fbbd] {
   font-size: 14px;
   font-weight: 600;
   line-height: 1.4;
@@ -5308,7 +5563,7 @@
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
 }
-.magicflow-cs-card__meta[data-v-0325621c] {
+.magicflow-cs-card__meta[data-v-e551fbbd] {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -5316,27 +5571,27 @@
   font-size: 12px;
   color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
 }
-.magicflow-cs-card__site[data-v-0325621c] {
+.magicflow-cs-card__site[data-v-e551fbbd] {
   font-weight: 600;
   color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
 }
-.magicflow-cs-card__size[data-v-0325621c] {
+.magicflow-cs-card__size[data-v-e551fbbd] {
   font-variant-numeric: tabular-nums;
 }
-.magicflow-cs-pending[data-v-0325621c] {
+.magicflow-cs-pending[data-v-e551fbbd] {
   display: flex;
   flex-direction: column;
   gap: 8px;
   margin-block-start: 16px;
 }
-.magicflow-cs-rules[data-v-0325621c] {
+.magicflow-cs-rules[data-v-e551fbbd] {
   margin-block-start: 18px;
   border-radius: 14px;
   border: 1px solid rgba(var(--v-border-color), 0.16);
   background: rgba(var(--v-theme-on-surface), 0.03);
   overflow: hidden;
 }
-.magicflow-cs-rules > summary[data-v-0325621c] {
+.magicflow-cs-rules > summary[data-v-e551fbbd] {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -5347,18 +5602,18 @@
   cursor: pointer;
   list-style: none;
 }
-.magicflow-cs-rules > summary[data-v-0325621c]::before {
+.magicflow-cs-rules > summary[data-v-e551fbbd]::before {
   content: '▸';
   font-size: 11px;
   transition: transform 0.15s ease;
 }
-.magicflow-cs-rules[open] > summary[data-v-0325621c]::before {
+.magicflow-cs-rules[open] > summary[data-v-e551fbbd]::before {
   transform: rotate(90deg);
 }
-.magicflow-cs-rules > summary[data-v-0325621c]::-webkit-details-marker {
+.magicflow-cs-rules > summary[data-v-e551fbbd]::-webkit-details-marker {
   display: none;
 }
-.magicflow-cs-rules__body[data-v-0325621c] {
+.magicflow-cs-rules__body[data-v-e551fbbd] {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -5367,14 +5622,14 @@
   line-height: 1.75;
   color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
 }
-.magicflow-cs-rules__body p[data-v-0325621c] {
+.magicflow-cs-rules__body p[data-v-e551fbbd] {
   margin: 0;
 }
-.magicflow-cs-rules__body strong[data-v-0325621c] {
+.magicflow-cs-rules__body strong[data-v-e551fbbd] {
   font-weight: 650;
   color: rgb(var(--v-theme-primary));
 }
-.magicflow-page[data-v-0325621c] {
+.magicflow-page[data-v-e551fbbd] {
   /* ===== 深色磨砂主题（仅限本插件工作台作用域）===== */
   --magicflow-panel-bg: rgb(var(--v-theme-surface));
   --magicflow-panel-brd: rgba(var(--v-border-color), 0.14);
@@ -5388,41 +5643,41 @@
   border-radius: 20px;
   background: rgb(var(--v-theme-background));
 }
-.magicflow-page--compact[data-v-0325621c] {
+.magicflow-page--compact[data-v-e551fbbd] {
   padding: 20px;
 }
-.magicflow-task-head[data-v-0325621c],
-.magicflow-task-head__identity[data-v-0325621c],
-.magicflow-task-head__title[data-v-0325621c],
-.magicflow-task-head__actions[data-v-0325621c],
-.magicflow-panel__head[data-v-0325621c],
-.magicflow-panel__title-row[data-v-0325621c],
-.magicflow-task-item__title[data-v-0325621c],
-.magicflow-task-item__meta[data-v-0325621c],
-.magicflow-mobile-torrent__head[data-v-0325621c],
-.magicflow-mobile-torrent__meta[data-v-0325621c],
-.magicflow-diagnostic-head[data-v-0325621c] {
+.magicflow-task-head[data-v-e551fbbd],
+.magicflow-task-head__identity[data-v-e551fbbd],
+.magicflow-task-head__title[data-v-e551fbbd],
+.magicflow-task-head__actions[data-v-e551fbbd],
+.magicflow-panel__head[data-v-e551fbbd],
+.magicflow-panel__title-row[data-v-e551fbbd],
+.magicflow-task-item__title[data-v-e551fbbd],
+.magicflow-task-item__meta[data-v-e551fbbd],
+.magicflow-mobile-torrent__head[data-v-e551fbbd],
+.magicflow-mobile-torrent__meta[data-v-e551fbbd],
+.magicflow-diagnostic-head[data-v-e551fbbd] {
   display: flex;
   align-items: center;
 }
-.magicflow-task-head[data-v-0325621c],
-.magicflow-panel__head[data-v-0325621c],
-.magicflow-mobile-torrent__head[data-v-0325621c],
-.magicflow-diagnostic-head[data-v-0325621c] {
+.magicflow-task-head[data-v-e551fbbd],
+.magicflow-panel__head[data-v-e551fbbd],
+.magicflow-mobile-torrent__head[data-v-e551fbbd],
+.magicflow-diagnostic-head[data-v-e551fbbd] {
   justify-content: space-between;
 }
-.magicflow-task-head__identity[data-v-0325621c] {
+.magicflow-task-head__identity[data-v-e551fbbd] {
   min-inline-size: 0;
   gap: 12px;
 }
-.magicflow-task-head h2[data-v-0325621c] {
+.magicflow-task-head h2[data-v-e551fbbd] {
   margin: 0;
   font-size: 1.35rem;
   font-weight: 600;
   line-height: 1.3;
   letter-spacing: 0;
 }
-.magicflow-task-head p[data-v-0325621c] {
+.magicflow-task-head p[data-v-e551fbbd] {
   margin: 2px 0 0;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
   font-size: 0.875rem;
@@ -5431,35 +5686,35 @@
 }
 
 /* 任务头卡：站点图标（方形圆角，居中于头像位） */
-.magicflow-task-head__avatar[data-v-0325621c] {
+.magicflow-task-head__avatar[data-v-e551fbbd] {
   overflow: hidden;
 }
-.magicflow-task-head__site-icon[data-v-0325621c] {
+.magicflow-task-head__site-icon[data-v-e551fbbd] {
   display: block;
   inline-size: 64%;
   block-size: 64%;
   object-fit: contain;
   border-radius: 6px;
 }
-.magicflow-task-head__actions[data-v-0325621c],
-.magicflow-task-head__title[data-v-0325621c],
-.magicflow-panel__title-row[data-v-0325621c],
-.magicflow-mobile-torrent__meta[data-v-0325621c] {
+.magicflow-task-head__actions[data-v-e551fbbd],
+.magicflow-task-head__title[data-v-e551fbbd],
+.magicflow-panel__title-row[data-v-e551fbbd],
+.magicflow-mobile-torrent__meta[data-v-e551fbbd] {
   flex-wrap: wrap;
   gap: 8px;
 }
-.magicflow-settings-dialog__head[data-v-0325621c] {
+.magicflow-settings-dialog__head[data-v-e551fbbd] {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 16px 18px 12px;
 }
-.magicflow-settings-dialog__title[data-v-0325621c] {
+.magicflow-settings-dialog__title[data-v-e551fbbd] {
   font-size: 1.05rem;
   font-weight: 600;
 }
-.magicflow-settings-hint[data-v-0325621c] {
+.magicflow-settings-hint[data-v-e551fbbd] {
   margin: 0;
   padding: 8px 12px;
   border-radius: 8px;
@@ -5469,34 +5724,34 @@
   background: rgba(var(--v-theme-primary), 0.07);
   border-inline-start: 3px solid rgba(var(--v-theme-primary), 0.45);
 }
-.magicflow-settings-dialog[data-v-0325621c] {
+.magicflow-settings-dialog[data-v-e551fbbd] {
   display: flex;
   flex-direction: column;
   block-size: min(84vh, 40rem);
   max-block-size: 92vh;
   overflow: hidden;
 }
-.magicflow-settings-dialog__head[data-v-0325621c],
-.magicflow-settings-dialog > .v-divider[data-v-0325621c] {
+.magicflow-settings-dialog__head[data-v-e551fbbd],
+.magicflow-settings-dialog > .v-divider[data-v-e551fbbd] {
   flex: 0 0 auto;
 }
 
 /* MoviePilot 会给表单控件套一层 .app-responsive-input（默认 ~72px 高），
    在自研分块里把它收紧，让间距由我们自己的 grid/gap 决定 */
-.magicflow-settings-block .app-responsive-input[data-v-0325621c] {
+.magicflow-settings-block .app-responsive-input[data-v-e551fbbd] {
   min-block-size: 0 !important;
   block-size: auto !important;
   padding-block: 0 !important;
   margin-block: 0 !important;
 }
-.magicflow-settings-block[data-v-0325621c] {
+.magicflow-settings-block[data-v-e551fbbd] {
   display: grid;
   gap: 10px;
   padding: 12px 14px;
   border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
   border-radius: 10px;
 }
-.magicflow-settings-block__head[data-v-0325621c] {
+.magicflow-settings-block__head[data-v-e551fbbd] {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -5505,20 +5760,20 @@
   letter-spacing: 0.01em;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
-.magicflow-field__sub[data-v-0325621c] {
+.magicflow-field__sub[data-v-e551fbbd] {
   font-size: 0.72rem;
   line-height: 1.45;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
   overflow-wrap: anywhere;
 }
-.magicflow-field-grid[data-v-0325621c] {
+.magicflow-field-grid[data-v-e551fbbd] {
   display: grid;
   /* MoviePilot 在窄屏会把每个控件渲染成「左标签 / 右值」一行，
      列宽太窄会把「并发数」等标签拆成多行 → 窄屏自动收成单列，宽屏才分两列 */
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 10px 12px;
 }
-.magicflow-settings-row[data-v-0325621c] {
+.magicflow-settings-row[data-v-e551fbbd] {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
   gap: 8px 12px;
@@ -5526,11 +5781,11 @@
 }
 
 /* 旧版新手考核样式（保留，部分页面仍在用） */
-.magicflow-exam-plan[data-v-0325621c] {
+.magicflow-exam-plan[data-v-e551fbbd] {
   display: grid;
   gap: 8px;
 }
-.magicflow-exam-plan__item[data-v-0325621c] {
+.magicflow-exam-plan__item[data-v-e551fbbd] {
   border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
   border-radius: 8px;
   padding: 8px 10px;
@@ -5539,7 +5794,7 @@
   justify-items: start;
   min-inline-size: 0;
 }
-.magicflow-exam-plan__main[data-v-0325621c] {
+.magicflow-exam-plan__main[data-v-e551fbbd] {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -5548,36 +5803,36 @@
 }
 
 /* .magicflow-signin-* / .magicflow-keepalive-*（专属选择器）随弹窗迁入 components/dialogs/SigninDialog.vue。 */
-.magicflow-settings-actions[data-v-0325621c] {
+.magicflow-settings-actions[data-v-e551fbbd] {
   display: grid;
   gap: 10px;
   justify-items: start;
 }
-.magicflow-loading[data-v-0325621c],
-.magicflow-empty[data-v-0325621c] {
+.magicflow-loading[data-v-e551fbbd],
+.magicflow-empty[data-v-e551fbbd] {
   min-block-size: 20rem;
 }
-.magicflow-empty[data-v-0325621c] {
+.magicflow-empty[data-v-e551fbbd] {
   display: grid;
   place-items: center;
   align-content: center;
   gap: 12px;
   text-align: center;
 }
-.magicflow-mobile-select[data-v-0325621c] {
+.magicflow-mobile-select[data-v-e551fbbd] {
   display: none;
 }
-.magicflow-mobile-toolbar[data-v-0325621c] {
+.magicflow-mobile-toolbar[data-v-e551fbbd] {
   display: none;
 }
-.magicflow-layout[data-v-0325621c] {
+.magicflow-layout[data-v-e551fbbd] {
   display: grid;
   grid-template-columns: minmax(13.5rem, 0.3fr) minmax(0, 1.7fr);
   align-items: start;
   gap: 18px;
   min-inline-size: 0;
 }
-.magicflow-task-rail[data-v-0325621c] {
+.magicflow-task-rail[data-v-e551fbbd] {
   position: sticky;
   top: 76px;
   display: flex;
@@ -5589,38 +5844,38 @@
   border: var(--app-surface-border);
   border-radius: var(--app-surface-radius);
 }
-.magicflow-status-dot[data-v-0325621c] {
+.magicflow-status-dot[data-v-e551fbbd] {
   inline-size: 8px;
   block-size: 8px;
   flex: 0 0 auto;
   border-radius: 50%;
   background: rgb(var(--v-theme-secondary));
 }
-.magicflow-status-dot--success[data-v-0325621c] { background: rgb(var(--v-theme-success));
+.magicflow-status-dot--success[data-v-e551fbbd] { background: rgb(var(--v-theme-success));
 }
-.magicflow-status-dot--primary[data-v-0325621c] { background: rgb(var(--v-theme-primary));
+.magicflow-status-dot--primary[data-v-e551fbbd] { background: rgb(var(--v-theme-primary));
 }
-.magicflow-status-dot--info[data-v-0325621c] { background: rgb(var(--v-theme-info));
+.magicflow-status-dot--info[data-v-e551fbbd] { background: rgb(var(--v-theme-info));
 }
-.magicflow-status-dot--warning[data-v-0325621c] { background: rgb(var(--v-theme-warning));
+.magicflow-status-dot--warning[data-v-e551fbbd] { background: rgb(var(--v-theme-warning));
 }
-.magicflow-status-dot--error[data-v-0325621c] { background: rgb(var(--v-theme-error));
+.magicflow-status-dot--error[data-v-e551fbbd] { background: rgb(var(--v-theme-error));
 }
-.magicflow-workspace[data-v-0325621c] {
+.magicflow-workspace[data-v-e551fbbd] {
   min-inline-size: 0;
 }
-.magicflow-task-head[data-v-0325621c] {
+.magicflow-task-head[data-v-e551fbbd] {
   min-block-size: 52px;
   gap: 12px;
   margin-block-end: 12px;
 }
-.magicflow-tabs[data-v-0325621c] {
+.magicflow-tabs[data-v-e551fbbd] {
   max-inline-size: 100%;
 }
-.magicflow-window[data-v-0325621c] {
+.magicflow-window[data-v-e551fbbd] {
   padding-block-start: 16px;
 }
-.magicflow-stat-grid[data-v-0325621c] {
+.magicflow-stat-grid[data-v-e551fbbd] {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
@@ -5630,46 +5885,46 @@
    .magicflow-settings-dialog / .magicflow-empty 为共享（父页其它弹窗/列表也用）→ 父页保留。 */
 
 /* ★ 可观测④：事件流 */
-.mf-timeline__bar[data-v-0325621c] {
+.mf-timeline__bar[data-v-e551fbbd] {
   display: flex;
   align-items: center;
   gap: 8px;
   padding-block: 4px 8px;
 }
-.mf-timeline__label[data-v-0325621c] { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.6);
+.mf-timeline__label[data-v-e551fbbd] { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.6);
 }
-.mf-timeline__select[data-v-0325621c] { max-inline-size: 12rem;
+.mf-timeline__select[data-v-e551fbbd] { max-inline-size: 12rem;
 }
-.mf-timeline__count[data-v-0325621c] { font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.5);
+.mf-timeline__count[data-v-e551fbbd] { font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.5);
 }
-.mf-timeline__row[data-v-0325621c] {
+.mf-timeline__row[data-v-e551fbbd] {
   display: flex;
   gap: 8px;
   padding: 7px 8px;
   border-inline-start: 3px solid transparent;
   border-block-end: 1px solid rgba(var(--v-theme-on-surface), 0.06);
 }
-.mf-timeline__row.is-error[data-v-0325621c] { border-inline-start-color: rgb(var(--v-theme-error));
+.mf-timeline__row.is-error[data-v-e551fbbd] { border-inline-start-color: rgb(var(--v-theme-error));
 }
-.mf-timeline__row.is-warning[data-v-0325621c] { border-inline-start-color: rgb(var(--v-theme-warning));
+.mf-timeline__row.is-warning[data-v-e551fbbd] { border-inline-start-color: rgb(var(--v-theme-warning));
 }
-.mf-timeline__row.is-info[data-v-0325621c] { border-inline-start-color: rgb(var(--v-theme-info));
+.mf-timeline__row.is-info[data-v-e551fbbd] { border-inline-start-color: rgb(var(--v-theme-info));
 }
-.mf-timeline__icon[data-v-0325621c] { margin-block-start: 2px;
+.mf-timeline__icon[data-v-e551fbbd] { margin-block-start: 2px;
 }
-.mf-timeline__row.is-error .mf-timeline__icon[data-v-0325621c] { color: rgb(var(--v-theme-error));
+.mf-timeline__row.is-error .mf-timeline__icon[data-v-e551fbbd] { color: rgb(var(--v-theme-error));
 }
-.mf-timeline__row.is-warning .mf-timeline__icon[data-v-0325621c] { color: rgb(var(--v-theme-warning));
+.mf-timeline__row.is-warning .mf-timeline__icon[data-v-e551fbbd] { color: rgb(var(--v-theme-warning));
 }
-.mf-timeline__row.is-info .mf-timeline__icon[data-v-0325621c] { color: rgb(var(--v-theme-info));
+.mf-timeline__row.is-info .mf-timeline__icon[data-v-e551fbbd] { color: rgb(var(--v-theme-info));
 }
-.mf-timeline__main[data-v-0325621c] { flex: 1 1 auto; min-inline-size: 0;
+.mf-timeline__main[data-v-e551fbbd] { flex: 1 1 auto; min-inline-size: 0;
 }
-.mf-timeline__head[data-v-0325621c] { display: flex; justify-content: space-between; gap: 8px; font-size: 13px;
+.mf-timeline__head[data-v-e551fbbd] { display: flex; justify-content: space-between; gap: 8px; font-size: 13px;
 }
-.mf-timeline__ts[data-v-0325621c] { font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.5); white-space: nowrap;
+.mf-timeline__ts[data-v-e551fbbd] { font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.5); white-space: nowrap;
 }
-.mf-timeline__meta[data-v-0325621c] {
+.mf-timeline__meta[data-v-e551fbbd] {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -5677,112 +5932,112 @@
   font-size: 12px;
   color: rgba(var(--v-theme-on-surface), 0.7);
 }
-.mf-timeline__reason[data-v-0325621c] { word-break: break-word;
+.mf-timeline__reason[data-v-e551fbbd] { word-break: break-word;
 }
-.mf-timeline__error[data-v-0325621c] { font-size: 12px; color: rgb(var(--v-theme-error)); word-break: break-word;
+.mf-timeline__error[data-v-e551fbbd] { font-size: 12px; color: rgb(var(--v-theme-error)); word-break: break-word;
 }
-.magicflow-stat[data-v-0325621c],
-.magicflow-panel[data-v-0325621c] {
+.magicflow-stat[data-v-e551fbbd],
+.magicflow-panel[data-v-e551fbbd] {
   border: var(--app-surface-border);
   border-radius: var(--app-surface-radius);
 }
-.magicflow-stat[data-v-0325621c] {
+.magicflow-stat[data-v-e551fbbd] {
   display: flex;
   flex-direction: column;
   gap: 4px;
   min-block-size: 116px;
   padding: 16px;
 }
-.magicflow-stat > span[data-v-0325621c],
-.magicflow-stat > small[data-v-0325621c] {
+.magicflow-stat > span[data-v-e551fbbd],
+.magicflow-stat > small[data-v-e551fbbd] {
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
-.magicflow-stat > strong[data-v-0325621c] {
+.magicflow-stat > strong[data-v-e551fbbd] {
   font-size: 1.25rem;
   font-weight: 600;
   line-height: 1.3;
   overflow-wrap: anywhere;
 }
-.magicflow-stat[data-v-0325621c] .v-progress-linear {
+.magicflow-stat[data-v-e551fbbd] .v-progress-linear {
   margin-block-start: auto;
 }
-.magicflow-diagnostic-grid[data-v-0325621c] {
+.magicflow-diagnostic-grid[data-v-e551fbbd] {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   margin-block-start: 12px;
 }
-.magicflow-panel[data-v-0325621c] {
+.magicflow-panel[data-v-e551fbbd] {
   min-inline-size: 0;
   padding: 16px;
 }
-.magicflow-panel__head[data-v-0325621c],
-.magicflow-diagnostic-head[data-v-0325621c] {
+.magicflow-panel__head[data-v-e551fbbd],
+.magicflow-diagnostic-head[data-v-e551fbbd] {
   align-items: flex-start;
   gap: 12px;
 }
-.magicflow-facts[data-v-0325621c] {
+.magicflow-facts[data-v-e551fbbd] {
   display: grid;
   gap: 11px;
   margin: 18px 0 0;
 }
-.magicflow-facts--two[data-v-0325621c] {
+.magicflow-facts--two[data-v-e551fbbd] {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
-.magicflow-facts > div[data-v-0325621c] {
+.magicflow-facts > div[data-v-e551fbbd] {
   display: flex;
   justify-content: space-between;
   gap: 12px;
   min-inline-size: 0;
 }
-.magicflow-facts dt[data-v-0325621c] {
+.magicflow-facts dt[data-v-e551fbbd] {
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
-.magicflow-facts dd[data-v-0325621c] {
+.magicflow-facts dd[data-v-e551fbbd] {
   margin: 0;
   text-align: end;
   overflow-wrap: anywhere;
 }
-.magicflow-torrent-filters[data-v-0325621c] {
+.magicflow-torrent-filters[data-v-e551fbbd] {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.magicflow-torrent-detail[data-v-0325621c] {
+.magicflow-torrent-detail[data-v-e551fbbd] {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
-.magicflow-hash-line[data-v-0325621c] {
+.magicflow-hash-line[data-v-e551fbbd] {
   margin-block-start: 10px;
   overflow-wrap: anywhere;
 }
-.torrent-status-cell[data-v-0325621c] {
+.torrent-status-cell[data-v-e551fbbd] {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 2px;
 }
-.magicflow-table-empty[data-v-0325621c] {
+.magicflow-table-empty[data-v-e551fbbd] {
   padding: 28px 12px;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
   text-align: center;
 }
-.magicflow-diagnostic-head[data-v-0325621c] {
+.magicflow-diagnostic-head[data-v-e551fbbd] {
   margin-block-end: 12px;
 }
-.magicflow-pipeline li > div[data-v-0325621c],
-.magicflow-events article > div[data-v-0325621c] {
+.magicflow-pipeline li > div[data-v-e551fbbd],
+.magicflow-events article > div[data-v-e551fbbd] {
   display: flex;
   flex-direction: column;
   gap: 3px;
   min-inline-size: 0;
 }
-.magicflow-pipeline li span[data-v-0325621c],
-.magicflow-events article span[data-v-0325621c] {
+.magicflow-pipeline li span[data-v-e551fbbd],
+.magicflow-events article span[data-v-e551fbbd] {
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
   font-size: 0.82rem;
   overflow-wrap: anywhere;
 }
-.magicflow-recommend-dialog__head-actions[data-v-0325621c] {
+.magicflow-recommend-dialog__head-actions[data-v-e551fbbd] {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -5790,7 +6045,7 @@
 
 /* .magicflow-recommend-dialog__summary(_strong/_i) / __note 为共享（点播弹窗等也用）→ 父页保留；
    RecommendDialog.vue 自带一份。 */
-.magicflow-recommend-dialog__summary[data-v-0325621c] {
+.magicflow-recommend-dialog__summary[data-v-e551fbbd] {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -5798,21 +6053,21 @@
   font-size: 0.85rem;
   color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
 }
-.magicflow-recommend-dialog__summary strong[data-v-0325621c] {
+.magicflow-recommend-dialog__summary strong[data-v-e551fbbd] {
   font-size: 1.05rem;
   color: rgb(var(--v-theme-primary));
 }
-.magicflow-recommend-dialog__summary i[data-v-0325621c] {
+.magicflow-recommend-dialog__summary i[data-v-e551fbbd] {
   font-style: normal;
   opacity: var(--mf-op-dim);
 }
-.magicflow-recommend-dialog__note[data-v-0325621c] {
+.magicflow-recommend-dialog__note[data-v-e551fbbd] {
   margin-block: 2px 6px;
   font-size: 0.78rem;
   color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
   opacity: 0.85;
 }
-.magicflow-events[data-v-0325621c] {
+.magicflow-events[data-v-e551fbbd] {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -5823,7 +6078,7 @@
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
-.magicflow-events article[data-v-0325621c] {
+.magicflow-events article[data-v-e551fbbd] {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: start;
@@ -5831,23 +6086,23 @@
 }
 @media (min-width: 960px) {
 /* 详情弹窗由宿主提供固定高度，内部只让右侧工作区承担页面滚动。 */
-.magicflow-page--compact[data-v-0325621c] {
+.magicflow-page--compact[data-v-e551fbbd] {
     block-size: calc(100dvh - 48px);
     min-block-size: 0;
     overflow: hidden;
-}.magicflow-page--compact .magicflow-layout[data-v-0325621c] {
+}.magicflow-page--compact .magicflow-layout[data-v-e551fbbd] {
     flex: 1 1 auto;
     grid-template-rows: minmax(0, 1fr);
     align-items: stretch;
     min-block-size: 0;
     overflow: hidden;
-}.magicflow-page--compact .magicflow-task-rail[data-v-0325621c] {
+}.magicflow-page--compact .magicflow-task-rail[data-v-e551fbbd] {
     position: static;
     block-size: 100%;
     min-block-size: 0;
     max-block-size: none;
     overflow: hidden;
-}.magicflow-page--compact .magicflow-workspace[data-v-0325621c] {
+}.magicflow-page--compact .magicflow-workspace[data-v-e551fbbd] {
     block-size: 100%;
     min-block-size: 0;
     padding-inline-end: 4px;
@@ -5857,81 +6112,81 @@
 }
 }
 @media (max-width: 1199px) {
-.magicflow-stat-grid[data-v-0325621c] {
+.magicflow-stat-grid[data-v-e551fbbd] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 }
 @media (max-width: 959px) {
-.magicflow-page[data-v-0325621c] {
+.magicflow-page[data-v-e551fbbd] {
     padding: 12px;
-}.magicflow-page--compact[data-v-0325621c] {
+}.magicflow-page--compact[data-v-e551fbbd] {
     padding-block-start: 0;
 }
-.magicflow-task-head[data-v-0325621c] {
+.magicflow-task-head[data-v-e551fbbd] {
     align-items: flex-start;
-}.magicflow-task-rail[data-v-0325621c] {
+}.magicflow-task-rail[data-v-e551fbbd] {
     display: none;
-}.magicflow-mobile-toolbar[data-v-0325621c] {
+}.magicflow-mobile-toolbar[data-v-e551fbbd] {
     display: flex;
     align-items: center;
     gap: 8px;
     margin-block-end: 4px;
-}.magicflow-mobile-toolbar .magicflow-mobile-select[data-v-0325621c] {
+}.magicflow-mobile-toolbar .magicflow-mobile-select[data-v-e551fbbd] {
     display: block;
     flex: 1 1 auto;
     min-inline-size: 0;
-}.magicflow-mobile-current[data-v-0325621c] {
+}.magicflow-mobile-current[data-v-e551fbbd] {
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
     justify-content: center;
     min-inline-size: 0;
     padding-inline: 2px;
-}.magicflow-mobile-current span[data-v-0325621c] {
+}.magicflow-mobile-current span[data-v-e551fbbd] {
     font-size: 11px;
     color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
-}.magicflow-mobile-current strong[data-v-0325621c] {
+}.magicflow-mobile-current strong[data-v-e551fbbd] {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-}.magicflow-mobile-add[data-v-0325621c] {
+}.magicflow-mobile-add[data-v-e551fbbd] {
     flex: 0 0 auto;
-}.magicflow-layout[data-v-0325621c] {
+}.magicflow-layout[data-v-e551fbbd] {
     grid-template-columns: 1fr;
-}.magicflow-diagnostic-grid[data-v-0325621c] {
+}.magicflow-diagnostic-grid[data-v-e551fbbd] {
     grid-template-columns: 1fr;
 }
 }
 @media (max-width: 699px) {
-.magicflow-settings-tab[data-v-0325621c] {
+.magicflow-settings-tab[data-v-e551fbbd] {
     padding-inline: 6px;
     min-width: auto !important;
     font-size: 12px;
     text-transform: none;
-}.magicflow-settings-dialog[data-v-0325621c] {
+}.magicflow-settings-dialog[data-v-e551fbbd] {
     block-size: min(90vh, 38rem);
     max-block-size: 94vh;
 }
-.magicflow-task-head[data-v-0325621c] {
+.magicflow-task-head[data-v-e551fbbd] {
     flex-direction: column;
     gap: 0;
-}.magicflow-task-head__identity[data-v-0325621c] {
+}.magicflow-task-head__identity[data-v-e551fbbd] {
     align-items: flex-start;
     inline-size: 100%;
 }/* 预览图：任务名左侧、状态徽章推到卡片最右 */
-.magicflow-task-head__body[data-v-0325621c] {
+.magicflow-task-head__body[data-v-e551fbbd] {
     flex: 1 1 auto;
     min-inline-size: 0;
-}.magicflow-task-head__title[data-v-0325621c] {
+}.magicflow-task-head__title[data-v-e551fbbd] {
     inline-size: 100%;
     justify-content: space-between;
     align-items: center;
-}.magicflow-diagnostic-head[data-v-0325621c],
-  .magicflow-panel__head[data-v-0325621c] {
+}.magicflow-diagnostic-head[data-v-e551fbbd],
+  .magicflow-panel__head[data-v-e551fbbd] {
     flex-direction: column;
     align-items: flex-start;
 }
-.magicflow-task-head__actions[data-v-0325621c] {
+.magicflow-task-head__actions[data-v-e551fbbd] {
     inline-size: 100%;
     justify-content: flex-end;
     gap: 0;
@@ -5939,40 +6194,40 @@
     padding-block-start: 8px;
     border-block-start: 1px solid rgba(var(--v-border-color), 0.1);
 }
-.magicflow-stat-grid[data-v-0325621c] {
+.magicflow-stat-grid[data-v-e551fbbd] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-}.magicflow-stat[data-v-0325621c] {
+}.magicflow-stat[data-v-e551fbbd] {
     min-block-size: 104px;
     padding: 13px;
-}.magicflow-stat > strong[data-v-0325621c] {
+}.magicflow-stat > strong[data-v-e551fbbd] {
     font-size: 1.05rem;
-}.magicflow-panel[data-v-0325621c] {
+}.magicflow-panel[data-v-e551fbbd] {
     padding: 14px;
-}.magicflow-panel__head[data-v-0325621c] {
+}.magicflow-panel__head[data-v-e551fbbd] {
     flex-wrap: wrap;
-}.magicflow-facts--two[data-v-0325621c] {
+}.magicflow-facts--two[data-v-e551fbbd] {
     grid-template-columns: 1fr;
-}.magicflow-torrent-filters[data-v-0325621c] {
+}.magicflow-torrent-filters[data-v-e551fbbd] {
     inline-size: 100%;
     flex-wrap: wrap;
 }
 }
 @media (max-width: 419px) {
-.magicflow-stat-grid[data-v-0325621c] {
+.magicflow-stat-grid[data-v-e551fbbd] {
     grid-template-columns: 1fr;
 }
-.magicflow-task-head__title[data-v-0325621c] {
+.magicflow-task-head__title[data-v-e551fbbd] {
     align-items: center;
     flex-wrap: wrap;
 }
 }
 
 /* ===== 深色磨砂主题：卡片 / 面板 / 弹窗 ===== */
-.magicflow-page .magicflow-panel[data-v-0325621c],
-.magicflow-page .magicflow-stat[data-v-0325621c],
-.magicflow-page .magicflow-task-rail[data-v-0325621c],
-.magicflow-page .magicflow-task-head[data-v-0325621c],
-.magicflow-page .magicflow-torrents[data-v-0325621c] {
+.magicflow-page .magicflow-panel[data-v-e551fbbd],
+.magicflow-page .magicflow-stat[data-v-e551fbbd],
+.magicflow-page .magicflow-task-rail[data-v-e551fbbd],
+.magicflow-page .magicflow-task-head[data-v-e551fbbd],
+.magicflow-page .magicflow-torrents[data-v-e551fbbd] {
   background: var(--magicflow-panel-bg) !important;
   border: 1px solid var(--magicflow-panel-brd);
   border-radius: 16px;
@@ -5982,7 +6237,7 @@
 }
 
 /* 弹窗（会 teleport 到 body，按专属类名限定，不污染宿主） */
-.magicflow-dialog[data-v-0325621c] {
+.magicflow-dialog[data-v-e551fbbd] {
   background: rgb(var(--v-theme-surface)) !important;
   border: 1px solid var(--magicflow-panel-brd);
   border-radius: 18px;
@@ -5993,7 +6248,7 @@
 }
 
 /* 品牌区版本号徽标（版本必须常驻显示） */
-.magicflow-page .magicflow-page__version[data-v-0325621c] {
+.magicflow-page .magicflow-page__version[data-v-e551fbbd] {
   display: inline-block;
   margin-inline-start: 8px;
   padding: 1px 7px;
@@ -6008,7 +6263,7 @@
 }
 
 /* 顶部「当前任务」切换下拉（方案 B） */
-.magicflow-page .magicflow-task-switch[data-v-0325621c] {
+.magicflow-page .magicflow-task-switch[data-v-e551fbbd] {
   display: inline-flex;
   align-items: center;
   gap: 9px;
@@ -6022,14 +6277,14 @@
   cursor: pointer;
   box-shadow: 0 6px 18px rgba(var(--v-theme-primary), 0.16);
 }
-.magicflow-page .magicflow-task-switch[data-v-0325621c]:hover {
+.magicflow-page .magicflow-task-switch[data-v-e551fbbd]:hover {
   border-color: rgba(var(--v-theme-primary), 0.42);
 }
-.magicflow-page .magicflow-task-switch[data-v-0325621c]:focus-visible {
+.magicflow-page .magicflow-task-switch[data-v-e551fbbd]:focus-visible {
   outline: 2px solid rgb(var(--v-theme-primary));
   outline-offset: 2px;
 }
-.magicflow-page .magicflow-task-switch__icon[data-v-0325621c] {
+.magicflow-page .magicflow-task-switch__icon[data-v-e551fbbd] {
   inline-size: 26px;
   block-size: 26px;
   flex: 0 0 auto;
@@ -6040,13 +6295,13 @@
   color: rgb(var(--v-theme-on-primary));
   background: linear-gradient(145deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary)));
 }
-.magicflow-page .magicflow-task-switch__icon img[data-v-0325621c] {
+.magicflow-page .magicflow-task-switch__icon img[data-v-e551fbbd] {
   inline-size: 62%;
   block-size: 62%;
   object-fit: contain;
   border-radius: 5px;
 }
-.magicflow-page .magicflow-task-switch__body[data-v-0325621c] {
+.magicflow-page .magicflow-task-switch__body[data-v-e551fbbd] {
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -6054,59 +6309,59 @@
   line-height: 1.15;
   text-align: start;
 }
-.magicflow-page .magicflow-task-switch__k[data-v-0325621c] {
+.magicflow-page .magicflow-task-switch__k[data-v-e551fbbd] {
   font-size: 10px;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
-.magicflow-page .magicflow-task-switch__v[data-v-0325621c] {
+.magicflow-page .magicflow-task-switch__v[data-v-e551fbbd] {
   font-size: 13px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.magicflow-page .magicflow-task-switch__chev[data-v-0325621c] {
+.magicflow-page .magicflow-task-switch__chev[data-v-e551fbbd] {
   flex: 0 0 auto;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
-.magicflow-page .magicflow-task-switch__menu[data-v-0325621c] {
+.magicflow-page .magicflow-task-switch__menu[data-v-e551fbbd] {
   min-inline-size: 15rem;
 }
 
 /* 任务切换菜单项：站点 + 关键数字 (两行子文字) */
-.magicflow-page .magicflow-task-switch__menu .v-list-item__subtitle[data-v-0325621c] {
+.magicflow-page .magicflow-task-switch__menu .v-list-item__subtitle[data-v-e551fbbd] {
   font-size: 11px !important;
   opacity: 0.85;
   letter-spacing: 0.01em;
 }
 @media (max-width: 959px) {
   /* 移动工具栏沿用「方案 B」胶囊：站点图标 + 任务名·站点 + 状态点 + ⌄ */
-.magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch[data-v-0325621c] {
+.magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch[data-v-e551fbbd] {
     display: inline-flex;
     flex: 1 1 auto;
     min-inline-size: 0;
     max-inline-size: none;
-}.magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch__k[data-v-0325621c] {
+}.magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch__k[data-v-e551fbbd] {
     display: none;
-}.magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch__v[data-v-0325621c] {
+}.magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch__v[data-v-e551fbbd] {
     font-size: 14px;
 }
 }
 
 /* 任务头「删除」按钮：与其余图标按钮拉开一点距离，降低误触 */
-.magicflow-page .magicflow-task-head__actions .v-btn[color='error'][data-v-0325621c] {
+.magicflow-page .magicflow-task-head__actions .v-btn[color='error'][data-v-e551fbbd] {
   margin-inline-start: 2px;
 }
-.magicflow-page .magicflow-task-head h2[data-v-0325621c] {
+.magicflow-page .magicflow-task-head h2[data-v-e551fbbd] {
   font-size: 15px;
   font-weight: 650;
 }
-.magicflow-page .magicflow-task-head p[data-v-0325621c] {
+.magicflow-page .magicflow-task-head p[data-v-e551fbbd] {
   font-size: 11px;
 }
 
 /* 分段式标签卡（预览图样式） */
-.magicflow-page .magicflow-tabs[data-v-0325621c] {
+.magicflow-page .magicflow-tabs[data-v-e551fbbd] {
   display: flex;
   gap: 4px;
   padding: 6px;
@@ -6117,7 +6372,7 @@
   -webkit-backdrop-filter: blur(14px) saturate(120%);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(var(--v-theme-on-surface), 0.04);
 }
-.magicflow-page .magicflow-tab[data-v-0325621c] {
+.magicflow-page .magicflow-tab[data-v-e551fbbd] {
   flex: 1 1 0;
   min-inline-size: 0;
   padding: 9px 4px;
@@ -6132,70 +6387,70 @@
   cursor: pointer;
   transition: background-color 0.15s ease, color 0.15s ease;
 }
-.magicflow-page .magicflow-tab.is-active[data-v-0325621c] {
+.magicflow-page .magicflow-tab.is-active[data-v-e551fbbd] {
   color: rgb(var(--v-theme-primary));
   background: rgba(var(--v-theme-primary), 0.18);
   font-weight: 600;
   box-shadow: inset 0 0 0 1px rgba(var(--v-theme-primary), 0.4);
 }
 @media (max-width: 1199px) {
-.magicflow-page .magicflow-stat-grid[data-v-0325621c] {
+.magicflow-page .magicflow-stat-grid[data-v-e551fbbd] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 }
-.magicflow-page .magicflow-stat[data-v-0325621c] {
+.magicflow-page .magicflow-stat[data-v-e551fbbd] {
   gap: 6px;
   min-block-size: 84px;
   padding: 14px 16px;
 }
-.magicflow-page .magicflow-stat > strong[data-v-0325621c] {
+.magicflow-page .magicflow-stat > strong[data-v-e551fbbd] {
   font-size: 20px;
   font-weight: 680;
   line-height: 1.2;
   letter-spacing: 0.2px;
 }
-.magicflow-page .magicflow-stat > span[data-v-0325621c],
-.magicflow-page .magicflow-stat > small[data-v-0325621c] {
+.magicflow-page .magicflow-stat > span[data-v-e551fbbd],
+.magicflow-page .magicflow-stat > small[data-v-e551fbbd] {
   font-size: 11px;
 }
 
 /* 面板标题排版（预览图：14px/600 + 11px 说明） */
-.magicflow-page .magicflow-panel[data-v-0325621c] {
+.magicflow-page .magicflow-panel[data-v-e551fbbd] {
   padding: 18px 16px;
 }
-.magicflow-page .magicflow-panel__head .text-subtitle-1[data-v-0325621c] {
+.magicflow-page .magicflow-panel__head .text-subtitle-1[data-v-e551fbbd] {
   font-size: 14px;
   font-weight: 600;
 }
-.magicflow-page .magicflow-panel__head .text-body-2[data-v-0325621c] {
+.magicflow-page .magicflow-panel__head .text-body-2[data-v-e551fbbd] {
   font-size: 11px;
 }
 
 /* 操作记录（预览图：图标瓦片 + 顶部细分隔线） */
-.magicflow-page .magicflow-events article[data-v-0325621c] {
+.magicflow-page .magicflow-events article[data-v-e551fbbd] {
   align-items: start;
   gap: 11px;
   padding-block: 11px;
   border-top: 1px solid rgba(var(--v-border-color), 0.1);
 }
-.magicflow-page .magicflow-events article[data-v-0325621c]:first-child {
+.magicflow-page .magicflow-events article[data-v-e551fbbd]:first-child {
   padding-block-start: 0;
   border-top: 0;
 }
-.magicflow-page .magicflow-events article > .v-icon[data-v-0325621c]:first-child {
+.magicflow-page .magicflow-events article > .v-icon[data-v-e551fbbd]:first-child {
   inline-size: 30px;
   block-size: 30px;
   flex: 0 0 auto;
   border-radius: 10px;
   background: rgba(var(--v-theme-primary), 0.14);
 }
-.magicflow-page .magicflow-events article strong[data-v-0325621c] {
+.magicflow-page .magicflow-events article strong[data-v-e551fbbd] {
   font-size: 12.5px;
   font-weight: 600;
 }
 
 /* 操作记录 · 明细展开（手机优先：单行省略，不撑破卡片） */
-.magicflow-page .magicflow-events__toggle[data-v-0325621c] {
+.magicflow-page .magicflow-events__toggle[data-v-e551fbbd] {
   align-self: flex-start;
   display: inline-flex;
   align-items: center;
@@ -6209,7 +6464,7 @@
   font-weight: 600;
   cursor: pointer;
 }
-.magicflow-page .magicflow-events__detail[data-v-0325621c] {
+.magicflow-page .magicflow-events__detail[data-v-e551fbbd] {
   list-style: none;
   margin: 6px 0 0;
   padding: 0;
@@ -6217,7 +6472,7 @@
   flex-direction: column;
   min-inline-size: 0;
 }
-.magicflow-page .magicflow-events__detail li[data-v-0325621c] {
+.magicflow-page .magicflow-events__detail li[data-v-e551fbbd] {
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -6225,16 +6480,16 @@
   padding-block: 5px;
   border-top: 1px dashed rgba(var(--v-border-color), 0.14);
 }
-.magicflow-page .magicflow-events__detail li[data-v-0325621c]:first-child {
+.magicflow-page .magicflow-events__detail li[data-v-e551fbbd]:first-child {
   border-top: 0;
 }
-.magicflow-page .magicflow-events__detail-line[data-v-0325621c] {
+.magicflow-page .magicflow-events__detail-line[data-v-e551fbbd] {
   display: flex;
   align-items: baseline;
   gap: 6px;
   min-inline-size: 0;
 }
-.magicflow-page .magicflow-events__detail-src[data-v-0325621c] {
+.magicflow-page .magicflow-events__detail-src[data-v-e551fbbd] {
   flex: 0 0 auto;
   font-style: normal;
   font-size: 0.68rem;
@@ -6244,7 +6499,7 @@
   color: rgb(var(--v-theme-primary));
   background: rgba(var(--v-theme-primary), 0.16);
 }
-.magicflow-page .magicflow-events__detail-title[data-v-0325621c] {
+.magicflow-page .magicflow-events__detail-title[data-v-e551fbbd] {
   min-inline-size: 0;
   flex: 1 1 auto;
   font-size: 0.78rem;
@@ -6253,15 +6508,15 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.magicflow-page .magicflow-events__detail-sub[data-v-0325621c] {
+.magicflow-page .magicflow-events__detail-sub[data-v-e551fbbd] {
   font-size: 0.72rem;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
   overflow-wrap: anywhere;
 }
 
 /* 明细里的短 hash（等宽、弱化） */
-.magicflow-page .magicflow-events__detail-hash[data-v-0325621c],
-.magicflow-dialog .magicflow-events__detail-hash[data-v-0325621c] {
+.magicflow-page .magicflow-events__detail-hash[data-v-e551fbbd],
+.magicflow-dialog .magicflow-events__detail-hash[data-v-e551fbbd] {
   flex: 0 0 auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.66rem;
@@ -6269,52 +6524,52 @@
 }
 
 /* ★ 操作记录类型筛选（Master 2026-10-01 18:10）：一行下拉，右对齐 */
-.magicflow-page .magicflow-ops-filter[data-v-0325621c],
-.magicflow-dialog .magicflow-ops-filter[data-v-0325621c] {
+.magicflow-page .magicflow-ops-filter[data-v-e551fbbd],
+.magicflow-dialog .magicflow-ops-filter[data-v-e551fbbd] {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
   margin: 0 0 6px;
 }
-.magicflow-page .magicflow-ops-filter__label[data-v-0325621c],
-.magicflow-dialog .magicflow-ops-filter__label[data-v-0325621c] {
+.magicflow-page .magicflow-ops-filter__label[data-v-e551fbbd],
+.magicflow-dialog .magicflow-ops-filter__label[data-v-e551fbbd] {
   font-size: 0.76rem;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
-.magicflow-page .magicflow-ops-filter__select[data-v-0325621c],
-.magicflow-dialog .magicflow-ops-filter__select[data-v-0325621c] {
+.magicflow-page .magicflow-ops-filter__select[data-v-e551fbbd],
+.magicflow-dialog .magicflow-ops-filter__select[data-v-e551fbbd] {
   inline-size: 10rem;
   flex: 0 0 auto;
 }
-.magicflow-page .magicflow-ops-filter__select .v-field[data-v-0325621c],
-.magicflow-dialog .magicflow-ops-filter__select .v-field[data-v-0325621c] {
+.magicflow-page .magicflow-ops-filter__select .v-field[data-v-e551fbbd],
+.magicflow-dialog .magicflow-ops-filter__select .v-field[data-v-e551fbbd] {
   font-size: 0.78rem;
 }
-.magicflow-page .magicflow-ops-filter__select .v-field__input[data-v-0325621c],
-.magicflow-dialog .magicflow-ops-filter__select .v-field__input[data-v-0325621c] {
+.magicflow-page .magicflow-ops-filter__select .v-field__input[data-v-e551fbbd],
+.magicflow-dialog .magicflow-ops-filter__select .v-field__input[data-v-e551fbbd] {
   min-block-size: 32px;
   padding-block: 0;
   font-size: 0.78rem;
 }
-.magicflow-dialog .magicflow-ops-dialog__tabs[data-v-0325621c] {
+.magicflow-dialog .magicflow-ops-dialog__tabs[data-v-e551fbbd] {
   align-items: center;
   gap: 8px;
 }
 
 /* 任务头卡片内边距（对齐预览图 .thead） */
-.magicflow-page .magicflow-task-head[data-v-0325621c] {
+.magicflow-page .magicflow-task-head[data-v-e551fbbd] {
   padding: 14px 16px;
 }
 
 /* 移动端任务选择器：紧凑成圆角下拉，避免大块空白 */
-.magicflow-page .magicflow-mobile-select[data-v-0325621c] {
+.magicflow-page .magicflow-mobile-select[data-v-e551fbbd] {
   padding-block: 0;
 }
-.magicflow-page .magicflow-mobile-select .app-responsive-input__meta[data-v-0325621c] {
+.magicflow-page .magicflow-mobile-select .app-responsive-input__meta[data-v-e551fbbd] {
   margin-block-end: 4px;
 }
-.magicflow-page .magicflow-mobile-select .v-field[data-v-0325621c] {
+.magicflow-page .magicflow-mobile-select .v-field[data-v-e551fbbd] {
   min-block-size: 42px;
   padding-inline: 12px;
   border: 1px solid var(--magicflow-panel-brd);
@@ -6322,29 +6577,29 @@
   background: rgba(var(--v-theme-on-surface), 0.03);
 }
 @media (max-width: 699px) {
-.magicflow-page[data-v-0325621c] {
+.magicflow-page[data-v-e551fbbd] {
     padding-block-end: 76px;
 }
 }
 
 /* ── ★ 手机端首页（任务列表）────────────────────────────────────────── */
-.magicflow-page .magicflow-mobile-home[data-v-0325621c] { display: none;
+.magicflow-page .magicflow-mobile-home[data-v-e551fbbd] { display: none;
 }
-.magicflow-page .magicflow-mobile-back[data-v-0325621c] { display: none;
+.magicflow-page .magicflow-mobile-back[data-v-e551fbbd] { display: none;
 }
 @media (max-width: 959px) {
 /* 列表页：显示首页，隐藏工作区与旧移动工具栏 / 桌面计数胶囊 */
-.magicflow-page--m-list .magicflow-mobile-home[data-v-0325621c] {
+.magicflow-page--m-list .magicflow-mobile-home[data-v-e551fbbd] {
     display: flex; flex-direction: column; padding: 2px 0 6px;
 }
-.magicflow-page--m-list .magicflow-layout[data-v-0325621c],
-  .magicflow-page--m-list .magicflow-mobile-toolbar[data-v-0325621c] { display: none;
+.magicflow-page--m-list .magicflow-layout[data-v-e551fbbd],
+  .magicflow-page--m-list .magicflow-mobile-toolbar[data-v-e551fbbd] { display: none;
 }
   /* 详情页：隐藏首页 */
-.magicflow-page--m-detail .magicflow-mobile-home[data-v-0325621c] { display: none;
+.magicflow-page--m-detail .magicflow-mobile-home[data-v-e551fbbd] { display: none;
 }
   /* 详情页显示返回列表按钮 */
-.magicflow-page .magicflow-mobile-back[data-v-0325621c] { display: inline-flex;
+.magicflow-page .magicflow-mobile-back[data-v-e551fbbd] { display: inline-flex;
 }
 }
 
@@ -6352,73 +6607,73 @@
 /* .magicflow-mobile-detail 为**外层容器**（显隐由父页控制），留在本页；
    内层 .md-*（md-verdict / md-dot / md-cards / md-strategy / md-entries / md-entry…）
    全部随内层内容迁入 components/MobileTaskDetail.vue（P4 拆分）。 */
-.magicflow-page .magicflow-mobile-detail[data-v-0325621c] { display: none;
+.magicflow-page .magicflow-mobile-detail[data-v-e551fbbd] { display: none;
 }
 @media (max-width: 959px) {
-.magicflow-page--m-detail .magicflow-mobile-detail[data-v-0325621c] { display: block;
+.magicflow-page--m-detail .magicflow-mobile-detail[data-v-e551fbbd] { display: block;
 }/* 手机端：取消平级四 tab，改为紧凑块 + 次级入口 */
-.magicflow-page .magicflow-tabs[data-v-0325621c] { display: none;
-}.magicflow-page .magicflow-window[data-v-0325621c] { padding-block-start: 12px;
+.magicflow-page .magicflow-tabs[data-v-e551fbbd] { display: none;
+}.magicflow-page .magicflow-window[data-v-e551fbbd] { padding-block-start: 12px;
 }
 }
 
 /* ── ★ 操作记录独立页 ─────────────────────────────── */
-.magicflow-ops-dialog[data-v-0325621c] { display: flex; flex-direction: column;
+.magicflow-ops-dialog[data-v-e551fbbd] { display: flex; flex-direction: column;
 }
-.magicflow-ops-dialog__spacer[data-v-0325621c] { flex: 1 1 auto;
+.magicflow-ops-dialog__spacer[data-v-e551fbbd] { flex: 1 1 auto;
 }
-.magicflow-ops-dialog__sub[data-v-0325621c] { padding: 6px 18px 4px; font-size: 12px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+.magicflow-ops-dialog__sub[data-v-e551fbbd] { padding: 6px 18px 4px; font-size: 12px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
 }
-.magicflow-ops-dialog__tabs[data-v-0325621c] { display: flex; gap: 4px; padding: 0 14px 4px;
+.magicflow-ops-dialog__tabs[data-v-e551fbbd] { display: flex; gap: 4px; padding: 0 14px 4px;
 }
 /* .magicflow-ondemand-* / .magicflow-od-*（专属选择器）随弹窗迁入 components/dialogs/OndemandDialog.vue。 */
 /* ★ §4.1 辅种流水单表 */
-.magicflow-reseed[data-v-0325621c] { display: flex; flex-direction: column; font-size: 12px;
+.magicflow-reseed[data-v-e551fbbd] { display: flex; flex-direction: column; font-size: 12px;
 }
-.magicflow-reseed__head[data-v-0325621c], .magicflow-reseed__row[data-v-0325621c] { display: grid; grid-template-columns: 8.5em minmax(0, 0.8fr) 5.2em minmax(0, 2fr) 4.2em 4.2em; gap: 8px; align-items: center; padding: 5px 2px;
+.magicflow-reseed__head[data-v-e551fbbd], .magicflow-reseed__row[data-v-e551fbbd] { display: grid; grid-template-columns: 8.5em minmax(0, 0.8fr) 5.2em minmax(0, 2fr) 4.2em 4.2em; gap: 8px; align-items: center; padding: 5px 2px;
 }
-.magicflow-reseed__head[data-v-0325621c] { font-weight: 600; opacity: var(--mf-op-dim); border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.12); position: sticky; top: 0; background: rgb(var(--v-theme-surface)); z-index: 1;
+.magicflow-reseed__head[data-v-e551fbbd] { font-weight: 600; opacity: var(--mf-op-dim); border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.12); position: sticky; top: 0; background: rgb(var(--v-theme-surface)); z-index: 1;
 }
-.magicflow-reseed__row[data-v-0325621c] { border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+.magicflow-reseed__row[data-v-e551fbbd] { border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
 }
-.magicflow-reseed__row > span[data-v-0325621c] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.magicflow-reseed__row > span[data-v-e551fbbd] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.magicflow-reseed .is-time[data-v-0325621c] { font-variant-numeric: tabular-nums; opacity: var(--mf-op-soft);
+.magicflow-reseed .is-time[data-v-e551fbbd] { font-variant-numeric: tabular-nums; opacity: var(--mf-op-soft);
 }
-.magicflow-reseed .is-num[data-v-0325621c] { text-align: right; font-variant-numeric: tabular-nums;
+.magicflow-reseed .is-num[data-v-e551fbbd] { text-align: right; font-variant-numeric: tabular-nums;
 }
-.magicflow-reseed .is-stage[data-v-0325621c] { opacity: 0.8;
+.magicflow-reseed .is-stage[data-v-e551fbbd] { opacity: 0.8;
 }
 @media (max-width: 640px) {
-.magicflow-reseed[data-v-0325621c] { font-size: 11px;
-}.magicflow-reseed__head[data-v-0325621c], .magicflow-reseed__row[data-v-0325621c] { grid-template-columns: 5.6em minmax(0, 0.9fr) 4.4em minmax(0, 1.7fr) 3.4em; gap: 6px;
-}.magicflow-reseed__head > span[data-v-0325621c]:nth-child(5),
-  .magicflow-reseed__row > span[data-v-0325621c]:nth-child(5) { display: none;
+.magicflow-reseed[data-v-e551fbbd] { font-size: 11px;
+}.magicflow-reseed__head[data-v-e551fbbd], .magicflow-reseed__row[data-v-e551fbbd] { grid-template-columns: 5.6em minmax(0, 0.9fr) 4.4em minmax(0, 1.7fr) 3.4em; gap: 6px;
+}.magicflow-reseed__head > span[data-v-e551fbbd]:nth-child(5),
+  .magicflow-reseed__row > span[data-v-e551fbbd]:nth-child(5) { display: none;
 }
 }
-.magicflow-ops-dialog__body[data-v-0325621c] { padding: 6px 18px 20px; overflow: auto; flex: 1 1 auto; min-height: 0;
+.magicflow-ops-dialog__body[data-v-e551fbbd] { padding: 6px 18px 20px; overflow: auto; flex: 1 1 auto; min-height: 0;
 }
 
 /* 操作记录 / 站点容量 弹窗：让列表撑满卡片可滚区，不再被 .magicflow-events 的 52dvh 上限截断，下方留一大片空白 */
-.magicflow-ops-dialog .magicflow-events[data-v-0325621c] { max-block-size: none; margin-block-start: 0; padding-inline-end: 0; overflow: visible;
+.magicflow-ops-dialog .magicflow-events[data-v-e551fbbd] { max-block-size: none; margin-block-start: 0; padding-inline-end: 0; overflow: visible;
 }
 
 /* .magicflow-ceiling-*（专属选择器）随弹窗迁入 components/dialogs/CeilingDialog.vue；
    .magicflow-ceiling-empty 为共享（站点报表/H&R 账单也用）→ 父页保留。 */
-.magicflow-ceiling-empty[data-v-0325621c] { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); text-align: center; padding: 20px 0;
+.magicflow-ceiling-empty[data-v-e551fbbd] { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); text-align: center; padding: 20px 0;
 }
 @media (max-width: 959px) {
-.magicflow-ops-dialog__body[data-v-0325621c] { padding: 4px 14px 18px;
+.magicflow-ops-dialog__body[data-v-e551fbbd] { padding: 4px 14px 18px;
 }
 }
 @media (max-width: 959px) {
-.magicflow-dialog .magicflow-stat-grid[data-v-0325621c] { grid-template-columns: repeat(2, minmax(0, 1fr));
-}.magicflow-dialog .magicflow-stat-grid--single[data-v-0325621c] { grid-template-columns: minmax(0, 1fr);
-}.magicflow-dialog .magicflow-config-grid[data-v-0325621c] { grid-template-columns: minmax(0, 1fr);
-}.magicflow-dialog .magicflow-facts--two[data-v-0325621c] { grid-template-columns: minmax(0, 1fr);
-}.magicflow-dialog .magicflow-run-summary[data-v-0325621c] { grid-template-columns: minmax(0, 1fr);
-}.magicflow-settings-dialog .magicflow-settings-grid[data-v-0325621c] { grid-template-columns: minmax(0, 1fr);
-}.magicflow-settings-dialog .magicflow-settings-switches[data-v-0325621c] { grid-template-columns: minmax(0, 1fr);
+.magicflow-dialog .magicflow-stat-grid[data-v-e551fbbd] { grid-template-columns: repeat(2, minmax(0, 1fr));
+}.magicflow-dialog .magicflow-stat-grid--single[data-v-e551fbbd] { grid-template-columns: minmax(0, 1fr);
+}.magicflow-dialog .magicflow-config-grid[data-v-e551fbbd] { grid-template-columns: minmax(0, 1fr);
+}.magicflow-dialog .magicflow-facts--two[data-v-e551fbbd] { grid-template-columns: minmax(0, 1fr);
+}.magicflow-dialog .magicflow-run-summary[data-v-e551fbbd] { grid-template-columns: minmax(0, 1fr);
+}.magicflow-settings-dialog .magicflow-settings-grid[data-v-e551fbbd] { grid-template-columns: minmax(0, 1fr);
+}.magicflow-settings-dialog .magicflow-settings-switches[data-v-e551fbbd] { grid-template-columns: minmax(0, 1fr);
 }
 }
 

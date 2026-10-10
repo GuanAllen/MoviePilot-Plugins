@@ -1650,12 +1650,13 @@ class DownloaderAdapter:
         delete_file: bool = False,
         reason: str = "",
         source: str = "",
+        allow_library_asset: bool = False,
     ) -> Tuple[int, Optional[str]]:
         """
         删除种子。
 
         ★ 这是插件内**唯一**的删种物理入口（Master 2026-10-05「删除令出一门」）。
-        删除前先过 ``self.gate``（硬保护：欠 H&R / 跨站来源份 / 已认领 / 手动保留）——
+        删除前先过 ``self.gate``（硬保护：欠 H&R / 跨站来源份 / 已认领 / 手动保留 / 库内资产）——
         受保护的一律拒删；删完（含失败 / 拦截）写 ``self.deletion_log`` 统一台账。
 
         Args:
@@ -1663,6 +1664,9 @@ class DownloaderAdapter:
             delete_file: 是否删除文件
             reason: 删除原因（进统一台账，便于排障）
             source: 调用来源（模块.函数；留空则由台账自动从调用栈推断）
+            allow_library_asset: ★ 15.8.15 仅「手动删除库内资产」入口传 True ——
+                改走 ``gate_manual``（只跳过第 5 类「库内资产」硬拦，其余 4 类与豁免不变）。
+                默认 False = 严格闸门，既有调用方行为零变化。
 
         Returns:
             (成功删除数量, 错误信息)
@@ -1680,7 +1684,20 @@ class DownloaderAdapter:
         #   现在两者都 → **全部阻断**（不删、返回 0、台账标注 blocked_by=gate_error）。
         #   set_gate_fail_closed(False) 可回退旧行为（放行 / 仅记日志）。
         _blocked: List[str] = []
-        _gate = getattr(self, "gate", None) or getattr(type(self), "_global_gate", None)
+        #   ★ 15.8.15（Master「增加魔流库内资产手动删除的入口」）：``allow_library_asset=True``
+        #      → 改取「手动删除库内资产」专用闸门 ``gate_manual``（``_delete_gate_manual``：
+        #      只跳过第 5 类「库内资产」，其余 4 类硬拦 + 两条豁免逐字相同）。
+        #      **默认 False ⇒ 全部既有调用方行为零变化**；专用闸门取不到 → 回退严格闸门
+        #      ``gate``（只会更严，绝不退化成「无闸门」）；两个都没有 → 走下面 fail-closed 全阻断。
+        if allow_library_asset:
+            _gate = getattr(self, "gate_manual", None) or getattr(type(self), "_global_gate_manual", None)
+            if _gate is None:
+                logger.error(
+                    "[删除闸门] 请求手动删除库内资产但未安装 gate_manual → 回退严格闸门（fail-closed）"
+                )
+                _gate = getattr(self, "gate", None) or getattr(type(self), "_global_gate", None)
+        else:
+            _gate = getattr(self, "gate", None) or getattr(type(self), "_global_gate", None)
         if _gate is None:
             if _GATE_FAIL_CLOSED:
                 logger.error(

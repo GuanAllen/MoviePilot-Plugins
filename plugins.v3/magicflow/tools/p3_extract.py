@@ -593,10 +593,6 @@ def extract(name, idents, inject=None, imports=None, apply=False, guards=False, 
             rc |= r.returncode
         print('  护栏：%s' % ('✅ 通过' if rc == 0 else '❌ 未通过'))
     if preflight:
-        # ★ 标准流程：改完前端必须先重生成代码字典，否则 deploy.sh 的 preflight 会拦
-        r = subprocess.run(['python3', 'tools/gen_code_dict.py'], cwd=ROOT, capture_output=True, text=True)
-        print('  代码字典：%s | %s' % ('✅' if r.returncode == 0 else '❌', (r.stdout or '').strip().split('\n')[-1][:80]))
-        rc |= r.returncode
         r = subprocess.run(['sh', 'tools/preflight.sh'], cwd=ROOT, capture_output=True, text=True)
         tail2 = [l for l in (r.stdout or '').split('\n') if l.strip()][-1]
         print('  preflight：%s | %s' % ('✅' if r.returncode == 0 else '❌', tail2[:90]))
@@ -653,7 +649,7 @@ def main():
     ap.add_argument('--apply', action='store_true', help='真的写文件')
     ap.add_argument('--guards', action='store_true', help='跑护栏⑥⑦')
     ap.add_argument('--build', action='store_true', help='跑 npm run build')
-    ap.add_argument('--preflight', action='store_true', help='重生成代码字典 + 跑 tools/preflight.sh（14 步）')
+    ap.add_argument('--preflight', action='store_true', help='跑 tools/preflight.sh（14 步）')
     ap.add_argument('--verify', action='store_true', help='自检已有 composable')
     a = ap.parse_args()
     if a.scan:

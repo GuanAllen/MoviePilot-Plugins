@@ -27,16 +27,20 @@ from ..tags import (
     is_asset_tags,
     is_external_candidate,
     is_library_asset,
+    is_music_line,
     is_reuse_copy,
     MARK_REUSE,
     STATE_BONUS,
     STATE_BRUSH,
     STATE_RECOMMEND,
+    SPECIAL_TAGS,
     STATE_SILENT,
     SUB_NEW,
     SUB_PLAIN,
     SUB_RESOURCE,
     is_magicflow_tag,
+    is_managed_tag,
+    needs_magicize,
     parse_tag,
     retag,
     set_site_names as _tags_set_site_names,
@@ -407,6 +411,9 @@ class TagsMixin:
           （``sub_drift``，新↔资源↔普通）**只报不写**（sub 会随生命周期变，真值待单独拍板）。
         - **账本没有、qB 有静默身份**（`tag_only`）：**一律不动**（15.1.0 口径：不定罪、不写账本）；
           `adopt_reseed=True` 时把其中带 `魔流-辅种` 的**无主辅种副本**补登进 `mf_reseed`。
+        - ★ 15.8.11 **音乐线豁免**：账本 state = 魔力/刷流、而 qB 分类是「音乐」的行**跳过**
+          （`skipped_music`）—— 音乐种不属任何魔力/刷流任务（§15.8.0），账本若还挂着职务就是
+          历史残留，按账本补标签只会和 `_music_untag_duty` 互打互删。保种/点播职务照旧补。
         - **只写 qB 标签 / 补登辅种账**；不删除、不暂停、不 resume、不动 `mf_seed`、不碰 H&R。
         """
         downloader = self._get_downloader()
@@ -439,6 +446,7 @@ class TagsMixin:
             rows = rows[:limit]
         checked = 0
         repaired = 0
+        skipped_music = 0
         items: List[Dict[str, Any]] = []
         drift: List[Dict[str, Any]] = []
         for h, rec in rows:
@@ -453,6 +461,14 @@ class TagsMixin:
             live = snap.get(h)
             if live is None:
                 continue  # qB 里没有 → 不管（空壳清理另有其人）
+            # ★ 15.8.11 音乐线豁免：音乐种（qB 分类「音乐」）**不属于任何魔力/刷流任务**
+            #   → 账本若还挂着刷流/魔力职务（历史残留，见 musicgrab._music_untag_duty），
+            #   **不要**按账本把 `魔流-<站>-魔力/刷流` 补回去 —— 否则与「音乐线摘职务标签」
+            #   worker 每小时互打互删（2026-10-09 live：每轮各 7 个，CARPT 3 + 馒头 4）。
+            #   保种（H&R）/点播 职务照旧补：音乐也要走 H&R。
+            if state in (STATE_BRUSH, STATE_BONUS) and is_music_line(live):
+                skipped_music += 1
+                continue
             cur = _tags_of(live)
             checked += 1
             exp = retag(cur, site=site, state=state, sub=str(rec.get("sub") or ""))
@@ -534,6 +550,7 @@ class TagsMixin:
             "apply": bool(apply),
             "checked": checked,
             "repaired": repaired,
+            "skipped_music": skipped_music,
             "items": items[:50],
             "items_total": len(items),
             "drift": drift[:50],
@@ -593,6 +610,165 @@ class TagsMixin:
         if n and reason:
             self._dbg(f"标签模型:任务「{getattr(task, 'name', '')}」退下 {n} 个（{reason}）")
         return n
+
+
+    def _music_ledger_release(self, *, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
+        """★ 15.8.11：把账本里还当「魔力/刷流」的音乐种**归还静默池**（幂等；默认干跑）。
+
+        与 ``MusicGrabMixin._music_untag_duty`` 配套：那一半只摘 qB 上的职务标签，这一半
+        负责**账本销账**。判定真值源 = 种子账本（不是 qB 标签），所以「标签早被摘掉、账本
+        task_id 却还占着任务」的种也能收敛 —— 这正是现场那一格：
+          * ``mf_seed.task_id`` 仍指向旧任务 → 账本判「在岗（魔力）」；
+          * qB 上只剩 ``魔流-<站>-静默-<子桶>`` → 审计把它算进 ``tag_only``
+            （「打了静默标签但账本不认为它静默」）→ Master 看到「静默池里 CARPT 3 个种
+            没被任务纳管」；
+          * 而静默托管第 ⑫ 步 ``_tag_ledger_reconcile`` 又按账本把职务标签补回去，
+            与音乐线摘标签 worker **每小时互打互删**（2026-10-09 live：每轮各 7 个，
+            CARPT 3 + 馒头 4）。
+        只认「魔力/刷流」职务：保种（``__hr_host__``）/点播不算 —— 音乐也要走 H&R。
+        """
+        rep: Dict[str, Any] = {"ok": True, "applied": bool(apply), "candidates": 0,
+                               "released": 0, "failed": 0, "samples": []}
+        try:
+            store = self._tag_state()
+            snap = self._tag_all_torrents()
+        except Exception as err:  # noqa: BLE001
+            return {**rep, "ok": False, "error": str(err)}
+        cap = int(limit or 0)
+        for h, rec in list((store.items() or {}).items()):
+            rec = rec or {}
+            if str(rec.get("state") or "") not in (STATE_BRUSH, STATE_BONUS):
+                continue
+            hh = str(h or "").strip().lower()
+            live = snap.get(hh)
+            if live is None or not is_music_line(live):
+                continue
+            owner = str(rec.get("taken_by") or "").strip()
+            rep["candidates"] = int(rep["candidates"]) + 1
+            if cap and int(rep["candidates"]) > cap:
+                continue
+            if len(rep["samples"]) < 10:
+                rep["samples"].append({"hash": hh[:12], "owner": owner,
+                                       "site": str(rec.get("site") or "")})
+            if not apply:
+                continue
+            try:
+                if store.release(hh, task_id=owner) is None:
+                    rep["failed"] = int(rep["failed"]) + 1
+                    continue
+            except Exception:  # noqa: BLE001
+                rep["failed"] = int(rep["failed"]) + 1
+                continue
+            rep["released"] = int(rep["released"]) + 1
+            try:  # 任务侧也忘掉：protected_torrents / adopted_hashes 不能留
+                forget = getattr(getattr(self, "_store", None), "forget_torrents", None)
+                if callable(forget) and owner:
+                    forget(owner, [hh])
+            except Exception:  # noqa: BLE001
+                pass
+        return rep
+
+
+    def _music_asset_pin(self, *, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
+        """★ 15.8.11 同版补丁：音乐种身份**钉成「资源」**（Master 2026-10-09 口径「跟点播一样」）。
+
+        §15.8.0 的线口径本来就是「音乐 = 资源」（加种即 ``魔流-<站>-静默-资源``），但身份真值
+        走的是**推荐/入库**那条路：⑦分拣（``库内 + 推荐过`` 才升「资源」，否则「普通」）+ ⑧超时
+        归位（``静默-新`` 超 24h → ``静默-普通``）。音乐不走推荐/影视库流程 → 每颗音乐种最终都
+        掉成「普通」，于是落进 ⑤普通清理 的「低效普通种」候选（2026-10-09 live：CARPT 3 +
+        馒头 4 共 7 个，审计 ``class=cleanup``）。
+
+        音乐不是「待定资源」——它加种即资源，地位同**点播结算后**的形态（``state=静默`` +
+        ``sub=资源``）。所以这里把身份钉在「资源」，三处一起写，缺一不可：
+          * 种子账本 ``sub=资源`` → ``is_library_asset`` 真 → ⑤普通清理「永不删」名单、
+            删除闸门第 5 步「库内资产，永不删」、①池清理的身份保护（未下完也不删）；
+          * qB 标签重算成 ``魔流-<站>-静默-资源``（摘掉残留的职务轴/旧子类）；
+          * 资源组库记 ``identity=资源``（``asset_member_hashes`` / ⑦分拣读的那一份也跟着对）。
+        只碰 ``state=静默`` 的行：职务态（点播/保种）有自己的生命周期，不抢（计入
+        ``skipped_duty``）。幂等（已是「资源」的跳过）；默认干跑。
+
+        ★ 15.8.13：**没有资源组就钉不住**——``store.put({"sub"})`` 落到 ``mf_seed`` 是空操作
+        （该表没有 sub 列），真正生效的是 ``files.set_identity(gid, ...)``，而它必须有 gid
+        （``group_of``）。2026-10-10 live 实证：两颗手灌音乐种**无文件特征码** → 算不出 gid →
+        ``set_identity`` 被静默跳过，但 qB 标签已经被改成「资源」⇒ 出现「标签说资源、账本/
+        审计说普通（``class=cleanup``）」的漂移。现在这种种**只计数 ``skipped_no_group``，不写
+        标签也不写账本**，等 ``action=fp``（补特征码）+ 资源同步把它登记进组之后再钉。
+        """
+        rep: Dict[str, Any] = {"ok": True, "applied": bool(apply), "candidates": 0,
+                               "pinned": 0, "failed": 0, "skipped_duty": 0,
+                               "skipped_no_group": 0, "samples": []}
+        try:
+            store = self._tag_state()
+            snap = self._tag_all_torrents()
+        except Exception as err:  # noqa: BLE001
+            return {**rep, "ok": False, "error": str(err)}
+        try:
+            files = self._tag_groups()
+        except Exception:  # noqa: BLE001
+            files = None
+        cap = int(limit or 0)
+        for h, rec in list((store.items() or {}).items()):
+            rec = rec or {}
+            hh = str(h or "").strip().lower()
+            live = snap.get(hh)
+            if live is None or not is_music_line(live):
+                continue
+            if str(rec.get("sub") or "") == SUB_RESOURCE:
+                continue
+            _state = str(rec.get("state") or "")
+            if _state in DUTY_STATES:
+                rep["skipped_duty"] = int(rep["skipped_duty"]) + 1
+                continue
+            if _state != STATE_SILENT:
+                continue
+            rep["candidates"] = int(rep["candidates"]) + 1
+            if cap and int(rep["candidates"]) > cap:
+                continue
+            site = str(rec.get("site") or "").strip()
+            dl_name = str(rec.get("downloader") or "qbittorrent")
+            cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])]
+            if not site:
+                site = self._torrent_site_name(cur, "")
+            if len(rep["samples"]) < 10:
+                rep["samples"].append({"hash": hh[:12], "site": site,
+                                       "sub": str(rec.get("sub") or "")})
+            if not apply:
+                continue
+            # ★ 15.8.13：钉不住就别钉 —— 无资源组时三处身份不可能一致，写标签只会制造漂移。
+            try:
+                _gid = str((files.group_of(hh) if files is not None else "") or "")
+            except Exception:  # noqa: BLE001
+                _gid = ""
+            if not _gid:
+                rep["skipped_no_group"] = int(rep["skipped_no_group"]) + 1
+                continue
+            # ★ 与 ``silent._silent_to_resource`` 同构：归「资源」时「魔流-推荐」生命周期结束
+            _keep = tuple(x for x in SPECIAL_TAGS if x != "魔流-推荐")
+            new_tags = (
+                retag(cur, site=site, state=STATE_SILENT, sub=SUB_RESOURCE, keep=_keep)
+                if cur
+                else [tag_for(site, STATE_SILENT, SUB_RESOURCE)]
+            )
+            ok = False
+            try:
+                dl = self._get_downloader(dl_name)
+                fn = getattr(dl, "replace_torrent_tags", None) if dl is not None else None
+                ok = bool(fn(hh, new_tags)) if callable(fn) else False
+            except Exception:  # noqa: BLE001
+                ok = False
+            if not ok:
+                rep["failed"] = int(rep["failed"]) + 1
+                continue
+            try:
+                store.put(hh, {"sub": SUB_RESOURCE, "reason": "音乐线:资源身份(同点播)"})
+            except Exception:  # noqa: BLE001
+                pass
+            try:  # 资源组库记：动的是「资源」身份，不是单个种的标签
+                files.set_identity(_gid, SUB_RESOURCE, by="music")
+            except Exception:  # noqa: BLE001
+                pass
+            rep["pinned"] = int(rep["pinned"]) + 1
+        return rep
 
 
     def _tag_site_names(self) -> List[str]:
@@ -751,11 +927,15 @@ class TagsMixin:
     def traffic_audit(self) -> Dict[str, Any]:
         """★ 未知流量审计（Master 2026-09-30 00:01「不能有未知流量」）。
 
-        未知 = 在下载器里、且**没有魔流标签**的种 —— 即不由我们管控的挂种/刷流行为。
+        未知 = 在下载器里、且**没有能认出来的魔流标签**的种 —— 即不由我们管控的挂种/刷流行为。
+        ★ 15.8.13：判据从「有 ``魔流-`` 前缀」收紧成 ``is_managed_tag``（解析得出身份 or 已知
+        标记）——否则手写脚本打的孤儿标签（如 ``魔流-手动``）会把种算成「已管控」，
+        既不进未知流量名单、又挡住归流 ⇒ 永久孤儿。孤儿标签另计入 ``orphan``。
         另回报单种上传限速分布（单种不限流后应为「不限」）。
         """
         out: Dict[str, Any] = {"ok": True, "total": 0, "managed": 0, "unknown": [],
-                              "uploading": 0, "unknown_uploading": 0, "upload_limit": {}}
+                              "uploading": 0, "unknown_uploading": 0, "upload_limit": {},
+                              "orphan": 0, "orphan_samples": []}
         try:
             _dl = self._get_downloader()
         except Exception as err:  # noqa: BLE001
@@ -782,9 +962,19 @@ class TagsMixin:
             out["total"] = int(out["total"]) + 1
             if up > 0:
                 out["uploading"] = int(out["uploading"]) + 1
-            if any(is_magicflow_tag(x) for x in tags):
+            if any(is_managed_tag(x) for x in tags):
                 out["managed"] = int(out["managed"]) + 1
                 continue
+            _orphan = [x for x in tags if is_magicflow_tag(x)]
+            if _orphan:
+                out["orphan"] = int(out["orphan"]) + 1
+                if len(out["orphan_samples"]) < 50:
+                    out["orphan_samples"].append({
+                        "hash": hh[:12],
+                        "name": str(getattr(t, "title", "") or "")[:60],
+                        "tags": tags,
+                        "up_mbps": round(up, 3),
+                    })
             if up > 0:
                 out["unknown_uploading"] = int(out["unknown_uploading"]) + 1
             if len(out["unknown"]) < 50:
@@ -816,16 +1006,23 @@ class TagsMixin:
             return {"ok": True, "skipped": True, "age": round(now - _last, 1)}
         self._tag_hygiene_last = now
         out: Dict[str, Any] = {"ok": True, "cleaned": 0, "adopted": 0, "promoted": 0,
-                              "assets": 0, "failed": 0, "unknown_uploading": 0}
-        try:  # ⓿ 未知流量审计（没魔流标签的种 = 不由我们管控的行为）
+                              "assets": 0, "failed": 0, "unknown_uploading": 0, "orphan": 0}
+        try:  # ⓿ 未知流量审计（没有能认出来的魔流标签的种 = 不由我们管控的行为）
             _ta = self.traffic_audit()
             out["total"] = int(_ta.get("total") or 0)
             out["managed"] = int(_ta.get("managed") or 0)
             out["unknown"] = int(len(_ta.get("unknown") or []))
             out["unknown_uploading"] = int(_ta.get("unknown_uploading") or 0)
+            out["orphan"] = int(_ta.get("orphan") or 0)
+            _warns = []
             if out["unknown_uploading"]:
-                self._log(f"标签巡检:⚠️ 发现 {out['unknown_uploading']} 个「未知流量」种"
-                          f"（无魔流标签且在上传）→ 立即归流", "warning")
+                _warns.append(f"⚠️ 发现 {out['unknown_uploading']} 个「未知流量」种"
+                              f"（无魔流标签且在上传）→ 立即归流")
+            if out["orphan"]:
+                _warns.append(f"⚠️ 发现 {out['orphan']} 个「孤儿魔流标签」种"
+                              f"（前缀是魔流但认不出身份/非已知标记，未算已管控）→ 归流会接管重贴")
+            if _warns:
+                self._log("标签巡检:" + " · ".join(_warns), "warning")
         except Exception as err:  # noqa: BLE001
             self._dbg(f"标签巡检:未知流量审计异常: {err}")
         try:  # ① 摘其他标签
@@ -993,9 +1190,11 @@ class TagsMixin:
         return (host, host) if host else ("", "")
 
     def _magicize_scope(self, snap: Dict[str, Any], *, site_filter: str = "") -> Dict[str, List[str]]:
-        """圈出「非魔流」种：一个魔流标签都没有；按资源组归桶。
+        """圈出「非魔流」种：一个**能认出来的**魔流标签都没有；按资源组归桶。
 
         另含「無站点名的老魔流静默标签」（如 ``魔流-静默-普通``）—— 靠 tracker 补齐站点。
+        ★ 15.8.13：判据 = ``needs_magicize``（不是「有没有 ``魔流-`` 前缀」）——
+        孤儿标签（``魔流-手动`` 这种解析不出身份、也不在标记表里的）不再占闸门，归流会接管并重贴。
         """
         try:
             files = self._tag_groups()
@@ -1006,16 +1205,11 @@ class TagsMixin:
         for h, t in (snap or {}).items():
             hh = str(h or "").strip().lower()
             tags = [str(x).strip() for x in (getattr(t, "tags", None) or [])]
-            _mf = [x for x in tags if is_magicflow_tag(x)]
-            if _mf:
-                _parsed = [parse_tag(x) for x in _mf]
-                _hassite = any(p and p.get("site") for p in _parsed)
-                _sitelss = any(
-                    p and not p.get("site") and p.get("state") == STATE_SILENT and p.get("sub")
-                    for p in _parsed
-                )
-                if _hassite or not _sitelss:
-                    continue  # 已是魔流（且站点已定/不是静默状态标签），不动
+            # ★ 15.8.13：判据收紧成 needs_magicize（只认**能认出来的**魔流标签）。
+            #   孤儿标签（如手写脚本打的 `魔流-手动`）不再挡闸门 —— 否则它既进不了账本，
+            #   又被 traffic_audit 算成「已管控」⇒ 永久孤儿（2026-10-10 实证）。
+            if not needs_magicize(tags):
+                continue  # 已是魔流（站点已定 / 职务 / 已知标记），不动
             if _site_filter:
                 _site, _dom = self._magicize_site(t, tags, getattr(t, "title", None) or getattr(t, "name", ""), hh)
                 if _site != _site_filter:
@@ -1515,11 +1709,25 @@ class TagsMixin:
         if act in ("music_untag", "music_untag_plan", "music_untag_apply"):
             _ap = act == "music_untag_apply"
             info = self._music_untag_duty(apply=_ap, limit=int(limit or 0))
+            # ★ 15.8.11：账本那一半一起做（只看账本 → 「标签早摘了、账本还占着」也能收敛）
+            _led = self._music_ledger_release(apply=_ap, limit=int(limit or 0))
+            # ★ 15.8.11 同版补丁：身份那一半也一起做（音乐=资源，同点播结算后形态；
+            #   不钉的话 ⑦分拣/⑧超时归位把音乐种降成「普通」→ 落进 ⑤普通清理候选）
+            _pin = self._music_asset_pin(apply=_ap, limit=int(limit or 0))
+            info["ledger"] = _led
+            info["asset"] = _pin
+            _failed = (int(info.get("failed") or 0) + int(_led.get("failed") or 0)
+                       + int(_pin.get("failed") or 0))
             return Response(
-                success=bool(info.get("ok")),
-                message=(f"音乐线职务标签：扫音乐种 {info.get('scanned')} · 待摘 {info.get('candidates')}"
-                         + (f" · 已摘 {info.get('cleaned')}（失败 {info.get('failed')}）" if _ap
-                            else "（干跑；加 action=music_untag_apply 才摘）")),
+                success=(bool(info.get("ok")) and bool(_led.get("ok")) and bool(_pin.get("ok"))),
+                message=(f"音乐线：扫音乐种 {info.get('scanned')} · 待摘职务 {info.get('candidates')}"
+                         f" · 账本占用 {_led.get('candidates')}"
+                         f" · 身份待归资源 {_pin.get('candidates')}"
+                         + (f" · 已摘 {info.get('cleaned')}、已归还 {_led.get('released')}"
+                            f"、已钉资源 {_pin.get('pinned')}（失败 {_failed}）"
+                            + (f"、跳过(无资源组) {_pin.get('skipped_no_group')}"
+                               if _pin.get("skipped_no_group") else "") if _ap
+                            else "（干跑；加 action=music_untag_apply 才写）")),
                 data=info,
             )
         # ★ 10.2.0 下载即开账（影子记账）：只读端点
@@ -1784,11 +1992,22 @@ class TagsMixin:
             except Exception as _ym_err:  # noqa: BLE001
                 self._log(f"野马PT 逐种 H&R 对账失败:{_ym_err}", "warning")
             # ★ 15.8.0 音乐线：摘掉音乐种上的「魔力/刷流」职务标签（幂等；音乐不属任何刷流任务）。
+            #   ★ 15.8.11 两步一起做：① 摘 qB 职务标签；② 按**账本**归还占用
+            #   （原来只摘 qB 标签 → mf_seed.task_id 留着，审计算 tag_only、
+            #    并被第 ⑫ 步标签对账每小时把职务标签补回来 → 每小时互打 7 个）。
             try:
                 _mu = self._music_untag_duty(apply=True)
-                if _mu.get("cleaned"):
+                _led = self._music_ledger_release(apply=True)
+                # ★ 15.8.11 同版补丁：身份钉「资源」（同点播）；幂等，只在有变化时出声
+                _pin = self._music_asset_pin(apply=True)
+                if (_mu.get("cleaned") or _led.get("released") or _led.get("failed")
+                        or _pin.get("pinned") or _pin.get("failed")):
                     self._log(f"魔流:音乐线摘职务标签 {_mu.get('cleaned')} 个"
-                              f"（扫音乐种 {_mu.get('scanned')}）")
+                              f"、账本归还 {_led.get('released')} 个"
+                              f"、身份归资源 {_pin.get('pinned')} 个"
+                              f"（扫音乐种 {_mu.get('scanned')}·账本占用 {_led.get('candidates')}"
+                              f"·身份待归位 {_pin.get('candidates')}"
+                              f"·失败 {int(_mu.get('failed') or 0) + int(_led.get('failed') or 0) + int(_pin.get('failed') or 0)}）")
             except Exception as _mu_err:  # noqa: BLE001
                 self._log(f"音乐线摘职务标签失败:{_mu_err}", "warning")
         except Exception as err:  # noqa: BLE001

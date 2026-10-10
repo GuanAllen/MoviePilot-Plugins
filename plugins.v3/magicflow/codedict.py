@@ -7,9 +7,11 @@
 设计（Master 2026-10-06）：
   - **字典放在插件接口里** → ``GET /agent/code-dict``（``features/agentapi.py::agent_code_dict``）；
   - **使用/维护说明放在 skill**（``skills/magicflow``）；
-  - 本模块是**唯一逻辑真值源**，两处复用：
-      ① 插件接口（运行时解析**插件自身源码**现算，永远与线上代码一致）；
-      ② 仓库侧 ``tools/gen_code_dict.py``（渲染 ``docs/CODE-DICT.md``）。
+  - 本模块是**唯一逻辑真值源**，只服务**够不到仓库源码的调用方**：
+      ① 插件接口（运行时解析**插件自身源码**现算，永远与线上代码一致）。
+    ★ 2026-10-10 Master 拍板：仓库侧镜像渲染（``tools/gen_code_dict.py`` → ``docs/CODE-DICT.md``）与坐标认领
+    （``tools/check_dict_claims.py`` / ``docs/CODE-CLAIMS.md``）已**整块砍除** —— 有文件系统的 agent 用
+    grep/glob/read 即真值，镜像版索引收益≈0、成本必付（实测 5–9K tok/会话）。本模块与接口保留（本地 0 成本）。
   - ``GLOSSARY``（口径速查）**手维护在本文件**——文档 §5 与接口返回都从这里出，避免两处漂移。
 
 铁律：**只读**（只 ``ast`` 解析自身源码 + 读本文件常量），不写任何 json / 账本 / 热层。

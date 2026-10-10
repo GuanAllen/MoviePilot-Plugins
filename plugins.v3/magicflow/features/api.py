@@ -757,6 +757,25 @@ class ApiMixin:
                 "summary": "手动设置种子状态（改标签 + 写账本）",
             },
             {
+                # ★ 15.8.15（Master「希望增加魔流库内资产手动删除的入口」）：
+                #   「库内资产」独立列表入口（只读，逐条明细 + deletable/block 预演）。
+                "path": "/assets",
+                "endpoint": self.assets_library,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "库内资产列表（逐条：大小/站点/可删性；block=被哪道闸拦住）",
+            },
+            {
+                # ★ 15.8.15：手动删除库内资产（**唯一**允许突破「已入库，永不删」的入口）。
+                #   confirm != 1 → 干跑（零写入）；confirm = 1 才真删，且真删前重新过闸门复检
+                #   （手动保留 / 跨站来源份 / 已认领 / 欠 H&R 四类照旧硬拦）。
+                "path": "/assets/delete",
+                "endpoint": self.assets_delete,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "手动删除库内资产（只破「库内资产」一道闸；默认干跑，confirm=1 才真删）",
+            },
+            {
                 "path": "/debug/candidates",
                 "endpoint": self.debug_candidates,
                 "methods": ["GET"],

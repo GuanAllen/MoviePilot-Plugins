@@ -737,9 +737,11 @@ class BrushMixin:
         识别方式:种子的 tracker(announce)域名与本站 domain 匹配。
         只**追加**标签(不覆盖其它标签),不下载、不校验、不改动其它站点。
 
-        ★ 保护策略:本插件自己下载/复用的(刷流用)照常按效率清理;
+        ★ 保护策略（★ 15.8.12 起）:本插件自己下载/复用的(刷流用)照常按效率清理;
           本机**早已存在**的同站种子(IYUU / 其它插件 / 手动添加 / 自己下载的影视资源)
-          一律纳入「自有资源」集合并 **永久保护**(不参与任何删种)。
+          只记入「自有资源」集合(``adopted_hashes``)，**不再写 ``protected_torrents``**
+          —— 纳管 ≠ 手动保留（Master 2026-10-10：「纳管任何任务都不需要加保护，
+          我们的清理程序不会删资源身份的种子」）。
         """
         keys = self._same_site_keys(task)
         if not keys:
@@ -823,19 +825,21 @@ class BrushMixin:
                 )
             except Exception as _jerr:
                 self._log(f"记录纳管标签事件失败:{_jerr}", "warning")
-        protected = 0
+        # ★ 15.8.12（Master 2026-10-10「纳管任何任务都不需要加保护，我们的清理程序
+        #   不会删资源身份的种子」）：纳管只补标签 + 记 ``adopted_hashes``，
+        #   **不再写 ``protected_torrents``**。旧行为把纳管种同时塞进「手动保留」集合，
+        #   而删除闸门（deletegate.py 直读 protected_torrents 当「手动保留」）、站点报表
+        #   protected、静默盘点的 manual 桶三处都只认那个集合 → 纳管被当成手动保留
+        #   （实测 5 个魔力任务 525 条，其中 520 条是纳管灌进来的）。
         if store and to_adopt:
             store.note_adopted(task.id, to_adopt)
-            for h in to_adopt:
-                if store.protect_torrent(task.id, h):
-                    protected += 1
 
         if adopted:
             self._log(
                 f"魔流 [{task.name}] 同站纳管:本站 tracker 种子 {matched} 个,"
-                f"新纳管并保护 {adopted} 个(已在管 {already})"
+                f"新纳管 {adopted} 个(已在管 {already})"
             )
-        return {"matched": matched, "adopted": adopted, "already": already, "protected": protected}
+        return {"matched": matched, "adopted": adopted, "already": already}
 
     def _watch_tag_integrity(self, task: MagicFlowTaskConfig, count: int) -> None:
         """托管数看门狗:与上一轮对比,骤降至一半以下 → 记「托管种异常丢失」。

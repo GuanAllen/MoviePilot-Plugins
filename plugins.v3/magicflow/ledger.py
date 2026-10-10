@@ -890,6 +890,11 @@ class SeedLedgerStore:
         rec.pop("lease_until", None)
         rec.pop("origin_state", None)
         rec.pop("origin_sub", None)
+        # ★ 15.8.11：归属也要清 —— ``task``（任务名）是 ``mf_seed.task_id`` 的**唯一来源**
+        #   （``seed_row`` = ``_task_id(rec["task"])``）。原来只清 taken_by/taken_at，
+        #   任务名留着 → 下一轮 ``save_seeds`` 又把 task_id 写回旧任务，账本永远判「在岗」
+        #   （复现：音乐种退下后标签是静默、账本仍算魔力 → 审计 tag_only + 与标签对账互删互打）。
+        rec.pop("task", None)
         data[h] = rec
         self._write(data)
         return tag_for(_clean(rec.get("site")), state, sub)

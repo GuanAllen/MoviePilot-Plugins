@@ -484,6 +484,22 @@ def main() -> int:
     _ok(rp.get("deleted", 0) >= 1, f"返回 deleted={rp.get('deleted')}")
     _ok(rp.get("skipped", 0) == 0 and rp.get("reason") != "阶段1 零删除", "不再返回 skipped + 阶段1 零删除")
 
+    # ---- ⑬b ★15.8.11：音乐线不参与「低效普通种」清理 ----
+    print("\n[13b] ★15.8.11 音乐线豁免：低效普通名单里的音乐种不删（自动不删；手动闸门另开）")
+    hm = PlainSweepHarness()
+    tm = _torrent(progress=1.0, tracker="hdfans.org"); tm.hash = "mus1"; tm.tags = []
+    tm.category = "音乐"
+    tn = _torrent(progress=1.0, tracker="hdfans.org"); tn.hash = "nor1"; tn.tags = []
+    hm.torrents["mus1"] = tm
+    hm.torrents["nor1"] = tn
+    hm.ledger["mus1"] = {"site": "hdfans.org", "state": "静默", "sub": "普通"}
+    hm.ledger["nor1"] = {"site": "hdfans.org", "state": "静默", "sub": "普通"}
+    rm = hm._silent_plain_sweep(apply=True, limit=10)
+    _ok("mus1" not in hm.dl.deleted,
+        f"音乐种不删（按分类豁免，不依赖身份是否归位；删了 {sorted(set(hm.dl.deleted))}）")
+    _ok("nor1" in hm.dl.deleted, "对照：同形的非音乐低效普通种照删")
+    _ok(rm.get("deleted", 0) >= 1, f"返回 deleted={rm.get('deleted')}")
+
     print("\n" + "=" * 64)
     print(f"✅ 全部通过：{CHECKS} 项断言")
     return 0
