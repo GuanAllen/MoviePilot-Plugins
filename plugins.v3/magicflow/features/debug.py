@@ -1136,13 +1136,6 @@ class DebugMixin:
             "module_file": getattr(_F, "__file__", "") or type(fetcher).__module__,
             "has_50pctdown": "pro_50pctdown" in getattr(_F, "_NP_PRO_CLASSES", {}),
             "src_has_daoxiangyu": "剩余时间" in _src,
-            "src_has_rule_verdict": "promo_rule_verdict" in _src,
-            "rules_count": len(getattr(_F, "_SITE_FREE_RULES", {}) or {}),
-            "rules_keys": list(getattr(_F, "_SITE_FREE_RULES", {}).keys())[:30],
-            "rules_for_dstudio": getattr(_F, "_site_free_rules_for", lambda _d: "NOFUNC")("dstudio.me"),
-            "verdict_sample": getattr(_F, "promo_rule_verdict", lambda *a, **k: "NOFUNC")(
-                "dstudio.me", 2.5, "Kians Bizarre B and B 2025 S02E08 1080p NF W"
-            ),
             "sample_p2": [
                 {"t": x.title[:40], "dv": x.downloadvolumefactor, "vf": x.volume_factor, "free": x.is_free}
                 for x in _p2[:3]

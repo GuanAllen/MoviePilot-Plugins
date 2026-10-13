@@ -76,7 +76,7 @@ function claimPenaltyText(prof) {
           认领默认关闭。开启路径：插件设置 → 认领（开启后仍是干跑，确认链路后再关干跑）。
         </VAlert>
         <VAlert v-else-if="claimCfg.dry" type="warning" variant="tonal" density="compact" class="mb-2">
-          当前为「干跑」：只列出可认领的种，**不发任何写请求**（含手动单条）。要实写请到「插件设置 → 认领」关闭「干跑」。
+          当前为「干跑」：只列出可认领的种，不发任何写请求（含手动单条）。要实写请到「插件设置 → 认领」关闭「干跑」。
         </VAlert>
         <VAlert type="info" variant="tonal" density="compact" class="mb-2">
           认领 = 保种承诺：认领后的种进硬保护、永不自动删除；站点侧不达标可能扣魔力，主动放弃更亏。
@@ -91,7 +91,7 @@ function claimPenaltyText(prof) {
         </VTabs>
         <VWindow v-model="claimTab">
           <VWindowItem value="claimable">
-            <div v-if="!claimClaimable.length" class="magicflow-table-empty">当前没有可认领的种（未满发布天数 / 无详情页 / 被安全阀挡住）。</div>
+            <div v-if="!claimClaimable.length" class="magicflow-table-empty">当前没有可认领的种（未满发布天数 / 无详情页 / 被安全阀拦住）</div>
             <ul v-else class="magicflow-claim-list">
               <li v-for="row in claimClaimable" :key="row.hash" class="magicflow-claim-item">
                 <div class="magicflow-claim-item__main">

@@ -398,13 +398,21 @@ class SilentMixin:
         本端点只做聚合（真值源 = 标签账本 ``tag_state`` + 下载器快照 + 跨站来源份），
         不改动任何逻辑。
         """
+        # 「显式 0」与「缺省」分开（2026-10-14）：limit=0 → 全部；records=0 → 不带明细。
+        # 旧实现 ``int(x or N)`` 把 0 当缺省：模型想「缩小」传 0 反而放大（实测默认 216KB 撞 30k 截断）。
+        _lim_raw = str(limit if limit is not None else "").strip()
         try:
-            _limit = int(limit or 400)
+            _limit = int(_lim_raw) if _lim_raw else 400
         except (TypeError, ValueError):
             _limit = 400
+        if _limit < 0:
+            _limit = 400
+        _rec_raw = str(records if records is not None else "").strip()
         try:
-            _rlimit = int(records or 60)
+            _rlimit = int(_rec_raw) if _rec_raw else 60
         except (TypeError, ValueError):
+            _rlimit = 60
+        if _rlimit < 0:
             _rlimit = 60
         now = time.time()
         try:
@@ -516,26 +524,28 @@ class SilentMixin:
             new_timeout_h = 0.0
         last = float(getattr(self, "_silent_host_last", 0) or 0)
         recs: List[Dict[str, Any]] = []
-        try:
-            rows = self._store.journal.list_by_task(SILENT_HOST_TASK_ID, limit=_rlimit) or []
-            for r in rows:
-                try:
-                    d = r.to_dict() if hasattr(r, "to_dict") else dict(r)
-                except Exception:  # noqa: BLE001
-                    continue
-                ts = float(d.get("ts") or d.get("created_at") or d.get("resolved_at") or 0)
-                if ts > last:
-                    last = ts
-                recs.append({
-                    "ts": ts,
-                    "kind": str(d.get("kind") or ""),
-                    "count": int(d.get("count") or len(d.get("items") or []) or 0),
-                    "reason": str(d.get("reason") or d.get("message") or ""),
-                    "duration_ms": d.get("duration_ms") or d.get("duration") or 0,
-                    "items": (d.get("items") or [])[:6],
-                })
-        except Exception:  # noqa: BLE001
-            recs = []
+        if _rlimit > 0:   # records=0 → 不带明细（显式缩小；不再被当成缺省 60）
+            try:
+                rows = self._store.journal.list_by_task(SILENT_HOST_TASK_ID, limit=_rlimit) or []
+                for r in rows:
+                    try:
+                        d = r.to_dict() if hasattr(r, "to_dict") else dict(r)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    ts = float(d.get("ts") or d.get("created_at") or d.get("resolved_at") or 0)
+                    if ts > last:
+                        last = ts
+                    recs.append({
+                        "ts": ts,
+                        "kind": str(d.get("kind") or ""),
+                        "count": int(d.get("count") or len(d.get("items") or []) or 0),
+                        "reason": str(d.get("reason") or d.get("message") or ""),
+                        "duration_ms": d.get("duration_ms") or d.get("duration") or 0,
+                        "items": (d.get("items") or [])[:6],
+                    })
+            except Exception:  # noqa: BLE001
+                recs = []
+        _shown_items = items if _limit <= 0 else items[:_limit]   # limit=0 → 全部
         data = {
             "summary": {
                 "total": len(items),
@@ -549,8 +559,8 @@ class SilentMixin:
                 ],
                 "sites": sorted(sites.values(), key=lambda x: -int(x.get("total") or 0)),
             },
-            "items": items[:_limit],
-            "items_truncated": max(0, len(items) - _limit),
+            "items": _shown_items,
+            "items_truncated": max(0, len(items) - len(_shown_items)),
             "records": recs,
             "host": {
                 "interval_minutes": round(host_min, 1),
@@ -1240,6 +1250,16 @@ class SilentMixin:
             return "claim"
         if str((rec or {}).get("asset_recheck") or "") == "fail":
             return ""
+        # ★ 15.8.16：未下完（progress<1）= 数据已不在 → 非有效「库内资产」宿主 → 不保护（可被清理）。
+        #   「真正要保护的是数据，未下完的种没数据可保护」（Master 2026-10-11）。
+        if t is not None:
+            try:
+                _pv = getattr(t, "progress", None)
+                _prog = float(_pv) if _pv is not None else 1.0
+            except (TypeError, ValueError):
+                _prog = 1.0
+            if _prog < 0.999:
+                return ""
         if hh in (ctx.get("members") or set()):
             return "resource"
         if is_library_asset(rec):

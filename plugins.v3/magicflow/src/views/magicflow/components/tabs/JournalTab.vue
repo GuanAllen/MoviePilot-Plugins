@@ -118,7 +118,7 @@ function operationSummary(record) {
         <span class="magicflow-reason__track"><i :style="{ width: `${(item.count / data.maxReasonCount) * 100}%` }" /></span>
       </div>
     </div>
-    <div v-else class="magicflow-table-empty">本轮没有记录过滤原因（候选全部通过或列表为空）</div>
+    <div v-else class="magicflow-table-empty">本轮无过滤原因记录（候选全通过或列表为空）</div>
     <VAlert v-if="data.detailStats.last_run_status === 'noop' && data.detailStats.last_run_reason" type="info" variant="tonal" density="compact" class="mt-3">
       最近一次执行未进入候选过滤：{{ data.detailStats.last_run_reason }}
     </VAlert>
@@ -128,7 +128,7 @@ function operationSummary(record) {
     <header class="magicflow-panel__head">
       <div>
         <div class="text-subtitle-1 font-weight-medium">操作记录</div>
-        <div class="text-body-2 text-medium-emphasis">每次执行 / 选种 / 删种 / 保护 / 标签 的流水（可展开明细）</div>
+        <div class="text-body-2 text-medium-emphasis">执行 / 选种 / 删种 / 保护 / 标签 的流水（可展开明细）</div>
       </div>
       <VBtn variant="text" color="primary" prepend-icon="mdi-refresh" @click="emit('refresh')">刷新</VBtn>
     </header>

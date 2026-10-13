@@ -2,7 +2,7 @@
 // MagicFlow · 设置弹窗（多标签）——P4 自 views/magicflow/index.vue **纯搬家**。
 // props 下 / emit 上：子组件不直接改父状态；开关与设置项走 defineModel / emit。
 // 复用 composable 纯函数 → module 级具名导出 import（单一真值源）。
-import { MF_SETTINGS_TABS, TILE_OPTIONS, ratingSourceItems } from '../../constants'
+import { MF_SETTINGS_TABS, TILE_OPTIONS, ratingSourceItems, episodePolicyItems, agentToolScopeItems } from '../../constants'
 import { fmtTs } from '../../format'
 import { settingsTabLabel, ruleSourceText } from '../../composables/useSettings'
 import { sortRuleText, sortRuleNeedsMin, sortRuleTypeOptions } from '../../composables/useTagModel'
@@ -19,7 +19,7 @@ const emit = defineEmits([
   'probe-rules', 'refresh-rules', 'set-rule-hr', 'set-rule-hours', 'set-rule-ratio',
   'open-claim', 'open-signin', 'run-fallback', 'run-reseed', 'load-reseed', 'load-fallback',
   'add-fallback-source', 'move-fallback-source', 'remove-fallback-source', 'set-tile-shown',
-  'add-sort-rule', 'remove-sort-rule', 'preview-tag-migrate', 'apply-tag-migrate', 'test-cloud',
+  'add-sort-rule', 'remove-sort-rule', 'test-cloud',
 ])
 
 // 供父组件在子渲染后取回设置导航栏 DOM（父 composable 的自动滚动依赖它）
@@ -50,8 +50,6 @@ defineProps({
   siteSelectItems: { type: Array, default: () => [] },
   siteLiveAlerts: { type: Array, default: () => [] },
   tagInfo: { type: Object, default: null },
-  tagMigratePlan: { type: Object, default: null },
-  tagMigrating: { type: Boolean, default: false },
   fallbackState: { type: Object, default: null },
   fallbackLoading: { type: Boolean, default: false },
   fallbackRunning: { type: Boolean, default: false },
@@ -112,10 +110,97 @@ defineProps({
           <VTab value="crossseed" class="magicflow-settings-tab">跨站</VTab>
           <VTab value="rules" class="magicflow-settings-tab">站点规则</VTab>
           <VTab value="tags" class="magicflow-settings-tab">标签管理</VTab>
+          <VTab value="notify" class="magicflow-settings-tab">通知</VTab>
         </VTabs>
         <VDivider v-if="!isNarrow || settingsPane === 'form'" />
 
         <div v-if="!isNarrow || settingsPane === 'form'" class="magicflow-settings-dialog__body">
+          <!-- ★ 15.13.0：事件通知（H&R 临期 / 容量红线 / 产出骤降 / 任务失败 / 日报） -->
+          <div v-if="settingsTab === 'notify'" class="magicflow-settings-form">
+            <VSwitch
+              v-model="settingsDraft.notify_enabled"
+              label="开启事件通知"
+              color="primary"
+              hide-details
+              inset
+            />
+            <p class="magicflow-settings-hint">
+              走 MoviePilot 已配置的通知渠道（微信 / Telegram / Bark…），推四类事件：
+              <strong>H&amp;R 临期</strong>、<strong>池盘触红线</strong>、<strong>时魔产出骤降</strong>、<strong>任务失败</strong>。
+              通知只发消息，绝不自动删种或订阅。
+            </p>
+            <VTextField
+              v-model.number="settingsDraft.notify_hr_hours"
+              type="number"
+              min="0"
+              step="1"
+              label="H&R 提前预警（小时）"
+              hint="距考核到期不足该小时数就提醒（默认 24）"
+              persistent-hint
+              variant="outlined"
+              density="comfortable"
+            />
+            <VTextField
+              v-model.number="settingsDraft.notify_capacity_pct"
+              type="number"
+              min="50"
+              max="99"
+              step="1"
+              label="池盘告警阈值（%）"
+              hint="池盘占用达到该百分比就提醒（默认 80）"
+              persistent-hint
+              variant="outlined"
+              density="comfortable"
+            />
+            <VTextField
+              v-model.number="settingsDraft.notify_drop_pct"
+              type="number"
+              min="1"
+              step="1"
+              label="产出骤降阈值（%）"
+              hint="比前 3 日均值低超过该比例就提醒（默认 20%）"
+              persistent-hint
+              variant="outlined"
+              density="comfortable"
+            />
+            <VSwitch
+              v-model="settingsDraft.notify_task_fail"
+              label="任务失败时通知"
+              color="primary"
+              hide-details
+              inset
+            />
+            <VSwitch
+              v-model="settingsDraft.notify_daily"
+              label="发送每日日报"
+              color="primary"
+              hide-details
+              inset
+            />
+            <VTextField
+              v-if="settingsDraft.notify_daily"
+              v-model.number="settingsDraft.notify_daily_hour"
+              type="number"
+              min="0"
+              max="23"
+              step="1"
+              label="日报发送时间（小时，0-23）"
+              hint="按本地时间，当天首次扫描时发送"
+              persistent-hint
+              variant="outlined"
+              density="comfortable"
+            />
+            <VTextField
+              v-model="settingsDraft.notify_quiet"
+              label="免打扰时段（可空）"
+              placeholder="23:00-08:00"
+              hint="该时段内不发送（仍记入历史）；留空 = 不静音"
+              persistent-hint
+              variant="outlined"
+              density="comfortable"
+            />
+          </div>
+
           <div v-if="settingsTab === 'general'" class="magicflow-settings-form">
             <VSwitch v-model="settingsDraft.enabled" label="启用插件（总开关）" color="primary" hide-details inset />
             <VSwitch
@@ -125,13 +210,34 @@ defineProps({
               hide-details
               inset
             />
+            <VSwitch
+              v-model="settingsDraft.agent_mcp"
+              label="把魔流能力注册进 MoviePilot Agent / MCP"
+              color="primary"
+              hide-details
+              inset
+            />
+            <VSelect
+              v-if="settingsDraft.agent_mcp"
+              v-model="settingsDraft.agent_mcp_scope"
+              :items="agentToolScopeItems"
+              item-title="title"
+              item-value="value"
+              label="注册范围"
+              hide-details
+              variant="outlined"
+              density="comfortable"
+            />
+            <p v-if="settingsDraft.agent_mcp" class="magicflow-settings-hint">
+              注册后，MoviePilot 的 AI 助手 / MCP 客户端（Claude、Cherry Studio 等）可直接调用魔流：<strong>常用工具</strong> 52 个高频接口（任务 / 站点做种 / H&amp;R / 补源 / 点播 / 库内资源 / 推荐 / 队列…），<strong>全部端点</strong> 76 个（含冷门排障接口）。写操作也一并注册，请只接可信的 AI 客户端。
+            </p>
             <VTextField
               v-model.number="settingsDraft.request_interval"
               type="number"
               min="0"
               step="0.5"
               label="站点请求间隔（秒）"
-              hint="站点翻页请求之间的最小间隔，0 = 不限速；对强流控站点可适当加大"
+              hint="站点翻页之间的最小间隔，0＝不限；强流控站可加大"
               persistent-hint
               variant="outlined"
               density="comfortable"
@@ -178,7 +284,7 @@ defineProps({
                 min="0"
                 step="50"
                 label="挂种单种上传限速（KB/s）"
-                hint="我们管控的魔力 / 推荐 / 跨站种：单种限速，默认 200；不在管控下的种不限速；0 = 全不限"
+                hint="管控中的种单种限速，默认 200；0＝不限；不管控的不限速"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
@@ -235,7 +341,7 @@ defineProps({
                   max="720"
                   step="1"
                   label="停滞阈值（小时）"
-                  hint="0 速持续超过该时长才纳入补源（默认 6；越小越灵敏）"
+                  hint="0 速持续超过该时长才纳入补源（默认 6，越小越灵敏）"
                   persistent-hint
                   variant="outlined"
                   density="comfortable"
@@ -386,7 +492,7 @@ defineProps({
               v-model="defaultsDraft.save_path"
               label="任务保存目录"
               placeholder="如 /vol3/1000/media/magicflow"
-              hint="新建任务时自动预填此目录（不影响已有任务，任务内仍可单独修改）"
+              hint="新建任务时预填此目录（不改已有任务）"
               persistent-hint
               variant="outlined"
               density="comfortable"
@@ -395,9 +501,9 @@ defineProps({
 
           <div v-else-if="settingsTab === 'iyuu'" class="magicflow-settings-form">
             <p class="magicflow-settings-hint">
-              IYUU 云端辅种为<strong>可选增强</strong>：填写 Token 后，复用/刷流会优先用 IYUU 云端匹配<strong>他站同资源</strong>；
-              下方站点密钥可手填（留空则自动尝试用 MoviePilot 已存的 apikey / cookie 取链）。
-              <strong>不填 Token 则完全不启用</strong>，一切照旧走内置跨站特征码方案。
+              IYUU 云端辅种为<strong>可选增强</strong>：填 Token 后，复用/刷流优先用 IYUU 云端匹配<strong>他站同资源</strong>；
+              下方站点密钥可手填（留空则自动用 MoviePilot 已存的 apikey / cookie 取链）。
+              <strong>不填 Token 则完全不启用</strong>，照旧走内置跨站特征码方案。
             </p>
             <div class="magicflow-iyuu-token">
               <VTextField
@@ -628,7 +734,7 @@ defineProps({
                 <VSpacer />
                 <VBtn size="small" color="primary" variant="tonal" prepend-icon="mdi-open-in-new" @click="emit('open-claim')">打开认领页</VBtn>
               </div>
-              <p class="magicflow-field__sub">先「扫描（干跑）」看能认领哪些，再逐条二次确认；对不熟悉的站建议长期保持干跑。</p>
+              <p class="magicflow-field__sub">先「扫描（干跑）」看能认领哪些，再逐条二次确认</p>
             </div>
           </div>
 
@@ -682,8 +788,8 @@ defineProps({
               缺的下载量需要你自己安排；已通过/未通过都不会影响现有做种。
             </p>
             <div class="magicflow-settings-switches">
-              <VSwitch v-model="settingsDraft.exam_enabled" label="启用「新手考核」（关闭则不抓取、不解析、不显示）" color="primary" hide-details inset />
-              <VSwitch v-model="settingsDraft.exam_include_pass" label="显示「已通过」的考核（默认只显示未通过的）" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.exam_enabled" label="启用「新手考核」（关闭则不抓取、不显示）" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.exam_include_pass" label="显示「已通过」的考核（默认只显示未通过）" color="primary" hide-details inset />
             </div>
             <div class="magicflow-settings-field">
               <VSelect
@@ -697,7 +803,7 @@ defineProps({
                 density="comfortable"
                 hide-details
               />
-              <p class="magicflow-settings-hint">选多少有多少：只盯你关心的站，不选就是全都盯。</p>
+              <p class="magicflow-settings-hint">只盯你关心的站；不选＝全都盯</p>
             </div>
             <p v-if="!settingsDraft.exam_enabled" class="magicflow-settings-hint magicflow-settings-hint--warn">
               当前处于<strong>关闭</strong>状态：不会去抓考核，也不会做任何额外请求。
@@ -787,7 +893,7 @@ defineProps({
             <div class="magicflow-settings-switches">
               <VSwitch v-model="settingsDraft.live_enabled" label="启用站点实时数据 + 流量监控" color="primary" hide-details inset />
               <VSwitch v-model="settingsDraft.live_notify" label="命中告警时推送通知" color="primary" hide-details inset />
-              <VSwitch v-model="settingsDraft.live_auto_stop" label="同时把该站「运行中」任务切「做种中」（停调度、不删种）" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.live_auto_stop" label="同时把该站「运行中」任务切「做种中」（只停调度）" color="primary" hide-details inset />
             </div>
 
             <VDivider class="my-3" />
@@ -797,12 +903,12 @@ defineProps({
               <em>全局</em>用站点「正在下载」列表核对、<em>取种期间</em>核对来源站。共用下面这个总开关。
             </p>
             <div class="magicflow-settings-switches">
-              <VSwitch v-model="settingsDraft.promo_guard" label="启用流量兜底（关掉 = 下面三项都只告警、不动手）" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.promo_guard" label="启用流量兜底（关掉＝下面三项只告警、不动手）" color="primary" hide-details inset />
             </div>
             <div class="magicflow-settings-switches">
-              <VSwitch v-model="settingsDraft.live_kill_unfree" :disabled="!settingsDraft.promo_guard" label="全局：下载量异常增长 → 站点「正在下载」列表里非免费的种，从下载器干掉" color="primary" hide-details inset />
-              <VSwitch v-model="settingsDraft.live_kill_delete_files" :disabled="!settingsDraft.promo_guard || !settingsDraft.live_kill_unfree" label="干掉时连文件一起删（只动「下载中」且名称+体积对得上的种）" color="primary" hide-details inset />
-              <VSwitch v-model="settingsDraft.crossseed_guard" :disabled="!settingsDraft.promo_guard" label="取种期间：核对来源站免费状态与下载量增量，判错就删种并拉黑该站（强烈建议）" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.live_kill_unfree" :disabled="!settingsDraft.promo_guard" label="全局：下载量异常增长时，干掉站点里非免费的下载" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.live_kill_delete_files" :disabled="!settingsDraft.promo_guard || !settingsDraft.live_kill_unfree" label="干掉时连文件一起删（只动名称+体积对得上的下载中种）" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.crossseed_guard" :disabled="!settingsDraft.promo_guard" label="取种期间核对来源站免费状态；判错就删种并拉黑（建议开启）" color="primary" hide-details inset />
             </div>
             <div class="magicflow-settings-grid">
               <VTextField
@@ -813,7 +919,7 @@ defineProps({
                 step="0.5"
                 :disabled="!settingsDraft.promo_guard || !settingsDraft.crossseed_guard"
                 label="下载增量阈值（体积的 %）"
-                hint="来源站下载增量 > 目标体积 × 该值 即判定「不免费」，默认 5%"
+                hint="下载增量超过目标体积该比例即判「不免费」（默认 5%）"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
@@ -838,7 +944,7 @@ defineProps({
                 step="1"
                 :disabled="!settingsDraft.promo_guard || !settingsDraft.crossseed_guard"
                 label="兜底核对间隔（分钟）"
-                hint="同一来源站两次核对的间隔，默认 15 分钟（各花 1 次站点请求）"
+                hint="同一来源站两次核对的间隔（默认 15 分钟，各花 1 次请求）"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
@@ -897,7 +1003,7 @@ defineProps({
                 max="10"
                 step="0.1"
                 label="评分门槛（高于）"
-                hint="评分高于该值才推荐，默认 7.5（评分源见左侧「评分来源」）"
+                hint="评分高于该值才推荐（默认 7.5，来源见左侧）"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
@@ -908,7 +1014,7 @@ defineProps({
                 min="0"
                 step="1"
                 label="推荐过期天数"
-                hint="超过该天数仍未确认则视为过期（0 = 不过期）"
+                hint="超过该天数仍未确认即视为过期（0＝不过期）"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
@@ -919,7 +1025,7 @@ defineProps({
                 min="0"
                 step="1"
                 label="临时种 TTL（天）"
-                hint="未入选推荐的普通刷流临时种，超过该天数回收"
+                hint="未入选推荐的刷流临时种，超过该天数回收"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
@@ -930,7 +1036,7 @@ defineProps({
                 min="0"
                 step="1"
                 label="磁盘余量下限（GB）"
-                hint="剩余空间低于该值时，推荐立即视为过期"
+                hint="剩余空间低于该值时推荐立即过期"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
@@ -939,7 +1045,7 @@ defineProps({
                 v-model="settingsDraft.recommend_douban_service_url"
                 label="豆瓣服务地址"
                 placeholder="http://magicflow-douban:18789"
-                hint="独立服务 magicflow-douban 的地址，留空用默认；本地查询 <1ms，不受豆瓣限流影响"
+                hint="magicflow-douban 服务地址，留空用默认；本地查询不限流"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
@@ -955,19 +1061,30 @@ defineProps({
             </div>
             <div class="magicflow-settings-grid">
               <VSelect
+                v-model="settingsDraft.recommend_episode_policy"
+                :items="episodePolicyItems"
+                item-title="title"
+                item-value="value"
+                label="单集策略"
+                hint="单集＝只有一个文件；默认不自动推荐，要整季请点推荐列表的「订阅整季」"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+              <VSelect
                 v-model="settingsDraft.recommend_rating_source"
                 :items="ratingSourceItems"
                 item-title="title"
                 item-value="value"
                 label="评分来源"
-                hint="默认只用 TMDB；豆瓣优先走本地服务 magicflow-douban（不再直连豆瓣）"
+                hint="默认只用 TMDB；豆瓣优先走本地服务 magicflow-douban"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
               />
             </div>
             <div class="magicflow-settings-switches">
-              <VSwitch v-model="settingsDraft.recommend_require_chart" label="榜单 / 热映 / 订阅命中也算达标（与评分为「或」关系）" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.recommend_require_chart" label="榜单 / 热映 / 订阅命中也算达标（与评分为「或」）" color="primary" hide-details inset />
               <VSwitch v-model="settingsDraft.recommend_auto_import" label="确认后自动整理入库" color="primary" hide-details inset />
               <VSwitch v-model="settingsDraft.recommend_notify" label="发现推荐时通知" color="primary" hide-details inset />
             </div>
@@ -1009,7 +1126,7 @@ defineProps({
                 step="0.5"
                 min="0"
                 label="H&amp;R 结清安全垫（小时）"
-                hint="实际做种需 ≥ 站点要求 + 该值才判结清（默认 2，0 = 不留垫）"
+                hint="做种需 ≥ 站点要求 + 该值才判结清（默认 2，0＝不留垫）"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
@@ -1020,7 +1137,7 @@ defineProps({
                 step="1"
                 min="0"
                 label="H&amp;R 临近到期预警（小时）"
-                hint="距站点考核窗口到期低于该值且未达标 → 预警（默认 48）"
+                hint="距考核窗口到期低于该值且未达标即预警（默认 48）"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
@@ -1032,14 +1149,14 @@ defineProps({
                 min="0"
                 max="1"
                 label="H&amp;R 完成度阈值（全局默认）"
-                hint="下载进度 ≥ 该值才算「完成」、才计 H&amp;R 义务（默认 0.999 = 下满）。某站不同 → 改下表该站的「完成度」列"
+                hint="达到该进度才算完成、才计 H&amp;R（默认 99.9%）；分站可在下表覆盖"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
               />
             </div>
             <div class="magicflow-settings-switches">
-              <VSwitch v-model="settingsDraft.crossseed_guard_keep_seed" label="来源份 H&R 保护（保种期内任何任务不得删/改标签）" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.crossseed_guard_keep_seed" label="来源份 H&R 保护（保种期内不得删/改标签）" color="primary" hide-details inset />
               <VSwitch v-model="settingsDraft.crossseed_reclaim" label="H&R 期满后回收来源份（只删种子不删文件）" color="warning" hide-details inset />
             </div>
             <div class="magicflow-rules-actions">
@@ -1050,7 +1167,7 @@ defineProps({
               <VSpacer />
               <span class="magicflow-settings-hint">共 {{ siteRules.length }} 条</span>
             </div>
-            <p v-if="rulesProbing" class="magicflow-settings-hint">正在逐站抓取规则页（每站 1~2 个请求，站间随机歇 1.5~3.5 秒）…</p>
+            <p v-if="rulesProbing" class="magicflow-settings-hint">正在逐站抓取规则页（每站 1~2 个请求，随机歇 1.5~3.5 秒）…</p>
             <div class="magicflow-rules-table">
               <div class="magicflow-rules-row magicflow-rules-row--head">
                 <span>站点</span><span>H&amp;R</span><span>保种(h)</span><span>完成度</span><span>做种上限</span><span>来源</span><span>操作</span>
@@ -1060,9 +1177,6 @@ defineProps({
                   {{ row.site_name || row.domain }}
                   <em v-if="!row.in_library">未入库</em>
                   <em v-if="row.exam_avg_hours" :title="row.exam_evidence || '站点考核的平均做种要求（不是 H&R）'">考核均值{{ row.exam_avg_hours }}h</em>
-                  <em v-if="row.free_over_gb" title="站点促销规则：达到该体积自动免费（列表页可能不标促销，插件按规则补判）">&gt;{{ row.free_over_gb }}G免</em>
-                  <em v-if="row.free_original" title="站点促销规则：原盘自动免费">原盘免</em>
-                  <em v-if="row.free_ep1" title="站点促销规则：每季第一集自动免费">首集免</em>
                 </span>
                 <span class="magicflow-rules-row__hr">
                   <VChip v-if="row.hr === true" size="x-small" color="error" variant="tonal">有</VChip>
@@ -1070,7 +1184,7 @@ defineProps({
                   <VChip v-else size="x-small" variant="tonal">未知</VChip>
                   <VBtn v-if="row.hr === false" size="x-small" variant="text" :disabled="rulesProbing" title="恢复为探测/内置判定" @click="emit('set-rule-hr', row, 'unknown')">恢复</VBtn>
                   <template v-else>
-                    <VBtn size="x-small" variant="text" :disabled="rulesProbing" title="该站有 H&R：手动确认为「有」并按当前时长保护" @click="emit('set-rule-hr', row, '1')">标有</VBtn>
+                    <VBtn size="x-small" variant="text" :disabled="rulesProbing" title="该站有 H&R：手动确认「有」并按当前时长保护" @click="emit('set-rule-hr', row, '1')">标有</VBtn>
                     <VBtn size="x-small" variant="text" :disabled="rulesProbing" title="该站没有 H&R：直接标无，不做保种保护" @click="emit('set-rule-hr', row, '0')">标无</VBtn>
                   </template>
                 </span>
@@ -1100,7 +1214,7 @@ defineProps({
                     hide-details
                     placeholder="跟全局"
                     style="max-width: 6rem"
-                    :title="row.complete_ratio == null ? '未覆盖 → 跟设置里的全局「H&amp;R 完成度阈值」' : '站点级覆盖（下载进度 ≥ 该值才计 H&amp;R）'"
+                    :title="row.complete_ratio == null ? '未覆盖，用全局「H&amp;R 完成度阈值」' : '站点级覆盖（进度达到该值才计 H&amp;R）'"
                     @change="emit('set-rule-ratio', row, $event.target.value)"
                   />
                 </span>
@@ -1119,7 +1233,7 @@ defineProps({
                     :href="String(row.rule_url).split(/\s+/)[0]"
                     target="_blank"
                     rel="noopener"
-                    :title="'规则地址（来自收件箱欢迎短讯，已存下）：' + row.rule_url"
+                    :title="'规则地址（来自收件箱欢迎短讯）：' + row.rule_url"
                   ><VIcon size="x-small">mdi-link-variant</VIcon></VBtn>
                   <VBtn size="x-small" variant="text" :disabled="rulesProbing" @click="emit('probe-rules', row.domain)">探测</VBtn>
                 </span>
@@ -1145,7 +1259,7 @@ defineProps({
             </div>
             <div class="magicflow-settings-grid">
               <VTextField v-model.number="settingsDraft.tag_silent_new_timeout_hours" type="number" min="0" step="1"
-                label="「静默-新」超时(小时)" hint="超过该时长未分拣自动归「静默-普通」，0 = 不超时"
+                label="「静默-新」超时(小时)" hint="超过该时长未分拣自动归「静默-普通」（0＝不超时）"
                 persistent-hint variant="outlined" density="comfortable" />
             </div>
 
@@ -1183,33 +1297,9 @@ defineProps({
 
             <VDivider class="my-3" />
             <div class="magicflow-rules-actions">
-              <VBtn size="small" variant="tonal" color="primary" :loading="tagMigrating" @click="emit('preview-tag-migrate')">
-                <VIcon start size="small">mdi-tag-multiple</VIcon>迁移预演（老标签 → 新命名）
-              </VBtn>
-              <VBtn v-if="tagMigratePlan" size="small" color="error" variant="tonal" :loading="tagMigrating" @click="emit('apply-tag-migrate')">
-                执行迁移（{{ tagMigratePlan.total }} 个）
-              </VBtn>
               <VSpacer />
               <span class="magicflow-settings-hint">账本 {{ tagInfo?.ledger_count ?? 0 }} 条 · 文件组 {{ tagInfo?.groups?.groups ?? 0 }}（多站 {{ tagInfo?.groups?.multi_site_groups ?? 0 }}）</span>
             </div>
-            <div v-if="tagMigratePlan" class="magicflow-tag-migrate">
-              <p class="magicflow-settings-hint">
-                待迁移 <strong>{{ tagMigratePlan.total }}</strong> 个：
-                <em v-for="(n, k) in tagMigratePlan.by_state" :key="k">{{ k }} {{ n }} </em>
-              </p>
-              <div class="magicflow-tag-migrate__samples">
-                <div v-for="(row, i) in (tagMigratePlan.samples || [])" :key="i" class="magicflow-tag-migrate__row">
-                  <span class="magicflow-tag-migrate__title" :title="row.title">{{ row.title }}</span>
-                  <span class="magicflow-tag-migrate__tags">
-                    <em>{{ (row.remove || []).join(' ') }}</em> → <strong>{{ row.add }}</strong>
-                  </span>
-                </div>
-              </div>
-            </div>
-            <p class="magicflow-settings-hint">
-              迁移会把任务里手填的 <code>brush_tag</code>（如 <code>魔流-财神</code>）换成状态标签，
-              保留 <code>已整理 / 辅种</code> 等外来标签；预演不变更任何东西。
-            </p>
           </div>
 
           <div v-else-if="settingsTab === 'crossseed'" class="magicflow-settings-form">
@@ -1226,8 +1316,8 @@ defineProps({
 
           <div v-else-if="settingsTab === 'fallback'" class="magicflow-settings-form">
             <p class="magicflow-settings-hint">
-              TMDB 对<strong>番剧特别篇/前传、国漫、B站特供</strong>常常「根本没有」，离了 TMDB 就没元数据可用。
-              这里做<strong>多源识别回退</strong>（按顺序试各来源）→ 给库里缺 NFO 的集补一份<strong>最小 NFO</strong>，
+              TMDB 对<strong>番剧特别篇/前传、国漫、B站特供</strong>常常「根本没有」，离了它就没元数据可用。
+              这里做<strong>多源识别回退</strong>（按顺序试各来源），给库里缺 NFO 的集补一份<strong>最小 NFO</strong>，
               让播放器 / 飞牛影视能显示名称与集号。<strong>只写 NFO，不动媒体文件，已存在的好 NFO 不覆盖。</strong>
             </p>
             <div class="magicflow-settings-switches">
@@ -1380,7 +1470,7 @@ defineProps({
                   hide-details
                   autocomplete="off"
                   persistent-hint
-                  hint="留空 = 保留已保存的 Token；Token 不会回显到浏览器"
+                  hint="留空＝保留已存 Token；Token 不回显"
                 />
                 <VBtn
                   variant="tonal"
@@ -1416,7 +1506,7 @@ defineProps({
             <VTextField
               v-model="settingsDraft.cloud_target_template"
               label="远端目标模板"
-              hint="{rel} = 相对库根的路径。默认 /quark/movie/{rel}（与本地库同构，影视侧自动对应）"
+              hint="{rel}＝相对库根的路径；默认 /quark/movie/{rel}（与本地库同构）"
               persistent-hint
               variant="outlined"
               density="comfortable"
@@ -1438,7 +1528,7 @@ defineProps({
             <VCombobox
               v-model="settingsDraft.cloud_exclude_paths"
               label="排除路径（子串匹配）"
-              hint="默认已排除下载区/刷流区/蓝光原盘结构；这里可再加"
+              hint="默认已排除下载区/刷流区/蓝光原盘；这里可再加"
               persistent-hint
               variant="outlined"
               density="comfortable"
@@ -1450,7 +1540,7 @@ defineProps({
 
             <VCombobox
               v-model="settingsDraft.cloud_exclude_tags"
-              label="排除标签（做种中的种子不打标上传策略，可留空）"
+              label="排除标签（做种中的种不打上传策略标，可留空）"
               variant="outlined"
               density="comfortable"
               chips
@@ -1516,7 +1606,7 @@ defineProps({
             <div class="magicflow-settings-switches">
               <VSwitch
                 v-model="settingsDraft.cloud_delete_local"
-                label="归档后删除本地文件（危险：会停种；插件会拒绝自动执行，只做记录）"
+                label="归档后删除本地文件（危险：会停种；插件只记录、不自动执行）"
                 color="error"
                 hide-details
                 inset
@@ -1603,41 +1693,6 @@ defineProps({
   display: flex;
   align-items: center;
   gap: 0.5rem;
-}
-
-.magicflow-tag-migrate {
-  margin-top: 0.5rem;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
-  border-radius: 8px;
-  padding: 0.5rem 0.75rem;
-}
-
-.magicflow-tag-migrate__samples {
-  max-height: 26vh;
-  overflow-y: auto;
-}
-
-.magicflow-tag-migrate__row {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
-  gap: 0.5rem;
-  font-size: 0.8125rem;
-  padding: 0.125rem 0;
-}
-
-.magicflow-tag-migrate__title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.magicflow-tag-migrate__tags em {
-  opacity: var(--mf-op-dim);
-  text-decoration: line-through;
-}
-
-.magicflow-tag-migrate__tags strong {
-  color: rgb(var(--v-theme-primary));
 }
 
 .magicflow-rules-row {

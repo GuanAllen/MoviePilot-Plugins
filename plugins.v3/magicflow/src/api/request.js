@@ -14,6 +14,10 @@ import { makeSettings } from './settings'
 import { makeFeatures } from './features'
 import { makePoolstats } from './poolstats'
 import { makeAssets } from './assets'
+import { makeJobs } from './jobs'
+import { makeTrend } from './trend'
+import { makeNotify } from './notify'
+import { makePlan } from './plan'
 
 /** 插件 API 基址。 */
 export function pluginBaseOf(pluginId) {
@@ -49,5 +53,9 @@ export function createApi(http, pluginId = 'MagicFlow') {
   c.features = makeFeatures(c)
   c.poolstats = makePoolstats(c)
   c.assets = makeAssets(c)
+  c.jobs = makeJobs(c)
+  c.trend = makeTrend(c)
+  c.notify = makeNotify(c)
+  c.plan = makePlan(c)
   return c
 }

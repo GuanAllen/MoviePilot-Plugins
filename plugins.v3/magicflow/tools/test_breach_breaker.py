@@ -180,8 +180,7 @@ def main() -> int:
 
     res = h._hrbills_breach_reconcile(site="carpt.net", confirm=True)
     _ok(res["totals"]["voided"] == 1, f"confirm 清账 1 张（实际 {res['totals']['voided']}）")
-    _ok(store.get("w1")["state"] == BILL_STATE_VOID
-        and store.get("w1")["void_reason"] == "site_no_longer_owed", "w1 → void/reason=site_no_longer_owed")
+    _ok(store.get("w1") is None, "w1 清账 → 账单已删除（作废即删）")
     _ok(any(a["site"] == "carpt.net" and a["tids"] == ["209930"] and a["confirm"]
             for a in h.applied), "站点仍欠 w2 → 调 _hr_reconcile_apply(tids=[209930], confirm=True)")
 

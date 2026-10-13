@@ -29,11 +29,11 @@ const emit = defineEmits(['load-enforce', 'suppress'])
       <VDivider />
       <VCardText class="text-body-2">
         <div class="magicflow-settings-hint mt-2">
-          <strong>补暂停</strong>（★ 12.7.1 / 15.1.0）：设计口径「静默池本意就是暂停不上传」——账本（或标签）已是静默、
+          <strong>补暂停</strong>（12.7.1 / 15.1.0）：静默池本意就是暂停不上传——账本（或标签）已静默、
           但下载器里没停的种一律补 pause（幂等，<strong>只暂停、不删种、不动文件</strong>）。
           <span v-if="counts.violations">当前违背不变量 <b>{{ counts.violations }}</b> 个。</span>
           <span v-else>当前不变量成立（全 paused）。</span>
-          <span v-if="counts.tag_only">（其中 <b>{{ counts.tag_only }}</b> 个是「只打了静默标签、不在账本」的——多为全站辅种副本，15.1.0 起一并纳入收敛。）</span>
+          <span v-if="counts.tag_only">（其中 <b>{{ counts.tag_only }}</b> 个只打了静默标签、不在账本——多为全站辅种副本，15.1.0 起一并纳入收敛。）</span>
         </div>
       </VCardText>
       <VDivider />

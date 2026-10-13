@@ -289,7 +289,6 @@ def test_pure_mapping(sitestore) -> None:
         "domain": "PT.BTSCHOOL.CLUB", "hr": True, "hr_src": "welcome",
         "seed_hours": 240.0, "seed_need_hours": 20.0, "seed_cap": None,
         "seed_window_hours": 240.0, "exam_avg_hours": 30.0,
-        "free_over_gb": 20.0, "free_original": True, "free_ep1": False,
         "source": "welcome", "confidence": "high", "evidence": "rules.php 原文",
         "probed_at": 1758000000.0, "rule_url": "https://x/rules.php",
         "rule_label": "H&R", "rule_src": "rules.php", "rule_mail_id": "m1",

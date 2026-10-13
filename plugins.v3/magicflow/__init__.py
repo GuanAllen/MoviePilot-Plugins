@@ -42,6 +42,8 @@ from .features.hr import HrMixin
 from .features.hrbills import HrBillsMixin
 from .features.yema import YemaHrMixin
 from .features.assets import AssetsMixin
+from .features.jobs import JobsMixin
+from .features.notify import NotifyMixin
 from .features.services import ServicesMixin
 from .features.reseed import ReSeedMixin
 from .features.reuse import ReuseMixin
@@ -67,12 +69,12 @@ from .features.health import HealthMixin
 from .features.eventlog import EventLogMixin
 from .features.sitereport import SiteReportMixin
 from .features.musicgrab import MusicGrabMixin
+from .features.plan import PlanMixin
 
 from .dupgate import DupGateMixin
-from .manualinject import ManualInjectMixin
 
 
-class MagicFlow(DupGateMixin, ManualInjectMixin, CoreMixin, RuntimeMixin, AgentApiMixin, AgentLedgerMixin, ApiMixin, RescueMixin, SettingsMixin, StatusMixin, TasksMixin, BrushMixin, FormulaMixin, ProtectionMixin, DeleteGateMixin, HrMixin, HrBillsMixin, YemaHrMixin, AssetsMixin, ServicesMixin, ReuseMixin, ReSeedMixin, CleanupMixin, CrossSeedMixin, TagsMixin, SilentMixin, RecommendMixin, LiveMixin, ExamMixin, PoolMixin, CloudMixin, SiteOpsMixin, EventsMixin, ActionsMixin, DeckMixin, OnDemandMixin, DebugMixin, RegistryMixin, ClaimMixin, TrendMixin, HealthMixin, EventLogMixin, SiteReportMixin, MusicGrabMixin, _PluginBase):
+class MagicFlow(DupGateMixin, CoreMixin, RuntimeMixin, AgentApiMixin, AgentLedgerMixin, PlanMixin, ApiMixin, RescueMixin, SettingsMixin, StatusMixin, TasksMixin, BrushMixin, FormulaMixin, ProtectionMixin, DeleteGateMixin, HrMixin, HrBillsMixin, YemaHrMixin, AssetsMixin, JobsMixin, NotifyMixin, ServicesMixin, ReuseMixin, ReSeedMixin, CleanupMixin, CrossSeedMixin, TagsMixin, SilentMixin, RecommendMixin, LiveMixin, ExamMixin, PoolMixin, CloudMixin, SiteOpsMixin, EventsMixin, ActionsMixin, DeckMixin, OnDemandMixin, DebugMixin, RegistryMixin, ClaimMixin, TrendMixin, HealthMixin, EventLogMixin, SiteReportMixin, MusicGrabMixin, _PluginBase):
     """魔流插件主类。"""
 
     plugin_name = "魔流"
@@ -88,6 +90,22 @@ class MagicFlow(DupGateMixin, ManualInjectMixin, CoreMixin, RuntimeMixin, AgentA
 
     DATA_SCHEMA_VERSION = 1
 
+    def get_agent_tools(self) -> list:
+        """★ 15.11.0：把魔流 AI 入口注册进 MoviePilot Agent / MCP。
+
+        Master：「我说的就是我们 agent 里面的东西可以注册到这个 mcp 里面，点播什么的」
+        MP 的 MCP server（``POST /api/v1/mcp``）会把这里返回的工具列进 ``tools/list``。
+        """
+        try:
+            if not bool(getattr(self, "_agent_mcp", True)):
+                return []
+            from .features.mcptools import build_agent_tools
+            return build_agent_tools(scope=str(getattr(self, "_agent_mcp_scope", "core") or "core"))
+        except Exception as err:  # noqa: BLE001
+            from app.sdk.logging import logger as _lg
+            _lg.warning(f"魔流 MCP 工具注册失败（忽略）：{err}")
+            return []
+
     def get_database_models(self) -> list:
         """声明插件自有库的 5 张表（MP 启动时一并建立，见 db.py）。"""
         from . import db as _db
@@ -96,6 +114,8 @@ class MagicFlow(DupGateMixin, ManualInjectMixin, CoreMixin, RuntimeMixin, AgentA
     # 运行状态
     _enabled: bool = False
     _show_sidebar_nav: bool = True
+    _agent_mcp: bool = True                 # ★ 15.11.0：把 AI 入口注册进 MP Agent / MCP
+    _agent_mcp_scope: str = "core"          # core=常用业务工具 / all=全部端点
     _task_configs: Dict[str, MagicFlowTaskConfig] = {}
     _task_locks: Dict[str, Any] = {}
     _task_runs: Dict[str, float] = {}

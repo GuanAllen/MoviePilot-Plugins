@@ -86,6 +86,70 @@ class CrossSeedMixin:
             )
         return obj
 
+    def _crossseed_sources_tick(self) -> Dict[str, Any]:
+        """★ 来源份保种监督（2026-10-11 重做：14.0.0 把它当死代码删了，但 ``_crossseed_guard``
+        仍调用它 → ``AttributeError`` 被 try/except 吞掉 → 来源份永不结清、闸门永久硬拦）。
+
+        职责：① 标签确权（来源份只属于「魔流-跨站」，被任务抢走就改回来）；
+        ② 做种时长达标 → 标记 ``done``（``active()`` 据此解除保护）；
+        ③ 清掉已不在下载器的条目。**不做入静默池**（下完分诊已交给 ``_crossseed_tick``）。
+        """
+        store = self._crossseed_sources()
+        items = store.items()
+        res: Dict[str, Any] = {"protected": len(items), "retagged": 0, "completed": 0, "pruned": 0}
+        if not items:
+            return res
+        dl_cache: Dict[str, Any] = {}
+        now = time.time()
+        live: Set[str] = set()
+        for h, rec in list(items.items()):
+            dl_name = str(rec.get("downloader") or "qbittorrent")
+            downloader = dl_cache.get(dl_name)
+            if downloader is None:
+                downloader = self._get_downloader(dl_name)
+                dl_cache[dl_name] = downloader
+            if downloader is None or not getattr(downloader, "is_available", False):
+                live.add(h)                       # 下载器不可用 → 保守视为还在，不 prune
+                continue
+            info = downloader.get_torrent_info(h)
+            if info is None:
+                continue                          # 已不在下载器 → 交给 prune
+            live.add(h)
+            try:
+                seeded = float(seed_hours_for_hr(info)) * 3600.0
+            except Exception:                     # noqa: BLE001
+                seeded = 0.0
+            try:
+                # need_hours 不落 mf_crossseed（不在 _CROSSSEED_COLUMNS）→ 回退用站点要求的 hours
+                need = float(rec.get("need_hours") or rec.get("hours") or 0.0)
+            except (TypeError, ValueError):
+                need = 0.0
+            if seeded > float(rec.get("seeded_sec") or 0.0) + 1.0:
+                store.put(h, {"seeded_sec": seeded})
+            if need > 0 and seeded >= need * 3600.0 and not bool(rec.get("done")):
+                store.put(h, {"done": True, "done_ts": now, "seeded_sec": seeded})
+                res["completed"] = int(res["completed"]) + 1
+                self._log(f"跨站:H&R 义务完成 —— {rec.get('site_b', '') or rec.get('site_b_domain', '')} "
+                          f"「{str(rec.get('title') or '')[:50]}」实做种 {seeded / 3600.0:.1f}h ≥ {need:g}h → 解除保护")
+                continue
+            if rec.get("done"):
+                continue                          # 已履行 → 不再保护、不强制标签
+            tags = getattr(info, "tags", None) or []
+            if isinstance(tags, str):
+                tags = [t.strip() for t in tags.split(",") if t.strip()]
+            if CROSSSEED_TAG not in tags:
+                try:
+                    if downloader.set_torrent_tags(h, [CROSSSEED_TAG]):
+                        res["retagged"] = int(res["retagged"]) + 1
+                except Exception:                 # noqa: BLE001
+                    pass
+        dead = store.prune(live)
+        if dead:
+            res["pruned"] = len(dead)
+        self._cs_src_hashes_cache = None          # 失效「保护集合」缓存
+        res["protected"] = len(store.items())
+        return res
+
     def _crossseed_source_hashes(self) -> Set[str]:
         """当前受 H&R 保护的来源份 hash 集合（并入清理保护集合）。
 
@@ -242,11 +306,14 @@ class CrossSeedMixin:
             cache = self._tier_cross_obj = TierCache("cross", base=self._cache_base())
         return cache
 
-    def _mp_search_title(self, keyword: str, sites: List[int], mtype: str = "") -> List[Any]:
+    def _mp_search_title(self, keyword: str, sites: List[int], mtype: str = "",
+                         page: int = 0) -> List[Any]:
         """调 MoviePilot 自带搜索（`SearchChain.search_by_title`），**兼容不同版签名**。
 
         只搜指定的站（`sites`）；若该版本不支持 `sites` 就不搜（不能限制就宁可不动 —— 不然会搜到全站、白烧 PV）。
         ``mtype``（15.7.0）：`music` = 只搜音乐类（影视默认为空）。老版本不支持则忽略。
+        ``page``（★ 17.1.1）：MP v3.1.2 的 ``search_by_title`` **原生带 ``page`` 形参**（一次一页）。
+        点播「按 AI 选定源落种」靠它续页找 pick；老版本无此形参 → 不传（仍是第 1 页，行为同改前）。
         """
         from app.chain.search import SearchChain  # noqa: WPS433
 
@@ -269,6 +336,11 @@ class CrossSeedMixin:
             kwargs["rule_groups"] = []      # ★ 空列表 = 不套用用户的搜索过滤规则
         if "cache_local" in params:
             kwargs["cache_local"] = False
+        if "page" in params:
+            try:
+                kwargs["page"] = max(0, int(page or 0))
+            except (TypeError, ValueError):
+                kwargs["page"] = 0
         if mtype and "mtype" in params:
             try:
                 from app.schemas.types import MediaType  # noqa: WPS433

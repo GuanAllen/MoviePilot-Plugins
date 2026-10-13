@@ -126,9 +126,6 @@ def _columns() -> Dict[str, List[Dict[str, Any]]]:
             _col("seed_window_hours", "float", unit="h", desc="规则窗口（保守保护期）"),
             _col("seed_cap", "int", desc="做种上限"),
             _col("exam_avg_hours", "float", unit="h", desc="考核平均保种小时"),
-            _col("free_over_gb", "float", unit="GB", desc="体积≥该值自动免费"),
-            _col("free_original", "bool", desc="原盘/原抓免费"),
-            _col("free_ep1", "bool", desc="首集免费"),
             _col("per_torrent_hr", "bool", desc="逐种 H&R 站（站点级无法评估）"),
             _col("note", "string", desc="规则备注"),
             _col("rule_url", "string", desc="规则依据 URL"),
@@ -361,9 +358,6 @@ class AgentLedgerMixin:
                 "seed_window_hours": getattr(r, "seed_window_hours", None),
                 "seed_cap": getattr(r, "seed_cap", None),
                 "exam_avg_hours": getattr(r, "exam_avg_hours", None),
-                "free_over_gb": getattr(r, "free_over_gb", None),
-                "free_original": getattr(r, "free_original", None),
-                "free_ep1": getattr(r, "free_ep1", None),
                 "per_torrent_hr": getattr(r, "per_torrent_hr", None),
                 "note": getattr(r, "note", None),
                 "rule_url": getattr(r, "rule_url", None),
@@ -854,6 +848,22 @@ class AgentLedgerMixin:
             return self._agent_err("internal", f"趋势读取失败:{e}", t0, trace_id=str(e))
         return self._agent_ok(getattr(resp, "data", {}) or {}, t0)
 
+    def agent_trend_why(self, scope: str = "site", id: str = "", hours: Any = 72) -> Dict[str, Any]:
+        """``GET /agent/trend/why`` —— 趋势归因（时魔变化拆因子 + 结论 + 建议）。"""
+        t0 = time.time()
+        # 参数错误由 explain_trend 用 Response(data={"bad_param": True}) 标记，
+        # `_agent_call_read` 据此回 bad_param（不再一律 internal）；真机实测 2026-10-14。
+        return self._agent_call_read(
+            t0, "explain_trend() → 小时序列前后两段对比 + 因子拆解 + 结论",
+            self.explain_trend, scope=scope, id=id, hours=hours)
+
+    def agent_trend_daily(self, scope: str = "site", id: str = "", days: Any = 30) -> Dict[str, Any]:
+        """``GET /agent/trend/daily`` —— 长期趋势（日报，持久化 180 天）。"""
+        t0 = time.time()
+        return self._agent_call_read(
+            t0, "get_trend_daily() → 插件数据目录 trend_daily.json（日报，180 天）",
+            self.get_trend_daily, scope=scope, id=id, days=days)
+
     def agent_rules(self) -> Dict[str, Any]:
         """``GET /agent/rules`` —— 站点规则（H&R / need_hours / 来源 builtin|override）。"""
         t0 = time.time()
@@ -990,8 +1000,13 @@ class AgentLedgerMixin:
         except Exception as e:  # noqa: BLE001
             return self._agent_err("internal", f"{source}读取失败:{e}", t0, trace_id=str(e))
         if getattr(resp, "success", True) is False:
-            return self._agent_err("internal",
-                                   str(getattr(resp, "message", "") or f"{source}读取失败"), t0)
+            # 参数类失败回 bad_param（模型据此自纠），别一律当插件故障：
+            # handler 用 ``Response(data={"bad_param": True, "field": …})`` 标记（如 explain_trend）。
+            _d = self._agent_resp_data(resp)
+            _param = isinstance(_d, dict) and bool(_d.get("bad_param"))
+            _kw = {"field": str(_d.get("field"))} if (_param and _d.get("field")) else {}
+            return self._agent_err("bad_param" if _param else "internal",
+                                   str(getattr(resp, "message", "") or f"{source}读取失败"), t0, **_kw)
         return self._agent_report(self._agent_resp_data(resp), t0, source)
 
     def agent_task_bonus(self, id: str = "") -> Dict[str, Any]:
@@ -1034,7 +1049,7 @@ class AgentLedgerMixin:
 
     def agent_douban(self) -> Dict[str, Any]:
         t0 = time.time()
-        return self._agent_call_read(t0, "douban_service_status() → magicflow-douban 服务状态",
+        return self._agent_call_read(t0, "douban_service_status() → magicflow-douban 服务状态（库/缓存/慢爬/详情回填）",
                                      self.douban_service_status)
 
     def agent_live(self, site_id: Any = 0) -> Dict[str, Any]:
@@ -1055,6 +1070,58 @@ class AgentLedgerMixin:
             t0, "get_exam_state() → 考核解析 + live 快照",
             self.get_exam_state, site_id=self._agent_int(site_id, 0),
             include_pass=self._agent_bool(include_pass))
+
+    def agent_exam_act(self, site_id: Any = 0, kind: str = "", confirm: Any = False) -> Dict[str, Any]:
+        """``GET|POST /agent/exam/act`` —— ★ 新手考核「一键起任务」（**写**：新建/启用任务）。
+
+        与页面端点 ``POST /exam/act`` **同一实现**（``exam.exam_act``），confirm 门禁不变：
+
+        - ``confirm`` 非真值 → **干跑**（不建任务；本端点直接回报 ``dry_run=true`` +
+          「预演明细见 ``GET /agent/exam``」，避免把「未确认」当成错误码）；
+        - ``confirm=1`` → 按该站**未通过**考核项建/启用任务；``kind=hold`` 不建任务（只做种即可）；
+          ``kind=download`` 明确不支持（魔流不做下载任务）。
+        - 写入面：仅**新建/启用任务配置**（不碰下载器、不删种）。
+        """
+        t0 = time.time()
+        sid = int(self._agent_int(site_id, 0))
+        kd = str(kind or "").strip().lower()
+        cf = bool(self._agent_bool(confirm))
+        if not sid:
+            return self._agent_err("bad_param", "缺少 site_id", t0, field="site_id")
+        if kd == "download":
+            return self._agent_err("bad_param", "kind=download 不支持：魔流不做下载业务（下载类考核请自行安排）",
+                                   t0, field="kind")
+        if kd not in ("upload", "bonus", "hold"):
+            return self._agent_err("bad_param", "kind 只能是 upload/bonus/hold", t0, field="kind")
+        try:
+            resp = self.exam_act(site_id=sid, kind=kd, confirm=cf)
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"新手考核一键起任务失败:{e}", t0, trace_id=str(e))
+        data = self._agent_resp_data(resp) or {}
+        ok = bool(getattr(resp, "success", False))
+        msg = str(getattr(resp, "message", "") or "")
+        if not ok and not cf:
+            # 干跑：用**同一函数**（_exam_action_plan，只读）算出「会建什么」，不写任何配置
+            item: Any = None
+            try:
+                live = (self._live_snapshot(sid) or {}).get("live") or {}
+                item = next((p for p in (self._exam_action_plan(sid, live, []) or [])
+                             if str(p.get("kind")) == kd), None)
+            except Exception:  # noqa: BLE001
+                item = None
+            preview = ({k: item.get(k) for k in ("label", "kind", "task_name", "params", "short_gb", "notes")
+                        if item.get(k) is not None} or None) if item else None
+            return self._agent_report(
+                {"dry_run": True, "site_id": sid, "kind": kd, "confirm": False,
+                 "would_create": preview,
+                 "hint": ("confirm=1 才会真建/启用任务；逐项预演见 GET /agent/exam" if preview else
+                          "该考核项当前无需处理（已通过 / 未识别）；完整预演见 GET /agent/exam")},
+                t0, "features/exam.py::exam_act + _exam_action_plan（干跑：只算不写）")
+        if not ok:
+            return self._agent_err("bad_request", msg or "未执行", t0, data=data)
+        return self._agent_report(
+            dict(data or {}, message=msg), t0,
+            "features/exam.py::exam_act → 按未通过考核项新建/启用任务（confirm 门禁；不删种、不动下载器）")
 
     def agent_silent(self, limit: Any = 400, records: Any = 60) -> Dict[str, Any]:
         t0 = time.time()
@@ -1261,7 +1328,7 @@ def _agent_type_schemas() -> Dict[str, Dict[str, Any]]:
             "_source": _f("string", desc="= /reseed 全站辅种状态（站点/配额/缓存/账本/上轮结果）"),
         },
         "DoubanReport": {
-            "_source": _f("string", desc="= /douban_service 豆瓣评分服务库容量 + 慢爬进度"),
+            "_source": _f("string", desc="= /douban_service 豆瓣评分服务：库容量 + 慢爬进度 + 详情回填（year/type/rating/元数据）"),
         },
         "LiveReport": {
             "_source": _f("string", desc="= /live 站点实时数据 + 流量监控"),

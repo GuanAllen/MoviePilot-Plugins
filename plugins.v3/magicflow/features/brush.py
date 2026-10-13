@@ -616,6 +616,9 @@ class BrushMixin:
                     kept=summary.get("kept"),
                     reused=summary.get("reused"),
                 ))
+            # ★ 15.13.0：任务失败 → 实时通知（只发消息）
+            if str(summary.get("status") or "") == "failed":
+                self.notify_task_fail(task, summary.get("reason"), duration)
         except Exception as e:
             import traceback
             logger.error(f"魔流 brush 异常: {e}\n{traceback.format_exc()}")
@@ -628,6 +631,7 @@ class BrushMixin:
                     task_id=task_id, source="brush", status="failed",
                     reason=str(e), duration=time.time() - started,
                 ))
+            self.notify_task_fail(task, str(e), time.time() - started)
         finally:
             self._end_run(task_id)
             self._release_worker_slot()

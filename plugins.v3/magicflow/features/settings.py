@@ -57,6 +57,40 @@ class SettingsMixin:
         """更新插件全局设置。"""
         self._enabled = bool(payload.enabled)
         self._show_sidebar_nav = bool(payload.show_sidebar_nav)
+        # ★ 15.11.0：MCP/Agent 工具注册（按 model_fields_set 才写，避免局部保存抹掉）
+        _fs_mcp = set(getattr(payload, "model_fields_set", None) or set())
+        if "agent_mcp" in _fs_mcp or not _fs_mcp:
+            self._agent_mcp = bool(getattr(payload, "agent_mcp", True))
+        if "agent_mcp_scope" in _fs_mcp or not _fs_mcp:
+            _sc = str(getattr(payload, "agent_mcp_scope", "core") or "core").strip().lower()
+            self._agent_mcp_scope = _sc if _sc in ("core", "all") else "core"
+        # ★ 15.13.0：事件通知配置（同样按 model_fields_set 才写）
+        _notify_keys = ("notify_enabled", "notify_hr_hours", "notify_capacity_pct",
+                        "notify_drop_pct", "notify_task_fail", "notify_daily",
+                        "notify_daily_hour", "notify_quiet")
+        for _k in _notify_keys:
+            if _fs_mcp and _k not in _fs_mcp:
+                continue
+            _v = getattr(payload, _k, None)
+            if _k == "notify_enabled":
+                self._notify_enabled = bool(_v if _v is not None else True)
+            elif _k == "notify_task_fail":
+                self._notify_task_fail = bool(_v if _v is not None else True)
+            elif _k == "notify_daily":
+                self._notify_daily = bool(_v if _v is not None else False)
+            elif _k == "notify_daily_hour":
+                try:
+                    self._notify_daily_hour = max(0, min(23, int(_v if _v is not None else 9)))
+                except (TypeError, ValueError):
+                    self._notify_daily_hour = 9
+            elif _k == "notify_quiet":
+                self._notify_quiet = str(_v or "").strip()
+            else:
+                try:
+                    _num = float(_v) if _v is not None else 0.0
+                except (TypeError, ValueError):
+                    _num = 0.0
+                setattr(self, "_" + _k, _num)
         self._debug_log = bool(payload.debug_log)
         self._compact_mode = bool(payload.compact_mode)
         try:
@@ -114,6 +148,7 @@ class SettingsMixin:
             except (TypeError, ValueError):
                 return d
 
+        _prev_rec = dict(getattr(self, "_recommend_cfg", {}) or {})
         self._recommend_cfg = {
             "enabled": bool(getattr(payload, "recommend_enabled", True)),
             "min_rating": _rf(getattr(payload, "recommend_min_rating", 7.5), 7.5),
@@ -125,6 +160,51 @@ class SettingsMixin:
             "temp_ttl_days": _rf(getattr(payload, "recommend_temp_ttl_days", 7.0), 7.0),
             "disk_min_free_gb": _rf(getattr(payload, "recommend_disk_min_free_gb", 50.0), 50.0),
         }
+        # ★ 15.8.19：评分源 / 豆瓣服务 / 死种补源 —— 旧代码保存时不写回这几个键，而
+        #   _save_config() → _current_config() 会按默认值整份回写 ⇒ 任何一次「保存」都会把
+        #   「豆瓣优先」悄悄改回 tmdb、清空豆瓣服务地址、把 rescue 阈值打回默认。
+        #   以下按「payload 真带了才写」合并（model_fields_set）：旧前端 chunk / 宿主配置页
+        #   提交局部 payload 时保持现值，绝不误抹（同 iyuu_token 的空值保护思路）。
+        _fs = getattr(payload, "model_fields_set", None)
+        if _fs is None:
+            # ★ 15.8.22：拿不到 model_fields_set（旧 pydantic / 包装对象）时**不再假定「全带了」**
+            #   —— 旧写法会把局部 payload 当全量写，把「豆瓣优先」打回 tmdb、清空服务地址。
+            #   这里改为「不写可选键」：现值保留，绝不误抹。
+            _fs = set()
+        # ★ 15.8.22：本次**未提交**的键保留现值（此前整份重建会把这些键整个丢掉，
+        #   随后 _save_config() 按默认值落盘 ⇒ 任何一次局部保存都会静默改配置）。
+        for _k, _dk in (("rating_source", "tmdb"), ("douban_max_per_run", 30),
+                        ("douban_service_url", ""), ("episode_policy", "season_first")):
+            if _k not in self._recommend_cfg:
+                self._recommend_cfg[_k] = _prev_rec.get(_k, _dk)
+        if "recommend_rating_source" in _fs:
+            self._recommend_cfg["rating_source"] = (
+                "douban" if str(getattr(payload, "recommend_rating_source", "") or "").strip().lower() == "douban"
+                else "tmdb"
+            )
+        if "recommend_douban_max_per_run" in _fs:
+            self._recommend_cfg["douban_max_per_run"] = max(
+                0, int(_rf(getattr(payload, "recommend_douban_max_per_run", 30), 30.0)))
+        if "recommend_douban_service_url" in _fs:
+            self._recommend_cfg["douban_service_url"] = str(
+                getattr(payload, "recommend_douban_service_url", "") or "").strip()
+        # ★ 15.8.21/15.8.25：单集策略（按 model_fields_set 才写，避免抹掉现值）
+        if "recommend_episode_policy" in _fs:
+            self._recommend_cfg["episode_policy"] = (
+                "all" if str(getattr(payload, "recommend_episode_policy", "") or ""
+                            ).strip().lower() == "all" else "season_first"
+            )
+        self._recommend_cfg.setdefault("episode_policy", "season_first")
+        _rescue = dict(getattr(self, "_rescue_cfg", {}) or {})
+        if "rescue_stall_hours" in _fs:
+            _rescue["stall_hours"] = _rf(getattr(payload, "rescue_stall_hours", None),
+                                         float(_rescue.get("stall_hours") or 6.0))
+        if "rescue_max_candidates" in _fs:
+            _rescue["max_candidates"] = max(0, int(_rf(getattr(payload, "rescue_max_candidates", None),
+                                                       float(_rescue.get("max_candidates") or 3.0))))
+        _rescue.setdefault("stall_hours", 6.0)
+        _rescue.setdefault("max_candidates", 3)
+        self._rescue_cfg = _rescue
         # 跨站辅种：兄弟站流量兜底
         self._cs_cfg = {
             "guard": bool(getattr(payload, "crossseed_guard", True)),
@@ -187,7 +267,6 @@ class SettingsMixin:
             "new_timeout": max(0.0, _rf(getattr(payload, "tag_silent_new_timeout_hours", 24.0), 24.0)) * 3600.0,
             "rules": [dict(r) for r in _sr if isinstance(r, dict)] if isinstance(_sr, list) and _sr else [dict(r) for r in DEFAULT_SORT_RULES],
         }
-        self._sync_free_rules()
         # 元数据兜底(多源识别 + 补 NFO)
         _fsrc = getattr(payload, "fallback_sources", None)
         _fpaths = getattr(payload, "fallback_paths", None)

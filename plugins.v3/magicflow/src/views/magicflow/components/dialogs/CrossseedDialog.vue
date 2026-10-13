@@ -197,11 +197,11 @@ function openSilent() { emit('silent') }
           <summary>查看完整规则</summary>
           <div class="magicflow-cs-rules__body">
             <p><strong>取种原理</strong>：在他站<strong>免费</strong>下载同一资源。落种由全局任务「<strong>跨站取种</strong>」承接；本站判为「非免费」的候选只走跨站，<strong>绝不在本站下载</strong>。把资源挂回本站的工作由「<strong>全站辅种</strong>」负责，本线不再回辅。</p>
-            <p><strong>流量兜底</strong>：判「免费」可能出错 → 取种期间核对来源站的免费状态与下载量增量；发现其实不免费，立即<strong>删种 + 拉黑该站</strong>（需人工确认后解除）。</p>
-            <p><strong>来源份 H&amp;R 保种</strong>：他站那份下完即做分诊 —— 欠 H&amp;R 交保种（保种期内任何任务都不会删它、也不会改它的标签），不欠则入静默池。</p>
-            <p><strong>取种台账</strong>：他站下载中=在岗；下完 → 过 H&amp;R 判定分诊并销账。超过 6 小时未下完/停滞会放弃。未下载完不会转资源、不会整理入库。</p>
-            <p><strong>保种时长</strong>：默认 {{ crossseedGuard.seed_hours_default ?? 24 }} 小时；优先级 种子自带 H&amp;R 标记 &gt; 站点规则库 &gt; 默认值。站点自定义：{{ (crossseedGuard.site_hours || []).join('、') || '无' }}。</p>
-            <p><strong>期满回收</strong>：{{ crossseedGuard.reclaim ? '已开启——保种期满后允许被任务删种回收空间。' : '未开启——保种期满的种也不会被自动删除。' }}</p>
+            <p><strong>流量兜底</strong>：判「免费」可能出错：取种期间核对来源站的免费状态与下载量增量；发现其实不免费，立即<strong>删种 + 拉黑该站</strong>（需人工确认后解除）。</p>
+            <p><strong>来源份 H&amp;R 保种</strong>：他站那份下完即分诊：欠 H&amp;R 交保种（保种期内任何任务不删它、也不改标签），不欠则入静默池。</p>
+            <p><strong>取种台账</strong>：他站下载中＝在岗；下完过 H&amp;R 判定分诊并销账。超过 6 小时未下完即放弃；未下完不转资源、不整理入库。</p>
+            <p><strong>保种时长</strong>：默认 {{ crossseedGuard.seed_hours_default ?? 24 }} 小时；优先级：种子自带 H&amp;R ＞ 站点规则库 ＞ 默认值。站点自定义：{{ (crossseedGuard.site_hours || []).join('、') || '无' }}。</p>
+            <p><strong>期满回收</strong>：{{ crossseedGuard.reclaim ? '已开启：期满后允许删种回收空间。' : '未开启：期满的种也不会被自动删除。' }}</p>
           </div>
         </details>
       </VCardText>

@@ -101,7 +101,7 @@ function taskLabel(taskId) {
         <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="open = false" />
       </header>
       <div class="magicflow-ops-dialog__sub">
-        <template v-if="scope === 'all'">全部任务 · 跨站点汇总 · 每次执行 / 选种 / 删种 / 保护 / 标签 的流水（最近 100 条）</template>
+        <template v-if="scope === 'all'">全部任务 · 跨站点汇总 · 执行 / 选种 / 删种 / 保护 / 标签 流水（最近 100 条）</template>
         <template v-else>{{ selectedTask ? (selectedTask.name || '当前任务') : '未选择任务' }} · 每次执行 / 选种 / 删种 / 保护 / 标签 的流水</template>
       </div>
       <div class="magicflow-ops-dialog__tabs">

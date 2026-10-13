@@ -117,7 +117,7 @@ defineProps({
           label="下载器标签"
           readonly
           prepend-inner-icon="mdi-lock-outline"
-          :hint="`自动：${autoTag || '魔流-站点-职务'}（按站点+任务类型派生，只读）`"
+          :hint="`自动：${autoTag || '魔流-站点-职务'}（按站点+类型派生，只读）`"
           persistent-hint
         />
       </VCol>
@@ -129,7 +129,7 @@ defineProps({
           @update:model-value="emit('save-path-change')"
           @update:focused="focused => { if (!focused) emit('remember-save-path', savePath) }"
           placeholder="留空使用下载器默认目录"
-          hint="默认目录可在插件设置「下载目录」中配置"
+          hint="默认目录可在插件设置「下载目录」里配置"
           persistent-hint
           clearable
           variant="outlined"

@@ -16,6 +16,16 @@ export function makeTasks(c) {
     candidates: (taskId) => c.get(`tasks/${taskId}/candidates`),
     /** 单任务操作记录（qs 含 `?kind=…&limit=…`） */
     taskOperations: (taskId, qs = '') => c.get(`tasks/${taskId}/operations${qs}`),
+    /** ★ 组合优化器（15.15.0）：容量预算下的最优「保 / 删」（0/1 背包）。
+     *  ``params.budget_gb`` 留空 = 自动取「保留 ≥95% 时魔」的最小预算。 */
+    optimize: (taskId, params = {}) => {
+      const p = new URLSearchParams()
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== '') p.set(k, v)
+      })
+      const qs = p.toString()
+      return c.get(`tasks/${taskId}/optimize${qs ? `?${qs}` : ''}`)
+    },
     /** 回填站点分页（手动触发） */
     backfillPages: (taskId) => c.post(`tasks/${taskId}/backfill-pages`),
     /** 立即跑一轮 */

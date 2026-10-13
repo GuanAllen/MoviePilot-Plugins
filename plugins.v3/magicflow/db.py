@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""魔流 · 5 张自有表（MP 官方插件数据库）
+"""魔流 · 10 张自有表（MP 官方插件数据库）
 
 设计（Master 2026-09-30 16:51 定稿）：用 MP 官方 `get_database_models()` 建**插件专属库**，
 不再把账本塞进 ``plugindata`` 的 kv 行。
@@ -10,7 +10,15 @@
     mf_identity  身份表
     mf_task      任务表（任务类型 / 任务状态）
     mf_deck      满魔套牌存档表（§5.2）
+    mf_crossseed 跨站复种表
+    mf_reseed    补种记录表
+    mf_claim     站点认领/收益表
+    mf_run       运行时 kv 表
 
+- ★ **主键契约（2026-10-10）**：``mf_resource.resource_id`` = **内容寻址主键**
+  （种子文件特征码 sha1），**禁改**；写入须过 ``_STRONG_RID`` 断言（见
+  ``ledger.py`` 的 ``save_groups`` / ``_touch_resource`` 护栏）；算法若要升级 →
+  **显式迁移**（重指纹 + 去重），**绝不当重建处理**。
 - 模型基类由 ``plugin_declarative_base()`` 产出：插件热重载会重新执行本模块 → 每次拿到
   干净的 ``MetaData``，不会重复定义表；
 - 表由 MP 在插件启动时一并建立（我们声明了 migrations 目录时才会改走 alembic，这里不用）；
@@ -49,7 +57,6 @@ class SiteRow(Base):
     iyuu_sid: Mapped[int | None] = mapped_column(Integer)
     base_url: Mapped[str | None] = mapped_column(String(300))
     is_https: Mapped[bool | None] = mapped_column(Boolean)
-    tz_offset: Mapped[float | None] = mapped_column(Float)
     # 取种
     framework: Mapped[str | None] = mapped_column(String(40))
     api_channel: Mapped[str | None] = mapped_column(String(40))
@@ -64,29 +71,14 @@ class SiteRow(Base):
     seed_window_hours: Mapped[float | None] = mapped_column(Float)
     exam_avg_hours: Mapped[float | None] = mapped_column(Float)
     # 免费规则
-    free_over_gb: Mapped[float | None] = mapped_column(Float)
-    free_original: Mapped[bool | None] = mapped_column(Boolean)
-    free_ep1: Mapped[bool | None] = mapped_column(Boolean)
     free_index: Mapped[bool | None] = mapped_column(Boolean)
     free_spstates: Mapped[Any | None] = mapped_column(_JSON, default=list)
     promo_in_list: Mapped[bool | None] = mapped_column(Boolean)
     page_param: Mapped[str | None] = mapped_column(String(40))
-    # 魔力公式参数
-    t0: Mapped[float | None] = mapped_column(Float)
-    n0: Mapped[int | None] = mapped_column(Integer)
-    b0: Mapped[float | None] = mapped_column(Float)
-    l: Mapped[float | None] = mapped_column(Float)
-    zero_weight: Mapped[float | None] = mapped_column(Float)
-    normal_weight: Mapped[float | None] = mapped_column(Float)
-    official_coef: Mapped[float | None] = mapped_column(Float)
-    harem_coef: Mapped[float | None] = mapped_column(Float)
-    per_torrent_flat: Mapped[float | None] = mapped_column(Float)
-    seeding_count_cap: Mapped[int | None] = mapped_column(Integer)
     # 运维
     pv_budget: Mapped[int | None] = mapped_column(Integer)
     pv_usage: Mapped[Any | None] = mapped_column(_JSON, default=dict)
     pv_block: Mapped[float | None] = mapped_column(Float)
-    bday: Mapped[str | None] = mapped_column(String(20))
     signin: Mapped[Any | None] = mapped_column(_JSON, default=dict)
     alerts: Mapped[Any | None] = mapped_column(_JSON, default=dict)
     # 证据链
@@ -159,12 +151,9 @@ class ResourceRow(Base):
     hrs: Mapped[Any | None] = mapped_column(_JSON, default=list)   # 变长集合：保持 JSON
     grouped: Mapped[bool | None] = mapped_column(Boolean, default=False)  # 是否「下完成组」（账本口径的资源）
     source_site_name: Mapped[str | None] = mapped_column(String(120))     # 站点关联不上时的兜底（原 extra）
-    # --- 入库真列（6.1.0 由 library 收敛）---
+    # --- 入库真列（6.1.0 由 library 收敛；2026-10-11：4 列 lib_* 并成 1 个 library JSON）---
     in_library: Mapped[bool | None] = mapped_column(Boolean)
-    lib_first_at: Mapped[float | None] = mapped_column(Float)
-    lib_updated: Mapped[float | None] = mapped_column(Float)
-    lib_path: Mapped[str | None] = mapped_column(String(500))
-    lib_media_id: Mapped[str | None] = mapped_column(String(64))
+    library: Mapped[Any | None] = mapped_column(_JSON, default=dict)   # {first_at,updated,path,media_id}；**不含** in_library（那是独立 bool 真列）
     # --- 评分（豆瓣，活列）---
     rating: Mapped[float | None] = mapped_column(Float)
     # --- 推荐复核结论（★ 12.0.0 由幽灵字段转真列：随资源记，重启不丢）---
@@ -185,6 +174,11 @@ class SeedRow(Base):
     resource_id: Mapped[str | None] = mapped_column(String(64), index=True)
     task_id: Mapped[str | None] = mapped_column(String(64), index=True)   # 空 = 静默（不在岗）
     published_at: Mapped[float | None] = mapped_column(Float)             # 站点口径发布时间
+    # ★ 2026-10-11（DESIGN-RESOURCE-SEED §2）：来源站判据的「每份事实」，首见落、write-once。
+    origin_site: Mapped[str | None] = mapped_column(String(120))          # 真实来源站（=该份所属站）
+    added_at: Mapped[float | None] = mapped_column(Float)                 # 加入下载器时刻（qB added_on）
+    completed_at: Mapped[float | None] = mapped_column(Float)             # 完成时刻（qB completion_on）
+    reused: Mapped[bool | None] = mapped_column(Boolean)                  # 是否复用份（downloaded≈0）
     vfy_miss: Mapped[int] = mapped_column(Integer, default=0)             # 巡检连续未命中
     # ★ 7.0.0 标签退役：之前 6.1.0 的台账/组员/影子真列（state/title/reason/asset/taken_*/verify_*/
     #   crossseed/downloader/ts/created/in_group/m_*/mmbr/rt）统一退役 → 状态走 resource.identity，

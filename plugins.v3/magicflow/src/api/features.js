@@ -24,8 +24,12 @@ export function makeFeatures(c) {
       `ondemand/act?hash=${encodeURIComponent(hash)}&action=${encodeURIComponent(action)}`, {}),
 
     // ── 音乐线 ─────────────────────────────────────────────
-    musicPlan: (params) => c.get(`agent/music/plan?${params}`),
-    musicGrab: (params) => c.post(`agent/music/grab?${params}`, {}),
+    musicSearch: (params) => c.post(`agent/music/search?${params}`, {}),
+    musicDownload: (cid) => c.post(
+      `agent/music/download?cids=${encodeURIComponent(cid)}&confirm=1`, {}),
+    musicItems: () => c.get('agent/music/items?limit=50'),
+    musicAct: (hash, action) => c.post(
+      `agent/music/act?hash=${encodeURIComponent(hash)}&action=${encodeURIComponent(action)}`, {}),
 
     // ── 补源 ──────────────────────────────────────────────
     rescueScan: () => c.get('rescue?action=scan'),
@@ -58,6 +62,8 @@ export function makeFeatures(c) {
     // ── 跨盘兜底 ───────────────────────────────────────────
     fallback: () => c.get('fallback?resolve_paths=true'),
     fallbackRun: (dryRun) => c.post(`fallback/run?dry_run=${dryRun ? 'true' : 'false'}`),
+
+    // ── 站点已删除（MP 侧删站善后）─────────────────────────
 
     // ── 宿主域 ────────────────────────────────────────────
     /** 站点图标（宿主 API 根） */

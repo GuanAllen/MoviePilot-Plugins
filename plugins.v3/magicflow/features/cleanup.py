@@ -128,12 +128,18 @@ class CleanupMixin:
                 pass
             _prot = self._protection_sets(task, _scope, _scope, snap=snap)
             _hard = set(_prot.get("hard") or set())
+            _soft = set(_prot.get("soft") or set())
             if _hard:
                 protected = set(protected) | _hard
                 self._dbg(
                     f"[{task.name}] X3 硬保护 {len(_hard)} 个"
                     f"（含欠 H&R / 未下完；口径 站点{len(all_tagged or [])}∪总{len(_scope)}）"
                 )
+            # ★ 15.8.17：把 soft（库内资产等「可换出不可删」）也并入 protected ——
+            #   否则库内资产不在候选保护里，被 decide_deletions 反复当低效候选试删、又被
+            #   删除闸门「库内资产永不删」拦下 → 每轮空转 + deletions.jsonl 刷屏。
+            if _soft:
+                protected = set(protected) | _soft
             # ★ 8.0.2（Master：「143g 促销到点前下不完你怎么删」）：
             #   「促销失效且未下完」清理的候选 **天生就是未下完的种**，却因 7.21.1 把「未下完」
             #   也收进 hard 而被整体滤掉 → 该路径永远删 0（名存实亡，日志里从没出现过）。

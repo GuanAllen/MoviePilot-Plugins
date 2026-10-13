@@ -9,7 +9,8 @@
   - crossseed tag → 跳过（crossseed 自己记账）
   - 7 天无进度 → void
   - 消失且未完成 → 立即 void
-  - progress ≥ 0.999 → active
+  - ★ 2026-10-10：规则闸——只有 rule∈{site_hr,hit_and_run} 才激活（unknown 恒 pending）
+  - progress ≥ 0.999 → active（已知 H&R 站）
   - seeded_h ≥ need_h → settled
 
 用法：``python3 tools/test_hrbills.py``（退出码 0=PASS / 1=FAIL）。
@@ -69,7 +70,7 @@ def _torrent(progress=0.0, seed_time=0.0, hit_and_run=False, title="test", track
     return types.SimpleNamespace(
         hash="", title=title, progress=progress, seed_time=seed_time,
         hit_and_run=hit_and_run, tags=[], tracker=tracker,
-        completion_on=completion_on,
+        completion_on=completion_on, downloaded=1e9,
     )
 
 
@@ -196,10 +197,8 @@ def main() -> int:
     t2.hash = "bbbb"
     h.torrents["bbbb"] = t2
     b3 = h._hrbills_open("bbbb", "unknown.site", "魔流-x-刷流", _torrent_bytes("b"))
-    _ok(b3 is not None, "未知站也开账（影子记录）")
-    _ok(b3["rule"] == "unknown", f"规则 = unknown（{b3['rule']}）")
-    _ok(b3["state"] == "pending", f"状态 = pending（{b3['state']}）")
-    _ok(abs(b3["need_h"] - 24.0) < 1e-9, f"need_h 兜底 24.0（{b3['need_h']}）")
+    _ok(b3 is None, "未知站不开账（无明确 H&R 规则）")
+    _ok("bbbb" not in store.all(), "未知站账单不进 store")
 
     # ---- 3) crossseed tag → 跳过 ----
     print("\n[3] crossseed tag → 跳过")
@@ -223,7 +222,7 @@ def main() -> int:
     # 模拟 8 天前就停在 0.3
     store.patch("dddd", last_progress_at=time.time() - 8 * 86400.0)
     h._hrbills_tick()
-    _ok(store.get("dddd")["state"] == "void", f"连续无进度 → void（{store.get('dddd')['state']}）")
+    _ok(store.get("dddd") is None, "连续无进度 → void 账单已删除（作废即删）")
 
     # ---- 5) 消失且未完成 → 立即 void ----
     print("\n[5] 消失且未完成 → 立即 void")
@@ -233,16 +232,16 @@ def main() -> int:
     h._hrbills_open("eeee", "hdfans.org", "魔流-hdfans-刷流", _torrent_bytes("e"))
     h.torrents.pop("eeee")  # 从下载器消失
     h._hrbills_tick()
-    _ok(store.get("eeee")["state"] == "void", f"消失且未完成 → 立即 void（{store.get('eeee')['state']}）")
-    _ok(store.get("eeee").get("void_reason") == "disappeared_uncompleted", "void_reason = disappeared_uncompleted")
+    _ok(store.get("eeee") is None, "消失且未完成 → void 账单已删除")
+    _ok("eeee" not in store.all(), "确认不再存在于账单表（作废即删）")
 
-    # ---- 6) progress ≥ 0.999 → active ----
-    print("\n[6] progress ≥ 0.999 → active")
-    t6 = _torrent(progress=0.0, title="未知站完成种", tracker="other.site")
+    # ---- 6) progress ≥ 0.999 → active（★ 2026-10-10：仅限明确 H&R 站；unknown 不激活）----
+    print("\n[6] progress ≥ 0.999 → active（已知 H&R 站）")
+    t6 = _torrent(progress=0.0, title="已知站完成种", tracker="hdfans.org")
     t6.hash = "ffff"
     h.torrents["ffff"] = t6
-    h._hrbills_open("ffff", "other.site", "魔流-x-刷流", _torrent_bytes("f"))
-    _ok(store.get("ffff")["state"] == "pending", "初始 pending（未知站）")
+    h._hrbills_open("ffff", "hdfans.org", "魔流-hdfans-刷流", _torrent_bytes("f"))
+    _ok(store.get("ffff")["state"] == "pending", "初始 pending（已知站，未完成）")
     t6.progress = 1.0
     h._hrbills_tick()
     _ok(store.get("ffff")["state"] == "active", f"下载完成 → active（{store.get('ffff')['state']}）")
@@ -459,10 +458,10 @@ def main() -> int:
     _ok(all(s["domain"] != "hdfans.org" for s in _aud["sites"]), "非逐种站不进逐种审计")
     # 12.5 人工作废：置 void + void_reason，幂等；回填不会重开
     _v = h._hrbills_void("e1201", "resolved_no_hr")
-    _ok(_v and _v.get("state") == "void" and _v.get("void_reason") == "resolved_no_hr",
-        "人工作废 → state=void + void_reason")
-    _ok(h._hrbills_void("e1201", "again").get("void_reason") == "resolved_no_hr",
-        "作废幂等（不覆盖已有 void_reason）")
+    _ok(_v and _v.get("dropped") == "e1201" and _v.get("reason") == "resolved_no_hr",
+        "人工作废 → 删除 + reason")
+    _ok(h._hrbills_void("e1201", "again") is None,
+        "作废幂等（已删 → None）")
     _ok(h._hrbills_void("nope", "x") is None, "作废不存在的账单 → None")
 
     print("\n" + "=" * 64)

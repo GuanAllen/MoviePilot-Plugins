@@ -116,7 +116,7 @@ BUILTIN_RULES: Dict[str, Dict[str, Any]] = {
 # 分层原则（别越界）：
 #   · **类型级只提供「怎么读」+ 兜底默认**，永远**不给站点阈值结论**——
 #     同一框架下站点差异很大（财神明确无 H&R，而其它 NexusPHP 站有；学校 20h vs 红豆饭 24h）。
-#   · 阈值结论（有无 H&R / 保种小时 / 上限 / 免费体积阈值）一律**站点级**（探测或手填）。
+#   · 阈值结论（有无 H&R / 保种小时 / 上限）一律**站点级**（探测或手填）。
 #   · 兜底默认里 ``hr/seed_hours/...`` 一律 **None = 未知**，交给既有「未知保守」逻辑，
 #     因此**不改变任何既有行为**，只是把「未知」这层写明白、可看。
 FRAMEWORK_RULE_DEFAULTS: Dict[str, Dict[str, Any]] = {
@@ -127,7 +127,7 @@ FRAMEWORK_RULE_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "seed_cap": None,
         "probe_paths": ("myhr.php", "rules.php"),
         "note": "NexusPHP 家族：H&R/保种以站点 myhr.php / rules.php 为准；"
-                "促销（体积自动免费/原盘/首集）见站点规则页。同类站结构一致，解析走同一套。",
+                "同类站结构一致，解析走同一套。",
     },
     "gazelle": {
         "hr": None,
@@ -273,20 +273,6 @@ def parse_hr_generic(html_text: str, framework: str = "unknown") -> Dict[str, An
         out["evidence"] = seg[:120]
         out["confidence"] = "medium" if need_re.search(seg) else "low"
         break
-    if out["hr"] is None:
-        # 促销/上限是「有就采」的良性信息，与 H&R 无关，单独扫
-        _fs = _free_size_pats(fw)
-        _fs0 = _rx(f"{fw}:free_size0", _fs[0])
-        _fs1 = _rx(f"{fw}:free_size1", _fs[1])
-        for seg in _segments(text):
-            if _ex_re.search(seg):
-                continue
-            m = _fs0.search(seg) or _fs1.search(seg)
-            if m:
-                try:
-                    out["free_over_gb"] = float(m.group(1))
-                except (TypeError, ValueError):
-                    pass
     return out
 
 
@@ -341,13 +327,6 @@ _D_RULE_NEED = (
     r"必须|需|要求|不得少于|不少于|至少|达到|以内|之内|at least|must|minimum"
 )
 _D_PERMIT_WITHDRAW = r"可撤种|可以撤种|允许撤种|可撤除|即可撤|可删除种子|撤种条件不适用"
-
-_D_FREE_SIZE0 = (
-    r"(?:总体积|文件体积|体积|大小)[^。\n]{0,12}?大于\s*([\d.]+)\s*(?:G|GB|GiB)[^。\n]{0,30}免费"
-)
-_D_FREE_SIZE1 = r"大于\s*([\d.]+)\s*(?:G|GB|GiB)[^。\n]{0,20}自动[^。\n]{0,10}免费"
-_D_FREE_ORIG = r"(?:Blu-?ray\s*Disk|HD\s*DVD|原盘)[^。\n]{0,40}(?:免费|free)"
-_D_FREE_EP1 = r"每季的第?一集|第1集[^。\n]{0,20}免费|第一集[^。\n]{0,20}免费"
 
 
 def _fire(fw: str, patch: str) -> Any:
@@ -412,28 +391,6 @@ _PERMIT_WITHDRAW_RE = _rx(
 _HR_TOKENS = _rx(f"{_NEXUS}:hr_tokens", _tok_alt(_NEXUS, "hr", _D_HR_TOKENS))
 # 「同一句里」的保种动作词
 _SEED_TOKENS = _rx(f"{_NEXUS}:seed_tokens", _tok_alt(_NEXUS, "seed", _D_SEED_TOKENS))
-# 促销规则：「文件总体积大于20GB的种子将自动成为免费」/「原盘免费」/「每季第一集免费」
-def _free_size_pats(fw: str) -> List[str]:
-    """体积自动免费正则（YAML 可给单条字符串或列表）→ 至少两条（主/备）。"""
-    got = _fire(fw, "free_size")
-    if isinstance(got, str):
-        pats = [got]
-    elif isinstance(got, (list, tuple)):
-        pats = [str(x) for x in got if str(x).strip()]
-    else:
-        pats = []
-    if not pats:
-        pats = [_D_FREE_SIZE0]
-    while len(pats) < 2:
-        pats.append(_D_FREE_SIZE1)
-    return pats
-
-
-_FREE_SIZE_PATS = _free_size_pats(_NEXUS)
-_FREE_SIZE_RE = _rx(f"{_NEXUS}:free_size0", _FREE_SIZE_PATS[0])
-_FREE_SIZE_RE2 = _rx(f"{_NEXUS}:free_size1", _FREE_SIZE_PATS[1])
-_FREE_ORIG_RE = _rx(f"{_NEXUS}:free_original", str(_fire(_NEXUS, "free_original") or _D_FREE_ORIG))
-_FREE_EP1_RE = _rx(f"{_NEXUS}:free_ep1", str(_fire(_NEXUS, "free_ep1") or _D_FREE_EP1))
 
 # 「考核指标」句式：指标N：平均做种时间, 要求：30 Hour —— 这是**新人考核的达标线**，
 # 不是 H&R 规则，必须分开存（否则会把考核要求误当成保种义务）。
@@ -478,7 +435,6 @@ def parse_hr_from_html(html_text: str) -> Dict[str, Any]:
         "hr": None, "seed_hours": None, "confidence": "low",
         "seed_cap": None, "evidence": "", "hits": 0,
         "exam_avg_hours": None,
-        "free_over_gb": None, "free_original": None, "free_ep1": None,
         "seed_need_hours": None, "seed_window_hours": None,
     }
     if not html_text:
@@ -558,19 +514,6 @@ def parse_hr_from_html(html_text: str) -> Dict[str, Any]:
         out["evidence"] = (ev_high or ev_low)[:300]
     elif ev_hit:
         out["evidence"] = ev_hit[:300]
-    # 促销规则（整页散文，不按句切）
-    for rx in (_FREE_SIZE_RE, _FREE_SIZE_RE2):
-        m = rx.search(text)
-        if m:
-            try:
-                out["free_over_gb"] = float(m.group(1))
-                break
-            except (TypeError, ValueError):
-                pass
-    if _FREE_ORIG_RE.search(text):
-        out["free_original"] = True
-    if _FREE_EP1_RE.search(text):
-        out["free_ep1"] = True
 
     cap = None
     # ★ 3.40.1：上限要排除「角色词/集数/考核」上下文
@@ -695,7 +638,7 @@ class SiteRules:
         """把探测结果并入。
 
         * 手填记录（``source=manual``）：**H&R / 保种时长 / 证据** 一律不动（手填为准），
-          但**促销规则**（与 H&R 无关）照常并入 —— 不能因为手填了「无 H&R」就丢掉体积自动免费。
+          但**保种窗口**等与 H&R 无关的字段照常并入。
         """
         d = _norm_domain(domain)
         cur = dict(self.items().get(d) or {})
@@ -717,8 +660,8 @@ class SiteRules:
         else:
             if (probed or {}).get("seed_cap") is not None and out.get("seed_cap") is None:
                 out["seed_cap"] = (probed or {}).get("seed_cap")
-        # 促销规则：与 H&R 无关，总是并入
-        for key in ("free_over_gb", "free_original", "free_ep1", "seed_need_hours", "seed_window_hours"):
+        # 保种窗口：与 H&R 无关，总是并入
+        for key in ("seed_need_hours", "seed_window_hours"):
             val = (probed or {}).get(key)
             if val is not None:
                 out[key] = val
@@ -774,28 +717,6 @@ class SiteRules:
         rec["framework"] = fw
         rec["note"] = dflt.get("note", "")
         return self.put(d, rec, source="framework")
-
-    def free_rules(self, domain: str) -> Dict[str, Any]:
-        """取该站的「促销规则」（体积自动免费阈值/原盘免费/第一集免费）。"""
-        d = _norm_domain(domain)
-        rec: Dict[str, Any] = {}
-        for k, v in (self.items() or {}).items():
-            if _same_domain(k, d):
-                rec = dict(v or {})
-                break
-        b: Dict[str, Any] = {}
-        for k, v in BUILTIN_RULES.items():
-            if _same_domain(k, d):
-                b = dict(v or {})
-                break
-        out: Dict[str, Any] = {}
-        for key in ("free_over_gb", "free_original", "free_ep1"):
-            val = rec.get(key)
-            if val is None:
-                val = b.get(key)
-            if val is not None:
-                out[key] = val
-        return out
 
     def retire_untrusted_hr(self) -> int:
         """★ 3.41.0：把**非权威来源**推出来的 H&R 结论作废（置 ``None`` = 未知）。

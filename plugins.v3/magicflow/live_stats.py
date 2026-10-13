@@ -713,7 +713,8 @@ class LiveStats:
                 "ts": time.time(),
                 "source": "api",
             }
-            for _k in ("uid", "ratio", "upload", "download", "seeding", "leeching", "bonus", "bonus_per_hour", "logged_in"):
+            # ★ 15.16.2：``ratio_inf``（下载=0 → 分享率「无限」）也带上，供前端显示 ∞
+            for _k in ("uid", "ratio", "ratio_inf", "upload", "download", "seeding", "leeching", "bonus", "bonus_per_hour", "logged_in"):
                 out[_k] = bar.get(_k)
             out["fields"] = [
                 _k

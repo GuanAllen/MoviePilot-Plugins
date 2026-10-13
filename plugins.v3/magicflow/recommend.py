@@ -13,7 +13,7 @@ MagicFlow 刷流种甄别与推荐（recommend.py）
 import re
 import threading
 import time
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 # 榜单/订阅索引缓存 TTL（秒）
 CHART_TTL = 12 * 3600.0
@@ -60,6 +60,133 @@ def recognize(name: str, source: str = "") -> Optional[Any]:
         return MediaChain().recognize_by_meta(_meta if source else MetaInfo(name))
     except Exception:
         return None
+
+
+def _ep_int(v: Any) -> int:
+    """``"E07"`` / ``7`` / ``"07"`` → ``7``；解析不出 → 0。"""
+    try:
+        return int(str(v).strip().lstrip("eE") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def episode_info(name: str) -> Dict[str, Any]:
+    """从种子名解析「季 / 集」（纯本地正则，无网络）。
+
+    返回 ``{season, episode, ep_begin, ep_end, kind}``；``kind`` ∈ ``movie``（电影/无季集） /
+    ``single``（单集） / ``multi``（多集范围） / ``season``（整季包：有季无集号）。
+    """
+    out: Dict[str, Any] = {"season": "", "episode": "", "ep_begin": 0, "ep_end": 0, "kind": "movie"}
+    if not name:
+        return out
+    try:
+        from app.sdk.media import MetaInfo  # type: ignore  # noqa: WPS433
+        m = MetaInfo(str(name))
+    except Exception:  # noqa: BLE001
+        return out
+    se = str(getattr(m, "season", "") or "").strip()
+    ep = str(getattr(m, "episode", "") or "").strip()
+    b = _ep_int(getattr(m, "begin_episode", None))
+    e = _ep_int(getattr(m, "end_episode", None))
+    out.update({"season": se, "episode": ep, "ep_begin": b, "ep_end": e})
+    if not (se or ep or b):
+        out["kind"] = "movie"
+    elif b and e and e > b:
+        out["kind"] = "multi"
+    elif b or ep:
+        out["kind"] = "single"
+    else:
+        out["kind"] = "season"
+    return out
+
+
+# 名字里出现这些后缀的条目**不算剧集文件**（字幕/图片/校验/样本）。
+_SKIP_FILE_EXT = (
+    ".srt", ".ass", ".ssa", ".sub", ".idx", ".nfo", ".txt", ".jpg", ".jpeg",
+    ".png", ".gif", ".webp", ".sfv", ".md5", ".cue", ".log", ".mka", ".flac", ".mp3",
+)
+# 常见视频后缀（其余一律当非剧集文件，避免封面/字幕混进集号统计）。
+_VIDEO_FILE_EXT = (
+    ".mkv", ".mp4", ".avi", ".ts", ".m2ts", ".mov", ".wmv", ".flv", ".rmvb",
+    ".m4v", ".mpg", ".mpeg", ".iso", ".webm",
+)
+
+
+def episode_info_files(entries: Any) -> Dict[str, Any]:
+    """★ 15.8.22：由**种子内文件列表**判定「单集 / 多集 / 整季」。
+
+    ``entries`` 形如 ``[(相对路径, 大小), ...]``（DownloaderAdapter.get_file_entries）。
+
+    为什么需要：DepWeb/ADWeb 这类发布的**种名只到季**（``Aoashi.2022.S02.1080p...``），
+    集号藏在**文件名**里（``Aoashi.2022.S02E01...mkv``）→ 只按种名会误判「整季」。
+    文件列表是**权威**来源：一个文件 = 单集，多个文件 = 多集/整季。
+    """
+    out: Dict[str, Any] = {}
+    eps: List[int] = []
+    season = ""
+    n_video = 0
+    for item in entries or []:
+        try:
+            raw = item[0] if isinstance(item, (list, tuple)) else getattr(item, "name", "")
+        except Exception:  # noqa: BLE001
+            raw = ""
+        rel = str(raw or "").replace("\\", "/")
+        parts = [x for x in rel.split("/") if x]
+        if not parts:
+            continue
+        base = parts[-1].strip()
+        if not base:
+            continue
+        low = base.lower()
+        if low.endswith(_SKIP_FILE_EXT) or not low.endswith(_VIDEO_FILE_EXT):
+            continue
+        if "sample" in low or "trailer" in low:
+            continue
+        n_video += 1
+        # 集号可能在**文件名**，也可能只在**目录名**（如 `Show.S01E01/xxx.mkv`）→ 两处都试
+        _cands = [re.sub(r"\.[a-z0-9]{2,4}$", "", base, flags=re.IGNORECASE)]
+        if len(parts) > 1:
+            _cands.append(parts[-2])
+        info: Dict[str, Any] = {}
+        for _c in _cands:
+            try:
+                _info = episode_info(_c)
+            except Exception:  # noqa: BLE001
+                continue
+            if not info.get("season") and _info.get("season"):
+                info["season"] = _info.get("season")
+            if _info.get("ep_begin") or _info.get("episode"):
+                info.update(_info)
+                break
+        if not season and info.get("season"):
+            season = str(info.get("season") or "")
+        b = int(info.get("ep_begin") or 0)
+        e = int(info.get("ep_end") or 0)
+        if b:
+            eps.append(b)
+        if e > b:
+            eps.append(e)
+    if not n_video:
+        return {}
+    uniq = sorted(set(eps))
+    if not uniq:
+        # 文件能数出来，但文件名里没有集号 → 只能给「季」（集数未知）。
+        if not season:
+            return {"files_n": n_video}
+        return {"season": season, "files_n": n_video, "kind": "season"}
+    if len(uniq) == 1:
+        out.update(
+            {"kind": "single", "episode": "E%02d" % uniq[0], "ep_begin": uniq[0],
+             "ep_end": 0, "files_n": n_video}
+        )
+    else:
+        out.update(
+            {"kind": "multi", "episode": "", "ep_begin": uniq[0], "ep_end": uniq[-1],
+             "files_n": n_video}
+        )
+    if season:
+        out["season"] = season
+    return out
 
 
 class RecommendEngine:
@@ -230,6 +357,11 @@ class RecommendEngine:
         # ★ 评分源：豆瓣优先（Master 2026-09-28 09:06 选 A）→ 拿不到回退 TMDB
         #   本部署 MP 全局 RECOGNIZE_SOURCE=themoviedb、豆瓣模块按名搜索返回空，
         #   所以「评分」默认走自带豆瓣源；榜单/热映仍是 MP 的 DoubanChain。
+        # ★ 15.8.21：季/集（单集 vs 整季）——本地解析，不打网络
+        try:
+            out.update(episode_info(name))
+        except Exception:  # noqa: BLE001
+            pass
         _cfg = getattr(self.plugin, "_recommend_cfg", {}) or {}
         out["rating_tmdb"] = rating
         out["rating_source"] = "tmdb"

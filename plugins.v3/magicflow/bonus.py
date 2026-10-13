@@ -640,6 +640,30 @@ def is_perfect_seed(torrent: TorrentBonusInfo, policy: MagicPolicy) -> bool:
     return True
 
 
+def is_undeletable(torrent: TorrentBonusInfo, policy: MagicPolicy,
+                   protected_hashes: Optional[set] = None) -> bool:
+    """「不可删除」的统一判定（★ 单一真值源，15.15.0 提取）。
+
+    覆盖清种策略里全部**强制保留**条件，供删除决策（``decide_deletions``）与
+    组合优化器（``optimize_pool``）共用，杜绝两处口径分叉：
+      - 手动保护（``protected_hashes``）/ H&R 种子；
+      - 完美种（``is_perfect_seed``：优质老种，删了 Ti 清零，越折腾越亏）；
+      - 保护期（做种时长 < ``min_seed_time_hours``）；
+      - 低分享率（``ratio < min_ratio``，先养着避免留欠账）。
+    """
+    if protected_hashes and torrent.hash in protected_hashes:
+        return True
+    if torrent.hit_and_run:
+        return True
+    if is_perfect_seed(torrent, policy):
+        return True
+    if policy.min_seed_time_hours > 0 and torrent.age_weeks * 168 < policy.min_seed_time_hours:
+        return True
+    if policy.min_ratio > 0 and torrent.ratio < policy.min_ratio:
+        return True
+    return False
+
+
 def decide_deletions(
     seeding_torrents: List[TorrentBonusInfo],
     policy: MagicPolicy,
@@ -705,23 +729,9 @@ def decide_deletions(
     to_keep: List[TorrentBonusInfo] = []
 
     for torrent in seeding_torrents:
-        # 手动保护 / H&R：绝不删除
-        if torrent.hash in protected_hashes or torrent.hit_and_run:
-            to_keep.append(torrent)
-            continue
-
-        # 完美种保护：优质老种永久保留，不参与任何清理理由
-        if is_perfect_seed(torrent, policy):
-            to_keep.append(torrent)
-            continue
-
-        # 保护期：做种时间不足的种子不参与删种
-        if policy.min_seed_time_hours > 0 and torrent.age_weeks * 168 < policy.min_seed_time_hours:
-            to_keep.append(torrent)
-            continue
-
-        # 分享率保护：分享率低于下限的种子不删（先养着，避免留下“欠账”）
-        if policy.min_ratio > 0 and torrent.ratio < policy.min_ratio:
+        # 不可删判定（手动保护 / H&R / 完美种 / 保护期 / 低分享率）
+        # ★ 单一真值源：与组合优化器 optimize_pool 共用 is_undeletable，杜绝口径分叉。
+        if is_undeletable(torrent, policy, protected_hashes):
             to_keep.append(torrent)
             continue
 
@@ -782,19 +792,17 @@ def decide_deletions(
     #   用户自己的资源（历史 bug：站点做种数上限 100 导致 33 个已保护种子被删）。
     if policy.max_keep_torrents is not None and len(to_keep) > policy.max_keep_torrents:
         def _pinned(t: TorrentBonusInfo) -> bool:
-            if t.hash in protected_hashes or t.hit_and_run:
-                return True
-            if is_perfect_seed(t, policy):
-                return True
-            if policy.min_seed_time_hours > 0 and t.age_weeks * 168 < policy.min_seed_time_hours:
-                return True
-            if policy.min_ratio > 0 and t.ratio < policy.min_ratio:
-                return True
-            return False
+            # ★ 与删种主循环 / optimize_pool 同源（is_undeletable）
+            return is_undeletable(t, policy, protected_hashes)
 
         evictable = [t for t in to_keep if not _pinned(t)]
         overflow = len(to_keep) - policy.max_keep_torrents
-        victims = sorted(evictable, key=lambda t: t.bonus_per_hour)[:overflow]
+        # ★ 15.8.17：超保留上限淘汰用「成熟期时魔」排序（新种 T≈0 → 时魔≈0，若用当前值
+        #   会永远垫底、被当最低误踢——与「低于门槛」路径同源的 CARPT 历史 bug 变体）。
+        victims = sorted(
+            evictable,
+            key=lambda t: (t.mature_bonus_per_hour or t.bonus_per_hour),
+        )[:overflow]
         victim_hashes = {t.hash for t in victims}
         for torrent in victims:
             to_delete.append(
@@ -870,6 +878,228 @@ def preview_deletions(
             }
             for t in result.to_keep
         ],
+    }
+
+
+# ============================================================
+# ★ 组合优化器（15.15.0）：容量预算下的最优「保 / 删」组合
+# ============================================================
+# 与「逐条阈值」清种（decide_deletions）互补：
+#   阈值法 = 「哪颗种不够格」；优化器 = 「在体积预算内，怎样取舍使保留种子的时魔总和最大」。
+# 这是一个 0/1 背包：物品 = 可删种子（重量 = 体积 GB，价值 = 成熟期时魔），受保护种
+#   **强制保留**（先从预算里扣除其体积），在剩余预算内做最优取舍。
+# 解法：按 1GB 粒度做**一次** 2D DP（``dp[k][b]`` = 前 k 件、容量 b 的最优价值）——
+#   一次求解即可读出任一预算下的最优值与落选集（效率前沿免费得到）。
+
+OPT_GRANULARITY_GB = 1.0      # 背包粒度（GB）
+OPT_MAX_CELLS = 4_000_000     # DP 规模上限（(件数+1)×(格数+1)）；超过则自动加大粒度
+OPT_FRONTIER_POINTS = 6       # 效率前沿采样点数
+OPT_AUTO_KEEP_PCT = 95.0      # 未给预算时：取「保留 ≥ 该比例时魔」的最小预算
+
+
+def _opt_value(t: TorrentBonusInfo) -> float:
+    """优化目标里的「价值」——成熟期时魔（与选种/清种门槛同源；缺 = 当前值）。"""
+    return float(getattr(t, "mature_bonus_per_hour", 0.0) or 0.0) or float(
+        getattr(t, "bonus_per_hour", 0.0) or 0.0)
+
+
+def _opt_row(t: TorrentBonusInfo, protected: bool = False) -> Dict[str, Any]:
+    """一条种子在优化结果里的可序列化视图。"""
+    return {
+        "hash": t.hash,
+        "title": t.title,
+        "size_gb": round(float(getattr(t, "size_gb", 0.0) or 0.0), 2),
+        "seeders": t.seeders,
+        "age_weeks": round(float(getattr(t, "age_weeks", 0.0) or 0.0), 2),
+        "bonus_per_hour": round(float(getattr(t, "bonus_per_hour", 0.0) or 0.0), 4),
+        "mature_bonus_per_hour": round(_opt_value(t), 4),
+        "is_zero_bonus": bool(t.is_zero_bonus),
+        "protected": bool(protected),
+    }
+
+
+def optimize_pool(
+    seeding_torrents: List[TorrentBonusInfo],
+    budget_gb: Optional[float],
+    policy: MagicPolicy,
+    protected_hashes: Optional[set] = None,
+) -> Dict[str, Any]:
+    """容量预算下的最优「保 / 删」组合（0/1 背包；含效率前沿与阈值口径对比）。
+
+    Args:
+        seeding_torrents: 当前做种种子（TorrentBonusInfo）
+        budget_gb: 保留体积预算（GB）。``None`` → 自动取「保留 ≥95% 时魔」的最小预算。
+        policy: 魔力策略（决定「不可删」条件，与清种同源）
+        protected_hashes: 手动/闸门保护 hash 集合
+
+    Returns:
+        可序列化 dict：pool / mandatory / plan(keep,delete) / frontier / compare。
+    """
+    rows = list(seeding_torrents or [])
+    total_size = sum(float(getattr(t, "size_gb", 0.0) or 0.0) for t in rows)
+    total_value = sum(_opt_value(t) for t in rows)
+
+    mandatory = [t for t in rows if is_undeletable(t, policy, protected_hashes)]
+    mand_ids = {id(t) for t in mandatory}
+    optional = [t for t in rows if id(t) not in mand_ids]
+
+    mand_size = sum(float(getattr(t, "size_gb", 0.0) or 0.0) for t in mandatory)
+    mand_value = sum(_opt_value(t) for t in mandatory)
+    n_opt = len(optional)
+
+    base: Dict[str, Any] = {
+        "pool": {"count": len(rows), "size_gb": round(total_size, 2),
+                 "bonus_per_hour": round(total_value, 4)},
+        "mandatory": {"count": len(mandatory), "size_gb": round(mand_size, 2),
+                      "bonus_per_hour": round(mand_value, 4)},
+    }
+    if not rows:
+        return {**base, "budget_gb": 0.0, "budget_source": "empty", "granularity_gb": 0.0,
+                "method": "empty", "infeasible": False, "frontier": [], "compare": {},
+                "plan": {"keep_count": 0, "delete_count": 0, "kept_size_gb": 0.0,
+                         "freed_gb": 0.0, "kept_bonus_per_hour": 0.0,
+                         "lost_bonus_per_hour": 0.0, "kept_bonus_pct": 100.0,
+                         "keep": [], "delete": []}}
+
+    # ---- 粒度（自动放大以限制 DP 规模；同一粒度下为精确解）----
+    max_size = max(total_size, float(budget_gb or 0.0))
+    gran = OPT_GRANULARITY_GB
+    if n_opt and max_size > 0:
+        bins = int(math.ceil(max_size / gran))
+        if (n_opt + 1) * (bins + 1) > OPT_MAX_CELLS:
+            bins = max(1, OPT_MAX_CELLS // (n_opt + 1))
+            gran = max(OPT_GRANULARITY_GB, max_size / bins)
+    cap = int(math.ceil(max_size / gran)) if gran > 0 else 0
+    cap = max(cap, 0)
+
+    weights = [max(1, int(math.ceil(float(getattr(t, "size_gb", 0.0) or 0.0) / gran)))
+               for t in optional]
+    values = [_opt_value(t) for t in optional]
+
+    # ---- 一次 2D DP（dp[k][b]：前 k 件、容量 b 的最优价值）----
+    dp = [[0.0] * (cap + 1) for _ in range(n_opt + 1)]
+    for k in range(1, n_opt + 1):
+        wk = weights[k - 1]
+        vk = values[k - 1]
+        prev = dp[k - 1]
+        row = dp[k]
+        if wk > cap or vk <= 0.0:
+            row[:] = prev
+            continue
+        for b in range(wk):
+            row[b] = prev[b]
+        for b in range(wk, cap + 1):
+            cand = prev[b - wk] + vk
+            row[b] = cand if cand > prev[b] else prev[b]
+
+    def _pick(cap_b: int) -> List[int]:
+        """按 DP 表回溯容量 cap_b 下的最优选择（返回 optional 下标）。"""
+        chosen: List[int] = []
+        b = min(max(int(cap_b), 0), cap)
+        for k in range(n_opt, 0, -1):
+            if b >= weights[k - 1] and abs(dp[k][b] - dp[k - 1][b]) > 1e-9:
+                chosen.append(k - 1)
+                b -= weights[k - 1]
+        return chosen
+
+    def _size_of(chosen: List[int]) -> float:
+        return mand_size + sum(float(getattr(optional[j], "size_gb", 0.0) or 0.0)
+                               for j in chosen)
+
+    def _cap_for(budget_total: float) -> int:
+        return min(int(math.ceil(max(budget_total - mand_size, 0.0) / gran)), cap)
+
+    # ---- 效率前沿（同一张 DP 表读出，免费）----
+    frontier: List[Dict[str, Any]] = []
+    npts = max(2, int(OPT_FRONTIER_POINTS))
+    lo, hi = mand_size, max(total_size, mand_size)
+    seen_caps = set()
+    for i in range(npts):
+        btot = lo + (hi - lo) * i / (npts - 1)
+        capb = _cap_for(btot)
+        if capb in seen_caps:
+            continue
+        seen_caps.add(capb)
+        chosen = _pick(capb)
+        val = dp[n_opt][capb] + mand_value
+        frontier.append({
+            "budget_gb": round(btot, 2),
+            "kept_size_gb": round(_size_of(chosen), 2),
+            "kept_count": len(mandatory) + len(chosen),
+            "delete_count": n_opt - len(chosen),
+            "kept_bonus_per_hour": round(val, 4),
+            "lost_bonus_per_hour": round(total_value - val, 4),
+            "kept_bonus_pct": round(100.0 * val / total_value, 2) if total_value > 0 else 100.0,
+        })
+
+    # ---- 预算：给定值 or 自动（保留 ≥95% 时魔的最小预算）----
+    auto = budget_gb is None
+    if auto:
+        # 精确求「保留 ≥P% 时魔」的**最小**预算：直接扫 DP 表（O(格数)，廉价）
+        need = OPT_AUTO_KEEP_PCT / 100.0 * max(total_value - mand_value, 0.0)
+        cap_b = cap
+        for b in range(cap + 1):
+            if dp[n_opt][b] + 1e-9 >= need:
+                cap_b = b
+                break
+        plan_budget = mand_size + cap_b * gran
+        budget_source = "auto:保留%.0f%%时魔的最小预算" % OPT_AUTO_KEEP_PCT
+    else:
+        plan_budget = max(float(budget_gb), 0.0)
+        budget_source = "param"
+
+    cap_plan = _cap_for(plan_budget)
+    chosen = _pick(cap_plan)
+    chosen_set = set(chosen)
+    keep_opt = [optional[j] for j in chosen]
+    del_opt = [t for j, t in enumerate(optional) if j not in chosen_set]
+    kept_size = _size_of(chosen)
+    kept_val = dp[n_opt][cap_plan] + mand_value
+    infeasible = mand_size > plan_budget + 1e-9
+
+    # ---- 与「逐条阈值」清种在同释放体积下对比（读同一张 DP 表）----
+    compare: Dict[str, Any] = {}
+    try:
+        thr = decide_deletions(rows, policy, protected_hashes)
+        thr_del = list(thr.to_delete or [])
+        thr_freed = sum(float(getattr(c.torrent, "size_gb", 0.0) or 0.0) for c in thr_del)
+        thr_lost = sum(_opt_value(c.torrent) for c in thr_del)
+        eq_cap = _cap_for(max(total_size - thr_freed, mand_size))
+        eq_lost = total_value - (dp[n_opt][eq_cap] + mand_value)
+        compare = {
+            "threshold": {"delete_count": len(thr_del), "freed_gb": round(thr_freed, 2),
+                          "lost_bonus_per_hour": round(thr_lost, 4)},
+            "optimized_at_same_freed": {"delete_count": n_opt - len(_pick(eq_cap)),
+                                        "lost_bonus_per_hour": round(eq_lost, 4)},
+            "saved_bonus_per_hour": round(thr_lost - eq_lost, 4),
+            "note": "阈值法（逐条门槛）与优化器在**同等释放体积**下的时魔损失对比；正 = 优化器更省。",
+        }
+    except Exception:  # noqa: BLE001
+        compare = {}
+
+    method = ("0/1 背包（DP，%.2f GB 粒度）" % gran) if n_opt else "无待优化项（仅受保护种）"
+    return {
+        **base,
+        "method": method,
+        "granularity_gb": round(gran, 3),
+        "budget_gb": round(plan_budget, 2),
+        "budget_source": budget_source,
+        "infeasible": bool(infeasible),
+        "plan": {
+            "keep_count": len(mandatory) + len(keep_opt),
+            "delete_count": len(del_opt),
+            "kept_size_gb": round(kept_size, 2),
+            "freed_gb": round(max(total_size - kept_size, 0.0), 2),
+            "kept_bonus_per_hour": round(kept_val, 4),
+            "lost_bonus_per_hour": round(total_value - kept_val, 4),
+            "kept_bonus_pct": round(100.0 * kept_val / total_value, 2) if total_value > 0 else 100.0,
+            "keep": [_opt_row(t, id(t) in mand_ids)
+                     for t in sorted(mandatory + keep_opt, key=_opt_value, reverse=True)],
+            "delete": [_opt_row(t)
+                       for t in sorted(del_opt, key=_opt_value)],
+        },
+        "frontier": frontier,
+        "compare": compare,
     }
 
 

@@ -19,15 +19,31 @@ from ..downloader_ops import (
     DownloaderAdapter,
 )
 from ..persistence import OperationItem
-from ..recommend import RecommendEngine, _norm, recognize
+from ..recommend import (
+    RecommendEngine,
+    _norm,
+    episode_info,
+    episode_info_files,
+    recognize,
+)
 
 
 from ..common import (
     MagicFlowTaskConfig,
+    RECOMMEND_FILES_MAX,
+    RECOMMEND_FILES_TTL,
     RECOMMEND_LIVE_LIBRARY_CHECK,
     RECOMMEND_SCAN_MAX,
     task_is_participating,
 )
+
+
+def _rec_group_key(media_key: str, info: Dict[str, Any]) -> str:
+    """「作品+季」分组键（★ 15.8.21）：同作品不同季分开；无季信息则等于作品键。"""
+    if not media_key:
+        return ""
+    se = str((info or {}).get("season") or "").strip().upper()
+    return "%s@%s" % (media_key, se) if se else media_key
 
 
 class RecommendMixin:
@@ -153,7 +169,10 @@ class RecommendMixin:
         exclude_hash: str,
         statuses: tuple = ("recommended", "confirmed"),
     ) -> Optional[str]:
-        """同一部作品是否已有指定状态的记录;返回命中的 hash(用于跨 hash 去重)。"""
+        """同一部「作品+季」是否已有指定状态的记录;返回命中的 hash(用于跨 hash 去重)。
+
+        ``media_key`` 实为 **分组键**（``作品@季``，见 ``_rec_group_key``）。
+        """
         if not media_key:
             return None
         try:
@@ -165,7 +184,7 @@ class RecommendMixin:
                 continue
             if str(rec.get("status")) not in statuses:
                 continue
-            if str(rec.get("media_key") or "") == media_key:
+            if str(rec.get("group_key") or rec.get("media_key") or "") == media_key:
                 return str(h)
         return None
 
@@ -196,6 +215,40 @@ class RecommendMixin:
                 if str(m or "").lower() in hs:
                     return str(h)
         return ""
+
+    def _recommend_subscribe_season(
+        self, info: Dict[str, Any], media: Optional[Dict[str, Any]] = None
+    ) -> Tuple[int, str]:
+        """★ 15.8.24：给 MP 加「整季订阅」（MP 按 标题+年份+季 自行识别媒体）。
+
+        幂等：MP 的订阅写入按「媒体身份+季」查重，命中既有订阅会**原样返回**其 id
+        （说明「订阅已存在」）。返回 ``(sid, msg)``；sid 为 0 = 没订上（识别不出 / 无季号 / 异常）。
+        """
+        media = media or {}
+        title = str(media.get("title") or info.get("title") or "").strip()
+        year = str(media.get("year") or info.get("year") or "").strip()
+        if not title:
+            return 0, "无标题"
+        season = int("".join(ch for ch in str(info.get("season") or "") if ch.isdigit()) or 0)
+        if season <= 0:
+            return 0, "无季号"
+        try:
+            from app.chain.subscribe import SubscribeChain  # noqa: WPS433
+            from app.schemas.types import MediaType  # noqa: WPS433
+
+            sid, msg = SubscribeChain().add(
+                title=title,
+                year=year,
+                mtype=MediaType.TV,
+                season=season,
+                source="魔流",
+                message=True,
+                exist_ok=False,
+            )
+            return int(sid or 0), str(msg or "")
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"魔流 整季订阅失败 {title} S{season}: {err}")
+            return 0, str(err)
 
     @staticmethod
     def _recommend_worth(info: Dict[str, Any], cfg: Dict[str, Any]) -> bool:
@@ -277,6 +330,141 @@ class RecommendMixin:
         finally:
             self._release_worker_slot()
 
+    def _recommend_backfill_file_episodes(
+        self, store: Any, downloader: Any, limit: int = 0
+    ) -> int:
+        """★ 15.8.23：给**存量推荐记录**补「单集/整季」判定（不依赖本任务名下的种）。
+
+        为什么：推荐扫描只遍历**本任务名下的种**（站点匹配 + 任务启用），所以
+        「已在库」「别的站」「已移走」的种永远轮不到 → 卡片一直停在「集数未知」。
+        这里按**记录**遍历：凡下载器里还在、且没查过文件列表（``files_at`` 空）的就查一次，
+        每轮封顶 ``limit``（默认 RECOMMEND_FILES_MAX）条。幂等：查过即写 ``files_at``。
+        """
+        n = 0
+        try:
+            items = store.all() or {}
+        except Exception:  # noqa: BLE001
+            return 0
+        cap = int(limit or RECOMMEND_FILES_MAX)
+        for h, rec in list(items.items()):
+            if n >= cap:
+                break
+            if not isinstance(rec, dict) or rec.get("files_at"):
+                continue
+            if rec.get("episode"):
+                continue
+            if str(rec.get("kind") or "") not in ("season", "multi", ""):
+                continue
+            # ★ 逐条**新建**预算（复用同一个 list 会让第二条起全被挡掉）
+            fi = self._recommend_episode_probe(
+                downloader, str(h), str(rec.get("title") or ""), rec, [1]
+            )
+            if not fi:
+                continue
+            upd = {k: v for k, v in fi.items() if v not in (None, "")}
+            if not upd:
+                continue
+            try:
+                store.upsert(str(h), **upd)
+                n += 1
+            except Exception:  # noqa: BLE001
+                pass
+        return n
+
+    def _recommend_episode_probe(
+        self, downloader: Any, h: str, name: str, rec: Dict[str, Any], budget: List[int]
+    ) -> Dict[str, Any]:
+        """★ 15.8.22：种名**只有季、没有集号**时，用下载器**文件列表**判定单集/整季。
+
+        为什么：DepWeb/ADWeb 这类发布把集号藏在文件名里（`X.2022.S02.…` 里只有
+        `X.2022.S02E01.…mkv`）→ 只按种名会误判「整季」，其实是单集。
+        花销：每个种一次 `get_files`；**每轮封顶** ``RECOMMEND_FILES_MAX``，
+        查过写 ``files_at`` 缓存 ``RECOMMEND_FILES_TTL``（空结果 3 天后重试）。
+        """
+        try:
+            info = episode_info(name)
+        except Exception:  # noqa: BLE001
+            return {}
+        if info.get("episode"):
+            return {}
+        if not info.get("kind") or info.get("kind") == "movie":
+            return {}
+        now = time.time()
+        if rec:
+            _ttl = float(RECOMMEND_FILES_TTL) if rec.get("files_n") else 3 * 86400
+            try:
+                if rec.get("files_at") and now - float(rec.get("files_at") or 0) < _ttl:
+                    return {}
+            except (TypeError, ValueError):
+                pass
+        if budget[0] <= 0:
+            return {}
+        budget[0] -= 1
+        try:
+            entries = downloader.get_file_entries(h) or []
+        except Exception:  # noqa: BLE001
+            entries = []
+        fi = episode_info_files(entries)
+        out = dict(fi)
+        out["files_at"] = now
+        out.setdefault("files_n", len(entries) if entries else 0)
+        if not fi.get("season") and info.get("season"):
+            out["season"] = str(info.get("season") or "")
+        return out
+
+    def _recommend_merge_episode(
+        self, store: Any, h: str, rec: Dict[str, Any], fi: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """把文件列表推出的季/集**就地补写**到存量推荐记录（覆盖种名推出的）。"""
+        upd: Dict[str, Any] = {}
+        for k in ("kind", "season", "episode", "ep_begin", "ep_end"):
+            v = fi.get(k)
+            if v not in (None, ""):
+                upd[k] = v
+        if fi.get("files_at"):
+            upd["files_at"] = float(fi.get("files_at") or 0)
+        if "files_n" in fi:
+            upd["files_n"] = int(fi.get("files_n") or 0)
+        if not upd:
+            return rec
+        try:
+            store.upsert(h, **upd)
+        except Exception:  # noqa: BLE001
+            return rec
+        return store.get(h) or rec
+
+    def _recommend_backfill_episodes(self, store: Any) -> int:
+        """★ 15.8.21：给存量推荐记录补「季/集」（纯本地解析，幂等）。
+
+        老记录只有作品名 → 卡片分不清「单集 / 整季」；这里按种子名补 season/
+        episode/kind/group_key。返回补写条数。
+        """
+        n = 0
+        try:
+            items = store.all() or {}
+        except Exception:  # noqa: BLE001
+            return 0
+        for h, rec in list(items.items()):
+            if not isinstance(rec, dict) or rec.get("kind"):
+                continue
+            title = str(rec.get("title") or "")
+            if not title:
+                continue
+            info = episode_info(title)
+            if not info.get("kind") or info.get("kind") == "movie":
+                continue
+            try:
+                store.upsert(
+                    h, season=info.get("season") or "", episode=info.get("episode") or "",
+                    ep_begin=int(info.get("ep_begin") or 0), ep_end=int(info.get("ep_end") or 0),
+                    kind=str(info.get("kind") or ""),
+                    group_key=_rec_group_key(str(rec.get("media_key") or ""), info),
+                )
+                n += 1
+            except Exception:  # noqa: BLE001
+                pass
+        return n
+
     def _recommend_scan_task(self, task: MagicFlowTaskConfig) -> None:
         """对单个任务做一轮推荐甄别(识别 + 推荐/临时判定 + 生命周期清理)。"""
         task_id = str(task.id)
@@ -286,9 +474,19 @@ class RecommendMixin:
         store = getattr(self._store, "recommend", None) if self._store else None
         if store is None:
             return
+        # ★ 15.8.21：存量记录补季/集（幂等，只补缺 kind 的）
+        try:
+            self._recommend_backfill_episodes(store)
+        except Exception:  # noqa: BLE001
+            pass
         downloader = self._get_downloader(task.downloader)
         if not downloader or not downloader.is_available:
             return
+        # ★ 15.8.23：再按**记录**补「单集/整季」（覆盖库里/别的站/已移走的种）
+        try:
+            self._recommend_backfill_file_episodes(store, downloader)
+        except Exception:  # noqa: BLE001
+            pass
         if not self._try_begin_run(task_id):
             self._log(f"魔流 [{task.name}] 推荐甄别:上一轮仍在执行,跳过")
             return
@@ -315,13 +513,30 @@ class RecommendMixin:
             scanned = recommended = expired = evaluated = 0
             to_downgrade: List[str] = []
             budget = max(int(RECOMMEND_SCAN_MAX), 1)
+            # ★ 15.8.22：文件列表探针预算（每轮封顶）
+            _files_budget: List[int] = [max(int(RECOMMEND_FILES_MAX), 0)]
             for t in torrents:
                 h = str(getattr(t, "hash", "") or "").lower()
-                if not h or h in asset:
+                if not h:
+                    continue
+                # ★ 15.8.22：凡**有推荐记录**的种（含「已在库」被跳过的）都先用
+                #   文件列表校正季/集 —— 否则这些「整季」会永远停在「集数未知」。
+                _rec_early = store.get(h)
+                _epi_early: Dict[str, Any] = {}
+                if _rec_early:
+                    _epi_early = self._recommend_episode_probe(
+                        downloader, h, str(getattr(t, "title", "") or ""),
+                        _rec_early, _files_budget,
+                    )
+                    if _epi_early:
+                        self._recommend_merge_episode(store, h, _rec_early, _epi_early)
+                if h in asset:
                     continue
                 rec = store.get(h) or {}
                 status = rec.get("status")
-                if status in ("confirmed", "dismissed", "deleted"):
+                # ★ 15.8.22：季/集已在上方按文件列表校正（_epi_early）
+                _epi = _epi_early
+                if status in ("confirmed", "dismissed", "deleted", "subscribed"):
                     continue
                 # 手动保护的种子(无推荐记录)跳过;推荐/待确认由本 worker 管理(才能走到过期删)
                 if h in protected and status not in ("recommended", "pending"):
@@ -329,6 +544,14 @@ class RecommendMixin:
                 first_seen = float(rec.get("first_seen") or 0) or now
                 scanned += 1
                 if status == "recommended":
+                    # ★ 15.8.22：文件列表证明是**单集**（DepWeb 那类）→ 不计入推荐，转普通（不删）
+                    if (str(rec.get("kind") or "") == "single"
+                            and str(cfg.get("episode_policy") or "season_first") != "all"):
+                        store.set_status(h, "downgraded", note="单集（非整季）→转普通",
+                                         downgraded_at=now)
+                        to_downgrade.append(h)
+                        expired += 1
+                        continue
                     if low_disk or (expire_sec > 0 and now - first_seen > expire_sec):
                         # ★ Master 01:17：推荐过期**不删** → **转普通**
                         store.set_status(
@@ -340,6 +563,32 @@ class RecommendMixin:
                         expired += 1
                     continue
                 if status == "pending" and rec.get("evaluated_at"):
+                    # ★ 15.8.21：老记录缺季/集 → 本地补一次（不打网络）
+                    if not rec.get("kind"):
+                        _e2 = episode_info(str(rec.get("title") or ""))
+                        if _e2.get("kind") and _e2.get("kind") != "movie":
+                            try:
+                                store.upsert(
+                                    h, season=_e2.get("season") or "",
+                                    episode=_e2.get("episode") or "",
+                                    ep_begin=int(_e2.get("ep_begin") or 0),
+                                    ep_end=int(_e2.get("ep_end") or 0),
+                                    kind=str(_e2.get("kind") or ""),
+                                    group_key=_rec_group_key(
+                                        str(rec.get("media_key") or ""), _e2),
+                                )
+                                rec = store.get(h) or rec
+                            except Exception:  # noqa: BLE001
+                                pass
+                    # ★ 15.8.21：单集在 season_first 下**不升级**为推荐（只做 TTL 复查）
+                    if (str(rec.get("kind") or "") == "single"
+                            and str(cfg.get("episode_policy") or "season_first") != "all"):
+                        if temp_sec > 0 and now - first_seen > temp_sec:
+                            store.set_status(h, "downgraded", note="临时种到期→转普通",
+                                             downgraded_at=now)
+                            to_downgrade.append(h)
+                            expired += 1
+                        continue
                     # 已评估过:1 口径变化后可能升级为推荐(用已存字段,免重复识别)2 复查 TTL
                     _like = {
                         "recognized": bool(rec.get("media")),
@@ -348,7 +597,8 @@ class RecommendMixin:
                         "in_subscribe": rec.get("in_subscribe"),
                     }
                     if self._recommend_worth(_like, cfg) and not self._recommend_dup(
-                        store, str(rec.get("media_key") or ""), h, ("recommended", "confirmed")
+                        store, str(rec.get("group_key") or rec.get("media_key") or ""), h,
+                        ("recommended", "confirmed")
                     ):
                         store.upsert(
                             h, status="recommended",
@@ -393,6 +643,12 @@ class RecommendMixin:
                 budget -= 1
                 evaluated += 1
                 info = engine.evaluate(str(getattr(t, "title", "") or ""))
+                if _epi:
+                    # ★ 15.8.22：文件列表（单集/多集）**覆盖**种名的「整季」判定
+                    info = dict(info)
+                    for _k in ("kind", "season", "episode", "ep_begin", "ep_end"):
+                        if _epi.get(_k) not in (None, ""):
+                            info[_k] = _epi[_k]
                 media = None
                 if info.get("recognized"):
                     media = {
@@ -412,20 +668,39 @@ class RecommendMixin:
                     "rating": info.get("rating"),
                     "in_chart": bool(info.get("in_chart")),
                     "in_subscribe": bool(info.get("in_subscribe")),
+                    # ★ 15.8.21：季/集（单集 vs 整季）
+                    "season": str(info.get("season") or ""),
+                    "episode": str(info.get("episode") or ""),
+                    "ep_begin": int(info.get("ep_begin") or 0),
+                    "ep_end": int(info.get("ep_end") or 0),
+                    "kind": str(info.get("kind") or ""),
                     "evaluated_at": now,
                 }
                 media_key = self._recommend_media_key(media, info)
                 base["media_key"] = media_key
+                base["group_key"] = _rec_group_key(media_key, info)
                 # 未识别(非影视/识别不出)→ 不入推荐库
                 if not info.get("recognized"):
                     continue
                 # 已在影视库 → 不入推荐库(资源已在库,无需跟踪/推荐)
                 if self._recommend_in_library(info):
                     continue
+                # ★ 15.8.21 单集策略：season_first（默认）下「单集」不自动推荐——
+                #   记为普通临时种（受 TTL 回收，**不删**，仍可在「显示全部候选」里手动确认）。
+                if (str(info.get("kind") or "") == "single"
+                        and str(cfg.get("episode_policy") or "season_first") != "all"):
+                    store.upsert(h, status="pending", **base,
+                                 reason="单集（非整季）·不自动推荐")
+                    if temp_sec > 0 and now - first_seen > temp_sec:
+                        store.set_status(h, "downgraded", note="临时种到期→转普通",
+                                         downgraded_at=now)
+                        to_downgrade.append(h)
+                        expired += 1
+                    continue
                 worth = self._recommend_worth(info, cfg)
                 # 同片已有同类记录 → 不重复建档(避免同名多条)
                 _dup_statuses = ("recommended", "confirmed") if worth else ("pending",)
-                if self._recommend_dup(store, media_key, h, _dup_statuses):
+                if self._recommend_dup(store, base["group_key"], h, _dup_statuses):
                     continue
                 if worth:
                     store.upsert(
@@ -752,6 +1027,72 @@ class RecommendMixin:
             "total": len(items),
             "recommended": len([i for i in items if i.get("status") == "recommended"]),
         })
+
+    def _recommend_unsubscribe_season(
+        self, sid: int, title: str, season: int
+    ) -> Tuple[bool, str]:
+        """★ 15.8.25：退订「作品+季」（优先按 sub_id，否则按 标题+季 反查）。"""
+        try:
+            from app.chain.subscribe import SubscribeChain  # noqa: WPS433
+            from app.db.oper.subscribe import SubscribeOper  # noqa: WPS433
+
+            if not sid and title:
+                try:
+                    for sub in (SubscribeOper().list() or []):
+                        _t = _norm(getattr(sub, "name", "") or getattr(sub, "title", ""))
+                        _s = int(getattr(sub, "season", 0) or 0)
+                        if _t and _t == _norm(title) and (not season or not _s or _s == season):
+                            sid = int(getattr(sub, "id", 0) or 0)
+                            break
+                except Exception as err:  # noqa: BLE001
+                    logger.warning(f"魔流 订阅反查失败 {title}: {err}")
+            if not sid:
+                return False, "未找到对应订阅（可能已被 MP 清理）"
+            ok = bool(SubscribeChain()._delete_subscription(sid))  # noqa: SLF001
+            return (ok, "已退订整季 id=%s" % sid) if ok else (False, "退订失败")
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"魔流 退订失败 {title} S{season}: {err}")
+            return False, str(err)
+
+    def subscribe_recommend(self, hash: str) -> Response:
+        """★ 15.8.25：**手动**给该记录的「作品+季」加 MP 整季订阅（标记了才订阅，不自动）。
+
+        单集（一集一个文件）如果只有这一集，标它「订阅整季」→ MP 去抓齐其余集并整理到一起。
+        """
+        store = getattr(self._store, "recommend", None) if self._store else None
+        if store is None:
+            return Response(success=False, message="推荐存储不可用")
+        rec = store.get(hash) or {}
+        if not rec:
+            return Response(success=False, message="未找到该推荐记录")
+        if str(rec.get("status") or "") == "subscribed":
+            return Response(success=True, message="已订阅整季", data=rec)
+        sid, msg = self._recommend_subscribe_season(rec, rec.get("media"))
+        if not sid:
+            return Response(success=False, message=f"订阅失败：{msg}", data=rec)
+        store.upsert(
+            hash, status="subscribed", subscribed_at=time.time(), sub_id=int(sid or 0),
+            reason=("手动 · 已订阅整季（%s）" % (msg or ""))[:80],
+            note=("已订阅整季 id=%s" % sid)[:80],
+        )
+        return Response(success=True, message=f"已订阅整季（{msg}）", data=store.get(hash))
+
+    def unsubscribe_recommend(self, hash: str) -> Response:
+        """★ 15.8.25：退订该记录的「作品+季」并把记录复位为待核实（**不动种子**）。"""
+        store = getattr(self._store, "recommend", None) if self._store else None
+        if store is None:
+            return Response(success=False, message="推荐存储不可用")
+        rec = store.get(hash) or {}
+        if not rec:
+            return Response(success=False, message="未找到该推荐记录")
+        ok, msg = self._recommend_unsubscribe_season(
+            int(rec.get("sub_id") or 0),
+            str((rec.get("media") or {}).get("title") or ""),
+            int("".join(ch for ch in str(rec.get("season") or "") if ch.isdigit()) or 0),
+        )
+        store.upsert(hash, status="pending", sub_id=0, subscribed_at=0,
+                     reason="单集（非整季）·不自动推荐", note=msg[:80])
+        return Response(success=ok, message=msg, data=store.get(hash))
 
     def confirm_recommend(self, hash: str) -> Response:
         """确认推荐:标记 confirmed;开启自动入库时尝试整理入库。"""

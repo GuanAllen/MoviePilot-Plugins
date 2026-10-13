@@ -5,7 +5,7 @@
 // 展示用纯函数（odTraffic / odPct / odSpeed / odEtaText / odStageColor / odIsPaused / fmtSizeGb）
 // 自 composables/useOndemand.js 具名导入复用 —— 单一真值源；isOndemandAuto 依赖点播结果
 // （ondemandResult.auto_pick），仍由 useOndemand 定义 → 以函数 prop 下传（同 SilentPoolDialog 的 gbText 做法）。
-import { fmtTs } from '../../format'
+import { tsText } from '../../format'
 import {
   odTraffic, odPct, odSpeed, odEtaText, odStageColor, odIsPaused, fmtSizeGb,
 } from '../../composables/useOndemand'
@@ -216,11 +216,11 @@ function actOndemand(row, action) { emit('act', row, action) }
                 <div class="magicflow-od-row__meta">
                   <VChip size="x-small" variant="tonal">{{ row.site || '—' }}</VChip>
                   <span v-if="row.size_gb">{{ row.size_gb.toFixed(2) }} GB</span>
-                  <span class="magicflow-od-row__ts">{{ fmtTs(row.ts) }}</span>
+                  <span class="magicflow-od-row__ts">{{ tsText(row.added_at) }}</span>
                 </div>
                 <div class="magicflow-od-row__stage">
-                  <VChip size="x-small" variant="tonal" :color="row.result === 'resource' ? 'success' : (row.result === 'downloading' ? 'primary' : '')">
-                    {{ row.result_text }}
+                  <VChip size="x-small" variant="tonal" :color="row.stage === 'resource' ? 'success' : (row.stage === 'downloading' ? 'primary' : '')">
+                    {{ row.stage_text }}
                   </VChip>
                   <span class="magicflow-od-row__hash">{{ row.hash.slice(0, 12) }}</span>
                 </div>

@@ -23,8 +23,12 @@ class ServicesMixin:
         try:
             st = cli.snapshot_stats()
             crawl = cli.crawl_status()
-            if str(action or "").strip().lower() in ("start", "stop", "reset"):
-                crawl = cli.crawl_control(action)
+            enrich = cli.enrich_status()
+            act = str(action or "").strip().lower()
+            if act in ("start", "stop", "reset"):
+                crawl = cli.crawl_control(act)
+            elif act.startswith("enrich_"):
+                enrich = cli.enrich_control(act[len("enrich_"):])
             data = {
                 "ok": bool(st.get("ok")),
                 "service": st.get("service"),
@@ -33,6 +37,7 @@ class ServicesMixin:
                 "errors": st.get("errors") or 0,
                 "last_error": st.get("last_error") or "",
                 "crawl": crawl,
+                "enrich": enrich,
             }
             return Response(success=True, data=data,
                             message=("豆瓣服务不可用" if not data["ok"] else f"库 {data['records']} 条"))

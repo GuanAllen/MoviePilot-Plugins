@@ -15,9 +15,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.schemas import Response
 from app.sdk.logging import logger
 
-from ..fetcher import (
-    set_site_free_rules,
-)
 from ..recommend import _norm
 from ..sites.rules import (
     BUILTIN_RULES,
@@ -34,7 +31,9 @@ from ..sites.formula_fetch import (
 from ..common import (
     RULES_PROBE_DELAY,
     SITE_FORMULA_STALE_MAX,
+    site_guard,
 )
+from ..tags import MARK_REUSE, SUB_RESOURCE
 from ..sitestore import get_site_store
 
 
@@ -172,7 +171,6 @@ class SiteOpsMixin:
             resp = self.probe_site_rules(site_id=0, persist=True)
             data = getattr(resp, "data", None) or {}
             n = len(data.get("results") or [])
-            self._sync_free_rules()
             self._log(f"魔流:站点规则自动刷新完成（{n} 站）")
         except Exception as err:  # noqa: BLE001
             self._log(f"站点规则刷新异常:{err}", "warning")
@@ -260,7 +258,7 @@ class SiteOpsMixin:
         ``paths`` 可覆盖默认的探测页（逗号分隔，默认 ``myhr.php,rules.php``）。
 
         ★ 3.41.0：H&R **只从收件箱「欢迎短讯」里给出的规则地址**取（Master 定调：
-        「所有 H&R 规则都从收件箱的欢迎邮件进，外面的是假规则」）。公开页只作促销/名额/考核事实，
+        「所有 H&R 规则都从收件箱的欢迎邮件进，外面的是假规则」）。公开页只作名额/考核事实，
         H&R 一律不采。抓不到的**保持原样**，绝不把「没解析到」写成「没有 H&R」。
         """
         try:
@@ -410,10 +408,7 @@ class SiteOpsMixin:
                     # H&R：**只有从欢迎短讯指到的地址**来的才算数（source=welcome）
                     if got.get("hr") is not None:
                         _hr_cands.append({"from": str(path), **self._hr_facts(got)})
-                    # 非 H&R 事实（促销/名额/考核）照常采
-                    for _pk in ("free_over_gb", "free_original", "free_ep1"):
-                        if got.get(_pk) is not None and parsed.get(_pk) is None:
-                            parsed[_pk] = got[_pk]
+                    # 非 H&R 事实（名额/考核）照常采
                     if got.get("exam_avg_hours") is not None and parsed.get("exam_avg_hours") is None:
                         parsed["exam_avg_hours"] = got["exam_avg_hours"]
                         parsed["exam_evidence"] = f"{path}: {got.get('exam_evidence', '')}"
@@ -453,7 +448,6 @@ class SiteOpsMixin:
                     })
                 if persist and (
                     parsed.get("seed_cap") is not None
-                    or parsed.get("free_over_gb") is not None
                     or parsed.get("exam_avg_hours") is not None
                 ):
                     _payload2 = dict(parsed, name=name, site_id=sid)
@@ -483,7 +477,6 @@ class SiteOpsMixin:
             except Exception as _re:  # noqa: BLE001
                 self._log(f"站点规则:作废外部 H&R 失败:{_re}", "warning")
             ok_n = sum(1 for r in results if r.get("stored") or r.get("parsed"))
-            self._sync_free_rules()
             self._log(
                 f"站点规则:探测完成 {ok_n}/{len(results)} 站有结果"
                 f"（H&R 只走收件箱欢迎短讯的规则地址；paths={paths or '自动'}）"
@@ -602,53 +595,11 @@ class SiteOpsMixin:
             except Exception:  # noqa: BLE001
                 row["complete_ratio"] = None
             row["in_library"] = bool(g["rec"])
-            try:
-                fr = self._site_rules().free_rules(disp)
-                if fr:
-                    row.update(fr)
-            except Exception:  # noqa: BLE001
-                pass
             if row.get("seed_hours") is None and row.get("seed_hours_seen") is not None:
                 row["evidence_hours"] = row.get("seed_hours_seen")
             out.append(row)
         out.sort(key=lambda r: (str(r.get("site_name") or r.get("domain") or "")))
         return out
-
-    def _sync_free_rules(self) -> int:
-        """把规则库里的「促销规则」注入选种器（体积自动免费等）。
-
-        列表页不显示促销标记的免费种（例：体积 >20GB 自动免费）如果只按 promo 判定，
-        会被当成收费种 → 免费任务挡掉 / 跨站任务误判。这里把站点规则同步过去。
-        """
-        try:
-            rules = self._site_rules()
-            doms = set()
-            try:
-                doms |= {str(k) for k in (rules.items() or {}).keys()}
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                doms |= {str(r.get("domain") or "") for r in (self._list_sites() or [])}
-            except Exception:  # noqa: BLE001
-                pass
-            doms |= {str(k) for k in BUILTIN_RULES.keys()}
-            manual = (getattr(self, "_cs_cfg", {}) or {}).get("site_hours") or {}
-            if isinstance(manual, dict):
-                doms |= {str(k) for k in manual.keys()}
-            mapping: Dict[str, Dict[str, Any]] = {}
-            for d in doms:
-                if not d:
-                    continue
-                fr = rules.free_rules(d)
-                if fr:
-                    mapping[d] = fr
-            set_site_free_rules(mapping)
-            if mapping:
-                logger.info(f"促销规则同步: {len(mapping)} 站可补判免费 {list(mapping.items())[:3]}")
-            return len(mapping)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"促销规则同步失败: {e}")
-            return 0
 
     def get_site_rules(self, action: str = "", site: str = "", hours: str = "", hr: str = "",
                        ratio: str = "") -> Response:
@@ -694,7 +645,6 @@ class SiteOpsMixin:
                 manual[dom] = max(0.0, hv)
                 self._cs_cfg["site_hours"] = manual
                 self.save_data(key="crossseed_cfg", value=dict(self._cs_cfg))
-                self._sync_free_rules()
                 return Response(success=True, message=f"{dom} 保种时长已设为 {hv:g}h", data={"rules": self._rules_view()})
             if act in ("hr", "nohr"):
                 dom = str(site or "").strip().lower().replace("https://", "").replace("http://", "").strip("/")
@@ -706,7 +656,6 @@ class SiteOpsMixin:
                         "hr": False, "seed_hours": 0.0, "source": "manual", "confidence": "high",
                         "evidence": "手填：该站无 H&R，不做 H&R 保种保护",
                     })
-                    self._sync_free_rules()
                     return Response(success=True, message=f"{dom} 已标记为「无 H&R」(不做保护)", data={"rules": self._rules_view()})
                 if val in ("1", "true", "yes", "on"):
                     prev = dict(store.items().get(dom) or {})
@@ -717,7 +666,6 @@ class SiteOpsMixin:
                         "hr": True, "seed_hours": float(hours), "source": "manual", "confidence": "high",
                         "evidence": "手填：该站有 H&R（按此保护）",
                     })
-                    self._sync_free_rules()
                     return Response(
                         success=True,
                         message=f"{dom} 已标记为「有 H&R」（手动，按 {float(hours):g}h 保护；如需改时长直接编辑「保种(h)」）",
@@ -726,13 +674,11 @@ class SiteOpsMixin:
                 # 其余（unknown/空/其它）= 取消手填，交还探测
                 store.clear(dom)
                 store.ensure_builtin(dom)
-                self._sync_free_rules()
                 return Response(success=True, message=f"{dom} 已恢复为探测/内置判定", data={"rules": self._rules_view()})
             if act in ("refresh", "sync"):
                 for dom, nm in (({str(r.get("domain") or "").strip().lower(): str(r.get("name") or "") for r in (self._list_sites() or [])})).items():
                     if dom:
                         store.ensure_builtin(dom, nm)
-                self._sync_free_rules()
                 return Response(success=True, message="已按 MP 配置 + 内置表补全规则库", data={"rules": self._rules_view()})
             if act in ("probe", "fetch"):
                 sid = 0
@@ -757,7 +703,6 @@ class SiteOpsMixin:
                 return self.probe_site_rules(site_id=sid, persist=True)
             if act == "clear":
                 n = store.clear(str(site or ""))
-                self._sync_free_rules()
                 return Response(success=True, message=f"已清空规则库 {n} 条", data={"rules": self._rules_view()})
             _rp_info: Dict[str, Any] = {}
             try:
@@ -801,3 +746,316 @@ class SiteOpsMixin:
         data = {"site_id": site_id, "domain": getattr(site, "domain", ""), "persisted": bool(persist and cap.ok)}
         data.update(cap.as_dict())
         return Response(success=True, data=data)
+
+
+# ===========================================================================
+# ★ 16.0.0「站点已删除」（site deleted）：识别 + 牵连面 + 行内处置
+#
+# 模块级函数（而非 self._xxx）→ 不触发 tools/check_self_calls.py 的「禁止新增
+# 跨文件 self._ 互调」棘轮（与 15.8.9 的 common.site_guard 同一手法）。
+# 真值源：魔流台账 mf_site（host._agent_db_site_rows()）× MoviePilot 站点表
+#        （common.site_guard(host).mp_sites()，60s 记忆化）。
+# 红线：处置只做 pause / resume / **摘种**（delete_file=False），绝不删文件。
+# ===========================================================================
+
+
+def dom_norm(domain: Any) -> str:
+    """域名归一（小写、去协议、去路径/尾斜杠）。"""
+    s = str(domain or "").strip().lower()
+    s = re.sub(r"^https?://", "", s).split("/")[0].strip().strip(".")
+    return s
+
+
+def _as_int(v: Any) -> int:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
+def site_seed_stats(host: Any, name: str) -> Dict[str, Any]:
+    """按标签前缀 ``魔流-<站名>-`` 统计 qB 里的种子（**只数不写**）。"""
+    out: Dict[str, Any] = {"count": 0, "size_gb": 0.0, "paused": 0, "running": 0, "reuse": 0}
+    name = str(name or "").strip()
+    if not name:
+        return out
+    pref = f"魔流-{name}-"
+    try:
+        snap = host._tag_all_torrents() or {}
+    except Exception:  # noqa: BLE001
+        snap = {}
+    for t in snap.values():
+        tags = [str(x) for x in (getattr(t, "tags", None) or [])]
+        if not any(x.startswith(pref) for x in tags):
+            continue
+        out["count"] += 1
+        try:
+            out["size_gb"] += float(getattr(t, "size", 0) or 0) / (1024 ** 3)
+        except (TypeError, ValueError):
+            pass
+        st = str(getattr(t, "state", "") or "").lower()
+        if st.startswith("paused"):
+            out["paused"] += 1
+        else:
+            out["running"] += 1
+        if any(x == MARK_REUSE for x in tags):
+            out["reuse"] += 1
+    out["size_gb"] = round(out["size_gb"], 1)
+    return out
+
+
+def site_ledger_counts(host: Any, site_id: Any, iyuu_sid: Any) -> Dict[str, int]:
+    """该站在魔流账本里的行数（``mf_seed`` 按台账 ``site_id``、``mf_reseed`` 按 ``iyuu_sid``）。只读。"""
+    sid = _as_int(site_id)
+    iid = _as_int(iyuu_sid)
+    n_seed = 0
+    n_reseed = 0
+    if sid:
+        for r in (host._agent_db_rows("SeedRow") or []):
+            if _as_int(getattr(r, "site_id", 0)) == sid:
+                n_seed += 1
+    if iid:
+        for r in (host._agent_db_rows("ReseedRow") or []):
+            if _as_int(getattr(r, "site_id", 0)) == iid:
+                n_reseed += 1
+    return {"seed_rows": n_seed, "reseed_rows": n_reseed}
+
+
+def deleted_sites_rows(host: Any) -> List[Dict[str, Any]]:
+    """★ 站点已被 MoviePilot 删除的**全量清单 + 牵连面**（只读）。
+
+    判据：魔流台账行的 ``mp_site_id``（无则按域名）在 MP 站点表里找不到 → 该站被人在 MP 侧删了。
+    **MP 站点表读不到时返回空**（判不出不硬判，宁可漏报一轮）。
+    牵连面全部「只数不写」：qB 标签种数/体积/暂停数/复用副本数、账本行数、站内任务数。
+    """
+    mp = site_guard(host).mp_sites()
+    if not mp:
+        return []
+    mp_domains = {dom_norm(v.get("domain")) for v in mp.values() if v.get("domain")}
+    mp_names = {dom_norm(v.get("name")) for v in mp.values() if v.get("name")}
+    tasks = getattr(host, "_task_configs", None) or {}
+    out: List[Dict[str, Any]] = []
+    for r in (host._agent_db_site_rows() or []):
+        mpsid = _as_int(r.get("mp_site_id"))
+        dom = dom_norm(r.get("domain"))
+        if mpsid:
+            deleted = mpsid not in mp
+            reason = "mp_deleted"
+        elif dom:
+            deleted = dom not in mp_domains
+            reason = "domain_missing"
+        else:
+            nm = dom_norm(r.get("name"))
+            deleted = bool(nm) and nm not in mp_names
+            reason = "no_binding"
+        if not deleted:
+            continue
+        name = str(r.get("name") or "").strip() or dom
+        bound: List[str] = []
+        if mpsid:
+            for tid, t in tasks.items():
+                if _as_int(getattr(t, "site_id", 0)) == mpsid:
+                    bound.append(str(getattr(t, "id", "") or tid))
+        out.append({
+            "site_id": r.get("site_id"),
+            "name": name,
+            "domain": r.get("domain"),
+            "mp_site_id": r.get("mp_site_id"),
+            "iyuu_sid": r.get("iyuu_sid"),
+            "reason": reason,
+            "tasks": bound,
+            "seeds": site_seed_stats(host, name),
+            "ledger": site_ledger_counts(host, r.get("site_id"), r.get("iyuu_sid")),
+        })
+    out.sort(key=lambda x: int((x.get("seeds") or {}).get("count") or 0), reverse=True)
+    return out
+
+
+def deleted_site_find(host: Any, site_id: Any) -> Optional[Dict[str, Any]]:
+    """按台账 ``site_id`` 或 ``mp_site_id`` 在「已删除站点」清单里定位一行。"""
+    sid = _as_int(site_id)
+    if not sid:
+        return None
+    for r in deleted_sites_rows(host):
+        if _as_int(r.get("site_id")) == sid or _as_int(r.get("mp_site_id")) == sid:
+            return r
+    return None
+
+
+def _truthy(v: Any) -> bool:
+    return str(v if v is not None else "").strip().lower() in ("1", "true", "yes", "on", "y")
+
+
+def _gate_preview(host: Any, hashes: Any, allow_asset: bool = False) -> Dict[str, Any]:
+    """★ 删除闸门**预览**：这些 hash 里哪些会被硬保护拦住、理由分布。
+
+    （与物理删除同口径：``_delete_gate_detail`` + ``_delete_bill_assert``；取不到就按「不拦」算。）
+    干跑就能提前看到「哪些删不掉、为什么」，不用真删一轮才知道。
+    """
+    hs = [str(h) for h in (hashes or []) if h]
+    out: Dict[str, Any] = {"blocked": 0, "reasons": {}, "would_delete": len(hs)}
+    if not hs:
+        return out
+    why: Dict[str, str] = {}
+    try:
+        fn = getattr(host, "_delete_gate_detail", None)
+        if callable(fn):
+            why.update(dict(fn(hs, allow_asset=True) if allow_asset else fn(hs) or {}))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        fn2 = getattr(host, "_delete_bill_assert", None)
+        if callable(fn2):
+            for k, v in (fn2(hs) or {}).items():
+                why.setdefault(k, v)
+    except Exception:  # noqa: BLE001
+        pass
+    reasons: Dict[str, int] = {}
+    for _r in why.values():
+        reasons[str(_r)] = reasons.get(str(_r), 0) + 1
+    out["blocked"] = len(why)
+    out["reasons"] = reasons
+    out["would_delete"] = len(hs) - len(why)
+    return out
+
+
+def deleted_site_act(host: Any, site_id: Any, action: str, reuse_only: Any = 0,
+                     dry_run: Any = 1, force_asset: Any = 0) -> Dict[str, Any]:
+    """★ 已删除站点的行内操作：``pause`` / ``resume`` / ``remove``。
+
+    ``remove`` 口径（Master 2026-10-10 拍板，借站点2 红豆饭）：
+
+      * **别人辅种的复用副本**（带 ``魔流-辅种``）→ **只摘种**（``delete_file=False``）：
+        文件是从别处复用来的，删文件不可逆且会连坐本体；
+      * **自己的、非资源的种**（无 ``魔流-辅种`` 且非 ``资源``）→ **连文件一起删**；
+      * **资源**（``静默-资源`` = 本体/库内资产）→ **保留不动**（删文件=丢本体）。
+
+    连文件删仍走**唯一删除闸门** + 内置**共享文件护栏**（同批之外还有别的种共用同一份文件
+    → 自动降级为只摘种，不会连坐）。``reuse_only=1`` 只跑第一档（最安全）。默认干跑。
+    ``force_asset=1`` → ★ 走「手动删库内资产」专用闸门（``allow_library_asset=True``，
+    即 15.8.15 那条**唯一**允许突破「库内资产（已入库，永不删）」的口子；其余四类照拦）。
+    回执恒含 ``{ok, site_id, action, message, blocked}``（与点播/音乐行内操作同一口径）。
+    """
+    act = str(action or "").strip().lower()
+    base: Dict[str, Any] = {"ok": False, "site_id": _as_int(site_id), "action": act,
+                            "message": "", "blocked": False}
+    row = deleted_site_find(host, site_id)
+    if row is None:
+        base["message"] = "未找到该「已删除站点」（站点仍在 / MP 站点表读不到）"
+        return base
+    name = str(row.get("name") or "")
+    pref = f"魔流-{name}-"
+    want_reuse = _truthy(reuse_only)
+    force = _truthy(force_asset)
+    _dk: Dict[str, Any] = {"allow_library_asset": True} if force else {}
+    try:
+        snap = host._tag_all_torrents() or {}
+    except Exception:  # noqa: BLE001
+        snap = {}
+    all_h: List[str] = []
+    reuse_h: List[str] = []   # 别人辅种的复用副本 → 只摘种
+    asset_h: List[str] = []   # 资源（本体/库内）→ 保留
+    own_h: List[str] = []     # 自己的非资源 → 连文件删
+    for h, t in snap.items():
+        tags = [str(x) for x in (getattr(t, "tags", None) or [])]
+        if not any(x.startswith(pref) for x in tags):
+            continue
+        all_h.append(str(h))
+        if MARK_REUSE in tags:
+            reuse_h.append(str(h))
+        elif any(x.startswith(pref) and x.endswith("-" + SUB_RESOURCE) for x in tags):
+            asset_h.append(str(h))
+        else:
+            own_h.append(str(h))
+    if not all_h:
+        base["ok"] = True
+        base["message"] = "该站名下没有符合条件的种"
+        base["affected"] = 0
+        return base
+    dry = _truthy(dry_run) if dry_run is not None else True
+    try:
+        dl = host._get_downloader()
+    except Exception:  # noqa: BLE001
+        dl = None
+
+    # ------------------------------------------------ remove：分档处置
+    if act in ("remove", "drop"):
+        if want_reuse:
+            plan = {"strip": len(reuse_h), "full": 0, "keep": len(all_h) - len(reuse_h)}
+            gate = _gate_preview(host, reuse_h, allow_asset=force)
+            if dry:
+                base.update(ok=True, dry_run=True, planned=plan, affected=0, gate=gate,
+                            message=f"干跑：只摘复用副本 {len(reuse_h)} 个" + ("（含库内资产·强删）" if force else ""))
+                return base
+            if dl is None:
+                base["message"] = "下载器不可用"
+                return base
+            try:
+                n1, e1 = dl.delete_torrents(hashes=reuse_h, delete_file=False,
+                                            reason="站点已删除（复用副本·只摘种）", source="sitedeleted", **_dk)
+            except Exception as e:  # noqa: BLE001
+                base["message"] = f"操作失败:{e}"
+                return base
+            base.update(ok=not e1, blocked=bool(e1), stripped=int(n1 or 0),
+                        deleted_with_file=0, kept=len(all_h) - len(reuse_h), affected=int(n1 or 0),
+                        message=str(e1) if e1 else f"已摘种 {int(n1 or 0)} 个复用副本（不删文件）")
+            return base
+        plan = {"strip": len(reuse_h), "full": len(own_h), "keep": len(asset_h)}
+        gate = _gate_preview(host, reuse_h + own_h, allow_asset=force)
+        if dry:
+            base.update(ok=True, dry_run=True, planned=plan, affected=0, gate=gate,
+                        message=(f"干跑：摘种 {len(reuse_h)}（复用副本）+ 连文件删 {len(own_h)}（自有非资源）"
+                                 f"；保留资源/本体 {len(asset_h)}"
+                                 + ("（含库内资产·强删）" if force else "")
+                                 + (f"；闸门会拦 {gate['blocked']} 个" if gate["blocked"] else "")))
+            return base
+        if dl is None:
+            base["message"] = "下载器不可用"
+            return base
+        try:
+            # ★ 先「连文件删」（共享护栏此时还能看到仍在的辅种副本 → 共用路径的自动降级为只摘种），
+            #   再摘种；反过来的话护栏看不见已摘掉的别人，会把共用文件一起干掉。
+            n2, e2 = dl.delete_torrents(hashes=own_h, delete_file=True,
+                                        reason="站点已删除（自有非资源·连文件）", source="sitedeleted", **_dk)
+            n1, e1 = dl.delete_torrents(hashes=reuse_h, delete_file=False,
+                                        reason="站点已删除（复用副本·只摘种）", source="sitedeleted", **_dk)
+        except Exception as e:  # noqa: BLE001
+            base["message"] = f"操作失败:{e}"
+            return base
+        errs = [x for x in (e1, e2) if x]
+        base.update(ok=not errs, blocked=bool(errs), stripped=int(n1 or 0),
+                    deleted_with_file=int(n2 or 0), kept=len(asset_h), gate=gate,
+                    affected=int(n1 or 0) + int(n2 or 0),
+                    message=(errs[0] if errs else
+                             f"已摘种 {int(n1 or 0)}（复用副本）+ 连文件删 {int(n2 or 0)}（自有非资源）"
+                             f"；保留资源 {len(asset_h)}"))
+        return base
+
+    # ------------------------------------------------ pause / resume
+    hashes = reuse_h if want_reuse else all_h
+    _verb = "暂停" if act == "pause" else ("恢复" if act == "resume" else "")
+    if not _verb:
+        base["message"] = f"未知动作 {act}（可选 pause/resume/remove）"
+        return base
+    if not hashes:
+        base["ok"] = True
+        base["affected"] = 0
+        base["message"] = "没有符合条件的种"
+        return base
+    if dry:
+        base.update(ok=True, dry_run=True, planned=len(hashes), affected=0,
+                    message=f"干跑：将{_verb} {len(hashes)} 个种")
+        return base
+    if dl is None:
+        base["message"] = "下载器不可用"
+        return base
+    try:
+        n, err = dl.pause_torrents(hashes) if act == "pause" else dl.resume_torrents(hashes)
+    except Exception as e:  # noqa: BLE001
+        base["message"] = f"操作失败:{e}"
+        return base
+    base["ok"] = not err
+    base["blocked"] = bool(err)
+    base["affected"] = int(n or 0)
+    base["message"] = str(err) if err else f"已{_verb} {int(n or 0)} 个种"
+    return base

@@ -32,7 +32,7 @@ const emit = defineEmits(['run'])
         <VAlert type="warning" variant="tonal" density="compact" class="mt-3">
           {{ conf && conf.kind === 'abandon'
             ? '放弃认领会丢失权益，且站点可能扣魔力。'
-            : '认领后该种进入硬保护、永不自动删除；站点侧不达标可能扣魔力。' }}
+            : '认领后该种进入硬保护、永不自动删除；站点不达标可能扣魔力。' }}
         </VAlert>
       </VCardText>
       <VDivider />

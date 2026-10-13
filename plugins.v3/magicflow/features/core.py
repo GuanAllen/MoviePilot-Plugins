@@ -121,6 +121,10 @@ class CoreMixin:
         #   表是唯一真值源；新装库在此幂等灌入身份表种子（原 migrate worker 的 _stage_identity 职责）。
         self._seed_identities()
         self._show_sidebar_nav = bool(raw_config.get("show_sidebar_nav", True))
+        # ★ 15.11.0：AI 入口注册进 MP Agent / MCP
+        self._agent_mcp = bool(raw_config.get("agent_mcp", True))
+        _scope = str(raw_config.get("agent_mcp_scope") or "core").strip().lower()
+        self._agent_mcp_scope = _scope if _scope in ("core", "all") else "core"
         self._debug_log = bool(raw_config.get("debug_log", False))
         self._compact_mode = bool(raw_config.get("compact_mode", False))
         # 顶栏功能磁贴显隐（纯界面层）：存「隐藏」白名单，空 = 全部显示
@@ -218,6 +222,17 @@ class CoreMixin:
             except (TypeError, ValueError):
                 return d
 
+        # ★ 15.13.0：事件通知（H&R 临期 / 容量红线 / 产出骤降 / 任务失败 / 日报）
+        #   ⚠ 必须放在 _rf 定义之后（原插在定义前 → UnboundLocalError，插件整体加载失败）。
+        self._notify_enabled = bool(raw_config.get("notify_enabled", True))
+        self._notify_hr_hours = _rf(raw_config.get("notify_hr_hours"), 24.0)
+        self._notify_capacity_pct = _rf(raw_config.get("notify_capacity_pct"), 80.0)
+        self._notify_drop_pct = _rf(raw_config.get("notify_drop_pct"), 20.0)
+        self._notify_task_fail = bool(raw_config.get("notify_task_fail", True))
+        self._notify_daily = bool(raw_config.get("notify_daily", False))
+        self._notify_daily_hour = int(raw_config.get("notify_daily_hour", 9) or 9)
+        self._notify_quiet = str(raw_config.get("notify_quiet") or "")
+
         self._recommend_cfg = {
             "enabled": bool(raw_config.get("recommend_enabled", True)),
             "min_rating": _rf(raw_config.get("recommend_min_rating"), 7.5),
@@ -232,6 +247,11 @@ class CoreMixin:
             "rating_source": str(raw_config.get("recommend_rating_source") or "tmdb").strip().lower(),
             "douban_max_per_run": int(_rf(raw_config.get("recommend_douban_max_per_run"), 30.0)),
             "douban_service_url": str(raw_config.get("recommend_douban_service_url") or "").strip(),
+            # ★ 15.8.25：单集策略（season_first=单集不自动推荐(默认，可手动订阅整季) / all=都推）
+            "episode_policy": (
+                "all" if str(raw_config.get("recommend_episode_policy") or ""
+                           ).strip().lower() == "all" else "season_first"
+            ),
         }
         # ★ 11.2.1 死种补源（rescue）：停滞阈值 / 候选上限（设置面板可调）
         self._rescue_cfg = {
@@ -420,9 +440,6 @@ class CoreMixin:
         self._rules_cfg: Dict[str, Any] = {
             "auto_refresh": bool(raw_config.get("rules_auto_refresh", True)),
         }
-        # 把规则库里的「促销规则」注入选种器（体积自动免费等），启动即生效
-        self._sync_free_rules()
-
         # 元数据兜底(多源识别 + 补 NFO):TMDB 没有的(番剧特别篇/前传/国漫)自动兜底
         def _fsources(v: Any) -> List[str]:
             if isinstance(v, (list, tuple)) and v:
@@ -623,6 +640,12 @@ class CoreMixin:
                 if callable(_fn):
                     _fn(_hs, _site_domain, _tag, _content, hit_and_run=_hit_and_run)
             _dlops.set_hr_open_hook(_hr_open_hook)
+
+            def _add_journal_hook(_hs, _site_domain, _tag):
+                _fn = getattr(self, "_journal_seed_add", None)
+                if callable(_fn):
+                    _fn(_hs, _site_domain, _tag)
+            _dlops.set_add_journal_hook(_add_journal_hook)
             self._hrbills_store()
             logger.info("魔流H&R账单:开账钩子已注册（账单已生效，接入 _hr_obligation 第三来源）")
         except Exception as _hr_wire_err:  # noqa: BLE001
@@ -1038,6 +1061,16 @@ class CoreMixin:
             "schema_version": self.DATA_SCHEMA_VERSION,
             "enabled": bool(getattr(self, "_enabled", False)),
             "show_sidebar_nav": bool(getattr(self, "_show_sidebar_nav", True)),
+            "agent_mcp": bool(getattr(self, "_agent_mcp", True)),
+            "agent_mcp_scope": str(getattr(self, "_agent_mcp_scope", "core") or "core"),
+            "notify_enabled": bool(getattr(self, "_notify_enabled", True)),
+            "notify_hr_hours": float(getattr(self, "_notify_hr_hours", 24.0) or 0),
+            "notify_capacity_pct": float(getattr(self, "_notify_capacity_pct", 80.0) or 0),
+            "notify_drop_pct": float(getattr(self, "_notify_drop_pct", 20.0) or 0),
+            "notify_task_fail": bool(getattr(self, "_notify_task_fail", True)),
+            "notify_daily": bool(getattr(self, "_notify_daily", False)),
+            "notify_daily_hour": int(getattr(self, "_notify_daily_hour", 9) or 0),
+            "notify_quiet": str(getattr(self, "_notify_quiet", "") or ""),
             "debug_log": bool(getattr(self, "_debug_log", False)),
             "compact_mode": bool(getattr(self, "_compact_mode", False)),
             "hidden_tiles": list(getattr(self, "_hidden_tiles", None) or []),
@@ -1065,6 +1098,7 @@ class CoreMixin:
             "recommend_rating_source": str(self._recommend_cfg.get("rating_source", "tmdb")),
             "recommend_douban_max_per_run": int(self._recommend_cfg.get("douban_max_per_run", 30) or 0),
             "recommend_douban_service_url": str(self._recommend_cfg.get("douban_service_url", "") or ""),
+            "recommend_episode_policy": str(self._recommend_cfg.get("episode_policy", "season_first") or "season_first"),
             "rescue_stall_hours": float(getattr(self, "_rescue_cfg", {}).get("stall_hours") or 6.0),
             "hr_seed_margin_hours": float(getattr(self, "_hr_seed_margin_hours",
                                                   HR_SEED_MARGIN_HOURS_DEFAULT) or 0.0),

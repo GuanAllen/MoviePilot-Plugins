@@ -65,7 +65,7 @@ def _torrent(hash_string="", progress=0.0, seed_time=0.0, hit_and_run=False,
              title="test", tracker=""):
     return types.SimpleNamespace(
         hash=str(hash_string).lower(), title=title, progress=progress,
-        seed_time=seed_time, hit_and_run=hit_and_run, tags=[], tracker=tracker,
+        seed_time=seed_time, hit_and_run=hit_and_run, tags=[], tracker=tracker, downloaded=1e9,
     )
 
 
