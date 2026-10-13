@@ -190,6 +190,15 @@ class DeleteGateMixin:
                         else getattr(_mt, "progress", None)
                     if _mp is not None and float(_mp or 0) < 0.999:
                         continue
+                # ★ 15.8.16：未下完（progress<1）= 文件已不在 → 非有效「库内资产」宿主 → 不保护
+                #   （删得掉）。此前只对音乐线豁免，这里统一到全部库内资产：
+                #   「真正要保护的是数据，未下完的种没数据可保护」（Master 2026-10-11）。
+                #   判据取不到 progress → 不豁免，fail-closed 走原硬拦。
+                if _mt is not None:
+                    _mp = _mt.get("progress") if isinstance(_mt, dict) \
+                        else getattr(_mt, "progress", None)
+                    if _mp is not None and float(_mp or 0) < 0.999:
+                        continue
                 try:
                     if is_library_asset(rec):
                         why[h] = "库内资产（已入库，永不删）"
@@ -248,6 +257,11 @@ class DeleteGateMixin:
             except Exception:  # noqa: BLE001
                 b = None
             if not (isinstance(b, dict) and str(b.get("state") or "") in ("active", "breached")):
+                continue
+            # ★ 2026-10-10：对齐 ``_hr_obligation`` —— **只有明确 H&R 规则才算欠**；
+            #   rule=unknown 不拦（否则会与保护/迁移口径矛盾，形成“删不掉”的死循环）。
+            from .hrbills import RULE_SITE_HR, RULE_HIT_AND_RUN
+            if str(b.get("rule") or "") not in (RULE_SITE_HR, RULE_HIT_AND_RUN):
                 continue
             # ★ 15.5.0/15.5.1：未达完成度的种无 H&R 义务 → 不拦。
             #   阈值 = 站点覆盖 > 全局默认；真值源 = qB 快照 progress

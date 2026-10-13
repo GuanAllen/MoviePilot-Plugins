@@ -259,6 +259,64 @@ def _num(v: Any) -> Optional[float]:
         return None
 
 
+def _pick_num(*sources: Any, keys: Tuple[str, ...]) -> Optional[float]:
+    """按顺序从多个 dict 取第一个非 None 的数值（★ 15.16.2 API 档案字段归一）。"""
+    for _s in sources:
+        if not isinstance(_s, dict):
+            continue
+        for _k in keys:
+            _v = _s.get(_k)
+            if _v is not None:
+                return _num(_v)
+    return None
+
+
+def normalize_api_profile(payload: Any) -> Optional[Dict[str, Any]]:
+    """★ API 站档案归一（module-level，便于离线测试）——把各站 JSON 差异折成统一 bar。
+
+    已知形态：
+      * 馒头 / 叶PT：``memberCount{bonus,uploaded,downloaded,shareRate}`` + ``memberStatus{id,vip,warned}``
+      * 野马PT：``data{id,bonus,level,status,promotionUploadSize,promotionDownloadSize}``
+        （**无** shareRate → 用上传/下载现算；下载=0 → 分享率「无限」→ ``ratio_inf``）
+    返回 ``None`` 表示载荷为空/不可识别。
+    """
+    if not isinstance(payload, dict) or not payload:
+        return None
+    d = payload
+    cnt = d.get("memberCount") if isinstance(d.get("memberCount"), dict) else {}
+    st = d.get("memberStatus") if isinstance(d.get("memberStatus"), dict) else {}
+    up = _pick_num(cnt, d, keys=("uploaded", "promotionUploadSize", "upload", "uploadSize"))
+    dl = _pick_num(cnt, d, keys=("downloaded", "promotionDownloadSize", "download", "downloadSize"))
+    rt = _pick_num(cnt, d, keys=("shareRate", "ratio", "shareRatio"))
+    if rt is None and up is not None:
+        if dl and float(dl) > 0:
+            rt = round(float(up) / float(dl), 4)
+    return {
+        "ok": True,
+        "source": "api",
+        "uid": str(st.get("id") or d.get("id") or ""),
+        "ratio": rt,
+        "ratio_inf": bool(rt is None and up and float(up) > 0 and not dl),
+        "upload": up,
+        "download": dl,
+        "bonus": _pick_num(cnt, d, keys=("bonus",)),
+        "seeding": _num(d.get("seeding")),
+        "leeching": _num(d.get("leeching")),
+        "bonus_per_hour": None,
+        "level": _num(d.get("level")),
+        "name": str(d.get("name") or ""),
+        "created": str(d.get("createdDate") or st.get("createdDate") or ""),
+        # ★ 7.17.0 账号保活：站点记录的「最后登入 / 最后浏览」（第三方工具的调用**不会**刷新它们）
+        "last_login": str(st.get("lastLogin") or d.get("lastLogin") or ""),
+        "last_browse": str(st.get("lastBrowse") or d.get("lastBrowse") or ""),
+        "logged_in": str(d.get("status") or st.get("status") or "").upper()
+        in ("CONFIRMED", "ENABLE", "ENABLED", "ACTIVE", "")
+        and (bool(d) or bool(st)),
+        "vip": bool(st.get("vip")),
+        "warned": bool(st.get("warned") or st.get("leechWarn")),
+    }
+
+
 def parse_mail_list(html_text: Any) -> List[Tuple[str, str]]:
     """收件箱列表 → ``[(短讯 id, 主题), …]``（事实，不做判断）。"""
     t = str(html_text or "")
@@ -618,6 +676,7 @@ def parse_user_bar(raw: Any) -> Dict[str, Any]:
     raw_s = str(raw or "")
     out: Dict[str, Any] = {
         "ratio": None,
+        "ratio_inf": False,
         "upload": None,
         "download": None,
         "seeding": None,
@@ -629,13 +688,17 @@ def parse_user_bar(raw: Any) -> Dict[str, Any]:
             re.search(r"logout\.php|退出|我的分享率|魔力值", raw_s)
         ) and not re.search(r'name="password"', raw_s),
     }
-    val = _first_num(r"分享率[：:]\s*([0-9]+(?:\.[0-9]+)?)", text)
+    # ★ 15.16.1：分隔符**可选**（部分模板「分享率 1.202」不带冒号，旧正则直接漏掉比例/上传/下载）。
+    val = _first_num(r"分享率\s*[：:]?\s*([0-9]+(?:\.[0-9]+)?)", text)
     if val is not None:
         out["ratio"] = val
-    m = re.search(r"上传(?:量)?[：:]\s*([0-9][0-9.,]*\s*[KMGTP]?I?B)", text, re.IGNORECASE)
+    elif re.search(r"分享率\s*[：:]?\s*(?:无限|无穷|∞)", text):
+        # 下载量为 0 时站点显示「无限」——这是**有效事实**，必须与「没解析出来」区分
+        out["ratio_inf"] = True
+    m = re.search(r"上传(?:量)?\s*[：:]?\s*([0-9][0-9.,]*\s*[KMGTP]?I?B)", text, re.IGNORECASE)
     if m:
         out["upload"] = parse_size(m.group(1))
-    m = re.search(r"下载(?:量)?[：:]\s*([0-9][0-9.,]*\s*[KMGTP]?I?B)", text, re.IGNORECASE)
+    m = re.search(r"下载(?:量)?\s*[：:]?\s*([0-9][0-9.,]*\s*[KMGTP]?I?B)", text, re.IGNORECASE)
     if m:
         out["download"] = parse_size(m.group(1))
     val = _first_num(r"魔力值?\(?\s*([0-9][0-9.,]*)\s*魔力?\s*/\s*(?:小时|時|h)", text)
@@ -649,6 +712,12 @@ def parse_user_bar(raw: Any) -> Dict[str, Any]:
         val = _first_num(r"[^0-9]{0,40}?([0-9][0-9,]*(?:\.[0-9]+)?)", text[_m.end():])
     if val is None:
         val = _first_num(r"魔力值[^0-9]{0,30}?([0-9][0-9,]*(?:\.[0-9]+)?)", text)
+    if val is None:
+        # ★ 15.16.1：魔力值**别名**（各站自定义币名：财神「元宝」/ 蟹黄堡「蟹币值」/ 金币…）。
+        #   要求数字带千分位或小数（≥3 字符）→ 避开「签到得金元宝] … 0(0)」这类误命中。
+        val = _first_num(
+            r"(?:元宝|蟹币值?|金币|魔力币)[^0-9]{0,30}?([0-9][0-9,]{2,}(?:\.[0-9]+)?)", text
+        )
     if val is not None:
         out["bonus"] = val
     m = re.search(r"title\s*=\s*[\"']?(?:当前做种|做种中|做种)[\"']?[^>]*>[^<]*</font>?\s*([0-9]+)", raw_s)
@@ -1564,32 +1633,10 @@ class SiteView:
                 return v
             return {"ok": False, "error": res.get("error"), "source": "api"}
         d = res.get("data") or {}
-        cnt = d.get("memberCount") if isinstance(d.get("memberCount"), dict) else {}
-        st = d.get("memberStatus") if isinstance(d.get("memberStatus"), dict) else {}
-        # ★ 字段归一：馒头 memberCount{bonus,uploaded,downloaded,shareRate}；叶PT data{id,bonus,level,...}
-        bar = {
-            "ok": True,
-            "source": "api",
-            "uid": str(st.get("id") or d.get("id") or ""),
-            "ratio": _num(cnt.get("shareRate") if cnt.get("shareRate") is not None else d.get("shareRate")),
-            "upload": _num(cnt.get("uploaded") if cnt.get("uploaded") is not None else d.get("uploaded")),
-            "download": _num(cnt.get("downloaded") if cnt.get("downloaded") is not None else d.get("downloaded")),
-            "bonus": _num(cnt.get("bonus") if cnt.get("bonus") is not None else d.get("bonus")),
-            "seeding": _num(d.get("seeding")),
-            "leeching": _num(d.get("leeching")),
-            "bonus_per_hour": None,
-            "level": _num(d.get("level")),
-            "name": str(d.get("name") or ""),
-            "created": str(d.get("createdDate") or st.get("createdDate") or ""),
-            # ★ 7.17.0 账号保活：站点记录的「最后登入 / 最后浏览」（第三方工具的调用**不会**刷新它们）
-            "last_login": str(st.get("lastLogin") or d.get("lastLogin") or ""),
-            "last_browse": str(st.get("lastBrowse") or d.get("lastBrowse") or ""),
-            "logged_in": str(d.get("status") or st.get("status") or "").upper()
-            in ("CONFIRMED", "ENABLE", "ENABLED", "ACTIVE", "")
-            and (bool(d) or bool(st)),
-            "vip": bool(st.get("vip")),
-            "warned": bool(st.get("warned") or st.get("leechWarn")),
-        }
+        # ★ 15.16.2：字段归一抽到 module-level ``normalize_api_profile``（便于离线测试）
+        bar = normalize_api_profile(d)
+        if bar is None:
+            return {"ok": False, "error": "API 档案为空", "source": "api"}
         try:
             self._c.facts.set("site", f"{self.sid}|api_profile", bar, ttl)
         except Exception:  # noqa: BLE001

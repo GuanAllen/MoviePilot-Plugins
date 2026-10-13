@@ -187,6 +187,16 @@ export function normalizeSettings(settings = {}) {
   return {
     enabled: Boolean(settings.enabled),
     show_sidebar_nav: Boolean(settings.show_sidebar_nav),
+    agent_mcp: settings.agent_mcp === undefined ? true : Boolean(settings.agent_mcp),
+    agent_mcp_scope: settings.agent_mcp_scope === 'all' ? 'all' : 'core',
+    notify_enabled: settings.notify_enabled === undefined ? true : Boolean(settings.notify_enabled),
+    notify_hr_hours: Math.max(0, num(settings.notify_hr_hours, 24)),
+    notify_capacity_pct: Math.max(0, num(settings.notify_capacity_pct, 80)),
+    notify_drop_pct: Math.max(0, num(settings.notify_drop_pct, 20)),
+    notify_task_fail: settings.notify_task_fail === undefined ? true : Boolean(settings.notify_task_fail),
+    notify_daily: settings.notify_daily === undefined ? false : Boolean(settings.notify_daily),
+    notify_daily_hour: Math.max(0, Math.min(23, Math.round(num(settings.notify_daily_hour, 9)))),
+    notify_quiet: typeof settings.notify_quiet === 'string' ? settings.notify_quiet : '',
     debug_log: Boolean(settings.debug_log),
     compact_mode: Boolean(settings.compact_mode),
     journal_keep: Number.isFinite(journalKeep) ? Math.max(0, Math.round(journalKeep)) : 200,
@@ -212,6 +222,8 @@ export function normalizeSettings(settings = {}) {
     recommend_temp_ttl_days: Math.max(0, num(settings.recommend_temp_ttl_days, 7)),
     recommend_disk_min_free_gb: Math.max(0, num(settings.recommend_disk_min_free_gb, 50)),
     recommend_rating_source: settings.recommend_rating_source === 'douban' ? 'douban' : 'tmdb',
+    // ★ 15.8.25：两值（season_first=单集不自动推荐，可手动「订阅整季」/ all=单集也推荐）
+    recommend_episode_policy: settings.recommend_episode_policy === 'all' ? 'all' : 'season_first',
     recommend_douban_max_per_run: Math.max(0, Math.round(num(settings.recommend_douban_max_per_run, 30))),
     recommend_douban_service_url: String(settings.recommend_douban_service_url || '').trim(),
     rescue_stall_hours: Math.min(720, Math.max(0, num(settings.rescue_stall_hours, 6))),
@@ -348,10 +360,29 @@ export function recommendStatusMeta(status) {
     pending: { text: '待核实', color: 'grey' },
     recommended: { text: '待确认', color: 'amber' },
     confirmed: { text: '已入库', color: 'success' },
+    downgraded: { text: '已转普通', color: 'grey' },
+    // ★ 15.8.24：单集达标 → 自动给 MP 加了「整季订阅」（MP 会抓齐其余集并整理）
+    subscribed: { text: '已订阅整季', color: 'indigo' },
     dismissed: { text: '已忽略', color: 'grey-darken-2' },
     deleted: { text: '已过期删除', color: 'error' },
   }
   return map[String(status || '').toLowerCase()] || { text: status || '未知', color: 'grey' }
+}
+
+/** ★ 15.8.21：从种子名解析「季 / 集」展示标签（与后端 episode_info 同口径的轻量版）。
+ * 例：`...S01E07...` → 「第 1 季 · 第 7 集」；`...S01.E01-E16...` → 「第 1 季 · 全 1-16 集」；
+ * `...S01...` → 「第 1 季 · 整季」；认不出 → ''（电影 / 看不出季集）。 */
+export function epLabelFromName(name) {
+  const s = String(name || '')
+  if (!s) return ''
+  const seM = s.match(/[Ss](\d{1,2})(?![0-9])/)
+  const season = seM ? `第 ${parseInt(seM[1], 10)} 季` : ''
+  const rng = s.match(/[Ss]\d{1,2}[\s._-]*[Ee](\d{1,4})\s*[-~～]\s*[Ee]?(\d{1,4})/)
+  if (rng) return [season, `全 ${parseInt(rng[1], 10)}-${parseInt(rng[2], 10)} 集`].filter(Boolean).join(' · ')
+  const ep = s.match(/[Ss]\d{1,2}[\s._-]*[Ee](\d{1,4})/) || s.match(/第\s*(\d{1,4})\s*[集话話]/)
+  if (ep) return [season, `第 ${parseInt(ep[1], 10)} 集`].filter(Boolean).join(' · ')
+  if (seM) return season
+  return ''
 }
 
 /** 标准化「IYUU 站点密钥表」：domain -> { passkey/uid/downhash }。 */

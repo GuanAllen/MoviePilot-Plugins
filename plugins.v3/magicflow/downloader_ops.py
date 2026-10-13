@@ -93,6 +93,18 @@ def set_hr_open_hook(fn) -> None:
     _HR_OPEN = fn
 
 
+_ADD_JOURNAL = None
+
+
+def set_add_journal_hook(fn) -> None:
+    """注册「加种落 journal」钩子：``fn(hash_string, site_domain, tag)``。
+
+    在 ``add_torrent`` **成功后**被调用（异常吞掉，绝不影响添加）。传 ``None`` 注销。
+    """
+    global _ADD_JOURNAL
+    _ADD_JOURNAL = fn
+
+
 def set_gate_installer(fn) -> None:
     """注册删除闸门安装器：``fn(adapter)`` 在每个 DownloaderAdapter 构造末尾被调用。
 
@@ -494,13 +506,17 @@ class TorrentInfo:
 
 
 def seed_hours_for_hr(torrent: Any, now: float = 0.0) -> float:
-    """H&R 口径的「已挂做种小时数」——**保守**取值。
+    """H&R 口径的「已挂做种小时数」——**用完成时刻的墙上时间**。
 
-    ★ 11.6.1 修：qB ``seeding_time`` 在部分情形会把「未下完的时段」也算进去
-    （实测 CARPT 目标 ``fe00726e1dd4``：added 06:49、真正完成 22:42，qB 却报 16.0h）。
-    直接采信 → 「挂够 24h」提前达成 → 账单提前结清 → 提前删种 → **真欠 H&R**。
-    故取：① 未下完（``progress < 0.999``）→ 0；② 已下完 → ``min(qB seeding_time, now - completion_on)``。
-    只会往**小**里算（= 保护更久），不会让欠账被低估。
+    ★ 15.8.18 修（关键）：已下完 → **直接 ``now - completion_on``**，不再 ``min`` 到 qB
+      ``seeding_time``。原因：qB ``seeding_time`` 是「**活跃**做种时长」，一旦种被暂停
+      （``pausedUP``，静默池/库内资产常态）就**冻结**不再累计。
+      实测：鬼灭无限列车 10-08 16:31 完成（67h 前），seeding_time 却只有 1.06h
+      → 被误判「欠 H&R 未挂满 1.1/24h」，而站点侧早结清（Master 2026-10-11 实测「现在没有欠 H&R 的」）。
+      ``completion_on``（qB 完成时刻）本身就是最可靠的保挂起点，``now - completion_on``
+      才是真实保挂时长；11.6.1 那个 CARPT 例子（seeding_time 虚高 16h）用 completion_on 反而更准。
+
+      边界：未下完（``progress < 0.999``）→ 0；``completion_on`` 缺失（=0）→ 回退 seeding_time。
     """
     try:
         prog = float(getattr(torrent, "progress", 0) or 0)
@@ -508,10 +524,6 @@ def seed_hours_for_hr(torrent: Any, now: float = 0.0) -> float:
         prog = 0.0
     if prog < 0.999:
         return 0.0
-    try:
-        sec = float(getattr(torrent, "seed_time", 0) or 0)
-    except (TypeError, ValueError):
-        sec = 0.0
     try:
         comp = float(getattr(torrent, "completion_on", 0) or 0)
     except (TypeError, ValueError):
@@ -521,7 +533,12 @@ def seed_hours_for_hr(torrent: Any, now: float = 0.0) -> float:
             _now = float(now or 0) or time.time()
         except Exception:  # noqa: BLE001
             _now = time.time()
-        sec = min(sec, max(0.0, _now - comp))
+        return max(0.0, _now - comp) / 3600.0
+    # completion_on 缺失：回退 qB seeding_time（活跃做种时长，暂停冻结的副作用仍在，但极少见）
+    try:
+        sec = float(getattr(torrent, "seed_time", 0) or 0)
+    except (TypeError, ValueError):
+        sec = 0.0
     return max(0.0, sec) / 3600.0
 
 
@@ -1068,6 +1085,23 @@ class DownloaderAdapter:
             time.sleep(2)
         return None  # 到点还在校验 → 视为「未完成」，由调用方撤销
 
+    def _confirm_progress(self, hash_string: str, progress: Optional[float],
+                          settle: float = 3.0) -> Optional[float]:
+        """★ 2026-10-10：qB 在「校验结束 → 状态切换」的那一瞬间，``progress`` 可能是**未落定
+        的闪值**（实测把一颗仅 15.67% 的辅种读成 ~1.0 → 误判通过、留下僵尸种）。
+        静置 ``settle`` 秒后再读一次：若又回到校验态就继续等；否则以复读值为准。
+        """
+        if progress is None:
+            return None
+        time.sleep(max(0.0, float(settle)))
+        raw = self._find_raw_torrent(hash_string)
+        if raw is None:
+            return None
+        state = str(_kv(raw, "state", "") or "").lower()
+        if state.startswith("checking"):
+            return self._wait_checked(hash_string, timeout=600)
+        return float(_kv(raw, "progress", 0) or progress)
+
     def add_torrent_reuse(
         self,
         torrent_bytes: bytes,
@@ -1117,6 +1151,31 @@ class DownloaderAdapter:
             local_hash = str(info_hash(torrent_bytes)).lower()
         except Exception:
             local_hash = None
+
+        # ★ 2026-10-10：该种**已在下载器**里 → 绝不重复添加（重复 add 会扰动/重置 qB 侧
+        #   状态，实测把一颗已校验 100% 的辅种打成 15.67% 僵尸种）。改为「就地核验」：
+        #   读真实完成度，<100% 且不在校验中 → 触发一次重校验并等待，让辅种落回真 100%。
+        if local_hash and self._find_raw_torrent(local_hash) is not None:
+            _raw0 = self._find_raw_torrent(local_hash) or {}
+            _p0 = float(_kv(_raw0, "progress", 0) or 0)
+            _st0 = str(_kv(_raw0, "state", "") or "").lower()
+            if _p0 < 0.999 and not _st0.startswith("checking"):
+                try:
+                    self._downloader.recheck_torrents(local_hash)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"辅种就地重校验失败 {local_hash}: {e}")
+                _p0 = self._wait_checked(local_hash, timeout=max(int(timeout), 300)) or _p0
+                _p0 = self._confirm_progress(local_hash, _p0) or _p0
+            if _p0 >= 0.999:
+                # 补齐「辅种」标记（append 语义，不动已有标签）
+                try:
+                    self.set_torrent_tags(local_hash, tag_list)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"辅种标记补齐失败 {local_hash}: {e}")
+                logger.info(f"[标签审计] ADD-REUSE 已在下载器·校验通过 hash={local_hash} "
+                            f"progress={_p0:.1%}（跳过重复添加）")
+                return local_hash, None
+            return None, f"已在下载器但校验仅 {_p0:.1%}（不重复添加）"
 
         hash_string: Optional[str] = None
         # 🔎 标签审计：辅种复用添加种子
@@ -1211,6 +1270,8 @@ class DownloaderAdapter:
             _need = int(300 + (_size / 1024 ** 3) * 20) if _size else int(timeout)
             timeout = max(int(timeout), _need)
             progress = self._wait_checked(hash_string, timeout=timeout)
+            # ★ 复读确认：避开「校验刚结束」瞬间的闪值（否则 15.67% 会被读成通过）
+            progress = self._confirm_progress(hash_string, progress)
             if progress is None:
                 # 校验超时/无法确认 → 撤销，避免留下「暂停·0%」僵尸种
                 return None, _delete_added("校验超时/未知，已撤销（避免残留）")
@@ -1443,6 +1504,13 @@ class DownloaderAdapter:
                         bool(hit_and_run))
             except Exception:  # noqa: BLE001
                 logger.error("HR 开账钩子异常", exc_info=True)
+        if _hs and not _err:
+            try:
+                _jfn = _ADD_JOURNAL
+                if callable(_jfn):
+                    _jfn(str(_hs), str(site_domain or ""), str(tag or ""))
+            except Exception:  # noqa: BLE001
+                logger.error("加种 journal 钩子异常", exc_info=True)
         return result
 
     def _add_torrent_qbittorrent(
@@ -1803,19 +1871,29 @@ class DownloaderAdapter:
 
         try:
             success_count = 0
-            _ok_hashes: List[str] = []
+            _ok_df: List[str] = []     # 实际连文件删的
+            _ok_keep: List[str] = []   # 只摘种、文件保留的（含被共享护栏降级的）
             for hash_string in hashes:
                 _df = bool(delete_file) and str(hash_string or "").strip().lower() not in shared
                 if self._downloader.delete_torrents(ids=[hash_string], delete_file=_df):
                     success_count += 1
-                    _ok_hashes.append(hash_string)
+                    (_ok_df if _df else _ok_keep).append(hash_string)
 
             _err: Optional[str] = None
             if success_count < len(hashes):
                 _err = f"部分种子删除失败 ({success_count}/{len(hashes)})"
             elif _blocked and success_count == 0:
                 _err = f"{len(_blocked)} 个种子受硬保护，已拦截（未删除）"
-            self._emit_delete_log(_ok_hashes, delete_file, reason, source, _err, _blocked)
+            # ★ 台账记**实际值**（2026-10-10 Master「按实际值来」）：连文件删的与只摘种的
+            #   **分开发**，``delete_file`` 一律写该行的**真实生效值**（被共享护栏降级为只摘种
+            #   的写 False）—— 否则台账看着像删了文件、其实没删。``_blocked`` 只随第一组发，避免重复行。
+            _groups = [g for g in ((_ok_df, True), (_ok_keep, False)) if g[0]]
+            if not _groups:
+                self._emit_delete_log([], delete_file, reason, source, _err, _blocked)
+            else:
+                for _i, (_ghs, _gdf) in enumerate(_groups):
+                    self._emit_delete_log(_ghs, _gdf, reason, source, _err,
+                                          _blocked if _i == 0 else [])
             return success_count, _err
 
         except Exception as e:

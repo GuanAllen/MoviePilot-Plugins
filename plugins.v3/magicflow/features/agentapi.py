@@ -30,6 +30,7 @@ from ..common import (
     RUN_MODE_SEEDING,
     decision_round_stats,
     run_mode_of,
+    site_type_rows,
 )
 from .pool import POOL_THRESHOLD
 
@@ -88,267 +89,378 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
     return [
         {"path": "/agent", "method": "GET", "handler": "agent_manifest", "write": False,
          "params": {}, "returns": "Manifest", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "能力清单（自描述：端点/方法/参数/返回类型/是否可写/版本）"},
+         "summary": "能力清单（所有 AI 端点的自描述）"},
         {"path": "/agent/state", "method": "GET", "handler": "agent_state", "write": False,
          "params": {}, "returns": "AgentState", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "总览（任务/托管/账单/池/站点 计数）"},
+         "summary": "有多少任务在跑、多少欠账：运行计数（任务/托管/账单/池/站点）"},
         {"path": "/agent/decide", "method": "GET", "handler": "agent_decide", "write": False,
-         "params": {"hashes": "hex[] 逗号分隔（必填，40/64 位）"}, "returns": "DecideReport",
+         "params": {"hashes": "hex[] 逗号分隔（必填，40/64 位）",
+                    "task_id": "任务 id（可选；给了就带任务级口径：软/硬保护 + 阈值评分）"},
+         "returns": "DecideReport",
          "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★核心：每个 hash 的 verdict + reason_chain + bills + protection"},
+         "summary": "这颗种为什么留着、该不该删：判决 + 完整决策链 + 账单 + 保护依据"},
+        {"path": "/agent/cleanup/preview", "method": "GET", "handler": "agent_cleanup_preview",
+         "write": False, "params": {"task_id": "任务 id（必填）"},
+         "returns": "CleanupPreview", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "这个任务本轮会删哪些：删种名单预览（只算不删，同真闸门保护集）"},
+        {"path": "/agent/optimize", "method": "GET", "handler": "agent_optimize",
+         "write": False, "params": {"task_id": "任务 id（必填）",
+                                    "budget_gb": "保留体积预算(GB,可选;缺省=保留≥95%时魔的最小预算)"},
+         "returns": "OptimizePlan", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "容量就这么多，保哪些最划算：预算下时魔最优组合（只算不删，含阈值对比）"},
+        {"path": "/agent/plan", "method": "GET", "handler": "agent_plan", "write": False,
+         "params": {"action": "cleanup|optimize（必填）", "task_id": "任务 id（必填）",
+                    "budget_gb": "仅 optimize：保留体积预算(GB,可选;缺省=保留≥95%时魔的最小预算)"},
+         "returns": "Plan", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "要删/优化哪些，先出可复核计划：条目 + plan_id（只算不删）"},
+        {"path": "/agent/plan/apply", "method": "POST", "handler": "agent_plan_apply", "write": True,
+         "params": {"plan_id": "计划内容哈希（必填，来自 /agent/plan）", "action": "cleanup|optimize",
+                    "task_id": "任务 id", "budget_gb": "仅 optimize",
+                    "delete_files": "-1=按任务配置|0=保文件|1=删文件（默认 -1）",
+                    "confirm": "1=真执行；0/缺省=干跑（零写入）"},
+         "returns": "PlanApply", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "批准并执行那份计划：比对 plan_id、过唯一删种闸门"},
         {"path": "/agent/bills", "method": "GET", "handler": "agent_bills", "write": False,
          "params": {"site": "domain", "state": "active|settled|pending|void",
-                    "rule": "site_hr|hit_and_run|unknown", "limit": "int", "cursor": "str"},
+                    "rule": "site_hr|hit_and_run|unknown", "limit": "int（默认 50）",
+                    "cursor": "下一页游标（回填上一次返回的 next_cursor）"},
          "returns": "BillPage", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "分页账单（limit/cursor + site/state/rule 过滤）"},
+         "summary": "欠不欠债、欠在哪些站/哪种：H&R 账单分页（可按 site/state/rule 过滤）"},
         {"path": "/agent/bills/{hash}", "method": "GET", "handler": "agent_bill", "write": False,
          "params": {"hash": "hex 路径参数（40/64 位）"}, "returns": "Bill",
-         "version": AGENT_ENDPOINT_VERSION, "summary": "单条账单（含 opened_by/opened_at/void_reason）"},
+         "version": AGENT_ENDPOINT_VERSION, "summary": "单条账单详情"},
         {"path": "/agent/snapshot", "method": "GET", "handler": "agent_snapshot", "write": False,
          "params": {}, "returns": "SnapshotRound", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "快照轮观测（本轮决策拉了几次快照、耗时）"},
+         "summary": "每轮决策的快照拉取次数/耗时观测"},
         {"path": "/agent/rescue", "method": "GET", "handler": "agent_rescue", "write": False,
          "params": {}, "returns": "RescueReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "死种补源观测：停滞欠 H&R/手动保留的未下完种 + 不能当源的站点 + 配置"},
+         "summary": "哪些种快没源了：补源目标（停滞/欠 H&R/手动保留的未下完种）"},
         {"path": "/agent/rescue/candidates", "method": "GET", "handler": "agent_rescue_candidates",
          "write": False,
          "params": {"hashes": "逗号分隔 hash（可空=全部目标）", "verify": "1|0（默认 1；会联网拉候选 .torrent 做指纹校验）"},
          "returns": "RescueCandidatesReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★ 真正可用的补源候选（IYUU 指纹索引 + 拉 .torrent 校验文件清单特征码）；不写下载器"},
+         "summary": "这些种从哪能补到源：候选（IYUU 指纹索引 + 落地校验，不写下载器）"},
         # ---- P1.5b：真值源直出 + 字段字典 + 报表层首批（handler 在 AgentLedgerMixin）----
         {"path": "/agent/ledger/{table}", "method": "GET", "handler": "agent_ledger", "write": False,
          "params": {"table": "site|resource|identity|task|seed|deck|crossseed|bills|deletions|journal|protected|rescue_actions|reseed|run|claim",
-                    "limit": "int（默认 50，0=全量）", "cursor": "str", "filter": "k=v 逗号分隔（如 site=/state=/rule=）",
+                    "limit": "int（默认 50，0=全量）", "cursor": "下一页游标（回填 next_cursor）",
+                    "filter": "k=v 逗号分隔（如 site=/state=/rule=）",
                     "fields": "逗号分隔字段投影"}, "returns": "LedgerPage",
          "version": AGENT_ENDPOINT_VERSION,
-         "summary": "真值表原样导出（列字典 + 分页 + 过滤 + 字段投影）——前端基本不给看的那一层"},
+         "summary": "查真值台账原文：站点/资源/做种/删除/日志等表（分页/过滤/字段投影）"},
         {"path": "/agent/schema", "method": "GET", "handler": "agent_schema", "write": False,
          "params": {}, "returns": "SchemaReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "字段字典：所有返回类型 + 所有真值表的字段/类型/单位/枚举/可空"},
+         "summary": "字段字典：所有返回类型 + 真值表字段/类型/单位/枚举/可空"},
         {"path": "/agent/overview", "method": "GET", "handler": "agent_overview", "write": False,
          "params": {}, "returns": "Overview", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "聚合首页（复用 /status 内部实现 + AgentState）"},
+         "summary": "整体现在什么情况：任务/站点/账单/池 概览数字"
+                    "（注意：无参数可缩，实测约 48KB —— 超过 MCP 单次 30k 上限会被截断，截断结果是残的，"
+                    "别当全量；细项改用 /agent/state、/agent/health、/agent/jobs、/agent/bills）"},
         {"path": "/agent/tasks", "method": "GET", "handler": "agent_tasks", "write": False,
-         "params": {"type": "all|real|host（默认 all；real=排除伪任务；host=只看伪任务）"},
+         "params": {"type": "all|real|host（默认 all；real=排除伪任务；host=只看伪任务；"
+                    "real/all 约 36KB 会超 30k 被截断 —— 单任务细节请用 /agent/tasks/{id}）"},
          "returns": "TaskList", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "任务列表（含 enabled/run_mode/site/统计；is_host 标注伪任务）"},
+         "summary": "有哪些任务、哪些是伪任务：任务列表（run_mode/站点/统计 + is_host 标注）"},
         {"path": "/agent/tasks/{id}", "method": "GET", "handler": "agent_task_detail", "write": False,
          "params": {"id": "任务 id 路径参数"}, "returns": "TaskDetail",
          "version": AGENT_ENDPOINT_VERSION,
-         "summary": "任务详情（含完整配置）+ 候选/种子/操作记录摘要"},
+         "summary": "某个任务怎么配的、最近干了什么：任务详情（配置 + 候选/种子/操作摘要）"},
         {"path": "/agent/operations", "method": "GET", "handler": "agent_operations", "write": False,
-         "params": {"limit": "int", "cursor": "str", "task": "任务 id", "action": "操作类型(kind)"},
+         "params": {"limit": "int（默认 50）", "cursor": "下一页游标（回填 next_cursor）",
+                    "task": "任务 id", "action": "操作类型(kind)"},
          "returns": "OperationsPage", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "跨任务操作记录（limit/cursor/task/action 过滤）"},
+         "summary": "谁在什么时候删/加了什么：跨任务操作流水（可按 task/action 过滤）"},
         {"path": "/agent/pool", "method": "GET", "handler": "agent_pool", "write": False,
          "params": {"path": "任务保存目录（可选）"}, "returns": "PoolReport",
-         "version": AGENT_ENDPOINT_VERSION, "summary": "池容积 / 磁盘水位 / 预算"},
+         "version": AGENT_ENDPOINT_VERSION, "summary": "池和磁盘还够不够：池容积 + 磁盘水位 + 预算"},
         {"path": "/agent/trend", "method": "GET", "handler": "agent_trend", "write": False,
          "params": {"scope": "all|task|site", "id": "任务/站点 id", "hours": "int（默认 72）"},
          "returns": "TrendReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "趋势（每小时；复用 features/trend.py）"},
+         "summary": "每小时魔力趋势"},
+        {"path": "/agent/notify", "method": "GET", "handler": "agent_notify", "write": False,
+         "params": {"limit": "int（默认 50）"}, "returns": "NotifyReport",
+         "version": AGENT_ENDPOINT_VERSION,
+         "summary": "通知发没发出去、都发过什么：配置 + 最近事件 + 计数"},
+        {"path": "/agent/notify/act", "method": "POST", "handler": "agent_notify_act", "write": True,
+         "params": {"action": "test|scan|clear", "text": "测试通知正文（可选）"},
+         "returns": "NotifyActReport", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "测通知/立即扫描/清历史：通知运维动作（即时生效）"},
+        {"path": "/agent/trend/daily", "method": "GET", "handler": "agent_trend_daily", "write": False,
+         "params": {"scope": "site|task|all（默认 site）", "id": "任务/站点 id", "days": "int（默认 30）"},
+         "returns": "TrendDailyReport", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "长期每天怎么走的：日报趋势（持久化 180 天）"},
+        {"path": "/agent/trend/why", "method": "GET", "handler": "agent_trend_why", "write": False,
+         "params": {"scope": "site|task", "id": "站点 id 或任务 id（必填；缺了报 bad_param）",
+                    "hours": "int 对比窗口（默认 72）"},
+         "returns": "TrendExplainReport", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "魔力为什么涨/跌：时魔因子拆解 + 结论 + 建议"},
         {"path": "/agent/rules", "method": "GET", "handler": "agent_rules", "write": False,
          "params": {}, "returns": "RulesReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "站点规则（H&R / need_hours / 来源 builtin|override）"},
+         "summary": "站点规则（H&R / 做种时长 / 来源）"},
         {"path": "/agent/settings", "method": "GET", "handler": "agent_settings", "write": False,
          "params": {}, "returns": "SettingsReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "当前设置 + 默认模板 + 下载器参数（只读）"},
+         "summary": "现在是什么配置：设置 + 默认模板 + 下载器参数"},
         {"path": "/agent/health", "method": "GET", "handler": "agent_health", "write": False,
          "params": {}, "returns": "HealthReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "健康检查（各子系统；复用现有 health）"},
+         "summary": "有没有出事、哪个子系统不健康：自检结论 + 待处理项"},
         {"path": "/agent/blindspot", "method": "GET", "handler": "agent_blindspot", "write": False,
          "params": {}, "returns": "HrBlindspotReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★H&R 盲区（有 H&R 的站却没记账/没标签的种）+ 补源来源站禁用清单"},
+         "summary": "H&R 有没有漏记/漏标：盲区种 + 补源禁用站"},
         {"path": "/agent/hr/per-torrent", "method": "GET", "handler": "agent_hr_per_torrent",
          "write": False,
          "params": {}, "returns": "PerTorrentHrReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★逐种 H&R 站（野马PT 类）账单审计：按 rule/state 摊开，unknown=可能漏记"},
+         "summary": "逐种 H&R 账单审计（按 rule/state 摊开；unknown=可能漏记）"},
         {"path": "/agent/hr/reconcile", "method": "GET", "handler": "agent_hr_reconcile",
          "write": False,
          "params": {"site": "站点域名（可空=全部 hr=True 站）", "live": "1=现在就真抓一轮（默认只读上次结果）"},
          "returns": "HrReconcileReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★站点 myhr 三方对账（站点欠×本机有无×账本账单）：只判「还欠」，绝不判「已结清」"},
+         "summary": "站点 myhr 三方对账（站点欠 × 本机有无 × 账本）；只判「还欠」"},
         {"path": "/agent/yema", "method": "GET", "handler": "agent_yema", "write": False,
          "params": {"live": "1=联机对账（拉站点后台接口）；默认读上一轮缓存",
                     "force": "1=忽略缓存强拉"},
          "returns": "YemaReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★野马PT 逐种 H&R 对账（站点 hrPunishEnable × 本机 × 账本）：漏挂/漏记可见；不产 settled"},
+         "summary": "野马PT 逐种 H&R 对账：漏挂/漏记可见（可现抓，不产 settled）"},
         {"path": "/agent/yema/absolve", "method": "GET", "handler": "agent_yema_absolve", "write": True,
          "params": {"tid": "站点 torrentId（必填）", "confirm": "1=真写（默认干跑，只报成本）"},
          "returns": "YemaAbsolve", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★野马PT「免罪」（扣积分、不可逆）：默认干跑；confirm=1 才写"},
+         "summary": "野马PT 免罪（扣积分不可逆）：默认只报成本"},
         {"path": "/agent/site/seeds", "method": "GET", "handler": "agent_site_seeds",
          "write": False,
          "params": {"site": "站点域名 / 短名 / id（可空 = 只回站点清单）",
                     "live": "1 = 现抓站点 H&R 对账（同 /agent/hr/reconcile）"},
          "returns": "SiteSeedsReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★站点级种子报表（两轴分级）：职务/身份六桶（刷流/魔力/保种/静默[含新/资源/普通]/补源/外部）+ 传输三态 + 债务列字段 + H&R 摘要"},
+         "summary": "某站做种/H&R 现状如何：六桶职务/身份 + 传输三态 + H&R 摘要"},
+        # ---- 15.9.0 站点「分类类型」映射（只读，★ 类型真值一律用 MP）----
+        {"path": "/agent/sites/types", "method": "GET", "handler": "agent_sites_types",
+         "write": False, "params": {},
+         "returns": "SiteTypes", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "站点分类类型映射（逐站 movie/tv/music 分类 id；真值来自 MP）"},
+        # ---- 16.0.0 站点已删除（MP 侧删站后的善后：识别 + 牵连面 + 行内处置）----
+        {"path": "/agent/sites/deleted", "method": "GET", "handler": "agent_sites_deleted",
+         "write": False, "params": {},
+         "returns": "DeletedSites", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "哪些站被删了、牵连多少种：已删站点 + 波及面（种数/体积/账本/任务）"},
+        {"path": "/agent/sites/deleted/act", "method": "POST", "handler": "agent_sites_deleted_act",
+         "write": True,
+         "params": {"site_id": "台账 site_id（或 mp_site_id）",
+                    "action": "pause|resume|remove（remove=复用副本只摘种 / 自有非资源连文件删 / 资源本体保留）",
+                    "reuse_only": "1=只处理带 魔流-辅种 的复用副本",
+                    "dry_run": "1=干跑（默认）；0=真做",
+                    "force_asset": "★1=走「手动删库内资产」闸门（跳过「库内资产（已入库，永不删）」；其余四类硬保护照拦）；默认 0。仅站点已删后的彻底清理用，破坏性"},
+         "returns": "SiteDeletedAct", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "已删站点的种怎么处置：pause/resume/remove（辅种副本只摘种、原种文件保留）"},
         # ---- 11.11.0 H&R 账单按站 + 违约告警（只读）----
         {"path": "/agent/hr/bills", "method": "GET", "handler": "agent_hr_bills", "write": False,
-         "params": {"site": "域名（可空=全站）", "live": "1=现抓对账（默认读缓存）"},
+         "params": {"site": "域名（留空=全站，约 85KB 会被 30k 截断 —— 建议先按站查）",
+                    "live": "1=现抓对账（默认读缓存）"},
          "returns": "HrBillsBySite", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★H&R 账单按站分组（欠债/状态分布/need_left/in_qb/missing/per_torrent_hr/规则来源）；只读"},
+         "summary": "各站 H&R 欠债多少、还剩多久：按站分组账单（可现抓对账）"},
         {"path": "/agent/hr/breaches", "method": "GET", "handler": "agent_hr_breaches", "write": False,
          "params": {}, "returns": "HrBreaches", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★H&R 违约告警清单（欠债种消失：归因 plugin/external + gate_bug 升级 + 补源提示）；只读"},
+         "summary": "H&R 违约告警（种消失归因 + gate_bug 升级 + 补源提示）"},
         {"path": "/agent/silent/audit", "method": "GET", "handler": "agent_silent_audit", "write": False,
          "params": {"limit": "int（默认 1000；0=全量）"}, "returns": "SilentAudit", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★静默池盘点（分类 + stalled_violation 违背不变量 + tag_only 标签面对账 + 清理候选）；只读"},
+         "summary": "静默池盘点（分类 + 违背不变量 + 标签面 + 清理候选）"},
         {"path": "/agent/silent/enforce", "method": "GET", "handler": "agent_silent_enforce",
          "write": True,
          "params": {"confirm": "1=真补 pause（默认干跑）"},
          "returns": "SilentEnforce", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★★静默不变量收敛（12.7.1 / 15.1.0）：账本/标签静默但 qB 没停的种补 pause（幂等、只 pause 不删）；默认干跑"},
+         "summary": "账本/标签说静默但 qB 还在跑的，补 pause：幂等只暂停"},
         {"path": "/agent/tags/reconcile", "method": "GET", "handler": "agent_tags_reconcile",
          "write": True,
          "params": {"confirm": "1=真写（默认干跑只报数）",
                     "adopt_reseed": "1=顺带把「无主辅种副本」补登进 mf_reseed",
                     "limit": "int（0=不限）"},
          "returns": "TagReconcileReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★标签↔账本对账（身份轴/职务轴自愈）：账本在岗但 qB 标签缺身份/缺职务 → 按账本补标签（不改账本、不删不暂停）；纯身份子桶漂移只报不写；默认干跑"},
+         "summary": "账本在岗但 qB 缺标签的补齐：不删不暂停，漂移只报"},
         {"path": "/agent/qb/snapshot", "method": "GET", "handler": "agent_qb_snapshot",
          "write": False,
          "params": {}, "returns": "QbSnapshot", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "qB 增量同步观测（/sync/maindata?rid=）：全量/增量/无变化次数 + rid + 上次增量条数/字节（纯内存，只读）"},
+         "summary": "qB 增量同步观测（全量/增量次数 + rid + 上次增量大小）"},
         {"path": "/agent/ondemand", "method": "GET", "handler": "agent_ondemand",
          "write": False,
-         "params": {"limit": "int（历史条数上限，默认 50，最大 200）"},
+         "params": {"limit": "int（清单条数上限，默认 50，最大 200）"},
          "returns": "OnDemandItems", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★点播清单：进行中（下载进度/速度/ETA/阶段）+ 已完成历史（结果=已转资源·已入库·已移出，现况回查）"},
+         "summary": "点播进行到哪了、历史下过什么：清单（stage/进度/体积 + totals）"},
         {"path": "/agent/ondemand/act", "method": "POST", "handler": "agent_ondemand_act",
          "write": True,
          "params": {"hash": "str（点播种 infohash）", "action": "pause | resume | remove"},
          "returns": "OnDemandAct", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "点播行内操作：pause 暂停 / resume 继续 / remove 移除（**走唯一删除闸门**，欠 H&R 硬拦并如实回传 blocked 原因）"},
-        # ---- 15.7.0 歌单→选种计划（只读干跑）----
-        {"path": "/agent/music/plan", "method": "GET", "handler": "agent_music_plan", "write": False,
-         "params": {"text": "歌单（每行一条：`艺人 - 歌名` / `歌名` / `歌名@站id,站id`）",
-                    "sites": "逗号分隔站点 id（空=全部已配置站点）",
-                    "per_item": "int 每首保留候选数（默认 3）",
-                    "limit": "int 歌单条数上限（默认 40）"},
-         "returns": "MusicPlan", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★歌单→选种计划（只读）：逐条 MP 搜索(mtype=music) → 硬过滤视频/MV → 打分（无损/位深/分轨/免费/做种/体积）→ 选中 + 逐条判定依据链"},
-        {"path": "/agent/music/grab", "method": "POST", "handler": "agent_music_grab", "write": True,
-         "params": {"text": "歌单（每行一条：`艺人 - 歌名` / `歌名` / `歌名@站id,站id`）",
-                    "sites": "逗号分隔站点 id（空=全部已配置站点）",
-                    "per_item": "int 每首保留候选数（默认 3）",
-                    "limit": "int 歌单条数上限（默认 40）",
-                    "save_path": "覆盖保存目录（默认 /vol6/1000/music）",
-                    "confirm": "1=真加种；否则只回计划（干跑）"},
-         "returns": "MusicGrab", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★歌单→加种（写）：按计划把选中的音乐种加进下载器（tag=魔流-<站>-静默-资源，category=音乐），自动进账本/H&R/闸门；confirm 缺省=干跑"},
-        # ---- 15.8.14 临时/手工投放（写；补上 2026-10-10 事故暴露的「手工加种无入口」）----
-        {"path": "/agent/inject", "method": "POST", "handler": "agent_inject", "write": True,
-         "params": {"magnet": "磁力链（magnet:?…）；三选一",
-                    "torrent": "种子字节的 base64（可带 data: 前缀）；三选一",
-                    "url": "远端 .torrent / 磁力的 http(s) 地址（无法预检重复）；三选一",
-                    "save_path": "保存目录（缺省=设置里的任务保存目录）",
-                    "site": "来源标记（缺省 `手工`，不是真实站点，只在报表里单列一个桶）",
-                    "sub": "身份子类：`资源`（缺省，在途受身份保护、永不自动删）/ `普通`（交给静默-普通 清理）",
-                    "category": "下载器分类（如 `音乐`；留空不加分类）",
-                    "confirm": "1=真加种；否则只回计划（干跑）"},
-         "returns": "InjectReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★临时/手工投放（写）：过全局 dup 闸门 → 加种（tag=魔流-<site>-静默-<sub>）→ 写账本 → 归流/静默/清理/报表全部可见；confirm 缺省=干跑"},
-        {"path": "/agent/inject/release", "method": "POST", "handler": "agent_inject_release",
+         "summary": "点播条目暂停/恢复/删除：remove 过唯一删种闸门、欠 H&R 硬拦（即时生效）"},
+        {"path": "/agent/ondemand/search", "method": "POST", "handler": "agent_ondemand_search",
+         "write": False,
+         "params": {"query": "str 片名 / 豆瓣·TMDB·IMDB 链接（首页必填；缺了报 bad_param；续页留空）",
+                    "site_ids": "逗号分隔站点 id（空=全部已配置站点）",
+                    "page": "int 起始页（默认 0）",
+                    "source": "str 续页令牌（首页留空；回传上一次 sources[].source 即续该站下一页）"},
+         "returns": "OnDemandSearch", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "用户要找这个片：各站候选 + 每站翻页事实（can_continue）"},
+        {"path": "/agent/ondemand/add", "method": "POST", "handler": "agent_ondemand_add",
          "write": True,
-         "params": {"hashes": "逗号/空格分隔的 infohash（只认本通道的投放）",
-                    "mode": "`pause`（缺省，只暂停）/ `delete`（删种）",
-                    "site": "只退场这个来源标记的投放（缺省 `手工`）",
-                    "delete_files": "1=连文件一起删（仅 mode=delete）",
-                    "force": "1=允许删资源身份（先把本通道自己的记录降级为 `普通` 再走唯一删种闸门）",
-                    "apply": "1=真动手；缺省只回计划（干跑）"},
-         "returns": "InjectReleaseReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★临时/手工投放退场（写）：默认只暂停；mode=delete 走唯一删种闸门（库内资产需 force=1，硬拦如实回传）；缺省干跑"},
+         "params": {"query": "str 片名 / 豆瓣·TMDB·IMDB 链接（必填）",
+                    "site_ids": "逗号分隔站点 id（空=全部已配置站点）",
+                    "pick": "str 必填 = 候选 enclosure / 下载链接（来自 /agent/ondemand/search 的 candidates[].enclosure）",
+                    "task_id": "任务 id（可空；只影响保存目录）",
+                    "confirm": "1=真加种；否则只回干跑计划"},
+         "returns": "OnDemandAdd", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "把用户选定的那条源加进下载器：只下 pick 那条"},
+        {"path": "/agent/music/search", "method": "POST", "handler": "agent_music_search",
+         "write": False,
+         "params": {"query": "str 关键词（首页必填；缺了报 bad_param；续页留空）",
+                    "site_ids": "逗号分隔站点 id（空=全部已配置站点）",
+                    "page": "int 起始页（默认 0）",
+                    "source": "str 续页令牌（首页留空；回传上一次 sources[].source 即续该站下一页）"},
+         "returns": "MusicSearch", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "用户要找这个音乐：各站候选（已打分/硬过滤）+ 翻页事实"},
+        {"path": "/agent/music/download", "method": "POST", "handler": "agent_music_download",
+         "write": True,
+         "params": {"cids": "逗号分隔候选 id（来自 /agent/music/search 的 candidates[].cid）",
+                    "save_path": "覆盖保存目录（默认 /vol6/1000/music）",
+                    "confirm": "1=真加种；否则只回将要加种的清单（干跑）"},
+         "returns": "MusicDownload", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "按选中的 cid 加种到音乐线（凭据不回传）"},
+        {"path": "/agent/music/items", "method": "GET", "handler": "agent_music_items",
+         "write": False,
+         "params": {"limit": "int 清单条数上限（默认 50，最大 200）"},
+         "returns": "MusicItems", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "音乐下过哪些、在库什么状态：清单 + totals"},
+        {"path": "/agent/music/act", "method": "POST", "handler": "agent_music_act",
+         "write": True,
+         "params": {"hash": "str（音乐种 infohash）", "action": "pause | resume | remove"},
+         "returns": "MusicAct", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "音乐种暂停/恢复/删除：仅音乐线，过唯一删种闸门（即时生效）"},
         # ---- 15.8.15 库内资产手动删除（Master「希望增加魔流库内资产手动删除的入口」）----
         #   AI 侧与前端**同口径**：两个 handler 都直接复用 AssetsMixin.assets_library /
         #   assets_delete（AI ⊇ 前端），不另写一套判定。
         {"path": "/agent/assets", "method": "GET", "handler": "agent_assets", "write": False,
-         "params": {"limit": "int（默认 0 = 全部）"},
+         "params": {"view": "summary（默认，瘦身：去 members/长字段）/ full（含全部成员明细）；单份详情用 resource_id",
+                    "q": "关键词：匹配资源名或任一成员种名（不区分大小写）",
+                    "resource_id": "单份资源详情（= items[].resource_id；给了它忽略 q/sort/分页）",
+                    "sort": "size（默认，体积降序）/ sites / members / name",
+                    "limit": "int（默认 50；0 = 全部）",
+                    "cursor": "分页游标：上次返回的 next_cursor（从第 N 条起）",
+                    "group_by": "site = 按站点聚合（每站份数/体积/可删数）",
+                    "include_stale": "1=带上「不在下载器（仅账本残留）」条目（默认不显示）"},
          "returns": "AssetList", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "库内资产列表（逐条：站点/大小/状态/qB 态/保存路径/标签 + deletable & block=被哪道闸拦住）"},
+         "summary": "库内有哪些资源、哪些能删：一条=一份资源（deletable/block，可筛/排/聚合）"},
         {"path": "/agent/assets/delete", "method": "POST", "handler": "agent_assets_delete",
          "write": True,
-         "params": {"hashes": "逗号/空格分隔的 infohash（只认库内资产；其余拒收）",
+         "params": {"resource_ids": "逗号/空格分隔的资源 id（只认库内资产；其余拒收）",
                     "delete_files": "1=连文件一起删（不可恢复）；缺省 0=只删种保文件",
                     "confirm": "1=真删；缺省/非 1 = 干跑（零写入）",
                     "reason": "删除原因（进统一台账 deletions.jsonl）"},
          "returns": "AssetDeleteReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★手动删除库内资产（写）：**只破「库内资产（已入库，永不删）」这一道闸**；手动保留/跨站来源份/已认领/欠 H&R 四类照旧硬拦；真删前重新过闸门复检；缺省干跑"},
+         "summary": "⚠不可恢复：真删整份库内资产（全组删完才连文件删，只破「永不删」一道闸）"},
         # ---- P1.5c：功能域只读（AI ⊇ 前端，收编 19 个只读豁免域）----
         {"path": "/agent/tasks/{id}/bonus", "method": "GET", "handler": "agent_task_bonus", "write": False,
          "params": {"id": "任务 id 路径参数"}, "returns": "TaskBonusReport",
-         "version": AGENT_ENDPOINT_VERSION, "summary": "做种魔力明细（= /tasks/{id}/bonus）"},
+         "version": AGENT_ENDPOINT_VERSION, "summary": "任务做种魔力明细"},
         {"path": "/agent/tasks/{id}/candidates", "method": "GET", "handler": "agent_task_candidates", "write": False,
          "params": {"id": "任务 id 路径参数"}, "returns": "TaskCandidatesReport",
-         "version": AGENT_ENDPOINT_VERSION, "summary": "候选种子及评分（= /tasks/{id}/candidates）"},
+         "version": AGENT_ENDPOINT_VERSION, "summary": "任务候选种子及评分"},
         {"path": "/agent/tasks/{id}/handover", "method": "GET", "handler": "agent_task_handover", "write": False,
          "params": {"id": "任务 id 路径参数"}, "returns": "TaskHandoverReport",
-         "version": AGENT_ENDPOINT_VERSION, "summary": "交棒预览（= /tasks/{id}/handover）"},
+         "version": AGENT_ENDPOINT_VERSION, "summary": "任务交棒预览"},
         {"path": "/agent/recommend", "method": "GET", "handler": "agent_recommend", "write": False,
          "params": {}, "returns": "RecommendReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "推荐甄别结果（= /recommend）"},
+         "summary": "有什么值得订：推荐甄别结果"
+                    "（注意：无参数可缩，实测约 255KB —— 超 30k 会被截断，只能看到开头几条）"},
+        {"path": "/agent/jobs", "method": "GET", "handler": "agent_jobs", "write": False,
+         "params": {"limit": "int 最多返回多少条（默认 50）"},
+         "returns": "JobList", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "后台慢动作跑到哪了：任务队列（异步执行，关页面不断）"},
+        {"path": "/agent/assets/act", "method": "POST", "handler": "agent_assets_act",
+         "write": True,
+         "params": {"action": "protect=手动保留(永不自动删) / unprotect=取消保留 / "
+                              "subscribe=订阅该作品+季(抓齐其余集) / unsubscribe=退订 / "
+                              "organize=让 MP 重新整理入库(换个地方) / "
+                              "scrape=多源重刮元数据(纠正刮错)",
+                    "resource_ids": "资源 id 列表（逗号分隔；= /assets 返回的 resource_id）",
+                    "hashes": "兼容：直接给成员 hash（逗号分隔）",
+                    "season": "int 可选：强制季号（0=从种名解析）"},
+         "returns": "AssetActReport", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "库内资源保护/订阅/整理/刮削：不删除（即时生效）"},
+        {"path": "/agent/recommend/act", "method": "POST", "handler": "agent_recommend_act",
+         "write": True,
+         "params": {"hash": "推荐记录 infohash（必填）",
+                    "action": "subscribe=按「作品+季」给 MP 加整季订阅（手动标记才订） / "
+                              "unsubscribe=退订并复位记录"},
+         "returns": "RecommendAct", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "给推荐记录整季订阅/退订：手动触发（即时生效）"},
         {"path": "/agent/crossseed", "method": "GET", "handler": "agent_crossseed", "write": False,
          "params": {}, "returns": "CrossseedReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "跨站取种台账：在飞取种 + 来源份 + 流量兜底（= /crossseed 只读）"},
+         "summary": "跨站取种在飞什么、来源够不够：取种台账 + 流量兜底"},
         {"path": "/agent/reseed", "method": "GET", "handler": "agent_reseed", "write": False,
          "params": {}, "returns": "ReseedReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "全站辅种现状（= /reseed）"},
+         "summary": "全站辅种现状"},
         {"path": "/agent/douban", "method": "GET", "handler": "agent_douban", "write": False,
          "params": {}, "returns": "DoubanReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "豆瓣评分服务现状（= /douban_service）"},
+         "summary": "豆瓣评分服务正常吗：服务现状"},
         {"path": "/agent/live", "method": "GET", "handler": "agent_live", "write": False,
          "params": {"site_id": "站点 id（可选）"}, "returns": "LiveReport",
-         "version": AGENT_ENDPOINT_VERSION, "summary": "站点实时数据（= /live）"},
+         "version": AGENT_ENDPOINT_VERSION, "summary": "站点现在通不通、魔力多少：站点实时采样（PV/下载量）"},
         {"path": "/agent/signin", "method": "GET", "handler": "agent_signin", "write": False,
-         "params": {"days": "int（近 N 天，默认 7）"}, "returns": "SigninReport",
-         "version": AGENT_ENDPOINT_VERSION, "summary": "签到现状（= /signin）"},
+         "params": {"days": "int（近 N 天，默认 7；默认输出约 34KB 会超 30k 被截断，查近期请 days=1..3）"},
+         "returns": "SigninReport",
+         "version": AGENT_ENDPOINT_VERSION, "summary": "最近签没签到：近 N 天签到现状"},
         {"path": "/agent/exam", "method": "GET", "handler": "agent_exam", "write": False,
          "params": {"site_id": "站点 id（可选）", "include_pass": "是否含已通过（默认否）"},
          "returns": "ExamReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "新手考核现状（= /exam）"},
+         "summary": "新手考核过没过、还差多少：进度现状（可含已通过）"},
+        {"path": "/agent/exam/act", "method": "POST", "handler": "agent_exam_act", "write": True,
+         "params": {"site_id": "站点 id（必填）", "kind": "考核项 upload|bonus|hold（download 不支持）",
+                    "confirm": "bool（默认否=干跑；true 才新建/启用任务）"},
+         "returns": "ExamAct", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "给考核项一键起任务：upload/bonus/hold"},
         {"path": "/agent/silent", "method": "GET", "handler": "agent_silent", "write": False,
-         "params": {"limit": "int", "records": "int"}, "returns": "SilentReport",
-         "version": AGENT_ENDPOINT_VERSION, "summary": "静默池现状（= /silent/pool）"},
+         "params": {"limit": "int（名单条数，默认 400；0=全部）",
+                    "records": "int（每条明细数，默认 60；0=不带明细）—— 默认全量约 216KB 会被 30k 截断；"
+                               "只要名单请 records=0，带少量明细用 records=1"},
+         "returns": "SilentReport",
+         "version": AGENT_ENDPOINT_VERSION, "summary": "静默池里关着哪些种、分几类：在池名单 + 分类"},
         {"path": "/agent/claim", "method": "GET", "handler": "agent_claim", "write": False,
          "params": {"site_id": "站点 id（可选）"}, "returns": "ClaimReport",
-         "version": AGENT_ENDPOINT_VERSION, "summary": "认领现状（= /claim）"},
+         "version": AGENT_ENDPOINT_VERSION, "summary": "认领现状"},
         {"path": "/agent/cloud", "method": "GET", "handler": "agent_cloud", "write": False,
          "params": {}, "returns": "CloudReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "云盘归档现状 + 连通性（= /cloud + /cloud/test）"},
+         "summary": "云盘归档到哪了、通不通：归档现状 + 连通性"},
         {"path": "/agent/fallback", "method": "GET", "handler": "agent_fallback", "write": False,
          "params": {"resolve_paths": "bool（是否解析路径）"}, "returns": "FallbackReport",
-         "version": AGENT_ENDPOINT_VERSION, "summary": "元数据兜底现状（= /fallback）"},
+         "version": AGENT_ENDPOINT_VERSION, "summary": "元数据兜底现状"},
         {"path": "/agent/iyuu", "method": "GET", "handler": "agent_iyuu", "write": False,
          "params": {}, "returns": "IYUUReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "IYUU 密钥表 + 连通性（= /iyuu/sites + /iyuu/test）"},
+         "summary": "IYUU 密钥表 + 连通性"},
         {"path": "/agent/events", "method": "GET", "handler": "agent_events", "write": False,
-         "params": {"since": "ts", "limit": "int", "kind": "类型", "task_id": "任务 id", "level": "级别"},
+         "params": {"since": "unix 秒（只回更新的；传毫秒自动换算；缺省 0=从头）",
+                    "limit": "int（1..1000，默认 200，取最新 N 条；默认约 114KB 会被 30k 截断，建议 ≤20）",
+                    "kind": "事件类型，逗号分隔精确匹配", "task_id": "任务 id",
+                    "level": "info|warning|error，逗号分隔"},
          "returns": "EventsReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "结构化事件流（= /events）"},
+         "summary": "结构化事件流"},
         {"path": "/agent/tags", "method": "GET", "handler": "agent_tags", "write": False,
          "params": {"action": "只读动作（默认 status）"}, "returns": "TagsReport",
-         "version": AGENT_ENDPOINT_VERSION, "summary": "标签模型总览（= /tags status）"},
+         "version": AGENT_ENDPOINT_VERSION, "summary": "标签模型总览（身份/职务轴）"},
         # ---- 11.12.0 代码字典（符号级索引，只读）----
         {"path": "/agent/code-dict", "method": "GET", "handler": "agent_code_dict", "write": False,
          "params": {"q": "子串模糊查（符号/常量/端点/模块职责/口径）",
                     "section": "endpoints|constants|symbols|modules|glossary（取整节）",
                     "full": "1=回全部（大，慎用）"},
          "returns": "CodeDict", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★代码字典（符号级索引）：一次调用答「某常量/函数/端点/口径在哪个文件哪一行」"},
+         "summary": "代码字典（符号级索引：某名在哪个文件哪一行）"},
         # ---- 12.5.0 挂种健康度自检（只读）----
         {"path": "/agent/seeds/health", "method": "GET", "handler": "agent_seeds_health",
          "write": False,
          "params": {"site": "域名/短名/id（可空=全站）", "only": "ghost|partial|all（默认 all）",
                     "limit": "int（默认 200，0=不限）"},
          "returns": "SeedsHealthReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★挂种健康度自检（逐文件核盘）：空转/缺文件 + 体积 + 其中欠 H&R 的风险；只读"},
+         "summary": "挂种健康自检（逐文件核盘：空转/缺文件 + 体积 + 欠 H&R 风险）"},
         # ---- 12.7.0 调试面自描述（只读）----
         {"path": "/agent/debug/surface", "method": "GET", "handler": "agent_debug_surface",
          "write": False,
          "params": {},
          "returns": "DebugSurface",
          "version": AGENT_ENDPOINT_VERSION,
-         "summary": "★调试面自描述：有哪些 /debug 端点 / 哪些会写 / 写操作需 confirm=1 / 读文件白名单与敏感文件黑名单；只读"},
+         "summary": "调试面自描述（/debug 端点、哪些会写、读文件白名单/黑名单）"},
     ]
 
 
@@ -369,9 +481,9 @@ class AgentApiMixin:
                 "meta": self._agent_meta(t0)}
 
     def _agent_err(self, code: str, message: str, t0: Optional[float] = None,
-                   field: Optional[str] = None, trace_id: Optional[str] = None) -> Dict[str, Any]:
-        data = None
-        if field is not None or trace_id is not None:
+                   field: Optional[str] = None, trace_id: Optional[str] = None,
+                   data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        if data is None and (field is not None or trace_id is not None):
             data = {}
             if field is not None:
                 data["field"] = field
@@ -421,9 +533,14 @@ class AgentApiMixin:
             "endpoints": endpoints,
             "types": {
                 "Reason": "判定依据链单条 {rule, verdict, inputs, source_of_truth, at}",
-                "DecideReport": "{hash, name, state, progress, verdict, reason_chain[], bills[], protection[]}",
+                "DecideReport": "{hash, name, state, progress, verdict, reason_chain[], chain[{step,rule,verdict,inputs,source_of_truth,at}], bills[], protection[]}",
+                "Plan": "{plan_id, format, action, task_id, task_name, task_type, site_id, budget_gb, created_at, items[{hash,op,title,size_gb,bonus_per_hour,age_weeks,reason,chain[]}], totals{}, warnings[], note}",
+                "PlanApply": "{plan_id, action, task_id, deleted, error, delete_files, blocked[{hash,reason}], note}（confirm!=1 时回 dry_run=true + items）",
                 "BillPage": "{items[], next_cursor, total}",
                 "AgentState": "{tasks{}, managed{}, bills{}, pool{}, sites{}}",
+                "CleanupPreview": "{task_id, mode?, total_torrents?, to_delete_count?/count?, deletion_candidates?[{hash,title,size_gb,seeders,age_weeks,bonus_per_hour,reason,priority}], estimated_bonus_gain?, message?}",
+                "OptimizePlan": "{task_id, method, granularity_gb, budget_gb, budget_source, infeasible, pool{count,size_gb,bonus_per_hour}, mandatory{count,size_gb,bonus_per_hour}, plan{keep_count,delete_count,kept_size_gb,freed_gb,kept_bonus_per_hour,lost_bonus_per_hour,kept_bonus_pct,keep[],delete[]}, frontier[{budget_gb,kept_size_gb,kept_count,delete_count,kept_bonus_per_hour,lost_bonus_per_hour,kept_bonus_pct}], compare{threshold,optimized_at_same_freed,saved_bonus_per_hour,note}}",
+                "ExamAct": "{dry_run?, site_id, kind, confirm?, hint?} 或写入结果 {task_name/task_id/enabled/noop?, notes[]?, message}（confirm!=1 恒零写入）",
             },
         }
 
@@ -650,17 +767,25 @@ class AgentApiMixin:
             entry["verdict"] = "delete_candidate"
         return entry
 
-    def agent_decide(self, hashes: str = "") -> Dict[str, Any]:
-        """``GET /agent/decide?hashes=a,b`` —— 每个 hash 为什么（Q1/Q4）。
+    def agent_decide(self, hashes: str = "", task_id: str = "") -> Dict[str, Any]:
+        """``GET /agent/decide?hashes=a,b[&task_id=xxx]`` —— 每个 hash **完整的决策链**。
 
         一整批只拉**一次** qB 快照（同一轮内复用），传给 ``_hr_obligation``；
-        不逐种重拉。
+        不逐种重拉。给了 ``task_id`` → 走 ``_chain_ctx`` 带上任务级口径
+        （硬/软保护 + 策略阈值评分），每条回 ``chain``（identity→protect→delete_gate
+        →score→history→verdict）。``reason_chain`` 保留（历史集成兼容）。
         """
         t0 = time.time()
         hs = self._agent_parse_hashes(hashes)
         if hs is None:
             return self._agent_err(
                 "bad_param", "hashes 需要 40/64 位 hex（逗号分隔，必填）", t0, field="hashes")
+        tid = str(task_id or "").strip()
+        task = None
+        if tid:
+            task = self._get_task_config(tid)
+            if not task:
+                return self._agent_err("not_found", "任务不存在", t0, field="task_id")
         snap: Dict[str, Any] = {}
         try:
             snap = self._tag_all_torrents() or {}
@@ -674,8 +799,103 @@ class AgentApiMixin:
         manual = self._agent_manual_hashes()
         crossseed = self._agent_crossseed_hashes()
         claim = self._agent_claim_hashes()
-        items = [self._decide_one(h, snap, ledger, manual, crossseed, claim) for h in hs]
-        return self._agent_ok({"items": items}, t0)
+        # ★ 15.17.0：任务上下文（软/硬保护 + 策略）→ 完整决策链
+        ctx: Optional[Dict[str, Any]] = None
+        _chain = getattr(self, "_chain_ctx", None)
+        if callable(_chain):
+            try:
+                ctx = _chain(task, tid, snap) if tid else _chain(None, "", snap)
+            except Exception:  # noqa: BLE001
+                ctx = None
+        items = []
+        for h in hs:
+            it = self._decide_one(h, snap, ledger, manual, crossseed, claim)
+            if ctx is not None:
+                try:
+                    it["task_id"] = tid
+                    it["chain"] = self._chain_steps(h, snap.get(h), ledger.get(h), ctx)
+                except Exception as e:  # noqa: BLE001
+                    it["chain_error"] = str(e)
+            items.append(it)
+        return self._agent_ok({"items": items, "task_id": tid}, t0)
+
+    # -------------------------------------------------------- 整批清理预览（任务级）
+    def agent_cleanup_preview(self, task_id: str = "") -> Dict[str, Any]:
+        """``GET /agent/cleanup/preview?task_id=xxx`` —— 某任务一轮删种名单预览（**只算不删**）。
+
+        与 UI ``POST /tasks/{task_id}/preview`` **同源**（复用 ``preview_cleanup``，不新增第二份口径）：
+        保护集 = ``_protection_sets``（手动保留 / 跨站来源份 / 已认领 / 欠 H&R / 未下完 / 库内资产）。
+        **只读**：只算名单，不删任何种、不写任何真值。bonus 任务回删种候选 + 魔力增益预估；
+        brush 任务回「无上传将被清理」名单。
+        """
+        t0 = time.time()
+        tid = str(task_id or "").strip()
+        if not tid:
+            return self._agent_err("bad_param", "task_id 必填", t0, field="task_id")
+        fn = getattr(self, "preview_cleanup", None)
+        if not callable(fn):
+            return self._agent_err("internal", "preview_cleanup 未实现（版本不符）", t0)
+        try:
+            res = fn(tid)
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"预览失败:{e}", t0, trace_id=str(e))
+        ok = bool(getattr(res, "success", False))
+        data = getattr(res, "data", None)
+        msg = str(getattr(res, "message", "") or "")
+        if not ok:
+            code = "not_found" if "不存在" in msg else "internal"
+            return self._agent_err(code, msg or "预览失败", t0)
+        payload: Dict[str, Any] = {"task_id": tid}
+        if isinstance(data, dict):
+            payload.update(data)
+        elif data is not None:
+            payload["result"] = data
+        if msg and "message" not in payload:
+            payload["message"] = msg
+        return self._agent_ok(payload, t0)
+
+    # -------------------------------------------------------- 组合优化器（任务级）
+    def agent_optimize(self, task_id: str = "", budget_gb: str = "") -> Dict[str, Any]:
+        """``GET /agent/optimize?task_id=xxx[&budget_gb=N]`` —— 容量预算下最优「保/删」组合。
+
+        与 UI ``GET /tasks/{task_id}/optimize`` **同源**（复用 ``optimize_plan``）：在
+        「保留体积 ≤ budget_gb」约束下最大化保留种子的**时魔总和**（0/1 背包，受保护种
+        强制保留）。**只读**：只出计划，不删任何种、不写任何真值。``budget_gb`` 缺省 →
+        自动取「保留 ≥95% 时魔」的最小预算；回包含效率前沿与「逐条阈值」口径在同释放
+        体积下的对比（优化器更省多少时魔/h）。
+        """
+        t0 = time.time()
+        tid = str(task_id or "").strip()
+        if not tid:
+            return self._agent_err("bad_param", "task_id 必填", t0, field="task_id")
+        bud = str(budget_gb or "").strip()
+        if bud != "":
+            try:
+                if float(bud) < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                return self._agent_err("bad_param", "budget_gb 需为非负数字（GB）", t0, field="budget_gb")
+        fn = getattr(self, "optimize_plan", None)
+        if not callable(fn):
+            return self._agent_err("internal", "optimize_plan 未实现（版本不符）", t0)
+        try:
+            res = fn(tid, bud)
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"组合优化失败:{e}", t0, trace_id=str(e))
+        ok = bool(getattr(res, "success", False))
+        data = getattr(res, "data", None)
+        msg = str(getattr(res, "message", "") or "")
+        if not ok:
+            code = "not_found" if "不存在" in msg else "bad_param" if "budget_gb" in msg else "internal"
+            return self._agent_err(code, msg or "组合优化失败", t0)
+        payload: Dict[str, Any] = {"task_id": tid}
+        if isinstance(data, dict):
+            payload.update(data)
+        elif data is not None:
+            payload["result"] = data
+        if msg and "message" not in payload:
+            payload["message"] = msg
+        return self._agent_ok(payload, t0)
 
     # ------------------------------------------------------------------ 账单
     @staticmethod
@@ -820,6 +1040,91 @@ class AgentApiMixin:
             payload, t0,
             ("features/sitereport._site_seed_report() → 下载器快照 + hr_bills.json + "
              "站点 myhr.php（经 _hr_reconcile_site）"))
+
+    # ---------------------------------------------------- 15.9.0 站点类型映射（只读）
+    # ---------------------------------------------------- 16.0.0 站点已删除（识别 + 处置）
+    def agent_sites_deleted(self) -> Dict[str, Any]:
+        """``GET /agent/sites/deleted`` —— ★ **已被 MoviePilot 删除的站点**清单 + 牵连面（只读）。
+
+        一次调用答：**「MP 里删了哪些站、每个站在魔流这边还挂着多少东西」**。
+        判据 = 魔流台账（``mf_site``）里还在、MP 站点表里已无（``SiteGuard.mp_sites``，60s 记忆化）；
+        牵连面只数不写：qB 标签种数/体积/暂停数/复用副本数、``mf_seed``/``mf_reseed`` 行数、站内任务。
+        处置入口见 ``POST /agent/sites/deleted/act``。
+        """
+        t0 = time.time()
+        try:
+            from .siteops import deleted_sites_rows  # noqa: WPS433（延迟导入：勿在 module 级拉兄弟 feature）
+            rows = deleted_sites_rows(self)
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"已删除站点盘点失败:{e}", t0, trace_id="sites")
+        return self._agent_report(
+            {"count": len(rows), "sites": rows}, t0,
+            ("魔流台账 mf_site（_agent_db_site_rows）× MoviePilot 站点表 SiteOper.list()"
+             "（common.SiteGuard.mp_sites，60s 记忆化）；牵连面只数不写"
+             "（qB 标签前缀 魔流-<站名>- / mf_seed / mf_reseed / _task_configs）"))
+
+    def agent_sites_deleted_act(self, site_id: Any = "", action: str = "",
+                                reuse_only: Any = 0, dry_run: Any = 1,
+                                force_asset: Any = 0) -> Dict[str, Any]:
+        """``POST /agent/sites/deleted/act`` —— ★ 已删除站点行内处置（pause/resume/remove）。
+
+        **默认干跑**（``dry_run=1``）。``remove`` 口径：**别人辅种的复用副本**（``魔流-辅种``）
+        → **只摘种**；**自己的非资源**（无辅种且非 ``资源``）→ **连文件一起删**；
+        **资源**（``静默-资源`` = 本体/库内资产）→ **保留不动**。
+        连文件删仍过**唯一删除闸门**（欠 H&R / 已认领 / 手动保留 / 库内资产硬拦）+ 内置**共享文件护栏**
+        （同批之外还有别的种共用同一份文件 → 自动降级为只摘种）。``reuse_only=1`` 只跑复用副本那档。
+        ``force_asset=1`` → ★ 走「手动删库内资产」专用闸门（跳过「库内资产（已入库，永不删）」这类，
+        其余四类照拦）；用于站点已删除后的彻底清理，**默认关**。
+        """
+        t0 = time.time()
+        try:
+            from .siteops import deleted_site_act  # noqa: WPS433（延迟导入：勿在 module 级拉兄弟 feature）
+            rep = deleted_site_act(self, site_id=site_id, action=action,
+                                   reuse_only=reuse_only, dry_run=dry_run, force_asset=force_asset)
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"已删除站点处置失败:{e}", t0, trace_id=str(action))
+        if not rep.get("ok"):
+            code = "blocked" if rep.get("blocked") else "invalid"
+            return self._agent_err(code, str(rep.get("message") or "操作未生效"), t0,
+                                   trace_id=str(action), data=rep)
+        return self._agent_report(
+            rep, t0,
+            ("写操作 → DownloaderAdapter.pause_torrents/resume_torrents/delete_torrents"
+             "(delete_file=False)；remove 过唯一删除闸门（deletegate），硬保护一律拦；"
+             "force_asset=1 改走手动删库内资产闸门 gate_manual"))
+
+    def agent_sites_types(self) -> Dict[str, Any]:
+        """``GET /agent/sites/types`` —— ★ **站点「分类类型」映射**（只读）。
+
+        一次调用答：**「每个站的 movie/tv/music 分类 id 各是什么、站点自报什么类型」**。
+
+        类型真值**一律用 MP**（Master 2026-10-10 定）：本端点只**读** MP 站点索引器的
+        ``category`` / ``media_type``（``SitesHelper().get_indexers()``，与搜索层
+        ``IndexerModule`` 同源），归一成逐站清单；**不自己造分类、不替 MP 判类型、
+        不私自回退**。搜索仍按 MP 的 ``mtype`` 走（本站点只是「选站 / 核对 / 展示」的对照表）。
+
+        真值源：``SitesHelper().get_indexers()``（内存索引器 schema）。本端点**只读**：
+        不写任何 json / 账本 / 热层。
+        """
+        t0 = time.time()
+        try:
+            from app.sdk.network import SitesHelper
+            indexers = SitesHelper().get_indexers() or []
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("unavailable", f"读取 MP 站点索引失败:{e}", t0, trace_id="sites")
+        rows = site_type_rows(indexers)
+        if not rows:
+            return self._agent_err(
+                "empty", "MP 站点索引为空（可能：站点未认证 / 未配置站点）",
+                t0, trace_id="sites")
+        return self._agent_report(
+            {"count": len(rows),
+             "with_music": sum(1 for r in rows if r["supports"]["music"]),
+             "sites": rows},
+            t0,
+            ("MoviePilot SitesHelper.get_indexers() → 站点索引器 schema 的 "
+             "category{movie,tv,music} + media_type（与搜索层 IndexerModule 同源）；"
+             "只读、不造第二份分类"))
 
     # ---------------------------------------------------- 11.12.0 代码字典（只读）
     def agent_code_dict(self, q: str = "", section: str = "", full: int = 0) -> Dict[str, Any]:
@@ -974,8 +1279,8 @@ class AgentApiMixin:
 
         一次调用答：**「我点播了哪些片、下到哪了、结果如何」**。
         真值源：进行中 = ``ondemand_pending``（``mf_seed.pending``）× qB 快照；
-        历史 = journal（``items[].source == "ondemand"``）＋ 种子账本（state/sub/in_library）。
-        不新增任何真值源，结果列全为**现况回查**。
+        历史 = **点播历史落盘记录**（``ondemand_history`` 槽；点播时写、结算/撤单时更新）。
+        17.1.0 起历史**不再**动态拼 journal + 现况回查（只读记录）。
         """
         t0 = time.time()
         try:
@@ -985,9 +1290,116 @@ class AgentApiMixin:
         return self._agent_report(
             data, t0,
             ("进行中 = ondemand_pending(mf_seed.pending) × qB 快照(progress/state/dl_speed)；"
-             "历史 = journal(items[].source=ondemand) + SeedLedgerStore(state/sub/in_library/identity_at)——只读回查"))
+             "历史 = ondemand_history 槽（落盘记录；点播时写、结算/撤单时更新）——只读，不再动态拼 journal"))
 
     # ---------------------------------------------------- 15.5.0 点播行内操作（写）
+    # ---------------------------------------------------- 15.10.0 后台任务队列（只读）
+    def agent_jobs(self, limit: int = 50) -> Dict[str, Any]:
+        """``GET /agent/jobs`` —— 后台任务队列（读）。"""
+        t0 = time.time()
+        return self._agent_call_read(t0, "jobs_list() → 后台任务队列(queued/running/done/failed)",
+                                     lambda: self.jobs_list(limit=int(limit or 50)))
+
+    # ---------------------------------------------------- 15.9.0 库内资源管理动作
+    def agent_notify(self, limit: int = 50) -> Dict[str, Any]:
+        """``GET /agent/notify`` —— 事件通知配置 + 最近事件（只读）。"""
+        t0 = time.time()
+        try:
+            resp = self.notify_status(limit=int(limit or 50))
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"通知状态读取失败:{e}", t0, trace_id=str(e))
+        d = getattr(resp, "data", {}) or {}
+        try:
+            n = max(1, min(int(limit or 50), 200))   # = notify.NOTIFY_HISTORY_KEEP（避免跨模块常量导入）
+        except Exception:  # noqa: BLE001
+            n = 50
+        return self._agent_ok({
+            "cfg": d.get("cfg") or {},
+            "counts": d.get("counts") or {},
+            "kinds": d.get("kinds") or {},
+            "quiet_now": bool(d.get("quiet_now")),
+            "history": (d.get("history") or [])[:n],
+        }, t0)
+
+    def agent_notify_act(self, action: str = "test", text: str = "") -> Dict[str, Any]:
+        """``POST /agent/notify/act`` —— 发测试 / 立即扫描 / 清历史（**只发消息，不动任何种子**）。"""
+        t0 = time.time()
+        try:
+            from ..models import MagicFlowNotifyActPayload  # noqa: WPS433
+            rep = self.notify_act(MagicFlowNotifyActPayload(action=str(action or "test"), text=str(text or "")))
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"通知动作失败:{e}", t0, trace_id=str(e))
+        data = {"success": bool(getattr(rep, "success", False)),
+                "message": str(getattr(rep, "message", "") or ""),
+                "report": getattr(rep, "data", None)}
+        if not data["success"]:
+            return self._agent_err("invalid", data["message"] or "动作未生效", t0,
+                                   trace_id=str(action), data=data)
+        # 只用本文件定义的 _agent_ok（不新增跨界私调）；来源说明随 data 一起回
+        data["source_of_truth"] = ("写操作（仅通知）：post_message() 走 MP 通知渠道；"
+                                   "scan=notify_sweep(force) 只读扫描；clear=清 notify_history.json")
+        return self._agent_ok(data, t0)
+
+    def agent_assets_act(self, action: str = "", resource_ids: str = "",
+                         hashes: str = "", season: int = 0) -> Dict[str, Any]:
+        """``POST /agent/assets/act`` —— 库内资源管理动作（保护/订阅/整理/刮削，**不删除**）。"""
+        t0 = time.time()
+        _r = [x.strip() for x in str(resource_ids or "").split(",") if x.strip()]
+        _h = [x.strip() for x in str(hashes or "").split(",") if x.strip()]
+        if not _r and not _h:
+            return self._agent_err("invalid", "resource_ids 或 hashes 至少给一个", t0,
+                                   field="resource_ids")
+        try:
+            from ..models import MagicFlowAssetActPayload  # noqa: WPS433
+            rep = self.assets_act(MagicFlowAssetActPayload(
+                action=str(action or ""), resource_ids=_r, hashes=_h, season=int(season or 0),
+            ))
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"库内资源动作失败:{e}", t0, trace_id=str(e))
+        data = {"success": bool(getattr(rep, "success", False)),
+                "message": str(getattr(rep, "message", "") or ""),
+                "report": getattr(rep, "data", None)}
+        if not data["success"]:
+            return self._agent_err("invalid", data["message"] or "动作未生效", t0,
+                                   trace_id=str(action), data=data)
+        return self._agent_report(
+            data, t0,
+            "写操作 → 手动保留桶(永不自动删) / MP SubscribeChain().add(作品+季) / "
+            "TransferChain().manual_transfer(重新整理) / FallbackEngine 多源重刮元数据")
+
+    # ---------------------------------------------------- 15.8.25 推荐整季订阅（手动）
+    def agent_recommend_act(self, hash: str = "", action: str = "") -> Dict[str, Any]:
+        """``POST /agent/recommend/act`` —— 推荐记录整季订阅（**手动标记才订阅**）。
+
+        ``subscribe`` = 按「作品+季」给 MP 加整季订阅（让 MP 抓齐其余集并整理到一起）；
+        ``unsubscribe`` = 退订并把记录复位为待核实（**不动种子**）。
+        """
+        t0 = time.time()
+        act = str(action or "").strip().lower()
+        if act not in ("subscribe", "unsubscribe"):
+            return self._agent_err("invalid", "action 需为 subscribe / unsubscribe", t0,
+                                   field="action")
+        if not hash:
+            return self._agent_err("invalid", "hash 必填", t0, field="hash")
+        try:
+            rep = (self.subscribe_recommend(hash) if act == "subscribe"
+                   else self.unsubscribe_recommend(hash))
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"推荐订阅操作失败:{e}", t0, trace_id=str(e))
+        data = {
+            "hash": hash, "action": act,
+            "ok": bool(getattr(rep, "success", False)),
+            "message": str(getattr(rep, "message", "") or ""),
+            "record": getattr(rep, "data", None),
+        }
+        if not data["ok"]:
+            return self._agent_err("blocked", data["message"] or "操作未生效", t0,
+                                   trace_id=act, data=data)
+        return self._agent_report(
+            data, t0,
+            "写操作 → MP SubscribeChain().add(title, year, MediaType.TV, season) 整季订阅；"
+            "unsubscribe → SubscribeChain()._delete_subscription(id)")
+
     def agent_ondemand_act(self, hash: str = "", action: str = "") -> Dict[str, Any]:
         """``POST /agent/ondemand/act`` —— 点播行内操作（pause / resume / remove）。
 
@@ -1002,122 +1414,164 @@ class AgentApiMixin:
         if not rep.get("ok"):
             code = "blocked" if rep.get("blocked") else "invalid"
             return self._agent_err(code, str(rep.get("message") or "操作未生效"), t0,
-                                   trace_id=str(action))
+                                   trace_id=str(action), data=rep)
         return self._agent_report(
             rep, t0,
             ("写操作 → DownloaderAdapter.pause_torrents/resume_torrents/delete_torrents；"
              "remove 过唯一删除闸门（deletegate）——欠 H&R / 跨站来源份 / 已认领 / 手动保留一律硬拦"))
 
-    # ---------------------------------------------------- 11.9.0 野马PT 逐种 H&R（只读 + 免罪写）
+    # ---------------------------------------------------- 15.9.0 点播搜索自描述（只读）
+    async def agent_ondemand_search(self, query: str = "", site_ids: str = "",
+                                    page: int = 0, source: str = "") -> Dict[str, Any]:
+        """``POST /agent/ondemand/search`` —— 点播候选 + **每站事实**（只读）。
 
-    def agent_music_plan(self, text: str = "", sites: str = "",
-                         per_item: int = 3, limit: int = 40) -> Dict[str, Any]:
-        """``GET /agent/music/plan`` —— 歌单 → 选种计划（只读干跑，15.7.0）。
-
-        判定链见 ``features/musicgrab.py``；本处只做参数校验与信封。
+        一次调用答：**「这单搜到没、全不全」**。**透传 MP 原生单页分页**（``search_page_events``）：
+        ``sources[]`` = 每站 ``{source, site_name, page, can_continue, error}``（``can_continue`` 判有无下页；
+        ``source`` 为续页令牌，回传 + ``page=N+1`` 即续该站）。类型/分页/别名/过滤全听 MP，我们不做第二真值源。
         """
         t0 = time.time()
-        if not str(text or "").strip():
-            return self._agent_err("bad_request", "缺少歌单文本 text（每行一条：`艺人 - 歌名` / `歌名`）", t0)
+        ids: List[int] = []
+        for x in str(site_ids or "").replace("，", ",").split(","):
+            s = str(x).strip()
+            if s.isdigit():
+                ids.append(int(s))
+        if not str(query or "").strip() and not str(source or "").strip():
+            return self._agent_err(
+                "bad_param",
+                "缺少 query（片名 / 豆瓣·TMDB·IMDB 链接）：首页必填，续页请带 source"
+                "（空 query 不再静默返回空名单）", t0, field="query")
         try:
-            data = self._music_plan(text, sites=sites, per_item=per_item, limit=limit)
+            data = await self._ondemand_search_sources(
+                str(query or ""), ids, page=int(page or 0), source=str(source or ""))
         except Exception as e:  # noqa: BLE001
-            return self._agent_err("internal_error", f"计划失败: {e}", t0)
-        return self._agent_ok(self._music_public_plan(data), t0)
+            return self._agent_err("upstream_error", f"搜索失败:{e}", t0, trace_id=str(e))
+        return self._agent_report(
+            data, t0,
+            ("搜索 = MP SearchChain().search_page_events(params=…)（app/chain/search/manual.py）；"
+             "sources[] = MP 逐来源事实 {source,site_name,page,can_continue,error}；类型/分页/别名/过滤全听 MP"))
 
-    def agent_music_grab(self, text: str = "", sites: str = "",
-                         per_item: int = 3, limit: int = 40,
-                         save_path: str = "", confirm: str = "") -> Dict[str, Any]:
-        """``POST /agent/music/grab`` —— 歌单 → 加种（写，15.7.0）。
+    def agent_ondemand_add(self, query: str = "", site_ids: str = "", pick: str = "",
+                           task_id: str = "", confirm: str = "") -> Dict[str, Any]:
+        """`POST /agent/ondemand/add` —— ★ 按 **AI 选定源** 落种（写，16.0.0）。
 
-        ``confirm`` 缺省（或非 1）→ **只回计划（干跑）**；``confirm=1`` 才真加种。
-        加种走现有下载词子（tag = ``魔流-<站>-静默-资源``，qB 分类 ``音乐``）→
-        自动进账本 / 静默池 / H&R / 删除闸门 / 站点报表（音乐就是资源）。
+        流程：`/agent/ondemand/search` 拿候选（含 `enclosure`）→ AI 自己选 → 本端点按 `pick` 下这条。
+        **绝不自动选源**（不调 `_ondemand_pick`）：`pick` 未命中候选 → 如实回报「请先 search」，不猜。
+        `confirm` 缺省（或非 1）→ **只回干跑计划**；`confirm=1` 才真加种（走点播通道，不被静默闸暂停）。
         """
         t0 = time.time()
-        if not str(text or "").strip():
-            return self._agent_err("bad_request", "缺少歌单文本 text（每行一条：`艺人 - 歌名` / `歌名`）", t0)
+        if not str(query or "").strip():
+            return self._agent_err("bad_request", "缺少 query（片名或链接）", t0)
+        if not str(pick or "").strip():
+            return self._agent_err(
+                "bad_request", "缺少 pick（候选 enclosure / 下载链接，来自 /agent/ondemand/search）", t0)
+        _ok = str(confirm).strip().lower() in ("1", "true", "yes", "y", "on")
+        try:
+            data = self._ondemand_add(query=query, site_ids=site_ids, pick=pick,
+                                      task_id=task_id, apply=bool(_ok))
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal_error", f"加种失败: {e}", t0)
+        if not data.get("ok"):
+            return self._agent_err("bad_request", str(data.get("message") or "加种未生效"),
+                                   t0, data=data)
+        if not _ok:
+            return self._agent_ok(data, t0)
+        return self._agent_report(
+            data, t0,
+            ("写操作 → 只按 pick 命中的候选 → _ondemand_download（DownloaderAdapter.add_torrent）；"
+             "身份=资源 + 职务=点播；**不调 _ondemand_pick**（不自动选源）；未下完不被静默池暂停"))
+
+    # ---------------------------------------------------- 15.9.0 音乐搜索自描述（只读）
+    async def agent_music_search(self, query: str = "", site_ids: str = "",
+                                 page: int = 0, source: str = "") -> Dict[str, Any]:
+        """``POST /agent/music/search`` —— 音乐候选 + **每站事实**（只读）。
+
+        试透传 MP 原生单页分页（``search_page_events``，``mtype=MediaType.MUSIC``）：
+        ``sources[]`` = 每站 ``{source, site_name, page, can_continue, error}``（``can_continue`` 判有无下页；
+        ``source`` 为续页令牌）。候选已打分/硬过滤（``score``/``excluded``/``exclude_reason``）。类型听 MP。
+        """
+        t0 = time.time()
+        ids: List[int] = []
+        for x in str(site_ids or "").replace("，", ",").split(","):
+            s = str(x).strip()
+            if s.isdigit():
+                ids.append(int(s))
+        if not str(query or "").strip() and not str(source or "").strip():
+            return self._agent_err(
+                "bad_param",
+                "缺少 query（歌名 / 艺人）：首页必填，续页请带 source"
+                "（空 query 不再静默返回空名单）", t0, field="query")
+        try:
+            data = await self._music_search_sources(
+                str(query or ""), ids, page=int(page or 0), source=str(source or ""))
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("upstream_error", f"音乐搜索失败:{e}", t0, trace_id=str(e))
+        return self._agent_report(
+            data, t0,
+            ("音乐搜索 = MP SearchChain().search_page_events(params={keyword,mtype:Music,…})；"
+             "sources[] = MP 逐来源事实 {source,site_name,page,can_continue,error}；候选 = MP 过滤后 Context.torrent_info 归一 + 现有打分"))
+
+    def agent_music_download(self, cids: str = "", save_path: str = "", confirm: str = "") -> Dict[str, Any]:
+        """``POST /agent/music/download`` —— 按 AI 选中的候选 cid 加种（写）。
+
+        流程：``/agent/music/search`` 拿 candidates[].cid → AI 挑 → 本端点按 cid 落种。
+        凭据真值（enclosure/cookie/ua）只存服务端候选缓存（30min，reload 清空）；``confirm`` 缺省=干跑。
+        """
+        t0 = time.time()
+        cid_list = [x.strip() for x in str(cids or "").replace("，", ",").split(",") if x.strip()]
+        if not cid_list:
+            return self._agent_err("bad_request",
+                                   "缺少 cids（逗号分隔，来自 /agent/music/search 的 candidates[].cid）", t0)
+        known = [c for c in cid_list if self._music_cand_get(c)]
+        if not known:
+            return self._agent_err("not_found", "cids 全部不存在或已过期（请重新搜索）", t0,
+                                   trace_id=",".join(cid_list[:3]))
         _ok = str(confirm).strip().lower() in ("1", "true", "yes", "y", "on")
         if not _ok:
-            try:
-                data = self._music_plan(text, sites=sites, per_item=per_item, limit=limit)
-            except Exception as e:  # noqa: BLE001
-                return self._agent_err("internal_error", f"计划失败: {e}", t0)
-            return self._agent_ok({"applied": False, "dry_run": True, "note": "干跑（confirm 未置 1，未加任何种）",
+            preview = [self._music_cand_public({**self._music_cand_get(c), "cid": c}) for c in known]
+            return self._agent_ok({"applied": False, "dry_run": True,
+                                   "note": "干跑（confirm 未置 1，未加任何种）",
                                    "save_path": self._music_save_path(save_path),
-                                   "plan": self._music_public_plan(data), "policy": data.get("policy")},
-                                  t0)
+                                   "candidates": preview,
+                                   "summary": {"picked": len(known)}}, t0)
         try:
-            data = self._music_grab(text, sites=sites, per_item=per_item, limit=limit,
-                                    save_path=save_path)
+            data = self._music_download_cids(known, save_path=save_path)
         except Exception as e:  # noqa: BLE001
             return self._agent_err("internal_error", f"加种失败: {e}", t0)
         return self._agent_report(data, t0,
-                                  ("写操作 → _crossseed_torrent_bytes 取种 + DownloaderAdapter.add_torrent；"
-                                   "tag=魔流-<站>-静默-资源，category=音乐；下载即开 H&R 账（走现有账本/闸门/报表）"))
+                                  ("写操作 → 服务端候选缓存按 cid 取回凭据 → _music_grab_one "
+                                   "→ _crossseed_torrent_bytes + add_torrent；category=音乐，进账本/H&R/闸门"))
 
-    def agent_inject(self, magnet: str = "", torrent: str = "", url: str = "",
-                     save_path: str = "", site: str = "", sub: str = "",
-                     category: str = "", confirm: str = "") -> Dict[str, Any]:
-        """``POST /agent/inject`` —— ★ **临时 / 手工投放**（写，15.8.14）。
-
-        ``confirm`` 缺省（或非 1）→ **只回计划（干跑）**；``confirm=1`` 才真加种。
-
-        加种前先过全局 dup 闸门（同一资源只下一次），落种时打**可识别身份**
-        ``魔流-<site>-静默-<sub>``（缺省 ``手工``/``资源``）并写种子账本 → 归流、静默审计、
-        清理闸门、站点报表全部看得见（对比 2026-10-10 事故：脚本直连 qB 打出的
-        ``魔流-手动`` 是孤儿标签，谁都不认）。
-        """
+    def agent_music_items(self, limit: int = 50) -> Dict[str, Any]:
+        """``GET /agent/music/items`` —— 音乐清单（单列表 + totals）。只读。"""
         t0 = time.time()
-        _ok = str(confirm).strip().lower() in ("1", "true", "yes", "y", "on")
-        if not _ok:
-            try:
-                data = self._inject_plan(magnet=magnet, torrent=torrent, url=url,
-                                         save_path=save_path, site=site, sub=sub,
-                                         category=category)
-            except Exception as e:  # noqa: BLE001
-                return self._agent_err("internal_error", f"计划失败: {e}", t0)
-            if not data.get("ok"):
-                return self._agent_err("bad_request", str(data.get("error") or "入参不可用"), t0)
-            return self._agent_ok({"applied": False, "dry_run": True,
-                                   "note": "干跑（confirm 未置 1，未加任何种）", "plan": data}, t0)
         try:
-            data = self._inject_apply(magnet=magnet, torrent=torrent, url=url,
-                                      save_path=save_path, site=site, sub=sub,
-                                      category=category)
+            data = self._music_items(limit=limit)
         except Exception as e:  # noqa: BLE001
-            return self._agent_err("internal_error", f"投放失败: {e}", t0)
-        if not data.get("ok"):
-            return self._agent_err("bad_request", str(data.get("error") or "投放失败"), t0)
-        return self._agent_report(data, t0,
-                                  ("写操作 → dup 闸门 claim → DownloaderAdapter.add_torrent → "
-                                   "SeedLedgerStore.put（site=来源标记 / state=静默 / sub=身份）；"
-                                   "归流/静默池/清理闸门/站点报表全部可见"))
+            return self._agent_err("internal", f"读取音乐清单失败:{e}", t0, trace_id=str(e))
+        return self._agent_report(
+            data, t0,
+            ("音乐清单 = qB 音乐线快照(is_music_line) × journal(source=music) × 种子账本；"
+             "只归一字段（stage/percent/ISO 时间），不新造真值源"))
 
-    def agent_inject_release(self, hashes: str = "", mode: str = "pause", site: str = "",
-                             delete_files: str = "", force: str = "",
-                             apply: str = "") -> Dict[str, Any]:
-        """``POST /agent/inject/release`` —— ★ **临时 / 手工投放退场**（写，15.8.14）。
+    def agent_music_act(self, hash: str = "", action: str = "") -> Dict[str, Any]:
+        """``POST /agent/music/act`` —— 音乐行内操作（pause / resume / remove）。
 
-        ``apply`` 缺省（或非 1）→ 只回计划（干跑）；``apply=1`` 才真动手。
-
-        ``mode=pause``（缺省）只暂停（保留账本/标签，可再 resume）；``mode=delete`` 删种，
-        走插件唯一删种闸门 ``DownloaderAdapter.delete_torrents``（H&R / 跨站来源 / 已认领 /
-        手动保留 硬拦，库内资产需 ``force=1`` —— 先把**本通道自己**记录降级为 ``普通`` 再删）。
-        只认 ``site``（缺省 ``手工``）的投放，别的种一律拒收（``force=1`` 除外）。
+        ``remove`` **走唯一删除闸门**（不绕）：欠 H&R 等硬拦，被拦时 ``ok=false`` + ``blocked=true`` + 原因。
+        只允许操作**音乐线**的种（不属于音乐线 → 拒绝）。
         """
         t0 = time.time()
         try:
-            data = self._inject_release(hashes=hashes, mode=mode, site=site,
-                                        delete_files=delete_files, force=force, apply=apply)
+            rep = self._music_act(hash=hash, action=action)
         except Exception as e:  # noqa: BLE001
-            return self._agent_err("internal_error", f"退场失败: {e}", t0)
-        if data.get("error"):
-            return self._agent_err("bad_request", str(data["error"]), t0)
-        return self._agent_report(data, t0,
-                                  ("写操作 → DownloaderAdapter.pause_torrents / "
-                                   "delete_torrents（唯一删种闸门）+ SeedLedgerStore.drop；"
-                                   "只认本通道（site=来源标记）的投放"))
+            return self._agent_err("internal", f"音乐操作失败:{e}", t0, trace_id=str(e))
+        if not rep.get("ok"):
+            code = "blocked" if rep.get("blocked") else "invalid"
+            return self._agent_err(code, str(rep.get("message") or "操作未生效"), t0,
+                                   trace_id=str(action), data=rep)
+        return self._agent_report(
+            rep, t0,
+            ("写操作 → DownloaderAdapter.pause_torrents/resume_torrents/delete_torrents；"
+             "remove 过唯一删除闸门（deletegate）；仅限 qB 音乐线种"))
 
     def agent_yema(self, live: int = 0, force: int = 0) -> Dict[str, Any]:
         """``GET /agent/yema`` —— ★ **野马PT 逐种 H&R 对账**（站点 × 本机 × 账本；只读）。
@@ -1239,49 +1693,65 @@ class AgentApiMixin:
     #   两个 handler **直接复用** ``AssetsMixin.assets_library`` / ``assets_delete``，
     #   与前端走同一段代码、同一套闸门口径（不重写判定，避免两边口径漂移）。
     # ----------------------------------------------------------------
-    def agent_assets(self, limit: str = "") -> Dict[str, Any]:
-        """``GET /agent/assets`` —— 库内资产逐条列表（只读）。
+    def agent_assets(self, limit: str = "", include_stale: str = "", view: str = "",
+                     q: str = "", resource_id: str = "", sort: str = "",
+                     cursor: str = "", group_by: str = "") -> Dict[str, Any]:
+        """``GET /agent/assets`` —— 库内资产列表（只读，★ 资产/资源粒度；15.19.0 起 AI 读取面）。
 
-        与前端 ``GET /assets`` **同源同口径**（同一个 ``assets_library``）；
-        每条带 ``deletable`` 与 ``block``（= 被手动保留 / 跨站来源份 / 已认领 / 欠 H&R 中的哪一道拦住）。
+        与前端 ``GET /assets`` **同源同口径**（同一份 ``AssetsMixin._asset_rows``）。
+        15.19.0（Master 2026-10-12「我有哪些资源、他们的情况」）：默认 **summary 瘦身视图 +
+        50 条分页** —— 全量 239 份 ≈ 390KB 会撞 MCP 单次结果 30k 上限（原来只能看到前 19 份）。
+        清单问题：默认视图翻页（``cursor=next_cursor``）或 ``group_by=site`` 聚合；
+        单份详情：``resource_id=<fp:…>``；旧完整粒度：``view=full``。
         """
         t0 = time.time()
+        _raw = str(limit or "").strip()
         try:
-            _lim = int(str(limit or "0").strip() or 0)
+            _lim = int(_raw) if _raw else 50
         except Exception:  # noqa: BLE001
-            return self._agent_err("bad_request", "limit 必须是整数", t0, field="limit")
+            return self._agent_err("bad_request", "limit 必须是整数（0 = 全部）", t0, field="limit")
+        _stale = 1 if str(include_stale or "").strip().lower() in ("1", "true", "yes", "y", "on") else 0
         try:
-            resp = self.assets_library(limit=_lim)
+            resp = self.assets_view(view=(view or "summary"), q=(q or ""),
+                                    resource_id=(resource_id or ""), sort=(sort or "size"),
+                                    limit=_lim, cursor=(cursor or ""),
+                                    include_stale=_stale, group_by=(group_by or ""))
         except Exception as e:  # noqa: BLE001
             return self._agent_err("internal_error", f"库内资产列表失败: {e}", t0)
         if not getattr(resp, "success", False):
-            return self._agent_err("internal_error", str(getattr(resp, "message", "") or "列表失败"), t0)
+            return self._agent_err("bad_request", str(getattr(resp, "message", "") or "列表失败"), t0)
         data = getattr(resp, "data", None) or {}
-        return self._agent_ok({
-            "items": data.get("items") or [],
-            "counts": data.get("counts") or {},
-            "scanned_at": data.get("scanned_at"),
-            "message": str(getattr(resp, "message", "") or ""),
-        }, t0)
+        out = dict(data or {})
+        out.setdefault("message", str(getattr(resp, "message", "") or ""))
+        return self._agent_ok(out, t0)
 
-    def agent_assets_delete(self, hashes: str = "", delete_files: str = "",
+    def agent_assets_delete(self, resource_ids: str = "", hashes: str = "", delete_files: str = "",
                             confirm: str = "", reason: str = "") -> Dict[str, Any]:
-        """``POST /agent/assets/delete`` —— ★手动删除库内资产（写，15.8.15）。
+        """``POST /agent/assets/delete`` —— ★删除库内资产（写，15.8.15 / 2026-10-10）。
+
+        ★ 删的是**整个资源**：``resource_ids`` 指定的每份资源，把它**全部在下载器的种**
+        （本体 + 各站所有辅种）**一次批量删**；``delete_files=1`` 连文件删。
+        一次删全组 → 文件不再被别的种共用 → 内置共享护栏不会再把连文件删降级成只摘种。
 
         **只破「库内资产（已入库，永不删）」这一道闸**；手动保留 / 跨站来源份 / 已认领 /
         欠 H&R 四类照旧硬拦（真删前还会重新过一遍闸门复检）。``confirm`` 非 1 → 干跑（零写入）。
         """
         t0 = time.time()
-        hs = [x for x in str(hashes or "").replace(",", " ").split() if x]
-        if not hs:
-            return self._agent_err("bad_request", "hashes 为空（逗号/空格分隔的 infohash）",
-                                   t0, field="hashes")
+        rids = [x for x in str(resource_ids or "").replace(",", " ").split() if x]
         _truthy = ("1", "true", "yes", "y", "on")
+        if not rids:
+            hs = [x for x in str(hashes or "").replace(",", " ").split() if x]
+            if not hs:
+                return self._agent_err("bad_request", "resource_ids 为空（逗号/空格分隔的资源 id）",
+                                       t0, field="resource_ids")
+        else:
+            hs = []
         try:
             from ..models import MagicFlowAssetDeletePayload  # noqa: WPS433
         except Exception as e:  # noqa: BLE001
             return self._agent_err("internal_error", f"请求模型不可用: {e}", t0)
         payload = MagicFlowAssetDeletePayload(
+            resource_ids=rids,
             hashes=hs,
             delete_files=1 if str(delete_files or "").strip().lower() in _truthy else 0,
             confirm=1 if str(confirm or "").strip().lower() in _truthy else 0,

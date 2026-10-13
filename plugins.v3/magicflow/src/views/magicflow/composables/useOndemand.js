@@ -47,11 +47,11 @@ export function odEtaText(sec) {
   return `剩 ${(s / 3600).toFixed(1)} 小时`
 }
 
-/** 阶段配色（点播清单用）。 */
+/** 阶段配色（点播清单用；★ 15.9.0：stage 枚举 downloading/settling/resource/gone）。 */
 export function odStageColor(stage) {
   if (stage === 'downloading') return 'primary'
   if (stage === 'resource') return 'success'
-  if (stage === 'pending_settle') return 'info'
+  if (stage === 'settling') return 'info'
   return 'warning'   // gone
 }
 
@@ -113,12 +113,16 @@ export function useOndemand(api) {
     }
   }
 
-  // ★ 15.4.0：点播清单（进行中带进度 + 历史）。真值源：后端 ondemand_pending × qB 快照 + journal。
-  const ondemandItems = ref({ inflight: [], history: [], totals: {} })
+  // ★ 15.4.0：点播清单。★ 15.9.0 后端换皮为「单列表 items[]（进行中+历史同构）」；
+  //   真值源：后端 ondemand_pending × qB 快照 + journal；此处按 stage 派生两个 Tab。
+  const ondemandItems = ref({ items: [], totals: {} })
   const ondemandItemsBusy = ref(false)
   let ondemandItemsTimer = null
-  const odInflight = computed(() => (Array.isArray(ondemandItems.value?.inflight) ? ondemandItems.value.inflight : []))
-  const odHistory = computed(() => (Array.isArray(ondemandItems.value?.history) ? ondemandItems.value.history : []))
+  const _odItems = computed(() => (Array.isArray(ondemandItems.value?.items) ? ondemandItems.value.items : []))
+  const odInflight = computed(() => _odItems.value.filter(
+    (r) => r && (r.stage === 'downloading' || r.stage === 'settling')))
+  const odHistory = computed(() => _odItems.value.filter(
+    (r) => r && (r.stage === 'resource' || r.stage === 'gone')))
 
   async function loadOndemandItems() {
     ondemandItemsBusy.value = true
@@ -159,7 +163,7 @@ export function useOndemand(api) {
     if (!h) return
     if (action === 'remove') {
       const _t = row?.title || h.slice(0, 12)
-      if (!confirm(`确认移除「${_t}」？\n\n· 从下载器删除该种 + 文件\n· 欠 H&R / 受保护的种会被闸门拦下`)) return
+      if (!confirm(`确认移除「${_t}」？\n\n· 从下载器删除该种 + 文件\n· 欠 H&R / 受保护的种会被拦下`)) return
     }
     odMsg.value = ''
     odActing.value = `${h}:${action}`

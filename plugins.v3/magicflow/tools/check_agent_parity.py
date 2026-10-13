@@ -32,6 +32,9 @@ COVERED = {
     "/status": "/agent/overview",
     "/pool": "/agent/pool",
     "/trend": "/agent/trend",
+    "/trend/daily": "/agent/trend/daily",
+    "/trend/why": "/agent/trend/why",
+    "/notify": "/agent/notify",
     "/rules": "/agent/rules",
     "/health": "/agent/health",
     "/operations": "/agent/operations",
@@ -64,8 +67,6 @@ COVERED = {
     "/ondemand/items": "/agent/ondemand",
     "/hr/bills": "/agent/hr/bills",
     "/health/scan": "/agent/seeds/health",
-    "/agent/music/plan": "/agent/music/plan",
-    "/agent/music/grab": "/agent/music/grab",
 }
 
 # 前端 GET 只读域 → 豁免理由（非插件端点 / MP 全局端点）

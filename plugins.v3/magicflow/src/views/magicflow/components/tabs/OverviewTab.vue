@@ -64,7 +64,7 @@ const emit = defineEmits(['open-entry'])
   <div v-if="(selectedTask.run_mode || 'running') === 'seeding'" class="magicflow-stat-grid magicflow-stat-grid--single">
     <VSheet class="magicflow-stat magicflow-stat--accent app-surface-static">
       <strong>{{ selectedTask.protected_count || 0 }}</strong>
-      <span>接管保护 · 手动加或 IYUU 回来的种子已纳管并永久保护（不再补种/刷魔力）</span>
+      <span>接管保护 · 手动加或 IYUU 回来的种已纳管并永久保护</span>
     </VSheet>
   </div>
 
@@ -73,7 +73,7 @@ const emit = defineEmits(['open-entry'])
     <header class="magicflow-panel__head">
       <div>
         <div class="text-subtitle-1 font-weight-medium">本轮决策</div>
-        <div class="text-body-2 text-medium-emphasis">为什么这么做 · 最近一轮的闸门判定与淘汰口径</div>
+        <div class="text-body-2 text-medium-emphasis">为什么这么做 · 最近一轮闸门判定与淘汰口径</div>
       </div>
       <VChip :color="decision.at_cap ? 'warning' : 'success'" size="small" variant="tonal">
         {{ decision.at_cap ? '已达上限 · 可换种' : '未达上限 · 不做低效换种' }}
@@ -115,7 +115,7 @@ const emit = defineEmits(['open-entry'])
     <header class="magicflow-panel__head">
       <div>
         <div class="text-subtitle-1 font-weight-medium">趋势</div>
-        <div class="text-body-2 text-medium-emphasis">每小时采样 · 最近 72 小时（本地序列，无外部依赖）</div>
+        <div class="text-body-2 text-medium-emphasis">每小时采样 · 最近 72 小时（本地序列）</div>
       </div>
     </header>
     <div class="mf-spark-grid">

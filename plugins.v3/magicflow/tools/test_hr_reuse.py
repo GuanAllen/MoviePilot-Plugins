@@ -110,7 +110,7 @@ def _torrent(hash_string="", progress=1.0, seed_time=0.0, title="test", tracker=
     return types.SimpleNamespace(
         hash=str(hash_string).lower(), title=title, progress=progress,
         seed_time=seed_time, hit_and_run=hit_and_run, tags=list(tags or []),
-        tracker=tracker, completion_on=0.0,
+        tracker=tracker, completion_on=0.0, downloaded=1e9,
     )
 
 
@@ -273,8 +273,7 @@ def main() -> int:
     _ok(store.get("v1")["state"] == "active", "干跑不改账单状态")
     res = h._hrbills_void_reuse(confirm=True)
     _ok(res["voided"] == 2, f"confirm 作废 2 张（实际 {res['voided']}）")
-    _ok(store.get("v1")["state"] == "void" and store.get("v1")["void_reason"] == "reuse_not_hr",
-        "作废后 state=void + void_reason=reuse_not_hr")
+    _ok(store.get("v1") is None, "作废后账单已删除（作废即删）")
     _ok(store.get("v3")["state"] == "active", "真实下载种账单不动（仍 active）")
 
     # ---- 5) _hr_need_hours 取值链 ----

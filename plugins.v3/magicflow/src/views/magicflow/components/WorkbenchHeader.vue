@@ -23,6 +23,8 @@ const props = defineProps({
   examBadge: { type: Number, default: 0 },
   examUrgent: { type: Boolean, default: false },
   showClose: { type: Boolean, default: false },
+  jobsBadge: { type: Number, default: 0 },
+  notifyBadge: { type: Number, default: 0 },
   taskBadge: { type: Function, required: true },
   taskSwitchSubtitle: { type: Function, required: true },
 })
@@ -41,6 +43,11 @@ const emit = defineEmits([
   'open-sitereport',
   'open-music',
   'open-assets',
+  'open-jobs',
+  'open-trend',
+  'open-optimize',
+  'open-plan',
+  'open-notify',
   'open-settings',
   'close',
 ])
@@ -99,7 +106,7 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
           class="magicflow-enabled-chip"
           size="small"
           variant="tonal"
-          :title="`共 ${summary.total_tasks} 个任务：运行中 = 跑流程+做种；做种中 = 停调度只保做种；已停止 = 种子全暂停`"
+          :title="`共 ${summary.total_tasks} 个任务 · 运行中跑流程+做种 · 做种中只保种 · 已停止全暂停`"
         >
           运行 {{ summary.running_tasks || 0 }} · 做种 {{ summary.seeding_tasks || 0 }} · 停 {{ summary.stopped_tasks || 0 }}
         </VChip>
@@ -208,7 +215,7 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
           icon="mdi-cloud-download-outline"
           variant="text"
           aria-label="点播"
-          title="点播：片名 / 豆瓣·TMDB·IMDB 链接 → 搜索选源（免费优先）→ 直接转「资源」"
+          title="点播：填片名或豆瓣·TMDB·IMDB 链接，搜索选源（免费优先）"
           @click="emit('open-ondemand')"
         />
         <VBadge
@@ -327,14 +334,53 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
               @click="emit('open-sitereport')"
             />
             <!-- ★ 15.8.2：音乐薄弹窗（窄屏也走「更多」菜单） -->
-            <VListItem prepend-icon="mdi-music-circle-outline" title="音乐甄别" subtitle="贴歌单 → 选种计划 → 一键加种" @click="emit('open-music')" />
-            <!-- ★ 15.8.15（Master「希望增加魔流库内资产手动删除的入口」）：
-                 全局入口（不挂在任务上 —— 库内资产跨任务）；默认干跑、真删需二次确认 -->
+            <VListItem prepend-icon="mdi-music-circle-outline" title="音乐" subtitle="清单（进行中/已完成 · 暂停/继续/移除）" @click="emit('open-music')" />
+            <!-- ★ 15.9.0（Master「库内资源那里应该改成库内资源管理，删除 保护 订阅 整理 刮削 都放在这里」）：
+                 全局入口（不挂在任务上 —— 库内资源跨任务） -->
             <VListItem
-              prepend-icon="mdi-delete-sweep-outline"
-              title="库内资产"
-              subtitle="手动删已入库资产（只破「库内资产」一道闸）"
+              prepend-icon="mdi-folder-cog-outline"
+              title="库内资源管理"
+              subtitle="已入库资源的养护：删除 / 保护 / 订阅 / 整理 / 刮削"
               @click="emit('open-assets')"
+            />
+            <!-- ★ 15.10.0：后台任务队列（慢动作入队跑，关页面不断） -->
+            <VListItem
+              prepend-icon="mdi-progress-clock"
+              title="后台任务"
+              :subtitle="jobsBadge ? `进行中 ${jobsBadge} 个` : '整理入库 / 订阅 / 刮削 进度与结果'"
+              @click="emit('open-jobs')"
+            >
+              <template v-if="jobsBadge" #append>
+                <VChip size="x-small" color="primary" variant="tonal">{{ jobsBadge }}</VChip>
+              </template>
+            </VListItem>
+            <!-- ★ 15.12.0：魔力趋势 + 归因（时魔走向 / 拐点归因） -->
+            <VListItem
+              prepend-icon="mdi-chart-timeline-variant"
+              title="魔力趋势"
+              subtitle="时魔走向与拐点归因（为什么掉了）"
+              @click="emit('open-trend')"
+            />
+            <!-- ★ 15.15.0：组合优化器（体积预算内保留时魔总和最大；只算不删） -->
+            <VListItem
+              prepend-icon="mdi-chart-timeline-variant-shimmer"
+              title="组合优化"
+              subtitle="体积预算内保谁删谁最划算（0/1 背包）"
+              @click="emit('open-optimize')"
+            />
+            <!-- ★ 15.17.0：AI 计划审批（AI 出计划 → 人复核 → 执行；默认干跑） -->
+            <VListItem
+              prepend-icon="mdi-clipboard-check-outline"
+              title="AI 计划审批"
+              subtitle="计划 + 依据链 → 干跑 → 批准执行"
+              @click="emit('open-plan')"
+            />
+            <!-- ★ 15.13.0：事件通知（H&R 临期 / 容量红线 / 产出骤降 / 任务失败） -->
+            <VListItem
+              prepend-icon="mdi-bell-ring-outline"
+              title="事件通知"
+              :subtitle="notifyBadge ? `${notifyBadge} 条事件` : 'H&R 临期 / 容量红线 / 产出骤降 / 任务失败'"
+              @click="emit('open-notify')"
             />
             <!-- ★ 上面是「详情」，下面是「设置」：分隔开，别混成一串 -->
             <VDivider class="my-1" />

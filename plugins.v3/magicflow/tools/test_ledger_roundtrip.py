@@ -104,7 +104,7 @@ def main() -> int:
 
     H = "rt" + uuid.uuid4().hex * 2          # 66 位里取 40 也行，这里给足
     H = H[:40]
-    FP = "rtfp" + uuid.uuid4().hex[:20]
+    FP = uuid.uuid4().hex + uuid.uuid4().hex[:8]   # 40-hex 强指纹（_STRONG_RID 护栏要求）
     NOW = time.time()
     seed_patch = {
         "site": "roundtrip.test",
@@ -167,6 +167,37 @@ def main() -> int:
             mid["mf_resource"] == base["mf_resource"] + 1,
             f"mf_resource 行数 +1（{base['mf_resource']}→{mid['mf_resource']}）",
         )
+
+        # ---- 5.4) ★ 2026-10-11：library（lib_* 4 列 → 1 JSON 列）真库往返 ----
+        _rec_lib = {
+            "size_gb": 1.0,
+            "library": {"in_library": True, "first_at": NOW, "updated": NOW,
+                        "path": "/media/test/x", "media_id": "mf-test-1"},
+        }
+        sess = be._session()
+        try:
+            sess.merge(mfdb.ResourceRow(**be.res_row(rid, _rec_lib, NOW)))
+            sess.commit()
+        finally:
+            sess.close()
+        be_l = ledger.LedgerBackend(p)
+        be_l.ensure_schema()
+        sess = be_l._session()
+        try:
+            lrow = sess.execute(
+                select(mfdb.ResourceRow).where(mfdb.ResourceRow.resource_id == rid)
+            ).scalars().first()
+        finally:
+            sess.close()
+        _ok(isinstance(getattr(lrow, "library", None), dict), "直查 mf_resource.library 是 dict")
+        _ok(str((lrow.library or {}).get("media_id") or "") == "mf-test-1", "库列 media_id 落对")
+        _ok("in_library" not in (lrow.library or {}), "库列不含 in_library（独立 bool 列）")
+        _lib_back = (be_l._rec_from_resource(lrow, {}, {}) or {}).get("library") or {}
+        _ok(_lib_back.get("in_library") is True, "回读 library.in_library")
+        _ok(str(_lib_back.get("path") or "") == "/media/test/x", "回读 library.path")
+        _ok(str(_lib_back.get("media_id") or "") == "mf-test-1", "回读 library.media_id")
+        _ok(_lib_back.get("first_at") is not None and _lib_back.get("updated") is not None,
+            "回读 library.first_at/updated")
 
         # ---- 5.5) ★ 15.8.11：release() 必须连「归属」一起清 ----
         #   为什么用 __hr_host__：``task`` 名是 mf_seed.task_id 的**唯一来源**，而

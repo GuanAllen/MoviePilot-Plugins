@@ -83,8 +83,8 @@ function runRescueApply(confirm) { emit('apply', confirm) }
           <summary>查看补源规则</summary>
           <div class="magicflow-cs-rules__body">
             <p><strong>目标</strong>：进度 &lt; 100% 且 0 速停滞 ≥ {{ data?.settings?.stall_hours ?? 6 }} 小时，且欠 H&amp;R 或手动保留。</p>
-            <p><strong>候选</strong>：标题规范化后完全一致（不把 10bit 当非 10bit）+ 来源站无 H&R + 有源。</p>
-            <p><strong>未下完不辅种</strong>：progress&lt;1 的种不进全站辅种，只能走补源（避免 ADD-REUSE 空转）。</p>
+            <p><strong>候选</strong>：标题规范化后完全一致（不把 10bit 当非 10bit）、来源站无 H&R、有源。</p>
+            <p><strong>未下完不辅种</strong>：progress &lt; 1 的种不进全站辅种，只能走补源（避免 ADD-REUSE 空转）。</p>
           </div>
         </details>
       </VCardText>

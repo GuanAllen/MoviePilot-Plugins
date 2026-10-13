@@ -35,10 +35,12 @@ export function siteReportTransportCount(trKey, summary, filter) {
   return (s.by_transport || {})[trKey] || 0
 }
 
-export function useSiteReport({ api, error }) {
+export function useSiteReport({ api, error, notify }) {
   const siteReportOpen = ref(false)
   const siteReportSite = ref('')
   const siteReportLive = ref(false)
+  const siteReportLiveStats = ref(null)
+  const siteReportLiveLoading = ref(false)
   const siteReportLoading = ref(false)
   const siteReport = ref({ site: {}, items: [], summary: {}, hr: {}, available_sites: [] })
   const siteReportSites = computed(() => (siteReport.value.available_sites || []))
@@ -56,6 +58,33 @@ export function useSiteReport({ api, error }) {
     )
   })
   const siteReportSummary = computed(() => siteReport.value.summary || {})
+  // ★ 站点已删除（MP 侧删站善后）已撤前端展示（Master 2026-10-10 19:20「这个提示去掉」）——
+  //   能力仍在 AI 入口（GET /agent/sites/deleted · POST /agent/sites/deleted/act）。
+  // ★ 15.16.0 站点流量：拉当前选中站点的实时账号数据（比例/上传/下载/魔力/做种）
+  //   来源 `GET /live?site_id=`（同 Dashboard 用的那套），只读。
+  async function loadLiveStats() {
+    const sid = Number((siteReport.value.site || {}).id || 0)
+    siteReportLiveStats.value = null
+    if (!sid) return
+    siteReportLiveLoading.value = true
+    try {
+      const data = unwrapResponse(await api.poolstats.live(sid)) || {}
+      const row = ((data || {}).sites || []).find(r => Number(r.site_id) === sid) || null
+      siteReportLiveStats.value = row
+        ? {
+            site_name: row.site_name || '',
+            ...(row.live || {}),
+            rates: row.rates || {},
+            alerts: row.alerts || [],
+            local_managed: row.local_managed || 0,
+          }
+        : null
+    } catch (e) {
+      siteReportLiveStats.value = null
+    } finally {
+      siteReportLiveLoading.value = false
+    }
+  }
   function openSiteReport() { siteReportOpen.value = true; loadSiteReport() }
   async function loadSiteReport(liveOverride) {
     siteReportLoading.value = true
@@ -73,6 +102,7 @@ export function useSiteReport({ api, error }) {
         siteReportSite.value = siteReportSites.value[0].domain || siteReportSites.value[0].name || ''
         await loadSiteReport()
       }
+      void loadLiveStats()
     } catch (e) {
       error.value = `站点报表加载失败：${e}`
     } finally {
@@ -87,6 +117,8 @@ export function useSiteReport({ api, error }) {
     siteReportFilter,
     siteReportItems,
     siteReportLive,
+    siteReportLiveLoading,
+    siteReportLiveStats,
     siteReportLoading,
     siteReportOpen,
     siteReportOrigin,

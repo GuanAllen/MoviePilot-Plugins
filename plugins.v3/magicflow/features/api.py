@@ -484,6 +484,34 @@ class ApiMixin:
                 "summary": "趋势观测:每小时采样(站点/任务口径时魔·做种数·体积)最近 7 天",
             },
             {
+                "path": "/notify",
+                "endpoint": self.notify_status,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "事件通知:配置 + 最近事件 + 计数(H&R 临期/容量红线/产出骤降/任务失败)",
+            },
+            {
+                "path": "/notify/act",
+                "endpoint": self.notify_act,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "通知动作:发测试 / 立即扫描 / 清历史",
+            },
+            {
+                "path": "/trend/daily",
+                "endpoint": self.get_trend_daily,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "长期趋势:日报采样(持久化 180 天;站点/任务口径时魔·做种数·体积·限免数)",
+            },
+            {
+                "path": "/trend/why",
+                "endpoint": self.explain_trend,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "趋势归因:时魔变化拆成种子数/单种魔力/残差 + 结论 + 证据 + 建议(只读)",
+            },
+            {
                 "path": "/debug/trend",
                 "endpoint": self.debug_trend,
                 "methods": ["GET"],
@@ -568,6 +596,20 @@ class ApiMixin:
                 "summary": "手动整理入库",
             },
             {
+                "path": "/recommend/{hash}/subscribe",
+                "endpoint": self.subscribe_recommend,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "★手动给该单集订阅整季（MP 抓齐其余集；不自动订阅）",
+            },
+            {
+                "path": "/recommend/{hash}/unsubscribe",
+                "endpoint": self.unsubscribe_recommend,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "★退订该记录的整季订阅并复位（不动种子）",
+            },
+            {
                 "path": "/recommend/batch_import",
                 "endpoint": self.import_recommend_batch,
                 "methods": ["POST"],
@@ -650,6 +692,13 @@ class ApiMixin:
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "预览一轮删种名单",
+            },
+            {
+                "path": "/tasks/{task_id}/optimize",
+                "endpoint": self.optimize_plan,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "★ 组合优化器:容量预算下最优「保/删」组合(0/1 背包;含前沿+阈值对比;只算不删)",
             },
             {
                 "path": "/tasks/{task_id}/operations",
@@ -747,7 +796,7 @@ class ApiMixin:
                 "endpoint": self.get_tag_model,
                 "methods": ["GET"],
                 "auth": "bear",
-                "summary": "标签模型：状态账本/文件组/分拣规则/迁移预演",
+                "summary": "标签模型：状态账本/文件组/分拣规则",
             },
             {
                 "path": "/tags/set",
@@ -758,12 +807,37 @@ class ApiMixin:
             },
             {
                 # ★ 15.8.15（Master「希望增加魔流库内资产手动删除的入口」）：
-                #   「库内资产」独立列表入口（只读，逐条明细 + deletable/block 预演）。
+                #   「库内资产」独立列表入口（只读，★ 资源粒度明细 + deletable/block 预演）。
                 "path": "/assets",
                 "endpoint": self.assets_library,
                 "methods": ["GET"],
                 "auth": "bear",
-                "summary": "库内资产列表（逐条：大小/站点/可删性；block=被哪道闸拦住）",
+                "summary": "库内资产列表（★ 资产粒度：一条=一份资源；name=资源名；members=本体+各站辅种；block=被哪道闸拦住）",
+            },
+            {
+                # ★ 15.10.0（Master：「加个队列后台跑，让用户等体验不好」）：
+                #   后台任务队列——慢动作（整理/订阅/刮削/批量删除）入队跑，关页面不断。
+                "path": "/jobs",
+                "endpoint": self.jobs_list,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "★后台任务队列（进度 + 结果；任务跑在插件进程里，关页面不中断）",
+            },
+            {
+                "path": "/jobs/clear",
+                "endpoint": self.jobs_clear,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "清理已完成的后台任务记录（在跑的不动）",
+            },
+            {
+                # ★ 15.9.0（Master：「删除 保护 订阅 整理 刮削 都放在库内资源管理」）：
+                #   行内养护动作统一入口（不删任何东西；删除仍走 /assets/delete，默认干跑）。
+                "path": "/assets/act",
+                "endpoint": self.assets_act,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "★库内资源管理动作（protect/unprotect/subscribe/unsubscribe/organize/scrape）",
             },
             {
                 # ★ 15.8.15：手动删除库内资产（**唯一**允许突破「已入库，永不删」的入口）。
@@ -773,7 +847,7 @@ class ApiMixin:
                 "endpoint": self.assets_delete,
                 "methods": ["POST"],
                 "auth": "bear",
-                "summary": "手动删除库内资产（只破「库内资产」一道闸；默认干跑，confirm=1 才真删）",
+                "summary": "删除库内资产（★ 按资源整组：删种+连带所有辅种+文件；只破「库内资产」一道闸；默认干跑）",
             },
             {
                 "path": "/debug/candidates",

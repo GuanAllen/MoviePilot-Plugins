@@ -17,8 +17,10 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import time
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set
 
@@ -28,6 +30,15 @@ from ..recommend import recognize
 from ..persistence import OperationItem
 from ..tags import SUB_NEW, SUB_RESOURCE, STATE_ONDEMAND, STATE_SILENT, duty_of, identity_of, retag, tag_for
 from ..sitestore import slot_callbacks
+from ..fingerprint import info_hash
+
+# 运行时导入（只有 MoviePilot 环境有 app.sdk）：离线单测无 app 包 → 退回标准 logging
+logger = logging.getLogger("magicflow")
+try:  # noqa: BLE001
+    from app.sdk.logging import logger as _mp_logger  # noqa: WPS433
+    logger = _mp_logger
+except Exception:  # noqa: BLE001
+    pass
 
 _DOUBAN_RE = re.compile(r"movie\.douban\.com/subject/(\d+)")
 _TMDB_RE = re.compile(r"themoviedb\.org/(?:movie|tv)/(\d+)")
@@ -35,6 +46,11 @@ _IMDB_RE = re.compile(r"imdb\.com/title/(tt\d+)")
 
 # 最近一次搜索结果的短时缓存（秒）：让「选某一条」不必把站点再搜一遍（原搜索要 60~75s）
 _OD_CACHE_TTL = 600
+
+# ★ 17.1.1：``/agent/ondemand/add`` 找不到 pick 时的**续页上限**（搜第 0..N-1 页）。
+#   根因：MP ``search_by_title(page=)`` 一次只给一页，pick 排在**第 2+ 页**时原来永远命中不了
+#   （``/agent/ondemand/search`` 翻页看得到、add 却说「候选未命中」）。逐页过 PV 闸，有界。
+_OD_ADD_MAX_PAGES = 3
 
 
 def _od_is_free(dv: Any) -> bool:
@@ -49,7 +65,28 @@ def _od_is_free(dv: Any) -> bool:
         v = 1.0
     return v <= 0.0
 
+
+def _od_iso(ts: Any) -> Optional[str]:
+    """裸 epoch 秒 → ISO8601（带本地时区偏移）。
+
+    ★ 干净清单口径：时间一律 ISO8601 字符串（AI 免换算）；缺/非法/``<=0`` → ``None``（**留值不留空洞**）。
+    """
+    try:
+        v = float(ts or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if v <= 0.0:
+        return None
+    try:
+        return datetime.fromtimestamp(v, tz=timezone.utc).astimezone().isoformat(timespec="seconds")
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 _OD_KEY = "ondemand_pending"
+# 17.1.0: ondemand history = persisted record slot (mf_run table).
+_OD_HIST_KEY = "ondemand_history"
+_OD_HIST_KEEP = 500
 
 
 class OnDemandMixin:
@@ -318,12 +355,21 @@ class OnDemandMixin:
             self._log(f"点播:列出站点失败: {e}", "warning")
         return ids
 
-    def _ondemand_search(self, keyword: str, site_ids: List[int]) -> List[Dict[str, Any]]:
-        """搜候选（**不过滤免费**，点播要的是这个资源本身）。"""
+    def _ondemand_search(self, keyword: str, site_ids: List[int],
+                         page: int = 0) -> List[Dict[str, Any]]:
+        """搜候选（**不过滤免费**，点播要的是这个资源本身）。
+
+        ★ 17.1.1：``page`` 透传给 MP ``search_by_title(page=)`` —— MP 一次只回一页，
+        要多页由调用方续（见 ``_ondemand_find_pick``）。每页各自过 PV 闸与计费。
+        """
         kw = str(keyword or "").strip()
         ids = [i for i in (site_ids or []) if i]
         if not kw or not ids:
             return []
+        try:
+            pg = max(0, int(page or 0))
+        except (TypeError, ValueError):
+            pg = 0
         allowed = [
             i for i in ids
             if not self._pv_block_reason(i) and self._pv_allow(i, "ondemand", want=1)
@@ -332,7 +378,7 @@ class OnDemandMixin:
             self._log("点播:候选站点 PV 预算不足/已封，跳过检索", "warning")
             return []
         try:
-            hits = self._mp_search_title(kw, allowed)
+            hits = self._mp_search_title(kw, allowed, page=pg)
         except Exception as e:  # noqa: BLE001
             self._log(f"点播:MP 搜索失败: {e}", "warning")
             hits = []
@@ -341,35 +387,244 @@ class OnDemandMixin:
                 self._pv_spend(i, "ondemand", 1)
         rows: List[Dict[str, Any]] = []
         for ti in hits or []:
-            url = str(getattr(ti, "enclosure", "") or "")
-            if not url:
-                continue
-            _dv = getattr(ti, "downloadvolumefactor", None)
-            try:
-                dv = 1.0 if _dv is None else float(_dv)
-            except Exception:  # noqa: BLE001
-                dv = 1.0
-            try:
-                seeders = int(getattr(ti, "seeders", 0) or 0)
-            except Exception:  # noqa: BLE001
-                seeders = 0
-            rows.append({
-                "title": str(getattr(ti, "title", "") or ""),
-                "size": float(getattr(ti, "size", 0.0) or 0.0),
-                "seeders": seeders,
-                "peers": int(getattr(ti, "peers", 0) or 0),
-                "enclosure": url,
-                "page_url": str(getattr(ti, "page_url", "") or ""),
-                "site": int(getattr(ti, "site", 0) or 0),
-                "site_name": str(getattr(ti, "site_name", "") or ""),
-                "site_cookie": getattr(ti, "site_cookie", None),
-                "site_ua": getattr(ti, "site_ua", None),
-                "site_proxy": bool(getattr(ti, "site_proxy", False)),
-                "downloadvolumefactor": dv,
-                "hit_and_run": bool(getattr(ti, "hit_and_run", False)),
-            })
-        self._log(f"点播:MP 搜索「{kw}」{len(allowed)} 站 → 候选 {len(rows)} 条")
+            r = self._od_row_from_ti(ti)
+            if r:
+                rows.append(r)
+        self._log(f"点播:MP 搜索「{kw}」page={pg} {len(allowed)} 站 → 候选 {len(rows)} 条")
         return rows
+
+    def _ondemand_find_pick(self, title: str, year: str, sites: List[int],
+                            pick: str) -> List[Dict[str, Any]]:
+        """★ 17.1.1：**逐页搜到 pick 命中为止**（有界 + 逐页过 PV 闸），返回「到此为止已见过的候选」。
+
+        根因（Master 2026-10-10 报）：``_ondemand_add`` 原来只搜 MP 的**第 1 页**，
+        候选排在第 2+ 页时永远命中不了 → 「搜索翻页看得到、add 加不进去」（真缺口：能看不能下）。
+
+        边界（别拉爆站点 PV）：
+        - 每关键词最多 ``_OD_ADD_MAX_PAGES`` 页（第 0..N-1 页），命中即停（**不多搜一页**）；
+        - 某页**空**（无结果 / PV 闸停 / PV 预算不足）→ 判为页尾，停止续页；
+        - 第一个关键词有货就不再试「片名+年份」（与改前 `_ondemand_add` 的口径一致）。
+        """
+        want = str(pick or "").strip()
+        acc: Dict[str, Dict[str, Any]] = {}
+        keys = [str(title or "").strip()]
+        if str(year or "").strip():
+            keys.append("%s %s" % (keys[0], str(year).strip()))
+        for kw in keys:
+            if not kw:
+                continue
+            for pg in range(_OD_ADD_MAX_PAGES):
+                # 异常不私吞（同改前：直接冒到 ``/agent/ondemand/add`` 的错误回报），
+                # 且 ``_ondemand_search`` 内部已记「MP 搜索失败」日志 —— 这里不再重复记。
+                rows = self._ondemand_search(kw, sites, page=pg) or []
+                for r in rows:
+                    acc[str(r.get("enclosure") or "")] = r
+                if any(str(r.get("enclosure") or "") == want for r in rows):
+                    return list(acc.values())
+                if not rows:
+                    break          # 页尾（或 PV 闸停）→ 本关键词不再续页
+            if acc:
+                break              # 第一个关键词有货：不再试「片名+年份」
+        return list(acc.values())
+
+    # ------------------------------------------------------------ §3 搜索自描述（★ 15.9.0）
+
+    @staticmethod
+    def _od_row_from_ti(ti: Any) -> Optional[Dict[str, Any]]:
+        """TorrentInfo（对象 / dict）→ 点播候选行（只读归一，真值源 = MP 的 TorrentInfo）。"""
+        def _g(k: str, d: Any = None) -> Any:
+            if isinstance(ti, dict):
+                return ti.get(k, d)
+            return getattr(ti, k, d)
+
+        url = str(_g("enclosure", "") or "")
+        if not url:
+            return None
+        _dv = _g("downloadvolumefactor", None)
+        try:
+            dv = 1.0 if _dv is None else float(_dv)
+        except Exception:  # noqa: BLE001
+            dv = 1.0
+
+        def _int(k: str, d: int = 0) -> int:
+            try:
+                return int(_g(k, d) or 0)
+            except Exception:  # noqa: BLE001
+                return d
+
+        try:
+            size = float(_g("size", 0.0) or 0.0)
+        except Exception:  # noqa: BLE001
+            size = 0.0
+        return {
+            "title": str(_g("title", "") or ""),
+            "size": size,
+            "seeders": _int("seeders"),
+            "peers": _int("peers"),
+            "enclosure": url,
+            "page_url": str(_g("page_url", "") or ""),
+            "site": _int("site"),
+            "site_name": str(_g("site_name", "") or ""),
+            "site_cookie": _g("site_cookie", None),
+            "site_ua": _g("site_ua", None),
+            "site_proxy": bool(_g("site_proxy", False)),
+            "downloadvolumefactor": dv,
+            "free": dv <= 0.0,
+            "counted_gb": round(size / 1e9 * dv, 2),
+            "hit_and_run": bool(_g("hit_and_run", False)),
+        }
+
+    @staticmethod
+    def _od_decode_source(source: str):
+        """MP 续页令牌（``base64([site, keyword, search_id])``）→ ``(site:int, keyword:str)``（解不出 → ``(0, "")``）。"""
+        try:
+            from app.chain.search.manual import decode_source  # noqa: WPS433
+            site, keyword, _sid = decode_source(str(source or ""))
+            return (int(site) if str(site).isdigit() else 0), str(keyword or "")
+        except Exception:  # noqa: BLE001
+            return 0, ""
+
+    @classmethod
+    def _od_source_site(cls, source: str) -> int:
+        """从 MP 续页令牌解出站点 id（解不出→0）。"""
+        return cls._od_decode_source(source)[0]
+
+    @classmethod
+    def _od_source_fact(cls, raw: Any) -> Dict[str, Any]:
+        """MP 单页分页来源事实 → 统一 ``sources[]`` 条目（§3.3）。**不平定义，只归一**。"""
+        raw = raw if isinstance(raw, dict) else {}
+        err = raw.get("error")
+        err = str(err) if err else None
+        if not err:
+            outcome = "ok"
+        elif "超时" in err or "timeout" in err.lower():
+            outcome = "timeout"
+        else:
+            outcome = "error"
+        tok = str(raw.get("source") or "")
+        site: Any = cls._od_source_site(tok)
+        if not site:
+            site = None
+        return {
+            "source": tok,
+            "site": site,
+            "site_name": str(raw.get("site_name") or ""),
+            "page": int(raw.get("page") or 0),
+            "can_continue": bool(raw.get("can_continue")),
+            "outcome": outcome,
+            "error": err,
+            "note": "",
+        }
+
+    async def _ondemand_search_sources(self, keyword: str, site_ids: List[int],
+                                       page: int = 0, source: str = "") -> Dict[str, Any]:
+        """★ 15.9.0 §3：点播候选 + **每站事实** —— **直接透传 MP 原生单页分页**。
+
+        MP v3.1.2 自带 ``SearchChain().search_page_events(params=…)``（``app/chain/search/manual.py``）：
+
+        - **客户端指定单页**（``page``），MP **不自留**分页进度；
+        - 每个来源回 ``{source, site_name, page, can_continue, error}``，与我们的 ``sources[]`` 同构；
+        - ``source`` 是**续页令牌**（回传它 + ``page=N+1`` 即续该站下一页；含 ``search_id`` 隔离本轮）；
+        - 上限 ``MAX_SEARCH_PAGES=100``；复用 MP 的站点流控 / 别名回退 / 识别 / 过滤。
+
+        我们**不做第二真值源**：类型判定 / 分页能力 / 别名 / 过滤全部听 MP。
+        """
+        kw = str(keyword or "").strip()
+        pg = 0
+        try:
+            pg = max(0, int(page or 0))
+        except (TypeError, ValueError):
+            pg = 0
+        src = str(source or "").strip()
+        ids: List[int] = []
+        for i in (site_ids or []):
+            try:
+                _i = int(i)
+            except (TypeError, ValueError):
+                continue
+            if _i and _i not in ids:
+                ids.append(_i)
+        out: Dict[str, Any] = {
+            "keyword": kw, "page": pg, "source": src, "sites": ids,
+            "sources": [], "candidates": [], "total_items": 0, "candidate_items": 0,
+        }
+        if not kw and not src:
+            return out
+        # 站点集合 + PV 闸（与 ``_ondemand_search`` 同源；续页只针对令牌里的那个站）
+        target_ids = ids or self._ondemand_sites()
+        pkw = kw
+        if src:
+            _s, _kw = self._od_decode_source(src)
+            target_ids = [_s] if _s else []
+            pkw = _kw or kw   # 续页：MP 的 ``_prepare_page`` 仍需 ``keyword`` 在场（随后会被令牌覆盖）
+            out["keyword"] = pkw
+        allowed = [i for i in target_ids
+                   if not self._pv_block_reason(i) and self._pv_allow(i, "ondemand", want=1)]
+        if not allowed:
+            self._log("点播:搜索站点 PV 预算不足/已封，跳过", "warning")
+            return out
+        out["sites"] = allowed
+        params: Dict[str, Any] = {"page": pg}
+        if src:
+            params["source"] = src
+            params["keyword"] = pkw
+        else:
+            params["keyword"] = kw
+            params["sites"] = allowed
+        try:
+            from app.chain.search import SearchChain  # noqa: WPS433
+            chain = SearchChain()
+            ev = getattr(chain, "search_page_events", None)
+            if not callable(ev):
+                raise RuntimeError("当前 MP 无 search_page_events（需 v3.1.2+）")
+            facts: List[Dict[str, Any]] = []
+            items: List[Any] = []
+            try:
+                async for event in ev(params=params):
+                    et = str((event or {}).get("type") or "")
+                    if et == "error":
+                        raise RuntimeError(str(event.get("message") or "搜索失败"))
+                    if et == "replace":
+                        raw = event.get("sources")
+                        if raw:
+                            facts = [self._od_source_fact(x) for x in raw]
+                        items = list(event.get("items") or [])
+                        try:
+                            out["total_items"] = int(event.get("total_items") or 0)
+                        except (TypeError, ValueError):
+                            pass
+                        try:
+                            out["candidate_items"] = int(event.get("candidate_items") or 0)
+                        except (TypeError, ValueError):
+                            pass
+                    elif et == "done":
+                        raw = event.get("sources")
+                        if raw:
+                            facts = [self._od_source_fact(x) for x in raw]
+            finally:
+                for i in allowed:
+                    self._pv_spend(i, "ondemand", 1)
+        except Exception as e:  # noqa: BLE001
+            self._log(f"点播:MP 分页搜索失败: {e}", "warning")
+            raise
+        out["sources"] = facts
+        rows: List[Dict[str, Any]] = []
+        for it in items:
+            ti = it.get("torrent_info") if isinstance(it, dict) else None
+            if ti is None and isinstance(it, dict):
+                ti = it
+            r = self._od_row_from_ti(ti) if ti is not None else None
+            if r:
+                rows.append(r)
+        out["candidates"] = sorted(rows, key=lambda r: (
+            0 if _od_is_free(r.get("downloadvolumefactor")) else 1,
+            -int(r.get("seeders", 0) or 0), -float(r.get("size", 0.0) or 0.0)))
+        self._log(f"点播:MP 分页搜索「{kw or '(续页)'}」page={pg} → 来源 {len(facts)} / 候选 {len(rows)}")
+        # ★ 17.1.1：本轮候选喂给「最近一次搜索」短时缓存 —— 让 /agent/ondemand/search →
+        #   /agent/ondemand/add 真正衔接（add 命中即秒回，不再自己重搜一页 / 白烧 PV）。
+        #   键 = 生效关键词（续页时取自令牌）+ 实际检索站点，与 add 的 ``_ondemand_cache_get`` 同口径。
+        self._ondemand_cache_put(str(out.get("keyword") or ""), allowed, out["candidates"])
+        return out
 
     def _ondemand_pick(self, rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """选源：**免费优先** → 做种数多 → 体积大。"""
@@ -409,7 +664,8 @@ class OnDemandMixin:
             pass
         return ""
 
-    def _ondemand_download(self, row: Dict[str, Any], task: Any = None) -> Dict[str, Any]:
+    def _ondemand_download(self, row: Dict[str, Any], task: Any = None,
+                           title: str = "", year: str = "") -> Dict[str, Any]:
         dl = self._get_downloader("qbittorrent")
         if dl is None or not getattr(dl, "is_available", False):
             return {"ok": False, "message": "下载器不可用"}
@@ -442,17 +698,118 @@ class OnDemandMixin:
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "message": f"添加失败: {e}"}
         if not hs:
-            return {"ok": False, "message": f"添加失败: {err or '未知'}"}
-        h = str(hs[0] if isinstance(hs, (list, tuple)) else hs).lower()
+            # ★ 16.0.2：重复（qB 已有该种）→ 用内容算出的 infohash 复用，仍补 mark/assign（幂等收养）
+            try:
+                _h = str(info_hash(content) or "").lower()
+            except Exception:  # noqa: BLE001
+                _h = ""
+            if _h and _h in (self._tag_all_torrents() or {}):
+                h = _h
+            else:
+                return {"ok": False, "message": f"添加失败: {err or '未知'}"}
+        else:
+            h = str(hs[0] if isinstance(hs, (list, tuple)) else hs).lower()
         # ★ 15.8.4：加种即挂 __ondemand__ 伪任务（职务=点播）→ 未下完不被静默池删/暂停
         try:
             self._od_assign([h], site=site_name, sub=SUB_RESOURCE, reason="加种")
         except Exception as _oae:  # noqa: BLE001
             self._log(f"点播:挂伪任务失败 {h[:12]}: {_oae}", "warning")
+        # ★ 16.0.1：同时写「点播 inflight」槽 → 静默闸 _silent_audit 跳过
+        #   （只靠 _od_assign 写账本会撞「qB 还没登记新种」的竞态 → 在途种被判违规补暂停）
+        try:
+            self._ondemand_mark(h, {
+                "title": str(row.get("title") or ""),
+                "site": site_name,
+                "site_id": int(row.get("site") or 0),
+                "free": _od_is_free(row.get("downloadvolumefactor")),
+                "hit_and_run": bool(row.get("hit_and_run")),
+            })
+        except Exception as _ome:  # noqa: BLE001
+            self._log(f"点播:inflight 槽落盘失败 {h[:12]}: {_ome}", "warning")
+        # 17.1.0：点播时落一条历史记录（清单只读它，此后不再现算/回查）
+        try:
+            _odf = _od_is_free(row.get("downloadvolumefactor"))
+            _ods = site_name or str(int(row.get("site") or 0))
+            self._ondemand_history_put(h, {
+                "title": str(title or row.get("title") or ""),
+                "year": str(year or ""),
+                "site": site_name,
+                "site_id": int(row.get("site") or 0),
+                "free": _odf,
+                "hit_and_run": bool(row.get("hit_and_run")),
+                "size_gb": round(float(row.get("size") or 0.0) / (1024 ** 3), 3),
+                "source_note": f"源 {_ods}" + ("·免费" if _odf else ""),
+                "stage": "downloading",
+                "added_at": time.time(),
+                "settled_at": 0.0,
+                "in_library": False,
+            })
+        except Exception as _ohe:  # noqa: BLE001
+            logger.warning(f"魔流点播历史写入跳过 {h[:12]}: {_ohe}")
         return {
             "ok": True, "hash": h, "tag": tag,
             "site": int(row.get("site") or 0), "save_path": save_path,
         }
+
+    def _ondemand_add(self, query: str = "", site_ids: str = "", pick: str = "",
+                      task_id: str = "", apply: bool = True) -> Dict[str, Any]:
+        """★ 16.0.0：**只按 AI 指定的源加种**（绝不自动选源）。
+
+        与 `on_demand`（自动优选）区分：本方法要求 `pick` = 候选 `enclosure`，
+        命中即下这条；未命中 → 如实回报「候选未命中，请先 search」，
+        **不调** `_ondemand_pick`（选源权归 AI）。
+
+        ★ 17.1.1：找 pick 由 ``_ondemand_find_pick`` 分页续搜（前 ``_OD_ADD_MAX_PAGES`` 页，有界），
+        不再只认第 1 页 —— 修「搜索翻页看得到、add 加不进去」。
+        """
+        q = self._ondemand_parse(query)
+        if not q["query"]:
+            return {"ok": False, "message": "缺少 query（片名或链接）"}
+        task = self._get_task_config(task_id) if task_id else None
+        sites = self._ondemand_sites(task, site_ids)
+        if not sites:
+            return {"ok": False, "message": "没有可搜的站点（site_ids / 任务站点均为空）"}
+        pick = str(pick or "").strip()
+        if not pick:
+            return {"ok": False, "message": "缺少 pick（候选 enclosure / 下载链接）"}
+        title = year = ""
+        rows = self._ondemand_cache_get(q["query"], sites) or []
+        if not rows:
+            media = self._ondemand_media(q)
+            if media is not None:
+                try:
+                    title = str(getattr(media, "title", "") or "")
+                    year = str(getattr(media, "year", "") or "")
+                except Exception:  # noqa: BLE001
+                    title, year = "", ""
+            if not title:
+                title = q["keyword"] or q["query"]
+            # ★ 17.1.1：命中失败不再只看 MP 第 1 页 —— 逐页续搜（有界）到 pick 命中/页尾/上限
+            rows = self._ondemand_find_pick(title, year, sites, pick)
+            self._ondemand_cache_put(q["query"], sites, rows)
+        row = next((r for r in rows if str(r.get("enclosure") or "") == pick), None)
+        if row is None:
+            return {"ok": False, "message": "候选未命中，请先 search（已续搜前 %d 页，候选可能更靠后）"
+                                            % _OD_ADD_MAX_PAGES}
+        save_path = (str(getattr(task, "save_path", "") or "") if task is not None else "")\
+            or self._ondemand_default_save_path()
+        plan = {
+            "title": row.get("title") or "",
+            "size": row.get("size"),
+            "downloadvolumefactor": row.get("downloadvolumefactor"),
+            "free": _od_is_free(row.get("downloadvolumefactor")),
+            "hit_and_run": bool(row.get("hit_and_run")),
+            "counted_gb": round(float(row.get("size") or 0.0) / 1e9
+                                * float(row.get("downloadvolumefactor") or 0.0), 2),
+            "save_path": save_path,
+            "site": row.get("site_name") or row.get("site") or "",
+        }
+        if not apply:
+            return {"ok": True, "applied": False, "dry_run": True, "plan": plan}
+        res = self._ondemand_download(row, task, title=title, year=year)
+        if not res.get("ok"):
+            return {"ok": False, "message": str(res.get("message") or "下载失败"), "plan": plan}
+        return {"ok": True, "applied": True, "hash": res.get("hash") or "", "plan": plan}
 
     # ------------------------------------------------------------ 结算（下载完 → 资源）
 
@@ -509,7 +866,10 @@ class OnDemandMixin:
             self._log(f"点播:转「资源」 {h[:12]} 「{_title}」")
             # ★ 2026-10-01：点播是「我要看这部片」→ 转资源后**顺手整理入库**
             #   （MP 手动整理：transfer_type=link → 硬链接进媒体库，种子照旧做种，不删不移）
-            self._ondemand_import(h, gid, _title)
+            _ok_import = self._ondemand_import(h, gid, _title)
+            # 17.1.0：点播历史记录 → 已转「资源」（落盘记录，清单只读它）
+            self._ondemand_history_update(h, stage="resource", settled_at=time.time(),
+                                          in_library=bool(_ok_import))
             # ★ 11.11.0：转资源后入池即暂停（静默硬不变量；任务纳管时才做种）
             try:
                 self._silent_pause_gate(h)
@@ -551,9 +911,11 @@ class OnDemandMixin:
         except Exception:  # noqa: BLE001
             return {}
 
+    # ------------------------------------------------------------ 点播历史（17.1.0 落盘记录）
+
     @staticmethod
     def _ondemand_hist_title(title: str) -> str:
-        """历史行的展示名：把 journal 里的「点播 xxx」前缀去掉。"""
+        """历史行的展示名：把 journal 里的「点播 xxx」前缀去掉（仅一次性迁移用）。"""
         t = str(title or "").strip()
         if t.startswith("点播"):
             t = t[len("点播"):].strip()
@@ -561,7 +923,7 @@ class OnDemandMixin:
 
     @staticmethod
     def _ondemand_hist_site(reason: str) -> str:
-        """从 journal 的 reason（如「源 财神·免费」）回填站点名——种已被删、账本无行时的兜底。"""
+        """从 journal 的 reason（如「源 财神·免费」）回填站点名（仅一次性迁移用）。"""
         r = str(reason or "").strip()
         if r.startswith("源"):
             r = r[len("源"):].strip()
@@ -571,20 +933,148 @@ class OnDemandMixin:
                 break
         return r
 
+
+    def _ondemand_history_read(self, limit: int = _OD_HIST_KEEP) -> List[Dict[str, Any]]:
+        """读点播历史记录（新 → 旧）。
+
+        17.1.0（Master 2026-10-13：「没必要动态，做个记录就好」）：真值源 = ondemand_history 槽
+        （mf_run 表，点播时**落一条记录**）—— 清单只读它，**不再**每次动态拼 journal + 现况回查。
+        """
+        try:
+            data = slot_callbacks(self, _OD_HIST_KEY)[0]() or {}
+        except Exception:  # noqa: BLE001
+            data = {}
+        rows = (data.get("rows") if isinstance(data, dict) else data) or []
+        rows = [r for r in rows if isinstance(r, dict)]
+        rows.sort(key=lambda r: float(r.get("added_at") or 0.0), reverse=True)
+        try:
+            n = max(1, min(int(limit or _OD_HIST_KEEP), _OD_HIST_KEEP))
+        except (TypeError, ValueError):
+            n = _OD_HIST_KEEP
+        return rows[:n]
+
+    def _ondemand_history_save(self, rows: List[Dict[str, Any]]) -> None:
+        """写点播历史记录（保留最近 _OD_HIST_KEEP 条）。"""
+        try:
+            slot_callbacks(self, _OD_HIST_KEY)[1](value={"seeded": True, "rows": list(rows or [])[:_OD_HIST_KEEP]})
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"魔流点播历史落盘失败（忽略）：{e}")
+
+    def _ondemand_history_put(self, h: str, fields: Dict[str, Any]) -> None:
+        """17.1.0：点播时落一条历史记录（按 hash 幂等；新记录置顶）。"""
+        hh = str(h or "").strip().lower()
+        if not hh:
+            return
+        try:
+            rows = [r for r in self._ondemand_history_read() if str(r.get("hash") or "") != hh]
+            rec: Dict[str, Any] = {"hash": hh}
+            rec.update({k: v for k, v in dict(fields or {}).items() if v is not None})
+            rows.insert(0, rec)
+            self._ondemand_history_save(rows)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"魔流点播历史写入失败（忽略）：{e}")
+
+    def _ondemand_history_update(self, h: str, **fields: Any) -> None:
+        """更新一条历史记录（结算转「资源」/ 撤单标 removed）。"""
+        hh = str(h or "").strip().lower()
+        if not hh:
+            return
+        try:
+            rows = self._ondemand_history_read()
+            for r in rows:
+                if str(r.get("hash") or "") != hh:
+                    continue
+                r.update({k: v for k, v in fields.items() if v is not None})
+                self._ondemand_history_save(rows)
+                return
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"魔流点播历史更新失败（忽略）：{e}")
+
+    def _ondemand_history_backfill(self) -> None:
+        """★ 17.1.0 一次性迁移：槽还没落过记录时，把 journal 里已有的点播记录灌成落盘记录。
+
+        只跑一次（写回时置 seeded 标记）；此后清单只看落盘记录，不再回看 journal / 现况回查。
+        """
+        try:
+            data = slot_callbacks(self, _OD_HIST_KEY)[0]() or {}
+        except Exception:  # noqa: BLE001
+            data = {}
+        if isinstance(data, dict) and data.get("seeded"):
+            return
+        rows: List[Dict[str, Any]] = []
+        try:
+            recs = self._store.journal.list_recent(limit=5000) if self._store is not None else []
+        except Exception:  # noqa: BLE001
+            recs = []
+        try:
+            snap = self._ondemand_snapshot()
+        except Exception:  # noqa: BLE001
+            snap = {}
+        for r in recs:
+            for it in (getattr(r, "items", None) or []):
+                if str(getattr(it, "source", "") or "") != "ondemand":
+                    continue
+                h = str(getattr(it, "hash", "") or "").lower()
+                if not h or any(str(x.get("hash") or "") == h for x in rows):
+                    continue
+                rec = self._ondemand_seed_rec(h)
+                inlib = bool((rec or {}).get("in_library"))
+                sub = str((rec or {}).get("sub") or "")
+                size_gb = 0.0
+                try:
+                    size_gb = float(getattr(it, "size_gb", 0) or 0.0)
+                except (TypeError, ValueError):
+                    size_gb = 0.0
+                if not size_gb and snap.get(h) is not None:
+                    try:
+                        size_gb = float(getattr(snap.get(h), "size_gb", 0) or 0.0)
+                    except (TypeError, ValueError):
+                        size_gb = 0.0
+                _reason = str(getattr(it, "reason", "") or "")
+                rows.append({
+                    "hash": h,
+                    "title": self._ondemand_hist_title(str(getattr(it, "title", "") or "")),
+                    "year": "",
+                    "site": str((rec or {}).get("site") or "") or self._ondemand_hist_site(_reason),
+                    "site_id": 0,
+                    "free": bool((rec or {}).get("free")),
+                    "hit_and_run": bool((rec or {}).get("hit_and_run")),
+                    "size_gb": round(size_gb, 3),
+                    "source_note": _reason,
+                    "stage": "resource" if (sub == SUB_RESOURCE or inlib) else "gone",
+                    "added_at": float(getattr(r, "created_at", 0) or 0.0),
+                    "settled_at": float((rec or {}).get("identity_at") or 0.0),
+                    "in_library": inlib,
+                })
+        self._ondemand_history_save(rows)
+
+
     def _ondemand_inflight_row(self, h: str, info: Dict[str, Any], t: Any, rec: Dict[str, Any]) -> Dict[str, Any]:
-        """进行中一行：基本信息 + qB 进度（progress/state/speed/剩余/ETA）。"""
+        """进行中一行（干净清单 Item）：身份 + qB 进度。
+
+        ★ 15.9.0 换皮：字段与历史行**同构**（stage / percent / downloaded_gb / ISO 时间…）。
+        内部 ``_ts`` 仅用于排序，出清单前会剥掉。
+        """
+        base_ts = info.get("ts") or 0.0
         row: Dict[str, Any] = {
             "hash": h,
+            "module": "ondemand",
+            "stage": "gone", "stage_text": "已不在下载器",
             "title": str(info.get("title") or info.get("media") or ""),
             "year": str(info.get("year") or ""),
             "site": str(info.get("site") or ""),
+            "progress": 0.0, "percent": 0.0, "state": "",
+            "size_gb": 0.0, "downloaded_gb": 0.0, "left_gb": 0.0,
+            "speed": 0.0, "eta_s": None, "ratio": 0.0,
             "free": bool(info.get("free")),
             "hit_and_run": bool(info.get("hit_and_run")),
-            "added_at": float(info.get("ts") or 0.0),
             "in_qb": t is not None,
-            "progress": 0.0, "state": "", "size_gb": 0.0, "left_gb": 0.0,
-            "speed": 0.0, "eta_s": None, "ratio": 0.0,
-            "stage": "gone", "stage_text": "已不在下载器",
+            "in_library": bool((rec or {}).get("in_library")),
+            "save_path": "",
+            "added_at": _od_iso(base_ts),
+            "settled_at": _od_iso((rec or {}).get("identity_at")),
+            "source_note": "",
+            "_ts": float(base_ts or 0.0),
         }
         if t is None:
             return row
@@ -594,11 +1084,14 @@ class OnDemandMixin:
         left_gb = max(0.0, size_gb * (1.0 - prog))
         row.update({
             "progress": round(prog, 4),
+            "percent": round(prog * 100.0, 2),
             "state": str(getattr(t, "state", "") or ""),
             "size_gb": round(size_gb, 3),
+            "downloaded_gb": round(size_gb * prog, 3),
             "left_gb": round(left_gb, 3),
             "speed": round(spd, 1),
             "ratio": round(float(getattr(t, "ratio", 0) or 0.0), 3),
+            "save_path": str(getattr(t, "save_path", "") or ""),
         })
         if prog < 0.999:
             row["stage"] = "downloading"
@@ -609,89 +1102,89 @@ class OnDemandMixin:
             row["stage"] = "resource"
             row["stage_text"] = "已转「资源」"
         else:
-            row["stage"] = "pending_settle"
+            row["stage"] = "settling"
             row["stage_text"] = "已下完，待转「资源」"
         return row
 
-    def _ondemand_hist_row(self, h: str, it: Any, rec_op: Any, t: Any, rec: Dict[str, Any]) -> Dict[str, Any]:
-        """历史一行：journal 的点播记录 + **现况回查**（不新增真值源）。"""
-        sub = str((rec or {}).get("sub") or "")
-        inlib = bool((rec or {}).get("in_library"))
-        row: Dict[str, Any] = {
-            "hash": h,
-            "title": self._ondemand_hist_title(str(getattr(it, "title", "") or "")),
-            "site": str((rec or {}).get("site") or "") or self._ondemand_hist_site(getattr(it, "reason", "")),
-            "reason": str(getattr(it, "reason", "") or ""),
-            "size_gb": round(float(getattr(it, "size_gb", 0) or 0.0), 3),
-            "ts": float(getattr(rec_op, "created_at", 0) or 0.0),
-            "in_qb": t is not None,
-            "in_library": inlib,
-            "sub": sub,
-            "settled_at": float((rec or {}).get("identity_at") or 0.0),
-            "progress": 0.0,
-            "result": "gone", "result_text": "已移出下载器",
-        }
-        if t is None:
-            return row
-        prog = float(getattr(t, "progress", 0) or 0.0)
-        row["progress"] = round(prog, 4)
-        row["state"] = str(getattr(t, "state", "") or "")
-        if prog < 0.999:
-            row["result"], row["result_text"] = "downloading", "下载中"
-        elif sub == SUB_RESOURCE or inlib:
-            row["result"] = "resource"
-            row["result_text"] = "已转「资源」" + ("·已入库" if inlib else "")
+    def _ondemand_hist_row(self, rec: Dict[str, Any]) -> Dict[str, Any]:
+        """历史一行（干净清单 Item）：**只读落盘记录**。
+
+        17.1.0：不再动态拼 journal / 现况回查（qB、账本）—— 行内一切取自 ondemand_history
+        记录；stage 由记录定：resource = 已转「资源」；其余 = 已结案。字段与进行中行**同构**。
+        """
+        stage = str(rec.get("stage") or "gone")
+        size_gb = round(float(rec.get("size_gb") or 0.0), 3)
+        if stage == "resource":
+            stage_text = "已转「资源」" + ("·已入库" if rec.get("in_library") else "")
         else:
-            row["result"], row["result_text"] = "settling", "已下完，待转「资源」"
-        return row
+            stage_text = "已结案"
+        return {
+            "hash": str(rec.get("hash") or ""),
+            "module": "ondemand",
+            "stage": "resource" if stage == "resource" else "gone",
+            "stage_text": stage_text,
+            "title": str(rec.get("title") or ""),
+            "year": str(rec.get("year") or ""),
+            "site": str(rec.get("site") or ""),
+            "progress": 1.0 if stage == "resource" else 0.0,
+            "percent": 100.0 if stage == "resource" else 0.0,
+            "state": "",
+            "size_gb": size_gb,
+            "downloaded_gb": size_gb if stage == "resource" else 0.0,
+            "left_gb": 0.0,
+            "speed": 0.0, "eta_s": None, "ratio": 0.0,
+            "free": bool(rec.get("free")),
+            "hit_and_run": bool(rec.get("hit_and_run")),
+            "in_qb": False,
+            "in_library": bool(rec.get("in_library")),
+            "save_path": "",
+            "added_at": _od_iso(rec.get("added_at")),
+            "settled_at": _od_iso(rec.get("settled_at")),
+            "source_note": str(rec.get("source_note") or ""),
+            "_ts": float(rec.get("added_at") or 0.0),
+        }
 
     def _ondemand_items(self, limit: int = 50) -> Dict[str, Any]:
-        """点播清单：进行中（带下载进度）+ 已完成（历史 + 现况）。
+        """点播干净清单：**单列表** items[]（进行中+历史**同构**）+ totals。
 
-        真值源（只读，不新造）：
-          - 进行中 = ``ondemand_pending``（``mf_seed.pending``）× qB 快照（进度/状态/速度）；
-          - 历史 = journal（``items[].source == "ondemand"``）＋ 种子账本（state/sub/in_library）。
+        真值源（只读）：
+          - 进行中 = ondemand_pending（mf_seed.pending）× qB 快照（进度/状态/速度）；
+          - 历史 = **点播历史落盘记录**（ondemand_history 槽；点播时写、结算/撤单时更新）
+            —— 17.1.0 起不再动态拼 journal + 现况回查。
         """
         try:
             cap = max(1, min(int(limit or 50), 200))
         except (TypeError, ValueError):
             cap = 50
+        self._ondemand_history_backfill()   # 17.1.0：一次性把已有 journal 点播灌成落盘记录
         pend = self._ondemand_all()
         snap = self._ondemand_snapshot()
-        inflight: List[Dict[str, Any]] = []
+        rows: List[Dict[str, Any]] = []
+        seen: Set[str] = set()
         for h, info in pend.items():
-            inflight.append(self._ondemand_inflight_row(h, info, snap.get(h), self._ondemand_seed_rec(h)))
-        inflight.sort(key=lambda r: float(r.get("added_at") or 0.0), reverse=True)
-        history: List[Dict[str, Any]] = []
-        seen: Set[str] = set(pend.keys())
-        try:
-            recs = self._store.journal.list_recent(limit=5000) if self._store is not None else []
-        except Exception:  # noqa: BLE001
-            recs = []
-        for r in recs:
-            for it in (getattr(r, "items", None) or []):
-                if str(getattr(it, "source", "") or "") != "ondemand":
-                    continue
-                h = str(getattr(it, "hash", "") or "").lower()
-                if not h or h in seen:
-                    continue
-                seen.add(h)
-                history.append(self._ondemand_hist_row(h, it, r, snap.get(h), self._ondemand_seed_rec(h)))
-                if len(history) >= cap:
-                    break
-            if len(history) >= cap:
-                break
-        history.sort(key=lambda r: float(r.get("ts") or 0.0), reverse=True)
-        return {
-            "inflight": inflight,
-            "history": history,
-            "totals": {
-                "inflight": len(inflight),
-                "downloading": sum(1 for r in inflight if r.get("stage") == "downloading"),
-                "history": len(history),
-                "left_gb": round(sum(float(r.get("left_gb") or 0.0) for r in inflight), 3),
-            },
+            seen.add(h)
+            rows.append(self._ondemand_inflight_row(h, info, snap.get(h), self._ondemand_seed_rec(h)))
+        for rec in self._ondemand_history_read():
+            h = str(rec.get("hash") or "").lower()
+            if not h or h in seen:
+                continue
+            if str(rec.get("stage") or "") == "removed":
+                continue   # 本线撤单过 → 点播窗口不展示
+            seen.add(h)
+            rows.append(self._ondemand_hist_row(rec))
+        rows.sort(key=lambda x: float(x.get("_ts") or 0.0), reverse=True)
+        rows = rows[:cap]
+        for x in rows:                      # 内部排序键不出清单
+            x.pop("_ts", None)
+        totals = {
+            "count": len(rows),
+            "downloading": sum(1 for r in rows if r.get("stage") == "downloading"),
+            "settling": sum(1 for r in rows if r.get("stage") == "settling"),
+            "resource": sum(1 for r in rows if r.get("stage") == "resource"),
+            "gone": sum(1 for r in rows if r.get("stage") == "gone"),
+            "left_gb": round(sum(float(r.get("left_gb") or 0.0) for r in rows), 3),
         }
+        return {"items": rows, "totals": totals}
 
     # ------------------------------------------------------------ 操作（行内：暂停/继续/移除）
 
@@ -700,6 +1193,7 @@ class OnDemandMixin:
     def _ondemand_act(self, hash: str = "", action: str = "") -> Dict[str, Any]:
         """点播「进行中」的行内操作：``pause`` / ``resume`` / ``remove``（只读清单之外的唯一写口）。
 
+        ★ 15.9.0 回执统一：**恒**返回 ``{ok, hash, action, message, blocked}``（5 键齐全）。
         ``remove`` **走唯一删除闸门**（``DownloaderAdapter.delete_torrents``）：欠 H&R /
         跨站来源份 / 已认领 / 手动保留 **一律硬拦**（fail-closed，不绕过）——被拦时
         ``ok=false``、``blocked=true`` 并附原因，前端如实展示。
@@ -707,41 +1201,46 @@ class OnDemandMixin:
         """
         h = str(hash or "").strip().lower()
         act = str(action or "").strip().lower()
+
+        def _rep(ok: bool, msg: str, *, blocked: bool = False) -> Dict[str, Any]:
+            return {"ok": bool(ok), "hash": h, "action": act,
+                    "message": str(msg or ""), "blocked": bool(blocked)}
+
         if not h:
-            return {"ok": False, "message": "缺少 hash"}
+            return _rep(False, "缺少 hash")
         if act not in self._OD_ACTS:
-            return {"ok": False, "message": f"未知操作:{action}"}
+            return _rep(False, f"未知操作:{action}")
         pend = self._ondemand_all()
         if h not in pend:
-            return {"ok": False, "message": "该种不在点播进行中（可能已完成/已移除）"}
+            return _rep(False, "该种不在点播进行中（可能已完成/已移除）")
         try:
             dl = self._get_downloader("qbittorrent")
         except Exception as e:  # noqa: BLE001
-            return {"ok": False, "message": f"下载器不可用:{e}"}
+            return _rep(False, f"下载器不可用:{e}")
         if dl is None or not getattr(dl, "is_available", False):
-            return {"ok": False, "message": "下载器不可用"}
+            return _rep(False, "下载器不可用")
         if act in ("pause", "resume"):
             try:
                 n, err = (dl.pause_torrents([h]) if act == "pause" else dl.resume_torrents([h]))
             except Exception as e:  # noqa: BLE001
-                return {"ok": False, "message": f"{act} 失败:{e}"}
+                return _rep(False, f"{act} 失败:{e}")
             if err or not n:
-                return {"ok": False, "message": f"{act} 失败:{err or '未命中'}"}
+                return _rep(False, f"{act} 失败:{err or '未命中'}")
             self._log(f"点播:{'暂停' if act == 'pause' else '继续'} {h[:12]}")
-            return {"ok": True, "hash": h, "action": act,
-                    "message": "已暂停" if act == "pause" else "已继续"}
+            return _rep(True, "已暂停" if act == "pause" else "已继续")
         # ---- remove：唯一删除闸门（不绕过）
         try:
             n, err = dl.delete_torrents(hashes=[h], delete_file=True,
                                         reason="点播移除（进行中）", source="ondemand")
         except Exception as e:  # noqa: BLE001
-            return {"ok": False, "message": f"移除失败:{e}"}
+            return _rep(False, f"移除失败:{e}")
         if not n:
-            return {"ok": False, "blocked": True,
-                    "message": err or "被删除闸门拦下（欠 H&R / 受保护），未移除"}
+            return _rep(False, err or "被删除闸门拦下（欠 H&R / 受保护），未移除", blocked=True)
         self._ondemand_unmark(h)
+        # 17.1.0：撤单 → 历史记录标 removed（点播窗口不再展示）
+        self._ondemand_history_update(h, stage="removed", removed_at=time.time())
         self._log(f"点播:移除 {h[:12]}（删种+删文件）")
-        return {"ok": True, "hash": h, "action": "remove", "message": "已移除（删种+删文件）"}
+        return _rep(True, "已移除（删种+删文件）")
 
     # ------------------------------------------------------------ API
 
@@ -835,7 +1334,7 @@ class OnDemandMixin:
         if not apply:
             out["applied"] = False
             return Response(success=True, message="预览（apply=false，未下载）", data=out)
-        res = self._ondemand_download(picked, task)
+        res = self._ondemand_download(picked, task, title=title, year=year)
         out["applied"] = True
         out["added"] = res.get("hash") or ""
         if not res.get("ok"):

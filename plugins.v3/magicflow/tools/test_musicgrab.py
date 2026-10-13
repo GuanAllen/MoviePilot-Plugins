@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""魔流 · 歌单→选种计划（★ 15.7.0）离线回归 —— 真跑 features/musicgrab.py，不需 MoviePilot / qB。
+"""魔流 · 音乐线离线回归（★ 16.0.0：只留 AI 选种链路相关纯函数）。真跑 features/musicgrab.py。
 
-背景（Master 2026-10-07 20:44）：**歌曲也是资源** → 音乐走 PT 规则（H&R / 账本），
-而「选种」是最难的一环。本版只做**计划（干跑）**：歌单 → 搜候选 → 硬过滤视频 →
-可解释打分 → 选中 + 逐条依据链。
+16.0.0 已移除「歌单程序选种」legacy（plan / public_plan / grab 一族方法）：
+音乐线只保留 `search → AI 选 → download(cids)`；本文件只测留下的纯函数。
 
 断言：
   [1] 歌单解析：`艺人 - 歌名` / `歌名` / `歌名@站id,站id` / 空行与 `#` 注释；
   [2] 硬过滤：分辨率/编码/容器/演唱会 → 排除（score=0, excluded=True）；
   [3] 打分：无损 > 有损；24bit 高解析加分；免费加分；
   [4] 打分：做种数折算封顶（>=50 拿满 10）；
-  [5] 选中：取最高分（并列时做种多者）；空候选 → chosen=None + empty_reason；
-  [6] 全被过滤 → chosen=None 且 empty_reason 指明「视频/MV」；
-  [7] 汇总：entries/chosen/empty/excluded_video/per_item；
-  [8] 依据链：每条含 rule/verdict/inputs/source_of_truth/at；
-  [9] per_item 截断候选条数；[10] limit 截断歌单条数。
+  [16] 护栏：`self._agent_ok` 只接 2 参（AST 扫描）；
+  [17] 保存目录 `_music_save_path`（方法/属性同名坑）；
+  [19] 音乐线判定 `_is_music_line`；[20] 摘职务标签；[21] 交回 stripped。
 
 用法：``python3 tools/test_musicgrab.py``（退出码 0=PASS / 1=FAIL）。
 """
@@ -202,103 +199,6 @@ a = f._music_score({"title": "X - A [FLAC]", "size": 3 * 10 ** 8, "seeders": 50,
 b = f._music_score({"title": "X - A [FLAC]", "size": 3 * 10 ** 8, "seeders": 500, "downloadvolumefactor": 1.0})
 ok(a["score"] == b["score"], ">=50 做种拿满，不再涨")
 
-# ---------------------------------------------------------------- [5] 选中
-print("[5] 选中（最高分；并列取做种多）")
-f = Fake({"周杰伦 晴天": [
-    _hit("Jay Chou - Ye Hui Mei FLAC分轨", size_gb=0.30, seeders=120),
-    _hit("Jay Chou - Ye Hui Mei MP3", size_gb=0.10, seeders=200),
-]})
-plan = f._music_plan("周杰伦 - 晴天")
-it = plan["items"][0]
-ok(it["chosen"] and "FLAC" in it["chosen"]["title"], "选中无损而非有损")
-ok(it["candidates_total"] == 2 and it["audio_total"] == 2, "候选计数 2/2")
-f2 = Fake({})
-plan2 = f2._music_plan("无此歌")
-ok(plan2["items"][0]["chosen"] is None, "无候选 → chosen=None")
-ok("没搜到" in plan2["items"][0]["empty_reason"], "empty_reason 说明没搜到")
-
-# ---------------------------------------------------------------- [6] 全被过滤
-print("[6] 全被过滤")
-f = Fake({"X 某歌": [_hit("X 某歌 1080p MV", size_gb=1.0, seeders=5)]})
-plan = f._music_plan("X - 某歌")
-ok(plan["items"][0]["chosen"] is None, "全被过滤 → chosen=None")
-ok("视频" in plan["items"][0]["empty_reason"], "empty_reason 指明视频/MV")
-
-# ---------------------------------------------------------------- [7] 汇总
-print("[7] 汇总")
-f = Fake({"A 歌1": [_hit("A - 歌1 FLAC分轨", size_gb=0.3)], "B 歌2": [_hit("B - 歌2 1080p MV", size_gb=1.0)]})
-plan = f._music_plan("A - 歌1\nB - 歌2")
-sm = plan["summary"]
-ok(sm["entries"] == 2 and sm["chosen"] == 1 and sm["empty"] == 1, "entries/chosen/empty")
-ok(sm["excluded_video"] == 1, "excluded_video 计数")
-ok(plan["policy"] and "mtype=music" in plan["policy"]["search"], "policy 说明搜索口径")
-
-# ---------------------------------------------------------------- [8] 依据链
-print("[8] 依据链")
-f = Fake({"A 歌1": [_hit("A - 歌1 FLAC分轨", size_gb=0.3, seeders=10)]})
-plan = f._music_plan("A - 歌1")
-rs = plan["items"][0]["chosen_reasons"]
-ok(len(rs) >= 4, f"选中项至少 4 条依据（实际 {len(rs)}）")
-keys = {"rule", "verdict", "inputs", "source_of_truth", "at"}
-ok(all(keys <= set(r) for r in rs), "每条依据含 rule/verdict/inputs/source_of_truth/at")
-
-# ---------------------------------------------------------------- [9] per_item
-print("[9] per_item 截断")
-f = Fake({"A 歌1": [_hit(f"A - 歌1 FLAC v{i}", size_gb=0.3, seeders=10 + i) for i in range(6)]})
-plan = f._music_plan("A - 歌1", per_item=2)
-ok(len(plan["items"][0]["candidates"]) == 2, "candidates 截到 per_item")
-ok(plan["items"][0]["candidates_total"] == 6, "candidates_total 保留全量")
-
-# ---------------------------------------------------------------- [10] limit
-print("[10] limit 截断歌单")
-f = Fake()
-plan = f._music_plan("\n".join(f"艺人 - 歌{i}" for i in range(10)), limit=3)
-ok(len(plan["items"]) == 3, "歌单截到 limit")
-
-# ---------------------------------------------------------------- [11] 加种
-print("[11] 加种（tag/category/save_path/site_domain/hit_and_run）")
-f = Fake({"A 歌1": [_hit("A - 歌1 FLAC分轨", size_gb=0.3, seeders=30)]})
-res = f._music_grab("A - 歌1", save_path="/tmp/music")
-ok(res["applied"] is True and len(res["added"]) == 1, "加种成功 1 条")
-ok(res["save_path"] == "/tmp/music" and res["category"] == "音乐", "save_path 覆盖 + 分类=音乐")
-c = f.calls[0]
-ok(c["download_dir"] == "/tmp/music", "下载器收到 download_dir")
-ok(c["tag"] == "魔流-聆音-静默-资源", f"标签 = 魔流-聆音-静默-资源（实际 {c['tag']}）")
-ok(c["category"] == "音乐", "下载器收到 category")
-ok(c["site_domain"] == "soulvoice.club", "下载器收到站点域名（开账真值源）")
-ok(c["hit_and_run"] is True, "带 hit_and_run（H&R 开账）")
-ok(len(f.journal) == 1 and f.journal[0]["items"][0].source == "music", "journal 记 source=music")
-
-# ---------------------------------------------------------------- [12] 幂等
-print("[12] 幂等（同歌单再跑）")
-f._exist.add("h" + "1".zfill(39))
-f2 = Fake({"A 歌1": [_hit("A - 歌1 FLAC分轨", size_gb=0.3)]})
-f2._exist = {"h:" + "t:a - 歌1 flac分轨"}
-r2 = f2._music_grab("A - 歌1")
-ok(len(r2["added"]) == 0 and len(r2["skipped"]) == 1, "已在下载器 → added=0 / skipped=1")
-ok("已在下载器" in (r2["skipped"][0].get("reason") or ""), "skip 原因=已在下载器")
-ok(len(f2.calls) == 0, "已在下载器 → 不再调 add_torrent")
-
-# ---------------------------------------------------------------- [13] 无候选
-print("[13] 无候选 → skipped")
-f3 = Fake({})
-r3 = f3._music_grab("无此歌")
-ok(len(r3["added"]) == 0 and len(r3["skipped"]) == 1, "无候选 → skipped 1")
-
-# ---------------------------------------------------------------- [14] 失败
-print("[14] 添加失败 → failed")
-f4 = Fake({"A 歌1": [_hit("A - 歌1 FLAC分轨", size_gb=0.3)]}, add_ok=False)
-r4 = f4._music_grab("A - 歌1")
-ok(len(r4["added"]) == 0 and len(r4["failed"]) == 1, "add 失败 → failed 1")
-ok("boom" in (r4["failed"][0].get("message") or ""), "带失败原因")
-
-# ---------------------------------------------------------------- [15] 对外剔除内部行
-print("[15] 对外计划剔除 _chosen_row")
-f5 = Fake({"A 歌1": [_hit("A - 歌1 FLAC分轨", size_gb=0.3)]})
-r5 = f5._music_grab("A - 歌1")
-ok(all("_chosen_row" not in it for it in r5["plan"]["items"]), "plan.items 不含 _chosen_row")
-ok(r5["summary"]["added"] == 1, "summary.added")
-
 # ---------------------------------------------------------------- [16] 护栏：_agent_ok 参数个数
 print("[16] 护栏：self._agent_ok 只接 2 参（曾把 source 误传进来 → 运行时 4 参报错）")
 import ast as _ast
@@ -320,15 +220,6 @@ ok(isinstance(v, str) and v == musicgrab.MUSIC_SAVE_PATH_DEFAULT, f"默认目录
 ok(f6._music_save_path("/tmp/x") == "/tmp/x", "入参覆盖")
 f6._music_save_dir = "/vol6/1000/mymusic"
 ok(f6._music_save_path() == "/vol6/1000/mymusic", "设置项生效（属性名 _music_save_dir）")
-
-# ---------------------------------------------------------------- [18] 被过滤候选可见
-print("[18] 全部被过滤时给出 excluded 明细")
-f7 = Fake({"A 歌1": [_hit("A - 歌1 1080p MV", size_gb=1.0, seeders=5)]})
-plan7 = f7._music_plan("A - 歌1")
-ex = plan7["items"][0]["excluded"]
-ok(len(ex) == 1 and "1080p" in ex[0]["title"], "excluded 带标题")
-ok(ex and ex[0]["reason"], "excluded 带原因")
-ok(plan7["items"][0]["candidates"] == [], "candidates 为空")
 
 # ---------------------------------------------------------------- [19] 音乐线判定
 print("[19] _is_music_line（qB 分类「音乐」）")

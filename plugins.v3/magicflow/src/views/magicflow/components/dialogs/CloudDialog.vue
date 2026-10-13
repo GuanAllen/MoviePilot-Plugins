@@ -93,7 +93,7 @@ function cloudRecordFor(item) { return pickCloudRecord((cloudState.value || {}).
           <header class="magicflow-panel__head">
             <div>
               <div class="text-subtitle-2 font-weight-medium">归档候选</div>
-              <div class="text-body-2 text-medium-emphasis">点「扫描候选」列出可上传文件；逐条点「上传」立即传该文件（后台执行）</div>
+              <div class="text-body-2 text-medium-emphasis">点「扫描候选」列出可传文件；逐条点「上传」立即传（后台执行）</div>
             </div>
           </header>
           <p v-if="cloudLoading && !cloudPlanItems.length" class="magicflow-settings-hint">加载中…</p>

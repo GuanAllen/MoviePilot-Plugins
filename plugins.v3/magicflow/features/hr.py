@@ -158,6 +158,27 @@ class HrMixin:
         except Exception:  # noqa: BLE001
             return False
 
+    def _hr_is_reuse(self, torrent: Any) -> bool:
+        """★ 15.8.18 统一铁律：「复用份不欠 H&R」。
+
+        判据 = 标签（``魔流-辅种`` / ``魔流-补源``，``is_reuse_copy``）**或** 从未真下载
+        （``downloaded <= 0``）。与账单 ``_hrbills_backfill`` 的「复用份不开账」同源，
+        修正此前「跨站复用副本（downloaded=0 但没打辅种标签，如『魔流-学校-保种』）
+        被种子级兜底误判成『本站欠 H&R』」的分裂——只有**真实来源站（reused=False）**才欠。
+        """
+        try:
+            _tags = [str(x) for x in (getattr(torrent, "tags", None) or [])]
+            if is_reuse_copy(_tags):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if float(getattr(torrent, "downloaded", 0) or 0) <= 0:
+                return True
+        except (TypeError, ValueError):  # noqa: BLE001
+            pass
+        return False
+
     def _hr_obligation_by_seed(self, site: str, torrent: Any) -> Tuple[bool, float, float, str]:
         """种子级兜底：该种**自己所在站点**明确有 H&R → 按它自己的做种时长判。
 
@@ -169,12 +190,8 @@ class HrMixin:
         # ★ 15.5.0（Master 16:19「没有下完的内容没有 h&r」）：未完成 → 无 H&R 义务。
         if self._hr_incomplete_of(site, torrent):
             return False, 0.0, 0.0, "未下载完成(无 H&R 义务)"
-        try:
-            _tags = [str(x) for x in (getattr(torrent, "tags", None) or [])]
-            if is_reuse_copy(_tags):
-                return False, 0.0, 0.0, "复用/补源副本(非真实下载)"
-        except Exception:  # noqa: BLE001
-            pass
+        if self._hr_is_reuse(torrent):
+            return False, 0.0, 0.0, "复用/补源副本(非真实下载)"
         dom = self._hr_domain(site, torrent)
         if not dom:
             return False, 0.0, 0.0, "站点未知"
@@ -230,13 +247,10 @@ class HrMixin:
         #   未下载完成 = 未达站点 H&R 触发阈（阈值可站点级覆盖），三/四路都不算欠。
         if self._hr_incomplete_of(site, torrent):
             return False, 0.0, 0.0, "未下载完成(无 H&R 义务)"
-        # ★ 11.11.1：复用/补源副本不继承资源的来源站 H&R 债（副本自己不是真实下载）。
-        try:
-            _tags = [str(x) for x in (getattr(torrent, "tags", None) or [])]
-            if is_reuse_copy(_tags):
-                return False, 0.0, 0.0, "复用/补源副本(非真实下载)"
-        except Exception:  # noqa: BLE001
-            pass
+        # ★ 11.11.1 / 15.8.18：复用/补源副本不继承资源的来源站 H&R 债（副本自己不是真实下载）。
+        #   判据统一走 ``_hr_is_reuse``（标签 OR downloaded<=0），与账单同源。
+        if self._hr_is_reuse(torrent):
+            return False, 0.0, 0.0, "复用/补源副本(非真实下载)"
         _h = str(getattr(torrent, "hash", "") or "").strip().lower()
         src_site, src_hash, settled = "", "", False
         _bills: List[Dict[str, Any]] = []

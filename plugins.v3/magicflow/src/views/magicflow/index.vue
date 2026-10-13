@@ -17,6 +17,11 @@ import ClaimDialog from './components/dialogs/ClaimDialog.vue'
 import ExamConfirm from './components/confirm/ExamConfirm.vue'
 import SiteReportDialog from './components/dialogs/SiteReportDialog.vue'
 import RecommendDialog from './components/dialogs/RecommendDialog.vue'
+import JobsDialog from './components/dialogs/JobsDialog.vue'
+import TrendDialog from './components/dialogs/TrendDialog.vue'
+import OptimizerDialog from './components/dialogs/OptimizerDialog.vue'
+import PlanDialog from './components/dialogs/PlanDialog.vue'
+import NotifyDialog from './components/dialogs/NotifyDialog.vue'
 import TorrentDialog from './components/dialogs/TorrentDialog.vue'
 import SigninDialog from './components/dialogs/SigninDialog.vue'
 import OndemandDialog from './components/dialogs/OndemandDialog.vue'
@@ -102,6 +107,11 @@ import { useReseed } from './composables/useReseed'
 import { useRecImport } from './composables/useRecImport'
 import { useTagModel } from './composables/useTagModel'
 import { useRecommend } from './composables/useRecommend'
+import { useJobs } from './composables/useJobs'
+import { useTrend } from './composables/useTrend'
+import { useOptimizer } from './composables/useOptimizer'
+import { usePlan } from './composables/usePlan'
+import { useNotify } from './composables/useNotify'
 import { useHealth } from './composables/useHealth'
 import { useSilentPool } from './composables/useSilentPool'
 import { useInvariant } from './composables/useInvariant'
@@ -155,6 +165,16 @@ const {
 const settingsDraft = ref({
   enabled: false,
   show_sidebar_nav: true,
+  agent_mcp: true,
+  agent_mcp_scope: 'core',
+  notify_enabled: true,
+  notify_hr_hours: 24,
+  notify_capacity_pct: 80,
+  notify_drop_pct: 20,
+  notify_task_fail: true,
+  notify_daily: false,
+  notify_daily_hour: 9,
+  notify_quiet: '',
   debug_log: false,
   compact_mode: false,
   hidden_tiles: [],
@@ -270,21 +290,28 @@ const pluginBase = computed(() => `plugin/${props.pluginId || 'MagicFlow'}`)
 const api = createApi(props.api, props.pluginId)
 // ★ 15.8.15：库内资产弹窗开关（全局入口，不挂在任务上）
 const assetsDialog = ref(false)
-// ── useMusic（P3 已抽）────────────────────────────────
-// P3：状态 / 取数 / 动作 已抽到 ./composables/useMusic.js（纯搬家）。
+// ── useMusic（P3 已抽；★ 2026-10-10 批2 改清单视图）──────────────
+// 状态 / 取数 / 动作 在 ./composables/useMusic.js（歌单/加种已撤，改为清单 + 行内操作）。
 const {
-  loadMusicPlan,
+  actMusic,
+  downloadMusic,
+  loadMusicItems,
   musicActing,
-  musicError,
-  musicGrabReport,
+  musicCandidates,
+  musicDownloading,
+  musicHistory,
+  musicInflight,
+  musicItems,
+  musicItemsBusy,
+  musicMsg,
   musicOpen,
-  musicResetResult,
+  musicQuery,
   musicResult,
-  musicSavePath,
-  musicSites,
-  musicText,
+  musicSearching,
+  musicSiteIds,
+  musicTab,
   openMusic,
-  runMusicGrab,
+  runMusicSearch,
 } = useMusic({ api })
 // ── useTasks（P3 已抽）────────────────────────────────
 // P3：状态 / 取数 / 动作 已抽到 ./composables/useTasks.js（纯搬家）。
@@ -322,6 +349,64 @@ const {
   tasks,
   warmingRetryCount,
 } = useTasks({ selectedTaskId, api, emit, hostToast, settingsDraft, selectTask, warmingTimer })
+
+// ★ 15.10.0：后台任务队列（慢动作都在后台跑，关页面不断）
+//   ⚠️ 必须放在 useTasks 解构之后：notify 出自那里，提前引用会 TDZ → 整页白屏。
+const {
+  jobsOpen, jobs, jobsSummary, jobsRunning, loadJobs, clearJobs, openJobs,
+} = useJobs({ api, notify })
+
+// ★ 15.13.0：事件通知（H&R 临期 / 容量红线 / 产出骤降 / 任务失败 → MP 通知渠道）
+const {
+  notifyOpen, notifyData, notifyLoading, loadNotify, notifyAct, openNotify,
+} = useNotify({ api, notify })
+const notifyCount = computed(() => {
+  const counts = (notifyData.value && notifyData.value.counts) || {}
+  return Object.values(counts).reduce((n, v) => n + Number(v || 0), 0)
+})
+
+// ★ 15.12.0：魔力趋势 + 归因（站点/任务口径；小时趋势 + 日报 + 因子拆解）
+function trendItemsOf(sc) {
+  if (sc === 'site') {
+    const sites = (status.value && status.value.options && status.value.options.sites) || []
+    return sites.map(s => ({ title: s.name || String(s.id), value: String(s.id) }))
+  }
+  return (tasks.value || []).map(t => ({ title: t.name || String(t.id), value: String(t.id) }))
+}
+const {
+  trendOpen, trendScope, trendId, trendHours, trendLoading, trendWhy, trendDaily,
+  trendScopeItems, loadTrendReport, openTrend,
+} = useTrend({ api, notify, itemsOf: trendItemsOf })
+function openTrendDialog() {
+  // 默认站点口径：站点由站点监控每轮采样，一定有点可看；任务口径可从弹窗里切。
+  const t = selectedTask.value
+  openTrend({ scope: 'site', id: t && t.site_id ? String(t.site_id) : '' })
+}
+
+// ★ 15.15.0：组合优化器（体积预算下的最优「保 / 删」；只算不删）
+function optimizerItemsOf() {
+  return (tasks.value || []).map(t => ({ title: t.name || String(t.id), value: String(t.id) }))
+}
+const {
+  optimizerOpen, optimizerTaskId, optimizerBudget, optimizerLoading, optimizerData,
+  optimizerItems, loadOptimize, openOptimize,
+} = useOptimizer({ api, notify, itemsOf: optimizerItemsOf })
+function openOptimizeDialog() {
+  const t = selectedTask.value
+  openOptimize({ taskId: t && t.id ? String(t.id) : '' })
+}
+
+// ★ 15.17.0：AI 计划审批（AI 出计划 → 人复核 → 执行；审批凭据 = 计划内容哈希）
+const {
+  planOpen, planAction, planTaskId, planBudget, planLoading, planData, planApplying, planApplied,
+  planItems, PLAN_ACTIONS, loadPlan, openPlan, applyPlan,
+} = usePlan({ api, notify, itemsOf: optimizerItemsOf })
+// 删文件也是审批的一部分（换档必须重新干跑）→ 放页面级状态，与弹窗 v-model 同源
+const planDeleteFiles = ref(false)
+function openPlanDialog() {
+  const t = selectedTask.value
+  openPlan({ taskId: t && t.id ? String(t.id) : '' })
+}
 // ── useOperations（P3 已抽）────────────────────────────────
 // P3：状态 / 取数 / 动作 已抽到 ./composables/useOperations.js（纯搬家）。
 const {
@@ -665,6 +750,8 @@ const {
   siteReportFilter,
   siteReportItems,
   siteReportLive,
+  siteReportLiveLoading,
+  siteReportLiveStats,
   siteReportLoading,
   siteReportOpen,
   siteReportOrigin,
@@ -673,7 +760,10 @@ const {
   siteReportSub,
   siteReportSummary,
   siteReportTransport,
-} = useSiteReport({ api, error })
+} = useSiteReport({ api, error, notify })
+
+// ★ 站点已删除（16.0.0）前端展示/行内处置已于 2026-10-10 撤除（Master「这个提示去掉」）；
+//   能力保留在 AI 入口（GET /agent/sites/deleted · POST /agent/sites/deleted/act）。
 // ★ 两轴筛选：第一级=职务/身份桶、第二级=传输三态、静默桶再按身份子桶细分
 // 传输三态计数：选中某桶时看该桶内三态（bucket_transport），否则看全局（by_transport）
 // 明细副标题 = 列字段：传输 / 身份子桶 / qB 状态 / 债务 / 账单（不再当桶）
@@ -1197,10 +1287,9 @@ async function setRunMode(mode) {
 // ── 标签模型 ─────────────────────────────────────────────
 // P3：状态 / 动作已抽到 ./composables/useTagModel.js（纯搬家）
 const {
-  tagInfo, tagMigratePlan, tagMigrating, newRuleType, sortRuleTypeOptions,
+  tagInfo, newRuleType, sortRuleTypeOptions,
   loadTags, sortRuleText, sortRuleNeedsMin, addSortRule, removeSortRule,
-  previewTagMigrate, applyTagMigrate,
-} = useTagModel({ api, notify, error, settingsDraft, emit })
+} = useTagModel({ api, notify, error, settingsDraft })
 
 // ── useSettings（P3 已抽）────────────────────────────────
 // P3：状态 / 取数 / 动作 已抽到 ./composables/useSettings.js（纯搬家）。
@@ -1417,6 +1506,7 @@ onUnmounted(() => {
       :exam-badge="examBadge"
       :exam-urgent="examUrgent"
       :show-close="showClose"
+      :jobs-badge="jobsRunning"
       :task-badge="taskBadge"
       :task-switch-subtitle="taskSwitchSubtitle"
       @select-task="selectTask"
@@ -1432,6 +1522,12 @@ onUnmounted(() => {
       @open-sitereport="openSiteReport"
       @open-music="openMusic"
       @open-assets="assetsDialog = true"
+      @open-jobs="openJobs"
+      @open-trend="openTrendDialog"
+      @open-optimize="openOptimizeDialog"
+      @open-plan="openPlanDialog"
+      @open-notify="openNotify"
+      :notify-badge="notifyCount"
       @open-settings="openSettings"
       @close="emit('close')"
     />
@@ -1448,7 +1544,7 @@ onUnmounted(() => {
     <div v-else-if="!tasks.length" class="magicflow-empty">
       <VIcon icon="mdi-star-four-points-outline" size="52" color="medium-emphasis" />
       <div class="text-h6">还没有任务</div>
-      <div class="text-body-2 text-medium-emphasis">创建任务后可按站点魔力公式养护做种，或按上传产出刷流保种</div>
+      <div class="text-body-2 text-medium-emphasis">创建任务后按魔力公式养护做种，或刷流保种</div>
       <VBtn color="primary" variant="flat" prepend-icon="mdi-plus" @click="openCreateTask">创建第一个任务</VBtn>
     </div>
 
@@ -1735,7 +1831,7 @@ onUnmounted(() => {
               <header class="magicflow-panel__head">
                 <div>
                   <div class="text-subtitle-1 font-weight-medium">静默托管 · 常驻 worker</div>
-                  <div class="text-body-2 text-medium-emphasis">静默池的负责人：清理未下完 / 保挂（恢复做种）/ H&R 统一管理 / 辅种校验 / 分拣，低频自动运行</div>
+                  <div class="text-body-2 text-medium-emphasis">静默池：清理未下完 / 保挂 / H&R 统一管理 / 辅种校验 / 分拣（低频自动跑）</div>
                 </div>
                 <VChip color="primary" size="small" variant="tonal" prepend-icon="mdi-access-point">常驻</VChip>
               </header>
@@ -1757,7 +1853,7 @@ onUnmounted(() => {
                 <header class="magicflow-panel__head">
                   <div>
                     <div class="text-subtitle-1 font-weight-medium">分类</div>
-                    <div class="text-body-2 text-medium-emphasis">静默池按子类 / 义务 / 站点拆分（职责说明见仓库 docs/静默托管.md）</div>
+                    <div class="text-body-2 text-medium-emphasis">静默池按子类 / 义务 / 站点拆分（见 docs/静默托管.md）</div>
                   </div>
                 </header>
                 <div class="d-flex flex-wrap ga-2 mb-2">
@@ -1852,6 +1948,8 @@ onUnmounted(() => {
       v-model:origin="siteReportOrigin"
       :loading="siteReportLoading"
       :live="siteReportLive"
+      :live-stats="siteReportLiveStats"
+      :live-loading="siteReportLiveLoading"
       :report="siteReport"
       :sites="siteReportSites"
       :items="siteReportItems"
@@ -1959,8 +2057,6 @@ onUnmounted(() => {
       :site-select-items="siteSelectItems"
       :site-live-alerts="siteLiveAlerts"
       :tag-info="tagInfo"
-      :tag-migrate-plan="tagMigratePlan"
-      :tag-migrating="tagMigrating"
       :fallback-state="fallbackState"
       :fallback-loading="fallbackLoading"
       :fallback-running="fallbackRunning"
@@ -1996,8 +2092,6 @@ onUnmounted(() => {
       @set-tile-shown="setTileShown"
       @add-sort-rule="addSortRule"
       @remove-sort-rule="removeSortRule"
-      @preview-tag-migrate="previewTagMigrate"
-      @apply-tag-migrate="applyTagMigrate"
       @test-cloud="testCloud"
     />
 
@@ -2173,20 +2267,89 @@ onUnmounted(() => {
       @batch-import="batchImportRecommend"
     />
 
-    <!-- ★ 15.8.2：音乐甄别（歌单 → 选种计划 → 一键加种） -->
+    <!-- ★ 2026-10-10 批2：音乐（单搜单下 + 清单，均与 AI 入口同源） -->
     <MusicDialog
       v-model="musicOpen"
-      v-model:text="musicText"
-      v-model:sites="musicSites"
-      v-model:savePath="musicSavePath"
-      v-model:error="musicError"
-      :result="musicResult"
-      :acting="musicActing"
-      :grab-report="musicGrabReport"
+      v-model:tab="musicTab"
+      v-model:msg="musicMsg"
+      v-model:query="musicQuery"
+      v-model:siteIds="musicSiteIds"
+      :music-inflight="musicInflight"
+      :music-history="musicHistory"
+      :music-items-busy="musicItemsBusy"
+      :music-acting="musicActing"
+      :music-searching="musicSearching"
+      :music-candidates="musicCandidates"
+      :music-result="musicResult"
+      :music-downloading="musicDownloading"
+      :site-select-items="siteSelectItems"
       :narrow="isNarrow"
-      @plan="loadMusicPlan"
-      @grab="runMusicGrab"
-      @reset="musicResetResult"
+      @refresh-items="loadMusicItems"
+      @act="actMusic"
+      @search="runMusicSearch"
+      @download="downloadMusic"
+    />
+
+    <!-- ★ 15.10.0：后台任务队列（Master「加个队列后台跑，让用户等体验不好」） -->
+    <JobsDialog
+      v-model="jobsOpen"
+      :jobs="jobs"
+      :summary="jobsSummary"
+      :narrow="isNarrow"
+      @refresh="loadJobs"
+      @clear="clearJobs"
+    />
+
+    <!-- ★ 15.12.0：魔力趋势与归因（时魔走向 / 因子拆解 / 日报） -->
+    <TrendDialog
+      v-model="trendOpen"
+      v-model:scope="trendScope"
+      v-model:ident="trendId"
+      v-model:hours="trendHours"
+      :why="trendWhy"
+      :daily="trendDaily"
+      :loading="trendLoading"
+      :scope-items="trendScopeItems"
+      :narrow="isNarrow"
+      @refresh="loadTrendReport"
+    />
+
+    <!-- ★ 15.17.0：AI 计划审批（只算不删 → 干跑 → 批准执行；审批凭据 = 计划内容哈希） -->
+    <PlanDialog
+      v-model="planOpen"
+      v-model:action="planAction"
+      v-model:task-id="planTaskId"
+      v-model:budget="planBudget"
+      v-model:delete-files="planDeleteFiles"
+      :data="planData"
+      :loading="planLoading"
+      :applying="planApplying"
+      :applied="planApplied"
+      :items="planItems"
+      :actions="PLAN_ACTIONS"
+      @refresh="loadPlan"
+      @apply="o => applyPlan(o.confirm, o.deleteFiles)"
+    />
+
+    <!-- ★ 15.15.0：组合优化器（体积预算内保留时魔总和最大；只算不删） -->
+    <OptimizerDialog
+      v-model="optimizerOpen"
+      v-model:task-id="optimizerTaskId"
+      v-model:budget="optimizerBudget"
+      :data="optimizerData"
+      :loading="optimizerLoading"
+      :items="optimizerItems"
+      @refresh="loadOptimize"
+    />
+
+    <!-- ★ 15.13.0：事件通知（配置 + 最近事件 + 测试/扫描/清历史） -->
+    <NotifyDialog
+      v-model="notifyOpen"
+      :data="notifyData"
+      :loading="notifyLoading"
+      :narrow="isNarrow"
+      @refresh="loadNotify"
+      @act="notifyAct"
     />
 
     <!-- ★ 15.8.15：库内资产（Master「希望增加魔流库内资产手动删除的入口」）——
@@ -2195,8 +2358,8 @@ onUnmounted(() => {
     <VDialog v-model="assetsDialog" max-width="1160" scrollable>
       <VCard class="magicflow-assets-card">
         <VCardTitle class="d-flex align-center">
-          <VIcon icon="mdi-delete-sweep-outline" class="me-2" />
-          库内资产
+          <VIcon icon="mdi-folder-cog-outline" class="me-2" />
+          库内资源管理
           <VSpacer />
           <VBtn icon="mdi-close" variant="text" aria-label="关闭" @click="assetsDialog = false" />
         </VCardTitle>

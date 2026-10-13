@@ -499,6 +499,8 @@ class SiteReportMixin:
             dom = _norm(str(b.get("site") or ""))
             if not dom:
                 continue
+            if str(b.get("rule") or "") not in _HR_RULES:
+                continue  # 未知规则账单（无 H&R 义务）→ 不进报表（跟踪影子，不展示）
             if filter_dom and dom != filter_dom:
                 continue
             g = _bucket(dom)
@@ -513,7 +515,7 @@ class SiteReportMixin:
                 totals[st] += 1
             if in_qb:
                 g["in_qb"] += 1
-            if st in (BILL_STATE_ACTIVE, BILL_STATE_BREACHED):
+            if st in (BILL_STATE_ACTIVE, BILL_STATE_BREACHED) and str(b.get("rule") or "") in _HR_RULES:
                 g["owed"] += 1
                 totals["owed"] += 1
             g["items"].append({

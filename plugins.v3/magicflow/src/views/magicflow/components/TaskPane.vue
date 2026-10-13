@@ -47,7 +47,7 @@ function taskBadge(task) {
           size="x-small"
           variant="tonal"
           color="error"
-          title="该任务绑定的站点已从 MoviePilot 删除：站点相关处理已跳过，请删除任务或改绑其他站点"
+          title="站点已删除：相关处理已跳过，请删除任务或改绑站点"
         >站点已删除</VChip>
         <span class="magicflow-status-dot" :class="`magicflow-status-dot--${taskBadge(task).color}`" />
       </span>

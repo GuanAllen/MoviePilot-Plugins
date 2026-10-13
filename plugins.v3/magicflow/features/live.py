@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 
 from app.schemas import Response
+from app.sdk.logging import logger
 
 from ..live_stats import title_match
 from ..persistence import OperationItem
@@ -98,6 +99,23 @@ class LiveMixin:
             )
             if _mode == "running":
                 item["has_running"] = True
+        # ★ 15.16.1：显式指定站点时（站点报表弹窗「站点流量」块 / AI `/agent/live?site_id=`），
+        #   即使该站**没有魔流任务**也要能取其实时账号数据 —— 采集层本就支持按 site_id 直连，
+        #   此前只遍历 `_task_configs` → 无任务的站（如大青虫）永远取不到数。
+        if only_site_id and int(only_site_id) not in out:
+            sid = int(only_site_id)
+            try:
+                _name = self._live_site_name(sid)
+            except Exception:  # noqa: BLE001
+                _name = ""
+            if _name:
+                out[sid] = {
+                    "site_id": sid,
+                    "site_name": _name,
+                    "local_managed": 0,
+                    "has_running": False,
+                    "tasks": [],
+                }
         return out
 
     def _live_snapshot(
@@ -105,12 +123,26 @@ class LiveMixin:
     ) -> Dict[str, Any]:
         """实时数据 + 速率 + 告警 的组合快照(绝不抛出)。"""
         try:
-            return self._live.snapshot(
+            snap = self._live.snapshot(
                 int(site_id), cfg=dict(self._live_cfg or {}), local_managed=local_managed, force=force
             )
         except Exception as err:  # noqa: BLE001
             self._log(f"站点实时数据获取失败(站点 {site_id}):{err}", "warning")
             return {"live": {"ok": False}, "rates": {}, "alerts": [], "level": "ok"}
+        # ★ 15.12.0：站点日报（长期趋势/归因用）——挂在快照这一层，worker 与手动 /live 都覆盖；
+        #   同日同值不重复落盘。公开方法，不新增跨文件私调。
+        try:
+            live = snap.get("live") or {}
+            if live.get("ok"):
+                self.trend_day("site", str(int(site_id)), {
+                    "bonus": live.get("bonus_per_hour"),
+                    "seeds": live.get("seeding"),
+                    "bonus_now": live.get("bonus"),
+                    "ratio": live.get("ratio"),
+                })
+        except Exception:  # noqa: BLE001
+            pass
+        return snap
 
     def get_live_state(self, force: bool = False, site_id: int = 0) -> Response:
         """站点实时数据 + 流量监控快照(只读,不做任何写操作)。
@@ -255,6 +287,11 @@ class LiveMixin:
             self._live_watch_impl()
         except Exception as err:  # noqa: BLE001
             self._log(f"站点流量监控异常:{err}", "warning")
+        # ★ 15.13.0：事件通知扫描（容量 / H&R 临期 / 产出骤降 / 每日日报；自带 10 分钟节流）
+        try:
+            self.notify_sweep()
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"魔流通知扫描异常（忽略）：{err}")
 
     def _live_watch_impl(self) -> None:
         sites = self._live_sites(enabled_only=True)

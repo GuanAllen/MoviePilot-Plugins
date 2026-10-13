@@ -44,6 +44,7 @@ SLOT_SIGNIN_KEEPALIVE = "signin_keepalive"
 SLOT_CLAIM_PROFILE = "claim_profile"
 SLOT_RESCUE_STALL = "rescue_stall"
 SLOT_ONDEMAND_PENDING = "ondemand_pending"
+SLOT_ONDEMAND_HISTORY = "ondemand_history"
 SLOT_CROSSSEED_PENDING = "crossseed_pending"
 SLOT_PV_BUDGET = "pv_budget"
 SLOT_LIVE_PV_BLOCK = "live_pv_block"
@@ -59,7 +60,8 @@ SLOT_CROSSSEED_BAN = "crossseed_ban"
 SLOTS: Tuple[str, ...] = (
     SLOT_SITE_RULES, SLOT_SITE_CAPS, SLOT_SITECAP_OVERRIDE, SLOT_CROSSSEED_SOURCES,
     SLOT_RESEED_LEDGER, SLOT_SIGNIN_LAST_FULL, SLOT_SIGNIN_RETRY, SLOT_SIGNIN_KEEPALIVE,
-    SLOT_CLAIM_PROFILE, SLOT_RESCUE_STALL, SLOT_ONDEMAND_PENDING, SLOT_CROSSSEED_PENDING,
+    SLOT_CLAIM_PROFILE, SLOT_RESCUE_STALL, SLOT_ONDEMAND_PENDING, SLOT_ONDEMAND_HISTORY,
+    SLOT_CROSSSEED_PENDING,
     SLOT_PV_BUDGET, SLOT_LIVE_PV_BLOCK, SLOT_LIVE_ALERTS, SLOT_PV_USAGE,
     SLOT_SIGNIN_RECORDS, SLOT_IYUU_SITES, SLOT_RESEED_PASSKEYS,
     SLOT_CLAIM_LEDGER, SLOT_KEEPALIVE_ALERT_DAY, SLOT_CROSSSEED_BAN,
@@ -77,8 +79,8 @@ _CAPS_CLAIM = "__claim__"
 # site_rules → mf_site 真列（§2.1；``domain``=行键、``updated``=now/rec 值，不在此列）
 _RULE_COLUMNS: Tuple[str, ...] = (
     "hr", "hr_src", "framework", "seed_hours", "seed_hours_retired", "seed_need_hours",
-    "seed_cap", "seed_window_hours", "exam_avg_hours", "free_over_gb",
-    "free_original", "free_ep1", "source", "confidence", "evidence",
+    "seed_cap", "seed_window_hours", "exam_avg_hours",
+    "source", "confidence", "evidence",
     "probed_at", "rule_url", "rule_label", "rule_src", "rule_mail_id",
     "rule_mail_subject", "name", "note", "exam_evidence", "per_torrent_hr",
 )
@@ -86,8 +88,8 @@ _RULE_COLUMNS: Tuple[str, ...] = (
 # 判断「这一行是不是规则记录」的标记列（不含 name/domain/updated，避免把纯站点/纯预算行当规则）
 _RULE_MARKER_COLUMNS: Tuple[str, ...] = (
     "hr", "hr_src", "seed_hours", "seed_hours_retired", "seed_need_hours",
-    "seed_cap", "seed_window_hours", "exam_avg_hours", "free_over_gb",
-    "free_original", "free_ep1", "source", "confidence", "evidence",
+    "seed_cap", "seed_window_hours", "exam_avg_hours",
+    "source", "confidence", "evidence",
     "probed_at", "rule_url", "rule_label", "rule_src", "rule_mail_id",
     "rule_mail_subject", "note", "exam_evidence", "per_torrent_hr",
 )
@@ -286,6 +288,8 @@ class SiteStore:
                 return self._get_seed_json("rescue")
             if slot == SLOT_ONDEMAND_PENDING:
                 return self._get_seed_json("pending")
+            if slot == SLOT_ONDEMAND_HISTORY:
+                return self._get_run(SLOT_ONDEMAND_HISTORY) or {}
             if slot == SLOT_CROSSSEED_PENDING:
                 return self._get_crossseed_pending()
             if slot == SLOT_PV_BUDGET:
@@ -344,6 +348,8 @@ class SiteStore:
             self._save_seed_json("rescue", value)
         elif slot == SLOT_ONDEMAND_PENDING:
             self._save_seed_json("pending", value)
+        elif slot == SLOT_ONDEMAND_HISTORY:
+            self._save_run(SLOT_ONDEMAND_HISTORY, value)
         elif slot == SLOT_CROSSSEED_PENDING:
             self._save_crossseed_pending(value)
         elif slot == SLOT_PV_BUDGET:

@@ -37,6 +37,7 @@ from ..iyuu_cloud import (
 from ..tags import STATE_SILENT, SUB_NEW, SUB_PLAIN, SUB_RESOURCE, tag_for
 from ..sitestore import slot_callbacks
 from ..kvstore import cache_get, cache_set
+from .reuse import _reuse_local_complete
 
 
 from ..common import (
@@ -387,6 +388,10 @@ class ReSeedMixin:
             src = local_index.get(src_hash)
             if src is None:
                 continue  # 本机已经没这颗了
+            # ★ 未下完的本机种不能当辅种源：check → 必不过 → ADD-REUSE 纯属空转
+            #   （口径复用 reuse.py::_reuse_local_complete，单一真值源）
+            if not _reuse_local_complete(src):
+                continue
             try:
                 size = float(getattr(src, "size", 0) or 0)
             except (TypeError, ValueError):

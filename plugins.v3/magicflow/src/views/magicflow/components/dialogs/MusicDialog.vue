@@ -1,180 +1,229 @@
 <script setup>
-// MagicFlow 前端 · 音乐甄别弹窗（15.8.2）
-// P4 拆分：自 views/magicflow/index.vue **纯搬家**（template 块 + 配套 scoped 样式，无行为/样式变更）。
-// 数据向下（defineModel / props）、事件向上（emit）；子组件不直接改父状态。
-const open = defineModel({ type: Boolean, default: false })
-const text = defineModel('text', { type: String, default: '' })
-const sites = defineModel('sites', { type: String, default: '' })
-const savePath = defineModel('savePath', { type: String, default: '' })
-const error = defineModel('error', { type: String, default: '' })
+// MagicFlow 前端 · 音乐弹窗（★ 2026-10-10 批2 改版：清单视图）
+// Master 口径：「清单做，跟点播一样，不要歌单了（塞不下）」——移除歌单/干跑/加种，
+// 改为与点播同构的**清单**（进行中/已完成两 Tab + 行内 暂停/继续/移除）。
+// 数据向下（defineModel / props）、事件向上（emit）。
+import { tsText } from '../../format'
+import {
+  odPct, odSpeed, odEtaText, odStageColor, odIsPaused,
+} from '../../composables/useOndemand'
+
+const musicOpen = defineModel({ type: Boolean, default: false })
+const musicTab = defineModel('tab', { type: String, default: 'inflight' })
+const musicMsg = defineModel('msg', { type: String, default: '' })
+const musicQuery = defineModel('query', { type: String, default: '' })
+const musicSiteIds = defineModel('siteIds', { type: Array, default: () => [] })
 
 defineProps({
-  result: { type: Object, default: null },
-  acting: { type: String, default: '' },
-  grabReport: { type: Object, default: null },
+  musicInflight: { type: Array, default: () => [] },
+  musicHistory: { type: Array, default: () => [] },
+  musicItemsBusy: { type: Boolean, default: false },
+  musicActing: { type: String, default: '' },
+  musicSearching: { type: Boolean, default: false },
+  musicCandidates: { type: Array, default: () => [] },
+  musicResult: { type: Object, default: null },
+  musicDownloading: { type: String, default: '' },
+  siteSelectItems: { type: Array, default: () => [] },
   narrow: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['plan', 'grab', 'reset'])
+const emit = defineEmits(['refresh-items', 'act', 'search', 'download'])
 
-const SAMPLE = 'Butter-Fly\n中島みゆき - 地上の星\n千里之外 @mptt,moufan\n青花瓷@3'
-
-function onSample() {
-  text.value = SAMPLE
-}
-function onClose() {
-  open.value = false
-}
-function onClearError() {
-  error.value = ''
-}
+function loadMusicItems() { emit('refresh-items') }
+function actMusic(row, action) { emit('act', row, action) }
+function runMusicSearch() { emit('search') }
+function downloadMusic(cid) { emit('download', cid) }
 </script>
 
 <template>
-  <VDialog v-model="open" max-width="52rem" scrollable :fullscreen="narrow">
+  <VDialog v-model="musicOpen" max-width="46rem" scrollable :fullscreen="narrow">
     <VCard class="magicflow-dialog magicflow-music-dialog">
       <header class="magicflow-settings-dialog__head">
-        <span class="magicflow-settings-dialog__title">音乐甄别</span>
+        <span class="magicflow-settings-dialog__title">音乐</span>
         <div class="magicflow-recommend-dialog__head-actions">
-          <VBtn variant="text" color="primary" size="small" prepend-icon="mdi-clipboard-text-outline" :disabled="!!acting" @click="onSample">示例</VBtn>
-          <VBtn variant="text" color="primary" size="small" prepend-icon="mdi-refresh" @click="emit('reset')" :disabled="!!acting || !result">清结果</VBtn>
-          <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="onClose" />
+          <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="musicOpen = false" />
         </div>
       </header>
       <VDivider />
-      <VCardText class="magicflow-music-body">
-        <VTextarea
-          v-model="text"
-          label="歌单（每行一首）"
-          placeholder="艺人 - 歌名&#10;歌名&#10;歌名@站id,站id&#10;例如：Butter-Fly"
-          rows="6"
-          density="comfortable"
-          variant="outlined"
-          auto-grow
-          hide-details
-          :readonly="!!acting"
-        />
-        <div class="magicflow-music-row mt-2">
-          <VTextField
-            v-model="sites"
-            label="站点 id（空=全部已配站）"
-            placeholder="逗号分隔，例如 3,7"
-            density="compact"
-            variant="outlined"
-            hide-details
-            clearable
-            style="max-width: 14rem"
-            :readonly="!!acting"
-          />
-          <VTextField
-            v-model="savePath"
-            label="保存目录（可选，留空走设置/默认）"
-            placeholder="/vol6/1000/music"
-            density="compact"
-            variant="outlined"
-            hide-details
-            clearable
-            style="max-width: 18rem"
-            :readonly="!!acting"
-          />
-          <span class="flex-grow-1"></span>
-          <VBtn
-            color="primary"
-            variant="tonal"
-            prepend-icon="mdi-playlist-music"
-            :loading="acting === 'plan'"
-            :disabled="!!acting || !text.trim()"
-            @click="emit('plan')"
-          >干跑计划</VBtn>
-          <VBtn
-            color="primary"
-            variant="flat"
-            prepend-icon="mdi-tray-arrow-down"
-            :loading="acting === 'grab'"
-            :disabled="!!acting || !text.trim()"
-            @click="emit('grab')"
-          >一键加种</VBtn>
+      <VCardText class="magicflow-music-dialog__body">
+        <div class="magicflow-music-search">
+          <div class="magicflow-music-search__row">
+            <VTextField
+              v-model="musicQuery"
+              density="comfortable"
+              hide-details="auto"
+              label="歌名 / 艺人"
+              placeholder="如 周杰伦 / Butter-Fly"
+              @keyup.enter="runMusicSearch"
+            />
+            <VSelect
+              v-model="musicSiteIds"
+              density="comfortable"
+              hide-details="auto"
+              :items="siteSelectItems"
+              label="站点（空＝全部）"
+              multiple
+              chips
+              closable-chips
+            />
+            <VBtn
+              size="small"
+              color="primary"
+              variant="tonal"
+              prepend-icon="mdi-magnify"
+              :loading="musicSearching"
+              @click="runMusicSearch"
+            >搜一首</VBtn>
+          </div>
+          <div v-if="musicCandidates.length" class="magicflow-music-cands">
+            <div class="magicflow-music-cands__head">
+              候选 {{ musicCandidates.length }}（相关度 → 评分）· 点「下这条」
+            </div>
+            <article v-for="c in musicCandidates" :key="c.cid" class="magicflow-music-cand">
+              <div class="magicflow-music-cand__main">
+                <div class="magicflow-music-cand__title" :title="c.title">{{ c.title || '(无标题)' }}</div>
+                <div class="magicflow-music-cand__meta">
+                  <VChip size="x-small" variant="tonal">{{ c.site_name || ('站 ' + c.site) }}</VChip>
+                  <VChip v-if="c.free" size="x-small" variant="tonal" color="success">免费</VChip>
+                  <span v-if="c.size_gb">{{ c.size_gb }} GB</span>
+                  <span>做种 {{ c.seeders }}</span>
+                  <span>相关度 {{ c.relevance }}</span>
+                  <span>score {{ c.score }}</span>
+                  <span v-if="c.excluded" class="magicflow-music-cand__ex">已过滤：{{ c.exclude_reason }}</span>
+                </div>
+              </div>
+              <VBtn
+                size="x-small"
+                color="primary"
+                variant="tonal"
+                :disabled="c.excluded"
+                :loading="musicDownloading === c.cid"
+                @click="downloadMusic(c.cid)"
+              >下这条</VBtn>
+            </article>
+          </div>
+          <div v-else-if="musicResult" class="magicflow-music-cands__empty">
+            没搜到候选（站点 {{ (musicResult.sites || []).join(', ') || '—' }}）。换个关键词或站点。
+          </div>
         </div>
-        <VAlert v-if="error" type="error" variant="tonal" density="compact" class="my-2" closable @click:close="onClearError">
-          {{ error }}
-        </VAlert>
-
-        <!-- grab 报告 -->
-        <VAlert v-if="grabReport && grabReport.totals" type="success" variant="tonal" density="compact" class="my-2">
-          加种完成：新增 <strong>{{ (grabReport.totals.added || []).length }}</strong>，
-          跳过 <strong>{{ (grabReport.totals.skipped || []).length }}</strong>，
-          失败 <strong>{{ (grabReport.totals.failed || []).length }}</strong>
-          <template v-if="grabReport.policy"> · {{ grabReport.policy }}</template>
-        </VAlert>
-
-        <!-- 计划 / 结果区 -->
-        <VSheet v-if="result" tag="section" class="magicflow-panel app-surface-static mt-2">
-          <header class="magicflow-panel__head">
-            <div>
-              <div class="text-subtitle-2 font-weight-medium">甄别结果</div>
-              <div class="text-body-2 text-medium-emphasis">
-                共 <strong>{{ result.summary?.entries || 0 }}</strong> 条歌单
-                · 选中 <strong>{{ result.summary?.chosen || 0 }}</strong>
-                · 空 <strong>{{ result.summary?.empty || 0 }}</strong>
-                · 硬过滤 <strong>{{ result.summary?.excluded_video || 0 }}</strong>
-                · 每首留 <strong>{{ result.summary?.per_item || 3 }}</strong> 候选
+        <div class="magicflow-music-inventory">
+          <div class="magicflow-music-inventory__head">
+            <span class="magicflow-music-inventory__title">音乐清单</span>
+            <VChip
+              size="x-small"
+              :variant="musicTab === 'inflight' ? 'flat' : 'tonal'"
+              :color="musicTab === 'inflight' ? 'primary' : ''"
+              class="magicflow-music-tab"
+              @click="musicTab = 'inflight'"
+            >进行中 {{ musicInflight.length }}</VChip>
+            <VChip
+              size="x-small"
+              :variant="musicTab === 'done' ? 'flat' : 'tonal'"
+              :color="musicTab === 'done' ? 'primary' : ''"
+              class="magicflow-music-tab"
+              @click="musicTab = 'done'"
+            >已完成 {{ musicHistory.length }}</VChip>
+            <VSpacer />
+            <VBtn
+              icon="mdi-refresh"
+              size="x-small"
+              variant="text"
+              aria-label="刷新音乐清单"
+              :loading="musicItemsBusy"
+              @click="loadMusicItems"
+            />
+          </div>
+          <VAlert
+            v-if="musicMsg"
+            :type="musicMsg.startsWith('❌') ? 'warning' : 'info'"
+            variant="tonal"
+            density="compact"
+            closable
+            class="mb-2"
+            @click:close="musicMsg = ''"
+          >{{ musicMsg }}</VAlert>
+          <template v-if="musicTab === 'inflight'">
+            <div v-if="!musicInflight.length" class="magicflow-music-inventory__empty">
+              没有进行中的音乐。让 AI 搜 + 下几条吧。
+            </div>
+            <article v-for="row in musicInflight" :key="'m-i-' + row.hash" class="magicflow-music-row">
+              <div class="magicflow-music-row__title" :title="row.title">
+                {{ row.title || row.hash.slice(0, 12) }}
               </div>
-            </div>
-            <div class="d-flex align-center flex-wrap ga-2 justify-end">
-              <VChip size="x-small" variant="tonal" color="primary">音乐线</VChip>
-            </div>
-          </header>
-          <div class="magicflow-music-items">
-            <article v-for="(it, idx) in (result.items || [])" :key="idx" class="magicflow-music-item">
-              <div class="magicflow-music-item__head">
-                <strong :title="it.query">
-                  <VIcon :icon="it.chosen ? 'mdi-music-note-eighth' : 'mdi-music-note-outline'" size="14" :color="it.chosen ? 'primary' : 'medium-emphasis'" />
-                  {{ it.artist || '' }}<span v-if="it.artist && it.title"> · </span>{{ it.title || it.raw }}
-                </strong>
-                <VChip size="x-small" :variant="it.chosen ? 'flat' : 'tonal'" :color="it.chosen ? 'primary' : 'medium-emphasis'">
-                  {{ it.chosen ? `已选 · ${it.chosen.site_name || ('站 ' + it.chosen.site)}` : (it.empty_reason || '无候选') }}
+              <div class="magicflow-music-row__meta">
+                <VChip size="x-small" variant="tonal">{{ row.site || '—' }}</VChip>
+                <VChip v-if="row.free" size="x-small" variant="tonal" color="success">免费</VChip>
+                <VChip v-if="row.hit_and_run" size="x-small" variant="tonal" color="warning">H&R</VChip>
+                <span v-if="row.size_gb">{{ row.size_gb.toFixed(2) }} GB</span>
+                <span v-if="row.stage === 'downloading' && row.speed">{{ odSpeed(row.speed) }}</span>
+                <span v-if="row.eta_s">{{ odEtaText(row.eta_s) }}</span>
+              </div>
+              <VProgressLinear
+                :model-value="odPct(row)"
+                height="6"
+                rounded
+                :color="odIsPaused(row) ? 'warning' : (row.stage === 'downloading' ? 'primary' : 'success')"
+                class="mt-1"
+              />
+              <div class="magicflow-music-row__stage">
+                <VChip size="x-small" variant="flat" :color="odIsPaused(row) ? 'warning' : odStageColor(row.stage)">
+                  {{ odIsPaused(row) ? '已暂停' : row.stage_text }}
                 </VChip>
-              </div>
-              <div v-if="it.chosen" class="magicflow-music-item__body">
-                <span class="text-body-2">
-                  {{ it.chosen.title }}
-                  <template v-if="it.chosen.size_gb"> · {{ Number(it.chosen.size_gb).toFixed(2) }}G</template>
-                  <template v-if="it.chosen.seeders !== undefined && it.chosen.seeders !== null"> · {{ it.chosen.seeders }} 做种</template>
-                  <template v-if="it.chosen.downloadvolumefactor !== undefined && it.chosen.downloadvolumefactor !== null"> · {{ Number(it.chosen.downloadvolumefactor).toFixed(2) }}x</template>
-                  <template v-if="it.chosen.score !== undefined"> · score {{ it.chosen.score }}</template>
-                </span>
-                <span v-if="it.chosen_reasons && it.chosen_reasons.length" class="text-caption text-medium-emphasis">
-                  命中：{{ it.chosen_reasons.join(' · ') }}
-                </span>
-                <span v-if="it.candidates && it.candidates.length > 1" class="text-caption text-medium-emphasis">
-                  共 {{ it.candidates_total }} 候选 / 选中 1 / 备选 {{ it.candidates.length - 1 }}
-                </span>
-              </div>
-              <div v-else-if="it.excluded && it.excluded.length" class="magicflow-music-item__body text-caption text-medium-emphasis">
-                排除样本：<template v-for="(ex, i) in it.excluded" :key="i">
-                  <span v-if="i > 0">；</span>{{ ex.title }}（{{ ex.reason }}）
-                </template>
+                <span v-if="row.stage === 'downloading' && !odIsPaused(row)" class="magicflow-music-row__pct">{{ odPct(row).toFixed(1) }}%</span>
+                <span class="magicflow-music-row__hash">{{ row.hash.slice(0, 12) }}</span>
+                <VSpacer />
+                <VBtn
+                  v-if="!odIsPaused(row)"
+                  size="x-small"
+                  variant="tonal"
+                  :loading="musicActing === row.hash + ':pause'"
+                  @click="actMusic(row, 'pause')"
+                >暂停</VBtn>
+                <VBtn
+                  v-else
+                  size="x-small"
+                  variant="tonal"
+                  color="primary"
+                  :loading="musicActing === row.hash + ':resume'"
+                  @click="actMusic(row, 'resume')"
+                >继续</VBtn>
+                <VBtn
+                  size="x-small"
+                  variant="tonal"
+                  color="error"
+                  :loading="musicActing === row.hash + ':remove'"
+                  @click="actMusic(row, 'remove')"
+                >移除</VBtn>
               </div>
             </article>
-            <div v-if="!result.items?.length" class="magicflow-table-empty">
-              暂无结果。试试贴一行歌单（如 Butter-Fly），再点「干跑计划」。
-            </div>
-          </div>
-        </VSheet>
-
-        <VSheet v-else class="paper-flat mt-2 pa-3 text-medium-emphasis text-body-2">
-          贴歌单 → 「干跑计划」只看不下载；「一键加种」才会按计划加种
-          （qB category=<code>音乐</code>、tag=<code>魔流-&lt;站&gt;-静默-资源</code>，自动进账本/静默/H&R/闸门/站点报表）。
-        </VSheet>
-
+          </template>
+          <template v-else>
+            <div v-if="!musicHistory.length" class="magicflow-music-inventory__empty">还没有已完成的音乐。</div>
+            <article
+              v-for="row in musicHistory"
+              :key="'m-h-' + row.hash"
+              class="magicflow-music-row magicflow-music-row--done"
+            >
+              <div class="magicflow-music-row__title" :title="row.title">
+                {{ row.title || row.hash.slice(0, 12) }}
+              </div>
+              <div class="magicflow-music-row__meta">
+                <VChip size="x-small" variant="tonal">{{ row.site || '—' }}</VChip>
+                <span v-if="row.size_gb">{{ row.size_gb.toFixed(2) }} GB</span>
+                <span class="magicflow-music-row__ts">{{ tsText(row.added_at) }}</span>
+              </div>
+              <div class="magicflow-music-row__stage">
+                <VChip size="x-small" variant="tonal" :color="row.stage === 'resource' ? 'success' : (row.stage === 'downloading' ? 'primary' : '')">
+                  {{ row.stage_text }}
+                </VChip>
+                <span class="magicflow-music-row__hash">{{ row.hash.slice(0, 12) }}</span>
+              </div>
+            </article>
+          </template>
+        </div>
         <p class="text-caption text-medium-emphasis mt-3 mb-0">
-          <strong>判定（命中逻辑）：</strong>
-          <span v-if="result && result.policy">
-            {{ result.policy.search }} · {{ result.policy.exclude }} · {{ result.policy.score }}。
-          </span>
-          <span v-else>
-            歌单逐行 MP 搜索（mtype=music，仅指定站点）→ 硬过滤视频/MV/录像 → 打分（无损+40/有损+8/高解析+15/分轨+5/免费+20/2x+5/做种折算0~10/体积+5）→ 选中并列取做种多。
-          </span>
+          音乐线：qB 分类 <code>音乐</code> 的种（与刷流/魔力分线，不会被当低效种清理）。
+          搜索 + 下载走 AI 入口（<code>/agent/music/search</code> → <code>/agent/music/download</code>）——按相关度挑候选更靠谱。
         </p>
       </VCardText>
     </VCard>
@@ -182,9 +231,7 @@ function onClearError() {
 </template>
 
 <style scoped>
-/* ── 弹窗根 / 标题行：随「音乐薄弹窗」自 index.vue 迁入。
-     下列共享选择器（magicflow-dialog / settings-dialog__head / recommend-dialog__head-actions /
-     panel / panel__head / table-empty）父页其它弹窗也在用 → 两处各留一份（纯复制，零改动）。── */
+/* 共享选择器（父页其它弹窗也用）→ 纯复制一份。VDialog teleport 到 body，父页 scoped 够不到。 */
 .magicflow-dialog {
   background: rgb(var(--v-theme-surface)) !important;
   border: 1px solid var(--magicflow-panel-brd);
@@ -213,56 +260,41 @@ function onClearError() {
   align-items: center;
   gap: 4px;
 }
-.magicflow-panel {
-  border: var(--app-surface-border);
-  border-radius: var(--app-surface-radius);
-  min-inline-size: 0;
-  padding: 16px;
-}
-.magicflow-panel__head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-}
-.magicflow-table-empty {
-  padding: 28px 12px;
-  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
-  text-align: center;
-}
 
-/* ── 音乐薄弹窗（15.8.2）──────────────────────────────────────────── */
-.magicflow-music-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.magicflow-music-items { display: flex; flex-direction: column; gap: 6px; }
-.magicflow-music-item {
-  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
-  border-radius: 8px;
-  padding: 8px 10px;
+/* ── 音乐清单（与点播清单同构）────────────────────────────────────── */
+.magicflow-music-dialog {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  background: rgba(var(--v-theme-surface), 0.4);
+  min-block-size: 0;
+  max-block-size: 92vh;
+  overflow: hidden;
 }
-.magicflow-music-item__head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: space-between;
-}
-.magicflow-music-item__head > strong {
-  font-weight: 600;
-  overflow-wrap: anywhere;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-inline-size: 0;
-}
-.magicflow-music-item__body { display: flex; flex-direction: column; gap: 2px; min-inline-size: 0; }
-.magicflow-music-item__body .text-body-2 { overflow-wrap: anywhere; }
-
-@media (max-width: 699px) {
-  .magicflow-panel { padding: 14px; }
-  .magicflow-panel__head { flex-wrap: wrap; flex-direction: column; align-items: flex-start; }
-}
+.magicflow-music-dialog__body { padding: 10px 18px 20px; overflow: auto; flex: 1 1 auto; min-height: 0; }
+/* ── 单搜单下（人机同源）──────────────────────────────────── */
+.magicflow-music-search { margin-bottom: 10px; }
+.magicflow-music-search__row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.magicflow-music-search__row > .v-input:first-child { flex: 1 1 16rem; }
+.magicflow-music-search__row > .v-input:nth-child(2) { flex: 1 1 12rem; max-width: 22rem; }
+.magicflow-music-cands { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.magicflow-music-cands__head { font-size: 0.76rem; opacity: 0.75; }
+.magicflow-music-cands__empty { margin-top: 6px; font-size: 0.78rem; opacity: 0.7; }
+.magicflow-music-cand { display: flex; align-items: center; gap: 8px; border: 1px solid rgba(var(--v-theme-on-surface), 0.12); border-radius: 8px; padding: 6px 8px; }
+.magicflow-music-cand__main { flex: 1 1 auto; min-inline-size: 0; }
+.magicflow-music-cand__title { font-size: 0.8rem; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.magicflow-music-cand__meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 3px; font-size: 0.72rem; color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); }
+.magicflow-music-cand__ex { color: rgb(var(--v-theme-warning)); }
+.magicflow-music-inventory { border: 1px solid rgba(var(--v-theme-on-surface), 0.12); border-radius: 10px; padding: 8px 10px; background: rgba(var(--v-theme-on-surface), 0.03); }
+.magicflow-music-inventory__head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.magicflow-music-inventory__title { font-size: 0.84rem; font-weight: 600; margin-right: 2px; }
+.magicflow-music-inventory__empty { font-size: 0.78rem; opacity: 0.7; padding: 6px 2px; }
+.magicflow-music-tab { cursor: pointer; user-select: none; }
+.magicflow-music-row { border-top: 1px solid rgba(var(--v-theme-on-surface), 0.07); padding: 6px 2px; }
+.magicflow-music-row:first-of-type { border-top: none; }
+.magicflow-music-row__title { font-size: 0.8rem; line-height: 1.45; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.magicflow-music-row__meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 3px; font-size: 0.72rem; color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); }
+.magicflow-music-row__stage { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.magicflow-music-row__pct { font-size: 0.72rem; font-variant-numeric: tabular-nums; opacity: 0.85; }
+.magicflow-music-row__hash { font-size: 0.7rem; opacity: 0.55; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.magicflow-music-row__ts { font-variant-numeric: tabular-nums; opacity: 0.75; }
+.magicflow-music-row--done .magicflow-music-row__title { color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); }
 </style>

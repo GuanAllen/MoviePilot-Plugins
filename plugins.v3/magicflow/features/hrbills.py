@@ -248,6 +248,55 @@ class HrBillsStore:
                 self.save()
             return b
 
+    def drop(self, hash_string: str) -> bool:
+        """删除一张账单（作废即删，不留 void 行）。"""
+        h = str(hash_string or "").strip().lower()
+        with self._lock:
+            if h not in self.bills:
+                return False
+            del self.bills[h]
+            self._dirty.discard(h)
+            try:
+                self.kv.delete(f"{self.kv_region}:{h}")
+            except Exception:  # noqa: BLE001
+                pass
+            self._write_file()
+            return True
+
+    def drop_void(self) -> int:
+        """批量删除所有 ``state=void`` 账单（作废即删）。返回删除条数。"""
+        with self._lock:
+            voids = [h for h, b in self.bills.items()
+                     if isinstance(b, dict) and str(b.get("state") or "") == BILL_STATE_VOID]
+            if not voids:
+                return 0
+            for h in voids:
+                del self.bills[h]
+                self._dirty.discard(h)
+            try:
+                self.kv.delete_many([f"{self.kv_region}:{h}" for h in voids])
+            except Exception:  # noqa: BLE001
+                pass
+            self._write_file()
+            return len(voids)
+
+    def drop_many(self, hashes: Any) -> int:
+        """批量删除指定 hash 的账单（误开账单清理）。返回删除条数。"""
+        with self._lock:
+            hs = [str(h or "").strip().lower() for h in (hashes or [])]
+            hs = [h for h in hs if h in self.bills]
+            if not hs:
+                return 0
+            for h in hs:
+                del self.bills[h]
+                self._dirty.discard(h)
+            try:
+                self.kv.delete_many([f"{self.kv_region}:{h}" for h in hs])
+            except Exception:  # noqa: BLE001
+                pass
+            self._write_file()
+            return len(hs)
+
     def all(self) -> Dict[str, Dict[str, Any]]:
         with self._lock:
             return dict(self.bills)
@@ -419,7 +468,8 @@ class HrBillsMixin:
         out["deadline_at"] = deadline_at
         out["hours_left"] = round(hours_left, 2)
         out["at_risk"] = bool(
-            state in (BILL_STATE_ACTIVE, BILL_STATE_PENDING)
+            str(b.get("rule") or "") in (RULE_SITE_HR, RULE_HIT_AND_RUN)
+            and state in (BILL_STATE_ACTIVE, BILL_STATE_PENDING)
             and (seeded_h + 1e-9) < due_h
             and hours_left <= self._hr_warn_hours()
         )
@@ -442,6 +492,33 @@ class HrBillsMixin:
             return str(getattr(t, "title", "") or "") if t is not None else ""
         except Exception:  # noqa: BLE001
             return ""
+
+    # ---------------------------------------------------------- 加种 journal
+    def _journal_seed_add(self, hash_string: str, site_domain: str, tag: str) -> None:
+        """加种落 journal（kind=add，供事后取证；不作运行时真值）。
+
+        DESIGN-RESOURCE-SEED §3：加种时记录 hash/site/tag；fp/reused/completed_at 等
+        事实由「完成」路径写 mf_seed（不在此处）。
+        """
+        try:
+            _store = getattr(self, "_store", None)
+            _journal = getattr(_store, "journal", None) if _store is not None else None
+            if _journal is None:
+                return
+            from ..persistence import OperationItem  # noqa: WPS433
+            _journal.record(
+                task_id="",
+                kind="add",
+                items=[OperationItem(
+                    hash=str(hash_string or "").strip().lower(),
+                    title="",
+                    source="add",
+                    tags=str(tag or ""),
+                    reason=str(site_domain or ""),
+                )],
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     # ---------------------------------------------------------- 开账
     def _hrbills_open(self, hash_string: str, site_domain: str, tag: str,
@@ -487,6 +564,18 @@ class HrBillsMixin:
             rule = RULE_SITE_HR
         elif thr is True:
             rule = RULE_HIT_AND_RUN
+        elif site_hr is False:
+            # 明确无 H&R → 不开账（防“凭空欠债”）。
+            return None
+        else:
+            # site_hr None（未知）：逐种开关站才开 unknown（跟踪漏记）；普通站不开账。
+            try:
+                _pt = bool(self._site_per_torrent_hr(dom))
+            except Exception:  # noqa: BLE001
+                _pt = False
+            if not _pt:
+                return None
+            rule = RULE_UNKNOWN
         # ★ 15.5.1（Master 2026-10-07 16:33「1 的话我删了，你账不是还欠着」）：
         #   刚加入下载 → 必然未完成。**H&R 义务自「下载完成」起算**，故开账只挂
         #   观测（pending：不算欠、不拦删、不进 owed）；完成那一刻由 ``_hrbills_tick``
@@ -619,6 +708,12 @@ class HrBillsMixin:
                     continue  # 跨站/复用/补源副本：不重复开（各自口径自己记账/不判 H&R）
             except Exception:  # noqa: BLE001
                 pass
+            # ★ 2026-10-11：复用份（downloaded≈0）→ 不开账（复用副本不欠 H&R）
+            try:
+                if float(getattr(t, "downloaded", 0) or 0) <= 0:
+                    continue
+            except (TypeError, ValueError):
+                pass
             rec = rec or {}
             dom = self._hrbills_resolve_domain(rec, t, groups)
             # 规则判定：站点规则明确 True / 种子自带 H&R 标记；否则 unknown（不猜）
@@ -635,6 +730,18 @@ class HrBillsMixin:
                 rule = RULE_SITE_HR
             elif thr is True:
                 rule = RULE_HIT_AND_RUN
+            elif site_hr is False:
+                # 明确无 H&R → 不开账。
+                continue
+            else:
+                # site_hr None（未知）：逐种开关站才开 unknown（跟踪漏记）；普通站不开。
+                try:
+                    _pt = bool(self._site_per_torrent_hr(dom))
+                except Exception:  # noqa: BLE001
+                    _pt = False
+                if not _pt:
+                    continue
+                rule = RULE_UNKNOWN
             try:
                 progress = float(getattr(t, "progress", 0) or 0)
             except (TypeError, ValueError):
@@ -719,6 +826,11 @@ class HrBillsMixin:
                     # 有 active 账单（欠 H&R）→ 违约：转 breached（不 void，保护不解除）
                     store.patch(h, save=False, state=BILL_STATE_BREACHED, breached_at=now)
                     breached += 1
+                elif cur_state == BILL_STATE_SETTLED and str(b.get("rule") or "") not in (RULE_SITE_HR, RULE_HIT_AND_RUN):
+                    # ★ 2026-10-11：unknown 却记「结清」且种子已消失 → 作废（无义务可结，关掉投机账单）
+                    store.patch(h, save=False, state=BILL_STATE_VOID,
+                                void_reason="unknown_settled_disappeared", voided_at=now)
+                    voided += 1
                 continue
             try:
                 progress = float(getattr(t, "progress", 0) or 0)
@@ -729,6 +841,9 @@ class HrBillsMixin:
             except Exception:  # noqa: BLE001
                 seeded_h = float(b.get("seeded_h") or 0)
             cur_state = str(b.get("state") or "")
+            # ★ 2026-10-10：规则闸——只有明确 H&R 规则（site_hr / hit_and_run）才算「欠」。
+            #   unknown / 空规则一律不算（对齐 ``_hr_obligation``），并自愈存量错误 active。
+            _known_rule = str(b.get("rule") or "") in (RULE_SITE_HR, RULE_HIT_AND_RUN)
             fields: Dict[str, Any] = {"progress": progress, "seeded_h": seeded_h}
             # ★ 15.8.1：补空标题（开账时快照可能还没这个种，如刚加的音乐种；只在能取到时补）。
             if not str(b.get("title") or "").strip():
@@ -738,23 +853,38 @@ class HrBillsMixin:
                     titles_filled += 1
             # ★ 种重新出现（breached → 恢复 active，复欠重进继续挂）
             if cur_state == BILL_STATE_BREACHED:
-                fields["state"] = BILL_STATE_ACTIVE
-                fields["breached_at"] = None
-                activated += 1
+                if _known_rule:
+                    fields["state"] = BILL_STATE_ACTIVE
+                    fields["breached_at"] = None
+                    activated += 1
+                else:
+                    # ★ 2026-10-10：unknown 规则不算欠 → 恢复也降回 pending
+                    fields["state"] = BILL_STATE_PENDING
+                    fields["breached_at"] = None
+                    demoted += 1
+            elif cur_state == BILL_STATE_ACTIVE and not _known_rule:
+                # ★ 2026-10-10 自愈：存量 unknown-active（凭空欠债）降回 pending。
+                fields["state"] = BILL_STATE_PENDING
+                demoted += 1
+            elif cur_state == BILL_STATE_SETTLED and not _known_rule:
+                # ★ 2026-10-11 自愈：存量 unknown-settled（无 H&R 规则却记结清）降回 pending。
+                fields["state"] = BILL_STATE_PENDING
+                demoted += 1
             # ★ 15.5.1（Master 16:33）：未完成的种不产生 H&R 义务 → active 账单降回 pending。
             #   兼容 15.5.1 之前「下载即 active」开出的历史账单（下一轮自动清掉虚欠）。
             elif progress < self._hr_complete_ratio(str(b.get("site") or "")) and cur_state == BILL_STATE_ACTIVE:
                 fields["state"] = BILL_STATE_PENDING
                 demoted += 1
             if progress >= self._hr_complete_ratio(str(b.get("site") or "")):
-                # ① 完成 → active
-                if cur_state == BILL_STATE_PENDING:
+                # ① 完成 → active（★ 2026-10-10：仅限**明确 H&R 规则**才激活）
+                if cur_state == BILL_STATE_PENDING and _known_rule:
                     fields["state"] = BILL_STATE_ACTIVE
                     activated += 1
                 # ④ 挂够 → settled（★ 11.13.0：达到线额外加冗余安全垫 ``_hr_margin_hours()``）
+                #   ★ 2026-10-11：仅限明确 H&R 规则（unknown 不算欠、不结清）。
                 need_h = float(b.get("need_h") or 24.0)
                 due_h = need_h + self._hr_margin_hours()
-                if cur_state not in (BILL_STATE_SETTLED, BILL_STATE_VOID) and seeded_h >= due_h:
+                if _known_rule and cur_state not in (BILL_STATE_SETTLED, BILL_STATE_VOID) and seeded_h >= due_h:
                     fields["state"] = BILL_STATE_SETTLED
                     settled += 1
                 fields["last_progress"] = progress
@@ -774,6 +904,32 @@ class HrBillsMixin:
                         voided += 1
             store.patch(h, save=False, **fields)
         store.flush()
+        # ★ 2026-10-11：清理误开账单（unknown 规则 + 复用份 downloaded≈0）→ 批量删。
+        _wrong: List[str] = []
+        for _h, _b in (bills or {}).items():
+            if not isinstance(_b, dict):
+                continue
+            if str(_b.get("rule") or "") not in (RULE_SITE_HR, RULE_HIT_AND_RUN):
+                continue  # unknown 账单交给自愈降级（pending），不删
+            _t = (snap or {}).get(_h)
+            if _t is not None:
+                try:
+                    _ratio = self._hr_complete_ratio(str(_b.get("site") or ""))
+                    if float(getattr(_t, "progress", 0) or 0) >= _ratio \
+                            and float(getattr(_t, "downloaded", 0) or 0) <= 0:
+                        _wrong.append(_h)  # 已完成却从未下载字节 = 复用份
+                except (TypeError, ValueError):
+                    pass
+        if _wrong:
+            try:
+                store.drop_many(_wrong)
+            except Exception:  # noqa: BLE001
+                pass
+        # ★ 2026-10-11（Master「作废就删了」）：void 账单不留行 → 直接删除。
+        try:
+            store.drop_void()
+        except Exception:  # noqa: BLE001
+            pass
         return {"bills": len(bills), "activated": activated, "voided": voided,
                 "settled": settled, "breached": breached, "demoted": demoted,
                 "titles_filled": titles_filled,
@@ -1178,11 +1334,8 @@ class HrBillsMixin:
         cur = store.get(hs)
         if not cur:
             return None
-        if str(cur.get("state") or "") == BILL_STATE_VOID:
-            return cur
-        return store.patch(hs, state=BILL_STATE_VOID,
-                           void_reason=str(reason or "manual")[:60],
-                           voided_at=float(time.time()), voided_by="manual")
+        store.drop(hs)
+        return {"dropped": hs, "reason": str(reason or "manual")[:60]}
 
     # ---------------------------------------------------------- 存量：辅种账单作废（11.11.1）
     def _hrbills_void_reuse(self, confirm: bool = False, limit: int = 0) -> Dict[str, Any]:

@@ -3,7 +3,7 @@
         "name": "魔流",
         "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
         "labels": "站点,做种,魔力,刷流",
-        "version": "15.8.15",
+        "version": "17.1.1",
         "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
         "author": "GuanAllen",
         "level": 1,
@@ -424,9 +424,10 @@
             "15.8.12": "15.8.12：纳管 ≠ 手动保留——纳管不再写硬保护 + 历史残留一次性摘除（purge_adopted_protected）+ 单例跨热重载换代",
             "15.8.13": "15.8.13：孤儿魔流标签不再算「已管控」——判据由「前缀」收紧为「能认出来」（is_managed_tag），流量审计新增 orphan/orphan_samples",
             "15.8.14": "15.8.14：临时/手工投放通道——临时需求有 API 一等公民入口（POST /agent/inject 与 /agent/inject/release，默认干跑）",
-            "15.8.15": "15.8.15：库内资产手动删除入口——新增独立「库内资产」列表 + 只破「库内资产」一道闸（连文件删 + 二次确认，其余四类照旧硬拦）；同批砍除代码字典机制（docs/CODE-DICT.md 镜像与坐标认领闸门，preflight 16→14 步）"
+            "15.8.15": "15.8.15：库内资产手动删除入口——新增独立「库内资产」列表 + 只破「库内资产」一道闸（连文件删 + 二次确认，其余四类照旧硬拦）；同批砍除代码字典机制（docs/CODE-DICT.md 镜像与坐标认领闸门，preflight 16→14 步）",
+            "17.1.1": "17.1.1：修点播 add 加不进第 2+ 页候选 —— 按 pick 分页续搜（有界 3 页）+ search→add 缓存衔接"
         }
     },
-    "version": "15.8.15",
+    "version": "17.1.1",
     "history": {}
 }

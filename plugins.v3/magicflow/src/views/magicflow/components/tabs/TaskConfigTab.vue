@@ -42,7 +42,7 @@ const emit = defineEmits(['run', 'edit', 'delete'])
               size="x-small"
               variant="tonal"
               color="error"
-              title="该站点已从 MoviePilot 删除：站点相关处理已跳过，请删除任务或改绑其他站点"
+              title="站点已删除：相关处理已跳过，请删除任务或改绑站点"
             >站点已删除</VChip>
           </dd>
         </div>
@@ -115,7 +115,7 @@ const emit = defineEmits(['run', 'edit', 'delete'])
         <VDivider />
         <div>
           <strong>删除任务</strong>
-          <span>存在活跃种子时后端会拒绝删除，避免留下失管任务</span>
+          <span>存在活跃种子时后端会拒绝删除，避免失管任务</span>
           <VBtn color="error" variant="tonal" prepend-icon="mdi-delete-outline" @click="emit('delete')">删除任务</VBtn>
         </div>
       </div>

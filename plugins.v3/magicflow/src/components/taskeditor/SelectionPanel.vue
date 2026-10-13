@@ -27,7 +27,7 @@ defineProps({
     <header class="editor-section__head">
       <div>
         <div class="text-subtitle-1 font-weight-medium">来源与促销</div>
-        <div class="text-body-2 text-medium-emphasis">{{ isBrush ? '刷流只看站点最新页（免费热种在最新页），不做游标深翻' : '沿用站点列表页或 RSS 获取链路' }}</div>
+        <div class="text-body-2 text-medium-emphasis">{{ isBrush ? '刷流只看站点最新页（免费热种在最新页），不深翻' : '沿用站点列表页或 RSS 获取链路' }}</div>
       </div>
     </header>
     <VRow>
@@ -38,7 +38,7 @@ defineProps({
           label="促销"
           :items="[{ title: '免费（含 2X 免费）', value: 'free' }]"
           disabled
-          hint="刷流固定只抓免费种（下载不计量），保障分享率"
+          hint="刷流固定只抓免费种（下载不计量）以保分享率"
           persistent-hint
         />
         <VSelect
@@ -49,7 +49,7 @@ defineProps({
             { title: '免费', value: 'free' },
             { title: '2X 免费', value: '2xfree' },
           ]"
-          hint="系统硬规则：只下免费种（非免费不碰）。「免费」含 2X 免费；选「2X 免费」= 只要双倍免费"
+          hint="系统硬规则：只下免费种（含 2X 免费）；选「2X 免费」＝只要双倍免费"
           persistent-hint
         />
       </VCol>
@@ -70,7 +70,7 @@ defineProps({
     <header class="editor-section__head">
       <div>
         <div class="text-subtitle-1 font-weight-medium">候选过滤</div>
-        <div class="text-body-2 text-medium-emphasis">{{ isBrush ? '刷流默认不限人数 / 体积 / 年龄（留空即为不限），如需收敛再填；范围支持单值或「最小值-最大值」' : '范围字段支持单值或「最小值-最大值」' }}</div>
+        <div class="text-body-2 text-medium-emphasis">{{ isBrush ? '留空＝不限；可填单值或「最小-最大」范围' : '范围字段支持单值或「最小值-最大值」' }}</div>
       </div>
     </header>
     <VRow>

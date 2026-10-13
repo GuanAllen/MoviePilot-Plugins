@@ -101,12 +101,22 @@ def _load_agentledger():
     return _load(PKG + ".features.agentledger", "features/agentledger.py")
 
 
-def _make_harness(AgentApiMixin, ApiMixin, RescueMixin=None, AgentLedgerMixin=None):
+def _load_plan():
+    """加载 features/plan.py（★ 15.17.0，顶层零相对 import，可离线小测）。"""
+    _stub_app()
+    _pkg(PKG, ROOT)
+    _pkg(PKG + ".features", ROOT / "features")
+    return _load(PKG + ".features.plan", "features/plan.py")
+
+
+def _make_harness(AgentApiMixin, ApiMixin, RescueMixin=None, AgentLedgerMixin=None, PlanMixin=None):
     bases = [AgentApiMixin, ApiMixin]
     if RescueMixin is not None:
         bases.insert(0, RescueMixin)  # handler 可能在 RescueMixin（如 agent_rescue）
     if AgentLedgerMixin is not None:
         bases.insert(1, AgentLedgerMixin)  # handler 在 AgentLedgerMixin（P1.5b）
+    if PlanMixin is not None:
+        bases.insert(2, PlanMixin)  # handler 在 PlanMixin（15.17.0：/agent/plan*）
 
     class Harness(*bases):
         def __getattr__(self, name):
@@ -125,8 +135,10 @@ def main() -> int:
     RescueMixin = rescue.RescueMixin
     agentledger = _load_agentledger()
     AgentLedgerMixin = agentledger.AgentLedgerMixin
+    plan = _load_plan()
+    PlanMixin = plan.PlanMixin
 
-    Harness = _make_harness(AgentApiMixin, ApiMixin, RescueMixin, AgentLedgerMixin)
+    Harness = _make_harness(AgentApiMixin, ApiMixin, RescueMixin, AgentLedgerMixin, PlanMixin)
     h = Harness()
 
     # ---- 1) 已注册路由里的 /agent* 子集 ----
@@ -153,7 +165,7 @@ def main() -> int:
         if ep.get("method") not in ("GET", "POST", "PUT", "DELETE"):
             _fail(f"清单 method 非法：{ep}")
         if not hasattr(Harness, ep.get("handler")):
-            _fail(f"清单 handler 在 AgentApiMixin/AgentLedgerMixin/RescueMixin 上不存在：{ep.get('handler')}")
+            _fail(f"清单 handler 在 AgentApiMixin/AgentLedgerMixin/RescueMixin/PlanMixin 上不存在：{ep.get('handler')}")
 
     # ---- 4) 求差：注册路由 ↔ 清单（path+method 维度） ----
     reg_keys = {(r.get("path"), (r.get("methods") or [None])[0]) for r in agent_routes}

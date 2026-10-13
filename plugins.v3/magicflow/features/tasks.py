@@ -15,6 +15,7 @@ from app.schemas import Response
 from ..bonus import (
     candidate_ref_weeks,
     calc_torrent_bonus,
+    optimize_pool,
     preview_deletions,
     rank_candidates,
 )
@@ -880,6 +881,44 @@ class TasksMixin:
             self._log(f"获取候选失败: {e}", "error")
             return Response(success=False, message=str(e))
 
+    def _cleanup_inputs(self, task: Any, task_id: str) -> Optional[Dict[str, Any]]:
+        """构建「清种 / 优化器」共用的输入（★ 单一真值源）。
+
+        返回 ``{"managed","task_torrents","bonus_list","protected","policy"}``；
+        下载器不可用时返回 ``None``。保护集 = ``_protection_sets``（hard ∪ soft），
+        与真实清理（``features/cleanup.py::_cleanup_round``）同源。
+        """
+        downloader = self._get_downloader(task.downloader)
+        if not downloader or not downloader.is_available:
+            return None
+        _managed = self._task_managed_torrents(task, view=True)
+        _SEED = {"uploading", "stalledup", "forcedup", "queuedup", "checkingup", "allocating"}
+        task_torrents = [t for t in (_managed or [])
+                         if str(getattr(t, "state", "") or "").lower() in _SEED]
+        bonus_list = self._convert_to_bonus_list(task_torrents, self._build_formula_params(task), self._task_pub_dates(task), getattr(task, "ti_source", "publish"), self._site_ni_map(task.site_id, task_torrents), self._site_official_titles(task.site_id))
+        # ★ 保护口径必须与真实清理（features/cleanup.py::_cleanup_round）同源：
+        #   唯一真值源 = _protection_sets（docs/MODULES.md X3）。
+        #   旧实现只用「手动保留 ∪ 库内资产」→ 漏 soft（同站纳管）与 hard（已认领 /
+        #   跨站来源份 / 欠 H&R / 未下完）→ 预览名单会列出实际会被保护的种，与真实删除
+        #   名单分叉（预览说不删、实删又拦下）。这里与清理同口径：hard ∪ soft 全并入。
+        try:
+            _prot = self._protection_sets(
+                task, list(bonus_list or []), list(task_torrents or []))
+            protected_hashes = (set(_prot.get("hard") or set())
+                                | set(_prot.get("soft") or set()))
+        except Exception:
+            # 兜底：退回旧口径（手动保留 ∪ 库内资产），至少不比现状差
+            protected_hashes = self._store.get_protected_torrents(task_id) if self._store else set()
+            try:
+                _asset = self._media_asset_hashes(list(task_torrents or []), task)
+                if _asset:
+                    protected_hashes = set(protected_hashes) | set(_asset)
+            except Exception:
+                pass
+        policy = self._build_magic_policy(task, bonus_list)
+        return {"managed": _managed or [], "task_torrents": task_torrents,
+                "bonus_list": bonus_list, "protected": protected_hashes, "policy": policy}
+
     def preview_cleanup(self, task_id: str) -> Response:
         """预览删种名单。"""
         task = self._get_task_config(task_id)
@@ -887,24 +926,15 @@ class TasksMixin:
             return Response(success=False, message="任务不存在")
 
         try:
-            downloader = self._get_downloader(task.downloader)
-            if not downloader or not downloader.is_available:
+            ins = self._cleanup_inputs(task, task_id)
+            if ins is None:
                 return Response(success=False, message="下载器不可用")
 
-            _managed = self._task_managed_torrents(task, view=True)
+            _managed = ins["managed"]
             if not _managed:
                 return Response(success=True, data={"preview": {}, "message": "没有做种种子"})
-            _SEED = {"uploading", "stalledup", "forcedup", "queuedup", "checkingup", "allocating"}
-            task_torrents = [t for t in _managed if str(getattr(t, "state", "") or "").lower() in _SEED]
-            torrent_bonus_list = self._convert_to_bonus_list(task_torrents, self._build_formula_params(task), self._task_pub_dates(task), getattr(task, "ti_source", "publish"), self._site_ni_map(task.site_id, task_torrents), self._site_official_titles(task.site_id))
-            protected_hashes = self._store.get_protected_torrents(task_id) if self._store else set()
-            # 媒体资产价值闸门:预览也排除已整理/辅种/历史命中的种子
-            try:
-                _asset = self._media_asset_hashes(list(task_torrents or []), task)
-                if _asset:
-                    protected_hashes = set(protected_hashes) | set(_asset)
-            except Exception:
-                pass
+            protected_hashes = ins["protected"]
+            torrent_bonus_list = ins["bonus_list"]
 
             # 刷流模式:预览「无上传将被清理」的种子(只读,不删)
             if str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush":
@@ -935,11 +965,43 @@ class TasksMixin:
                     "message": f"刷流模式:预计清理「无上传」种子 {len(would)} 个",
                 })
 
-            policy = self._build_magic_policy(task, torrent_bonus_list)
-
-            preview = preview_deletions(torrent_bonus_list, policy, protected_hashes)
+            preview = preview_deletions(torrent_bonus_list, ins["policy"], protected_hashes)
             return Response(success=True, data=preview)
 
         except Exception as e:
             self._log(f"预览删种失败: {e}", "error")
+            return Response(success=False, message=str(e))
+
+    def optimize_plan(self, task_id: str, budget_gb: str = "") -> Response:
+        """★ 组合优化器（15.15.0）：容量预算下的最优「保/删」组合（只算不删）。
+
+        与 preview_cleanup 同源（共用 `_cleanup_inputs`，保护集 = `_protection_sets`）：
+        在「保留体积 ≤ budget_gb」约束下最大化保留种子的**时魔总和**（0/1 背包）。
+        受保护种强制保留；另附效率前沿与「逐条阈值」口径在同释放体积下的对比。
+        budget_gb 缺省 → 自动取「保留 ≥95% 时魔」的最小预算。
+        """
+        task = self._get_task_config(task_id)
+        if not task:
+            return Response(success=False, message="任务不存在")
+        try:
+            ins = self._cleanup_inputs(task, task_id)
+            if ins is None:
+                return Response(success=False, message="下载器不可用")
+            budget: Optional[float] = None
+            if str(budget_gb or "").strip() != "":
+                try:
+                    budget = float(budget_gb)
+                except (TypeError, ValueError):
+                    return Response(success=False, message="budget_gb 需为数字（GB）")
+                if budget < 0:
+                    return Response(success=False, message="budget_gb 不能为负")
+            data = optimize_pool(ins["bonus_list"], budget, ins["policy"], ins["protected"])
+            data["task_id"] = task_id
+            data["site_id"] = int(getattr(task, "site_id", 0) or 0)
+            data["task_type"] = str(getattr(task, "task_type", "bonus") or "bonus")
+            if data["task_type"].strip().lower() == "brush":
+                data["mode_warning"] = "刷流任务（目标=分享率/上传），时魔最优口径仅供参考"
+            return Response(success=True, data=data)
+        except Exception as e:
+            self._log(f"组合优化失败: {e}", "error")
             return Response(success=False, message=str(e))

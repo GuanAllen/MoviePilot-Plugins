@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "15.8.15"
+__version__ = "17.1.1"
 
 import bisect
 import re
@@ -130,6 +130,7 @@ class SiteGuard:
         self._log = log
         self._cache: Dict[int, Tuple[float, bool]] = {}
         self._warned: set = set()
+        self._sites_cache: Optional[Tuple[float, Dict[int, Dict[str, str]]]] = None
 
     def _say(self, msg: str, level: str = "warning") -> None:
         if callable(self._log):
@@ -158,6 +159,43 @@ class SiteGuard:
             return True
         self._cache[sid] = (now, exists)
         return exists
+
+    def mp_sites(self) -> Optional[Dict[int, Dict[str, str]]]:
+        """★ MoviePilot **当前**站点表（``id → {name, domain}``）；查库异常 → ``None``。
+
+        用于「站点已删除」判定：魔流台账里还在、这张表里已无 = 站点被人在 MP 侧删了。
+        与 ``exists`` 同为 60s 记忆化；查库异常返回 ``None``（**判不出就不判删除**，
+        宁可漏报一轮，也别把一次数据库抖动当成整排站点被删）。
+        """
+        now = time.time()
+        hit = self._sites_cache
+        if hit and (now - float(hit[0])) < SITE_EXISTS_TTL:
+            return hit[1]
+        try:
+            from app.db.oper.site import SiteOper
+            rows = SiteOper().list() or []
+        except Exception as err:  # noqa: BLE001
+            self._say(f"站点集合检查失败:{err}", "warning")
+            return None
+        out: Dict[int, Dict[str, str]] = {}
+        for r in rows:
+            try:
+                sid = int(getattr(r, "id", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if not sid:
+                continue
+            out[sid] = {
+                "name": str(getattr(r, "name", "") or ""),
+                "domain": str(getattr(r, "domain", "") or ""),
+            }
+        self._sites_cache = (now, out)
+        return out
+
+    def mp_ids(self) -> Optional[set]:
+        """MP 当前站点 id 集合；判不出返回 ``None``（同 ``mp_sites``）。"""
+        sites = self.mp_sites()
+        return None if sites is None else set(sites.keys())
 
     def missing(self, task: Any) -> bool:
         """任务绑的站点是否已被删除（无 site_id → False，不查库）。"""
@@ -337,6 +375,10 @@ def _cs_parse_site_hours(raw: Any) -> Dict[str, float]:
 # ★ 推荐甄别(刷流种价值生命周期):独立低频 worker,同样插件级单 worker + 轮转。
 RECOMMEND_INTERVAL_MINUTES = 60
 RECOMMEND_SCAN_MAX = 15
+# ★ 15.8.22：种名只到「季」时，用**下载器文件列表**判定单集/整季（DepWeb/ADWeb 把集号
+# 藏进文件名）。每轮最多查 RECOMMEND_FILES_MAX 个；查过缓存 RECOMMEND_FILES_TTL 秒。
+RECOMMEND_FILES_MAX = 40
+RECOMMEND_FILES_TTL = 30 * 86400
 # 推荐/已在库检查:是否额外实时查媒体服务器(链);默认可关(trimemedia 实现会报错刷日志)
 RECOMMEND_LIVE_LIBRARY_CHECK = False
 # 站点级候选抓取共享缓存 TTL(秒):同站点的多个任务在此时窗内只抓**一份**候选,
@@ -878,6 +920,73 @@ def hr_complete_ratio_of(obj: Any, dom: Any = "", default: Any = None) -> float:
                 return float(_d)
             except (TypeError, ValueError):
                 return HR_COMPLETE_RATIO_DEFAULT
+
+
+def site_type_rows(indexers: Any) -> List[Dict[str, Any]]:
+    """把 MoviePilot 站点索引器列表归一成「站点 → 分类类型」清单（纯函数，2026-10-10）。
+
+    用途：``GET /agent/sites/types``（人机同源）——让 AI / UI **一眼看清每个站的
+    ``movie/tv/music`` 分类 id**（各站**不统一**，见 ``docs/site-type-map.md``）与站点
+    自声明的 ``media_type``。**只读 MP 真值**（``SitesHelper().get_indexers()`` 的
+    ``category`` / ``media_type`` 字段，与搜索层 ``IndexerModule`` 同源）。
+
+    ★ 红线（Master 2026-10-10）：**类型真值一律用 MP** —— 本函数只做「读 + 归一」，
+    **绝不自己造分类、不替 MP 判类型、不私自回退**。
+
+    输入：``get_indexers()`` 的原始 ``list[dict]``（缺字段 / 异常输入一律容忍）。
+    输出：``[{id, name, domain, declared_media_type, movie[], tv[], music[],
+    supports{movie,tv,music}, category_count}]``，站点 id 升序（缺 id 排后）。
+    分类项 = ``{id, cat, desc}``（同 MP ``category`` schema）。
+    """
+    rows: List[Dict[str, Any]] = []
+
+    def _bucket(cat: Any, key: str) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for item in (cat.get(key) or []) if isinstance(cat, dict) else []:
+            if not isinstance(item, dict):
+                continue
+            cid = item.get("id")
+            if cid is None:
+                continue
+            out.append({
+                "id": cid,
+                "cat": str(item.get("cat") or ""),
+                "desc": str(item.get("desc") or ""),
+            })
+        return out
+
+    def _mt(raw: Any) -> str:
+        if raw is None:
+            return ""
+        if isinstance(raw, (list, tuple)):
+            return ",".join(str(x) for x in raw)
+        return str(raw)
+
+    for it in indexers or []:
+        if not isinstance(it, dict):
+            continue
+        cat = it.get("category")
+        movie = _bucket(cat, "movie")
+        tv = _bucket(cat, "tv")
+        music = _bucket(cat, "music")
+        rows.append({
+            "id": it.get("id"),
+            "name": str(it.get("name") or ""),
+            "domain": str(it.get("domain") or "").strip().lower(),
+            "declared_media_type": _mt(it.get("media_type")),
+            "movie": movie,
+            "tv": tv,
+            "music": music,
+            "supports": {"movie": bool(movie), "tv": bool(tv), "music": bool(music)},
+            "category_count": len(movie) + len(tv) + len(music),
+        })
+
+    def _key(row: Dict[str, Any]):
+        sid = row.get("id")
+        return (0, sid) if isinstance(sid, int) else (1, str(sid or ""))
+
+    rows.sort(key=_key)
+    return rows
 
 
 # ============================================================

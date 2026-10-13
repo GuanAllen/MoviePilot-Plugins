@@ -74,7 +74,7 @@ def _ok(cond: bool, msg: str) -> None:
 def _torrent(progress=0.0, seed_time=0.0, title="test", tracker="hdfans.org", completion_on=0.0):
     return types.SimpleNamespace(
         hash="", title=title, progress=progress, seed_time=seed_time,
-        hit_and_run=False, tags=[], tracker=tracker, completion_on=completion_on,
+        hit_and_run=False, tags=[], tracker=tracker, completion_on=completion_on, downloaded=1e9,
     )
 
 
@@ -382,8 +382,8 @@ def main() -> int:
     h.torrents.pop("a222")
     h._hrbills_tick()
     b2 = h._hrbills_store().get("a222")
-    _ok(b2["state"] == BILL_STATE_VOID, f"消失 + 未完成 → void（{b2['state']}）")
-    _ok(b2.get("void_reason") == "disappeared_uncompleted", "void_reason = disappeared_uncompleted")
+    _ok(b2 is None, "消失 + 未完成 → void 账单已删除")
+    _ok("a222" not in h._hrbills_store().all(), "确认不再存在于账单表（作废即删）")
 
     # ---- ⑥ breached 种重新出现 → 恢复 active ----
     print("\n[6] breached 种重新出现 → 恢复 active（复欠重进）")

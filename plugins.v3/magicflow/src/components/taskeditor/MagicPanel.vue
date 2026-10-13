@@ -36,7 +36,7 @@ const perfectMinWeeks = defineModel('perfectMinWeeks')
                 <header class="editor-section__head">
                   <div>
                     <div class="text-subtitle-1 font-weight-medium">魔力门槛（留空 = 自动）</div>
-                    <div class="text-body-2 text-medium-emphasis">留空由公式与实时数据自动推算，手填即覆盖</div>
+                    <div class="text-body-2 text-medium-emphasis">留空自动推算，手填即覆盖</div>
                   </div>
                   <VChip size="small" color="primary" variant="tonal">可自动</VChip>
                 </header>
@@ -71,8 +71,8 @@ const perfectMinWeeks = defineModel('perfectMinWeeks')
                       type="number"
                       min="1"
                       label="最多保留种子数（覆盖站点上限）"
-                      placeholder="留空 = 按站点上限 → 保种体积 ÷ 平均种子大小"
-                      hint="站点上限来自「设置 · 站点规则」；此处只覆盖当前任务"
+                      placeholder="留空＝按站点上限：保种体积 ÷ 平均种子大小"
+                      hint="上限来自「设置 · 站点规则」；此处只覆盖当前任务"
                       persistent-hint
                       clearable
                     />
@@ -152,28 +152,28 @@ const perfectMinWeeks = defineModel('perfectMinWeeks')
                   <VSwitch v-model="refillWhenEmpty" label="清理后主动补种" color="primary" hide-details inset />
                   <VSwitch
                     v-model="cleanupNoProgress"
-                    label="每次运行清理无进度种子（停滞/出错且进度为 0）"
+                    label="每次运行清理无进度种（停滞/出错且进度为 0）"
                     color="primary"
                     hide-details
                     inset
                   />
                   <VSwitch
                     v-model="cleanupSlowProgress"
-                    label="清理下载过慢的种子（速度÷体积算 ETA，长期下不完的腾名额）"
+                    label="清理下载过慢的种（按 ETA 算，长期下不完的腾名额）"
                     color="primary"
                     hide-details
                     inset
                   />
                   <VSwitch
                     v-model="purgeUnfreeIncomplete"
-                    label="检查时清理「已不再免费且未下完」的种子（回站点核对促销）"
+                    label="清理「已不再免费且未下完」的种（回站点核对促销）"
                     color="primary"
                     hide-details
                     inset
                   />
                   <VSwitch
                     v-model="autoResumePaused"
-                    label="自动恢复被暂停的已完成种子（重新做种）"
+                    label="自动恢复被暂停的已完成种（重新做种）"
                     color="primary"
                     hide-details
                     inset
@@ -188,7 +188,7 @@ const perfectMinWeeks = defineModel('perfectMinWeeks')
                         { title: '做种时长（qB 统计）', value: 'seed_time' },
                       ]"
                       label="Ti 口径（做种时间因子）"
-                      hint="候选排序与做种汇总使用同一口径；取不到发布时间时自动回落做种时长"
+                      hint="与做种汇总同口径；缺发布时间时按做种时长"
                       persistent-hint
                     />
                   </VCol>
@@ -210,7 +210,7 @@ const perfectMinWeeks = defineModel('perfectMinWeeks')
                       type="number"
                       min="0"
                       label="已处理去重窗口（小时）"
-                      hint="同一候选在该时长内不重复拉取，0 = 不跳过"
+                      hint="同一候选在该时长内不重复拉取（0＝不跳过）"
                       persistent-hint
                     />
                   </VCol>
@@ -222,7 +222,7 @@ const perfectMinWeeks = defineModel('perfectMinWeeks')
                       type="number"
                       min="1"
                       label="慢种宽限（分钟）"
-                      hint="种子加入后该时长内不判「慢」，给新种起步时间"
+                      hint="新种加入后该时长内不判「慢」，给起步时间"
                       persistent-hint
                     />
                   </VCol>
@@ -232,7 +232,7 @@ const perfectMinWeeks = defineModel('perfectMinWeeks')
                       type="number"
                       min="1"
                       label="预计下完上限（小时）"
-                      hint="按当前速度（速度÷体积）预计还要超过该小时数才下完 → 清理"
+                      hint="按当前速度预计还需超过该小时数才下完即清理"
                       persistent-hint
                     />
                   </VCol>
@@ -275,7 +275,7 @@ const perfectMinWeeks = defineModel('perfectMinWeeks')
                     <VTextField
                       v-model="deleteExceptTags"
                       label="永不删除的标签（可选，逗号分隔）"
-                      hint="叠加在「已整理 / 辅种」之上：带这些标签的种子删种时永不删除"
+                      hint="在「已整理 / 辅种」之外，带这些标签的种删种时永不删除"
                       persistent-hint
                       clearable
                     />
@@ -286,11 +286,11 @@ const perfectMinWeeks = defineModel('perfectMinWeeks')
                 <header class="editor-section__head">
                   <div>
                     <div class="text-subtitle-1 font-weight-medium">完美种保护</div>
-                    <div class="text-body-2 text-medium-emphasis">优质老种（非零魔 · 做种人数少 · 挂得够老）永久保留，不参与任何清理——魔力靠「养」，越老越肥</div>
+                    <div class="text-body-2 text-medium-emphasis">优质老种（非零魔 · 人数少 · 挂得久）永久保留——魔力靠养，越老越肥</div>
                   </div>
                 </header>
                 <div class="editor-switches">
-                  <VSwitch v-model="protectPerfect" label="启用完美种保护（满足条件的种子永不清理）" color="primary" hide-details inset />
+                  <VSwitch v-model="protectPerfect" label="启用完美种保护（满足条件的种永不清理）" color="primary" hide-details inset />
                 </div>
                 <VRow v-if="protectPerfect">
                   <VCol cols="12" md="6">

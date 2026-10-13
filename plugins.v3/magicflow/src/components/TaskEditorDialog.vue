@@ -18,6 +18,7 @@ const props = defineProps({
   savePaths: { type: Array, default: () => [] },
   saving: { type: Boolean, default: false },
   api: { type: Object, default: null },
+  // 保留兼容：已不再使用（★ 15.17.1：路径相对**插件域客户端** props.api，勿再拼 plugin/<id>）
   pluginBase: { type: String, default: 'plugin/MagicFlow' },
 })
 
@@ -235,7 +236,10 @@ async function loadPool() {
   try {
     const savePath = String(localTask.value.save_path || props.defaultSavePath || '').trim()
     const query = `?path=${encodeURIComponent(savePath)}`
-    const raw = await props.api.get(`${props.pluginBase}/pool${query}`)
+    // ★ 15.17.1 修复：`props.api` 是**插件域客户端**（createApi，路径相对插件基址，内部已拼 `plugin/<id>/`）。
+    //   原来这里又拼了一次 `pluginBase` → `plugin/MagicFlow/plugin/MagicFlow/pool` → 404 Not Found
+    //   （新建任务弹窗每次都报「Not Found」）。
+    const raw = await props.api.get(`pool${query}`)
     const data = unwrapResponse(raw) || {}
     if (!data.total) throw new Error('empty')
     pool.value = {

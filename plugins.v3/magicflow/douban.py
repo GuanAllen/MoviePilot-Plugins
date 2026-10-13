@@ -135,6 +135,30 @@ class DoubanRating:
         st["service"] = self._base
         return st
 
+    # ---------- 详情回填（服务端 enricher：year/type/rating/元数据）----------
+    def enrich_status(self) -> Dict[str, Any]:
+        """服务端详情回填进度（不可用时 ok=False）。"""
+        payload = self._req("/enrich")
+        if not payload:
+            return {"ok": False, "service": self._base}
+        st = payload.get("status") or {}
+        st["ok"] = bool(payload.get("ok"))
+        st["service"] = self._base
+        return st
+
+    def enrich_control(self, action: str) -> Dict[str, Any]:
+        """start / stop / reset（reset=清标重跑全量）。"""
+        act = str(action or "").strip().lower()
+        if act not in ("start", "stop", "reset"):
+            return {"ok": False, "error": f"未知动作:{action}"}
+        payload = self._req(f"/enrich/{act}", method="POST")
+        if not payload:
+            return {"ok": False, "service": self._base, "error": "服务不可用"}
+        st = payload.get("status") or {}
+        st["ok"] = bool(payload.get("ok"))
+        st["service"] = self._base
+        return st
+
     def _snapshot_lookup(self, title: str, year: Any = "") -> Optional[Dict[str, Any]]:
         return self.lookup(title, year)
 

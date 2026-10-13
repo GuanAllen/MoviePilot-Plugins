@@ -9,6 +9,7 @@ import {
   siteReportItemSub,
   siteReportTransportCount,
 } from '../../composables/useSiteReport'
+import { computed } from 'vue'
 import {
   SITE_REPORT_BUCKETS,
   SITE_REPORT_TRANSPORT,
@@ -23,9 +24,11 @@ const transport = defineModel('transport', { type: String, default: '' })
 const sub = defineModel('sub', { type: String, default: '' })
 const origin = defineModel('origin', { type: String, default: '' })
 
-defineProps({
+const props = defineProps({
   loading: { type: Boolean, default: false },
   live: { type: Boolean, default: false },
+  liveLoading: { type: Boolean, default: false },
+  liveStats: { type: Object, default: () => null },
   report: { type: Object, default: () => ({}) },
   sites: { type: Array, default: () => [] },
   items: { type: Array, default: () => [] },
@@ -34,6 +37,23 @@ defineProps({
 })
 
 const emit = defineEmits(['refresh', 'live', 'change'])
+
+// ★ 15.16.0 站点流量块：展示用格式化（分享率 2 位 / 字节→G / 数字千分位）
+const liveRatio = computed(() => {
+  const s = props.liveStats || {}
+  if (s.ratio_inf) return '∞'   // ★ 15.16.1：站点下载=0 → 页面显示「无限」，照实呈现
+  const v = s.ratio
+  return v === null || v === undefined ? '—' : Number(v).toFixed(2)
+})
+function liveGb(bytes) {
+  const n = Number(bytes || 0)
+  if (!n) return '0'
+  return `${(n / 1024 / 1024 / 1024).toFixed(1)}G`
+}
+function liveNum(v) {
+  const n = Number(v || 0)
+  return Number.isFinite(n) ? (Math.round(n * 10) / 10).toLocaleString('en-US') : '—'
+}
 </script>
 
 <template>
@@ -65,8 +85,27 @@ const emit = defineEmits(['refresh', 'live', 'change'])
         >H&R 现抓</VBtn>
       </div>
       <div class="magicflow-ops-dialog__body">
+        <div class="magicflow-sitereport__live">
+          <div class="magicflow-sitereport__live-head">
+            <span class="magicflow-sitereport__live-t">站点流量</span>
+            <VChip v-if="liveLoading" size="x-small" color="grey" variant="tonal">加载中</VChip>
+            <template v-else-if="liveStats">
+              <VChip size="x-small" :color="liveStats.logged_in ? 'success' : 'warning'" variant="tonal">{{ liveStats.logged_in ? '已登录' : '未登录' }}</VChip>
+              <span v-if="liveStats.uid" class="magicflow-sitereport__live-uid">UID {{ liveStats.uid }}</span>
+            </template>
+          </div>
+          <div v-if="liveStats && liveStats.ok" class="magicflow-sitereport__live-grid">
+            <div class="magicflow-sitereport__live-cell"><b>{{ liveRatio }}</b><span>分享率</span></div>
+            <div class="magicflow-sitereport__live-cell"><b>{{ liveGb(liveStats.upload) }}</b><span>上传</span></div>
+            <div class="magicflow-sitereport__live-cell"><b>{{ liveGb(liveStats.download) }}</b><span>下载</span></div>
+            <div class="magicflow-sitereport__live-cell"><b>{{ liveNum(liveStats.bonus) }}</b><span>当前魔力</span></div>
+            <div class="magicflow-sitereport__live-cell"><b>{{ liveNum(liveStats.seeding) }}</b><span>做种</span></div>
+            <div class="magicflow-sitereport__live-cell"><b>{{ liveNum(liveStats.bonus_per_hour) }}</b><span>魔力/时</span></div>
+          </div>
+          <div v-else-if="!liveLoading" class="magicflow-sitereport__live-empty">暂无实时账号数据（站点未登录或取数失败）</div>
+        </div>
         <div class="magicflow-sitereport__stats">
-          <div class="magicflow-sitereport__stat" title="该站点在本机下载器里的全部种子（含做种/下载中/暂停/静默）"><b>{{ summary.total || 0 }}</b><span>本站种子</span></div>
+          <div class="magicflow-sitereport__stat" title="该站点在本机下载器里的全部种（做种/下载/暂停/静默）"><b>{{ summary.total || 0 }}</b><span>本站种子</span></div>
           <div class="magicflow-sitereport__stat"><b>{{ (summary.size_gb || 0).toFixed(1) }}</b><span>GB</span></div>
           <div class="magicflow-sitereport__stat is-danger"><b>{{ summary.hr_owed || 0 }}</b><span>欠 H&amp;R</span></div>
           <div class="magicflow-sitereport__stat is-danger"><b>{{ summary.hr_missing || 0 }}</b><span>本机缺失</span></div>
@@ -205,6 +244,16 @@ const emit = defineEmits(['refresh', 'live', 'change'])
 .magicflow-sitereport__bar { display: flex; align-items: center; gap: 10px; }
 .magicflow-sitereport__site { flex: 1 1 auto; max-width: 22rem; }
 .magicflow-sitereport__stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-block-end: 10px; }
+/* ★ 15.16.0 站点流量块（弹窗顶部）：账号实时数据（比例/上传/下载/魔力/做种）── */
+.magicflow-sitereport__live { background: rgba(var(--v-theme-primary), 0.06); border: 1px solid rgba(var(--v-theme-primary), 0.18); border-radius: 10px; padding: 8px 10px; margin-block-end: 10px; }
+.magicflow-sitereport__live-head { display: flex; align-items: center; gap: 8px; margin-block-end: 6px; }
+.magicflow-sitereport__live-t { font-size: 12.5px; font-weight: 600; }
+.magicflow-sitereport__live-uid { font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
+.magicflow-sitereport__live-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; }
+.magicflow-sitereport__live-cell { text-align: center; min-width: 0; }
+.magicflow-sitereport__live-cell b { display: block; font-size: 14px; font-weight: 700; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.magicflow-sitereport__live-cell span { font-size: 10.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
+.magicflow-sitereport__live-empty { font-size: 12px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
 .magicflow-sitereport__stat { background: rgba(var(--v-theme-on-surface), 0.04); border-radius: 10px; padding: 8px 10px; text-align: center; }
 .magicflow-sitereport__stat b { display: block; font-size: 20px; font-weight: 700; line-height: 1.15; }
 .magicflow-sitereport__stat span { font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
@@ -225,6 +274,7 @@ const emit = defineEmits(['refresh', 'live', 'change'])
 
 @media (max-width: 959px) {
   .magicflow-sitereport__stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .magicflow-sitereport__live-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .magicflow-sitereport__bar { flex-wrap: wrap; }
   .magicflow-sitereport__site { max-width: none; }
 }

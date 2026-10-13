@@ -67,7 +67,7 @@ defineProps({
           type="number"
           min="1"
           label="最多探测站点数"
-          hint="每个候选最多查几个他站（越大越慢/越耗 PV）"
+          hint="每个候选最多查几个他站（越大越慢）"
           persistent-hint
         />
       </VCol>
@@ -82,7 +82,7 @@ defineProps({
     </header>
     <VRow>
       <VCol cols="12" md="6">
-        <VTextField v-model.number="upSpeed" type="number" min="1" label="上传限速（KB/s）" hint="留空 = 用全局档位（设置 · 常规：魔力 / 刷流上传限速）" persistent-hint />
+        <VTextField v-model.number="upSpeed" type="number" min="1" label="上传限速（KB/s）" hint="留空＝用全局档位（设置 · 常规：魔力 / 刷流上传限速）" persistent-hint />
       </VCol>
       <VCol cols="12" md="6">
         <VTextField v-model.number="dlSpeed" type="number" min="1" label="下载限速（KB/s）" hint="留空 = 用任务类型默认（魔力 1024 / 刷流全局档位）" persistent-hint />

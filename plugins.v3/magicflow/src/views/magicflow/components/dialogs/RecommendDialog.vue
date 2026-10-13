@@ -4,8 +4,12 @@
 // 数据向下（defineModel / props）、事件向上（emit）；子组件不直接改父状态。
 // 展示用纯函数（recName / recommendActionable）自 composables/useRecommend.js 具名导入复用
 // —— 单一真值源，不在两处各写一份（同 useHrBills 的 hrBillStateColor 做法）。
+import { ref } from 'vue'
 import { recommendStatusMeta, formatDateTime } from '../../../../utils'
-import { recName, recommendActionable } from '../../composables/useRecommend'
+import {
+  recName, recommendActionable, recGroupKey, recGroupMembers,
+  recSeasonLabel, recEpisodeLabel, recIsSingle,
+} from '../../composables/useRecommend'
 
 // 开关走 defineModel（Boolean）；「显示全部候选」是列表展示态，同样两向绑定，子不直接改父 state。
 const open = defineModel({ type: Boolean, default: false })
@@ -14,7 +18,7 @@ const showAllRecs = defineModel('showAllRecs', { type: Boolean, default: false }
 // 推荐域（useRecommend）：data / items / acting / hidden / confirmed / pending
 // 批量入库域（useRecImport）：selected / selectable / selectedList / allChecked / batchActing
 // 壳：narrow（窄屏全屏）
-defineProps({
+const props = defineProps({
   data: { type: Object, default: () => ({}) },
   items: { type: Array, default: () => [] },
   acting: { type: String, default: '' },
@@ -28,6 +32,16 @@ defineProps({
   batchActing: { type: Boolean, default: false },
   narrow: { type: Boolean, default: false },
 })
+
+// 组展开态：纯展示状态（不进领域层，不向上改父状态）
+const expandedGroups = ref({})
+function groupMembers(rec) {
+  return recGroupMembers((props.data || {}).items || [], rec)
+}
+function toggleGroup(key) {
+  if (!key) return
+  expandedGroups.value = { ...expandedGroups.value, [key]: !expandedGroups.value[key] }
+}
 
 const emit = defineEmits([
   'refresh',
@@ -73,7 +87,7 @@ const emit = defineEmits([
           <header class="magicflow-panel__head">
             <div>
               <div class="text-subtitle-2 font-weight-medium">甄别结果</div>
-              <div class="text-body-2 text-medium-emphasis">全部任务汇总 · 确认 = 自动整理入库；忽略 = 删除该临时种（«待核实»也可手动确认）</div>
+              <div class="text-body-2 text-medium-emphasis">全部任务汇总 · 确认＝入库；忽略＝删临时种（也可手动确认）</div>
             </div>
             <div class="d-flex align-center flex-wrap ga-2 justify-end">
               <VBtn
@@ -128,6 +142,9 @@ const emit = defineEmits([
                 <span class="magicflow-rec__meta">
                   <VChip size="x-small" variant="tonal" :color="recommendStatusMeta(rec.status).color">{{ recommendStatusMeta(rec.status).text }}</VChip>
                   <template v-if="rec.media && rec.media.type"> · {{ rec.media.type }}</template>
+                  <template v-if="recIsSingle(rec)"> · <em class="magicflow-rec__single">单集</em></template>
+                  <template v-if="recSeasonLabel(rec)"> · {{ recSeasonLabel(rec) }}</template>
+                  <template v-if="recEpisodeLabel(rec)"> · {{ recEpisodeLabel(rec) }}</template>
                   <template v-if="rec.rating"> · 评分 {{ Number(rec.rating).toFixed(1) }}</template>
                   <template v-if="rec.size_gb"> · {{ Number(rec.size_gb).toFixed(2) }}G</template>
                   <template v-if="rec.in_chart"> · 在榜</template>
@@ -138,6 +155,25 @@ const emit = defineEmits([
                   <template v-if="rec.import_result"> · {{ rec.import_result }}</template>
                   <template v-if="rec.note"> · {{ rec.note }}</template>
                 </span>
+                <div v-if="groupMembers(rec).length > 1" class="magicflow-rec__group">
+                  <VBtn
+                    size="x-small"
+                    variant="text"
+                    color="primary"
+                    :prepend-icon="expandedGroups[recGroupKey(rec)] ? 'mdi-chevron-up' : 'mdi-chevron-down'"
+                    @click="toggleGroup(recGroupKey(rec))"
+                  >{{ expandedGroups[recGroupKey(rec)] ? '收起' : `同季其它 ${groupMembers(rec).length - 1} 条` }}</VBtn>
+                  <ul v-if="expandedGroups[recGroupKey(rec)]" class="magicflow-rec__members">
+                    <li v-for="m in groupMembers(rec)" :key="m.hash">
+                      <span class="magicflow-rec__member-ep">{{ recEpisodeLabel(m) || '—' }}</span>
+                      <span class="magicflow-rec__member-meta">
+                        {{ Number(m.size_gb || 0).toFixed(2) }}G ·
+                        {{ recommendStatusMeta(m.status).text }}
+                        <template v-if="m.rating"> · 评分 {{ Number(m.rating).toFixed(1) }}</template>
+                      </span>
+                    </li>
+                  </ul>
+                </div>
               </div>
               <div v-if="recommendActionable(rec)" class="magicflow-rec__actions">
                 <VBtn
@@ -339,5 +375,39 @@ const emit = defineEmits([
 @media (max-width: 699px) {
   .magicflow-panel { padding: 14px; }
   .magicflow-panel__head { flex-wrap: wrap; flex-direction: column; align-items: flex-start; }
+}
+/* ★ 15.8.21：单集标注 / 同季聚合 */
+.magicflow-rec__single {
+  font-style: normal;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(var(--v-theme-warning), 0.16);
+  color: rgb(var(--v-theme-warning));
+}
+.magicflow-rec__group {
+  margin-block-start: 2px;
+}
+.magicflow-rec__members {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 2px;
+}
+.magicflow-rec__members li {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 0.78rem;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
+}
+.magicflow-rec__member-ep {
+  flex: 0 0 auto;
+  min-inline-size: 3.4rem;
+  color: rgb(var(--v-theme-primary));
+}
+.magicflow-rec__member-meta {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

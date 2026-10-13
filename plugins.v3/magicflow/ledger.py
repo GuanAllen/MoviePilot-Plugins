@@ -49,6 +49,7 @@ from .tags import (
 #   历史遗留的**弱身份**（``|2.0`` 这种体积档）。弱组被清理时要把残留种子直接解绑，
 #   否则资源行会因「还有种子指着它」被留下 → 下次重载弱组复活。
 _STRONG_RID = re.compile(r"^[0-9a-f]{32,64}$")
+_MEMBER_KEYS = ("site", "completed_at", "added_at", "reused", "origin_site")
 
 _SCHEMA_LOCK = threading.Lock()   # 结构自愈串行化（启动瞬间多 worker 抢建列会撞 DuplicateColumn）
 
@@ -151,6 +152,22 @@ class LedgerBackend:
                           f"{'…' if len(added) > 6 else ''}")
         finally:
             sess.close()
+        # ★ 2026-10-11：旧行一次性回填 —— 合并前的 ``lib_*`` 4 列 → ``library`` JSON。
+        #   幂等（只补 ``library IS NULL``）；孤儿列若已被物理删除 → 静默跳过（不阻断启动）。
+        try:
+            _bs = self._session()
+            try:
+                _bs.execute(text(
+                    "UPDATE mf_resource SET library = json_build_object("
+                    "'first_at', lib_first_at, 'updated', lib_updated, "
+                    "'path', lib_path, 'media_id', lib_media_id) "
+                    "WHERE library IS NULL AND (lib_first_at IS NOT NULL OR lib_updated IS NOT NULL "
+                    "OR lib_path IS NOT NULL OR lib_media_id IS NOT NULL)"))
+                _bs.commit()
+            finally:
+                _bs.close()
+        except Exception as err:  # noqa: BLE001
+            self._log(f"账本:library 回填跳过:{err}", "warning")
 
     # ------------------------------------------------------------ 站点索引
 
@@ -250,7 +267,8 @@ class LedgerBackend:
         不再读出 —— 它们已经被 DROP，SQLAlchemy 访问会报 AttributeError。身份走 resource。
         """
         rec: Dict[str, Any] = {}
-        rec["site"] = names.get(s.site_id) or ""
+        _os = getattr(s, "origin_site", "") or ""
+        rec["site"] = names.get(s.site_id) or _os or ""
         if s.task_id:
             rec["task"] = self._task_name(s.task_id) or ""
         if s.resource_id:
@@ -270,10 +288,32 @@ class LedgerBackend:
         退役的组员真列（in_group/m_*/mmbr）不再读出。
         """
         m: Dict[str, Any] = {}
-        m["site"] = names.get(s.site_id) or ""
+        _m_os = getattr(s, "origin_site", "") or ""
+        m["site"] = names.get(s.site_id) or _m_os or ""
         if s.resource_id:
             m["fp"] = s.resource_id
+        # ★ 2026-10-11：来源站判据的「每份事实」（write-once 持久化在 mf_seed）
+        _ca = getattr(s, "completed_at", None)
+        if _ca:
+            m["completed_at"] = float(_ca)
+        _aa = getattr(s, "added_at", None)
+        if _aa:
+            m["added_at"] = float(_aa)
+        _ru = getattr(s, "reused", None)
+        if _ru is not None:
+            m["reused"] = bool(_ru)
+        _os = getattr(s, "origin_site", None)
+        if _os:
+            m["origin_site"] = str(_os)
         return m
+
+    @staticmethod
+    def _member_same(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+        """只比较 ``_member_patch`` 实际落库的字段（其余是内存态，不影响写）。"""
+        for k in _MEMBER_KEYS:
+            if (a or {}).get(k) != (b or {}).get(k):
+                return False
+        return True
 
     def _rec_from_resource(self, r: Any, members: Dict[str, Dict[str, Any]],
                            names: Dict[int, str]) -> Dict[str, Any]:
@@ -287,11 +327,15 @@ class LedgerBackend:
         rec["source_site"] = names.get(r.source_site_id) or r.source_site_name or rec.get("source_site") or ""
         rec["members"] = dict(members or {})           # 已按资源 id 取好的成员表
         lib: Dict[str, Any] = {}
-        for col, key in (("in_library", "in_library"), ("lib_first_at", "first_at"),
-                         ("lib_updated", "updated"), ("lib_path", "path"), ("lib_media_id", "media_id")):
-            v = getattr(r, col, None)
-            if v is not None:
-                lib[key] = bool(v) if col == "in_library" else v
+        _in = getattr(r, "in_library", None)
+        if _in is not None:
+            lib["in_library"] = bool(_in)
+        _stored = getattr(r, "library", None)
+        if isinstance(_stored, dict):
+            for k in ("first_at", "updated", "path", "media_id"):
+                v = _stored.get(k)
+                if v is not None:
+                    lib[k] = v
         rec["library"] = lib
         if r.identity:
             rec["identity"] = r.identity
@@ -317,11 +361,11 @@ class LedgerBackend:
         不再写入。状态/身份/H&R 走 resource；进度/体积/做种时长走下载器实况。
         """
         site_name = str(rec.get("site") or "").strip()
-        sid = self._site_id(site_name)
+        sid = self._site_id(site_name, create=False)
         task_name = str(rec.get("task") or "").strip()
         tid = self._task_id(task_name)
         rid = norm_res_id(rec.get("fp")).lower()
-        return {
+        _row = {
             "hash": str(h).lower(),
             "site_id": sid,
             "resource_id": rid or None,
@@ -330,6 +374,9 @@ class LedgerBackend:
             "vfy_miss": int(rec.get("miss") or 0),
             "updated": rec.get("updated") or now,
         }
+        if sid is None and site_name:            # 站未登记：站名兜底进 origin_site（不建 mf_site 行）
+            _row["origin_site"] = site_name
+        return _row
 
     def _member_patch(self, h: str, rid: Optional[str], m: Dict[str, Any],
                       now: float) -> Dict[str, Any]:
@@ -343,12 +390,33 @@ class LedgerBackend:
             "updated": now,
         }
         site_name = str((m or {}).get("site") or "").strip()
-        sid = self._site_id(site_name) if site_name else None
+        sid = self._site_id(site_name, create=False) if site_name else None
         if sid:
             patch["site_id"] = sid
+        # ★ 2026-10-11：来源站判据的「每份事实」（有则写；组员没变会跳过 → 不覆盖旧值）
+        _mm = m or {}
+        try:
+            _ca = float(_mm.get("completed_at") or 0.0)
+        except (TypeError, ValueError):
+            _ca = 0.0
+        if _ca > 0:
+            patch["completed_at"] = _ca
+        try:
+            _aa = float(_mm.get("added_at") or 0.0)
+        except (TypeError, ValueError):
+            _aa = 0.0
+        if _aa > 0:
+            patch["added_at"] = _aa
+        if _mm.get("reused") is not None:
+            patch["reused"] = bool(_mm.get("reused"))
+        _org = str(_mm.get("origin_site") or "").strip()
+        if _org:
+            patch["origin_site"] = _org
         return patch
 
     def res_row(self, rid: str, rec: Dict[str, Any], now: float) -> Dict[str, Any]:
+        # ★ 2026-10-10：``rid`` 是**内容寻址主键**（种子文件特征码 sha1），**禁改**。
+        #   调用方须保证 ``_STRONG_RID`` 匹配（见 save_groups / _touch_resource 的护栏）。
         # ★ 10.0.0：账单**按站分账**（``hrs``）—— 同一资源多站各欠一份，全部写入
         _bills = rec.get("hrs") if isinstance(rec.get("hrs"), dict) else None
         if not _bills:
@@ -361,11 +429,13 @@ class LedgerBackend:
             item = dict(_b)
             site_name = str(item.get("site") or "").strip()
             if site_name:
-                item["site_id"] = self._site_id(site_name)
-                item.pop("site", None)
+                _sid = self._site_id(site_name, create=False)
+                item["site_id"] = _sid
+                if _sid:
+                    item.pop("site", None)
             hrs.append(item)
         src_site = str(rec.get("source_site") or "").strip()
-        src_id = self._site_id(src_site) if src_site else None
+        src_id = self._site_id(src_site, create=False) if src_site else None
         lib = rec.get("library") or {}
         row: Dict[str, Any] = {
             "resource_id": rid,
@@ -383,10 +453,9 @@ class LedgerBackend:
             row["source_site_name"] = src_site     # 关联不上 → 单列兜底
         # 入库真列
         row["in_library"] = None if lib.get("in_library") is None else bool(lib.get("in_library"))
-        row["lib_first_at"] = lib.get("first_at")
-        row["lib_updated"] = lib.get("updated")
-        row["lib_path"] = lib.get("path") or None
-        row["lib_media_id"] = str(lib.get("media_id") or "") or None
+        # 写侧保证 path/media_id 为非空 str（set_library/queue_library 已强转）→ 此处只按 None 过滤
+        _libsub = {k: lib.get(k) for k in ("first_at", "updated", "path", "media_id") if lib.get(k) is not None}
+        row["library"] = _libsub or None
         if rec.get("identity"):
             row["identity"] = str(rec["identity"])
             row["identity_at"] = rec.get("identity_at")
@@ -481,7 +550,8 @@ class LedgerBackend:
     def _touch_resource(self, sess: Any, rec: Dict[str, Any], now: float) -> None:
         """种子的身份/体积 → 资源表（资源表仍是身份的唯一真值源）。"""
         rid = norm_res_id(rec.get("fp")).lower()
-        if not rid:
+        # ★ 护栏（2026-10-10）：内容寻址主键必须来自真实特征码且为强身份，否则拒写
+        if not rid or not _STRONG_RID.match(rid):
             return
         patch: Dict[str, Any] = {"resource_id": rid}
         if rec.get("sub"):
@@ -498,7 +568,101 @@ class LedgerBackend:
         if len(patch) > 1:
             sess.merge(mfdb.ResourceRow(**patch))
 
-    # ------------------------------------------------------------ 资源账本
+    def _media_titles(self) -> Dict[str, str]:
+        """媒体库内容名索引：``{media_id: title}``（★ 15.8.18，库内资产列表显示干净的
+        剧名/片名/专辑名，而非下载器种子的原始标题）。
+
+        读 MoviePilot 自己的媒体库表 ``public.mediaserveritem``（跨 schema，60s 缓存）。
+        查不到/异常 → 返回空 dict（调用方回退种子名兜底）。
+        """
+        now = time.time()
+        cache = getattr(self, "_media_titles_cache", None)
+        if isinstance(cache, tuple) and (now - float(cache[0] or 0)) < 60.0:
+            return cache[1]
+        out: Dict[str, str] = {}
+        try:
+            sess = self._session()
+            try:
+                rows = sess.execute(text(
+                    "SELECT media_id, title FROM public.mediaserveritem "
+                    "WHERE media_id IS NOT NULL AND title IS NOT NULL AND title != ''"
+                )).all()
+            finally:
+                sess.close()
+            for mid, title in rows:
+                k = str(mid or "").strip()
+                v = str(title or "").strip()
+                if k and v:
+                    out[k] = v
+        except Exception:  # noqa: BLE001
+            out = {}
+        self._media_titles_cache = (now, out)
+        return out
+
+    def _transfer_titles(self) -> Dict[str, str]:
+        """整理历史索引：``{download_hash: title}``（库内资产列表优先显示 MP 识别出的媒体名）。
+
+        比 ``_media_titles``（依赖 ``library.media_id``，多数存量资产没记）覆盖广得多：
+        读 MoviePilot 自己的 ``public.transferhistory``（跨 schema，60s 缓存），
+        按 ``download_hash`` 关联 —— 同一 hash 多行（每集一行）取**最新**非空 title。
+        查不到/异常 → 返回空 dict（调用方回退）。
+        """
+        now = time.time()
+        cache = getattr(self, "_transfer_titles_cache", None)
+        if isinstance(cache, tuple) and (now - float(cache[0] or 0)) < 60.0:
+            return cache[1]
+        out: Dict[str, str] = {}
+        try:
+            sess = self._session()
+            try:
+                rows = sess.execute(text(
+                    "SELECT download_hash, title FROM public.transferhistory "
+                    "WHERE download_hash IS NOT NULL AND title IS NOT NULL AND title != '' "
+                    "ORDER BY id"
+                )).all()
+            finally:
+                sess.close()
+            for h, title in rows:
+                k = str(h or "").strip().lower()
+                v = str(title or "").strip()
+                if k and v:
+                    out[k] = v          # 按 id 升序遍历 → 后写覆盖前写 = 取最新
+        except Exception:  # noqa: BLE001
+            out = {}
+        self._transfer_titles_cache = (now, out)
+        return out
+
+    def _transfer_dests(self) -> Dict[str, str]:
+        """整理落点索引：``{download_hash: dest}``（★ 15.9.0「库内资源管理·刮削」用）。
+
+        读 MoviePilot 的 ``public.transferhistory.dest``（跨 schema，60s 缓存）——
+        拿到这份资源**实际整理到了哪个目录**，重刮时就能精确定位剧集/电影目录，
+        不用靠名字模糊匹配。查不到/异常 → 空 dict（调用方回退按名字找）。
+        """
+        now = time.time()
+        cache = getattr(self, "_transfer_dests_cache", None)
+        if isinstance(cache, tuple) and (now - float(cache[0] or 0)) < 60.0:
+            return cache[1]
+        out: Dict[str, str] = {}
+        try:
+            sess = self._session()
+            try:
+                rows = sess.execute(text(
+                    "SELECT download_hash, dest FROM public.transferhistory "
+                    "WHERE download_hash IS NOT NULL AND dest IS NOT NULL AND dest != '' "
+                    "ORDER BY id"
+                )).all()
+            finally:
+                sess.close()
+            for h, dest in rows:
+                k = str(h or "").strip().lower()
+                v = str(dest or "").strip()
+                if k and v:
+                    out[k] = v      # 按 id 升序 → 取最新一行
+        except Exception:  # noqa: BLE001
+            out = {}
+        self._transfer_dests_cache = (now, out)
+        return out
 
     def load_groups(self) -> Dict[str, Dict[str, Any]]:
         with self._lock:
@@ -547,7 +711,8 @@ class LedgerBackend:
                         for gid in changed:
                             rec = data.get(gid) or {}
                             rid = norm_res_id(gid).lower()
-                            if not rid:
+                            # ★ 护栏（2026-10-10）：只落强身份（真实特征码）资源行，假码/体积档拒写
+                            if not rid or not _STRONG_RID.match(rid):
                                 continue
                             sess.merge(mfdb.ResourceRow(**self.res_row(rid, rec, now)))
                             self._sync_members(sess, rid, rec.get("members") or {},
@@ -580,13 +745,81 @@ class LedgerBackend:
         for h, m in (members or {}).items():
             if not isinstance(m, dict):
                 continue
-            if prev.get(h) == m and prev.get(h) is not None:
+            _pm = prev.get(h)
+            if _pm is not None and self._member_same(_pm, m):
                 continue                                  # 组员没变，跳过（省一写）
             sess.merge(mfdb.SeedRow(**self._member_patch(str(h), rid, m, now)))
         for h in (prev or {}):
             if h not in (members or {}):                  # 退出资源 → 摘 resource_id（7.0.0：无组员列）
                 sess.execute(update(mfdb.SeedRow).where(mfdb.SeedRow.hash == str(h).lower())
                              .values(resource_id=None))
+
+    def gc_empty_groups(self) -> int:
+        """清掉「grouped 但已无任何成员」的资源行（读侧已跳过、纯占表的空壳组）。
+
+        只清空壳；``grouped=false`` 的裸行（观察期/库内资产）不碰。幂等，返回删除行数。
+        """
+        with self._lock:
+            n = 0
+            try:
+                sess = self._session()
+                try:
+                    n = int(sess.execute(text(
+                        "SELECT count(*) FROM mf_resource r WHERE r.grouped AND NOT EXISTS "
+                        "(SELECT 1 FROM mf_seed s WHERE s.resource_id = r.resource_id)")).scalar() or 0)
+                    if n:
+                        sess.execute(text(
+                            "DELETE FROM mf_resource WHERE grouped AND NOT EXISTS "
+                            "(SELECT 1 FROM mf_seed s WHERE s.resource_id = mf_resource.resource_id)"))
+                        sess.commit()
+                    else:
+                        sess.rollback()
+                finally:
+                    sess.close()
+            except Exception as err:  # noqa: BLE001
+                self._log(f"账本:空组 GC 跳过:{err}", "warning")
+                return 0
+        if n:
+            self._groups = None
+            self._group_prev = {}
+        return n
+
+    def recompute_sources(self) -> int:
+        """★ 2026-10-11：来源站纠偏——source_hash 指向复用份（reused 非 False）或为空的资源，
+        重算为「真下载(reused=False)且完成最早」的成员。返回纠正条数。幂等。"""
+        with self._lock:
+            n = 0
+            try:
+                sess = self._session()
+                try:
+                    rows = sess.execute(text(
+                        "SELECT resource_id FROM mf_resource WHERE grouped AND ("
+                        "source_hash IS NULL OR source_hash = '' OR EXISTS ("
+                        "SELECT 1 FROM mf_seed s WHERE s.hash = mf_resource.source_hash "
+                        "AND s.reused IS NOT FALSE))"
+                    )).fetchall()
+                    for (rid,) in rows:
+                        cand = sess.execute(text(
+                            "SELECT hash, site_id FROM mf_seed WHERE resource_id = :rid "
+                            "AND reused IS FALSE ORDER BY COALESCE(completed_at, added_at) ASC LIMIT 1"
+                        ), {"rid": rid}).fetchone()
+                        if not cand:
+                            continue
+                        sess.execute(text(
+                            "UPDATE mf_resource SET source_hash = :h, source_site_id = :sid, "
+                            "source_site_name = NULL, updated = :u WHERE resource_id = :rid"
+                        ), {"h": cand[0], "sid": cand[1], "u": time.time(), "rid": rid})
+                        n += 1
+                    sess.commit()
+                finally:
+                    sess.close()
+            except Exception as err:  # noqa: BLE001
+                self._log(f"账本:来源站纠偏跳过:{err}", "warning")
+                return 0
+        if n:
+            self._groups = None
+            self._group_prev = {}
+        return n
 
 class SeedLedgerStore:
     """``tag_state`` 账本对象（★ 12.0.0 自成一体，不再继承 kv 类）。
@@ -907,7 +1140,7 @@ class ResourceLedgerStore:
     ``group_id -> {size_gb, files_shared, members:{hash:{site,downloader,added,
     downloaded,progress,state,fp}}, source_site, source_hash,
     hrs:{site:{site,required_hours,need_hours,seeded_seconds,settled,settled_at,checked_at,by_hash}},
-    hr:<主账单(兼容)>, library:{in_library,first_at,media_id,path}, created, updated}``
+    hr:<主账单(兼容)>, library:{in_library,first_at,updated,media_id,path}, created, updated}``
     """
 
     def __init__(self, backend: LedgerBackend, log: Any = None) -> None:
@@ -969,6 +1202,9 @@ class ResourceLedgerStore:
         progress: float = 1.0,
         state: str = "",
         fp: str = "",
+        dl_bytes: Optional[float] = None,
+        completed_at: float = 0.0,
+        added_at: float = 0.0,
         now: Optional[float] = None,
     ) -> Dict[str, Any]:
         gid = _clean(group_id)
@@ -990,10 +1226,65 @@ class ResourceLedgerStore:
         _fp = _clean(fp) or _clean(prev.get("fp"))
         if _fp:
             members[h]["fp"] = _fp
-        # 资源级的「来源站」= 真正把它下回来的那个站（H&R 义务所在）
-        if downloaded and not _clean(rec.get("source_site")):
-            rec["source_site"] = _clean(site)
-            rec["source_hash"] = h
+        # ★ 2026-10-11（DESIGN-RESOURCE-SEED §2）：来源站判据的「每份事实」，首见落、不覆盖。
+        _org = _clean(site)
+        if _org:
+            members[h]["origin_site"] = _org
+        try:
+            _ca = float(completed_at or 0.0)
+        except (TypeError, ValueError):
+            _ca = 0.0
+        _ca = _ca or float(prev.get("completed_at") or 0.0)
+        if _ca > 0:
+            members[h]["completed_at"] = _ca
+        try:
+            _aa = float(added_at or 0.0)
+        except (TypeError, ValueError):
+            _aa = 0.0
+        _aa = _aa or float(prev.get("added_at") or 0.0)
+        if _aa > 0:
+            members[h]["added_at"] = _aa
+        if dl_bytes is not None:
+            try:
+                _dlb = float(dl_bytes)
+            except (TypeError, ValueError):
+                _dlb = 0.0
+            members[h]["dl_bytes"] = _dlb
+            members[h]["reused"] = bool(_dlb <= 0)     # 复用份 = 没真下载（downloaded≈0）
+        # 资源级「来源站」= **真下载（downloaded>0，非复用）且完成最早**者的站；write-once（定了不漂）。
+        if not _clean(rec.get("source_site")):
+            _cands: List[Tuple[float, float, str, str]] = []   # (completed, added, hash, site)
+            _truedl: List[Tuple[float, str, str]] = []         # 真下载但无完成时刻 → 退用加入时刻
+            for _mh, _mm in members.items():
+                if not isinstance(_mm, dict) or _mm.get("reused") is not False:
+                    continue                              # 未确证「非复用」不参评（宁漏不错）
+                _ms = _clean(_mm.get("site"))
+                if not _ms:
+                    continue
+                try:
+                    _mca = float(_mm.get("completed_at") or 0.0)
+                except (TypeError, ValueError):
+                    _mca = 0.0
+                try:
+                    _maa = float(_mm.get("added_at") or _mm.get("added") or 0.0)
+                except (TypeError, ValueError):
+                    _maa = 0.0
+                if _mca > 0:
+                    _cands.append((_mca, _maa, str(_mh), _ms))
+                else:
+                    _truedl.append((_maa if _maa > 0 else float("inf"), str(_mh), _ms))
+            if _cands:
+                _cands.sort(key=lambda x: (x[0], x[1], x[2]))
+                rec["source_site"] = _cands[0][3]
+                rec["source_hash"] = _cands[0][2]
+            elif _truedl:
+                _truedl.sort(key=lambda x: (x[0], x[1]))
+                rec["source_site"] = _truedl[0][2]
+                rec["source_hash"] = _truedl[0][1]
+            elif dl_bytes is None and downloaded:
+                # 退化兜底：调用方未给真下载信息（旧测试 / 未通路）→ 老口径
+                rec["source_site"] = _clean(site)
+                rec["source_hash"] = h
         rec["members"] = members
         # ★ 同一 hash 只能属于一个资源：从其它组里摘掉（fp 计算出来后从「关键词组」搬进「特征码组」）
         for other_gid in [k for k in data if k != gid and h in (data[k].get("members") or {})]:
@@ -1285,6 +1576,14 @@ class ResourceLedgerStore:
         with_fp = sum(1 for rec in items.values()
                       if any(_clean((m or {}).get("fp")) for m in (rec.get("members") or {}).values()))
         return {"groups": len(items), "multi_site_groups": multi, "groups_with_fp": with_fp}
+
+    def gc_empty_groups(self) -> int:
+        """清掉无成员的 grouped 资源行（空壳组）。见 ``LedgerBackend.gc_empty_groups``。"""
+        return self.backend.gc_empty_groups()
+
+    def recompute_sources(self) -> int:
+        """来源站纠偏（source_hash 指向复用份 → 重算真下载最早者）。"""
+        return self.backend.recompute_sources()
 
 
 def get_backend(plugin: Any) -> LedgerBackend:

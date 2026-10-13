@@ -2,12 +2,13 @@
 // MagicFlow 前端 · 豆瓣评分服务弹窗（magicflow-douban · 3.23.1）
 // P4 拆分：自 views/magicflow/index.vue **纯搬家**（template 块 + 配套 scoped 样式，无行为/样式变更）。
 // 数据向下（modelValue / state / narrow）、事件向上（emit）；子组件不直接改父状态。
+import { computed } from 'vue'
 import { fmtTs } from '../../format'
 
 const open = defineModel({ type: Boolean, default: false })
 
 // state = 豆瓣评分服务状态（来自 useDouban）：data / crawl / progress / acting
-defineProps({
+const props = defineProps({
   state: {
     type: Object,
     default: () => ({ data: {}, crawl: {}, progress: 0, acting: '' }),
@@ -16,6 +17,16 @@ defineProps({
 })
 
 const emit = defineEmits(['start', 'refresh'])
+
+// 服务端「详情回填」（year/type/rating/元数据）进度
+const enrich = computed(() => (props.state.data || {}).enrich || {})
+const enrichProgress = computed(() => {
+  const e = enrich.value
+  const total = Number(e.queued || 0)
+  const idx = Number(e.cursor || 0)
+  if (!total) return e.finished ? 100 : 0
+  return Math.min(100, Math.round((idx / total) * 100))
+})
 
 // 纯格式化：与 index.vue 的 fmtCount 同口径（< 1 万直接显示，否则「x.x 万」）。
 function fmtCount(n) {
@@ -77,7 +88,7 @@ function fmtCount(n) {
             <div class="magicflow-douban-crawl__grid">
               <span>累计请求 <strong>{{ state.crawl.requests || 0 }}</strong></span>
               <span>今日 <strong>{{ state.crawl.day_requests || 0 }}</strong> / {{ state.crawl.daily_max || '—' }}</span>
-              <span>已抓 <strong>{{ fmtCount(state.crawl.items) }}</strong> 条</span>
+              <span>扫描条次 <strong>{{ fmtCount(state.crawl.items) }}</strong></span>
               <span>新增 <strong>{{ fmtCount(state.crawl.new) }}</strong> 条</span>
               <span>错误 <strong>{{ state.crawl.errors || 0 }}</strong></span>
             </div>
@@ -109,6 +120,64 @@ function fmtCount(n) {
                 :loading="state.acting === 'reset'"
                 @click="emit('start', 'reset')"
               >从头重跑</VBtn>
+            </div>
+          </div>
+        </VSheet>
+
+        <VSheet tag="section" class="magicflow-panel app-surface-static mt-2">
+          <header class="magicflow-panel__head">
+            <div>
+              <div class="text-subtitle-2 font-weight-medium">详情回填（年份 / 类型 / 评分 / 元数据）</div>
+              <div class="text-body-2 text-medium-emphasis">
+                列表接口不返回年份、也不区分影/剧 → 逐条补 subject_abstract 的 year/type/rating/region/…，同名多记录组优先，每条只补一次
+              </div>
+            </div>
+            <VChip
+              size="small"
+              variant="tonal"
+              :color="enrich.running ? 'success' : (enrich.finished ? 'info' : 'warning')"
+            >{{ enrich.running ? '回填中' : (enrich.finished ? '已完成' : '已暂停') }}</VChip>
+          </header>
+          <div class="magicflow-douban-crawl">
+            <div class="magicflow-douban-crawl__row">
+              <span>进度</span>
+              <span class="text-medium-emphasis">
+                游标 {{ enrich.cursor || 0 }} / {{ enrich.queued || 0 }}
+                <template v-if="enrich.finished">· 全部补完</template>
+              </span>
+            </div>
+            <VProgressLinear :model-value="enrichProgress" height="6" rounded color="primary" class="my-2" />
+            <div class="magicflow-douban-crawl__grid">
+              <span>待回填 <strong>{{ fmtCount(enrich.pending) }}</strong> 条</span>
+              <span>缺年份 <strong>{{ fmtCount(enrich.missing) }}</strong> 条</span>
+              <span>已回填 <strong>{{ fmtCount(enrich.filled) }}</strong> 条</span>
+              <span>今日 <strong>{{ enrich.day_requests || 0 }}</strong> / {{ enrich.daily_max || '—' }}</span>
+              <span>错误 <strong>{{ enrich.errors || 0 }}</strong></span>
+            </div>
+            <div v-if="enrich.blocked_for > 0" class="magicflow-douban-crawl__warn">
+              ⚠ 触发限流/退避，暂停 {{ enrich.blocked_for }} 秒后继续
+            </div>
+            <div v-else-if="enrich.last_error" class="magicflow-douban-crawl__warn">
+              最近异常：{{ enrich.last_error }}
+            </div>
+            <div class="magicflow-douban-crawl__actions">
+              <VBtn
+                v-if="enrich.running"
+                size="small" variant="tonal" color="warning" prepend-icon="mdi-pause"
+                :loading="state.acting === 'enrich_stop'"
+                @click="emit('start', 'enrich_stop')"
+              >暂停回填</VBtn>
+              <VBtn
+                v-else-if="!enrich.finished"
+                size="small" variant="tonal" color="success" prepend-icon="mdi-play"
+                :loading="state.acting === 'enrich_start'"
+                @click="emit('start', 'enrich_start')"
+              >继续回填</VBtn>
+              <VBtn
+                size="small" variant="text" color="primary" prepend-icon="mdi-restart"
+                :loading="state.acting === 'enrich_reset'"
+                @click="emit('start', 'enrich_reset')"
+              >重置队列</VBtn>
             </div>
           </div>
         </VSheet>

@@ -136,7 +136,7 @@ const data = reactive(props.data)
             </div>
           </div>
         </VSheet>
-        <div class="magicflow-exam-foot">只统计「有 Cookie」的站点；已通过的默认不显示（可在「插件设置 → 考核」里改）</div>
+        <div class="magicflow-exam-foot">只统计有 Cookie 的站点；已通过默认不显示（设置 → 考核 可改）</div>
       </VCardText>
     </VCard>
   </VDialog>

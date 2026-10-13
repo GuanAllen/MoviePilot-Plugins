@@ -135,7 +135,7 @@ const emit = defineEmits(['refresh', 'run', 'settings'])
               <span class="magicflow-signin-row__msg" :title="row.msg">{{ row.msg || '待执行' }}</span>
             </div>
           </div>
-          <p v-else class="magicflow-field__sub">还没有站点结果。先到右上齿轮里勾选要签到的站点。</p>
+          <p v-else class="magicflow-field__sub">还没有站点结果：先到右上齿轮勾选要签到的站点</p>
         </div>
 
         <div v-if="signinMatrix.rows.length" class="magicflow-settings-block">

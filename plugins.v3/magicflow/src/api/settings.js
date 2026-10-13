@@ -9,10 +9,6 @@ export function makeSettings(c) {
     // ── 标签模型 ───────────────────────────────────────────
     /** 标签模型概览 */
     tags: () => c.get('tags'),
-    /** 老标签 → 新命名 迁移预演 */
-    tagMigratePlan: () => c.get('tags?action=migrate'),
-    /** 执行迁移 */
-    tagMigrateApply: () => c.post('tags/migrate', { apply: true }),
     /** 标签 ↔ 账本对账（confirm=true 才写） */
     tagReconcile: (confirm = false) => c.get(
       `tags?action=${confirm ? 'reconcile_apply' : 'reconcile'}${confirm ? '&confirm=1&adopt_reseed=1' : ''}`,

@@ -6,6 +6,20 @@ export const ratingSourceItems = [
   { title: '豆瓣优先（拿不到回退 TMDB · 易被豆瓣限流）', value: 'douban' },
 ]
 
+// ★ 15.8.21：单集策略（推荐「季/集」识别）
+// ★ 15.11.0：把魔流 AI 入口注册进 MoviePilot Agent / MCP 的范围
+// ★ 2026-10-14：数字跟 `features/mcptools.py::CORE_TOOLS` / `_agent_endpoints()` 对齐（52 具名 core / 76 端点）
+export const agentToolScopeItems = [
+  { title: '常用工具（52）', value: 'core' },
+  { title: '全部端点（76）', value: 'all' },
+]
+
+export const episodePolicyItems = [
+  // ★ 15.8.25：单集**不自动**订阅；要订整季请在推荐列表中手动点「订阅整季」（标记了才订阅）
+  { title: '单集不自动推荐（只推整季 / 合集）', value: 'season_first' },
+  { title: '单集也推荐', value: 'all' },
+]
+
 // ── ★ 页面注册表（数据驱动，新增功能页只改这个数组，不必动布局）──────────────
 // key 与 open* 处理函数一一对应；后续接入手机端导航 / 底栏 / 更多菜单时统一从这里取。
 // scope='global' = 插件级单例（不按任务配）；'view' = 只读视图。
@@ -68,6 +82,7 @@ export const MF_SETTINGS_TABS = [
   { key: 'claim', label: '认领', icon: 'mdi-seal-variant' },
   { key: 'rules', label: '站点规则', icon: 'mdi-shield-check-outline' },
   { key: 'tags', label: '标签管理', icon: 'mdi-tag-multiple-outline' },
+  { key: 'notify', label: '通知', icon: 'mdi-bell-ring-outline' },
 ]
 
 export const SITE_REPORT_BUCKETS = [

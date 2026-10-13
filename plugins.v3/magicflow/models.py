@@ -256,6 +256,17 @@ class MagicFlowSettingsPayload(BaseModel):
     # 基础
     enabled: bool = True
     show_sidebar_nav: bool = True
+    agent_mcp: bool = True                    # ★ 15.11.0：注册进 MP Agent / MCP
+    agent_mcp_scope: str = "core"             # core|all
+    # ★ 15.13.0：事件通知（H&R 临期 / 容量红线 / 产出骤降 / 任务失败 / 日报）
+    notify_enabled: bool = True
+    notify_hr_hours: float = 24.0
+    notify_capacity_pct: float = 80.0
+    notify_drop_pct: float = 20.0
+    notify_task_fail: bool = True
+    notify_daily: bool = False
+    notify_daily_hour: int = 9
+    notify_quiet: str = ""                   # 免打扰，如 23:00-08:00（空=不静音）
 
     # 运行
     debug_log: bool = False
@@ -299,6 +310,11 @@ class MagicFlowSettingsPayload(BaseModel):
     recommend_douban_service_url: str = Field(
         "", max_length=200,
         description="豆瓣评分服务地址(magicflow-douban),留空用默认 http://magicflow-douban:18789"
+    )
+    recommend_episode_policy: str = Field(
+        "season_first", max_length=20,
+        description=("单集剧集策略：season_first=单集不自动推荐(降级为普通临时种，不删，可手动"
+                     "「订阅整季」) / all=单集也推荐")
     )
     recommend_require_chart: bool = Field(True, description="榜单/热映/命中订阅时也算达标(与评分为「或」关系)")
     recommend_expire_days: float = Field(7.0, ge=0, le=3650, description="推荐待确认窗口(天);磁盘不足则立即视为过期")
@@ -551,13 +567,44 @@ class MagicFlowTorrentBatchPayload(BaseModel):
     hashes: List[str] = Field(default_factory=list, description="待操作的种子 infohash 列表")
 
 
-class MagicFlowAssetDeletePayload(BaseModel):
-    """★ 15.8.15 库内资产手动删除请求模型（Master「希望增加魔流库内资产手动删除的入口」）。
+class MagicFlowAssetActPayload(BaseModel):
+    """★ 15.9.0「库内资源管理」行内动作请求模型（一条 = 一份资源）。
 
-    只对**本插件库内资产列表里**的 hash 生效；``confirm != 1`` 一律干跑（零写入）。
+    ``action`` ∈ ``protect``（手动保留，永不自动删） / ``unprotect``（取消保留） /
+    ``subscribe``（MP 订阅「作品+季」，抓齐其余集） / ``unsubscribe``（退订） /
+    ``organize``（让 MP 重新整理入库 = 换个地方） / ``scrape``（多源重新刮元数据，
+    纠正 TMDB 刮错，如「高达00」被识别成「0079」）。
+    非删除类动作默认**执行**（都可逆、不删文件）；删除仍走 ``/assets/delete``（默认干跑）。
     """
 
-    hashes: List[str] = Field(default_factory=list, description="待删除的库内资产 infohash 列表")
+    action: str = Field(..., max_length=20, description="protect|unprotect|subscribe|unsubscribe|organize|scrape")
+    resource_ids: List[str] = Field(default_factory=list, description="资源 id（资源账本 group_id）列表")
+    hashes: List[str] = Field(default_factory=list, description="兼容：直接给成员 hash")
+    season: int = Field(0, description="可选：强制指定季号（0=自动从种名解析）")
+    scrape_source: str = Field("", max_length=20, description="可选：刮削指定源（themoviedb|bangumi|douban，空=多源依次）")
+    background: int = Field(1, description="★ 15.10.0：1=扔后台队列跑（默认，关页面也不断）；0=同步等待")
+
+
+class MagicFlowAssetDeletePayload(BaseModel):
+    """★ 15.8.15 / 2026-10-10 库内资产手动删除请求模型。
+
+    ★ Master 2026-10-10：删的是**资产（一份资源）**——传 ``resource_ids``（资源 id），
+    删除动作 = 该资源的**全部在下载器的种**（本体 + 各站所有辅种）一次批量删。
+    ``confirm != 1`` 一律干跑（零写入）。
+    """
+
+    resource_ids: List[str] = Field(default_factory=list,
+                                    description="待删除的资源 id（资源账本 group_id）列表")
+    hashes: List[str] = Field(default_factory=list,
+                              description="兼容：只给 hash 时自动反查其所属资源（不推荐）")
     delete_files: int = Field(0, description="1=同时删除文件（不可恢复）；0=仅删种保文件")
     confirm: int = Field(0, description="1=真删；0=干跑（只回报将发生什么，零写入）")
     reason: str = Field("", max_length=200, description="删除原因（进统一台账）")
+    background: int = Field(1, description="★ 15.10.0：1=真删扔后台队列（默认）；0=同步等待")
+
+
+class MagicFlowNotifyActPayload(BaseModel):
+    """★ 15.13.0：事件通知动作（test / scan / clear）。"""
+
+    action: str = "test"
+    text: str = ""
