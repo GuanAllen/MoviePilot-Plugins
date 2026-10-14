@@ -69,6 +69,7 @@ CORE_TOOLS: Tuple[Tuple[str, str], ...] = (
     ("/agent/ondemand", "magicflow_ondemand"),
     ("/agent/ondemand/search", "magicflow_ondemand_search"),
     ("/agent/ondemand/add", "magicflow_ondemand_add"),
+    ("/agent/ondemand/add_direct", "magicflow_ondemand_add_direct"),
     # ---- 库内资源 / 推荐 ----
     ("/agent/assets", "magicflow_assets"),
     ("/agent/recommend", "magicflow_recommend"),

@@ -30,7 +30,8 @@ from ..recommend import recognize
 from ..persistence import OperationItem
 from ..tags import SUB_NEW, SUB_RESOURCE, STATE_ONDEMAND, STATE_SILENT, duty_of, identity_of, retag, tag_for
 from ..sitestore import slot_callbacks
-from ..fingerprint import info_hash
+from ..fingerprint import info_hash, load_torrent_entries, total_size
+from ..sites.formula_fetch import fetch_torrent_promotion
 
 # 运行时导入（只有 MoviePilot 环境有 app.sdk）：离线单测无 app 包 → 退回标准 logging
 logger = logging.getLogger("magicflow")
@@ -64,6 +65,26 @@ def _od_is_free(dv: Any) -> bool:
     except Exception:  # noqa: BLE001
         v = 1.0
     return v <= 0.0
+
+
+#: ★ 17.2.0 直连加种：促销状态 → 下载计费系数（真值源 = ``sites/formula_fetch.parse_torrent_promotion`` 的词表）。
+#  ``unknown``（页面拿不到/模板变了）**按全额计**：宁可把免费当收费记账，也不把收费当免费白嫖。
+_OD_PROMO_DV = {"free": 0.0, "2xfree": 0.0, "twoup": 1.0, "none": 1.0, "unknown": 1.0}
+
+
+def _od_promo_dv(promotion: Any, raw: Any = "") -> float:
+    """促销 → ``downloadvolumefactor``（``partial`` 从原文括号里的 ``N%`` 反解，解不出按全额）。"""
+    p = str(promotion or "").strip().lower()
+    if p in _OD_PROMO_DV:
+        return _OD_PROMO_DV[p]
+    if p == "partial":
+        m = re.search(r"(\d{1,3})\s*%", str(raw or ""))
+        if m:
+            try:
+                return max(0.0, min(1.0, float(m.group(1)) / 100.0))
+            except Exception:  # noqa: BLE001
+                return 1.0
+    return 1.0
 
 
 def _od_iso(ts: Any) -> Optional[str]:
@@ -665,11 +686,13 @@ class OnDemandMixin:
         return ""
 
     def _ondemand_download(self, row: Dict[str, Any], task: Any = None,
-                           title: str = "", year: str = "") -> Dict[str, Any]:
+                           title: str = "", year: str = "",
+                           content: Optional[bytes] = None) -> Dict[str, Any]:
+        """落种（点播通道）。``content`` 给了就不再取一次 .torrent（★ 17.2.0 直连加种复用取种结果）。"""
         dl = self._get_downloader("qbittorrent")
         if dl is None or not getattr(dl, "is_available", False):
             return {"ok": False, "message": "下载器不可用"}
-        content = self._crossseed_torrent_bytes(SimpleNamespace(**row))
+        content = content or self._crossseed_torrent_bytes(SimpleNamespace(**row))
         if not content:
             return {"ok": False, "message": "取 .torrent 失败（PV 闸门/站点拒绝）"}
         site_name = str(row.get("site_name") or "")
@@ -810,6 +833,138 @@ class OnDemandMixin:
         if not res.get("ok"):
             return {"ok": False, "message": str(res.get("message") or "下载失败"), "plan": plan}
         return {"ok": True, "applied": True, "hash": res.get("hash") or "", "plan": plan}
+
+    # ------------------------------------------------- 直连加种（★ 17.2.0）
+
+    @staticmethod
+    def _direct_download_url(url: str, base: str, tid: str) -> str:
+        """把用户给的链接归一成「取 .torrent 的下载链接」（只换端点，不猜站点）。"""
+        u = str(url or "").strip()
+        if not u:
+            return ""
+        if "://" not in u and not u.startswith("//"):
+            u = "https://" + u.lstrip("/")
+        low = u.lower()
+        if low.endswith(".torrent") or "download.php" in low or "/download?" in low:
+            return u
+        if tid and base:
+            return f"{base}/download.php?id={tid}"
+        return u
+
+    @staticmethod
+    def _direct_torrent_meta(content: bytes) -> Dict[str, Any]:
+        """从 .torrent 字节读「标题 + 体积」（真值源 = ``fingerprint`` 的 bencode 解析，不自己 parse）。"""
+        title, size = "", 0
+        try:
+            entries = load_torrent_entries(content)
+            size = int(total_size(entries))
+            if entries:
+                title = str(entries[0][0] or "").split("/")[0].strip()
+        except Exception:  # noqa: BLE001
+            pass
+        return {"title": title, "size": size}
+
+    def _ondemand_add_direct(self, url: str = "", site_ids: str = "",
+                             task_id: str = "", apply: bool = True) -> Dict[str, Any]:
+        """★ 17.2.0：**按种子链接直接加种**（不经过 search / 不选源 / 不猜站点）。
+
+        与 ``_ondemand_add`` 的区别：那个要「先 search 拿候选 → pick 命中候选」；
+        本方法只认链接本身（``details.php?id=N`` / ``download.php?id=N`` / ``.torrent`` 直链），
+        用**指定站点**的 cookie 取种 → 走同一条点播落地（标签/伪任务/账本/静默闸全复用）。
+
+        账号口径（诚实记账，绝不假装免费）：
+          · 促销 ``dv`` 来自详情页抗取（``fetch_torrent_promotion``）；**拿不到 → dv=1.0 按全额计**；
+          · ``H&R`` 详情页解析不出 → **按「欠 H&R」保守处理**（H&R 硬拦只在 remove 时生效：宁多留不误删）。
+        """
+        from .claim import _torrent_id_of  # noqa: WPS433（惰性：claim 硬依赖 app.sdk.logging，离线单测无它）
+
+        raw_url = str(url or "").strip()
+        if not raw_url:
+            return {"ok": False,
+                    "message": "缺少 url（种子链接：details.php?id=N / download.php?id=N / .torrent 直链）"}
+        task = self._get_task_config(task_id) if task_id else None
+        sites = self._ondemand_sites(task, site_ids)
+        if len(sites) != 1:
+            return {"ok": False,
+                    "message": "直连加种必须指定**唯一**站点 id（要拿该站 cookie 取种）；现收到 %d 个：%s"
+                               % (len(sites), ",".join(str(x) for x in sites[:5]))}
+        sid = int(sites[0])
+        site = self._get_site(sid)
+        if site is None:
+            return {"ok": False, "message": f"站点 {sid} 不存在（site_ids）"}
+        site_name = str(getattr(site, "name", "") or getattr(site, "domain", "") or "").strip()
+        domain = str(getattr(site, "domain", "") or "").strip()
+        base = str(getattr(site, "url", "") or (f"https://{domain}" if domain else "")).rstrip("/")
+        tid = _torrent_id_of(raw_url)
+        low = raw_url.lower()
+        page_url = ""
+        if "details.php" in low or "/details" in low:
+            page_url = raw_url if "://" in raw_url else f"https://{raw_url.lstrip('/')}"
+        elif tid and base:
+            page_url = f"{base}/details.php?id={tid}"
+        row: Dict[str, Any] = {
+            "title": "", "size": 0.0, "seeders": 0, "peers": 0,
+            "enclosure": self._direct_download_url(raw_url, base, tid),
+            "page_url": page_url,
+            "site": sid, "site_name": site_name,
+            "site_cookie": getattr(site, "cookie", None),
+            "site_ua": str(getattr(site, "ua", "") or "").strip() or None,
+            "site_proxy": bool(getattr(site, "proxy", False)),
+            "downloadvolumefactor": 1.0, "free": False, "counted_gb": 0.0,
+            # H&R 详情页解析不出 → 按「欠 H&R」保守处理（H&R 硬拦只在 remove 时生效：宁多留不误删）
+            "hit_and_run": True,
+        }
+        promo, promo_raw, promo_note = "unknown", "", "详情页拿不到 → 按全额计"
+        if page_url:
+            try:
+                info = fetch_torrent_promotion(site, page_url) or {}
+                promo = str(info.get("promotion") or "unknown")
+                promo_raw = str(info.get("raw") or "")
+                if promo != "unknown":
+                    promo_note = f"详情页抗取 {promo}" + (f"（{promo_raw}）" if promo_raw else "")
+                else:
+                    promo_note = f"详情页解析不出({info.get('error') or '无促销区'}) → 按全额计"
+            except Exception as e:  # noqa: BLE001
+                promo_note = f"详情页异常({e}) → 按全额计"
+        dv = _od_promo_dv(promo, promo_raw)
+        row["downloadvolumefactor"] = dv
+        row["free"] = dv <= 0.0
+        content = self._crossseed_torrent_bytes(SimpleNamespace(**row))
+        if not content:
+            return {"ok": False, "message": "取 .torrent 失败（PV 闸门/站点拒绝/链接无效或该站无权限）"}
+        meta = self._direct_torrent_meta(content)
+        title = str(meta.get("title") or "")
+        size = float(meta.get("size") or 0.0)
+        row["title"] = title
+        row["size"] = size
+        row["counted_gb"] = round(size / 1e9 * dv, 2)
+        save_path = (str(getattr(task, "save_path", "") or "") if task is not None else "") \
+            or self._ondemand_default_save_path()
+        plan = {
+            "title": title,
+            "size": size,
+            "downloadvolumefactor": dv,
+            "free": dv <= 0.0,
+            "hit_and_run": True,
+            "counted_gb": row["counted_gb"],
+            "save_path": save_path,
+            "site": site_name or sid,
+            "site_id": sid,
+            "url": row["enclosure"],
+            "page_url": page_url,
+            "torrent_id": tid,
+            "promotion": promo,
+            "promotion_note": promo_note,
+            "meta_source": ".torrent（fingerprint.load_torrent_entries）",
+        }
+        if not apply:
+            return {"ok": True, "applied": False, "dry_run": True, "plan": plan,
+                    "note": "干跑也取了一次 .torrent 读元数据（1 PV），但**没有落种**"}
+        res = self._ondemand_download(row, task, title=title, year="", content=content)
+        if not res.get("ok"):
+            return {"ok": False, "message": str(res.get("message") or "下载失败"), "plan": plan}
+        return {"ok": True, "applied": True, "hash": res.get("hash") or "",
+                "plan": dict(plan, save_path=str(res.get("save_path") or save_path))}
 
     # ------------------------------------------------------------ 结算（下载完 → 资源）
 
