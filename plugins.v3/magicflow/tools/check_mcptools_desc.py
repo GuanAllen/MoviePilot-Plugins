@@ -6,7 +6,7 @@
 真机侧验证见 ``docs/AGENT-API.md`` §C.9（``tools/list`` 数数 + ``tools/call`` 看截断说明）；
 本步把「改描述 / 改类型表 / 改截断逻辑会不会悄悄改坏」钉在护栏里：
 
-  * **数量**：端点 77 / ``CORE_TOOLS`` 53 / ``build_agent_tools("core")`` = 54（53 具名 + 万能），名字唯一；
+  * **数量**：端点 79 / ``CORE_TOOLS`` 55 / ``build_agent_tools("core")`` = 56（55 具名 + 万能），名字唯一；
   * **描述**：≤ ``_DESC_MAX``、以读写标记开头、不含「参数：」（参数只进 args_schema）、
     返回值段与 spec.returns 一致、写工具的标记与是否带 confirm/dry_run 对得上；
   * **类型**：``_PARAM_TYPES`` 只允许 bool/int/float 三种，且每个参数在对应 inputSchema 里落型正确；
@@ -112,17 +112,17 @@ def _check_counts(mc) -> None:
     if not (1000 < mc.RESULT_MAX_CHARS <= 60000):
         _fail(f"RESULT_MAX_CHARS = {mc.RESULT_MAX_CHARS}，越界（1k~60k 之外不合理）")
     index = mc._spec_index()
-    if len(index) != 77:
-        _fail(f"端点真值源 = {len(index)}，期望 77（_agent_endpoints() 变了就同步改本护栏与文档）")
-    if len(mc.CORE_TOOLS) != 53:
-        _fail(f"CORE_TOOLS = {len(mc.CORE_TOOLS)}，期望 53")
+    if len(index) != 79:
+        _fail(f"端点真值源 = {len(index)}，期望 79（_agent_endpoints() 变了就同步改本护栏与文档）")
+    if len(mc.CORE_TOOLS) != 55:
+        _fail(f"CORE_TOOLS = {len(mc.CORE_TOOLS)}，期望 55")
     names = [n for _p, n in mc.CORE_TOOLS]
     if len(set(names)) != len(names):
         _fail("CORE_TOOLS 有重名工具名")
     tools = mc.build_agent_tools("core")
     got = [t.name for t in tools]
-    if len(got) != 54:
-        _fail(f'build_agent_tools("core") = {len(got)} 个，期望 54（53 具名 + magicflow_agent_api）')
+    if len(got) != 56:
+        _fail(f'build_agent_tools("core") = {len(got)} 个，期望 56（55 具名 + magicflow_agent_api）')
     if len(set(got)) != len(got):
         _fail(f"工具名重复：{sorted({n for n in got if got.count(n) > 1})}")
     want = set(names) | {"magicflow_agent_api"}
@@ -200,7 +200,7 @@ def _check_types(mc) -> None:
                 seen.setdefault(pname, []).append(_scalar(typ))
     for name, typ in mc._PARAM_TYPES.items():
         if name not in seen:
-            _fail(f"_PARAM_TYPES[{name!r}] 在 77 个端点的参数里没出现（表里有僵尸键？）")
+            _fail(f"_PARAM_TYPES[{name!r}] 在 79 个端点的参数里没出现（表里有僵尸键？）")
             continue
         want = _scalar(typ)
         bad = sorted({g for g in seen[name] if g != want})

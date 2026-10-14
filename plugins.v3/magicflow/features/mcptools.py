@@ -55,6 +55,9 @@ CORE_TOOLS: Tuple[Tuple[str, str], ...] = (
     # ---- 站点 / H&R ----
     ("/agent/live", "magicflow_live"),
     ("/agent/site/seeds", "magicflow_site_seeds"),
+    # ---- 17.3.0 报表统一口径（四视图同源 + 互校）----
+    ("/agent/report", "magicflow_report"),
+    ("/agent/report/drift", "magicflow_report_drift"),
     ("/agent/hr/bills", "magicflow_hr_bills"),
     ("/agent/notify", "magicflow_notify"),
     ("/agent/notify/act", "magicflow_notify_act"),

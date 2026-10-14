@@ -1799,13 +1799,16 @@ class HrBillsMixin:
                         "bill_state": st, "site": dom,
                         "action_hint": "站点未列欠 + 账本已结清 → 可人工考虑轮换（**不自动删**）",
                     })
+        # ★ 17.3.0：ok 必须在**落盘之前**置 True。此前顺序相反，缓存里每份报告都带
+        #   ok=false（无论 myhr.php 抓得多成功），于是 /agent/site/seeds 的 hr 列、
+        #   records_total、missing_local 全被当成「这站还没对过账」——口径假象的根因。
+        rep["ok"] = True
+        rep["took_ms"] = int((time.time() - t0) * 1000)
         try:
             cache.put_report(dom, {k: v for k, v in rep.items() if k != "took_ms"})
             cache.save()
         except Exception:  # noqa: BLE001
             pass
-        rep["ok"] = True
-        rep["took_ms"] = int((time.time() - t0) * 1000)
         return rep
 
     @staticmethod
