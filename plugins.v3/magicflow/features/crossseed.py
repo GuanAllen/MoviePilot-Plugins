@@ -32,9 +32,6 @@ from ..crossseed import (
     search_key,
 )
 from ..dtier import TierCache
-from ..sites.rules import (
-    BUILTIN_RULES,
-)
 from ..tags import (
     SPECIAL_TAGS,
     STATE_SILENT,
@@ -191,19 +188,18 @@ class CrossSeedMixin:
                 val = 0.0
             if val > 0:
                 return val
-        try:
-            builtin = dict(BUILTIN_RULES.get(dom) or {})
-            return float(builtin.get("seed_need_hours") or 0.0)
-        except Exception:  # noqa: BLE001
-            return 0.0
+        # ★ 17.2.2：**不再回退内置表** —— 「实际做种达标小时」是**站点级 H&R 阈值结论**，
+        #   只有一处真值源（站点规则账本：手填 > 欢迎短讯）。内置表只是「出厂建议」，不自动生效
+        #   （3.41.0 定调「外面的是假规则」；旧代码在 hr_of/resolve 已不信内置表，只有这里漏了）。
+        return 0.0
 
     def _crossseed_seed_window_hours(self, domain: str) -> float:
         """站点 H&R 的**考核窗口**（小时）：多久之内要做满 ``seed_need_hours``；取不到 → 0。
 
         取值链（高 → 低）：
           ① 规则库 ``seed_window_hours``（探测时从原文「10 天内做种 20 小时」拆出来的窗口）；
-          ② 规则库 ``seed_hours``（保护期长，如学校 240h，本身就含窗口语义）；
-          ③ 内置表同名键。
+          ② 规则库 ``seed_hours``（保护期长，如学校 240h，本身就含窗口语义）。
+        ★ 17.2.2：不再回退内置表（内置表 = 出厂建议，不自动生效）。
         """
         dom = str(domain or "").strip().lower()
         dom = re.sub(r"^https?://", "", dom).split("/")[0].strip()
@@ -218,17 +214,8 @@ class CrossSeedMixin:
                 val = 0.0
             if val > 0:
                 return val
-        try:
-            b = dict(BUILTIN_RULES.get(dom) or {})
-        except Exception:  # noqa: BLE001
-            b = {}
-        for key in ("seed_window_hours", "seed_hours"):
-            try:
-                val = float(b.get(key) or 0.0)
-            except (TypeError, ValueError):
-                val = 0.0
-            if val > 0:
-                return val
+        # ★ 17.2.2：同 ``_crossseed_seed_need_hours`` —— 考核窗口也是**站点级阈值结论**，
+        #   不回退内置表（内置表只是出厂建议，不自动生效）。
         return 0.0
 
     def _crossseed_hr_decision(
@@ -248,6 +235,15 @@ class CrossSeedMixin:
         if torrent_hr is True:
             use = float(hours) if float(hours or 0.0) > 0 else float(CROSSSEED_SEED_HOURS_DEFAULT)
             return True, use, f"种子标记/{hsrc}"
+        # ★ 17.2.2：逐种站（YemaPT ``hrPunishEnable`` / Depth Studio 黑色标签）—— 站点级结论
+        #   （无论 True/False/未知）**对它都不适用**：这颗种没逐种标记 → 不保护。
+        #   时长/窗口仍留在站点规则库里（逐种标记命中时按它算 need）。
+        try:
+            _pt = bool(self._site_per_torrent_hr(domain))
+        except Exception:  # noqa: BLE001
+            _pt = False
+        if _pt:
+            return False, 0.0, "逐种站未标H&R"
         if torrent_hr is False and site_hr is False:
             return False, 0.0, "种子未标H&R+站点无H&R"
         if site_hr is False:

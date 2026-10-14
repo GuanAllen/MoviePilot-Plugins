@@ -765,7 +765,10 @@ class SiteRules:
         manual_map: Optional[Dict[str, float]] = None,
         default: float = 24.0,
     ) -> float:
-        """算「该站来源份要保种多少小时」：manual > probe > builtin > default。"""
+        """算「该站来源份要保种多少小时」：manual > 规则库(权威来源 manual/welcome) > default。
+
+        ★ 3.41.0/17.2.2：内置表**不参与**（只是出厂建议）；非权威来源的探测值也不参与。
+        """
         hours, _src = self.resolve(domain, manual_map, default)
         return hours
 
@@ -780,15 +783,10 @@ class SiteRules:
                     break
         if rec.get("hr") is not None and str(rec.get("source") or "") in HR_TRUSTED_SOURCES:
             return bool(rec.get("hr"))
-        if "builtin" in HR_TRUSTED_SOURCES:      # ★ 3.41.0：默认**不信**内置表
-            b = BUILTIN_RULES.get(d) or {}
-            if not b:
-                for k, v in BUILTIN_RULES.items():
-                    if _same_domain(k, d):
-                        b = v or {}
-                        break
-            if b.get("hr") is not None:
-                return bool(b.get("hr"))
+        # ★ 3.41.0 / 17.2.2：**内置表不参与 H&R 判定**（「外面的是假规则」：公开页与内置表推出的
+        #   hr 一律不生效，只认权威来源 ``manual`` / ``welcome``）。原处是
+        #   ``if "builtin" in HR_TRUSTED_SOURCES:`` 恒 False 的死判断 —— 删掉，免得被误读成
+        #   「内置表还能生效」。内置表 = **出厂建议**（机制位如 ``per_torrent_hr``/``seed_cap`` 仍读它）。
         return None
 
     def per_torrent_hr_of(self, domain: str) -> bool:
@@ -876,19 +874,7 @@ class SiteRules:
                     return hv, src or "store"
             except (TypeError, ValueError):
                 pass
-        if "builtin" in HR_TRUSTED_SOURCES:
-            b = BUILTIN_RULES.get(d) or {}
-            if not b:
-                for k, v in BUILTIN_RULES.items():
-                    if _same_domain(k, d):
-                        b = v or {}
-                        break
-            bh = b.get("seed_hours")
-            if bh is not None:
-                return float(bh), "builtin"
-            if b.get("hr") is False:
-                # 内置明确「无 H&R」→ 没有保种义务，不用保护（例：馒头）
-                return 0.0, "builtin"
+        # ★ 3.41.0 / 17.2.2：内置表不参与**生效时长**（同 ``hr_of``；原为恒 False 的死判断）。
         return float(default), "default"
 
 

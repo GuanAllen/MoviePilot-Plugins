@@ -714,7 +714,8 @@ class LiveStats:
                 "source": "api",
             }
             # ★ 15.16.2：``ratio_inf``（下载=0 → 分享率「无限」）也带上，供前端显示 ∞
-            for _k in ("uid", "ratio", "ratio_inf", "upload", "download", "seeding", "leeching", "bonus", "bonus_per_hour", "logged_in"):
+            # ★ 17.2.2：``hr``（页头 H&R 计数事实，API 站没有这栏 → None）
+            for _k in ("uid", "ratio", "ratio_inf", "upload", "download", "seeding", "leeching", "bonus", "bonus_per_hour", "logged_in", "hr"):
                 out[_k] = bar.get(_k)
             out["fields"] = [
                 _k
@@ -853,6 +854,19 @@ class LiveStats:
             "warning",
         )
         return until
+
+    def cached(self, site_id: int) -> Dict[str, Any]:
+        """★ 17.2.2：**只读**缓存命中（绝不触发抓取）。
+
+        供健康自检等「零外部请求」路径读取最近一次实时快照（含 ``hr`` 页头 H&R 计数）。
+        没有命中/没有该站 → 空 dict。
+        """
+        try:
+            key = str(int(site_id))
+        except (TypeError, ValueError):
+            return {}
+        hit = self._cache.get(key)
+        return dict(hit) if isinstance(hit, dict) else {}
 
     def get(self, site_id: int, force: bool = False, page: str = DEFAULT_PAGE) -> Dict[str, Any]:
         """带缓存 + single-flight 的实时数据。抓不到时**返回上次成功值并标记 stale**。"""

@@ -220,9 +220,16 @@ def main() -> int:
         "优先 seed_window_hours")
     _ok(_win_of(CS(_Rules({"b.net": {"seed_hours": 120.0}})), "b.net") == 120.0, "回退 seed_hours")
     _ok(_win_of(CS(_Rules({"c.net": {"seed_hours": 0.0}})), "c.net") == 0.0, "无窗口 → 0")
-    _ok(_win_of(CS(_Rules({})), "zzz-builtin.net") == 336.0, "内置表 seed_window_hours 回退")
-    _ok(_win_of(CS(_Rules({})), "zzz-builtin2.net") == 72.0, "内置表 seed_hours 回退")
     _ok(_win_of(CS(_Rules({})), "zzz-nope.net") == 0.0, "未知域 → 0")
+    # ★ 17.2.2：内置表**不再**回退（内置表 = 出厂建议，不自动生效；站点级阈值只有一处真值源）
+    _ok(_win_of(CS(_Rules({})), "zzz-builtin.net") == 0.0, "内置表 seed_window_hours 不再回退 → 0")
+    _ok(_win_of(CS(_Rules({})), "zzz-builtin2.net") == 0.0, "内置表 seed_hours 不再回退 → 0")
+    # 源码守卫：两个取值函数都不许再引用 BUILTIN_RULES（防回归）
+    for _name in ("_crossseed_seed_need_hours", "_crossseed_seed_window_hours"):
+        _f = next(n for n in ast.walk(_tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == _name)
+        _seg = ast.get_source_segment(_src, _f) or ""
+        _ok("BUILTIN_RULES" not in _seg, f"{_name} 不回退内置表（源码守卫）")
 
     print("\n" + "=" * 64)
     print(f"✅ PASS（{CHECKS} 项断言）")

@@ -7,6 +7,8 @@
      - 站点规则明确 **无 H&R**（hr=False）→ **不开账**；
      - 明确有（hr=True）→ rule=site_hr；逐种 hit_and_run → rule=hit_and_run；
      - 未探明（None）→ rule=unknown（影子，pending）。
+  A2. ★ 17.2.2 逐种站（``per_torrent_hr=True``，如 Depth Studio/YemaPT）：
+     - 站点级 True **不通用** → 无逐种标记**不开账**；有逐种标记 → rule=hit_and_run。
   B. 回填 ``_hrbills_backfill``：明确无 H&R 的站**不回填开账**（防「凭空欠债」）。
   C. tick 规则闸 + 自愈 ``_hrbills_tick``：
      - 只有 rule∈{site_hr,hit_and_run} 才 **激活/算欠**；
@@ -143,7 +145,7 @@ class Harness(HrBillsMixin, DeleteGateMixin):
         return self.site_hr.get(dom)
 
     def _site_per_torrent_hr(self, dom):
-        return False
+        return dom in getattr(self, "_per_torrent", set())
 
     def _crossseed_seed_window_hours(self, dom):
         return 0.0
@@ -216,6 +218,41 @@ def main() -> int:
     h.torrents["dddd"] = t
     b = h._hrbills_open("dddd", "unknown.site", "魔流-u-刷流", raw)
     _ok(b is None, "未探明（None）→ 不开账")
+
+    # ---- A2) ★ 17.2.2 逐种站：站点级 True 不代表**每颗种**都欠 H&R ----
+    print("\n[A2] 逐种站语义（站点级 True + per_torrent_hr=True）")
+    h.site_hr["pertor.site"] = True
+    h.need_hours["pertor.site"] = 48.0
+    h._per_torrent = {"pertor.site"}
+
+    t = _torrent("A5", progress=0.0, tracker="pertor.site")
+    t.hash = "eeee"
+    h.torrents["eeee"] = t
+    b = h._hrbills_open("eeee", "pertor.site", "魔流-pt-点播", raw)
+    _ok(b is None, "★ 逐种站 + 无逐种标记 → **不开账**（站点级 True 对逐种站不通用）")
+
+    t = _torrent("A6", progress=0.0, tracker="pertor.site", hit_and_run=True)
+    t.hash = "ffff"
+    h.torrents["ffff"] = t
+    b = h._hrbills_open("ffff", "pertor.site", "魔流-pt-点播", raw, hit_and_run=True)
+    _ok(b is not None and b["rule"] == RULE_HIT_AND_RUN,
+        f"★ 逐种站 + 逐种标记 → rule=hit_and_run（{b and b['rule']}）")
+
+    # 逐种站 + 站点级 False（dstudio 迁移后的形态）：无标记不开账、有标记开账
+    h.site_hr["pertor2.site"] = False
+    h.need_hours["pertor2.site"] = 48.0
+    h._per_torrent.add("pertor2.site")
+    t = _torrent("A7", progress=0.0, tracker="pertor2.site")
+    t.hash = "gggg"
+    h.torrents["gggg"] = t
+    _ok(h._hrbills_open("gggg", "pertor2.site", "魔流-p2-点播", raw) is None,
+        "★ 逐种站(hr=False) + 无标记 → 不开账")
+    t = _torrent("A8", progress=0.0, tracker="pertor2.site", hit_and_run=True)
+    t.hash = "hhhh"
+    h.torrents["hhhh"] = t
+    b = h._hrbills_open("hhhh", "pertor2.site", "魔流-p2-点播", raw, hit_and_run=True)
+    _ok(b is not None and b["rule"] == RULE_HIT_AND_RUN,
+        f"★ 逐种站(hr=False) + 逐种标记 → rule=hit_and_run（{b and b['rule']}）")
 
     # ---- B) 回填规则闸 ----
     print("\n[B] 回填规则闸")

@@ -418,6 +418,38 @@ class CoreMixin:
                     )
         except Exception:  # noqa: BLE001
             pass
+        # ★ 17.2.2：Depth Studio(dstudio.me) **不是站点级 H&R** —— rules.php §11 原文：
+        #   「H&R记录将会在种子下载至20%时产生 / 产生H&R的种子要求下载后10天内保种时间必须达到
+        #    48小时，分享率大于3自动免除H&R / H&R记录为10时账号将被禁用 / 提示：本站很少有种子
+        #    存在H&R，有H&R的种子，会显示黑色标签」
+        #   ⇒ **逐种站**（黑色标签，20% 触发）。旧记录把它当站点级 hr=True（证据串来自 rules.php
+        #   却被标成 welcome、还被关键字切片吃掉前缀）→ 每个种都开账（实测：免费种下完、站点 myhr
+        #   0 行，我们却开了 site_hr/pending 的凭空账）。
+        #   一次性改写；手填记录受 merge_probe 保护，之后探测不会把它翻回去。
+        try:
+            _mig6 = dict(self.get_data("rules_migrations") or {})
+            if not _mig6.get("dstudio_per_torrent_hr_v1"):
+                _st6 = self._site_rules()
+                _st6.put("dstudio.me", {
+                    "hr": False,                            # 无**站点级** H&R（逐种判定）
+                    "per_torrent_hr": True,                 # ★ H&R 逐种（发布者打黑色标签）
+                    "seed_need_hours": 48.0,                # 命中后：10 天内做种 ≥48h
+                    "seed_window_hours": 240.0,             # 考核窗口 = 10 天
+                    "seed_hours": 240.0,                    # 保护期取满窗口（保守，同学校口径）
+                    "share_ratio_exempt": 3.0,              # 分享率 >3 自动免除（记录站点事实）
+                    "source": "manual",
+                    "confidence": "high",
+                    "evidence": "手填（rules.php §11 原文）：H&R 于下载至 20% 时产生；"
+                                "产生 H&R 的种子需 10 天内保种 ≥48h，分享率>3 自动免除；"
+                                "H&R 记录为 10 则禁用；「本站很少有种子存在 H&R，有 H&R 的种子会显示黑色标签」",
+                    "note": "Depth Studio：**无站点级 H&R**；H&R 逐种（黑色标签、20% 触发）"
+                            "⇒ 未标 H&R 的种不开账、补源/来源份保守排除",
+                })
+                _mig6["dstudio_per_torrent_hr_v1"] = True
+                self.save_data(key="rules_migrations", value=_mig6)
+                logger.info("站点规则:Depth Studio 改为逐种站（无站点级 H&R；黑色标签逐种，20% 触发）")
+        except Exception:  # noqa: BLE001
+            pass
         # ★ 单种上传限速默认值迁移(3.12.0)：旧默认 100 KB/s 正好压在
         #   咖啡「恶意限速判定：单人做种 6h 内稳定 <100Kb/s」线上 → 抬到 200。
         #   只迁移「恰好等于旧默认值」的配置，且只跑一次（用户手填 100 不会被反复改回去）。

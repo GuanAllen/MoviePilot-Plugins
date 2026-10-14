@@ -189,6 +189,17 @@ class HealthMixin:
                 "task_id": "",
             })
 
+        # H7 H&R 三源交叉（★ 17.2.2，**零外部请求**）：首页页头计数 × myhr 对账 × 站点规则
+        #   三源各说一件事：首页计数=站点口径的事实；myhr=逐条明细的事实；规则表=我们在用的判据。
+        #   页头形态「H&R: [考核中/未完成/上限]」，**未完成数达到上限即禁用账号**（不是配额）：
+        #   已到/差 1 条到禁用线 → 🔴/🟡（判据只看 y=未完成；x=考核中是缓冲，到期没做够才记一条 y），
+        #   优先于其余对账规则。
+        #   本检查**只报不改**（不写规则库、不碰账单状态、不抓页面），只为把「假账/漏账」摆上台面。
+        try:
+            issues.extend(self._health_hr_crosscheck())
+        except Exception:  # noqa: BLE001
+            pass
+
         # H5 全局：一个启用的任务都没有
         if tasks and not participating:
             issues.append({
@@ -201,6 +212,167 @@ class HealthMixin:
 
         issues.sort(key=lambda i: (LEVEL_ORDER.get(str(i.get("level")), 9), str(i.get("title", ""))))
         return issues
+
+    def _health_hr_crosscheck(self) -> List[Dict[str, Any]]:
+        """★ 17.2.2 H&R 三源交叉校验（首页页头计数 / myhr 对账 / 站点规则）。
+
+        页头计数形态 ``H&R: [考核中/未完成/上限]``，**未完成数达到上限即禁用账号**（不是配额）：
+        已到 / 差 1 条到禁用线时给 🔴/🟡（**判据只看 y=未完成**，x=考核中是缓冲、不算封号数），
+        优先于其余对账规则。
+
+        **零外部请求**：只读 live 缓存 + myhr 对账缓存 + 规则库。详见 ``_health_issues`` 里的 H7 注释。
+        """
+        out: List[Dict[str, Any]] = []
+        try:
+            rules = dict(self._site_rules() or {})
+        except Exception:  # noqa: BLE001
+            rules = {}
+        try:
+            sites = list(self._list_sites() or [])
+        except Exception:  # noqa: BLE001
+            sites = []
+        names: Dict[str, str] = {}
+        ids: Dict[str, int] = {}
+        for row in sites:
+            d = self._health_norm_domain((row or {}).get("domain"))
+            if not d:
+                continue
+            names.setdefault(d, str((row or {}).get("name") or d))
+            try:
+                ids.setdefault(d, int((row or {}).get("id") or 0))
+            except (TypeError, ValueError):
+                continue
+        for dom in list(rules.keys()):
+            d = self._health_norm_domain(dom)
+            if d and d not in names:
+                names[d] = d
+        # myhr 对账缓存（上一轮结果；不抓页）
+        myhr: Dict[str, Dict[str, Any]] = {}
+        try:
+            for dom, rep in dict(self._hr_reconcile_cache().reports() or {}).items():
+                myhr[self._health_norm_domain(dom)] = dict(rep or {})
+        except Exception:  # noqa: BLE001
+            myhr = {}
+        live = getattr(self, "_live", None)
+        for dom in sorted(names.keys()):
+            name = names.get(dom) or dom
+            rec: Dict[str, Any] = {}
+            for _k, _v in rules.items():
+                if self._health_norm_domain(_k) == dom and isinstance(_v, dict):
+                    rec = dict(_v)
+                    break
+            try:
+                hr_flag = self._site_hr_flag(dom)
+            except Exception:  # noqa: BLE001
+                hr_flag = None
+            try:
+                per_torrent = bool(self._site_per_torrent_hr(dom))
+            except Exception:  # noqa: BLE001
+                per_torrent = False
+            sid = ids.get(dom) or 0
+            bar: Dict[str, Any] = {}
+            if live is not None and sid:
+                try:
+                    bar = live.cached(sid) or {}
+                except Exception:  # noqa: BLE001
+                    bar = {}
+            if not bar or "hr" not in bar:
+                continue  # 升级后还没采到这一栏（或该站没这栏）→ 静默，避免刷屏
+            cnt = bar.get("hr")
+            cnt = cnt if isinstance(cnt, dict) else {}
+            raw = str(cnt.get("raw") or "")[:40]
+            assessing = cnt.get("assessing")
+            unfinished = cnt.get("unfinished")
+            limit = cnt.get("limit")
+            if all(v is None for v in (assessing, unfinished, limit)) and raw:
+                out.append({
+                    "key": f"H7:{sid or dom}",
+                    "level": "warning",
+                    "title": f"「{name}」页头 H&R 栏没读懂",
+                    "detail": f"原文「{raw}」→ 采集正则不匹配，健康检查无法判断本站欠没欠",
+                    "task_id": "",
+                })
+                continue
+
+            def _n(v: Any) -> Optional[int]:
+                try:
+                    return int(v) if v is not None else None
+                except (TypeError, ValueError):
+                    return None
+
+            n_assess = _n(assessing)
+            n_unfin = _n(unfinished)
+            n_limit = _n(limit)
+            _known = [v for v in (n_assess, n_unfin) if v is not None]
+            n_open = sum(_known) if _known else None  # 考核中 + 未完成（用于「页头有没有欠条」）
+            rep = dict(myhr.get(dom) or {})
+            rec_ok = rep.get("ok") is True
+            rec_total = rep.get("records_total")
+            if not isinstance(rec_total, int):
+                rec_total = None
+            src = str(rec.get("hr_src") or rec.get("source") or "") or "?"
+            # ⓪ 禁用线（y=未完成 达到 z=上限 即禁用账号）：最高优先，先保号再谈对账
+            _buf = f"，另有考核中 {n_assess} 条（到期没做够会各记一条未完成）" if (n_assess or 0) > 0 else ""
+            if n_limit and n_limit > 0 and n_unfin is not None and n_unfin >= n_limit:
+                out.append({
+                    "key": f"H7:{sid or dom}",
+                    "level": "error",
+                    "title": f"「{name}」未完成 H&R 已达禁用线（{n_unfin}/{n_limit}）",
+                    "detail": (f"页头 {raw}：未完成 {n_unfin} 条，达本站上限 {n_limit}"
+                               f"（**未完成数达到该数即禁用账号**）{_buf} → 立即申诉/补做，别再下种"),
+                    "task_id": "",
+                })
+            elif (n_limit and n_limit >= 2 and n_unfin is not None
+                  and n_unfin == n_limit - 1):
+                out.append({
+                    "key": f"H7:{sid or dom}",
+                    "level": "warning",
+                    "title": f"「{name}」差 1 条到 H&R 禁用线（{n_unfin}/{n_limit}）",
+                    "detail": (f"页头 {raw}：未完成 {n_unfin} 条，上限 {n_limit}"
+                               f"（再记一条就禁用账号）{_buf} → 优先把这一条补完/清掉"),
+                    "task_id": "",
+                })
+            # ① 页头说欠了，myhr 明细却 0 条 → 对账通道失灵（🔴 会漏保护）
+            elif n_open and n_open > 0 and rec_ok and rec_total == 0:
+                out.append({
+                    "key": f"H7:{sid or dom}",
+                    "level": "error",
+                    "title": f"「{name}」H&R 计数与明细对不上",
+                    "detail": (f"页头显示 考核中 {n_assess}/未完成 {n_unfin}（{raw}），但 myhr 对账读到 0 条 → "
+                               f"对账通道可能失灵（解析不到/页面改版），欠账会漏保护"),
+                    "task_id": "",
+                })
+            # ② 页头说欠了，规则表却说本站没有 H&R → 规则与事实冲突（🟡，手填「无 H&R」尤其要看）
+            elif n_open and n_open > 0 and hr_flag is False:
+                out.append({
+                    "key": f"H7:{sid or dom}",
+                    "level": "warning",
+                    "title": f"「{name}」规则写「无 H&R」但页头有欠条",
+                    "detail": (f"页头 H&R 计数 考核中 {n_assess}/未完成 {n_unfin}（{raw}），规则表 hr=False（来源 {src}）→ "
+                               f"请核对：是站点在实行，还是皮肤自带计数"),
+                    "task_id": "",
+                })
+            # ③ 规则说本站有 H&R，页头与 myhr 都是 0 → 仅提示（ℹ️ 不降级）
+            elif (hr_flag is True and not per_torrent and (n_open or 0) == 0
+                  and rec_ok and rec_total == 0):
+                out.append({
+                    "key": f"H7:{sid or dom}",
+                    "level": "info",
+                    "title": f"「{name}」标有 H&R 但当前无记录",
+                    "detail": f"页头计数 0（{raw}）且 myhr 对账 0 条，本站当前无欠账（口径一致）",
+                    "task_id": "",
+                })
+            # ④ 页头有欠条，规则库里却没有判据 → 规则库该补（ℹ️ 只升不降的证据）
+            elif (n_open or 0) > 0 and hr_flag is None:
+                out.append({
+                    "key": f"H7:{sid or dom}",
+                    "level": "info",
+                    "title": f"「{name}」页头有 H&R 欠条，规则库无判据",
+                    "detail": (f"页头 H&R 计数 考核中 {n_assess}/未完成 {n_unfin}（{raw}）→ 建议在设置里给本站标「有 H&R」"
+                               f"（逐种站另标逐种）"),
+                    "task_id": "",
+                })
+        return out
 
     def _trend_label(self, scope: str, ident: str) -> str:
         """把 ``task:<id>`` / ``site:<id>`` 变成可读名字。"""
