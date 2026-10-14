@@ -738,6 +738,49 @@ def parse_user_bar(raw: Any) -> Dict[str, Any]:
             val = _first_num(r"(?:下载中|正在下载)[：:]?\s*([0-9]+)\s*(?:个|条)?", text)
         if val is not None:
             out["leeching"] = int(val)
+    # ★ 17.2.2：H&R 计数（用户栏页头）——形态「H&R: [考核中/未完成/上限]」。
+    #   ① ``assessing`` 考核中：仍在考核窗口内（计时中）；**到期没做够就记一条 ``unfinished``**；
+    #   ② ``unfinished`` 未完成：欠账成立 —— **它达到 ``limit`` 时账号就被禁用**（封号判据看 y，不看 x+y）；
+    #   ③ ``limit`` 上限：**未完成数达到该数即禁用账号**（非「配额」，是封号线）。实证 Depth Studio=10，
+    #      与其 rules.php 原文「H&R 记录为 10 时账号将被禁用」一致；聆音=15；学校页头只有
+    #      ``H&R: 0/0``（不给第三个数）→ ``limit=None``，**不伪造 0**。
+    #   这里只采事实、不做判断（禁用线预警由健康检查 H7 负责）。
+    #   口径：页面没有这一栏 → ``None``（**不等于 0**）；有栏但解不出数字 → 只留 ``raw``
+    #   （供健康检查区分「采集没读懂」与「确实没有」）；只有单个数（形态罕见）→ 归入
+    #   ``unfinished``（**保守**：宁可早报禁用线，也不把欠账读没）。
+    #   ★ 17.2.2 收口（2026-10-14 真机取证，修三处实机漏读/误报）：
+    #   ① cyanbug.net 页头**没有这一栏**，只剩模板注释 ``<!-- H&R -->`` → 必须先剥 HTML 注释，
+    #      否则注释被当成「有栏但没读懂」，H7 误报 warning；
+    #   ② cspt.top 形态 ``[H&R]:``——标签在 ``R`` 后多一个右括号才跟冒号，旧正则整条漏（真机漏读）；
+    #   ③ 计数数字可能被 ``<font>`` 切开（``0/<font color="red">0</font>/15``）→ 先去标签再匹配；
+    #   ④ 真栏必挂 ``myhr.php`` 链接（各站实证）→ 只留 raw 的兜底**要求上下文含 myhr**，
+    #      免得把导航文案/占位符当计数。
+    out["hr"] = None
+    _hraw = re.sub(r"<!--.*?-->", " ", f"{raw_s or ''}\n{text or ''}", flags=re.DOTALL)
+    _hsrc = re.sub(r"\s+", " ", re.sub(r"<[^>]{0,200}>", " ", _hraw))  # 去标签 + 压空白
+    _hrlab = r"H\s*&\s*R\s*[\])]?\s*[：:]?"  # 标签尾部容忍 ``]``/``)``（[H&R]: 形态）
+    _mhr = re.search(
+        rf"{_hrlab}\s*[\[(]?\s*(\d+)\s*/\s*(\d+)\s*(?:/\s*(\d+))?\s*[\])]?",
+        _hsrc, re.IGNORECASE,
+    )
+    if _mhr:
+        out["hr"] = {
+            "raw": " ".join(_mhr.group(0).split())[:40],
+            "assessing": int(_mhr.group(1)),
+            "unfinished": int(_mhr.group(2)),
+            "limit": int(_mhr.group(3)) if _mhr.group(3) else None,
+        }
+    else:
+        _mhr1 = re.search(rf"{_hrlab}\s*[\[(]?\s*(\d+)\s*[\])]?", _hsrc, re.IGNORECASE)
+        if _mhr1:
+            out["hr"] = {"raw": " ".join(_mhr1.group(0).split())[:40],
+                         "assessing": None, "unfinished": int(_mhr1.group(1)), "limit": None}
+        else:
+            _mr = re.search(r"H\s*&\s*R[^\n]{0,60}", _hraw, re.IGNORECASE)
+            _mctx = _hraw[max(0, _mr.start() - 80):(_mr.end() + 80)] if _mr else ""
+            if _mr and "myhr" in _mctx.lower():  # 只有真栏（挂在 myhr.php 上）才留 raw
+                out["hr"] = {"raw": " ".join(_mr.group(0).split())[:40],
+                             "assessing": None, "unfinished": None, "limit": None}
     if out["ratio"] in (None, 0.0) and (out["upload"] or 0) > 0 and (out["download"] or 0) > 0:
         out["ratio"] = round(float(out["upload"]) / float(out["download"]), 3)
     return out

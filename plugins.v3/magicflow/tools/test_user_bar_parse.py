@@ -78,6 +78,42 @@ chk("回归·上传", gb(r["upload"]) == 307.28, gb(r["upload"]))
 chk("回归·下载", gb(r["download"]) == 305.72, gb(r["download"]))
 chk("回归·ratio_inf 默认 False", r.get("ratio_inf") is False, r.get("ratio_inf"))
 
+# 6) ★ 17.2.2：页头 H&R 计数事实（「考核中/未完成/上限」，上限＝达到即禁用账号）
+r = parse_user_bar("<a href='myhr.php'>H&R: [0/0/15]</a> 分享率: 2.5 上传量: 10.00 GB")
+chk("H&R·三数", isinstance(r.get("hr"), dict) and r["hr"]["assessing"] == 0
+    and r["hr"]["unfinished"] == 0 and r["hr"]["limit"] == 15, r.get("hr"))
+r = parse_user_bar("H&amp;R 2/1/10 分享率: 1.0 上传量: 1.00 GB")
+chk("H&R·实体转义+无冒号", isinstance(r.get("hr"), dict) and r["hr"]["assessing"] == 2
+    and r["hr"]["unfinished"] == 1 and r["hr"]["limit"] == 10, r.get("hr"))
+r = parse_user_bar("H&R: 3 分享率: 1.0 上传量: 1.00 GB")
+chk("H&R·单数归入未完成（保守）", isinstance(r.get("hr"), dict) and r["hr"]["assessing"] is None
+    and r["hr"]["unfinished"] == 3 and r["hr"]["limit"] is None, r.get("hr"))
+# 真机形态（学校 pt.btschool.club）：数字被 font/span 切开、且不给第三个数 → limit=None
+r = parse_user_bar('<a href="myhr.php"><font class="medium">H&amp;R:</font>0/'
+                   '<span style="color:#f00;font-weight: bold;">0</span></a> 分享率: 5.9')
+chk("H&R·学校真机形态（无禁用线）", isinstance(r.get("hr"), dict) and r["hr"]["assessing"] == 0
+    and r["hr"]["unfinished"] == 0 and r["hr"]["limit"] is None, r.get("hr"))
+# 真机形态（财神 cspt.top）：标签写成 `[H&R]:`、数字与标签之间换行、且被 <font> 切开
+r = parse_user_bar('<div class="menu-base-info-items">[H&R]:\n [<a href="myhr.php">0/'
+                   '<font color="red">0</font>/10</a>]</div> 分享率: 3.3')
+chk("H&R·财神真机形态（[H&R]: + 换行 + font）", isinstance(r.get("hr"), dict)
+    and r["hr"]["assessing"] == 0 and r["hr"]["unfinished"] == 0 and r["hr"]["limit"] == 10, r.get("hr"))
+# 真机形态（大青虫 cyanbug.net）：站点**没开这栏**，只剩模板注释 `<!-- H&R -->` → 必须 None
+r = parse_user_bar("<!-- H&R --> <font>认领: </font> [<a href='claim.php'>0/1000</a>] 分享率: 1.5")
+chk("H&R·注释占位=None（大青虫真机）", r.get("hr") is None, r.get("hr"))
+
+# 7) ★ 17.2.2：**没有这一栏 → None（不等于 0）**
+r = parse_user_bar("分享率: 1.01 上传量: 307.28 GB 下载量: 305.72 GB")
+chk("H&R·无该栏=None", r.get("hr") is None, r.get("hr"))
+
+# 8) ★ 17.2.2：有栏但解不出数字 → 只留 raw（不冒充 0）
+#    只认真栏：命中处必须挂着 myhr.php 链接（导航文案/占位符不算）
+r = parse_user_bar("<a href='myhr.php'>H&R: 详见规则页</a> 分享率: 1.0 上传量: 1.00 GB")
+chk("H&R·解不出只留 raw", isinstance(r.get("hr"), dict) and r["hr"]["assessing"] is None
+    and r["hr"]["raw"], r.get("hr"))
+r = parse_user_bar("本站 H&R: 详见规则页 分享率: 1.0 上传量: 1.00 GB")
+chk("H&R·无 myhr 链接的文案不算栏", r.get("hr") is None, r.get("hr"))
+
 
 
 # ── API 档案归一（normalize_api_profile）────────────────────────────────

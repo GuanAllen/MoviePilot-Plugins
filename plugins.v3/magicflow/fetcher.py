@@ -742,6 +742,14 @@ class SiteFetcher:
                         break
             dv, uv = _NP_PROMO_FACTORS.get(promo) or _NP_PRO_CLASSES.get(promo) or (1.0, 1.0)
 
+            # ★ 17.2.2：逐种 H&R 标签（carpt / dstudio 同皮肤）——
+            #   ``<img class="hitandrun" src="pic/trans.gif" alt="H&R" title="H&R" />``。
+            #   实测（2026-10-14）：carpt.net 每行都带（站点级 H&R，102/102 行）；
+            #   dstudio.me 只在少数种子带（rules.php：「本站很少有种子存在 H&R，
+            #   有 H&R 的种子，会显示黑色标签」）。
+            #   这里只读**页面事实**：读到 → True；读不到 → False（不推断、不补默认）。
+            hit_and_run = bool(re.search(r"class=['\"]hitandrun['\"]", chunk))
+
             # ★ 促销到期（限时免费）：紧跟在促销标记后的 <span title="YYYY-MM-DD HH:MM:SS">
             free_until = ""
             free_remaining_sec = -1.0
@@ -873,7 +881,7 @@ class SiteFetcher:
                 site_domain=site_domain,
                 is_free=(dv == 0),
                 is_double_free=(dv == 0 and uv == 2),
-                hit_and_run=False,
+                hit_and_run=hit_and_run,
                 volume_factor=dv,
                 site_cookie=cookie,
                 site_ua=ua,

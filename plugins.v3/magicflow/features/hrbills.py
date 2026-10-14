@@ -560,19 +560,27 @@ class HrBillsMixin:
                 thr = bool(getattr(t, "hit_and_run", False)) if t is not None else None
             except Exception:  # noqa: BLE001
                 thr = None
-        if site_hr is True:
-            rule = RULE_SITE_HR
-        elif thr is True:
+        # ★ 17.2.2：该站 H&R 是否**逐种开关**（YemaPT ``hrPunishEnable`` / Depth Studio 黑色标签）。
+        #   逐种站的站点级 ``hr=True`` 只说明「该站存在 H&R 制度」，**不代表这颗种有义务** ⇒
+        #   站点级结论对它不适用，一切以逐种事实为准（无标记 = 不开账）。
+        try:
+            _pt = bool(self._site_per_torrent_hr(dom)) if dom else False
+        except Exception:  # noqa: BLE001
+            _pt = False
+        if thr is True:
+            # 逐种事实最硬（下载瞬间带入），优先于站点级结论。
             rule = RULE_HIT_AND_RUN
+        elif site_hr is True and not _pt:
+            # 站点级明确有 H&R 且非逐种站 → 全量义务。
+            rule = RULE_SITE_HR
         elif site_hr is False:
-            # 明确无 H&R → 不开账（防“凭空欠债”）。
+            # 明确无站点级 H&R → 不开账（防“凭空欠债”）；逐种标记命中已在上面拦下。
+            return None
+        elif site_hr is True and _pt:
+            # ★ 逐种站 + 这颗种没标 H&R → 无义务，不开账。
             return None
         else:
             # site_hr None（未知）：逐种开关站才开 unknown（跟踪漏记）；普通站不开账。
-            try:
-                _pt = bool(self._site_per_torrent_hr(dom))
-            except Exception:  # noqa: BLE001
-                _pt = False
             if not _pt:
                 return None
             rule = RULE_UNKNOWN

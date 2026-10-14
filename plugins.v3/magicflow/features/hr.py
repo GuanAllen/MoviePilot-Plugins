@@ -203,8 +203,15 @@ class HrMixin:
             thr = True if bool(getattr(torrent, "hit_and_run", False)) else None
         except Exception:  # noqa: BLE001
             thr = None
-        if not (hr_flag is True or thr is True):
-            return False, 0.0, 0.0, f"本站({dom})无H&R规则"
+        # ★ 17.2.2：逐种站（YemaPT ``hrPunishEnable`` / Depth Studio 黑色标签）的**站点级 True
+        #   不代表这颗种有义务** → 只认逐种标记；无标记不猜（站点级结论对逐种站不适用）。
+        #   ``_site_per_torrent_hr`` 是「逐种站」的唯一真值入口（siteops.py:65），不在此另立判断。
+        try:
+            _pt = bool(self._site_per_torrent_hr(dom))
+        except Exception:  # noqa: BLE001
+            _pt = False
+        if not (thr is True or (hr_flag is True and not _pt)):
+            return False, 0.0, 0.0, (f"逐种站({dom})未标H&R" if _pt else f"本站({dom})无H&R规则")
         try:
             need = float(self._crossseed_seed_need_hours(dom) or 0.0)
         except Exception:  # noqa: BLE001
