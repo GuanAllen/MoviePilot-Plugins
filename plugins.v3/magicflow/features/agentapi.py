@@ -1520,7 +1520,8 @@ class AgentApiMixin:
             data, t0,
             ("写操作 → 按链接解析 id（claim._torrent_id_of）→ 该站 cookie 取 .torrent（crossseed PV 闸门）→ "
              "复用 _ondemand_download 落种；身份=资源 + 职务=点播；"
-             "促销拿不到按全额计、H&R 未知按欠 H&R 保守处理"))
+             "促销拿不到按全额计；H&R 不自造逐种标记（判定归 H&R 模块：站点规则账本 hr=True→site_hr / "
+             "False→不开账 / 未知→unknown）"))
 
     # ---------------------------------------------------- 15.9.0 音乐搜索自描述（只读）
     async def agent_music_search(self, query: str = "", site_ids: str = "",

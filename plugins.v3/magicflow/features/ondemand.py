@@ -874,7 +874,8 @@ class OnDemandMixin:
 
         账号口径（诚实记账，绝不假装免费）：
           · 促销 ``dv`` 来自详情页抗取（``fetch_torrent_promotion``）；**拿不到 → dv=1.0 按全额计**；
-          · ``H&R`` 详情页解析不出 → **按「欠 H&R」保守处理**（H&R 硬拦只在 remove 时生效：宁多留不误删）。
+          · ``H&R`` **不自造逐种标记**：详情页解析不出 ≠ 欠 H&R，判定归 H&R 模块
+            （站点规则账本 ``_site_hr_flag``：True→site_hr；False→不开账；未知→unknown）。
         """
         from .claim import _torrent_id_of  # noqa: WPS433（惰性：claim 硬依赖 app.sdk.logging，离线单测无它）
 
@@ -911,8 +912,9 @@ class OnDemandMixin:
             "site_ua": str(getattr(site, "ua", "") or "").strip() or None,
             "site_proxy": bool(getattr(site, "proxy", False)),
             "downloadvolumefactor": 1.0, "free": False, "counted_gb": 0.0,
-            # H&R 详情页解析不出 → 按「欠 H&R」保守处理（H&R 硬拦只在 remove 时生效：宁多留不误删）
-            "hit_and_run": True,
+            # ★ 不传逐种 H&R 标记：详情页解析不出 ≠ 欠 H&R。H&R 判定归 H&R 模块，
+            #   按站点规则账本（features/hrbills.py::_site_hr_flag）判：
+            #   site_hr=True→site_hr；site_hr=False→不开账；未知→unknown。
         }
         promo, promo_raw, promo_note = "unknown", "", "详情页拿不到 → 按全额计"
         if page_url:
@@ -945,7 +947,7 @@ class OnDemandMixin:
             "size": size,
             "downloadvolumefactor": dv,
             "free": dv <= 0.0,
-            "hit_and_run": True,
+            "hit_and_run": bool(row.get("hit_and_run", False)),
             "counted_gb": row["counted_gb"],
             "save_path": save_path,
             "site": site_name or sid,
