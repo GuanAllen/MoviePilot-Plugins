@@ -9,7 +9,7 @@
 
 账号口径（诚实记账，绝不假装免费）：
   · 促销 `dv` 来自详情页抗取（`fetch_torrent_promotion`）；**拿不到 → dv=1.0 按全额计**；
-  · `H&R` 详情页解析不出 → **按「欠 H&R」保守处理**。
+  · `H&R` **不自造逐种标记**：详情页解析不出 ≠ 欠 H&R，判定交回 H&R 模块（站点规则账本 `_site_hr_flag`）。
 
 断言：
   [1] `_od_promo_dv`：free/2xfree→0.0；none/twoup/unknown→1.0；partial 从 `N%` 反解、解不出按 1.0；
@@ -242,7 +242,7 @@ def main() -> int:
     if f4.download_calls:
         _c = f4.download_calls[0]
         ok(_c["content"] is not None and _c["title"] == "Free.2024", "content/title 透传给落种")
-        ok(_c["row"].get("hit_and_run") is True, "H&R 解析不出 → 按欠 H&R 保守处理")
+        ok("hit_and_run" not in _c["row"], "H&R 解析不出 → 不自造逐种标记（row 不带 hit_and_run）")
 
     print("[9] 取种失败 → 如实报错，不落种")
     f5 = _fake(ondemand, content=b"")
