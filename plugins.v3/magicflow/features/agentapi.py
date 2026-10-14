@@ -304,6 +304,14 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
                     "confirm": "1=真加种；否则只回干跑计划"},
          "returns": "OnDemandAdd", "version": AGENT_ENDPOINT_VERSION,
          "summary": "把用户选定的那条源加进下载器：只下 pick 那条"},
+        {"path": "/agent/ondemand/add_direct", "method": "POST", "handler": "agent_ondemand_add_direct",
+         "write": True,
+         "params": {"url": "str 必填 = 种子链接（details.php?id=N / download.php?id=N / .torrent 直链）",
+                    "site_ids": "str 必填且唯一 = 站点 id（取种要用该站 cookie，不猜站点）",
+                    "task_id": "任务 id（可空；只影响保存目录）",
+                    "confirm": "1=真加种；否则只回干跑计划（干跑也取一次 .torrent 读元数据，不落种）"},
+         "returns": "OnDemandAddDirect", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "有种子链接但搜不到时直接加：按链接取种落种（不 search、不选源）"},
         {"path": "/agent/music/search", "method": "POST", "handler": "agent_music_search",
          "write": False,
          "params": {"query": "str 关键词（首页必填；缺了报 bad_param；续页留空）",
@@ -1479,6 +1487,40 @@ class AgentApiMixin:
             data, t0,
             ("写操作 → 只按 pick 命中的候选 → _ondemand_download（DownloaderAdapter.add_torrent）；"
              "身份=资源 + 职务=点播；**不调 _ondemand_pick**（不自动选源）；未下完不被静默池暂停"))
+
+    def agent_ondemand_add_direct(self, url: str = "", site_ids: str = "",
+                                  task_id: str = "", confirm: str = "") -> Dict[str, Any]:
+        """`POST /agent/ondemand/add_direct` —— ★ 按**种子链接**直接加种（写，17.2.0）。
+
+        与 `POST /agent/ondemand/add` 的分工：那个要先 search 再 pick；**这个只认链接**
+        （`details.php?id=N` / `download.php?id=N` / `.torrent` 直链），用指定站点的 cookie 取种。
+        `site_ids` **必填且唯一**（取种要 cookie，不猜站点）。
+        `confirm` 缺省（或非 1）→ **只回干跑计划**（干跑也取一次 .torrent 读元数据、不落种）；`confirm=1` 才真加种。
+        """
+        t0 = time.time()
+        if not str(url or "").strip():
+            return self._agent_err(
+                "bad_request",
+                "缺少 url（种子链接：details.php?id=N / download.php?id=N / .torrent 直链）", t0)
+        if not str(site_ids or "").strip():
+            return self._agent_err(
+                "bad_request", "缺少 site_ids（直连加种必须指定**唯一**站点：取种要用该站 cookie）", t0)
+        _ok = str(confirm).strip().lower() in ("1", "true", "yes", "y", "on")
+        try:
+            data = self._ondemand_add_direct(url=url, site_ids=site_ids,
+                                             task_id=task_id, apply=bool(_ok))
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal_error", f"直连加种失败: {e}", t0)
+        if not data.get("ok"):
+            return self._agent_err("bad_request", str(data.get("message") or "加种未生效"),
+                                   t0, data=data)
+        if not _ok:
+            return self._agent_ok(data, t0)
+        return self._agent_report(
+            data, t0,
+            ("写操作 → 按链接解析 id（claim._torrent_id_of）→ 该站 cookie 取 .torrent（crossseed PV 闸门）→ "
+             "复用 _ondemand_download 落种；身份=资源 + 职务=点播；"
+             "促销拿不到按全额计、H&R 未知按欠 H&R 保守处理"))
 
     # ---------------------------------------------------- 15.9.0 音乐搜索自描述（只读）
     async def agent_music_search(self, query: str = "", site_ids: str = "",
