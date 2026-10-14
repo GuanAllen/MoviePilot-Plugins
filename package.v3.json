@@ -3,7 +3,7 @@
         "name": "魔流",
         "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
         "labels": "站点,做种,魔力,刷流",
-        "version": "17.2.2",
+        "version": "17.3.0",
         "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
         "author": "GuanAllen",
         "level": 1,
@@ -428,9 +428,10 @@
             "17.1.1": "17.1.1：修点播 add 加不进第 2+ 页候选 —— 按 pick 分页续搜（有界 3 页）+ search→add 缓存衔接",
             "17.2.0": "17.2.0：AI 入口补「点播按种子链接直连加种」POST /agent/ondemand/add_direct + MCP magicflow_ondemand_add_direct",
             "17.2.1": "17.2.1：直连加种删掉写死的逐种 H&R 标记（判定归 H&R 模块，修 cspt.top/聆音 被凭空开账）",
-            "17.2.2": "H&R 真值链收口：逐种站的站点级结论不适用 + 首页 H&R 计数进健康自检 H7 + 内置表退场 + 列表页 hitandrun 标签自解析"
+            "17.2.2": "H&R 真值链收口：逐种站的站点级结论不适用 + 首页 H&R 计数进健康自检 H7 + 内置表退场 + 列表页 hitandrun 标签自解析",
+            "17.3.0": "17.3.0：报表统一口径——新增 GET /agent/report（view=site|silent|hr|rows）+ /agent/report/drift，三旧报表端点改由同一台账投影（数字一致、字段不变）；rule=unknown 账单显式归「未定性」；修 myhr 对账 ok 先落盘后置位导致 hr.ok 恒 false 的口径假象。"
         }
     },
-    "version": "17.2.2",
+    "version": "17.3.0",
     "history": {}
 }

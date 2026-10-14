@@ -230,6 +230,25 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
                     "live": "1 = 现抓站点 H&R 对账（同 /agent/hr/reconcile）"},
          "returns": "SiteSeedsReport", "version": AGENT_ENDPOINT_VERSION,
          "summary": "某站做种/H&R 现状如何：六桶职务/身份 + 传输三态 + H&R 摘要"},
+        # ---- 17.3.0 报表统一入口（唯一口径：账本为真值 + 全量 + 互校）----
+        {"path": "/agent/report", "method": "GET", "handler": "agent_report", "write": False,
+         "params": {"view": "site|silent|hr|rows（默认 site）",
+                    "site": "站点域名 / 短名 / id（site/hr/rows 视图用）",
+                    "state": "刷流|魔力|保种|静默（账本职务轴，可选）",
+                    "bucket": "刷流|魔力|保种|静默|补源|外部（可选）",
+                    "sub": "新|资源|普通（静默身份轴，可选）",
+                    "origin": "池|辅种副本|无主（可选）",
+                    "transport": "做种中|暂停|未完成|不在下载器（可选）",
+                    "hr": "1=欠 H&R / 0=不欠 / unclassified=未定性账单（可选）",
+                    "protected": "1=只保护 / 0=只未保护（可选）",
+                    "limit": "int（默认 200；0=全部）", "offset": "int（默认 0）",
+                    "live": "1=现抓站点 H&R 对账（site/hr 视图用）"},
+         "returns": "Report", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "统一报表：一行=一颗种（站/静默池/账单/全量四视图同口径，参数非法即报错）"},
+        {"path": "/agent/report/drift", "method": "GET", "handler": "agent_report_drift",
+         "write": False, "params": {},
+         "returns": "ReportDrift", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "报表互校：账本 × 下载器 × MP 站点 × 账单（幽灵/未纳管/站点缺失）"},
         # ---- 15.9.0 站点「分类类型」映射（只读，★ 类型真值一律用 MP）----
         {"path": "/agent/sites/types", "method": "GET", "handler": "agent_sites_types",
          "write": False, "params": {},
@@ -1017,6 +1036,44 @@ class AgentApiMixin:
              "缓存 hr_reconcile.json（派生，非真值源）"))
 
     # ---------------------------------------------------- 11.10.0 站点级种子报表（只读）
+    def agent_report(self, view: str = "site", site: str = "", state: str = "",
+                     bucket: str = "", sub: str = "", origin: str = "", transport: str = "",
+                     hr: str = "", protected: str = "", limit: int = 200, offset: int = 0,
+                     live: int = 0) -> Dict[str, Any]:
+        """``GET /agent/report`` —— ★ **报表统一入口**（只读，17.3.0）。
+
+        一次调用答：**「我们手上到底有哪些种、各是什么身份、欠不欠债、能不能动」**。
+        一行 = 一颗种；真值源 = **账本**（种子账本 + ``hr_bills.json`` + 资源账本），
+        下载器快照只补 ``transport``（做种中 / 暂停 / 未完成 / 不在下载器）并用于互校。
+
+        - ``view=site``   按站聚合全量（同旧 ``/agent/site/seeds``，数字已收口）
+        - ``view=silent`` 静默池（同旧 ``/agent/silent``）
+        - ``view=hr``     H&R 账单（同旧 ``/agent/hr/bills``，``rule=unknown`` 显式归「未定性」）
+        - ``view=rows``   通用台账（可按 state/bucket/sub/origin/transport/hr/protected 过滤）
+
+        参数非法一律报 ``bad_param``（不再静默忽略）；``limit=0`` = 全部。
+        本端点**只读**：不写下载器 / 不写账本 / 不新增缓存。
+        """
+        t0 = time.time()
+        return self._agent_call_read(
+            t0,
+            ("features/reportview.get_report() → 种子账本 mf_seed + hr_bills.json + mf_resource"
+             " + 下载器快照（只补传输态）+ _protection_sets()"),
+            self.get_report, view, site, state, bucket, sub, origin, transport, hr,
+            protected, limit, offset, live)
+
+    def agent_report_drift(self) -> Dict[str, Any]:
+        """``GET /agent/report/drift`` —— **报表四向互校**（只读，17.3.0）。
+
+        账本 × 下载器 × MP 站点清单 × 账单对齐：``ledger_only``（账本有、下载器没有的幽灵行）、
+        ``qb_only``（下载器有、账本没纳管的）、``missing_from_mp``（账本在挂但站已不在 MP）。
+        只报不修。
+        """
+        t0 = time.time()
+        return self._agent_call_read(
+            t0, "features/reportview.drift() → 账本 × 下载器 × MP 站点清单 × 账单",
+            self.get_report_drift)
+
     def agent_site_seeds(self, site: str = "", live: int = 0) -> Dict[str, Any]:
         """``GET /agent/site/seeds`` —— ★ **站点级种子报表**（只读，两轴分级）。
 
