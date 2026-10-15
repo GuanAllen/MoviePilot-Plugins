@@ -176,7 +176,14 @@ export function normalizeTask(task) {
   return result
 }
 
-/** 标准化全局设置。 */
+/** 标准化全局设置。
+ *
+ * ★ P1 修复（认领 / H&R 设置存不进去）：此函数以前是**闭集**——只返回下面列出的已知键，
+ *   调用方（useSettings 的保存路径）直接把它当请求体用，于是它不认识的键（claim_* / hr_*，
+ *   以及将来新增的设置）在提交前被静默丢掉，UI 却仍提示「设置已保存」。
+ *   现在改为「已知键做类型归一 + 未知键原样透传」：未知键不丢、不改值、不覆盖已知键，
+ *   且只透传源对象里**确实存在**的键（`undefined` 不入 payload，避免改变后端行为）。
+ */
 export function normalizeSettings(settings = {}) {
   const journalKeep = Number(settings.journal_keep)
   const requestInterval = Number(settings.request_interval)
@@ -184,7 +191,7 @@ export function normalizeSettings(settings = {}) {
     const n = Number(value)
     return Number.isFinite(n) ? n : fallback
   }
-  return {
+  const result = {
     enabled: Boolean(settings.enabled),
     show_sidebar_nav: Boolean(settings.show_sidebar_nav),
     agent_mcp: settings.agent_mcp === undefined ? true : Boolean(settings.agent_mcp),
@@ -300,6 +307,14 @@ export function normalizeSettings(settings = {}) {
       ? settings.hidden_tiles.map(v => String(v || '').trim()).filter(Boolean)
       : normalizePathList(settings.hidden_tiles),
   }
+  // ★ 未知键透传（单一真值源 = 后端设置模型；前端不再维护第二份白名单）。
+  //   只透传原对象里确实存在的键：已知键已归一化好，绝不被覆盖；`undefined` 不进 payload。
+  Object.keys(settings).forEach(key => {
+    if (Object.prototype.hasOwnProperty.call(result, key)) return
+    if (settings[key] === undefined) return
+    result[key] = settings[key]
+  })
+  return result
 }
 
 /** 可选的识别来源（与 MoviePilot 内置 MediaSource 对齐）。 */

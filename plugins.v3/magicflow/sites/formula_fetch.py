@@ -452,7 +452,7 @@ def fetch_mteam_bonus(site: Any, timeout: int = 30) -> FormulaCapture:
     return fallback
 
 
-def fetch_site_formula(site: Any, timeout: int = 30, force: bool = False) -> FormulaCapture:
+def fetch_site_formula(site: Any, timeout: int = 60, force: bool = False) -> FormulaCapture:
     """
     用 MoviePilot SDK 抓取站点 ``mybonus.php`` 并解析公式。
 

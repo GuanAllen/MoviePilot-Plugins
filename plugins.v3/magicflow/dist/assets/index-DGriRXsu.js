@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { _ as _export_sfc, a as formatBytes, c as cloneTask, u as unwrapResponse, n as normalizeTask, b as cloudStatusMeta, r as recommendStatusMeta, d as formatDateTime, e as formatDurationSeconds, g as formatDuration, f as formatBonus, h as runModeMeta, t as taskStateMeta, i as runStatusText, j as normalizeDownloaderPrefs, k as normalizeDownloaderPaths, l as normalizeDefaults, m as normalizeIyuuSites, o as normalizeSettings, S as SORT_RULE_TYPES, F as FALLBACK_SOURCE_OPTIONS, p as epLabelFromName, q as normalizeSortRules, R as RUN_MODES } from './_plugin-vue_export-helper-JAM6KKOp.js';
+import { _ as _export_sfc, a as formatBytes, c as cloneTask, u as unwrapResponse, n as normalizeTask, b as cloudStatusMeta, r as recommendStatusMeta, d as formatDateTime, e as formatDurationSeconds, g as formatDuration, f as formatBonus, h as runModeMeta, t as taskStateMeta, i as runStatusText, j as normalizeDownloaderPrefs, k as normalizeDownloaderPaths, l as normalizeDefaults, m as normalizeIyuuSites, o as normalizeSettings, S as SORT_RULE_TYPES, F as FALLBACK_SOURCE_OPTIONS, p as epLabelFromName, q as normalizeSortRules, R as RUN_MODES } from './_plugin-vue_export-helper-DZmhfy2R.js';
 
 const {useModel:_useModel$y,mergeModels:_mergeModels$w} = await importShared('vue');
 
@@ -5950,7 +5950,10 @@ function useSilentPool({ api, notify }) {
     return (silentData.value.items || []).filter(it => {
       if (silentSub.value && String(it.sub || '') !== silentSub.value) return false
       if (silentSite.value && String(it.site || '') !== silentSite.value) return false
-      if (silentOnlyHr.value && !it.hr) return false
+      // ★ 19.0.0 hotfix：it.hr 是对象（{owed, owed_hr, need_left}）而非布尔 ——
+      //   「仅看 H&R」过滤必须用 owed_hr（欠 H&R 才算），否则对象恒 truthy → 全池全被算成 H&R。
+      const owedHr = !!(it.hr && (typeof it.hr === 'object' ? it.hr.owed_hr : it.hr));
+      if (silentOnlyHr.value && !owedHr) return false
       if (kw && !String(it.title || '').toLowerCase().includes(kw)) return false
       return true
     })
@@ -5985,9 +5988,17 @@ function silentProgressText(it) {
   return `${(p * 100).toFixed(1)}%`
 }
 function silentHrText(it) {
+  // ★ 19.0.0 hotfix：it.hr 是对象 {owed, owed_hr, need_left}。
+  //   只有 owed_hr=true 才展示「H&R」；剩余时间优先 remain_min（跨站来源份），
+  //   欠账账单种用 bill.hours_left（hrbills.py deadline 口径），都没有就只写「H&R 中」。
+  const hr = it?.hr;
+  const owed = !!(hr && (typeof hr === 'object' ? hr.owed_hr : hr));
+  if (!owed) return ''
   const rem = it?.remain_min;
-  if (rem === null || rem === undefined) return it?.hr ? 'H&R 中' : ''
-  return `剩 ${formatRemain(rem)}`
+  if (rem !== null && rem !== undefined) return `剩 ${formatRemain(rem)}`
+  const left = Number(hr?.need_left || it?.bill?.hours_left);
+  if (Number.isFinite(left) && left > 0) return `剩 ${formatRemain(left)}`
+  return 'H&R 中'
 }
 function silentSubLabel(sub) { return SILENT_SUB_LABEL[String(sub || '')] || `静默-${sub || '?'}` }
 
@@ -6010,7 +6021,7 @@ const _hoisted_10$j = {
   class: "magicflow-silent-sites"
 };
 const _hoisted_11$j = ["onClick"];
-const _hoisted_12$j = { class: "magicflow-silent-site__name" };
+const _hoisted_12$j = ["title"];
 const _hoisted_13$h = { class: "magicflow-silent-site__num" };
 const _hoisted_14$h = {
   key: 0,
@@ -6255,7 +6266,10 @@ return (_ctx, _cache) => {
                         class: _normalizeClass$g(["magicflow-silent-site", { 'is-active': site.value === s.site }]),
                         onClick: $event => (site.value = site.value === s.site ? '' : s.site)
                       }, [
-                        _createElementVNode$A("span", _hoisted_12$j, _toDisplayString$A(s.site), 1),
+                        _createElementVNode$A("span", {
+                          class: "magicflow-silent-site__name",
+                          title: s.name && s.name !== s.site ? `${s.name}（${s.site}）` : s.site
+                        }, _toDisplayString$A(s.site), 9, _hoisted_12$j),
                         _createElementVNode$A("span", _hoisted_13$h, _toDisplayString$A(s.total), 1),
                         (s.hr)
                           ? (_openBlock$A(), _createElementBlock$u("span", _hoisted_14$h, "H&R " + _toDisplayString$A(s.hr), 1))
@@ -6335,7 +6349,7 @@ return (_ctx, _cache) => {
                                 _: 2
                               }, 1024),
                               _createElementVNode$A("span", _hoisted_18$h, _toDisplayString$A(__props.gbText(it.size_gb)), 1),
-                              (it.hr)
+                              (it.hr && it.hr.owed_hr)
                                 ? (_openBlock$A(), _createBlock$y(_component_VChip, {
                                     key: 0,
                                     size: "x-small",
@@ -6439,7 +6453,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const SilentPoolDialog = /*#__PURE__*/_export_sfc(_sfc_main$A, [['__scopeId',"data-v-5e655797"]]);
+const SilentPoolDialog = /*#__PURE__*/_export_sfc(_sfc_main$A, [['__scopeId',"data-v-53608aaf"]]);
 
 const {useModel:_useModel$k,mergeModels:_mergeModels$k} = await importShared('vue');
 
@@ -12972,7 +12986,7 @@ const mobileDetailCards = computed$r(() => {
     cards.push({ v: formatBytes(t.task_uploaded || 0), k: '本任务上传' });
     cards.push({ v: props.siteAccount?.ok ? formatBytes(props.siteAccount.upload || 0) : '—', k: '站点上传' });
   } else {
-    cards.push({ v: t.site_bonus_ok && t.site_bonus_per_hour != null ? Number(t.site_bonus_per_hour).toFixed(2) : '—', k: '时魔 /h' });
+    cards.push({ v: t.site_bonus_ok && t.site_bonus_per_hour != null ? Number(t.site_bonus_per_hour).toFixed(2) : '取数中…', k: '时魔 /h' });
     cards.push({ v: t.site_current_bonus != null ? Number(t.site_current_bonus).toFixed(0) : '—', k: '站点魔力' });
   }
   return cards
@@ -13066,7 +13080,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const MobileTaskDetail = /*#__PURE__*/_export_sfc(_sfc_main$h, [['__scopeId',"data-v-8e1b6547"]]);
+const MobileTaskDetail = /*#__PURE__*/_export_sfc(_sfc_main$h, [['__scopeId',"data-v-610d06af"]]);
 
 const {createElementVNode:_createElementVNode$g,toDisplayString:_toDisplayString$g,createTextVNode:_createTextVNode$f,resolveComponent:_resolveComponent$g,withCtx:_withCtx$f,createVNode:_createVNode$f,renderList:_renderList$b,Fragment:_Fragment$d,openBlock:_openBlock$g,createElementBlock:_createElementBlock$d,createBlock:_createBlock$f,createCommentVNode:_createCommentVNode$d,normalizeClass:_normalizeClass$5,unref:_unref$6} = await importShared('vue');
 
@@ -13399,7 +13413,7 @@ return (_ctx, _cache) => {
         : (_openBlock$e(), _createElementBlock$c(_Fragment$c, { key: 1 }, [
             _createVNode$d(_component_VSheet, { class: "magicflow-stat app-surface-static" }, {
               default: _withCtx$d(() => [
-                _createElementVNode$e("strong", null, _toDisplayString$e(__props.selectedTask.site_bonus_ok ? _unref$5(formatBonus)(__props.selectedTask.site_bonus_per_hour) : '—'), 1),
+                _createElementVNode$e("strong", null, _toDisplayString$e(__props.selectedTask.site_bonus_ok ? _unref$5(formatBonus)(__props.selectedTask.site_bonus_per_hour) : '取数中…'), 1),
                 _cache[1] || (_cache[1] = _createElementVNode$e("span", null, "站点上报时魔 · 站点实时值", -1))
               ]),
               _: 1
@@ -13875,7 +13889,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const OverviewTab = /*#__PURE__*/_export_sfc(_sfc_main$e, [['__scopeId',"data-v-be2f0fcb"]]);
+const OverviewTab = /*#__PURE__*/_export_sfc(_sfc_main$e, [['__scopeId',"data-v-218bddc7"]]);
 
 // MagicFlow 前端 · useCrossseed 域 composable
 // P3 拆分：自 views/magicflow/index.vue **纯搬家**（无行为变更）。
@@ -24948,7 +24962,7 @@ function mobileRowLine(t) {
 function mobileRowNum(t) {
   if (t.task_type === 'brush') return t.task_uploaded ? `↑ ${formatBytes(t.task_uploaded)}` : ''
   if (t.site_bonus_ok && t.site_bonus_per_hour != null) return formatBonus(t.site_bonus_per_hour)
-  return ''
+  return '取数中…'
 }
 function mobileDetailEntry(entry) {
   const e = typeof entry === 'string' ? { key: entry } : entry;
@@ -27085,6 +27099,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-92efac26"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-8043ab52"]]);
 
 export { MagicFlowWorkbench as M };

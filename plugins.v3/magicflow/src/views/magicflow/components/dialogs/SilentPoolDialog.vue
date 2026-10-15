@@ -104,7 +104,7 @@ const emit = defineEmits(['refresh', 'operations', 'invariant', 'tag-reconcile']
             :class="{ 'is-active': site === s.site }"
             @click="site = site === s.site ? '' : s.site"
           >
-            <span class="magicflow-silent-site__name">{{ s.site }}</span>
+            <span class="magicflow-silent-site__name" :title="s.name && s.name !== s.site ? `${s.name}（${s.site}）` : s.site">{{ s.site }}</span>
             <span class="magicflow-silent-site__num">{{ s.total }}</span>
             <span v-if="s.hr" class="magicflow-silent-site__hr">H&R {{ s.hr }}</span>
           </div>
@@ -134,7 +134,7 @@ const emit = defineEmits(['refresh', 'operations', 'invariant', 'tag-reconcile']
                   <VChip size="x-small" variant="tonal" color="primary">{{ it.site }}</VChip>
                   <VChip size="x-small" variant="tonal">{{ silentSubLabel(it.sub) }}</VChip>
                   <span class="magicflow-cs-card__size">{{ gbText(it.size_gb) }}</span>
-                  <VChip v-if="it.hr" size="x-small" variant="flat" color="warning">H&R {{ silentHrText(it) }}</VChip>
+                  <VChip v-if="it.hr && it.hr.owed_hr" size="x-small" variant="flat" color="warning">H&R {{ silentHrText(it) }}</VChip>
                   <VChip v-else size="x-small" variant="tonal">无 H&R</VChip>
                   <VChip
                     v-if="Number(it.progress) < 0.999"

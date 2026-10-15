@@ -48,7 +48,7 @@ const emit = defineEmits(['open-entry'])
     </template>
     <template v-else>
       <VSheet class="magicflow-stat app-surface-static">
-        <strong>{{ selectedTask.site_bonus_ok ? formatBonus(selectedTask.site_bonus_per_hour) : '—' }}</strong>
+        <strong>{{ selectedTask.site_bonus_ok ? formatBonus(selectedTask.site_bonus_per_hour) : '取数中…' }}</strong>
         <span>站点上报时魔 · 站点实时值</span>
       </VSheet>
       <VSheet class="magicflow-stat app-surface-static">

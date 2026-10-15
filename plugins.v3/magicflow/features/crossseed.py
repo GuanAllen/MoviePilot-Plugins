@@ -174,24 +174,42 @@ class CrossSeedMixin:
         return hours
 
     def _crossseed_seed_need_hours(self, domain: str) -> float:
-        """站点要求的「**实际做种**达标小时数」（如学校 20h）；没有则 0（只看窗口）。"""
+        """★ P4：向后兼容**薄壳**，真实现 = ``_crossseed_seed_need_hours_ex``。
+
+        历史契约：**未知与真实 0 都回 0.0**（旧调用方靠自己的 ``or 默认`` 兜底，不要改这条，
+        否则老调用点会静默变向）。新调用点请用 ``_ex`` 拿 ``known`` 标志。
+        """
+        return self._crossseed_seed_need_hours_ex(domain)[0]
+
+    def _crossseed_seed_need_hours_ex(self, domain: str) -> Tuple[float, bool]:
+        """★ P4 **唯一**「实际做种达标小时」解析点 —— 返回 ``(hours, known)``。
+
+        ``known=True``  = 站点规则账本里**明确写了**一个数值（含**真实 0**：手填「该站无 H&R /
+                          不要求做种时长」是**已定论**，按 0 判 → 不欠工时）；
+        ``known=False`` = 站点规则**缺失 / 键位为空（None）/ 类型不可解析** → 未知，
+                          调用方必须走**保守兜底**（宁可多挂，不可少挂）；小时数回 0.0
+                          （与 ``_crossseed_seed_need_hours`` 的历史返回值一致）。
+
+        ★ 17.2.2 拍板（不许推翻）：**不回退内置表** —— 「实际做种达标小时」是**站点级 H&R
+          阈值结论**，只有一处真值源（站点规则账本：手填 ``manual`` > 欢迎短讯 ``welcome``）。
+          内置表只是「出厂建议」，不自动生效（3.41.0「外面的是假规则」）。
+          因此「规则缺失」只能由**调用方**用保守默认兜底，本函数**不臆造站点阈值**。
+        """
         dom = str(domain or "").strip().lower()
         dom = re.sub(r"^https?://", "", dom).split("/")[0].strip()
         try:
             rec = dict(self._site_rules().get(dom) or {})
         except Exception:  # noqa: BLE001
             rec = {}
-        for key in ("seed_need_hours",):
+        if "seed_need_hours" in rec:
+            raw = rec.get("seed_need_hours")
             try:
-                val = float(rec.get(key) or 0.0)
+                val = float(raw)
             except (TypeError, ValueError):
-                val = 0.0
-            if val > 0:
-                return val
-        # ★ 17.2.2：**不再回退内置表** —— 「实际做种达标小时」是**站点级 H&R 阈值结论**，
-        #   只有一处真值源（站点规则账本：手填 > 欢迎短讯）。内置表只是「出厂建议」，不自动生效
-        #   （3.41.0 定调「外面的是假规则」；旧代码在 hr_of/resolve 已不信内置表，只有这里漏了）。
-        return 0.0
+                val = None
+            if val is not None:
+                return (val if val > 0 else 0.0), True
+        return 0.0, False
 
     def _crossseed_seed_window_hours(self, domain: str) -> float:
         """站点 H&R 的**考核窗口**（小时）：多久之内要做满 ``seed_need_hours``；取不到 → 0。

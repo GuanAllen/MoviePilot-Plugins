@@ -16,7 +16,7 @@
 铁律（承接 agentapi.py）：
   - **纯只读**：不写任何 json / 账本 / 热层 / 下载器，不 protect/delete/add/recheck。
   - **不造第二真值源**：只读 ``_tag_state()`` / ``_tag_groups()`` / ``_hrbills_store()`` /
-    ``_store.journal`` / ``_store.task_states`` / ``deletions.jsonl`` / 插件自有库六表，
+    ``_store.journal`` / ``_store.task_states`` / ``mf_deletions``（19.0.0 起真值源为 PG 表）/ 插件自有库各表，
     绝不自己缓存一份真值。
   - **不泄密**：站点表导出时剥掉 ``credential``（口令/apikey/cookie 密文）。
   - 不 bump 版本、不改决策路径（golden 基线必须不变）。
@@ -493,8 +493,46 @@ class AgentLedgerMixin:
         return out
 
     def _agent_deletions_rows(self) -> List[Dict[str, Any]]:
-        """读 ``deletions.jsonl``（删除唯一入口统一台账，逐行 JSON）。"""
-        out: List[Dict[str, Any]] = []
+        """★ 19.0.0 删除台账：真值源 = ``mf_deletions`` 表（时间正序）。
+
+        离线无 DB / PG 异常 → 回退读 ``deletions.jsonl``（降级路径，口径同旧版）。
+        行形状与 JSONL 完全一致（``ts`` 仍是 ``YYYY-MM-DD HH:MM:SS`` 展示串）。
+        """
+        # ---- ① PG 真值源 ----
+        try:
+            from .. import db as mfdb  # noqa: WPS433
+            from sqlalchemy import select  # noqa: WPS433
+            if mfdb.db_available():
+                sess = mfdb.db_session()
+                if sess is not None:
+                    try:
+                        with sess:
+                            rows = list(sess.execute(
+                                select(mfdb.DeletionRow).order_by(mfdb.DeletionRow.id)
+                            ).scalars().all())
+                        out = []
+                        for r in rows:
+                            out.append({
+                                "ts": getattr(r, "ts", "") or "",
+                                "hash": str(getattr(r, "hash", "") or "").strip().lower(),
+                                "site": getattr(r, "site", "") or "",
+                                "title": getattr(r, "title", "") or "",
+                                "source": getattr(r, "source", "") or "",
+                                "reason": getattr(r, "reason", "") or "",
+                                "delete_file": bool(getattr(r, "delete_file", False)),
+                                "ok": bool(getattr(r, "ok", False)),
+                                "blocked": bool(getattr(r, "blocked", False)),
+                                "err": getattr(r, "err", "") or "",
+                                "blocked_by": getattr(r, "blocked_by", "") or "",
+                            })
+                        # PG 查询成功即以表为准（空表也是真值：没删过就是没删过）
+                        return out
+                    except Exception:  # noqa: BLE001
+                        pass  # 落到 JSONL 回退
+        except Exception:  # noqa: BLE001
+            pass
+        # ---- ② JSONL 降级 ----
+        out = []
         try:
             store = getattr(self, "_store", None)
             d = getattr(store, "data_dir", None) if store is not None else None

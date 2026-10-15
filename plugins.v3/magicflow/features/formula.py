@@ -306,7 +306,7 @@ class FormulaMixin:
                     return
                 try:
                     # ★ 7.8.1：强制绕过采集页缓存——零值重抓时若命中旧的 0 页面就白跑了。
-                    cap = fetch_site_formula(site, timeout=15, force=True)
+                    cap = fetch_site_formula(site, timeout=60, force=True)
                 except Exception as err:
                     self._log(f"站点公式抓取失败 [{domain}]: {err}", "warning")
                     cap = None

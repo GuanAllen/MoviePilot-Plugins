@@ -2,3 +2,6 @@ node_modules/
 __pycache__/
 *.pyc
 .DS_Store
+
+# 本地备份（存储收口 19.0.0 迁移用，勿提交）
+.backup-*/

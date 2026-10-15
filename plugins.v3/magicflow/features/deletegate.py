@@ -9,12 +9,19 @@ H&R 补种被任务「超保留上限」路径删掉，因为该路径的保护�
 
 - 物理入口：``DownloaderAdapter.delete_torrents``（插件内所有删种都经它）挂上本闸门的
   ``gate`` 回调 —— 任何路径要删种，先过它。
-- 统一台账：``<data_dir>/deletions.jsonl``，每行一条（**含被拦截的、含失败的**）：
+- 统一台账（★ 19.0.0 真值源）：``mf_deletions`` 表（离线降级写 ``<data_dir>/deletions.jsonl``），每行一条（**含被拦截的、含失败的**）：
   ``ts / hash / site / title / source / reason / delete_file / ok / blocked / err``。
   排查「谁删了 X」→ 只读这一个文件，按 hash grep。
 
 闸门硬拦（**任何路径都不得删**，全局口径、不依赖单任务）：
   手动保留 / 跨站来源份（H&R 保种期）/ 已认领（保种承诺）/ 欠 H&R 义务 / **库内资产（★ 12.3.0）**。
+
+★ P3（fail-closed）：第 1~3 类（手动保留 / 跨站来源份 / 已认领）的**保护集合读取失败**
+  不再被吞成「无保护」——任一类取不到 → ``logger.error`` 记具体异常，且**本批 hash 全部
+  按「被拦」返回**（理由前缀 ``保护集合读取失败(<类名>): <err>``）。这样物理删除入口靠既有
+  外层 fail-closed 语义（``downloader_ops`` 闸门异常 → 全阻断）直接整批拦住，无需改动
+  ``downloader_ops.py``；只读诊断/报表路径也会显示「被拦 + 读取失败原因」。
+  第 4 类（欠 H&R 义务）与第 5 类（库内资产）的既有兜底语义**未动**。
 
 ★ 17.4.0：第 5 类「库内资产」有**两条互不代偿**的具名豁免通道（都只跳第 5 类，其余 4 类照拦）：
   - ``_delete_gate_manual`` ← ``delete_torrents(allow_library_asset=True)``：**手动删库内资产**
@@ -37,9 +44,10 @@ H&R 补种被任务「超保留上限」路径删掉，因为该路径的保护�
 """
 
 import json as _json
+import logging
 import sys as _sys
 import time as _time
-from typing import Any, Dict, Iterable, Set
+from typing import Any, Dict, Iterable, List, Set
 
 from ..common import (
     begin_decision_round,
@@ -52,6 +60,43 @@ from ..common import (
 )
 from ..common import hr_incomplete, hr_complete_ratio_of
 from ..tags import is_library_asset, is_music_line, STATE_ONDEMAND
+
+
+# 运行时导入（只有 MoviePilot 环境有 app.sdk）：离线单测无 app 包 → 退回标准 logging
+logger = logging.getLogger("magicflow")
+try:  # noqa: BLE001
+    from app.sdk.logging import logger as _mp_logger  # noqa: WPS433
+    logger = _mp_logger
+except Exception:  # noqa: BLE001
+    pass
+
+
+def _mark_read_failure(why: "Dict[str, str]", hs: "List[str]", label: str,
+                       err: BaseException) -> None:
+    """★ P3 fail-closed：某类硬保护的**保护集合读取失败** ⇒ 本批 hash 全部按「被拦」返回。
+
+    为什么不是「取不到就当没有保护」：第 1~3 类都是「本批 hash ∩ 保护集合」的判定，
+    保护集合一旦读失败就**不完整**；而删除的触发场景恰恰是磁盘清理（清理的压力方向是
+    「保护变少、候选变多」）。所以任何「拿不准」都必须落到「拦」，绝不落到「放行」。
+
+    做法：把本批**每一个** hash 都写进返回字典（理由带前缀 ``保护集合读取失败(<label>):``），
+    已带更具体理由的（``setdefault``）保留原理由。于是：
+
+      * 物理删除入口：``downloader_ops.delete_torrents`` 不需要改 —— 闸门正常返回「全拦」
+        集合，受保护的一个都不删；
+      * 只读诊断/报表：显示「被拦 + 读取失败原因」，不是崩溃、也不是静默放行。
+
+    ``label``：类名（``手动保留`` / ``跨站来源份`` / ``已认领``）。
+    """
+    _detail = f"{type(err).__name__}: {err}" if str(err) else type(err).__name__
+    # ★ P3：本项目 features/ 统一 f-string（logger 走 app.runtime.log，不认 %s 占位符：
+    #   旧写法 `logger.error("…%s…%d…", …)` 会把占位符原样打进日志、丢掉 label/detail）。
+    logger.error(
+        f"删除闸门：{label} 保护集合读取失败 → 本批 {len(hs)} 个 hash 全部按「被拦」处理：{_detail}"
+    )
+    _reason = f"保护集合读取失败({label}): {_detail}"
+    for h in hs:
+        why.setdefault(h, _reason)
 
 
 class DeleteGateMixin:
@@ -105,7 +150,8 @@ class DeleteGateMixin:
                             allow_strip_asset: bool = False) -> "Dict[str, str]":
         """返回 ``{hash: 拦截理由}``；未拦截的不出现。理由取值：
 
-        手动保留 / 跨站来源份（H&R 保种期）/ 已认领（保种承诺）/ 欠 H&R 义务 / 库内资产。
+        手动保留 / 跨站来源份（H&R 保种期）/ 已认领（保种承诺）/ 欠 H&R 义务 / 库内资产 /
+        ``保护集合读取失败(<类名>): <err>``（★ P3 fail-closed，见 ``_mark_read_failure``）。
 
         ``force_error=True``：**故障注入**——强制抛异常，供离线测试与线上自检
         验证删除入口的 fail-closed 兜底。
@@ -128,6 +174,10 @@ class DeleteGateMixin:
         why: Dict[str, str] = {}
 
         # 1) 手动保留（跨所有任务取并集）
+        #    ★ P3 fail-closed：**取值失败 ≠ 无保护**。这是「本批 hash ∩ 保护并集」判定，
+        #    并集一旦读失败就**不完整**；删除的触发场景恰是磁盘清理（保护只会变少），
+        #    所以「拿不准」必须落到「拦」。**内层不再 `continue`**：任一 task 桶读失败
+        #    = 我们不知道那个桶里有没有本批 hash ⇒ **整类不可信** ⇒ 本批全部被拦。
         try:
             store = getattr(self, "_store", None)
             if store is not None:
@@ -135,15 +185,13 @@ class DeleteGateMixin:
                 _tids.append("")  # 兼容历史按空 task_id 存的保留
                 _man: set = set()
                 for _tid in _tids:
-                    try:
-                        _man |= set(store.get_protected_torrents(_tid) or set())
-                    except Exception:  # noqa: BLE001
-                        continue
+                    _man |= set(store.get_protected_torrents(_tid) or set())
+                _mans = {str(x).strip().lower() for x in _man}
                 for h in hs:
-                    if h in {str(x).strip().lower() for x in _man}:
+                    if h in _mans:
                         why.setdefault(h, "手动保留")
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _e:  # noqa: BLE001
+            _mark_read_failure(why, hs, "手动保留", _e)
 
         # 2) 跨站来源份（别的站的 H&R 保种责任种）
         try:
@@ -151,8 +199,8 @@ class DeleteGateMixin:
             for h in hs:
                 if h in _cs:
                     why.setdefault(h, "跨站来源份（H&R 保种期）")
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _e:  # noqa: BLE001
+            _mark_read_failure(why, hs, "跨站来源份", _e)
 
         # 3) 已认领（保种承诺：删了 → 站点判不达标 → 扣魔力）
         try:
@@ -160,8 +208,8 @@ class DeleteGateMixin:
             for h in hs:
                 if h in _cl:
                     why.setdefault(h, "已认领（保种承诺）")
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _e:  # noqa: BLE001
+            _mark_read_failure(why, hs, "已认领", _e)
 
         # 4) 欠 H&R 义务（★ 9.0.0：**按资源判** —— 债挂在资源上，用「来源站那个种」的做种时长判；
         #    没有资源 / 来源站无 H&R / 账单已结清 → 不拦。不再要求「站点可确定」。）
@@ -380,6 +428,7 @@ class DeleteGateMixin:
             pass
 
     def _deletions_log_path(self):
+        """JSONL 兜底路径（★ 19.0.0：真值源已是 ``mf_deletions`` 表，此文件仅离线降级时写）。"""
         try:
             store = getattr(self, "_store", None)
             d = getattr(store, "data_dir", None)
@@ -388,6 +437,44 @@ class DeleteGateMixin:
             return (d / "deletions.jsonl") if d is not None else None
         except Exception:  # noqa: BLE001
             return None
+
+    def _deletions_write_pg(self, rows: List[Dict[str, Any]]) -> bool:
+        """把删除台账行写进 ``mf_deletions`` 表（真值源）。
+
+        返回 False = 没写进（离线无 DB / PG 异常）→ 调用方回退 JSONL。
+        记账不能影响删种本身：一切异常都吞掉。
+        """
+        try:
+            from .. import db as mfdb  # noqa: WPS433
+        except Exception:  # noqa: BLE001
+            return False
+        if not mfdb.db_available():
+            return False
+        try:
+            now = _time.time()
+            sess = mfdb.db_session()
+            if sess is None:
+                return False
+            with sess:
+                for r in rows:
+                    sess.add(mfdb.DeletionRow(
+                        ts=str(r.get("ts") or ""),
+                        at=now,
+                        hash=str(r.get("hash") or "").strip().lower(),
+                        site=str(r.get("site") or "")[:200],
+                        title=str(r.get("title") or "")[:400],
+                        source=str(r.get("source") or "")[:120],
+                        reason=str(r.get("reason") or "")[:200],
+                        delete_file=bool(r.get("delete_file")),
+                        ok=bool(r.get("ok")),
+                        blocked=bool(r.get("blocked")),
+                        blocked_by=str(r.get("blocked_by") or "")[:60],
+                        err=str(r.get("err") or ""),
+                    ))
+                sess.commit()
+            return True
+        except Exception:  # noqa: BLE001
+            return False
 
     def _delete_log_cb(
         self,
@@ -401,17 +488,11 @@ class DeleteGateMixin:
     ) -> None:
         """统一删除台账回调（由 ``DownloaderAdapter.delete_torrents`` 调用）。
 
-        只写一个文件：``deletions.jsonl``。每行一条 JSON。失败静默 —— 记账不能影响删种本身。
+        ★ 19.0.0：真值源 = ``mf_deletions`` 表（PG）；离线无 DB 时回退 ``deletions.jsonl``。
+        每行一条。失败静默 —— 记账不能影响删种本身。
         ``blocked_by``：阻断原因分类（如 ``"gate_error"`` = 闸门缺失/异常触发的 fail-closed 全阻断）。
         """
         try:
-            _path = self._deletions_log_path()
-            if _path is None:
-                return
-            try:
-                _path.parent.mkdir(parents=True, exist_ok=True)
-            except Exception:  # noqa: BLE001
-                pass
             ts = _time.strftime("%Y-%m-%d %H:%M:%S")
             _src = str(source or "").strip() or self._delete_caller_source()
             _rsn = str(reason or "").strip()
@@ -451,9 +532,20 @@ class DeleteGateMixin:
                     "source": _src, "reason": _rsn, "delete_file": bool(delete_file),
                     "ok": False, "blocked": True, "err": "", "blocked_by": _bby,
                 })
-            if rows:
-                with open(_path, "a", encoding="utf-8") as f:
-                    f.write("\n".join(_json.dumps(r, ensure_ascii=False) for r in rows) + "\n")
+            if not rows:
+                return
+            # ★ 19.0.0：先写 PG 真值源；写不进（离线/异常）→ 回退 JSONL（降级不丢账）。
+            if self._deletions_write_pg(rows):
+                return
+            _path = self._deletions_log_path()
+            if _path is None:
+                return
+            try:
+                _path.parent.mkdir(parents=True, exist_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
+            with open(_path, "a", encoding="utf-8") as f:
+                f.write("\n".join(_json.dumps(r, ensure_ascii=False) for r in rows) + "\n")
         except Exception:  # noqa: BLE001
             pass
 

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""魔流 · 10 张自有表（MP 官方插件数据库）
+"""魔流 · 13 张自有表（MP 官方插件数据库）
 
 设计（Master 2026-09-30 16:51 定稿）：用 MP 官方 `get_database_models()` 建**插件专属库**，
 不再把账本塞进 ``plugindata`` 的 kv 行。
@@ -14,11 +14,18 @@
     mf_reseed    补种记录表
     mf_claim     站点认领/收益表
     mf_run       运行时 kv 表
+    mf_bills     H&R 账单表（★ 19.0.0：hr_bills.json + Redis hrbills:* → 本表）
+    mf_deletions 删除台账表（★ 19.0.0：deletions.jsonl → 本表，只增不减）
+    mf_journal   操作日志表（★ 19.0.0：operations.json + Redis ops:* → 本表）
 
 - ★ **主键契约（2026-10-10）**：``mf_resource.resource_id`` = **内容寻址主键**
   （种子文件特征码 sha1），**禁改**；写入须过 ``_STRONG_RID`` 断言（见
   ``ledger.py`` 的 ``save_groups`` / ``_touch_resource`` 护栏）；算法若要升级 →
   **显式迁移**（重指纹 + 去重），**绝不当重建处理**。
+- ★ **19.0.0 存储收口**（docs/PLAN-ledger-consolidation.md）：最后 3 张仍以
+  JSON/Redis 落地的真值表（账单/删除/日志）收进 PG —— **一个后端**；mf_reseed
+  补 alive/last_seen/seen_by 生命周期列；JSON 仅作离线（无 app.* 的单测）降级
+  路径，生产环境不再有第二个真值源。
 - 模型基类由 ``plugin_declarative_base()`` 产出：插件热重载会重新执行本模块 → 每次拿到
   干净的 ``MetaData``，不会重复定义表；
 - 表由 MP 在插件启动时一并建立（我们声明了 migrations 目录时才会改走 alembic，这里不用）；
@@ -27,6 +34,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any, List
 
 from sqlalchemy import JSON as _JSON
@@ -254,6 +262,8 @@ class ReseedRow(Base):
 
     主键 ``key`` = ``"<iyuu_sid>:<hash>"``（已试过的「站点:目标 hash」对）；``st`` ∈ miss/fail/ok，
     ``ts`` → ``updated``（最近一次触碰）。miss/fail 按 TTL 过期即丢（读侧过滤，见 features/reseed.py）。
+    ★ 19.0.0 补生命周期三列：``alive=False`` = 目标 hash 已不在下载器（对账器刷新），
+    ``last_seen/seen_by`` 记最近一轮看到它的时刻/途径 —— 治「辅种挂了但种没了仍报 ok」。
     """
 
     __tablename__ = "mf_reseed"
@@ -263,6 +273,9 @@ class ReseedRow(Base):
     hash: Mapped[str | None] = mapped_column(String(64), index=True)   # 目标 infohash（小写）
     st: Mapped[str | None] = mapped_column(String(24))
     note: Mapped[str | None] = mapped_column(String(200))
+    alive: Mapped[bool | None] = mapped_column(Boolean, default=True)
+    last_seen: Mapped[float | None] = mapped_column(Float)
+    seen_by: Mapped[str | None] = mapped_column(String(40))
     created: Mapped[float | None] = mapped_column(Float)
     updated: Mapped[float | None] = mapped_column(Float)
 
@@ -305,4 +318,127 @@ class ClaimRow(Base):
     updated: Mapped[float | None] = mapped_column(Float)
 
 
-ALL_MODELS: List[type] = [SiteRow, ResourceRow, SeedRow, IdentityRow, TaskRow, DeckRow, CrossSeedRow, ReseedRow, RunRow, ClaimRow]
+class BillRow(Base):
+    """H&R 账单表（★ 19.0.0：hr_bills.json + Redis hrbills:* → 本表，唯一真值源）。
+
+    主键 = hash（1 颗种 1 张账单）。``fp`` = 文件指纹（= mf_resource.resource_id），
+    开账/回填**强制反查填充**——修 18.x 回填硬写空串（hrbills.py:773）导致账单只能
+    靠 hash 挂、种一删就成孤儿的根因。
+    生命周期：``alive=False`` = 实物已消失（对账器刷新）；settled 不再永久沉淀，
+    按 TTL 归档（读侧过滤）。
+    """
+
+    __tablename__ = "mf_bills"
+
+    hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    site: Mapped[str | None] = mapped_column(String(200), index=True)  # 规范化域名
+    rule: Mapped[str | None] = mapped_column(String(24))               # site_hr | hit_and_run | unknown
+    state: Mapped[str | None] = mapped_column(String(24), index=True)  # pending | active | settled | void | breached
+    fp: Mapped[str | None] = mapped_column(String(64), index=True)     # = mf_resource.resource_id（强制填）
+    need_h: Mapped[float | None] = mapped_column(Float)                # 需做种时长（小时）
+    seeded_h: Mapped[float | None] = mapped_column(Float)              # 已做种时长（小时）
+    progress: Mapped[float | None] = mapped_column(Float)              # 0-1
+    last_progress: Mapped[float | None] = mapped_column(Float)
+    last_progress_at: Mapped[float | None] = mapped_column(Float)
+    title: Mapped[str | None] = mapped_column(String(400))
+    opened_at: Mapped[float | None] = mapped_column(Float)
+    opened_by: Mapped[str | None] = mapped_column(String(24))          # open | backfill | reconcile
+    settled_at: Mapped[float | None] = mapped_column(Float)
+    breached_at: Mapped[float | None] = mapped_column(Float)
+    voided_at: Mapped[float | None] = mapped_column(Float)
+    void_reason: Mapped[str | None] = mapped_column(String(60))
+    alive: Mapped[bool | None] = mapped_column(Boolean, default=True)
+    last_seen: Mapped[float | None] = mapped_column(Float)
+    seen_by: Mapped[str | None] = mapped_column(String(40))
+    created: Mapped[float | None] = mapped_column(Float)
+    updated: Mapped[float | None] = mapped_column(Float)
+
+
+class DeletionRow(Base):
+    """删除台账表（★ 19.0.0：deletions.jsonl → 本表，只增不减，审计唯一入口）。
+
+    行结构与原 JSONL 逐字段一致：``ts`` 保持「YYYY-MM-DD HH:MM:SS」字符串（展示口径
+    不变），``at`` 为 epoch 秒（范围查询/保留期裁剪用）。成功行 ok=True、拦截行
+    ok=False + blocked=True（口径同 deletegate._delete_log_cb）。
+    """
+
+    __tablename__ = "mf_deletions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[str | None] = mapped_column(String(32))
+    at: Mapped[float | None] = mapped_column(Float, index=True)
+    hash: Mapped[str | None] = mapped_column(String(64), index=True)
+    site: Mapped[str | None] = mapped_column(String(200))
+    title: Mapped[str | None] = mapped_column(String(400))
+    source: Mapped[str | None] = mapped_column(String(120))
+    reason: Mapped[str | None] = mapped_column(String(200))
+    delete_file: Mapped[bool | None] = mapped_column(Boolean)
+    ok: Mapped[bool | None] = mapped_column(Boolean)
+    blocked: Mapped[bool | None] = mapped_column(Boolean)
+    blocked_by: Mapped[str | None] = mapped_column(String(60))
+    err: Mapped[str | None] = mapped_column(Text)
+
+
+class JournalRow(Base):
+    """操作日志表（★ 19.0.0：operations.json + Redis ops:* → 本表）。
+
+    一行 = 一条 OperationRecord（persistence.py::OperationRecord.to_dict 同构，
+    items 整包 JSON）。``operation_id`` 加索引而非主键（防脏数据重复），读侧按
+    id 倒序取最新。
+    """
+
+    __tablename__ = "mf_journal"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    operation_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    request_id: Mapped[str | None] = mapped_column(String(64))
+    task_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    kind: Mapped[str | None] = mapped_column(String(40))               # selection | deletion | protection | unprotection | reseed | cloud
+    state: Mapped[str | None] = mapped_column(String(24))              # submitting | accepted | completed | failed
+    items: Mapped[Any | None] = mapped_column(_JSON, default=list)
+    created_at: Mapped[float | None] = mapped_column(Float, index=True)
+    resolved_at: Mapped[float | None] = mapped_column(Float)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    duration: Mapped[float | None] = mapped_column(Float)
+
+
+ALL_MODELS: List[type] = [
+    SiteRow, ResourceRow, SeedRow, IdentityRow, TaskRow, DeckRow, CrossSeedRow,
+    ReseedRow, RunRow, ClaimRow, BillRow, DeletionRow, JournalRow,
+]
+
+
+# ------------------------------------------------------------------ 19.0.0：DB 句柄绑定
+# 给非 LedgerBackend 路径的存储（HrBillsStore / OperationJournal / 删除台账）提供统一
+# 会话入口：插件 init 时 bind_database() 一次；离线（无 app.* 的单测/工具）恒 None →
+# 各存储判空回退 JSON 文件模式（现有测试全绿，行为不变）。绑定幂等；热重载后重绑。
+_DB_HANDLE: Any = None
+_DB_BIND_LOCK = threading.Lock()
+
+
+def bind_database(db: Any) -> None:
+    """绑定插件数据库句柄（app.plugins.PluginDatabase；幂等）。"""
+    global _DB_HANDLE
+    with _DB_BIND_LOCK:
+        _DB_HANDLE = db
+
+
+def unbind_database() -> None:
+    """解绑（仅测试隔离用；生产不调）。"""
+    global _DB_HANDLE
+    with _DB_BIND_LOCK:
+        _DB_HANDLE = None
+
+
+def db_available() -> bool:
+    return _DB_HANDLE is not None
+
+
+def db_session():
+    """取会话上下文管理器；未绑定/取不到 → None（调用方必须判空并走降级路径）。"""
+    if _DB_HANDLE is None:
+        return None
+    try:
+        return _DB_HANDLE.session()
+    except Exception:  # noqa: BLE001
+        return None

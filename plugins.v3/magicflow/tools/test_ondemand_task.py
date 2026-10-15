@@ -133,6 +133,13 @@ class _Store:
     def items(self):
         return {k: dict(v) for k, v in self._d.items()}
 
+    def get_protected_torrents(self, task_id):
+        # ★ P3：删除闸门第 1 类「手动保留」的读取入口。本桩原先没有这个方法 ⇒
+        #   P3 的 fail-closed（读取失败 ≠ 无保护）会把本批**全部**判成「被拦」，
+        #   于是 [8] 段的三条断言全挂。这里显式回「无手动保留」，保持测试意图：
+        #   本用例只关心第 5 类「库内资产」硬拦与在途点播豁免。
+        return set()
+
     def put(self, h, patch):
         hh = str(h or "").lower()
         rec = self._d.setdefault(hh, {})

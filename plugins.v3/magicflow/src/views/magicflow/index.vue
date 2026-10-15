@@ -792,7 +792,7 @@ function mobileRowLine(t) {
 function mobileRowNum(t) {
   if (t.task_type === 'brush') return t.task_uploaded ? `↑ ${formatBytes(t.task_uploaded)}` : ''
   if (t.site_bonus_ok && t.site_bonus_per_hour != null) return formatBonus(t.site_bonus_per_hour)
-  return ''
+  return '取数中…'
 }
 function mobileDetailEntry(entry) {
   const e = typeof entry === 'string' ? { key: entry } : entry

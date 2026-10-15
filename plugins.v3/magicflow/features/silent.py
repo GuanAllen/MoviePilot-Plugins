@@ -23,7 +23,6 @@ from ..tags import (
     is_music_line,
     MARK_REUSE,
     SPECIAL_TAGS,
-    MARK_HR,
     STATE_RECOMMEND,
     STATE_SILENT,
     SUB_NEW,
@@ -253,12 +252,81 @@ class SilentMixin:
         except Exception as err:  # noqa: BLE001
             self._log(f"静默托管异常:{err}", "warning")
 
+    def _hr_owed_hash_set(self) -> Set[str]:
+        """★ P5b：站点 H&R 对账缓存里的「仍欠」infohash 集合（**只读上一轮缓存**）。
+
+        与 ``features/reportview.py:1089-1103`` 同源：遍历 ``_hr_reconcile_cache().reports()``
+        的逐条 ``records``，凡解析出 infohash 的站点 myhr 行 → 计入（站点仍在 myhr 列表里 = 未结清）。
+        **不联网、不触发对账**（对账由 hrbills_tick 自己跑）；无缓存 / 任何异常 → 空集，
+        由调用方 ``_hr_obligated_truth`` 的 fail-safe（拿不准 → 计入）兜底，绝不少算。
+
+        性能：每次 ``_silent_host_card`` 构建（30s 缓存）**只建一次**，逐种判定只做 O(1) 查表。
+        """
+        out: Set[str] = set()
+        try:
+            _fn = getattr(self, "_hr_reconcile_cache", None)
+            if not callable(_fn):
+                return out
+            _cache = _fn()
+            _reports = getattr(_cache, "reports", None)
+            if not callable(_reports):
+                return out
+            for _rep in dict(_reports() or {}).values():
+                for _r in (dict(_rep or {}).get("records") or []):
+                    if not isinstance(_r, dict):
+                        continue
+                    _h = str(_r.get("infohash") or "").strip().lower()
+                    if _h:
+                        out.add(_h)
+        except Exception:  # noqa: BLE001
+            return out
+        return out
+
+    def _hr_obligated_truth(self, site: str, torrent: Any, snap: Any = None,
+                            owed: Optional[Set[str]] = None) -> bool:
+        """★ P5b：单种「是否欠 H&R 工时」的**真值判定**（fail-safe：拿不准 → True）。
+
+        背景：隔离区（UI「欠 H&R 工时」）原先读 ``MARK_HR`` 标签，而 ``features/hr.py:551``
+        明写 7.0.0 起**标签退役、H&R 状态账本化** → 该标签不再有人写；老种身上的旧标签
+        会让「账本早已不欠」的种被永远算进隔离区。
+
+        真值口径（与同文件 ``_silent_inspect`` 的 ``owed`` 判据、``reportview`` 的 ``owed`` 一致）：
+          ① ``_hr_obligation(site, torrent, snap=snap)[0]`` —— 删除闸门同源的主判据；
+          ② OR 上对账缓存 ``owed``（站点 myhr 说仍欠）—— 只增保护。
+        任何异常 / 判定函数缺失 / hash 缺失 → 返回 True（**绝不因缺数据而少算**）。
+        """
+        _have_fn = callable(getattr(self, "_hr_obligation", None))
+        if _have_fn:
+            try:
+                if bool(self._hr_obligation(site, torrent, snap=snap)[0]):
+                    return True
+            except Exception:  # noqa: BLE001
+                return True                      # 判定异常 → 保守计入
+        _h = ""
+        try:
+            _h = str(getattr(torrent, "hash", "") or "").strip().lower()
+        except Exception:  # noqa: BLE001
+            return True
+        if not _have_fn:
+            return True                          # 无真值判定函数 → 拿不准 → 计入
+        if not _h:
+            return True                          # 自己 hash 都取不到 → 拿不准 → 计入
+        if owed is None:
+            owed = self._hr_owed_hash_set()
+        return bool(_h in (owed or set()))
+
     def _silent_host_card(self) -> Dict[str, Any]:
         """★ 「静默托管」常驻任务在**任务列表**里的只读条目（Master 2026-09-28 06:33）。
 
         带 30s 内存缓存（按运行身份）：原来每次 /status 都会全量走 _tag_all_torrents
         拉到 868 个种子，跳表 + 分类 + stat 组装，在 status 30s 轮询时是最大慢点之一。
         缓存后稳态首次 0.01s。
+
+        ★ P5b：``hr_count`` / ``nonhr_count`` 的**来源**改为 H&R 真值（``_hr_obligation``
+        + 对账缓存 owed）；字段名保持不变（前端 ``index.vue:1841/1863`` 在用）。同一轮内
+        复用已拉的 ``_tag_all_torrents()`` 快照（``snap=`` 传下去，不再逐种重拉 qB），
+        对账 owed 集合每轮只建一次；``_hr_obligation`` 自身的 ``_resource_source_index``
+        等都有 30s TTL 缓存。
         """
         cache = getattr(self, "_silent_host_card_cache", None)
         now = time.time()
@@ -271,18 +339,23 @@ class SilentMixin:
         try:
             _store = self._tag_state()
             _led = _store.items()
-            for _h, _t in (self._tag_all_torrents() or {}).items():
+            _all = self._tag_all_torrents() or {}
+            # ★ P5b：对账缓存只建**一次**（不再逐种算），循环里仅 O(1) 查表
+            _owed = self._hr_owed_hash_set()
+            for _h, _t in _all.items():
                 _tg = [str(x) for x in (getattr(_t, "tags", None) or [])]
                 _rec = _led.get(_h) or {}
                 if str(_rec.get("state") or "") != STATE_SILENT:
                     continue  # ★ 账本判池内：职务=静默才算；在岗(刷流/魔力)/未知跳过
                 n_sil += 1
-                _ishr = bool(MARK_HR in _tg)
-                if _ishr:
-                    n_hr += 1
                 _sub = str(_rec.get("sub") or SUB_NEW)
                 by_state[_sub] = int(by_state.get(_sub) or 0) + 1
                 _site = str(_rec.get("site") or "") or self._torrent_site_name(_tg, "") or "未知"
+                # ★ P5b：隔离区判据 = H&R **真值源**（``_hr_obligation`` + 对账 owed），
+                #   不再读 7.0.0 已退役、不再有人写的 ``MARK_HR`` 标签（老标仅历史可读）。
+                _ishr = bool(self._hr_obligated_truth(_site, _t, snap=_all, owed=_owed))
+                if _ishr:
+                    n_hr += 1
                 _d = by_site.setdefault(_site, {"total": 0, "hr": 0})
                 _d["total"] += 1
                 if _ishr:
@@ -291,7 +364,8 @@ class SilentMixin:
             try:
                 led = self._tag_state().items() or {}
                 n_sil = sum(1 for r in led.values() if str(r.get("state") or "") == STATE_SILENT)
-                n_hr = 0
+                # ★ P5b fail-safe：qB 快照拉不到就无法逐种判定 → 全部计入隔离区（绝不因缺数据少算）
+                n_hr = n_sil
             except Exception:  # noqa: BLE001
                 n_sil, n_hr = 0, 0
         try:

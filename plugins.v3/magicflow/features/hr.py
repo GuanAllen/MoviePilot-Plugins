@@ -7,7 +7,7 @@
 import time
 import threading
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 from ..tags import (
@@ -27,6 +27,7 @@ from ..tags import (
 )
 from .hrbills import (
     HR_BILLS_ENFORCE,
+    HR_NEED_HOURS_DEFAULT,
     BILL_STATE_ACTIVE,
     BILL_STATE_SETTLED,
     BILL_STATE_VOID,
@@ -45,9 +46,8 @@ class HrMixin:
 
         ★ 9.0.0：H&R 债挂在**资源**上（``mf_resource`` 的 ``source_site_id``/``source_hash``），
         本索引把「某个种 → 它所属资源的来源站 / 来源种」摊平，供 ``_hr_obligation`` 逐种查。
-        ★ 10.0.0：账单**按站分账**（``hrs``）。同一资源可在多个站各有 H&R 债 → 每张账单的
-        ``by_hash``（该站的还债名片）映射到 (该站, 该名片种, 该账单是否结清)；没有自己账单的
-        成员落到**主账单**（来源站/来源种）。
+        ★ 19.0.0：``mf_resource.hrs`` 退役 → 账单元组恒空、settled 恒 False（保守方向，
+        结清判定移交 ``mf_bills`` 账单层）。
         """
         now = time.time()
         cache = getattr(self, "_hr_residx_cache", None)
@@ -66,31 +66,14 @@ class HrMixin:
                 continue
             src_hash = str(rec.get("source_hash") or "").strip().lower()
             src_site = str(rec.get("source_site") or "").strip()
-            bills = rec.get("hrs") or {}
-            if not isinstance(bills, dict) or not bills:
-                _h0 = rec.get("hr")
-                bills = {str((_h0 or {}).get("site") or "_"): _h0} if isinstance(_h0, dict) and _h0 else {}
-            _blist = [dict(b) for b in bills.values() if isinstance(b, dict)]
-            _main = next((b for b in _blist
-                          if str(b.get("by_hash") or "").strip().lower() == src_hash and src_hash), None)
-            if _main is None and _blist:
-                _main = _blist[0]
-            _main_site = str((_main or {}).get("site") or "").strip() or src_site
-            _main_hash = str((_main or {}).get("by_hash") or "").strip().lower() or src_hash
-            _main_settled = bool((_main or {}).get("settled"))
-            _own: Dict[str, Dict[str, Any]] = {}
-            for b in _blist:
-                _bh = str(b.get("by_hash") or "").strip().lower()
-                if _bh:
-                    _own[_bh] = b
+            # ★ 19.0.0：``mf_resource.hrs`` 退役 —— 资源级账单不再读；
+            #   H&R 真值 = ``mf_bills``（种子级，``_hrbills_store``）。
+            #   本索引退化为「成员 → 来源站/来源种」反查；settled 一律 False
+            #   （结清与否由账单层判定，本索引不再承担结清语义 → 保守方向）。
             for _mh in members:
                 mh = str(_mh).strip().lower()
-                b = _own.get(mh)
-                if b:
-                    out[mh] = (str(b.get("site") or "").strip() or _main_site, mh,
-                               bool(b.get("settled")), _blist)
-                else:
-                    out[mh] = (_main_site, _main_hash, _main_settled, _blist)
+                if mh:
+                    out[mh] = (src_site, src_hash, False, [])
         # ★ 别把「空索引」缓存住：热重载/冷缓存瞬间 items() 可能为空 →
         #   若缓存空集，会在 30s 内把一切都当「无资源」放行（闸门就形同虚设）。
         if out:
@@ -143,6 +126,48 @@ class HrMixin:
         except Exception:  # noqa: BLE001
             margin = 0.0
         return float(need or 0.0) + max(0.0, margin)
+
+    def _hr_need_hours_or_default(self, dom: str) -> float:
+        """★ P4 **唯一**「义务工时」兜底点：站点规则取不到时 → 保守默认 ``HR_NEED_HOURS_DEFAULT``。
+
+        语义（两种情形**不能混**，由 ``_crossseed_seed_need_hours_ex`` 的 ``known`` 标志给出）：
+
+        * 站点规则**存在且明确写了真实 0**（``known=True, hours=0``）→ 站点已定论「不要求做种
+          时长」→ 返回 **0.0**（不臆造阈值；H&R 义务由 ``hr`` 规则本身决定，与工时无关）；
+        * 站点规则**缺失 / 键为空 / 解析失败**（``known=False``）→ 返回 **24.0**
+          （保守：拿不准就多挂，绝不因「读不到规则」而少保护）；
+        * 旧 ``_crossseed_seed_need_hours`` 薄壳（无 ``_ex``）→ 视作未知 → 24.0。
+
+        ★ 不回退内置表（17.2.2 拍板：内置表只是出厂建议，不自动生效）。
+        * 规则值本身有理解歧义的取值链（``seed_need_hours`` → 保护期 ``seed_hours``）不在本函数内，
+          由调用方先自行回退，仍取不到再落到这里（见 ``_hr_obligation_by_seed``）。
+        """
+        _known = self._hr_need_hours_known(dom)
+        if _known is None:
+            return float(HR_NEED_HOURS_DEFAULT)
+        return float(_known)
+
+    def _hr_need_hours_known(self, dom: str) -> Optional[float]:
+        """站点「实际做种达标小时」：**已知**返回数值（含真实 0.0）；**未知**返回 ``None``。
+
+        只读 ``_crossseed_seed_need_hours_ex``（站点规则账本唯一真值源 + ``known`` 标志），
+        不在此另立推断。调用方需要「未知 vs 真实 0」时必须读本函数的 ``None`` 语义，
+        别用 ``value > 0`` 代替（那会把真实 0 误判成未知 → 凭空多挂 24h）。
+        """
+        try:
+            fn = getattr(self, "_crossseed_seed_need_hours_ex", None)
+            if callable(fn):
+                _h, _known = fn(dom)
+                if _known:
+                    try:
+                        return float(_h or 0.0)
+                    except (TypeError, ValueError):
+                        return 0.0
+                return None
+        except Exception:  # noqa: BLE001
+            return None
+        # 旧桩（无 ``_ex``）→ 按 17.2.2 前的螺旋语义只能视作未知 → ``None``（→ 24h 保守兜底）。
+        return None
 
     def _hr_incomplete_of(self, site: str, torrent: Any) -> bool:
         """★ 15.5.1：该种「未达完成度」？（阈值 = 站点覆盖 > 全局默认；见 ``common.hr_incomplete``）。
@@ -221,8 +246,13 @@ class HrMixin:
                 need = float(self._crossseed_seed_hours_detail(dom)[0] or 0.0)
             except Exception:  # noqa: BLE001
                 need = 0.0
-        if need <= 0:
-            need = 24.0
+        # ★ P4：口径链走完仍取不到 → 唯一兜底点（站点规则缺失 = 未知 → 保守 24h；
+        #   站点规则明确写真实 0 → 0，不臆造工时）。
+        _known = self._hr_need_hours_known(dom)
+        if _known is not None:
+            need = float(_known)            # 已定论（含真实 0；0 不覆盖，保持保守方向由 hr 规则决定）
+        else:
+            need = float(self._hr_need_hours_or_default(dom))  # 未知 → 24h
         try:
             seeded = seed_hours_for_hr(torrent)
         except Exception:  # noqa: BLE001
@@ -292,13 +322,12 @@ class HrMixin:
             except Exception:  # noqa: BLE001
                 protect, hours, src = False, 0.0, "err"
             if protect:
-                need = 0.0
-                try:
-                    need = float(self._crossseed_seed_need_hours(dom) or 0.0)
-                except Exception:  # noqa: BLE001
-                    need = 0.0
+                # ★ P4：来源站工时同源（站点规则明确 0 → 0；缺失/未知 → 保守 24h）。
+                need = float(self._hr_need_hours_or_default(dom) or 0.0)
                 if need <= 0:
-                    need = float(hours or 0.0)
+                    need = float(hours or 0.0)          # 仅剩「保护期」语义 → 用它当工时（与旧行为一致）
+                if need <= 0:
+                    need = float(self._hr_need_hours_or_default(dom))  # 仍为 0 → 未知 → 24h
                 try:
                     seeded = seed_hours_for_hr(_src_t) if _src_t is not None else 0.0
                 except Exception:  # noqa: BLE001
@@ -397,14 +426,16 @@ class HrMixin:
             scope = {str(x).strip().lower() for x in set(ledger) | set(cssrc)}
             for h, t in snap.items():
                 try:
-                    if float(getattr(t, "progress", 0) or 0) < 0.999:
-                        continue
                     if str(h).lower() not in scope:
                         continue
                     rec = ledger.get(str(h).lower()) or {}
                     tags = [str(x) for x in (getattr(t, "tags", None) or [])]
                     site = str(rec.get("site") or "").strip() or self._torrent_site_name(tags, "")
                     if not site:
+                        continue
+                    # ★ P4：完成度阈值 = 站点覆盖 > 全局默认（`hr_complete_ratio`），
+                    #   不再硬编码 0.999 —— 否则设置里把阈值调成 0.95/1.0 对这里无效。
+                    if self._hr_incomplete_of(site, t):
                         continue
                     obl, need, seeded, _src = self._hr_obligation(site, t)
                     if not obl:
@@ -491,15 +522,16 @@ class HrMixin:
             rep["checked"] = int(rep["checked"]) + 1
             tags = [str(x) for x in (getattr(t, "tags", None) or [])]
             has_tag = MARK_HR in tags
-            try:
-                done = float(getattr(t, "progress", 0) or 0) >= 0.999
-            except (TypeError, ValueError):
-                done = False
+            rec = ledger.get(hh) or {}
+            site = str(rec.get("site") or "").strip() or self._torrent_site_name(tags, "")
+            # ★ P4：完成度阈值 = 站点覆盖 > 全局默认（`hr_complete_ratio`），
+            #   不再硬编码 0.999 —— 否则设置里把阈值调成 0.95/1.0 对这里无效。
+            #   ★ 注意：本循环尾部「强拉暂停种」还要读 `done`（`MARK_REUSE in tags and not done`），
+            #   所以 `done` 这个绑定必须留着（改成纯 `if ...: continue` 会让 tail 处 NameError）。
+            done = not self._hr_incomplete_of(site, t)
             if not done:
                 continue  # 未完成：无 H&R 义务（另由跨站池/校验流程管）
             rep["completed"] = int(rep["completed"]) + 1
-            rec = ledger.get(hh) or {}
-            site = str(rec.get("site") or "").strip() or self._torrent_site_name(tags, "")
             obl, need, seeded, src = self._hr_obligation(site, t, snap=snap)
             if not obl:
                 if has_tag:
