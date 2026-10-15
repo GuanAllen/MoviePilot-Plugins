@@ -121,6 +121,19 @@ class CoreMixin:
         # ★ 12.0.0：升级闸门（migrate_gate / migrate_record_version）随 features/migrate.py 一并退役。
         #   表是唯一真值源；新装库在此幂等灌入身份表种子（原 migrate worker 的 _stage_identity 职责）。
         self._seed_identities()
+        # ★ 19.0.0 存储收口：绑定插件 DB 句柄（mf_bills / mf_deletions / mf_journal 直写 PG；
+        #   离线/异常 → 不绑，各存储走 JSON 降级）。幂等；热重载后重绑新句柄。
+        try:
+            from .. import db as _mfdb  # noqa: WPS433
+            _mfdb.bind_database(self.get_database())
+            # ★ 19.0.0：DB 绑定晚于 MagicFlowStore 单例构造 → 把 journal 换成 PG 版
+            #   （mf_journal 表）。首构造时已绑好则此处幂等空转。
+            _store = getattr(self, "_store", None)
+            _rebind = getattr(_store, "rebind_journal", None)
+            if callable(_rebind):
+                _rebind()
+        except Exception:  # noqa: BLE001
+            pass
         self._show_sidebar_nav = bool(raw_config.get("show_sidebar_nav", True))
         # ★ 15.11.0：AI 入口注册进 MP Agent / MCP
         self._agent_mcp = bool(raw_config.get("agent_mcp", True))
@@ -1505,17 +1518,25 @@ class CoreMixin:
                 progress = float(getattr(t, "progress", 0) or 0)
             except (TypeError, ValueError):
                 progress = 0.0
+            _site = getattr(task, "site_name", "") or getattr(task, "site_domain", "")
             if mode == "stopped":
                 if not paused:
                     pause_hashes.append(h)
             elif mode == "seeding":
-                if progress >= 0.999:
+                # ★ P4：完成度阈值 = 站点覆盖 > 全局默认（`hr_complete_ratio`），
+                #   不再硬编码 0.999 —— 否则设置里把阈值调成 0.95/1.0 对这里无效。
+                if not self._hr_incomplete_of(_site, t):
                     if paused and (h or "").lower() not in manual_paused:
                         resume_hashes.append(h)
                 else:
                     if not paused:
                         # ★ 欠 H&R 的种**不暂停**：它本就需要先下完、再做满义务时长，
                         #   暂停只会让它更下不完、更容易被清理淘汰（H&R 违约）。
+                        #   ★ P4 fail-safe：判定**失败**时按「欠」处理（_owed=True → 不暂停）。
+                        #   旧实现在这里 `_owed = False`，与上面这段注释的意图正好相反：
+                        #   判不出来就暂停 → 既不做种（不产魔力）又不计 H&R 做种时长
+                        #   （按墙钟计时的站点如学校「10 天内 ≥20 小时」→ 违约风险）。
+                        #   方向铁律：拿不准 → 保护（继续做种），绝不因缺数据而暂停。
                         try:
                             _owed = bool(
                                 self._hr_obligation(
@@ -1524,8 +1545,13 @@ class CoreMixin:
                                     t,
                                 )[0]
                             )
-                        except Exception:  # noqa: BLE001
-                            _owed = False
+                        except Exception as _err:  # noqa: BLE001
+                            _owed = True
+                            out.setdefault("pause_skipped_by_error", []).append(h)
+                            logger.warning(
+                                f"[run_mode] {h} 的 H&R 义务判定失败 → 保守按「欠」处理"
+                                f"（不暂停，继续做种）：{_err!r}"
+                            )
                         if not _owed:
                             pause_hashes.append(h)
             else:  # running
@@ -1534,9 +1560,15 @@ class CoreMixin:
         if pause_hashes:
             n, _e = downloader.pause_torrents(pause_hashes)
             out["paused"] = int(n or 0)
+            if _e:  # ★ P4：下载器错误不再丢弃（旧实现 `n, _e = ...` 后 _e 直接被扔掉）
+                out["pause_error"] = str(_e)
+                logger.warning(f"[run_mode] 暂停 {len(pause_hashes)} 个种时下载器报错：{_e}")
         if resume_hashes:
             n, _e = downloader.resume_torrents(resume_hashes)
             out["resumed"] = int(n or 0)
+            if _e:
+                out["resume_error"] = str(_e)
+                logger.warning(f"[run_mode] 恢复 {len(resume_hashes)} 个种时下载器报错：{_e}")
         # ★ 4.6.0 遣散：停止 → 名下种子**立刻**退回静默仓库（释放账本占用），
         #   不等 hourly 的「标签账本维护」worker（那是兜底）。
         if mode == "stopped":

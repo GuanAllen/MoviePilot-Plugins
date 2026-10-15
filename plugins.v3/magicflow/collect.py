@@ -1130,7 +1130,7 @@ class Http:
             req = RequestUtils(
                 cookies=_cookie,
                 ua=_ua,
-                timeout=30,
+                timeout=60,
                 referer=f"{base}/",
             )
             resp = req.get_res(url)
@@ -1381,7 +1381,7 @@ class Http:
             try:
                 from app.sdk.network import RequestUtils  # noqa: WPS433
 
-                req = RequestUtils(cookies=cookie, ua=ua, timeout=30, referer=f"{base}/")
+                req = RequestUtils(cookies=cookie, ua=ua, timeout=60, referer=f"{base}/")
                 resp = req.post_res(target, json=body, headers=hdr)
                 if resp is not None:
                     try:

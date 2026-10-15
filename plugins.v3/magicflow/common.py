@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "17.5.0"
+__version__ = "19.0.2"
 
 import bisect
 import re
@@ -259,6 +259,7 @@ RESEED_MIN_SIZE_GB = 1.0          # 小于该体积的本机种不参与（不�
 RESEED_CLOUD_TTL = 3 * 86400.0    # IYUU 云端反查结果的有效期（秒）
 RESEED_MISS_TTL = 30 * 86400.0    # 特征码不匹配 → 30 天内不再重试该对
 RESEED_FAIL_TTL = 86400.0         # 取种失败（流控/网络）→ 1 天后重试
+RESEED_OK_TTL = 90 * 86400.0      # ★ 19.0.0：已挂成功记录的保留期（历史参考；去重靠本机实况）
 RESEED_CFG_KEY = "reseed_cfg"
 RESEED_LEDGER_KEY = "reseed_ledger"
 RESEED_DAY_KEY = "reseed_day"

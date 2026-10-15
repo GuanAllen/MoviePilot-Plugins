@@ -21,6 +21,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
+# ★ 单一日志入口：MP 运行环境走 MP logger；离线单测（无 MoviePilot）退回标准库，
+#   保证 persistence.py 仍可被 tools/test_*.py 直接 import。
+try:
+    from app.log import logger
+except ImportError:  # pragma: no cover - 仅离线环境（容器内始终有 app.log）
+    import logging
+
+    logger = logging.getLogger("magicflow.persistence")
+
 # JSON 冷备份落盘间隔（秒）：Redis 热层负责在线读写，文件只作重载恢复
 # 冷备份落盘间隔（秒）。热层才是在线权威；JSON 只用于「Redis 丢了/没装」时恢复。
 # 60s 太密（活跃时 5~6 张表每分钟都脏 → 每分钟 5~6 次全量表 dump，反而比增量写便宜不了多少，
@@ -94,15 +103,58 @@ class KvBridge:
         return out
 
     def flush_if_dirty(self) -> bool:
-        """把内存快照写进 JSON 冷备份（仅在标脏时）。"""
+        """把内存快照写进 JSON 冷备份（仅在标脏时）。
+
+        ★ 只有**确实写出成功**才清 ``dirty``；写失败保留 ``dirty=True``（下次重试）
+        并告警 —— 否则磁盘满/权限错时内存照旧、``hot_stats()`` 报 ``dirty:false``、
+        ``flush_all()`` 还把该 Store 记进 ``written``（**丢了却报告已落盘**）。
+        """
         if not getattr(self, "dirty", False):
             return False
         try:
-            self._write_file()
-            self.dirty = False
-            return True
-        except Exception:  # noqa: BLE001
+            ok = self._write_file()
+        except Exception as err:  # noqa: BLE001 - 子类实现本不应抛，防御性兜底
+            logger.warning(f"[{type(self).__name__}] 冷备份落盘异常，保留脏标记：{err!r}")
             return False
+        if not ok:
+            logger.warning(f"[{type(self).__name__}] 冷备份落盘失败，保留脏标记（下次重试）")
+            return False
+        self.dirty = False
+        return True
+
+    @staticmethod
+    def _atomic_write_json(path: Path, data: Any) -> None:
+        """原子写 JSON（``tmp + os.replace``）：中途失败 → 原文件保持完好。
+
+        失败**抛异常**（由各 ``_write_file`` 记录具体异常并返回 False）；
+        半截 tmp 会清掉，不留垃圾。磁盘上已有生产数据，格式必须与旧实现一致
+        （``ensure_ascii=False`` + ``indent=2``）。
+        """
+        tmp = path.with_name(path.name + ".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except BaseException:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
+        os.replace(tmp, path)
+
+    @staticmethod
+    def _merge_missing(target: Dict[str, Any], incoming: Dict[str, Any]) -> int:
+        """只把 ``incoming`` 中 ``target`` **没有**的键补进去（绝不覆盖已有键）。
+
+        用于「热层 + 冷备份」载入并集：热层是权威，文件只补热层被 LRU 淘汰/丢过的键；
+        方向恒为「补缺」，对更旧的文件值安全。返回补齐条数。
+        """
+        added = 0
+        for key, value in (incoming or {}).items():
+            if key not in target:
+                target[key] = value
+                added += 1
+        return added
 
 
 # ============================================================
@@ -430,36 +482,38 @@ class OperationJournal(KvBridge):
                 self._operations.pop(op.operation_id, None)
 
     def _load(self) -> None:
-        """加载操作日志：Redis 热层优先；热层无数据 → 读文件并回灌。"""
-        if self._kv_load():
+        """加载操作日志：Redis 热层优先，**并与文件并集互补缺失键**（绝不覆盖热层）。
+
+        ★ 旧实现是「热层有 ≥1 条就完全不读文件」：热层被 LRU 淘汰掉的那条记录
+        永远回不来（冷备又只写内存快照 → 永久丢）。改为：热层载入后，文件里
+        **热层没有的** op_id 一律补进来；热层已有的键一律不动（方向恒为补缺）。
+        """
+        self._kv_load()  # 热层（权威）先入内存
+        if self.operations_file.exists():
             try:
-                self._heal_stale_submitting()
-            except Exception:  # noqa: BLE001
-                pass
-            return
-        if not self.operations_file.exists():
-            return
-
-        try:
-            with open(self.operations_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
+                with open(self.operations_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                disk: Dict[str, OperationRecord] = {}
                 for op_id, op_dict in data.items():
-                    self._operations[op_id] = OperationRecord.from_dict(op_dict)
-        except Exception:
-            # 如果加载失败，初始化为空
-            self._operations = {}
+                    disk[op_id] = OperationRecord.from_dict(op_dict)
+                added = self._merge_missing(self._operations, disk)
+                if added:
+                    logger.warning(f"[OperationJournal] 冷备份补回热层缺失的 {added} 条操作记录（热层被淘汰？）")
+            except Exception as err:  # noqa: BLE001
+                # ★ 不再清空内存：文件损坏时保留热层/已解析出的记录（丢记录 = 丢审计与在飞状态）
+                logger.error(f"[OperationJournal] 冷备份 {self.operations_file} 不可读，保留现有内存记录：{err!r}")
 
-        # 文件里有历史（Redis 空/丢过）→ 回灌热层
+        # 文件里有历史（Redis 空/丢过）→ 回灌热层（含刚从文件补回的键）
         if self._operations:
             try:
                 self._kv_apply()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as err:  # noqa: BLE001
+                logger.warning(f"[OperationJournal] 回灌热层失败：{err!r}")
 
         # 载入时自愈：进程中断/重载遗留的「卡在 submitting」孤儿记录 → 标记为中断
         try:
             self._heal_stale_submitting()
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
     # ---------------------------------------------------------- 热层（MP 缓存/Redis）
@@ -551,14 +605,16 @@ class OperationJournal(KvBridge):
         if self.kv_ready() and self._kv_apply(delta):
             self.dirty = True
             return
-        self._write_file()
+        if not self._write_file():   # ★ P2：直写失败 → 标脏，交后台 flusher 重试
+            self.dirty = True
 
-    def _write_file(self) -> None:
-        """保存操作日志到磁盘。
+    def _write_file(self) -> bool:
+        """保存操作日志到磁盘（成功 True / 失败 False，失败记录具体异常）。
 
         采用「与磁盘并集合并」再写回：热重载会同时存在多个插件实例，
         旧实例若用内存快照整表覆盖，会把新实例刚写入的记录覆盖丢失/状态回退。
         合并时同一 operation_id 取更“终态/更新”的那份，保证记录只增不减、状态不倒退。
+        原子写：tmp + os.replace（中途失败 → 原文件完好）。
         """
         try:
             self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -569,7 +625,9 @@ class OperationJournal(KvBridge):
                         disk = json.load(f)
                     for op_id, op_dict in disk.items():
                         merged[op_id] = OperationRecord.from_dict(op_dict)
-                except Exception:
+                except Exception as err:  # noqa: BLE001
+                    # 磁盘文件损坏：本次以内存为准重建（正常修复路径，但要留痕）
+                    logger.warning(f"[OperationJournal] 冷备份不可读，改用内存快照重建：{err!r}")
                     merged = {}
             for op_id, op in self._operations.items():
                 if op_id in merged:
@@ -579,12 +637,11 @@ class OperationJournal(KvBridge):
             self._operations = merged
             self._prune_all()
             data = {op_id: op.to_dict() for op_id, op in self._operations.items()}
-            tmp = self.operations_file.with_name(self.operations_file.name + ".tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, self.operations_file)
-        except Exception:
-            pass
+            self._atomic_write_json(self.operations_file, data)
+            return True
+        except Exception as err:  # noqa: BLE001
+            logger.error(f"[OperationJournal] 写 {self.operations_file} 失败：{err!r}")
+            return False
 
     def add(
         self,
@@ -772,6 +829,332 @@ class OperationJournal(KvBridge):
         return len(doomed)
 
 
+class PgOperationJournal(OperationJournal):
+    """★ 19.0.0：操作日志真值源 = ``mf_journal`` 表（PG 直写）。
+
+    - 无内存全量快照、无 JSON 冷备、无 Redis 热层（表就是唯一真值）；
+    - **逐调用**判 ``db_available()``：PG 不可用（离线测试/未绑句柄）→ 回退父类
+      旧路径（JSON/Redis），API 完全一致；
+    - 旧 ``operations.json`` 数据**不迁移不读入**（Master 2026-10-15「数据不要了」）；
+    - ``flush_if_dirty``/``_write_file`` 为 no-op（flusher 线程安全空转）。
+    """
+
+    def __init__(self, data_dir: Path, kv: Any = None):
+        # 不调 super().__init__()：不载入旧 JSON（19.0.0 旧数据不迁），不起 Redis 载入。
+        self.data_dir = data_dir
+        self.operations_file = data_dir / "operations.json"
+        self._operations: Dict[str, OperationRecord] = {}  # 仅离线回退路径使用
+        self.keep: int = 0
+        self._lock = threading.RLock()
+        self._kv_written: Dict[str, str] = {}
+        self.kv = kv
+        self.dirty = False
+        # 载入时自愈：上代进程遗留的「卡 submitting」孤儿 → 标记中断（对齐父类 _load 行为）
+        try:
+            mfdb = self._pg()
+            if mfdb is not None:
+                self._pg_heal_stale(mfdb)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ---------------------------------------------------------- 基础设施
+    @staticmethod
+    def _pg():
+        """mfdb 模块（已绑 DB 才返回，否则 None = 走父类回退）。"""
+        try:
+            from . import db as mfdb  # noqa: WPS433
+        except Exception:  # noqa: BLE001
+            return None
+        try:
+            return mfdb if mfdb.db_available() else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _write_file(self) -> bool:  # noqa: D102
+        """PG 可用 → no-op（真值在表里）；离线回退路径 → 走父类真写 JSON。"""
+        if self._pg() is not None:
+            return True
+        return super()._write_file()
+
+    @staticmethod
+    def _row_of(record: OperationRecord, mfdb) -> Any:
+        """OperationRecord → JournalRow（items 统一存 dict 列表，JSON 列序列化）。"""
+        items = []
+        for it in (record.items or []):
+            if isinstance(it, dict):
+                items.append(it)
+            else:
+                try:
+                    items.append(asdict(it))
+                except Exception:  # noqa: BLE001
+                    continue
+        return mfdb.JournalRow(
+            operation_id=str(record.operation_id or "")[:64],
+            request_id=str(record.request_id or "")[:64],
+            task_id=str(record.task_id or "")[:64],
+            kind=str(record.kind or "")[:40],
+            state=str(record.state or "submitting")[:24],
+            items=items,
+            created_at=float(record.created_at or 0.0),
+            resolved_at=record.resolved_at,
+            error_message=record.error_message,
+            duration=record.duration,
+        )
+
+    @staticmethod
+    def _record_of(row: Any) -> OperationRecord:
+        """JournalRow → OperationRecord（items 逐项容错：坏行跳过不炸整表）。"""
+        items: List[OperationItem] = []
+        for it in (getattr(row, "items", None) or []):
+            try:
+                if isinstance(it, OperationItem):
+                    items.append(it)
+                elif isinstance(it, dict):
+                    items.append(OperationItem(**it))
+            except Exception:  # noqa: BLE001
+                continue
+        return OperationRecord(
+            operation_id=str(getattr(row, "operation_id", "") or ""),
+            request_id=str(getattr(row, "request_id", "") or ""),
+            task_id=str(getattr(row, "task_id", "") or ""),
+            kind=str(getattr(row, "kind", "") or ""),
+            state=str(getattr(row, "state", "") or ""),
+            items=items,
+            created_at=float(getattr(row, "created_at", 0.0) or 0.0),
+            resolved_at=getattr(row, "resolved_at", None),
+            error_message=getattr(row, "error_message", None),
+            duration=getattr(row, "duration", None),
+        )
+
+    def _pg_heal_stale(self, mfdb) -> int:
+        """把过期仍 submitting 的行标记为 failed（进程重启/重载未收尾的孤儿）。"""
+        try:
+            cutoff = time.time() - self._STALE_SUBMITTING_SEC
+            sess = mfdb.db_session()
+            with sess:
+                n = sess.query(mfdb.JournalRow).filter(
+                    mfdb.JournalRow.state == "submitting",
+                    mfdb.JournalRow.created_at < cutoff,
+                ).update({
+                    "state": "failed",
+                    "resolved_at": time.time(),
+                    "error_message": "中断（进程重载或异常，未正常收尾）",
+                }, synchronize_session=False)
+                sess.commit()
+            return int(n or 0)
+        except Exception:  # noqa: BLE001
+            return 0
+
+    def _pg_prune_task(self, mfdb, task_id: str) -> None:
+        """按 keep 裁剪某任务在 PG 里的历史（保留最新 keep 条）。"""
+        if not self.keep or not task_id:
+            return
+        try:
+            sess = mfdb.db_session()
+            with sess:
+                keep_ids = [
+                    r[0] for r in sess.query(mfdb.JournalRow.operation_id)
+                    .filter(mfdb.JournalRow.task_id == str(task_id))
+                    .order_by(mfdb.JournalRow.created_at.desc())
+                    .limit(int(self.keep)).all()
+                ]
+                if not keep_ids:
+                    return
+                sess.query(mfdb.JournalRow).filter(
+                    mfdb.JournalRow.task_id == str(task_id),
+                    ~mfdb.JournalRow.operation_id.in_(keep_ids),
+                ).delete(synchronize_session=False)
+                sess.commit()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ---------------------------------------------------------- 写 API
+    def add(self, task_id: str, kind: str, items: Optional[List[OperationItem]] = None,
+            request_id: Optional[str] = None) -> OperationRecord:
+        mfdb = self._pg()
+        if mfdb is None:
+            return super().add(task_id=task_id, kind=kind, items=items, request_id=request_id)
+        operation_id = str(uuid.uuid4())[:8]
+        request_id = request_id or str(uuid.uuid4())[:8]
+        record = OperationRecord(
+            operation_id=operation_id,
+            request_id=request_id,
+            task_id=task_id,
+            kind=kind,
+            state="submitting",
+            items=items or [],
+        )
+        try:
+            sess = mfdb.db_session()
+            with sess:
+                sess.add(self._row_of(record, mfdb))
+                sess.commit()
+            self._pg_prune_task(mfdb, task_id)
+            return record
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"[PgOperationJournal] 写 mf_journal 失败，回退 JSON：{err!r}")
+            return super().add(task_id=task_id, kind=kind, items=items, request_id=request_id)
+
+    def record(self, task_id: str, kind: str,
+               items: Optional[List[OperationItem]] = None,
+               duration: Optional[float] = None,
+               state: str = "completed",
+               error_message: Optional[str] = None) -> OperationRecord:
+        """即时完成一条记录：add + finalize（返回对象的 state 与库内一致）。"""
+        record = self.add(task_id=task_id, kind=kind, items=items)
+        ok = self.finalize(record.operation_id, state, items=items,
+                           duration=duration, error_message=error_message)
+        if ok:
+            # 父类版 finalize 改内存对象引用；PG 版只改库行 → 手动同步返回值
+            record.state = str(state)[:24]
+            record.resolved_at = time.time()
+            if duration is not None:
+                record.duration = round(float(duration), 2)
+            if error_message:
+                record.error_message = str(error_message)
+        return record
+
+    def finalize(self, operation_id: str, state: str,
+                 items: Optional[List[OperationItem]] = None,
+                 duration: Optional[float] = None,
+                 error_message: Optional[str] = None) -> bool:
+        mfdb = self._pg()
+        if mfdb is None:
+            return super().finalize(operation_id, state, items=items,
+                                    duration=duration, error_message=error_message)
+        try:
+            sess = mfdb.db_session()
+            with sess:
+                row = sess.query(mfdb.JournalRow).filter(
+                    mfdb.JournalRow.operation_id == str(operation_id)).first()
+                if row is None:
+                    return False
+                row.state = str(state)[:24]
+                if items is not None:
+                    row.items = [it if isinstance(it, dict) else asdict(it) for it in items]
+                if duration is not None:
+                    row.duration = round(float(duration), 2)
+                if error_message:
+                    row.error_message = str(error_message)
+                row.resolved_at = time.time()
+                sess.commit()
+            return True
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"[PgOperationJournal] finalize mf_journal 失败：{err!r}")
+            return False
+
+    def update_state(self, operation_id: str, state: str,
+                     error_message: Optional[str] = None) -> bool:
+        mfdb = self._pg()
+        if mfdb is None:
+            return super().update_state(operation_id, state, error_message=error_message)
+        try:
+            sess = mfdb.db_session()
+            with sess:
+                row = sess.query(mfdb.JournalRow).filter(
+                    mfdb.JournalRow.operation_id == str(operation_id)).first()
+                if row is None:
+                    return False
+                row.state = str(state)[:24]
+                if str(state) in ("completed", "failed"):
+                    row.resolved_at = time.time()
+                if error_message:
+                    row.error_message = str(error_message)
+                sess.commit()
+            return True
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"[PgOperationJournal] update_state mf_journal 失败：{err!r}")
+            return False
+
+    # ---------------------------------------------------------- 读 API
+    def get(self, operation_id: str) -> Optional[OperationRecord]:
+        mfdb = self._pg()
+        if mfdb is None:
+            return super().get(operation_id)
+        try:
+            sess = mfdb.db_session()
+            with sess:
+                row = sess.query(mfdb.JournalRow).filter(
+                    mfdb.JournalRow.operation_id == str(operation_id)).first()
+                return self._record_of(row) if row is not None else None
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"[PgOperationJournal] get mf_journal 失败，回退内存：{err!r}")
+            return super().get(operation_id)
+
+    def list_by_task(self, task_id: str, kind: Optional[str] = None,
+                     limit: int = 50) -> List[OperationRecord]:
+        mfdb = self._pg()
+        if mfdb is None:
+            return super().list_by_task(task_id, kind=kind, limit=limit)
+        try:
+            sess = mfdb.db_session()
+            with sess:
+                q = sess.query(mfdb.JournalRow).filter(
+                    mfdb.JournalRow.task_id == str(task_id))
+                if kind:
+                    q = q.filter(mfdb.JournalRow.kind == str(kind))
+                rows = q.order_by(mfdb.JournalRow.created_at.desc()) \
+                        .limit(max(1, int(limit or 50))).all()
+                return [self._record_of(r) for r in rows]
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"[PgOperationJournal] list_by_task 失败，回退内存：{err!r}")
+            return super().list_by_task(task_id, kind=kind, limit=limit)
+
+    def list_recent(self, limit: int = 100, kind: Optional[str] = None) -> List[OperationRecord]:
+        wanted = [k.strip() for k in str(kind or "").split(",") if k.strip()]
+        mfdb = self._pg()
+        if mfdb is None:
+            return super().list_recent(limit=limit, kind=kind)
+        try:
+            sess = mfdb.db_session()
+            with sess:
+                q = sess.query(mfdb.JournalRow)
+                if wanted:
+                    q = q.filter(mfdb.JournalRow.kind.in_(wanted))
+                rows = q.order_by(mfdb.JournalRow.created_at.desc()) \
+                        .limit(max(1, int(limit or 100))).all()
+                return [self._record_of(r) for r in rows]
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"[PgOperationJournal] list_recent 失败，回退内存：{err!r}")
+            return super().list_recent(limit=limit, kind=kind)
+
+    # ---------------------------------------------------------- 删 API
+    def delete_old(self, days: int = 30) -> int:
+        mfdb = self._pg()
+        if mfdb is None:
+            return super().delete_old(days)
+        try:
+            cutoff = time.time() - int(days) * 24 * 3600
+            sess = mfdb.db_session()
+            with sess:
+                n = sess.query(mfdb.JournalRow).filter(
+                    mfdb.JournalRow.created_at < cutoff
+                ).delete(synchronize_session=False)
+                sess.commit()
+            return int(n or 0)
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"[PgOperationJournal] delete_old 失败：{err!r}")
+            return 0
+
+    def delete_task(self, task_id: str) -> int:
+        if not task_id:
+            return 0
+        mfdb = self._pg()
+        if mfdb is None:
+            return super().delete_task(task_id)
+        try:
+            sess = mfdb.db_session()
+            with sess:
+                n = sess.query(mfdb.JournalRow).filter(
+                    mfdb.JournalRow.task_id == str(task_id)
+                ).delete(synchronize_session=False)
+                sess.commit()
+            return int(n or 0)
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"[PgOperationJournal] delete_task 失败：{err!r}")
+            return 0
+
+
 # ============================================================
 # 任务状态
 # ============================================================
@@ -804,24 +1187,43 @@ class TaskStateStore(KvBridge):
         self._load()
 
     def _load(self) -> None:
-        """加载任务状态：Redis 热层优先；热层无数据 → 读文件并回灌。"""
-        if self._kv_load():
-            return
-        if not self.state_file.exists():
-            return
-
-        try:
-            with open(self.state_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
+        """加载任务状态：Redis 热层优先，**并与文件并集互补缺失键**（绝不覆盖热层）。"""
+        self._kv_load()  # 热层（权威）先入内存
+        if self.state_file.exists():
+            try:
+                with open(self.state_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                disk: Dict[str, TaskState] = {}
                 for task_id, state_dict in data.items():
-                    self._states[task_id] = TaskState.from_dict(state_dict)
-        except Exception:
-            self._states = {}
-        if self._states:  # 文件有历史（Redis 空/丢过）→ 回灌热层
+                    disk[str(task_id)] = TaskState.from_dict(state_dict)
+                # ★ 只补「热层没有」的键：热层被 LRU 淘汰的 task 从文件回补；
+                #   热层已有的键（含计数器/修订号）一律保留热层值，绝不覆盖。
+                added = self._merge_missing(self._states, disk)
+                if added:
+                    logger.warning(f"[TaskStateStore] 冷备份补回热层缺失的 {added} 个任务状态（热层被淘汰？）")
+            except Exception as err:  # noqa: BLE001
+                # ★ 解析失败**不清空** _states：半截 JSON 多是上次写中断留下的，
+                #   清空会丢 protected_torrents（删除闸门第 1 类硬保护）/ manual_paused /
+                #   纳管标记。保留现状 + 坏文件留证 + 记具体异常。
+                self._quarantine_corrupt(err)
+        if self._states:  # 文件有历史（Redis 空/丢过）→ 回灌热层（含刚从文件补回的键）
             try:
                 self._kv_apply()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as err:  # noqa: BLE001
+                logger.warning(f"[TaskStateStore] 回灌热层失败：{err!r}")
+
+    def _quarantine_corrupt(self, err: Exception) -> None:
+        """冷备份解析失败：**保留内存状态**，把坏文件改名 ``<name>.corrupt.<ts>`` 留证。"""
+        stamp = time.strftime("%Y%m%d%H%M%S", time.localtime())
+        bad = self.state_file.with_name(f"{self.state_file.name}.corrupt.{stamp}")
+        logger.error(
+            f"[TaskStateStore] 冷备份 {self.state_file} 解析失败（保留现有内存状态，"
+            f"坏文件留证 {bad.name}）：{err!r}"
+        )
+        try:
+            os.replace(self.state_file, bad)
+        except OSError as rerr:  # noqa: PERF203
+            logger.error(f"[TaskStateStore] 坏文件留证失败（不影响内存状态）：{rerr!r}")
 
     # ---------------------------------------------------------- 热层（MP 缓存/Redis）
     def _kv_load(self) -> bool:
@@ -861,18 +1263,27 @@ class TaskStateStore(KvBridge):
         if self.kv_ready() and self._kv_apply(task_id):
             self.dirty = True
             return
-        self._write_file()
+        if not self._write_file():   # ★ P2：直写失败 → 标脏，交后台 flusher 重试
+            self.dirty = True
 
-    def _write_file(self) -> None:
-        """保存任务状态到磁盘。"""
+    def _write_file(self) -> bool:
+        """保存任务状态到磁盘（★ P2：原子写 + 返回成败）。
+
+        这里曾是**全项目唯一直接覆盖原文件**的写（``open(..., "w")``）：写一半被杀
+        → 半截 JSON → 下次载入清空 ``_states`` → 丢掉 ``protected_torrents``
+        （删除闸门第 1 类硬保护，「手动保留」）、``manual_paused``、纳管标记。
+        改走 ``tmp + os.replace``（中途失败原文件保持完好），并返回成败，
+        交 :meth:`KvBridge.flush_if_dirty` 决定是否清 ``dirty``。
+        """
         with self._lock:
             try:
                 self.data_dir.mkdir(parents=True, exist_ok=True)
                 data = {task_id: state.to_dict() for task_id, state in self._states.items()}
-                with open(self.state_file, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
+                self._atomic_write_json(self.state_file, data)
+                return True
+            except Exception as err:  # noqa: BLE001
+                logger.error(f"[TaskStateStore] 写 {self.state_file} 失败（保留脏标记，待重试）：{err!r}")
+                return False
 
     def get(self, task_id: str) -> Optional[TaskState]:
         """获取任务状态。"""
@@ -999,18 +1410,18 @@ class SeenStore(KvBridge):
         if self.kv_ready() and self._kv_apply(task_id):
             self.dirty = True
             return
-        self._write_file()
+        if not self._write_file():   # ★ P2：直写失败 → 标脏，交后台 flusher 重试
+            self.dirty = True
 
-    def _write_file(self) -> None:
-        """写 JSON 冷备份。"""
+    def _write_file(self) -> bool:
+        """写 JSON 冷备份（★ P2：原子写 + 返回成败，失败不再静默）。"""
         try:
             self.data_dir.mkdir(parents=True, exist_ok=True)
-            tmp = self.file.with_name(self.file.name + ".tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(self._data, f, ensure_ascii=False, indent=2)
-            tmp.replace(self.file)
-        except Exception:
-            pass
+            self._atomic_write_json(self.file, self._data)
+            return True
+        except Exception as err:  # noqa: BLE001
+            logger.error(f"[{type(self).__name__}] 写 {self.file} 失败（保留脏标记，待重试）：{err!r}")
+            return False
 
     def is_seen(self, task_id: str, key: str, cooldown_seconds: float = 0.0) -> bool:
         """该 key 是否在窗口期内已被处理过。"""
@@ -1202,21 +1613,21 @@ class AddGateStore(KvBridge):
         if self.kv_ready():
             try:
                 self._kv_apply(keys)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as err:  # noqa: BLE001
+                logger.warning(f"[AddGateStore] 热层写入失败：{err!r}")
             self.dirty = False
-        self._write_file()
+        if not self._write_file():   # ★ P2：直写失败 → 标脏（本表不挂 stores()，靠下次 _save 重试）
+            self.dirty = True
 
-    def _write_file(self) -> None:
-        """写 JSON 冷备份。"""
+    def _write_file(self) -> bool:
+        """写 JSON 冷备份（★ P2：原子写 + 返回成败，失败不再静默）。"""
         try:
             self.data_dir.mkdir(parents=True, exist_ok=True)
-            tmp = self.file.with_name(self.file.name + ".tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(self._data, f, ensure_ascii=False, indent=2)
-            tmp.replace(self.file)
-        except Exception:
-            pass
+            self._atomic_write_json(self.file, self._data)
+            return True
+        except Exception as err:  # noqa: BLE001
+            logger.error(f"[AddGateStore] 写 {self.file} 失败（保留脏标记，待重试）：{err!r}")
+            return False
 
     # ---------------------------------------------------------- 对外
     @staticmethod
@@ -1497,9 +1908,11 @@ class RecommendStore(KvBridge):
         if self.kv_ready() and self._kv_apply(key):
             self.dirty = True
             return
-        self._write_file()
+        if not self._write_file():   # ★ P2：直写失败 → 标脏，交后台 flusher 重试
+            self.dirty = True
 
-    def _write_file(self) -> None:
+    def _write_file(self) -> bool:
+        """写 JSON 冷备份（★ P2：与磁盘并集合并 + 原子写 + 返回成败）。"""
         with self._lock:
             try:
                 self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -1514,7 +1927,8 @@ class RecommendStore(KvBridge):
                                 for k, v in d.items()
                                 if isinstance(v, dict)
                             }
-                    except Exception:
+                    except Exception as err:  # noqa: BLE001
+                        logger.warning(f"[{type(self).__name__}] 冷备份不可读，改用内存快照重建：{err!r}")
                         disk = {}
                 merged = dict(disk)
                 for h, item in self._items.items():
@@ -1522,12 +1936,11 @@ class RecommendStore(KvBridge):
                     if cur is None or float(item.get("updated_at", 0) or 0) >= float(cur.get("updated_at", 0) or 0):
                         merged[h] = item
                 self._items = merged
-                tmp = self.file.with_name(self.file.name + ".tmp")
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(merged, f, ensure_ascii=False, indent=2)
-                os.replace(tmp, self.file)
-            except Exception:
-                pass
+                self._atomic_write_json(self.file, merged)
+                return True
+            except Exception as err:  # noqa: BLE001
+                logger.error(f"[{type(self).__name__}] 写 {self.file} 失败（保留脏标记，待重试）：{err!r}")
+                return False
 
     def get(self, h: str) -> Optional[Dict[str, Any]]:
         h = str(h or "").lower()
@@ -1683,9 +2096,11 @@ class ArchiveStore(KvBridge):
         if self.kv_ready() and self._kv_apply(key):
             self.dirty = True
             return
-        self._write_file()
+        if not self._write_file():   # ★ P2：直写失败 → 标脏，交后台 flusher 重试
+            self.dirty = True
 
-    def _write_file(self) -> None:
+    def _write_file(self) -> bool:
+        """写 JSON 冷备份（★ P2：与磁盘并集合并 + 原子写 + 返回成败）。"""
         with self._lock:
             try:
                 self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -1696,7 +2111,8 @@ class ArchiveStore(KvBridge):
                             d = json.load(f) or {}
                         if isinstance(d, dict):
                             disk = {str(k): v for k, v in d.items() if isinstance(v, dict)}
-                    except Exception:
+                    except Exception as err:  # noqa: BLE001
+                        logger.warning(f"[{type(self).__name__}] 冷备份不可读，改用内存快照重建：{err!r}")
                         disk = {}
                 merged = dict(disk)
                 for k, item in self._items.items():
@@ -1704,12 +2120,11 @@ class ArchiveStore(KvBridge):
                     if cur is None or float(item.get("updated_at", 0) or 0) >= float(cur.get("updated_at", 0) or 0):
                         merged[k] = item
                 self._items = merged
-                tmp = self.file.with_name(self.file.name + ".tmp")
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(merged, f, ensure_ascii=False, indent=2)
-                os.replace(tmp, self.file)
-            except Exception:
-                pass
+                self._atomic_write_json(self.file, merged)
+                return True
+            except Exception as err:  # noqa: BLE001
+                logger.error(f"[{type(self).__name__}] 写 {self.file} 失败（保留脏标记，待重试）：{err!r}")
+                return False
 
     def get(self, path: str) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -1821,7 +2236,7 @@ class MagicFlowStore:
         self.data_dir = data_dir
         _t0 = time.perf_counter()
         _marks: Dict[str, float] = {}
-        self.journal = OperationJournal(data_dir, kv=kv)
+        self.journal = self._new_journal(data_dir, kv)
         _marks["日志"] = time.perf_counter()
         self.task_states = TaskStateStore(data_dir, kv=kv)
         self.seen = SeenStore(data_dir, kv=kv)
@@ -1850,6 +2265,34 @@ class MagicFlowStore:
         self._start_flusher()
 
     # -------------------- 热层 / 冷备份 --------------------
+    @staticmethod
+    def _new_journal(data_dir: Path, kv: Any = None) -> OperationJournal:
+        """★ 19.0.0：DB 已绑 → PgOperationJournal（mf_journal 表）；否则旧 JSON 版。
+
+        进程级单例 ``MagicFlowStore`` 先于 ``init_plugin`` 的 bind_database 存在时，
+        首次构造会落到旧版；``init_plugin`` 绑定后调用 ``rebind_journal()`` 换新（见下）。
+        """
+        try:
+            from . import db as mfdb  # noqa: WPS433
+            if mfdb.db_available():
+                return PgOperationJournal(data_dir, kv=kv)
+        except Exception:  # noqa: BLE001
+            pass
+        return OperationJournal(data_dir, kv=kv)
+
+    def rebind_journal(self, kv: Any = None) -> bool:
+        """DB 绑定晚于 store 构造时，把 journal 换成 PG 版（幂等；已在 PG 版 → False）。"""
+        if isinstance(self.journal, PgOperationJournal):
+            return False
+        try:
+            new = self._new_journal(self.data_dir, kv if kv is not None else self.journal.kv)
+            if isinstance(new, PgOperationJournal):
+                self.journal = new
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
     def stores(self) -> List[Any]:
         """全部 Store（顺序 = journal / task_states / seen / dead / recommend / cloud）。"""
         return [self.journal, self.task_states, self.seen, self.dead, self.recommend, self.cloud]
@@ -1932,10 +2375,13 @@ class MagicFlowStore:
             name = getattr(store, "kv_region", type(store).__name__)
             try:
                 applied = store._kv_apply() if store.kv_ready() else False  # noqa: SLF001
-                store._write_file()  # noqa: SLF001
-                store.dirty = False
-                counts[name] = 1 if applied else 0
-            except Exception:  # noqa: BLE001
+                # ★ P2：只有真写成功才清 dirty；失败保留脏标记（否则「丢了却报告已落盘」）
+                ok = store._write_file()  # noqa: SLF001
+                if ok:
+                    store.dirty = False
+                counts[name] = 1 if (applied and ok) else 0
+            except Exception as err:  # noqa: BLE001
+                logger.warning(f"[flush_to_disk_and_hot] {name} 对齐失败：{err!r}")
                 counts[name] = 0
         return counts
 

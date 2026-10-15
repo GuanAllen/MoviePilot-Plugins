@@ -53,6 +53,7 @@ from ..common import (
     RESEED_LEDGER_KEY,
     RESEED_MIN_SIZE_GB,
     RESEED_MISS_TTL,
+    RESEED_OK_TTL,
     RESEED_PASSKEY_KEY,
     SILENT_HR_SPLIT_ENABLED,
 )
@@ -120,6 +121,9 @@ class ReSeedMixin:
                 continue
             if st == "fail" and age > RESEED_FAIL_TTL:
                 continue
+            if st == "ok" and age > RESEED_OK_TTL:
+                # ★ 19.0.0：ok 记录只是历史参考（去重靠本机实况）→ 90 天后过期
+                continue
             out[k] = v
         return out
 
@@ -127,7 +131,13 @@ class ReSeedMixin:
         if not key:
             return
         led = self._reseed_ledger()
-        led[key] = {"st": st, "ts": time.time(), "note": note[:160]}
+        rec: Dict[str, Any] = {"st": st, "ts": time.time(), "note": note[:160]}
+        if st == "ok":
+            # ★ 19.0.0：生命周期三列（mf_reseed.alive/last_seen/seen_by）
+            rec["alive"] = True
+            rec["last_seen"] = rec["ts"]
+            rec["seen_by"] = "reseed"
+        led[key] = rec
         if len(led) > 4000:  # 防无限膨胀
             for k in sorted(led, key=lambda x: float(led[x].get("ts") or 0))[: len(led) - 4000]:
                 led.pop(k, None)
@@ -495,6 +505,7 @@ class ReSeedMixin:
         # ★ 先按资源身份定标签：资源表的身份就是这颗种的「身份」（继承）；
         #   资源表说「资源」→ 直接「静默-资源」（不观察，Master 13:37）；没记过身份 → 辅种即资源
         tag = tag_for(site_name, STATE_SILENT, SUB_RESOURCE)
+        _ident = SUB_RESOURCE
         gid = ""
         try:
             groups = self._tag_groups()
@@ -503,6 +514,7 @@ class ReSeedMixin:
                 ident = groups.identity(gid)
                 if ident in (SUB_NEW, SUB_PLAIN):
                     tag = tag_for(site_name, STATE_SILENT, ident)  # 资源表明写了他身份 → 跟随
+                    _ident = ident
                 else:
                     groups.set_identity(gid, SUB_RESOURCE, by="reseed")
         except Exception:  # noqa: BLE001
@@ -524,6 +536,22 @@ class ReSeedMixin:
             return "fail"
         self._reseed_ledger_put(key, "ok", "已挂")
         self._reseed_day_bump(sid)
+        # ★ 19.0.1：挂上即登种子账本（mf_seed）。此前只写辅种台账（mf_reseed），
+        #   种子账本无行 → drift qb_only 持续累积（实测 358 颗），账本侧逻辑
+        #   （分拣/清理/H&R/报表）对辅种全盲。魔流化扫描只收「无魔流标签」的种，
+        #   辅种挂上即带完整标签 → 永远没人登记。put 幂等（同 hash 只 patch）。
+        try:
+            _patch = {
+                "site": site_name, "state": STATE_SILENT, "sub": _ident,
+                "fp": fp or "",
+                "reason": "全站辅种:挂种登记",
+            }
+            _sz = float(pair.get("src_size") or 0) / 1024 ** 3
+            if _sz > 0:
+                _patch["size_gb"] = _sz
+            self._tag_state().put(h, _patch)
+        except Exception as err:  # noqa: BLE001
+            self._log(f"全站辅种:账本登记失败 {h[:12]}:{err}", "warning")
         # ★ 资源身份继承：组的身份是「资源」→ 挂上就转「静默-资源」，并写回账本
         if gid and tag.endswith(SUB_RESOURCE):
             try:

@@ -28,7 +28,7 @@ const mobileDetailCards = computed(() => {
     cards.push({ v: formatBytes(t.task_uploaded || 0), k: '本任务上传' })
     cards.push({ v: props.siteAccount?.ok ? formatBytes(props.siteAccount.upload || 0) : '—', k: '站点上传' })
   } else {
-    cards.push({ v: t.site_bonus_ok && t.site_bonus_per_hour != null ? Number(t.site_bonus_per_hour).toFixed(2) : '—', k: '时魔 /h' })
+    cards.push({ v: t.site_bonus_ok && t.site_bonus_per_hour != null ? Number(t.site_bonus_per_hour).toFixed(2) : '取数中…', k: '时魔 /h' })
     cards.push({ v: t.site_current_bonus != null ? Number(t.site_current_bonus).toFixed(0) : '—', k: '站点魔力' })
   }
   return cards

@@ -341,10 +341,8 @@ class LedgerBackend:
             rec["identity"] = r.identity
             rec["identity_at"] = r.identity_at
             rec["identity_by"] = r.identity_by
-        if r.hrs:
-            hr = dict(r.hrs[0] or {})
-            hr.pop("site_id", None)
-            rec["hr"] = hr
+        # ★ 19.0.0：``mf_resource.hrs`` 退役（写侧已停、读写口径本就互斥）；
+        #   H&R 真值 = ``mf_bills``（种子级）。
         if r.rating is not None:
             rec["rating"] = r.rating
         if r.asset_recheck:
@@ -417,23 +415,8 @@ class LedgerBackend:
     def res_row(self, rid: str, rec: Dict[str, Any], now: float) -> Dict[str, Any]:
         # ★ 2026-10-10：``rid`` 是**内容寻址主键**（种子文件特征码 sha1），**禁改**。
         #   调用方须保证 ``_STRONG_RID`` 匹配（见 save_groups / _touch_resource 的护栏）。
-        # ★ 10.0.0：账单**按站分账**（``hrs``）—— 同一资源多站各欠一份，全部写入
-        _bills = rec.get("hrs") if isinstance(rec.get("hrs"), dict) else None
-        if not _bills:
-            _h0 = rec.get("hr") or {}
-            _bills = {str(_h0.get("site") or "_"): _h0} if isinstance(_h0, dict) and _h0 else {}
-        hrs: List[Dict[str, Any]] = []
-        for _b in (_bills or {}).values():
-            if not isinstance(_b, dict) or not _b:
-                continue
-            item = dict(_b)
-            site_name = str(item.get("site") or "").strip()
-            if site_name:
-                _sid = self._site_id(site_name, create=False)
-                item["site_id"] = _sid
-                if _sid:
-                    item.pop("site", None)
-            hrs.append(item)
+        # ★ 19.0.0：``mf_resource.hrs`` 退役 —— 写侧不再落 hrs（历史 dict 改 array 的
+        #   互斥通道连根拔掉）；H&R 真值 = ``mf_bills``。
         src_site = str(rec.get("source_site") or "").strip()
         src_id = self._site_id(src_site, create=False) if src_site else None
         lib = rec.get("library") or {}
@@ -443,7 +426,6 @@ class LedgerBackend:
             "size_gb": rec.get("size_gb"),
             "files_shared": bool(rec.get("files_shared")),
             "source_hash": str(rec.get("source_hash") or "").lower() or None,
-            "hrs": hrs,
             "created": rec.get("created") or now,
             "updated": rec.get("updated") or now,
         }
@@ -1139,8 +1121,10 @@ class ResourceLedgerStore:
     存储后端 = ``LedgerBackend``（5 表），直接读写 ``load_groups``/``save_groups``。
     ``group_id -> {size_gb, files_shared, members:{hash:{site,downloader,added,
     downloaded,progress,state,fp}}, source_site, source_hash,
-    hrs:{site:{site,required_hours,need_hours,seeded_seconds,settled,settled_at,checked_at,by_hash}},
-    hr:<主账单(兼容)>, library:{in_library,first_at,updated,media_id,path}, created, updated}``
+    library:{in_library,first_at,updated,media_id,path}, created, updated}``
+
+    ★ 19.0.0：``hrs``/``hr`` 字段**退役**（写侧 set_hr/note_hr_progress 停写、
+    读侧 _row_dict/res_row 不再映射）。H&R 真值 = ``mf_bills`` 表（种子级）。
     """
 
     def __init__(self, backend: LedgerBackend, log: Any = None) -> None:
@@ -1318,38 +1302,17 @@ class ResourceLedgerStore:
         by_hash: str = "",
         now: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """挂/更新资源上的 H&R 账单（义务靠来源站那个种子挂种结清）。
+        """★ 19.0.0 **退役**：不再写 ``mf_resource.hrs``（H&R 真值收口 ``mf_bills``）。
 
-        ★ 10.0.0：账单**按来源站分账**（``hrs = {site: bill}``）。``hr`` 仍是「主账单」
-        （``by_hash`` 命中的那张，否则第一张）。
+        历史背景：10.0.0 曾把账单按站分账挂 ``hrs = {site: bill}``，但读侧
+        （``_row_dict``）一直按 array 口径读 ``hrs[0]`` —— 读写互斥 ⇒ 该通道恒假
+        （实测 675 资源仅 2 行有 hrs 且都是 array 型）。19.0.0 起唯一真值 =
+        ``mf_bills`` 表（种子级），``mf_resource.hrs`` 列保留但无写入方。
+
+        方法体保留（返回空 dict）只为兼容热重载期旧调用链。
         """
-        gid = _clean(group_id)
-        data = self.items()
-        rec = dict(data.get(gid) or {})
-        if not gid or not rec:
-            return {}
-        ts = float(now if now is not None else time.time())
-        _site = _clean(site)
-        _by = _clean(by_hash).lower()
-        bills = dict(rec.get("hrs") or {})
-        key = _site or _by or "_"
-        hr = dict(bills.get(key) or {})
-        hr.update({
-            "site": _site or hr.get("site", ""),
-            "required_hours": float(required_hours or hr.get("required_hours") or 0.0),
-            "need_hours": float(need_hours or hr.get("need_hours") or 0.0),
-            "by_hash": _by or hr.get("by_hash", ""),
-            "checked_at": ts,
-        })
-        hr.setdefault("settled", False)
-        bills[key] = hr
-        rec["hrs"] = bills
-        _main = next((b for b in bills.values() if _by and _clean(b.get("by_hash")).lower() == _by), None)
-        rec["hr"] = _main or next(iter(bills.values()))
-        rec["updated"] = ts
-        data[gid] = rec
-        self._write(data)
-        return hr
+        _ = (group_id, site, required_hours, need_hours, by_hash, now)
+        return {}
 
     def note_hr_progress(
         self,
@@ -1359,45 +1322,13 @@ class ResourceLedgerStore:
         by_hash: str = "",
         now: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """记录来源种挂种进度；挂够要求 → **给资源结清 H&R 账单**。
+        """★ 19.0.0 **退役**：全仓本就零调用；``mf_resource.hrs`` 停写后连语义一并消失。
 
-        ★ 10.0.0：账单分站存 ``hrs``。给了 ``by_hash`` 就只更新它自己那张。
+        H&R 挂种进度/结清真值 = ``mf_bills`` 的 ``state``/``seeded_h``/``progress``
+        （``features/hrbills.py::_hrbills_tick`` 每轮刷新）。
         """
-        gid = _clean(group_id)
-        data = self.items()
-        rec = dict(data.get(gid) or {})
-        if not gid or not rec:
-            return {}
-        bills = dict(rec.get("hrs") or {})
-        if not bills:
-            _hr0 = dict(rec.get("hr") or {})
-            if _hr0:
-                bills = {_clean(_hr0.get("site")) or "_": _hr0}
-        if not bills:
-            return {}
-        ts = float(now if now is not None else time.time())
-        seeded = float(seeded_seconds or 0.0)
-        _by = _clean(by_hash).lower()
-        _hit = None
-        for key, b in list(bills.items()):
-            b = dict(b)
-            if _by and _clean(b.get("by_hash")).lower() not in ("", _by):
-                continue
-            b["seeded_seconds"] = round(seeded, 1)
-            b["checked_at"] = ts
-            need = max(float(b.get("required_hours") or 0.0), float(b.get("need_hours") or 0.0))
-            if not b.get("settled") and need > 0 and seeded >= need * 3600.0:
-                b["settled"] = True
-                b["settled_at"] = ts
-            bills[key] = b
-            if _by and _clean(b.get("by_hash")).lower() == _by:
-                _hit = b
-        rec["hrs"] = bills
-        rec["hr"] = _hit or next(iter(bills.values()))
-        rec["updated"] = ts
-        data[gid] = rec
-        self._write(data)
-        return rec["hr"]
+        _ = (group_id, seeded_seconds, by_hash, now)
+        return {}
 
     def set_library(
         self,
@@ -1525,7 +1456,7 @@ class ResourceLedgerStore:
         out: List[Dict[str, Any]] = []
         for gid, rec in self.items().items():
             members = rec.get("members") or {}
-            hr = dict(rec.get("hr") or {})
+            # ★ 19.0.0：``hr``/``hrs`` 退役 —— 资源视图不再吐账单（真值 mf_bills）
             lib = dict(rec.get("library") or {})
             _fps = sorted({_clean((m or {}).get("fp")) for m in members.values() if _clean((m or {}).get("fp"))})
             out.append({
@@ -1535,7 +1466,6 @@ class ResourceLedgerStore:
                 "members": len(members),
                 "sites": sorted({str((m or {}).get("site") or "") for m in members.values() if (m or {}).get("site")}),
                 "source_site": rec.get("source_site") or "",
-                "hr": hr,
                 "library": lib,
             })
         out.sort(key=lambda x: x["members"], reverse=True)

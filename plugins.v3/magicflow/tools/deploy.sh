@@ -93,6 +93,7 @@ if [ "$DO_MARKET" = 1 ]; then
     rsync -a --delete \
       --exclude='__pycache__' --exclude='*.pyc' --exclude='node_modules' \
       --exclude='.git' --exclude='docs' --exclude='preview' --exclude='screenshots' \
+      --exclude='.worktrees' \
       --exclude='dist' \
       "$DEV/" "$MARKET_DIR/"
     if [ -d "$DEV/dist" ]; then
@@ -114,6 +115,7 @@ if [ "$DO_CONTAINER" = 1 ]; then
     tar -C "$DEV" \
       --exclude='__pycache__' --exclude='*.pyc' --exclude='node_modules' \
       --exclude='.git' --exclude='docs' --exclude='preview' --exclude='screenshots' \
+      --exclude='.worktrees' \
       -cf - . | docker exec -i "$CONTAINER" tar -C "$CPATH" -xf -
     echo "  ▸ 容器副本已更新"
   fi

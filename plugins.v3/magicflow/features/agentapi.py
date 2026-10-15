@@ -375,7 +375,7 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
          "params": {"resource_ids": "逗号/空格分隔的资源 id（只认库内资产；其余拒收）",
                     "delete_files": "1=连文件一起删（不可恢复）；缺省 0=只删种保文件",
                     "confirm": "1=真删；缺省/非 1 = 干跑（零写入）",
-                    "reason": "删除原因（进统一台账 deletions.jsonl）"},
+                    "reason": "删除原因（进统一删除台账 mf_deletions）"},
          "returns": "AssetDeleteReport", "version": AGENT_ENDPOINT_VERSION,
          "summary": "⚠不可恢复：真删整份库内资产（全组删完才连文件删，只破「永不删」一道闸）"},
         # ---- P1.5c：功能域只读（AI ⊇ 前端，收编 19 个只读豁免域）----
@@ -1263,7 +1263,7 @@ class AgentApiMixin:
         """``GET /agent/hr/breaches`` —— ★ **H&R 违约告警清单**（只读）。
 
         一次调用答：**「哪些欠 H&R 的种从下载器消失了，谁删的（本插件/外部）」**。
-        归因：deletions.jsonl 命中 ok=true → 本插件删（gate bug 升级 critical）；否则外部删。
+        归因：删除台账（mf_deletions）命中 ok=true → 本插件删（gate bug 升级 critical）；否则外部删。
         只读：不写任何账单/账本；补回走 write.reseed / write.rescue（需 confirm=1）。
         """
         t0 = time.time()
@@ -1273,7 +1273,7 @@ class AgentApiMixin:
             return self._agent_err("internal", f"H&R违约清单失败:{e}", t0, trace_id=str(e))
         return self._agent_report(
             data, t0,
-            ("features/hrbills._hr_breaches() → hr_bills.json + deletions.jsonl + "
+            ("features/hrbills._hr_breaches() → mf_bills + mf_deletions + "
              "下载器快照（只读，归因不造第二真值）"))
 
     def agent_silent_audit(self, limit: int = 0) -> Dict[str, Any]:

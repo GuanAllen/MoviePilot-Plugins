@@ -30,7 +30,10 @@ export function useSilentPool({ api, notify }) {
     return (silentData.value.items || []).filter(it => {
       if (silentSub.value && String(it.sub || '') !== silentSub.value) return false
       if (silentSite.value && String(it.site || '') !== silentSite.value) return false
-      if (silentOnlyHr.value && !it.hr) return false
+      // ★ 19.0.0 hotfix：it.hr 是对象（{owed, owed_hr, need_left}）而非布尔 ——
+      //   「仅看 H&R」过滤必须用 owed_hr（欠 H&R 才算），否则对象恒 truthy → 全池全被算成 H&R。
+      const owedHr = !!(it.hr && (typeof it.hr === 'object' ? it.hr.owed_hr : it.hr))
+      if (silentOnlyHr.value && !owedHr) return false
       if (kw && !String(it.title || '').toLowerCase().includes(kw)) return false
       return true
     })
@@ -65,8 +68,16 @@ export function silentProgressText(it) {
   return `${(p * 100).toFixed(1)}%`
 }
 export function silentHrText(it) {
+  // ★ 19.0.0 hotfix：it.hr 是对象 {owed, owed_hr, need_left}。
+  //   只有 owed_hr=true 才展示「H&R」；剩余时间优先 remain_min（跨站来源份），
+  //   欠账账单种用 bill.hours_left（hrbills.py deadline 口径），都没有就只写「H&R 中」。
+  const hr = it?.hr
+  const owed = !!(hr && (typeof hr === 'object' ? hr.owed_hr : hr))
+  if (!owed) return ''
   const rem = it?.remain_min
-  if (rem === null || rem === undefined) return it?.hr ? 'H&R 中' : ''
-  return `剩 ${formatRemain(rem)}`
+  if (rem !== null && rem !== undefined) return `剩 ${formatRemain(rem)}`
+  const left = Number(hr?.need_left || it?.bill?.hours_left)
+  if (Number.isFinite(left) && left > 0) return `剩 ${formatRemain(left)}`
+  return 'H&R 中'
 }
 export function silentSubLabel(sub) { return SILENT_SUB_LABEL[String(sub || '')] || `静默-${sub || '?'}` }

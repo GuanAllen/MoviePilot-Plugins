@@ -517,11 +517,9 @@ class AssetsMixin:
                                      added_at=(float(getattr(_a_live, "added_on", 0) or 0)
                                                if _a_live is not None else 0.0),
                                      fp=(str((ledger.get(a_hash) or {}).get("fp") or "").strip() or _sib_fp))
-                store.set_hr(gid, site=_site,
-                             required_hours=float(srec.get("hours") or 0.0),
-                             need_hours=float(srec.get("need_hours") or 0.0),
-                             by_hash=str(sib).lower())
-            stat["hr_bills"] = int(stat["hr_bills"]) + 1
+                # ★ 19.0.0：``store.set_hr(...)`` 已退役（mf_resource.hrs 停写）；
+                #   跨站来源份的 H&R 义务真值在 mf_bills（hrbills 开账）。
+                stat["sib_hr_seen"] = int(stat.get("sib_hr_seen") or 0) + 1
         if apply:
             # ★ 10.0.0 迁徙：清掉「弱身份」（按体积档归的）资源组 —— 幂等，跑完就没有弱组了
             try:
@@ -559,12 +557,13 @@ class AssetsMixin:
             stat["in_library"] = sum(
                 1 for r in store.items().values() if (r.get("library") or {}).get("in_library")
             )
-            # ★ 10.0.0：账单分站存 ``hrs``；这里统计「全部账单 / 未结清」
-            _all_bills = [b for r in store.items().values() for b in (r.get("hrs") or {}).values()]
-            if not _all_bills:
-                _all_bills = [(r.get("hr") or {}) for r in store.items().values() if (r.get("hr") or {})]
-            stat["hr_bills"] = len(_all_bills)
-            stat["hr_settled"] = sum(1 for b in _all_bills if (b or {}).get("settled"))
+            # ★ 19.0.0：``mf_resource.hrs`` 退役 → 账单统计改读 ``mf_bills``（真值源）
+            try:
+                _bst = self._hrbills_store().stats()
+                stat["hr_bills"] = int(_bst.get("total") or 0)
+                stat["hr_settled"] = int((_bst.get("by_state") or {}).get("settled") or 0)
+            except Exception:  # noqa: BLE001
+                pass
         except Exception:  # noqa: BLE001
             pass
         return stat

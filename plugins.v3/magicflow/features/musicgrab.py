@@ -738,7 +738,7 @@ class MusicGrabMixin:
     def _music_deleted_hashes(self) -> Set[str]:
         """★ 2026-10-10（Master「音乐线一样的」）：**音乐撤单成功**过的 hash。
 
-        真值源：``deletions.jsonl``，``source=="music"`` 且 ``ok`` 且未被闸门拦。
+        真值源：删除台账（mf_deletions，离线回退 deletions.jsonl），``source=="music"`` 且 ``ok`` 且未被闸门拦。
         用途：一颗被音乐线**撤单**拿掉的种，如果之后又出现在下载器里，说明它已被**别的线
         （辅种/补源/手动）接管**，不再是音乐线的 → 音乐窗口不认。
         """

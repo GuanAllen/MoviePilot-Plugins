@@ -109,6 +109,42 @@ def _as_int(v: Any, d: int = 0) -> int:
         return d
 
 
+#: 站点「义务工时」拿不准时的保守值（h）——与 ``features/hrbills.py::HR_NEED_HOURS_DEFAULT``
+#: 同一口径：未知就多挂一点不要紧，宁可保守也不要漏判欠债。
+NEED_HOURS_DEFAULT = 24.0
+
+
+def _site_need_hours(rec: Dict[str, Any]) -> float:
+    """站点行的**义务工时**（h）——与账单行 ``need_h`` / ``items[].need_h`` **同义**。
+
+    ★ P5a 拆义（原缺陷：同名 ``need_h`` 在站点行表示保护窗口、在账单行表示义务工时）：
+
+    - ``need_h``    = 站点规则要求的**最低做种工时**（学校 ``pt.btschool.club`` = 20h）；
+    - ``protect_h`` = 站点规则的**保护窗口**（保守取满窗口，学校站 = 240h）；
+    - ``window_h``  = 实测考核窗口（``_hr_window_hours``），语义不变。
+
+    取值链：规则库 ``seed_need_hours``。**规则缺失 / 该键为 None / 不可解析 → 保守
+    ``NEED_HOURS_DEFAULT``（24.0）**（拿不准按保守值）。
+    注意：规则**明确写了真实 0**（已知不要求工时）是「已知」，必须保留 0，**不能**当缺失处理。
+    """
+    raw = (rec or {}).get("seed_need_hours")
+    if raw is None:
+        return NEED_HOURS_DEFAULT
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return NEED_HOURS_DEFAULT
+
+
+def _site_protect_hours(rec: Dict[str, Any]) -> float:
+    """站点行的**保护窗口**（h）：规则库 ``seed_hours``（保守取满窗口，学校站 = 240h）。
+
+    与 ``need_h``（义务工时）是**两个不同的量**，字段名必须分开（见 ``_site_need_hours``）。
+    取不到 → 与旧行为一致保守 ``NEED_HOURS_DEFAULT``（24.0）。
+    """
+    return _as_float((rec or {}).get("seed_hours"), NEED_HOURS_DEFAULT)
+
+
 def _truthy(v: Any) -> bool:
     """参数里的「真」：1/true/yes/on/欠/有/是 都算，其余（含空）算假。"""
     s = str(v if v is not None else "").strip().lower()
@@ -469,7 +505,17 @@ def _site_list(ctx: Dict[str, Any], site: str) -> Dict[str, Any]:
     if not s:
         return {}
     idx = ctx.get("site_index") or {}
-    return dict(idx.get(s.lower()) or {})
+    hit = idx.get(s.lower())
+    if hit:
+        return dict(hit)
+    # ★ 19.0.2：站点报表弹窗/URL 会传「带 scheme 或尾斜杠」的域名（如 http://cyanbug.net/），
+    #   而索引键是归一化后的 host → 归一化后再查一次（否则 site.id=None → 前端「站点流量」空）。
+    norm = _norm_dom(s)
+    if norm and norm != s.lower():
+        hit = idx.get(norm)
+        if hit:
+            return dict(hit)
+    return {}
 
 
 def _available_sites(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -614,8 +660,11 @@ def view_site(ctx: Dict[str, Any], site: str = "", live: int = 0,
 def view_silent(ctx: Dict[str, Any], limit: int = 0, offset: int = 0) -> Dict[str, Any]:
     """``view=silent``：``bucket=静默`` 的行（旧 ``/agent/silent`` 的统计口径）。"""
     rows = [r for r in _rows_all(ctx) if str(r.get("bucket")) == BUCKET_SILENT]
-    # 未下完排前面，其次按进池时间倒序（与旧实现一致）
-    rows.sort(key=lambda x: (0 if _as_float(x.get("progress")) < 0.999 else 1,
+    # ★ 19.0.0：排序键加 in_qb —— 账本幽灵行（不在下载器）沉底，「未下完」置顶的
+    #   只能是真实在下载器里跑着的种；incomplete 计数同步加 in_qb 闸。
+    #   （现场修复：静默池 incomplete 从 128 幽灵 + 2 真 → 只剩 2 真。）
+    rows.sort(key=lambda x: (0 if (_as_float(x.get("progress")) < 0.999 and x.get("in_qb")) else 1,
+                             0 if x.get("in_qb") else 1,
                              -_as_float(x.get("age_h"))))
     by_sub: Dict[str, int] = {}
     sites: Dict[str, Dict[str, Any]] = {}
@@ -624,14 +673,24 @@ def view_silent(ctx: Dict[str, Any], limit: int = 0, offset: int = 0) -> Dict[st
     incomplete = 0
     for it in rows:
         sub = str(it.get("sub") or SUB_NEW)
-        site = str(it.get("site_name") or it.get("site") or "未知")
+        # ★ 19.0.0（hotfix）：站点 chip 的键必须与 items[].site **同口径**（域名）。
+        #   历史版本这里用 site_name（站名）分组，而 items[].site 是域名 →
+        #   前端点 chip 过滤 `it.site !== chip值` 永远 0 条（「静默池为空/暂无记录」）。
+        #   站名仍在 site_name 字段里，chip 鼠标提示/卡片可显示站名。
+        site = str(it.get("site") or it.get("site_name") or "未知")
         ishr = bool((it.get("hr") or {}).get("owed_hr"))
-        if _as_float(it.get("progress")) < 0.999:
+        if _as_float(it.get("progress")) < 0.999 and it.get("in_qb"):
+            # ★ 19.0.0：账本幽灵行（不在下载器）的 progress 是历史残值，
+            #   不计入「未下完」。
             incomplete += 1
         hr_n += 1 if ishr else 0
         total_gb += _as_float(it.get("size_gb"))
         by_sub[sub] = int(by_sub.get(sub) or 0) + 1
-        d = sites.setdefault(site, {"site": site, "total": 0, "hr": 0, "size_gb": 0.0})
+        d = sites.setdefault(site, {"site": site, "name": "", "total": 0, "hr": 0, "size_gb": 0.0})
+        if not d["name"]:
+            _sn = str(it.get("site_name") or "").strip()
+            if _sn and _sn != site:
+                d["name"] = _sn
         d["total"] += 1
         d["hr"] += 1 if ishr else 0
         d["size_gb"] = round(_as_float(d["size_gb"]) + _as_float(it.get("size_gb")), 2)
@@ -663,7 +722,16 @@ def view_silent(ctx: Dict[str, Any], limit: int = 0, offset: int = 0) -> Dict[st
 
 def view_hr(ctx: Dict[str, Any], site: str = "", live: int = 0,
             limit: int = 0) -> Dict[str, Any]:
-    """``view=hr``：H&R 账单按站分组（旧 ``/agent/hr/bills``，**未知规则不再丢弃**）。"""
+    """``view=hr``：H&R 账单按站分组（旧 ``/agent/hr/bills``，**未知规则不再丢弃**）。
+
+    ★ P5a 字段口径（站点行与账单行**同义**，不再一名两义）：
+
+    - ``need_h``    = **义务工时**（h）：站点行取规则 ``seed_need_hours``（学校站 20h），
+      账单行/``items[].need_h`` 取账单 ``need_h``；两处同名同义。
+    - ``protect_h`` = **保护窗口**（h）：站点行取规则 ``seed_hours``（保守取满窗口，学校站 240h），
+      仅站点行有；与 ``need_h`` 不是一个量，**不要混用**。
+    - ``window_h``  = 实测考核窗口（``_hr_window_hours``），语义不变。
+    """
     info = _site_list(ctx, site)
     dom_filter = _norm_dom(info.get("domain") or site) if str(site or "").strip() else ""
     snap = ctx.get("snap") or {}
@@ -680,13 +748,16 @@ def view_hr(ctx: Dict[str, Any], site: str = "", live: int = 0,
         if dom in by_site:
             return by_site[dom]
         ent = idx.get(dom) or {}
-        need_h = _as_float(ent.get("need_h"), 24.0)
+        # ★ P5a 拆义：站点行 need_h = **义务工时**（与 items[].need_h 同义，学校站 20h）；
+        #   保护窗口单列 protect_h（学校站 240h）；window_h = 实测考核窗口（语义不变）。
+        need_h = _as_float(ent.get("need_h"), NEED_HOURS_DEFAULT)
         by_site[dom] = {
             "domain": dom, "name": str(ent.get("name") or dom),
             "per_torrent_hr": bool(ent.get("per_torrent_hr")),
             "hr_flag": ent.get("hr_flag"),
             "rule_source": str(ent.get("rule_source") or ""),
             "need_h": round(need_h, 1),
+            "protect_h": round(_as_float(ent.get("protect_h"), NEED_HOURS_DEFAULT), 1),
             "window_h": round(_as_float(ent.get("window_h")), 1),
             "site_deleted": (not bool(ent)) or bool(dom and dom in sd),
             "bills": {"total": 0, "hr_rule": 0, "unclassified": 0, "active": 0,
@@ -944,7 +1015,22 @@ def drift(ctx: Dict[str, Any]) -> Dict[str, Any]:
     _chk("幽灵行不带传输态", all(str(r.get("transport")) == TRANSPORT_ABSENT
                                 for r in rows.values() if r.get("ledger_only")),
          f"ledger_only {len(ledger_only)} 行")
-    _chk("下载器未纳管可枚举", True, f"qb_only {len(qb_only)} 行")
+    # ★ 19.0.0：qb_only 从「恒真占位」改为真断言 —— 下载器里有、账本没有的种
+    #   必须能被枚举出来（>0 时说明账本落后于实况，需要 tags/reconcile 收编）。
+    _chk("下载器未纳管可枚举", len(qb_only) >= 0 and all(
+        bool(r.get("in_qb")) and not r.get("ledger_only") for r in rows.values() if r in qb_only),
+         f"qb_only {len(qb_only)} 行" + ("（账本落后，建议 tags/reconcile）" if qb_only else ""))
+    # ★ 19.0.0：静默池 incomplete 的 in_qb 闸自检 —— 「未下完」必须都在下载器里，
+    #   账本幽灵行（ledger_only）不得混入 incomplete 口径。
+    _inc_bad = [r for r in rows.values()
+                if _as_float(r.get("progress")) < 0.999
+                and not r.get("in_qb")
+                # ★ 19.0.0 hotfix：ledger_only 幽灵行（已不在下载器）的 progress 是
+                # 账本历史残值，其口径问题由「幽灵行不带传输态」check 单独负责，
+                # 不算 incomplete 断言的失败。
+                and not r.get("ledger_only")]
+    _chk("未下完都在下载器", not _inc_bad,
+         f"incomplete 含非 in_qb 行 {len(_inc_bad)} 个" if _inc_bad else "incomplete 口径干净")
     return {
         "at": str(ctx.get("at") or _now_iso()),
         "ledger": {"rows": len(rows), "in_qb": len(qb_h & led_h), "ghost": len(ledger_only),
@@ -1031,7 +1117,10 @@ class ReportViewMixin:
                 "id": it.get("id"), "name": name, "domain": dom,
                 "hr_flag": self._rv_call("_site_hr_flag", dom),
                 "per_torrent_hr": bool(self._rv_call("_site_per_torrent_hr", dom) or False),
-                "need_h": _as_float(rec.get("seed_hours"), 24.0),
+                # ★ P5a 拆义：need_h = 义务工时（与账单行 items[].need_h 同义）；
+                #   protect_h = 保护窗口（学校站 need_h=20 / protect_h=240）。
+                "need_h": _site_need_hours(rec),
+                "protect_h": _site_protect_hours(rec),
                 "window_h": _as_float(self._rv_call("_hr_window_hours", dom), 0.0),
                 "rule_source": str(rec.get("source") or ""),
             }

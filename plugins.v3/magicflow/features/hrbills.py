@@ -45,6 +45,10 @@ HR_BILLS_ENFORCE = True
 # 连续多少天进度无增长 → 作废（死账）
 HR_BILLS_STALL_DAYS = 7.0
 
+# ★ 19.0.0：settled 行保留天数（挂够结清后仍暂存作幂等锚，防回填反复开/结；
+# 到期即销）。种消失则不等 TTL、当轮直接销（销账反写：默认删，只有「还欠着」是例外）。
+HR_BILLS_SETTLED_TTL_DAYS = 30.0
+
 # ★ 11.7.0 逐种 H&R 标记（YemaPT ``hrPunishEnable`` 这类「无站点级规则、逐种开关」）。
 #   一键回退：改 ``False`` → 忽略候选的逐种标记，退回「只认站点规则」的旧行为
 #   （不影响 ``HR_BILLS_ENFORCE`` 这层总开关）。
@@ -302,30 +306,210 @@ class HrBillsStore:
             return dict(self.bills)
 
     def stats(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"total": 0, "by_state": {}, "by_rule": {}, "by_site": {},
-                              "no_site": 0, "opened_by": {}}
         with self._lock:
-            for b in self.bills.values():
-                out["total"] = int(out["total"]) + 1
-                st = str(b.get("state") or "")
-                out["by_state"][st] = int(out["by_state"].get(st) or 0) + 1
-                ru = str(b.get("rule") or "")
-                out["by_rule"][ru] = int(out["by_rule"].get(ru) or 0) + 1
-                si = str(b.get("site") or "")
-                out["by_site"][si] = int(out["by_site"].get(si) or 0) + 1
-                if not si:
-                    out["no_site"] = int(out["no_site"]) + 1
-                ob = str(b.get("opened_by") or "")
-                out["opened_by"][ob] = int(out["opened_by"].get(ob) or 0) + 1
+            return _bills_stats(dict(self.bills))
+
+
+
+def _bills_stats(bills: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """账单分桶统计（JSON / PG 两种后端共用同一口径）。"""
+    out: Dict[str, Any] = {"total": 0, "by_state": {}, "by_rule": {}, "by_site": {},
+                           "no_site": 0, "opened_by": {}}
+    for b in bills.values():
+        if not isinstance(b, dict):
+            continue
+        out["total"] = int(out["total"]) + 1
+        st = str(b.get("state") or "")
+        out["by_state"][st] = int(out["by_state"].get(st) or 0) + 1
+        ru = str(b.get("rule") or "")
+        out["by_rule"][ru] = int(out["by_rule"].get(ru) or 0) + 1
+        si = str(b.get("site") or "")
+        out["by_site"][si] = int(out["by_site"].get(si) or 0) + 1
+        if not si:
+            out["no_site"] = int(out["no_site"]) + 1
+        ob = str(b.get("opened_by") or "")
+        out["opened_by"][ob] = int(out["opened_by"].get(ob) or 0) + 1
+    return out
+
+
+def _mfdb_module() -> Any:
+    """懒取插件 db 模块（离线无 sqlalchemy → None，调用方走 JSON 降级）。"""
+    try:
+        from .. import db as mfdb  # noqa: WPS433
+        return mfdb
+    except Exception:  # noqa: BLE001
+        return None
+
+
+class PgHrBillsStore(HrBillsStore):
+    """mf_bills 表后端（★ 19.0.0 存储收口：hr_bills.json + Redis hrbills:* → PG）。
+
+    - 真值源 = PG 表 ``mf_bills``，直写直读（每操作一事务）；无热层、无 JSON 冷备、
+      无节流 —— ``save``/``flush``/``load`` 全部兼容空实现，调用面签名不变。
+    - ``put`` 时 ``fp`` 为空 → **反查 ``mf_seed[hash].resource_id`` 强制填**（修 18.x
+      回填硬写空串、账单只能靠 hash 挂的根因；见 db.BillRow 文档）。
+    - 离线（无 app.* / 无 sqlalchemy）：工厂不会选本类；即便误入，读返回空、写返回
+      入参，不会碰文件。
+    """
+
+    # BillRow 业务列（hash/created/updated 由 store 自己管）
+    _FIELDS = ("site", "rule", "state", "fp", "need_h", "seeded_h", "progress",
+               "last_progress", "last_progress_at", "title", "opened_at", "opened_by",
+               "settled_at", "breached_at", "voided_at", "void_reason",
+               "alive", "last_seen", "seen_by")
+
+    def __init__(self, data_dir: Path, kv: Any = None):
+        # 不调父类 __init__（其会 load() JSON——PG 模式下那不是真值源）
+        self.data_dir = Path(data_dir)
+        self.file = self.data_dir / "hr_bills.json"
+        self.bills: Dict[str, Dict[str, Any]] = {}
+        self._lock = threading.RLock()
+        self._last_file_write = 0.0
+        self._pending = False
+        self._dirty: Set[str] = set()
+        self.kv = kv
+
+    # ------------------------------------------------------ 兼容面（no-op）
+    def load(self) -> None:
+        return None
+
+    def save(self, force: bool = False) -> None:
+        return None
+
+    def flush(self) -> None:
+        return None
+
+    # ------------------------------------------------------ 内部
+    def _run(self, fn: Any, default: Any = None) -> Any:
+        """在 PG 会话里跑 ``fn(sess, mfdb)``；离线/异常 → ``default``。"""
+        mf = _mfdb_module()
+        if mf is None or not mf.db_available():
+            return default
+        try:
+            with mf.db_session() as sess:
+                out = fn(sess, mf)
+                sess.commit()
+                return out
+        except Exception:  # noqa: BLE001
+            return default
+
+    @classmethod
+    def _to_dict(cls, row: Any) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        for c in cls._FIELDS:
+            out[c] = getattr(row, c, None)
         return out
+
+    # ------------------------------------------------------ 对外（同 HrBillsStore API）
+    def get(self, hash_string: str) -> Optional[Dict[str, Any]]:
+        h = str(hash_string or "").strip().lower()
+        if not h:
+            return None
+
+        def _q(sess: Any, mf: Any) -> Optional[Dict[str, Any]]:
+            row = sess.get(mf.BillRow, h)
+            return self._to_dict(row) if row is not None else None
+
+        return self._run(_q)
+
+    def put(self, hash_string: str, bill: Dict[str, Any],
+            save: bool = True) -> Optional[Dict[str, Any]]:
+        h = str(hash_string or "").strip().lower()
+        if not h:
+            return None
+        bill = bill if isinstance(bill, dict) else {}
+
+        def _op(sess: Any, mf: Any) -> Optional[Dict[str, Any]]:
+            row = sess.get(mf.BillRow, h)
+            if row is not None:  # 幂等：同 hash 已存在 → 返回已有账单
+                return self._to_dict(row)
+            now = time.time()
+            kw = {c: bill.get(c) for c in self._FIELDS if c in bill}
+            # ★ fp 强制填：调用方没给（回填路径）→ 反查 mf_seed
+            if not str(kw.get("fp") or "").strip():
+                seed = sess.get(mf.SeedRow, h)
+                rid = str(getattr(seed, "resource_id", "") or "").strip() if seed else ""
+                if rid:
+                    kw["fp"] = rid
+            row = mf.BillRow(hash=h, created=now, updated=now, **kw)
+            sess.add(row)
+            sess.flush()
+            return self._to_dict(row)
+
+        return self._run(_op)
+
+    def patch(self, hash_string: str, save: bool = True,
+              **fields: Any) -> Optional[Dict[str, Any]]:
+        h = str(hash_string or "").strip().lower()
+        if not h:
+            return None
+
+        def _op(sess: Any, mf: Any) -> Optional[Dict[str, Any]]:
+            row = sess.get(mf.BillRow, h)
+            if row is not None:
+                for k, v in fields.items():
+                    if k in self._FIELDS:
+                        setattr(row, k, v)
+                row.updated = time.time()
+                sess.flush()
+            return self._to_dict(row) if row is not None else None
+
+        return self._run(_op)
+
+    def drop(self, hash_string: str) -> bool:
+        h = str(hash_string or "").strip().lower()
+        if not h:
+            return False
+
+        def _op(sess: Any, mf: Any) -> bool:
+            row = sess.get(mf.BillRow, h)
+            if row is None:
+                return False
+            sess.delete(row)
+            return True
+
+        return bool(self._run(_op, default=False))
+
+    def drop_void(self) -> int:
+        def _op(sess: Any, mf: Any) -> int:
+            return int(sess.query(mf.BillRow)
+                       .filter(mf.BillRow.state == BILL_STATE_VOID)
+                       .delete(synchronize_session=False))
+
+        return int(self._run(_op, default=0) or 0)
+
+    def drop_many(self, hashes: Any) -> int:
+        hs = sorted({str(x or "").strip().lower() for x in (hashes or [])
+                     if str(x or "").strip()})
+        if not hs:
+            return 0
+
+        def _op(sess: Any, mf: Any) -> int:
+            return int(sess.query(mf.BillRow)
+                       .filter(mf.BillRow.hash.in_(hs))
+                       .delete(synchronize_session=False))
+
+        return int(self._run(_op, default=0) or 0)
+
+    def all(self) -> Dict[str, Dict[str, Any]]:
+        def _op(sess: Any, mf: Any) -> Dict[str, Dict[str, Any]]:
+            rows = sess.query(mf.BillRow).all()
+            return {str(r.hash): self._to_dict(r) for r in rows}
+
+        return self._run(_op, default={}) or {}
+
+    def stats(self) -> Dict[str, Any]:
+        return _bills_stats(self.all())
 
 
 def get_hr_bills_store(data_dir: Path, kv: Any = None) -> HrBillsStore:
     """取/建**进程级** H&R 账单存储（按 data_dir 单例，跨热重载存活）。
 
     ★ 照 ``persistence.get_gate_store`` 一模一样：用同一套 ``_shared()`` 注册表
-    单独持有实例，热重载后仍指向同一对象；**不挂 ``MagicFlowStore``**（其是进程级
+    单例持有实例，热重载后仍指向同一对象；**不挂 ``MagicFlowStore``**（其是进程级
     单例，热重载不重建 → 新字段/新方法拿不到）。
+    ★ 19.0.0：db 句柄已绑定（生产）→ ``PgHrBillsStore``（mf_bills 表）；离线
+    （单测/工具，无 app.*）→ 原 JSON 版。两代类不同 → isinstance 校验自动重建。
     """
     key = f"hrbills:{Path(data_dir)}"
     sh = _shared()
@@ -333,7 +517,7 @@ def get_hr_bills_store(data_dir: Path, kv: Any = None) -> HrBillsStore:
         store = sh.singletons.get(key)
         # ★ 热重载后：模块里是**新类**，而单例还可能是**旧类的实例** → 方法过时/缺失
         #   （实测踩过：`stats()` 新增字段在 reload 后仍不出现）。校验类型，不匹配就重建
-        #   （数据从 JSON 冷备恢复；照 `tags.py::_tag_state` 的同款做法）。
+        #   （PG 模式数据本来就在库里；JSON 模式从冷备恢复）。
         if store is not None and not isinstance(store, HrBillsStore):
             try:
                 store.flush()
@@ -341,7 +525,11 @@ def get_hr_bills_store(data_dir: Path, kv: Any = None) -> HrBillsStore:
                 pass
             store = None
         if store is None:
-            store = HrBillsStore(data_dir, kv=kv)
+            mf = _mfdb_module()
+            if mf is not None and mf.db_available():
+                store = PgHrBillsStore(data_dir, kv=kv)
+            else:
+                store = HrBillsStore(data_dir, kv=kv)
             sh.singletons[key] = store
         elif kv is not None:
             try:
@@ -665,6 +853,18 @@ class HrBillsMixin:
         except Exception:  # noqa: BLE001
             pass
         return ""
+    def _hrbills_seed_fp(self, h: str) -> str:
+        """反查 ``mf_seed[hash].resource_id``（= fp）。离线 / 无行 / 异常 → ""。"""
+        mf = _mfdb_module()
+        if mf is None or not mf.db_available():
+            return ""
+        try:
+            with mf.db_session() as sess:
+                row = sess.get(mf.SeedRow, h)
+                rid = str(getattr(row, "resource_id", "") or "").strip() if row else ""
+                return rid if (len(rid) == 40 and re.fullmatch(r"[0-9a-f]{40}", rid)) else ""
+        except Exception:  # noqa: BLE001
+            return ""
     def _hrbills_backfill(self, store: HrBillsStore, snap: Dict[str, Any],
                           limit: int = 200) -> Dict[str, Any]:
         """给「本插件托管种」补开账单（**不是**下载器全量）。
@@ -764,13 +964,19 @@ class HrBillsMixin:
                 seeded_h = seed_hours_for_hr(t)
             except Exception:  # noqa: BLE001
                 seeded_h = 0.0
+            # ★ 19.0.0：fp 强制填——先取账本 group_id（即 resource_id/fp），
+            #   没有再反查 mf_seed[hash].resource_id；再不行才允许空（PG 侧 put 还会兜一次）。
+            #   （修 18.x 回填硬写 "fp": "" —— 账单只能靠 hash 挂、种一删就成孤儿的根因。）
+            fp = str(rec.get("group_id") or "").strip().lower()
+            if not (len(fp) == 40 and re.fullmatch(r"[0-9a-f]{40}", fp)):
+                fp = self._hrbills_seed_fp(h)
             bill = {
                 "site": dom,
                 "rule": rule,
                 "state": state,
                 "need_h": float(need_h),
                 "seeded_h": seeded_h,
-                "fp": "",
+                "fp": fp,
                 "title": str(getattr(t, "title", "") or "")[:200],
                 "opened_at": now,
                 "last_progress": progress,
@@ -787,10 +993,14 @@ class HrBillsMixin:
         """作废/结清规则（只改账单状态，**不影响删除/保护**）+ 存量回填：
 
         回填：给账本托管种补开账单（幂等，每轮限量 ≤200）。
-        ① ``progress >= 完成度阈值`` → active；
-        ② 连续 ``HR_BILLS_STALL_DAYS`` 天进度无增长 → void；
-        ③ 种子在下载器消失且从未完成 → 立即 void；
-        ④ ``seeded_h >= need_h`` → settled。
+        ★ 19.0.0 **销账反写**：默认删，只有「还欠着」是例外——
+        ① ``progress >= 完成度阈值`` → active（仅明确规则）；
+        ② 连续 ``HR_BILLS_STALL_DAYS`` 天进度无增长 → 删（原 void）；
+        ③ 种子消失 → 删；例外：active（明确规则）→ breached 违约在案、breached 保留；
+        ④ ``seeded_h >= need_h`` → settled（记 ``settled_at``，挂
+           ``HR_BILLS_SETTLED_TTL_DAYS`` 天后销；种消失不等 TTL 当轮销）；
+        ⑤ 快照为空 + 账单非空 → 跳过本轮（防下载器 API 抖动误销）。
+        生命周期：在下载器 → ``alive=True`` + ``last_seen/seen_by``；消失 → ``alive=False``。
         """
         store = self._hrbills_store()
         try:
@@ -814,32 +1024,46 @@ class HrBillsMixin:
             store.flush()
             return {"bills": 0, "activated": 0, "voided": 0, "settled": 0,
                     "breached": 0, "demoted": 0, "backfilled": backfilled, "no_site": no_site}
+        # ★ 19.0.0 安全闸：快照为空（多半是下载器 API 抖动）+ 账单非空 → 跳过本轮，
+        #   防止「一次抖动把全部账单当消失销掉」（销账已是默认删，宁可漏一轮）。
+        if bills and not snap:
+            store.flush()
+            return {"bills": len(bills), "activated": 0, "voided": 0, "settled": 0,
+                    "breached": 0, "demoted": 0, "skipped_empty_snap": 1,
+                    "backfilled": backfilled, "no_site": no_site}
         now = time.time()
-        activated = voided = settled = breached = demoted = titles_filled = 0
+        activated = voided = settled = breached = demoted = titles_filled = dropped = 0
+        _drop: List[str] = []
         for h, b in list(bills.items()):
             if not isinstance(b, dict):
                 continue
             t = (snap or {}).get(h)
+            cur_state = str(b.get("state") or "")
+            _known_rule = str(b.get("rule") or "") in (RULE_SITE_HR, RULE_HIT_AND_RUN)
             if t is None:
-                # ③ 消失：拆两路（Master 2026-10-06 08:24）
-                completed = (float(b.get("progress") or 0) >= self._hr_complete_ratio(str(b.get("site") or ""))
-                             or float(b.get("last_progress") or 0) >= self._hr_complete_ratio(str(b.get("site") or "")))
-                cur_state = str(b.get("state") or "")
-                if not completed and cur_state not in (BILL_STATE_VOID, BILL_STATE_BREACHED):
-                    # 从未完成（无 H&R 义务）→ 立即作废（无害）
-                    store.patch(h, save=False, state=BILL_STATE_VOID,
-                                void_reason="disappeared_uncompleted", voided_at=now)
-                    voided += 1
-                elif cur_state == BILL_STATE_ACTIVE:
-                    # 有 active 账单（欠 H&R）→ 违约：转 breached（不 void，保护不解除）
-                    store.patch(h, save=False, state=BILL_STATE_BREACHED, breached_at=now)
+                # ★ 19.0.0 销账反写：种已消失 → **默认删账**；只有「明确规则且还在欠」
+                #   是例外（active→breached 违约在案；已 breached 保留，保护不解除）。
+                #   治 259 条孤儿：settled+消失 / pending+完成+消失 此前永远落不进
+                #   任何分支（:823 老逻辑只有 3 个特例出口）。
+                if cur_state == BILL_STATE_ACTIVE and _known_rule:
+                    store.patch(h, save=False, state=BILL_STATE_BREACHED,
+                                breached_at=now, alive=False, last_seen=now, seen_by="tick_gone")
                     breached += 1
-                elif cur_state == BILL_STATE_SETTLED and str(b.get("rule") or "") not in (RULE_SITE_HR, RULE_HIT_AND_RUN):
-                    # ★ 2026-10-11：unknown 却记「结清」且种子已消失 → 作废（无义务可结，关掉投机账单）
-                    store.patch(h, save=False, state=BILL_STATE_VOID,
-                                void_reason="unknown_settled_disappeared", voided_at=now)
-                    voided += 1
+                    continue
+                if cur_state == BILL_STATE_BREACHED and _known_rule:
+                    store.patch(h, save=False, alive=False, last_seen=now, seen_by="tick_gone")
+                    continue  # 违约在案：保留
+                _drop.append(h)  # pending/settled/void/unknown 规则 → 默认销
+                dropped += 1
                 continue
+            # ★ 19.0.0 生命周期：还在下载器 → 刷新存活三列（统一对账口径）。
+            #   settled 行挂够即销（TTL）→ 账单表只剩「还欠着」的。
+            if cur_state == BILL_STATE_SETTLED:
+                _sa = float(b.get("settled_at") or 0) or now
+                if now - _sa >= HR_BILLS_SETTLED_TTL_DAYS * 86400.0:
+                    _drop.append(h)
+                    dropped += 1
+                    continue
             try:
                 progress = float(getattr(t, "progress", 0) or 0)
             except (TypeError, ValueError):
@@ -848,11 +1072,10 @@ class HrBillsMixin:
                 seeded_h = seed_hours_for_hr(t)
             except Exception:  # noqa: BLE001
                 seeded_h = float(b.get("seeded_h") or 0)
-            cur_state = str(b.get("state") or "")
             # ★ 2026-10-10：规则闸——只有明确 H&R 规则（site_hr / hit_and_run）才算「欠」。
             #   unknown / 空规则一律不算（对齐 ``_hr_obligation``），并自愈存量错误 active。
-            _known_rule = str(b.get("rule") or "") in (RULE_SITE_HR, RULE_HIT_AND_RUN)
-            fields: Dict[str, Any] = {"progress": progress, "seeded_h": seeded_h}
+            fields: Dict[str, Any] = {"progress": progress, "seeded_h": seeded_h,
+                                      "alive": True, "last_seen": now, "seen_by": "tick"}
             # ★ 15.8.1：补空标题（开账时快照可能还没这个种，如刚加的音乐种；只在能取到时补）。
             if not str(b.get("title") or "").strip():
                 _tt = str(getattr(t, "title", "") or "").strip()
@@ -894,6 +1117,7 @@ class HrBillsMixin:
                 due_h = need_h + self._hr_margin_hours()
                 if _known_rule and cur_state not in (BILL_STATE_SETTLED, BILL_STATE_VOID) and seeded_h >= due_h:
                     fields["state"] = BILL_STATE_SETTLED
+                    fields["settled_at"] = now
                     settled += 1
                 fields["last_progress"] = progress
                 fields["last_progress_at"] = now
@@ -904,13 +1128,18 @@ class HrBillsMixin:
                     fields["last_progress"] = progress
                     fields["last_progress_at"] = now
                 elif now - last_at >= HR_BILLS_STALL_DAYS * 86400.0:
-                    # ② 连续 N 天无进度 → 作废
+                    # ② 连续 N 天无进度 → 作废（★ 19.0.0：作废即删，不留 void 行）
                     if cur_state != BILL_STATE_VOID:
-                        fields["state"] = BILL_STATE_VOID
-                        fields["void_reason"] = "no_progress_7d"
-                        fields["voided_at"] = now
                         voided += 1
+                    _drop.append(h)
+                    dropped += 1
+                    continue
             store.patch(h, save=False, **fields)
+        if _drop:
+            try:
+                store.drop_many(_drop)
+            except Exception:  # noqa: BLE001
+                pass
         store.flush()
         # ★ 2026-10-11：清理误开账单（unknown 规则 + 复用份 downloaded≈0）→ 批量删。
         _wrong: List[str] = []
@@ -940,7 +1169,7 @@ class HrBillsMixin:
             pass
         return {"bills": len(bills), "activated": activated, "voided": voided,
                 "settled": settled, "breached": breached, "demoted": demoted,
-                "titles_filled": titles_filled,
+                "dropped": dropped, "titles_filled": titles_filled,
                 "backfilled": backfilled, "no_site": no_site}
 
     # ---------------------------------------------------------- 干跑（只读，不落库）
@@ -1121,7 +1350,7 @@ class HrBillsMixin:
     def _hr_breaches(self) -> Dict[str, Any]:
         """★ H&R 违约清单（只读）：active/breached 账单 + 种已从下载器消失。
 
-        归因：deletions.jsonl（唯一删除台账）命中 `ok=true` → 本插件删（gate bug 升级 critical）；
+        归因：删除台账（mf_deletions）命中 `ok=true` → 本插件删（gate bug 升级 critical）；
         否则 → 外部删。只读，不写任何账本/账单。
         """
         store = self._hrbills_store()
@@ -1132,21 +1361,15 @@ class HrBillsMixin:
         deleted_ok: Set[str] = set()
         deleted_rows: Dict[str, Dict[str, Any]] = {}
         try:
-            _path = self._deletions_log_path()
-            if _path is not None and _path.exists():
-                for _line in _path.read_text(encoding="utf-8").splitlines():
-                    _line = _line.strip()
-                    if not _line:
-                        continue
-                    try:
-                        _row = json.loads(_line)
-                    except Exception:  # noqa: BLE001
-                        continue
-                    if _row.get("ok") and not _row.get("blocked"):
-                        _dh = str(_row.get("hash") or "").strip().lower()
-                        if _dh:
-                            deleted_ok.add(_dh)
-                            deleted_rows[_dh] = _row
+            # ★ 19.0.0：走统一读口（真值源 mf_deletions 表，离线回退 JSONL），
+            #   不再直读 deletions.jsonl（避免第二真值源）。
+            _rows = self._agent_deletions_rows() if hasattr(self, "_agent_deletions_rows") else []
+            for _row in (_rows or []):
+                if _row.get("ok") and not _row.get("blocked"):
+                    _dh = str(_row.get("hash") or "").strip().lower()
+                    if _dh:
+                        deleted_ok.add(_dh)
+                        deleted_rows[_dh] = _row
         except Exception:  # noqa: BLE001
             pass
         breaches: List[Dict[str, Any]] = []
@@ -1225,7 +1448,7 @@ class HrBillsMixin:
                 "rule": "at_risk = 种还在 qB、未达标、距站点考核窗口到期 ≤ warn 小时数（预警≠违约）",
                 "gate_bug_kind": "gate_miss=删除时账单已在册（闸门当班漏判）；rule_drift=删除早于开账/口径差",
             },
-            "source_of_truth": ["hr_bills.json", "deletions.jsonl", "_tag_all_torrents()"],
+            "source_of_truth": ["mf_bills", "mf_deletions", "_tag_all_torrents()"],
             "write": {
                 "reseed": "GET /tags?action=hr_reconcile&site=<dom>&confirm=1",
                 "rescue": "POST /plugin/MagicFlow/rescue?confirm=1",
