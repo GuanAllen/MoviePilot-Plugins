@@ -566,7 +566,9 @@ class DownloaderAdapter:
         self.tags_enabled = True  # ★ 标签写开关（show_qb_tags=False 时由上层关掉）
         # ★ 删除唯一入口（Master 2026-10-05「删除令出一门」）：由插件挂上
         #   gate=硬保护判定回调 / deletion_log=统一台账回调。见 features/deletegate.py。
+        #   ★ 17.4.0 起另有一条具名豁免通道 gate_strip（只摘种、不删文件；见下方 delete_torrents）。
         self.gate = None
+        self.gate_strip = None
         self.deletion_log = None
         self._init_downloader()
         # ★ 裸构造也自动挂闸门：注册在案的安装器（见 set_gate_installer）在构造末尾执行 →
@@ -1719,6 +1721,7 @@ class DownloaderAdapter:
         reason: str = "",
         source: str = "",
         allow_library_asset: bool = False,
+        allow_strip_asset: bool = False,
     ) -> Tuple[int, Optional[str]]:
         """
         删除种子。
@@ -1734,6 +1737,12 @@ class DownloaderAdapter:
             source: 调用来源（模块.函数；留空则由台账自动从调用栈推断）
             allow_library_asset: ★ 15.8.15 仅「手动删除库内资产」入口传 True ——
                 改走 ``gate_manual``（只跳过第 5 类「库内资产」硬拦，其余 4 类与豁免不变）。
+                默认 False = 严格闸门，既有调用方行为零变化。
+            allow_strip_asset: ★ 17.4.0 仅「已删除站点」处置入口的**只摘种**档传 True ——
+                改走 ``gate_strip``（``_delete_gate_strip``：同样只跳过第 5 类「库内资产」，
+                其余 4 类硬拦与两条豁免逐字不变）。与 ``allow_library_asset`` **互不代偿**：
+                那条配 ``delete_file=True``（真删媒体库文件），本条配 ``delete_file=False``
+                （只摘种、文件留在库里），第 5 类的保护目的不适用。
                 默认 False = 严格闸门，既有调用方行为零变化。
 
         Returns:
@@ -1762,6 +1771,16 @@ class DownloaderAdapter:
             if _gate is None:
                 logger.error(
                     "[删除闸门] 请求手动删除库内资产但未安装 gate_manual → 回退严格闸门（fail-closed）"
+                )
+                _gate = getattr(self, "gate", None) or getattr(type(self), "_global_gate", None)
+        elif allow_strip_asset:
+            #   ★ 17.4.0：「只摘种、不删文件」具名通道（``_delete_gate_strip``）——
+            #      与上面那条**互不代偿**：本条配 ``delete_file=False``，跳第 5 类的理由是
+            #      「保护目的是防丢文件，而本操作不丢文件」，不是「获准删库内资产」。
+            _gate = getattr(self, "gate_strip", None) or getattr(type(self), "_global_gate_strip", None)
+            if _gate is None:
+                logger.error(
+                    "[删除闸门] 请求只摘种但未安装 gate_strip → 回退严格闸门（fail-closed）"
                 )
                 _gate = getattr(self, "gate", None) or getattr(type(self), "_global_gate", None)
         else:

@@ -262,12 +262,12 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
         {"path": "/agent/sites/deleted/act", "method": "POST", "handler": "agent_sites_deleted_act",
          "write": True,
          "params": {"site_id": "台账 site_id（或 mp_site_id）",
-                    "action": "pause|resume|remove（remove=复用副本只摘种 / 自有非资源连文件删 / 资源本体保留）",
+                    "action": "pause|resume|remove（remove 三档：①复用副本只摘种 ②本体/库内资产只摘种（文件留媒体库）③自有非本体连文件删；摘种走具名 gate_strip 通道，不等同于删库内资产）",
                     "reuse_only": "1=只处理带 魔流-辅种 的复用副本",
                     "dry_run": "1=干跑（默认）；0=真做",
-                    "force_asset": "★1=走「手动删库内资产」闸门（跳过「库内资产（已入库，永不删）」；其余四类硬保护照拦）；默认 0。仅站点已删后的彻底清理用，破坏性"},
+                    "force_asset": "★1=**仅对「连文件删」那一档**改走「手动删库内资产」闸门（跳过第 5 类「库内资产（已入库，永不删）」；其余四类硬保护照拦）；对「只摘种」两档无效（那两档恒走 gate_strip）。默认 0，破坏性"},
          "returns": "SiteDeletedAct", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "已删站点的种怎么处置：pause/resume/remove（辅种副本只摘种、原种文件保留）"},
+         "summary": "已删站点的种怎么处置：pause/resume/remove（复用副本与本体只摘种、自有非本体才连文件删）"},
         # ---- 11.11.0 H&R 账单按站 + 违约告警（只读）----
         {"path": "/agent/hr/bills", "method": "GET", "handler": "agent_hr_bills", "write": False,
          "params": {"site": "域名（留空=全站，约 85KB 会被 30k 截断 —— 建议先按站查）",
@@ -1115,6 +1115,10 @@ class AgentApiMixin:
         判据 = 魔流台账（``mf_site``）里还在、MP 站点表里已无（``SiteGuard.mp_sites``，60s 记忆化）；
         牵连面只数不写：qB 标签种数/体积/暂停数/复用副本数、``mf_seed``/``mf_reseed`` 行数、站内任务。
         处置入口见 ``POST /agent/sites/deleted/act``。
+
+        ★ 17.4.0 起本清单**已接自动化**：站点监控每轮经 ``notify_sweep`` → ``notify_check_site_deleted``
+        发「站点已删除」告警（每站一条、按 ``sitedel:<site_id>`` 去重），健康自检出 ``H8:<site_id>``。
+        **两处都只报不做**——摘种/删种一律要显式下令（act 端点，默认干跑）。
         """
         t0 = time.time()
         try:
@@ -1156,7 +1160,9 @@ class AgentApiMixin:
             rep, t0,
             ("写操作 → DownloaderAdapter.pause_torrents/resume_torrents/delete_torrents"
              "(delete_file=False)；remove 过唯一删除闸门（deletegate），硬保护一律拦；"
-             "force_asset=1 改走手动删库内资产闸门 gate_manual"))
+             "remove 三档：复用副本 + 本体/库内资产【只摘种、不删文件】走具名通道 gate_strip"
+             "（只跳第 5 类，且**永不带** allow_library_asset），自有非本体【连文件删】走严格 gate"
+             "（force_asset=1 时才改走 gate_manual 跳过第 5 类）"))
 
     def agent_sites_types(self) -> Dict[str, Any]:
         """``GET /agent/sites/types`` —— ★ **站点「分类类型」映射**（只读）。

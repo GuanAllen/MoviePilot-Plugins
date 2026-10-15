@@ -887,12 +887,18 @@ def drift(ctx: Dict[str, Any]) -> Dict[str, Any]:
     for h, r in rows.items():
         key = _norm_dom(r.get("site")) or "(无站点)"
         d = by_site.setdefault(key, {"rows": 0, "size_gb": 0.0, "ledger_only": 0,
-                                     "qb_only": 0, "protected": 0})
+                                     "qb_only": 0, "protected": 0, "protected_hard": 0,
+                                     "protected_soft": 0, "protected_any": 0})
         d["rows"] += 1
         d["size_gb"] = round(_as_float(d["size_gb"]) + _as_float(r.get("size_gb")), 2)
         d["ledger_only"] += 1 if r.get("ledger_only") else 0
         d["qb_only"] += 1 if r.get("qb_only") else 0
-        d["protected"] += 1 if r.get("protected") else 0
+        # ★ 与 summary 同一口径：protected = 旧站点报表口径（legacy），另三档才是新分档
+        d["protected"] += 1 if r.get("protected_legacy") else 0
+        d["protected_any"] += 1 if r.get("protected") else 0
+        _pc = str(r.get("protect_class") or "")
+        d["protected_hard"] += 1 if _pc == "hard" else 0
+        d["protected_soft"] += 1 if _pc == "soft" else 0
         if key not in idx and key != "(无站点)":
             m = missing_sites.setdefault(key, {**d, "site": key, "site_deleted": True})
             m.update(d)

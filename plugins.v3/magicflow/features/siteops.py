@@ -33,7 +33,7 @@ from ..common import (
     SITE_FORMULA_STALE_MAX,
     site_guard,
 )
-from ..tags import MARK_REUSE, SUB_RESOURCE
+from ..tags import MARK_REUSE, SUB_RESOURCE, is_asset_tags, is_library_asset
 from ..sitestore import get_site_store
 
 
@@ -886,11 +886,16 @@ def _truthy(v: Any) -> bool:
     return str(v if v is not None else "").strip().lower() in ("1", "true", "yes", "on", "y")
 
 
-def _gate_preview(host: Any, hashes: Any, allow_asset: bool = False) -> Dict[str, Any]:
+def _gate_preview(host: Any, hashes: Any, allow_asset: bool = False,
+                  allow_strip_asset: bool = False) -> Dict[str, Any]:
     """★ 删除闸门**预览**：这些 hash 里哪些会被硬保护拦住、理由分布。
 
     （与物理删除同口径：``_delete_gate_detail`` + ``_delete_bill_assert``；取不到就按「不拦」算。）
     干跑就能提前看到「哪些删不掉、为什么」，不用真删一轮才知道。
+
+    ``allow_asset`` / ``allow_strip_asset``：★ 与 ``DownloaderAdapter.delete_torrents`` 的
+    两个具名通道一一对应（都只跳第 5 类「库内资产」）——预览必须按**同一个通道**算，
+    否则干跑说「删得掉」、真删被拦（或反过来）。
     """
     hs = [str(h) for h in (hashes or []) if h]
     out: Dict[str, Any] = {"blocked": 0, "reasons": {}, "would_delete": len(hs)}
@@ -900,7 +905,12 @@ def _gate_preview(host: Any, hashes: Any, allow_asset: bool = False) -> Dict[str
     try:
         fn = getattr(host, "_delete_gate_detail", None)
         if callable(fn):
-            why.update(dict(fn(hs, allow_asset=True) if allow_asset else fn(hs) or {}))
+            if allow_asset:
+                why.update(dict(fn(hs, allow_asset=True) or {}))
+            elif allow_strip_asset:
+                why.update(dict(fn(hs, allow_strip_asset=True) or {}))
+            else:
+                why.update(dict(fn(hs) or {}))
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -919,21 +929,55 @@ def _gate_preview(host: Any, hashes: Any, allow_asset: bool = False) -> Dict[str
     return out
 
 
+def _is_body_like(tags: Any, pref: str, rec: Any) -> bool:
+    """本体判定（★ 17.4.0，**只增保护**）：这个种的文件是不是「本体 / 库内资产」。
+
+    三个判据任一命中即算本体（取不到判据就按本体算 = fail-closed，宁可只摘种、不误删文件）：
+
+      1. 魔流自己的身份标签 ``<pref>…-资源``（= ``静默-资源``）—— 16.0.0 起的原生判据；
+      2. MP 写的 ``已整理 / 辅种``（``tags.is_asset_tags``）—— 文件已被 MP 搬进媒体库的直接证据；
+      3. 账本 ``in_library`` / 身份「资源」（``tags.is_library_asset``）—— 资源库真值。
+
+    为什么补 2、3：16.0.0 只看判据 1，于是「已整理入库、但身份还没转成 ``静默-资源``」的种
+    会落进「自己的非资源」档被**连文件删** —— 删掉的正是媒体库里的本体。
+    """
+    try:
+        if any(str(x).startswith(pref) and str(x).endswith("-" + SUB_RESOURCE)
+               for x in (tags or [])):
+            return True
+        if is_asset_tags(tags):
+            return True
+        if is_library_asset(rec):
+            return True
+    except Exception:  # noqa: BLE001
+        return True
+    return False
+
+
 def deleted_site_act(host: Any, site_id: Any, action: str, reuse_only: Any = 0,
                      dry_run: Any = 1, force_asset: Any = 0) -> Dict[str, Any]:
     """★ 已删除站点的行内操作：``pause`` / ``resume`` / ``remove``。
 
-    ``remove`` 口径（Master 2026-10-10 拍板，借站点2 红豆饭）：
+    ``remove`` 口径（Master 2026-10-15 拍板：站点没了 → 本站的种都不必再挂）：
 
-      * **别人辅种的复用副本**（带 ``魔流-辅种``）→ **只摘种**（``delete_file=False``）：
-        文件是从别处复用来的，删文件不可逆且会连坐本体；
-      * **自己的、非资源的种**（无 ``魔流-辅种`` 且非 ``资源``）→ **连文件一起删**；
-      * **资源**（``静默-资源`` = 本体/库内资产）→ **保留不动**（删文件=丢本体）。
+      * **复用副本**（带 ``魔流-辅种``）→ **只摘种**（``delete_file=False``）：文件是从别处
+        复用来的，删文件不可逆且会连坐本体；
+      * **本体 / 库内资产**（``_is_body_like``：``静默-资源`` ∪ MP 的 ``已整理/辅种``
+        ∪ 账本 ``in_library``）→ **只摘种**（``delete_file=False``）：文件在媒体库里，
+        摘种只是不再为本站挂，本体一个字节都不动；
+      * **自己的、非本体的种** → **连文件一起删**（``delete_file=True``）。
+
+    ★ 与 16.0.0 的差别**只有第二档**：本体此前是「保留不动（连种都不摘）」，现在改**摘种、
+    仍不删文件**。只摘种那一档走 ``delete_torrents(allow_strip_asset=True)`` —— 17.4.0 新增的
+    **具名豁免通道**（``deletegate._delete_gate_strip``：只跳过第 5 类「库内资产」，理由是
+    本操作不删文件、第 5 类的保护目的不适用；其余四类硬拦照拦），**不复用** ``force_asset`` /
+    ``gate_manual``（那条的语义是「手动删库内资产」配 ``delete_file=True``，借它摘种是语义借位）。
 
     连文件删仍走**唯一删除闸门** + 内置**共享文件护栏**（同批之外还有别的种共用同一份文件
     → 自动降级为只摘种，不会连坐）。``reuse_only=1`` 只跑第一档（最安全）。默认干跑。
-    ``force_asset=1`` → ★ 走「手动删库内资产」专用闸门（``allow_library_asset=True``，
-    即 15.8.15 那条**唯一**允许突破「库内资产（已入库，永不删）」的口子；其余四类照拦）。
+    ``force_asset=1`` → ★ **只影响连文件删那一档**：改走「手动删库内资产」专用闸门
+    （``allow_library_asset=True``，即 15.8.15 那条**唯一**允许突破「库内资产（已入库，永不删）」
+    的口子；其余四类照拦）；只摘种那一档本来就走 ``gate_strip``，不受它影响。
     回执恒含 ``{ok, site_id, action, message, blocked}``（与点播/音乐行内操作同一口径）。
     """
     act = str(action or "").strip().lower()
@@ -948,14 +992,21 @@ def deleted_site_act(host: Any, site_id: Any, action: str, reuse_only: Any = 0,
     want_reuse = _truthy(reuse_only)
     force = _truthy(force_asset)
     _dk: Dict[str, Any] = {"allow_library_asset": True} if force else {}
+    #   ★ 17.4.0：只摘种那一档走**具名通道** gate_strip（只跳第 5 类库内资产，理由=本操作
+    #     不删文件）。**任何情况下都不带 allow_library_asset**：那条是「删库内资产」的语义。
+    _dk_strip: Dict[str, Any] = {"allow_strip_asset": True}
     try:
         snap = host._tag_all_torrents() or {}
     except Exception:  # noqa: BLE001
         snap = {}
+    try:  # 本体判据 3 的真值源（账本 in_library / 身份「资源」）
+        _led: Dict[str, Any] = dict((host._tag_state() or {}).items() or {})
+    except Exception:  # noqa: BLE001
+        _led = {}
     all_h: List[str] = []
     reuse_h: List[str] = []   # 别人辅种的复用副本 → 只摘种
-    asset_h: List[str] = []   # 资源（本体/库内）→ 保留
-    own_h: List[str] = []     # 自己的非资源 → 连文件删
+    asset_h: List[str] = []   # 本体/库内资产 → ★ 17.4.0 起：只摘种（文件留在媒体库）
+    own_h: List[str] = []     # 自己的非本体 → 连文件删
     for h, t in snap.items():
         tags = [str(x) for x in (getattr(t, "tags", None) or [])]
         if not any(x.startswith(pref) for x in tags):
@@ -963,10 +1014,11 @@ def deleted_site_act(host: Any, site_id: Any, action: str, reuse_only: Any = 0,
         all_h.append(str(h))
         if MARK_REUSE in tags:
             reuse_h.append(str(h))
-        elif any(x.startswith(pref) and x.endswith("-" + SUB_RESOURCE) for x in tags):
+        elif _is_body_like(tags, pref, _led.get(str(h)) or {}):
             asset_h.append(str(h))
         else:
             own_h.append(str(h))
+    strip_h: List[str] = reuse_h + asset_h   # 只摘种（不删文件）那一档
     if not all_h:
         base["ok"] = True
         base["message"] = "该站名下没有符合条件的种"
@@ -981,33 +1033,45 @@ def deleted_site_act(host: Any, site_id: Any, action: str, reuse_only: Any = 0,
     # ------------------------------------------------ remove：分档处置
     if act in ("remove", "drop"):
         if want_reuse:
-            plan = {"strip": len(reuse_h), "full": 0, "keep": len(all_h) - len(reuse_h)}
-            gate = _gate_preview(host, reuse_h, allow_asset=force)
+            plan = {"strip": len(reuse_h), "strip_reuse": len(reuse_h), "strip_asset": 0,
+                    "full": 0, "keep": len(all_h) - len(reuse_h)}
+            #   ★ 17.4.0：只摘种 → 预览必须按 gate_strip 算（同通道，否则干跑与真删不一致）。
+            gate = _gate_preview(host, reuse_h, allow_strip_asset=True)
             if dry:
                 base.update(ok=True, dry_run=True, planned=plan, affected=0, gate=gate,
-                            message=f"干跑：只摘复用副本 {len(reuse_h)} 个" + ("（含库内资产·强删）" if force else ""))
+                            message=(f"干跑：只摘复用副本 {len(reuse_h)} 个（不删文件）"
+                                     + (f"；闸门会拦 {gate['blocked']} 个" if gate["blocked"] else "")))
                 return base
             if dl is None:
                 base["message"] = "下载器不可用"
                 return base
             try:
-                n1, e1 = dl.delete_torrents(hashes=reuse_h, delete_file=False,
-                                            reason="站点已删除（复用副本·只摘种）", source="sitedeleted", **_dk)
+                n1, e1 = ((0, None) if not reuse_h else
+                          dl.delete_torrents(hashes=reuse_h, delete_file=False,
+                                             reason="站点已删除（复用副本·只摘种）", source="sitedeleted",
+                                             **_dk_strip))
             except Exception as e:  # noqa: BLE001
                 base["message"] = f"操作失败:{e}"
                 return base
             base.update(ok=not e1, blocked=bool(e1), stripped=int(n1 or 0),
-                        deleted_with_file=0, kept=len(all_h) - len(reuse_h), affected=int(n1 or 0),
+                        deleted_with_file=0, kept=len(all_h) - len(reuse_h), gate=gate,
+                        affected=int(n1 or 0),
                         message=str(e1) if e1 else f"已摘种 {int(n1 or 0)} 个复用副本（不删文件）")
             return base
-        plan = {"strip": len(reuse_h), "full": len(own_h), "keep": len(asset_h)}
-        gate = _gate_preview(host, reuse_h + own_h, allow_asset=force)
+        plan = {"strip": len(strip_h), "strip_reuse": len(reuse_h), "strip_asset": len(asset_h),
+                "full": len(own_h), "keep": 0}
+        #   两条通道各自的预览（与真删同口径）：连文件删那一档按 allow_asset（force 时才放宽），
+        #   只摘种那一档固定按 gate_strip。
+        gate = _gate_preview(host, own_h, allow_asset=force)
+        gate_strip = _gate_preview(host, strip_h, allow_strip_asset=True)
         if dry:
-            base.update(ok=True, dry_run=True, planned=plan, affected=0, gate=gate,
-                        message=(f"干跑：摘种 {len(reuse_h)}（复用副本）+ 连文件删 {len(own_h)}（自有非资源）"
-                                 f"；保留资源/本体 {len(asset_h)}"
-                                 + ("（含库内资产·强删）" if force else "")
-                                 + (f"；闸门会拦 {gate['blocked']} 个" if gate["blocked"] else "")))
+            base.update(ok=True, dry_run=True, planned=plan, affected=0,
+                        gate=gate, gate_strip=gate_strip,
+                        message=(f"干跑：摘种 {len(strip_h)}（复用副本 {len(reuse_h)} + 本体 {len(asset_h)}，"
+                                 f"均不删文件）+ 连文件删 {len(own_h)}（自有非本体）"
+                                 + ("（连文件删·库内资产强删）" if force else "")
+                                 + (f"；闸门会拦 {gate['blocked'] + gate_strip['blocked']} 个"
+                                    if (gate["blocked"] or gate_strip["blocked"]) else "")))
             return base
         if dl is None:
             base["message"] = "下载器不可用"
@@ -1015,20 +1079,27 @@ def deleted_site_act(host: Any, site_id: Any, action: str, reuse_only: Any = 0,
         try:
             # ★ 先「连文件删」（共享护栏此时还能看到仍在的辅种副本 → 共用路径的自动降级为只摘种），
             #   再摘种；反过来的话护栏看不见已摘掉的别人，会把共用文件一起干掉。
-            n2, e2 = dl.delete_torrents(hashes=own_h, delete_file=True,
-                                        reason="站点已删除（自有非资源·连文件）", source="sitedeleted", **_dk)
-            n1, e1 = dl.delete_torrents(hashes=reuse_h, delete_file=False,
-                                        reason="站点已删除（复用副本·只摘种）", source="sitedeleted", **_dk)
+            #   空批不发调用（少一次下载器往返 / 少一条空日志）。
+            n2, e2 = (0, None)
+            n1, e1 = (0, None)
+            if own_h:
+                n2, e2 = dl.delete_torrents(hashes=own_h, delete_file=True,
+                                            reason="站点已删除（自有非本体·连文件）", source="sitedeleted",
+                                            **_dk)
+            if strip_h:
+                n1, e1 = dl.delete_torrents(hashes=strip_h, delete_file=False,
+                                            reason="站点已删除（复用副本 + 本体·只摘种）", source="sitedeleted",
+                                            **_dk_strip)
         except Exception as e:  # noqa: BLE001
             base["message"] = f"操作失败:{e}"
             return base
         errs = [x for x in (e1, e2) if x]
         base.update(ok=not errs, blocked=bool(errs), stripped=int(n1 or 0),
-                    deleted_with_file=int(n2 or 0), kept=len(asset_h), gate=gate,
+                    deleted_with_file=int(n2 or 0), kept=0, gate=gate, gate_strip=gate_strip,
                     affected=int(n1 or 0) + int(n2 or 0),
                     message=(errs[0] if errs else
-                             f"已摘种 {int(n1 or 0)}（复用副本）+ 连文件删 {int(n2 or 0)}（自有非资源）"
-                             f"；保留资源 {len(asset_h)}"))
+                             f"已摘种 {int(n1 or 0)}（复用副本 {len(reuse_h)} + 本体 {len(asset_h)}，"
+                             f"均不删文件）+ 连文件删 {int(n2 or 0)}（自有非本体）"))
         return base
 
     # ------------------------------------------------ pause / resume

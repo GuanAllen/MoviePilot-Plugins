@@ -648,9 +648,14 @@ class CoreMixin:
                 #   专用闸门（只跳过第 5 类「库内资产」）—— 只有
                 #   ``delete_torrents(allow_library_asset=True)`` 会取它。
                 _dl.gate_manual = self._delete_gate_manual
+                # ★ 17.4.0：「只摘种、不删文件」具名通道（同样只跳过第 5 类库内资产）——
+                #   只有 ``delete_torrents(allow_strip_asset=True)`` 会取它，调用方 =
+                #   已删除站点处置入口（features/siteops.py::deleted_site_act）。
+                _dl.gate_strip = self._delete_gate_strip
                 _dl.deletion_log = self._delete_log_cb
                 type(_dl)._global_gate = self._delete_gate
                 type(_dl)._global_gate_manual = self._delete_gate_manual
+                type(_dl)._global_gate_strip = self._delete_gate_strip
                 type(_dl)._global_dlog = self._delete_log_cb
             downloader_ops.set_gate_installer(_install_delete_gate)
             downloader_ops.set_gate_fail_closed(bool(DELETE_GATE_FAIL_CLOSED))
@@ -1785,9 +1790,12 @@ class CoreMixin:
                 dl.gate = self._delete_gate
                 # ★ 15.8.15：手动删库内资产专用闸门（只跳过第 5 类库内资产）。
                 dl.gate_manual = self._delete_gate_manual
+                # ★ 17.4.0：只摘种专用闸门（同样只跳过第 5 类）—— 见 downloader_ops.delete_torrents。
+                dl.gate_strip = self._delete_gate_strip
                 dl.deletion_log = self._delete_log_cb
                 type(dl)._global_gate = self._delete_gate
                 type(dl)._global_gate_manual = self._delete_gate_manual
+                type(dl)._global_gate_strip = self._delete_gate_strip
                 type(dl)._global_dlog = self._delete_log_cb
             except Exception:  # noqa: BLE001
                 pass
