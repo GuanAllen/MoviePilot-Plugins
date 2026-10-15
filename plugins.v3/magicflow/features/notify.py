@@ -38,6 +38,7 @@ NOTIFY_KIND_TEXT: Dict[str, str] = {
     "hr_deadline": "H&R 临期",
     "capacity": "容量红线",
     "trend_drop": "产出骤降",
+    "site_deleted": "站点已删除",
     "task_fail": "任务失败",
     "daily": "每日日报",
     "test": "测试通知",
@@ -264,6 +265,25 @@ class NotifyMixin:
         out.sort(key=lambda x: x["pct"])
         return out[:10]
 
+    def notify_check_site_deleted(self, cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """★ 17.4.0：站点已被 MoviePilot 删除（只报告、不处置）。
+
+        判据与 ``GET /agent/sites/deleted`` **同源**（``siteops.deleted_sites_rows``：魔流台账
+        ``mf_site`` 里还在、MP 站点表里已无；按 ``mp_site_id`` / 域名 / 站名三级回落），零额外外部
+        请求——``SiteGuard.mp_sites()`` 自带 60s 记忆化，牵连面统计读的是本地标签快照。
+
+        ★ 为什么只告警不自动摘种：真删不可逆，而判据依赖 MP 站点表可读（未认证 / 索引器临时为空
+        时 ``deleted_sites_rows`` 自己就返回空——宁可漏报一轮）。故**发现**自动化，**处置**必须显式
+        下令（``POST /agent/sites/deleted/act``，默认干跑）。
+        """
+        out: List[Dict[str, Any]] = []
+        try:
+            from .siteops import deleted_sites_rows   # 延迟导入：feature 间勿在模块级互相拉
+            out = [r for r in (deleted_sites_rows(self) or []) if isinstance(r, dict)]
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"魔流已删站点检查失败（忽略）：{err}")
+        return out
+
     def notify_daily_report(self, cfg: Dict[str, Any]) -> bool:
         """每日日报（可选；按 ``daily_hour`` 之后第一次扫描发一次）。"""
         if not cfg.get("daily"):
@@ -338,13 +358,35 @@ class NotifyMixin:
                                  dedup="drop", level="warn"):
                 fired.append({"kind": "trend_drop", "n": len(drops)})
 
+        dels = self.notify_check_site_deleted(cfg)
+        for r in dels[:5]:   # 一次最多告警 5 个站，避免「整排站被删」时刷屏
+            sd = r.get("seeds") if isinstance(r.get("seeds"), dict) else {}
+            nm = str(r.get("name") or r.get("domain") or r.get("site_id") or "")
+            if self.notify_event(
+                    "site_deleted", f"魔流·站点已被 MP 删除：{nm}",
+                    (f"站点「{nm}」（{r.get('domain') or '—'}）已不在 MP 站点表里"
+                     f"（判据 {r.get('reason') or '—'}）。\n"
+                     f"魔流这边还挂着：种 {int(sd.get('count') or 0)} 个 · {sd.get('size_gb') or 0}GB"
+                     f"（运行 {int(sd.get('running') or 0)} / 暂停 {int(sd.get('paused') or 0)}）"
+                     f"· 复用副本 {int(sd.get('reuse') or 0)} 个"
+                     f"· 站内任务 {len(r.get('tasks') or [])} 个。\n\n"
+                     "处理：`GET /agent/sites/deleted` 看全量牵连面；处置用 "
+                     "`POST /agent/sites/deleted/act`（**默认干跑**）——remove 只摘掉复用副本与本体"
+                     "（都不删文件）、仅把「自有非本体」连文件删；也可先用 pause 止血。"),
+                    dedup=f"sitedel:{r.get('site_id')}", level="warn"):
+                fired.append({"kind": "site_deleted", "n": 1})
+        if len(dels) > 5:
+            logger.warning(f"魔流已删站点共 {len(dels)} 个，本轮只告警前 5 个："
+                           f"{[r.get('name') for r in dels[5:]]}")
+
         try:
             if self.notify_daily_report(cfg):
                 fired.append({"kind": "daily", "n": 1})
         except Exception as err:  # noqa: BLE001
             logger.warning(f"魔流日报发送异常（忽略）：{err}")
 
-        return {"fired": fired, "checked": {"capacity": len(caps), "hr": len(hrs), "drop": len(drops)},
+        return {"fired": fired, "checked": {"capacity": len(caps), "hr": len(hrs), "drop": len(drops),
+                                            "site_deleted": len(dels)},
                 "at": time.time()}
 
     # ------------------------------------------------------------ 端点

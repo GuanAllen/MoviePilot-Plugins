@@ -200,6 +200,36 @@ class HealthMixin:
         except Exception:  # noqa: BLE001
             pass
 
+        # H8 站点已被 MP 删除（★ 17.4.0，**零外部请求**）：魔流台账 mf_site 里还在、MP 站点表里已无
+        #   （按 mp_site_id / 域名 / 站名三级回落）→ 该站的种不必再挂，但**只报不做**：
+        #   判据依赖 MP 站点表可读（未认证 / 索引器临时为空时判据函数自己返回空，宁可漏报一轮），
+        #   误判一次的代价是不可逆的摘种 —— 摘种/删种一律走显式下令
+        #   （POST /agent/sites/deleted/act，默认干跑）。
+        try:
+            from .siteops import deleted_sites_rows   # 延迟导入：feature 间勿在模块级互相拉
+            for row in (deleted_sites_rows(self) or []):
+                if not isinstance(row, dict):
+                    continue
+                sd = row.get("seeds") if isinstance(row.get("seeds"), dict) else {}
+                led = row.get("ledger") if isinstance(row.get("ledger"), dict) else {}
+                nm = str(row.get("name") or row.get("domain") or row.get("site_id") or "")
+                issues.append({
+                    "key": f"H8:{row.get('site_id')}",
+                    "level": "warning",
+                    "title": f"站点「{nm}」已被 MoviePilot 删除",
+                    "detail": (
+                        f"判据 {row.get('reason') or '—'}；qB 仍挂着 {int(sd.get('count') or 0)} 个种"
+                        f"（{sd.get('size_gb') or 0}GB，运行 {int(sd.get('running') or 0)} / "
+                        f"暂停 {int(sd.get('paused') or 0)}，其中复用副本 {int(sd.get('reuse') or 0)} 个）、"
+                        f"账本 mf_seed {int(led.get('seed_rows') or 0)} 行、"
+                        f"站内任务 {len(row.get('tasks') or [])} 个。"
+                        "→ 处置：POST /agent/sites/deleted/act（默认干跑，摘种不删文件 / 自有非本体才连文件删）"
+                    ),
+                    "task_id": "",
+                })
+        except Exception:  # noqa: BLE001
+            pass
+
         # H5 全局：一个启用的任务都没有
         if tasks and not participating:
             issues.append({

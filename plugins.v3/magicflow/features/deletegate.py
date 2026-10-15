@@ -15,6 +15,13 @@ H&R 补种被任务「超保留上限」路径删掉，因为该路径的保护�
 
 闸门硬拦（**任何路径都不得删**，全局口径、不依赖单任务）：
   手动保留 / 跨站来源份（H&R 保种期）/ 已认领（保种承诺）/ 欠 H&R 义务 / **库内资产（★ 12.3.0）**。
+
+★ 17.4.0：第 5 类「库内资产」有**两条互不代偿**的具名豁免通道（都只跳第 5 类，其余 4 类照拦）：
+  - ``_delete_gate_manual`` ← ``delete_torrents(allow_library_asset=True)``：**手动删库内资产**
+    （``delete_file=True``，会真删媒体库文件），调用方 = 库内资产列表入口。
+  - ``_delete_gate_strip``  ← ``delete_torrents(allow_strip_asset=True)``：**只摘种、不删文件**
+    （``delete_file=False``，文件留在库里）—— 第 5 类的保护目的（防丢文件）不适用，
+    调用方 = 已删除站点处置入口（``features/siteops.py::deleted_site_act``）。
   ★ 15.8.11 同版补丁：**音乐线**（qB 分类=音乐）身份=「资源」（同点播），按 Master 口径
   「身份标签的要求要跟点播的资源一样 / 支持手动删除**未下完**的种子」→ 音乐线**只在「下载中」
   豁免本第 5 步**（与上面 15.8.5 的在途点播一一对应，Master 明确限定「未下完」）；
@@ -25,6 +32,8 @@ H&R 补种被任务「超保留上限」路径删掉，因为该路径的保护�
   换种（暂停不删）也走这里做硬拦，但台账记 ``delete_file`` 与来源。）
 
 要新增一类「永不删」→ 只改本文件的 ``_delete_gate``。
+要新增一条「具名豁免通道」（只跳某一类硬拦）→ 加一个 ``_delete_gate_xxx`` 方法
++ ``delete_torrents`` 的对应参数（**默认关**，既有调用方行为零变化），别复用既有通道代偿。
 """
 
 import json as _json
@@ -73,8 +82,27 @@ class DeleteGateMixin:
         """
         return set(self._delete_gate_detail(hashes, snap=snap, allow_asset=True).keys())
 
+    def _delete_gate_strip(self, hashes: Iterable[str], snap: Any = None) -> Set[str]:
+        """★ 17.4.0：「只摘种（不删文件）」专用闸门 —— **只跳过第 5 类（库内资产）**。
+
+        拦什么与 ``_delete_gate_manual`` **逐字相同**（手动保留 / 跨站来源份 / 已认领 /
+        欠 H&R 义务 四类硬拦 + 在途点播、音乐线下中两条豁免），差别只在**语义与调用方**。
+
+        为什么不复用 ``_delete_gate_manual``：那一类的语义是「**手动删库内资产**」
+        （配 ``delete_file=True``，会真删媒体库文件）；本闸门对应的操作是 ``delete_file=False``
+        —— **只摘种、文件留在库里**，第 5 类「库内资产（已入库，永不删）」的保护目的
+        （防「媒体库里就没文件了」，见 ``_delete_gate_detail`` 第 5 类注释）**根本不适用**，
+        所以另开一条语义正确的具名通道，而不是借「删库内资产」那个闸门代偿。
+
+        唯一的调用方 = ``DownloaderAdapter.delete_torrents(allow_strip_asset=True)``，
+        由「已删除站点」处置入口（``features/siteops.py::deleted_site_act``）显式传入；
+        其余任何删种路径都走严格闸门 ``_delete_gate``，本闸门不会自动生效。
+        """
+        return set(self._delete_gate_detail(hashes, snap=snap, allow_strip_asset=True).keys())
+
     def _delete_gate_detail(self, hashes: Iterable[str], force_error: bool = False, snap: Any = None,
-                            allow_asset: bool = False) -> "Dict[str, str]":
+                            allow_asset: bool = False,
+                            allow_strip_asset: bool = False) -> "Dict[str, str]":
         """返回 ``{hash: 拦截理由}``；未拦截的不出现。理由取值：
 
         手动保留 / 跨站来源份（H&R 保种期）/ 已认领（保种承诺）/ 欠 H&R 义务 / 库内资产。
@@ -84,6 +112,11 @@ class DeleteGateMixin:
 
         ``allow_asset=True``：★ 15.8.15 **只跳过第 5 类「库内资产」**（库内资产手动删除入口
         专用），其余 4 类硬拦与两条豁免逐字不变。默认 ``False`` ⇒ 与历史行为完全一致。
+
+        ``allow_strip_asset=True``：★ 17.4.0 **同样只跳过第 5 类**，但语义是「只摘种、不删文件」
+        （见 ``_delete_gate_strip``）。与 ``allow_asset`` **互不代偿**：两者是两条各自具名的通道，
+        合并只影响「跳不跳第 5 类」这一件事，其余 4 类硬拦在任一取值下都照拦。
+        默认 ``False`` ⇒ 与历史行为完全一致。
         """
         # ★ 故障注入入口（仅用于测试 / 自检，不影响正常调用）：
         #   删种入口拿到闸门异常 → fail-closed 会全阻断。用它可验证「拦得住」。
@@ -161,7 +194,10 @@ class DeleteGateMixin:
         #    的文件就没了宿主（qB 数据被删）。真值源 = 资源库 ``in_library`` / 身份「资源」
         #    （``is_library_asset``）——qB 的 已整理/辅种 标签会因「标签主权」被摘，不能当判据。
         # ★ 15.8.15：``allow_asset=True`` → **整段跳过第 5 类**（库内资产手动删除的唯一豁免通道）。
-        _rest = [h for h in hs if h not in why] if not allow_asset else []
+        # ★ 17.4.0：``allow_strip_asset=True`` → **同样整段跳过第 5 类**，但那是「只摘种、
+        #   不删文件」的具名通道（见 ``_delete_gate_strip``）——两条通道互不代偿，只共用
+        #   「跳不跳第 5 类」这一个开关；下面 1)~4) 四类硬拦在任一取值下都照拦。
+        _rest = [h for h in hs if h not in why] if not (allow_asset or allow_strip_asset) else []
         if _rest:
             _led: Dict[str, Any] = {}
             try:

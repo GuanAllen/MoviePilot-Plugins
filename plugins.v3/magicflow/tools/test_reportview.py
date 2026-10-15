@@ -440,6 +440,20 @@ def main() -> int:
                                "protected_any")) and
         _sm["protected"] == sum(1 for r in _rows.values() if r.get("protected_legacy")),
         {k: _sm[k] for k in ("protected", "protected_hard", "protected_soft", "protected_any")})
+    # ★ G8：互校报告里的**逐站** protected 必须与 summary 同口径（否则同一个 payload
+    #   里两个 protected 各说各话——正是 17.3.0 要消灭的那类口径分裂）
+    _dr = rv.drift(ctx)
+    _bs = (_dr.get("sites") or {}).get("by_site") or []
+    _keys = ("protected", "protected_hard", "protected_soft", "protected_any")
+    _sum_site = sum(int((d or {}).get("protected") or 0) for _s, d in _bs)
+    chk("G8 drift 逐站 protected 与 summary 同口径",
+        all(all(k in (d or {}) for k in _keys) for _s, d in _bs) and
+        _sum_site == _sm["protected"],
+        {"逐站合计": _sum_site, "summary": _sm["protected"],
+         "站数": len(_bs)})
+    chk("G8b 逐站 protected ≤ protected_any（分档不越界）",
+        all(int((d or {}).get("protected") or 0) <= int((d or {}).get("protected_any") or 0)
+            for _s, d in _bs), [(s, d.get("protected"), d.get("protected_any")) for s, d in _bs])
 
     print()
     if FAILED:

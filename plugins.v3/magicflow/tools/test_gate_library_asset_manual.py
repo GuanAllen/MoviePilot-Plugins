@@ -16,6 +16,10 @@
   D. ``allow_asset=True`` **不**破坏两条豁免（在途点播 / 未下完音乐线仍放行；下完音乐线仍按资产拦）；
   E. ``delete_torrents`` 闸门选边：默认取严格 ``gate``；``allow_library_asset=True`` 取 ``gate_manual``；
      **取不到 ``gate_manual`` 时回退严格 ``gate``**（绝不退化成「无闸门」）。
+  F. ★ 17.4.0「只摘种」具名通道 ``_delete_gate_strip``：同样只跳第 5 类，但**不复用** ``gate_manual``
+     （后者配 ``delete_file=True``，语义是「手动删库内资产」）；其余 4 类硬拦 + 两条豁免逐字相同。
+  G. ★ 17.4.0 ``delete_torrents(allow_strip_asset=True)`` 取 ``gate_strip``；取不到回退严格 ``gate``；
+     两条豁免同时给时 ``allow_library_asset`` 优先（不得被降级成只摘种）。
 
 用法：``python3 tools/test_gate_library_asset_manual.py``（退出码 0=PASS / 1=FAIL）。
 """
@@ -180,7 +184,8 @@ def _normal(h):
                                  save_path="/x", content_path=f"/x/{h}")
 
 
-def _fake_adapter(strict_block=None, manual_block=None, with_manual=True):
+def _fake_adapter(strict_block=None, manual_block=None, with_manual=True,
+                  strip_block=None, with_strip=True):
     """裸造 DownloaderAdapter（不过 __init__），只保留闸门选边所需的最小面。"""
     calls = []
     dl = object.__new__(dops.DownloaderAdapter)
@@ -197,9 +202,15 @@ def _fake_adapter(strict_block=None, manual_block=None, with_manual=True):
         calls.append("manual")
         return set(manual_block or set())
 
+    def _strip(hs):
+        calls.append("strip")
+        return set(strip_block or set())
+
     dl.gate = _strict
     if with_manual:
         dl.gate_manual = _manual
+    if with_strip:
+        dl.gate_strip = _strip
     return dl, calls
 
 
@@ -292,6 +303,76 @@ def main() -> int:
         res3 = None
     _ok(calls == ["strict"], f"缺 gate_manual → 回退严格 gate（calls={calls}）")
     _ok(res3 == (0, None), "缺 gate_manual + 库内资产被严格闸门拦 → (0, None)（绝不退化成无闸门）")
+
+    # ---------------- F. ★ 17.4.0「只摘种」具名通道 gate_strip ----------------
+    print("-- F. 只摘种通道：_delete_gate_strip 只跳第 5 类（≠ gate_manual）--")
+    p2 = Plug({"h-inlib": {"site": "s", "sub": "资源", "in_library": True},
+               "h-ok": {"site": "s", "sub": "普通"}},
+              protected={"h-prot"}, crossseed={"h-cs"}, claim={"h-cl"}, hr_owed=True,
+              snap={"h-prot": _normal("h-prot"), "h-cs": _normal("h-cs"),
+                    "h-cl": _normal("h-cl"), "h-inlib": _normal("h-inlib"),
+                    "h-ok": _normal("h-ok")})
+    hs2 = ["h-inlib", "h-ok", "h-prot", "h-cs", "h-cl"]
+    _ok(p2._delete_gate_strip(hs2) == set(p2._delete_gate_detail(hs2, allow_strip_asset=True).keys()),
+        "_delete_gate_strip == detail(allow_strip_asset=True).keys()")
+    # 第 5 类豁免用「干净」桩单独验（p2 带 hr_owed=True，会让每个种都欠 H&R，混入第 4 类理由）
+    p_inlib = Plug({"h-inlib": {"site": "s", "sub": "资源", "in_library": True},
+                    "h-plain": {"site": "s", "sub": "普通", "in_library": False}},
+                   snap={"h-inlib": _normal("h-inlib"), "h-plain": _normal("h-plain")})
+    _ok("h-inlib" in p_inlib._delete_gate(["h-inlib"]) and
+        p_inlib._delete_gate_strip(["h-inlib"]) == set(),
+        "只摘种通道：库内资产（第 5 类）→ 放行（本通道唯一豁免）；对照严格闸门照拦")
+    _ok(p_inlib._delete_gate_strip(["h-plain"]) == set() and
+        p_inlib._delete_gate(["h-plain"]) == set(),
+        "普通种：严格 / 只摘种两通道都不拦（行为不变）")
+    _ok("h-prot" in p2._delete_gate_strip(["h-prot"]), "只摘种通道：手动保留**照拦**")
+    _ok("h-cs" in p2._delete_gate_strip(["h-cs"]), "只摘种通道：跨站来源份**照拦**")
+    _ok("h-cl" in p2._delete_gate_strip(["h-cl"]), "只摘种通道：已认领**照拦**")
+    _ok("欠 H&R" in str(p2._delete_gate_detail(["h-ok"], allow_strip_asset=True).get("h-ok", "")),
+        "只摘种通道：欠 H&R**照拦**")
+    _ok(p2._delete_gate_detail(["h-prot"], allow_strip_asset=True)["h-prot"] == "手动保留",
+        "只摘种通道：理由逐字保留")
+    # 与「手动删库内资产」通道的核心差别：两条通道都跳第 5 类，但**语义不同**（本通道不删文件），
+    # 故 gate_strip 绝不能复用 gate_manual（后者配 delete_file=True 且其余四类逐字相同）。
+    p3 = Plug({"h-mus": {"site": "CARPT", "sub": "资源", "state": "静默", "in_library": True}},
+              snap={"h-mus": _music("h-mus", progress=0.4)})
+    _ok("h-mus" not in p3._delete_gate_strip(["h-mus"]),
+        "只摘种通道：音乐线「下载中」豁免不变（两条豁免与通道无关）")
+
+    # ---------------- G. ★ 17.4.0 delete_torrents 只摘种选边 ----------------
+    print("-- G. delete_torrents：allow_strip_asset=True 只问 gate_strip / 缺它回退严格 --")
+    dl, calls = _fake_adapter(strict_block={h}, strip_block=set())
+    try:
+        res4 = dl.delete_torrents([h], delete_file=False, allow_strip_asset=True)
+    except Exception:  # noqa: BLE001
+        res4 = None
+    _ok(calls == ["strip"], f"allow_strip_asset=True → 只问 gate_strip（calls={calls}）")
+    _ok(not (isinstance(res4, tuple) and "闸门" in str(res4[1])),
+        "allow_strip_asset=True → 未被严格闸门拦（res=%r）" % (res4,))
+
+    dl, calls = _fake_adapter(strict_block={h}, with_strip=False)
+    try:
+        res5 = dl.delete_torrents([h], delete_file=False, allow_strip_asset=True)
+    except Exception:  # noqa: BLE001
+        res5 = None
+    _ok(calls == ["strict"], f"缺 gate_strip → 回退严格 gate（fail-closed，calls={calls}）")
+    _ok(res5 == (0, None), "缺 gate_strip + 被严格闸门拦 → (0, None)（绝不退化成无闸门）")
+
+    # 两条豁免同时给：allow_library_asset 优先（它才是「删库内资产」语义），不得被降级成只摘种。
+    dl, calls = _fake_adapter(strict_block={h}, manual_block=set(), strip_block={h})
+    try:
+        dl.delete_torrents([h], allow_library_asset=True, allow_strip_asset=True)
+    except Exception:  # noqa: BLE001
+        pass
+    _ok(calls == ["manual"], f"两条豁免同时给 → allow_library_asset 优先（calls={calls}）")
+
+    # 都不给：严格闸门（既有行为零变化）
+    dl, calls = _fake_adapter(strict_block={h}, manual_block=set(), strip_block=set())
+    try:
+        dl.delete_torrents([h])
+    except Exception:  # noqa: BLE001
+        pass
+    _ok(calls == ["strict"], f"两条豁免都不给 → 严格 gate（calls={calls}）")
 
     print("=" * 60)
     print(f"✅ PASS —— 共 {CHECKS} 项全过")
