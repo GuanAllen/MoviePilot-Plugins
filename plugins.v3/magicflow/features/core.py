@@ -84,6 +84,7 @@ from ..common import (
     SIGNIN_TICK_MINUTES,
     HR_HOST_INTERVAL_MINUTES,
     SILENT_HOST_INTERVAL_MINUTES,
+    SITE_LIFECYCLE_INTERVAL_MINUTES,
     SILENT_HR_SPLIT_ENABLED,
     _MF_ACTIVE,
     _cs_parse_site_hours,
@@ -1026,6 +1027,22 @@ class CoreMixin:
                 "kwargs": {
                     "minutes": float(CROSSSEED_TASK_INTERVAL_MINUTES),
                     "jitter": self._jitter_seconds(float(CROSSSEED_TASK_INTERVAL_MINUTES)),
+                },
+            }
+        )
+        # ★ 17.5.0：「站点生命周期」常驻 worker（与 SilentHost/HrHost/CrossSeed 同语义：常驻、无开关）。
+        #   MP 侧删站 → 台账 mf_site.status/deleted_at/reason 打标记（**只标记不删行**）；
+        #   MP 里又有该站 → 清回 NULL（复活）。MP 站点表读不到 → 一个字都不写。
+        #   独立成 worker 的原因：站点删除与「有没有任务在跑」无关，挂 LiveWatch 会在全 stopped 时停摆。
+        services.append(
+            {
+                "id": "SiteLifecycle",
+                "name": "站点生命周期",
+                "trigger": "interval",
+                "func": self.site_lifecycle,
+                "kwargs": {
+                    "minutes": float(SITE_LIFECYCLE_INTERVAL_MINUTES),
+                    "jitter": self._jitter_seconds(float(SITE_LIFECYCLE_INTERVAL_MINUTES)),
                 },
             }
         )

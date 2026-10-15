@@ -81,6 +81,12 @@ class SiteRow(Base):
     pv_block: Mapped[float | None] = mapped_column(Float)
     signin: Mapped[Any | None] = mapped_column(_JSON, default=dict)
     alerts: Mapped[Any | None] = mapped_column(_JSON, default=dict)
+    # ★ 17.5.0 站点生命周期：MP 侧删站 → **只标记不删行**（NULL ≡ active）。
+    #   status ∈ {"deleted"}；行与按 mp_site_id 存的标量（pv_budget/pv_block/规则）原样保留，
+    #   以便站点在 MP 里被重新加回时**无损恢复**（真值源 = 所有站点引用 − MP 站点表）。
+    status: Mapped[str | None] = mapped_column(String(20))
+    deleted_at: Mapped[float | None] = mapped_column(Float)
+    deleted_reason: Mapped[str | None] = mapped_column(String(40))
     # 证据链
     source: Mapped[str | None] = mapped_column(String(40))
     confidence: Mapped[str | None] = mapped_column(String(20))

@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "17.4.0"
+__version__ = "17.5.0"
 
 import bisect
 import re
@@ -286,6 +286,7 @@ CLAIM_FAIL_TTL = 24 * 3600.0                 # 失败/名额满/不达标 → 24
 CLAIM_SOFT_CAP = 200                         # 单站账本软上限（仅提示，不强制）
 SILENT_HOST_INTERVAL_MINUTES = 60  # ⭐「静默托管」常驻 worker 周期(分钟，低频)
 HR_HOST_INTERVAL_MINUTES = 15  # ⭐ 14.0.0：H&R 保种宿主 worker 周期（60→15min，Master 03:17）
+SITE_LIFECYCLE_INTERVAL_MINUTES = 30  # ⭐ 17.5.0：站点生命周期标记 worker 周期（分钟，低频幂等）
 SILENT_HOST_TASK_ID = "__silent_host__"  # ⭐「静默托管」常驻任务在任务列表里的只读条目 id
 CROSSSEED_TASK_ID = "__crossseed__"  # ⭐ 14.0.0「跨站取种」全局真任务 id（承接取种下载；非伪任务）
 CROSSSEED_TASK_NAME = "跨站取种"

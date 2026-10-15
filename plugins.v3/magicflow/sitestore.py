@@ -49,6 +49,8 @@ SLOT_CROSSSEED_PENDING = "crossseed_pending"
 SLOT_PV_BUDGET = "pv_budget"
 SLOT_LIVE_PV_BLOCK = "live_pv_block"
 SLOT_LIVE_ALERTS = "live_alerts"
+# ★ 17.5.0：站点生命周期（mf_site.status/deleted_at/deleted_reason）——MP 侧删站只标记不删行
+SLOT_SITE_STATUS = "site_status"
 SLOT_PV_USAGE = "pv_usage"
 SLOT_SIGNIN_RECORDS = "signin_records"
 SLOT_IYUU_SITES = "iyuu_sites"
@@ -298,6 +300,8 @@ class SiteStore:
                 return self._get_site_scalar("pv_block", "float")
             if slot == SLOT_LIVE_ALERTS:
                 return self._get_live_alerts()
+            if slot == SLOT_SITE_STATUS:          # ★ 17.5.0
+                return self._get_site_status()
             if slot == SLOT_PV_USAGE:
                 return by_site_to_by_date(self._get_site_json("pv_usage"))
             if slot == SLOT_SIGNIN_RECORDS:
@@ -358,6 +362,8 @@ class SiteStore:
             self._save_site_scalar("pv_block", value, "float")
         elif slot == SLOT_LIVE_ALERTS:
             self._save_live_alerts(value)
+        elif slot == SLOT_SITE_STATUS:        # ★ 17.5.0
+            self._save_site_status(value)
         elif slot == SLOT_PV_USAGE:
             self._save_site_json("pv_usage", by_date_to_by_site(value))
         elif slot == SLOT_SIGNIN_RECORDS:
@@ -392,7 +398,14 @@ class SiteStore:
         return _get, _save
 
     # ---------------------------------------------------------- site_rules
-    def _get_site_rules(self) -> Dict[str, Any]:
+    def _get_site_rules(self, include_deleted: bool = False) -> Dict[str, Any]:
+        """站点规则索引（域名 → 规则 rec）。
+
+        ★ 17.5.0：**默认排除生命周期标记为 deleted 的站点**（MP 侧已删）——这里是
+        「已配置站点」的唯一闸口：crossseed / hrbills / health / silent 都读它，
+        在这一处过滤即可保证墓碑站点不回流进站点选择器与合规判断。
+        需要展示已删站时显式 ``include_deleted=True``。
+        """
         from sqlalchemy import select
 
         out: Dict[str, Any] = {}
@@ -402,6 +415,8 @@ class SiteStore:
             for r in rows:
                 dom = getattr(r, "domain", None)
                 if not dom:
+                    continue
+                if not include_deleted and str(getattr(r, "status", None) or "").strip().lower() == "deleted":
                     continue
                 if not self._row_has_rules(r):
                     continue
@@ -419,6 +434,73 @@ class SiteStore:
             return True
         extra = getattr(row, "rules_extra", None)
         return isinstance(extra, dict) and bool(extra)
+
+    # ---------------------------------------------------------- mf_site 生命周期（17.5.0）
+    def _get_site_status(self) -> Dict[str, Any]:
+        """★ 17.5.0：站点生命周期标记（只读）。键 = 归一化域名，值 = {status, at, reason}。"""
+        from sqlalchemy import select
+
+        out: Dict[str, Any] = {}
+        sess = self._session
+        try:
+            for r in sess.execute(select(mfdb.SiteRow)).scalars().all():
+                st = str(getattr(r, "status", None) or "").strip()
+                if not st:
+                    continue
+                dom = _norm_domain(getattr(r, "domain", None))
+                if not dom:
+                    continue
+                out[dom] = {
+                    "status": st,
+                    "at": getattr(r, "deleted_at", None),
+                    "reason": str(getattr(r, "deleted_reason", None) or ""),
+                }
+        finally:
+            sess.close()
+        return out
+
+    def _save_site_status(self, value: Dict[str, Any]) -> None:
+        """★ 17.5.0：写站点生命周期标记（**只动 status/deleted_at/deleted_reason 三列**）。
+
+        ``value`` = ``{域名: {"status": "deleted"|"active", "at": ts, "reason": "mp_deleted"}}``。
+        **未列出的行一律不动**（保守：MP 站点表读不到时调用方根本不会走到这里）；
+        ``deleted`` 幂等（已是 deleted 就不重盖 ``deleted_at``），``active`` 清回 NULL。
+        """
+        from sqlalchemy import select
+
+        now = _now()
+        want: Dict[str, Dict[str, Any]] = {}
+        for dom, rec in (value or {}).items():
+            d = _norm_domain(dom)
+            if d and isinstance(rec, dict):
+                want[d] = rec
+        if not want:
+            return
+        lock = self._lock
+        if lock is not None:
+            lock.acquire()
+        try:
+            sess = self._session
+            try:
+                for r in sess.execute(select(mfdb.SiteRow)).scalars().all():
+                    rec = want.get(_norm_domain(getattr(r, "domain", None)))
+                    if rec is None:
+                        continue
+                    if str(rec.get("status") or "").strip().lower() == "deleted":
+                        if str(getattr(r, "status", None) or "") != "deleted":
+                            r.deleted_at = float(rec.get("at") or now)
+                        r.status = "deleted"
+                        r.deleted_reason = (str(rec.get("reason") or "")[:40] or None)
+                    else:
+                        r.status = None
+                        r.deleted_at = None
+                        r.deleted_reason = None
+                sess.commit()
+            finally:
+                sess.close()
+        finally:
+            if lock is not None:
+                lock.release()
 
     def _save_site_rules(self, value: Dict[str, Any]) -> None:
         from sqlalchemy import select
@@ -713,10 +795,20 @@ class SiteStore:
                 select(mfdb.SiteRow).where(mfdb.SiteRow.domain == dom)
             ).scalars().first()
             if row is not None:  # 复用同一物理站点的域名行（只补对应列，不覆写另一列）
-                if getattr(row, col, None) is None:
+                # ★ 17.5.0 修误报：**同一命名空间**内以当前解析结果为准。
+                #   反例（修前）：MP 里删掉站点再加回同名站 → 新 ``mp_site_id``，而旧值
+                #   （``getattr(row, col) is None`` 才补）留着 → ``deleted_sites_rows``
+                #   拿旧 id 去 MP 表里找不到 → 误判「站点已删除」。
+                #   跨命名空间保护不变：只写 ``col``（解析来源那一列），绝不动 ``other_col``。
+                if getattr(row, col, None) != sid:
                     setattr(row, col, sid)
                 if not str(getattr(row, "name", "") or "").strip():
                     row.name = info.get("name") or dom
+                # ★ 17.5.0：站点在 MP 里又出现了 → 清掉生命周期标记（无损复活）
+                if col == "mp_site_id" and str(getattr(row, "status", None) or "") == "deleted":
+                    row.status = None
+                    row.deleted_at = None
+                    row.deleted_reason = None
                 return row
         row = mfdb.SiteRow(
             site_id=self._next_site_id(sess), domain=dom or None,

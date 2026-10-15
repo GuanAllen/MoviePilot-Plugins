@@ -266,11 +266,13 @@ class NotifyMixin:
         return out[:10]
 
     def notify_check_site_deleted(self, cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """★ 17.4.0：站点已被 MoviePilot 删除（只报告、不处置）。
+        """★ 17.4.0 起（17.5.0 换共用真值源）：站点已被 MoviePilot 删除（只报告、不处置）。
 
-        判据与 ``GET /agent/sites/deleted`` **同源**（``siteops.deleted_sites_rows``：魔流台账
-        ``mf_site`` 里还在、MP 站点表里已无；按 ``mp_site_id`` / 域名 / 站名三级回落），零额外外部
-        请求——``SiteGuard.mp_sites()`` 自带 60s 记忆化，牵连面统计读的是本地标签快照。
+        判据与 ``GET /agent/sites/deleted`` / 健康自检 H8 / 报表**同源**
+        （``siteops.deleted_sites_rows`` → ``site_deleted_domains``：**所有站点引用** − MP 站点表；
+        引用层 = ``mf_site`` 行 ∪ 账单 ∪ ``mf_seed``/``mf_reseed``/``mf_crossseed`` ∪ 任务），
+        零额外外部请求——``SiteGuard.mp_sites()`` 自带 60s 记忆化，牵连面统计读的是本地快照。
+        ★ 17.5.0 起「只剩账单/账本残留、台账行已不在」的站也告警（旧口径看不见 → 盲区）。
 
         ★ 为什么只告警不自动摘种：真删不可逆，而判据依赖 MP 站点表可读（未认证 / 索引器临时为空
         时 ``deleted_sites_rows`` 自己就返回空——宁可漏报一轮）。故**发现**自动化，**处置**必须显式
@@ -362,18 +364,25 @@ class NotifyMixin:
         for r in dels[:5]:   # 一次最多告警 5 个站，避免「整排站被删」时刷屏
             sd = r.get("seeds") if isinstance(r.get("seeds"), dict) else {}
             nm = str(r.get("name") or r.get("domain") or r.get("site_id") or "")
+            n_bills = int(r.get("bills") or 0)
+            has_row = bool(r.get("has_row"))
+            _ident = r.get("site_id") or r.get("domain") or nm
             if self.notify_event(
                     "site_deleted", f"魔流·站点已被 MP 删除：{nm}",
                     (f"站点「{nm}」（{r.get('domain') or '—'}）已不在 MP 站点表里"
-                     f"（判据 {r.get('reason') or '—'}）。\n"
-                     f"魔流这边还挂着：种 {int(sd.get('count') or 0)} 个 · {sd.get('size_gb') or 0}GB"
+                     f"（判据 {r.get('reason') or '—'}；引用层 "
+                     f"{'、'.join(str(x) for x in (r.get('refs') or [])) or '—'}）。\n"
+                     + ("" if has_row else "★ 台账行已不在（只在清单里可见，不建行）。\n")
+                     + (f"⚠ 还有账单 {n_bills} 条**无法对账**（站点没了，欠账口径无从核对）。\n"
+                        if n_bills else "")
+                     + f"魔流这边还挂着：种 {int(sd.get('count') or 0)} 个 · {sd.get('size_gb') or 0}GB"
                      f"（运行 {int(sd.get('running') or 0)} / 暂停 {int(sd.get('paused') or 0)}）"
                      f"· 复用副本 {int(sd.get('reuse') or 0)} 个"
                      f"· 站内任务 {len(r.get('tasks') or [])} 个。\n\n"
                      "处理：`GET /agent/sites/deleted` 看全量牵连面；处置用 "
                      "`POST /agent/sites/deleted/act`（**默认干跑**）——remove 只摘掉复用副本与本体"
                      "（都不删文件）、仅把「自有非本体」连文件删；也可先用 pause 止血。"),
-                    dedup=f"sitedel:{r.get('site_id')}", level="warn"):
+                    dedup=f"sitedel:{_ident}", level="warn"):
                 fired.append({"kind": "site_deleted", "n": 1})
         if len(dels) > 5:
             logger.warning(f"魔流已删站点共 {len(dels)} 个，本轮只告警前 5 个："

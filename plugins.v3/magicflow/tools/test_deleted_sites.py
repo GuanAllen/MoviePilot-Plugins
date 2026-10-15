@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""魔流 · 「站点已删除」离线回归（★ 16.0.0 起，17.4.0 扩三档口径，真跑 common.py + features/siteops.py）。
+"""魔流 · 「站点已删除」离线回归（★ 16.0.0 起，17.4.0 扩三档口径，17.5.0 换共用真值源 + 标记制，
+真跑 common.py + features/siteops.py）。
 
 背景（Master 2026-10-10）：「目前站点2 红豆饭已经被删了」→ 借这个活案例把
 「MP 侧删站之后魔流怎么办」做成完整功能：
@@ -22,8 +23,11 @@
 断言：
   [1] SiteGuard.mp_sites 60s 记忆化（同进程只查一次库）；查库异常 → None（判不出不硬判）；
       mp_ids 派生；
-  [2] deleted_sites_rows：MP 已无的站被列出（按 mp_site_id 判）、MP 仍在的不列出、
-      无 mp_site_id 的按域名判、台账排序按种子数降序；
+  [2] deleted_sites_rows：MP 已无的站被列出（按 mp_site_id 判；★ 17.5.0 起**域名对得上就不算删**
+      —— 修「MP 删站再加回 → 新 id → 旧 id 查不到 → 误报」；★**别名兜底**：域名是活站子域
+      （``www.yemapt.org`` ⊂ ``yemapt.org``）也算活站 —— 真机账单里 ``pt.soulvoice.club``
+      有 9 条而聆音 ``soulvoice.club`` 活着）、MP 仍在的不列出、
+      无 mp_site_id 的按域名判、域名与 id 都认不出的行**不硬判**（不进清单）、排序按种子数降序；
   [3] 牵连面正确：qB 种数/体积/暂停/运行/复用副本 + 账本行数 + 站内任务；
   [4] 站点已删但 MP 表读不到 → 返回空（保守）；
   [5] deleted_site_act：默认干跑不动下载器；pause/resume 真做；remove 三档分档正确、
@@ -33,8 +37,12 @@
       具名通道 ``_delete_gate_strip``、``delete_torrents`` 已接 allow_strip_asset；
   [7] ★本体识别三腿（身份后缀 -资源 / MP「已整理」/ 账本 in_library）+ fail-closed
       （判据抛异常 → 一律按本体只摘种，绝不连文件删）；
-  [8] ★自动化接线：notify 新检查函数 + kind 登记 + 按站去重 + 上限 5；health H8 已接；
-      **两处都不调用处置函数**（只报不做）。
+  [8] ★自动化接线：notify 新检查函数 + kind 登记 + 按站去重 + 上限 5；health H8 已接 + key 用域名兜底；
+      **两处都不调用处置函数**（只报不做）；
+  [9] ★★17.5.0 共用真值源 + 标记制：``site_references`` 把台账行/账单/账本/任务全算引用；
+      ★**残留站**（台账行已不在、只剩账单）必须被拾出（reason=residue_no_row / has_row=False）；
+      ``site_deleted_mark`` 只标记不删行（幂等 + 复活清回 NULL + 无台账行的残留**不建行**）+
+      MP 读不到时一个字都不写；报表/健康/通知三处共用 ``site_deleted_domains``。
 
 用法：``python3 tools/test_deleted_sites.py``（退出码 0=PASS / 1=FAIL）。
 """
@@ -168,6 +176,7 @@ SITE_ROWS = [
     {"site_id": 1, "name": "学校", "domain": "btschool.club", "mp_site_id": 1, "iyuu_sid": 8},
     {"site_id": 16, "name": "YemaPT", "domain": "yemapt.org", "mp_site_id": 16, "iyuu_sid": 109},
     {"site_id": 17, "name": "www.yemapt.org", "domain": "www.yemapt.org", "mp_site_id": None, "iyuu_sid": None},
+    {"site_id": 18, "name": "已删站", "domain": "gone.example.net", "mp_site_id": None, "iyuu_sid": None},
     {"site_id": 19, "name": "hdfans.org", "domain": "", "mp_site_id": None, "iyuu_sid": None},
     {"site_id": 20, "name": "手工", "domain": "", "mp_site_id": None, "iyuu_sid": None},
 ]
@@ -273,13 +282,19 @@ names = sorted(str(r.get("name") or r.get("domain")) for r in rows)
 ok("红豆饭" in names, "[2] MP 已删的「红豆饭」被列出（按 mp_site_id 判）")
 ok("学校" not in names, "[2] MP 仍在的「学校」不列出")
 ok("YemaPT" not in names, "[2] MP 仍存的 YemaPT（域名对得上）不列出")
-ok("www.yemapt.org" in names, "[2] 无 mp_site_id 的行按域名判（www.yemapt.org 不在 MP → 列出）")
-ok("手工" in names, "[2] 无 mp_site_id 且无域名 → 按名字判（列出）")
-ok("hdfans.org" in names, "[2] 残留行 hdfans.org（无 id 无域名）也被拾出")
-ok(len(rows) == 4, f"[2] 共 4 行（实际 {len(rows)}）")
+ok("www.yemapt.org" not in names,
+   "[2] ★别名兜底：www.yemapt.org 是活站 yemapt.org 的子域 → 算活站、不列出"
+   "（17.5.0 新增；真机账单里 pt.soulvoice.club 就是同一个坑：聆音活着，9 条账单挂在它下面）")
+ok("手工" not in names, "[2] ★17.5.0：无 mp_site_id 且无域名 → **不再按名字猜**（判不出不硬判，列在 [9] 里反向断言）")
+ok("手工" not in names and "hdfans.org" not in names,
+   "[2] ★17.5.0：无域名且无 mp_site_id 的行「判不出」→ 不硬判、不进清单（旧口径会把手工行误报成已删）")
+ok(len(rows) == 2, f"[2] 共 2 行（红豆饭 + 已删站 gone.example.net，实际 {len(rows)}）")
 rd0 = [r for r in rows if r.get("name") == "红豆饭"][0]
 ok(rd0.get("reason") == "mp_deleted", "[2] 红豆饭 reason=mp_deleted")
-ok([r for r in rows if r.get("name") == "手工"][0].get("reason") == "no_binding", "[2] 手工 reason=no_binding")
+ok([r for r in rows if r.get("name") == "已删站"][0].get("reason") == "domain_missing",
+   "[2] 已删站（gone.example.net：无 mp_site_id、域名不在 MP、也不是活站子域）reason=domain_missing")
+ok(rd0.get("has_row") is True and "mf_site" in (rd0.get("refs") or []),
+   f"[2] ★17.5.0 行里带 has_row/refs（实际 {rd0.get('has_row')}/{rd0.get('refs')}）")
 ok(int((rows[0].get("seeds") or {}).get("count") or 0) >= int((rows[1].get("seeds") or {}).get("count") or 0),
    "[2] 按种子数降序")
 
@@ -441,13 +456,17 @@ ok("def notify_check_site_deleted" in psrc and "deleted_sites_rows" in psrc,
    "[8] notify：新检查函数存在且与盘点同源（deleted_sites_rows）")
 ok("self.notify_check_site_deleted(cfg)" in psrc, "[8] notify_sweep 里真的调了它（不是死代码）")
 ok('"site_deleted": "站点已删除"' in psrc, "[8] notify：kind 已登记进 NOTIFY_KIND_TEXT（否则前端显示空）")
-ok('dedup=f"sitedel:{r.get(\'site_id\')}"' in psrc, "[8] notify：按「站」去重（一个站一条，不互相顶掉）")
+ok('dedup=f"sitedel:{_ident}"' in psrc, "[8] notify：按「站」去重（域名兜底，残留站不撞键；一个站一条）")
 ok("dels[:5]" in psrc, "[8] notify：一次最多告警 5 个站（整排站被删不刷屏）")
 ok('"site_deleted": len(dels)' in psrc, "[8] notify_sweep 的 checked 回报 site_deleted 计数")
+ok("or row.get('domain') or nm" in psrc or "_ident" in psrc,
+   "[8] ★残留站（无 site_id）也有稳定去重键")
 
 hsrc = (ROOT / "features" / "health.py").read_text(encoding="utf-8")
-ok('f"H8:{row.get(\'site_id\')}"' in hsrc and "deleted_sites_rows" in hsrc,
+ok("H8:{row.get('site_id')" in hsrc and "deleted_sites_rows" in hsrc,
    "[8] health：H8 已接进 _health_issues（与盘点同源）")
+ok("or row.get('domain') or nm" in hsrc,
+   "[8] ★H8 key 用域名兜底（残留站没有 site_id，否则全撞成同一个 key）")
 _hi = hsrc.find("H8:{row.get")
 _hr = hsrc.find("H5:global")
 ok(0 < _hi < _hr, "[8] health：H8 段落在 H5 之前（结构位置正确）")
@@ -455,6 +474,107 @@ ok(0 < _hi < _hr, "[8] health：H8 段落在 H5 之前（结构位置正确）")
 # 只报不做：三处都不得出现「自动摘种」的调用
 ok("deleted_site_act" not in psrc and "deleted_site_act" not in hsrc,
    "[8] ★★只报不做：notify / health 都不调用处置函数（摘种必须显式下令）")
+
+# ------------------------------- [9] ★★17.5.0 共用真值源（所有引用 − MP）+ 台账标记制
+print("-- [9] 共用真值源 + 标记制（只标记不删行）--")
+
+# (a) site_references：引用层聚合（台账行 ∪ 账单 ∪ mf_seed/mf_reseed/mf_crossseed ∪ 任务）
+refs = siteops.site_references(h)
+hd = refs.get("hdfans.org") or {}
+ok(hd.get("has_row") is True and hd.get("site_id") == 2 and hd.get("mp_site_id") == 2,
+   f"[9] site_references：台账行带 has_row/site_id/mp_site_id（实际 {hd.get('has_row')}/"
+   f"{hd.get('site_id')}/{hd.get('mp_site_id')}）")
+ok({"mf_site", "mf_seed", "mf_reseed", "task"} <= set(hd.get("refs") or []),
+   f"[9] ★引用层聚合：台账行 + mf_seed + mf_reseed + 站内任务都算引用（实际 {hd.get('refs')}）")
+ok("site:19" in refs and "site:20" in refs,
+   f"[9] 无域名的台账行用 site:<id> 兜底建键（只在内存里，绝不建行）（实际 {sorted(refs)}）")
+
+
+# (b) ★id 换代的误报修复：台账存着旧 mp_site_id，但**域名对得上 MP** → 不算已删
+class HostSwap(Host):
+    """MP 里删掉站点再加回 → 新 mp_site_id；旧 id 查不到 ≠ 站点没了。"""
+
+    def _agent_db_site_rows(self):
+        return [{"site_id": 5, "name": "学校", "domain": "btschool.club",
+                 "mp_site_id": 99, "iyuu_sid": 8}]
+
+
+ok(siteops.deleted_sites_rows(HostSwap()) == [],
+   "[9] ★★域名兜底：mp_site_id 过期（99）但域名仍在 MP → 不算已删（修 17.4.0 误报根因）")
+
+
+# (c) ★残留站：台账行早已不在、只剩账单 → 旧真值源完全看不见（盲区）
+class HostResidue(Host):
+    def _agent_db_site_rows(self):
+        return []
+
+    def _agent_db_rows(self, model):
+        return []
+
+    def _tag_all_torrents(self):
+        return {}
+
+    def _hrbills_store(self):
+        class _S:
+            def all(self):
+                return {"hdfans.org|1": {"site": "hdfans.org", "rule": "site_hr"},
+                        "btschool.club|2": {"site": "btschool.club", "rule": "site_hr"}}
+        return _S()
+
+
+rr = siteops.deleted_sites_rows(HostResidue())
+ok([r.get("domain") for r in rr] == ["hdfans.org"],
+   f"[9] ★★残留站被拾出（只剩账单、无台账行；学校仍在 MP 故不列）（实际 {[r.get('domain') for r in rr]}）")
+ok(bool(rr) and rr[0].get("reason") == "residue_no_row" and rr[0].get("has_row") is False,
+   f"[9] 残留站 reason=residue_no_row / has_row=False（实际 {rr[0].get('reason') if rr else None}）")
+ok(bool(rr) and int(rr[0].get("bills") or 0) == 1 and "bills" in (rr[0].get("refs") or []),
+   f"[9] 残留站带账单条数 + 引用层标 bills（欠账无从核对 → 告警要看得见）（实际 {rr[0].get('bills') if rr else None}）")
+
+
+# (d) ★标记制：只标记不删行；无台账行的残留**不建行**；MP 读不到一个字都不写
+class _Slot:
+    """假 slot_callbacks：只记「读写过 site_status」。"""
+
+    def __init__(self, cur=None):
+        self.cur = dict(cur or {})
+        self.wrote: list = []
+
+    def __call__(self, host, slot):
+        return (lambda: dict(self.cur)), (lambda v: self.wrote.append(dict(v)))
+
+
+_orig_slot = siteops.slot_callbacks
+try:
+    sl = _Slot({"yemapt.org": {"status": "deleted"}})
+    siteops.slot_callbacks = sl
+    mk = siteops.site_deleted_mark(h, dry_run=1)
+    ok(mk.get("ok") is True and mk.get("dry_run") is True and mk.get("marked") == 2,
+       f"[9] ★标记制干跑：mark 2 个（红豆饭 + www.yemapt.org）（实际 {mk}）")
+    ok(mk.get("cleared") == 1 and sl.wrote == [],
+       "[9] ★干跑不写库；已标记但 MP 里又有该站的 → 计入复活（cleared=1）")
+
+    mk2 = siteops.site_deleted_mark(h, dry_run=0)
+    w = sl.wrote[0] if sl.wrote else {}
+    ok(mk2.get("ok") is True and w.get("hdfans.org", {}).get("status") == "deleted",
+       f"[9] ★真跑只写 status/deleted_at/deleted_reason（域名键）（实际 {w}）")
+    ok(w.get("yemapt.org", {}).get("status") == "active",
+       f"[9] ★★复活：MP 里又有该站 → 清回 NULL（不是删行）（实际 {w.get('yemapt.org')}）")
+    ok(all(k not in w for k in ("site:19", "site:20")),
+       "[9] ★★残留/判不出的站不进写集（不建行·Master 2026-10-15 拍板）")
+
+    sl2 = _Slot()
+    siteops.slot_callbacks = sl2
+    mk3 = siteops.site_deleted_mark(HostResidue(), dry_run=0)
+    ok(mk3.get("ok") is True and mk3.get("marked") == 0 and sl2.wrote == [],
+       f"[9] ★★只剩账单的残留站：一个字都不写（不建行）（实际 {mk3}）")
+
+    MP_STATE["raise"] = True
+    mk4 = siteops.site_deleted_mark(Host(), dry_run=0)
+    ok(mk4.get("ok") is False and mk4.get("skipped") == "mp_unavailable",
+       f"[9] ★★MP 读不到 → skipped=mp_unavailable（绝不把「读不到」写成「整排站被删」）（实际 {mk4}）")
+    MP_STATE["raise"] = False
+finally:
+    siteops.slot_callbacks = _orig_slot
 
 # ------------------------------------------------- [6] 源码护栏
 src = (ROOT / "features" / "siteops.py").read_text(encoding="utf-8")
@@ -466,6 +586,18 @@ ok("allow_library_asset" not in src.split("_dk_strip")[1].split("try:")[0],
 ok("def _is_body_like" in src and "is_asset_tags" in src and "is_library_asset" in src,
    "[6] siteops 源码：本体判据三腿（身份后缀 / is_asset_tags / is_library_asset）")
 ok("def deleted_sites_rows" in src and "def deleted_site_act" in src, "[6] siteops 源码：模块级函数（避开 self._ 棘轮）")
+ok("def site_references" in src and "def site_deleted_domains" in src and "def site_deleted_mark" in src,
+   "[6] ★17.5.0 siteops：共用真值源三函数存在（references / deleted_domains / mark）")
+ok('endswith("." + d)' in src,
+   "[6] ★17.5.0 别名兜底：残留域名是活站子域 → 不算已删（真机 pt.soulvoice.club vs 活站 soulvoice.club）")
+ok("def site_lifecycle" in src and "site_deleted_mark(self)" in src,
+   "[6] ★17.5.0 siteops：常驻 worker site_lifecycle 存在且真的调了标记（不依赖任务在跑）")
+ok('slot_callbacks(host, "site_status")' in src,
+   "[6] ★标记制唯一写点 = sitestore 的 site_status 槽（不是两处各写一套）")
+ok("_hrbills_store" in src and "CrossSeedRow" in src and "mf_reseed" in src,
+   "[6] ★真值源含账单 + 跨站来源份 + 补种记录（残留寿命最长的几层）")
+_rsrc = (ROOT / "features" / "reportview.py").read_text(encoding="utf-8")
+ok("site_deleted_domains" in _rsrc, "[6] ★报表与健康/通知共用同一真值源（reportview 不再自算）")
 csrc = (ROOT / "common.py").read_text(encoding="utf-8")
 ok("def mp_sites" in csrc and "class SiteGuard" in csrc, "[6] common 源码：SiteGuard.mp_sites 存在（叶子层判定）")
 dsrc = (ROOT / "features" / "deletegate.py").read_text(encoding="utf-8")
