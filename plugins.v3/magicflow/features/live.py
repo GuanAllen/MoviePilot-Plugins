@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from app.schemas import Response
 from app.sdk.logging import logger
 
+from ..common import SITE_FORMULA_STALE_MAX
 from ..live_stats import title_match
 from ..persistence import OperationItem
 from ..sitecap import (
@@ -129,6 +130,8 @@ class LiveMixin:
         except Exception as err:  # noqa: BLE001
             self._log(f"站点实时数据获取失败(站点 {site_id}):{err}", "warning")
             return {"live": {"ok": False}, "rates": {}, "alerts": [], "level": "ok"}
+        # ★★ 19.1.0：站点账号读侧收口 —— 实时为主源，缺项按 公式通道(时魔) → MP 快照(做种) 补齐
+        snap["live"] = self._live_account_fill(int(site_id), snap.get("live") or {})
         # ★ 15.12.0：站点日报（长期趋势/归因用）——挂在快照这一层，worker 与手动 /live 都覆盖；
         #   同日同值不重复落盘。公开方法，不新增跨文件私调。
         try:
@@ -143,6 +146,56 @@ class LiveMixin:
         except Exception:  # noqa: BLE001
             pass
         return snap
+
+    def _live_account_fill(self, site_id: int, live: Dict[str, Any]) -> Dict[str, Any]:
+        """★★ 19.1.0：站点账号「单一真值源」读侧收口。
+
+        实时抓取（站点主页面：用户栏 + 页头 H&R 计数）是**主源**；NexusPHP 用户栏
+        多数站不印「时魔 /h」、部分站不印「做种」——缺项按 公式通道（时魔）→ MP
+        站点快照（做种/下载中）补齐，并在 ``live['src']`` 里**逐项标注来源**，
+        供 UI/AI 的判定依据链。只补空值，**绝不覆盖**实时抓到的数。
+        """
+        if not isinstance(live, dict) or not live.get("ok"):
+            return live
+        src = live.get("src")
+        if not isinstance(src, dict):
+            src = {}
+            live["src"] = src
+        dom = ""
+        try:
+            site = self._get_site(int(site_id))
+            dom = str(getattr(site, "domain", "") or "").strip().lower()
+        except Exception:  # noqa: BLE001
+            dom = ""
+        # ① 时魔 /h：实时页基本没有 → 取「站点公式」通道（同域，Redis 冷/热层）
+        if live.get("bonus_per_hour") is None and dom:
+            try:
+                cap = self._cache_formula().get(dom, SITE_FORMULA_STALE_MAX)
+                extra = getattr(cap, "extra", None) or {}
+                bph = extra.get("total_bonus_per_hour")
+                if bph is None:
+                    bph = extra.get("current_bonus_per_hour")
+                if bph is not None:
+                    live["bonus_per_hour"] = float(bph)
+                    src["bonus_per_hour"] = "formula"
+            except Exception:  # noqa: BLE001
+                pass
+        # ② 做种 / 下载中：实时页缺 → 取 MP 站点快照兜底（不触网）
+        if live.get("seeding") is None or live.get("leeching") is None:
+            try:
+                u = self._site_user_stats(int(site_id)) or {}
+                if live.get("seeding") is None and u.get("seeding") is not None:
+                    live["seeding"] = int(u.get("seeding") or 0)
+                    src["seeding"] = "mp"
+                if live.get("leeching") is None and u.get("leeching") is not None:
+                    live["leeching"] = int(u.get("leeching") or 0)
+                    src["leeching"] = "mp"
+            except Exception:  # noqa: BLE001
+                pass
+        for key in ("uid", "upload", "download", "ratio", "bonus", "hr"):
+            if live.get(key) is not None:
+                src.setdefault(key, "live")
+        return live
 
     def get_live_state(self, force: bool = False, site_id: int = 0) -> Response:
         """站点实时数据 + 流量监控快照(只读,不做任何写操作)。
