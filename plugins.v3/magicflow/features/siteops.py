@@ -34,7 +34,7 @@ from ..common import (
     site_guard,
 )
 from ..tags import MARK_REUSE, SUB_RESOURCE, is_asset_tags, is_library_asset
-from ..sitestore import get_site_store
+from ..sitestore import get_site_store, slot_callbacks
 
 
 class SiteOpsMixin:
@@ -174,6 +174,38 @@ class SiteOpsMixin:
             self._log(f"魔流:站点规则自动刷新完成（{n} 站）")
         except Exception as err:  # noqa: BLE001
             self._log(f"站点规则刷新异常:{err}", "warning")
+        finally:
+            self._release_worker_slot()
+
+    def site_lifecycle(self) -> None:
+        """★ 17.5.0（常驻 worker）：把「MP 侧已删站」落成台账标记（**只标记，不删行**）。
+
+        为什么单独开一个常驻 worker：站点删除跟「有没有任务在跑」无关，而 LiveWatch
+        只在有运行中/做种中任务时才注册 ⇒ 挂在那里会在全 stopped 时静默停摆。
+        动作全幂等：判为已删 → ``status='deleted'``；MP 里又有该站 → 清回 NULL（复活）。
+        """
+        if not self._acquire_worker_slot("站点生命周期"):
+            return
+        try:
+            r = site_deleted_mark(self)
+            if not r.get("ok"):
+                if r.get("skipped"):
+                    logger.debug(f"魔流站点生命周期：跳过标记（{r.get('skipped')}）")
+                elif r.get("error"):
+                    self._log(f"站点生命周期标记失败:{r.get('error')}", "warning")
+                return
+            marked = int(r.get("marked") or 0)
+            cleared = int(r.get("cleared") or 0)
+            if not marked and not cleared:
+                return
+            names = [str(x) for x in (r.get("sites") or [])][:5]
+            self._log(
+                f"站点生命周期：MP 侧已删站 {marked} 个已标记 / {cleared} 个已复活"
+                + (f"（{'、'.join(names)}）" if names else ""),
+                "warning" if marked else "info",
+            )
+        except Exception as err:  # noqa: BLE001
+            self._log(f"站点生命周期标记异常:{err}", "warning")
         finally:
             self._release_worker_slot()
 
@@ -821,63 +853,282 @@ def site_ledger_counts(host: Any, site_id: Any, iyuu_sid: Any) -> Dict[str, int]
     return {"seed_rows": n_seed, "reseed_rows": n_reseed}
 
 
-def deleted_sites_rows(host: Any) -> List[Dict[str, Any]]:
-    """★ 站点已被 MoviePilot 删除的**全量清单 + 牵连面**（只读）。
+def site_references(host: Any) -> Dict[str, Dict[str, Any]]:
+    """★ 17.5.0：**所有**站点引用的汇总（只读）——「已删站」真值源 = 本函数 − MP 站点表。
 
-    判据：魔流台账行的 ``mp_site_id``（无则按域名）在 MP 站点表里找不到 → 该站被人在 MP 侧删了。
+    为什么需要它：站点在 MP 里被删掉之后，引用**比 ``mf_site`` 行活得久** ——
+    账单（``hr_bills.json``）、跨站来源份、补种记录、任务配置都会继续引用这个域名。
+    只认 ``mf_site`` 行会形成盲区（现场 2026-10-15：hdfans.org 的台账行早已不在，
+    账单还剩 46 条，而旧判据报「0 个已删站」；更糟的是**删掉那一行会让它彻底隐形**）。
+
+    引用来源（逐项记进 ``refs``）：
+    ``mf_site``(台账行) / ``bills``(账单) / ``mf_seed`` / ``mf_reseed`` / ``mf_crossseed`` / ``task``。
+
+    键 = 归一化域名；没有域名的残留（台账行已删、只剩按 id 的账本行）用 ``site:<id>`` /
+    ``iyuu:<sid>`` 兜底建键 —— ★ **只在内存里建键，绝不建台账行**（Master 2026-10-15 拍板）。
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+
+    def _slot(dom: Any = "", sid: Any = None, iyuu: Any = None) -> Dict[str, Any]:
+        d = dom_norm(dom)
+        sid_i = _as_int(sid)
+        iyuu_i = _as_int(iyuu)
+        key = d or (f"site:{sid_i}" if sid_i else (f"iyuu:{iyuu_i}" if iyuu_i else ""))
+        if not key:
+            return {}
+        ent = out.get(key)
+        if ent is None:
+            ent = {"key": key, "domain": d or "", "name": "", "site_id": None,
+                   "mp_site_id": None, "iyuu_sid": None, "has_row": False,
+                   "status": "", "deleted_at": None, "refs": [], "bills": 0}
+            out[key] = ent
+        # ★ 台账 site_id / iyuu_sid 必须落进槽里：``deleted_sites_rows`` 要用它数 mf_seed 行
+        #   （漏了会让「按域名建键」的正常站算成 0 行 —— 17.5.0 回归抓到）
+        if sid_i and not ent["site_id"]:
+            ent["site_id"] = sid_i
+        if iyuu_i and not ent["iyuu_sid"]:
+            ent["iyuu_sid"] = iyuu_i
+        return ent
+
+    def _ref(ent: Dict[str, Any], kind: str) -> None:
+        if ent and kind not in ent["refs"]:
+            ent["refs"].append(kind)
+
+    by_site_id: Dict[int, str] = {}
+    by_mp_id: Dict[int, str] = {}
+    by_iyuu: Dict[int, str] = {}
+    # 1) 台账行（唯一带生命周期状态的来源）
+    for r in (host._agent_db_site_rows() or []):
+        if not isinstance(r, dict):
+            continue
+        sid = _as_int(r.get("site_id"))
+        ent = _slot(r.get("domain"), sid=sid, iyuu=r.get("iyuu_sid"))
+        if not ent:
+            continue
+        _ref(ent, "mf_site")
+        ent["has_row"] = True
+        ent["name"] = str(r.get("name") or "").strip() or ent["name"]
+        ent["mp_site_id"] = _as_int(r.get("mp_site_id")) or ent["mp_site_id"]
+        ent["iyuu_sid"] = _as_int(r.get("iyuu_sid")) or ent["iyuu_sid"]
+        ent["status"] = str(r.get("status") or "").strip()
+        ent["deleted_at"] = r.get("deleted_at") or ent["deleted_at"]
+        if sid:
+            by_site_id[sid] = ent["key"]
+        if ent["mp_site_id"]:
+            by_mp_id[ent["mp_site_id"]] = ent["key"]
+        if ent["iyuu_sid"]:
+            by_iyuu[ent["iyuu_sid"]] = ent["key"]
+    # 2) 账单（★ 残留寿命最长的一层）
+    try:
+        _bills = host._hrbills_store().all() or {}
+    except Exception:  # noqa: BLE001
+        _bills = {}
+    for b in ((_bills or {}).values() if isinstance(_bills, dict) else []):
+        if not isinstance(b, dict) or not dom_norm(b.get("site")):
+            continue
+        ent = _slot(b.get("site"))
+        if not ent:
+            continue
+        _ref(ent, "bills")
+        ent["bills"] += 1
+    # 3) 账本残留（台账行已经没了的那部分）
+    for r in (host._agent_db_rows("SeedRow") or []):
+        sid = _as_int(getattr(r, "site_id", 0))
+        if not sid:
+            continue
+        key = by_site_id.get(sid)
+        ent = out.get(key) if key else None
+        if ent is None:
+            ent = _slot(sid=sid)
+        _ref(ent, "mf_seed")
+    for r in (host._agent_db_rows("ReseedRow") or []):
+        iid = _as_int(getattr(r, "site_id", 0))
+        if not iid:
+            continue
+        key = by_iyuu.get(iid)
+        ent = out.get(key) if key else None
+        if ent is None:
+            ent = _slot(iyuu=iid)
+        _ref(ent, "mf_reseed")
+    for r in (host._agent_db_rows("CrossSeedRow") or []):
+        if not dom_norm(getattr(r, "site_b_domain", None)):
+            continue
+        _ref(_slot(getattr(r, "site_b_domain", None)), "mf_crossseed")
+    # 4) 任务配置（按 mp_site_id）
+    for tid, t in ((getattr(host, "_task_configs", None) or {}).items()):
+        sid = _as_int(getattr(t, "site_id", 0))
+        if not sid:
+            continue
+        key = by_mp_id.get(sid)
+        ent = out.get(key) if key else None
+        if ent is None:
+            ent = _slot(sid=sid)
+        _ref(ent, "task")
+    return out
+
+
+def site_deleted_domains(host: Any, mp: Any = None) -> Dict[str, Dict[str, Any]]:
+    """★ 17.5.0：**已删站真值源**（key = 归一化域名 / ``site:<id>``；只读）。
+
+    判据 = 「所有站点引用」（``site_references``）− MP 站点表，含**域名兜底**：
+
+      * ``mp_site_id`` 在 MP 里查不到，但**同域名**还在 MP 里 → **不算删**（MP 里删站后重加
+        同名站会拿到新 id；旧 id 查不到 ≠ 站点没了 —— 17.5.0 修的误报根因）；
+      * 连域名也查不到 → ``mp_deleted``；
+      * 没有 ``mp_site_id``（只有域名）且域名不在 MP → ``domain_missing``；
+      * 台账行已不在、只剩账单/账本残留 → ``residue_no_row``（旧判据完全看不见这一类）；
+      * **别名兜底**：残留域名是某个**活站**域名的子域（``pt.soulvoice.club`` ⊂ 活站
+        ``soulvoice.club``）→ 算活站，不算删（同一个 tracker 换了域名而已）；
+      * 域名与 id 都认不出（只剩按 id 的账本行）→ **不硬判**，不进清单。
+
+    报表 ``reportview``、健康自检 H8、通知 ``notify`` 三处**共用这一份**，不再各算各的。
+    """
+    mp = mp if mp is not None else site_guard(host).mp_sites()
+    if not mp:
+        return {}
+    try:
+        mp_ids = {_as_int(k) for k in (mp or {}).keys()}
+        mp_domains = {dom_norm(v.get("domain")) for v in mp.values()
+                      if isinstance(v, dict) and dom_norm(v.get("domain"))}
+    except Exception:  # noqa: BLE001
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for key, ent in site_references(host).items():
+        mpsid = _as_int(ent.get("mp_site_id"))
+        dom = dom_norm(ent.get("domain"))
+        if mpsid and mpsid in mp_ids:
+            continue
+        if dom and dom in mp_domains:
+            continue
+        # ★ 别名兜底：残留域名是某个**活站**域名的子域 → 同一个 tracker 换了域名，算活站。
+        #   现场 2026-10-15：账单里有 9 条 ``pt.soulvoice.club``（states 全 pending），
+        #   而聆音 ``soulvoice.club`` 活着且在 MP 里；不兜底就会把活站报成「站点已删」、
+        #   并把这 9 条账单误判成「无法对账」。**只认子域方向**（残留 ⊂ 活站），
+        #   不认父域方向 —— 父域更容易把真正被删的站合并掉。
+        if dom and any(dom.endswith("." + d) for d in mp_domains):
+            continue
+        if not dom and not mpsid:
+            # 域名与 mp_site_id 都认不出（只剩按 id 的账本行）→ 不硬判，宁可漏报。
+            # ★ 刻意**不做按站名匹配**：无域名无 id 的台账行（如手工行）按名字猜会把
+            #   「从来不是 MP 站点」的行永久报成已删 → H8/告警常驻噪音。
+            continue
+        if not ent.get("has_row"):
+            reason = "residue_no_row"
+        elif mpsid:
+            reason = "mp_deleted"
+        else:
+            reason = "domain_missing"
+        out[key] = {**ent, "reason": reason}
+    return out
+
+
+def deleted_sites_rows(host: Any) -> List[Dict[str, Any]]:
+    """★ 站点已被 MoviePilot 删除的**全量清单 + 牵连面**（真值源：``site_deleted_domains``；只读）。
+
+    ★ 17.5.0 判据修正：原来只看 ``mf_site`` 行（台账行一删就彻底看不见 → 盲区），
+    现在遍历**所有站点引用**（台账行 ∪ 账单 ∪ mf_seed/mf_reseed/mf_crossseed ∪ 任务），
+    ``refs`` 标出被哪些层引用、``bills`` 给出账单条数（=「无法对账的欠账」规模），
+    ``has_row`` 区分「有台账行（可标记/可处置）」与「只剩残留（只在清单里可见）」。
+
+    ``reason`` ∈ ``mp_deleted`` / ``domain_missing`` / ``residue_no_row``。
     **MP 站点表读不到时返回空**（判不出不硬判，宁可漏报一轮）。
     牵连面全部「只数不写」：qB 标签种数/体积/暂停数/复用副本数、账本行数、站内任务数。
     """
     mp = site_guard(host).mp_sites()
     if not mp:
         return []
-    mp_domains = {dom_norm(v.get("domain")) for v in mp.values() if v.get("domain")}
-    mp_names = {dom_norm(v.get("name")) for v in mp.values() if v.get("name")}
+    deleted = site_deleted_domains(host, mp=mp)
     tasks = getattr(host, "_task_configs", None) or {}
     out: List[Dict[str, Any]] = []
-    for r in (host._agent_db_site_rows() or []):
-        mpsid = _as_int(r.get("mp_site_id"))
-        dom = dom_norm(r.get("domain"))
-        if mpsid:
-            deleted = mpsid not in mp
-            reason = "mp_deleted"
-        elif dom:
-            deleted = dom not in mp_domains
-            reason = "domain_missing"
-        else:
-            nm = dom_norm(r.get("name"))
-            deleted = bool(nm) and nm not in mp_names
-            reason = "no_binding"
-        if not deleted:
-            continue
-        name = str(r.get("name") or "").strip() or dom
+    for _key, d in deleted.items():
+        mpsid = _as_int(d.get("mp_site_id"))
+        name = str(d.get("name") or "").strip() or str(d.get("domain") or "")
         bound: List[str] = []
         if mpsid:
             for tid, t in tasks.items():
                 if _as_int(getattr(t, "site_id", 0)) == mpsid:
                     bound.append(str(getattr(t, "id", "") or tid))
         out.append({
-            "site_id": r.get("site_id"),
+            "site_id": d.get("site_id"),
             "name": name,
-            "domain": r.get("domain"),
-            "mp_site_id": r.get("mp_site_id"),
-            "iyuu_sid": r.get("iyuu_sid"),
-            "reason": reason,
+            "domain": d.get("domain") or "",
+            "mp_site_id": d.get("mp_site_id"),
+            "iyuu_sid": d.get("iyuu_sid"),
+            "reason": d.get("reason"),
+            "has_row": bool(d.get("has_row")),
+            "status": str(d.get("status") or ""),
+            "deleted_at": d.get("deleted_at"),
+            "refs": list(d.get("refs") or []),
+            "bills": int(d.get("bills") or 0),
             "tasks": bound,
             "seeds": site_seed_stats(host, name),
-            "ledger": site_ledger_counts(host, r.get("site_id"), r.get("iyuu_sid")),
+            "ledger": site_ledger_counts(host, d.get("site_id"), d.get("iyuu_sid")),
         })
-    out.sort(key=lambda x: int((x.get("seeds") or {}).get("count") or 0), reverse=True)
+    out.sort(key=lambda x: (-int((x.get("seeds") or {}).get("count") or 0),
+                            -int(x.get("bills") or 0)))
     return out
 
 
+def site_deleted_mark(host: Any, dry_run: Any = 0) -> Dict[str, Any]:
+    """★ 17.5.0：把「MP 侧已删」落到台账 ``mf_site.status``（**只标记，不删行、不动标量**）。
+
+    ★ 17.5.0：由**常驻** worker ``site_lifecycle``（``features/core.py`` 服务表，默认每 30 分钟一轮）
+    调，**不依赖任何任务在跑**。规则：
+
+      * 有台账行且判为已删 → ``status='deleted'`` + ``deleted_at``（幂等：已标记不重盖时间）+ ``reason``；
+      * 之前标过 deleted、但 MP 里又有该站 → **清回 NULL**（重加同名站 / 站点恢复 = 无损复活，
+        按 ``mp_site_id`` 存的 ``pv_budget`` / 站点规则 / 分类 id 原样还在）;
+      * 只剩账单/账本残留、**没有台账行**的 → **不建行**（Master 2026-10-15 拍板），只在清单里可见。
+
+    MP 站点表读不到 → 直接 ``{"ok": False, "skipped": "mp_unavailable"}``：判不出就**一个字都不写**，
+    绝不把「读不到 MP」误写成「整排站被删」。
+    """
+    mp = site_guard(host).mp_sites()
+    if not mp:
+        return {"ok": False, "skipped": "mp_unavailable", "marked": 0, "cleared": 0}
+    deleted = site_deleted_domains(host, mp=mp)
+    want: Dict[str, Dict[str, Any]] = {}
+    for _key, d in deleted.items():
+        dom = dom_norm(d.get("domain"))
+        if not dom or not d.get("has_row"):
+            continue
+        want[dom] = {"status": "deleted", "at": time.time(), "reason": d.get("reason")}
+    marked = len(want)
+    try:
+        cur = dict(slot_callbacks(host, "site_status")[0]() or {})
+    except Exception:  # noqa: BLE001
+        cur = {}
+    cleared = 0
+    for dom in list(cur.keys()):
+        if dom not in want:
+            want[dom] = {"status": "active"}   # 站点又回到 MP → 复活
+            cleared += 1
+    if _truthy(dry_run):
+        return {"ok": True, "dry_run": True, "marked": marked, "cleared": cleared,
+                "sites": sorted([d for d, v in want.items() if v.get("status") == "deleted"])}
+    if not want:
+        return {"ok": True, "marked": 0, "cleared": 0, "sites": []}
+    try:
+        slot_callbacks(host, "site_status")[1](want)
+    except Exception as err:  # noqa: BLE001
+        return {"ok": False, "error": str(err), "marked": 0, "cleared": 0}
+    return {"ok": True, "marked": marked, "cleared": cleared,
+            "sites": sorted([d for d, v in want.items() if v.get("status") == "deleted"])}
+
+
 def deleted_site_find(host: Any, site_id: Any) -> Optional[Dict[str, Any]]:
-    """按台账 ``site_id`` 或 ``mp_site_id`` 在「已删除站点」清单里定位一行。"""
+    """按台账 ``site_id`` / ``mp_site_id`` / **域名** 在「已删除站点」清单里定位一行。
+
+    ★ 17.5.0：支持域名（只剩账单残留、没有台账行的站也能被定位/展示）。
+    """
     sid = _as_int(site_id)
-    if not sid:
+    key = "" if sid else dom_norm(site_id)
+    if not sid and not key:
         return None
     for r in deleted_sites_rows(host):
-        if _as_int(r.get("site_id")) == sid or _as_int(r.get("mp_site_id")) == sid:
+        if sid and (_as_int(r.get("site_id")) == sid or _as_int(r.get("mp_site_id")) == sid):
+            return r
+        if key and dom_norm(r.get("domain")) == key:
             return r
     return None
 

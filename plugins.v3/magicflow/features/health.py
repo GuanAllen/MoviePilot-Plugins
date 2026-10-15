@@ -200,9 +200,10 @@ class HealthMixin:
         except Exception:  # noqa: BLE001
             pass
 
-        # H8 站点已被 MP 删除（★ 17.4.0，**零外部请求**）：魔流台账 mf_site 里还在、MP 站点表里已无
-        #   （按 mp_site_id / 域名 / 站名三级回落）→ 该站的种不必再挂，但**只报不做**：
-        #   判据依赖 MP 站点表可读（未认证 / 索引器临时为空时判据函数自己返回空，宁可漏报一轮），
+        # H8 站点已被 MP 删除（★ 17.4.0 起；17.5.0 换共用真值源 + 覆盖「只剩账单/账本残留」的站）
+        #   真值 = siteops.site_deleted_domains（所有站点引用 − MP 站点表；报表/notify 用同一份），
+        #   **零外部请求** → 该站的种不必再挂，但**只报不做**：判据依赖 MP 站点表可读
+        #   （未认证 / 索引器临时为空时判据函数自己返回空，宁可漏报一轮），
         #   误判一次的代价是不可逆的摘种 —— 摘种/删种一律走显式下令
         #   （POST /agent/sites/deleted/act，默认干跑）。
         try:
@@ -213,12 +214,20 @@ class HealthMixin:
                 sd = row.get("seeds") if isinstance(row.get("seeds"), dict) else {}
                 led = row.get("ledger") if isinstance(row.get("ledger"), dict) else {}
                 nm = str(row.get("name") or row.get("domain") or row.get("site_id") or "")
+                n_bills = int(row.get("bills") or 0)
+                has_row = bool(row.get("has_row"))
+                refs = "、".join(str(x) for x in (row.get("refs") or [])) or "—"
                 issues.append({
-                    "key": f"H8:{row.get('site_id')}",
+                    # ★ 17.5.0：`site_id` 可能为空（只剩账单/账本残留）→ 用域名兜底，避免 key 撞成 H8:None
+                    "key": f"H8:{row.get('site_id') or row.get('domain') or nm or '?'}",
                     "level": "warning",
-                    "title": f"站点「{nm}」已被 MoviePilot 删除",
+                    "title": (f"站点「{nm}」已被 MoviePilot 删除"
+                              + ("" if has_row else "（只剩残留）")),
                     "detail": (
-                        f"判据 {row.get('reason') or '—'}；qB 仍挂着 {int(sd.get('count') or 0)} 个种"
+                        f"判据 {row.get('reason') or '—'}；引用层 {refs}"
+                        + (f"、账单 {n_bills} 条" if n_bills else "")
+                        + ("" if has_row else "、**台账行已不在**（不建行，只在清单里可见）")
+                        + f"；qB 仍挂着 {int(sd.get('count') or 0)} 个种"
                         f"（{sd.get('size_gb') or 0}GB，运行 {int(sd.get('running') or 0)} / "
                         f"暂停 {int(sd.get('paused') or 0)}，其中复用副本 {int(sd.get('reuse') or 0)} 个）、"
                         f"账本 mf_seed {int(led.get('seed_rows') or 0)} 行、"

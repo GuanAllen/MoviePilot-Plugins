@@ -263,6 +263,7 @@ def build_rows(ctx: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     why: Dict[str, str] = dict(prot.get("why") or {})
     legacy = set(prot.get("legacy") or ())
     idx: Dict[str, Any] = ctx.get("site_index") or {}
+    sd: Dict[str, Any] = ctx.get("site_deleted") or {}
     known = set(ctx.get("known_sites") or ())
     reseed = set(ctx.get("reseed") or ())
     cssrc: Dict[str, Any] = ctx.get("crossseed") or {}
@@ -378,7 +379,10 @@ def build_rows(ctx: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
                 deadline = {}
         ledger_only = bool(rec) and not in_qb
         qb_only = in_qb and not rec
-        site_deleted = bool(site_raw) and not info
+        # ★ 17.5.0：与 H8 / 通知 / /agent/sites/deleted 共用「已删站真值源」——
+        #   站点引用还在（账单/账本残留），而 MP 站点表里已没有它。
+        _sd_key = _norm_dom(site_dom or site_raw)
+        site_deleted = bool(site_raw) and (not info or bool(_sd_key and _sd_key in sd))
         out[h] = {
             "hash": h,
             "site": site_dom or site_raw,
@@ -665,6 +669,7 @@ def view_hr(ctx: Dict[str, Any], site: str = "", live: int = 0,
     snap = ctx.get("snap") or {}
     bills = ctx.get("bills") or {}
     idx = ctx.get("site_index") or {}
+    sd: Dict[str, Any] = ctx.get("site_deleted") or {}
     reconcile = ctx.get("reconcile") or {}
     totals = {"sites": 0, "bills": 0, "total_bills": 0, "hr_rule": 0, "unclassified": 0,
               "active": 0, "pending": 0, "settled": 0, "void": 0, "breached": 0,
@@ -683,7 +688,7 @@ def view_hr(ctx: Dict[str, Any], site: str = "", live: int = 0,
             "rule_source": str(ent.get("rule_source") or ""),
             "need_h": round(need_h, 1),
             "window_h": round(_as_float(ent.get("window_h")), 1),
-            "site_deleted": not bool(ent),
+            "site_deleted": (not bool(ent)) or bool(dom and dom in sd),
             "bills": {"total": 0, "hr_rule": 0, "unclassified": 0, "active": 0,
                       "pending": 0, "settled": 0, "void": 0, "breached": 0},
             "owed": 0, "in_qb": 0, "missing": 0, "at_risk": 0, "items": [],
@@ -882,6 +887,7 @@ def drift(ctx: Dict[str, Any]) -> Dict[str, Any]:
     ledger_only = sorted(led_h - qb_h)
     qb_only = sorted(qb_h - led_h)
     idx = ctx.get("site_index") or {}
+    sd: Dict[str, Any] = ctx.get("site_deleted") or {}
     by_site: Dict[str, Dict[str, Any]] = {}
     missing_sites: Dict[str, Dict[str, Any]] = {}
     for h, r in rows.items():
@@ -902,6 +908,21 @@ def drift(ctx: Dict[str, Any]) -> Dict[str, Any]:
         if key not in idx and key != "(无站点)":
             m = missing_sites.setdefault(key, {**d, "site": key, "site_deleted": True})
             m.update(d)
+    # ★ 17.5.0：只剩残留（账单/账本）而**台账行已经没了**的已删站也要进互校——
+    #   旧口径只遍历台账行 ⇒ 这类站完全隐形（现场：hdfans.org 台账行已删、账单剩 46 条，
+    #   旧互校/旧 /agent/sites/deleted 都报 0）。
+    for _dom, _ent in (sd or {}).items():
+        if not _dom or _dom == "(无站点)" or _dom in by_site or _dom in missing_sites:
+            continue
+        missing_sites[_dom] = {
+            "rows": 0, "size_gb": 0.0, "ledger_only": 0, "qb_only": 0,
+            "protected": 0, "protected_hard": 0, "protected_soft": 0, "protected_any": 0,
+            "site": _dom, "site_deleted": True,
+            "reason": str((_ent or {}).get("reason") or ""),
+            "bills": int((_ent or {}).get("bills") or 0),
+            "has_row": bool((_ent or {}).get("has_row")),
+            "refs": list((_ent or {}).get("refs") or []),
+        }
     mp_sites = {_norm_dom(it.get("domain") or it.get("name"))
                 for it in (ctx.get("sites") or []) if (it.get("domain") or it.get("name"))}
     silent_n = sum(1 for r in rows.values() if str(r.get("bucket")) == BUCKET_SILENT)
@@ -1084,12 +1105,19 @@ class ReportViewMixin:
             known = set(self._rv_call("_tag_site_names") or ())
         except Exception:  # noqa: BLE001
             known = set()
+        # ★ 17.5.0：已删站真值源（与 H8 / 通知 / /agent/sites/deleted 共用**同一份**，不再各算各的）
+        try:
+            from .siteops import site_deleted_domains
+            site_deleted = site_deleted_domains(self)
+        except Exception:  # noqa: BLE001
+            site_deleted = {}
         return {
             "at": _now_iso(), "now": time.time(),
             "ledger": ledger, "snap": snap, "bills": bills,
             "sites": sites, "site_rows": site_rows, "site_index": site_index,
             "protected": prot, "reseed": reseed, "crossseed": cssrc,
             "owed": owed, "known_sites": known, "reconcile": reconcile,
+            "site_deleted": site_deleted,
             "transport_fn": getattr(self, "_site_report_transport", None),
             "sub_fn": getattr(self, "_site_report_sub", None),
             "bucket_fn": getattr(self, "_site_report_bucket", None),

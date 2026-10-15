@@ -3,7 +3,7 @@
         "name": "魔流",
         "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
         "labels": "站点,做种,魔力,刷流",
-        "version": "17.4.0",
+        "version": "17.5.0",
         "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
         "author": "GuanAllen",
         "level": 1,
@@ -430,9 +430,10 @@
             "17.2.1": "17.2.1：直连加种删掉写死的逐种 H&R 标记（判定归 H&R 模块，修 cspt.top/聆音 被凭空开账）",
             "17.2.2": "H&R 真值链收口：逐种站的站点级结论不适用 + 首页 H&R 计数进健康自检 H7 + 内置表退场 + 列表页 hitandrun 标签自解析",
             "17.3.0": "17.3.0：报表统一口径——新增 GET /agent/report（view=site|silent|hr|rows）+ /agent/report/drift，三旧报表端点改由同一台账投影（数字一致、字段不变）；rule=unknown 账单显式归「未定性」；修 myhr 对账 ok 先落盘后置位导致 hr.ok 恒 false 的口径假象。",
-            "17.4.0": "17.4.0：MP 删站善后收口 —— 处置改三档口径（复用副本/本体·库内资产只摘种保文件，自有非本体才连文件删）+ 具名 gate_strip 通道 + 站点删除发现自动化（通知 sitedel:<id> 去重 / 健康自检 H8）"
+            "17.4.0": "17.4.0：MP 删站善后收口 —— 处置改三档口径（复用副本/本体·库内资产只摘种保文件，自有非本体才连文件删）+ 具名 gate_strip 通道 + 站点删除发现自动化（通知 sitedel:<id> 去重 / 健康自检 H8）",
+            "17.5.0": "MP 删站善后收口：真值源扩成「所有站点引用 − MP 站点表」+ 台账标记制（只标记不删行）+ 残留站不再隐形 + 别名兜底"
         }
     },
-    "version": "17.4.0",
+    "version": "17.5.0",
     "history": {}
 }

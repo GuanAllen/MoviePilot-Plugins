@@ -258,10 +258,10 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
         {"path": "/agent/sites/deleted", "method": "GET", "handler": "agent_sites_deleted",
          "write": False, "params": {},
          "returns": "DeletedSites", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "哪些站被删了、牵连多少种：已删站点 + 波及面（种数/体积/账本/任务）"},
+         "summary": "哪些站被删了、牵连多少种：已删站 + 只剩账单/账本残留的站（真值=全部站点引用−MP 站点表）"},
         {"path": "/agent/sites/deleted/act", "method": "POST", "handler": "agent_sites_deleted_act",
          "write": True,
-         "params": {"site_id": "台账 site_id（或 mp_site_id）",
+         "params": {"site_id": "台账 site_id / mp_site_id / **域名**（只剩账单残留、已无台账行的站只能用域名）",
                     "action": "pause|resume|remove（remove 三档：①复用副本只摘种 ②本体/库内资产只摘种（文件留媒体库）③自有非本体连文件删；摘种走具名 gate_strip 通道，不等同于删库内资产）",
                     "reuse_only": "1=只处理带 魔流-辅种 的复用副本",
                     "dry_run": "1=干跑（默认）；0=真做",
@@ -1112,13 +1112,21 @@ class AgentApiMixin:
         """``GET /agent/sites/deleted`` —— ★ **已被 MoviePilot 删除的站点**清单 + 牵连面（只读）。
 
         一次调用答：**「MP 里删了哪些站、每个站在魔流这边还挂着多少东西」**。
-        判据 = 魔流台账（``mf_site``）里还在、MP 站点表里已无（``SiteGuard.mp_sites``，60s 记忆化）；
+        ★ 17.5.0 判据换成**共用真值源** ``siteops.site_deleted_domains``
+        （``site_references`` − MP 站点表；报表/health H8/notify 用同一份）：
+        遍历**所有站点引用**（``mf_site`` 行 ∪ 账单 ∪ ``mf_seed``/``mf_reseed``/``mf_crossseed`` ∪ 任务），
+        所以**只剩账单/账本残留、台账行早已被删**的站也能看见（旧口径只看 ``mf_site`` 行 → 盲区）。
+        新增字段：``refs``（被哪些层引用）、``bills``（账单条数 = 无法对账的欠账规模）、
+        ``has_row``（有没有台账行）、``status``/``deleted_at``（``SiteLifecycle`` worker 落的标记）。
         牵连面只数不写：qB 标签种数/体积/暂停数/复用副本数、``mf_seed``/``mf_reseed`` 行数、站内任务。
         处置入口见 ``POST /agent/sites/deleted/act``。
 
-        ★ 17.4.0 起本清单**已接自动化**：站点监控每轮经 ``notify_sweep`` → ``notify_check_site_deleted``
-        发「站点已删除」告警（每站一条、按 ``sitedel:<site_id>`` 去重），健康自检出 ``H8:<site_id>``。
-        **两处都只报不做**——摘种/删种一律要显式下令（act 端点，默认干跑）。
+        ``reason`` ∈ ``mp_deleted`` / ``domain_missing`` / ``residue_no_row``。
+        **MP 站点表读不到 → 返回空**（判不出不硬判）。
+
+        ★ 17.4.0 起本清单**已接自动化**：``notify_sweep`` → ``notify_check_site_deleted`` 发告警
+        （每站一条、按 ``sitedel:<site_id>`` 去重），健康自检出 ``H8:<site_id>``。
+        **只报不做**——摘种/删种一律要显式下令（act 端点，默认干跑）。
         """
         t0 = time.time()
         try:
@@ -1128,8 +1136,10 @@ class AgentApiMixin:
             return self._agent_err("internal", f"已删除站点盘点失败:{e}", t0, trace_id="sites")
         return self._agent_report(
             {"count": len(rows), "sites": rows}, t0,
-            ("魔流台账 mf_site（_agent_db_site_rows）× MoviePilot 站点表 SiteOper.list()"
-             "（common.SiteGuard.mp_sites，60s 记忆化）；牵连面只数不写"
+            ("魔流**所有站点引用**（siteops.site_references：mf_site ∪ hr_bills.json ∪ "
+             "mf_seed/mf_reseed/mf_crossseed ∪ _task_configs）× MoviePilot 站点表 SiteOper.list()"
+             "（common.SiteGuard.mp_sites，60s 记忆化）；域名兜底：mp_site_id 查不到但同域名还在 MP → "
+             "不算删（MP 删站后重加同名站会拿新 id）。牵连面只数不写"
              "（qB 标签前缀 魔流-<站名>- / mf_seed / mf_reseed / _task_configs）"))
 
     def agent_sites_deleted_act(self, site_id: Any = "", action: str = "",
@@ -1144,6 +1154,8 @@ class AgentApiMixin:
         （同批之外还有别的种共用同一份文件 → 自动降级为只摘种）。``reuse_only=1`` 只跑复用副本那档。
         ``force_asset=1`` → ★ 走「手动删库内资产」专用闸门（跳过「库内资产（已入库，永不删）」这类，
         其余四类照拦）；用于站点已删除后的彻底清理，**默认关**。
+
+        ★ 17.5.0：``site_id`` 也接受**域名**（只剩账单/账本残留、台账行已删的站没有 site_id 可用）。
         """
         t0 = time.time()
         try:
