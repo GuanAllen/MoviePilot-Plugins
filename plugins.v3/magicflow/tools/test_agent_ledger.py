@@ -95,6 +95,8 @@ agentapi, agentledger = _load_modules()
 AgentApiMixin = agentapi.AgentApiMixin
 AgentLedgerMixin = agentledger.AgentLedgerMixin
 LEDGER_TABLES = agentledger.LEDGER_TABLES
+# ★ 19.2.2：AI 入口缺省等待上限真值源（common.py）—— 断言用它，别在测试里写死数字
+LIVE_AGENT_WAIT_S = float(sys.modules[PKG + ".common"].LIVE_AGENT_WAIT_S)
 
 
 # ------------------------------------------------------------------ 假对象
@@ -262,7 +264,10 @@ class Harness(AgentApiMixin, AgentLedgerMixin):
     def douban_service_status(self, action=""):
         return FakeResp({"count": 3, "progress": 0.5, "running": True})
 
-    def get_live_state(self, force=False, site_id=0):
+    def get_live_state(self, force=False, site_id=0, block=False, fresh=False, wait=None):
+        # ★ 19.2.2：AI 入口缺省 = 限时真抓（wait=LIVE_AGENT_WAIT_S）；记录供断言
+        self._last_live_call = {"force": force, "site_id": site_id,
+                                "block": block, "fresh": fresh, "wait": wait}
         return FakeResp({"sites": [{"site_id": 1, "live": {}}], "traffic": {}})
 
     def get_signin_state(self, days=7):
@@ -597,6 +602,17 @@ def main() -> int:
     _ok(ex["ok"], "agent_exam(include_pass='true') 强转 ok")
     lv = hh.agent_live(site_id="2")
     _ok(lv["ok"], "agent_live(site_id='2') 强转 ok")
+    _ok(hh._last_live_call.get("wait") == LIVE_AGENT_WAIT_S
+        and not hh._last_live_call.get("block") and not hh._last_live_call.get("fresh"),
+        "agent_live 缺省 → 限时真抓（wait=LIVE_AGENT_WAIT_S，不等死）")
+    hh.agent_live(site_id="2", live="1")
+    _ok(hh._last_live_call.get("block") is True and hh._last_live_call.get("fresh") is True
+        and hh._last_live_call.get("wait") is None,
+        "agent_live live=1 → 不限时真抓（block/fresh=True）")
+    hh.agent_live(site_id="2", live="0")
+    _ok(hh._last_live_call.get("block") is False and hh._last_live_call.get("fresh") is False
+        and hh._last_live_call.get("wait") is None,
+        "agent_live live=0 → 只读缓存（block/fresh=False）")
     ev = hh.agent_events(limit="10")
     _ok(ev["ok"], "agent_events(limit='10') 强转 ok")
     fb = hh.agent_fallback(resolve_paths="true")

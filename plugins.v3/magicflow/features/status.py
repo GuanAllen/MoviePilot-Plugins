@@ -41,6 +41,7 @@ from ..common import (
     HR_COMPLETE_RATIO_DEFAULT,
     STATS_TTL,
     STATUS_TTL,
+    redact_secrets,
     run_mode_of,
     site_guard,
     task_is_participating,
@@ -615,4 +616,7 @@ class StatusMixin:
             "cloud": self._cloud_cfg_view(),
             "defaults": dict(getattr(self, "_defaults", {}) or {}),
         })
-        return Response(success=True, data=data)
+        # ★ 出口过「唯一脱敏闸」（common.redact_secrets）：凭据只回 `***` + `<key>_set`。
+        #   本方法同时被 agentledger 的 /agent/overview、/agent/settings 复用（那边再过 `_agent_ok`），
+        #   两处都**不需要**明文 —— 内部逻辑一律直接读 `self._iyuu_token` 等内存字段，不读出口。
+        return Response(success=True, data=redact_secrets(data))

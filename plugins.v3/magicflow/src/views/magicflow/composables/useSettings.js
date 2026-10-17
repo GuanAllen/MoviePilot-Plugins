@@ -130,6 +130,13 @@ export function useSettings({ api, error, notify, emit, saving, loadStatus, sett
       const data = unwrapResponse(await api.settings.iyuuSites())
       iyuuStatus.value = data || null
       const draftFill = normalizeIyuuSites(settingsDraft.value.iyuu_sites)
+      // ★ 服务端只回 `***`（密钥已脱敏）：掩码 → 输入框留空（占位符说「已保存」），
+      //   绝不再把掩码当值回填/回存；真实值只在 `*_set` 里以布尔形式暴露。
+      const val = (v) => {
+        const s = String(v == null ? '' : v).trim()
+        return (!s || s === '***') ? '' : s
+      }
+      const set = (v) => String(v == null ? '' : v).trim() === '***' || v === true
       iyuuSites.value = (data?.sites || []).map(row => {
         const domain = String(row.domain || '').toLowerCase()
         const serverFill = normalizeIyuuSites({ d: row.fill || {} }).d || {}
@@ -142,9 +149,12 @@ export function useSettings({ api, error, notify, emit, saving, loadStatus, sett
           is_active: row.is_active,
           has_apikey: row.has_apikey,
           has_cookie: row.has_cookie,
-          passkey: fill.passkey || '',
-          uid: fill.uid || '',
-          downhash: fill.downhash || '',
+          passkey: val(fill.passkey),
+          uid: val(fill.uid),
+          downhash: val(fill.downhash),
+          passkey_set: set(row.fill?.passkey_set) || set(fill.passkey),
+          uid_set: set(row.fill?.uid_set) || set(fill.uid),
+          downhash_set: set(row.fill?.downhash_set) || set(fill.downhash),
         }
       })
     } catch (err) {

@@ -41,6 +41,11 @@ export function useSiteReport({ api, error, notify }) {
   const siteReportLive = ref(false)
   const siteReportLiveStats = ref(null)
   const siteReportLiveLoading = ref(false)
+  // ★ 19.2.0：站点流量块改为「纯缓存读」—— 后端未命中回 warming，前端自动重拉几次；
+  //   切换站点才清空旧值（避免同站自动刷新时闪空）。
+  let siteReportLiveTimer = null
+  let siteReportLiveRetry = 0
+  let siteReportLiveSid = 0
   const siteReportLoading = ref(false)
   const siteReport = ref({ site: {}, items: [], summary: {}, hr: {}, available_sites: [] })
   const siteReportSites = computed(() => (siteReport.value.available_sites || []))
@@ -64,8 +69,17 @@ export function useSiteReport({ api, error, notify }) {
   //   来源 `GET /live?site_id=`（同 Dashboard 用的那套），只读。
   async function loadLiveStats() {
     const sid = Number((siteReport.value.site || {}).id || 0)
-    siteReportLiveStats.value = null
-    if (!sid) return
+    if (!sid) {
+      siteReportLiveSid = 0
+      siteReportLiveStats.value = null
+      return
+    }
+    if (siteReportLiveTimer) { window.clearTimeout(siteReportLiveTimer); siteReportLiveTimer = null }
+    if (siteReportLiveSid !== sid) {
+      siteReportLiveSid = sid
+      siteReportLiveRetry = 0
+      siteReportLiveStats.value = null
+    }
     siteReportLiveLoading.value = true
     try {
       const data = unwrapResponse(await api.poolstats.live(sid)) || {}
@@ -79,6 +93,13 @@ export function useSiteReport({ api, error, notify }) {
             local_managed: row.local_managed || 0,
           }
         : null
+      // ★ 19.2.0：warming = 后端纯缓存读未命中 / 过期，已排队后台补 → 隔几秒自动重拉
+      if (row && (row.live || {}).warming && siteReportLiveRetry < 8) {
+        siteReportLiveRetry += 1
+        siteReportLiveTimer = window.setTimeout(() => { void loadLiveStats() }, 2500)
+      } else if (row && !(row.live || {}).warming) {
+        siteReportLiveRetry = 0
+      }
     } catch (e) {
       siteReportLiveStats.value = null
     } finally {

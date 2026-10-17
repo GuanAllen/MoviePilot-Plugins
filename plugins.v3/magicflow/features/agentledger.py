@@ -1090,11 +1090,32 @@ class AgentLedgerMixin:
         return self._agent_call_read(t0, "douban_service_status() → magicflow-douban 服务状态（库/缓存/慢爬/详情回填）",
                                      self.douban_service_status)
 
-    def agent_live(self, site_id: Any = 0) -> Dict[str, Any]:
+    def agent_live(self, site_id: Any = 0, live: Any = None) -> Dict[str, Any]:
+        """GET /agent/live —— 站点实时数据（AI 真值三档）。
+
+        ★ 19.2.2：**限时真抓**为缺省 —— AI 真值读不再挂 30~60s。
+
+        - live 缺省（不传）→ **限时真抓 ≈10s**（LIVE_AGENT_WAIT_S）：过期 / 未命中时
+          后台发起一次真抓并最多等 ~10s；拿到新值就回新值，没等到就回上次缓存值 +
+          cached/stale/age_s/warming 标记（无缓存则 ok=false + warming=true）；
+        - live=1 → **不限时真抓**（block/fresh=True，等到抓完，可能较慢）；
+        - live=0 → 纯缓存秒回（**仅供展示**，不作决策依据）。
+        """
+        from ..common import LIVE_AGENT_WAIT_S  # noqa: WPS433（顶层零相对 import 纪律）
         t0 = time.time()
+        _sid = self._agent_int(site_id, 0)
+        _lv = str(live).strip() if live is not None else ""
+        if not _lv:
+            return self._agent_call_read(
+                t0, "get_live_state(wait) → 站点实时数据(缺省限时真抓≈10s，超时回上次值+标记)",
+                self.get_live_state, site_id=_sid, wait=LIVE_AGENT_WAIT_S)
+        if self._agent_bool(_lv):
+            return self._agent_call_read(
+                t0, "get_live_state(fresh) → 站点实时数据(现抓真值，不限时)",
+                self.get_live_state, site_id=_sid, block=True, fresh=True)
         return self._agent_call_read(
-            t0, "get_live_state() → 站点实时数据(直连站点)",
-            self.get_live_state, site_id=self._agent_int(site_id, 0))
+            t0, "get_live_state(cached) → 站点实时数据(纯缓存，仅供展示)",
+            self.get_live_state, site_id=_sid, block=False)
 
     def agent_signin(self, days: Any = 7) -> Dict[str, Any]:
         t0 = time.time()

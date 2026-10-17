@@ -136,8 +136,11 @@ export function useTasks({ selectedTaskId, api, emit, hostToast, settingsDraft, 
         show_qb_tags: status.value.show_qb_tags !== false,
         tag_silent_new_timeout_hours: status.value.tag_silent_new_timeout_hours ?? 24,
         sort_rules: normalizeSortRules(status.value.sort_rules),
-        iyuu_token: status.value.iyuu_token,
-        iyuu_sites: status.value.iyuu_sites,
+        // ★ 凭据**不回填明文**：`/status` 出口已过脱敏闸（只回 `***`），这里直接留空；
+        //   保存路径把「空 / ***」一律当「不修改」（后端 settings.update_settings 逐字段合并）。
+        //   是否已配置看 `iyuuStatus.token_set` / `row.*_set`（IYUU 弹窗里显示「已保存」）。
+        iyuu_token: '',
+        iyuu_sites: {},
         hr_seed_margin_hours: status.value.hr_seed_margin_hours ?? 2,
         hr_deadline_warn_hours: status.value.hr_deadline_warn_hours ?? 48,
         hr_complete_ratio: status.value.hr_complete_ratio ?? 0.999,

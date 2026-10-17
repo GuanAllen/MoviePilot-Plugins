@@ -28,7 +28,9 @@ from ..common import (
     __version__,
     RUN_MODE_RUNNING,
     RUN_MODE_SEEDING,
+    SECRET_KEYS as _AGENT_SECRET_KEYS,
     decision_round_stats,
+    redact_secrets as _agent_scrub,
     run_mode_of,
     site_type_rows,
 )
@@ -49,35 +51,9 @@ _HEX = set("0123456789abcdef")
 # ---------------------------------------------------------------------------
 # ★ 不泄密：AI 门面出口统一剥密（唯一出口关卡，所有 handler 都过 _agent_ok）
 # ---------------------------------------------------------------------------
-#: 键名命中即视为密文：非空字符串值 → ``"***"``，并补 ``<key>_set=True`` 保住「是否已配置」。
-_AGENT_SECRET_KEYS = frozenset({
-    "token", "iyuu_token", "cloud_openlist_token", "cookie", "site_cookie",
-    "passkey", "credential", "credentials", "apikey", "api_key", "apikeys",
-    "password", "passwd", "secret", "private_key", "access_token", "refresh_token",
-    "user_agent", "ua", "authorization",
-})
-
-
-def _agent_scrub(obj: Any) -> Any:
-    """递归剥密（纯函数）：密文键的**非空字符串**值 → ``"***"``。
-
-    - 布尔/数字/空值原样保留（``{"token": False}`` = 未配置 → 不遮）
-    - 被遮的键补 ``<key>_set: True``，保证「是否已配置」仍可判定
-    - dict/list 递归；其它类型原样返回
-    """
-    if isinstance(obj, dict):
-        out: Dict[str, Any] = {}
-        for k, v in obj.items():
-            key = k.strip().lower() if isinstance(k, str) else ""
-            if key in _AGENT_SECRET_KEYS and isinstance(v, str) and v.strip():
-                out[k] = "***"
-                out[key + "_set"] = True
-            else:
-                out[k] = _agent_scrub(v)
-        return out
-    if isinstance(obj, (list, tuple)):
-        return [_agent_scrub(x) for x in obj]
-    return obj
+#: 真值源已上提 `common.SECRET_KEYS` / `common.redact_secrets`（UI 出口与 AI 出口共用一份，
+#: 见 `docs/CODING-RULES.md` §0「单一真值源」）；此处仅保留本模块惯用别名 `_AGENT_SECRET_KEYS`
+#: / `_agent_scrub`，不再自带第二份实现。
 
 
 def _agent_endpoints() -> List[Dict[str, Any]]:
@@ -424,7 +400,10 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
          "params": {}, "returns": "DoubanReport", "version": AGENT_ENDPOINT_VERSION,
          "summary": "豆瓣评分服务正常吗：服务现状"},
         {"path": "/agent/live", "method": "GET", "handler": "agent_live", "write": False,
-         "params": {"site_id": "站点 id（可选）"}, "returns": "LiveReport",
+         "params": {"site_id": "站点 id（可选）",
+                    "live": "缺省=限时真抓（≈10s，超时回上次值+标记）；"
+                            "1=不限时真抓（可能较慢）；0=纯缓存秒回（仅供展示）"},
+         "returns": "LiveReport",
          "version": AGENT_ENDPOINT_VERSION, "summary": "站点现在通不通、魔力多少：站点实时采样（PV/下载量）"},
         {"path": "/agent/signin", "method": "GET", "handler": "agent_signin", "write": False,
          "params": {"days": "int（近 N 天，默认 7；默认输出约 34KB 会超 30k 被截断，查近期请 days=1..3）"},

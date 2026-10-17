@@ -7601,6 +7601,11 @@ function useSiteReport({ api, error, notify }) {
   const siteReportLive = ref$t(false);
   const siteReportLiveStats = ref$t(null);
   const siteReportLiveLoading = ref$t(false);
+  // ★ 19.2.0：站点流量块改为「纯缓存读」—— 后端未命中回 warming，前端自动重拉几次；
+  //   切换站点才清空旧值（避免同站自动刷新时闪空）。
+  let siteReportLiveTimer = null;
+  let siteReportLiveRetry = 0;
+  let siteReportLiveSid = 0;
   const siteReportLoading = ref$t(false);
   const siteReport = ref$t({ site: {}, items: [], summary: {}, hr: {}, available_sites: [] });
   const siteReportSites = computed$z(() => (siteReport.value.available_sites || []));
@@ -7624,8 +7629,17 @@ function useSiteReport({ api, error, notify }) {
   //   来源 `GET /live?site_id=`（同 Dashboard 用的那套），只读。
   async function loadLiveStats() {
     const sid = Number((siteReport.value.site || {}).id || 0);
-    siteReportLiveStats.value = null;
-    if (!sid) return
+    if (!sid) {
+      siteReportLiveSid = 0;
+      siteReportLiveStats.value = null;
+      return
+    }
+    if (siteReportLiveTimer) { window.clearTimeout(siteReportLiveTimer); siteReportLiveTimer = null; }
+    if (siteReportLiveSid !== sid) {
+      siteReportLiveSid = sid;
+      siteReportLiveRetry = 0;
+      siteReportLiveStats.value = null;
+    }
     siteReportLiveLoading.value = true;
     try {
       const data = unwrapResponse(await api.poolstats.live(sid)) || {};
@@ -7639,6 +7653,13 @@ function useSiteReport({ api, error, notify }) {
             local_managed: row.local_managed || 0,
           }
         : null;
+      // ★ 19.2.0：warming = 后端纯缓存读未命中 / 过期，已排队后台补 → 隔几秒自动重拉
+      if (row && (row.live || {}).warming && siteReportLiveRetry < 8) {
+        siteReportLiveRetry += 1;
+        siteReportLiveTimer = window.setTimeout(() => { void loadLiveStats(); }, 2500);
+      } else if (row && !(row.live || {}).warming) {
+        siteReportLiveRetry = 0;
+      }
     } catch (e) {
       siteReportLiveStats.value = null;
     } finally {
@@ -7718,39 +7739,43 @@ const _hoisted_14$f = {
   key: 1,
   class: "magicflow-sitereport__live-empty"
 };
-const _hoisted_15$f = { class: "magicflow-sitereport__stats" };
-const _hoisted_16$f = {
+const _hoisted_15$f = {
+  key: 2,
+  class: "magicflow-sitereport__live-empty"
+};
+const _hoisted_16$f = { class: "magicflow-sitereport__stats" };
+const _hoisted_17$f = {
   class: "magicflow-sitereport__stat",
   title: "该站点在本机下载器里的全部种（做种/下载/暂停/静默）"
 };
-const _hoisted_17$f = { class: "magicflow-sitereport__stat" };
-const _hoisted_18$f = { class: "magicflow-sitereport__stat is-danger" };
+const _hoisted_18$f = { class: "magicflow-sitereport__stat" };
 const _hoisted_19$e = { class: "magicflow-sitereport__stat is-danger" };
-const _hoisted_20$c = { class: "magicflow-sitereport__chips" };
-const _hoisted_21$b = { class: "magicflow-sitereport__chips magicflow-sitereport__chips--l2" };
-const _hoisted_22$a = {
+const _hoisted_20$c = { class: "magicflow-sitereport__stat is-danger" };
+const _hoisted_21$b = { class: "magicflow-sitereport__chips" };
+const _hoisted_22$a = { class: "magicflow-sitereport__chips magicflow-sitereport__chips--l2" };
+const _hoisted_23$9 = {
   key: 0,
   class: "magicflow-sitereport__chips magicflow-sitereport__chips--l2"
 };
-const _hoisted_23$9 = {
+const _hoisted_24$8 = {
   key: 1,
   class: "magicflow-sitereport__chips magicflow-sitereport__chips--l2"
 };
-const _hoisted_24$8 = { class: "magicflow-ops-dialog__sub" };
-const _hoisted_25$8 = {
+const _hoisted_25$8 = { class: "magicflow-ops-dialog__sub" };
+const _hoisted_26$6 = {
   key: 2,
   class: "magicflow-sitereport__err"
 };
-const _hoisted_26$6 = {
+const _hoisted_27$6 = {
   key: 3,
   class: "magicflow-sitereport__note"
 };
-const _hoisted_27$6 = { class: "magicflow-sitereport__list" };
-const _hoisted_28$5 = { class: "magicflow-sitereport__row-main" };
-const _hoisted_29$4 = ["title"];
-const _hoisted_30$4 = { class: "magicflow-sitereport__row-s" };
-const _hoisted_31$3 = { class: "magicflow-sitereport__row-size" };
-const _hoisted_32$3 = {
+const _hoisted_28$5 = { class: "magicflow-sitereport__list" };
+const _hoisted_29$4 = { class: "magicflow-sitereport__row-main" };
+const _hoisted_30$4 = ["title"];
+const _hoisted_31$3 = { class: "magicflow-sitereport__row-s" };
+const _hoisted_32$3 = { class: "magicflow-sitereport__row-size" };
+const _hoisted_33$2 = {
   key: 0,
   class: "magicflow-ceiling-empty"
 };
@@ -7955,29 +7980,31 @@ return (_ctx, _cache) => {
                       _cache[21] || (_cache[21] = _createElementVNode$t("span", null, "魔力/时", -1))
                     ])
                   ]))
-                : (!__props.liveLoading)
-                  ? (_openBlock$t(), _createElementBlock$p("div", _hoisted_14$f, "暂无实时账号数据（站点未登录或取数失败）"))
-                  : _createCommentVNode$q("", true)
+                : (!__props.liveLoading && __props.liveStats && __props.liveStats.warming)
+                  ? (_openBlock$t(), _createElementBlock$p("div", _hoisted_14$f, "取数中…（实时数据正在后台补齐，稍候自动刷新）"))
+                  : (!__props.liveLoading)
+                    ? (_openBlock$t(), _createElementBlock$p("div", _hoisted_15$f, "暂无实时账号数据（站点未登录或取数失败）"))
+                    : _createCommentVNode$q("", true)
             ]),
-            _createElementVNode$t("div", _hoisted_15$f, [
-              _createElementVNode$t("div", _hoisted_16$f, [
+            _createElementVNode$t("div", _hoisted_16$f, [
+              _createElementVNode$t("div", _hoisted_17$f, [
                 _createElementVNode$t("b", null, _toDisplayString$t(__props.summary.total || 0), 1),
                 _cache[22] || (_cache[22] = _createElementVNode$t("span", null, "本站种子", -1))
               ]),
-              _createElementVNode$t("div", _hoisted_17$f, [
+              _createElementVNode$t("div", _hoisted_18$f, [
                 _createElementVNode$t("b", null, _toDisplayString$t((__props.summary.size_gb || 0).toFixed(1)), 1),
                 _cache[23] || (_cache[23] = _createElementVNode$t("span", null, "GB", -1))
               ]),
-              _createElementVNode$t("div", _hoisted_18$f, [
+              _createElementVNode$t("div", _hoisted_19$e, [
                 _createElementVNode$t("b", null, _toDisplayString$t(__props.summary.hr_owed || 0), 1),
                 _cache[24] || (_cache[24] = _createElementVNode$t("span", null, "欠 H&R", -1))
               ]),
-              _createElementVNode$t("div", _hoisted_19$e, [
+              _createElementVNode$t("div", _hoisted_20$c, [
                 _createElementVNode$t("b", null, _toDisplayString$t(__props.summary.hr_missing || 0), 1),
                 _cache[25] || (_cache[25] = _createElementVNode$t("span", null, "本机缺失", -1))
               ])
             ]),
-            _createElementVNode$t("div", _hoisted_20$c, [
+            _createElementVNode$t("div", _hoisted_21$b, [
               _createVNode$s(_component_VChip, {
                 size: "small",
                 color: filter.value ? 'grey' : 'primary',
@@ -8006,7 +8033,7 @@ return (_ctx, _cache) => {
                 }, 1032, ["color", "variant", "onClick"]))
               }), 128))
             ]),
-            _createElementVNode$t("div", _hoisted_21$b, [
+            _createElementVNode$t("div", _hoisted_22$a, [
               _cache[27] || (_cache[27] = _createElementVNode$t("span", { class: "magicflow-sitereport__chip-label" }, "传输", -1)),
               _createVNode$s(_component_VChip, {
                 size: "small",
@@ -8037,7 +8064,7 @@ return (_ctx, _cache) => {
               }), 128))
             ]),
             (filter.value === '静默')
-              ? (_openBlock$t(), _createElementBlock$p("div", _hoisted_22$a, [
+              ? (_openBlock$t(), _createElementBlock$p("div", _hoisted_23$9, [
                   _cache[29] || (_cache[29] = _createElementVNode$t("span", { class: "magicflow-sitereport__chip-label" }, "身份", -1)),
                   _createVNode$s(_component_VChip, {
                     size: "small",
@@ -8069,7 +8096,7 @@ return (_ctx, _cache) => {
                 ]))
               : _createCommentVNode$q("", true),
             (filter.value === '静默')
-              ? (_openBlock$t(), _createElementBlock$p("div", _hoisted_23$9, [
+              ? (_openBlock$t(), _createElementBlock$p("div", _hoisted_24$8, [
                   _cache[31] || (_cache[31] = _createElementVNode$t("span", { class: "magicflow-sitereport__chip-label" }, "出身", -1)),
                   _createVNode$s(_component_VChip, {
                     size: "small",
@@ -8100,13 +8127,13 @@ return (_ctx, _cache) => {
                   }), 128))
                 ]))
               : _createCommentVNode$q("", true),
-            _createElementVNode$t("div", _hoisted_24$8, " 明细 " + _toDisplayString$t(__props.items.length) + " / " + _toDisplayString$t(__props.summary.total || 0) + _toDisplayString$t((filter.value || transport.value || sub.value || origin.value) ? ' · 已筛选' : ' · 点分类可筛选'), 1),
+            _createElementVNode$t("div", _hoisted_25$8, " 明细 " + _toDisplayString$t(__props.items.length) + " / " + _toDisplayString$t(__props.summary.total || 0) + _toDisplayString$t((filter.value || transport.value || sub.value || origin.value) ? ' · 已筛选' : ' · 点分类可筛选'), 1),
             (__props.report.hr && __props.report.hr.error)
-              ? (_openBlock$t(), _createElementBlock$p("div", _hoisted_25$8, " H&R 对账（" + _toDisplayString$t(__props.report.hr.source) + "）：" + _toDisplayString$t(__props.report.hr.error), 1))
+              ? (_openBlock$t(), _createElementBlock$p("div", _hoisted_26$6, " H&R 对账（" + _toDisplayString$t(__props.report.hr.source) + "）：" + _toDisplayString$t(__props.report.hr.error), 1))
               : (__props.report.hr && __props.report.hr.records_total != null)
-                ? (_openBlock$t(), _createElementBlock$p("div", _hoisted_26$6, " H&R 对账（" + _toDisplayString$t(__props.report.hr.source) + "）：站点欠 " + _toDisplayString$t(__props.report.hr.records_total) + " 条，本机缺失 " + _toDisplayString$t(__props.report.hr.missing) + " 条" + _toDisplayString$t(__props.report.hr.hash_coverage_complete ? '' : '（部分未覆盖）'), 1))
+                ? (_openBlock$t(), _createElementBlock$p("div", _hoisted_27$6, " H&R 对账（" + _toDisplayString$t(__props.report.hr.source) + "）：站点欠 " + _toDisplayString$t(__props.report.hr.records_total) + " 条，本机缺失 " + _toDisplayString$t(__props.report.hr.missing) + " 条" + _toDisplayString$t(__props.report.hr.hash_coverage_complete ? '' : '（部分未覆盖）'), 1))
                 : _createCommentVNode$q("", true),
-            _createElementVNode$t("div", _hoisted_27$6, [
+            _createElementVNode$t("div", _hoisted_28$5, [
               (_openBlock$t(true), _createElementBlock$p(_Fragment$p, null, _renderList$n(__props.items, (it) => {
                 return (_openBlock$t(), _createElementBlock$p("div", {
                   key: it.hash,
@@ -8123,18 +8150,18 @@ return (_ctx, _cache) => {
                     ]),
                     _: 2
                   }, 1032, ["color"]),
-                  _createElementVNode$t("div", _hoisted_28$5, [
+                  _createElementVNode$t("div", _hoisted_29$4, [
                     _createElementVNode$t("div", {
                       class: "magicflow-sitereport__row-t",
                       title: it.title
-                    }, _toDisplayString$t(it.title || it.hash), 9, _hoisted_29$4),
-                    _createElementVNode$t("div", _hoisted_30$4, _toDisplayString$t(_unref$d(siteReportItemSub)(it)), 1)
+                    }, _toDisplayString$t(it.title || it.hash), 9, _hoisted_30$4),
+                    _createElementVNode$t("div", _hoisted_31$3, _toDisplayString$t(_unref$d(siteReportItemSub)(it)), 1)
                   ]),
-                  _createElementVNode$t("span", _hoisted_31$3, _toDisplayString$t((it.size_gb || 0).toFixed(2)) + "G", 1)
+                  _createElementVNode$t("span", _hoisted_32$3, _toDisplayString$t((it.size_gb || 0).toFixed(2)) + "G", 1)
                 ]))
               }), 128)),
               (!__props.loading && !__props.items.length)
-                ? (_openBlock$t(), _createElementBlock$p("div", _hoisted_32$3, "该站点暂无种子（或未选择站点）"))
+                ? (_openBlock$t(), _createElementBlock$p("div", _hoisted_33$2, "该站点暂无种子（或未选择站点）"))
                 : _createCommentVNode$q("", true)
             ])
           ])
@@ -8148,7 +8175,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const SiteReportDialog = /*#__PURE__*/_export_sfc(_sfc_main$t, [['__scopeId',"data-v-7307f356"]]);
+const SiteReportDialog = /*#__PURE__*/_export_sfc(_sfc_main$t, [['__scopeId',"data-v-36e7feda"]]);
 
 // MagicFlow 前端 · 「推荐（批量入库候选）」域 composable
 // P3 拆分：自 views/magicflow/index.vue **纯搬家**（无行为变更）。
@@ -14873,6 +14900,13 @@ function useSettings({ api, error, notify, emit, saving, loadStatus, settingsDra
       const data = unwrapResponse(await api.settings.iyuuSites());
       iyuuStatus.value = data || null;
       const draftFill = normalizeIyuuSites(settingsDraft.value.iyuu_sites);
+      // ★ 服务端只回 `***`（密钥已脱敏）：掩码 → 输入框留空（占位符说「已保存」），
+      //   绝不再把掩码当值回填/回存；真实值只在 `*_set` 里以布尔形式暴露。
+      const val = (v) => {
+        const s = String(v == null ? '' : v).trim();
+        return (!s || s === '***') ? '' : s
+      };
+      const set = (v) => String(v == null ? '' : v).trim() === '***' || v === true;
       iyuuSites.value = (data?.sites || []).map(row => {
         const domain = String(row.domain || '').toLowerCase();
         const serverFill = normalizeIyuuSites({ d: row.fill || {} }).d || {};
@@ -14885,9 +14919,12 @@ function useSettings({ api, error, notify, emit, saving, loadStatus, settingsDra
           is_active: row.is_active,
           has_apikey: row.has_apikey,
           has_cookie: row.has_cookie,
-          passkey: fill.passkey || '',
-          uid: fill.uid || '',
-          downhash: fill.downhash || '',
+          passkey: val(fill.passkey),
+          uid: val(fill.uid),
+          downhash: val(fill.downhash),
+          passkey_set: set(row.fill?.passkey_set) || set(fill.passkey),
+          uid_set: set(row.fill?.uid_set) || set(fill.uid),
+          downhash_set: set(row.fill?.downhash_set) || set(fill.downhash),
         }
       });
     } catch (err) {
@@ -16319,19 +16356,19 @@ return (_ctx, _cache) => {
                               modelValue: __props.settingsDraft.iyuu_token,
                               "onUpdate:modelValue": _cache[38] || (_cache[38] = $event => ((__props.settingsDraft.iyuu_token) = $event)),
                               label: "IYUU 云端 Token",
-                              placeholder: "留空 = 不启用 IYUU 辅种",
+                              placeholder: __props.iyuuStatus?.token_set ? '已保存（留空则不修改）' : '留空 = 不启用 IYUU 辅种',
                               variant: "outlined",
                               density: "comfortable",
                               "hide-details": "",
                               autocomplete: "off"
-                            }, null, 8, ["modelValue"]),
+                            }, null, 8, ["modelValue", "placeholder"]),
                             _createVNode$a(_component_VBtn, {
                               variant: "tonal",
                               color: "primary",
                               size: "small",
                               "prepend-icon": "mdi-connection",
                               loading: __props.iyuuTesting,
-                              disabled: !__props.settingsDraft.iyuu_token,
+                              disabled: !__props.settingsDraft.iyuu_token && !__props.iyuuStatus?.token_set,
                               onClick: _cache[39] || (_cache[39] = $event => (emit('test-iyuu')))
                             }, {
                               default: _withCtx$a(() => [...(_cache[183] || (_cache[183] = [
@@ -16339,7 +16376,7 @@ return (_ctx, _cache) => {
                               ]))]),
                               _: 1
                             }, 8, ["loading", "disabled"]),
-                            (__props.settingsDraft.iyuu_token)
+                            (__props.settingsDraft.iyuu_token || __props.iyuuStatus?.token_set)
                               ? (_openBlock$b(), _createBlock$a(_component_VBtn, {
                                   key: 0,
                                   variant: "text",
@@ -16440,21 +16477,22 @@ return (_ctx, _cache) => {
                                     modelValue: row.passkey,
                                     "onUpdate:modelValue": $event => ((row.passkey) = $event),
                                     label: "passkey",
-                                    placeholder: "留空 = 自动获取",
+                                    placeholder: row.passkey_set ? '已保存（留空则不修改）' : '留空 = 自动获取',
                                     variant: "outlined",
                                     density: "compact",
                                     "hide-details": "",
                                     autocomplete: "off"
-                                  }, null, 8, ["modelValue", "onUpdate:modelValue"]),
+                                  }, null, 8, ["modelValue", "onUpdate:modelValue", "placeholder"]),
                                   _createVNode$a(_component_VTextField, {
                                     modelValue: row.uid,
                                     "onUpdate:modelValue": $event => ((row.uid) = $event),
                                     label: "uid（可选）",
+                                    placeholder: row.uid_set ? '已保存（留空则不修改）' : '留空 = 自动获取',
                                     variant: "outlined",
                                     density: "compact",
                                     "hide-details": "",
                                     autocomplete: "off"
-                                  }, null, 8, ["modelValue", "onUpdate:modelValue"])
+                                  }, null, 8, ["modelValue", "onUpdate:modelValue", "placeholder"])
                                 ]),
                                 (__props.iyuuShowMore[row.domain || row.name])
                                   ? (_openBlock$b(), _createBlock$a(_component_VTextField, {
@@ -16462,11 +16500,12 @@ return (_ctx, _cache) => {
                                       modelValue: row.downhash,
                                       "onUpdate:modelValue": $event => ((row.downhash) = $event),
                                       label: "downhash（可选）",
+                                      placeholder: row.downhash_set ? '已保存（留空则不修改）' : '留空 = 自动获取',
                                       variant: "outlined",
                                       density: "compact",
                                       "hide-details": "",
                                       autocomplete: "off"
-                                    }, null, 8, ["modelValue", "onUpdate:modelValue"]))
+                                    }, null, 8, ["modelValue", "onUpdate:modelValue", "placeholder"]))
                                   : _createCommentVNode$9("", true)
                               ]))
                             }), 128))
@@ -18590,7 +18629,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const SettingsDialog = /*#__PURE__*/_export_sfc(_sfc_main$b, [['__scopeId',"data-v-31ea2a45"]]);
+const SettingsDialog = /*#__PURE__*/_export_sfc(_sfc_main$b, [['__scopeId',"data-v-f2764786"]]);
 
 const {useModel:_useModel$4,mergeModels:_mergeModels$4} = await importShared('vue');
 
@@ -23102,8 +23141,11 @@ function useTasks({ selectedTaskId, api, emit, hostToast, settingsDraft, selectT
         show_qb_tags: status.value.show_qb_tags !== false,
         tag_silent_new_timeout_hours: status.value.tag_silent_new_timeout_hours ?? 24,
         sort_rules: normalizeSortRules(status.value.sort_rules),
-        iyuu_token: status.value.iyuu_token,
-        iyuu_sites: status.value.iyuu_sites,
+        // ★ 凭据**不回填明文**：`/status` 出口已过脱敏闸（只回 `***`），这里直接留空；
+        //   保存路径把「空 / ***」一律当「不修改」（后端 settings.update_settings 逐字段合并）。
+        //   是否已配置看 `iyuuStatus.token_set` / `row.*_set`（IYUU 弹窗里显示「已保存」）。
+        iyuu_token: '',
+        iyuu_sites: {},
         hr_seed_margin_hours: status.value.hr_seed_margin_hours ?? 2,
         hr_deadline_warn_hours: status.value.hr_deadline_warn_hours ?? 48,
         hr_complete_ratio: status.value.hr_complete_ratio ?? 0.999,

@@ -102,6 +102,7 @@ function liveNum(v) {
             <div class="magicflow-sitereport__live-cell"><b>{{ liveNum(liveStats.seeding) }}</b><span>做种</span></div>
             <div class="magicflow-sitereport__live-cell"><b>{{ liveNum(liveStats.bonus_per_hour) }}</b><span>魔力/时</span></div>
           </div>
+          <div v-else-if="!liveLoading && liveStats && liveStats.warming" class="magicflow-sitereport__live-empty">取数中…（实时数据正在后台补齐，稍候自动刷新）</div>
           <div v-else-if="!liveLoading" class="magicflow-sitereport__live-empty">暂无实时账号数据（站点未登录或取数失败）</div>
         </div>
         <div class="magicflow-sitereport__stats">

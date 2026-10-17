@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "19.1.0"
+__version__ = "19.2.4"
 
 import bisect
 import re
@@ -464,6 +464,10 @@ SIGNIN_QUEUE = 5                    # 并发站点数
 LIVE_DOWNLOAD_ALERT_MB = 50.0       # 下载量增长告警阈值(MB/分钟)
 LIVE_RATIO_TARGET = 0.5             # 分享率目标线(低于则告警)
 LIVE_ALERT_COOLDOWN_MIN = 30        # 同类告警去重窗口(分钟),避免刷屏
+# ★ 19.2.2：AI 入口 /agent/live 缺省「限时真抓」的等待上限(秒) —— 过期 / 未命中时
+#   后台发起一次真抓并最多等这么久；拿到新值回新值，超时回上次缓存值 + 标记
+#   （无缓存则 ok=false + warming），绝不把调用方挂 30~60s。UI /live 仍是纯缓存。
+LIVE_AGENT_WAIT_S = 10.0
 # 官种(official)列表抓取:缓存 TTL 与翻页数。
 # 官种加成是「单种自身」的加成,会影响选种/删种排序,值得缓存抓取;
 # 后宫加成依赖他人种子(用户级),与「选哪一颗」无关,不参与决策,故不抓取。
@@ -1079,3 +1083,124 @@ def decision_round_stats() -> Dict[str, Any]:
 def end_decision_round() -> Dict[str, Any]:
     """标记当前决策轮收尾（后续 ``begin`` 才会新开一轮）。"""
     return _get_snapshot_round().end()
+
+
+# ============================================================
+# ★ 不泄密：凭据脱敏（**单一真值源**，UI 出口 / AI 出口共用）
+# ============================================================
+#: 键名命中即视为密文：非空字符串值 → ``"***"``，并补 ``<key>_set=True`` 保住「是否已配置」。
+SECRET_KEYS = frozenset({
+    "token", "iyuu_token", "cloud_openlist_token", "cloud_token", "cookie", "site_cookie",
+    "passkey", "downhash", "authkey", "rsskey",
+    "credential", "credentials", "apikey", "api_key", "apikeys",
+    "password", "passwd", "secret", "private_key", "access_token", "refresh_token",
+    "user_agent", "ua", "authorization",
+})
+
+#: 掩码哨兵：出口回显的密文值。保存路径遇到「空 或 本哨兵」= **不修改**，
+#: 防止「出口回显掩码 → 前端原样存回 → 真值被写成 `***`」。
+SECRET_MASK = "***"
+
+
+def is_secret_key(key: Any) -> bool:
+    """键名是否属凭据面（大小写不敏感、忽略首尾空白；非字符串 → False）。"""
+    return isinstance(key, str) and key.strip().lower() in SECRET_KEYS
+
+
+def is_secret_blank(value: Any) -> bool:
+    """值是否「空 或 掩码」——保存路径据此判定为「不修改」。"""
+    if value is None:
+        return True
+    text = str(value).strip()
+    return not text or text == SECRET_MASK
+
+
+def redact_secrets(obj: Any) -> Any:
+    """递归剥密（纯函数）：密文键的**非空字符串**值 → ``"***"``。
+
+    - 布尔/数字/空值原样保留（``{"token": False}`` = 未配置 → 不遮）
+    - 被遮的键补 ``<key>_set: True``，保证「是否已配置」仍可判定
+    - dict/list 递归；其它类型原样返回
+    - 键名大小写不敏感，但**保留原键名**出口
+    """
+    if isinstance(obj, dict):
+        out: Dict[str, Any] = {}
+        for k, v in obj.items():
+            key = k.strip().lower() if isinstance(k, str) else ""
+            if key in SECRET_KEYS and isinstance(v, str) and v.strip():
+                out[k] = SECRET_MASK
+                out[key + "_set"] = True
+            else:
+                out[k] = redact_secrets(v)
+        return out
+    if isinstance(obj, (list, tuple)):
+        return [redact_secrets(x) for x in obj]
+    return obj
+
+
+#: 「IYUU 站点密钥表」字段名（`src/utils.js::normalizeIyuuSites` 的 KEYS 同集合）。
+#: 单独列出、**不并进** `SECRET_KEYS`：`uid` 是通用短键名，进全局表会误伤别处
+#: 同名的**显示字段**（如站点 uid 列表）；只在密钥表这一处按字段名遮。
+IYUU_SECRET_FIELDS = ("passkey", "uid", "downhash", "authkey", "rsskey")
+
+
+def mask_secret_fields(mapping: Any) -> Dict[str, Any]:
+    """遮「IYUU 密钥表」一行：`IYUU_SECRET_FIELDS` 的非空值 → `***` + `<field>_set=True`。
+
+    非密钥字段走 `redact_secrets`（保证嵌在里面的 `token` 之类也被遮）。
+    """
+    out: Dict[str, Any] = {}
+    for k, v in dict(mapping or {}).items():
+        key = str(k or "").strip().lower()
+        if key in IYUU_SECRET_FIELDS or is_secret_key(key):
+            if isinstance(v, str) and v.strip():
+                out[k] = SECRET_MASK
+                out[key + "_set"] = True
+            else:
+                out[k] = v if v is not None else ""
+        else:
+            out[k] = redact_secrets(v)
+    return out
+
+
+#: URL 查询串里属「口令」的参数名 —— 仅用于**诊断回显**时遮值（不影响 URL 的实际用途）。
+_URL_SECRET_PARAMS = frozenset({
+    "passkey", "authkey", "rsskey", "downhash", "key", "token", "apikey", "api_key",
+    "secret", "password", "passwd", "uid", "hash", "sign", "sig",
+})
+
+
+def mask_url_secrets(url: Any) -> str:
+    """把 URL 查询串里口令类参数的值换成 ``***``（**只改值**，路径/参数名/顺序不变）。
+
+    用于「诊断回显」（如全站辅种的 `url_sample`）：站点下载链常带 `?passkey=…`，
+    整条回给浏览器/日志就等于把口令又抄了一遍；遮值后仍能看出链接拼没拼对。
+    """
+    text = str(url or "")
+    if "?" not in text:
+        return text
+    head, _, query = text.partition("?")
+    frag = ""
+    if "#" in query:
+        query, _, frag = query.partition("#")
+    parts: List[str] = []
+    for part in query.split("&"):
+        if not part:
+            continue
+        name, sep, _val = part.partition("=")
+        if sep and name.strip().lower() in _URL_SECRET_PARAMS:
+            parts.append(f"{name}={SECRET_MASK}")
+        else:
+            parts.append(part)
+    out = head + "?" + "&".join(parts)
+    return out + ("#" + frag if frag else "")
+
+
+#: 「长口令串」候选：连续 ≥16 位字母/数字/下划线/连字符（passkey/hash/apikey 的常见形态）。
+_LONG_TOKEN_RE = re.compile(r"[A-Za-z0-9_\-]{16,}")
+
+
+def mask_long_tokens(text: Any, min_len: int = 16) -> str:
+    """把文本里的长口令串遮成 ``***``（诊断片段回显用；短词/标签不动，保住可读性）。"""
+    pat = _LONG_TOKEN_RE if min_len == 16 else re.compile(rf"[A-Za-z0-9_\-]{{{int(min_len)},}}")
+    return pat.sub(SECRET_MASK, str(text or ""))

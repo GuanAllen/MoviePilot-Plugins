@@ -570,6 +570,11 @@ class LiveStats:
         self._leech: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         self._pv_block: Dict[str, float] = {}
         self._pv_loaded = False
+        # ★ 19.2.0：后台「预热」状态 —— 读路径永不抓取，过期/未命中只排队一次刷新。
+        self._refresh_pending: set = set()
+        self._refresh_lock: Any = threading.RLock()
+        # ★ 19.2.2：后台刷新的「完成事件」表 —— 限时真抓(get_bounded)据此最多等一次刷新。
+        self._refresh_events: Dict[str, threading.Event] = {}
         # 「新手考核」总开关（由 插件设置 → 考核 控制；关则不解析考核块）
         self.exam_enabled = False
 
@@ -868,6 +873,158 @@ class LiveStats:
         hit = self._cache.get(key)
         return dict(hit) if isinstance(hit, dict) else {}
 
+    def get_cached_or_warm(self, site_id: int) -> Dict[str, Any]:
+        """★ 19.2.0：纯缓存读（绝不阻塞抓取）—— UI 秒开用。
+
+        - 命中且新鲜（age < ttl）→ 原样返回并标 cached；
+        - 命中但过期 → 返回**旧值** + cached / stale / age_s，并触发后台刷新；
+        - 未命中 → 返回 ok=False + warming=True，并触发后台刷新。
+
+        真正的抓取由 request_refresh（后台 daemon 线程、single-flight、尊重 ttl / 冷却 / PV）
+        或既有的周期 worker（block=True 路径）完成。
+
+        ★★ 铁律：本方法（纯缓存读）**只服务人看的 UI**。任何**后端决策 / 写路径 / AI 真值读**
+        必须走 ``get()``（block=True / force 语义）或 ``snapshot(block=True)``，绝不调用本方法。
+        """
+        try:
+            sid = int(site_id)
+        except (TypeError, ValueError):
+            sid = 0
+        if not sid:
+            return {"ok": False, "error": "缺少 site_id"}
+        key = str(sid)
+        hit = self._cache.get(key)
+        if isinstance(hit, dict) and hit:
+            age = max(0.0, time.time() - float(hit.get("_at", 0) or 0))
+            out = dict(hit)
+            out["cached"] = True
+            if age < self.ttl:
+                return out
+            out["stale"] = True
+            out["age_s"] = round(age, 1)
+            self.request_refresh(sid)
+            return out
+        self.request_refresh(sid)
+        return {"ok": False, "warming": True, "stale": True}
+
+    def get_bounded(self, site_id: int, max_wait: float = 10.0,
+                    page: str = DEFAULT_PAGE) -> Dict[str, Any]:
+        """★ 19.2.2：**限时真抓** —— 给 AI 入口缺省读用（UI 仍走纯缓存）。
+
+        - 命中且新鲜（age < ttl）→ 直接回缓存值（标 cached）；
+        - 否则发起 / 搭上一次后台刷新并最多等 max_wait 秒：
+          · 等到新值（缓存 _at 变新）→ 回**新值**（真值）；
+          · 没等到 → 回上次缓存值 + cached/stale/age_s/warming
+            （无缓存则 ok=False + warming=True）。
+        ★ 绝不长时间挂起调用方（上限就是 max_wait）。
+
+        ★★ 铁律：本方法只服务「AI 缺省读」这一次**限时**真抓；纯缓存读走
+        get_cached_or_warm，不限时真抓走 get（block=True / force）。
+        """
+        try:
+            sid = int(site_id)
+        except (TypeError, ValueError):
+            sid = 0
+        if not sid:
+            return {"ok": False, "error": "缺少 site_id"}
+        key = str(sid)
+        hit = self._cache.get(key)
+        if isinstance(hit, dict) and hit:
+            age = max(0.0, time.time() - float(hit.get("_at", 0) or 0))
+            if age < self.ttl:
+                out = dict(hit)
+                out["cached"] = True
+                return out
+        _old_at = float((hit or {}).get("_at", 0) or 0)
+        _t0 = time.time()
+        _started, ev = self._refresh_begin(sid, page=page)
+        _new0 = self._cache.get(key)
+        if isinstance(_new0, dict) and _new0 and float(_new0.get("_at", 0) or 0) > _old_at:
+            # 起刷新前刚好有别的刷新完成 → 直接用新值（不等）
+            out = dict(_new0)
+            out["cached"] = False
+            out["waited_s"] = 0.0
+            return out
+        try:
+            _mw = max(0.0, float(max_wait or 0.0))
+        except (TypeError, ValueError):
+            _mw = 0.0
+        if ev is not None and _mw > 0:
+            ev.wait(_mw)
+        waited = round(time.time() - _t0, 1)
+        hit2 = self._cache.get(key)
+        if isinstance(hit2, dict) and hit2:
+            _at2 = float(hit2.get("_at", 0) or 0)
+            out = dict(hit2)
+            if _at2 > _old_at:
+                out["cached"] = False
+                out["waited_s"] = waited
+                return out
+            out["cached"] = True
+            out["stale"] = True
+            out["age_s"] = round(max(0.0, time.time() - _at2), 1)
+            out["warming"] = True
+            out["waited_s"] = waited
+            return out
+        return {"ok": False, "warming": True, "stale": True, "waited_s": waited}
+
+    def _refresh_begin(self, site_id: int,
+                       page: str = DEFAULT_PAGE) -> Tuple[bool, Optional[threading.Event]]:
+        """★ 19.2.2：发起 / 搭上一次后台刷新 → (本次是否新起线程, 完成事件)。
+
+        同一站点已在刷 → 复用**同一个** Event（调用方可等它，不会重复排队 / 双抓）；
+        否则新建 Event 并起一个 daemon 线程调用 self.get(sid, force=False)
+        （不带 force ⇒ 天然尊重 ttl / 失败冷却 / PV 闸门）。
+        worker 的 finally 里 pop 掉事件并 set()。
+        """
+        try:
+            sid = int(site_id)
+        except (TypeError, ValueError):
+            return False, None
+        if not sid:
+            return False, None
+        key = str(sid)
+        with self._refresh_lock:
+            ev = self._refresh_events.get(key)
+            if ev is not None:
+                return False, ev
+            ev = threading.Event()
+            self._refresh_events[key] = ev
+            self._refresh_pending.add(key)
+
+        def _worker() -> None:
+            try:
+                self.get(sid, force=False, page=page)
+            except Exception as err:  # noqa: BLE001
+                self._log(f"站点 {sid} 后台刷新失败：{err}", "debug")
+            finally:
+                with self._refresh_lock:
+                    self._refresh_pending.discard(key)
+                    self._refresh_events.pop(key, None)
+                ev.set()
+
+        try:
+            threading.Thread(
+                target=_worker, name="mf-live-warm-" + str(sid), daemon=True
+            ).start()
+        except Exception as err:  # noqa: BLE001
+            with self._refresh_lock:
+                self._refresh_pending.discard(key)
+                self._refresh_events.pop(key, None)
+            ev.set()
+            self._log(f"站点 {sid} 后台刷新线程启动失败：{err}", "debug")
+            return False, None
+        return True, ev
+
+    def request_refresh(self, site_id: int, page: str = DEFAULT_PAGE) -> bool:
+        """★ 19.2.0：single-flight 后台刷新 —— 不阻塞调用方。
+
+        同一站点已在刷 → 返回 False（不重复排队）；否则起线程并返回 True。
+        ★ 19.2.2：实现搬进 _refresh_begin（同时暴露完成事件供 get_bounded 等待）。
+        """
+        started, _ev = self._refresh_begin(site_id, page=page)
+        return bool(started)
+
     def get(self, site_id: int, force: bool = False, page: str = DEFAULT_PAGE) -> Dict[str, Any]:
         """带缓存 + single-flight 的实时数据。抓不到时**返回上次成功值并标记 stale**。"""
         if not site_id:
@@ -933,6 +1090,53 @@ class LiveStats:
                     out.update({"cached": True, "stale": True, "error": res.get("error")})
                     return out
             return dict(res)
+
+    def warm_all(self, site_ids: Any, min_interval: float = 300.0) -> Dict[str, Any]:
+        """★ 19.2.0：对一批站点触发**后台预热**，整体按时间戳节流。
+
+        用 TierCache 的 live_warm_ts 记上次预热时刻：距上次 < min_interval
+        → 整个调用跳过（skipped = 全部站点）；否则对每个站点 request_refresh
+        （single-flight：已在刷的计 skipped）。返回 started / skipped / ts。
+        """
+        ids: List[int] = []
+        for raw in site_ids or []:
+            try:
+                sid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if sid and sid not in ids:
+                ids.append(sid)
+        now = time.time()
+        _iv = float(min_interval or 0.0)
+        _ttl = max(3600.0, _iv * 2.0)
+        tc = None
+        try:
+            factory = getattr(self._plugin, "live_cache", None)
+            if callable(factory):
+                tc = factory()
+        except Exception:  # noqa: BLE001
+            tc = None
+        last = 0.0
+        if tc is not None:
+            try:
+                last = float(tc.get("live_warm_ts", _ttl) or 0.0)
+            except Exception:  # noqa: BLE001
+                last = 0.0
+        if last and (now - last) < _iv:
+            return {"started": [], "skipped": ids, "ts": last}
+        if tc is not None and ids:
+            try:
+                tc.set("live_warm_ts", now, _ttl)
+            except Exception:  # noqa: BLE001
+                pass
+        started: List[int] = []
+        skipped: List[int] = []
+        for sid in ids:
+            if self.request_refresh(sid):
+                started.append(sid)
+            else:
+                skipped.append(sid)
+        return {"started": started, "skipped": skipped, "ts": now}
 
     # ---------------------------------------------------------------- 采样历史
     def _load_samples(self) -> None:
@@ -1124,9 +1328,28 @@ class LiveStats:
         cfg: Optional[Dict[str, Any]] = None,
         local_managed: Optional[int] = None,
         force: bool = False,
+        block: bool = True,
+        wait: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """实时数据 + 速率 + 告警 的组合快照（供 API 展示/看门狗使用）。"""
-        live = self.get(site_id, force=force)
+        """实时数据 + 速率 + 告警 的组合快照（供 API 展示/看门狗使用）。
+
+        ★ 19.2.0：block=False 时 live 走**纯缓存读**（get_cached_or_warm，绝不阻塞；
+        过期/未命中只排队后台补），rates/alerts 照常计算；worker 路径保持 block=True
+        （继续真抓 = 天然的预热器）。
+        ★ 19.2.2：wait 非 None 时优先 —— wait>0 走 get_bounded（限时真抓），
+        wait<=0 走 get_cached_or_warm（纯缓存）。
+        """
+        if wait is not None:
+            try:
+                _w = float(wait)
+            except (TypeError, ValueError):
+                _w = 0.0
+            live = (self.get_bounded(site_id, max_wait=_w) if _w > 0
+                    else self.get_cached_or_warm(site_id))
+        elif block:
+            live = self.get(site_id, force=force)
+        else:
+            live = self.get_cached_or_warm(site_id)
         ev = self.evaluate(site_id, cfg=cfg, live=live, local_managed=local_managed)
         return {
             "live": live,

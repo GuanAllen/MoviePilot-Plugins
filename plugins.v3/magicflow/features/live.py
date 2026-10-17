@@ -25,6 +25,7 @@ from ..sitestore import get_site_store, slot_callbacks
 
 from ..common import (
     SILENT_HOST_TASK_ID,
+    LIVE_AGENT_WAIT_S,
     LIVE_ALERT_COOLDOWN_MIN,
     LIVE_DOWNLOAD_ALERT_MB,
     LIVE_INTERVAL_MINUTES,
@@ -120,12 +121,28 @@ class LiveMixin:
         return out
 
     def _live_snapshot(
-        self, site_id: int, local_managed: Optional[int] = None, force: bool = False
+        self,
+        site_id: int,
+        local_managed: Optional[int] = None,
+        force: bool = False,
+        block: bool = True,
+        wait: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """实时数据 + 速率 + 告警 的组合快照(绝不抛出)。"""
+        """实时数据 + 速率 + 告警 的组合快照(绝不抛出)。
+
+        ★ 19.2.0：block=False → live 走**纯缓存读**（UI 秒开，绝不现抓）；
+        worker 路径保持 block=True（继续真抓 = 天然的预热器）。
+        ★ 19.2.2：wait 非 None → **限时真抓**（wait>0 最多等 wait 秒；wait<=0 纯缓存），
+        供 AI 入口 /agent/live 缺省用（见 get_live_state）。
+        """
         try:
             snap = self._live.snapshot(
-                int(site_id), cfg=dict(self._live_cfg or {}), local_managed=local_managed, force=force
+                int(site_id),
+                cfg=dict(self._live_cfg or {}),
+                local_managed=local_managed,
+                force=force,
+                block=block,
+                wait=wait,
             )
         except Exception as err:  # noqa: BLE001
             self._log(f"站点实时数据获取失败(站点 {site_id}):{err}", "warning")
@@ -197,15 +214,53 @@ class LiveMixin:
                 src.setdefault(key, "live")
         return live
 
-    def get_live_state(self, force: bool = False, site_id: int = 0) -> Response:
+    def get_live_state(self, force: bool = False, site_id: int = 0,
+                       block: bool = False, fresh: bool = False,
+                       wait: Optional[float] = None) -> Response:
         """站点实时数据 + 流量监控快照(只读,不做任何写操作)。
 
         `site_id` 给出时只返回该站点(前端只看当前任务的站点,少打站点)。
+
+        ★ 19.2.0：**UI 只读缓存**（block=False）—— 请求线程绝不现抓站点，命中即秒回；
+        未命中 / 过期回 warming / 旧值 + stale，后台 single-flight 预热补齐。
+        「打开插件」这一次调用同时充当预热触发器（按 live_warm_ts 整体 5 分钟节流）。
+
+        ★ 19.2.1：新增 ``fresh``（与 ``block=True`` 等价）→ **现抓真值**（= 19.2.0 之前行为）。
+        ★★ 铁律：缓存读（``get_cached_or_warm`` / ``block=False``）**只服务人看的 UI**；
+        任何**后端决策 / 写路径 / AI 真值读**一律 ``block=True`` / ``fresh=True``，或直接
+        ``self._live.get()``。UI 路由 ``/live`` 默认（不传 fresh/block）保持纯缓存秒开。
+        ★ 19.2.2：新增 wait（秒）→ **限时真抓**：wait>0 后台刷一次并最多等 wait 秒，
+        拿到新值回新值，没等到回上次值 + cached/stale/age_s/warming（无缓存则 ok=False+warming）；
+        wait<=0 等价纯缓存。AI 入口 /agent/live 缺省即用 LIVE_AGENT_WAIT_S。
         """
+        _wait: Optional[float] = None
+        if wait is not None:
+            try:
+                _wait = float(wait)
+            except (TypeError, ValueError):
+                _wait = None
+        # ★ 19.2.2：wait 给出 → 走**限时真抓**（bounded）；不再走 block/fresh 的不限时真抓。
+        _bounded = _wait is not None
+        _fresh = bool(fresh or block) and not _bounded
         sites = self._live_sites(only_site_id=int(site_id or 0))
+        if _fresh or _bounded:
+            # ★ 19.2.1：真抓路径不排队后台预热 —— 本次同步 get 已是真值，
+            #   再触发 request_refresh 会对同站并发双抓 / 双计 PV。
+            # ★ 19.2.2：限时真抓同理（get_bounded 内部已负责发起 / 搭上一次后台刷新）。
+            warm: Dict[str, Any] = {"skipped": "fresh" if _fresh else "bounded"}
+        else:
+            # ★ 19.2.0：非阻塞预热 —— 覆盖所有任务站点（含本次请求的那一个）。
+            #   warm_all 自带 live_warm_ts 节流（默认 300s），不会把站点打爆。
+            try:
+                warm = self._live.warm_all(list(self._live_sites().keys()))
+            except Exception as err:  # noqa: BLE001
+                warm = {"error": str(err)}
         rows: List[Dict[str, Any]] = []
         for sid, meta in sites.items():
-            snap = self._live_snapshot(sid, local_managed=meta.get("local_managed"), force=bool(force))
+            snap = self._live_snapshot(
+                sid, local_managed=meta.get("local_managed"), force=bool(force),
+                block=_fresh, wait=_wait,
+            )
             rows.append(
                 {
                     "site_id": sid,
@@ -233,6 +288,7 @@ class LiveMixin:
                     "exam_enabled": bool(self._live_cfg.get("exam_enabled", False)),
                 },
                 "sites": rows,
+                "warm": warm,
                 "ts": time.time(),
             },
         )

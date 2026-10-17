@@ -56,6 +56,8 @@ from ..common import (
     RESEED_OK_TTL,
     RESEED_PASSKEY_KEY,
     SILENT_HR_SPLIT_ENABLED,
+    mask_long_tokens,
+    mask_url_secrets,
 )
 
 
@@ -740,8 +742,9 @@ class ReSeedMixin:
                                               int((conn or {}).get("site_id") or 0),
                                               (conn or {}).get("cookie"))
                     url = self._reseed_download_url(sid, 1)
+                    # ★ 诊断回显不得带口令：下载链里常含 `?passkey=…`，先遮值再截断。
                     row.update({"passkey_len": len(pk or ""), "url_ok": bool(url),
-                                "url_sample": (url or "")[:70]})
+                                "url_sample": mask_url_secrets(url or "")[:70]})
                 rows.append(row)
             return Response(success=True, data={"ver": "p2", "sites": rows})
         except Exception as err:  # noqa: BLE001
@@ -768,23 +771,27 @@ class ReSeedMixin:
                     res = collect.http.text(site_id, url, kind="passkey")
                     txt = str(getattr(res, "text", "") or "")
                     m = _PASSKEY_RE.search(txt)
-                    out["tries"].append({"url": url, "ok": bool(getattr(res, "ok", False)),
+                    out["tries"].append({"url": mask_url_secrets(url), "ok": bool(getattr(res, "ok", False)),
                                          "status": getattr(res, "status", None),
-                                         "len": len(txt), "pk": (m.group(1)[:6] + "…") if m else ""})
+                                         "len": len(txt),
+                                         # ★ 只回长度：旧版回 passkey 前 6 位 = 变相外泄口令。
+                                         "pk_len": len(m.group(1)) if m else 0})
                     if not out.get("ctx"):
                         ctx = []
                         low = txt.lower()
                         for needle in ("passkey", "密钥", "downhash", "authkey"):
                             pos = low.find(needle.lower())
                             if pos >= 0:
-                                ctx.append(txt[max(0, pos - 60):pos + 80])
+                                # ★ 命中处前后 140 字符里正含着口令值：长串先遮再回显。
+                                ctx.append(mask_long_tokens(txt[max(0, pos - 60):pos + 80]))
                         out["ctx"] = ctx[:3]
                         try:
                             from ..collect import parse_passkey as _pp, _passkey_from_label as _pl  # noqa: WPS433
-                            out["label"] = (_pl(txt) or "")[:10]
-                            out["parsed_pk"] = str((_pp(txt) or {}).get("passkey") or "")[:10]
+                            # ★ 只回长度：旧版回前 10 位 = 变相外泄口令。
+                            out["label_len"] = len(_pl(txt) or "")
+                            out["parsed_pk_len"] = len(str((_pp(txt) or {}).get("passkey") or ""))
                         except Exception as err:  # noqa: BLE001
-                            out["label"] = f"ERR {err}"
+                            out["label_err"] = str(err)[:120]
                     if m:
                         break
                 except Exception as err:  # noqa: BLE001
