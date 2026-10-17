@@ -47,6 +47,9 @@ from ..common import (
     SIGNIN_QUEUE,
     SIGNIN_RETRY_KEYWORD,
     _cs_parse_site_hours,
+    is_secret_blank,
+    mask_secret_fields,
+    redact_secrets,
 )
 
 
@@ -126,16 +129,34 @@ class SettingsMixin:
         if bool(getattr(payload, "iyuu_clear", False)):
             self._iyuu_token = ""
             self.save_data(key="iyuu_token", value="")
-        elif _new_iyuu:
+        elif _new_iyuu and not is_secret_blank(_new_iyuu):
+            # ★ 掩码哨兵 `***` 也当「不修改」：出口脱敏后前端可能原样存回，绝不能落成真值。
             self._iyuu_token = _new_iyuu
             self.save_data(key="iyuu_token", value=_new_iyuu)
         raw_sites = getattr(payload, "iyuu_sites", None)
-        if isinstance(raw_sites, dict):
-            self._iyuu_sites = {
-                str(k).strip().lower(): {str(vk): str(vv) for vk, vv in dict(v).items()}
-                for k, v in raw_sites.items()
-                if isinstance(v, dict) and str(k).strip()
+        if isinstance(raw_sites, dict) and raw_sites:
+            # ★ **逐字段合并**（不再整份替换）：出口只回 `***`/空 ⇒ 前端回传的也是掩码/空，
+            #   整份替换会把站点密钥抹成 `***`。空 或 掩码 = 保留原值；显式 clear 才删。
+            merged: Dict[str, Dict[str, str]] = {
+                k: dict(v) for k, v in dict(getattr(self, "_iyuu_sites", {}) or {}).items()
             }
+            for _dom, _fill in raw_sites.items():
+                dom = str(_dom or "").strip().lower()
+                if not dom or not isinstance(_fill, dict):
+                    continue
+                clear = bool(_fill.get("clear"))
+                cur = merged.setdefault(dom, {})
+                for _k, _v in _fill.items():
+                    field = str(_k or "").strip()
+                    if not field or field == "clear":
+                        continue
+                    if clear:
+                        cur.pop(field, None)
+                    elif not is_secret_blank(_v):
+                        cur[field] = str(_v).strip()
+                if not cur:
+                    merged.pop(dom, None)
+            self._iyuu_sites = merged
         slot_callbacks(self, "iyuu_sites")[1](value=dict(self._iyuu_sites))
         if self._iyuu_client is None:
             self._iyuu_client = self._build_iyuu_client(self._iyuu_token)
@@ -364,7 +385,10 @@ class SettingsMixin:
             f"debug={self._debug_log} compact={self._compact_mode} "
             f"journal_keep={self._journal_keep} req_interval={self._request_interval}"
         )
-        return Response(success=True, message="设置已保存", data=self._current_config())
+        # ★ 保存响应也过脱敏闸：`_current_config()` 里带 iyuu_token / cloud_openlist_token，
+        #   直接回显 = 前端每次保存都把明文再吃一遍（既有泄露面之一）。
+        return Response(success=True, message="设置已保存",
+                        data=redact_secrets(self._current_config()))
 
     def get_downloader_prefs(self) -> Response:
         """读取下载器(qBittorrent)全局参数 + 推荐值。"""
@@ -491,16 +515,18 @@ class SettingsMixin:
                     "has_apikey": bool(str(getattr(site, "apikey", "") or "").strip()),
                     "has_cookie": bool(str(getattr(site, "cookie", "") or "").strip()),
                     "iyuu_sid": client.sid_by_domain(domain) if (client and client.enabled) else None,
-                    "fill": dict(self._iyuu_sites.get(domain.lower(), {})),
+                    # ★ 密钥不预填明文：只回 `***` + `<field>_set`，前端据此显示「已保存（留空则不修改）」。
+                    "fill": mask_secret_fields(self._iyuu_sites.get(domain.lower(), {})),
                 })
         except Exception as err:  # noqa: BLE001
             self._log(f"列出已配置站点失败:{err}", "warning")
-        return Response(success=True, data={
+        # ★ 出口统一脱敏（`token` 命中 SECRET_KEYS → `***` + `token_set`）。
+        return Response(success=True, data=redact_secrets({
             "token_set": bool(self._iyuu_token),
             "token": self._iyuu_token,
             "enabled": self._iyuu_enabled(),
             "sites": sorted(rows, key=lambda r: str(r.get("name") or "")),
-        })
+        }))
 
     def test_iyuu(self) -> Response:
         """测试已保存的 IYUU Token(拉一次账号信息)。"""
@@ -510,9 +536,10 @@ class SettingsMixin:
         profile = probe.profile()
         if not profile:
             return Response(success=False, message="Token 无效或云端不可达")
-        return Response(success=True, message="Token 有效", data={
+        # ★ 云端 profile 原样回显有风险（可能带回 token 类字段）→ 统一过脱敏闸。
+        return Response(success=True, message="Token 有效", data=redact_secrets({
             "id": profile.get("id"),
             "username": profile.get("username"),
             "sid": profile.get("sid"),
             "sites": len(probe.sites()),
-        })
+        }))

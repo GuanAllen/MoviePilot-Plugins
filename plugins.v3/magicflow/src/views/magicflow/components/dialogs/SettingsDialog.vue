@@ -509,7 +509,7 @@ defineProps({
               <VTextField
                 v-model="settingsDraft.iyuu_token"
                 label="IYUU 云端 Token"
-                placeholder="留空 = 不启用 IYUU 辅种"
+                :placeholder="iyuuStatus?.token_set ? '已保存（留空则不修改）' : '留空 = 不启用 IYUU 辅种'"
                 variant="outlined"
                 density="comfortable"
                 hide-details
@@ -521,11 +521,11 @@ defineProps({
                 size="small"
                 prepend-icon="mdi-connection"
                 :loading="iyuuTesting"
-                :disabled="!settingsDraft.iyuu_token"
+                :disabled="!settingsDraft.iyuu_token && !iyuuStatus?.token_set"
                 @click="emit('test-iyuu')"
               >测试</VBtn>
               <VBtn
-                v-if="settingsDraft.iyuu_token"
+                v-if="settingsDraft.iyuu_token || iyuuStatus?.token_set"
                 variant="text"
                 color="error"
                 size="small"
@@ -565,7 +565,7 @@ defineProps({
                   <VTextField
                     v-model="row.passkey"
                     label="passkey"
-                    placeholder="留空 = 自动获取"
+                    :placeholder="row.passkey_set ? '已保存（留空则不修改）' : '留空 = 自动获取'"
                     variant="outlined"
                     density="compact"
                     hide-details
@@ -574,6 +574,7 @@ defineProps({
                   <VTextField
                     v-model="row.uid"
                     label="uid（可选）"
+                    :placeholder="row.uid_set ? '已保存（留空则不修改）' : '留空 = 自动获取'"
                     variant="outlined"
                     density="compact"
                     hide-details
@@ -584,6 +585,7 @@ defineProps({
                   v-if="iyuuShowMore[row.domain || row.name]"
                   v-model="row.downhash"
                   label="downhash（可选）"
+                  :placeholder="row.downhash_set ? '已保存（留空则不修改）' : '留空 = 自动获取'"
                   variant="outlined"
                   density="compact"
                   hide-details

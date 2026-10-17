@@ -405,11 +405,15 @@ LEECH_PAGE_ALT = "/userdetails.php?id={uid}"
 
 
 def sanitize_site_headers(site: Any) -> Tuple[Optional[str], Optional[str]]:
-    """站点 UA / Cookie 去空白（尤其 **UA 前导空格**）。
+    """站点 UA / Cookie → 交给 MP SDK 自己解析（**不再自造清洗逻辑**）。
 
-    踩过（2026-09-29，蟹黄堡）：站点配置里 ua 带一个前导空格 →
-    httpx 直接判「非法 header」→ 请求在 0.9ms 内返回 None，
-    表现成「无响应」，规则页永远抓不到。UA/Cookie 统一 strip 兜底。
+    教训（2026-10-16）：自造的「压成一行」会把 cookie 的 `;` 分隔符吃掉
+    （`c_secure_pass=…; c_secure_ssl=…` → `…c_secure_pass=…c_secure_ssl=…`）→ 站点认不出 →
+    返回登录页 → **把 cookie 好好的站误判成失效**。
+
+    正确做法（与隔壁 autosignin 一致）：**直接把原串交给 SDK ``RequestUtils(cookies=…)``**，
+    由它内部的 ``cookie_parse`` 解析（该函数明确「保持浏览器原值」，`%3D` 不解码）。
+    这里只做最小本职：**.strip() 去首尾空白**（防 httpx 非法 header）——绝不改内部结构。
     """
     try:
         ua = str(getattr(site, "ua", "") or "").strip() or None
@@ -787,18 +791,76 @@ def parse_user_bar(raw: Any) -> Dict[str, Any]:
 
 
 # 签到结果特征
+# ★ 19.2.3 签到判据修正：**以站点「签到状态/记录」为准，不再「没识别到就算成功」**。
+#   铁证（2026-10-16）：通用路径多站记录写着「签到成功」，可本函数根本产不出该文案 → 假成功。
+#   现约定：
+#     1) 明确读到「已签」记录（NexusPHP 标准回显）→ signed=True；
+#     2) 页面是**未签态**（「待签到 / 立即签到 / 未签到 / is-pending」）→ signed=False（未签，非失败）；
+#     3) 什么都读不到（异常页 / 空页 / 抓错页）→ **ambiguous=True**（不再默认成功）。
 SIGNED_RE = re.compile(r"已得\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:个)?魔力")
-SIGNED_TEXTS = ("签到成功", "已签到", "已签", "签到已得", "每日签到", "签到已得魔力")
+# 「今日已签」类回显（NexusPHP 标准）+ 与专用处理器口径对齐（ttg/tjupt/hdsky/pttime 认这些）
+#   ★ 19.2.3 加固（2026-10-17）：剔除 `每日签到` 与裸 `已签` —— 它们不是「已签事实」，是
+#     **页面常驻文案**（导航栏 / 板块标题 / 历史表头都可能出现）。实测铁证：未签页只因导航含
+#     「每日签到」四个字就命中旧表 → 记「今日已签到」= 假成功。此处只收**整短语**，不收半截词；
+#     半截语义（如 pttime 的「今日已签」）另列整词，不靠子串兜。
+SIGNED_TEXTS = (
+    "签到成功", "已签到", "签到已得", "签到已得魔力",
+    "今日已签到", "已经签到", "今天已签到", "无需再签", "您今天已签到", "已签到过",
+    "今日已签", "今天已签", "已经签过",
+)
+# ★ 未签态：页面明确在**要你去签**（而非已签）→ 直接判「未签」，压过任何肯定文案
+#   （治 dstudio 那种页 `<h1>` 固定写「签到成功」的误报）。
+UNSIGNED_TEXTS = ("待签到", "立即签到", "未签到", "尚未签到", "is-pending")
+# ★ 弱未签判据（原始 HTML，19.2.3 加固）：摆着裸「签到」**提交控件** = 站方在等你签
+#   （NexusPHP 标准未签页的 form）。只认 `<input>/<button>` 控件，**不认 `<a>` 导航链接**
+#   （已签页导航里仍可能留「签到」入口）。故它排在弱成功判据**之后**：只要页面给得出任何
+#   已签回显/记录，就不因这个控件翻案（否则会把真成功记成未签、白刷 PV）。
+UNSIGNED_CTRL_RE = re.compile(
+    r"<(?:input|button)[^>]*\bvalue\s*=\s*[\"']?\s*签到\s*[\"']?"
+    r"|<(?:input|button)[^>]*>\s*签到\s*<",
+    re.I,
+)
 LOGIN_HINT_RE = re.compile(r"login\.php|name=\"password\"|登录|登陆")
+# ★ 19.2.3：**标题即登录页**。部分 NexusPHP 站 cookie 失后 ``attendance.php`` 返回的登录页
+#   不含 ``login.php``/``name="password"`` 字面（只 title 写「登录」）→ 旧判据漏判 → 掉兜底假成功。
+#   铁证（2026-10-16，财神/高清时间）：早上 cookie 已失效却报「签到成功」。
+LOGIN_TITLE_RE = re.compile(r"<title>[^<]*(登录|登入|簽到登录|login)\s*[-–—]?\s*(Powered by|::)?", re.I)
 PV_LIMIT_RE = re.compile(r"访问次数已达上限|今日访问次数")
 
 
 def parse_signin(raw: Any) -> Dict[str, Any]:
-    """解析签到页 → {ok, signed, already, bonus, cookie_dead, pv_limited, message}。"""
+    """解析签到页 → {ok, signed, already, bonus, cookie_dead, pv_limited, ambiguous, message}。
+
+    ★ 19.2.3：**未识别到就返回 ambiguous（不再默认 signed=True）**。上层的 recorded
+    成功只认「明确读到已签记录」这一种；其余交给 signin.py 记为「未识别（建议手动确认）」。
+
+    ★ 19.2.3 加固（2026-10-17）判据顺序 —— **强到弱，互相不越权**：
+      ① 强未签：`UNSIGNED_TEXTS`（待签到/未签到/…）→ 未签（压过一切肯定文案）；
+      ② 强已签：`SIGNED_RE`（已得 N 魔力）→ 已签（记录证据，最硬）；
+      ③ 弱已签：`SIGNED_TEXTS`（已签回显整短语）→ 已签；
+      ④ 弱未签：`UNSIGNED_CTRL_RE`（裸「签到」提交控件）→ 未签；
+      ⑤ 都读不到 → `ambiguous=True`（不猜成功）。
+    """
     text = str(raw or "")
     flat = _to_text(text)
     if PV_LIMIT_RE.search(flat):
         return {"ok": False, "pv_limited": True, "message": "站点每日访问次数已达上限"}
+    # Cookie 失效判据（★ 19.2.3 修正）。**顺序很关键**：先看「是否已登录」。
+    #   铁证（2026-10-16）：财神/高清时间的 attendance.php 带 cookie 是**「签到」页且含 `logout.php`**
+    #   （已登录）；裸抓ー时看到的重定向中间态才是「登录」页。若只看 title 含「登录」就判失效 →
+    #   **把已登录的站误判成失效**（Master 原话：MP 那边没失效）。
+    #   故：① 有 `logout.php`（登出链接 = 已登录）→ **绝不判失效**；
+    #       ② 否则才看密码框 / login.php 等登录特征。
+    _has_logout = "logout.php" in text
+    cookie_dead = False
+    if not _has_logout:
+        cookie_dead = (
+            bool(re.search(r'name="password"', text))
+            or bool(re.search(r"<title>[^<]*(登录|登入|login)", text, re.I))
+            or bool(LOGIN_HINT_RE.search(flat))
+        )
+    if cookie_dead:
+        return {"ok": False, "cookie_dead": True, "message": "Cookie 已失效或未登录"}
     m = SIGNED_RE.search(flat)
     bonus = None
     if m:
@@ -806,21 +868,54 @@ def parse_signin(raw: Any) -> Dict[str, Any]:
             bonus = float(m.group(1).replace(",", ""))
         except ValueError:
             bonus = None
-    hit = bool(m) or any(t in flat for t in SIGNED_TEXTS)
-    cookie_dead = bool(re.search(r'name="password"', text)) or (
-        bool(LOGIN_HINT_RE.search(flat)) and "logout.php" not in text
-    )
-    if cookie_dead:
-        return {"ok": False, "cookie_dead": True, "message": "Cookie 已失效或未登录"}
-    if hit:
+    # ★ 否定态优先：明确「待签到/立即签到」→ 未签（不给成功）
+    if any(t in flat for t in UNSIGNED_TEXTS):
+        return {
+            "ok": False,
+            "signed": False,
+            "ambiguous": False,
+            "bonus": bonus,
+            "message": "未签到（页面显示待签到）",
+        }
+    # ★ 硬成功（19.2.3 加固）：回显「已得 N 魔力」= 有**记录证据**，比文案硬。
+    #   它排在弱未签控件判据之前 —— 已签页若残留一个「签到」按钮，真成功不能被翻成未签。
+    if m:
         return {
             "ok": True,
             "signed": True,
-            "already": ("已签" in flat) or bool(m),
+            "already": True,
             "bonus": bonus,
             "message": "今日已签到",
         }
-    return {"ok": True, "signed": True, "already": False, "bonus": bonus, "message": "已执行（未识别到结果文案）"}
+    # ★ 弱成功：站点「已签」回显整短语（与专用处理器口径对齐：ttg/tjupt/hdsky/pttime 等）
+    if any(t in flat for t in SIGNED_TEXTS):
+        # `already` 只为**文案**（signin.py:446）：`签到成功` 是「本次刚签」，
+        # 其余整短语（已签到/无需再签/今日已签…）都是「已签态」→ 文案记「今日已签到」。
+        signed_already = any(t in flat for t in SIGNED_TEXTS if t != "签到成功")
+        return {
+            "ok": True,
+            "signed": True,
+            "already": signed_already,
+            "bonus": bonus,
+            "message": "今日已签到" if signed_already else "签到成功",
+        }
+    # ★ 弱未签（19.2.3 加固）：页面没有任何已签回显，却摆着裸「签到」提交控件 → 未签
+    if UNSIGNED_CTRL_RE.search(text):
+        return {
+            "ok": False,
+            "signed": False,
+            "ambiguous": False,
+            "bonus": bonus,
+            "message": "未签到（页面显示待签到）",
+        }
+    # ★ 什么都读不到 → 不猜成功
+    return {
+        "ok": False,
+        "signed": False,
+        "ambiguous": True,
+        "bonus": bonus,
+        "message": "未识别到签到结果（页面可能异常，建议手动确认）",
+    }
 
 
 _PASSKEY_RE = re.compile(r"passkey=([0-9a-fA-F]{16,64})")

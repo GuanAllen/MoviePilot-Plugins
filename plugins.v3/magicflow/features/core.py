@@ -94,6 +94,7 @@ from ..common import (
     decision_round_stats,
     end_decision_round,
     note_snapshot_pull,
+    redact_secrets,
     task_is_participating,
 )
 
@@ -803,8 +804,14 @@ class CoreMixin:
         ]
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
-        """Vue 配置组件只需要接收当前配置模型"""
-        return [], self._current_config()
+        """Vue 配置组件只需要接收当前配置模型。
+
+        ★ 出口过脱敏闸：`_current_config()` 带 `iyuu_token` / `cloud_openlist_token` 明文，
+        这里是 MoviePilot 原生插件配置表单的取值口（浏览器可见），必须遮。
+        注意 **只能在出口遮**：`_current_config()` 本体还被 `core.py:1639`
+        `self.update_config(self._current_config())` 用于**落盘**，不能在函数内部脱敏。
+        """
+        return [], redact_secrets(self._current_config())
 
     def get_page(self) -> List[dict]:
         """Vue 详情组件自行通过插件 API 获取页面数据"""

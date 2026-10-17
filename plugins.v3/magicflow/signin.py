@@ -56,7 +56,11 @@ LOGIN_HINT_RE = re.compile(
     re.I,
 )
 SIGNED_RE = re.compile(r"签到已得\s*([0-9][0-9,]*(?:\.[0-9]+)?)")
-SIGNED_TEXTS = ("已签到", "签到已得", "每日签到", "签到成功", "簽到成功", "已经签到", "已签")
+# ★ 19.2.3：与 collect.parse_signin 口径对齐（补「今日已签到/无需再签」等）
+SIGNED_TEXTS = (
+    "已签到", "签到已得", "每日签到", "签到成功", "簽到成功", "已经签到", "已签",
+    "今日已签到", "今天已签到", "无需再签",
+)
 PV_LIMIT_RE = re.compile(r"访问次数已达上限|已达今日上限|每日访问次数|今日访问")
 API_SITE_DOMAINS = ("m-team", "mteam", "api.")
 
@@ -429,6 +433,14 @@ class SigninEngine:
             return self._store_result("sign", site_id, name, False, "站点每日访问次数已达上限（今日不再尝试）")
         if got.get("cookie_dead"):
             return self._store_result("sign", site_id, name, False, "Cookie 已失效或未登录")
+        # ★ 19.2.3：未识别到结果（页面异常/抓错页）→ **绝不算成功**，记 skipped+na，
+        #   不参与「今日已成功」保留逻辑（否则假成功会粘一天、当天不再重试）。
+        if got.get("ambiguous"):
+            return self._store_result(
+                "sign", site_id, name, False,
+                got.get("message") or "未识别到签到结果（建议手动确认）",
+                skipped=True, na=True,
+            )
         if got.get("signed"):
             bonus = got.get("bonus")
             already = bool(got.get("already"))
@@ -436,7 +448,11 @@ class SigninEngine:
                 "今日已签到" if already else "签到成功"
             )
             return self._store_result("sign", site_id, name, True, msg, bonus=bonus)
-        return self._store_result("sign", site_id, name, True, "已执行（未识别到结果文案，可去站点确认）")
+        # 页面明确显示「未签到」→ 如实记未签（非失败、非成功；可继续重试）
+        return self._store_result(
+            "sign", site_id, name, False,
+            got.get("message") or "未签到（页面显示待签到）",
+        )
 
     # ---------------------------------------------------------------- 登录
     def login(self, site_id: Any) -> Dict[str, Any]:
