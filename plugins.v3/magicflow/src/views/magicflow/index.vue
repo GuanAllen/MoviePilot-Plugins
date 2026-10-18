@@ -1093,7 +1093,7 @@ const {
 
 // ── 认领（claim，7.14.0）：把「我们在做种」的种在站点侧认领掉，换站点权益 ────────
 //   ★ 写动作不可逆（不达标 −魔力 / 主动放弃 −更多）→ 默认干跑，真写要二次确认。
-const claimData = ref({ sites: [], claimed: [], claimable: [], soon: [], cfg: {}, records: [] })
+const claimData = ref({ sites: [], claimed: [], claimable: [], soon: [], cfg: {}, records: [], settlement: {}, est_month_bonus_total: 0 })
 const claimOpen = ref(false)
 const claimLoading = ref(false)
 const claimActing = ref('')
@@ -1126,8 +1126,10 @@ async function claimScanRun() {
   if (claimActing.value) return
   claimActing.value = 'run'
   try {
-    const res = unwrapResponse(await api.features.claimRun()) || {}
-    notify(res.message || '已扫描')
+    // ★ 19.5.0：扫描只读（dry=1）。干跑/真跑两个动作彻底分开：
+    //   扫描从不写；真写必须先关设置里的「干跑」，再点「认领本轮」二次确认。
+    const res = unwrapResponse(await api.features.claimScan()) || {}
+    notify(res.message || '已扫描（只读）')
     await loadClaim()
   } catch (err) {
     notify(`扫描失败：${err?.message || err}`, 'error')

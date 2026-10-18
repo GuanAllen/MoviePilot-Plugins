@@ -189,6 +189,11 @@ def main() -> int:
        "signin.py 最终兜底记 False（不写成功）")
     ok(re.search(r'msg = "今日已签到（\+%s 魔力）"', src) is not None,
        "signin.py 记住成功路径（+N 魔力文案）")
+    # 19.2.4 账号保活「去登录」入口：站点地址归一（不拼出 https://https://…）
+    ok("def _norm_site_url" in src, "signin.py 有 _norm_site_url（入口地址归一）")
+    ok(src.count("_norm_site_url(") >= 4, "入口地址归一被行构造 + 快照补齐共用（≥4 处）")
+    ok('startswith(("http://", "https://"))' in src, "入口地址已判 scheme（不重复拼协议）")
+    ok('"url": _norm_site_url(' in src, "保活行带 url（面板/通知/健康自检同一入口）")
 
     print("=" * 60)
     if FAILS:

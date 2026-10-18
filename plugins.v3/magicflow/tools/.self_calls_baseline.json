@@ -146,6 +146,7 @@
   "claim.py::_build_formula_params": 1,
   "claim.py::_convert_to_bonus_list": 1,
   "claim.py::_get_site": 5,
+  "claim.py::_list_sites": 1,
   "claim.py::_log": 2,
   "claim.py::_site_ni_map": 1,
   "claim.py::_site_official_titles": 1,

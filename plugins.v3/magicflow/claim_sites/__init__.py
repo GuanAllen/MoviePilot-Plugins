@@ -231,5 +231,17 @@ def find(url: str) -> Optional[type]:
 
 
 def domains() -> List[str]:
-    """已支持写动作的站点域名列表。"""
-    return sorted({str(getattr(c, "site_url", "") or "") for c in handlers() if getattr(c, "site_url", "")})
+    """已支持写动作的站点域名列表（专用适配器 + 同族 preset 站点）。"""
+    out = {str(getattr(c, "site_url", "") or "") for c in handlers() if getattr(c, "site_url", "")}
+    try:
+        from ..sites.claim_presets import CLAIM_PRESETS  # noqa: WPS433
+
+        out |= {
+            key
+            for key, val in CLAIM_PRESETS.items()
+            if isinstance(val, dict) and val.get("supported") and (val.get("endpoint") or {}).get("path")
+        }
+    except Exception as err:  # noqa: BLE001
+        logger.debug(f"认领：preset 域名枚举失败 {err}")
+    out.discard("")
+    return sorted(out)

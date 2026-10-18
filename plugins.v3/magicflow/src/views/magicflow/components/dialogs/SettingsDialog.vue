@@ -692,12 +692,12 @@ defineProps({
 
             <div class="magicflow-settings-switches">
               <VSwitch v-model="settingsDraft.claim_enabled" label="启用认领" color="primary" hide-details inset />
-              <VSwitch v-model="settingsDraft.claim_dry" label="干跑（只列不写）" color="primary" hide-details inset :disabled="!settingsDraft.claim_enabled" />
+              <VSwitch v-model="settingsDraft.claim_dry" label="干跑（只读，不认领）" color="primary" hide-details inset :disabled="!settingsDraft.claim_enabled" />
               <VSwitch v-model="settingsDraft.claim_exclude_zero_bonus" label="零魔种不认领" color="primary" hide-details inset />
             </div>
 
             <div class="magicflow-settings-block">
-              <div class="magicflow-settings-block__head"><VIcon icon="mdi-web" size="16" /> 站点白名单（留空 = 全部支持的站）</div>
+              <div class="magicflow-settings-block__head"><VIcon icon="mdi-web" size="16" /> 站点白名单（留空 = 全站）</div>
               <VCombobox
                 v-model="settingsDraft.claim_sites"
                 :items="claimSiteOptions"
@@ -709,7 +709,7 @@ defineProps({
                 density="comfortable"
                 hide-details
               />
-              <span class="magicflow-field__sub">已选 {{ (settingsDraft.claim_sites || []).length }} 个 · 目前支持的站：{{ claimSiteOptions.join(' / ') || '（尚未探测，打开认领页后可见）' }}</span>
+              <span class="magicflow-field__sub">已选 {{ (settingsDraft.claim_sites || []).length }} 个 · 支持认领的站：{{ claimSiteOptions.join(' / ') || '（尚未探测，打开认领页后可见）' }}</span>
             </div>
 
             <div class="magicflow-settings-block">
@@ -736,7 +736,7 @@ defineProps({
                 <VSpacer />
                 <VBtn size="small" color="primary" variant="tonal" prepend-icon="mdi-open-in-new" @click="emit('open-claim')">打开认领页</VBtn>
               </div>
-              <p class="magicflow-field__sub">先「扫描（干跑）」看能认领哪些，再逐条二次确认</p>
+              <p class="magicflow-field__sub">先「扫描（只读）」看清单；关掉干跑后再执行认领</p>
             </div>
           </div>
 

@@ -1188,11 +1188,12 @@ class AgentLedgerMixin:
             t0, "silent_pool() → 静默池(tag 账本 + 下载器)",
             self.silent_pool, limit=limit, records=records)
 
-    def agent_claim(self, site_id: Any = None) -> Dict[str, Any]:
+    def agent_claim(self, site_id: Any = None, limit: Any = 200) -> Dict[str, Any]:
         t0 = time.time()
         sid = self._agent_int(site_id, 0) if site_id not in (None, "") else None
         return self._agent_call_read(
-            t0, "get_claim_state() → 认领账本 + journal", self.get_claim_state, site_id=sid)
+            t0, "get_claim_state() → 认领账本 + journal", self.get_claim_state,
+            site_id=sid, limit=self._agent_int(limit, 200))
 
     def agent_cloud(self) -> Dict[str, Any]:
         t0 = time.time()

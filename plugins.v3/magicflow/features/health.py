@@ -186,6 +186,8 @@ class HealthMixin:
                     f"站点记录的最后登入：{row.get('last_login') or '未知'}。"
                     f"{row.get('rule_note') or ''}→ 请用浏览器 / 官方 App 亲自登一次"
                 ),
+                # ★ 入口：面板上给「去登录」按钮（跳 MP 站点登记表里的 url，不带凭据）
+                "url": str(row.get("url") or ""),
                 "task_id": "",
             })
 

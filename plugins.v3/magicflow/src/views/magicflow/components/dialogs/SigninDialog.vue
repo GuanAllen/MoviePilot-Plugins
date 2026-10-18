@@ -14,6 +14,13 @@ const signinDateLabel = d => {
   if (s.length < 10) return s
   return `${Number(s.slice(5, 7))}/${Number(s.slice(8, 10))}`
 }
+// 保活时间戳：2026-10-08 05:53:38 → 10-08 05:53（跨年才带年份，窄屏不换行 / 不折断）
+const shortTs = v => {
+  const s = String(v || '').trim()
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}:\d{2})/)
+  if (!m) return s
+  return m[1] === String(new Date().getFullYear()) ? `${m[2]}-${m[3]} ${m[4]}` : `${m[1]}-${m[2]}-${m[3]}`
+}
 
 // 开关走 defineModel（父 v-model="signinOpen"）；筛选 / 搜索是列表展示态，同样两向绑定，子不直接改父 state。
 const open = defineModel({ type: Boolean, default: false })
@@ -88,20 +95,34 @@ const emit = defineEmits(['refresh', 'run', 'settings'])
             >
               <span class="magicflow-keepalive-row__name" :title="k.domain + (k.exempt ? ' · 豁免：' + k.exempt : '')">{{ k.site_name }}</span>
               <span class="magicflow-keepalive-row__time">
-                最后登入 <b>{{ k.last_login || '—' }}</b>
-                <template v-if="k.last_browse && k.last_browse !== k.last_login"> · 最后访问 {{ k.last_browse }}</template>
-                <template v-if="k.last_seen_kind === '浏览'">（按更早的「{{ k.last_seen }}」保守起算）</template>
+                <span class="magicflow-keepalive-row__ts">最后登入 <b>{{ shortTs(k.last_login) || '—' }}</b></span>
+                <span v-if="k.last_browse && k.last_browse !== k.last_login" class="magicflow-keepalive-row__sub">· 最后访问 {{ shortTs(k.last_browse) }}</span>
+                <span v-if="k.last_seen_kind === '浏览'" class="magicflow-keepalive-row__sub">（按更早的「{{ shortTs(k.last_seen) }}」保守起算）</span>
               </span>
               <span class="magicflow-keepalive-row__left" :class="'is-' + (k.level || 'unknown')">
                 <template v-if="k.days_left !== null && k.days_left !== undefined">
-                  距 {{ k.keep_days }} 天红线还有 {{ k.days_left }} 天
+                  距 {{ k.keep_days }} 天红线还有 <b>{{ k.days_left }}</b> 天
                 </template>
                 <template v-else>暂无登入记录</template>
               </span>
+              <!-- ★ 入口：只提醒不够，得能一步跳过去亲自登（站点口径：第三方工具不算登入） -->
+              <VBtn
+                v-if="k.url"
+                class="magicflow-keepalive-row__go"
+                size="x-small"
+                variant="text"
+                :color="k.warn ? 'warning' : undefined"
+                :href="k.url"
+                target="_blank"
+                rel="noopener"
+                prepend-icon="mdi-open-in-new"
+                :title="'打开 ' + k.site_name + ' 亲自登入：' + k.url"
+              >去登录</VBtn>
             </div>
-            <p class="magicflow-field__sub">
-              {{ signinKeepaliveNote }} → 插件是第三方工具（不算登入），到点请用浏览器 / 官方 App 亲自登一次。
-            </p>
+            <details class="magicflow-keepalive-note">
+              <summary>站点口径：第三方工具（含本插件）不算登入，需用浏览器 / 官方 App 亲自登</summary>
+              <p v-if="signinKeepaliveNote">{{ signinKeepaliveNote }}</p>
+            </details>
           </div>
         </div>
 
@@ -284,17 +305,22 @@ const emit = defineEmits(['refresh', 'run', 'settings'])
   overflow: auto;
 }
 
-/* ★ 7.17.0 账号保活段（最后登入 / 距删号红线） */
+/* ★ 7.17.0 账号保活段（最后登入 / 距删号红线）
+   ★ 19.2.4 手机排版重做：grid 分区，桌面一行（名称 | 最后登入 | 剩余天数 | 去登录），
+     手机两行（名称 + 剩余天数 / 最后登入 + 去登录）。不再靠 flex-wrap 硬挤——
+     窄屏时「最后登入 …· 最后访问 …」会自己换行，不再被 nowrap+省略号切掉。 */
 .magicflow-keepalive {
   display: grid;
   gap: 4px;
 }
 
 .magicflow-keepalive-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-areas: "name time left go";
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  column-gap: 8px;
+  row-gap: 2px;
   padding: 7px 8px;
   border-radius: 6px;
   background: rgba(var(--v-theme-on-surface), 0.04);
@@ -310,24 +336,65 @@ const emit = defineEmits(['refresh', 'run', 'settings'])
 .magicflow-keepalive-row.is-ok { border-inline-start-color: rgb(var(--v-theme-success)); }
 
 .magicflow-keepalive-row__name {
-  flex: 0 0 auto;
-  font-size: 0.82rem;
-  font-weight: 600;
-}
-
-.magicflow-keepalive-row__time {
-  flex: 0 1 auto;
+  grid-area: name;
   min-inline-size: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-size: 0.82rem;
+  font-weight: 600;
   white-space: nowrap;
+}
+
+.magicflow-keepalive-row__time {
+  grid-area: time;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 5px;
+  row-gap: 1px;
+  min-inline-size: 0;
   font-size: 0.76rem;
+  line-height: 1.45;
   opacity: 0.8;
 }
 
-.magicflow-keepalive-row__left {
+/* 每个时间片各自 nowrap：只在两片之间换行，绝不把日期时间拆两行 */
+.magicflow-keepalive-row__time > span { white-space: nowrap; }
+
+.magicflow-keepalive-row__sub { opacity: 0.85; }
+
+/* ★ 19.2.5 口径说明折叠：默认一行可操作结论，长文点「详情」再展开 */
+.magicflow-keepalive-note {
+  margin-block-start: 2px;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  opacity: 0.75;
+}
+
+.magicflow-keepalive-note > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.magicflow-keepalive-note > summary::-webkit-details-marker { display: none; }
+
+.magicflow-keepalive-note > summary::after {
+  content: '详情';
   margin-inline-start: auto;
-  flex: 0 0 auto;
+  padding-inline-start: 6px;
+  opacity: 0.7;
+}
+
+.magicflow-keepalive-note[open] > summary::after { content: '收起'; }
+
+.magicflow-keepalive-note > p { margin-block: 4px 0; }
+
+.magicflow-keepalive-row__left {
+  grid-area: left;
+  justify-self: end;
   font-size: 0.76rem;
   font-weight: 600;
   white-space: nowrap;
@@ -337,6 +404,41 @@ const emit = defineEmits(['refresh', 'run', 'settings'])
 .magicflow-keepalive-row__left.is-warn { color: #b45309; }
 
 .magicflow-keepalive-row__left.is-ok { color: rgb(var(--v-theme-success)); }
+
+/* ★ 入口按钮：桌面跟在「还剩 N 天」右侧；手机落到第二行末尾 */
+.magicflow-keepalive-row__go {
+  grid-area: go;
+  justify-self: end;
+  font-size: 0.74rem;
+}
+
+@media (max-width: 600px) {
+  .magicflow-keepalive-row {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "name left go"
+      "time time time";
+    column-gap: 6px;
+    row-gap: 2px;
+    padding: 7px 9px;
+  }
+
+  .magicflow-keepalive-row__name { font-size: 0.85rem; }
+
+  /* 窄屏：名称+剩余天数+去登录 一行；时间片整行铺开，日期不再折断 */
+  .magicflow-keepalive-row__time {
+    font-size: 0.73rem;
+    line-height: 1.35;
+  }
+
+  .magicflow-keepalive-row__left { font-size: 0.72rem; }
+
+  /* 触屏点按目标 ≥ 32px（x-small 按钮默认只有 ~24px） */
+  .magicflow-keepalive-row__go {
+    min-block-size: 32px;
+    align-self: center;
+  }
+}
 
 .magicflow-signin-row {
   display: flex;
