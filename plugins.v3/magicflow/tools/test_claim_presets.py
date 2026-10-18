@@ -1,0 +1,97 @@
+# -*- coding: utf-8 -*-
+"""魔流 · 认领预设表回归（离线，无需 MoviePilot）。
+
+覆盖：
+  (a) 预设表 11 站齐全（CARPT + 咖啡/Depth Studio + 8 个同族站）
+  (b) 每个 supported 预设字段完整、endpoint 模板合法（只有 {id}/{uid} 占位）
+  (c) 已核对站数值断言（carpt / ptcafe / dstudio）
+  (d) 未公布规则的 8 站必须带 rules_unverified=True（不许伪装成已核对）
+  (e) preset_for() 域名归一（协议/大小写/www/尾斜杠）
+
+用法：``python3 tools/test_claim_presets.py``（退出码 0=PASS / 1=FAIL）。
+"""
+import importlib.util
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path('/vol1/@apphome/trim.openclaw/data/workspace/magicflow')
+spec = importlib.util.spec_from_file_location("mf_claim_presets", ROOT / "sites/claim_presets.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+CLAIM_PRESETS = mod.CLAIM_PRESETS
+preset_for = mod.preset_for
+
+fails = []
+
+
+def _ok(cond, msg):
+    if not cond:
+        fails.append(msg)
+
+
+EXPECTED = {
+    "carpt.net", "ptcafe.club", "dstudio.me",
+    "cyanbug.net", "hdtime.org", "pt.soulvoice.club", "duckboobee.org",
+    "novahd.top", "crabpt.vip", "cspt.top", "pt.btschool.club",
+}
+_ok(set(CLAIM_PRESETS) == EXPECTED, f"预设站点集合不符：{sorted(set(CLAIM_PRESETS) ^ EXPECTED)}")
+
+UNVERIFIED = {
+    "cyanbug.net", "hdtime.org", "pt.soulvoice.club", "duckboobee.org",
+    "novahd.top", "crabpt.vip", "cspt.top", "pt.btschool.club",
+}
+for key, prof in CLAIM_PRESETS.items():
+    _ok(prof.get("supported") is True, f"{key}: supported 必须为 True")
+    for field in ("min_age_days", "max_claimers", "per_user_cap", "benefit", "benefit_desc",
+                  "claim_page", "claim_list", "detail_selector"):
+        _ok(field in prof, f"{key}: 缺字段 {field}")
+    pen = prof.get("penalty") or {}
+    for field in ("unsatisfied", "abandon", "exempt_days"):
+        _ok(field in pen, f"{key}: penalty 缺 {field}")
+    st = prof.get("settlement") or {}
+    for field in ("cycle", "cycle_text", "target_seed_hours", "target_upload_ratio",
+                  "payout_hours", "payout_multiplier"):
+        _ok(field in st, f"{key}: settlement 缺 {field}")
+    ep = prof.get("endpoint") or {}
+    _ok(str(ep.get("path") or "").startswith("/"), f"{key}: endpoint.path 非法")
+    _ok((ep.get("body") or {}).get("action") == "addClaim", f"{key}: endpoint 不是 addClaim")
+    placeholders = set()
+    stack = [ep]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            stack.extend(cur.values())
+        elif isinstance(cur, list):
+            stack.extend(cur)
+        elif isinstance(cur, str):
+            placeholders |= set(re.findall(r"\{[^}]*\}", cur))
+    _ok(placeholders <= {"{id}", "{uid}"}, f"{key}: endpoint 出现非法占位符 {sorted(placeholders)}")
+    unverified = bool(prof.get("rules_unverified"))
+    _ok(unverified == (key in UNVERIFIED), f"{key}: rules_unverified 标记错误（应为 {key in UNVERIFIED}）")
+    _ok(bool(str(prof.get("rules_note") or "").strip()), f"{key}: 缺 rules_note")
+
+# 已核对站数值
+_ok(CLAIM_PRESETS["carpt.net"]["max_claimers"] == 20, "carpt: 每颗 20 人")
+_ok(CLAIM_PRESETS["carpt.net"]["settlement"]["target_seed_hours"] == 300, "carpt: 达标 300h")
+_ok(CLAIM_PRESETS["carpt.net"]["penalty"]["abandon"] == 500, "carpt: 放弃扣 500")
+_ok(CLAIM_PRESETS["ptcafe.club"]["per_user_cap"] == 3000, "咖啡: 上限 3000")
+_ok(CLAIM_PRESETS["ptcafe.club"]["max_claimers"] == 10, "咖啡: 每颗 10 人")
+_ok(CLAIM_PRESETS["ptcafe.club"]["settlement"]["target_upload_ratio"] == 10, "咖啡: 上传 ×10")
+_ok(CLAIM_PRESETS["ptcafe.club"]["penalty"]["unsatisfied"] == 3000, "咖啡: 不达标扣 3000")
+_ok(CLAIM_PRESETS["dstudio.me"]["max_claimers"] == 30, "Depth: 每颗 30 人")
+_ok(CLAIM_PRESETS["dstudio.me"]["per_user_cap"] == 500, "Depth: 单用户 500")
+_ok(CLAIM_PRESETS["dstudio.me"]["penalty"]["unsatisfied"] == 1000, "Depth: 不达标扣 1000")
+
+# 域名归一
+for raw in ("https://ptcafe.club/", "WWW.PTCAFE.CLUB", "ptcafe.club/rules.php"):
+    _ok(bool(preset_for(raw)), f"preset_for 未命中：{raw}")
+_ok(preset_for("example.org") is None, "未知域名不应命中")
+_ok(preset_for("www.novahd.top") is not None, "www 前缀应命中")
+
+if fails:
+    print("FAIL")
+    for f in fails:
+        print(" -", f)
+    sys.exit(1)
+print(f"PASS · 预设 {len(CLAIM_PRESETS)} 站（未核对 {len(UNVERIFIED)}），字段/模板/域名归一全部通过")

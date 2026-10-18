@@ -273,8 +273,10 @@ class ExamMixin:
     def _alert_keepalive(self, engine: Any) -> None:
         """账号保活提醒：剩 ≤ 临界天数 → 当日提醒一次。
 
-        ★ 只提醒，不替主人做任何事：站点口径「第三方工具间接存取不算登入」，
+        ★ 不替主人做任何事：站点口径「第三方工具间接存取不算登入」，
           保活只能主人用浏览器 / 官方 App 亲自登。
+        ★ 但**不只提醒**：每条都带站点登入入口（``row["url"]``，MP 站点登记表里的地址），
+          通知里直接点得进去，省掉「再去翻站点地址」这一步。
         """
         snap = engine.keepalive_check()
         warns: List[Dict[str, Any]] = list(snap.get("warnings") or [])
@@ -287,11 +289,16 @@ class ExamMixin:
             slot_callbacks(self, "keepalive_alert_day")[1](value=day)
         except Exception:  # noqa: BLE001
             return
-        lines = [
-            f"⚠️ {w.get('site_name')}：最后登入 {w.get('last_login') or '未知'}，"
-            f"距不登入删号还有 {w.get('days_left')} 天"
-            for w in warns
-        ]
+        lines: List[str] = []
+        for w in warns:
+            line = (
+                f"⚠️ {w.get('site_name')}：最后登入 {w.get('last_login') or '未知'}，"
+                f"距不登入删号还有 {w.get('days_left')} 天"
+            )
+            url = str(w.get("url") or "").strip()
+            if url:
+                line += f"\n👉 登入入口：{url}"
+            lines.append(line)
         self._log("账号保活提醒：" + "；".join(lines), "warning")
         hint = str((warns[0] or {}).get("agent") or "")
         try:

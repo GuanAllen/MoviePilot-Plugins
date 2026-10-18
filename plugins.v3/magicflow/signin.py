@@ -86,6 +86,21 @@ def _site_name(site: Any, site_id: Any) -> str:
     return str(getattr(site, "name", "") or getattr(site, "domain", "") or site_id)
 
 
+def _norm_site_url(*cands: Any) -> str:
+    """站点登入入口归一：带 scheme 原样用，纯域名补 ``https://``，全空返回 ""。
+
+    ★ 只拼站点根地址，**不带任何凭据**（19.2.4 账号保活「去登录」按钮 / 通知入口用）。
+    ★ MP 站点登记表里 ``url`` 与 ``domain`` 两种形态都有（馒头实测 domain 就是
+      ``https://kp.m-team.cc/``）→ 不判 scheme 会拼出 ``https://https://…``。
+    """
+    for cand in cands:
+        text = str(cand or "").strip()
+        if not text:
+            continue
+        return text if text.lower().startswith(("http://", "https://")) else "https://" + text
+    return ""
+
+
 class SigninEngine:
     """站点签到 / 模拟登录引擎（无状态；结果落插件数据）。"""
 
@@ -213,14 +228,51 @@ class SigninEngine:
             d = {}
         return d if isinstance(d, dict) else {}
 
+    def _keepalive_fill_urls(self, rows: List[Dict[str, Any]]) -> None:
+        """给保活快照行补 ``url``（旧快照没这个字段；面板「去登录」/通知入口都要它）。
+
+        只补缺的、只拼站点根地址、**不碰任何凭据**；``_list_sites()`` 走 MP 站点登记表缓存，
+        一次调用即可，不产生额外站点请求。
+        """
+        need = [r for r in rows if isinstance(r, dict)]
+        if not need:
+            return
+        urls: Dict[int, str] = {}
+        try:
+            for item in self._plugin._list_sites() or []:
+                try:
+                    _sid = int(item.get("id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                _url = _norm_site_url(item.get("url"), item.get("domain"))
+                if _sid and _url:
+                    urls[_sid] = _url
+        except Exception as err:  # noqa: BLE001
+            self._log(f"保活入口取站点地址失败：{err}", "debug")
+            return
+        for row in need:
+            try:
+                _sid = int(row.get("site_id") or 0)
+            except (TypeError, ValueError):
+                _sid = 0
+            # 站点清单优先；没有就用行里已有的地址归一（顺带修旧快照的 https://https:// 拼错）
+            row["url"] = urls.get(_sid) or _norm_site_url(row.get("url"), row.get("domain"))
+
     def keepalive_check(self, force: bool = False) -> Dict[str, Any]:
         """账号保活：站点记录的最后登入/浏览 → 距「不登入删号」还剩几天。
 
         ★ 只做「如实显示」：插件是第三方工具，按站点口径**不计入登入**，
           保活必须主人亲自用浏览器 / 官方 App 完成。
         ★ 省请求：快照 KEEPALIVE_TTL 内直接复用；站点档案走采集模块缓存（TTL 300s）。
+        ★ 旧快照（19.2.4 之前落库的）没有 ``url`` 字段 → 用一次站点清单补齐「登入入口」，
+          否则面板上「去登录」要等 6h 快照过期才出现。
         """
         snap = self.keepalive_snapshot()
+        try:
+            if snap.get("sites"):
+                self._keepalive_fill_urls(list(snap.get("sites") or []))
+        except Exception as err:  # noqa: BLE001
+            self._log(f"保活入口补齐失败：{err}", "debug")
         if (
             not force
             and snap.get("sites") is not None
@@ -244,6 +296,12 @@ class SigninEngine:
                 "site_id": sid,
                 "site_name": name,
                 "domain": str(getattr(site, "domain", "") or item.get("domain") or ""),
+                # ★ 入口：面板/通知/健康自检里的「去登录」直接跳这里（MP 站点登记表的 url；
+                #   缺了才回落 __list_sites 的 url / domain）。只放站点地址、不带任何凭据。
+                "url": _norm_site_url(
+                    getattr(site, "url", ""), item.get("url"), item.get("domain"),
+                    getattr(site, "domain", ""),
+                ),
                 "keep_days": int(rule.get("keep_days") or 0),
                 "archived_days": int(rule.get("archived_days") or 0),
                 "warn_days": int(rule.get("warn_days") or 7),

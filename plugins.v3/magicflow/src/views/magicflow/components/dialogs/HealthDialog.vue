@@ -58,6 +58,17 @@ const emit = defineEmits(['goto'])
               variant="text"
               @click="emit('goto', issue)"
             >诊断</VBtn>
+            <!-- ★ 入口：账号保活这类「只能主人亲自做」的项，直接给跳转（同 issue 可带 url） -->
+            <VBtn
+              v-if="issue.url"
+              size="small"
+              variant="text"
+              :href="issue.url"
+              target="_blank"
+              rel="noopener"
+              prepend-icon="mdi-open-in-new"
+              :title="'打开站点：' + issue.url"
+            >去登录</VBtn>
           </article>
         </template>
       </VCardText>

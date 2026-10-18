@@ -49,7 +49,9 @@ export function makeFeatures(c) {
 
     // ── 认领 ──────────────────────────────────────────────
     claim: (q = '') => c.get(`claim${q}`),
-    claimRun: () => c.post('claim/run?dry=1', {}),
+    // ★ 19.5.0：扫描是**只读动作**，永远带 dry=1 → 后端只回可认领列表，零写请求。
+    //   真写走 claim/run?write=1&confirm=1（仅当设置里关闭「干跑」），两个动作彻底分开。
+    claimScan: () => c.post('claim/run?dry=1', {}),
 
     // ── 云盘归档 ───────────────────────────────────────────
     cloud: () => c.get('cloud'),
