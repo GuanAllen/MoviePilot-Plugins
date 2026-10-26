@@ -136,6 +136,12 @@ def pick_source(
 ) -> Optional[Dict[str, Any]]:
     """在「跨站搜索」结果里挑一个「免费且同一 Release」的源。
 
+    ★ 19.7.61：改成两遍筛。
+      1) 第一遍：标题像 + 体积近 → 取种比特征码（最省流量的路径）；
+      2) 第二遍：**只要求体积近**，仍用完整特征码定论。
+    各站标题格式差异（中文前缀、S01E19/E19、团队后缀、季包写法）不该让
+    真匹配漏掉 —— 特征码相等才是「同一 Release」的硬证据。
+
     Args:
         title: 目标站候选标题（用于站点内检索与标题比对）
         size_bytes: 目标站候选体积（字节，用于体积邻近过滤）
@@ -165,42 +171,84 @@ def pick_source(
         return None
     # 体积最接近的优先试（同 Release 体积必然一致）
     try:
-        rows = sorted(rows, key=lambda r: abs(float(getattr(r, "size", 0) or 0) - float(size_bytes or 0)))
+        rows = sorted(
+            rows,
+            key=lambda r: abs(float(getattr(r, "size", 0) or 0) - float(size_bytes or 0)),
+        )
     except Exception:  # noqa: BLE001
         pass
+    budget = max(int(max_torrents or 0), 1)
     tried = 0
-    for row in rows[:MAX_ROWS_SCAN]:
-        if tried >= max(int(max_torrents or 0), 1):
-            break
+    skipped_title = 0
+    skipped_size = 0
+
+    def _hit(row: Any, tb: bytes, how: str) -> Dict[str, Any]:
         sname = str(getattr(row, "site_name", "") or getattr(row, "site", "") or "?")
-        if not title_like(getattr(row, "title", ""), title):
-            continue
-        if not size_close(getattr(row, "size", 0), size_bytes):
-            continue
-        tried += 1
+        _log(log, f"跨站:命中免费源 {sname} <{str(getattr(row, 'title', '') or '')[:60]}>（{how}）")
+        # ★ site_domain 必须是**真实域名**（搜索行由调用方填充 site_domain 字段；
+        #   拿不到就不填、绝不回退 site_name——站点名不是域名，落账后会被
+        #   siteops 的「站点删除判定」误判成残站别名（踩过：CARPT → 误报已删站））。
+        return {
+            "site": int(getattr(row, "site", 0) or 0),
+            "row": row,
+            "torrent": tb,
+            "site_name": sname,
+            "site_domain": str(getattr(row, "site_domain", "") or ""),
+        }
+
+    def _try(row: Any, strict: bool) -> Optional[Dict[str, Any]]:
+        nonlocal tried
+        if tried >= budget:
+            return None
+        sname = str(getattr(row, "site_name", "") or getattr(row, "site", "") or "?")
         try:
             tb = torrent_bytes(row)
         except Exception as err:  # noqa: BLE001
             _log(log, f"跨站:{sname} 取种失败:{err}", "warning")
-            continue
+            return None
+        tried += 1
         if not tb:
-            continue
+            return None
         try:
             f2 = fingerprint(tb)
         except Exception:  # noqa: BLE001
             f2 = None
         if f2 and f2 == fp:
-            _log(log, f"跨站:命中免费源 {sname} <{getattr(row, 'title', '')}>")
-            return {
-                "site": int(getattr(row, "site", 0) or 0),
-                "row": row,
-                "torrent": tb,
-                "site_name": sname,
-                "site_domain": str(getattr(row, "site_name", "") or ""),
-            }
-        _log(log, f"跨站:{sname} 标题/体积相符但特征码不同(非同一 Release),跳过")
-    return None
+            return _hit(row, tb, "标题相同" if strict else "标题不同但特征码一致")
+        if strict:
+            _log(log, f"跨站:{sname} 标题/体积相符但特征码不同(非同一 Release),跳过")
+        return None
 
+    # 第一遍：标题像 + 体积近
+    for row in rows[:MAX_ROWS_SCAN]:
+        if tried >= budget:
+            break
+        if not title_like(getattr(row, "title", ""), title):
+            skipped_title += 1
+            continue
+        if not size_close(getattr(row, "size", 0), size_bytes):
+            skipped_size += 1
+            continue
+        got = _try(row, True)
+        if got:
+            return got
+    # 第二遍：标题格式不同，但体积几乎一致 → 仍用特征码定论
+    for row in rows[:MAX_ROWS_SCAN]:
+        if tried >= budget:
+            break
+        if title_like(getattr(row, "title", ""), title):
+            continue
+        if not size_close(getattr(row, "size", 0), size_bytes):
+            continue
+        got = _try(row, False)
+        if got:
+            return got
+    _log(
+        log,
+        f"跨站:未拿到同 Release 源（候选 {len(rows[:MAX_ROWS_SCAN])} 条 / "
+        f"标题不符 {skipped_title} / 体积不符 {skipped_size} / 比对 {tried}）",
+    )
+    return None
 
 # --------------------------------------------------------------------------- 取种台账
 

@@ -280,6 +280,34 @@ class ReseedRow(Base):
     updated: Mapped[float | None] = mapped_column(Float)
 
 
+class RssRow(Base):
+    """站点种子目录缓存表（★ 19.7.x：派生缓存，非真值表）。
+
+    把站点浏览/搜索/RSS 拉下来的「每颗种的下载凭据」沉淀成可命中的目录，
+    治「RSS 只给最新 N 条 / API 下载每小时限额」这类站的辅种取种瓶颈。
+
+    - 主键 ``(site_id, tid)``：MP 站点 id × 站点种子 id，幂等 upsert；
+    - ``download_url`` 优先存**可直接复用**的下载链接（HDDolby 类：RSS 的
+      downhash 或带签名直链）；缺凭据时存 ``title/size/pub_at`` 供名单/去重；
+    - ``seen_at`` = 最近一次入库时间；保留 TTL 由读侧过滤（派生缓存，
+      不走账单式归档）。
+    - ★ 派生缓存（同 ``hr_tid_index``）：**不进 LEDGER_TABLES 真值表清单**，
+      仅进 ALL_MODELS 由 MP 自动建表。
+    """
+
+    __tablename__ = "mf_rss"
+
+    site_id: Mapped[int] = mapped_column(Integer, primary_key=True)   # MP site_id
+    tid: Mapped[str] = mapped_column(String(40), primary_key=True)   # 站点种子 id
+    title: Mapped[str | None] = mapped_column(String(500))
+    size: Mapped[float | None] = mapped_column(Float)                # GB
+    downhash: Mapped[str | None] = mapped_column(String(200))        # HDDolby 类：RSS downhash
+    download_url: Mapped[str | None] = mapped_column(String(800))    # 可复用直链（无则空）
+    pub_at: Mapped[float | None] = mapped_column(Float)              # 站点发布时间
+    created: Mapped[float | None] = mapped_column(Float)
+    updated: Mapped[float | None] = mapped_column(Float)
+
+
 class RunRow(Base):
     """运行标量表（★ 12.2.0：无实体归属的全局运行态 kv → 表）。
 
@@ -404,7 +432,7 @@ class JournalRow(Base):
 
 ALL_MODELS: List[type] = [
     SiteRow, ResourceRow, SeedRow, IdentityRow, TaskRow, DeckRow, CrossSeedRow,
-    ReseedRow, RunRow, ClaimRow, BillRow, DeletionRow, JournalRow,
+    ReseedRow, RssRow, RunRow, ClaimRow, BillRow, DeletionRow, JournalRow,
 ]
 
 

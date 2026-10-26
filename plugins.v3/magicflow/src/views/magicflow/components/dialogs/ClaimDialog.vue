@@ -52,6 +52,27 @@ function claimSiteDateText(s) {
   return [dateText, left].filter(Boolean).join(' · ')
 }
 function claimSiteCycleText(s) { return claimSiteSettle(s).cycle_text || '结算周期待定' }
+function claimSiteById(id) { return (props.claimSites || []).find(s => String(s.site_id) === String(id)) || null }
+function claimSiteReward(s) {
+  if (!s) return '—'
+  const rows = (props.claimClaimed || []).filter(r => String(r.site_id) === String(s.site_id) && r.site_reward_num != null)
+  if (rows.length) {
+    const total = rows.reduce((a, r) => a + (Number(r.site_reward_num) || 0), 0)
+    if (total > 0) return claimNum(total)
+  }
+  const p = claimProfile(s)
+  return p.benefit === 'bonus_x2' ? '×2' : (p.benefit || '—')
+}
+function claimRowSettleText(row) {
+  const s = claimSiteById(row.site_id)
+  return s ? claimSiteDateText(s) : (row.site_next_settle || '—')
+}
+function claimRowReward(row) {
+  if (row.site_reward) return row.site_reward
+  const s = claimSiteById(row.site_id)
+  const p = s ? claimProfile(s) : {}
+  return p.benefit === 'bonus_x2' ? '×2' : (p.benefit || '—')
+}
 // 配比规则（单站口径）。
 function claimRuleText(s) {
   const st = claimSiteSettle(s)
@@ -73,7 +94,31 @@ const claimFilteredClaimed = computed(() => claimRowsFor(props.claimClaimed, cla
 const claimFilteredSoon = computed(() => claimRowsFor(props.claimSoon, claimSiteFilter.value))
 // 多站大量种子时列表只渲染前 50 条（总量与收益在报表里，列表只是操作入口）。
 const CLAIM_LIST_SHOWN = 50
-const claimShownClaimable = computed(() => claimFilteredClaimable.value.slice(0, CLAIM_LIST_SHOWN))
+const claimClaimedLimit = ref(20)
+const claimClaimableLimit = ref(20)
+const claimShownClaimed = computed(() => claimFilteredClaimed.value.slice(0, claimClaimedLimit.value))
+const claimShownClaimable = computed(() => claimFilteredClaimable.value.slice(0, claimClaimableLimit.value))
+function claimMoreClaimed() { claimClaimedLimit.value += 20 }
+function claimMoreClaimable() { claimClaimableLimit.value += 20 }
+const claimListTab = ref('claimed')
+const claimSummaryClaimed = computed(() => claimFilteredClaimed.value.length)
+const claimSummaryReward = computed(() => {
+  let n = 0
+  for (const r of claimFilteredClaimed.value) {
+    const v = Number(r.site_reward_num)
+    if (Number.isFinite(v)) n += v
+  }
+  return n
+})
+const claimSummaryRewardText = computed(() => claimSummaryReward.value > 0 ? claimNum(claimSummaryReward.value) : '—')
+const claimSummarySettle = computed(() => {
+  if (claimScopeSite.value) return claimSiteDateText(claimScopeSite.value)
+  const rows = (props.claimSites || []).filter(s => s.supported && s.settlement && s.settlement.next_settle_at)
+  if (!rows.length) return '—'
+  const min = Math.min(...rows.map(s => Number(s.settlement.next_settle_at)))
+  const s = rows.find(x => Number(x.settlement.next_settle_at) === min)
+  return s ? claimSiteDateText(s) : '—'
+})
 function claimNum(v) { return Number(v || 0).toLocaleString('zh-CN') }
 // ── 展示用纯函数（随弹窗自 index.vue 迁入；数据经 props 下行，函数在组件内自持，
 //    不向上传函数，避免 Function prop）──
@@ -91,6 +136,15 @@ function claimPenaltyText(prof) {
   if (p.exempt_days) parts.push(`首 ${p.exempt_days} 天豁免`)
   return parts.join(' · ') || '—'
 }
+// ★ 认领「入口」文案（2026-10-18 Master 指出：一部分站入口在个人详情页，学校在种子详情页）。
+function claimEntryText(s) {
+  const p = claimProfile(s) || {}
+  const entry = String(p.claim_entry || '').trim()
+  if (entry.includes('viewclaims')) return '种子详情页「认领」→ viewclaims.php（已认领列表）'
+  if (entry.includes('userdetails')) return '个人详情页「认领: [n/N]」配额；实际认领在种子详情页'
+  if (entry) return entry
+  return '种子详情页「认领」按钮'
+}
 // ★ 单站结算口径文案（结算日 / 周期 / 倍率）。
 function claimSettlementText(s) {
   const st = claimSiteSettle(s)
@@ -105,6 +159,25 @@ function claimSeedHoursText(row) {
   const h = Number((row || {}).seed_hours || 0)
   if (!(h > 0)) return ''
   return `已保 ${h.toFixed(1)}h`
+}
+// ★ 19.7.0：认领保挂实况（账本 × qB）
+const claimHost = computed(() => props.claimData.host || {})
+function claimQbKind(row) {
+  if (row && row.site_only) return 'site'
+  if (!row || !row.in_qb) return 'missing'
+  const s = String(row.qb_state || '').toLowerCase()
+  if (s.includes('paus') || s.includes('stop')) return 'paused'
+  return 'seeding'
+}
+function claimQbText(row) {
+  const k = claimQbKind(row)
+  if (k === 'site') return '站点侧'
+  return k === 'seeding' ? '做种中' : (k === 'paused' ? '已暂停' : '不在 qB')
+}
+function claimQbColor(row) {
+  const k = claimQbKind(row)
+  if (k === 'site') return 'info'
+  return k === 'seeding' ? 'success' : (k === 'paused' ? 'warning' : 'error')
 }
 // ── ★ 19.5.0：干跑 / 真跑两个动作彻底分开（用户可见文案，短句）──
 //   顶栏常驻模式徽标；「扫描（只读）」永不写；「认领本轮」常驻但禁用时给出原因。
@@ -174,74 +247,75 @@ function claimBatchHint() {
       </div>
       <div v-if="claimBatchHint()" class="magicflow-claim-bar__hint">{{ claimBatchHint() }}</div>
       <VCardText class="magicflow-claim-body">
-        <VAlert v-if="!claimCfg.enabled" type="info" variant="tonal" density="compact" class="mb-2">
+        <VAlert v-if="claimLoading" type="info" variant="tonal" density="compact" class="mb-2">
+          正在加载认领状态…
+        </VAlert>
+        <VAlert v-else-if="!claimCfg.enabled" type="info" variant="tonal" density="compact" class="mb-2">
           认领未开启。开启：插件设置 → 认领。
         </VAlert>
         <VAlert v-else-if="claimCfg.dry" type="warning" variant="tonal" density="compact" class="mb-2">
-          干跑中：扫描只读，执行认领已禁用。
+          干跑中：执行认领已禁用。
         </VAlert>
-        <div class="magicflow-claim-note">
-          <VIcon icon="mdi-information-outline" size="14" />
-          <span>认领后进硬保护；站点不达标可能扣魔力，主动放弃更亏。</span>
-        </div>
-        <!-- ★ 19.5.0 全站纳入：站点表全集 = 全站；未收录认领能力的站计数并跳过。 -->
-        <div class="magicflow-claim-note">
-          <VIcon icon="mdi-earth" size="14" />
-          <span>全站 {{ claimSitesTotal }} 站，可认领 {{ claimSitesSupported }} 站</span>
-        </div>
-        <div v-if="claimUnverified" class="magicflow-claim-note is-warning">
-          <VIcon icon="mdi-alert-outline" size="14" />
-          <span>{{ claimUnverified }} 个站规则未核对（{{ claimUnverifiedNames.slice(0, 6).join('、') }}{{ claimUnverifiedNames.length > 6 ? ' 等' : '' }}）：本表数值为同族插件默认值，真写前请先到站点核对认领规则</span>
-        </div>
 
-        <div class="magicflow-claim-sec">
-          {{ claimScopeSite ? '认领详情' : '站点汇总' }}<template v-if="claimScopeSite"> · {{ claimScopeSite.site_name }}</template>
-          <span v-if="!claimScopeSite" class="magicflow-claim-sec__hint">点站点看明细</span>
-        </div>
-
-        <!-- 单站：该站自己的结算日 / 已认领数量 / 本结算日收益；不做跨站总量。 -->
-        <div v-if="claimScopeSite && !claimScopeSite.supported" class="magicflow-claim-detail">
-          <div class="magicflow-claim-detail__rule">
-            该站未收录认领能力（规则/接口未核对）：{{ (claimScopeSite.profile && claimScopeSite.profile.reason) || '未收录' }}
+        <div class="magicflow-claim-summary">
+          <div class="magicflow-claim-summary__item">
+            <b>{{ claimNum(claimSummaryClaimed) }}</b><span>认领</span>
+          </div>
+          <div class="magicflow-claim-summary__item">
+            <b>{{ claimSummarySettle }}</b><span>结算</span>
+          </div>
+          <div class="magicflow-claim-summary__item is-accent">
+            <b>{{ claimSummaryRewardText }}</b><span>合计奖励</span>
           </div>
         </div>
 
-        <div v-else-if="claimScopeSite" class="magicflow-claim-detail">
-          <div class="magicflow-claim-site__head">
-            <div class="magicflow-claim-site__name">{{ claimScopeSite.site_name }}</div>
-            <VChip v-if="claimRulesUnverified(claimScopeSite)" size="x-small" color="warning" variant="tonal">规则未核对</VChip>
-            <VChip size="x-small" color="primary" variant="tonal">{{ claimSiteCycleText(claimScopeSite) }}</VChip>
-            <span class="magicflow-claim-site__date">{{ claimSiteDateText(claimScopeSite) }}</span>
-          </div>
-          <div class="magicflow-claim-site__stats">
-            <div class="magicflow-claim-site__stat">
-              <b>{{ claimNum(claimScopeSite.claimed) }}</b><span>已认领</span>
-            </div>
-            <div class="magicflow-claim-site__stat">
-              <b>{{ claimNum(claimScopeSite.claimable) }}</b><span>可认领</span>
-            </div>
-            <div class="magicflow-claim-site__stat is-accent">
-              <b>{{ claimNum(claimScopeSite.est_settle_payout_total) }}</b><span>本结算日魔力</span>
-            </div>
-            <div class="magicflow-claim-site__stat">
-              <b>{{ Number(claimScopeSite.hourly_bonus_total || 0).toFixed(2) }}</b><span>时魔/h</span>
-            </div>
-          </div>
-          <div class="magicflow-claim-detail__rule">
-            已认领 {{ claimNum(claimScopeSite.claimed) }} 个，本结算日已计 {{ claimNum(claimScopeSite.est_payout_now_total) }} 魔力；
-            可认领 {{ claimNum(claimScopeSite.claimable) }} 个，现在认领到结算日约 +{{ claimNum(claimScopeSite.est_claimable_payout_total) }} 魔力。
-          </div>
-          <div class="magicflow-claim-detail__rule">
-            <template v-if="claimRuleText(claimScopeSite)">{{ claimRuleText(claimScopeSite) }}。</template>
-            规约：满 {{ claimProfile(claimScopeSite).min_age_days }} 天可认领 · 每颗 {{ claimProfile(claimScopeSite).max_claimers }} 名额 · 每人上限 {{ claimProfile(claimScopeSite).per_user_cap }} · {{ claimProfile(claimScopeSite).benefit_desc || claimProfile(claimScopeSite).benefit }} · {{ claimPenaltyText(claimProfile(claimScopeSite)) }}
-          </div>
-          <div v-if="claimRulesUnverified(claimScopeSite)" class="magicflow-claim-detail__rule is-warning">
-            {{ claimProfile(claimScopeSite).rules_note || '规则未核对：以上数值为同族插件默认值，真写前请先到站点核对' }}
-          </div>
+        <template v-if="claimScopeSite">
+        <div class="magicflow-claim-tabs">
+          <VBtn size="small" :variant="claimListTab === 'claimed' ? 'flat' : 'text'" color="primary" @click="claimListTab = 'claimed'">
+            已认领（{{ claimFilteredClaimed.length }}）
+          </VBtn>
+          <VBtn size="small" :variant="claimListTab === 'claimable' ? 'flat' : 'text'" color="primary" @click="claimListTab = 'claimable'">
+            可认领（{{ claimFilteredClaimable.length }}）
+          </VBtn>
         </div>
 
-        <!-- 全部站点：逐站汇总（站点 / 结算日期 / 已认领数量 / 本结算日收益），不做跨站求和的「总数」。 -->
-        <div v-else class="magicflow-claim-sites">
+        <template v-if="claimListTab === 'claimed'">
+          <div v-if="!claimFilteredClaimed.length" class="magicflow-table-empty">还没有已认领种子</div>
+          <ul v-else class="magicflow-claim-list">
+            <li v-for="row in claimShownClaimed" :key="row.hash || (row.site_id + ':' + row.torrent_id)" class="magicflow-claim-item is-claimed">
+              <div class="magicflow-claim-item__main">
+                <span class="magicflow-claim-item__title">{{ row.title || row.hash }}</span>
+                <span class="magicflow-claim-item__meta">{{ row.site_name }} · {{ row.site_only ? '站点侧' : '账本' }} · 奖励 {{ claimRowReward(row) }}<template v-if="row.site_seed_time"> · 做种 {{ row.site_seed_time }}</template></span>
+              </div>
+              <VChip size="x-small" :color="claimQbColor(row)" variant="tonal">{{ claimQbText(row) }}</VChip>
+              <VChip size="x-small" color="success" variant="tonal" prepend-icon="mdi-shield-lock-outline">硬保护</VChip>
+            </li>
+          </ul>
+          <div v-if="claimFilteredClaimed.length > claimShownClaimed.length" class="magicflow-claim-more">
+            <VBtn size="x-small" variant="text" @click="claimMoreClaimed">加载更多（{{ claimShownClaimed.length }} / {{ claimFilteredClaimed.length }}）</VBtn>
+          </div>
+        </template>
+
+        <template v-else>
+          <div v-if="!claimFilteredClaimable.length" class="magicflow-table-empty">当前没有可认领种子</div>
+          <ul v-else class="magicflow-claim-list">
+            <li v-for="row in claimShownClaimable" :key="row.hash" class="magicflow-claim-item">
+              <div class="magicflow-claim-item__main">
+                <span class="magicflow-claim-item__title">{{ row.title || row.hash }}</span>
+                <span class="magicflow-claim-item__meta">{{ row.site_name }} · {{ row.size_gb }}G · 做种 {{ claimSeedersText(row.seeders) }} · 发布 {{ claimAgeText(row.age_days) }}</span>
+              </div>
+              <VBtn size="x-small" variant="flat" color="primary" prepend-icon="mdi-seal" :disabled="claimCfg.dry" :loading="claimActing === ('do:' + row.hash)" @click="emit('ask', 'do', row)">认领</VBtn>
+            </li>
+          </ul>
+          <div v-if="claimFilteredClaimable.length > claimShownClaimable.length" class="magicflow-claim-more">
+            <VBtn size="x-small" variant="text" @click="claimMoreClaimable">加载更多（{{ claimShownClaimable.length }} / {{ claimFilteredClaimable.length }}）</VBtn>
+          </div>
+        </template>
+
+        </template>
+
+        <template v-else>
+<div v-if="!claimScopeSite" class="magicflow-claim-sites">
           <div
             v-for="s in claimSupportedList"
             :key="s.site_id"
@@ -254,9 +328,9 @@ function claimBatchHint() {
           >
             <div class="magicflow-claim-site__head">
               <div class="magicflow-claim-site__name">{{ s.site_name }}</div>
-              <VChip v-if="claimRulesUnverified(s)" size="x-small" color="warning" variant="tonal">规则未核对</VChip>
               <VChip size="x-small" color="primary" variant="tonal">{{ claimSiteCycleText(s) }}</VChip>
               <span class="magicflow-claim-site__date">{{ claimSiteDateText(s) }}</span>
+              <VIcon icon="mdi-chevron-right" size="18" />
             </div>
             <div class="magicflow-claim-site__stats">
               <div class="magicflow-claim-site__stat">
@@ -266,65 +340,25 @@ function claimBatchHint() {
                 <b>{{ claimNum(s.claimable) }}</b><span>可认领</span>
               </div>
               <div class="magicflow-claim-site__stat is-accent">
-                <b>{{ claimNum(s.est_settle_payout_total) }}</b><span>本结算日魔力</span>
+                <b>{{ claimSiteReward(s) }}</b><span>奖励</span>
               </div>
-              <div class="magicflow-claim-site__stat">
-                <b>{{ Number(s.hourly_bonus_total || 0).toFixed(2) }}</b><span>时魔/h</span>
-              </div>
-            </div>
-            <div class="magicflow-claim-site__sub">
-              本结算日已计 {{ claimNum(s.est_payout_now_total) }} · 现在认领可再 +{{ claimNum(s.est_claimable_payout_total) }}
             </div>
           </div>
-          <div v-if="!claimSupportedList.length" class="magicflow-table-empty">没有支持认领的站点（认领预设表未收录；见 docs/认领.md）。</div>
+          <div v-if="!claimLoading && !claimSupportedList.length" class="magicflow-table-empty">没有支持认领的站点（认领预设表未收录；见 docs/认领.md）。</div>
           <div v-if="claimSkipped.length" class="magicflow-claim-more">
             未收录认领（跳过）：{{ claimSkipped.slice(0, 8).join('、') }}<template v-if="claimSkipped.length > 8"> 等 {{ claimSkipped.length }} 站</template>
           </div>
         </div>
-
-        <template v-if="claimScopeSite">
-        <div class="magicflow-claim-sec">认领部分（可认领 {{ claimFilteredClaimable.length }}）</div>
-        <div v-if="!claimFilteredClaimable.length" class="magicflow-table-empty">当前筛选下没有可认领的种（未满发布天数 / 无详情页 / 被安全阀拦住）</div>
-        <template v-else>
-          <ul class="magicflow-claim-list">
-            <li v-for="row in claimShownClaimable" :key="row.hash" class="magicflow-claim-item">
-              <div class="magicflow-claim-item__main">
-                <span class="magicflow-claim-item__title">{{ row.title || row.hash }}</span>
-                <span class="magicflow-claim-item__meta">{{ row.site_name }} · {{ row.size_gb }}G · 做种 {{ claimSeedersText(row.seeders) }} · 发布 {{ claimAgeText(row.age_days) }}</span>
-              </div>
-              <VBtn size="x-small" variant="flat" color="primary" prepend-icon="mdi-seal" :disabled="claimCfg.dry" :loading="claimActing === ('do:' + row.hash)" @click="emit('ask', 'do', row)">认领</VBtn>
-            </li>
-          </ul>
-          <div v-if="claimFilteredClaimable.length > claimShownClaimable.length" class="magicflow-claim-more">
-            仅显示前 {{ claimShownClaimable.length }} 个（共 {{ claimFilteredClaimable.length }} 个；收益见上方站点汇总）
-          </div>
         </template>
 
-        <template v-if="claimFilteredClaimed.length">
-          <div class="magicflow-claim-sec">已认领（{{ claimFilteredClaimed.length }}）</div>
-          <ul class="magicflow-claim-list">
-            <li v-for="row in claimFilteredClaimed" :key="row.hash" class="magicflow-claim-item is-claimed">
-              <div class="magicflow-claim-item__main">
-                <span class="magicflow-claim-item__title">{{ row.title || row.hash }}</span>
-                <span class="magicflow-claim-item__meta">{{ row.site_name }} · {{ row.benefit || '权益' }} · {{ row.state }} <template v-if="row.note">· {{ row.note }}</template><template v-if="claimSeedHoursText(row)"> · {{ claimSeedHoursText(row) }}</template></span>
-              </div>
-              <VChip size="x-small" color="success" variant="tonal" prepend-icon="mdi-shield-lock-outline">硬保护</VChip>
-            </li>
-          </ul>
-        </template>
-
-        <template v-if="claimFilteredSoon.length">
-          <div class="magicflow-claim-sec">快到期（{{ claimFilteredSoon.length }}）</div>
-          <ul class="magicflow-claim-list">
-            <li v-for="row in claimFilteredSoon" :key="row.hash" class="magicflow-claim-item is-dim">
-              <div class="magicflow-claim-item__main">
-                <span class="magicflow-claim-item__title">{{ row.title || row.hash }}</span>
-                <span class="magicflow-claim-item__meta">{{ row.site_name }} · 发布 {{ claimAgeText(row.age_days) }} · {{ (row.block || []).join(' / ') }}</span>
-              </div>
-            </li>
-          </ul>
-        </template>
-        </template>
+        <div class="magicflow-claim-note">
+          <VIcon icon="mdi-information-outline" size="14" />
+          <span>认领后进硬保护；不达标可能扣魔力。</span>
+        </div>
+        <div v-if="claimHost.total" class="magicflow-claim-note">
+          <VIcon icon="mdi-shield-check-outline" size="14" />
+          <span>保挂：{{ claimHost.total }} 个已认领 · 做种 {{ claimHost.seeding }} · 暂停 {{ claimHost.paused }} · 丢失 {{ claimHost.missing }}</span>
+        </div>
       </VCardText>
     </VCard>
   </VDialog>
@@ -415,4 +449,10 @@ function claimBatchHint() {
 .magicflow-claim-item__title { font-size: .82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .magicflow-claim-item__meta { font-size: .7rem; opacity: .62; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .magicflow-claim-item__stat { display: flex; gap: 4px; flex: 0 0 auto; }
+
+.magicflow-claim-summary { display: flex; gap: 8px; margin: 10px 0 12px; }
+.magicflow-claim-summary__item { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 10px; background: rgba(var(--v-theme-on-surface), .04); }
+.magicflow-claim-summary__item b { display: block; font-size: 17px; line-height: 1.3; }
+.magicflow-claim-summary__item span { font-size: 11px; color: var(--mf-fg-mid); }
+.magicflow-claim-tabs { display: flex; gap: 6px; margin-bottom: 8px; }
 </style>

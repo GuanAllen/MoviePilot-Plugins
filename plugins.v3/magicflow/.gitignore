@@ -5,3 +5,6 @@ __pycache__/
 
 # 本地备份（存储收口 19.0.0 迁移用，勿提交）
 .backup-*/
+
+# MCP 写文件自动备份（mf_write_file），勿提交
+backups/

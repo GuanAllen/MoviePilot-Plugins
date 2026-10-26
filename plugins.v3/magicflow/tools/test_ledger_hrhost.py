@@ -165,6 +165,20 @@ def main() -> int:
     _ok(be._task_name(task_id) == "H&R保种", "task_id=__hr_host__ → task=H&R保种")
     _ok(str(task_id) == common.HR_HOST_TASK_ID, "task_id=__hr_host__ → taken_by=__hr_host__")
 
+    # ---- ⑥ ★19.9.0 __music__（音乐在途）同款映射 ----
+    print("\n[6] ★19.9.0 __music__ 伪任务映射（音乐在途；本文件已扩成「伪任务账本映射」回归）")
+    _ok(common.MUSIC_TASK_ID == "__music__" and common.MUSIC_TASK_NAME == "音乐线",
+        "common.py MUSIC_TASK_ID / MUSIC_TASK_NAME")
+    _ok(be._task_state("__music__") == tags.STATE_MUSIC, "_task_state('__music__') → 音乐")
+    _ok(be._task_name("__music__") == "音乐线", "_task_name('__music__') → 音乐线")
+    _ok(be._task_id("音乐") == common.MUSIC_TASK_ID and be._task_id("音乐线") == common.MUSIC_TASK_ID,
+        "_task_id 反查（音乐 / 音乐线）")
+    _ok(tags.STATE_MUSIC in tags.STATES and tags.STATE_MUSIC in tags.DUTY_STATES,
+        "tags 词汇：STATE_MUSIC 在 STATES 与 DUTY_STATES")
+    _mrow = be.seed_row("bbbb", {"task": "音乐线", "site": "聆音"}, 0.0)
+    _ok(_mrow["task_id"] == common.MUSIC_TASK_ID, f"seed_row task='音乐线' → task_id=__music__（{_mrow['task_id']}）")
+    _ok(be._task_state(_mrow["task_id"]) == tags.STATE_MUSIC, "读侧往返：task_id=__music__ → state=音乐")
+
     print("\n" + "=" * 64)
     print(f"✅ 全部通过：{CHECKS} 项断言")
     return 0

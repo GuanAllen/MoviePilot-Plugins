@@ -224,7 +224,7 @@ function onSiteRow(s) {
   flex: 1 1 0; display: flex; align-items: center; justify-content: center; gap: 6px;
   block-size: 46px; border-radius: 14px; border: 0; cursor: pointer;
   font-size: 14px; font-weight: 650; color: rgb(var(--v-theme-on-primary));
-  background: linear-gradient(145deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary)));
+  background: linear-gradient(145deg, #8D51F9 0%, #7432DF 55%, #5B00C5 100%);
 }
 
 .magicflow-page .mh-btn--ghost {

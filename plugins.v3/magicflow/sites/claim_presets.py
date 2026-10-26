@@ -49,7 +49,9 @@ def _nexus_claim_preset(
     benefit_desc: str = "达标种子魔力奖励 = 正常值 ×2",
     claim_page: str = "/claim.php?torrent_id={id}",
     claim_list: str = "/claim.php?uid={uid}",
+    claim_entry: str = "/userdetails.php?id={uid}",
     detail_selector: str = "#add-claim",
+    endpoint: Optional[Dict[str, Any]] = None,
     note: str = "",
 ) -> Dict[str, Any]:
     """同族认领插件的一站一套能力（``verified=False`` = 站点规则页没公布数值）。
@@ -81,8 +83,12 @@ def _nexus_claim_preset(
         },
         "claim_page": claim_page,
         "claim_list": claim_list,
+        # ★ 认领「入口」随站点而变（2026-10-18 Master 指出）：
+        #   同族插件站：个人详情页 userdetails.php 的「认领: [n/N]」配额 → claim.php
+        #   学校：种子详情页 details.php 的「认领」→ viewclaims.php?add_torrent_id=
+        "claim_entry": claim_entry,
         "detail_selector": detail_selector,
-        "endpoint": dict(_CLAIM_PLUGIN_ENDPOINT),
+        "endpoint": dict(endpoint or _CLAIM_PLUGIN_ENDPOINT),
         "rules_unverified": not bool(verified),
         "rules_note": note or (
             "站点已公布认领规则（2026-10-18 核对）"
@@ -113,6 +119,7 @@ CLAIM_PRESETS: Dict[str, Dict[str, Any]] = {
         },
         "claim_page": "/claim.php?torrent_id={id}",
         "claim_list": "/claim.php?uid={uid}",
+        "claim_entry": "/userdetails.php?id={uid}",
         "detail_selector": "#add-claim",
         "endpoint": {
             "method": "POST",
@@ -140,7 +147,10 @@ CLAIM_PRESETS: Dict[str, Dict[str, Any]] = {
     "hdtime.org": _nexus_claim_preset(
         1000, note="高清时间：用户上限 1000（userbar）；规则页未公布数值"),
     "pt.soulvoice.club": _nexus_claim_preset(
-        1000, note="聆音：用户上限 1000（userbar）；规则页未公布数值"),
+        1000, min_age_days=30, claim_entry="/userdetails.php?id={uid}",
+        detail_selector="button[data-action='addClaim']",
+        note="聆音：用户上限 1000；2026-10-18 实机：userdetails 的正在做种/已完成列表都有认领按钮，"
+             "按钮只在发布满 30 天后出现（30.0 天无、30.5 天有）"),
     "duckboobee.org": _nexus_claim_preset(
         1000, note="March：用户上限 1000（userbar）；规则页未公布数值"),
     "novahd.top": _nexus_claim_preset(
@@ -151,9 +161,15 @@ CLAIM_PRESETS: Dict[str, Dict[str, Any]] = {
         1000, benefit_desc="达标种子魔力奖励 = 正常值 ×2（以站点「预计奖励」为准）",
         note="财神：用户上限 1000（userbar）；claim 页显示自然月结算，规则页未公布数值"),
     "pt.btschool.club": _nexus_claim_preset(
-        0, claim_page="/torrents.php", claim_list="/viewclaims.php",
+        100, min_age_days=30, max_claimers=20,
+        target_seed_hours=300, target_upload_ratio=10,
+        penalty_abandon=300,
+        claim_page="/details.php?id={id}", claim_list="/viewclaims.php",
+        claim_entry="/viewclaims.php", detail_selector="a[href*='add_torrent_id']",
+        endpoint={"method": "GET", "path": "/viewclaims.php?add_torrent_id={id}"},
         benefit_desc="站点按自然月结算发放（认领页显示 500 魔力/种）",
-        note="学校：viewclaims.php 有「下次结账/获得魔力值」；认领接口按同族 ajax.php 推断"),
+        verified=True,
+        note="学校 rules.php「认领种子规则」已核对（2026-10-18）：满30天 / 每颗20人 / 每人100 / 月做种300h 或 上传×10 / 放弃扣300魔力"),
 }
 
 

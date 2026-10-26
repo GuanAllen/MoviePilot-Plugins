@@ -356,6 +356,13 @@ class FormulaMixin:
                     return uid
         except Exception:
             pass
+        # ★ 19.7.56：凭据中心里手填的 uid（无 cookie 的 API 站用）
+        try:
+            _cred_uid = self._cred_get(int(getattr(site, "id", 0) or 0), "uid")
+            if _cred_uid:
+                return str(_cred_uid).strip()
+        except Exception:
+            pass
         try:
             row = self._userdata_row(int(getattr(site, "id", 0) or 0))
             if row is not None:
@@ -383,20 +390,43 @@ class FormulaMixin:
             self._log("回填发布时间:站点不存在,跳过", "warning")
             return 0
         uid = self._site_user_id(site)
-        if not uid:
-            self._log(
-                f"回填发布时间:未取到站点 UID,跳过({getattr(site, 'name', '') or ''}/{getattr(site, 'domain', '') or ''})",
-                "warning",
-            )
-            return 0
-        try:
-            rows = fetch_seeding_list(site, uid, timeout=25)
-        except Exception as err:
-            self._log(f"回填发布时间失败:{err}", "warning")
-            return 0
+        rows = []
+        if uid:
+            try:
+                rows = fetch_seeding_list(site, uid, timeout=25)
+            except Exception as err:  # noqa: BLE001
+                self._log(f"回填发布时间失败:{err}", "warning")
+                rows = []
         if not rows:
-            self._log(f"回填发布时间:做种页为空(uid={uid}),跳过", "warning")
-            return 0
+            # ★ 19.7.57：RSS pubDate 兜底（无 cookie 的 API 站也能回填发布时间）
+            try:
+                _rss = self._rss_fetch(site, 50) or {}
+                _items = _rss.get("items") or []
+            except Exception:  # noqa: BLE001
+                _items = []
+            if _items:
+                from email.utils import parsedate_to_datetime  # noqa: WPS433
+
+                def _iso0(v: Any) -> str:
+                    try:
+                        return parsedate_to_datetime(str(v)).isoformat()
+                    except Exception:  # noqa: BLE001
+                        return str(v or "")
+
+                def _n0(s: str) -> str:
+                    t = (s or "").lower()
+                    t = re.sub(r"^\[[^\]]*\]", "", t)
+                    t = re.sub(r"[^a-z0-9]+", " ", t)
+                    return re.sub(r"\s+", " ", t).strip()
+
+                rows = [{"title_norm": _n0(it.get("title")),
+                         "size_bytes": float(it.get("size") or 0),
+                         "pubdate": _iso0(it.get("pub"))}
+                        for it in _items if it.get("title")]
+                self._log(f"回填发布时间:RSS 兜底 {len(rows)} 条（做种页为空/无 UID）")
+            if not rows:
+                self._log(f"回填发布时间:无可用来源(uid={uid or '-'}),跳过", "warning")
+                return 0
 
         def _norm(s: str) -> str:
             t = (s or "").lower()

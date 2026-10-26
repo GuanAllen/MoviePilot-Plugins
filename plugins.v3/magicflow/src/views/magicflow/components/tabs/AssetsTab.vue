@@ -1,7 +1,7 @@
 <script setup>
 // MagicFlow 前端 · 库内资产（asset 页 · 手动强删入口）
 // 数据向下（props）、事件向上（emit）；子组件不直接改父状态、不调父方法。
-// 本组件**自取数**：onMounted 调 api.assets.getAssets(0)（api 由父页 :api 下传）；
+// 本组件**自取数**：onMounted 调 api.assets.getAssets(0)（api 由父页 :api 下发）；
 // reloadKey 变化时重拉（可选）。
 // ★ 2026-10-10：列表改为**资产（资源）粒度**——一条 = 一份资源（本体 + 各站全部辅种），
 //   显示 resource 名（不是单个种名）；删除 = 该资源整组（删文件 + 删种 + 连带所有辅种）。
@@ -14,7 +14,7 @@ const props = defineProps({
   reloadKey: { type: [String, Number], default: 0 },
 })
 
-// ★ 15.8.21：资源级「季 / 集」标签——取自**本体种**（source_hash）的种子名；
+// ★ 15.8.21：资源级「季 / 集」标签——取自**本体种**（source_hash）的种名；
 // 本体种缺失时退回首成员。仅作展示，不参与删除判定。
 function assetSeedName(item) {
   const ms = Array.isArray(item?.members) ? item.members : []
@@ -26,12 +26,15 @@ function assetEpLabel(item) {
 }
 
 // ★ 15.9.0：行内养护动作（保护 / 订阅 / 整理 / 刮削）——删除仍走选中 + 顶部按钮
+// ★ 设计统一：养护一列里「保护」是唯一带状态切换的主操作，走实心 success；
+//   其余三个是低频次操作，统一收成中性描边（原来四种颜色并排，看不出主次）。
 const ACTIONS = [
-  { key: 'protect', label: '保护', icon: 'mdi-shield-lock-outline', color: 'success' },
-  { key: 'subscribe', label: '订阅整季', icon: 'mdi-playlist-plus', color: 'indigo',
+  { key: 'subscribe', label: '订阅整季', icon: 'mdi-playlist-plus',
     hint: '在 MoviePilot 订阅这份资源的「剧+季」补齐缺集；再点一次退订' },
-  { key: 'organize', label: '整理', icon: 'mdi-folder-move-outline', color: 'primary' },
-  { key: 'scrape', label: '刮削', icon: 'mdi-image-search-outline', color: 'deep-purple' },
+  { key: 'organize', label: '整理', icon: 'mdi-folder-move-outline',
+    hint: '换个地方再入库' },
+  { key: 'scrape', label: '刮削', icon: 'mdi-image-search-outline',
+    hint: '纠错元数据' },
 ]
 
 const headers = [
@@ -102,8 +105,14 @@ function blockText(item) {
   // 列表里只显示短标签，长原因（如 H&R 义务）截断 + 悬停看全文，避免把卡片撑爆
   return full.length > 12 ? `${full.slice(0, 12)}…` : full
 }
+// ★ 设计统一：绿色在本页只代表「手动保留」一种含义。
+//   「可删」原本也是 success 绿，和「手动保留」chip 相邻时语义撞车 → 改中性色，
+//   让颜色只负责一件事：绿=已上保护，中性=可以动它，琥珀=有东西拦着。
+//   ★ 中性不要写成主题色名：宿主 glass 主题的 secondary=#7C9CC4，与 info 完全同色，
+//     「可删」会渲染成一颗 info 蓝的状态标签。返回 undefined 让 VChip 走默认中性，
+//     五个主题（light/dark/purple/transparent/glass）下都成立。
 function blockColor(item) {
-  return item?.deletable === true ? 'success' : 'warning'
+  return item?.deletable === true ? undefined : 'warning'
 }
 function sitesText(item) {
   const list = (item?.sites || []).filter(Boolean)
@@ -388,15 +397,15 @@ watch(includeStale, () => { load() })
         <div class="magicflow-asset-act">
           <VBtn
             size="x-small" variant="tonal"
-            :color="item.protected ? 'grey' : 'success'"
+            :color="item.protected ? undefined : 'success'"
             :prepend-icon="item.protected ? 'mdi-shield-off-outline' : 'mdi-shield-lock-outline'"
             :loading="acting === String(item.resource_id) + protectAction(item)"
             @click="act(item, protectAction(item), protectLabel(item))"
           >{{ protectLabel(item) }}</VBtn>
           <VBtn
-            v-for="a in ACTIONS.filter(x => x.key !== 'protect')"
+            v-for="a in ACTIONS"
             :key="a.key"
-            size="x-small" variant="tonal" :color="a.color"
+            size="x-small" variant="outlined"
             :prepend-icon="a.icon"
             :loading="acting === String(item.resource_id) + a.key"
             :title="a.hint || a.label"
@@ -452,15 +461,15 @@ watch(includeStale, () => { load() })
         <div class="magicflow-asset-act magicflow-asset-act--mobile">
           <VBtn
             size="x-small" variant="tonal"
-            :color="item.protected ? 'grey' : 'success'"
+            :color="item.protected ? undefined : 'success'"
             :prepend-icon="item.protected ? 'mdi-shield-off-outline' : 'mdi-shield-lock-outline'"
             :loading="acting === String(item.resource_id) + protectAction(item)"
             @click="act(item, protectAction(item), protectLabel(item))"
           >{{ protectLabel(item) }}</VBtn>
           <VBtn
-            v-for="a in ACTIONS.filter(x => x.key !== 'protect')"
+            v-for="a in ACTIONS"
             :key="a.key"
-            size="x-small" variant="tonal" :color="a.color"
+            size="x-small" variant="outlined"
             :prepend-icon="a.icon"
             :loading="acting === String(item.resource_id) + a.key"
             :title="a.hint || a.label"
@@ -492,6 +501,12 @@ watch(includeStale, () => { load() })
 }
 .magicflow-asset-act--mobile {
   margin-top: 8px;
+}
+/* 次级养护动作统一「中性低强调」：去掉主题色名后描边按钮会继承 on-surface 全强调，
+   反而比主操作（保留/取消保护）更抢眼。这里压到和指标卡副文本同档的 medium-emphasis，
+   视觉层级不依赖任何主题色名，glass 主题下也不会变蓝。 */
+.magicflow-asset-act :deep(.v-btn--variant-outlined) {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
 .magicflow-asset-blocks {
   display: flex;
@@ -538,7 +553,7 @@ watch(includeStale, () => { load() })
   margin-inline-end: 4px;
 }
 
-/* ── 本视图专属 ─────────────────────────────────────────────────── */
+/* ── 本视图专属 ────────────────────────────────────────────────────────── */
 .magicflow-assets {
   margin-block-start: 12px;
 }
@@ -603,7 +618,7 @@ watch(includeStale, () => { load() })
   align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
-  flex-wrap: nowrap;   /* ★ P10：不许换行，否则「可删」chip 会掉到下一行 */
+  flex-wrap: nowrap;   /* ★ P10：不允许换行，否则「可删」chip 会掉到下一行 */
 }
 
 .magicflow-mobile-asset__check {
@@ -644,7 +659,7 @@ watch(includeStale, () => { load() })
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
 .magicflow-mobile-asset__state {
-  /* ★ 15.9.0：标题过长时「可删 / 被保护」被压到截断 → chip 不再收缩（取 min(内容宽, 50%)） */
+  /* ★ 15.9.0：标题过长时「可删 / 被保护」被压缩到截断 → chip 不再收缩（取 min(内容宽, 50%)） */
   flex: 0 0 auto;
   max-inline-size: 50%;
   min-inline-size: 0;
@@ -683,7 +698,7 @@ watch(includeStale, () => { load() })
   overflow-wrap: anywhere;
 }
 
-/* ── .magicflow-page 级覆盖（同父页；目标元素已在本组件内）────────── */
+/* ── .magicflow-page 级覆盖（同父页；目标元素已在本组件内）──────────────── */
 .magicflow-page .magicflow-panel {
   padding: 18px 16px;
 }

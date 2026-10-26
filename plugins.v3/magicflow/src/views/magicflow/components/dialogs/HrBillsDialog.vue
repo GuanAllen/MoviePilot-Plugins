@@ -49,6 +49,7 @@ const sites = computed(() => (props.data && props.data.sites) || [])
               <VChip v-if="s.rule_source" size="x-small" color="grey" variant="tonal">{{ s.rule_source }}</VChip>
               <span class="magicflow-ops-dialog__spacer" />
               <span class="magicflow-hrbills__nums">欠 {{ s.owed }} · 在qb {{ s.in_qb }} · 缺 {{ s.missing }}<template v-if="s.at_risk"> · ⚠临期 {{ s.at_risk }}</template></span>
+              <VChip v-if="(s.pending_items || []).length" size="x-small" color="amber" variant="tonal">待起表 {{ (s.pending_items || []).length }}</VChip>
             </div>
             <div class="magicflow-hrbills__chips">
               <VChip
@@ -63,6 +64,10 @@ const sites = computed(() => (props.data && props.data.sites) || [])
             <div v-if="s.at_risk" class="magicflow-ops-dialog__sub">
               临近到期：
               <span v-for="(it, i) in hrBillsAtRisk(s)" :key="it.hash">{{ i ? '、' : '' }}{{ it.title || it.hash.slice(0, 8) }}（剩 {{ fmtHoursLeft(it.hours_left, it.state) }} / 需 {{ it.due_h }}h）</span>
+            </div>
+            <div v-if="(s.pending_items || []).length" class="magicflow-ops-dialog__sub">
+              待起表（未下完，完成即计 H&amp;R）：
+              <span v-for="(it, i) in s.pending_items" :key="it.hash">{{ i ? '、' : '' }}{{ it.title || it.hash.slice(0, 8) }}（{{ Math.round((it.progress || 0) * 100) }}%）</span>
             </div>
           </div>
           <div v-if="!loading && !sites.length" class="magicflow-ceiling-empty">暂无 H&amp;R 账单（无欠债站）</div>

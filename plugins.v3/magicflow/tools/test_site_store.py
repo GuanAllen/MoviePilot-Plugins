@@ -403,6 +403,64 @@ def test_store_roundtrip(sitestore) -> None:
         sitestore.mfdb = sys.modules[PKG + ".db"]
 
 
+def test_www_domain_merge(sitestore) -> None:
+    """19.7.96：``www.`` 归一 —— 同一站不再被拆成两行（现场：15 号 www 行 + 18 号裸域空壳）。"""
+    print("\n[4] 域名归一 / www 空壳行合并")
+    _ok(sitestore._norm_domain("www.yemapt.org") == "yemapt.org", "_norm_domain 去 www 前缀")
+    _ok(sitestore._norm_domain("https://WWW.HDDolby.com:8443/list") == "hddolby.com",
+        "_norm_domain 去协议/端口/路径")
+    _ok(sitestore._norm_domain("  yemapt.org.  ") == "yemapt.org", "_norm_domain 去首尾点与空白")
+
+    db, FakeSiteRow, FakeCrossRow, fake_db = _build_fake_db(sitestore)
+    sitestore.mfdb = fake_db
+    try:
+        # 历史行：domain 存的是 www 形态（真机 15 号行）
+        db.setdefault("mf_site", []).append(
+            FakeSiteRow(site_id=15, domain="www.yemapt.org", name="YemaPT",
+                        caps=None, created=0.0)
+        )
+        store = sitestore.SiteStore(_FakeBackend(db))
+        store.save("site_caps", {"yemapt.org": {"framework": "nexusphp"}})
+        rows = db.get("mf_site", [])
+        _ok(len(rows) == 1, f"裸域写 caps 不再新建空壳行（实际 {len(rows)} 行）")
+        _ok(getattr(rows[0], "site_id", None) == 15, "复用历史 www 行（site_id 保持 15）")
+        _ok(getattr(rows[0], "domain", None) == "yemapt.org", "历史行 domain 就地归一为裸域")
+        _ok((getattr(rows[0], "caps", None) or {}).get("framework") == "nexusphp",
+            "caps 写进被复用的行")
+
+        # 反向：库里已是裸域，再按 www 写也不新建行
+        store.save("site_caps", {"www.yemapt.org": {"framework": "gazelle"}})
+        rows = db.get("mf_site", [])
+        _ok(len(rows) == 1, f"www 写入命中原行（实际 {len(rows)} 行）")
+        _ok((getattr(rows[0], "caps", None) or {}).get("framework") == "gazelle",
+            "www 写入覆盖同一行 caps")
+    finally:
+        sitestore.mfdb = sys.modules[PKG + ".db"]
+
+    # ★ URL 主机名（历史行 pt.btschool.club）↔ 注册域（MP site.domain = btschool.club）
+    db2, FakeSiteRow2, _FakeCross2, fake_db2 = _build_fake_db(sitestore)
+    sitestore.mfdb = fake_db2
+    try:
+        db2.setdefault("mf_site", []).append(
+            FakeSiteRow2(site_id=4, domain="pt.btschool.club", name="学校",
+                         mp_site_id=1, caps=None, created=0.0)
+        )
+        store2 = sitestore.SiteStore(_FakeBackend(db2))
+        store2.save("site_caps", {"btschool.club": {"framework": "nexusphp"}})
+        rows = db2.get("mf_site", [])
+        _ok(len(rows) == 1, f"注册域写 caps 不新建空壳行（实际 {len(rows)} 行）")
+        _ok(getattr(rows[0], "site_id", None) == 4, "按主机名后缀命中真站行（site_id=4）")
+        _ok(getattr(rows[0], "domain", None) == "btschool.club", "历史主机名行就地收敛为注册域")
+        _ok((getattr(rows[0], "caps", None) or {}).get("framework") == "nexusphp",
+            "caps 写进被复用的真站行")
+
+        # 反向：库里是注册域，按主机名写也不新建
+        store2.save("site_caps", {"tracker.novahd.top": {"framework": "nexusphp"}})
+        _ok(len(db2.get("mf_site", [])) == 2, "主机名首次出现才建行（此站此前无行）")
+    finally:
+        sitestore.mfdb = sys.modules[PKG + ".db"]
+
+
 def main() -> int:
     print("=" * 64)
     print("魔流 · SiteStore（三套站点 kv 账本 → 表）离线单测")
@@ -410,6 +468,7 @@ def main() -> int:
     sitestore = _load_modules()
     test_pure_mapping(sitestore)
     test_store_roundtrip(sitestore)
+    test_www_domain_merge(sitestore)
     print("\n" + "=" * 64)
     if _FAIL == 0:
         print(f"✅ PASS —— 共 {_OK} 项全过")

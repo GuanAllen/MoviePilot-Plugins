@@ -879,7 +879,13 @@ class SiteRules:
 
 
 def _norm_domain(domain: str) -> str:
-    return str(domain or "").strip().lower().replace("https://", "").replace("http://", "").strip("/")
+    """域名归一：小写、去协议/路径/端口、去 ``www.`` 前缀、去首尾点（口径同 ``sitestore._norm_domain``）。
+
+    ★ 19.7.96：补 ``www.`` 归一。规则表按域名建键，``www.`` 不归一会让同一站查不到自己的规则。
+    """
+    s = str(domain or "").strip().lower().replace("https://", "").replace("http://", "")
+    s = s.split("/")[0].split(":")[0].strip().strip(".")
+    return s[4:] if s.startswith("www.") else s
 
 
 def _same_domain(a: str, b: str) -> bool:

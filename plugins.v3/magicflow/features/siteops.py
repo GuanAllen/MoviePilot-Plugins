@@ -792,10 +792,14 @@ class SiteOpsMixin:
 
 
 def dom_norm(domain: Any) -> str:
-    """域名归一（小写、去协议、去路径/尾斜杠）。"""
+    """域名归一：小写、去协议/路径/端口、去 ``www.`` 前缀、去首尾点。
+
+    ★ 19.7.96：补 ``www.`` 与端口归一（`mf_site` 口径见 ``sitestore._norm_domain``）。
+    不归一的话 MP 侧 ``www.yemapt.org`` 与台账侧 ``yemapt.org`` 会被当成两个站。
+    """
     s = str(domain or "").strip().lower()
-    s = re.sub(r"^https?://", "", s).split("/")[0].strip().strip(".")
-    return s
+    s = re.sub(r"^https?://", "", s).split("/")[0].split(":")[0].strip().strip(".")
+    return s[4:] if s.startswith("www.") else s
 
 
 def _as_int(v: Any) -> int:

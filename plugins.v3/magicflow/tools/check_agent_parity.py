@@ -67,6 +67,7 @@ COVERED = {
     "/ondemand/items": "/agent/ondemand",
     "/hr/bills": "/agent/hr/bills",
     "/health/scan": "/agent/seeds/health",
+    "/rss/config": "/agent/rss",
 }
 
 # 前端 GET 只读域 → 豁免理由（非插件端点 / MP 全局端点）

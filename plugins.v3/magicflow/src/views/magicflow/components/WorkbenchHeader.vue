@@ -41,6 +41,12 @@ const emit = defineEmits([
   'open-exam',
   'open-rescue',
   'open-sitereport',
+  'open-claim',
+  'open-rss',
+  'open-silent',
+  'open-hrbills',
+  'open-ceiling',
+  'open-ops',
   'open-music',
   'open-assets',
   'open-jobs',
@@ -260,7 +266,7 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
           title="站点报表：逐条种子状态（分类/保护/账单/qB）"
           @click="emit('open-sitereport')"
         />
-        <!-- ★ 音乐甄别入口已「收起来」：只在窄屏/桌面「更多」菜单里，顶栏不再放独立图标 -->
+        <!-- ★ 音乐入口已「收起来」：只在窄屏/桌面「更多」菜单里，顶栏不再放独立图标 -->
         <!-- ★ 桌面：详情磁贴（推荐/云盘/跨站/豆瓣/点播/考核/补源）与「设置」分两档 → 中间加一条竖分隔 -->
         <span class="magicflow-hdr-sep" aria-hidden="true" />
         <VBtn
@@ -271,7 +277,7 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
           @click="emit('open-settings')"
         />
         <VBtn v-if="showClose" class="magicflow-close-btn" icon="mdi-close" variant="text" aria-label="关闭" @click="emit('close')" />
-        <!-- 窄屏：把上面那几个图标按钮收进「更多」菜单（宽屏不显示本按钮） -->
+        <!-- 「更多」菜单：宽屏仅承载次级入口（与顶部图标不重复）；窄屏（≤959px）图标按钮隐藏，本菜单收纳全部功能 -->
         <VMenu location="bottom end" :close-on-content-click="true">
           <template #activator="{ props: moreProps }">
             <VBtn
@@ -283,16 +289,19 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
             />
           </template>
           <VList density="comfortable" class="magicflow-more-menu" min-width="228">
+            <!-- 以下 9 项与顶部图标按钮重复：宽屏（≥960px）隐藏，仅窄屏显示，避免入口二义 -->
             <VListItem
               v-if="tileVisible('recommend') && recommendData.enabled !== false"
+              class="magicflow-more-menu__primary"
               prepend-icon="mdi-movie-star-outline"
               title="推荐"
-              :subtitle="(recommendData.recommended || 0) > 0 ? `${recommendData.recommended} 个待确认` : '影视推荐甄别'"
+              :subtitle="(recommendData.recommended || 0) > 0 ? `${recommendData.recommended} 个待确认` : '影视推荐'"
               @click="emit('open-recommend')"
             />
-            <VListItem v-if="tileVisible('cloud')" prepend-icon="mdi-cloud-upload-outline" title="云盘归档" @click="emit('open-cloud')" />
+            <VListItem v-if="tileVisible('cloud')" class="magicflow-more-menu__primary" prepend-icon="mdi-cloud-upload-outline" title="云盘归档" @click="emit('open-cloud')" />
             <VListItem
               v-if="tileVisible('crossseed')"
+              class="magicflow-more-menu__primary"
               prepend-icon="mdi-swap-horizontal-bold"
               title="跨站取种"
               :subtitle="Number(crossseedData.count || 0) > 0 ? `${crossseedData.count} 个可免费取种` : '跨站免费取种'"
@@ -300,12 +309,14 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
             />
             <VListItem
               v-if="tileVisible('douban')"
+              class="magicflow-more-menu__primary"
               prepend-icon="mdi-database-search-outline"
               title="豆瓣评分"
               :subtitle="`库 ${doubanServiceData.records || 0} 条${doubanServiceData.ok ? '' : '（服务不可用）'}`"
               @click="emit('open-douban')"
             />
             <VListItem
+              class="magicflow-more-menu__primary"
               prepend-icon="mdi-heart-pulse"
               title="健康自检"
               :subtitle="healthBadgeCount > 0 ? `${healthBadgeCount} 项待处理` : '各子系统正常'"
@@ -313,6 +324,7 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
             />
             <VListItem
               v-if="tileVisible('ondemand')"
+              class="magicflow-more-menu__primary"
               prepend-icon="mdi-cloud-download-outline"
               title="点播"
               subtitle="片名 / 链接 → 搜索选源（免费优先）"
@@ -320,23 +332,31 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
             />
             <VListItem
               v-if="tileVisible('exam') && examData.enabled !== false"
+              class="magicflow-more-menu__primary"
               prepend-icon="mdi-school-outline"
               title="新手考核"
               :subtitle="examBadge > 0 ? `${examBadge} 个未通过` : '考核进度与一键起任务'"
               @click="emit('open-exam')"
             />
-            <VListItem prepend-icon="mdi-lifebuoy" title="死种补源" subtitle="停滞欠 H&R 的种 → 无 H&R 站补源" @click="emit('open-rescue')" />
+            <VListItem class="magicflow-more-menu__primary" prepend-icon="mdi-lifebuoy" title="死种补源" subtitle="停滞欠 H&R 的种 → 无 H&R 站补源" @click="emit('open-rescue')" />
             <VListItem
               v-if="tileVisible('sitereport')"
+              class="magicflow-more-menu__primary"
               prepend-icon="mdi-table-large"
               title="站点报表"
               subtitle="站点逐条种子状态（分类/保护/账单）"
               @click="emit('open-sitereport')"
             />
-            <!-- ★ 15.8.2：音乐薄弹窗（窄屏也走「更多」菜单） -->
+            <VListItem v-if="tileVisible('claim')" prepend-icon="mdi-seal-variant" title="认领" subtitle="站点认领 / 结算与奖励" @click="emit('open-claim')" />
+            <VListItem v-if="tileVisible('rss')" prepend-icon="mdi-rss" title="RSS" subtitle="站点 RSS 与 passkey 配置" @click="emit('open-rss')" />
+            <VListItem v-if="tileVisible('silent')" prepend-icon="mdi-pool" title="静默池" subtitle="静默托管：按站点查看" @click="emit('open-silent')" />
+            <VListItem v-if="tileVisible('hrbills')" prepend-icon="mdi-file-alert-outline" title="H&R 账单" subtitle="欠 H&R 与保种进度" @click="emit('open-hrbills')" />
+            <VListItem v-if="tileVisible('ceiling')" prepend-icon="mdi-gauge" title="站点容量" subtitle="各站体积与余量" @click="emit('open-ceiling')" />
+            <VListItem v-if="tileVisible('ops')" prepend-icon="mdi-history" title="操作记录" subtitle="删除 / 暂停 / 认领等动作审计" @click="emit('open-ops')" />
+            <!-- ★ 15.8.2：音乐（窄屏也走「更多」菜单） -->
             <VListItem prepend-icon="mdi-music-circle-outline" title="音乐" subtitle="清单（进行中/已完成 · 暂停/继续/移除）" @click="emit('open-music')" />
             <!-- ★ 15.9.0（Master「库内资源那里应该改成库内资源管理，删除 保护 订阅 整理 刮削 都放在这里」）：
-                 全局入口（不挂在任务上 —— 库内资源跨任务） -->
+                全局入口（不挂在任务上 —— 库内资源跨任务） -->
             <VListItem
               prepend-icon="mdi-folder-cog-outline"
               title="库内资源管理"
@@ -396,7 +416,7 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
 /* P4：WorkbenchHeader 专属样式（自 index.vue 纯搬家）。
    ★ 共享选择器（magicflow-status-dot / magicflow-task-switch*）在 index.vue 各留一份。 */
 
-/* ── 顶栏：品牌 / 动作区布局 ───────────────────────────── */
+/* ── 顶栏：品牌 / 动作区布局 ──────────────────────────────────────────── */
 .magicflow-page__header,
 .magicflow-page__identity,
 .magicflow-page__actions {
@@ -454,16 +474,25 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
   margin-inline-start: 2px;
 }
 
-/* 「更多」⋮ 只在窄屏出现（宽屏直接展开各图标按钮） */
+/* 「更多」⋮ 宽屏也显示：PC 上收纳次级功能入口（窄屏同样用它） */
 .magicflow-more-btn {
-  display: none;
+  display: inline-flex;
 }
 
 .magicflow-more-menu .v-list-item {
   min-block-size: 44px;
 }
 
-/* ── 状态点（与任务栏共用选择器 → 两处各留一份）────────── */
+/* 宽屏（≥960px）：顶部图标按钮已承载高频功能，故「更多」菜单中与之重复的
+   9 项隐藏，仅保留次级入口（认领/RSS/静默池/H&R 账单/容量/操作记录/音乐/
+   库内资源/后台任务/趋势/优化/计划/通知）。窄屏（≤959px）图标收起，这些项照常显示。 */
+@media (min-width: 960px) {
+  .magicflow-more-menu__primary {
+    display: none;
+  }
+}
+
+/* ── 状态点（与任务栏共用选择器 → 两处各留一份）────────────────────────── */
 .magicflow-status-dot {
   inline-size: 8px;
   block-size: 8px;
@@ -478,7 +507,7 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
 .magicflow-status-dot--warning { background: rgb(var(--v-theme-warning)); }
 .magicflow-status-dot--error { background: rgb(var(--v-theme-error)); }
 
-/* ── 窄屏（≤959px）：品牌头吸顶 / 折叠 ─────────────────── */
+/* ── 窄屏（≤959px）：品牌头吸顶 / 折叠 ─────────────────────────────── */
 @media (max-width: 959px) {
   .magicflow-page--compact .magicflow-page__header {
     position: sticky;
@@ -496,7 +525,7 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
   }
 }
 
-/* ── 窄屏（≤699px）────────────────────────────────────── */
+/* ── 窄屏（≤699px）──────────────────────────────────────────────────── */
 @media (max-width: 699px) {
   /* 窄屏隐藏顶部「新建任务」，交给移动工具栏的「新建」按钮 */
   .magicflow-page .magicflow-header-create {
@@ -543,7 +572,7 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
   }
 }
 
-/* ── 超窄（≤419px）────────────────────────────────────── */
+/* ── 超窄（≤419px）──────────────────────────────────────────────────── */
 @media (max-width: 419px) {
   .magicflow-page:not(.magicflow-page--compact) .magicflow-page__header,
   .magicflow-page:not(.magicflow-page--compact) .magicflow-page__identity {
@@ -551,7 +580,7 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
   }
 }
 
-/* ── 按预览图对齐：品牌头排版 ─────────────────────────── */
+/* ── 按预览图对齐：品牌头排版 ──────────────────────────────────────── */
 .magicflow-page .magicflow-page__header {
   gap: 12px;
   min-block-size: 44px;
@@ -565,7 +594,8 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
   place-items: center;
   border-radius: 12px;
   color: rgb(var(--v-theme-on-primary));
-  background: linear-gradient(145deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary)));
+  /* 品牌三段紫渐变（#8D51F9 → #7432DF → #5B00C5），替换原先的纯色假渐变 */
+  background: linear-gradient(145deg, #8D51F9 0%, #7432DF 55%, #5B00C5 100%);
   box-shadow: 0 6px 20px rgba(var(--v-theme-primary), 0.45), inset 0 1px 0 rgba(var(--v-theme-on-primary), 0.25);
 }
 
@@ -622,7 +652,8 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
   overflow: hidden;
   border-radius: 8px;
   color: rgb(var(--v-theme-on-primary));
-  background: linear-gradient(145deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary)));
+  /* 同品牌三段紫渐变，替换原先的纯色假渐变 */
+  background: linear-gradient(145deg, #8D51F9 0%, #7432DF 55%, #5B00C5 100%);
 }
 
 .magicflow-page .magicflow-task-switch__icon img {
@@ -669,15 +700,15 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
   letter-spacing: 0.01em;
 }
 
-/* ── 窄屏（≤959px）：只留品牌 + 「更多」菜单 ──────────── */
+/* ── 窄屏（≤959px）：只留品牌 + 「更多」菜单 ──────────────────────── */
 @media (max-width: 959px) {
   /* 桌面品牌头里的切换胶囊隐藏；移动端由工具栏承担 */
   .magicflow-page__actions .magicflow-task-switch {
     display: none;
   }
 
-  /* ★ 窄屏：顶栏只留「魔流」品牌 + 右上角「⋮ 更多」——把**所有**功能入口（推荐/云盘/跨站/豆瓣/
-     健康/点播/考核/补源/设置/关闭）都收进这一个菜单，别一边留图标、一边又放菜单（≡ 两边都有）。 */
+  /* ★ 窄屏：顶栏只剩「魔流」品牌 + 右上角「⋮ 更多」——把**所有**功能入口（推荐/云盘/跨站/豆瓣/
+    健康/点播/考核/补源/设置/关闭）都收进这一个菜单，别一边留图标、一边又放菜单（≡ 两边都有）。 */
   .magicflow-page__actions .magicflow-header-create,
   .magicflow-page__actions .magicflow-recommend-wrap,
   .magicflow-page__actions .magicflow-recommend-btn,
@@ -702,7 +733,7 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
     display: inline-flex;
   }
 
-  /* 手机端隐藏自相矛盾的运行计数胶囊（信息已由首页大数承担） */
+  /* 手机端隐藏自相矛盾的计数胶囊（信息已由首页大数承担） */
   .magicflow-page .magicflow-enabled-chip { display: none; }
 }
 </style>

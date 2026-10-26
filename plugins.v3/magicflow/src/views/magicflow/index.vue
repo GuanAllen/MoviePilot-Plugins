@@ -14,6 +14,7 @@ import ClaimConfirm from './components/confirm/ClaimConfirm.vue'
 import EnforceConfirm from './components/confirm/EnforceConfirm.vue'
 import TagReconConfirm from './components/confirm/TagReconConfirm.vue'
 import ClaimDialog from './components/dialogs/ClaimDialog.vue'
+import RssDialog from './components/dialogs/RssDialog.vue'
 import ExamConfirm from './components/confirm/ExamConfirm.vue'
 import SiteReportDialog from './components/dialogs/SiteReportDialog.vue'
 import RecommendDialog from './components/dialogs/RecommendDialog.vue'
@@ -618,6 +619,7 @@ function mfOpenPage(page) {
     case 'douban': return openDoubanService()
     case 'crossseed': return showCrossseed()
     case 'claim': return openClaim()
+    case 'rss': return openRss()
     case 'silent': return openSilent()
     case 'sitereport': return openSiteReport()
     case 'hrbills': return openHrBills()
@@ -1095,6 +1097,7 @@ const {
 //   ★ 写动作不可逆（不达标 −魔力 / 主动放弃 −更多）→ 默认干跑，真写要二次确认。
 const claimData = ref({ sites: [], claimed: [], claimable: [], soon: [], cfg: {}, records: [], settlement: {}, est_month_bonus_total: 0 })
 const claimOpen = ref(false)
+const rssOpen = ref(false)
 const claimLoading = ref(false)
 const claimActing = ref('')
 const claimSiteFilter = ref(0)
@@ -1107,20 +1110,32 @@ const claimSoon = computed(() => claimData.value.soon || [])
 const claimRecords = computed(() => claimData.value.records || [])
 const claimSupportedSites = computed(() => claimSites.value.filter(s => s.supported))
 const claimSiteOptions = computed(() => claimSupportedSites.value.map(s => s.domain).filter(Boolean))
-async function loadClaim() {
-  claimLoading.value = true
+async function loadClaim(force = false, silent = false) {
+  if (!silent) claimLoading.value = true
   try {
-    const q = claimSiteFilter.value ? `?site_id=${claimSiteFilter.value}` : ''
+    const params = new URLSearchParams()
+    if (claimSiteFilter.value) params.set('site_id', claimSiteFilter.value)
+    if (force) params.set('refresh', '1')
+    const qs = params.toString()
+    const q = qs ? `?${qs}` : ''
     claimData.value = unwrapResponse(await api.features.claim(q)) || claimData.value
   } catch (err) {
     notify(`读取认领状态失败：${err?.message || err}`, 'error')
   } finally {
-    claimLoading.value = false
+    if (!silent) claimLoading.value = false
   }
+}
+function openRss() {
+  rssOpen.value = true
 }
 function openClaim() {
   claimOpen.value = true
-  loadClaim()
+  const hasData = !!(claimData.value && (claimData.value.sites || []).length)
+  if (hasData) {
+    loadClaim(false, true)
+  } else {
+    loadClaim()
+  }
 }
 async function claimScanRun() {
   if (claimActing.value) return
@@ -1463,6 +1478,8 @@ onMounted(() => {
   // 站点实时数据：采样周期 240s，这里 120s 轮询（服务端有缓存，不会重复打站点）
   loadLive()
   liveTimer = window.setInterval(loadLive, 120000)
+  // 预热认领数据：点「认领」时直接显示缓存，不再等 /claim
+  window.setTimeout(() => { loadClaim(false, true) }, 1500)
   // 运行诊断页每秒多刷新一次任务阶段，驱动流程链转圈
   phaseTimer = window.setInterval(() => {
     if (activeTab.value === 'diagnostics' && selectedTaskId.value) loadDetail(selectedTaskId.value)
@@ -1522,6 +1539,12 @@ onUnmounted(() => {
       @open-exam="openExam"
       @open-rescue="openRescue"
       @open-sitereport="openSiteReport"
+      @open-claim="openClaim"
+      @open-rss="openRss"
+      @open-silent="openSilent"
+      @open-hrbills="openHrBills"
+      @open-ceiling="openCeiling"
+      @open-ops="openOperations('all')"'
       @open-music="openMusic"
       @open-assets="assetsDialog = true"
       @open-jobs="openJobs"
@@ -2383,6 +2406,8 @@ onUnmounted(() => {
 
     <!-- 一键起任务确认（先展示要干什么，再动手）→ P4 已拆到 ./components/confirm/ExamConfirm.vue（props 下 / emit 上） -->
     <ExamConfirm v-model="examConfirm" :acting="examActing" @run="examConfirmRun" />
+    <RssDialog v-model="rssOpen" :api="api" :is-narrow="isNarrow" />
+
     <ClaimDialog
       v-model="claimOpen"
       :is-narrow="isNarrow"
@@ -2395,7 +2420,7 @@ onUnmounted(() => {
       :claim-soon="claimSoon"
       :claim-loading="claimLoading"
       :claim-acting="claimActing"
-      @refresh="loadClaim"
+      @refresh="loadClaim(true)"
       @scan="claimScanRun"
       @ask="claimAsk"
     />
@@ -3315,7 +3340,7 @@ onUnmounted(() => {
   overflow: hidden;
   border-radius: 8px;
   color: rgb(var(--v-theme-on-primary));
-  background: linear-gradient(145deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary)));
+  background: linear-gradient(145deg, #8D51F9 0%, #7432DF 55%, #5B00C5 100%);
 }
 
 .magicflow-page .magicflow-task-switch__icon img {

@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "19.6.0"
+__version__ = "19.9.6"
 
 import bisect
 import re
@@ -256,7 +256,18 @@ RESEED_INTERVAL_MINUTES = 15      # worker 周期（分钟；低频，慢慢喂�
 RESEED_BATCH = 10                 # 每轮最多处理多少个「本机种 × 目标站」对
 RESEED_DAILY_PER_SITE = 30        # 每站每天最多挂多少辅种（防一口气灌爆站点）
 RESEED_MIN_SIZE_GB = 1.0          # 小于该体积的本机种不参与（不值得挂）
+# ★ 19.7.92：体积线自动降档的下限（GB）。现场（2026-10-20）：云端反查出 233 个候选
+#   全挂在 0.29~0.99GB 的本机种上 → 体积线 1.0 一卡，`plan` 恒为 0（辅种停摆 5 小时）。
+#   处置：**不改默认配置**——只在「本轮排不出任何一对」且候选中确有线下的时，按被拦下的
+#   最大候选体积降一档复算一次，且不低于本下限（避免为挂小而把配额花光）。
+RESEED_DOWNSHIFT_MIN_SIZE_GB = 0.3
 RESEED_CLOUD_TTL = 3 * 86400.0    # IYUU 云端反查结果的有效期（秒）
+# ★ 19.7.93：IYUU 反查「0 命中」时的冷静期（秒）。现场（2026-10-20 14:32）：
+#   IYUU `/reseed/index/index` 返回 code=429「86400 秒窗口内的次数 500 已耗尽」，
+#   而 `_reseed_cloud_map` 把空结果**当成新结果写回缓存**（ts 刷新 + by_hash={}）
+#   ⇒ 1773 颗本机种、6859 条候选的旧结果被一次限流抹掉，辅种停摆到 TTL(3 天) 才恢复。
+#   处置：反查 0 命中且旧结果非空时**保留旧结果、不推进 ts**，并在此冷静期内不再查询。
+RESEED_CLOUD_BACKOFF_S = 4 * 3600.0
 RESEED_MISS_TTL = 30 * 86400.0    # 特征码不匹配 → 30 天内不再重试该对
 RESEED_FAIL_TTL = 86400.0         # 取种失败（流控/网络）→ 1 天后重试
 RESEED_OK_TTL = 90 * 86400.0      # ★ 19.0.0：已挂成功记录的保留期（历史参考；去重靠本机实况）
@@ -265,6 +276,9 @@ RESEED_LEDGER_KEY = "reseed_ledger"
 RESEED_DAY_KEY = "reseed_day"
 RESEED_CLOUD_KEY = "reseed_cloud"
 RESEED_PASSKEY_KEY = "reseed_passkeys"
+RSS_PASSKEY_KEY = "rss_passkeys"  # RSS 订阅 passkey（按 site_id）
+CREDS_KEY = "site_creds"
+IYUU_SITES_CACHE_KEY = "iyuu_sites_cache"  # IYUU 站点表本地缓存（104 站模板）  # 统一凭据：passkey / apikey / rss_url
 
 # ---------------------------------------------------------------- 缓存/日志 TTL
 # ★ 12.6.0：原 kv（plugindata）里的「缓存 / 日志」键全部搬进热层（TierCache：内存 + FileCache/Redis）。
@@ -285,6 +299,10 @@ CLAIM_BATCH = 5                              # 单轮最多认领多少颗
 CLAIM_INTERVAL_SEC = 8.0                     # 两次认领之间的最小间隔（秒，限速）
 CLAIM_FAIL_TTL = 24 * 3600.0                 # 失败/名额满/不达标 → 24h 内不重试
 CLAIM_SOFT_CAP = 200                         # 单站账本软上限（仅提示，不强制）
+CLAIM_HOST_INTERVAL_MINUTES = 15             # ★ 19.7.0：认领保挂 worker 周期（分钟）
+CLAIM_SITE_TTL = 600                        # ★ 19.7.1：站点认领页缓存（秒）
+CLAIM_STATE_TTL = 180                        # ★ 19.7.22：/claim 结果缓存新鲜期（秒）
+CLAIM_STATE_STALE = 3600                     # ★ 19.7.22：陈旧窗口（秒，窗口内直接返回并后台刷新）
 SILENT_HOST_INTERVAL_MINUTES = 60  # ⭐「静默托管」常驻 worker 周期(分钟，低频)
 HR_HOST_INTERVAL_MINUTES = 15  # ⭐ 14.0.0：H&R 保种宿主 worker 周期（60→15min，Master 03:17）
 SITE_LIFECYCLE_INTERVAL_MINUTES = 30  # ⭐ 17.5.0：站点生命周期标记 worker 周期（分钟，低频幂等）
@@ -295,6 +313,13 @@ HR_HOST_TASK_ID = "__hr_host__"  # ⭐「H&R 保种」常驻伪任务 id（欠 H
 ONDEMAND_TASK_ID = "__ondemand__"  # ⭐ 15.8.4「点播在途」伪任务 id（点播加种即挂、settle 摘）。
 #   目的：让「还没下完的点播种」账本 state=点播 ≠ 静默 → 免疫静默池的暂停闸与清理闸（防误删，Master 18:40 拍板）。
 ONDEMAND_TASK_NAME = "点播"  # 伪任务展示名（写账本 task / _task_id 反查用）
+MUSIC_TASK_ID = "__music__"  # ⭐ 19.9.0「音乐在途」伪任务 id（音乐加种即挂、下完/入库摘）。
+#   目的同点播：账本 state=音乐 ≠ 静默 → 音乐下载中不靠「progress<1 例外」也天然免疫暂停闸/清理闸。
+MUSIC_TASK_NAME = "音乐线"  # 伪任务展示名（写账本 task / _task_id 反查用）
+KEEP_TASK_ID = "__keep__"  # ⭐ 19.9.1「手动保种」伪任务 id（人工点名的种挂这里）。
+#   与 __hr_host__ 的区别：那个由「欠 H&R」驱动、结清/规则不欠就自动释放；这个只由接口写入、
+#   只能由 `action=unhold` 解除 —— 高价值/待做种的种用它长期做种（不会被 hr_host 收回）。
+KEEP_TASK_NAME = "手动保种"  # 伪任务展示名（写账本 task / _task_id 反查用）
 SILENT_HR_SPLIT_ENABLED = True  # ⭐ 11.11.0 回退开关：静默池=全 paused + H&R 拆到 __hr_host__（False=退回旧行为）
 # ★ 11.12.0 删除熔断 + 账单一致性断言（Master 2026-10-06：「bug 别再删很多次」；「消违约是正常动作」）
 DELETE_BREAKER_ENABLED = True   # 滚动窗口内删除数超阈 → 阻断 + 报警（防失控循环/重复删）

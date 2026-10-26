@@ -14,6 +14,7 @@ CARPT：达标种子魔力奖励 = 正常值 ×2；代价是「不达标 −100 
   否则「认领了又被自己删掉 → 站点判不达标 → 扣魔力」。
 """
 
+import threading
 import time
 from datetime import datetime
 from typing import Any, Dict, List
@@ -27,13 +28,18 @@ from ..common import (
     CLAIM_CFG_KEY,
     CLAIM_DAILY_PER_SITE,
     CLAIM_FAIL_TTL,
+    CLAIM_HOST_INTERVAL_MINUTES,
     CLAIM_INTERVAL_SEC,
     CLAIM_LEDGER_KEY,
     CLAIM_PROFILE_KEY,
     CLAIM_PROFILE_TTL,
+    CLAIM_SITE_TTL,
+    CLAIM_STATE_STALE,
+    CLAIM_STATE_TTL,
     CLAIM_SOFT_CAP,
     CLAIM_TASK_ID,
 )
+from ..kvstore import cache_get, cache_set
 from ..persistence import OperationItem
 from ..sites.claim_presets import preset_for
 from ..sitestore import slot_callbacks
@@ -186,7 +192,12 @@ class ClaimMixin:
             except Exception:  # noqa: BLE001
                 fresh = None
             if isinstance(fresh, dict) and fresh:
-                prof.update(fresh)
+                # ★ 2026-10-18：预设表是本地真值 → 整份以 preset 为准。
+                #   旧缓存里的 source/reason（早期 "未收录" 探测）不能被 update 残留，
+                #   否则会出现 supported=True 但 reason=未收录 的自相矛盾数据。
+                prof = dict(fresh)
+                prof["source"] = "preset"
+                prof["verified_at"] = int(time.time())
             return prof
         prof = self._probe_claim_profile(site)
         cache[sid] = {"profile": prof, "at": time.time()}
@@ -347,6 +358,7 @@ class ClaimMixin:
                 led.pop(k, None)
         try:
             slot_callbacks(self, CLAIM_LEDGER_KEY)[1](value=led)
+            self._claim_state_bump()
         except Exception as err:  # noqa: BLE001
             self._log(f"认领账本写入失败：{err}", "warning")
 
@@ -378,6 +390,296 @@ class ClaimMixin:
             if float(val.get("ts") or 0) >= day0:
                 n += 1
         return n
+
+    # ------------------------------------------------------- 19.7.0 保挂
+    def _claim_qb_snapshot(self) -> Dict[str, Any]:
+        """qB 当前快照（hash → TorrentInfo）；失败返回空表，不影响只读展示。"""
+        try:
+            return dict(self._tag_all_torrents() or {})
+        except Exception as err:  # noqa: BLE001
+            logger.debug(f"认领保挂: qB 快照失败 {err}")
+            return {}
+
+    def _claim_host_status(self, resume: bool = False) -> Dict[str, Any]:
+        """★ 19.7.0：已认领种的保挂状态（``resume=False`` 纯只读）。
+
+        账本 ``st=ok/already`` = 站点侧承诺。这里只做保活：
+          · qB 里没了 → missing（不自动重下，避免误吞流量）
+          · paused/stopped → resume（仅 worker 调用时）
+          · 其余 → 视为在种
+        绝不删除、不改账本承诺；删除闸门另有硬保护。
+        """
+        claims = {
+            str(k): v for k, v in (self._claim_ledger() or {}).items()
+            if isinstance(v, dict) and str(v.get("st")) in ("ok", "already")
+        }
+        snap = self._claim_qb_snapshot()
+        missing: List[str] = []
+        to_resume: List[str] = []
+        seeding = 0
+        for key in claims:
+            _, _, h = str(key).partition(":")
+            h = h.strip().lower()
+            if not h:
+                continue
+            t = snap.get(h)
+            if t is None:
+                missing.append(h)
+                continue
+            st = str(getattr(t, "state", "") or "").lower()
+            if st in ("paused", "stopped", "queued", "pausedup", "stoppedup"):
+                to_resume.append(h)
+            else:
+                seeding += 1
+        resumed = 0
+        if resume and to_resume:
+            try:
+                dl = self._get_downloader()
+                n, err = dl.resume_torrents(to_resume)
+                resumed = int(n or 0)
+                if err:
+                    self._log(f"认领保挂:恢复失败 {err}", "warning")
+            except Exception as err:  # noqa: BLE001
+                self._log(f"认领保挂:恢复异常 {err}", "warning")
+        rep = {
+            "at": time.time(),
+            "total": len(claims),
+            "seeding": seeding,
+            "paused": len(to_resume),
+            "resumed": resumed,
+            "missing": len(missing),
+            "missing_hashes": missing[:20],
+        }
+        if resume and claims:
+            self._log(
+                f"认领保挂: {rep['total']} 个已认领 / 在种 {seeding} / 恢复 {resumed} / 丢失 {len(missing)}"
+            )
+        return rep
+
+    def claim_host(self) -> Dict[str, Any]:
+        """★ 19.7.0：``__claim__`` 常驻保挂 worker（会 resume 暂停的已认领种）。"""
+        return self._claim_host_status(resume=True)
+
+    def _claim_host_card(self) -> Dict[str, Any]:
+        """★ 19.7.0：``__claim__`` 保挂在任务列表里的只读卡片（不触发 resume）。"""
+        rep = self._claim_host_status(resume=False)
+        return {
+            "id": CLAIM_TASK_ID,
+            "name": "认领保挂",
+            "builtin": True,
+            "enabled": True,
+            "run_mode": "running",
+            "task_type": "host",
+            "state": "running",
+            "site_id": 0,
+            "site_domain": "",
+            "site_name": "全部站点（认领保挂）",
+            "downloader": "所有下载器",
+            "brush_tag": "魔流-<站点>-认领",
+            "save_path": "",
+            "seeding_count": int(rep.get("seeding") or 0),
+            "active_seeding_count": int(rep.get("seeding") or 0),
+            "paused_count": int(rep.get("paused") or 0),
+            "missing_count": int(rep.get("missing") or 0),
+            "claim_count": int(rep.get("total") or 0),
+            "host_interval_minutes": float(CLAIM_HOST_INTERVAL_MINUTES),
+            "host_last_run": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(rep.get("at") or time.time()))),
+        }
+
+    # --------------------------------------------------- 19.7.1 站点口径
+    @staticmethod
+    def _claim_parse_table(html: str) -> Dict[str, Any]:
+        """解析 NexusPHP 认领页（表头驱动，兼容 11/12/13 列与学校 viewclaims）。"""
+        import re as _re
+
+        out: Dict[str, Any] = {"summary": {}, "by_tid": {}}
+        text = str(html or "")
+        m = _re.search(r"本月认领总数：\s*(\d+).*?已达标：\s*(\d+).*?未达标：\s*(\d+)", text, _re.S)
+        if m:
+            out["summary"] = {"total": int(m.group(1)), "qualified": int(m.group(2)), "unqualified": int(m.group(3))}
+        m = _re.search(r"下次结算时间：\s*([0-9:\- ]+)", text)
+        if m:
+            out["summary"]["next_settle"] = m.group(1).strip()
+
+        def clean(x: str) -> str:
+            return _re.sub(r"\s+", " ", _re.sub(r"<[^>]+>", " ", x or "")).strip()
+
+        def hours_of(v: str) -> float:
+            tm = _re.match(r"(?:(\d+)天)?\s*(\d+):(\d+):(\d+)", v or "")
+            if not tm:
+                return 0.0
+            return int(tm.group(1) or 0) * 24 + int(tm.group(2)) + int(tm.group(3)) / 60.0 + int(tm.group(4)) / 3600.0
+
+        rows = _re.findall(r"<tr[^>]*>(.*?)</tr>", text, _re.S)
+        header = None
+        for tr in rows:
+            cells = _re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, _re.S)
+            vals = [clean(c) for c in cells]
+            if any("种子名称" in v for v in vals) and any(("认领时间" in v or "添加时间" in v) for v in vals):
+                header = vals
+                break
+        if not header:
+            return out
+        idx: Dict[str, int] = {}
+        for i, name in enumerate(header):
+            n = name.strip()
+            if n == "ID":
+                idx["id"] = i
+            elif n == "用户":
+                idx["user"] = i
+            elif "种子名称" in n:
+                idx["title"] = i
+            elif "种子大小" in n or n == "大小":
+                idx["size"] = i
+            elif "种子存活" in n:
+                idx["alive"] = i
+            elif "认领时间" in n or "添加时间" in n:
+                idx["claimed_at"] = i
+            elif "上次结算" in n:
+                idx["last_settle"] = i
+            elif "本月做种" in n or n == "做种时间":
+                idx["seed_time"] = i
+            elif "本月上传" in n or n == "上传":
+                idx["upload"] = i
+            elif "是否达标" in n:
+                idx["qualified"] = i
+            elif "预计奖励" in n or "获得魔力" in n:
+                idx["reward"] = i
+            elif "下次结账" in n:
+                idx["next_settle"] = i
+
+        def at(vals, key, default=""):
+            i = idx.get(key)
+            return vals[i] if i is not None and i < len(vals) else default
+
+        for tr in rows:
+            cells = _re.findall(r"<td[^>]*>(.*?)</td>", tr, _re.S)
+            if len(cells) < len(header):
+                continue
+            title_cell = at(cells, "title", "")
+            tid_m = _re.search(r"detail\w*\s*\.php\?id=(\d+)", title_cell) or _re.search(r"detail\w*\s*\.php\?id=(\d+)", tr)
+            if not tid_m:
+                continue
+            vals = [clean(c) for c in cells]
+            seed_time = at(vals, "seed_time")
+            reward = at(vals, "reward")
+            reward_num = None
+            rm = _re.search(r"([\d,]+)", reward)
+            if rm:
+                reward_num = float(rm.group(1).replace(",", ""))
+            qv = at(vals, "qualified")
+            qualified = (qv.lower() in ("yes", "是", "达标")) if qv else bool(reward_num and reward_num > 0)
+            out["by_tid"][tid_m.group(1)] = {
+                "claim_id": at(vals, "id"),
+                "title": clean(title_cell),
+                "size": at(vals, "size"),
+                "alive": at(vals, "alive"),
+                "claimed_at": at(vals, "claimed_at"),
+                "last_settle": at(vals, "last_settle"),
+                "next_settle": at(vals, "next_settle"),
+                "seed_time": seed_time,
+                "seed_hours": round(hours_of(seed_time), 2),
+                "upload": at(vals, "upload"),
+                "qualified": qualified,
+                "reward": reward,
+                "reward_num": reward_num,
+            }
+        if not out["summary"]:
+            out["summary"] = {"total": len(out["by_tid"])}
+            first = next(iter(out["by_tid"].values()), None)
+            if first and first.get("next_settle"):
+                out["summary"]["next_settle"] = first["next_settle"]
+        return out
+
+    def _claim_discover_uid(self, site: Any, ctx: Dict[str, Any], base: str) -> str:
+        """没有 c_secure_uid 时，从 userdetails.php 的 claim.php？uid= 链接反查 UID。"""
+        sid = str(getattr(site, "id", "") or "")
+        cache = getattr(self, "_claim_uid_cache", None)
+        if cache is None:
+            cache = {}
+            try:
+                self._claim_uid_cache = cache
+            except Exception:  # noqa: BLE001
+                pass
+        if sid in cache:
+            return str(cache.get(sid) or "")
+        uid = ""
+        try:
+            from app.utils.http import RequestUtils  # noqa: WPS433
+
+            proxies = None
+            if ctx.get("proxy"):
+                try:
+                    from app.core.config import settings as _settings  # noqa: WPS433
+
+                    proxies = _settings.PROXY
+                except Exception:  # noqa: BLE001
+                    proxies = None
+            req = RequestUtils(
+                cookies=ctx.get("cookie"), ua=ctx.get("ua"), proxies=proxies,
+                timeout=ctx.get("timeout") or 20, referer=base + "/",
+            )
+            res = req.get_res(url=base + "/userdetails.php")
+            text = (res.text or "") if res is not None else ""
+            import re as _re
+
+            m = _re.search(r"claim\.php\?uid=(\d+)", text) or _re.search(r"userdetails\.php\?id=(\d+)", text)
+            uid = m.group(1) if m else ""
+        except Exception as err:  # noqa: BLE001
+            logger.debug(f"认领 UID 反查失败 {sid}: {err}")
+        cache[sid] = uid
+        return uid
+
+    def _claim_site_claims(self, site: Any, refresh: bool = False) -> Dict[str, Any]:
+        """★ 19.7.1：抓站点认领页（按站缓存 10 分钟），返回站点口径。"""
+        sid = str(getattr(site, "id", "") or "")
+        cache = getattr(self, "_claim_site_cache", None)
+        if cache is None:
+            cache = {}
+            try:
+                self._claim_site_cache = cache
+            except Exception:  # noqa: BLE001
+                pass
+        hit = cache.get(sid)
+        if not refresh and hit and (time.time() - float(hit.get("at") or 0)) < CLAIM_SITE_TTL:
+            return hit
+        prof = self._claim_profile(site)
+        path = str(prof.get("claim_list") or "").strip()
+        ctx = self._claim_site_ctx(site)
+        base = str(ctx.get("url") or "").strip().rstrip("/")
+        if not path or not base:
+            return {}
+        uid = self._site_user_id(site) or self._claim_discover_uid(site, ctx, base)
+        if "{uid}" in path and not uid:
+            return {}
+        path = path.replace("{uid}", str(uid or ""))
+        url = base + (path if path.startswith("/") else "/" + path)
+        try:
+            from app.utils.http import RequestUtils  # noqa: WPS433
+
+            proxies = None
+            if ctx.get("proxy"):
+                try:
+                    from app.core.config import settings as _settings  # noqa: WPS433
+
+                    proxies = _settings.PROXY
+                except Exception:  # noqa: BLE001
+                    proxies = None
+            req = RequestUtils(
+                cookies=ctx.get("cookie"), ua=ctx.get("ua"), proxies=proxies,
+                timeout=ctx.get("timeout") or 20, referer=base + "/",
+            )
+            res = req.get_res(url=url)
+            if res is None:
+                return {}
+            data = self._claim_parse_table(res.text or "")
+            data["at"] = time.time()
+            data["url"] = url
+            cache[sid] = data
+            return data
+        except Exception as err:  # noqa: BLE001
+            logger.debug(f"认领站点口径读取失败 {sid}: {err}")
+            return {}
 
     # ------------------------------------------------------------------ 扫描
     @staticmethod
@@ -432,7 +734,7 @@ class ClaimMixin:
             self._log(f"认领：枚举任务失败 {err}", "warning")
         return out
 
-    def _claim_scan(self, site_id: Any = None, upcoming: int = 20, limit: int = 0) -> Dict[str, Any]:
+    def _claim_scan(self, site_id: Any = None, upcoming: int = 20, limit: int = 0, refresh_site: bool = False) -> Dict[str, Any]:
         """扫一遍「可认领 / 已认领 / 快到期」——**只读本地账本 + 下载器**，零站点请求。
 
         站点范围 = **全部已配置站点**（``_claim_site_universe``）；未收录认领能力的站
@@ -448,6 +750,10 @@ class ClaimMixin:
         cfg = self._claim_cfg()
         now = time.time()
         ledger = self._claim_ledger()
+        try:
+            snap = dict(self._tag_all_torrents() or {})
+        except Exception:  # noqa: BLE001
+            snap = {}
         want = str(site_id).strip() if site_id not in (None, "", "0") else ""
         sites_filter = {str(x).strip().lower() for x in (cfg.get("sites") or [])}
         claimed: List[Dict[str, Any]] = []
@@ -551,7 +857,10 @@ class ClaimMixin:
                                     "state": str(rec.get("st")), "benefit": str(rec.get("benefit") or ""),
                                     "seed_hours": round(hours, 1),
                                     "est_payout_now": payout_now,
-                                    "note": str(rec.get("note") or "")})
+                                    "note": str(rec.get("note") or ""),
+                                    "qb_state": str(getattr(snap.get(h), "state", "") or ""),
+                                    "in_qb": h in snap,
+                                    "progress": float(getattr(snap.get(h), "progress", 0) or 0)})
                     continue
                 ts = float(pub.get(h) or 0)
                 age_days = round((now - ts) / 86400.0, 2) if ts else None
@@ -582,6 +891,177 @@ class ClaimMixin:
                 row["est_claimable_payout_total"] += payout_pot
                 claimable.append({**base, "age_days": age_days, "profile_min_age": prof.get("min_age_days"),
                                   "est_settle_payout": payout_pot})
+        # ★ 19.7.0：账本里有、但不在任务管辖内的已认领种也要出现在「已认领」列表。
+        for key, rec2 in ledger.items():
+            if not isinstance(rec2, dict) or str(rec2.get("st")) not in ("ok", "already"):
+                continue
+            if key in seen:
+                continue
+            sid_s, _, h2 = str(key).partition(":")
+            try:
+                sid2 = int(sid_s)
+            except (TypeError, ValueError):
+                continue
+            h2 = h2.strip().lower()
+            if not h2:
+                continue
+            t2 = snap.get(h2)
+            hours2 = max(0.0, (now - float(rec2.get("ts") or 0)) / 3600.0)
+            row2 = per_site.get(str(sid2))
+            if want and row2 is None:
+                continue
+            claimed.append({
+                "site_id": sid2,
+                "site_name": str((row2 or {}).get("site_name") or sid2),
+                "hash": h2,
+                "task": str(rec2.get("task") or ""),
+                "title": str(rec2.get("title") or "")[:200],
+                "size_gb": round(float(getattr(t2, "size_gb", 0) or 0), 3) if t2 else 0,
+                "seeders": -1,
+                "torrent_id": str(rec2.get("tid") or ""),
+                "hourly_bonus": 0.0,
+                "est_month_bonus": 0.0,
+                "ts": float(rec2.get("ts") or 0),
+                "state": str(rec2.get("st") or ""),
+                "benefit": str(rec2.get("benefit") or ""),
+                "seed_hours": round(hours2, 1),
+                "est_payout_now": 0.0,
+                "note": str(rec2.get("note") or ""),
+                "qb_state": str(getattr(t2, "state", "") or "") if t2 else "",
+                "in_qb": t2 is not None,
+                "progress": float(getattr(t2, "progress", 0) or 0) if t2 else 0.0,
+            })
+            seen.add(key)
+            if row2 is not None:
+                row2["claimed"] += 1
+                row2["claimed_hours_total"] += hours2
+        # ★ 19.7.1：站点口径覆盖（本月做种 / 上传 / 达标 / 预计奖励）。
+        # ★ 19.7.5：先并行抓取，避免 6 个站串行把 /claim 拖到 60s+。
+        site_calc: Dict[str, Any] = {}
+        prefetched: Dict[str, Any] = {}
+        targets = []
+        for sid_s0, row_s0 in per_site.items():
+            if not row_s0.get("claimed") and "viewclaims" not in str((row_s0.get("profile") or {}).get("claim_list") or ""):
+                continue
+            try:
+                site_obj0 = self._get_site(int(sid_s0))
+            except Exception:  # noqa: BLE001
+                site_obj0 = None
+            if site_obj0:
+                targets.append((sid_s0, site_obj0))
+        if targets and refresh_site:
+            from concurrent.futures import ThreadPoolExecutor  # noqa: WPS433
+
+            def _fetch_one(item):
+                sid_s1, site_obj1 = item
+                return sid_s1, self._claim_site_claims(site_obj1, refresh=True)
+
+            try:
+                with ThreadPoolExecutor(max_workers=min(6, len(targets))) as ex:
+                    for sid_s1, data1 in ex.map(_fetch_one, targets):
+                        prefetched[sid_s1] = data1
+            except Exception as err:  # noqa: BLE001
+                logger.debug(f"认领站点口径并行抓取失败: {err}")
+        elif targets:
+            # 19.7.18: default cache-only; 19.7.27: cold viewclaims sites fetch once
+            cache0 = getattr(self, "_claim_site_cache", {}) or {}
+            cold = []
+            for sid_s1, site_obj1 in targets:
+                cached = cache0.get(sid_s1)
+                if cached:
+                    prefetched[sid_s1] = cached
+                    continue
+                prof1 = self._claim_profile(site_obj1)
+                if "viewclaims" in str(prof1.get("claim_list") or ""):
+                    cold.append((sid_s1, site_obj1))
+            if cold:
+                from concurrent.futures import ThreadPoolExecutor  # noqa: WPS433
+                def _fetch_cold(item):
+                    sid_s1, site_obj1 = item
+                    return sid_s1, self._claim_site_claims(site_obj1, refresh=True)
+                try:
+                    with ThreadPoolExecutor(max_workers=min(4, len(cold))) as ex:
+                        for sid_s1, data1 in ex.map(_fetch_cold, cold):
+                            prefetched[sid_s1] = data1
+                except Exception as err:  # noqa: BLE001
+                    logger.debug(f"claim site cold fetch failed: {err}")
+
+        for sid_s, row_s in per_site.items():
+            if not row_s.get("claimed") and "viewclaims" not in str((row_s.get("profile") or {}).get("claim_list") or ""):
+                continue
+            data_s = prefetched.get(sid_s) or {}
+            if not data_s:
+                continue
+            by_tid = data_s.get("by_tid") or {}
+            site_calc[sid_s] = data_s.get("summary") or {}
+            for r in claimed:
+                if str(r.get("site_id")) != sid_s:
+                    continue
+                srow = by_tid.get(str(r.get("torrent_id") or ""))
+                if not srow:
+                    continue
+                r["site_seed_time"] = srow.get("seed_time")
+                r["site_seed_hours"] = srow.get("seed_hours")
+                r["site_upload"] = srow.get("upload")
+                r["site_qualified"] = bool(srow.get("qualified"))
+                r["site_reward"] = srow.get("reward")
+                r["site_reward_num"] = srow.get("reward_num")
+                r["site_claimed_at"] = srow.get("claimed_at")
+                r["site_last_settle"] = srow.get("last_settle")
+                r["site_alive"] = srow.get("alive")
+                r["site_claim_id"] = srow.get("claim_id")
+                r["calc_source"] = "site"
+                if srow.get("seed_hours") is not None:
+                    r["seed_hours"] = srow["seed_hours"]
+                if srow.get("reward_num") is not None:
+                    r["est_payout_now"] = float(srow["reward_num"]) if srow.get("qualified") else 0.0
+            known_tids = {str(x.get("torrent_id")) for x in claimed if str(x.get("site_id")) == sid_s}
+            for tid_s, srow in by_tid.items():
+                if tid_s in known_tids:
+                    continue
+                if not _re.match(r"\d{4}-\d{2}-\d{2}", str(srow.get("claimed_at") or "")):
+                    continue
+                title_s = str(srow.get("title") or "")
+                if "本月做种时间" in title_s or "种子名称" in title_s:
+                    continue
+                hours_s = float(srow.get("seed_hours") or 0)
+                payout_s = float(srow.get("reward_num") or 0) if srow.get("qualified") else 0.0
+                claimed.append({
+                    "site_id": int(sid_s),
+                    "site_name": str(row_s.get("site_name") or sid_s),
+                    "hash": "",
+                    "task": "",
+                    "title": str(srow.get("title") or "")[:200],
+                    "size_gb": 0,
+                    "seeders": -1,
+                    "torrent_id": tid_s,
+                    "hourly_bonus": 0.0,
+                    "est_month_bonus": 0.0,
+                    "ts": 0,
+                    "state": "site",
+                    "benefit": "",
+                    "seed_hours": round(hours_s, 1),
+                    "est_payout_now": float(srow.get("reward_num") or 0) if srow.get("qualified") else 0.0,
+                    "note": "站点侧认领",
+                    "qb_state": "",
+                    "in_qb": False,
+                    "site_only": True,
+                    "site_seed_time": srow.get("seed_time"),
+                    "site_seed_hours": srow.get("seed_hours"),
+                    "site_upload": srow.get("upload"),
+                    "site_qualified": bool(srow.get("qualified")),
+                    "site_reward": srow.get("reward"),
+                    "site_reward_num": srow.get("reward_num"),
+                    "site_claimed_at": srow.get("claimed_at"),
+                    "site_last_settle": srow.get("last_settle"),
+                    "site_next_settle": srow.get("next_settle"),
+                    "site_claim_id": srow.get("claim_id"),
+                    "calc_source": "site",
+                })
+                if row_s is not None:
+                    row_s["claimed"] = int(row_s.get("claimed") or 0) + 1
+                    row_s["claimed_hours_total"] += hours_s
+                    row_s["est_payout_now_total"] += payout_s
         claimable.sort(key=lambda x: (-float(x.get("est_month_bonus") or 0.0),
                                       -float(x.get("age_days") or 0.0)))
         soon.sort(key=lambda x: float(x.get("age_days") or 0), reverse=True)
@@ -612,6 +1092,8 @@ class ClaimMixin:
                 sum(float(r.get("est_month_bonus_total") or 0.0) for r in per_site.values()), 1),
             "claimed_total": len(claimed),
             "claimable_total": claimable_total,
+            "host": self._claim_host_status(resume=False),
+            "site_calc": site_calc,
             # ★ 19.5.0「全站纳入」计数：全站 N / 支持认领 M / 未收录被跳过（名字，前 50）。
             "sites_total": len(per_site),
             "sites_supported_total": sum(1 for r in per_site.values() if r.get("supported")),
@@ -653,24 +1135,92 @@ class ClaimMixin:
                 out[h] = float(getattr(it, "bonus_per_hour", 0) or 0)
         return out
 
-    # ------------------------------------------------------------------ 只读端点
-    def get_claim_state(self, site_id: Any = None, limit: Any = 0) -> Response:
-        """功能页数据：概览 / 能力卡 / 可认领 / 已认领 / 账本 / 记录。"""
+    # ------------------------------------------------- 19.7.22 结果缓存（Redis）
+    def _claim_state_gen(self) -> int:
+        """缓存代际：账本一变就 +1，旧键自然失效（不用枚举删除）。"""
         try:
-            data = self._claim_scan(site_id=site_id, limit=self._claim_limit(limit))
-            data["supported_sites"] = self._claim_sites_supported()
-            data["cap_total"] = sum(int((s.get("profile") or {}).get("per_user_cap") or 0) for s in data["sites"])
-            data["benefit_desc"] = next(
-                (str((s.get("profile") or {}).get("benefit_desc") or "") for s in data["sites"]
-                 if (s.get("profile") or {}).get("supported")),
-                "",
-            )
-            last = 0.0
-            for v in (self._claim_ledger() or {}).values():
-                if isinstance(v, dict) and str(v.get("st")) in ("ok", "already"):
-                    last = max(last, float(v.get("ts") or 0))
-            data["last_claim_at"] = last
-            data["records"] = self._claim_records()
+            return int(cache_get(self, "claim", "state_gen", 86400 * 30) or 0)
+        except Exception:  # noqa: BLE001
+            return 0
+
+    def _claim_state_bump(self) -> None:
+        try:
+            cache_set(self, "claim", "state_gen", self._claim_state_gen() + 1, 86400 * 30)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _claim_state_key(self, site_id: str, limit: int) -> str:
+        from ..common import __version__ as _ver  # noqa: WPS433
+        return f"state:{_ver}:{self._claim_state_gen()}:{site_id or 'all'}:{int(limit or 0)}"
+
+    def _claim_state_build(self, site_id: Any, limit: int, cache_key: str, refresh_site: bool = False) -> Dict[str, Any]:
+        """真正算一遍并写缓存（计算很重：账本 + qB 快照 + 站点页）。"""
+        data = self._claim_scan(site_id=site_id, limit=limit, refresh_site=refresh_site)
+        data["supported_sites"] = self._claim_sites_supported()
+        data["cap_total"] = sum(int((s.get("profile") or {}).get("per_user_cap") or 0) for s in data["sites"])
+        data["benefit_desc"] = next(
+            (str((s.get("profile") or {}).get("benefit_desc") or "") for s in data["sites"]
+             if (s.get("profile") or {}).get("supported")),
+            "",
+        )
+        last = 0.0
+        for v in (self._claim_ledger() or {}).values():
+            if isinstance(v, dict) and str(v.get("st")) in ("ok", "already"):
+                last = max(last, float(v.get("ts") or 0))
+        data["last_claim_at"] = last
+        data["records"] = self._claim_records()
+        data["built_at"] = time.time()
+        cache_set(self, "claim", cache_key, {"at": time.time(), "data": data}, CLAIM_STATE_STALE)
+        return data
+
+    def _claim_state_refresh(self, site_id: str, limit: int) -> None:
+        """后台刷新（同一 key 单飞，避免并发打站点）。"""
+        key = self._claim_state_key(site_id, limit)
+        locks = getattr(self, "_claim_state_locks", None)
+        if not isinstance(locks, dict):
+            locks = self._claim_state_locks = {}
+        guard = locks.get(key)
+        if guard is None:
+            guard = locks[key] = threading.Lock()
+        if not guard.acquire(blocking=False):
+            return
+        try:
+            self._claim_state_build(site_id or None, limit, key, refresh_site=True)
+        except Exception as err:  # noqa: BLE001
+            logger.debug(f"认领缓存后台刷新失败：{err}")
+        finally:
+            guard.release()
+
+    # ------------------------------------------------------------------ 只读端点
+    def get_claim_state(self, site_id: Any = None, limit: Any = 0, refresh: Any = None) -> Response:
+        """功能页数据：概览 / 能力卡 / 可认领 / 已认领 / 账本 / 记录。
+
+        ★ 19.7.22：整份结果进 Redis 缓存（CLAIM_STATE_TTL 新鲜期，CLAIM_STATE_STALE
+        内陈旧也直接返回并后台刷新）。refresh=1 强制重算。
+        """
+        try:
+            sid = str(site_id).strip() if site_id not in (None, "", "0") else ""
+            lim = self._claim_limit(limit)
+            force = bool(self._as_bool_arg(refresh))
+            key = self._claim_state_key(sid, lim)
+            if not force:
+                hit = cache_get(self, "claim", key, CLAIM_STATE_STALE)
+                if isinstance(hit, dict) and isinstance(hit.get("data"), dict):
+                    age = max(0.0, time.time() - float(hit.get("at") or 0))
+                    data = dict(hit["data"])
+                    data["cached"] = True
+                    data["cache_age"] = round(age, 1)
+                    if age > CLAIM_STATE_TTL:
+                        try:
+                            threading.Thread(
+                                target=self._claim_state_refresh, args=(sid, lim), daemon=True
+                            ).start()
+                        except Exception:  # noqa: BLE001
+                            pass
+                    return Response(success=True, data=data)
+            data = self._claim_state_build(sid or None, lim, key, refresh_site=force)
+            data["cached"] = False
+            data["cache_age"] = 0.0
             return Response(success=True, data=data)
         except Exception as err:  # noqa: BLE001
             return Response(success=False, message=f"读取认领状态失败：{err}")

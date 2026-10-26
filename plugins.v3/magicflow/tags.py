@@ -21,6 +21,7 @@ __all__ = [
     "STATE_RECOMMEND",
     "STATE_HR",
     "STATE_ONDEMAND",
+    "STATE_MUSIC",
     "DUTY_STATES",
     "SUB_NEW",
     "SUB_RESOURCE",
@@ -58,17 +59,20 @@ STATE_SILENT = "静默"
 STATE_RECOMMEND = "推荐"
 STATE_HR = "保种"  # ★ 11.11.0：H&R 保种职务（归 __hr_host__ 伪任务；只由 _hr_obligation 派生，不可手动设）
 STATE_ONDEMAND = "点播"  # ★ 15.8.4：点播在途职务（归 __ondemand__ 伪任务；加种即挂、settle 摘）。
+STATE_MUSIC = "音乐"  # ★ 19.9.0：音乐在途职务（归 __music__ 伪任务；加种即挂、下完/入库摘）。
+#   作用同点播：账本 state=音乐 ≠ 静默 → 免疫静默池的暂停闸与清理闸（不再靠「progress<1 例外」打补丁）。
 #   作用：账本 state≠静默 → 免疫静默池的暂停闸与清理闸（未下完不再被当「静默半成品」删）。不可手动设。
 
 SUB_NEW = "新"
 SUB_RESOURCE = "资源"
 SUB_PLAIN = "普通"
 
-STATES = (STATE_BRUSH, STATE_BONUS, STATE_SILENT, STATE_RECOMMEND, STATE_HR, STATE_ONDEMAND)
+STATES = (STATE_BRUSH, STATE_BONUS, STATE_SILENT, STATE_RECOMMEND, STATE_HR,
+          STATE_ONDEMAND, STATE_MUSIC)
 # 职务轴（上班贴 / 下班摘）：辅种不单列职务 —— 它只给**身份**，之后由该站任务照常让它上班。
 # 保种也是职务（__hr_host__ 的「上班」= 保挂 H&R），但**不可手动设**（set_tag_state 不含它）。
 # 点播（__ondemand__ 的在途职务）：只为了把「下没下完」的种**划出静默池**，同样不可手动设。
-DUTY_STATES = (STATE_BRUSH, STATE_BONUS, STATE_HR, STATE_ONDEMAND)
+DUTY_STATES = (STATE_BRUSH, STATE_BONUS, STATE_HR, STATE_ONDEMAND, STATE_MUSIC)
 SUBS = (SUB_NEW, SUB_RESOURCE, SUB_PLAIN)
 
 # 只有「静默」有子类

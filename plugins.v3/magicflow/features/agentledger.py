@@ -77,8 +77,8 @@ def _columns() -> Dict[str, List[Dict[str, Any]]]:
         "seed": [
             _col("hash", "hex40", desc="种子 infohash（小写）", nullable=False),
             _col("site", "string", desc="站点名"),
-            _col("state", "enum", enum=["刷流", "魔力", "静默", "推荐", "保种", "点播"],
-                 desc="职务（由 task_id 推导；点播=__ondemand__ 在途）"),
+            _col("state", "enum", enum=["刷流", "魔力", "静默", "推荐", "保种", "点播", "音乐"],
+                 desc="职务（由 task_id 推导；点播=__ondemand__ 在途、音乐=__music__ 在途）"),
             _col("sub", "enum", enum=["新", "资源", "普通"], desc="身份（顺 mf_resource.identity）"),
             _col("task", "string", desc="所属任务名（空=静默不在岗）"),
             _col("taken_by", "string", desc="占用任务 id（空=不在岗）"),
@@ -1122,6 +1122,13 @@ class AgentLedgerMixin:
         return self._agent_call_read(
             t0, "get_signin_state() → 签到记录/站点账本",
             self.get_signin_state, days=self._agent_int(days, 7))
+
+    def agent_rss(self) -> Dict[str, Any]:
+        """``GET /agent/rss`` —— RSS 订阅配置状态（只读，脱敏）。"""
+        t0 = time.time()
+        return self._agent_call_read(
+            t0, "get_rss_config() → 各站 passkey 是否已存 / MP 侧 rss/apikey 是否已配",
+            self.get_rss_config)
 
     def agent_exam(self, site_id: Any = 0, include_pass: Any = False) -> Dict[str, Any]:
         t0 = time.time()

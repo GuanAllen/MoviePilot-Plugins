@@ -70,6 +70,28 @@ class ClaimSiteHandler(metaclass=ABCMeta):
         return tpl
 
     @staticmethod
+    def form_pairs(value: Any, prefix: str = "") -> list:
+        """把嵌套 dict 展平成 PHP 风格 ``a[b]=c`` 表单键（jQuery.param 口径）。
+
+        ★ 2026-10-18 实机：站点 JS 是 ``jQuery.post("ajax.php", {action:...,
+        params:{torrent_id:N}})``，jQuery 序列化成 ``params[torrent_id]=N``；
+        直接 ``requests(data=nested_dict)`` 会把整个 dict 写成字符串，
+        站点 PHP 读 ``$_POST['params']['torrent_id']`` 就报
+        「Cannot access offset of type string on string」。
+        """
+        out: list = []
+        if isinstance(value, dict):
+            for k, v in value.items():
+                key = f"{prefix}[{k}]" if prefix else str(k)
+                out.extend(ClaimSiteHandler.form_pairs(v, key))
+        elif isinstance(value, (list, tuple)):
+            for i, v in enumerate(value):
+                out.extend(ClaimSiteHandler.form_pairs(v, f"{prefix}[{i}]"))
+        else:
+            out.append((prefix, "" if value is None else str(value)))
+        return out
+
+    @staticmethod
     def site_base(site_info: Dict[str, Any]) -> str:
         base = str(site_info.get("url") or site_info.get("domain") or "").strip()
         if base and not base.startswith("http"):
@@ -92,6 +114,9 @@ class ClaimSiteHandler(metaclass=ABCMeta):
         path = str(ep.get("path") or "").strip()
         if not path:
             return False, "unsupported", "缺少接口模板（endpoint.path）"
+        # ★ 学校等站的写动作是 GET + query（viewclaims.php?add_torrent_id={id}）
+        #   → path 也要做占位符替换（以前只替换 body，GET 模板会带 {} 字面量）。
+        path = self.subst(path, torrent_id=torrent_id, uid=uid)
         base = self.site_base(site_info)
         url = base + (path if path.startswith("/") else "/" + path)
         method = str(ep.get("method") or "POST").upper()
@@ -117,10 +142,18 @@ class ClaimSiteHandler(metaclass=ABCMeta):
                 referer=base + "/",
             )
             if method == "POST":
+                # ★ 2026-10-18 实机核对：同族站前端是 jQuery.post(..., data, "json")，
+                #   默认发 application/x-www-form-urlencoded（params[torrent_id]=N），
+                #   不是 JSON body。这里默认走 data= 表单；需要 JSON 的站用 preset
+                #   的 {"format": "json"} 显式声明。
+                fmt = str((ep or {}).get("format") or "form").lower()
                 if isinstance(body, dict):
-                    res = req.post_res(url, json=body)
+                    if fmt == "json":
+                        res = req.post_res(url, json=body)
+                    else:
+                        res = req.post_res(url, data=self.form_pairs(body))
                 else:
-                    res = req.post_res(url, params=body or None)
+                    res = req.post_res(url, data=body or None)
             else:
                 res = req.get_res(url=url)
             if res is None:
@@ -220,13 +253,26 @@ def handlers() -> List[type]:
 
 
 def find(url: str) -> Optional[type]:
-    """按站点 Url 匹配处理器，未命中返回 None。"""
+    """按站点 Url 匹配处理器，未命中返回 None。
+
+    ★ 2026-10-18 实机：某个处理器模块导入失败（例如文件权限）时，
+      ``handlers()`` 只会静默少一个类 → 该站被判「未收录」。
+      这里加一层 preset 兜底：只要 preset 声明了 endpoint，就直接走
+      通用同族适配器 ``NexusPhpClaim``，不依赖模块扫描是否成功。
+    """
     for cls in handlers():
         try:
             if cls.match(str(url or "")):
                 return cls
         except Exception:  # noqa: BLE001
             continue
+    try:
+        from .nexusphp import NexusPhpClaim  # noqa: WPS433
+
+        if NexusPhpClaim().match(str(url or "")):
+            return NexusPhpClaim
+    except Exception:  # noqa: BLE001
+        pass
     return None
 
 

@@ -30,6 +30,8 @@ from ..crossseed import (
     CrossSeedSources,
     pick_source,
     search_key,
+    size_close,
+    title_like,
 )
 from ..dtier import TierCache
 from ..tags import (
@@ -320,6 +322,85 @@ class CrossSeedMixin:
             cache = self._tier_cross_obj = TierCache("cross", base=self._cache_base())
         return cache
 
+    def _hd_apikey_of(self, site: Any) -> str:
+        try:
+            pk = str(getattr(site, "apikey", "") or "").strip()
+        except Exception:  # noqa: BLE001
+            pk = ""
+        if pk:
+            return pk
+        try:
+            return str(self._cred_get(int(getattr(site, "id", 0) or 0), "apikey") or "").strip()
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _hd_site_ids_of(self, site_ids: List[int]) -> List[int]:
+        out: List[int] = []
+        for sid in site_ids or []:
+            try:
+                site = self._get_site(int(sid))
+            except Exception:  # noqa: BLE001
+                site = None
+            dom = str(getattr(site, "domain", "") or "").lower()
+            if site is not None and "hddolby" in dom:
+                out.append(int(sid))
+        return out
+
+    def _hd_search_rows(self, keyword: str, sid: int) -> List[Any]:
+        """HDDolby 自带搜索（POST api/v1/torrent/search，不走 MP）。"""
+        import json as _json
+        from types import SimpleNamespace
+        from app.sdk.network import RequestUtils  # noqa: WPS433
+
+        try:
+            site = self._get_site(int(sid))
+            dom = str(getattr(site, "domain", "") or "").strip().lower()
+            key = self._hd_apikey_of(site)
+            if not dom or not key:
+                return []
+            body = {"keyword": keyword, "page_number": 0, "page_size": 100, "visible": 1}
+            res = RequestUtils(
+                headers={"x-api-key": key, "Content-Type": "application/json",
+                         "Accept": "application/json, text/plain, */*"},
+                timeout=20,
+            ).post_res(url=f"https://api.{dom}/api/v1/torrent/search", json=body)
+            if int(getattr(res, "status_code", 0) or 0) != 200:
+                self._dbg(f"HDDolby 搜索 HTTP {getattr(res, 'status_code', '?')}")
+                return []
+            data = _json.loads(getattr(res, "text", "") or "{}")
+        except Exception as err:  # noqa: BLE001
+            self._dbg(f"HDDolby 搜索失败:{err}")
+            return []
+        dv_map = {2: 0.0, 5: 0.5, 6: 1.0, 7: 0.3}
+        uv_map = {3: 2.0, 4: 2.0, 6: 2.0}
+        site_url = str(getattr(site, "url", "") or f"https://www.{dom}").rstrip("/")
+        out: List[Any] = []
+        for it in (data.get("data") or []):
+            tid = str(it.get("id") or "").strip()
+            downhash = str(it.get("downhash") or "").strip()
+            # ★ 2026-10-20：下载链**不再**用官方 API（`/api/v1/torrent/download`）——那条端点回的
+            #   .torrent 既缺 announce 主机名、明文口令也不被 tracker 接受（实测 `torrent error B`）。
+            #   正解与刷流同链：站点网页下载链 `download.php?id=&downhash=`，而 `downhash` 正是
+            #   **搜索 API 行自带**的字段（MP 自带 HDDolby spider 同款，见 `hddolby.py:175/287`），
+            #   每次下载一份、长期有效。拿不到 downhash 的行取不到种子 → 直接弃，不留假入口。
+            if not tid or not downhash:
+                continue
+            ptt = it.get("promotion_time_type")
+            dv = dv_map.get(ptt, 1.0)
+            uv = uv_map.get(ptt, 1.0)
+            out.append(SimpleNamespace(
+                title=it.get("name"), size=it.get("size"),
+                seeders=it.get("seeders"), peers=it.get("leechers"),
+                downloadvolumefactor=dv, uploadvolumefactor=uv,
+                freedate=str(it.get("promotion_until") or ""),
+                enclosure=f"{site_url}/download.php?id={tid}&downhash={downhash}",
+                site=int(sid), site_name=str(getattr(site, "name", "") or ""),
+                page_url=f"{site_url}/details.php?id={tid}",
+                site_cookie=None, site_ua=None, category=it.get("category"),
+                is_free=(dv == 0.0), hd_api=True,
+            ))
+        return out
+
     def _mp_search_title(self, keyword: str, sites: List[int], mtype: str = "",
                          page: int = 0) -> List[Any]:
         """调 MoviePilot 自带搜索（`SearchChain.search_by_title`），**兼容不同版签名**。
@@ -346,6 +427,13 @@ class CrossSeedMixin:
             self._log("跨站:当前 MP 版本搜索不支持限定站点,放弃(避免搜全站烧 PV)", "warning")
             return []
         kwargs["sites"] = sites
+        hd_ids = self._hd_site_ids_of(sites)
+        hd_rows: List[Any] = []
+        for _sid in hd_ids:
+            hd_rows.extend(self._hd_search_rows(keyword, _sid))
+        sites = [s for s in sites if s not in hd_ids]
+        if not sites:
+            return hd_rows
         if "rule_groups" in params:
             kwargs["rule_groups"] = []      # ★ 空列表 = 不套用用户的搜索过滤规则
         if "cache_local" in params:
@@ -368,6 +456,7 @@ class CrossSeedMixin:
             ti = getattr(ctx, "torrent_info", None)
             if ti is not None:
                 out.append(ti)
+        out.extend(hd_rows)
         return out
 
     def _crossseed_search_rows(self, keyword: str, site_ids: List[int]) -> List[Any]:
@@ -390,7 +479,9 @@ class CrossSeedMixin:
         if not kw or not ids:
             return []
         cache = self._crossseed_cache()
-        ckey = f"mpsearch|{kw}|{','.join(str(i) for i in sorted(ids))}"
+        # ★ v2：搜索行补 ``site_domain`` 真实域名（修复跨站取种落账存站点名
+        #   而非域名 → siteops 误判「站点已删」）。bump 版本号让旧缓存（无该字段）失效。
+        ckey = f"mpsearch|v2|{kw}|{','.join(str(i) for i in sorted(ids))}"
         hit = cache.get(ckey, CROSSSEED_CACHE_TTL)
         if hit is not None:
             return [SimpleNamespace(**dict(r)) for r in hit]
@@ -415,6 +506,19 @@ class CrossSeedMixin:
                 for i in allowed:
                     self._pv_spend(i, "crossseed", 1)
             rows: List[Dict[str, Any]] = []
+            # ★ 站点 id → 真实域名（搜索行必须带真实域名，pick_source._hit 落账用它；
+            #   拿不到就留空、绝不拿 site_name 顶替——站点名不是域名）。
+            _dom_by_id: Dict[int, str] = {}
+            try:
+                from app.db.oper.site import SiteOper  # noqa: WPS433
+
+                for _s in (SiteOper().list() or []):
+                    _sid = int(getattr(_s, "id", 0) or 0)
+                    _d = str(getattr(_s, "domain", "") or "").strip().lower()
+                    if _sid and _d:
+                        _dom_by_id[_sid] = _d
+            except Exception:  # noqa: BLE001
+                _dom_by_id = {}
             for ti in hits:
                 _dv = getattr(ti, "downloadvolumefactor", None)
                 try:
@@ -441,6 +545,7 @@ class CrossSeedMixin:
                     "page_url": str(getattr(ti, "page_url", "") or ""),
                     "site": int(getattr(ti, "site", 0) or 0),
                     "site_name": str(getattr(ti, "site_name", "") or ""),
+                    "site_domain": _dom_by_id.get(int(getattr(ti, "site", 0) or 0), ""),
                     "site_cookie": getattr(ti, "site_cookie", None),
                     "site_ua": getattr(ti, "site_ua", None),
                     "site_proxy": bool(getattr(ti, "site_proxy", False)),
@@ -541,6 +646,106 @@ class CrossSeedMixin:
                     break
         return narrowed or pool
 
+    def _crossseed_rss_free_pick(
+        self, cand: Any, fp: str, ids: List[int]
+    ) -> Optional[Dict[str, Any]]:
+        """★ 19.7.62：RSS 免费索引快路径。
+
+        源站 RSS 里**直接按「免费 + 体积接近 + 标题像」筛**（不耗 PV），
+        命中才取 1 次 .torrent 用完整特征码定论。RSS 只覆盖各站最新几十条，
+        所以只是快路径；没命中仍回落到 MP 搜索（全目录）。
+        """
+        size = int(getattr(cand, "size", 0) or 0)
+        title = getattr(cand, "title", "")
+        cache = getattr(self, "_xs_rss_cache", None)
+        if not isinstance(cache, dict):
+            cache = self._xs_rss_cache = {}
+        now = time.time()
+        for sid in ids:
+            site = self._get_site(sid)
+            if not site:
+                continue
+            entry = cache.get(sid)
+            if not (isinstance(entry, tuple) and len(entry) == 3):
+                entry = None
+            if entry is not None:
+                ttl = 600 if entry[2] else 21600
+                if now - entry[0] >= ttl:
+                    entry = None
+            if entry is not None:
+                items, has_promo = entry[1], bool(entry[2])
+            else:
+                items, has_promo = [], False
+                try:
+                    data = self._rss_fetch(site, 60) or {}
+                except Exception as err:  # noqa: BLE001
+                    self._dbg(f"跨站:RSS 快路径取 {sid} RSS 失败:{err}")
+                else:
+                    items = data.get("items") or []
+                    has_promo = any(str(it.get("promo") or "").strip() for it in items)
+                    cache[sid] = (now, items, has_promo)
+            sname = str(getattr(site, "name", "") or sid)
+            detail_checks = 0
+            for it in items:
+                promo = str(it.get("promo") or "").lower()
+                is_free = bool(promo) and ("free" in promo or "免费" in promo)
+                if has_promo and not is_free:
+                    continue          # 该站会标促销，这条没标 → 非免费
+                try:
+                    isz = int(float(it.get("size") or 0))
+                except (TypeError, ValueError):
+                    isz = 0
+                if isz and size and not size_close(isz, size):
+                    continue
+                if not title_like(str(it.get("title") or ""), title):
+                    continue
+                if not is_free:
+                    # ★ 19.7.66 兜底：RSS 不带促销标记 → 回详情页确认（带缓存，限次）
+                    if detail_checks >= 3:
+                        break
+                    page = str(it.get("link") or "")
+                    if not page:
+                        continue
+                    detail_checks += 1
+                    try:
+                        info = self._promotion_of(None, site, "", page)
+                    except Exception as err:  # noqa: BLE001
+                        self._dbg(f"跨站:RSS 兜底查促销失败 {page[:60]}:{err}")
+                        continue
+                    if str((info or {}).get("promotion") or "") not in ("free", "2xfree"):
+                        continue
+                url = str(it.get("enclosure") or "") or str(it.get("link") or "")
+                if not url:
+                    continue
+                row = SimpleNamespace(
+                    site=int(sid),
+                    site_name=sname,
+                    title=str(it.get("title") or ""),
+                    size=isz,
+                    seeders=int(it.get("seeders") or 0),
+                    enclosure=url,
+                    page_url=str(it.get("link") or ""),
+                    site_cookie=getattr(site, "cookie", None),
+                    site_ua=getattr(site, "ua", None),
+                )
+                tb = self._crossseed_torrent_bytes(row)
+                if not tb:
+                    continue
+                try:
+                    f2 = fingerprint(tb)
+                except Exception:  # noqa: BLE001
+                    f2 = None
+                if f2 and f2 == fp:
+                    self._log(f"跨站:RSS 快路径命中免费源 {sname} <{row.title[:60]}>")
+                    return {
+                        "site": int(sid),
+                        "row": row,
+                        "torrent": tb,
+                        "site_name": sname,
+                        "site_domain": str(getattr(site, "domain", "") or ""),
+                    }
+        return None
+
     def _crossseed_find(
         self, task: MagicFlowTaskConfig, cand: Any, downloader: DownloaderAdapter
     ) -> Optional[Dict[str, Any]]:
@@ -568,6 +773,13 @@ class CrossSeedMixin:
         if not ids:
             self._log("跨站:没有可用的候选源站", "warning")
             return None
+        # ★ 19.7.62：RSS 免费索引快路径（0 PV 筛选，命中才取 1 次种子）
+        try:
+            _rss_hit = self._crossseed_rss_free_pick(cand, fp, ids)
+            if _rss_hit:
+                return _rss_hit
+        except Exception as err:  # noqa: BLE001
+            self._dbg(f"跨站:RSS 快路径异常 {err}")
         self._crossseed_downloader = str(getattr(task, "downloader", "") or "qbittorrent")
         return pick_source(
             title=getattr(cand, "title", ""),
@@ -615,7 +827,20 @@ class CrossSeedMixin:
         Returns: 已发起跨站的 `[(他站 hash, 标题, 体积GB), ...]`。
         """
         started: List[Tuple[str, str, float]] = []
-        if not pool or limit <= 0:
+        if limit <= 0:
+            return started
+        # ★ 19.7.53：RSS 只服务跨站取种——把站点 RSS 新种并入候选池
+        try:
+            _rss_pool = self._rss_candidates(task, limit=max(10, limit), with_hash=False)
+            if _rss_pool:
+                _have = {str(getattr(c, "page_url", "") or "") for c in (pool or [])}
+                _add = [c for c in _rss_pool if str(getattr(c, "page_url", "") or "") not in _have]
+                if _add:
+                    pool = list(pool or []) + _add
+                    self._log(f"魔流 [{task.name}] 跨站:RSS 并入 {len(_add)} 个新种候选")
+        except Exception as err:  # noqa: BLE001
+            self._dbg(f"跨站:RSS 候选并入失败 {err}")
+        if not pool:
             return started
         scanned = 0
         sid = int(getattr(task, "site_id", 0) or 0)
@@ -628,23 +853,31 @@ class CrossSeedMixin:
             return started
         max_size = float(getattr(task, "crossseed_max_size_gb", 20.0) or 20.0)
         seen_cd = float(getattr(task, "seen_cooldown_hours", 0) or 0) * 3600
+        # ★ 19.7.68：死种/已见冷却单独算（跨站「没同 Release」不该锁 6 小时），
+        #   并把跳过原因汇总成一条 info 日志，避免「跨站一直 0 且无解释」。
+        _xs_dead_cd = min(float(getattr(self, "_dead_cooldown", 0) or 0), 1800.0)
+        skipped_dead = skipped_seen = skipped_size = skipped_nourl = 0
         for cand in list(pool):
             if len(started) >= limit or scanned >= CROSSSEED_EXTRA_SCAN:
                 break
             if _cap > 0 and (_used + scanned) >= _cap:
-                self._dbg(f"跨站:{dom} 今日取种 PV 触顶（{_used + scanned}/{_cap}），本轮截止")
+                self._log(f"跨站:{dom} 今日取种 PV 触顶（{_used + scanned}/{_cap}），本轮截止", "warning")
                 break
             size_gb = float(getattr(cand, "size_gb", 0.0) or 0.0)
             if size_gb > max_size:
+                skipped_size += 1
                 continue
             ckey = self._candidate_key(cand)
             if ckey and self._store:
                 if self._store.seen.is_seen(task.id, f"cand:{ckey}", seen_cd):
+                    skipped_seen += 1
                     continue
-                if self._store.dead.is_dead(task.id, f"cand:{ckey}", self._dead_cooldown):
+                if self._store.dead.is_dead(task.id, f"cand:{ckey}", _xs_dead_cd):
+                    skipped_dead += 1
                     continue
             url = str(getattr(cand, "enclosure", "") or "")
             if not url:
+                skipped_nourl += 1
                 continue
             # ★ 本站取一次 .torrent（1 PV）→ 拿特征码（判「同一 Release」的硬标准）
             if sid and (self._pv_block_reason(sid) or not self._pv_allow(sid, "crossseed", want=1)):
@@ -693,6 +926,12 @@ class CrossSeedMixin:
         if started:
             self._log(
                 f"魔流 [{task.name}] 跨站免费取种:本轮发起 {len(started)} 个（探测 {scanned} 个候选）"
+            )
+        else:
+            self._log(
+                f"魔流 [{task.name}] 跨站:本轮 0 发起（池 {len(pool)} / 死种冷却 {skipped_dead}"
+                f" / 已见 {skipped_seen} / 超体积 {skipped_size} / 无链接 {skipped_nourl}"
+                f" / 探测 {scanned}）"
             )
         return started
 

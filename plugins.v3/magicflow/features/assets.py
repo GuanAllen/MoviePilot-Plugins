@@ -49,11 +49,14 @@ def _clean_title_from_torrent(title: str) -> str:
 
 from ..tags import (
     asset_member_hashes,
+    DUTY_STATES,
     is_asset_tags,
     is_library_asset,
+    is_music_line,
     retag,
     STATE_SILENT,
     SUB_NEW,
+    SUB_PLAIN,
     SUB_RESOURCE,
     parse_tag,
 )
@@ -673,6 +676,7 @@ class AssetsMixin:
         return {"ok": True, "checked": len(todo), "got": got, "failed": fail,
                 "remaining": max(0, len([h for h in snap if str(h).lower() in ledger]) - len(
                     [h for h in ledger if str((ledger.get(h) or {}).get('fp') or "").strip()]) - got)}
+
 
     # ------------------------------------------------------------------ ★ 15.8.15
     # Master：「希望增加魔流库内资产手动删除的入口」——
