@@ -83,6 +83,7 @@ from ..common import (
     SIGNIN_RETRY_KEYWORD,
     SIGNIN_TICK_MINUTES,
     HR_HOST_INTERVAL_MINUTES,
+    CLAIM_HOST_INTERVAL_MINUTES,
     SILENT_HOST_INTERVAL_MINUTES,
     SITE_LIFECYCLE_INTERVAL_MINUTES,
     SILENT_HR_SPLIT_ENABLED,
@@ -1031,6 +1032,20 @@ class CoreMixin:
                 "kwargs": {
                     "minutes": _hr_min,
                     "jitter": self._jitter_seconds(_hr_min),
+                },
+            }
+        )
+        # ★ 19.7.0：认领保挂宿主（__claim__ 常驻 worker）——已认领的种被暂停/停止时拉回做种。
+        _cl_min = float(getattr(self, "_tags_cfg", {}).get("claim_host_interval") or CLAIM_HOST_INTERVAL_MINUTES)
+        services.append(
+            {
+                "id": "ClaimHost",
+                "name": "认领保挂",
+                "trigger": "interval",
+                "func": self.claim_host,
+                "kwargs": {
+                    "minutes": _cl_min,
+                    "jitter": self._jitter_seconds(_cl_min),
                 },
             }
         )

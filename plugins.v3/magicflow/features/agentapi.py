@@ -318,7 +318,7 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
         {"path": "/agent/music/download", "method": "POST", "handler": "agent_music_download",
          "write": True,
          "params": {"cids": "逗号分隔候选 id（来自 /agent/music/search 的 candidates[].cid）",
-                    "save_path": "覆盖保存目录（默认 /vol6/1000/music）",
+                    "save_path": "覆盖保存目录（默认 /vol6/1000/movie/下载）",
                     "confirm": "1=真加种；否则只回将要加种的清单（干跑）"},
          "returns": "MusicDownload", "version": AGENT_ENDPOINT_VERSION,
          "summary": "按选中的 cid 加种到音乐线（凭据不回传）"},
@@ -332,6 +332,12 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
          "params": {"hash": "str（音乐种 infohash）", "action": "pause | resume | remove"},
          "returns": "MusicAct", "version": AGENT_ENDPOINT_VERSION,
          "summary": "音乐种暂停/恢复/删除：仅音乐线，过唯一删种闸门（即时生效）"},
+        {"path": "/agent/music/settle", "method": "POST", "handler": "agent_music_settle",
+         "write": True,
+         "params": {"confirm": "1=真结算（写 MP 下载历史 + 调 MP 整理）；否则只回将结算的清单（干跑）",
+                    "limit": "int 本轮最多结算几张（默认 3）"},
+         "returns": "MusicSettle", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "下完成的音乐专辑 → MP 整理入库（硬链接，种子继续做种）"},
         # ---- 15.8.15 库内资产手动删除（Master「希望增加魔流库内资产手动删除的入口」）----
         #   AI 侧与前端**同口径**：两个 handler 都直接复用 AssetsMixin.assets_library /
         #   assets_delete（AI ⊇ 前端），不另写一套判定。
@@ -409,6 +415,10 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
          "params": {"days": "int（近 N 天，默认 7；默认输出约 34KB 会超 30k 被截断，查近期请 days=1..3）"},
          "returns": "SigninReport",
          "version": AGENT_ENDPOINT_VERSION, "summary": "最近签没签到：近 N 天签到现状"},
+        {"path": "/agent/rss", "method": "GET", "handler": "agent_rss", "write": False,
+         "params": {"site_id": "站点 id（可选）"},
+         "returns": "RssConfig",
+         "version": AGENT_ENDPOINT_VERSION, "summary": "RSS 订阅配置状态（passkey 是否已存、MP 侧 rss/apikey 是否已配；脱敏）"},
         {"path": "/agent/exam", "method": "GET", "handler": "agent_exam", "write": False,
          "params": {"site_id": "站点 id（可选）", "include_pass": "是否含已通过（默认否）"},
          "returns": "ExamReport", "version": AGENT_ENDPOINT_VERSION,
@@ -1671,6 +1681,29 @@ class AgentApiMixin:
             rep, t0,
             ("写操作 → DownloaderAdapter.pause_torrents/resume_torrents/delete_torrents；"
              "remove 过唯一删除闸门（deletegate）；仅限 qB 音乐线种"))
+
+    def agent_music_settle(self, confirm: str = "", limit: int = 0) -> Dict[str, Any]:
+        """``POST /agent/music/settle`` —— 音乐结算：下完成的专辑 → MP 整理入库（写）。
+
+        跟点播同一条链：补 MP ``downloadhistory``（type=音乐 / music_type=album）→
+        ``TransferChain().manual_transfer()`` 硬链接进库（种子继续做种）。只认落在音乐下载目录下的
+        qB 音乐线种；已成功整理过的只补历史、不重复搬。``confirm`` 缺省=干跑。
+        """
+        t0 = time.time()
+        _ok = str(confirm).strip().lower() in ("1", "true", "yes", "y", "on")
+        try:
+            rep = self._music_settle_import(apply=_ok, limit=int(limit or 0))
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"音乐结算失败:{e}", t0, trace_id=str(e))
+        payload = dict(rep or {})
+        payload["applied"] = _ok
+        if not _ok:
+            payload["note"] = "干跑（confirm 未置 1，未写历史、未整理）"
+        return self._agent_report(
+            payload, t0,
+            ("音乐结算 = qB 音乐线 + 完成度≥0.999 + 下载目录内 → 幂等写 downloadhistory"
+             " → MP manual_transfer(mtype=音乐, music_type=album)；含 note.music 会触发本机 MP 的"
+             "MusicInfo.from_dict 缺陷，故只写列字段"))
 
     def agent_yema(self, live: int = 0, force: int = 0) -> Dict[str, Any]:
         """``GET /agent/yema`` —— ★ **野马PT 逐种 H&R 对账**（站点 × 本机 × 账本；只读）。

@@ -168,7 +168,8 @@ export function useSettings({ api, error, notify, emit, saving, loadStatus, sett
     iyuuSites.value.forEach(row => {
       const domain = String(row.domain || '').toLowerCase()
       if (!domain) return
-      const clean = normalizeIyuuSites({ d: { passkey: row.passkey, uid: row.uid, downhash: row.downhash } }).d
+      // passkey 统一由凭据中心管理，这里不再重复提交
+      const clean = normalizeIyuuSites({ d: { uid: row.uid, downhash: row.downhash } }).d
       if (clean) map[domain] = clean
     })
     settingsDraft.value.iyuu_sites = map

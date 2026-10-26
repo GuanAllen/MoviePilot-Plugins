@@ -112,8 +112,8 @@ def _check_counts(mc) -> None:
     if not (1000 < mc.RESULT_MAX_CHARS <= 60000):
         _fail(f"RESULT_MAX_CHARS = {mc.RESULT_MAX_CHARS}，越界（1k~60k 之外不合理）")
     index = mc._spec_index()
-    if len(index) != 79:
-        _fail(f"端点真值源 = {len(index)}，期望 79（_agent_endpoints() 变了就同步改本护栏与文档）")
+    if len(index) != 81:
+        _fail(f"端点真值源 = {len(index)}，期望 81（_agent_endpoints() 变了就同步改本护栏与文档）")
     if len(mc.CORE_TOOLS) != 55:
         _fail(f"CORE_TOOLS = {len(mc.CORE_TOOLS)}，期望 55")
     names = [n for _p, n in mc.CORE_TOOLS]

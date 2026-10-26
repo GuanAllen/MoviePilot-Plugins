@@ -562,15 +562,9 @@ defineProps({
                   >{{ iyuuShowMore[row.domain || row.name] ? '收起' : '更多' }}</VBtn>
                 </div>
                 <div class="magicflow-iyuu-row__fields">
-                  <VTextField
-                    v-model="row.passkey"
-                    label="passkey"
-                    :placeholder="row.passkey_set ? '已保存（留空则不修改）' : '留空 = 自动获取'"
-                    variant="outlined"
-                    density="compact"
-                    hide-details
-                    autocomplete="off"
-                  />
+                  <div class="text-caption text-medium-emphasis" style="grid-column: 1 / -1">
+                    passkey 统一在「RSS / 凭据」里填写（这里不再重复）
+                  </div>
                   <VTextField
                     v-model="row.uid"
                     label="uid（可选）"

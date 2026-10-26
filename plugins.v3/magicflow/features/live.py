@@ -120,6 +120,156 @@ class LiveMixin:
                 }
         return out
 
+    def _hd_apikey(self, site_id: int) -> str:
+        try:
+            site = self._get_site(int(site_id))
+            pk = str(getattr(site, "apikey", "") or "").strip()
+            if pk:
+                return pk
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            return str(self._cred_get(int(site_id), "apikey") or "").strip()
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _hd_api_json(self, site_id: int, path: str) -> Optional[Dict[str, Any]]:
+        import json as _json
+        from app.sdk.network import RequestUtils  # noqa: WPS433
+
+        try:
+            site = self._get_site(int(site_id))
+            dom = str(getattr(site, "domain", "") or "").strip().lower()
+            key = self._hd_apikey(site_id)
+            if not dom or not key:
+                return None
+            cli = RequestUtils(headers={"x-api-key": key, "Accept": "application/json"}, timeout=15)
+            r = cli.get_res("https://api." + dom + "/" + str(path or "").lstrip("/"))
+            if int(getattr(r, "status_code", 0) or 0) != 200:
+                return None
+            return _json.loads(getattr(r, "text", "") or "{}")
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _live_hd_api(self, site_id: int) -> Dict[str, Any]:
+        """HDDolby：走官方 API（x-api-key），不用 cookie。"""
+        d = self._hd_api_json(site_id, "api/v1/user/data") or {}
+        rows = d.get("data") or []
+        if d.get("status") != 0 or not rows:
+            return {}
+        u = rows[0]
+        try:
+            up = float(u.get("uploaded") or 0)
+            down = float(u.get("downloaded") or 0)
+            bonus = float(u.get("seedbonus") or 0)
+            bph = float(u.get("sebonus")) if u.get("sebonus") not in (None, "") else None
+        except (TypeError, ValueError):
+            return {}
+        seed_n = 0
+        seed_size = 0.0
+        peers = self._hd_api_json(site_id, "api/v1/user/peers") or {}
+        if peers.get("status") == 0:
+            for p in peers.get("data") or []:
+                seed_n += 1
+                try:
+                    seed_size += float(p.get("size") or 0)
+                except (TypeError, ValueError):
+                    pass
+        dom = ""
+        try:
+            dom = str(getattr(self._get_site(int(site_id)), "domain", "") or "")
+        except Exception:  # noqa: BLE001
+            dom = ""
+        # ★ 19.7.83：新手考核按数据推算（不再写死）
+        #   下载量 = downloaded/1024³；做种积分 = sebonus；
+        #   上传量 = max(API uploaded, qB 本站标签上传)；
+        #   做种率 = 做种体积 / 实际下载字节（qB 本站标签 downloaded，含免费）。
+        _GB2 = 1024.0 ** 3
+        _down_gb = down / _GB2
+        _up_api_gb = up / _GB2
+        _up_qb = 0.0
+        _act_down = 0.0
+        try:
+            _dl = self._get_downloader("qbittorrent")
+            _groups, _ = _dl.get_torrents_by_tag()
+            _seen = set()
+            for _tag, _rows in (_groups or {}).items():
+                if not str(_tag).startswith("魔流-HDDolby"):
+                    continue
+                for _t in _rows or []:
+                    _h = str(getattr(_t, "hash", "") or "")
+                    if _h and _h in _seen:
+                        continue
+                    if _h:
+                        _seen.add(_h)
+                    _up_qb += float(getattr(_t, "uploaded", 0) or 0)
+                    _act_down += float(getattr(_t, "downloaded", 0) or 0)
+        except Exception:  # noqa: BLE001
+            pass
+        _up_gb = _up_api_gb
+        # 做种率：站点口径 = 做种体积 / 实际下载字节（含免费）。
+        # qB 的 downloaded 含其它 tracker 流量，和站点口径不一致 → 仅作参考，不直接当分母。
+        _seed_ratio = None
+        _items = []
+        for _label, _cur, _tgt, _unit in (
+            ("下载量", _down_gb, 30.0, "GB"),
+            ("上传量", _up_gb, 30.0, "GB"),
+        ):
+            _short = max(0.0, _tgt - _cur)
+            _items.append({"label": _label, "cur": round(_cur, 2), "target": _tgt,
+                           "unit": _unit, "pass": _short <= 0.01,
+                           "short_gb": round(_short, 2) if _short > 0.01 else 0.0})
+        if _seed_ratio is None:
+            _items.append({"label": "做种率", "cur": None, "target": 6.0,
+                           "unit": "", "pass": False, "short_num": None,
+                           "note": "站点无接口；qB 下载字节含其它 tracker，口径不一致"})
+        else:
+            _short_seed = max(0.0, 6.0 - _seed_ratio)
+            _items.append({"label": "做种率", "cur": round(_seed_ratio, 3), "target": 6.0,
+                           "unit": "", "pass": _short_seed <= 0.01,
+                           "short_num": round(_short_seed, 3) if _short_seed > 0.01 else 0.0})
+        _sebonus = 0.0
+        try:
+            _sebonus = float(u.get("sebonus") or 0)
+        except (TypeError, ValueError):
+            _sebonus = 0.0
+        _short_bonus = max(0.0, 10000.0 - _sebonus)
+        _items.append({"label": "做种积分", "cur": round(_sebonus, 1), "target": 10000.0,
+                       "unit": "", "pass": _short_bonus <= 0.01,
+                       "short_num": round(_short_bonus, 1) if _short_bonus > 0.01 else 0.0})
+        # 考核截止：加入时间 + 36 天（HDDolby 新手期为 5 周+1 天，页面口径）
+        _days_left = None
+        try:
+            from datetime import datetime as _dt, timedelta as _td
+
+            _join = _dt.strptime(str(u.get("added") or ""), "%Y-%m-%d %H:%M:%S")
+            _days_left = round((_join + _td(days=36) - _dt.now()).total_seconds() / 86400.0, 1)
+        except Exception:  # noqa: BLE001
+            _days_left = None
+        _exam = {"items": _items,
+                 "failed": [i["label"] for i in _items if not i["pass"]],
+                 "days_left": _days_left, "hardcoded": False,
+                 "source": "computed",
+                 "raw": {"uploaded": up, "downloaded": down, "sebonus": bonus,
+                         "qb_uploaded": _up_qb, "qb_downloaded": _act_down,
+                         "sebonus": _sebonus, "seeding_size": seed_size}}
+        return {
+            "exam": _exam,
+            "ok": True, "site_id": int(site_id), "source": "api",
+            "url": "https://api." + dom + "/api/v1/user/data",
+            "ts": time.time(), "uid": str(u.get("id") or ""),
+            "username": u.get("username"), "logged_in": True,
+            "upload": up, "download": down,
+            "ratio": round(up / down, 2) if down else 0.0,
+            "bonus": bonus, "bonus_per_hour": bph,
+            "seeding": seed_n, "seeding_size": seed_size,
+            "message_unread": int(u.get("unread_messages") or 0),
+            "fields": ["ratio", "upload", "download", "seeding", "bonus", "uid", "logged_in"],
+            "src": {"uid": "api", "upload": "api", "download": "api",
+                    "ratio": "api", "bonus": "api", "seeding": "api",
+                    "seeding_size": "api", "bonus_per_hour": "api"},
+        }
+
     def _live_snapshot(
         self,
         site_id: int,
@@ -135,6 +285,12 @@ class LiveMixin:
         ★ 19.2.2：wait 非 None → **限时真抓**（wait>0 最多等 wait 秒；wait<=0 纯缓存），
         供 AI 入口 /agent/live 缺省用（见 get_live_state）。
         """
+        try:
+            _hd = self._live_hd_api(int(site_id)) if "hddolby" in str(getattr(self._get_site(int(site_id)), "domain", "") or "").lower() else {}
+        except Exception:  # noqa: BLE001
+            _hd = {}
+        if _hd:
+            return {"live": _hd, "rates": {}, "alerts": [], "level": "ok"}
         try:
             snap = self._live.snapshot(
                 int(site_id),

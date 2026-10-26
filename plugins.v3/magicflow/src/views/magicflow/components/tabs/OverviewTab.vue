@@ -33,38 +33,45 @@ const emit = defineEmits(['open-entry'])
 <template>
   <div class="magicflow-stat-grid">
     <VSheet class="magicflow-stat magicflow-stat--accent app-surface-static">
+      <span class="magicflow-stat__label">托管种子</span>
       <strong>{{ selectedTask.seeding_count || 0 }}</strong>
-      <span>托管种子 · {{ selectedTask.active_seeding_count || 0 }} 做种中 / {{ selectedTask.downloading_count || 0 }} 下载中 / {{ selectedTask.paused_count || 0 }} 已暂停</span>
+      <span class="magicflow-stat__foot">做种中 {{ selectedTask.active_seeding_count || 0 }} · 下载中 {{ selectedTask.downloading_count || 0 }} · 已暂停 {{ selectedTask.paused_count || 0 }}</span>
     </VSheet>
     <template v-if="taskIsBrush">
       <VSheet class="magicflow-stat app-surface-static">
+        <span class="magicflow-stat__label">本任务上传量</span>
         <strong>{{ formatBytes(selectedTask.task_uploaded || 0) }}</strong>
-        <span>本任务上传量 · 下载器累计（{{ selectedTask.task_upload_active || 0 }} 个有上传）</span>
+        <span class="magicflow-stat__foot">下载器累计 · {{ selectedTask.task_upload_active || 0 }} 个有上传</span>
       </VSheet>
       <VSheet class="magicflow-stat app-surface-static">
+        <span class="magicflow-stat__label">站点上传量</span>
         <strong>{{ siteAccount.ok ? formatBytes(siteAccount.upload || 0) : '—' }}</strong>
-        <span>站点上传量 · {{ siteAccount.source === 'live' ? '实时（直连站点）' : 'MP 快照' }}{{ siteAccount.ok ? ` · 下载 ${formatBytes(siteAccount.download || 0)}` : '' }}</span>
+        <span class="magicflow-stat__foot">{{ siteAccount.source === 'live' ? '实时（直连站点）' : 'MP 快照' }}{{ siteAccount.ok ? ` · 下载 ${formatBytes(siteAccount.download || 0)}` : '' }}</span>
       </VSheet>
     </template>
     <template v-else>
       <VSheet class="magicflow-stat app-surface-static">
+        <span class="magicflow-stat__label">站点上报时魔</span>
         <strong>{{ selectedTask.site_bonus_ok ? formatBonus(selectedTask.site_bonus_per_hour) : '取数中…' }}</strong>
-        <span>站点上报时魔 · 站点实时值</span>
+        <span class="magicflow-stat__foot">站点实时值</span>
       </VSheet>
       <VSheet class="magicflow-stat app-surface-static">
+        <span class="magicflow-stat__label">站点当前魔力</span>
         <strong>{{ Number(selectedTask.site_current_bonus || 0).toFixed(2) }}</strong>
-        <span>站点当前魔力 · 该站点实时存量</span>
+        <span class="magicflow-stat__foot">该站点实时存量</span>
       </VSheet>
     </template>
     <VSheet class="magicflow-stat app-surface-static">
+      <span class="magicflow-stat__label">上次运行</span>
       <strong>{{ detailStats.last_added || 0 }} / {{ detailStats.last_reused || 0 }} / {{ detailStats.last_deleted || 0 }}</strong>
-      <span>上次运行 新增/复用/删除 · 当前托管 {{ detailStats.last_kept || selectedTask.seeding_count || 0 }}</span>
+      <span class="magicflow-stat__foot">新增 / 复用 / 删除 · 当前托管 {{ detailStats.last_kept || selectedTask.seeding_count || 0 }}</span>
     </VSheet>
   </div>
   <div v-if="(selectedTask.run_mode || 'running') === 'seeding'" class="magicflow-stat-grid magicflow-stat-grid--single">
     <VSheet class="magicflow-stat magicflow-stat--accent app-surface-static">
+      <span class="magicflow-stat__label">接管保护</span>
       <strong>{{ selectedTask.protected_count || 0 }}</strong>
-      <span>接管保护 · 手动加或 IYUU 回来的种已纳管并永久保护</span>
+      <span class="magicflow-stat__foot">手动加或 IYUU 回来的种已纳管并永久保护</span>
     </VSheet>
   </div>
 
@@ -246,7 +253,7 @@ const emit = defineEmits(['open-entry'])
 </template>
 
 <style scoped>
-/* ═══════════════════════════════════════════════════════════════════════════
+/* ══════════════════════════════════════════════════════════════════════════════
    概览 Tab 样式（P4 拆分）。
    · **专属选择器**（仅本面板使用）：.magicflow-overview-grid / .magicflow-stat-grid--single /
      .magicflow-stat--accent / .magicflow-live-alert(s) / .magicflow-run-summary / .mf-obs* / .mf-spark*
@@ -254,7 +261,7 @@ const emit = defineEmits(['open-entry'])
    · **共享选择器**（父页多处使用）：.magicflow-stat(-grid) / .magicflow-panel(__head) / .magicflow-facts
      → 组件内**复制一份**，index.vue 原样保留（纯复制、零改动）。
    顺序与 index.vue 中一致，保证层叠（!important / 主题覆盖）行为完全相同。
-   ═══════════════════════════════════════════════════════════════════════════ */
+   ══════════════════════════════════════════════════════════════════════════════ */
 
 /* ── 共享：面板头部（index.vue L3673 / L3688 / L4493）── */
 .magicflow-panel__head {
@@ -300,6 +307,16 @@ const emit = defineEmits(['open-entry'])
   font-weight: 600;
   line-height: 1.3;
   overflow-wrap: anywhere;
+}
+
+/* 指标卡三段式：label（是什么）/ strong（多少）/ foot（补充口径）。
+   仅重排信息层级，不改取数逻辑；foot 贴底，使四张卡高低不一时底部基线仍齐平。 */
+.magicflow-stat > .magicflow-stat__label {
+  letter-spacing: 0.2px;
+}
+
+.magicflow-stat > .magicflow-stat__foot {
+  margin-block-start: auto;
 }
 
 .magicflow-stat :deep(.v-progress-linear) {

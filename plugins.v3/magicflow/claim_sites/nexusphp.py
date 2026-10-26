@@ -3,12 +3,17 @@
 
 2026-10-18 逐站实测（只读探测）：
 
-  · 咖啡 / 大青虫 / 高清时间 / 聆音 / March / NovaHD / 蟹黄堡 / 财神 /
-    Depth Studio 的种子详情页在可认领时都渲染 ``<input id="add-claim" data-torrent_id=N>``；
-  · 前端统一发 ``POST {base}/ajax.php``，body
-    ``{"action":"addClaim","params":{"torrent_id":N}}``（cookie 鉴权，非 token）；
-  · 学校（BTSCHOOL）用 ``viewclaims.php`` 展示「种子认领」，页面字段
-    （认领时间 / 下次结账 / 获得魔力值）与同族插件一致，写入口按同族推断。
+  · **认领入口分两种**（Master 指出）：
+    ① 同族插件站（咖啡 / 大青虫 / 高清时间 / 聆音 / March / 蟹黄堡 …）入口在
+       个人详情页 ``userdetails.php`` 的「认领: [n/N]」配额（→ ``claim.php``），
+       实际认领按钮在**种子详情页** ``<input id="add-claim" data-torrent_id=N>``，
+       前端发 ``POST {base}/ajax.php``，body
+       ``{"action":"addClaim","params":{"torrent_id":N}}``（cookie 鉴权，非 token）；
+    ② 学校（BTSCHOOL）：入口与动作都在**种子详情页**「认领」→ ``GET
+       {base}/viewclaims.php?add_torrent_id=N``；配额与已认领列表在
+       ``viewclaims.php``（字段：认领时间 / 下次结账 / 获得魔力值）。
+  · 财神（cspt.top）种子详情页实测**没有** ``#add-claim``、``claim.php?torrent_id``
+    只有认领人表 → 写入口按同族 ``ajax.php`` 保留，真写前需在站点核对。
 
 本处理器**不写死站点**：能力与接口模板全部来自 ``sites/claim_presets.py`` 的
 preset（``endpoint`` 模板 + ``rules_unverified``）。未收录的站 ``match()`` 返回

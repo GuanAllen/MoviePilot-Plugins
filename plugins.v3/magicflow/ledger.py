@@ -26,13 +26,23 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import delete, func, inspect as sa_inspect, select, text, update
 
 from . import db as mfdb
-from .common import HR_HOST_TASK_ID, ONDEMAND_TASK_ID, ONDEMAND_TASK_NAME, task_is_participating
+from .common import (
+    HR_HOST_TASK_ID,
+    KEEP_TASK_ID,
+    KEEP_TASK_NAME,
+    MUSIC_TASK_ID,
+    MUSIC_TASK_NAME,
+    ONDEMAND_TASK_ID,
+    ONDEMAND_TASK_NAME,
+    task_is_participating,
+)
 from .tags import (
     LEASE_TTL,
     SILENT_NEW_TIMEOUT,
     STATE_BONUS,
     STATE_BRUSH,
     STATE_HR,
+    STATE_MUSIC,
     STATE_ONDEMAND,
     STATE_SILENT,
     STATES_WITH_SUB,
@@ -220,6 +230,12 @@ class LedgerBackend:
         # ★ 15.8.4：__ondemand__（点播在途）伪任务可寻址
         if tid == ONDEMAND_TASK_ID:
             return ONDEMAND_TASK_NAME
+        # ★ 19.9.0：__music__（音乐在途）伪任务可寻址
+        if tid == MUSIC_TASK_ID:
+            return MUSIC_TASK_NAME
+        # ★ 19.9.1：__keep__（手动保种）伪任务可寻址
+        if tid == KEEP_TASK_ID:
+            return KEEP_TASK_NAME
         cfg = (getattr(self.plugin, "_task_configs", {}) or {}).get(tid)
         return str(getattr(cfg, "name", "") or "") if cfg is not None else ""
 
@@ -236,6 +252,12 @@ class LedgerBackend:
         # ★ 15.8.4：点播在途伪任务 → 职务「点播」（≠ 静默 → 免疫静默池暂停/清理）
         if tid == ONDEMAND_TASK_ID:
             return STATE_ONDEMAND
+        # ★ 19.9.0：音乐在途伪任务 → 职务「音乐」（同上；下完摘职务才回静默池）
+        if tid == MUSIC_TASK_ID:
+            return STATE_MUSIC
+        # ★ 19.9.1：手动保种伪任务 → 职务「保种」（≠ 静默 → 不被静默池暂停/清理）
+        if tid == KEEP_TASK_ID:
+            return STATE_HR
         cfg = (getattr(self.plugin, "_task_configs", {}) or {}).get(tid)
         if cfg is None:
             return STATE_SILENT
@@ -253,6 +275,12 @@ class LedgerBackend:
         # ★ 15.8.4：点播在途伪任务名 → __ondemand__（账本可寻址，seed_row 写 task_id 用）
         if key in ("__ondemand__", "ondemand", "点播", "点播下载"):
             return ONDEMAND_TASK_ID
+        # ★ 19.9.0：音乐在途伪任务名 → __music__（账本可寻址，seed_row 写 task_id 用）
+        if key in ("__music__", "music", "音乐", "音乐线"):
+            return MUSIC_TASK_ID
+        # ★ 19.9.1：手动保种伪任务名 → __keep__（不能用「保种」——那是 __hr_host__ 的别名）
+        if key in ("__keep__", "keep", "手动保种"):
+            return KEEP_TASK_ID
         for tid, cfg in (getattr(self.plugin, "_task_configs", {}) or {}).items():
             if str(tid).lower() == key or str(getattr(cfg, "name", "") or "").strip().lower() == key:
                 return str(tid)

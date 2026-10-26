@@ -174,6 +174,12 @@ class _DL:
     def resume_torrents(self, *a, **k):  # pragma: no cover
         raise AssertionError("对账绝不应 resume")
 
+    # ★ 19.9.1：``_manual_hold`` 挂完要强挂做种
+    def force_start_torrents(self, hs):
+        self.resumed = getattr(self, "resumed", [])
+        self.resumed.extend([str(h).lower() for h in (hs or [])])
+        return len(list(hs or [])), None
+
 
 class _Groups:
     """资源组库桩（★ 15.8.11 同版补丁：``_music_asset_pin`` 会写身份）。"""
@@ -203,6 +209,7 @@ class Harness(ftags.TagsMixin):
         self.logs = []
         self.forgotten = []
         self._store = types.SimpleNamespace(forget_torrents=self._forget)
+        self._task_configs = {}  # ★ 19.9.1：``_torrent_site_name`` 兜底要读（真插件里恒存在）
 
     def _forget(self, task_id, hashes):
         self.forgotten.append((str(task_id), [str(x) for x in (hashes or [])]))
@@ -426,6 +433,106 @@ def t10_music_asset_pin():
     _ok(again["candidates"] == 0 and again["pinned"] == 0, "幂等：再跑零动作")
 
 
+def t11_music_assign():
+    print("⑪ ★19.9.0 音乐在途挂 __music__：加种即打身份+职务、账本 state=音乐；只在下完后归还")
+
+    def _mt(h, tags, prog, cat="音乐"):
+        return types.SimpleNamespace(hash=h, title=h, state="downloading", size=1 << 30,
+                                     tags=list(tags), progress=prog, category=cat,
+                                     save_path="/x", content_path=f"/x/{h}")
+
+    seed = {}
+    snap = {"a1": _mt("a1", [], 0.4)}
+    h = Harness(seed=seed, snap=snap)
+    n = h._music_assign(["a1"], site="聆音", sub="资源", reason="测试")
+    tags = list(snap["a1"].tags)
+    _ok(n == 1, f"挂 1 个（{n}）")
+    _ok("魔流-聆音-静默-资源" in tags and "魔流-聆音-音乐" in tags,
+        f"qB 标签 = 身份 + 职务（{tags}）")
+    rec = h._tag_state().get("a1")
+    _ok(rec.get("state") == tags_root.STATE_MUSIC, f"账本 state=音乐（{rec.get('state')}）")
+    _ok(rec.get("taken_by") == common.MUSIC_TASK_ID, f"taken_by=__music__（{rec.get('taken_by')}）")
+    _ok(rec.get("sub") == "资源", "身份保持资源")
+    _ok(h._music_assign(["a1"], site="聆音") == 0, "幂等：再挂零动作（账本+标签都已到位）")
+
+    seed2 = {"b1": {"state": STATE_SILENT, "site": "CARPT", "sub": "新"},
+             "b3": {"state": STATE_HR, "site": "CARPT", "sub": "资源",
+                    "taken_by": "__hr_host__"}}
+    snap2 = {"b1": _mt("b1", ["魔流-CARPT-静默-新"], 0.5),
+             "b2": _mt("b2", ["魔流-CARPT-静默-资源"], 1.0),
+             "b3": _mt("b3", ["魔流-CARPT-保种"], 0.5)}
+    h2 = Harness(seed=seed2, snap=snap2)
+    dry = h2._music_assign_pending(apply=False)
+    _ok(dry["candidates"] == 1, f"干跑：只认 1 个在途待挂（{dry['candidates']}）")
+    _ok(not h2._tag_state().get("b1").get("taken_by"), "干跑：账本零写入")
+    app = h2._music_assign_pending(apply=True)
+    _ok(app["assigned"] == 1, f"执行：补挂 1 个（{app['assigned']}）")
+    _ok(h2._tag_state().get("b1").get("taken_by") == common.MUSIC_TASK_ID, "补挂后账本归属 __music__")
+    _ok("魔流-CARPT-音乐" in snap2["b1"].tags and "魔流-CARPT-静默-新" in snap2["b1"].tags,
+        f"补挂走 retag：身份轴保留 + 职务轴追加（{snap2['b1'].tags}）")
+    _ok(h2._music_assign_pending(apply=True)["candidates"] == 0, "幂等：下轮零候选")
+
+    seed3 = {"c1": {"state": tags_root.STATE_MUSIC, "site": "聆音", "sub": "资源",
+                    "taken_by": common.MUSIC_TASK_ID, "task": "音乐线"},
+             "c2": {"state": tags_root.STATE_MUSIC, "site": "聆音", "sub": "资源",
+                    "taken_by": common.MUSIC_TASK_ID, "task": "音乐线"}}
+    snap3 = {"c1": _mt("c1", ["魔流-聆音-静默-资源", "魔流-聆音-音乐"], 0.6),
+             "c2": _mt("c2", ["魔流-聆音-静默-资源", "魔流-聆音-音乐"], 1.0)}
+    h3 = Harness(seed=seed3, snap=snap3)
+    dry3 = h3._music_ledger_release(apply=False)
+    _ok(dry3["candidates"] == 1, f"干跑：只认 1 个下完的音乐职务（{dry3['candidates']}）")
+    app3 = h3._music_ledger_release(apply=True)
+    _ok(app3["released"] == 1, f"执行：归还 1 笔（{app3['released']}）")
+    st3 = h3._tag_state()
+    _ok(st3.get("c2").get("state") == STATE_SILENT and not st3.get("c2").get("task"),
+        "c2 下完 → 账本回静默、归属清空")
+    _ok(st3.get("c1").get("state") == tags_root.STATE_MUSIC, "c1 下载中 → 职务保持（否则会进暂停闸）")
+
+
+def t12_manual_hold():
+    print("⑫ ★19.9.1 手动保种 __keep__：挂职务保种、账本可寻址；只能 unhold 解除")
+
+    snap = {"d1": _torrent("d1", ["魔流-聆音-静默-资源"], state="pausedUP")}
+    seed = {"d1": {"site": "聆音", "state": STATE_SILENT, "sub": "资源"}}
+    h = Harness(seed=seed, snap=snap)
+    dry = h._manual_hold(["d1"], apply=False)
+    _ok(dry["candidates"] == 1 and dry["held"] == 0, f"干跑：候选 1、零写入（{dry}）")
+    _ok(snap["d1"].tags == ["魔流-聆音-静默-资源"], "干跑不动 qB 标签")
+    _ok(not h._tag_state().get("d1").get("taken_by"), "干跑不动账本")
+
+    app = h._manual_hold(["d1"], apply=True, reason="测试")
+    rec = h._tag_state().get("d1")
+    _ok(app["held"] == 1, f"执行：挂 1 个（{app['held']}）")
+    _ok("魔流-聆音-保种" in snap["d1"].tags and "魔流-聆音-静默-资源" in snap["d1"].tags,
+        f"qB = 身份轴保留 + 职务轴换保种（{snap['d1'].tags}）")
+    _ok(rec.get("state") == STATE_HR, f"账本 state=保种（{rec.get('state')}）")
+    _ok(rec.get("taken_by") == common.KEEP_TASK_ID and rec.get("task") == common.KEEP_TASK_NAME,
+        f"归属 __keep__（{rec.get('taken_by')} / {rec.get('task')}）")
+    _ok(rec.get("sub") == "资源", "身份轴没被改")
+    _ok("d1" in (getattr(h.dl, "resumed", []) or []), "挂上后强挂做种")
+
+    _ok(h._manual_hold(["d1"], apply=True)["candidates"] == 0, "幂等：再挂零候选")
+    _ok(h._manual_hold(["nope"], apply=True)["skipped"] == 1, "qB 没有的种计 skipped")
+
+    # 身份推断：账本没有 site/sub、标签也没有身份轴 → 兜底「资源」
+    snap2 = {"e1": _torrent("e1", []), "e2": _torrent("e2", ["魔流-CARPT-静默-新"])}
+    h2 = Harness(seed={}, snap=snap2)
+    a2 = h2._manual_hold(["e1", "e2"], apply=True)
+    _ok(a2["held"] == 2, f"无账本也能挂 2 个（{a2['held']}）")
+    _ok(h2._tag_state().get("e1").get("sub") in ("资源", ""), "无身份 ⇒ 兜底资源")
+    _ok(h2._tag_state().get("e2").get("sub") == "新", "有身份轴 ⇒ 保留「新」")
+
+    rel_dry = h2._manual_release(["e1"], apply=False)
+    _ok(rel_dry["released"] == 0, "解除干跑零动作")
+    rel = h2._manual_release(["e1", "e2"], apply=True)
+    _ok(rel["released"] == 2, f"解除 2 个（{rel['released']}）")
+    r1 = h2._tag_state().get("e1")
+    _ok(r1.get("state") == STATE_SILENT and not r1.get("taken_by"), "解除后账本回静默、归属清空")
+    _ok("魔流-保种" not in snap2["e1"].tags, f"qB 职务轴摘掉（{snap2['e1'].tags}）")
+    _ok(h2._manual_release(["e1"], apply=True)["candidates"] == 0, "解除幂等")
+    _ok(h2._manual_release(["zz"], apply=True)["skipped"] == 1, "非 __keep__ 的种不碰（跳过）")
+
+
 def main() -> int:
     print("== 标签 ↔ 账本对账（15.2.0）==")
     t1_dry_run()
@@ -438,6 +545,8 @@ def main() -> int:
     t8_music_exempt()
     t9_music_ledger_release()
     t10_music_asset_pin()
+    t11_music_assign()
+    t12_manual_hold()
     print("=" * 60)
     print(f"✅ PASS —— 共 {CHECKS} 项全过")
     return 0

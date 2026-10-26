@@ -54,6 +54,7 @@ from ..tags import (
 from .hrbills import (
     BILL_STATE_ACTIVE,
     BILL_STATE_BREACHED,
+    BILL_STATE_PENDING,
     RULE_HIT_AND_RUN,
     RULE_SITE_HR,
 )
@@ -763,6 +764,9 @@ def view_hr(ctx: Dict[str, Any], site: str = "", live: int = 0,
             "bills": {"total": 0, "hr_rule": 0, "unclassified": 0, "active": 0,
                       "pending": 0, "settled": 0, "void": 0, "breached": 0},
             "owed": 0, "in_qb": 0, "missing": 0, "at_risk": 0, "items": [],
+            # ★ 19.9.5：未下完的账单（pending）单列一份明细 ---- 它们**不算欠债**
+            #   （H&R 义务自下载完成起算），但界面上不该「完全看不见」。
+            "pending_items": [],
         }
         return by_site[dom]
 
@@ -813,6 +817,8 @@ def view_hr(ctx: Dict[str, Any], site: str = "", live: int = 0,
             except Exception:  # noqa: BLE001
                 pass
         g["items"].append(item)
+        if st == BILL_STATE_PENDING:
+            g["pending_items"].append(item)
         if item.get("at_risk"):
             g["at_risk"] += 1
             totals["at_risk"] += 1
@@ -835,6 +841,7 @@ def view_hr(ctx: Dict[str, Any], site: str = "", live: int = 0,
             by_site[dom]["items"] = by_site[dom]["items"][:_as_int(limit, 0)]
         else:
             by_site[dom]["items"] = by_site[dom]["items"][:200]
+        by_site[dom]["pending_items"] = by_site[dom]["pending_items"][:50]
     sites = [by_site[k] for k in sorted(
         by_site, key=lambda d: (-by_site[d]["owed"], -by_site[d]["bills"]["total"]))]
     totals["sites"] = len(sites)

@@ -128,6 +128,7 @@ def _dbg_guard_write(name: str, confirm: int = 0):
 DEBUG_WRITE_PATHS: Dict[str, str] = {
     "/debug/store": "action=flush（落盘）/ drop-hot（清热层键）",
     "/debug/cache": "drop / prefix（丢站点抓取缓存）",
+    "/debug/retag": "dry=0（真的补标签）",
     "/debug/crossseed": "add=true（真的在他站发起下载）",
     "/debug/seedlimit": "给我们管控的种套单档限速（改 qB）",
     "/debug/emit-transfer": "投递/直调 TransferComplete，clear=1 清库记",
@@ -161,7 +162,7 @@ class DebugMixin:
         except Exception as err:  # noqa: BLE001
             return Response(success=False, message=str(err))
 
-    def debug_mp_search(self, keyword: str = "", sites: str = "") -> Response:
+    def debug_mp_search(self, keyword: str = "", sites: str = "", raw: int = 0) -> Response:
         """诊断:直接调 MoviePilot 自带搜索,看签名兼容性与免费/有源命中。
 
         ``GET /debug/mpsearch?keyword=xxx&sites=8,9``——**会消耗 1 PV/站**，只在排查时手动调。
@@ -191,7 +192,19 @@ class DebugMixin:
         if "sites" not in params:
             return Response(success=False, message=f"该版本 search_by_title 不支持 sites:{params}")
         try:
-            hits = self._mp_search_title(kw, ids)
+            if int(raw or 0):
+                _kwargs: Dict[str, Any] = {"sites": ids}
+                if "rule_groups" in params:
+                    _kwargs["rule_groups"] = []
+                if "cache_local" in params:
+                    _kwargs["cache_local"] = False
+                if "page" in params:
+                    _kwargs["page"] = 0
+                _res = fn(kw, **_kwargs) or []
+                hits = [getattr(_c, "torrent_info", None) for _c in _res]
+                hits = [h for h in hits if h is not None]
+            else:
+                hits = self._mp_search_title(kw, ids)
         except Exception as err:  # noqa: BLE001
             return Response(success=False, message=f"搜索失败:{err}")
         finally:
@@ -272,6 +285,215 @@ class DebugMixin:
                 data={"count": len(items), "non_free": _nf, "sample": rows},
             )
         return Response(success=True, message=f"热层 {len(keys)} 个 key", data={"keys": keys})
+
+    def debug_siteua(self, site_id: int = 0, ua: str = "") -> Response:
+        """诊断:只改站点 UA 字段（写操作，调用方确认）。"""
+        try:
+            from app.db.oper.site import SiteOper  # noqa: WPS433
+
+            sid = int(site_id or 0)
+            site = SiteOper().update(sid, {"ua": str(ua or "")})
+            if not site:
+                return Response(success=False, message="更新失败/站点不存在")
+            return Response(success=True, data={"site_id": sid,
+                                                "ua": str(getattr(site, "ua", "") or "")})
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=f"更新失败:{err}")
+
+    def debug_mtapi(self, site_id: int = 9, keyword: str = "", host: str = "api.m-team.io", ua: str = "") -> Response:
+        """诊断:按站点 apikey 调 M-Team API 搜索（只读），返回原始响应片段。"""
+        try:
+            from app.sdk.network import RequestUtils  # noqa: WPS433
+
+            sid = int(site_id or 0)
+            site = self._get_site(sid)
+            if not site:
+                return Response(success=False, message="站点不存在")
+            apikey = ""
+            try:
+                apikey = str(self._cred_get(int(sid), "apikey") or "").strip()
+            except Exception:  # noqa: BLE001
+                apikey = ""
+            if not apikey:
+                apikey = str(getattr(site, "apikey", "") or "").strip()
+            if not apikey:
+                return Response(success=False, message="缺少 apikey")
+            body = {"keyword": str(keyword or ""), "categories": [], "pageNumber": 1,
+                    "pageSize": 100, "visible": 1}
+            url = "https://" + str(host) + "/api/torrent/search"
+            _headers = {"x-api-key": apikey, "Content-Type": "application/json"}
+            if ua != "omit":
+                _headers["User-Agent"] = ua
+            res = RequestUtils(headers=_headers, timeout=20).post_res(url=url, json=body)
+            txt = str(getattr(res, "text", "") or "")
+            return Response(success=True, data={
+                "url": url, "status": getattr(res, "status_code", None),
+                "len": len(txt), "head": txt[:800],
+            })
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=f"请求失败:{err}")
+
+    def debug_hdpost(self, site_id: int = 0, path: str = "api/v1/torrent/search", body: str = "{}") -> Response:
+        """诊断:按站点 apikey 向 HDDolby API 发 POST JSON（只读搜索）。"""
+        try:
+            import json as _json
+            from app.sdk.network import RequestUtils  # noqa: WPS433
+
+            sid = int(site_id or 0)
+            site = self._get_site(sid)
+            if not site:
+                return Response(success=False, message="站点不存在")
+            dom = str(getattr(site, "domain", "") or "").strip().lower()
+            apikey = ""
+            try:
+                apikey = str(self._cred_get(sid, "apikey") or "").strip()
+            except Exception:  # noqa: BLE001
+                apikey = ""
+            if not apikey:
+                apikey = str(getattr(site, "apikey", "") or "").strip()
+            if not apikey:
+                return Response(success=False, message="缺少 apikey")
+            payload = _json.loads(body or "{}")
+            url = f"https://api.{dom}/" + str(path or "").lstrip("/")
+            res = RequestUtils(headers={"x-api-key": apikey,
+                                        "Content-Type": "application/json",
+                                        "Accept": "application/json, text/plain, */*"},
+                               timeout=20).post_res(url=url, json=payload)
+            txt = str(getattr(res, "text", "") or "")
+            return Response(success=True, data={
+                "url": url, "status": getattr(res, "status_code", None),
+                "len": len(txt), "head": txt[:600],
+            })
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=f"请求失败:{err}")
+
+    def debug_hdapi(self, site_id: int = 0, path: str = "api/v1/user/data", full: int = 0, qs: str = "") -> Response:
+        """诊断:按站点 apikey 调 HDDolby 风格 API（只读）。"""
+        try:
+            sid = int(site_id or 0)
+            site = self._get_site(sid)
+            if not site:
+                return Response(success=False, message="站点不存在")
+            dom = str(getattr(site, "domain", "") or "").strip().lower()
+            apikey = ""
+            try:
+                apikey = str(self._cred_get(sid, "apikey") or "").strip()
+            except Exception:  # noqa: BLE001
+                apikey = ""
+            src = "creds"
+            if not apikey:
+                apikey = str(getattr(site, "apikey", "") or "").strip()
+                src = "site"
+            if not apikey:
+                return Response(success=False, message="缺少 apikey（站点配置/凭据中心都没有）")
+            from app.sdk.network import RequestUtils  # noqa: WPS433
+
+            base = f"https://api.{dom}"
+            url = base.rstrip("/") + "/" + str(path or "").lstrip("/")
+            _qs = str(qs or "").strip().lstrip("?")
+            if _qs:
+                url = url + "?" + _qs
+            cli = RequestUtils(headers={"x-api-key": apikey, "Accept": "application/json"}, timeout=20)
+            res = cli.get_res(url)
+            txt = str(getattr(res, "text", "") or "")
+            return Response(success=True, data={
+                "url": url, "apikey_src": src,
+                "status": getattr(res, "status_code", None),
+                "len": len(txt), "head": txt[:600],
+                "body": (txt[:4000] if int(full or 0) else ""),
+            })
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=f"请求失败:{err}")
+
+    def debug_fetch(self, site_id: int = 0, path: str = "/", scan: int = 0, full: int = 0) -> Response:
+        """按站点会话抓一个页面（只读诊断）：返回 status / 长度 / 命中词 / 片段。"""
+        try:
+            c = self._collect_ref()
+            if c is None:
+                return Response(success=False, message="采集模块未就绪")
+            sid = int(site_id or 0)
+            site = self._get_site(sid)
+            if not site:
+                return Response(success=False, message="站点不存在")
+            base = (getattr(site, "url", "") or f"https://{getattr(site, 'domain', '')}").rstrip("/")
+            url = str(path or "/")
+            if not url.startswith(("http://", "https://")):
+                url = base + "/" + url.lstrip("/")
+            cli = c.http.client(sid, kind="browse")
+            r = cli.get_res(url)
+            txt = str(getattr(r, "text", "") or "")
+            try:
+                _raw = getattr(r, "content", b"") or b""
+            except Exception:  # noqa: BLE001
+                _raw = b""
+            import re as _re
+
+            m = _re.search(r"<title[^>]*>(.*?)</title>", txt, _re.I | _re.S)
+            hits = [k for k in ("考核", "exam", "做种率", "积分", "下载量", "上传量", "魔力") if k in txt]
+            _scan = {}
+            if int(scan or 0):
+                import re as _re2
+
+                _apis = sorted(set(_re2.findall(r"api/v\d+[A-Za-z0-9_\-/\.\?=&%]*", txt)))
+                _urls = sorted(set(_re2.findall(r"https?://api\.[A-Za-z0-9\.\-]+/[^\s\"'<>]+", txt)))
+                _scripts = sorted(set(_re2.findall(r"<script[^>]+src=[\"']([^\"']+)[\"']", txt, _re.I)))
+                _scan = {"apis": _apis[:80], "api_urls": _urls[:40], "scripts": _scripts[:40]}
+            return Response(success=True, data={
+                "url": url,
+                "scan": _scan,
+                "body": (txt[:9000] if int(full or 0) else ""),
+                "status": getattr(r, "status_code", None),
+                "has_cookie": bool(getattr(site, "cookie", "")),
+                "raw_len": len(_raw) if isinstance(_raw, (bytes, bytearray)) else 0,
+                "len": len(txt),
+                "hits": hits,
+                "title": (m.group(1).strip()[:100] if m else ""),
+                "head": txt[:300],
+            })
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=f"抓取失败:{err}")
+
+    def debug_retag(self, task_id: str = "", dry: int = 1) -> Response:
+        """把任务「旧标签」下的种补上当前标签（只加不减）。
+
+        ``GET /debug/retag?task_id=<id>&dry=1`` 只报告；`dry=0` 真写。
+        用于任务改过类型（刷流↔魔力）后，旧标签下的种脱离托管的情况。
+        """
+        tid = str(task_id or "").strip()
+        cfg = self._task_configs.get(tid)
+        if cfg is None:
+            return Response(success=False, message=f"任务不存在:{tid}")
+        new_tag = self._derive_task_tag(cfg)
+        site = str(getattr(cfg, "site_name", "") or "")
+        downloader = self._get_downloader(str(getattr(cfg, "downloader", "") or "qbittorrent"))
+        if downloader is None or not downloader.is_available:
+            return Response(success=False, message="下载器不可用")
+        groups, err = downloader.get_torrents_by_tag()
+        if err:
+            return Response(success=False, message=str(err))
+        prefix = f"魔流-{site}-" if site else "魔流-"
+        detail = {}
+        hashes = []
+        for tag, rows in (groups or {}).items():
+            if tag == new_tag or not str(tag).startswith(prefix):
+                continue
+            hs = [str(getattr(r, "hash", "") or "") for r in (rows or [])]
+            hs = [h for h in hs if h]
+            if hs:
+                detail[str(tag)] = len(hs)
+                hashes.extend(hs)
+        hashes = sorted(set(hashes))
+        out = {
+            "task": tid, "new_tag": new_tag, "old_tags": detail,
+            "count": len(hashes), "dry": bool(int(dry or 0)),
+        }
+        if int(dry or 0):
+            return Response(success=True, data=out)
+        n, err2 = downloader.add_torrents_tag(hashes, new_tag)
+        out["added"] = n
+        if err2:
+            return Response(success=False, message=str(err2), data=out)
+        return Response(success=True, data=out)
 
     def debug_crossseed(
         self, task: str = "", n: int = 3, add: bool = False, force_main: bool = True,
@@ -371,6 +593,24 @@ class DebugMixin:
             item["keyword"] = kw
             rows = self._crossseed_search_rows(kw, ids) if (kw and ids) else []
             item["mp_search"] = len(rows)
+            item["rows_sample"] = [
+                {"site": str(getattr(r, "site_name", "") or ""),
+                 "title": str(getattr(r, "title", "") or "")[:80],
+                 "size": getattr(r, "size", None)}
+                for r in rows[:5]
+            ]
+            try:
+                item["pass_title"] = sum(
+                    1 for r in rows
+                    if title_like(str(getattr(r, "title", "") or ""),
+                                  str(getattr(cand, "title", "") or ""))
+                )
+                item["pass_size"] = sum(
+                    1 for r in rows
+                    if size_close(getattr(r, "size", 0), int(getattr(cand, "size", 0) or 0))
+                )
+            except Exception:  # noqa: BLE001
+                pass
             if not rows:
                 item["note"] = item["note"] or "MP 搜索:他站无免费且有源的同名种"
                 items.append(item)

@@ -81,6 +81,27 @@ class TasksMixin:
             derived = ""
         return derived or f"魔流-{getattr(task, 'name', '') or getattr(task, 'id', '')}"
 
+    def _site_active_task(self, site_id: Any, exclude_id: str = "") -> Any:
+        """同站只允许一个运行中的任务：返回该站另一个运行中的任务（没有则 None）。"""
+        try:
+            _sid = int(site_id or 0)
+        except (TypeError, ValueError):
+            return None
+        for _tid, _t in (self._task_configs or {}).items():
+            if exclude_id and str(_tid) == str(exclude_id):
+                continue
+            if str(getattr(_t, "task_type", "") or "").strip().lower() == "host":
+                continue
+            try:
+                if int(getattr(_t, "site_id", 0) or 0) != _sid:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            _mode = str(getattr(_t, "run_mode", "") or "").strip().lower()
+            if bool(getattr(_t, "enabled", False)) or _mode == "running":
+                return _t
+        return None
+
     def create_task(self, payload: MagicFlowTaskPayload) -> Response:
         """创建魔流任务。"""
         task_id = payload.id or uuid.uuid4().hex[:12]
@@ -92,6 +113,17 @@ class TasksMixin:
             return Response(success=False, message="站点不存在")
 
         run_mode = normalize_run_mode(getattr(payload, "run_mode", None), payload.enabled)
+        if enabled_of_run_mode(run_mode):
+            _other = self._site_active_task(payload.site_id)
+            if _other is not None:
+                return Response(
+                    success=False,
+                    message=(
+                        f"该站点已有运行中的任务「{getattr(_other, 'name', '')}」。"
+                        "同一站点只允许一个运行中的任务；请先停止它，"
+                        "或把本任务建成停止状态。"
+                    ),
+                )
         task = MagicFlowTaskConfig(
             id=task_id,
             name=payload.name,
@@ -192,6 +224,21 @@ class TasksMixin:
         if not task:
             return Response(success=False, message="任务不存在")
 
+        # ★ 19.7.69：任务类型创建后不可修改。
+        #   类型绑着标签（刷流/魔力）、托管口径、目标与清理/静默判定，
+        #   中途切类型会让旧标签下的种脱离管理（不会崩，但会「没人管」）。
+        _prev_type = str(getattr(task, "task_type", "bonus") or "bonus").strip().lower()
+        _new_type = str(getattr(payload, "task_type", "") or "").strip().lower()
+        if _new_type and _new_type != _prev_type:
+            return Response(
+                success=False,
+                message=(
+                    f"任务类型创建后不可修改（{_prev_type} → {_new_type}）。"
+                    "类型决定标签、托管、目标与清理口径；请新建一个任务，"
+                    "再停掉或删除旧任务。"
+                ),
+            )
+
         site = self._get_site(payload.site_id)
         if not site:
             return Response(success=False, message="站点不存在")
@@ -206,6 +253,16 @@ class TasksMixin:
             _run_mode = "stopped"
         else:
             _run_mode = self._normalize_run_mode(_req_mode or _prev_mode, payload.enabled)
+        if enabled_of_run_mode(_run_mode):
+            _other = self._site_active_task(payload.site_id, exclude_id=task_id)
+            if _other is not None:
+                return Response(
+                    success=False,
+                    message=(
+                        f"该站点已有运行中的任务「{getattr(_other, 'name', '')}」。"
+                        "同一站点只允许一个运行中的任务；请先停止它再启用本任务。"
+                    ),
+                )
         task.run_mode = _run_mode
         task.enabled = enabled_of_run_mode(_run_mode)
         task.site_id = payload.site_id
@@ -618,7 +675,7 @@ class TasksMixin:
         self._spawn_run_mode_apply(task, mode)
         return Response(success=True, data=self._build_task_detail(task_id))
 
-    def run_task(self, task_id: str) -> Response:
+    def run_task(self, task_id: str, dry: Any = None) -> Response:
         """异步执行一轮魔力优化(清理低效种子并补充优质种子)。"""
         if str(task_id or "") == SILENT_HOST_TASK_ID:
             threading.Thread(target=self.silent_host, daemon=True).start()
@@ -626,9 +683,10 @@ class TasksMixin:
         task = self._get_task_config(task_id)
         if not task:
             return Response(success=False, message="任务不存在")
-        thread = threading.Thread(target=self.brush, args=(task_id,), daemon=True)
+        _dry = bool(self._as_bool_arg(dry))
+        thread = threading.Thread(target=self.brush, args=(task_id, _dry), daemon=True)
         thread.start()
-        return Response(success=True, message="魔力优化已启动")
+        return Response(success=True, message=("魔力优化已启动（干跑：只选不下）" if _dry else "魔力优化已启动"))
 
     # ---------------------------------------------------------
     # API:魔力明细

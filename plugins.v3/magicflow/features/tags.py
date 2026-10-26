@@ -23,6 +23,7 @@ from ..tags import (
     EXTERNAL_TAG,
     KEEP_FOREIGN_TAGS,
     LEASE_TTL,
+    duty_of,
     identity_of,
     is_asset_tags,
     is_external_candidate,
@@ -32,6 +33,9 @@ from ..tags import (
     MARK_REUSE,
     STATE_BONUS,
     STATE_BRUSH,
+    STATE_HR,
+    STATE_MUSIC,
+    STATE_ONDEMAND,
     STATE_RECOMMEND,
     SPECIAL_TAGS,
     STATE_SILENT,
@@ -49,7 +53,11 @@ from ..tags import (
 
 
 from ..common import (
+    KEEP_TASK_ID,
+    KEEP_TASK_NAME,
     MEDIA_ASSET_HISTORY_TTL,
+    MUSIC_TASK_ID,
+    MUSIC_TASK_NAME,
     TAG_NEW_TIMEOUT,
     TAG_SNAPSHOT_TTL,
     TAG_SNAPSHOT_STALE_MAX,
@@ -612,6 +620,129 @@ class TagsMixin:
         return n
 
 
+    def _music_assign(self, hashes: Any, *, site: str = "", sub: str = "",
+                      reason: str = "") -> int:
+        """★ 19.9.0：音乐「在途」挂 ``__music__`` 伪任务（职务=音乐）。
+
+        Master 2026-10-25：「音乐应该是**伪任务** —— 下载时带任务标签，完成后摘标签」。
+        与点播 15.8.4 同构：贴职务标签（身份轴 ``魔流-<站>-静默-<子类>`` 永久保留）
+        + 写账本 ``taken_by=__music__``。效果：账本 ``state=音乐`` ≠ 静默 ⇒
+        静默池的**暂停闸 / 清理闸**天然跳过 —— 不再靠 15.8.11「音乐线 progress<1
+        不暂停」那条例外打补丁（那是当时没有在途职务的权宜）。
+        **不动下载状态**（正在下，不 pause、不 force_start）。
+        幂等：账本已挂 ``__music__`` **且** qB 职务标签在位 → 跳过。
+        """
+        hs = [hashes] if isinstance(hashes, str) else list(hashes or [])
+        hs = [str(h or "").strip().lower() for h in hs if str(h or "").strip()]
+        if not hs:
+            return 0
+        try:
+            downloader = self._get_downloader("qbittorrent")
+        except Exception:  # noqa: BLE001
+            downloader = None
+        if downloader is None or not getattr(downloader, "is_available", False):
+            return 0
+        try:
+            store = self._tag_state()
+            snap = self._tag_all_torrents()
+        except Exception as err:  # noqa: BLE001
+            self._log(f"音乐线:挂伪任务取账本失败:{err}", "warning")
+            return 0
+        fn = getattr(downloader, "replace_torrent_tags", None)
+        n = 0
+        _now = time.time()
+        for h in hs:
+            hh = str(h or "").strip().lower()
+            _rec0 = store.get(hh) or {}
+            live = (snap or {}).get(hh)
+            cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
+            _i_site, _i_sub = identity_of(cur)
+            _sub = str(sub or "") or str(_rec0.get("sub") or "") or _i_sub or SUB_RESOURCE
+            _site = str(site or "") or str(_rec0.get("site") or "") or _i_site \
+                or self._torrent_site_name(cur, "")
+            if str(_rec0.get("taken_by") or "") == MUSIC_TASK_ID \
+                    and duty_of(cur)[1] == STATE_MUSIC:
+                continue  # 已挂音乐宿主且标签在位
+            if cur:
+                new_tags = retag(cur, site=_site, state=STATE_MUSIC, sub=_sub)
+            else:
+                new_tags = [tag_for(_site, STATE_SILENT, _sub), tag_for(_site, STATE_MUSIC)]
+            try:
+                done = fn(hh, new_tags) if callable(fn) else downloader.set_torrent_tags(hh, new_tags)
+            except Exception:  # noqa: BLE001
+                done = False
+            if not done:
+                continue
+            try:
+                store.put(hh, {
+                    "site": _site, "state": STATE_MUSIC, "sub": _sub,
+                    "taken_by": MUSIC_TASK_ID, "task": MUSIC_TASK_NAME,
+                    "taken_at": _now, "lease_until": 0,
+                    "title": str(getattr(live, "title", "") or "") if live is not None else "",
+                })
+            except Exception:  # noqa: BLE001
+                pass
+            n += 1
+        if n:
+            self._log(f"音乐线:挂 __music__ {n} 个（{reason or '在途'}）")
+        return n
+
+    def _music_assign_pending(self, *, apply: bool = True, limit: int = 0) -> Dict[str, Any]:
+        """★ 19.9.0：音乐在途**补挂**（防漏）—— qB 里进度<1 的音乐种、账本还不是「音乐」→ 补挂。
+
+        加种那一刻的 ``_music_assign`` 可能撞「qB 还没登记新种」的竞态（同点播 15.8.6），
+        这一轮按 qB 真值补齐；与 ``_music_ledger_release``（只在**下完**时摘）判据互补，
+        不会互打：本方法只碰 ``progress<0.999``，那边只碰 ``progress>=0.999``。
+        """
+        rep: Dict[str, Any] = {"ok": True, "applied": bool(apply), "candidates": 0,
+                               "assigned": 0, "failed": 0, "samples": []}
+        try:
+            store = self._tag_state()
+            snap = self._tag_all_torrents()
+        except Exception as err:  # noqa: BLE001
+            return {**rep, "ok": False, "error": str(err)}
+        cap = int(limit or 0)
+        pend: List[str] = []
+        for h, t in (snap or {}).items():
+            hh = str(h or "").strip().lower()
+            if not is_music_line(t):
+                continue
+            try:
+                if float(getattr(t, "progress", 0) or 0) >= 0.999:
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+            rec = (store.items() or {}).get(hh) or {}
+            # 19.9.3：只补挂还在下载的；下完的交给 settle 整理入库，
+            # 这里再补挂会让「已完成」那行的职务标签来回跳。
+            try:
+                if float(getattr(t, "progress", 0) or 0) >= 0.999:
+                    continue
+            except Exception:  # noqa: BLE001
+                pass
+            if str(rec.get("taken_by") or "") == MUSIC_TASK_ID:
+                continue
+            if str(rec.get("state") or "") in (STATE_BRUSH, STATE_BONUS,
+                                               STATE_HR, STATE_ONDEMAND):
+                continue  # 在别的任务/职务上，不抢
+            rep["candidates"] = int(rep["candidates"]) + 1
+            if len(rep["samples"]) < 10:
+                rep["samples"].append({"hash": hh[:12], "site": str(rec.get("site") or "")})
+            if cap and len(pend) >= cap:
+                continue
+            pend.append(hh)
+        if not apply or not pend:
+            return rep
+        try:
+            # 不传 sub：按账本/标签的既有身份挂（补挂不该改身份轴）
+            n = self._music_assign(pend, reason="补挂")
+            rep["assigned"] = int(n or 0)
+            rep["failed"] = max(0, len(pend) - int(n or 0))
+        except Exception as err:  # noqa: BLE001
+            rep["failed"] = len(pend)
+            rep["error"] = str(err)
+        return rep
+
     def _music_ledger_release(self, *, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
         """★ 15.8.11：把账本里还当「魔力/刷流」的音乐种**归还静默池**（幂等；默认干跑）。
 
@@ -637,12 +768,22 @@ class TagsMixin:
         cap = int(limit or 0)
         for h, rec in list((store.items() or {}).items()):
             rec = rec or {}
-            if str(rec.get("state") or "") not in (STATE_BRUSH, STATE_BONUS):
+            # ★ 19.9.0：音乐在途（state=音乐）也要能归还 —— 但**只在下完之后**；
+            #   下载中必须保持职务，否则账本先回静默、qB 职务标签还在 → 十分钟互打。
+            _st = str(rec.get("state") or "")
+            if _st not in (STATE_BRUSH, STATE_BONUS, STATE_MUSIC):
                 continue
             hh = str(h or "").strip().lower()
             live = snap.get(hh)
             if live is None or not is_music_line(live):
                 continue
+            if _st == STATE_MUSIC:
+                try:
+                    _prog = float(getattr(live, "progress", 0) or 0)
+                except Exception:  # noqa: BLE001
+                    _prog = 0.0
+                if _prog < 0.999:
+                    continue
             owner = str(rec.get("taken_by") or "").strip()
             rep["candidates"] = int(rep["candidates"]) + 1
             if cap and int(rep["candidates"]) > cap:
@@ -668,6 +809,138 @@ class TagsMixin:
                 pass
         return rep
 
+
+    def _manual_hold(self, hashes: Any, *, apply: bool = True,
+                     reason: str = "") -> Dict[str, Any]:
+        """★ 19.9.1：把指定种挂到「手动保种」伪任务（职务=保种）—— 下完也继续做种。
+
+        动机（Master 2026-10-25）：「全部 20 个挂保种」。静默池的不变量是「state=静默
+        一律 pause」，而 ``__hr_host__`` 的保种由「欠 H&R」驱动、规则一不欠就
+        ``_hr_host_release`` 收回（``features/hr.py:800-840``）⇒ 人工想让某批种长期做种，
+        需要一个**不会被自动释放**的落点。这里用 ``__keep__``（task_id 非空 ⇒ state=保种
+        ≠ 静默）：静默闸/清理闸天然跳过，``hr_host()`` 也只处理 ``taken_by=__hr_host__``，
+        不会来收。解除只能走 ``_manual_release``（action=unhold）。
+
+        只碰 qB 真值里存在的种；身份轴 ``魔流-<站>-静默-<子类>`` 原样保留，职务轴换成
+        ``魔流-<站>-保种``。默认干跑（``apply=False``）。
+        """
+        rep: Dict[str, Any] = {"ok": True, "applied": bool(apply), "candidates": 0,
+                               "held": 0, "skipped": 0, "failed": 0, "samples": []}
+        hs = [hashes] if isinstance(hashes, str) else list(hashes or [])
+        hs = [str(h or "").strip().lower() for h in hs if str(h or "").strip()]
+        if not hs:
+            return {**rep, "ok": False, "error": "缺少 hash"}
+        try:
+            downloader = self._get_downloader("qbittorrent")
+        except Exception:  # noqa: BLE001
+            downloader = None
+        try:
+            store = self._tag_state()
+            snap = self._tag_all_torrents()
+        except Exception as err:  # noqa: BLE001
+            return {**rep, "ok": False, "error": str(err)}
+        fn = getattr(downloader, "replace_torrent_tags", None) if downloader is not None else None
+        _now = time.time()
+        for hh in hs:
+            live = (snap or {}).get(hh)
+            if live is None:
+                rep["skipped"] = int(rep["skipped"]) + 1
+                continue
+            cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])]
+            _i_site, _i_sub = identity_of(cur)
+            rec0 = store.get(hh) or {}
+            _site = str(rec0.get("site") or "") or _i_site or self._torrent_site_name(cur, "")
+            _sub = str(rec0.get("sub") or "") or _i_sub or SUB_RESOURCE
+            if str(rec0.get("taken_by") or "") == KEEP_TASK_ID and duty_of(cur)[1] == STATE_HR:
+                continue  # 已挂手动保种且标签在位
+            rep["candidates"] = int(rep["candidates"]) + 1
+            if len(rep["samples"]) < 10:
+                rep["samples"].append({"hash": hh[:12], "site": _site, "sub": _sub})
+            if not apply:
+                continue
+            if cur:
+                new_tags = retag(cur, site=_site, state=STATE_HR, sub=_sub)
+            else:
+                new_tags = [tag_for(_site, STATE_SILENT, _sub), tag_for(_site, STATE_HR)]
+            try:
+                done = fn(hh, new_tags) if callable(fn) else (
+                    downloader.set_torrent_tags(hh, new_tags) if downloader is not None else False)
+            except Exception:  # noqa: BLE001
+                done = False
+            if not done:
+                rep["failed"] = int(rep["failed"]) + 1
+                continue
+            try:
+                store.put(hh, {
+                    "site": _site, "state": STATE_HR, "sub": _sub,
+                    "taken_by": KEEP_TASK_ID, "task": KEEP_TASK_NAME,
+                    "taken_at": _now, "lease_until": 0,
+                    "title": str(getattr(live, "title", "") or ""),
+                })
+            except Exception:  # noqa: BLE001
+                pass
+            if downloader is not None:
+                try:
+                    _fs = getattr(downloader, "force_start_torrents", None)
+                    if callable(_fs):
+                        _fs([hh])
+                    else:
+                        downloader.resume_torrents([hh])
+                except Exception:  # noqa: BLE001
+                    pass
+            rep["held"] = int(rep["held"]) + 1
+        if rep["held"]:
+            self._log(f"手动保种:挂 {rep['held']} 个（{reason or '接口'}）")
+        return rep
+
+    def _manual_release(self, hashes: Any, *, apply: bool = True) -> Dict[str, Any]:
+        """★ 19.9.1：解除「手动保种」→ 归还静默池（职务轴摘掉、身份轴保留；默认干跑）。"""
+        rep: Dict[str, Any] = {"ok": True, "applied": bool(apply), "candidates": 0,
+                               "released": 0, "skipped": 0, "failed": 0, "samples": []}
+        hs = [hashes] if isinstance(hashes, str) else list(hashes or [])
+        hs = [str(h or "").strip().lower() for h in hs if str(h or "").strip()]
+        if not hs:
+            return {**rep, "ok": False, "error": "缺少 hash"}
+        try:
+            downloader = self._get_downloader("qbittorrent")
+        except Exception:  # noqa: BLE001
+            downloader = None
+        try:
+            store = self._tag_state()
+            snap = self._tag_all_torrents()
+        except Exception as err:  # noqa: BLE001
+            return {**rep, "ok": False, "error": str(err)}
+        fn = getattr(downloader, "replace_torrent_tags", None) if downloader is not None else None
+        for hh in hs:
+            rec = (store.items() or {}).get(hh) or {}
+            if str(rec.get("taken_by") or "") != KEEP_TASK_ID:
+                rep["skipped"] = int(rep["skipped"]) + 1
+                continue
+            rep["candidates"] = int(rep["candidates"]) + 1
+            if not apply:
+                continue
+            live = (snap or {}).get(hh)
+            cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
+            _i_site, _i_sub = identity_of(cur)
+            _site = str(rec.get("site") or "") or _i_site
+            _sub = str(rec.get("sub") or "") or _i_sub or SUB_RESOURCE
+            if cur:
+                new_tags = retag(cur, site=_site, state=STATE_SILENT, sub=_sub)
+                try:
+                    done = fn(hh, new_tags) if callable(fn) else (
+                        downloader.set_torrent_tags(hh, new_tags) if downloader is not None else False)
+                except Exception:  # noqa: BLE001
+                    done = False
+                if not done:
+                    rep["failed"] = int(rep["failed"]) + 1
+                    continue
+            try:
+                store.release(hh, task_id=KEEP_TASK_ID)
+            except Exception:  # noqa: BLE001
+                rep["failed"] = int(rep["failed"]) + 1
+                continue
+            rep["released"] = int(rep["released"]) + 1
+        return rep
 
     def _music_asset_pin(self, *, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
         """★ 15.8.11 同版补丁：音乐种身份**钉成「资源」**（Master 2026-10-09 口径「跟点播一样」）。
@@ -1632,6 +1905,36 @@ class TagsMixin:
                          + ("" if _ap else "（预演，未动）")),
                 data=info,
             )
+        if act in ("hold", "hold_seed", "manual_hold", "unhold", "hold_clear"):
+            _un = act in ("unhold", "hold_clear")
+            _hs = [x for x in re.split(r"[,|\s]+", str(hash or "")) if x.strip()]
+            _ap = act in ("unhold", "hold_clear") or str(confirm or "").strip().lower() in (
+                "1", "true", "yes", "on")
+            info = self._manual_release(_hs, apply=_ap) if _un else self._manual_hold(
+                _hs, apply=_ap, reason=str(reason or ""))
+            _n = int(info.get("released") or info.get("held") or 0)
+            return Response(
+                success=bool(info.get("ok")),
+                message=(f"{'解除手动保种' if _un else '手动保种'}:候选 {info.get('candidates')} → "
+                         f"{'归还静默' if _un else '挂保种'} {_n} 个"
+                         + ("" if _ap else "（预演）")),
+                data=info,
+            )
+        if act in ("adopt_orphans", "orphan_adopt"):
+            # ★ 19.8.0 灾备恢复：账本被清/迁移后，用 qB 上的「魔流-<站>-静默-*」标签把账本补回来
+            #   （补行 → 补特征码 → sync_resources 建资源 → 身份回写资源）。默认干跑。
+            _confirm = str(confirm or "").strip().lower() in ("1", "true", "yes", "on")
+            info = self.adopt_tag_only_seeds(apply=_confirm,
+                                             limit=int(limit or 0) if str(limit or 0).strip().isdigit() else 0)
+            if _confirm:
+                _msg = (f"孤儿种纳管：候选 {info.get('candidates')} · 已补行 {info.get('adopted')}"
+                        f" · 特征码 {info.get('fp_ok')}（缺 {info.get('fp_fail')}）"
+                        f" · 身份 资源 {info.get('identity_resource')} / 普通 {info.get('identity_plain')}"
+                        f" / 新 {info.get('identity_new')} · 无资源组 {info.get('no_group')}")
+            else:
+                _msg = (f"孤儿种预演：候选 {info.get('candidates')}（在岗跳过 {info.get('skipped_duty')}）"
+                        f"（干跑；加 confirm=1 才写账本）")
+            return Response(success=not info.get("errors"), message=_msg, data=info)
         if act in ("asset_untag", "asset_untag_apply"):
             _ap = act == "asset_untag_apply"
             info = self._asset_untag(apply=_ap, limit=int(limit or 0))
@@ -1873,6 +2176,114 @@ class TagsMixin:
             "subs": [SUB_NEW, SUB_RESOURCE, SUB_PLAIN],
         })
 
+    def adopt_tag_only_seeds(self, *, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
+        """★ 19.8.0 用标签重建「只有标签、账本没行」的种（撞库 / 迁移后的恢复入口）。
+
+        真值源 = 标签（``魔流-<站>-<职务>-<身份>``）：它本来就是账本的**镜像**。账本被清空后，
+        标签是唯一幸存的现场事实 —— 所以这里按标签把账本补回来，**只做加法**：
+
+        1. 账本补行：``site`` 取标签站名、``state=静默``（``task_id`` 留空）、身份先记内存；
+        2. 补特征码：``get_torrent_fingerprint`` → ``mf_seed.resource_id``（弱码/取不到就不写）；
+        3. ``sync_resources(apply=True)`` 建资源/成员/来源站（**复用唯一实现**，不另造真值源）；
+        4. 身份回写资源：``资源``/``普通`` 走 ``ResourceLedgerStore.set_identity``
+           （落 ``mf_resource.identity``，``_read_seeds`` 再从资源推导种子的 sub）；
+           ``新`` 是等待态，``store.put`` 触发的 ``_touch_resource`` 会把它写进资源真列。
+
+        **跳过**：标签职务是刷流/魔力/保种/点播的行（任务在岗，不该由本动作接管）；
+        账本已有行一律不动（不覆盖、不改职务）。音乐线身份按 15.8.11 恒为 ``资源``。
+
+        默认干跑（``apply=False`` 只统计候选）；``limit>0`` 只处理前 N 个。
+        """
+        store = self._tag_state()
+        groups = self._tag_groups()
+        snap = self._tag_all_torrents() or {}
+        ledger = store.items() or {}
+        rep: Dict[str, Any] = {
+            "apply": bool(apply), "live": len(snap), "ledger": len(ledger),
+            "tag_only": 0, "skipped_duty": 0, "skipped_no_site": 0, "candidates": 0,
+            "adopted": 0, "fp_ok": 0, "fp_fail": 0,
+            "identity_resource": 0, "identity_plain": 0, "identity_new": 0, "no_group": 0,
+            "items": [], "errors": [],
+        }
+        cand: List[Tuple[str, str, str, float]] = []
+        for h, t in snap.items():
+            hh = str(h or "").strip().lower()
+            if not hh or hh in ledger:
+                continue
+            site = sub = state = ""
+            for raw in (getattr(t, "tags", None) or []):
+                p = parse_tag(raw)
+                if not p:
+                    continue
+                _st = str(p.get("state") or "")
+                if _st not in DUTY_STATES and _st != STATE_SILENT:
+                    continue
+                state, site, sub = _st, str(p.get("site") or ""), str(p.get("sub") or "")
+                break
+            if state in DUTY_STATES:                 # 在岗（有任务）→ 不是孤儿，别接管
+                rep["skipped_duty"] = int(rep["skipped_duty"]) + 1
+                continue
+            if state != STATE_SILENT:                # 没有魔流静默标签 → 不猜
+                continue
+            try:
+                if is_music_line(t):                 # 音乐线身份恒为资源（15.8.11）
+                    sub = SUB_RESOURCE
+            except Exception:  # noqa: BLE001
+                pass
+            rep["tag_only"] = int(rep["tag_only"]) + 1
+            if not site:
+                rep["skipped_no_site"] = int(rep["skipped_no_site"]) + 1
+            cand.append((hh, site, sub, float(getattr(t, "size_gb", 0) or 0)))
+        rep["candidates"] = len(cand)
+        todo = cand[: int(limit)] if str(limit or 0).strip().isdigit() and int(limit) > 0 else cand
+        if not apply:
+            rep["items"] = [{"hash": h, "site": s, "sub": u, "size_gb": sz}
+                            for h, s, u, sz in todo[:30]]
+            return rep
+        for hh, site, sub, size in todo:
+            try:
+                store.put(hh, {"site": site, "state": STATE_SILENT, "sub": sub,
+                               "size_gb": size})
+            except Exception as err:  # noqa: BLE001
+                rep["errors"].append(f"{hh[:8]}:账本补行失败:{err}")
+                continue
+            rep["adopted"] = int(rep["adopted"]) + 1
+        # 补特征码：复用 backfill_fingerprints（只补「账本里有、缺强码」的种 → 含刚补的行），
+        # 它内部已经调了 sync_resources(apply=True) 建资源/成员/来源站。
+        try:
+            _bf = self.backfill_fingerprints(limit=0) or {}
+            rep["fp_ok"] = int(_bf.get("got") or 0)
+            rep["fp_fail"] = int(_bf.get("failed") or 0)
+            rep["fingerprints"] = _bf
+            if not rep["fp_ok"]:                     # 没有新码 → backfill 不会 sync，这里补一次
+                rep["resources"] = self.sync_resources(apply=True)
+        except Exception as err:  # noqa: BLE001
+            rep["errors"].append(f"特征码补齐:{err}")
+        for hh, _site, sub, _size in todo:
+            try:
+                gid = groups.group_of(hh)
+            except Exception:  # noqa: BLE001
+                gid = ""
+            if not gid:
+                rep["no_group"] = int(rep["no_group"]) + 1
+                continue
+            if sub in (SUB_RESOURCE, SUB_PLAIN):
+                try:
+                    if groups.set_identity(gid, sub, by="recover"):
+                        _key = "identity_resource" if sub == SUB_RESOURCE else "identity_plain"
+                        rep[_key] = int(rep[_key]) + 1
+                except Exception as err:  # noqa: BLE001
+                    rep["errors"].append(f"{hh[:8]}:身份回写失败:{err}")
+            elif sub == SUB_NEW:
+                try:
+                    store.put(hh, {"sub": SUB_NEW})
+                    rep["identity_new"] = int(rep["identity_new"]) + 1
+                except Exception as err:  # noqa: BLE001
+                    rep["errors"].append(f"{hh[:8]}:身份回写失败:{err}")
+        rep["items"] = [{"hash": h, "site": s, "sub": u, "size_gb": sz}
+                        for h, s, u, sz in todo[:30]]
+        return rep
+
     def set_tag_state(self, payload: MagicFlowTagStatePayload) -> Response:
         """手动设置种子状态：改标签 + 写账本（两处一起，失败回滚标签）。"""
         h = str(getattr(payload, "hash", "") or "").strip().lower()
@@ -1996,13 +2407,16 @@ class TagsMixin:
             #   （原来只摘 qB 标签 → mf_seed.task_id 留着，审计算 tag_only、
             #    并被第 ⑫ 步标签对账每小时把职务标签补回来 → 每小时互打 7 个）。
             try:
+                # ★ 19.9.0：先补挂音乐在途（__music__），再摘职务/归还 —— 三段判据互补
+                _ma = self._music_assign_pending(apply=True)
                 _mu = self._music_untag_duty(apply=True)
                 _led = self._music_ledger_release(apply=True)
                 # ★ 15.8.11 同版补丁：身份钉「资源」（同点播）；幂等，只在有变化时出声
                 _pin = self._music_asset_pin(apply=True)
-                if (_mu.get("cleaned") or _led.get("released") or _led.get("failed")
+                if (_ma.get("assigned") or _mu.get("cleaned") or _led.get("released") or _led.get("failed")
                         or _pin.get("pinned") or _pin.get("failed")):
-                    self._log(f"魔流:音乐线摘职务标签 {_mu.get('cleaned')} 个"
+                    self._log(f"魔流:音乐线在途挂伪任务 {_ma.get('assigned')} 个"
+                              f"、摘职务标签 {_mu.get('cleaned')} 个"
                               f"、账本归还 {_led.get('released')} 个"
                               f"、身份归资源 {_pin.get('pinned')} 个"
                               f"（扫音乐种 {_mu.get('scanned')}·账本占用 {_led.get('candidates')}"

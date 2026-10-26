@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 
+from app.schemas import Response
 from app.sdk.logging import logger
 
 from ..bonus import (
@@ -450,6 +451,16 @@ class BrushMixin:
                 cache.set(cache_key, cands, SITE_FETCH_TTL)
                 backoff.pop(site_key, None)
             else:
+                # 页面抓不到 → RSS 兜底（新种发现；无 cookie 的站也能用）
+                try:
+                    _rss = self._rss_candidates(task, limit=30)
+                except Exception:  # noqa: BLE001
+                    _rss = []
+                if _rss:
+                    self._log(f"魔流 [{task.name}] 站点 {site_key} 页面无候选，RSS 兜底 {len(_rss)} 条")
+                    cache.set(cache_key, _rss, SITE_FETCH_TTL)
+                    backoff.pop(site_key, None)
+                    return [copy.copy(c) for c in _rss]
                 # 没抓到（失败/空）：不缓存空表（免得把站点"冻"满 TTL），改用显式冷却
                 backoff[site_key] = time.time() + SITE_FETCH_BACKOFF
                 self._log(
@@ -458,6 +469,99 @@ class BrushMixin:
                     "warning",
                 )
             return [copy.copy(c) for c in cands]
+
+    def _rss_candidates(self, task: Any, limit: int = 30, with_hash: bool = True) -> List[Any]:
+        """从站点 RSS 构造候选（RSS 优先；按需补 info hash）。"""
+        try:
+            from ..fingerprint import info_hash  # noqa: WPS433
+        except Exception:  # noqa: BLE001
+            info_hash = None  # noqa: N806
+        try:
+            sid = int(getattr(task, "site_id", 0) or 0)
+            site = self._get_site(sid)
+            if not site:
+                return []
+            data = self._rss_fetch(site, limit) or {}
+            items = data.get("items") or []
+        except Exception:  # noqa: BLE001
+            return []
+        base = str(getattr(site, "url", "") or "").rstrip("/")
+        try:
+            pk = self._cred_get(sid, "passkey")
+        except Exception:  # noqa: BLE001
+            pk = ""
+        budget = 10  # 每轮最多补 10 个 hash，避免请求风暴
+        out: List[Any] = []
+        for it in items:
+            if len(out) >= limit:
+                break
+            title = str(it.get("title") or "").strip()
+            if not title:
+                continue
+            link = str(it.get("link") or "").strip()
+            try:
+                size = float(it.get("size") or 0)
+            except (TypeError, ValueError):
+                size = 0.0
+            promo = str(it.get("promo") or "").lower()
+            free = bool(promo) and ("free" in promo or "免费" in promo)
+            dbl = free and ("2x" in promo)
+            tid = ""
+            m = __import__("re").search(r"details\.php\?id=(\d+)", link)
+            if m:
+                tid = m.group(1)
+            dl = str(it.get("enclosure") or "").strip()
+            h = ""
+            if not dl and tid and base:
+                dl = f"{base}/download.php?id={tid}" + (f"&passkey={pk}" if pk else "")
+                if with_hash and info_hash is not None and budget > 0:
+                    budget -= 1
+                    try:
+                        from app.utils.http import RequestUtils  # noqa: WPS433
+
+                        req = RequestUtils(cookies=getattr(site, "cookie", None),
+                                           ua=getattr(site, "ua", None), timeout=15,
+                                           referer=base + "/")
+                        res = req.get_res(url=dl)
+                        raw = getattr(res, "content", b"") if res is not None else b""
+                        if raw:
+                            h = str(info_hash(raw) or "")
+                    except Exception:  # noqa: BLE001
+                        h = ""
+            out.append(SiteCandidateTorrent(
+                hash=h, title=title, size=size,
+                seeders=int(it.get("seeders") or 0),
+                leechers=int(it.get("leechers") or 0),
+                pubdate=str(it.get("pub") or "") or None,
+                page_url=link, enclosure=dl or link,
+                site_name=str(getattr(task, "site_name", "") or ""),
+                site_domain=str(getattr(task, "site_domain", "") or ""),
+                is_free=free, is_double_free=dbl, site_id=sid,
+                site_cookie=getattr(site, "cookie", None),
+                site_ua=getattr(site, "ua", None),
+            ))
+        return out
+    def debug_rss_candidates(self, site_id: int = 0, limit: int = 10) -> Response:
+        """逐站测试 RSS 候选：返回条数 / 补齐 hash 的数量（只读，不下种）。"""
+        try:
+            from types import SimpleNamespace  # noqa: WPS433
+
+            sid = int(site_id or 0)
+            site = self._get_site(sid)
+            if not site:
+                return Response(success=False, message="站点不存在")
+            task = SimpleNamespace(site_id=sid,
+                                   site_name=str(getattr(site, "name", "") or ""),
+                                   site_domain=str(getattr(site, "domain", "") or ""))
+            cands = self._rss_candidates(task, limit=max(1, min(50, int(limit or 10))))
+            rows = [{"title": c.title, "size": c.size, "hash": c.hash,
+                     "is_free": c.is_free, "page": c.page_url} for c in cands]
+            return Response(success=True, data={
+                "site_id": sid, "count": len(rows),
+                "with_hash": sum(1 for r in rows if r["hash"]),
+                "rows": rows[:10]})
+        except Exception as err:  # noqa: BLE001
+            return Response(success=False, message=f"RSS 候选测试失败：{err}")
 
     # ---------------------------------------------------------
     # 调度与服务实现
@@ -567,7 +671,7 @@ class BrushMixin:
                 pass
         return url
 
-    def brush(self, task_id: str) -> None:
+    def brush(self, task_id: str, dry: bool = False) -> None:
         """抓取站点候选并补充优质魔力种子(刷流,带并发保护)。"""
         task = self._get_task_config(task_id)
         # ★ 14.0.0：「跨站取种」全局任务不抓站点列表（零 browse PV），落种由各站刷流任务发起；
@@ -594,7 +698,7 @@ class BrushMixin:
                 items=[OperationItem(hash="", title="开始执行", reason="")],
             )
         try:
-            summary = self._brush_impl(task_id) or {}
+            summary = self._brush_impl(task_id, dry=dry) or {}
             duration = time.time() - started
             if self._store:
                 if record:
@@ -924,7 +1028,7 @@ class BrushMixin:
         # ★ 基线跟随实况：不再 max(prev,c)（只升不降 → 一次下降后永久误报）
         self._store.set_last_tagged_count(task.id, c)
 
-    def _brush_impl(self, task_id: str) -> None:
+    def _brush_impl(self, task_id: str, dry: bool = False) -> None:
         """抓取站点候选并补充优质魔力种子(刷流,v5 流程)。"""
         task = self._get_task_config(task_id)
         if not task or not task_is_running(task):
@@ -1043,6 +1147,40 @@ class BrushMixin:
             max_keep = policy.max_keep_torrents
             disk_gb = task.disk_size_gb
             min_bonus = policy.min_bonus_per_hour
+
+            # ---------- 0 跨站取种：独立并行（RSS 候选，不占刷流候选池） ----------
+            try:
+                if bool(getattr(task, "crossseed_enabled", False)):
+                    _cs_flag = getattr(self, "_cs_parallel_running", None)
+                    if not isinstance(_cs_flag, dict):
+                        _cs_flag = self._cs_parallel_running = {}
+                    if not _cs_flag.get(task.id):
+                        _csl = max(1, min(int(getattr(task, "max_add_per_run", 0) or 3), 10))
+                        _cspool = self._rss_candidates(task, limit=max(10, _csl * 5), with_hash=False)
+                        if not _cspool:
+                            self._log(f"魔流 [{task.name}] 跨站:并行跳过（RSS 无候选）")
+                        elif _cspool:
+                            _csdl = self._get_downloader(str(getattr(task, "downloader", "") or "qbittorrent"))
+                            if _csdl is not None and getattr(_csdl, "is_available", False):
+                                _cs_flag[task.id] = True
+
+                                def _cs_worker(_t=task, _p=list(_cspool), _d=_csdl, _n=_csl):
+                                    try:
+                                        self._crossseed_round(_t, _d, _p, _n)
+                                    except Exception as _e:  # noqa: BLE001
+                                        self._log(f"跨站并行异常 {_e}", "warning")
+                                    finally:
+                                        try:
+                                            self._cs_parallel_running.pop(_t.id, None)
+                                        except Exception:  # noqa: BLE001
+                                            pass
+
+                                threading.Thread(target=_cs_worker, daemon=True).start()
+                                self._log(f"魔流 [{task.name}] 跨站:独立并行启动（RSS {len(_cspool)} 候选）")
+                            else:
+                                self._log(f"魔流 [{task.name}] 跨站:并行跳过（下载器不可用）", "warning")
+            except Exception as _cse:  # noqa: BLE001
+                self._log(f"跨站:独立并行启动失败 {_cse}", "warning")
 
             # ---------- 1 入口前置检查(不抓取、游标不推进)----------
             self._set_phase(task.id, "entry")
@@ -1644,6 +1782,9 @@ class BrushMixin:
                         if _sk:
                             self._store.seen.mark(task.id, _sk)
                     continue
+                if dry:
+                    self._log(f"干跑·would-download: {cand.title} ({size_gb:.2f}GB)")
+                    continue
                 hash_string, error = downloader.add_torrent(
                     content=cand.raw,
                     download_dir=task.save_path or "",
@@ -1726,7 +1867,7 @@ class BrushMixin:
             )
 
             # ---------- 5.5 跨站免费取种：本站不免费的候选 → 去他站免费下 → 下完由「跨站取种」分诊 ----------
-            if _cs_pool and crossseed_started < _cs_max:
+            if False and _cs_pool and crossseed_started < _cs_max:  # 19.7.54 已改为独立并行
                 try:
                     _cs_started = self._crossseed_round(
                         task, downloader, _cs_pool, _cs_max - crossseed_started
@@ -1879,6 +2020,14 @@ class BrushMixin:
                     self._dbg(f"魔流 [{task.name}] 点播转资源 {_od.get('settled')} 个")
             except Exception as _ode:  # noqa: BLE001
                 self._log(f"魔流 [{task.name}] 点播结算异常: {_ode}", "warning")
+
+            # ★ 17.2.0 §1 音乐：专辑下完 → MP 手动整理入库（硬链接进 /music，种子继续做种）
+            try:
+                _ms = self._music_settle_import()
+                if _ms.get("settled"):
+                    self._dbg(f"魔流 [{task.name}] 音乐整理入库 {_ms.get('settled')} 个")
+            except Exception as _mse:  # noqa: BLE001
+                self._log(f"魔流 [{task.name}] 音乐整理异常: {_mse}", "warning")
 
             # ★ 3.43.0: 标签主权巡检 —— 别的插件/人私下挂的种立即归流、
             #   其他标签一律摘掉（先记账本再摘），MP 来源（订阅/自下）直接进资源。

@@ -741,6 +741,14 @@ class SiteFetcher:
                         promo = cls
                         break
             dv, uv = _NP_PROMO_FACTORS.get(promo) or _NP_PRO_CLASSES.get(promo) or (1.0, 1.0)
+            # ★ 19.7.67 文字促销兜底：HDDolby 一类皮肤把「50%」写在文字里、
+            #   class 仍给 pro_free（或干脆没有促销 class）——只看 class 会误判为免费。
+            #   只要这一行出现 25%~75% 的百分比促销，就以文字为准（下载仍计费）。
+            if dv == 0.0:
+                _pm = re.search(r"(?<!\d)(25|30|50|70|75)\s*%", chunk)
+                if _pm:
+                    dv = {"75": 0.25, "70": 0.3, "50": 0.5, "30": 0.7, "25": 0.75}[_pm.group(1)]
+                    uv = max(uv, 1.0)
 
             # ★ 17.2.2：逐种 H&R 标签（carpt / dstudio 同皮肤）——
             #   ``<img class="hitandrun" src="pic/trans.gif" alt="H&R" title="H&R" />``。

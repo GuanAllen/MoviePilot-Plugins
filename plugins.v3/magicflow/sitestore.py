@@ -108,10 +108,54 @@ _OVERRIDE_SUBKEY = "__override__"
 
 
 def _norm_domain(domain: str) -> str:
-    """域名归一（与旧 kv 键口径一致：小写、去协议、去尾斜杠）。"""
+    """域名归一：小写、去协议/端口/路径、去 ``www.`` 前缀、去首尾点。
+
+    ★ 19.7.96：补 ``www.`` 与端口/路径归一（口径与 ``sitecap.norm_domain`` 对齐）。
+    修前只去协议和尾斜杠 → ``www.yemapt.org`` 与 ``yemapt.org`` 算两个域名，
+    同一站被拆成两行（16 号真实行 + 空壳行），``_save_caps`` 按裸域查不到行就新建。
+    """
     s = str(domain or "").strip().lower()
-    s = s.replace("https://", "").replace("http://", "").strip("/")
-    return s
+    s = s.replace("https://", "").replace("http://", "")
+    s = s.split("/")[0].split(":")[0].strip().strip(".")
+    return s[4:] if s.startswith("www.") else s
+
+
+def _find_site_row(sess: Any, dom: str) -> Any:
+    """按归一域名找 ``mf_site`` 行：先精确（含 ``www.`` 变体），再按主机名后缀兜底。
+
+    ★ 19.7.96 修两类「同一站存成两行」（现场 mf_site 从 17 行涨到 20 行）：
+
+    1. **www 形态**：历史行存过 ``www.yemapt.org``，只按裸域 ``==`` 查会漏 → 又建一条空壳行；
+       这里 ``dom`` 与 ``www.`` + ``dom`` 都试。
+    2. **URL 主机名 vs 注册域**：MP 站点表的 ``domain`` 是注册域（``btschool.club``、
+       ``m-team.cc``、``soulvoice.club``、``novahd.top``），历史行存的却是 URL 主机名
+       （``pt.btschool.club`` / ``kp.m-team.cc`` / ``pt.soulvoice.club`` / ``tracker.novahd.top``）
+       → 精确查仍然漏。按 ``.`` 后缀双向匹配兜底。
+
+    命中即复用；调用方随后把 ``row.domain`` 归一，脏值自然收敛。多个后缀候选时**优先
+    ``mp_site_id`` 非空的行**（真站），避免再次命中历史空壳。
+    """
+    if not dom:
+        return None
+    from sqlalchemy import select
+
+    for cand in (dom, "www." + dom):
+        row = sess.execute(
+            select(mfdb.SiteRow).where(mfdb.SiteRow.domain == cand)
+        ).scalars().first()
+        if row is not None:
+            return row
+    loose = None
+    for row in sess.execute(select(mfdb.SiteRow)).scalars().all():
+        other = _norm_domain(getattr(row, "domain", "") or "")
+        if not other or other == dom:
+            continue
+        if other.endswith("." + dom) or dom.endswith("." + other):
+            if getattr(row, "mp_site_id", None) is not None:
+                return row
+            if loose is None:
+                loose = row
+    return loose
 
 
 def _norm_hash(hash_string: str) -> str:
@@ -503,8 +547,6 @@ class SiteStore:
                 lock.release()
 
     def _save_site_rules(self, value: Dict[str, Any]) -> None:
-        from sqlalchemy import select
-
         now = _now()
         lock = self._lock
         if lock is not None:
@@ -519,9 +561,7 @@ class SiteStore:
                     if not dom:
                         continue
                     cols = rec_to_site_columns(dom, rec, now)
-                    row = sess.execute(
-                        select(mfdb.SiteRow).where(mfdb.SiteRow.domain == dom)
-                    ).scalars().first()
+                    row = _find_site_row(sess, dom)
                     if row is None:
                         row = mfdb.SiteRow(
                             site_id=self._next_site_id(sess),
@@ -603,8 +643,6 @@ class SiteStore:
         self._save_caps(value, override=True)
 
     def _save_caps(self, value: Dict[str, Any], *, override: bool) -> None:
-        from sqlalchemy import select
-
         now = _now()
         lock = self._lock
         if lock is not None:
@@ -618,9 +656,7 @@ class SiteStore:
                     dom = _norm_domain(domain)
                     if not dom:
                         continue
-                    row = sess.execute(
-                        select(mfdb.SiteRow).where(mfdb.SiteRow.domain == dom)
-                    ).scalars().first()
+                    row = _find_site_row(sess, dom)
                     if row is None:
                         row = mfdb.SiteRow(
                             site_id=self._next_site_id(sess),
@@ -628,6 +664,9 @@ class SiteStore:
                             created=now,
                         )
                         sess.add(row)
+                    elif row.domain != dom:
+                        # ★ 19.7.96：历史行存的是 ``www.`` 形态 → 就地收敛，防止同一站两行
+                        row.domain = dom
                     caps = dict(getattr(row, "caps", None) or {})
                     if override:
                         caps[_OVERRIDE_SUBKEY] = dict(rec)
@@ -791,10 +830,11 @@ class SiteStore:
                 info, col = iy_info, "iyuu_sid"
         dom = _norm_domain(info.get("domain"))
         if dom:
-            row = sess.execute(
-                select(mfdb.SiteRow).where(mfdb.SiteRow.domain == dom)
-            ).scalars().first()
+            row = _find_site_row(sess, dom)
             if row is not None:  # 复用同一物理站点的域名行（只补对应列，不覆写另一列）
+                if row.domain != dom:
+                    # ★ 19.7.96：历史行存的是 ``www.`` 形态 → 就地收敛（口径同 _norm_domain）
+                    row.domain = dom
                 # ★ 17.5.0 修误报：**同一命名空间**内以当前解析结果为准。
                 #   反例（修前）：MP 里删掉站点再加回同名站 → 新 ``mp_site_id``，而旧值
                 #   （``getattr(row, col) is None`` 才补）留着 → ``deleted_sites_rows``
@@ -825,17 +865,15 @@ class SiteStore:
         return self._site_row_by_id(sess, sid, now, "iyuu_sid")
 
     def _site_row_by_domain(self, sess: Any, domain: str, now: float) -> Any:
-        from sqlalchemy import select
-
         dom = _norm_domain(domain)
-        row = sess.execute(
-            select(mfdb.SiteRow).where(mfdb.SiteRow.domain == dom)
-        ).scalars().first()
+        row = _find_site_row(sess, dom)
         if row is None:
             row = mfdb.SiteRow(
                 site_id=self._next_site_id(sess), domain=dom, name=dom, created=now,
             )
             sess.add(row)
+        elif row.domain != dom:
+            row.domain = dom
         return row
 
     # ---------------------------------------------------------- mf_run（全局运行标量）

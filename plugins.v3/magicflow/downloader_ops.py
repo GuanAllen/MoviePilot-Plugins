@@ -129,6 +129,17 @@ class TorrentFetchFlowControl(RuntimeError):
     """
 
 
+class TorrentFetchGone(RuntimeError):
+    """目标种子在站点侧已不存在（HTTP 200，但回的是站点错误体）。
+
+    典型：馒头官方 API 的签名链对失效 tid 返回
+    ``{"code":"1","message":"種子未找到","data":null}``。旧代码把这段 JSON 当成
+    「非有效种子」→ 归类为**站点流控**，于是「IYUU 云端给的 tid 在该站已不存在」
+    被写成「取种被站点流控」，排查方向被带偏（实测 tid=1 就返回这个）。
+    这类是**确定性失效**（重试无用），调用方按 fail 记一笔并跳过即可。
+    """
+
+
 # ---------------------------------------------------------------------------
 # 自适应下载限速闸门
 #   - 所有 .torrent 下载（含 SDK 路径与回落路径）都先过 _dl_gate()，保证全局
@@ -186,6 +197,39 @@ _FLOW_MARKERS = (
 def _is_flow_control(text: Any) -> bool:
     t = str(text or "").lower()
     return any(m in t for m in _FLOW_MARKERS)
+
+
+def _site_error_hint(data: Any) -> str:
+    """站点用 JSON 回的「取种失败」原因（例：``種子未找到``）——不是错误体则空串。
+
+    只在**明确是错误体**时才给原因：JSON object、带 ``message``/``msg``、
+    且 ``data`` 为空（正常返回体都带 data）。这样既能把「目标种不存在」这类
+    确定性失效从「流控」里摘出来，又不会把正常的 JSON 误判成错误。
+    """
+    if not data:
+        return ""
+    try:
+        if isinstance(data, str):
+            text = data.strip()
+        else:
+            text = bytes(data)[:2000].decode("utf-8", "ignore").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+    if not text.startswith("{"):
+        return ""
+    try:
+        obj = json.loads(text)
+    except Exception:  # noqa: BLE001
+        return ""
+    if not isinstance(obj, dict) or obj.get("data"):
+        return ""
+    msg = str(obj.get("message") or obj.get("msg") or "").strip()
+    if not msg:
+        return ""
+    code = str(obj.get("code") if obj.get("code") is not None else obj.get("status") or "").strip()
+    if code.lower() in ("0", "200", "success", "true", "ok"):
+        return ""
+    return f"{msg}（code={code}）" if code else msg
 
 
 def _looks_like_torrent(data: Any) -> bool:
@@ -986,6 +1030,12 @@ class DownloaderAdapter:
                 if content:
                     _bytes = content if isinstance(content, bytes) else str(content).encode("utf-8")
                     if not _looks_like_torrent(_bytes):
+                        # 站点用 JSON 明确回错（如馒头 API「種子未找到」）→ 目标种确定性失效，
+                        # 不是流控（旧代码把它记成流控，日志里 15 次「馒头流控」多半是这类）。
+                        _hint = _site_error_hint(_bytes)
+                        if _hint:
+                            logger.warning(f"站点返回错误体（目标种子可能已不存在）{url}: {_hint}")
+                            raise TorrentFetchGone(_hint)
                         # 拿到 200 但不是有效种子（多半是站点流控/登录提示页）
                         logger.warning(f"TorrentHelper 返回内容非有效种子（疑似流控）{url}")
                         _dl_note_flow_control()
@@ -1043,6 +1093,10 @@ class DownloaderAdapter:
                 return None
             _dl_note_success()
             if not _looks_like_torrent(response.content):
+                _hint = _site_error_hint(response.content)
+                if _hint:
+                    logger.warning(f"站点返回错误体（目标种子可能已不存在）{url}: {_hint}")
+                    raise TorrentFetchGone(_hint)
                 _dl_note_flow_control()
                 raise TorrentFetchFlowControl("返回内容非有效种子（疑似站点流控/登录页）")
             _torrent_cache_put(url, response.content)
@@ -1180,6 +1234,10 @@ class DownloaderAdapter:
             return None, f"已在下载器但校验仅 {_p0:.1%}（不重复添加）"
 
         hash_string: Optional[str] = None
+        # ★ 19.7.92：留下 add 的真实返回，供「添加后未出现在下载器」类失败归因。
+        #   现场（2026-10-20）：学校站 9 颗一輪全失败，日志只剩笼统一句，看不出是
+        #   qB 拒收（ok=False）/ 回了空 ids / 还是 qB 侧延迟可见。**只加描述，不改行为**。
+        _add_note = ""
         # 🔎 标签审计：辅种复用添加种子
         logger.info(f"[标签审计] ADD-REUSE dir={save_path or '-'} tags={tag_list} paused=True")
         try:
@@ -1194,10 +1252,13 @@ class DownloaderAdapter:
             # 兼容 (bool, [ids]) 与 bool 两种返回
             if isinstance(result, tuple) and len(result) == 2:
                 ok, ids = result
+                _add_note = f"add 返回 ok={bool(ok)} / ids={len(list(ids or []))} 个"
                 if ids:
                     hash_string = str(next(iter(ids))).lower()
                 if not ok and not hash_string and not local_hash:
                     return None, "qBittorrent 添加种子失败"
+            else:
+                _add_note = f"add 返回 {str(result)[:60]}"
         except Exception as e:
             return None, f"添加种子失败: {e}"
 
@@ -1216,7 +1277,7 @@ class DownloaderAdapter:
                 hash_string = None
         if not hash_string:
             # 定位不到新种子 → 不冒险操作别的种，直接放弃本次辅种
-            return None, "添加成功但未能定位新种子 hash（已放弃辅种）"
+            return None, f"添加成功但未能定位新种子 hash（{_add_note or 'add 无返回'}，已放弃辅种）"
 
         def _delete_added(reason: str) -> str:
             """撤销刚添加的辅种种（不删文件），并复核确已删除。"""
@@ -1244,7 +1305,7 @@ class DownloaderAdapter:
                 break
             time.sleep(0.5)
         if not _appeared:
-            return None, _delete_added("添加后未出现在下载器，已撤销")
+            return None, _delete_added(f"添加后未出现在下载器（{_add_note or 'add 无返回'}），已撤销")
 
         # 重新校验：指向已有文件，若命中则瞬时 100%
         try:

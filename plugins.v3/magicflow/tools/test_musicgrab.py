@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import time
 import types
 from pathlib import Path
 from types import SimpleNamespace
@@ -86,7 +87,29 @@ class Fake(MusicGrabMixin):
         self.journal = []
         self._dl = self
         self.tag_calls = []
+        self.lib_marks = []
+        self.asset_marks = []
         self._qb_index = {}
+
+    # --- 库记桩（_music_mark_library）
+    def _tag_groups(self):
+        outer = self
+
+        class _G:
+            def queue_library(self, h, path="", media_id=""):
+                outer.lib_marks.append((h, path))
+                return "g" + h[:4]
+
+        return _G()
+
+    def _tag_state(self):
+        outer = self
+
+        class _S2:
+            def set_asset(self, h, sub=None):
+                outer.asset_marks.append((h, sub))
+
+        return _S2()
 
     # --- 下载器桩
     @property
@@ -118,8 +141,24 @@ class Fake(MusicGrabMixin):
             _t.tags = list(tags)
         return True
 
+    def set_torrent_tags(self, h, tags):
+        self.tag_calls.append((h, list(tags)))
+        _t = self._qb_index.get(h)
+        if _t is not None:
+            _t.tags = list(tags)
+        return bool(self._tag_ok) if hasattr(self, "_tag_ok") else True
+
     def _site_domain_by_name(self, name):
         return "soulvoice.club"
+
+    def normalize_path(self, path):
+        """宿主路径 → MP 视角路径（与 downloader path_mapping 同向）。"""
+        p = str(path or "")
+        for host, mp in (("/vol6/1000/movie", "/movie"), ("/vol3/1000/media", "/media"),
+                         ("/vol6/1000/music", "/music")):
+            if p == host or p.startswith(host + "/"):
+                return mp + p[len(host):]
+        return p
 
     @property
     def _store(self):
@@ -271,6 +310,214 @@ ok(dict(f10.tag_calls).get("g" * 40) == ["魔流-馒头-静默-资源"], "g：�
 ok(dict(f10.tag_calls).get("d" * 40) is None, "d：标签没职务轴 → 不动 qB（账本另由 TagsMixin 收）")
 again = f10._music_untag_duty(apply=True)
 ok(again["candidates"] == 0 and again["cleaned"] == 0 and again["stripped"] == [], "幂等：再跑零动作")
+
+# --------------------------------------------- [22] 音乐结算：下完 → 直调 MP 整理（★17.2.0）
+print("[22] _music_settle_import：下完的音乐种直调 manual_transfer，幂等/限流/失败不阻断")
+
+class _S:
+    def __init__(self, cat, prog, content="/vol6/1000/music/下载/Album X/t01.flac", title="Album X - Artist",
+                 added_on=None):
+        self.category, self.progress, self.content_path = cat, prog, content
+        self.save_path, self.title, self.tags = "/vol6/1000/music/下载", title, []
+        self.added_on = time.time() if added_on is None else added_on
+
+f11 = Fake()
+f11._qb_index = {}
+_F11_TORRENTS = {
+    "m" * 40: _S("音乐", 1.0),
+    "n" * 40: _S("音乐", 0.5, title="还在下"),
+    "o" * 40: _S("音乐", 1.0, title="已整理过"),
+    "p" * 40: _S("电影", 1.0, title="影视种不动"),
+    "x" * 40: _S("音乐", 1.0, content="/vol6/1000/movie/下载/Old Album/t01.flac", title="老下载目录里的种"),
+    "y" * 40: _S("音乐", 1.0, title="三周前的老种", added_on=time.time() - 21 * 86400),
+}
+f11._tag_all_torrents = lambda: _F11_TORRENTS
+_done = {"o" * 40}
+f11._music_transferred = lambda h: h in _done
+_calls = []
+
+
+def _f11_tr(h, t, p):
+    _calls.append((h, p))
+    return True, ""
+
+
+f11._music_transfer_now = _f11_tr
+r = f11._music_settle_import(apply=False)
+ok(r["scanned"] == 5 and r["pending"] == 2 and r["settled"] == 0,
+   f"干跑：扫 5（音乐线；非音乐下载目录/老种不算）= 待转 2（{r}）")
+ok(_calls == [], "干跑：零动作")
+r = f11._music_settle_import(apply=True)
+ok(r["settled"] == 1 and _calls and _calls[0][0] == "m" * 40,
+   f"执行：只直调下完且未整理的那颗（{_calls}）")
+ok(_calls and _calls[0][1].startswith("/music/下载"), f"整理路径是 MP 视角路径（{_calls}）")
+ok(all(w[0] != "x" * 40 for w in _calls), "不在音乐下载目录的种（老 movie 目录）不整理")
+ok(all(w[0] != "y" * 40 for w in _calls), "3 周前的老种不重复结算")
+ok(f11.tag_calls == [], "直调路线不再打 MOVIEPILOT 标签（否则 MP 定时任务重复扫描）")
+_done.add("m" * 40)  # 模拟整理成功（transferhistory 已记）
+_calls.clear()
+r = f11._music_settle_import(apply=True)
+ok(r["settled"] == 0 and _calls == [], "幂等：已整理过的不再重复调用")
+ok(any(h == "o" * 40 for h, _p in f11.lib_marks),
+   f"已整理过的种补写库记（事件偶发收不到；{f11.lib_marks}）")
+
+f12 = Fake()
+f12._qb_index = {}
+f12._tag_all_torrents = lambda: {"q%d" % i * 40: _S("音乐", 1.0) for i in range(5)}
+f12._music_transferred = lambda h: False
+f12._music_transfer_now = lambda h, t, p: (True, "")
+r = f12._music_settle_import(apply=True, limit=2)
+ok(r["settled"] == 2 and r["pending"] == 5, f"限流：一轮最多处理 2 张（{r['settled']}）")
+
+f13 = Fake()
+f13._qb_index = {}
+f13._tag_all_torrents = lambda: {"z" * 40: _S("音乐", 1.0)}
+f13._music_transferred = lambda h: False
+f13._music_transfer_now = lambda h, t, p: (False, "整理任务处理失败")
+r = f13._music_settle_import(apply=True)
+ok(r["failed"] == 1 and r["settled"] == 0, "整理失败只计数，不抛异常（下轮再试）")
+ok(f11._music_mp_path("/vol6/1000/music/下载/X").startswith("/"), "宿主路径 → MP 路径兜底可用")
+
+# ------------------------ [23] 19.9.2 relocate 防抖（空转修复）
+print("[23] _music_settle_import 19.9.2：save_path 已等值目标 / 冷却期内不再 relocate（防空转刷屏）")
+
+
+class _SP(_S):
+    def __init__(self, cat, prog, content, save_path, title="Album SP"):
+        super().__init__(cat, prog, content=content, title=title)
+        self.save_path = save_path
+
+
+f14 = Fake()
+f14._qb_index = {}
+_relocs = []
+f14._music_relocate = lambda h, d: (_relocs.append(h) or True)
+f14._tag_all_torrents = lambda: {
+    # 真实数据在 movie 目录，qB 记的 save_path 也还是 movie 目录 → 该搬（一次）
+    "r" * 40: _SP("音乐", 1.0, "/vol6/1000/movie/下载/A/t01.flac", "/vol6/1000/movie/下载/A"),
+    # 2026-10-25 现场：数据在 movie 目录，qB 记的 save_path 已是音乐目录 → 搬不动，必须跳过
+    "s" * 40: _SP("音乐", 1.0, "/vol6/1000/movie/下载/B/t01.flac", "/vol6/1000/music/下载"),
+}
+r = f14._music_settle_import(apply=True)
+ok(r["relocated"] == 1 and _relocs == ["r" * 40], f"路径不同 → 只搬一次（{r} / {_relocs}）")
+ok(int(r["reloc_skip"]) >= 1, f"save_path 已等值目标 → 直接跳过、不空搬（{r['reloc_skip']}）")
+_relocs.clear()
+r2 = f14._music_settle_import(apply=True)
+ok(r2["relocated"] == 0 and _relocs == [], "冷却期内同一 hash 不重试（不再每轮刷屏）")
+ok(int(r2["reloc_skip"]) >= 2, f"跳过计数可见（{r2['reloc_skip']}）")
+
+# ------------------- [24] 19.8.1 音乐清单：交棒后只留下载记录（★19.8.1 参照点播）
+print("[24] _music_items 19.8.1：交棒静默池后只留静态下载记录，不取 qB 现况")
+
+
+class _ST(_S):
+    def __init__(self, cat, prog, state="pausedUP", size_gb=1.0, title="Album X"):
+        super().__init__(cat, prog, title=title)
+        self.state = state
+        self.size_gb = size_gb
+
+
+class _RecFake(Fake):
+    def __init__(self, snap, recs, journal=()):
+        super().__init__()
+        self._snap = snap
+        self._seed_recs = recs
+        self.journal = list(journal)
+        self._tag_all_torrents = lambda: dict(self._snap)
+
+    def _ondemand_seed_rec(self, h):
+        return self._seed_recs.get(h) or {}
+
+    def _music_deleted_hashes(self):
+        return set()
+
+    @property
+    def _store(self):
+        class _J:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def list_recent(self, limit=5000):
+                return list(self.rows)[:limit]
+
+        return SimpleNamespace(journal=_J(self.journal))
+
+
+_H1, _H2, _H3, _H4 = "a" * 40, "b" * 40, "c" * 40, "d" * 40
+_snap = {
+    _H1: _ST("音乐", 1.0, title="已交棒专辑"),      # sub=资源 + pausedUP
+    _H2: _ST("音乐", 0.5, title="还在下"),          # 下到一半
+    _H3: _ST("音乐", 1.0, title="下完待转"),        # 下完未交棒
+}
+_recs = {
+    _H1: {"sub": "资源", "site": "聆音", "in_library": True, "identity_at": 1.0},
+    _H2: {"sub": "新", "site": "聆音"},
+    _H3: {"sub": "新", "site": "聆音"},
+}
+_jrec = SimpleNamespace(
+    created_at=99.0,
+    items=[SimpleNamespace(source="music", hash=_H1, title="音乐 已交棒专辑", reason="源 聆音"),
+           SimpleNamespace(source="music", hash=_H4, title="音乐 已结案专辑", reason="源 CARPT")],
+)
+f14 = _RecFake(_snap, _recs, [_jrec])
+_rep = f14._music_items(limit=50)
+_rows = {r["hash"]: r for r in _rep["items"]}
+ok(len(_rows) == 4 and _rep["totals"]["count"] == 4, f"清单 4 行（{list(_rows)}）")
+ok(_rows[_H1]["stage"] == "resource" and _rows[_H1]["stage_text"] == "已转「资源」·已入库",
+   f"交棒行 = 已转「资源」·已入库（{_rows[_H1]['stage_text']}）")
+ok(_rows[_H1]["state"] == "" and _rows[_H1]["in_qb"] is False,
+   f"交棒行**不取 qB 现况**（state={_rows[_H1]['state']!r} in_qb={_rows[_H1]['in_qb']}）")
+ok(_rows[_H1]["progress"] == 1.0 and _rows[_H1]["percent"] == 100.0 and _rows[_H1]["save_path"] == "",
+   "交棒行按记录写死 100%（不回查下载器）")
+ok(_rows[_H2]["stage"] == "downloading" and _rows[_H2]["state"] == "pausedUP"
+   and _rows[_H2]["in_qb"] is True and _rows[_H2]["percent"] == 50.0,
+   "未交棒行仍带 qB 现况（下载中）")
+ok(_rows[_H3]["stage"] == "settling" and _rows[_H3]["stage_text"] == "已下完，待转「资源」",
+   f"下完未交棒 = 待转资源（{_rows[_H3]['stage_text']}）")
+ok(_rows[_H4]["stage"] == "gone" and _rows[_H4]["stage_text"] == "已结案"
+   and _rows[_H4]["in_qb"] is False and _rows[_H4]["state"] == "",
+   f"只剩 journal 的行 = 已结案记录（{_rows[_H4]['stage_text']}）")
+ok(all(not r["state"] for h, r in _rows.items() if h in (_H1, _H4)),
+   "回归：交棒/结案行绝不暴露 pausedUP（静默池状态不再串进音乐任务）")
+
+# ---------------------------------------------------------------- [25] 19.9.0 在途职务「音乐」
+print("[25] 19.9.0 音乐在途挂 __music__：加种即带职务标签、下完才摘")
+
+
+class _TP(_T):
+    def __init__(self, cat, tags=None, prog=0.0):
+        super().__init__(cat, tags)
+        self.progress = prog
+        self.title = "x"
+
+
+f11 = Fake()
+f11._qb_index = {
+    "d" * 40: _TP("音乐", ["魔流-聆音-静默-资源", "魔流-聆音-音乐"], 0.4),
+    "e" * 40: _TP("音乐", ["魔流-聆音-静默-资源", "魔流-聆音-音乐"], 1.0),
+    "f" * 40: _TP("音乐", ["魔流-聆音-静默-资源"], 0.5),
+}
+_r25 = f11._music_untag_duty(apply=True)
+_c25 = dict(f11.tag_calls)
+ok(_r25["cleaned"] == 1, f"下完的才摘（{_r25['cleaned']}）")
+ok("d" * 40 not in _c25 and "魔流-聆音-音乐" in f11._qb_index["d" * 40].tags,
+   "下载中：音乐职务保留（免疫静默池的唯一凭据）")
+ok(_c25["e" * 40] == ["魔流-聆音-静默-资源"], "下完：摘掉音乐职务，回到纯身份")
+ok("f" * 40 not in _c25, "没有音乐职务的种不动")
+
+f12 = Fake()
+f12.assign_calls = []
+f12._music_assign = lambda hs, **kw: f12.assign_calls.append((list(hs), kw)) or len(hs)
+f12._music_relocate = lambda h, p: None
+_out = f12._music_grab_one({"title": "Album X", "site": 0, "site_name": "聆音",
+                            "size": 1 << 30, "hit_and_run": False,
+                            "enclosure": "https://pt.soulvoice.club/download.php?id=1"},
+                           "/vol6/1000/music/下载")
+_tag25 = str((f12.calls[-1] or {}).get("tag") or "") if f12.calls else ""
+ok("魔流-聆音-音乐" in _tag25 and "魔流-聆音-静默-资源" in _tag25,
+   f"加种即打「身份+职务」两个标签（{_tag25}）")
+ok(bool(f12.assign_calls) and f12.assign_calls[0][1].get("sub") == "资源",
+   "加种后立刻挂 __music__（sub=资源）")
 
 print()
 if FAILS:
