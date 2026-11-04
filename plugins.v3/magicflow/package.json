@@ -1,7 +1,7 @@
 {
   "name": "moviepilot-magicflow-plugin",
   "private": true,
-  "version": "19.9.6",
+  "version": "19.10.1",
   "type": "module",
   "scripts": {
     "dev": "vite build --watch",
@@ -17,6 +17,8 @@
     "vite": "^5.4.11"
   },
   "history": {
+    "19.10.1": "点播取种链路修通（点击下载没反应）：① **API 站换票结果按 result_base_url + result_path + ?result_query_param 拼成真地址**（野马PT 等返回的是 token 不是 URL，旧代码把 token 当地址 → 「无法打开链接」）；② 换票与取种**同一套 header**（下载口校验 Authorization，TorrentHelper 带不上 → 403）；③ 点播取种每条失败都写日志（含 code 与站点名），不再只回前端。",
+    "19.10.0": "点播取种链路重做：**候选池 + 去 PV**。① 搜索与取种全程走 MP SDK（插件 0 站点请求），不再记 PV；② 搜完入 TierCache `odpool`（TTL 2h），点候选零请求落地，过期按站点回填凭据现取；③ 候选池只留「站点暂停抓取」闸，被跳过站点进 sources[] 可见；④ 落地失败带 code（no_downloader / no_save_path / pv_blocked / torrent_fetch_failed / cand_expired）；⑤ 修 pick 存在时提前赋 title 导致识别被跳过的老 bug。",
     "7.15.0": "可观测④**结构化事件流**：`GET /events`（`since/limit/kind/task_id/level/min_level/include_open`，默认升序便于增量拉取）+ `GET /debug/events`。**不造第二份日志**——已有的「操作日志」（journal，热层 Redis + 冷备）就是结构化的发生过流水，本模块把它读成统一事件（`_event_from_record`：kind→级别/动作名、主因、明细前 10 条、时魔/体积合计），再补上 journal 覆盖不到的本地事件（健康告警/任务执行失败/同站纳管，小环形 `eventlog_v1` 300 条，带 dedup 防抖）。事件 schema：id/ts/kind/level/action/task_id/(task_name)/site_id(site_name)/state/count/reason/items/metrics/error。前端：操作记录弹窗新增「事件流」标签页（级别筛选 + 时间倒序 + 严重度左边框着色）。",
     "7.14.2": "Master 口径（09:16 / 09:57 / 10:15）：**「换种」只在到达上限之后才有意义**——两个上限口径任一命中即算「满」：① 做种数达站点「计入魔力的做种数上限」(seeding_count_cap；March 500 / 财神 1000 / CARPT 100)；② 达到任务设定的**存储上限**(disk_size_gb)。⇒ `_build_magic_policy` 新增 at_cap 判定（做种数取 max(站点账号口径, 本任务托管数)）。★**体积只算本任务自己下载占用的种，辅种（存量复用/跨站辅种，标「魔流-辅种」）复用已有文件不占新增磁盘 → 不计入**。**未达上限 → 关闭「低效淘汰」**（门槛清零 + prefer_delete_zero_bonus=False），只清「0 产出垃圾」（无进度/过慢/非免费）与磁盘体积超限强制淘汰；达上限才做换种。",
     "7.14.1": "修「站内做种人数过多」误删高产种：旧代码写死 `people_factor < 1.5`（=人数因子硬阈），等价于**Ni≥4 就删**——删种理由完全无视体积/做种时长/官种系数，把一堆**产出仍然很高**的种子一起误杀（March·刷魔力 08:34 一轮删 8 个，站点口径时魔 98.85 → 68.32/h）。修法：① 该口径改为**默认关**（policy.prefer_delete_crowded=False）——它本来就被「低于魔力门槛」覆盖（人数因子已算进 bonus_per_hour）；② 真需要时用**站点公式算出的人数因子**（torrent.people_factor，不再用默认 n0 重算）+ 可配阈 crowded_people_factor（默认 1.05≈几乎不触发）。",

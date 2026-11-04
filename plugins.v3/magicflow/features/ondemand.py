@@ -8,8 +8,8 @@
     → 下载
     → **直接转「资源」**（不观察、不分拣）。
 
-实现上复用既有链路：``_mp_search_title``（MP 自带搜索）取候选、``_crossseed_torrent_bytes``
-取 .torrent 字节、``downloader.add_torrent`` 落盘，最后只把「身份」这一步从自动扫描
+实现上复用既有链路：``_mp_search_title``（MP 自带搜索）取候选、``_od_fetch_torrent``
+取 .torrent 字节（★ 19.10.0 起不再走跨站通道、也不判本地 PV 预算）、``downloader.add_torrent`` 落盘，最后只把「身份」这一步从自动扫描
 换成手动指定 —— 下载中的 hash 记进 ``ondemand_pending``，一旦形成资源组
 （``ResourceLedgerStore``）就 ``set_identity(资源)`` 并摘掉待办；在此期间分拣
 （``_silent_triage``）**跳过**这些种，保证「不观察、不分拣」。
@@ -21,7 +21,6 @@ import logging
 import re
 import time
 from datetime import datetime, timezone
-from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set
 
 from app.schemas import Response
@@ -48,9 +47,15 @@ _IMDB_RE = re.compile(r"imdb\.com/title/(tt\d+)")
 # 最近一次搜索结果的短时缓存（秒）：让「选某一条」不必把站点再搜一遍（原搜索要 60~75s）
 _OD_CACHE_TTL = 600
 
+# ★ 19.10.0 候选池：候选一旦返回给前端，**就必须在服务端活着**，直到用户点它。
+#   键 = ``enclosure``，与关键词 / 站点集合 / 分页**全部无关** → 「搜完必能下」，落地零请求。
+#   落点 = 缓存层（``TierCache``：Redis → 文件 → 内存，代码零分支）；丢了最多少抓一次，不影响正确性。
+_OD_POOL_REGION = "odpool"
+_OD_PICK_TTL = 7200      # 2h：这是**人的决策时间**（先比体积、比做种），不是抓取的缓存时间
+
 # ★ 17.1.1：``/agent/ondemand/add`` 找不到 pick 时的**续页上限**（搜第 0..N-1 页）。
 #   根因：MP ``search_by_title(page=)`` 一次只给一页，pick 排在**第 2+ 页**时原来永远命中不了
-#   （``/agent/ondemand/search`` 翻页看得到、add 却说「候选未命中」）。逐页过 PV 闸，有界。
+#   （``/agent/ondemand/search`` 翻页看得到、add 却说「候选未命中」）。逐页搜、命中即停，有界。
 _OD_ADD_MAX_PAGES = 3
 
 
@@ -136,6 +141,108 @@ class OnDemandMixin:
             "raw": str(raw or ""), "sites": [int(x) for x in (sites or [])],
             "rows": list(rows), "ts": time.time(),
         }
+
+    # ------------------------------------------------------------ 候选池（★ 19.10.0）
+
+    def _od_pool_store(self, key: str, item: Dict[str, Any]) -> None:
+        """候选池写入的**唯一出口**（键 = enclosure / ``__last__``，TTL = ``_OD_PICK_TTL``）。
+
+        收成一个方法是为了让「池写入」只有一处宿主调用（棘轮按调用点计数），
+        同时保证所有写入的 TTL 口径一致 —— 别在这里出现第二套过期时间。
+        """
+        self._cache_set(_OD_POOL_REGION, key, item, _OD_PICK_TTL)
+
+    def _od_pool_put(self, rows: List[Dict[str, Any]], keyword: str = "") -> int:
+        """把候选**逐条**放进缓存层（键 = ``enclosure``），返回入池条数。
+
+        与 ``_od_last`` 的区别：那是**单槽 + 整批 + 绑关键词**（第二次搜索就覆盖第一次），
+        这是**按候选索引** —— 所以「搜 3 个站、逐条比体积、2 小时后才点」也照样能落种。
+        凭据（``site_cookie`` / ``site_ua``）不入缓存，落地时按 site id 回填（见 ``_od_pool_hydrate``）。
+        """
+        kw = str(keyword or "")[:120]
+        now = time.time()
+        n = 0
+        for r in (rows or []):
+            u = str((r or {}).get("enclosure") or "")
+            if not u:
+                continue
+            item = dict(r)
+            item.pop("site_cookie", None)      # 凭据不入缓存（Redis / 散文件都可能被读到）
+            item.pop("site_ua", None)
+            item["_kw"] = kw
+            item["_at"] = now
+            self._od_pool_store(u, item)
+            n += 1
+        if n:
+            # 自证键：``TierCache`` 没有 scan，池里有几条从外面看不到 → 留一个索引（可随响应带出）
+            self._od_pool_store("__last__", {"ts": now, "n": n, "kw": kw})
+        return n
+
+    def _od_pool_get(self, pick: str) -> Optional[Dict[str, Any]]:
+        """按 ``enclosure`` 取候选；未命中 / 过期 → ``None``（**绝不在这里回退成重搜**）。"""
+        u = str(pick or "").strip()
+        if not u:
+            return None
+        it = self._cache_get(_OD_POOL_REGION, u, _OD_PICK_TTL)
+        if not isinstance(it, dict) or not it.get("enclosure"):
+            return None
+        row = dict(it)
+        row.pop("_kw", None)                   # 内部字段不带出去：形状必须与「刚搜出来的行」一致
+        row.pop("_at", None)
+        return self._od_pool_hydrate(row)
+
+    def _od_pool_hydrate(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        """池里的行不含凭据 → 按 ``site`` id 从站点表回填 cookie / ua（内存查表，不是网络）。"""
+        try:
+            sid = int(row.get("site") or 0)
+        except (TypeError, ValueError):
+            sid = 0
+        if not sid:
+            return row
+        try:
+            site = self._get_site(sid)
+        except Exception:  # noqa: BLE001
+            return row
+        if site is None:
+            return row
+        row["site_cookie"] = getattr(site, "cookie", None) or row.get("site_cookie")
+        row["site_ua"] = str(getattr(site, "ua", "") or "").strip() or row.get("site_ua")
+        row["site_name"] = str(row.get("site_name") or getattr(site, "name", "") or "")
+        return row
+
+    # ------------------------------------------------------------ 站点闸（★ 19.10.0）
+
+    def _od_site_gate(self, ids: List[int]) -> List[int]:
+        """点播/直连路径的站点过滤：**只看「站点已暂停抓取」，不看本地 PV 预算**。
+
+        为什么不再判 ``_pv_allow``：这条链路的请求是 **MP 发的**（``SearchChain`` / ``TorrentHelper``），
+        插件自己一个都没发；判本地预算拦不住任何对站点的请求，只会「关掉自己」。
+        更糟的是 ``_pv_spend`` 落的是 ``mf_site.pv_usage``，而 ``_pv_allow`` 读 ``today_total(site)``
+        且 **不分 kind** —— 记这笔**估算账**等于拿假账挤占后台真实采集（``collect.py``）的预算。
+        被跳过的站不静默丢弃：写进 ``self._od_skipped``，由调用方透到 ``sources[]`` 让用户看见。
+        """
+        blocked: Dict[int, str] = {}
+        for i in (ids or []):
+            why = self._pv_block_reason(i)
+            if why:
+                blocked[i] = why
+        self._od_skipped = [
+            {"site": i, "outcome": "pv_blocked", "error": f"暂停抓取至 {blocked[i]}"}
+            for i in (ids or []) if blocked.get(i)
+        ]
+        return [i for i in (ids or []) if not blocked.get(i)]
+
+    def _od_skipped_facts(self, page: int = 0) -> List[Dict[str, Any]]:
+        """被站点闸跳过的站 → 统一 ``sources[]`` 条目（形状同 ``_od_source_fact``）。
+
+        不静默丢弃：用户要能看到「这个站没搜，因为它被标了暂停至 HH:MM」，而不是「候选少了几个」。
+        """
+        return [{
+            "source": "", "site": x.get("site"), "site_name": "",
+            "page": int(page or 0), "can_continue": False,
+            "outcome": "pv_blocked", "error": str(x.get("error") or ""),
+            "note": "站点已暂停抓取，本次未检索",
+        } for x in (getattr(self, "_od_skipped", None) or [])]
 
     def _ondemand_all(self) -> Dict[str, Dict[str, Any]]:
         try:
@@ -381,7 +488,7 @@ class OnDemandMixin:
         """搜候选（**不过滤免费**，点播要的是这个资源本身）。
 
         ★ 17.1.1：``page`` 透传给 MP ``search_by_title(page=)`` —— MP 一次只回一页，
-        要多页由调用方续（见 ``_ondemand_find_pick``）。每页各自过 PV 闸与计费。
+        要多页由调用方续（见 ``_ondemand_find_pick``）。★ 19.10.0：每页候选逐条入池，且不再记 PV。
         """
         kw = str(keyword or "").strip()
         ids = [i for i in (site_ids or []) if i]
@@ -391,39 +498,35 @@ class OnDemandMixin:
             pg = max(0, int(page or 0))
         except (TypeError, ValueError):
             pg = 0
-        allowed = [
-            i for i in ids
-            if not self._pv_block_reason(i) and self._pv_allow(i, "ondemand", want=1)
-        ]
+        allowed = self._od_site_gate(ids)
         if not allowed:
-            self._log("点播:候选站点 PV 预算不足/已封，跳过检索", "warning")
+            self._log("点播:候选站点均处于「暂停抓取」，跳过检索", "warning")
             return []
         try:
             hits = self._mp_search_title(kw, allowed, page=pg)
         except Exception as e:  # noqa: BLE001
             self._log(f"点播:MP 搜索失败: {e}", "warning")
             hits = []
-        finally:
-            for i in allowed:
-                self._pv_spend(i, "ondemand", 1)
         rows: List[Dict[str, Any]] = []
         for ti in hits or []:
             r = self._od_row_from_ti(ti)
             if r:
                 rows.append(r)
+        # ★ 19.10.0：候选入池（键 = enclosure）—— 前端拿到列表后无论多久点，都能落种
+        self._od_pool_put(rows, kw)
         self._log(f"点播:MP 搜索「{kw}」page={pg} {len(allowed)} 站 → 候选 {len(rows)} 条")
         return rows
 
     def _ondemand_find_pick(self, title: str, year: str, sites: List[int],
                             pick: str) -> List[Dict[str, Any]]:
-        """★ 17.1.1：**逐页搜到 pick 命中为止**（有界 + 逐页过 PV 闸），返回「到此为止已见过的候选」。
+        """★ 17.1.1：**逐页搜到 pick 命中为止**（有界），返回「到此为止已见过的候选」。
 
         根因（Master 2026-10-10 报）：``_ondemand_add`` 原来只搜 MP 的**第 1 页**，
         候选排在第 2+ 页时永远命中不了 → 「搜索翻页看得到、add 加不进去」（真缺口：能看不能下）。
 
-        边界（别拉爆站点 PV）：
+        边界（别把站点搜爆）：
         - 每关键词最多 ``_OD_ADD_MAX_PAGES`` 页（第 0..N-1 页），命中即停（**不多搜一页**）；
-        - 某页**空**（无结果 / PV 闸停 / PV 预算不足）→ 判为页尾，停止续页；
+        - 某页**空**（无结果 / 站点暂停抓取）→ 判为页尾，停止续页；
         - 第一个关键词有货就不再试「片名+年份」（与改前 `_ondemand_add` 的口径一致）。
         """
         want = str(pick or "").strip()
@@ -443,7 +546,7 @@ class OnDemandMixin:
                 if any(str(r.get("enclosure") or "") == want for r in rows):
                     return list(acc.values())
                 if not rows:
-                    break          # 页尾（或 PV 闸停）→ 本关键词不再续页
+                    break          # 页尾（或站点暂停抓取）→ 本关键词不再续页
             if acc:
                 break              # 第一个关键词有货：不再试「片名+年份」
         return list(acc.values())
@@ -571,7 +674,7 @@ class OnDemandMixin:
         }
         if not kw and not src:
             return out
-        # 站点集合 + PV 闸（与 ``_ondemand_search`` 同源；续页只针对令牌里的那个站）
+        # 站点集合 + 站点闸（与 ``_ondemand_search`` 同源；续页只针对令牌里的那个站）
         target_ids = ids or self._ondemand_sites()
         pkw = kw
         if src:
@@ -579,10 +682,11 @@ class OnDemandMixin:
             target_ids = [_s] if _s else []
             pkw = _kw or kw   # 续页：MP 的 ``_prepare_page`` 仍需 ``keyword`` 在场（随后会被令牌覆盖）
             out["keyword"] = pkw
-        allowed = [i for i in target_ids
-                   if not self._pv_block_reason(i) and self._pv_allow(i, "ondemand", want=1)]
+        allowed = self._od_site_gate(target_ids)
+        skipped = self._od_skipped_facts(pg)
         if not allowed:
-            self._log("点播:搜索站点 PV 预算不足/已封，跳过", "warning")
+            out["sources"] = skipped
+            self._log("点播:搜索站点均处于「暂停抓取」，跳过", "warning")
             return out
         out["sites"] = allowed
         params: Dict[str, Any] = {"page": pg}
@@ -600,35 +704,33 @@ class OnDemandMixin:
                 raise RuntimeError("当前 MP 无 search_page_events（需 v3.1.2+）")
             facts: List[Dict[str, Any]] = []
             items: List[Any] = []
-            try:
-                async for event in ev(params=params):
-                    et = str((event or {}).get("type") or "")
-                    if et == "error":
-                        raise RuntimeError(str(event.get("message") or "搜索失败"))
-                    if et == "replace":
-                        raw = event.get("sources")
-                        if raw:
-                            facts = [self._od_source_fact(x) for x in raw]
-                        items = list(event.get("items") or [])
-                        try:
-                            out["total_items"] = int(event.get("total_items") or 0)
-                        except (TypeError, ValueError):
-                            pass
-                        try:
-                            out["candidate_items"] = int(event.get("candidate_items") or 0)
-                        except (TypeError, ValueError):
-                            pass
-                    elif et == "done":
-                        raw = event.get("sources")
-                        if raw:
-                            facts = [self._od_source_fact(x) for x in raw]
-            finally:
-                for i in allowed:
-                    self._pv_spend(i, "ondemand", 1)
+            # ★ 19.10.0：这里**不再记 PV**（请求是 MP 发的，且旧实现会把估算账写进共享池，
+            #   反倒挤掉后台 collect.py 的真实预算）。逐站暂停抓取已在上面由 ``_od_site_gate`` 拦。
+            async for event in ev(params=params):
+                et = str((event or {}).get("type") or "")
+                if et == "error":
+                    raise RuntimeError(str(event.get("message") or "搜索失败"))
+                if et == "replace":
+                    raw = event.get("sources")
+                    if raw:
+                        facts = [self._od_source_fact(x) for x in raw]
+                    items = list(event.get("items") or [])
+                    try:
+                        out["total_items"] = int(event.get("total_items") or 0)
+                    except (TypeError, ValueError):
+                        pass
+                    try:
+                        out["candidate_items"] = int(event.get("candidate_items") or 0)
+                    except (TypeError, ValueError):
+                        pass
+                elif et == "done":
+                    raw = event.get("sources")
+                    if raw:
+                        facts = [self._od_source_fact(x) for x in raw]
         except Exception as e:  # noqa: BLE001
             self._log(f"点播:MP 分页搜索失败: {e}", "warning")
             raise
-        out["sources"] = facts
+        out["sources"] = list(facts) + skipped
         rows: List[Dict[str, Any]] = []
         for it in items:
             ti = it.get("torrent_info") if isinstance(it, dict) else None
@@ -645,6 +747,8 @@ class OnDemandMixin:
         #   /agent/ondemand/add 真正衔接（add 命中即秒回，不再自己重搜一页 / 白烧 PV）。
         #   键 = 生效关键词（续页时取自令牌）+ 实际检索站点，与 add 的 ``_ondemand_cache_get`` 同口径。
         self._ondemand_cache_put(str(out.get("keyword") or ""), allowed, out["candidates"])
+        # ★ 19.10.0：逐条入池（键 = enclosure）—— 这是「搜完必能下」的正解
+        self._od_pool_put(out["candidates"], str(out.get("keyword") or ""))
         return out
 
     def _ondemand_pick(self, rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -685,22 +789,72 @@ class OnDemandMixin:
             pass
         return ""
 
+    def _od_fetch_torrent(self, row: Dict[str, Any]) -> Any:
+        """取 ``.torrent`` 字节（点播通道）：只拦「站点已暂停抓取」，**不判本地 PV 预算**。
+
+        返回 ``(content, code, message)``；成功时 ``code``/``message`` 为 ``("", "")``。
+
+        为什么不走 ``_crossseed_torrent_bytes``：那里是**跨站自己发请求**的通道，过 PV 闸是对的；
+        点播取种走 ``downloader_ops.fetch_torrent_bytes``（宿主 SDK 下载链），
+        请求不是插件发的 —— 在这里判 ``_pv_allow`` 只会造出「搜到却下不了」，
+        还会把估算账 ``_pv_spend`` 写进共享池，挤掉后台真实采集的预算。
+
+        ★ 19.10.1：每条失败都写日志（带 code）。此前失败只回前端、不进日志，
+        排查「点了下载没反应」只能靠猜。
+        """
+        url = str((row or {}).get("enclosure") or "")
+        _name = str(row.get("site_name") or row.get("site") or "")
+        if not url:
+            logger.warning(f"魔流点播:取种跳过 {_name} —— 候选缺 enclosure")
+            return None, "torrent_fetch_failed", "缺少种子链接（enclosure）"
+        try:
+            sid = int(row.get("site") or 0)
+        except (TypeError, ValueError):
+            sid = 0
+        until = self._pv_block_reason(sid) if sid else ""
+        if until:
+            logger.warning(f"魔流点播:取种被拦 {_name} —— 站点暂停抓取至 {until}")
+            return None, "pv_blocked", f"该站已暂停抓取至 {until}，未取种子（可到「站点」页确认后重试）"
+        dl = self._get_downloader("qbittorrent")
+        if dl is None or not getattr(dl, "is_available", False):
+            logger.warning("魔流点播:取种失败 —— 下载器 qbittorrent 不可用")
+            return None, "no_downloader", "下载器不可用（当前配置：qbittorrent）"
+        try:
+            content = dl.fetch_torrent_bytes(
+                url,
+                cookie=row.get("site_cookie"),
+                user_agent=row.get("site_ua"),
+                referer=row.get("page_url") or None,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"魔流点播:取种异常 {_name}: {e}")
+            return None, "torrent_fetch_failed", f"取种子失败：{e}"
+        if not content:
+            logger.warning(f"魔流点播:取种失败 {_name} —— 站点未返回有效种子"
+                           f"（API 站换票/登录态；enclosure={url[:60]}）")
+            return None, "torrent_fetch_failed", "取种子失败：站点未返回内容（API 站换票失败或登录态失效，日志有明细）"
+        return content, "", ""
+
     def _ondemand_download(self, row: Dict[str, Any], task: Any = None,
                            title: str = "", year: str = "",
                            content: Optional[bytes] = None) -> Dict[str, Any]:
         """落种（点播通道）。``content`` 给了就不再取一次 .torrent（★ 17.2.0 直连加种复用取种结果）。"""
-        dl = self._get_downloader("qbittorrent")
+        want_dl = str(getattr(task, "downloader", "") or "").strip() or "qbittorrent"
+        dl = self._get_downloader(want_dl)
         if dl is None or not getattr(dl, "is_available", False):
-            return {"ok": False, "message": "下载器不可用"}
-        content = content or self._crossseed_torrent_bytes(SimpleNamespace(**row))
+            return {"ok": False, "code": "no_downloader",
+                    "message": f"未找到可用下载器（当前配置：{want_dl}）"}
         if not content:
-            return {"ok": False, "message": "取 .torrent 失败（PV 闸门/站点拒绝）"}
+            content, code, msg = self._od_fetch_torrent(row)
+            if not content:
+                return {"ok": False, "code": code, "message": msg}
         site_name = str(row.get("site_name") or "")
         save_path = str(getattr(task, "save_path", "") or "") if task is not None else ""
         if not save_path:
             save_path = self._ondemand_default_save_path()
         if not save_path:
-            return {"ok": False, "message": "没有可用的保存目录：请在弹窗上方选一个任务，或到「设置 → 下载目录」填「任务保存目录」"}
+            return {"ok": False, "code": "no_save_path",
+                    "message": "没有可用的保存目录：请在弹窗上方选一个任务，或到「设置 → 下载目录」填「任务保存目录」"}
         # ★ 15.8.6：**加种时就同时打「身份 + 职务」两个标签**——否则紧随其后的
         #   ``_od_assign`` 会在「qB 还没登记这颗新种」时写标签失败（竞态），
         #   「点播」职务标签要等下一轮对账才补上。
@@ -796,24 +950,30 @@ class OnDemandMixin:
         if not pick:
             return {"ok": False, "message": "缺少 pick（候选 enclosure / 下载链接）"}
         title = year = ""
-        rows = self._ondemand_cache_get(q["query"], sites) or []
-        if not rows:
-            media = self._ondemand_media(q)
-            if media is not None:
-                try:
-                    title = str(getattr(media, "title", "") or "")
-                    year = str(getattr(media, "year", "") or "")
-                except Exception:  # noqa: BLE001
-                    title, year = "", ""
-            if not title:
-                title = q["keyword"] or q["query"]
-            # ★ 17.1.1：命中失败不再只看 MP 第 1 页 —— 逐页续搜（有界）到 pick 命中/页尾/上限
-            rows = self._ondemand_find_pick(title, year, sites, pick)
-            self._ondemand_cache_put(q["query"], sites, rows)
-        row = next((r for r in rows if str(r.get("enclosure") or "") == pick), None)
+        # ★ 19.10.0：候选池优先 —— 命中即零请求（不重搜、不记账、不看预算）
+        row = self._od_pool_get(pick)
+        if row is not None:
+            title = str(row.get("title") or "")
         if row is None:
-            return {"ok": False, "message": "候选未命中，请先 search（已续搜前 %d 页，候选可能更靠后）"
-                                            % _OD_ADD_MAX_PAGES}
+            rows = self._ondemand_cache_get(q["query"], sites) or []
+            if not rows:
+                media = self._ondemand_media(q)
+                if media is not None:
+                    try:
+                        title = str(getattr(media, "title", "") or "")
+                        year = str(getattr(media, "year", "") or "")
+                    except Exception:  # noqa: BLE001
+                        title, year = "", ""
+                if not title:
+                    title = q["keyword"] or q["query"]
+                # ★ 17.1.1：命中失败不再只看 MP 第 1 页 —— 逐页续搜（有界）到 pick 命中/页尾/上限
+                rows = self._ondemand_find_pick(title, year, sites, pick)
+                self._ondemand_cache_put(q["query"], sites, rows)
+            row = next((r for r in rows if str(r.get("enclosure") or "") == pick), None)
+        if row is None:
+            return {"ok": False, "code": "cand_expired",
+                    "message": "候选已不在（超过 2 小时或站点已下架；已续搜前 %d 页，候选可能更靠后），请重新搜索"
+                               % _OD_ADD_MAX_PAGES}
         save_path = (str(getattr(task, "save_path", "") or "") if task is not None else "")\
             or self._ondemand_default_save_path()
         plan = {
@@ -931,9 +1091,9 @@ class OnDemandMixin:
         dv = _od_promo_dv(promo, promo_raw)
         row["downloadvolumefactor"] = dv
         row["free"] = dv <= 0.0
-        content = self._crossseed_torrent_bytes(SimpleNamespace(**row))
+        content, _fcode, _fmsg = self._od_fetch_torrent(row)
         if not content:
-            return {"ok": False, "message": "取 .torrent 失败（PV 闸门/站点拒绝/链接无效或该站无权限）"}
+            return {"ok": False, "code": _fcode, "message": _fmsg}
         meta = self._direct_torrent_meta(content)
         title = str(meta.get("title") or "")
         size = float(meta.get("size") or 0.0)
@@ -961,7 +1121,7 @@ class OnDemandMixin:
         }
         if not apply:
             return {"ok": True, "applied": False, "dry_run": True, "plan": plan,
-                    "note": "干跑也取了一次 .torrent 读元数据（1 PV），但**没有落种**"}
+                    "note": "干跑也取了一次 .torrent 读元数据（MP 侧请求），但**没有落种**"}
         res = self._ondemand_download(row, task, title=title, year="", content=content)
         if not res.get("ok"):
             return {"ok": False, "message": str(res.get("message") or "下载失败"), "plan": plan}
@@ -1440,34 +1600,45 @@ class OnDemandMixin:
         media = None
         title = year = ""
         rows: List[Dict[str, Any]] = []
-        if pick:
-            # ★ 手动选源：优先吃上次搜索结果（命中则秒回，不必再搜一次）
-            title = q["keyword"] or q["query"]
-            rows = self._ondemand_cache_get(q["query"], sites) or []
-        if not rows:
-            # 未指定来源 / 手动指定但缓存失效 → 正常识别 + 搜索
-            media = self._ondemand_media(q)
-            if media is not None and not title:
-                try:
-                    title = str(getattr(media, "title", "") or "")
-                    year = str(getattr(media, "year", "") or "")
-                except Exception:  # noqa: BLE001
-                    title, year = "", ""
-            if not title:
-                # ★ 识别不到（如 TMDB 不可达）**不阻断**：Master 的「主动声明」本身已是最硬信号（§1），
-                #   识别只用来拼搜索关键词 → 退回原串（可直接粘种子名）。
-                title = q["keyword"] or q["query"]
-            keyword = title
-            rows = self._ondemand_search(keyword, sites)
-            if not rows and year:
-                rows = self._ondemand_search(f"{title} {year}", sites)
-            self._ondemand_cache_put(q["query"], sites, rows)
-        auto = self._ondemand_pick(rows)
         picked: Optional[Dict[str, Any]] = None
         if pick:
-            picked = next((r for r in rows if str(r.get("enclosure") or "") == pick), None)
+            # ★ 19.10.0：候选池优先 —— 命中即零请求（不重搜、不记账、不看预算）。
+            #   这是「搜完必能下」的关键：候选留在服务端，落地时不再推导一次。
+            picked = self._od_pool_get(pick)
+            if picked is not None:
+                rows = [picked]
+                title = str(picked.get("title") or "")
+        if picked is None:
+            if pick:
+                # 池未命中（旧池 / 池被淘汰）→ 退「最近一次搜索」单槽再试一次
+                rows = self._ondemand_cache_get(q["query"], sites) or []
+            if not rows:
+                # 未指定来源 / 手动指定但缓存失效 → 正常识别 + 搜索
+                media = self._ondemand_media(q)
+                if media is not None:
+                    try:
+                        title = str(getattr(media, "title", "") or "")
+                        year = str(getattr(media, "year", "") or "")
+                    except Exception:  # noqa: BLE001
+                        title, year = "", ""
+                if not title:
+                    # ★ 识别不到（如 TMDB 不可达）**不阻断**：Master 的「主动声明」本身已是最硬信号（§1），
+                    #   识别只用来拼搜索关键词 → 退回原串（可直接粘种子名）。
+                    title = q["keyword"] or q["query"]
+                keyword = title
+                rows = self._ondemand_search(keyword, sites)
+                if not rows and year:
+                    rows = self._ondemand_search(f"{title} {year}", sites)
+                self._ondemand_cache_put(q["query"], sites, rows)
+        auto = self._ondemand_pick(rows)
+        if pick:
             if picked is None:
-                return Response(success=False, message="指定的候选不在本次搜索结果里（列表可能已刷新）")
+                picked = next((r for r in rows if str(r.get("enclosure") or "") == pick), None)
+            if picked is None:
+                logger.warning(f"魔流点播:候选池未命中 {pick[:80]}（TTL={_OD_PICK_TTL}s）")
+                return Response(success=False,
+                                message="候选已不在（超过 2 小时或站点已下架），请重新搜索",
+                                data={"code": "cand_expired"})
         else:
             picked = auto
         out: Dict[str, Any] = {
@@ -1495,6 +1666,7 @@ class OnDemandMixin:
         out["applied"] = True
         out["added"] = res.get("hash") or ""
         if not res.get("ok"):
+            out["code"] = str(res.get("code") or "")
             return Response(success=False, message=str(res.get("message") or "下载失败"), data=out)
         self._ondemand_mark(str(res.get("hash") or ""), {
             "title": picked.get("title") or "",

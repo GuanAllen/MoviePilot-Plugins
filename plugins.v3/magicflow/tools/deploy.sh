@@ -96,9 +96,11 @@ if [ "$DO_MARKET" = 1 ]; then
       --exclude='.worktrees' \
       --exclude='dist' --exclude='backups' \
       "$DEV/" "$MARKET_DIR/"
-    if [ -d "$DEV/dist" ]; then
+    if [ -f "$DEV/dist/index.html" ]; then
       rsync -a --delete "$DEV/dist/" "$MARKET_DIR/dist/"
       echo "  ▸ dist 已同步"
+    else
+      echo "  ⚠ 源 dist 缺失（$DEV/dist/index.html），跳过 dist 同步"
     fi
   fi
 fi
@@ -111,7 +113,14 @@ if [ "$DO_CONTAINER" = 1 ]; then
   else
     # ★ 先清容器里过期的 dist（tar 只覆盖不删 → 旧 MagicFlowWorkbench-*.js 会残留；
     #   浏览器若还拿着旧 remoteEntry 就会加载旧 UI）。dist 是全量发布的，直接整目录换。
-    docker exec "$CONTAINER" sh -c "rm -rf $CPATH/dist" >/dev/null 2>&1 || true
+    # ★ 护栏：先确认源 dist 完整再删容器内 dist。
+    #   旧写法无条件 rm -rf：源 dist 不存在时会把容器内 UI 删光，
+    #   而 tar 又带不进 dist → 插件页面白屏（插件“没起来”）。
+    if [ -f "$DEV/dist/index.html" ]; then
+      docker exec "$CONTAINER" sh -c "rm -rf $CPATH/dist" >/dev/null 2>&1 || true
+    else
+      echo "  ⚠ 源 dist 缺失，保留容器内旧 dist"
+    fi
     tar -C "$DEV" \
       --exclude='__pycache__' --exclude='*.pyc' --exclude='node_modules' \
       --exclude='.git' --exclude='docs' --exclude='preview' --exclude='screenshots' \

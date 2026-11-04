@@ -26,6 +26,7 @@ import NotifyDialog from './components/dialogs/NotifyDialog.vue'
 import TorrentDialog from './components/dialogs/TorrentDialog.vue'
 import SigninDialog from './components/dialogs/SigninDialog.vue'
 import OndemandDialog from './components/dialogs/OndemandDialog.vue'
+import FunctionHubDialog from './components/dialogs/FunctionHubDialog.vue'
 import OpsDialog from './components/dialogs/OpsDialog.vue'
 import WorkbenchHeader from './components/WorkbenchHeader.vue'
 import MobileTaskDetail from './components/MobileTaskDetail.vue'
@@ -44,6 +45,7 @@ import SeedingTab from './components/tabs/SeedingTab.vue'
 // ★ 15.8.15：库内资产（全局入口 → 独立列表 + 手动删除）
 import AssetsTab from './components/tabs/AssetsTab.vue'
 import MobileHome from './components/MobileHome.vue'
+import OverviewHome from './components/OverviewHome.vue'
 import TransferConfirm from './components/confirm/TransferConfirm.vue'
 import {
   cloneTask,
@@ -265,6 +267,7 @@ let liveTimer = null
 // ---- 云盘归档 ----
 // IYUU 云端辅种（可选）：站点表按 MoviePilot 已配置站点生成
 let refreshTimer
+let homeTrendTimer = null
 let phaseTimer
 let warmingTimer
 
@@ -610,8 +613,25 @@ const {
 // 任务徽章：非「运行中」时直接显示运行状态；运行中则显示实时状态。
 // 任务切换器菜单的副标题：站点 + 关键数字一行表达
 // 统一分发：新增功能页只改 MF_PAGES + 这里加一行
+// ★ 入参兼容两种形态：MF_PAGES 的对象项（手机功能格 / 顶栏磁贴）与纯字符串 key（概览「快速功能」）。
+//   之前只认 page.key，概览传的是 'recommend' 这类字符串 → undefined → switch 全不匹配 → 点击静默无效。
 function mfOpenPage(page) {
-  switch (page.key) {
+  const key = typeof page === 'string' ? page : (page && page.key)
+  switch (key) {
+    case 'ondemand': return openOndemand()
+    case 'hub': return openFunctionHub()
+    case 'notify': return openNotify()
+    case 'health': return openHealth()
+    case 'create': return openCreateTask()
+    case 'close': return emit('close')
+    // 次级入口（原先只散落在顶栏「更多」菜单里，功能中心统一收口）
+    case 'assets': return (assetsDialog.value = true)
+    case 'music': return openMusic()
+    case 'jobs': return openJobs()
+    case 'trend': return openTrendDialog()
+    case 'optimize': return openOptimizeDialog()
+    case 'plan': return openPlanDialog()
+    case 'rescue': return openRescue()
     case 'recommend': return openRecommend()
     case 'exam': return openExam()
     case 'signin': return openSignin()
@@ -628,6 +648,10 @@ function mfOpenPage(page) {
     case 'settings': return openSettings()
   }
 }
+// 功能中心（弹层）：MF_PAGES 全量入口。概览「快速功能 / 全部功能 / 功能中心」统一落地到这里。
+const hubOpen = ref(false)
+function openFunctionHub() { hubOpen.value = true }
+
 // 已保存的隐藏集合（来自 /status）→ 顶栏/菜单/功能格据此显隐。保存后 loadStatus 刷新。
 // ── useHeaderTiles（P3 已抽）────────────────────────────────
 // P3：状态 / 取数 / 动作 已抽到 ./composables/useHeaderTiles.js（纯搬家）。
@@ -1048,6 +1072,14 @@ const {
   examConfirmRun,
 } = useExam({ api, notify, loadStatus })
 
+// 功能中心卡片角标（页头不再逐个摆图标 → 待处理数量在卡片上体现）
+const hubBadges = computed(() => ({
+  recommend: Number(recommendData.value?.recommended || 0),
+  exam: Number(examBadge.value || 0),
+  notify: Number(notifyCount.value || 0),
+  jobs: Number(jobsRunning.value || 0),
+}))
+
 // P4：汇总弹窗已拆到 ./components/dialogs/ExamDialog.vue —— 它需要的「状态 + 派生 + 只读回调」
 // 整体作为 props.data 下传（子组件 reactive() 解包其中的 ref/computed；子不直接改父状态）。
 const examDialogData = {
@@ -1183,8 +1215,65 @@ async function claimConfirmRun() {
   }
 }
 
+// ── ★ 主页「整体概览」作用域（设计稿 Ardot 740112280764561 帧 1）────────────────
+// home = 全站聚合概览，默认落地页；task = 单任务工作台（原有两栏结构，行为不变）。
+// 移动端不参与：仍走 magicflow-mobile-home（列表优先），由模板里的 !isNarrow 判定。
+const homeScope = ref('home')
+const homeTrend = ref({})
+const homeTrendLoading = ref(false)
+
+// 全站趋势（168h = 本周 72 + 上周 72，用于「本周实线 / 上周虚线」对比）
+async function loadHomeTrend() {
+  if (homeTrendLoading.value) return
+  homeTrendLoading.value = true
+  try {
+    const resp = await api.trend.hours({ scope: 'all', hours: 168 })
+    homeTrend.value = unwrapResponse(resp) || {}
+  } catch (err) {
+    homeTrend.value = {}
+  } finally {
+    homeTrendLoading.value = false
+  }
+}
+
+// 从概览下钻单任务（selectTask 有「同 id 短路」，所以先清空再选）
+function openTaskFromHome(taskId) {
+  if (!taskId) return
+  homeScope.value = 'task'
+  selectedTaskId.value = ''
+  activeTab.value = 'overview'
+  selectTask(taskId)
+}
+
+// 返回概览（任务头左上的「← 返回概览」）
+function backToHome() {
+  homeScope.value = 'home'
+  loadHomeTrend()
+  if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+// H&R 账单：兼容 useHrBills 的返回形态（数组 / {bills:[]} / {items:[]}）
+const hrBillsList = computed(() => {
+  const v = hrBills.value
+  if (Array.isArray(v)) return v
+  if (v && Array.isArray(v.bills)) return v.bills
+  if (v && Array.isArray(v.items)) return v.items
+  return []
+})
+
+// 概览右栏「快速功能」：走 MF_PAGES 的全局功能页（scope=global），点开即原弹窗
+const homeQuickPages = computed(() => [
+  { key: 'ondemand', label: '点播', icon: 'mdi-cloud-download-outline', hint: '片名 / 链接 → 选源下载' },
+  { key: 'recommend', label: '推荐', icon: 'mdi-movie-star-outline', hint: '按评分自动选种' },
+  { key: 'crossseed', label: '跨站取种', icon: 'mdi-swap-horizontal-bold', hint: '已有资源去他站落户' },
+])
+
 // 选择任务并刷新其详情数据。
-function selectTask(taskId) {
+// opts.auto = 系统兜底（status 首载后自动选中首个任务），不代表用户意图，
+// 此时必须**留在概览落地页**；否则一进插件就被顶到任务工作台（本 bug 的成因）。
+function selectTask(taskId, opts = {}) {
+  // 任何用户入口选任务（顶栏切换器 / 左侧任务栏 / 概览矩阵）都要离开概览作用域
+  if (taskId && !opts.auto) homeScope.value = 'task'
   if (!taskId) {
     selectedTaskId.value = ''
     return
@@ -1466,6 +1555,9 @@ watch(
 )
 
 onMounted(() => {
+  loadHomeTrend()
+  // 概览「每 5 分钟刷新」口径：全站趋势单独低频拉（status 走 30s 轮询已覆盖指标）
+  homeTrendTimer = window.setInterval(loadHomeTrend, 300000)
   loadStatus()
   loadRecommend()
   refreshTimer = window.setInterval(loadStatus, 30000)
@@ -1488,6 +1580,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (refreshTimer) window.clearInterval(refreshTimer)
+  if (homeTrendTimer) window.clearInterval(homeTrendTimer)
   if (phaseTimer) window.clearInterval(phaseTimer)
   if (doubanServiceTimer) window.clearInterval(doubanServiceTimer)
   if (healthTimer) window.clearInterval(healthTimer)
@@ -1544,7 +1637,7 @@ onUnmounted(() => {
       @open-silent="openSilent"
       @open-hrbills="openHrBills"
       @open-ceiling="openCeiling"
-      @open-ops="openOperations('all')"'
+      @open-ops="openOperations('all')"
       @open-music="openMusic"
       @open-assets="assetsDialog = true"
       @open-jobs="openJobs"
@@ -1552,6 +1645,7 @@ onUnmounted(() => {
       @open-optimize="openOptimizeDialog"
       @open-plan="openPlanDialog"
       @open-notify="openNotify"
+      @open-hub="openFunctionHub"
       :notify-badge="notifyCount"
       @open-settings="openSettings"
       @close="emit('close')"
@@ -1641,13 +1735,48 @@ onUnmounted(() => {
         />
       </div>
 
-      <div class="magicflow-layout">
+      <!-- ★ 主页「整体概览」：全站聚合口径（设计稿 740112280764561 帧 1）。
+           点任务矩阵任意行 → 下钻单任务（homeScope='task'），任务头「← 返回概览」回来。 -->
+      <div v-if="homeScope === 'home' && !isNarrow" class="magicflow-home">
+        <OverviewHome
+          :summary="summary"
+          :tasks="tasks"
+          :trend="homeTrend"
+          :health="healthData"
+          :health-label="healthLabel"
+          :health-color="healthColor"
+          :health-badge="healthBadgeCount"
+          :bills="hrBillsList"
+          :ops="(operationData && operationData.operations) || []"
+          :notify-count="notifyCount"
+          :pages="homeQuickPages"
+          :loading="homeTrendLoading"
+          @open-task="openTaskFromHome"
+          @open-ceiling="openCeiling"
+          @open-hr="openHrBills"
+          @open-health="openHealth"
+          @open-ops="openOperations()"
+          @open-page="mfOpenPage"
+          @create-task="openCreateTask"
+        />
+      </div>
+
+      <div v-if="homeScope === 'task' || isNarrow" class="magicflow-layout">
         <VSheet tag="aside" class="magicflow-task-rail app-surface-static">
           <TaskPane :tasks="tasks" :selected-id="selectedTaskId" @select="selectTask" @new="openCreateTask" />
         </VSheet>
 
         <main v-if="selectedTask" class="magicflow-workspace">
           <section class="magicflow-task-head">
+            <VBtn
+              class="magicflow-task-head__back"
+              variant="text"
+              size="small"
+              prepend-icon="mdi-arrow-left"
+              @click="backToHome"
+            >
+              返回概览
+            </VBtn>
             <div class="magicflow-task-head__identity">
               <VAvatar color="primary" variant="tonal" rounded size="42" class="magicflow-task-head__avatar">
                 <img v-if="taskSiteIcon" class="magicflow-task-head__site-icon" :src="taskSiteIcon" alt="" />
@@ -1983,6 +2112,15 @@ onUnmounted(() => {
       @refresh="loadSiteReport(false)"
       @live="loadSiteReport(true)"
       @change="loadSiteReport()"
+    />
+
+    <!-- ★ 功能中心（MF_PAGES 全量入口；概览「快速功能 / 全部功能」的落地页） -->
+    <FunctionHubDialog
+      v-model="hubOpen"
+      :pages="MF_PAGES"
+      :narrow="isNarrow"
+      :badges="hubBadges"
+      @open="mfOpenPage"
     />
 
     <!-- ★ P4：H&R 账单（自有组件；props 下 / emit 上） -->
@@ -2487,6 +2625,20 @@ onUnmounted(() => {
   </div>
 </template>
 <style scoped>
+/* ★ 主页「整体概览」：任务头左上返回按钮（设计稿方案①·常驻钮） */
+.magicflow-task-head__back {
+  flex: none;
+  margin-right: 2px;
+  color: rgba(var(--v-theme-on-surface), 0.62);
+}
+.magicflow-task-head__back:hover {
+  color: rgb(var(--v-theme-primary));
+}
+/* 加了返回按钮后 head 变成三段（back / identity / actions），
+   identity 必须吃掉剩余宽度，否则 space-between 会把它挤到中间。 */
+.magicflow-task-head .magicflow-task-head__identity {
+  flex: 1;
+}
 .magicflow-cs-status {
   display: flex;
   flex-wrap: wrap;

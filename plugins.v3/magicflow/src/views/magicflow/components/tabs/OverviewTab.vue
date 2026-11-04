@@ -68,7 +68,7 @@ const emit = defineEmits(['open-entry'])
     </VSheet>
   </div>
   <div v-if="(selectedTask.run_mode || 'running') === 'seeding'" class="magicflow-stat-grid magicflow-stat-grid--single">
-    <VSheet class="magicflow-stat magicflow-stat--accent app-surface-static">
+    <VSheet class="magicflow-stat magicflow-stat--accent magicflow-stat--strip app-surface-static">
       <span class="magicflow-stat__label">接管保护</span>
       <strong>{{ selectedTask.protected_count || 0 }}</strong>
       <span class="magicflow-stat__foot">手动加或 IYUU 回来的种已纳管并永久保护</span>
@@ -148,7 +148,7 @@ const emit = defineEmits(['open-entry'])
   </VSheet>
 
   <div class="magicflow-overview-grid">
-    <VSheet tag="section" class="magicflow-panel app-surface-static">
+    <VSheet tag="section" class="magicflow-panel magicflow-panel--tall app-surface-static">
       <header class="magicflow-panel__head">
         <div>
           <div class="text-subtitle-1 font-weight-medium">运行状态</div>
@@ -157,10 +157,13 @@ const emit = defineEmits(['open-entry'])
         <VChip :color="selectedState.color" size="small" variant="tonal">{{ selectedState.text }}</VChip>
       </header>
       <dl class="magicflow-facts">
+        <div class="magicflow-facts__group">调度</div>
         <div><dt>任务目标</dt><dd>{{ goalFactText }}</dd></div>
         <div><dt>选种周期</dt><dd>{{ taskConfig.cron_expression || `每 ${taskConfig.brush_interval} 分钟` }}</dd></div>
         <div><dt>检查周期</dt><dd>每 {{ taskConfig.check_interval }} 分钟</dd></div>
         <div><dt>开启时段</dt><dd>{{ taskConfig.active_time_range || '全天' }}</dd></div>
+
+        <div class="magicflow-facts__group">选种与保留</div>
         <template v-if="taskIsBrush">
           <div><dt>保种天数</dt><dd>{{ brushSeedDays > 0 ? `做种满 ${brushSeedDays} 天清理` : '不按天数（按无上传）' }}</dd></div>
           <div><dt>最小下载人数</dt><dd>{{ taskConfig.brush_min_leechers ?? 1 }} 人</dd></div>
@@ -171,13 +174,15 @@ const emit = defineEmits(['open-entry'])
           <div><dt>保护阈值</dt><dd>{{ taskConfig.bonus_protect_threshold == null ? '站点当前魔力' : Number(taskConfig.bonus_protect_threshold).toFixed(0) }}</dd></div>
           <div><dt>完美种保护</dt><dd>{{ taskConfig.protect_perfect === false ? '关闭' : `开启（≤${taskConfig.perfect_max_seeders ?? 3}人 · ≥${taskConfig.perfect_min_weeks ?? 4}周）` }}</dd></div>
         </template>
+        <div><dt>选种来源</dt><dd>{{ taskConfig.rss_support ? 'RSS' : '站点列表页' }}</dd></div>
+        <div><dt>促销要求</dt><dd>{{ taskIsBrush ? '免费（含 2X免费）' : (taskConfig.freeleech === '2xfree' ? '2X 免费' : taskConfig.freeleech === 'free' ? '免费' : '全部') }}</dd></div>
+
+        <div class="magicflow-facts__group">清理与恢复</div>
         <div><dt>自动补种</dt><dd>{{ taskConfig.refill_when_empty ? '开启' : '关闭' }}</dd></div>
         <div><dt>无进度清理</dt><dd>{{ taskConfig.cleanup_no_progress ? `开启（${taskConfig.no_progress_minutes ?? 30} 分钟）` : '关闭' }}</dd></div>
         <div><dt>慢速清理</dt><dd>{{ taskConfig.cleanup_slow_progress === false ? '关闭' : `开启（> ${taskConfig.slow_progress_max_hours ?? 48}h 下不完即清）` }}</dd></div>
         <div><dt>促销失效清理</dt><dd>{{ taskConfig.purge_unfree_incomplete === false ? '关闭' : '开启（已非免费且未下完→清）' }}</dd></div>
         <div><dt>自动恢复暂停</dt><dd>{{ taskConfig.auto_resume_paused === false ? '关闭' : '开启' }}</dd></div>
-        <div><dt>选种来源</dt><dd>{{ taskConfig.rss_support ? 'RSS' : '站点列表页' }}</dd></div>
-        <div><dt>促销要求</dt><dd>{{ taskIsBrush ? '免费（含 2X免费）' : (taskConfig.freeleech === '2xfree' ? '2X 免费' : taskConfig.freeleech === 'free' ? '免费' : '全部') }}</dd></div>
       </dl>
     </VSheet>
 
@@ -186,9 +191,9 @@ const emit = defineEmits(['open-entry'])
         <div>
           <div class="text-subtitle-1 font-weight-medium">站点数据</div>
           <div class="text-body-2 text-medium-emphasis">
-            <template v-if="siteAccount.source === 'live'">魔流直连站点用户栏（实时）{{ siteAccount.sampledAt ? ` · 采样于 ${siteAccount.sampledAt}` : '' }}</template>
-            <template v-else-if="siteAccount.source === 'mp'">MoviePilot 站点数据快照（默认 6 小时一轮）{{ siteUser.updated_at ? ` · 更新于 ${siteUser.updated_at}` : '' }}</template>
-            <template v-else>暂无站点数据</template>
+            <template v-if="siteAccount.source === 'live'">魔流直连站点用户栏{{ siteAccount.sampledAt ? ` · 采样于 ${siteAccount.sampledAt}` : '' }}</template>
+            <template v-else-if="siteAccount.source === 'mp'">默认 6 小时一轮{{ siteUser.updated_at ? ` · 更新于 ${siteUser.updated_at}` : '' }}</template>
+            <template v-else>等待站点回填数据</template>
           </div>
         </div>
         <VChip v-if="siteAccount.source === 'live'" size="small" variant="tonal" :color="siteLiveLevel === 'warn' ? 'warning' : 'success'">
@@ -460,11 +465,13 @@ const emit = defineEmits(['open-entry'])
   gap: 12px;
 }
 
+/* 趋势卡标题：标签在上、数值在下（与上方 KPI 三段式同构）。
+   原先是「标签左 + 数值右」两端对齐，四卡并排时数值会紧挨下一张卡的标签，读起来会串行。 */
 .mf-spark__head {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
   font-size: 12px;
   color: rgba(var(--v-theme-on-surface), 0.65);
 }
@@ -602,5 +609,98 @@ const emit = defineEmits(['open-entry'])
 
 .magicflow-page .magicflow-panel__head .text-body-2 {
   font-size: 11px;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   首页布局修订（19.9.6）
+   这一版只修「排出来的空」，不动数据与交互：
+   1) 双列概览网格不再强制等高 →「站点数据」不再被左侧 15 行事实表撑出半屏空白；
+   2) 「最近一次运行」跨双列占满第二行 → 消除右半列整块空栏，摘要改 6 列横带；
+   3) 「接管保护」竖排宽卡改横向条带 → 单卡不再显得空荡；
+   4) 「运行状态」15 条事实分三组（调度 / 选种与保留 / 清理与恢复）→ 从文字墙变可扫读。
+   全部为排布层，未改任何取数、props 与事件。放在文件末尾以压过上面的同优先级主题覆盖。
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/* 1) 双列网格改为顶部对齐，各面板按自身内容取高 */
+.magicflow-overview-grid {
+  align-items: start;
+}
+
+/* 2) 运行状态跨两行 → 右列上下堆叠「站点数据 / 最近一次运行」，两列底边基本齐平 */
+.magicflow-overview-grid > .magicflow-panel--tall {
+  grid-row: span 2;
+}
+
+.magicflow-panel--tall .magicflow-run-summary,
+.magicflow-overview-grid > .magicflow-panel .magicflow-run-summary {
+  margin-block: 16px 18px;
+}
+
+.magicflow-overview-grid .magicflow-run-summary strong {
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+/* 3) 接管保护：横向条带（标签 | 数值 | 口径说明） */
+.magicflow-page .magicflow-stat-grid--single .magicflow-stat--strip {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0 14px;
+  min-block-size: auto;
+  padding-block: 12px;
+}
+
+.magicflow-page .magicflow-stat-grid--single .magicflow-stat--strip > strong {
+  font-size: 18px;
+}
+
+/* 条带里的 foot 不再贴底：紧跟数值左对齐，避免中间出现大段空档 */
+.magicflow-page .magicflow-stat-grid--single .magicflow-stat--strip > .magicflow-stat__foot {
+  margin-block-start: 0;
+  text-align: start;
+}
+
+/* 4) 运行状态：事实表分组标题 + 组间细分隔线 */
+.magicflow-facts > .magicflow-facts__group {
+  justify-content: flex-start;
+  gap: 0;
+  margin-block-start: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.magicflow-facts > .magicflow-facts__group:first-child {
+  margin-block-start: 0;
+}
+
+.magicflow-facts > .magicflow-facts__group:not(:first-child) {
+  margin-block-start: 6px;
+  padding-block-start: 10px;
+  border-block-start: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+
+/* 响应式：摘要横带逐级降列；条带在窄屏回落为两行 */
+@media (max-width: 959px) {
+  .magicflow-overview-grid > .magicflow-panel--tall {
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 699px) {
+
+  .magicflow-page .magicflow-stat-grid--single .magicflow-stat--strip {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 2px 12px;
+  }
+
+  .magicflow-page .magicflow-stat-grid--single .magicflow-stat--strip > .magicflow-stat__foot {
+    grid-column: 1 / -1;
+    text-align: start;
+  }
 }
 </style>

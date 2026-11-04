@@ -54,6 +54,7 @@ const emit = defineEmits([
   'open-optimize',
   'open-plan',
   'open-notify',
+  'open-hub',
   'open-settings',
   'close',
 ])
@@ -66,7 +67,7 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
       <div class="magicflow-page__identity">
         <span class="magicflow-logo"><VIcon icon="mdi-magnet" size="20" /></span>
         <div>
-          <h1>魔流</h1>
+          <h1>魔流<span class="magicflow-page__brand-en">MagicFlow</span></h1>
           <p>PT 做种 · 魔力养护 / 刷流保种</p>
         </div>
       </div>
@@ -83,10 +84,7 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
                 <img v-if="taskSiteIcon" :src="taskSiteIcon" alt="" />
                 <VIcon v-else icon="mdi-web" size="15" />
               </span>
-              <span class="magicflow-task-switch__body">
-                <span class="magicflow-task-switch__k">当前任务</span>
-                <span class="magicflow-task-switch__v">{{ selectedTask?.name || '—' }} · {{ selectedTask?.site_name || '' }}</span>
-              </span>
+              <span class="magicflow-task-switch__v">{{ selectedTask?.name || '—' }} · {{ selectedTask?.site_name || '' }}</span>
               <span class="magicflow-status-dot" :class="`magicflow-status-dot--${selectedState.color}`" />
               <VIcon icon="mdi-chevron-down" size="18" class="magicflow-task-switch__chev" />
             </button>
@@ -114,300 +112,72 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
           variant="tonal"
           :title="`共 ${summary.total_tasks} 个任务 · 运行中跑流程+做种 · 做种中只保种 · 已停止全暂停`"
         >
+          <span class="magicflow-enabled-chip__dot" aria-hidden="true" />
           运行 {{ summary.running_tasks || 0 }} · 做种 {{ summary.seeding_tasks || 0 }} · 停 {{ summary.stopped_tasks || 0 }}
         </VChip>
-        <VBtn class="magicflow-header-create" color="primary" variant="flat" prepend-icon="mdi-plus" @click="emit('open-create-task')">
+        <!-- ★ 新建任务：设计稿页头没有它，但它是主操作 —— 放在「运行/做种/停」之后、
+             与右侧「铃铛 / 齿轮 / 功能中心」用竖分隔隔开，避免和实心紫的功能中心撞色成一对 -->
+        <VBtn
+          class="magicflow-header-create"
+          color="primary"
+          variant="flat"
+          prepend-icon="mdi-plus"
+          aria-label="新建任务"
+          title="新建任务：选站点、定模式、开跑"
+          @click="emit('open-create-task')"
+        >
           新建任务
         </VBtn>
+        <span class="magicflow-hdr-sep" aria-hidden="true" />
+        <!-- ★★ 页头右端按设计稿只留三样：通知铃铛 / 设置齿轮 / 功能中心。
+             其余 20+ 个入口（推荐·云盘·跨站·豆瓣·健康·点播·考核·补源·站点报表·
+             音乐·库内资源·后台任务·趋势·优化·计划·通知·认领·RSS·静默池·H&R·容量·
+             操作记录·新建任务·关闭）**全部收进「功能中心」**，页头不再逐个摆图标。 -->
         <VBadge
-          v-if="tileVisible('recommend') && recommendData.enabled !== false && (recommendData.recommended || 0) > 0"
-          class="magicflow-recommend-wrap"
-          :content="recommendData.recommended"
+          v-if="notifyBadge > 0"
+          :content="notifyBadge"
           color="error"
           location="top end"
           offset-x="6"
           offset-y="4"
         >
           <VBtn
-            class="magicflow-recommend-btn"
-            icon="mdi-movie-star-outline"
+            class="magicflow-icon-btn magicflow-notify-btn"
+            icon="mdi-bell-outline"
             variant="text"
-            aria-label="推荐"
-            @click="emit('open-recommend')"
-          />
-        </VBadge>
-        <VBtn
-          v-else-if="tileVisible('recommend')"
-          class="magicflow-recommend-btn"
-          icon="mdi-movie-star-outline"
-          variant="text"
-          aria-label="推荐"
-          @click="emit('open-recommend')"
-        />
-        <VBtn
-          v-if="tileVisible('cloud')"
-          class="magicflow-cloud-btn"
-          icon="mdi-cloud-upload-outline"
-          variant="text"
-          aria-label="云盘归档"
-          @click="emit('open-cloud')"
-        />
-        <VBadge
-          v-if="tileVisible('crossseed') && Number(crossseedData.count || 0) > 0"
-          class="magicflow-crossseed-wrap"
-          :content="crossseedData.count"
-          color="info"
-          location="top end"
-          offset-x="6"
-          offset-y="4"
-        >
-          <VBtn
-            class="magicflow-crossseed-btn"
-            icon="mdi-swap-horizontal-bold"
-            variant="text"
-            aria-label="跨站免费取种"
-            @click="emit('open-crossseed')"
-          />
-        </VBadge>
-        <VBtn
-          v-else-if="tileVisible('crossseed')"
-          class="magicflow-crossseed-btn"
-          icon="mdi-swap-horizontal-bold"
-          variant="text"
-          aria-label="跨站免费取种"
-          @click="emit('open-crossseed')"
-        />
-        <VBtn
-          v-if="tileVisible('douban')"
-          class="magicflow-douban-btn"
-          icon="mdi-database-search-outline"
-          variant="text"
-          :color="doubanServiceData.ok ? undefined : 'warning'"
-          :aria-label="`豆瓣评分服务：库 ${doubanServiceData.records || 0} 条`"
-          :title="`豆瓣评分服务：库 ${doubanServiceData.records || 0} 条${doubanServiceData.ok ? '' : '（不可用）'}`"
-          @click="emit('open-douban')"
-        />
-        <VBadge
-          v-if="healthBadgeCount > 0"
-          class="magicflow-health-wrap"
-          :content="healthBadgeCount"
-          :color="healthData.level === 'error' ? 'error' : 'warning'"
-          location="top end"
-          offset-x="6"
-          offset-y="4"
-        >
-          <VBtn
-            class="magicflow-health-btn"
-            icon="mdi-heart-pulse"
-            variant="text"
-            :color="healthColor"
-            :aria-label="healthLabel"
-            :title="healthLabel"
-            @click="emit('open-health')"
+            :aria-label="`事件通知：${notifyBadge} 条`"
+            :title="`事件通知：${notifyBadge} 条`"
+            @click="emit('open-notify')"
           />
         </VBadge>
         <VBtn
           v-else
-          class="magicflow-health-btn"
-          icon="mdi-heart-pulse"
+          class="magicflow-icon-btn magicflow-notify-btn"
+          icon="mdi-bell-outline"
           variant="text"
-          :aria-label="healthLabel"
-          :title="healthLabel"
-          @click="emit('open-health')"
+          aria-label="事件通知"
+          title="事件通知"
+          @click="emit('open-notify')"
         />
         <VBtn
-          v-if="tileVisible('ondemand')"
-          class="magicflow-ondemand-btn"
-          icon="mdi-cloud-download-outline"
-          variant="text"
-          aria-label="点播"
-          title="点播：填片名或豆瓣·TMDB·IMDB 链接，搜索选源（免费优先）"
-          @click="emit('open-ondemand')"
-        />
-        <VBadge
-          v-if="tileVisible('exam') && examData.enabled !== false && examBadge > 0"
-          class="magicflow-exam-wrap"
-          :content="examBadge"
-          :color="examUrgent ? 'error' : 'warning'"
-          location="top end"
-          offset-x="6"
-          offset-y="4"
-        >
-          <VBtn
-            class="magicflow-exam-btn"
-            icon="mdi-school-outline"
-            variant="text"
-            aria-label="新手考核"
-            @click="emit('open-exam')"
-          />
-        </VBadge>
-        <VBtn
-          v-else-if="tileVisible('exam') && examData.enabled !== false"
-          class="magicflow-exam-btn"
-          icon="mdi-school-outline"
-          variant="text"
-          aria-label="新手考核"
-          @click="emit('open-exam')"
-        />
-        <VBtn
-          class="magicflow-rescue-btn"
-          icon="mdi-lifebuoy"
-          variant="text"
-          aria-label="死种补源"
-          title="死种补源：停滞欠 H&R 的种 → 他站无 H&R 站补下同 Release"
-          @click="emit('open-rescue')"
-        />
-        <VBtn
-          v-if="tileVisible('sitereport')"
-          class="magicflow-sitereport-btn"
-          icon="mdi-table-large"
-          variant="text"
-          aria-label="站点报表"
-          title="站点报表：逐条种子状态（分类/保护/账单/qB）"
-          @click="emit('open-sitereport')"
-        />
-        <!-- ★ 音乐入口已「收起来」：只在窄屏/桌面「更多」菜单里，顶栏不再放独立图标 -->
-        <!-- ★ 桌面：详情磁贴（推荐/云盘/跨站/豆瓣/点播/考核/补源）与「设置」分两档 → 中间加一条竖分隔 -->
-        <span class="magicflow-hdr-sep" aria-hidden="true" />
-        <VBtn
-          class="magicflow-settings-btn"
-          icon="mdi-tune-variant"
+          class="magicflow-icon-btn magicflow-settings-btn"
+          icon="mdi-cog-outline"
           variant="text"
           aria-label="插件设置"
+          title="插件设置"
           @click="emit('open-settings')"
         />
-        <VBtn v-if="showClose" class="magicflow-close-btn" icon="mdi-close" variant="text" aria-label="关闭" @click="emit('close')" />
-        <!-- 「更多」菜单：宽屏仅承载次级入口（与顶部图标不重复）；窄屏（≤959px）图标按钮隐藏，本菜单收纳全部功能 -->
-        <VMenu location="bottom end" :close-on-content-click="true">
-          <template #activator="{ props: moreProps }">
-            <VBtn
-              v-bind="moreProps"
-              class="magicflow-more-btn"
-              icon="mdi-dots-vertical"
-              variant="text"
-              aria-label="更多"
-            />
-          </template>
-          <VList density="comfortable" class="magicflow-more-menu" min-width="228">
-            <!-- 以下 9 项与顶部图标按钮重复：宽屏（≥960px）隐藏，仅窄屏显示，避免入口二义 -->
-            <VListItem
-              v-if="tileVisible('recommend') && recommendData.enabled !== false"
-              class="magicflow-more-menu__primary"
-              prepend-icon="mdi-movie-star-outline"
-              title="推荐"
-              :subtitle="(recommendData.recommended || 0) > 0 ? `${recommendData.recommended} 个待确认` : '影视推荐'"
-              @click="emit('open-recommend')"
-            />
-            <VListItem v-if="tileVisible('cloud')" class="magicflow-more-menu__primary" prepend-icon="mdi-cloud-upload-outline" title="云盘归档" @click="emit('open-cloud')" />
-            <VListItem
-              v-if="tileVisible('crossseed')"
-              class="magicflow-more-menu__primary"
-              prepend-icon="mdi-swap-horizontal-bold"
-              title="跨站取种"
-              :subtitle="Number(crossseedData.count || 0) > 0 ? `${crossseedData.count} 个可免费取种` : '跨站免费取种'"
-              @click="emit('open-crossseed')"
-            />
-            <VListItem
-              v-if="tileVisible('douban')"
-              class="magicflow-more-menu__primary"
-              prepend-icon="mdi-database-search-outline"
-              title="豆瓣评分"
-              :subtitle="`库 ${doubanServiceData.records || 0} 条${doubanServiceData.ok ? '' : '（服务不可用）'}`"
-              @click="emit('open-douban')"
-            />
-            <VListItem
-              class="magicflow-more-menu__primary"
-              prepend-icon="mdi-heart-pulse"
-              title="健康自检"
-              :subtitle="healthBadgeCount > 0 ? `${healthBadgeCount} 项待处理` : '各子系统正常'"
-              @click="emit('open-health')"
-            />
-            <VListItem
-              v-if="tileVisible('ondemand')"
-              class="magicflow-more-menu__primary"
-              prepend-icon="mdi-cloud-download-outline"
-              title="点播"
-              subtitle="片名 / 链接 → 搜索选源（免费优先）"
-              @click="emit('open-ondemand')"
-            />
-            <VListItem
-              v-if="tileVisible('exam') && examData.enabled !== false"
-              class="magicflow-more-menu__primary"
-              prepend-icon="mdi-school-outline"
-              title="新手考核"
-              :subtitle="examBadge > 0 ? `${examBadge} 个未通过` : '考核进度与一键起任务'"
-              @click="emit('open-exam')"
-            />
-            <VListItem class="magicflow-more-menu__primary" prepend-icon="mdi-lifebuoy" title="死种补源" subtitle="停滞欠 H&R 的种 → 无 H&R 站补源" @click="emit('open-rescue')" />
-            <VListItem
-              v-if="tileVisible('sitereport')"
-              class="magicflow-more-menu__primary"
-              prepend-icon="mdi-table-large"
-              title="站点报表"
-              subtitle="站点逐条种子状态（分类/保护/账单）"
-              @click="emit('open-sitereport')"
-            />
-            <VListItem v-if="tileVisible('claim')" prepend-icon="mdi-seal-variant" title="认领" subtitle="站点认领 / 结算与奖励" @click="emit('open-claim')" />
-            <VListItem v-if="tileVisible('rss')" prepend-icon="mdi-rss" title="RSS" subtitle="站点 RSS 与 passkey 配置" @click="emit('open-rss')" />
-            <VListItem v-if="tileVisible('silent')" prepend-icon="mdi-pool" title="静默池" subtitle="静默托管：按站点查看" @click="emit('open-silent')" />
-            <VListItem v-if="tileVisible('hrbills')" prepend-icon="mdi-file-alert-outline" title="H&R 账单" subtitle="欠 H&R 与保种进度" @click="emit('open-hrbills')" />
-            <VListItem v-if="tileVisible('ceiling')" prepend-icon="mdi-gauge" title="站点容量" subtitle="各站体积与余量" @click="emit('open-ceiling')" />
-            <VListItem v-if="tileVisible('ops')" prepend-icon="mdi-history" title="操作记录" subtitle="删除 / 暂停 / 认领等动作审计" @click="emit('open-ops')" />
-            <!-- ★ 15.8.2：音乐（窄屏也走「更多」菜单） -->
-            <VListItem prepend-icon="mdi-music-circle-outline" title="音乐" subtitle="清单（进行中/已完成 · 暂停/继续/移除）" @click="emit('open-music')" />
-            <!-- ★ 15.9.0（Master「库内资源那里应该改成库内资源管理，删除 保护 订阅 整理 刮削 都放在这里」）：
-                全局入口（不挂在任务上 —— 库内资源跨任务） -->
-            <VListItem
-              prepend-icon="mdi-folder-cog-outline"
-              title="库内资源管理"
-              subtitle="已入库资源的养护：删除 / 保护 / 订阅 / 整理 / 刮削"
-              @click="emit('open-assets')"
-            />
-            <!-- ★ 15.10.0：后台任务队列（慢动作入队跑，关页面不断） -->
-            <VListItem
-              prepend-icon="mdi-progress-clock"
-              title="后台任务"
-              :subtitle="jobsBadge ? `进行中 ${jobsBadge} 个` : '整理入库 / 订阅 / 刮削 进度与结果'"
-              @click="emit('open-jobs')"
-            >
-              <template v-if="jobsBadge" #append>
-                <VChip size="x-small" color="primary" variant="tonal">{{ jobsBadge }}</VChip>
-              </template>
-            </VListItem>
-            <!-- ★ 15.12.0：魔力趋势 + 归因（时魔走向 / 拐点归因） -->
-            <VListItem
-              prepend-icon="mdi-chart-timeline-variant"
-              title="魔力趋势"
-              subtitle="时魔走向与拐点归因（为什么掉了）"
-              @click="emit('open-trend')"
-            />
-            <!-- ★ 15.15.0：组合优化器（体积预算内保留时魔总和最大；只算不删） -->
-            <VListItem
-              prepend-icon="mdi-chart-timeline-variant-shimmer"
-              title="组合优化"
-              subtitle="体积预算内保谁删谁最划算（0/1 背包）"
-              @click="emit('open-optimize')"
-            />
-            <!-- ★ 15.17.0：AI 计划审批（AI 出计划 → 人复核 → 执行；默认干跑） -->
-            <VListItem
-              prepend-icon="mdi-clipboard-check-outline"
-              title="AI 计划审批"
-              subtitle="计划 + 依据链 → 干跑 → 批准执行"
-              @click="emit('open-plan')"
-            />
-            <!-- ★ 15.13.0：事件通知（H&R 临期 / 容量红线 / 产出骤降 / 任务失败） -->
-            <VListItem
-              prepend-icon="mdi-bell-ring-outline"
-              title="事件通知"
-              :subtitle="notifyBadge ? `${notifyBadge} 条事件` : 'H&R 临期 / 容量红线 / 产出骤降 / 任务失败'"
-              @click="emit('open-notify')"
-            />
-            <!-- ★ 上面是「详情」，下面是「设置」：分隔开，别混成一串 -->
-            <VDivider class="my-1" />
-            <VListItem prepend-icon="mdi-tune-variant" title="插件设置" @click="emit('open-settings')" />
-            <VListItem v-if="showClose" prepend-icon="mdi-close" title="关闭" @click="emit('close')" />
-          </VList>
-        </VMenu>
+        <VBtn
+          class="magicflow-hub-btn"
+          color="primary"
+          variant="flat"
+          prepend-icon="mdi-view-grid-outline"
+          aria-label="功能中心"
+          title="功能中心：全部功能页与工具"
+          @click="emit('open-hub')"
+        >
+          功能中心
+        </VBtn>
       </div>
     </header>
 </template>
@@ -446,6 +216,29 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
   letter-spacing: 0;
 }
 
+.magicflow-page__identity h1 .magicflow-page__brand-en {
+  margin-inline-start: 6px;
+  font-size: 0.92em;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: rgba(var(--v-theme-on-surface), 0.86);
+}
+
+/* 计数胶囊（运行 / 做种 / 停）：设计稿左边带一颗绿点 */
+.magicflow-page .magicflow-enabled-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.magicflow-page .magicflow-enabled-chip__dot {
+  inline-size: 7px;
+  block-size: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: rgb(var(--v-theme-success));
+}
+
 .magicflow-page__identity p {
   margin: 2px 0 0;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
@@ -464,32 +257,29 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
   display: inline-block;
   inline-size: 1px;
   block-size: 22px;
-  margin-inline: 6px;
+  margin-inline: 10px;
   align-self: center;
   background: rgba(var(--v-border-color), 0.45);
   flex: 0 0 auto;
 }
 
+/* ★ 页头图标钮（通知铃铛 / 设置齿轮）：设计稿是浅底圆角方形，不是裸图标 */
+.magicflow-page .magicflow-icon-btn {
+  inline-size: 34px;
+  block-size: 34px;
+  min-inline-size: 34px;
+  border-radius: 11px;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.78);
+}
+
+.magicflow-page .magicflow-icon-btn:hover {
+  background: rgba(var(--v-theme-on-surface), 0.13);
+  color: rgb(var(--v-theme-on-surface));
+}
+
 .magicflow-settings-btn {
   margin-inline-start: 2px;
-}
-
-/* 「更多」⋮ 宽屏也显示：PC 上收纳次级功能入口（窄屏同样用它） */
-.magicflow-more-btn {
-  display: inline-flex;
-}
-
-.magicflow-more-menu .v-list-item {
-  min-block-size: 44px;
-}
-
-/* 宽屏（≥960px）：顶部图标按钮已承载高频功能，故「更多」菜单中与之重复的
-   9 项隐藏，仅保留次级入口（认领/RSS/静默池/H&R 账单/容量/操作记录/音乐/
-   库内资源/后台任务/趋势/优化/计划/通知）。窄屏（≤959px）图标收起，这些项照常显示。 */
-@media (min-width: 960px) {
-  .magicflow-more-menu__primary {
-    display: none;
-  }
 }
 
 /* ── 状态点（与任务栏共用选择器 → 两处各留一份）────────────────────────── */
@@ -618,6 +408,14 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
   font-weight: 600;
 }
 
+/* 顶部「功能中心」（设计稿页头最右的实心紫按钮；窄屏收进「更多」菜单） */
+.magicflow-page .magicflow-hub-btn {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+  margin-inline-start: 4px;
+}
+
 /* ── 顶部「当前任务」切换下拉（方案 B，与移动工具栏共用 → 两处各留一份）── */
 .magicflow-page .magicflow-task-switch {
   display: inline-flex;
@@ -700,37 +498,20 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
   letter-spacing: 0.01em;
 }
 
-/* ── 窄屏（≤959px）：只留品牌 + 「更多」菜单 ──────────────────────── */
+/* ── 窄屏（≤959px）：只留「铃铛 / 齿轮 / 功能中心」───────────────── */
 @media (max-width: 959px) {
   /* 桌面品牌头里的切换胶囊隐藏；移动端由工具栏承担 */
   .magicflow-page__actions .magicflow-task-switch {
     display: none;
   }
 
-  /* ★ 窄屏：顶栏只剩「魔流」品牌 + 右上角「⋮ 更多」——把**所有**功能入口（推荐/云盘/跨站/豆瓣/
-    健康/点播/考核/补源/设置/关闭）都收进这一个菜单，别一边留图标、一边又放菜单（≡ 两边都有）。 */
-  .magicflow-page__actions .magicflow-header-create,
-  .magicflow-page__actions .magicflow-recommend-wrap,
-  .magicflow-page__actions .magicflow-recommend-btn,
-  .magicflow-page__actions .magicflow-exam-wrap,
-  .magicflow-page__actions .magicflow-exam-btn,
-  .magicflow-page__actions .magicflow-cloud-btn,
-  .magicflow-page__actions .magicflow-crossseed-wrap,
-  .magicflow-page__actions .magicflow-crossseed-btn,
-  .magicflow-page__actions .magicflow-douban-btn,
-  .magicflow-page__actions .magicflow-health-wrap,
-  .magicflow-page__actions .magicflow-health-btn,
-  .magicflow-page__actions .magicflow-ondemand-btn,
-  .magicflow-page__actions .magicflow-rescue-btn,
-  .magicflow-page__actions .magicflow-sitereport-btn,
-  .magicflow-page__actions .magicflow-settings-btn,
-  .magicflow-page__actions .magicflow-hdr-sep,
-  .magicflow-page__actions .magicflow-close-btn {
+  /* 窄屏同样不再摆一排图标：全部入口都在「功能中心」里 */
+  .magicflow-page__actions .magicflow-hdr-sep {
     display: none;
   }
 
-  .magicflow-page__actions .magicflow-more-btn {
-    display: inline-flex;
+  .magicflow-page .magicflow-hub-btn {
+    margin-inline-start: 0;
   }
 
   /* 手机端隐藏自相矛盾的计数胶囊（信息已由首页大数承担） */
