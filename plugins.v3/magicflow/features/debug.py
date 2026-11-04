@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 from app.schemas import Response
 from app.sdk.events import Event
 
+from .. import envops
 from ..downloader_ops import (
     _kv,
 )
@@ -25,7 +26,7 @@ from ..crossseed import (
     size_close,
     title_like,
 )
-from ..recommend import _norm
+from ..norm import norm_key
 
 
 from .. import common  # noqa: F401
@@ -129,12 +130,16 @@ DEBUG_WRITE_PATHS: Dict[str, str] = {
     "/debug/store": "action=flush（落盘）/ drop-hot（清热层键）",
     "/debug/cache": "drop / prefix（丢站点抓取缓存）",
     "/debug/retag": "dry=0（真的补标签）",
+    "/debug/siteua": "改站点 UA 字段（写站点表）",
     "/debug/crossseed": "add=true（真的在他站发起下载）",
     "/debug/seedlimit": "给我们管控的种套单档限速（改 qB）",
     "/debug/emit-transfer": "投递/直调 TransferComplete，clear=1 清库记",
     "/debug/cloud-put": "往 OpenList 真写测试文件",
     "/debug/recommend-reset": "清空推荐甄别结果",
     "/debug/douban": "action=purge_neg（清服务端负缓存）/ flush_snapshot",
+    # ★ 19.10.7（S15）：probe=true 逐站联网探测，每站扣一次 PV 配额。原先是清单外的漏网——
+    #   它写的不是库，是「当日预算」，但同样不可撤销，且会让正常刮削被限流。
+    "/debug/sitecap": "probe=true（联网探测，消耗站点 PV 配额）",
 }
 
 
@@ -286,8 +291,16 @@ class DebugMixin:
             )
         return Response(success=True, message=f"热层 {len(keys)} 个 key", data={"keys": keys})
 
-    def debug_siteua(self, site_id: int = 0, ua: str = "") -> Response:
-        """诊断:只改站点 UA 字段（写操作，调用方确认）。"""
+    def debug_siteua(self, site_id: int = 0, ua: str = "", confirm: int = 0) -> Response:
+        """诊断:只改站点 UA 字段（写操作，需 ``confirm=1``）。
+
+        ★ 19.10.3（整改 S8）：补 ``_dbg_guard_write``。此前 docstring 写着「调用方确认」，
+          但代码里没有任何强制手段 —— 一个 GET 请求就能改掉站点表的 UA 字段，
+          「写门只有一道」的口径在这里是断的。
+        """
+        _g = _dbg_guard_write("debug_siteua", confirm)
+        if _g is not None:
+            return _g
         try:
             from app.db.oper.site import SiteOper  # noqa: WPS433
 
@@ -354,7 +367,7 @@ class DebugMixin:
             if not apikey:
                 return Response(success=False, message="缺少 apikey")
             payload = _json.loads(body or "{}")
-            url = f"https://api.{dom}/" + str(path or "").lstrip("/")
+            url = f"{envops.hd_api_base(site, dom)}/" + str(path or "").lstrip("/")
             res = RequestUtils(headers={"x-api-key": apikey,
                                         "Content-Type": "application/json",
                                         "Accept": "application/json, text/plain, */*"},
@@ -388,7 +401,7 @@ class DebugMixin:
                 return Response(success=False, message="缺少 apikey（站点配置/凭据中心都没有）")
             from app.sdk.network import RequestUtils  # noqa: WPS433
 
-            base = f"https://api.{dom}"
+            base = envops.hd_api_base(site, dom)
             url = base.rstrip("/") + "/" + str(path or "").lstrip("/")
             _qs = str(qs or "").strip().lstrip("?")
             if _qs:
@@ -453,12 +466,24 @@ class DebugMixin:
         except Exception as err:  # noqa: BLE001
             return Response(success=False, message=f"抓取失败:{err}")
 
-    def debug_retag(self, task_id: str = "", dry: int = 1) -> Response:
+    def debug_retag(self, task_id: str = "", dry: int = 1, confirm: int = 0) -> Response:
         """把任务「旧标签」下的种补上当前标签（只加不减）。
 
         ``GET /debug/retag?task_id=<id>&dry=1`` 只报告；`dry=0` 真写。
         用于任务改过类型（刷流↔魔力）后，旧标签下的种脱离托管的情况。
+
+        ★ 19.10.2（整改 S4）：``dry=0`` 属写操作，必须显式 ``confirm=1``。
+          本端点早在 ``DEBUG_WRITE_PATHS`` 里登记为「dry=0 会真写」，
+          但代码从未调用 ``_dbg_guard_write`` —— 登记与执行两张皮，等于清单在说谎。
         """
+        try:
+            _dry = int(dry if dry is not None else 1)
+        except (TypeError, ValueError):
+            return Response(success=False, message=f"dry 参数非法:{dry!r}")
+        if not _dry:
+            _g = _dbg_guard_write("debug_retag(dry=0)", confirm)
+            if _g is not None:
+                return _g
         tid = str(task_id or "").strip()
         cfg = self._task_configs.get(tid)
         if cfg is None:
@@ -485,9 +510,9 @@ class DebugMixin:
         hashes = sorted(set(hashes))
         out = {
             "task": tid, "new_tag": new_tag, "old_tags": detail,
-            "count": len(hashes), "dry": bool(int(dry or 0)),
+            "count": len(hashes), "dry": bool(_dry),
         }
-        if int(dry or 0):
+        if _dry:
             return Response(success=True, data=out)
         n, err2 = downloader.add_torrents_tag(hashes, new_tag)
         out["added"] = n
@@ -743,11 +768,10 @@ class DebugMixin:
                 return Response(success=True, message=f"已重读快照: {cli.snapshot_stats()['total']} 条", data=cli.stats())
             if str(action or "") == "snap_test":
                 # 诊断：单独查 snapshot（不查 cache/live）
-                from ..douban import _norm
                 _ss = cli.snapshot_stats()
                 _hit = cli._snapshot_lookup(name or "", year or "")
-                return Response(success=True, message=f"snap_test: norm={repr(_norm(name))} snapshot_total={_ss['total']} hit={'Y' if _hit else 'N'}",
-                                data={"norm": _norm(name or ""), "hit": _hit, "stats": _ss})
+                return Response(success=True, message=f"snap_test: norm={repr(norm_key(name))} snapshot_total={_ss['total']} hit={'Y' if _hit else 'N'}",
+                                data={"norm": norm_key(name or ""), "hit": _hit, "stats": _ss})
             if keyword:
                 # ★ 评分源已拆为独立服务（只做「标题/年份」精确匹配），不再支持关键词模糊搜索
                 return Response(success=True, message="本地评分服务不支持关键词模糊搜索（请用 name/year 精确查）",
@@ -1365,7 +1389,12 @@ class DebugMixin:
 
         _src = ""
         try:
-            _src = _ins.getsource(type(fetcher)._parse_np_rows)
+            # ★ 19.10.35：解析实现在 L0 ``collect_rows.parse_np_rows``；
+            #   ``SiteFetcher._parse_np_rows`` 已是薄委托，取它的源码只会得到 5 行壳，
+            #   ``src_has_daoxiangyu`` 会假阴性。这里取真实现。
+            from ..collect_rows import parse_np_rows as _parse_np_rows
+
+            _src = _ins.getsource(_parse_np_rows)
         except Exception:  # noqa: BLE001
             pass
         _p2 = fetcher._parse_np_rows(t2, dom, base, getattr(site, "cookie", None), getattr(site, "ua", None))
@@ -1589,6 +1618,43 @@ class DebugMixin:
             "cost": int(res.cost or 0),
             "length": len(text),
             "text": text[: max(0, int(limit))],
+        })
+
+    def debug_auth_get(self, site_id: int = 0, url: str = "", limit: int = 6000) -> Response:
+        """诊断:用**站点 API Key**（而不是 cookie）发 GET（只读），返回原始响应。
+
+        与 ``/debug/fetch-page``（cookie 通道）成对使用 —— 用来判断某个站点后台端点
+        到底认 apikey 还是只认 cookie（野马PT 的 ``/api/consumer/*`` 就是这么查出归宿的）。
+
+        安全: SSRF / 凭据外带由**唯一出口** ``collect.Http.auth_get`` 把关（它会校验
+        目标必须属于该站点域名，且站点不存在时直接返回 ``站点不存在``）——
+        本层刻意**不重复**判一次，既避免两处口径漂移，也不去碰那道「禁止新增跨文件
+        self._xxx() 互调」的棘轮。``kind=debug`` 请求不进缓存。
+        """
+        if not url:
+            return Response(success=False, message="缺少 url")
+        if not site_id:
+            return Response(success=False, message="必须指定 site_id")
+        c = self._collect_ref()
+        if c is None:
+            return Response(success=False, message="采集模块未就绪")
+        got = c.http.auth_get(int(site_id), url, kind="debug", force=True)
+        if not got.get("ok"):
+            return Response(success=False, message=got.get("error") or "请求失败")
+        import json as _json  # noqa: WPS433
+
+        data = got.get("data")
+        try:
+            txt = data if isinstance(data, str) else _json.dumps(data, ensure_ascii=False)
+        except Exception:  # noqa: BLE001
+            txt = str(data)
+        return Response(success=True, data={
+            "url": url,
+            "cost": int(got.get("cost") or 0),
+            "type": type(data).__name__,
+            "length": len(txt),
+            "data": data,
+            "text": txt[: max(0, int(limit))],
         })
 
     def debug_recommend_reset(self, confirm: int = 0) -> Response:

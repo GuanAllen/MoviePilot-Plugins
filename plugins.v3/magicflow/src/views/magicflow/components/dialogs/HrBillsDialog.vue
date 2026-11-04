@@ -5,7 +5,7 @@
 // 展示用纯函数（hrBillStateColor / hrBillsAtRisk / fmtHoursLeft）自 composables/useHrBills.js
 // 具名导入复用 —— 单一真值源，不在两处各写一份。
 import { computed } from 'vue'
-import { hrBillStateColor, hrBillsAtRisk, fmtHoursLeft } from '../../composables/useHrBills'
+import { hrBillStateColor, hrBillsAtRisk, fmtHoursLeft, fmtBillSeeded, fmtBillLeft, hrBillLeftH } from '../../composables/useHrBills'
 
 const open = defineModel({ type: Boolean, default: false })
 
@@ -61,9 +61,19 @@ const sites = computed(() => (props.data && props.data.sites) || [])
               >{{ st }} {{ n }}</VChip>
               <VChip v-if="s.window_h" size="x-small" color="blue-grey" variant="tonal">窗口 {{ (s.window_h / 24).toFixed(1) }}d</VChip>
             </div>
+            <details v-if="(s.items || []).length" class="magicflow-hrbills__detail">
+              <summary>逐颗明细 {{ (s.items || []).length }} 颗</summary>
+              <div class="magicflow-hrbills__rows">
+                <div v-for="it in s.items" :key="it.hash" class="magicflow-hrbills__row">
+                  <span class="magicflow-hrbills__row-title" :title="it.title || it.hash">{{ it.title || it.hash.slice(0, 8) }}</span>
+                  <span class="magicflow-hrbills__row-seed">{{ fmtBillSeeded(it) }}</span>
+                  <span class="magicflow-hrbills__row-left" :class="{ 'is-ok': hrBillLeftH(it) <= 0.05 }">{{ fmtBillLeft(it) }}</span>
+                </div>
+              </div>
+            </details>
             <div v-if="s.at_risk" class="magicflow-ops-dialog__sub">
               临近到期：
-              <span v-for="(it, i) in hrBillsAtRisk(s)" :key="it.hash">{{ i ? '、' : '' }}{{ it.title || it.hash.slice(0, 8) }}（剩 {{ fmtHoursLeft(it.hours_left, it.state) }} / 需 {{ it.due_h }}h）</span>
+              <span v-for="(it, i) in hrBillsAtRisk(s)" :key="it.hash">{{ i ? '、' : '' }}{{ it.title || it.hash.slice(0, 8) }}（站点窗口剩 {{ fmtHoursLeft(it.hours_left, it.state) }} · 需 {{ it.due_h }}h）</span>
             </div>
             <div v-if="(s.pending_items || []).length" class="magicflow-ops-dialog__sub">
               待起表（未下完，完成即计 H&amp;R）：
@@ -114,10 +124,63 @@ const sites = computed(() => (props.data && props.data.sites) || [])
 .magicflow-sitereport__stat span { font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
 .magicflow-sitereport__stat.is-danger b { color: rgb(var(--v-theme-error)); }
 
+/* ── 按站卡片：这几条样式在 P4 拆分时**丢了**（template 有类名、全库无 CSS），
+   结果所有站的内容糊成一片、卡片之间没有边界。19.10.11 补齐。── */
+.magicflow-hrbills__list { display: flex; flex-direction: column; gap: 10px; }
+.magicflow-hrbills__card {
+  border: 1px solid var(--magicflow-panel-brd);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+}
+.magicflow-hrbills__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.magicflow-hrbills__name { font-size: 13.5px; font-weight: 600; }
+.magicflow-hrbills__nums { font-size: 11.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
+.magicflow-hrbills__chips { display: flex; flex-wrap: wrap; gap: 6px; margin-block-start: 6px; }
+
+/* ── 逐颗明细（19.10.11）：可折叠，默认收起，避免把弹窗堆爆 ── */
+.magicflow-hrbills__detail { margin-block-start: 8px; }
+.magicflow-hrbills__detail > summary {
+  cursor: pointer;
+  font-size: 11.5px;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+  user-select: none;
+}
+.magicflow-hrbills__rows { display: flex; flex-direction: column; gap: 2px; margin-block-start: 6px; }
+.magicflow-hrbills__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 11.5px;
+  border-block-start: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.magicflow-hrbills__row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(var(--v-theme-on-surface), 0.86);
+}
+.magicflow-hrbills__row-seed { font-variant-numeric: tabular-nums; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
+.magicflow-hrbills__row-left { font-variant-numeric: tabular-nums; color: rgb(var(--v-theme-warning)); white-space: nowrap; }
+.magicflow-hrbills__row-left.is-ok { color: rgb(var(--v-theme-success)); }
+
 @media (max-width: 959px) {
   .magicflow-sitereport__stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 959px) {
   .magicflow-ops-dialog__body { padding: 4px 14px 18px; }
+}
+/* 窄屏：种子名独占一行，工时/还需 并到第二行，避免三列挤成省略号 */
+@media (max-width: 520px) {
+  .magicflow-hrbills__row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "t t" "s l";
+    row-gap: 0;
+  }
+  .magicflow-hrbills__row-title { grid-area: t; }
+  .magicflow-hrbills__row-seed { grid-area: s; }
+  .magicflow-hrbills__row-left { grid-area: l; }
 }
 </style>

@@ -15,6 +15,7 @@
 运行：python3 tools/test_silent_filter_inflight.py
 """
 import os
+import re
 import sys
 import unittest
 
@@ -57,12 +58,14 @@ class SilentFilterInflightTest(unittest.TestCase):
 
     def test_05_ondemand_api_unchanged(self):
         """on-demand API 端点没新增/删除"""
-        with open(os.path.join(ROOT, "features", "api.py")) as f:
+        with open(os.path.join(ROOT, "features", "api.py"), encoding="utf-8") as f:
             api = f.read()
         # /ondemand 三件套：ondemand / ondemand_items / ondemand_act
-        self.assertIn('"path": "/ondemand"', api)
-        self.assertIn('"path": "/ondemand/items"', api)
-        self.assertIn('"path": "/ondemand/act"', api)
+        # 19.10.29 起路由表是 `("/path", "handler", "METHOD", "summary")` 元组，
+        # 不再是 `"path": ...` 字典 → 只钉「路径字面量后面紧跟逗号」，两种写法都成立。
+        for path in ("/ondemand", "/ondemand/items", "/ondemand/act"):
+            self.assertRegex(api, r'"%s"\s*,' % re.escape(path),
+                             f"路由表应仍注册 {path}")
 
     # ★ 15.8.11 同版补丁：音乐线「下载中」同点播 inflight 待遇
     def test_06_music_inflight_source_guard(self):

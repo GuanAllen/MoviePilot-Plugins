@@ -1,0 +1,70 @@
+/* MobileTaskDetail 的 scoped 样式，由线上 dist 按 scopeId data-v-cc4581d6 提取。
+   选择器里的属性限定符是 scoped 边界，别去掉。 */
+
+.magicflow-page .md-verdict[data-v-cc4581d6] {
+  display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-radius: 16px;
+  background: linear-gradient(140deg, rgba(var(--v-theme-success), 0.15), rgba(var(--v-theme-success), 0.04));
+  border: 1px solid rgba(var(--v-theme-success), 0.32);
+}
+
+.magicflow-page .md-verdict.is-warn[data-v-cc4581d6] {
+  background: linear-gradient(140deg, rgba(var(--v-theme-error), 0.15), rgba(var(--v-theme-error), 0.04));
+  border-color: rgba(var(--v-theme-error), 0.34);
+}
+
+.magicflow-page .md-dot[data-v-cc4581d6] { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: rgb(var(--v-theme-primary)); box-shadow: 0 0 8px rgba(var(--v-theme-primary), 0.8);
+}
+
+.magicflow-page .md-dot.is-error[data-v-cc4581d6] { background: rgb(var(--v-theme-error)); box-shadow: 0 0 8px rgba(var(--v-theme-error), 0.7);
+}
+
+.magicflow-page .md-dot.is-warning[data-v-cc4581d6] { background: rgb(var(--v-theme-warning)); box-shadow: 0 0 8px rgba(var(--v-theme-warning), 0.7);
+}
+
+.magicflow-page .md-dot.is-secondary[data-v-cc4581d6] { background: rgba(var(--v-theme-on-surface), 0.45); box-shadow: none;
+}
+
+.magicflow-page .md-verdict__body[data-v-cc4581d6] { min-inline-size: 0;
+}
+
+.magicflow-page .md-v[data-v-cc4581d6] { font-size: 15px; font-weight: 750; color: rgb(var(--v-theme-success));
+}
+
+.magicflow-page .md-verdict.is-warn .md-v[data-v-cc4581d6] { color: rgb(var(--v-theme-error));
+}
+
+.magicflow-page .md-s[data-v-cc4581d6] { font-size: 11.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); margin-block-start: 2px;
+}
+
+.magicflow-page .md-act[data-v-cc4581d6] {
+  margin-inline-start: auto; flex: 0 0 auto; font: inherit; font-size: 12px; font-weight: 650;
+  padding: 7px 13px; border-radius: 10px; cursor: pointer; color: rgb(var(--v-theme-on-primary));
+  background: rgba(var(--v-theme-error), 0.92); border: 1px solid rgba(var(--v-theme-error), 0.92);
+}
+
+.magicflow-page .md-cards[data-v-cc4581d6] { display: flex; gap: 9px; margin-block-start: 12px;
+}
+
+.magicflow-page .md-card[data-v-cc4581d6] { flex: 1 1 0; min-inline-size: 0; background: rgba(var(--v-theme-surface), 0.9); border: 1px solid var(--magicflow-panel-brd); border-radius: 15px; padding: 14px 12px;
+}
+
+.magicflow-page .md-card b[data-v-cc4581d6] { font-size: 19px; font-weight: 800; display: block; letter-spacing: 0.2px;
+}
+
+.magicflow-page .md-card span[data-v-cc4581d6] { font-size: 10.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-dim)); margin-block-start: 6px; display: block;
+}
+
+.magicflow-page .md-strategy[data-v-cc4581d6] { margin-block-start: 10px; font-size: 12px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); padding: 0 4px; line-height: 1.5;
+}
+
+.magicflow-page .md-entries[data-v-cc4581d6] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-block-start: 14px;
+}
+
+.magicflow-page .md-entry[data-v-cc4581d6] {
+  flex: 1 1 0; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 6px;
+  border-radius: 15px; background: rgba(var(--v-theme-surface), 0.9); border: 1px solid var(--magicflow-panel-brd);
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); font: inherit; font-size: 12px; cursor: pointer;
+}
+
+.magicflow-page .md-entry.is-active[data-v-cc4581d6] { color: rgb(var(--v-theme-primary)); border-color: rgba(var(--v-theme-primary), 0.5); background: rgba(var(--v-theme-primary), 0.16);
+}

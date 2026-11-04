@@ -16,6 +16,8 @@
 #   --no-verify        不校验
 #   --dry-run          只打印将要执行的动作
 #   --symbols=a,b,c    校验容器内代码含这些符号（grep 命中文件数）
+#   --prune-dist       真删 dist 里的旧哈希构建产物（默认只报告，见 tools/prune_dist_orphans.py）
+#   --no-prune-dist    跳过这项检查
 #
 # ── 三个部署点（与 TOOLS.md 一致）──
 #   ① 监控源（改这里 monitor 会自动装）: $MARKET_DIR
@@ -32,9 +34,12 @@ PLUGIN="MagicFlow"
 API="http://127.0.0.1:3000/api/v1/plugin"
 
 DO_BUILD=1; DO_PREFLIGHT=1; DO_MARKET=1; DO_CONTAINER=1; DO_RELOAD=1; DO_VERIFY=1; DRY=0
+DO_PRUNE=1   # 1=只报告  2=真删  0=跳过
 SYMBOLS=""
 for a in "$@"; do
   case "$a" in
+    --prune-dist) DO_PRUNE=2;;
+    --no-prune-dist) DO_PRUNE=0;;
     --no-build) DO_BUILD=0;;
     --no-preflight) DO_PREFLIGHT=0;;
     --no-market) DO_MARKET=0;;
@@ -65,8 +70,21 @@ if [ "$DO_BUILD" = 1 ]; then
   echo "── 1) 前端构建（vite build）──"
   if [ "$DRY" = 1 ]; then
     echo "  (dry-run) npm run build"
+  elif [ ! -d "$DEV/node_modules" ]; then
+    # ★ 护栏：无 node_modules 时 vite 必然启动失败，但 vite 会在启动阶段先清空 dist/。
+    #   直接跑等于「先删 UI 再报错」，所以这里必须先拦住。
+    if [ -f "$DEV/dist/index.html" ]; then
+      echo "  ⚠ 无 node_modules，跳过构建，沿用现有 dist"
+    else
+      echo "  ✖ 无 node_modules 且无 dist —— 前端资源无从产生，中止部署" >&2
+      exit 4
+    fi
   else
     ( cd "$DEV" && npm run build 2>&1 | tail -3 )
+    if [ ! -f "$DEV/dist/index.html" ]; then
+      echo "  ✖ 前端构建失败：$DEV/dist/index.html 不存在，中止部署" >&2
+      exit 4
+    fi
     echo "  ▸ dist 已重建"
   fi
 fi
@@ -105,17 +123,28 @@ if [ "$DO_MARKET" = 1 ]; then
   fi
 fi
 
-# 3) 更新容器副本（tar 流过去，避开逐文件 docker cp）
+# 3) 更新容器副本
+#    ★ 2026-10-27 关键修正：本环境的 $CPATH 与 $DEV 是同一个 bind mount
+#      （/vol1/1000/moviepilot/plugins-local/magicflow → /app/app/plugins/magicflow）。
+#      旧写法 "docker exec rm -rf $CPATH/dist" 删掉的其实是宿主的 $DEV/dist，
+#      紧接着 "tar -C $DEV ." 打包时 dist 已不存在 → 每部署一次必丢一次前端，页面白屏。
+#      现在先探测挂载：已挂载则源码即容器副本，整个同步步骤跳过。
 if [ "$DO_CONTAINER" = 1 ]; then
   echo "── 4) 更新容器副本 → $CONTAINER:$CPATH ──"
-  if [ "$DRY" = 1 ]; then
+  MOUNTED=0
+  if [ "$DRY" = 0 ]; then
+    if docker inspect -f '{{range .Mounts}}{{.Source}}=>{{.Destination}}{{"\n"}}{{end}}' "$CONTAINER" 2>/dev/null \
+         | tr -d '\r' | grep -qx "$DEV=>$CPATH"; then
+      MOUNTED=1
+    fi
+  fi
+  if [ "$MOUNTED" = 1 ]; then
+    echo "  ▸ 已绑定挂载（$DEV => $CPATH）"
+    echo "  ▸ 源码即容器副本，跳过同步（同步会自删 dist）"
+  elif [ "$DRY" = 1 ]; then
     echo "  (dry-run) tar ... | docker exec -i $CONTAINER tar -C $CPATH -xf -"
   else
-    # ★ 先清容器里过期的 dist（tar 只覆盖不删 → 旧 MagicFlowWorkbench-*.js 会残留；
-    #   浏览器若还拿着旧 remoteEntry 就会加载旧 UI）。dist 是全量发布的，直接整目录换。
-    # ★ 护栏：先确认源 dist 完整再删容器内 dist。
-    #   旧写法无条件 rm -rf：源 dist 不存在时会把容器内 UI 删光，
-    #   而 tar 又带不进 dist → 插件页面白屏（插件“没起来”）。
+    # 非挂载场景：容器内是独立副本，才需要先清 dist 再整目录覆盖。
     if [ -f "$DEV/dist/index.html" ]; then
       docker exec "$CONTAINER" sh -c "rm -rf $CPATH/dist" >/dev/null 2>&1 || true
     else
@@ -172,6 +201,17 @@ PY
     echo "  ▸ 符号 $sym → $n 个文件命中"
   done
   rm -f /tmp/mf_agent.json
+fi
+
+# 7) dist 旧构建残留（vite 每次构建都出新哈希文件名，旧的不自动消失）
+#    --no-market 时 dist 不同步，这项就没意义，直接跳过。
+if [ "$DO_PRUNE" != 0 ] && [ "$DO_MARKET" = 1 ] && [ "$DRY" = 0 ] && [ -d "$MARKET_DIR/dist" ]; then
+  echo "── 7) dist 旧构建残留 ──"
+  PRUNE_ARG=""
+  [ "$DO_PRUNE" = 2 ] && PRUNE_ARG="--prune"
+  # 非致命：清不掉不该让整次部署判失败
+  python3 "$DEV/tools/prune_dist_orphans.py" --local \
+    --dest "$MARKET_DIR/dist" --local-src "$DEV/dist" $PRUNE_ARG || true
 fi
 
 echo "✅ 部署完成（版本 $VER）"

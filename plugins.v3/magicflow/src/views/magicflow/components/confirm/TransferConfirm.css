@@ -1,0 +1,26 @@
+/* TransferConfirm 的 scoped 样式，由线上 dist 按 scopeId data-v-5c527562 提取。
+   选择器里的属性限定符是 scoped 边界，别去掉。 */
+
+/* ── 共享选择器（`.magicflow-dialog` / `.magicflow-settings-hint`）随本弹窗自 index.vue **复制一份**；
+     父页其它弹窗仍在用，故 index.vue 原样保留（纯复制，零改动）。
+     VDialog 会 teleport 到 body，父 scoped 够不到子内部，故须自带。── */
+.magicflow-dialog[data-v-5c527562] {
+  background: rgb(var(--v-theme-surface)) !important;
+  border: 1px solid var(--magicflow-panel-brd);
+  border-radius: 18px;
+  backdrop-filter: blur(16px) saturate(120%);
+  -webkit-backdrop-filter: blur(16px) saturate(120%);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.magicflow-settings-hint[data-v-5c527562] {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  background: rgba(var(--v-theme-primary), 0.07);
+  border-inline-start: 3px solid rgba(var(--v-theme-primary), 0.45);
+}

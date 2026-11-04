@@ -170,12 +170,12 @@ function openSilent() { emit('silent') }
         <!-- ★ 来源份（他站那份 · 保种中）：来源站 → 目标站 明示（7.19.3） -->
         <section v-if="crossseedSources.length" class="magicflow-cs-pending">
           <header class="magicflow-cs-pending__head">
-            <span>来源份（他站那份 · 源站保种中）</span>
+            <span>来源份（他站那份 · 源站挂义务中）</span>
           </header>
           <article v-for="s in crossseedSources" :key="s.sib_hash" class="magicflow-cs-card">
             <div class="magicflow-cs-card__name" :title="s.title || s.sib_hash">{{ s.title || s.sib_hash }}</div>
             <div class="magicflow-cs-card__meta">
-              <span class="magicflow-cs-card__site">来自 {{ s.site_b || '?' }}（源站保种中）</span>
+              <span class="magicflow-cs-card__site">来自 {{ s.site_b || '?' }}（源站挂义务中）</span>
               <span class="magicflow-cs-card__size">{{ gbText(s.size_gb) }}</span>
               <VChip
                 v-if="Number(s.progress ?? 1) < 0.999"
@@ -198,9 +198,9 @@ function openSilent() { emit('silent') }
           <div class="magicflow-cs-rules__body">
             <p><strong>取种原理</strong>：在他站<strong>免费</strong>下载同一资源。落种由全局任务「<strong>跨站取种</strong>」承接；本站判为「非免费」的候选只走跨站，<strong>绝不在本站下载</strong>。把资源挂回本站的工作由「<strong>全站辅种</strong>」负责，本线不再回辅。</p>
             <p><strong>流量兜底</strong>：判「免费」可能出错：取种期间核对来源站的免费状态与下载量增量；发现其实不免费，立即<strong>删种 + 拉黑该站</strong>（需人工确认后解除）。</p>
-            <p><strong>来源份 H&amp;R 保种</strong>：他站那份下完即分诊：欠 H&amp;R 交保种（保种期内任何任务不删它、也不改标签），不欠则入静默池。</p>
+            <p><strong>来源份 H&amp;R 义务</strong>：他站那份下完即分诊：欠 H&amp;R 交保种宿主（义务工时内任何任务不删它、也不改标签），不欠则入静默池。</p>
             <p><strong>取种台账</strong>：他站下载中＝在岗；下完过 H&amp;R 判定分诊并销账。超过 6 小时未下完即放弃；未下完不转资源、不整理入库。</p>
-            <p><strong>保种时长</strong>：默认 {{ crossseedGuard.seed_hours_default ?? 24 }} 小时；优先级：种子自带 H&amp;R ＞ 站点规则库 ＞ 默认值。站点自定义：{{ (crossseedGuard.site_hours || []).join('、') || '无' }}。</p>
+            <p><strong>来源站义务工时</strong>：默认 {{ crossseedGuard.seed_hours_default ?? 24 }} 小时；优先级：种子自带 H&amp;R ＞ 站点规则库 ＞ 默认值。站点自定义：{{ (crossseedGuard.site_hours || []).join('、') || '无' }}。</p>
             <p><strong>期满回收</strong>：{{ crossseedGuard.reclaim ? '已开启：期满后允许删种回收空间。' : '未开启：期满的种也不会被自动删除。' }}</p>
           </div>
         </details>

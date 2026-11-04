@@ -21,6 +21,8 @@ from sqlalchemy import delete, select
 
 from .. import db as mfdb
 from ..downloader_ops import QB_PAUSED_STATES
+from ..dutyreg import duty_task_spec
+from ..dutyops import free_for
 from ..persistence import OperationItem
 from ..tags import STATE_BONUS, STATE_BRUSH
 
@@ -227,7 +229,19 @@ class DeckMixin:
         site = str(getattr(task, "site_name", "") or getattr(task, "site_domain", "") or "")
         adopted = 0
         if apply and self._store:
+            _taker = duty_task_spec(state) or str(getattr(task, "id", "") or "")
             for h in todo:
+                # ★ 19.10.12：套牌复用也是「任务招人」→ 走注册表口径（刷流/魔力是非特殊
+                #   岗位，只能招没岗位的种）。否则会把认领/保种名下的种记到自己账上，
+                #   而标签不动 → 账本与 qB 每轮对打（19.10.11 认领拉锯的同款成因）。
+                try:
+                    _free, _why = free_for(
+                        self._store.get(h) or {}, _taker,
+                        taker_id=str(getattr(task, "id", "") or ""))
+                except Exception:  # noqa: BLE001
+                    _free = False
+                if not _free:
+                    continue
                 try:
                     ok, _why = self._store.claim(h, task.id, state=state, site=site)
                     if ok:

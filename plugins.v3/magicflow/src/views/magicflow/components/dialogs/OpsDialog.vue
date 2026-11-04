@@ -2,12 +2,22 @@
 // MagicFlow 前端 · 操作记录弹窗
 // P4 拆分：自 views/magicflow/index.vue **纯搬家**（template 块 + 配套 scoped 样式，无行为/样式变更）。
 // 数据向下（defineModel / props）、事件向上（emit）；子组件不直接改父状态、不调父方法。
-// 展示纯函数（operationKindText / operationIcon / operationColor / operationStateText /
-// operationSummary / operationDuration / hasOpDetail / opDetailItems / isOpDetailOpen /
-// itemSourceText / eventLevelIcon / taskLabel）本地实现，与 composables/useOperations.js 同口径
-// —— 避免把函数当 prop 传（同 components/tabs/JournalTab.vue 做法）。
-import { EVENT_LEVELS, KIND_ICON, KIND_TEXT, STATE_TEXT, ITEM_SOURCE_TEXT } from '../../constants'
-import { formatDateTime, formatDuration, formatDurationSeconds } from '../../../../utils'
+// 展示纯函数（S14 / F6）：9 个函数原先在本文件、tabs/JournalTab.js、composables/useOperations.js
+// **三处逐字重复**，现统一由 views/magicflow/opsDisplay.js 提供。本地只保留真正只属于本文件的
+// isOpDetailOpen（读 props.expandedOps）、eventLevelIcon、taskLabel。
+import { EVENT_LEVELS } from '../../constants'
+import { formatDateTime } from '../../../../utils'
+import {
+  hasOpDetail,
+  itemSourceText,
+  opDetailItems,
+  operationColor,
+  operationDuration,
+  operationIcon,
+  operationKindText,
+  operationStateText,
+  operationSummary,
+} from '../../opsDisplay'
 
 // 开关走 defineModel（Boolean）；视图 / 类型筛选 / 事件级别 是列表展示态，同样两向绑定，子不直接改父 state。
 const open = defineModel({ type: Boolean, default: false })
@@ -37,45 +47,10 @@ function onRefresh() {
   else emit('refresh-task')
 }
 
-// —— 操作记录展示纯函数（本地实现，与 useOperations 同口径；避免把函数当 prop 传）——
-function operationKindText(k) {
-  return KIND_TEXT[k] || k
-}
-function operationStateText(state) {
-  return STATE_TEXT[state] || state
-}
-function operationIcon(k) {
-  return KIND_ICON[k] || 'mdi-circle-small'
-}
-function operationColor(record) {
-  if (record.state === 'failed') return 'error'
-  if (record.kind === 'deletion') return 'warning'
-  if (record.kind === 'tag') return 'purple'
-  if (record.kind === 'run') return 'secondary'
-  return 'primary'
-}
-function opDetailItems(record) {
-  if (!record) return []
-  return (record.items || []).filter((it) => String((it && it.source) || '') !== 'run')
-}
-function hasOpDetail(record) {
-  return opDetailItems(record).length > 0
-}
+// —— 只属于本文件的展示函数 ——
+// 展开态：弹窗的展开表在父页（props.expandedOps），与 JournalTab 的 data.expandedOps 不是同一份
 function isOpDetailOpen(opId) {
   return !!props.expandedOps[opId]
-}
-function itemSourceText(src) {
-  return ITEM_SOURCE_TEXT[src] || ''
-}
-function operationDuration(record) {
-  if (record.duration != null && Number(record.duration) > 0) return formatDurationSeconds(record.duration)
-  return formatDuration(record.created_at, record.resolved_at)
-}
-function operationSummary(record) {
-  const first = (record.items || [])[0]
-  if (first && first.title) return first.title
-  const count = (record.items || []).length
-  return count ? `${count} 个条目` : ''
 }
 function eventLevelIcon(level) {
   if (level === 'error') return 'mdi-alert-octagon-outline'

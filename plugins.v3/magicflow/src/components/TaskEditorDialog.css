@@ -1,0 +1,130 @@
+/* TaskEditorDialog 的 scoped 样式，由线上 dist 按 scopeId data-v-6791ce5d 提取。
+   选择器里的属性限定符是 scoped 边界，别去掉。 */
+
+.magicflow-editor[data-v-6791ce5d] {
+  /* 深色磨砂主题（与工作台保持一致）*/
+  max-block-size: min(90dvh, 58rem);
+  background: rgb(var(--v-theme-surface)) !important;
+  border: 1px solid rgba(var(--v-border-color), 0.14);
+  border-radius: 18px;
+  backdrop-filter: blur(16px) saturate(120%);
+  -webkit-backdrop-filter: blur(16px) saturate(120%);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.magicflow-editor__toolbar[data-v-6791ce5d] {
+  flex: 0 0 auto;
+  padding-inline: 8px;
+  z-index: 4;
+  backdrop-filter: blur(var(--transparent-blur, 0px));
+  background-color: rgba(var(--v-theme-surface), var(--transparent-opacity-heavy, 1));
+}
+
+.magicflow-editor__body[data-v-6791ce5d] {
+  padding: 0;
+}
+
+.magicflow-editor__form[data-v-6791ce5d] {
+  display: grid;
+  grid-template-columns: 12rem auto minmax(0, 1fr) minmax(12rem, 0.34fr);
+  min-block-size: 34rem;
+}
+
+.magicflow-editor__tabs[data-v-6791ce5d] {
+  padding: 12px 8px;
+}
+
+.magicflow-editor__window[data-v-6791ce5d] {
+  min-inline-size: 0;
+  padding: 20px;
+}
+
+.editor-section[data-v-6791ce5d] {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.editor-section + .editor-section[data-v-6791ce5d] {
+  margin-block-start: 28px;
+  padding-block-start: 24px;
+  border-block-start: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+}
+
+.editor-section__head[data-v-6791ce5d] {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.editor-switches[data-v-6791ce5d] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+}
+
+.magicflow-editor__summary[data-v-6791ce5d] {
+  padding: 20px 16px;
+  border-inline-start: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+}
+
+.magicflow-editor__summary dl[data-v-6791ce5d] {
+  display: grid;
+  gap: 12px;
+  margin: 18px 0 0;
+}
+
+.magicflow-editor__summary dl > div[data-v-6791ce5d] {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.magicflow-editor__summary dt[data-v-6791ce5d] {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.magicflow-editor__summary dd[data-v-6791ce5d] {
+  margin: 0;
+  text-align: end;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 959px) {
+
+.magicflow-editor[data-v-6791ce5d] {
+    max-block-size: none;
+}
+
+.magicflow-editor__form[data-v-6791ce5d] {
+    grid-template-columns: 1fr;
+    min-block-size: 0;
+}
+
+.magicflow-editor__tabs[data-v-6791ce5d] {
+    max-inline-size: 100%;
+    padding-block: 0;
+    overflow-x: auto;
+}
+
+.magicflow-editor__window[data-v-6791ce5d] {
+    padding: 16px;
+}
+
+.magicflow-editor__summary[data-v-6791ce5d] {
+    border-inline-start: 0;
+    border-block-start: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+}
+}
+
+@media (max-width: 599px) {
+
+.magicflow-editor__toolbar[data-v-6791ce5d] .v-toolbar-title {
+    font-size: 1rem;
+}
+
+.magicflow-editor__toolbar[data-v-6791ce5d] .v-btn__content {
+    white-space: normal;
+}
+}

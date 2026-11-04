@@ -2,7 +2,10 @@
  * 设置域接口（设置草稿 / 下载器 / 目录 / 默认模板 / IYUU / 标签 / 站点规则）。
  * 全部返回**原始响应**。
  *
- * 注：`rules*` 是**宿主域**接口（MP 原生站点规则），走 `hostGet`。
+ * 注：`rules*` 之前被误当成**宿主域**接口走 `hostGet`，实测打到 `/api/v1/rules` 是 **404**
+ *      —— MP 没有这个路由，规则库一直是插件自己注册的 `GET /rules`
+ *      （`features/api.py` → `get_site_rules`，真实地址 `/api/v1/plugin/MagicFlow/rules`）。
+ *      现一律走插件域 `get`。
  */
 export function makeSettings(c) {
   return {
@@ -32,17 +35,17 @@ export function makeSettings(c) {
     iyuuSites: () => c.get('iyuu/sites'),
     iyuuTest: () => c.get('iyuu/test'),
 
-    // ── 站点规则（宿主域）──────────────────────────────────
-    rules: () => c.hostGet('rules'),
-    refreshRules: () => c.hostGet('rules?action=refresh'),
-    rulesProbe: (q = '') => c.hostGet(`rules?action=probe${q}`),
-    setRuleHr: (domain, hr) => c.hostGet(
+    // ── 站点规则（插件域 /rules）────────────────────────────
+    rules: () => c.get('rules'),
+    refreshRules: () => c.get('rules?action=refresh'),
+    rulesProbe: (q = '') => c.get(`rules?action=probe${q}`),
+    setRuleHr: (domain, hr) => c.get(
       `rules?action=hr&site=${encodeURIComponent(domain)}&hr=${encodeURIComponent(hr)}`,
     ),
-    setRuleHours: (dom, hours) => c.hostGet(
+    setRuleHours: (dom, hours) => c.get(
       `rules?action=set&site=${encodeURIComponent(dom)}&hours=${encodeURIComponent(hours)}`,
     ),
-    setRuleRatio: (dom, ratio) => c.hostGet(
+    setRuleRatio: (dom, ratio) => c.get(
       `rules?action=set_ratio&site=${encodeURIComponent(dom)}&ratio=${encodeURIComponent(ratio)}`,
     ),
   }

@@ -19,6 +19,7 @@ defineProps({
   musicHistory: { type: Array, default: () => [] },
   musicItemsBusy: { type: Boolean, default: false },
   musicActing: { type: String, default: '' },
+  musicImporting: { type: String, default: '' },
   musicSearching: { type: Boolean, default: false },
   musicCandidates: { type: Array, default: () => [] },
   musicResult: { type: Object, default: null },
@@ -27,12 +28,13 @@ defineProps({
   narrow: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['refresh-items', 'act', 'search', 'download'])
+const emit = defineEmits(['refresh-items', 'act', 'search', 'download', 'import'])
 
 function loadMusicItems() { emit('refresh-items') }
 function actMusic(row, action) { emit('act', row, action) }
 function runMusicSearch() { emit('search') }
 function downloadMusic(cid) { emit('download', cid) }
+function importMusic(row) { emit('import', row) }
 </script>
 
 <template>
@@ -217,6 +219,18 @@ function downloadMusic(cid) { emit('download', cid) }
                   {{ row.stage_text }}
                 </VChip>
                 <span class="magicflow-music-row__hash">{{ row.hash.slice(0, 12) }}</span>
+                <VSpacer />
+                <!-- ★ 19.12.0：手动补跑入库（自动入队只覆盖「下完 3 天内」，老种/上次失败的从这里补） -->
+                <VBtn
+                  size="x-small"
+                  variant="tonal"
+                  color="primary"
+                  prepend-icon="mdi-library-shelves"
+                  :loading="musicImporting === row.hash"
+                  :disabled="row.stage === 'gone'"
+                  :title="row.stage === 'gone' ? '该种已不在下载器，无法读取文件' : '读标签 → 硬链接进音乐库 → 触发媒体库扫描'"
+                  @click="importMusic(row)"
+                >整理</VBtn>
               </div>
             </article>
           </template>

@@ -1,7 +1,7 @@
 // MagicFlow 前端 · useSiteReport 域 composable
 // P3 拆分：自 views/magicflow/index.vue **纯搬家**（无行为变更）。
 // P4：展示用纯函数（siteReportBucketColor / siteReportItemSub / siteReportTransportCount）
-//     提为**具名导出**，供 components/dialogs/SiteReportDialog.vue 直接 import 复用
+//     提为**具名导出**，供 components/dialogs/SiteReportDialog.js 直接 import 复用
 //     （单一真值源，不复制）。
 // 依赖注入：api, error（★ 真值源仍在后端；本域只放 UI 状态与动作）。
 import { computed, ref } from 'vue'

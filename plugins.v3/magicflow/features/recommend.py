@@ -19,9 +19,9 @@ from ..downloader_ops import (
     DownloaderAdapter,
 )
 from ..persistence import OperationItem
+from ..norm import norm_key
 from ..recommend import (
     RecommendEngine,
-    _norm,
     episode_info,
     episode_info_files,
     recognize,
@@ -44,6 +44,42 @@ def _rec_group_key(media_key: str, info: Dict[str, Any]) -> str:
         return ""
     se = str((info or {}).get("season") or "").strip().upper()
     return "%s@%s" % (media_key, se) if se else media_key
+
+
+def _media_source_of(value: Any) -> Any:
+    """把落盘的来源标识还原成 MP 的 ``MediaSource``（★ 19.11.2）。
+
+    ``MediaSource`` 是 ``(str, Enum)`` 且带 ``_missing_`` 容错，``MediaSource(txt)``
+    能还原内置成员、也能还原插件动态成员；还原不出就原样返回字符串（MP 侧按标识比较）。
+    """
+    txt = str(value or "").strip()
+    if not txt:
+        return None
+    try:
+        from app.schemas.types import MediaSource  # type: ignore  # noqa: WPS433
+        return MediaSource(txt)
+    except Exception:  # noqa: BLE001
+        return txt
+
+
+def _media_type_of(value: Any) -> Any:
+    """把落盘的类型（``"电视剧"``/``"电影"``）还原成 MP 的 ``MediaType`` 成员（★ 19.11.2）。
+
+    ``MediaType`` 是**普通 Enum**（值就是中文），不是 ``str`` 枚举 —— 直接把字符串传进
+    ``manual_transfer`` 会让 MP 内部判等失败，剧集会被当电影建目录。所以必须还原成成员。
+    认不出返回 ``None``，调用方退回「按名称识别」。
+    """
+    txt = str(value or "").strip()
+    if not txt:
+        return None
+    try:
+        from app.schemas.types import MediaType  # type: ignore  # noqa: WPS433
+    except Exception:  # noqa: BLE001
+        return None
+    for m in MediaType:
+        if txt in (str(m.value), str(m.name)):
+            return m
+    return None
 
 
 class RecommendMixin:
@@ -75,11 +111,11 @@ class RecommendMixin:
         subs = {s for s in subs if len(s) >= 2}
         if not subs:
             return candidates
-        # "_norm/recognize" 已提到模块顶层导入：worker 运行时不再碰 import 机制，
+        # "norm_key/recognize" 已提到模块顶层导入：worker 运行时不再碰 import 机制，
         # 避免热重载期间与 loader 形成「循环导入死锁」（详见 README 存储/重载章节）。
         out: List[Any] = []
         for c in candidates:
-            nt = _norm(getattr(c, "title", ""))
+            nt = norm_key(getattr(c, "title", ""))
             if nt and any(s in nt for s in subs):
                 continue
             out.append(c)
@@ -814,8 +850,15 @@ class RecommendMixin:
             return False
         return True
 
-    def _recommend_import(self, h: str, rec: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
-        """确认后自动整理入库:识别 → 用 TransferChain 手动整理该资源。"""
+    def _recommend_import(self, h: str, rec: Optional[Dict[str, Any]] = None,
+                          media_hint: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
+        """确认后自动整理入库:识别 → 用 TransferChain 手动整理该资源。
+
+        ``media_hint``（★ 19.11.2）= ``{media_id, media_source, media_type}``，调用方
+        （点播）**下载那一刻**就识别好并落过台账的身份。给了就跳过 ``recognize(title)``：
+        那次识别用的是站点完整标题（带季号/来源），比这里的中文短名准；而且整理不再
+        依赖 TMDB 可达 —— 缓存命中与否、网络通不通，都不再影响入库。
+        """
         try:
             from app.chain.transfer import TransferChain  # type: ignore  # noqa: WPS433
             from app.schemas.file import FileItem  # type: ignore  # noqa: WPS433
@@ -835,14 +878,28 @@ class RecommendMixin:
             torrent = None
         if torrent is not None and not title:
             title = str(getattr(torrent, "title", "") or "")
-        if not title:
-            return False, "缺少资源标题,无法识别"
-        try:
-            mi = recognize(title)
-        except Exception:  # noqa: BLE001
-            mi = None
-        if not mi:
-            return False, "未能识别媒体信息,无法自动整理"
+        _hint = media_hint or {}
+        _hint_id = str(_hint.get("media_id") or "").strip()
+        mi = None
+        if _hint_id:
+            # ★ 19.11.2：下载期已识别过 → 直接用它，不重跑 recognize，也不要求 title
+            _ms = _media_source_of(_hint.get("media_source"))
+            _mid = _hint_id
+            _mt = _media_type_of(_hint.get("media_type"))
+            if not title:
+                title = str(h)
+        else:
+            if not title:
+                return False, "缺少资源标题,无法识别"
+            try:
+                mi = recognize(title)
+            except Exception:  # noqa: BLE001
+                mi = None
+            if not mi:
+                return False, "未能识别媒体信息,无法自动整理"
+            _ms = getattr(mi, "media_source", None)
+            _mid = getattr(mi, "media_id", None)
+            _mt = getattr(mi, "type", None)
         save_path = ""
         if torrent is not None:
             # 优先「内容路径」(单种文件 / 多种目录),回退 save_path;
@@ -870,9 +927,9 @@ class RecommendMixin:
             )
             ok, msg = TransferChain().manual_transfer(
                 fileitem=fileitem,
-                media_source=getattr(mi, "media_source", None),
-                media_id=getattr(mi, "media_id", None),
-                mtype=getattr(mi, "type", None),
+                media_source=_ms,
+                media_id=_mid,
+                mtype=_mt,
                 downloader="qbittorrent",
                 download_hash=str(h).lower(),
             )
@@ -888,7 +945,7 @@ class RecommendMixin:
                     # MP 对「已整理过」不广播 TransferComplete → 自己补库记（否则转不了「静默-资源」）
                     try:
                         _gidq = self._tag_groups().queue_library(
-                            str(h).lower(), media_id=str(getattr(mi, "media_id", "") or ""))
+                            str(h).lower(), media_id=str(_mid or ""))
                         if _gidq:
                             self._log(f"库记:整理完成(已整理过) {h[:12]} → 资源 {_gidq[:46]}")
                     except Exception as err:  # noqa: BLE001
@@ -1039,9 +1096,9 @@ class RecommendMixin:
             if not sid and title:
                 try:
                     for sub in (SubscribeOper().list() or []):
-                        _t = _norm(getattr(sub, "name", "") or getattr(sub, "title", ""))
+                        _t = norm_key(getattr(sub, "name", "") or getattr(sub, "title", ""))
                         _s = int(getattr(sub, "season", 0) or 0)
-                        if _t and _t == _norm(title) and (not season or not _s or _s == season):
+                        if _t and _t == norm_key(title) and (not season or not _s or _s == season):
                             sid = int(getattr(sub, "id", 0) or 0)
                             break
                 except Exception as err:  # noqa: BLE001

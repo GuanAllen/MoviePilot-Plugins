@@ -399,6 +399,10 @@ class AssetsMixin:
         store = self._tag_groups()
         ledger = self._tag_state().items()
         snap = self._tag_all_torrents()
+        # ★ 19.10.62：真跑时把「每颗种一次落盘」改成「整轮落一次」。
+        #   期间 ``_tag_groups().items()`` 仍立即可见（stage 换的是内存快照），语义不变；
+        #   但**直查库的动作**（gc_empty_groups / recompute_sources）必须排在 flush 之后。
+        _defer = bool(apply and callable(getattr(store, "flush", None)))
         stat: Dict[str, Any] = {"ok": True, "applied": bool(apply), "resources": 0,
                                 "members": 0, "multi": 0, "in_library": 0, "hr_bills": 0,
                                 "joined_by_dir": 0}
@@ -451,17 +455,21 @@ class AssetsMixin:
                     stat["joined_by_dir"] = int(stat.get("joined_by_dir") or 0) + 1
             if apply and gid:
                 # ★ 2026-10-11：透传 qB「每份事实」给来源站判据（真下载字节/完成时刻/加入时刻）
+                # ★ 19.10.62：``flush=not _defer`` —— 全量重建时把 2000+ 次事务压成 1 次
+                #   （逐次落盘 = 每次都全量比较 + deepcopy 全组 + commit，实测 5 分钟）。
                 store.add_member(gid, hh, site=rec.get("site") or "", size_gb=size,
                                  downloaded=prog >= 0.999, progress=prog,
                                  state=rec.get("state") or "", fp=_fp,
                                  dl_bytes=float(getattr(t, "downloaded", 0) or 0),
                                  completed_at=float(getattr(t, "completion_on", 0) or 0),
-                                 added_at=float(getattr(t, "added_on", 0) or 0))
-                if (is_asset_tags(tags) or is_library_asset(rec)) and store.set_library(gid, True):
+                                 added_at=float(getattr(t, "added_on", 0) or 0),
+                                 flush=not _defer)
+                if (is_asset_tags(tags) or is_library_asset(rec)) and store.set_library(
+                        gid, True, flush=not _defer):
                     stat["in_library"] = int(stat["in_library"]) + 1
                 # ★ 资源身份（Master 2026-09-30）：入库/推荐过 → 资源；种子身份跟它走
                 if is_asset_tags(tags) or is_library_asset(rec):
-                    store.set_identity(gid, SUB_RESOURCE, by="sync")
+                    store.set_identity(gid, SUB_RESOURCE, by="sync", flush=not _defer)
         # 来源站 + H&R 账单：跨站来源份账本里的义务挂到「资源」上
         try:
             srcs = self._crossseed_sources().items()
@@ -508,7 +516,7 @@ class AssetsMixin:
                                                if _sib_live is not None else 0.0),
                                  added_at=(float(getattr(_sib_live, "added_on", 0) or 0)
                                            if _sib_live is not None else 0.0),
-                                 fp=_sib_fp)
+                                 fp=_sib_fp, flush=not _defer)
                 if a_hash:
                     _a_live = snap.get(str(a_hash).lower())
                     store.add_member(gid, a_hash, site=str(srec.get("site_a") or ""),
@@ -519,10 +527,16 @@ class AssetsMixin:
                                                    if _a_live is not None else 0.0),
                                      added_at=(float(getattr(_a_live, "added_on", 0) or 0)
                                                if _a_live is not None else 0.0),
-                                     fp=(str((ledger.get(a_hash) or {}).get("fp") or "").strip() or _sib_fp))
+                                     fp=(str((ledger.get(a_hash) or {}).get("fp") or "").strip() or _sib_fp),
+                                     flush=not _defer)
                 # ★ 19.0.0：``store.set_hr(...)`` 已退役（mf_resource.hrs 停写）；
                 #   跨站来源份的 H&R 义务真值在 mf_bills（hrbills 开账）。
                 stat["sib_hr_seen"] = int(stat.get("sib_hr_seen") or 0) + 1
+        if _defer:
+            # ★ 19.10.62：整轮改动在这里统一落盘 —— 必须早于下面的 gc/recompute，
+            #   那两个是**直查库**的（读的是 mf_seed.resource_id / grouped），
+            #   不先 flush 会按旧值判断，把刚挂上的成员当「空壳」清掉。
+            store.flush()
         if apply:
             # ★ 10.0.0 迁徙：清掉「弱身份」（按体积档归的）资源组 —— 幂等，跑完就没有弱组了
             try:

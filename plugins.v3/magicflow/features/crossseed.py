@@ -15,11 +15,11 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from app.schemas import Response
 from app.sdk.logging import logger
 
+from .. import envops
 from ..downloader_ops import (
     DownloaderAdapter,
     QB_DOWNLOADING_STATES,
     QB_PAUSED_STATES,
-    seed_hours_for_hr,
 )
 from ..fingerprint import fingerprint, info_hash
 from ..live_stats import title_match
@@ -34,6 +34,7 @@ from ..crossseed import (
     title_like,
 )
 from ..dtier import TierCache
+from .. import cacheops
 from ..tags import (
     SPECIAL_TAGS,
     STATE_SILENT,
@@ -52,6 +53,7 @@ from ..common import (
     CROSSSEED_TASK_NAME,
     CROSSSEED_TASK_INTERVAL_MINUTES,
     CROSSSEED_CACHE_TTL,
+    CS_SRC_HASHES_TTL,
     CROSSSEED_EXTRA_SCAN,
     CROSSSEED_SEED_HOURS_DEFAULT,
     MagicFlowTaskConfig,
@@ -90,8 +92,12 @@ class CrossSeedMixin:
         仍调用它 → ``AttributeError`` 被 try/except 吞掉 → 来源份永不结清、闸门永久硬拦）。
 
         职责：① 标签确权（来源份只属于「魔流-跨站」，被任务抢走就改回来）；
-        ② 做种时长达标 → 标记 ``done``（``active()`` 据此解除保护）；
+        ② 账单**已结清** → 摘掉来源份记录（保护的唯一出口）；
         ③ 清掉已不在下载器的条目。**不做入静默池**（下完分诊已交给 ``_crossseed_tick``）。
+
+        ★ 19.10.11：② 的口径从「本函数自己算 seeded_sec ≥ hours」改为「读 H&R 账单」
+        （``_cs_bill_settled``）。工时真值源只剩 `_hrbills_tick` 的 ``seeded_h`` 一处 ——
+        旧实现与账单各存一份快照，站点规则一改两份就漂（第 2 档说还在保护、第 4 档说早该结清）。
         """
         store = self._crossseed_sources()
         items = store.items()
@@ -99,9 +105,19 @@ class CrossSeedMixin:
         if not items:
             return res
         dl_cache: Dict[str, Any] = {}
-        now = time.time()
         live: Set[str] = set()
         for h, rec in list(items.items()):
+            # ★ 账单结清 → 义务履行完毕：摘记录、不再确权标签（后续归清理口径正常释放）
+            if self._cs_bill_settled(h):
+                store.drop(h)
+                res["completed"] = int(res["completed"]) + 1
+                self._log(
+                    f"跨站:H&R 义务完成 —— {rec.get('site_b', '') or rec.get('site_b_domain', '')} "
+                    f"「{str(rec.get('title') or '')[:50]}」账单已结清 → 释放保护"
+                )
+                continue
+            if rec.get("done"):
+                continue                          # 兼容：历史 done 标记仍视为已履行
             dl_name = str(rec.get("downloader") or "qbittorrent")
             downloader = dl_cache.get(dl_name)
             if downloader is None:
@@ -114,25 +130,6 @@ class CrossSeedMixin:
             if info is None:
                 continue                          # 已不在下载器 → 交给 prune
             live.add(h)
-            try:
-                seeded = float(seed_hours_for_hr(info)) * 3600.0
-            except Exception:                     # noqa: BLE001
-                seeded = 0.0
-            try:
-                # need_hours 不落 mf_crossseed（不在 _CROSSSEED_COLUMNS）→ 回退用站点要求的 hours
-                need = float(rec.get("need_hours") or rec.get("hours") or 0.0)
-            except (TypeError, ValueError):
-                need = 0.0
-            if seeded > float(rec.get("seeded_sec") or 0.0) + 1.0:
-                store.put(h, {"seeded_sec": seeded})
-            if need > 0 and seeded >= need * 3600.0 and not bool(rec.get("done")):
-                store.put(h, {"done": True, "done_ts": now, "seeded_sec": seeded})
-                res["completed"] = int(res["completed"]) + 1
-                self._log(f"跨站:H&R 义务完成 —— {rec.get('site_b', '') or rec.get('site_b_domain', '')} "
-                          f"「{str(rec.get('title') or '')[:50]}」实做种 {seeded / 3600.0:.1f}h ≥ {need:g}h → 解除保护")
-                continue
-            if rec.get("done"):
-                continue                          # 已履行 → 不再保护、不强制标签
             tags = getattr(info, "tags", None) or []
             if isinstance(tags, str):
                 tags = [t.strip() for t in tags.split(",") if t.strip()]
@@ -149,22 +146,48 @@ class CrossSeedMixin:
         res["protected"] = len(store.items())
         return res
 
+    def _cs_bill_settled(self, h: str) -> bool:
+        """该来源份的 H&R 账单是否**可以放行**（不再保护）。
+
+        ★ 19.10.11：来源份的义务判定统一以账单为准（工时 = ``seeded_h``，实时取自下载器），
+        不再由本模块自己算 ``seeded_sec >= hours``。
+
+        ★ 19.10.11b（Master「不欠保种不欠静默」）：**无账单 = 无欠债 = 放行**。
+        旧逻辑对「没开账」也保守保护 —— 但没开账恰恰说明 `_hrbills_open_crossseed`
+        判过了「该站/该种没有 H&R 义务」，再保护就是凭空占位。
+        只有 ``settled`` 才是「义务已履行」；``active`` / ``void`` / 读取异常仍保守不放。
+        """
+        try:
+            bill = self._hrbills_store().get(str(h or "").strip().lower())
+        except Exception:  # noqa: BLE001
+            return False        # 读不到账单 → 保守：不释放
+        if not isinstance(bill, dict):
+            return True         # 没开账 = 判过无义务 → 放行（不欠不保）
+        from .hrbills import BILL_STATE_SETTLED  # noqa: WPS433（features 内延迟导入，避免模块级环）
+        return str(bill.get("state") or "") == BILL_STATE_SETTLED
+
     def _crossseed_source_hashes(self) -> Set[str]:
         """当前受 H&R 保护的来源份 hash 集合（并入清理保护集合）。
 
         ★ 排除「义务已履行」（实测做种时长达标）的条目 —— 挂够就能撤，不必再占位。
         ★ 30s TTL 缓存：统计/总览路径会逐任务调它，避免每任务都读一次来源份 kv。
+        ★ 19.10.11：放行判据改为**账单结清**（``_cs_bill_settled``）—— 工时与账单同一真值源。
         """
+        # ★ 19.10.21：过期判定改用 cacheops 信封（原写法是 (ts, val) 元组 + 手写
+        #   ``time.time() - ts < 30.0``，全库这种手写判定有 23 处、五种惯用法）。
         cached = getattr(self, "_cs_src_hashes_cache", None)
-        if cached is not None:
-            _ts, _val = cached
-            if time.time() - float(_ts) < 30.0:
-                return _val
+        hit = cacheops.value(cached, CS_SRC_HASHES_TTL)
+        if hit is not None:
+            return hit
         try:
-            val = self._crossseed_sources().active()
+            _raw = self._crossseed_sources().active()
         except Exception:  # noqa: BLE001
-            val = set()
-        self._cs_src_hashes_cache = (time.time(), val)
+            _raw = set()
+        try:
+            val = {h for h in _raw if not self._cs_bill_settled(h)}
+        except Exception:  # noqa: BLE001
+            val = set(_raw)
+        self._cs_src_hashes_cache = cacheops.entry(val)
         return val
 
     def _crossseed_seed_hours(self, domain: str) -> float:
@@ -305,12 +328,17 @@ class CrossSeedMixin:
             )
         return obj
 
-    def _crossseed_lock(self) -> threading.Lock:
-        """跨站取种专用锁（低频率，一把全局锁即可，避免同刻重复打同一站）。"""
-        lock = getattr(self, "_crossseed_lock_obj", None)
-        if lock is None:
-            lock = self._crossseed_lock_obj = threading.Lock()
-        return lock
+    def _crossseed_lock(self) -> cacheops.Solo:
+        """跨站取种专用锁（低频率，一把全局锁即可，避免同刻重复打同一站）。
+
+        19.10.26：裸 ``threading.Lock`` → ``cacheops.Solo``。判定从 ``is None`` 改成
+        **按类型**：热重载后实例上可能残留旧代码造的裸 Lock，只判 ``is None`` 会把它
+        当容器用（``with`` 能跑，但语义/诊断都对不上）；按类型判则顺手换成新容器。
+        """
+        solo = getattr(self, "_crossseed_lock_obj", None)
+        if not isinstance(solo, cacheops.Solo):
+            solo = self._crossseed_lock_obj = cacheops.Solo("crossseed.search")
+        return solo
 
     def _crossseed_cache(self) -> TierCache:
         """跨站检索结果缓存（内存热层 + FileCache 冷层，跨热重载不丢）。
@@ -363,7 +391,7 @@ class CrossSeedMixin:
                 headers={"x-api-key": key, "Content-Type": "application/json",
                          "Accept": "application/json, text/plain, */*"},
                 timeout=20,
-            ).post_res(url=f"https://api.{dom}/api/v1/torrent/search", json=body)
+            ).post_res(url=f"{envops.hd_api_base(site, dom)}/api/v1/torrent/search", json=body)
             if int(getattr(res, "status_code", 0) or 0) != 200:
                 self._dbg(f"HDDolby 搜索 HTTP {getattr(res, 'status_code', '?')}")
                 return []
@@ -1048,9 +1076,25 @@ class CrossSeedMixin:
             "task_id": str(rec.get("task_id") or ""),
             "task_name": str(rec.get("task_name") or ""),
         })
+        # ★ 19.10.11：**下完那一刻直接开 H&R 账单** —— 与刷流 / 音乐 / 点播同口径。
+        #   旧形态是来源份自己算工时（`seeded_sec` vs `hours`），与账单 `seeded_h` 同源
+        #   却各存一份快照 → 站点规则一改两份就漂（第 2 档说还在保护、第 4 档说早该结清）。
+        #   现在义务判定只剩一处：`_hrbills_tick` 的 pending→active→settled。
+        #   开不出账（规则库明确无 H&R / 逐种站这颗没标）不是错误：说明来源站不欠工时，
+        #   但保护登记仍保留 —— `_crossseed_source_hashes` 只在**账单结清**时才放行。
+        try:
+            _fn = getattr(self, "_hrbills_open", None)
+            if callable(_fn):
+                _fn(
+                    h, dom, CROSSSEED_TAG, None,
+                    hit_and_run=bool(rec.get("hit_and_run")),
+                    crossseed=True,
+                )
+        except Exception as err:  # noqa: BLE001
+            self._log(f"跨站:来源份开 H&R 账单失败 {h[:12]}:{err}", "warning")
         self._log(
             f"跨站:H&R 保护 {rec.get('site_b', '') or dom} 「{str(rec.get('title') or '')[:50]}」"
-            f" → 保种至 {time.strftime('%m-%d %H:%M', time.localtime(until))}（{hours:g}h，期内任何任务不得删/改）"
+            f" → 已开 H&R 账单（{hours:g}h，工时挂够自动放行；期内任何任务不得删/改）"
         )
 
     def _crossseed_guard(self) -> Dict[str, Any]:
@@ -1382,14 +1426,16 @@ class CrossSeedMixin:
             }
             pending.append(rec)
         pending.sort(key=lambda x: float(x.get("age_min") or 0))
-        # ★ 来源份（H&R 保种中）：距保种期满还剩多久
+        # ★ 来源份（H&R 保种中）：**以账单为准**显示还需多少工时
+        #   19.10.11 起 `seed_until`（自定期限）不再是判据，改为账单 `need_h - seeded_h`。
         sources: List[Dict[str, Any]] = []
         try:
+            _bill_store = None
+            try:
+                _bill_store = self._hrbills_store()
+            except Exception:  # noqa: BLE001
+                _bill_store = None
             for h, rec in self._crossseed_sources().items().items():
-                try:
-                    until = float(rec.get("seed_until") or 0.0)
-                except (TypeError, ValueError):
-                    until = 0.0
                 age_min = round(max(0.0, (now - float(rec.get("created") or 0)) / 60.0), 1)
                 # ★ 7.19.3：来源份也带「下载器实时进度/状态」，与在途同口径
                 _p_prog: Any = None
@@ -1407,6 +1453,28 @@ class CrossSeedMixin:
                             _p_state = str(getattr(_info, "state", "") or "")
                 except Exception:  # noqa: BLE001
                     _p_prog, _p_state = None, ""
+                # 账单口径（工时真值源）；无账单（规则未知 / 历史条目）→ 回退记录里的旧字段
+                _bill = None
+                if _bill_store is not None:
+                    try:
+                        _b = _bill_store.get(h)
+                        _bill = _b if isinstance(_b, dict) else None
+                    except Exception:  # noqa: BLE001
+                        _bill = None
+                try:
+                    _need_h = float((_bill or {}).get("need_h")
+                                    or rec.get("need_hours") or rec.get("hours") or 0.0)
+                except (TypeError, ValueError):
+                    _need_h = 0.0
+                try:
+                    _seeded_h = float((_bill or {}).get("seeded_h")
+                                      if _bill is not None
+                                      else float(rec.get("seeded_sec") or 0.0) / 3600.0)
+                except (TypeError, ValueError):
+                    _seeded_h = 0.0
+                _left_h = round(max(0.0, _need_h - _seeded_h), 2)
+                _fulfilled = (str((_bill or {}).get("state") or "") == "settled"
+                              if _bill is not None else bool(rec.get("done")))
                 sources.append({
                     "sib_hash": h,
                     "progress": _p_prog,
@@ -1420,13 +1488,15 @@ class CrossSeedMixin:
                     "size_gb": round(float(rec.get("size_gb") or 0.0), 3),
                     "hours": float(rec.get("hours") or 0.0),
                     "hours_src": str(rec.get("hours_src") or ""),
-                    "need_hours": float(rec.get("need_hours") or 0.0),
-                    "seeded_h": round(float(rec.get("seeded_sec") or 0.0) / 3600.0, 2),
-                    "fulfilled": bool(rec.get("done")),
+                    "need_hours": _need_h,
+                    "seeded_h": round(_seeded_h, 2),
+                    "left_h": _left_h,                      # ★ 19.10.11 新增：还需多少工时
+                    "fulfilled": bool(_fulfilled),
                     "hit_and_run": bool(rec.get("hit_and_run")),
-                    "seed_until": until,
-                    "remain_min": round(max(0.0, (until - now) / 60.0), 1),
-                    "done": bool(until and now >= until),
+                    # 兼容旧前端：`seed_until`/`done` 已无「自定期限」含义，改为按工时给等价量
+                    "seed_until": 0.0,
+                    "remain_min": round(_left_h * 60.0, 1),
+                    "done": bool(_fulfilled),
                     "pool": str(rec.get("pool") or ""),
                     "files_shared": bool(rec.get("files_shared")),
                     "age_min": age_min,
@@ -1697,8 +1767,30 @@ class CrossSeedMixin:
             "host_last_run": (time.strftime("%m-%d %H:%M", time.localtime(last)) if last else "—"),
         }
 
-    def get_crossseed(self, action: str = "", hash: str = "", site: str = "") -> Response:
-        """跨站免费取种（全局任务「跨站取种」）：取种台账 + 启用该功能的任务。
+    def get_crossseed(self, action: str = "") -> Response:
+        """跨站免费取种（全局任务「跨站取种」）：取种台账 + 启用该功能的任务。**只读**。
+
+        ★ 19.10.2（整改 S2）：GET 不再承担写语义。
+          旧版 ``GET /crossseed?action=clear|drop|unban|guard`` 会真清台账、真删种、
+          真改来源站黑名单、真跑一次兜底核对 —— 浏览器预抓、代理预取、地址栏回车
+          都可能触发写操作。现在写一律走 ``POST /crossseed``（前端早已是 POST，零改动）。
+          GET 带着 action 时**显式拒绝**而非静默降级为只读：静默比报错更伤人
+          （调用方会以为写成功了）。
+        """
+        try:
+            act = str(action or "").strip().lower()
+            if act:
+                return Response(
+                    success=False,
+                    message=f"写操作不接受 GET：请改用 POST /crossseed（action={act}）",
+                    data=self._crossseed_info(),
+                )
+            return Response(success=True, message="OK", data=self._crossseed_info())
+        except Exception as e:  # noqa: BLE001
+            return Response(success=False, message=str(e), data={})
+
+    def post_crossseed(self, action: str = "", hash: str = "", site: str = "") -> Response:
+        """跨站免费取种的**写**操作（只接受 POST）。
 
         - ``action=clear``：清空取种台账；
         - ``action=drop&hash=<sib_hash>``：删除单个跨站种（下载器 + 记录）；

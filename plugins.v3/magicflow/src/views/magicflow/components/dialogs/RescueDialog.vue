@@ -62,7 +62,7 @@ function runRescueApply(confirm) { emit('apply', confirm) }
             <div class="magicflow-cs-card__meta">
               <span class="magicflow-cs-card__site">{{ t.site || '?' }}</span>
               <span class="magicflow-cs-card__size">进度 {{ Math.round((t.progress ?? 0) * 100) }}% · 停滞 {{ t.stalled_hours ?? 0 }}h</span>
-              <VChip v-if="t.hr_owed" size="x-small" variant="tonal" color="error">欠 H&R {{ t.hr_need_h }}h</VChip>
+              <VChip v-if="t.hr_owed" size="x-small" variant="tonal" color="error">欠义务工时 {{ t.hr_need_h }}h</VChip>
               <VChip v-else-if="t.manual" size="x-small" variant="tonal" color="primary">手动保留</VChip>
             </div>
             <div class="magicflow-cs-card__meta">

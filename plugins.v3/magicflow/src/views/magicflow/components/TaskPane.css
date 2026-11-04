@@ -1,0 +1,157 @@
+/* TaskPane 的 scoped 样式，由线上 dist 按 scopeId data-v-15655e51 提取。
+   选择器里的属性限定符是 scoped 边界，别去掉。 */
+
+/* ── 内层专属选择器（自 index.vue 搬入并从父页删除）────────────── */
+.magicflow-task-rail__head[data-v-15655e51] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-inline: 4px;
+}
+
+.magicflow-task-list[data-v-15655e51] {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.magicflow-create-task[data-v-15655e51] {
+  flex: 0 0 auto;
+}
+
+.magicflow-task-item[data-v-15655e51] {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  inline-size: 100%;
+  padding: 11px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--app-control-radius);
+  color: rgb(var(--v-theme-on-surface));
+  background: transparent;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.magicflow-task-item[data-v-15655e51]:hover {
+  background: rgba(var(--v-theme-primary), 0.05);
+}
+
+.magicflow-task-item[data-v-15655e51]:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 2px;
+}
+
+.magicflow-task-item--selected[data-v-15655e51] {
+  border-color: rgba(var(--v-theme-primary), 0.28);
+  background: rgba(var(--v-theme-primary), 0.1);
+}
+
+.magicflow-task-item__title[data-v-15655e51],
+.magicflow-task-item__meta[data-v-15655e51] {
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.magicflow-task-item__title strong[data-v-15655e51] {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.magicflow-task-item > span[data-v-15655e51]:not(.magicflow-task-item__title) {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  font-size: 0.78rem;
+}
+
+
+/* ★ 19.11.0：主指标（考核目标）+ 次指标（对照项）并列。
+   主指标实色加粗以便竖扫，次指标降一档透明度；数字统一等宽，避免切换任务时跳版。 */
+.magicflow-task-item__main[data-v-15655e51] {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: rgb(var(--v-theme-on-surface));
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+
+/* 有托管种子但 0 个在上传：不报警、只着色，作为空跑信号前移到列表 */
+.magicflow-task-item__main.is-idle[data-v-15655e51] {
+  color: rgb(var(--v-theme-error));
+}
+
+.magicflow-task-item__idle[data-v-15655e51] {
+  inline-size: 5px;
+  block-size: 5px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.magicflow-task-item__sub[data-v-15655e51] {
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  font-variant-numeric: tabular-nums;
+}
+
+
+/* ── 共享选择器（index.vue 同有，此处复制一份；父页原样保留）────── */
+.magicflow-task-item__title[data-v-15655e51],
+.magicflow-task-item__meta[data-v-15655e51] {
+  display: flex;
+  align-items: center;
+}
+
+.magicflow-status-dot[data-v-15655e51] {
+  inline-size: 8px;
+  block-size: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: rgb(var(--v-theme-secondary));
+}
+
+.magicflow-status-dot--success[data-v-15655e51] { background: rgb(var(--v-theme-success));
+}
+
+.magicflow-status-dot--primary[data-v-15655e51] { background: rgb(var(--v-theme-primary));
+}
+
+.magicflow-status-dot--info[data-v-15655e51] { background: rgb(var(--v-theme-info));
+}
+
+.magicflow-status-dot--warning[data-v-15655e51] { background: rgb(var(--v-theme-warning));
+}
+
+.magicflow-status-dot--error[data-v-15655e51] { background: rgb(var(--v-theme-error));
+}
+
+
+/* ── .magicflow-page 级深色主题覆盖（目标元素已在本组件内；自 index.vue 搬入） */
+.magicflow-page .magicflow-task-item[data-v-15655e51] {
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  border: 1px solid transparent;
+  border-radius: 12px;
+}
+
+.magicflow-page .magicflow-task-item--selected[data-v-15655e51] {
+  background: rgba(var(--v-theme-primary), 0.16);
+  border-color: rgba(var(--v-theme-primary), 0.42);
+}
+
+.magicflow-page .magicflow-task-item[data-v-15655e51]:hover {
+  background: rgba(var(--v-theme-primary), 0.1);
+}
+@media (min-width: 960px) {
+
+.magicflow-page--compact .magicflow-task-list[data-v-15655e51] {
+    flex: 1 1 auto;
+    min-block-size: 0;
+    padding-inline-end: 2px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+}
+}

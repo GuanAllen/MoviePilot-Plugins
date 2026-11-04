@@ -51,7 +51,7 @@ const emit = defineEmits(['run', 'edit', 'delete'])
         <div><dt>促销要求</dt><dd>{{ isBrush ? '免费（含 2X免费）' : (config.freeleech === '2xfree' ? '2X 免费' : config.freeleech === 'free' ? '免费' : '全部') }}</dd></div>
         <div><dt>选种来源</dt><dd>{{ config.rss_support ? 'RSS' : '站点列表页' }}</dd></div>
         <template v-if="isBrush">
-          <div><dt>保种天数</dt><dd>{{ brushSeedDays > 0 ? `做种满 ${brushSeedDays} 天清理` : '不按天数（按无上传）' }}</dd></div>
+          <div><dt>轮转周期</dt><dd>{{ brushSeedDays > 0 ? `做种满 ${brushSeedDays} 天清理` : '不按天数（按无上传）' }}</dd></div>
           <div><dt>最小下载人数</dt><dd>{{ config.brush_min_leechers ?? 1 }} 人</dd></div>
           <div><dt>种子大小</dt><dd>{{ config.size || '不限' }}</dd></div>
           <div><dt>做种人数</dt><dd>{{ config.seeder || '不限' }}</dd></div>
@@ -76,7 +76,7 @@ const emit = defineEmits(['run', 'edit', 'delete'])
           <div><dt>排除 H&R</dt><dd>{{ config.hr === 'yes' ? '是' : '否' }}</dd></div>
           <div><dt>包含规则</dt><dd>{{ config.include || '无' }}</dd></div>
           <div><dt>排除规则</dt><dd>{{ config.exclude || '无' }}</dd></div>
-          <div><dt>最短做种</dt><dd>{{ config.min_seed_time ? `${config.min_seed_time} 小时` : '不限' }}</dd></div>
+          <div><dt>本地保护期</dt><dd>{{ config.min_seed_time ? `${config.min_seed_time} 小时` : '不限' }}</dd></div>
           <div><dt>最低分享率</dt><dd>{{ Number(config.min_ratio || 0).toFixed(2) }}</dd></div>
         </template>
         <div><dt>单轮最多新增</dt><dd>{{ config.max_add_per_run ?? 10 }} 个</dd></div>

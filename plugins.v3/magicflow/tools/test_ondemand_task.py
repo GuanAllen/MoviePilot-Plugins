@@ -185,7 +185,9 @@ class Fake(OnDemandMixin):
     def _tag_state(self):
         return self._store
 
-    def _get_downloader(self):
+    def _get_downloader(self, downloader_name="qbittorrent"):
+        # ★ 19.10.11：签名对齐真 `_get_downloader(self, downloader_name="qbittorrent")`
+        #   （`tags.duty_assign` 按真实协议显式传 "qbittorrent"）
         return self._dl
 
     def _torrent_site_name(self, cur_tags=None, default=""):
@@ -265,14 +267,18 @@ ok("_rc = self._ondemand_duty_reconcile()" in _src, "_ondemand_settle 调 _ondem
 ok('self._od_release([h], reason="结算转资源")' in _src, "_ondemand_settle 调 _od_release")
 
 # ---------------------------------------------------------------- [6] 真值源锚点
-print("[6] 真值源锚点：common / ledger / agentledger")
+print("[6] 真值源锚点：岗位注册表 / common / ledger / agentledger")
 _c = (ROOT / "common.py").read_text()
-ok('ONDEMAND_TASK_ID = "__ondemand__"' in _c, "common.py ONDEMAND_TASK_ID 常量")
+ok('ONDEMAND_TASK_ID = ID_ONDEMAND' in _c or 'ONDEMAND_TASK_ID = "__ondemand__"' in _c,
+   "common.py ONDEMAND_TASK_ID 常量")
+# ★ 19.10.11：职务派生收进 dutyreg（单一真值）→ 断言**行为**，不再钉 if 源码
+#   （旧断言钉 "if tid == ONDEMAND_TASK_ID:\n return STATE_ONDEMAND"，一重构就假红）
+_dr = _load(PKG + ".dutyreg", "dutyreg.py")
+ok(_dr.duty_state("__ondemand__") == STATE_ONDEMAND, "dutyreg: __ondemand__ → 点播")
+ok(_dr.duty_name("__ondemand__") == "点播", "dutyreg: __ondemand__ 展示名=点播")
+ok(_dr.duty_id_of("点播") == "__ondemand__", "dutyreg: 点播 → __ondemand__ 反查")
 _l = (ROOT / "ledger.py").read_text()
-ok("if tid == ONDEMAND_TASK_ID:\n            return STATE_ONDEMAND" in _l or
-   "return STATE_ONDEMAND" in _l, "ledger._task_state 特判 __ondemand__→点播")
-ok("return ONDEMAND_TASK_NAME" in _l, "ledger._task_name 特判 __ondemand__→点播")
-ok('if key in ("__ondemand__", "ondemand", "点播", "点播下载"):' in _l, "ledger._task_id 反查 __ondemand__")
+ok("duty_state(tid)" in _l, "ledger._task_state 走注册表（duty_state）")
 _al = (ROOT / "features" / "agentledger.py").read_text()
 ok('"点播"' in _al and '"保种", "点播"' in _al, "agentledger state 枚举含 点播")
 

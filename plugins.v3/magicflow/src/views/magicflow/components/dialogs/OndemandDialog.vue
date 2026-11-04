@@ -5,9 +5,11 @@
 // 展示用纯函数（odTraffic / odPct / odSpeed / odEtaText / odStageColor / odIsPaused / fmtSizeGb）
 // 自 composables/useOndemand.js 具名导入复用 —— 单一真值源；isOndemandAuto 依赖点播结果
 // （ondemandResult.auto_pick），仍由 useOndemand 定义 → 以函数 prop 下传（同 SilentPoolDialog 的 gbText 做法）。
+import { ref, watch } from 'vue'
 import { tsText } from '../../format'
 import {
   odTraffic, odPct, odSpeed, odEtaText, odStageColor, odIsPaused, fmtSizeGb,
+  odMainTitle, odAltTitle, odSubTitle,
 } from '../../composables/useOndemand'
 
 // 开关走 defineModel（Boolean）；查询 / 站点多选 / 保存目录 / 清单筛选 / 操作提示 均两向绑定，
@@ -22,7 +24,7 @@ const odMsg = defineModel('msg', { type: String, default: '' })
 // props：点播域展示态（useOndemand）+ 站点多选 / 保存目录（父页其它域）+ 函数 prop（isOndemandAuto）。
 // ★ 保持无内联注释：护栏⑦（check_template_bindings）按 `[,{] ident :` 逐键解析 defineProps。
 //   siteSelectItems ← useSignin；tasks ← useTasks；isOndemandAuto ← useOndemand（依赖结果，函数下传）。
-defineProps({
+const props = defineProps({
   ondemandResult: { type: Object, default: null },
   ondemandCandidates: { type: Array, default: () => [] },
   odInflight: { type: Array, default: () => [] },
@@ -34,18 +36,34 @@ defineProps({
   siteSelectItems: { type: Array, default: () => [] },
   tasks: { type: Array, default: () => [] },
   isOndemandAuto: { type: Function, default: () => false },
+  odPicked: { type: Array, default: () => [] },
+  odBatchBusy: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['run', 'refresh-items', 'act'])
+const emit = defineEmits(['run', 'refresh-items', 'act', 'pick', 'pick-all', 'batch-run'])
 
-// 动作向上：搜候选 / 选源并下载、刷新清单、行内操作（暂停 / 继续 / 移除）
+// ★ 19.11.1 视图分流：候选与清单**互斥显示**，只占一块滚动区。
+//   起因：两块长列表原本上下串联在同一滚动槽里 —— 搜完要滚过整份点播清单（可上百条）
+//   才看见候选，用户反馈「放不了那么多内容». 默认停在清单（进来先看自己点播的东西），
+//   一旦拿到新候选就自动切到候选。
+const odView = ref('inventory')
+const odSearchHint = ref(false)
+watch(() => props.ondemandResult, (v) => {
+  if (v) odView.value = 'candidates'
+})
+
+// 动作向上：搜候选 / 选源并下载、刷新清单、行内操作（暂停 / 继续 / 移除）、多选勾选与批量点播
 function runOndemand(apply, pick = '') { emit('run', apply, pick) }
 function loadOndemandItems() { emit('refresh-items') }
 function actOndemand(row, action) { emit('act', row, action) }
+function pickRow(row) { emit('pick', row) }
+function pickAllCandidates(on) { emit('pick-all', !!on) }
+function runBatch() { emit('batch-run') }
+// 全选 / 半选态在 template 里就地算（props 键可直接引用，无需再包一层 computed）
 </script>
 
 <template>
-    <VDialog v-model="ondemandOpen" max-width="46rem" scrollable>
+    <VDialog v-model="ondemandOpen" max-width="54rem" scrollable>
       <VCard class="magicflow-dialog magicflow-ondemand-dialog">
         <header class="magicflow-settings-dialog__head">
           <span class="magicflow-settings-dialog__title">点播</span>
@@ -54,41 +72,36 @@ function actOndemand(row, action) { emit('act', row, action) }
           </div>
         </header>
         <VDivider />
-        <VCardText class="magicflow-ondemand-dialog__body">
-          <div class="magicflow-ondemand-hint">
-            <div>输入片名或链接 → <strong>搜候选</strong> → 点<strong>「下这条」</strong>；不选就点<strong>「选源并下载」</strong>（自动挑推荐源）。下完<strong>自动整理进影视库</strong>。</div>
-            <div class="magicflow-ondemand-hint__legend">
-              站点可多选，<strong>不勾＝全部</strong>；默认优先选<strong>免费</strong>的源。
-            </div>
-          </div>
-          <div class="magicflow-ondemand-form">
+        <!-- 固定区①：搜索（不随内容滚动，永远够得着） -->
+        <div class="magicflow-od-search">
+          <div class="magicflow-od-search__grid">
             <VTextField
               v-model="ondemandQuery"
-              density="comfortable"
+              density="compact"
               hide-details="auto"
               label="片名 / 链接"
-              placeholder="如 流浪地球 或 https://movie.douban.com/subject/35267208/"
+              placeholder="如 流浪地球 或 豆瓣链接"
               @keyup.enter="runOndemand(false)"
             />
             <VSelect
               v-model="ondemandSiteIds"
-              density="comfortable"
+              density="compact"
               hide-details="auto"
               :items="siteSelectItems"
-              label="站点（可多选 · 不勾 = 全部站点）"
+              label="站点（可多选 · 空＝全部）"
               multiple
               chips
               closable-chips
             />
             <VSelect
               v-model="ondemandTaskId"
-              density="comfortable"
+              density="compact"
               hide-details="auto"
               :items="[{ title: '（默认目录）', value: '' }, ...tasks.map((t) => ({ title: `${t.name}·${t.site_name || t.site_id}`, value: t.id }))]"
               label="保存目录"
             />
           </div>
-          <div class="magicflow-ondemand-actions">
+          <div class="magicflow-od-search__acts">
             <VBtn
               size="small"
               variant="tonal"
@@ -104,15 +117,59 @@ function actOndemand(row, action) { emit('act', row, action) }
               :loading="ondemandBusy === 'apply'"
               @click="runOndemand(true)"
             >选源并下载</VBtn>
+            <VSpacer />
+            <VBtn
+              size="x-small"
+              variant="text"
+              :append-icon="odSearchHint ? 'mdi-chevron-up' : 'mdi-help-circle-outline'"
+              @click="odSearchHint = !odSearchHint"
+            >说明</VBtn>
           </div>
-          <VAlert v-if="ondemandError" type="error" variant="tonal" density="compact" class="mt-2">
-            {{ ondemandError }}
-          </VAlert>
+          <div v-if="odSearchHint" class="magicflow-od-search__hint">
+            搜出候选后<strong>勾选</strong>多条 → 点底部<strong>「一并点播」</strong>；不勾也能点<strong>「选源并下载」</strong>自动挑推荐源。
+            片名认不出、或站点里没有同名资源时它<strong>不会替你乱选</strong>，只把站点结果列出来让你自己勾
+            （标「名称未匹配」的是按关键词捞到的噪音）。
+            下完<strong>自动整理进影视库</strong>。候选第一行是<strong>中文名</strong>，灰色小字为站点原名。
+          </div>
+          <VAlert
+            v-if="ondemandError"
+            :type="ondemandCandidates.length ? 'warning' : 'error'"
+            variant="tonal"
+            density="compact"
+            class="mt-2"
+          >{{ ondemandError }}</VAlert>
+        </div>
+        <!-- 固定区②：候选 / 清单 二选一，只占一块滚动区 -->
+        <div class="magicflow-od-switch">
+          <VChip
+            size="small"
+            class="magicflow-od-tab"
+            :variant="odView === 'candidates' ? 'flat' : 'tonal'"
+            :color="odView === 'candidates' ? 'primary' : ''"
+            @click="odView = 'candidates'"
+          >候选 {{ ondemandCandidates.length }}</VChip>
+          <VChip
+            size="small"
+            class="magicflow-od-tab"
+            :variant="odView === 'inventory' ? 'flat' : 'tonal'"
+            :color="odView === 'inventory' ? 'primary' : ''"
+            @click="odView = 'inventory'"
+          >点播清单 {{ odInflight.length + odHistory.length }}</VChip>
+          <VSpacer />
+          <VBtn
+            icon="mdi-refresh"
+            size="x-small"
+            variant="text"
+            aria-label="刷新点播清单"
+            :loading="ondemandItemsBusy"
+            @click="loadOndemandItems"
+          />
+        </div>
+        <VCardText class="magicflow-ondemand-dialog__body">
 
           <!-- ★ 15.4.0/15.5.0：点播清单（筛选 + 行内操作）——先看见自己点播的东西，再看搜索结果 -->
-          <div class="magicflow-od-inventory mt-3">
+          <div v-if="odView === 'inventory'" class="magicflow-od-inventory">
             <div class="magicflow-od-inventory__head">
-              <span class="magicflow-od-inventory__title">点播清单</span>
               <VChip
                 size="x-small"
                 :variant="ondemandTab === 'inflight' ? 'flat' : 'tonal'"
@@ -127,15 +184,6 @@ function actOndemand(row, action) { emit('act', row, action) }
                 class="magicflow-od-tab"
                 @click="ondemandTab = 'done'"
               >已完成 {{ odHistory.length }}</VChip>
-              <VSpacer />
-              <VBtn
-                icon="mdi-refresh"
-                size="x-small"
-                variant="text"
-                aria-label="刷新点播清单"
-                :loading="ondemandItemsBusy"
-                @click="loadOndemandItems"
-              />
             </div>
             <VAlert
               v-if="odMsg"
@@ -143,7 +191,7 @@ function actOndemand(row, action) { emit('act', row, action) }
               variant="tonal"
               density="compact"
               closable
-              class="mb-2"
+              class="mb-2 magicflow-od-msg"
               @click:close="odMsg = ''"
             >{{ odMsg }}</VAlert>
             <!-- 进行中 -->
@@ -213,6 +261,7 @@ function actOndemand(row, action) { emit('act', row, action) }
                 <div class="magicflow-od-row__title" :title="row.title">
                   {{ row.title || row.hash.slice(0, 12) }}
                 </div>
+                <div v-if="row.subtitle" class="magicflow-od-row__sub" :title="row.subtitle">{{ row.subtitle }}</div>
                 <div class="magicflow-od-row__meta">
                   <VChip size="x-small" variant="tonal">{{ row.site || '—' }}</VChip>
                   <span v-if="row.size_gb">{{ row.size_gb.toFixed(2) }} GB</span>
@@ -227,7 +276,11 @@ function actOndemand(row, action) { emit('act', row, action) }
               </article>
             </template>
           </div>
-          <template v-if="ondemandResult">
+          <template v-if="odView === 'candidates'">
+            <div v-if="!ondemandResult" class="magicflow-od-inventory__empty">
+              输入片名点「搜候选」：结果在这里，可勾选多条后一并点播。
+            </div>
+            <template v-else>
             <div class="magicflow-recommend-dialog__summary mt-2">
               <VChip size="small" :color="ondemandResult.resource?.recognized ? 'success' : 'warning'" variant="tonal">
                 {{ ondemandResult.resource?.recognized ? '已识别' : '未识别（按原串搜）' }}
@@ -244,30 +297,69 @@ function actOndemand(row, action) { emit('act', row, action) }
             <div v-if="ondemandResult.added" class="magicflow-recommend-dialog__note">
               已下载：<code>{{ ondemandResult.added }}</code>（完成后直接转「资源」）
             </div>
+            <div v-if="ondemandCandidates.length" class="magicflow-od-batchbar mt-2">
+              <VCheckbox
+                :model-value="ondemandCandidates.length > 0 && odPicked.length >= ondemandCandidates.length"
+                :indeterminate="odPicked.length > 0 && odPicked.length < ondemandCandidates.length"
+                density="compact"
+                hide-details
+                aria-label="全选候选"
+                @update:model-value="pickAllCandidates"
+              />
+              <span class="magicflow-od-batchbar__text">全选 · 已选 <strong>{{ odPicked.length }}</strong> 条</span>
+              <VSpacer />
+              <VBtn
+                size="small"
+                color="primary"
+                prepend-icon="mdi-download-multiple"
+                :loading="odBatchBusy"
+                :disabled="!odPicked.length || !!ondemandBusy"
+                @click="runBatch"
+              >一并点播</VBtn>
+            </div>
             <div v-if="ondemandCandidates.length" class="magicflow-ondemand-list mt-2">
               <article
                 v-for="(row, idx) in ondemandCandidates"
                 :key="idx"
                 class="magicflow-ondemand-item"
-                :class="{ 'magicflow-ondemand-item--auto': isOndemandAuto(row) }"
+                :class="{ 'magicflow-ondemand-item--auto': isOndemandAuto(row), 'magicflow-ondemand-item--picked': odPicked.includes(row.enclosure) }"
               >
-                <div class="magicflow-ondemand-item__title" :title="row.title">{{ row.title }}</div>
-                <div class="magicflow-ondemand-item__meta">
-                  <VChip size="x-small" variant="tonal">{{ row.site_name || row.site }}</VChip>
-                  <span>{{ fmtSizeGb(row.size) }}</span>
-                  <span>做种 {{ row.seeders }}</span>
-                  <VChip
-                    size="x-small"
-                    variant="tonal"
-                    :color="odTraffic(row.downloadvolumefactor).color || undefined"
-                  >{{ odTraffic(row.downloadvolumefactor).text }}</VChip>
-                  <VChip v-if="isOndemandAuto(row)" size="x-small" variant="flat" color="primary">推荐</VChip>
-                  <VChip
-                    v-if="ondemandResult?.added && ondemandResult?.picked?.enclosure === row.enclosure"
-                    size="x-small"
-                    variant="flat"
-                    color="success"
-                  >已下</VChip>
+                <VCheckbox
+                  class="magicflow-ondemand-item__check"
+                  :model-value="odPicked.includes(row.enclosure)"
+                  density="compact"
+                  hide-details
+                  :aria-label="'选择 ' + odMainTitle(row)"
+                  @update:model-value="pickRow(row)"
+                />
+                <div class="magicflow-ondemand-item__body">
+                  <div class="magicflow-ondemand-item__title" :title="row.subtitle || row.title">
+                    {{ odMainTitle(row) }}<span v-if="odAltTitle(row)" class="magicflow-ondemand-item__alt">（{{ odAltTitle(row) }}）</span>
+                  </div>
+                  <div v-if="odSubTitle(row)" class="magicflow-ondemand-item__sub">{{ odSubTitle(row) }}</div>
+                  <div class="magicflow-ondemand-item__meta">
+                    <VChip size="x-small" variant="tonal">{{ row.site_name || row.site }}</VChip>
+                    <span>{{ fmtSizeGb(row.size) }}</span>
+                    <span>做种 {{ row.seeders }}</span>
+                    <VChip
+                      size="x-small"
+                      variant="tonal"
+                      :color="odTraffic(row.downloadvolumefactor).color || undefined"
+                    >{{ odTraffic(row.downloadvolumefactor).text }}</VChip>
+                    <VChip v-if="row.hit_and_run" size="x-small" variant="tonal" color="warning">H&R</VChip>
+                    <!-- ★ 19.11.7：片名相关性（后端 rel）——「没自动选源」时靠它人工挑：
+                         2=片名对得上 / 0=关键词粗筛的噪音（站点用译名/拼音时可能误判，故只说「未匹配」不说「不是」）。 -->
+                    <VChip v-if="row.rel >= 2 && !isOndemandAuto(row)" size="x-small" variant="tonal" color="primary">片名对得上</VChip>
+                    <VChip v-else-if="row.rel === 0" size="x-small" variant="tonal">名称未匹配</VChip>
+                    <VChip v-if="isOndemandAuto(row)" size="x-small" variant="flat" color="primary">推荐</VChip>
+                    <VChip
+                      v-if="ondemandResult?.added && ondemandResult?.picked?.enclosure === row.enclosure"
+                      size="x-small"
+                      variant="flat"
+                      color="success"
+                    >已下</VChip>
+                  </div>
+                  <div class="magicflow-ondemand-item__raw" :title="row.title">{{ row.title }}</div>
                 </div>
                 <div class="magicflow-ondemand-item__act">
                   <VBtn
@@ -282,6 +374,10 @@ function actOndemand(row, action) { emit('act', row, action) }
                 </div>
               </article>
             </div>
+            <div v-else class="magicflow-od-inventory__empty">
+              没搜到候选。换个片名，或把站点选择清空（＝全部站点）再试一次。
+            </div>
+            </template>
           </template>
         </VCardText>
       </VCard>
@@ -351,30 +447,52 @@ function actOndemand(row, action) { emit('act', row, action) }
   max-block-size: 92vh;
   overflow: hidden;
 }
-.magicflow-ondemand-dialog__body { padding: 10px 18px 20px; overflow: auto; flex: 1 1 auto; min-height: 0; }
-.magicflow-ondemand-form { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-start; margin-top: 8px; }
-.magicflow-ondemand-form > .v-input:first-child { flex: 1 1 100%; }
-.magicflow-ondemand-form > .v-input:not(:first-child) { flex: 1 1 12rem; max-width: 24rem; }
-.magicflow-ondemand-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-.magicflow-ondemand-hint { margin: 2px 0 10px; padding: 8px 10px; border-radius: 10px; background: rgba(var(--v-theme-primary), 0.10); font-size: 0.84rem; line-height: 1.6; }
-.magicflow-ondemand-hint strong { color: rgb(var(--v-theme-primary)); }
-.magicflow-ondemand-hint__legend { margin-top: 4px; font-size: 0.76rem; color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); }
-.magicflow-ondemand-hint__legend em { font-style: normal; font-weight: 600; color: rgb(var(--v-theme-on-surface)); }
+.magicflow-ondemand-dialog__body { padding: 8px 18px 16px; overflow: auto; flex: 1 1 auto; min-height: 0; overscroll-behavior: contain; }
+/* ★ 19.11.1 分区：搜索 / 切换是固定区，只有中间一块滚动 —— 内容再多也不会把别的东西挤出视野 */
+.magicflow-od-search { padding: 10px 18px 8px; flex: 0 0 auto; }
+.magicflow-od-search__grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1.3fr) minmax(0, 1fr); gap: 8px; align-items: start; }
+.magicflow-od-search__acts { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.magicflow-od-search__hint { margin-top: 8px; padding: 7px 10px; border-radius: 8px; background: rgba(var(--v-theme-primary), 0.09); font-size: 0.78rem; line-height: 1.55; }
+.magicflow-od-search__hint strong { color: rgb(var(--v-theme-primary)); }
+.magicflow-od-switch { display: flex; align-items: center; gap: 6px; padding: 6px 18px 6px; flex: 0 0 auto; border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08); }
+@media (max-width: 760px) {
+  .magicflow-od-search__grid { grid-template-columns: 1fr; }
+  .magicflow-od-search__acts { margin-top: 6px; }
+}
 .magicflow-ondemand-list { display: flex; flex-direction: column; gap: 6px; }
-.magicflow-ondemand-item { border: 1px solid rgba(var(--v-theme-on-surface), 0.14); border-radius: 8px; padding: 6px 8px; }
+/* ★ 19.11.0：候选行改为「勾选框 | 内容 | 按钮」三栏 —— 中文主标题 + 规格副标题 + 站点原名小字 */
+.magicflow-ondemand-item { display: flex; align-items: flex-start; gap: 4px; border: 1px solid rgba(var(--v-theme-on-surface), 0.14); border-radius: 8px; padding: 6px 8px 6px 2px; }
 .magicflow-ondemand-item--auto { border-color: rgba(var(--v-theme-primary), 0.55); box-shadow: inset 0 0 0 1px rgba(var(--v-theme-primary), 0.22); }
-.magicflow-ondemand-item__act { display: flex; justify-content: flex-end; margin-top: 6px; }
-.magicflow-ondemand-item__title { font-size: 0.8rem; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
+.magicflow-ondemand-item--picked { background: rgba(var(--v-theme-primary), 0.08); border-color: rgba(var(--v-theme-primary), 0.65); }
+.magicflow-ondemand-item__check { flex: 0 0 auto; margin-top: -2px; }
+.magicflow-ondemand-item__body { flex: 1 1 auto; min-width: 0; }
+.magicflow-ondemand-item__act { flex: 0 0 auto; align-self: center; display: flex; justify-content: flex-end; margin-top: 0; }
+.magicflow-ondemand-item__title { font-size: 0.86rem; font-weight: 600; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+.magicflow-ondemand-item__alt { font-weight: 400; font-size: 0.94em; color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); }
+.magicflow-ondemand-item__sub { margin-top: 2px; font-size: 0.75rem; line-height: 1.45; color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+.magicflow-ondemand-item__raw { margin-top: 3px; font-size: 0.68rem; line-height: 1.4; opacity: 0.45; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .magicflow-ondemand-item__meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; font-size: 0.74rem; color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); }
+/* ★ 19.11.0 批量工具条：全选 / 已选计数 / 一并点播
+   ★ 19.11.1 吸顶：候选再多，勾选后也能立刻点到「一并点播」，不用滚回顶部 */
+.magicflow-od-batchbar {
+  display: flex; align-items: center; gap: 4px; padding: 4px 8px 4px 2px; border-radius: 8px;
+  background: rgba(var(--v-theme-primary), 0.10);
+  position: sticky; top: 0; z-index: 2;
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+}
+.magicflow-od-batchbar__text { font-size: 0.78rem; color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); }
+.magicflow-od-batchbar__text strong { color: rgb(var(--v-theme-primary)); font-variant-numeric: tabular-nums; }
 /* ★ 15.4.0 点播清单：进行中（带进度条）+ 历史 */
 .magicflow-od-inventory { border: 1px solid rgba(var(--v-theme-on-surface), 0.12); border-radius: 10px; padding: 8px 10px; background: rgba(var(--v-theme-on-surface), 0.03); }
 .magicflow-od-inventory__head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
-.magicflow-od-inventory__title { font-size: 0.84rem; font-weight: 600; margin-right: 2px; }
 .magicflow-od-inventory__empty { font-size: 0.78rem; opacity: 0.7; padding: 6px 2px; }
 .magicflow-od-tab { cursor: pointer; user-select: none; }
+/* ★ 19.11.0：批量点播的回报带换行（一条失败一行），别糊成一大段 */
+.magicflow-od-msg { white-space: pre-line; }
 .magicflow-od-row { border-top: 1px solid rgba(var(--v-theme-on-surface), 0.07); padding: 6px 2px; }
 .magicflow-od-row:first-of-type { border-top: none; }
 .magicflow-od-row__title { font-size: 0.8rem; line-height: 1.45; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.magicflow-od-row__sub { font-size: 0.7rem; line-height: 1.4; margin-top: 1px; opacity: 0.55; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .magicflow-od-row__meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 3px; font-size: 0.72rem; color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); }
 .magicflow-od-row__stage { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
 .magicflow-od-row__pct { font-size: 0.72rem; font-variant-numeric: tabular-nums; opacity: 0.85; }

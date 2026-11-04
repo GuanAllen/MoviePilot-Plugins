@@ -1103,6 +1103,76 @@ def optimize_pool(
     }
 
 
+def observed_bonus_per_hour(d_bonus: Any, span_sec: Any, *, min_span: float = 900.0) -> Optional[float]:
+    """★ 19.10.38：把「采样窗口内的魔力增量」折算成每小时速率（**实测**时魔）。
+
+    背景（野马PT）：非 NexusPHP 站没有 ``mybonus.php``，站点上报的时魔永远取不到，
+    但 live 采样历史里**一直有真实的魔力增量**。与其让 UI 显示 0（看起来像坏了），
+    不如如实给一个「我自己在窗口里测到的速率」，并用 ``source="observed"`` 标明出处。
+
+    与模型估算（``calc_bonus_per_hour``）的区别：这里是**观测值**，不含任何假设参数，
+    因此不会踩「拿 NexusPHP 默认参数假装是站点公式」那个坑。
+
+    Args:
+        d_bonus: 窗口内魔力增量（可为 None / 非数字字符串）
+        span_sec: 窗口跨度（秒）
+
+    Returns:
+        折算出的每小时魔力；以下情况返回 ``None``（表示「不知道」，交给调用方保持原状）：
+          * 跨度不足 ``min_span``（默认 15 分钟）——窗口太短，折算出来是噪声；
+          * 增量为负——通常意味着期间兑换过魔力，速率口径已被破坏；
+          * 入参不是数字 / 跨度 <= 0。
+    """
+    try:
+        span = float(span_sec or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if span <= 0 or span < float(min_span or 0.0):
+        return None
+    # ★ None（压根没采到）≠ 0（采到了、确实没涨）：前者是「不知道」，不能折算成 0
+    if d_bonus is None:
+        return None
+    try:
+        delta = float(d_bonus)
+    except (TypeError, ValueError):
+        return None
+    if delta < 0:
+        return None
+    return delta / span * 3600.0
+
+
+def apply_observed_rate(live: Any, rates: Any) -> Any:
+    """★ 19.10.39：live 快照缺时魔时，用采样速率补上（**返回新 dict，不改入参**）。
+
+    背景：API 站的 ``bonus_per_hour`` 在解析层恒为 None（站点没有公式接口），
+    前端「魔力/时」拿 ``Number(null || 0)`` 就会画成 0 —— 看起来像取数失败，
+    实际是「站点没有这个口径」。这里补一个本地实测值，并用
+    ``bonus_per_hour_source="observed"`` 标明出处，让 UI 能区分「站点自报」与「本地折算」。
+
+    Args:
+        live: ``/live`` 的 live 块（站点账号事实字典）
+        rates: 同站的采样速率块（需含 ``ok`` / ``d_bonus`` / ``span_sec``）
+
+    Returns:
+        - 原本已有 ``bonus_per_hour`` → 原样返回（**不覆盖站点自报值**）
+        - 能折算 → 返回**副本**，带 ``bonus_per_hour`` 与 ``bonus_per_hour_source``
+        - 折不出来（窗口太短 / 兑换过 / 参数缺失）→ 原样返回，保持 None，绝不填 0
+    """
+    if not isinstance(live, dict):
+        return live
+    if live.get("bonus_per_hour") is not None:
+        return live
+    if not isinstance(rates, dict) or not rates.get("ok"):
+        return live
+    obs = observed_bonus_per_hour(rates.get("d_bonus"), rates.get("span_sec"))
+    if obs is None:
+        return live
+    out = dict(live)
+    out["bonus_per_hour"] = round(float(obs), 4)
+    out["bonus_per_hour_source"] = "observed"
+    return out
+
+
 # ============================================================
 # 测试代码
 # ============================================================

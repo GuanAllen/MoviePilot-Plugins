@@ -1,0 +1,537 @@
+/* OverviewTab 的 scoped 样式，由线上 dist 按 scopeId data-v-be190652 提取。
+   选择器里的属性限定符是 scoped 边界，别去掉。 */
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   概览 Tab 样式（P4 拆分）。
+   · **专属选择器**（仅本面板使用）：.magicflow-overview-grid / .magicflow-stat-grid--single /
+     .magicflow-stat--accent / .magicflow-live-alert(s) / .magicflow-run-summary / .mf-obs* / .mf-spark*
+     → 自 index.vue **迁入**（父页对应规则已删除）。
+   · **共享选择器**（父页多处使用）：.magicflow-stat(-grid) / .magicflow-panel(__head) / .magicflow-facts
+     → 组件内**复制一份**，index.vue 原样保留（纯复制、零改动）。
+   顺序与 index.vue 中一致，保证层叠（!important / 主题覆盖）行为完全相同。
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/* ── 共享：面板头部（index.vue L3673 / L3688 / L4493）── */
+.magicflow-panel__head[data-v-be190652] {
+  display: flex;
+  align-items: center;
+}
+
+.magicflow-panel__head[data-v-be190652] {
+  justify-content: space-between;
+}
+
+.magicflow-panel__head[data-v-be190652] {
+  align-items: flex-start;
+  gap: 12px;
+}
+
+
+/* ── 共享：磁贴网格 / 磁贴 / 面板 / 事实表（index.vue L4250 / L4449-4477 / L4488-4503 / L4534-4549）── */
+.magicflow-stat-grid[data-v-be190652] {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.magicflow-stat[data-v-be190652],
+.magicflow-panel[data-v-be190652] {
+  border: var(--app-surface-border);
+  border-radius: var(--app-surface-radius);
+}
+
+.magicflow-stat[data-v-be190652] {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-block-size: 116px;
+  padding: 16px;
+}
+
+.magicflow-stat > span[data-v-be190652],
+.magicflow-stat > small[data-v-be190652] {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.magicflow-stat > strong[data-v-be190652] {
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+
+/* 指标卡三段式：label（是什么）/ strong（多少）/ foot（补充口径）。
+   仅重排信息层级，不改取数逻辑；foot 贴底，使四张卡高低不一时底部基线仍齐平。 */
+.magicflow-stat > .magicflow-stat__label[data-v-be190652] {
+  letter-spacing: 0.2px;
+}
+
+.magicflow-stat > .magicflow-stat__foot[data-v-be190652] {
+  margin-block-start: auto;
+}
+
+.magicflow-stat[data-v-be190652] .v-progress-linear {
+  margin-block-start: auto;
+}
+
+.magicflow-panel[data-v-be190652] {
+  min-inline-size: 0;
+  padding: 16px;
+}
+
+.magicflow-facts[data-v-be190652] {
+  display: grid;
+  gap: 11px;
+  margin: 18px 0 0;
+}
+
+.magicflow-facts > div[data-v-be190652] {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  min-inline-size: 0;
+}
+
+.magicflow-facts dt[data-v-be190652] {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.magicflow-facts dd[data-v-be190652] {
+  margin: 0;
+  text-align: end;
+  overflow-wrap: anywhere;
+}
+
+
+/* ── 专属（迁入）：概览网格 / 单列磁贴网格 ── */
+.magicflow-overview-grid[data-v-be190652] {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-block-start: 12px;
+}
+
+.magicflow-stat-grid--single[data-v-be190652] {
+  grid-template-columns: minmax(0, 1fr);
+  margin-block-start: 12px;
+}
+
+.magicflow-stat-grid--single .magicflow-stat[data-v-be190652] {
+  min-block-size: auto;
+  padding-block: 12px;
+}
+
+
+/* ── 专属（迁入）：站点实时告警 ── */
+.magicflow-live-alerts[data-v-be190652] {
+  display: grid;
+  gap: 6px;
+  margin-block-start: 12px;
+}
+
+.magicflow-live-alert[data-v-be190652] {
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  border-inline-start: 3px solid transparent;
+}
+
+.magicflow-live-alert--warn[data-v-be190652] {
+  background: rgba(var(--v-theme-warning), 0.12);
+  border-inline-start-color: rgb(var(--v-theme-warning));
+}
+
+.magicflow-live-alert--info[data-v-be190652] {
+  background: rgba(var(--v-theme-info), 0.12);
+  border-inline-start-color: rgb(var(--v-theme-info));
+}
+
+
+/* ── 专属（迁入）：最近一次运行摘要 ── */
+.magicflow-run-summary[data-v-be190652] {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-block: 20px;
+}
+
+.magicflow-run-summary > div[data-v-be190652] {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.magicflow-run-summary span[data-v-be190652] {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  font-size: 0.8rem;
+}
+
+.magicflow-run-summary strong[data-v-be190652] {
+  font-size: 1.2rem;
+}
+
+
+/* ── 专属（迁入）：本轮决策 / 趋势 sparkline ── */
+.mf-obs[data-v-be190652] {
+  margin-block-start: 12px;
+}
+
+.mf-obs__rows[data-v-be190652] {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-block-start: 4px;
+}
+
+.mf-obs__row[data-v-be190652] {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.mf-obs__row > span[data-v-be190652] {
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+
+.mf-obs__row > strong[data-v-be190652] {
+  font-weight: 500;
+  word-break: break-word;
+}
+
+.mf-obs__chips[data-v-be190652] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.mf-spark-grid[data-v-be190652] {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+
+/* 趋势卡标题：标签在上、数值在下（与上方 KPI 三段式同构）。
+   原先是「标签左 + 数值右」两端对齐，四卡并排时数值会紧挨下一张卡的标签，读起来会串行。 */
+.mf-spark__head[data-v-be190652] {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+}
+
+.mf-spark__head strong[data-v-be190652] {
+  font-size: 13px;
+  color: rgb(var(--v-theme-on-surface));
+  font-weight: 600;
+}
+
+.mf-spark__head em[data-v-be190652] {
+  font-style: normal;
+  font-size: 11px;
+  margin-inline-start: 4px;
+}
+
+.mf-spark__head em.is-up[data-v-be190652] { color: rgb(var(--v-theme-success));
+}
+
+.mf-spark__head em.is-down[data-v-be190652] { color: rgb(var(--v-theme-error));
+}
+
+.mf-spark__svg[data-v-be190652] {
+  display: block;
+  inline-size: 100%;
+  block-size: 26px;
+  margin-block: 4px;
+}
+
+.mf-spark__line[data-v-be190652] { stroke-width: 1.5;
+}
+
+.mf-spark__line--primary[data-v-be190652] { stroke: rgb(var(--v-theme-primary));
+}
+
+.mf-spark__line--info[data-v-be190652] { stroke: rgb(var(--v-theme-info));
+}
+
+.mf-spark__line--secondary[data-v-be190652] { stroke: rgb(var(--v-theme-secondary));
+}
+
+.mf-spark__line--success[data-v-be190652] { stroke: rgb(var(--v-theme-success));
+}
+
+.mf-spark__foot[data-v-be190652] {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+@media (max-width: 1199px) {
+
+.magicflow-stat-grid[data-v-be190652] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.magicflow-page .magicflow-stat-grid[data-v-be190652] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+}
+
+@media (max-width: 959px) {
+
+.magicflow-overview-grid[data-v-be190652] {
+    grid-template-columns: 1fr;
+}
+
+  /* 概览窗口里的旧大块内容在手机端隐藏（信息已收进紧凑块 / 任务配置页） */
+.magicflow-page .magicflow-window .magicflow-window-ov .magicflow-stat-grid[data-v-be190652],
+  .magicflow-page .magicflow-window .magicflow-window-ov .magicflow-overview-grid[data-v-be190652] { display: none;
+}
+}
+
+@media (max-width: 699px) {
+
+.magicflow-panel__head[data-v-be190652] {
+    flex-direction: column;
+    align-items: flex-start;
+}
+
+.magicflow-stat-grid[data-v-be190652] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.magicflow-stat[data-v-be190652] {
+    min-block-size: 104px;
+    padding: 13px;
+}
+
+.magicflow-stat > strong[data-v-be190652] {
+    font-size: 1.05rem;
+}
+
+.magicflow-panel[data-v-be190652] {
+    padding: 14px;
+}
+
+.magicflow-panel__head[data-v-be190652] {
+    flex-wrap: wrap;
+}
+
+.magicflow-run-summary[data-v-be190652] {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+}
+
+@media (max-width: 419px) {
+
+.magicflow-stat-grid[data-v-be190652] {
+    grid-template-columns: 1fr;
+}
+}
+
+
+
+/* ── 深色磨砂主题覆盖（.magicflow-page 作用域）：共享部分复制、专属部分迁入。──
+   注意：--magicflow-panel-bg/--magicflow-panel-brd 定义在祖先 .magicflow-page 上，随 CSS 变量继承生效。 */
+.magicflow-page .magicflow-panel[data-v-be190652],
+.magicflow-page .magicflow-stat[data-v-be190652] {
+  background: var(--magicflow-panel-bg) !important;
+  border: 1px solid var(--magicflow-panel-brd);
+  border-radius: 16px;
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(var(--v-theme-on-surface), 0.04);
+}
+
+.magicflow-page .magicflow-stat[data-v-be190652] {
+  gap: 6px;
+  min-block-size: 84px;
+  padding: 14px 16px;
+}
+
+.magicflow-page .magicflow-stat > strong[data-v-be190652] {
+  font-size: 20px;
+  font-weight: 680;
+  line-height: 1.2;
+  letter-spacing: 0.2px;
+}
+
+.magicflow-page .magicflow-stat > span[data-v-be190652],
+.magicflow-page .magicflow-stat > small[data-v-be190652] {
+  font-size: 11px;
+}
+
+.magicflow-page .magicflow-stat--accent > strong[data-v-be190652] {
+  color: rgb(var(--v-theme-primary));
+}
+
+
+/* 面板标题排版（预览图：14px/600 + 11px 说明） */
+.magicflow-page .magicflow-panel[data-v-be190652] {
+  padding: 18px 16px;
+}
+
+.magicflow-page .magicflow-panel__head .text-subtitle-1[data-v-be190652] {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.magicflow-page .magicflow-panel__head .text-body-2[data-v-be190652] {
+  font-size: 11px;
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   首页布局修订（19.9.6）
+   这一版只修「排出来的空」，不动数据与交互：
+   1) 双列概览网格不再强制等高 →「站点数据」不再被左侧 15 行事实表撑出半屏空白；
+   2) 「最近一次运行」跨双列占满第二行 → 消除右半列整块空栏，摘要改 6 列横带；
+   3) 「接管保护」竖排宽卡改横向条带 → 单卡不再显得空荡；
+   4) 「运行状态」15 条事实分三组（调度 / 选种与保留 / 清理与恢复）→ 从文字墙变可扫读。
+   全部为排布层，未改任何取数、props 与事件。放在文件末尾以压过上面的同优先级主题覆盖。
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/* 1) 双列网格改为顶部对齐，各面板按自身内容取高 */
+.magicflow-overview-grid[data-v-be190652] {
+  align-items: start;
+}
+
+
+/* 2) 运行状态跨两行 → 右列上下堆叠「站点数据 / 最近一次运行」，两列底边基本齐平 */
+.magicflow-overview-grid > .magicflow-panel--tall[data-v-be190652] {
+  grid-row: span 2;
+}
+
+.magicflow-panel--tall .magicflow-run-summary[data-v-be190652],
+.magicflow-overview-grid > .magicflow-panel .magicflow-run-summary[data-v-be190652] {
+  margin-block: 16px 18px;
+}
+
+.magicflow-overview-grid .magicflow-run-summary strong[data-v-be190652] {
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+
+/* 3) 接管保护：横向条带（标签 | 数值 | 口径说明） */
+.magicflow-page .magicflow-stat-grid--single .magicflow-stat--strip[data-v-be190652] {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0 14px;
+  min-block-size: auto;
+  padding-block: 12px;
+}
+
+.magicflow-page .magicflow-stat-grid--single .magicflow-stat--strip > strong[data-v-be190652] {
+  font-size: 18px;
+}
+
+
+/* 条带里的 foot 不再贴底：紧跟数值左对齐，避免中间出现大段空档 */
+.magicflow-page .magicflow-stat-grid--single .magicflow-stat--strip > .magicflow-stat__foot[data-v-be190652] {
+  margin-block-start: 0;
+  text-align: start;
+}
+
+
+/* 4) 运行状态：事实表分组标题 + 组间细分隔线 */
+.magicflow-facts > .magicflow-facts__group[data-v-be190652] {
+  justify-content: flex-start;
+  gap: 0;
+  margin-block-start: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.magicflow-facts > .magicflow-facts__group[data-v-be190652]:first-child {
+  margin-block-start: 0;
+}
+
+.magicflow-facts > .magicflow-facts__group[data-v-be190652]:not(:first-child) {
+  margin-block-start: 6px;
+  padding-block-start: 10px;
+  border-block-start: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+@media (max-width: 959px) {
+
+.magicflow-overview-grid > .magicflow-panel--tall[data-v-be190652] {
+    grid-row: auto;
+}
+}
+
+@media (max-width: 699px) {
+
+.magicflow-page .magicflow-stat-grid--single .magicflow-stat--strip[data-v-be190652] {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 2px 12px;
+}
+
+.magicflow-page .magicflow-stat-grid--single .magicflow-stat--strip > .magicflow-stat__foot[data-v-be190652] {
+    grid-column: 1 / -1;
+    text-align: start;
+}
+}
+
+
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   19.11.0 可观测改动：磁贴自适应列数 + 任务目标进度
+   · 磁贴数量随任务类型变化（刷流 4 张 / 魔力 5 张），固定 4 列会让末张落单；
+   · 目标进度是站点级累计量，与「本任务上传」不同层级，用单列条带单独呈现。
+   放在文件末尾以压过上面同优先级的网格规则与媒体查询。
+   ══════════════════════════════════════════════════════════════════════════════ */
+.magicflow-stat-grid--auto[data-v-be190652] {
+  grid-template-columns: repeat(auto-fit, minmax(152px, 1fr));
+}
+
+
+/* 有托管种子但当前 0 个在上传：只着色不报警，与任务列表的 is-idle 同口径 */
+.magicflow-stat__foot.mf-warn[data-v-be190652] {
+  color: rgb(var(--v-theme-error));
+}
+
+.magicflow-stat--goal > strong[data-v-be190652] {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mf-goal__target[data-v-be190652],
+.mf-goal__pct[data-v-be190652] {
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.mf-goal__target[data-v-be190652] {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.mf-goal__pct[data-v-be190652] {
+  margin-inline-start: auto;
+  color: rgb(var(--v-theme-primary));
+}
+
+.magicflow-stat--goal .mf-goal__bar[data-v-be190652] {
+  margin-block: 4px 6px;
+}
+@media (max-width: 699px) {
+
+.magicflow-stat-grid--auto[data-v-be190652] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+}

@@ -2,8 +2,22 @@
 // P3 拆分：自 views/magicflow/index.vue **纯搬家**（无行为变更）。
 // 依赖注入：api, error, notify, selectedTaskId, tasks（★ 真值源仍在后端；本域只放 UI 状态与动作）。
 import { computed, ref } from 'vue'
-import { formatDuration, formatDurationSeconds, unwrapResponse } from '../../../utils'
-import { ITEM_SOURCE_TEXT, KIND_ICON, KIND_TEXT, OPS_KIND_FILTERS, RESEED_KINDS, STATE_TEXT } from '../constants'
+import { unwrapResponse } from '../../../utils'
+import { OPS_KIND_FILTERS, RESEED_KINDS } from '../constants'
+// S14 / F6：9 个展示纯函数原先在本文件、components/dialogs/OpsDialog.vue、
+// components/tabs/JournalTab.js 三处逐字重复，现统一从 ../opsDisplay 引入。
+// 返回对象仍原样带上这 9 个键 —— index.vue 依赖该结构，保持零破坏。
+import {
+  hasOpDetail,
+  itemSourceText,
+  opDetailItems,
+  operationColor,
+  operationDuration,
+  operationIcon,
+  operationKindText,
+  operationStateText,
+  operationSummary,
+} from '../opsDisplay'
 
 export function useOperations({ api, error, notify, selectedTaskId, tasks }) {
   const operationData = ref({ operations: [], total: 0 })
@@ -15,22 +29,6 @@ export function useOperations({ api, error, notify, selectedTaskId, tasks }) {
     if (scope === 'all') loadOperationsAll()
     else if (selectedTaskId.value) loadOperations(selectedTaskId.value)
     else operationData.value = { operations: [], total: 0 }
-  }
-  function operationKindText(kind) {
-    return KIND_TEXT[kind] || kind
-  }
-  function operationStateText(state) {
-    return STATE_TEXT[state] || state
-  }
-  function operationIcon(kind) {
-    return KIND_ICON[kind] || 'mdi-circle-small'
-  }
-  function operationColor(record) {
-    if (record.state === 'failed') return 'error'
-    if (record.kind === 'deletion') return 'warning'
-    if (record.kind === 'tag') return 'purple'
-    if (record.kind === 'run') return 'secondary'
-    return 'primary'
   }
   const expandedOps = ref({})
   const eventRows = ref([])
@@ -63,10 +61,6 @@ export function useOperations({ api, error, notify, selectedTaskId, tasks }) {
     if (level === 'warning') return 'mdi-alert-outline'
     return 'mdi-information-outline'
   }
-  function opDetailItems(record) {
-    if (!record) return []
-    return (record.items || []).filter((it) => String((it && it.source) || '') !== 'run')
-  }
   const opsKind = ref('')
   const opsKindItems = computed(() => {
     // ★ 下拉里只放短标签（不带条数）：手机端窄，带条数会被省略号截断
@@ -82,17 +76,11 @@ export function useOperations({ api, error, notify, selectedTaskId, tasks }) {
     if (!opsKind.value) return rows
     return rows.filter((r) => String(r.kind || '') === opsKind.value)
   })
-  function hasOpDetail(record) {
-    return opDetailItems(record).length > 0
-  }
   function isOpDetailOpen(opId) {
     return !!expandedOps.value[opId]
   }
   function toggleOpDetail(opId) {
     expandedOps.value = { ...expandedOps.value, [opId]: !expandedOps.value[opId] }
-  }
-  function itemSourceText(src) {
-    return ITEM_SOURCE_TEXT[src] || ''
   }
   const opsView = ref('flow') // 'flow'=全部流水 · 'reseed'=辅种流水 · 'timeline'=事件流
   function isReseedRecord(record) {
@@ -127,16 +115,6 @@ export function useOperations({ api, error, notify, selectedTaskId, tasks }) {
     }
     return out.sort((a, b) => String(b.ts || '').localeCompare(String(a.ts || '')))
   })
-  function operationDuration(record) {
-    if (record.duration != null && Number(record.duration) > 0) return formatDurationSeconds(record.duration)
-    return formatDuration(record.created_at, record.resolved_at)
-  }
-  function operationSummary(record) {
-    const first = (record.items || [])[0]
-    if (first && first.title) return first.title
-    const count = (record.items || []).length
-    return count ? `${count} 个条目` : ''
-  }
   const backfilling = ref(false)
   async function backfillPages() {
     const taskId = selectedTaskId.value

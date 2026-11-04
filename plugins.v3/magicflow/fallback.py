@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .kvstore import cache_get, cache_set
 from .common import CACHE_TTL_REPORT
+from .norm import norm_key
 
 DEFAULT_SOURCES = ("themoviedb", "bangumi", "douban")
 SOURCE_LABELS = {
@@ -75,14 +76,7 @@ _SE_RE = re.compile(r"[Ss](\d{1,3})[Ee](\d{1,4})")
 _SEASON_DIR_RE = re.compile(r"^(?:season|s)\s*(\d{1,3})$", re.IGNORECASE)
 _SPECIAL_DIR_RE = re.compile(r"^(?:特别篇|特典|specials?|extras?|ova|oad)$", re.IGNORECASE)
 _SHOW_YEAR_RE = re.compile(r"^(?P<title>.+?)\s*[\(\[]\s*(?P<year>19\d{2}|20\d{2})\s*[\)\]]\s*$")
-_NORM_RE = re.compile(r"[^0-9a-z\u4e00-\u9fff]+")
-
 NFO_HEAD = '<?xml version="1.0" encoding="utf-8" standalone="yes"?>\n'
-
-
-def _norm(s: Any) -> str:
-    """标题归一化（去标点 / 空格、小写），用于跨源比对。"""
-    return _NORM_RE.sub("", str(s or "").lower())
 
 
 def _esc(text: Any) -> str:
@@ -208,11 +202,11 @@ class FallbackEngine:
         """从候选里挑最匹配的一条（标题完全一致 > 含年份一致 > 电视剧类型 > 第一条）。"""
         if not results:
             return None
-        nt = _norm(title)
+        nt = norm_key(title)
         best, best_score = None, -1
         for item in results:
             score = 0
-            it = _norm(getattr(item, "title", ""))
+            it = norm_key(getattr(item, "title", ""))
             if it and it == nt:
                 score += 4
             elif it and nt and (nt in it or it in nt):
@@ -261,7 +255,7 @@ class FallbackEngine:
         title = str(title or "").strip()
         if not title:
             return None
-        key = f"{_norm(title)}|{year}"
+        key = f"{norm_key(title)}|{year}"
         now = time.time()
         with self._lock:
             hit = self._cache.get(key)
@@ -314,7 +308,7 @@ class FallbackEngine:
 
         例：库里 `时光代理人 (2021)` 里的 `S03E07`，TMDB 的 2026 条目另开一页。
         """
-        base = _norm(title)
+        base = norm_key(title)
         if not base or season <= 0:
             return set(), ""
         cn = _CN_NUM.get(season)
@@ -324,7 +318,7 @@ class FallbackEngine:
         for src in self.sources():
             for variant in variants:
                 for item in self._search_source(variant, src):
-                    iname = _norm(str(getattr(item, "title", "") or ""))
+                    iname = norm_key(str(getattr(item, "title", "") or ""))
                     if not iname.startswith(base):
                         continue
                     detail = self._detail_source(
@@ -364,7 +358,7 @@ class FallbackEngine:
 
         返回 ``{"seasons": {季: {集}}, "source": "bangumi"}``。
         """
-        key = f"x|{_norm(title)}|{year}|{exclude}|{season}"
+        key = f"x|{norm_key(title)}|{year}|{exclude}|{season}"
         now = time.time()
         with self._lock:
             hit = self._cache.get(key)

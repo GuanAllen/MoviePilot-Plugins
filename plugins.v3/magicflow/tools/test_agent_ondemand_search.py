@@ -179,6 +179,16 @@ def main() -> int:
         def _log(self, *a, **k):
             pass
 
+        def _cache_get(self, region, key, ttl):
+            # ★ 19.10.11：候选池走 TierCache（_cache_set/_cache_get），替身补内存桩
+            return getattr(self, "_cachemem", {}).get((region, key))
+
+        def _cache_set(self, region, key, value, ttl):
+            if not hasattr(self, "_cachemem") or self._cachemem is None:
+                self._cachemem = {}
+            self._cachemem[(region, key)] = value
+
+
         def _pv_block_reason(self, i):
             return "blocked" if i in self._blocked else ""
 
@@ -230,10 +240,12 @@ def main() -> int:
     out = asyncio.run(f._ondemand_search_sources("kw", [1, 2], page=0, source=""))
     ok(out["sources"] and len(out["sources"]) == 2, f"2 个来源事实（{len(out['sources'])}）")
     ok(out["total_items"] == 2 and out["candidate_items"] == 7, "total_items/candidate_items")
-    ok([c["site"] for c in out["candidates"]] == [2, 1], "候选按「免费优先」排序（B 免费在前）")
+    # ★ 19.11.14：排序首个键从「免费布尔」换成**计费体积**（体积×下载系数）。
+    #   本组数据 T2 免费（实扣 0）< T1 全额（100B）→ 仍是 B 在前，但理由变了。
+    ok([c["site"] for c in out["candidates"]] == [2, 1], "候选按「计费体积」排序（B 免费＝实扣 0，在前）")
     p = FakeSearchChain.last_params
     ok(p == {"keyword": "kw", "sites": [1, 2], "page": 0}, f"透传 params（{p}）")
-    ok(f.spent == [(1, "ondemand", 1), (2, "ondemand", 1)], "PV 按站计 1")
+    ok(f.spent == [], "搜索不记 PV（19.10.0 起 _pv_spend 零调用）")
 
     print("[5] 续页：带 source → 透传 {source,page}（不带 keyword/sites）")
     FakeSearchChain.events = [{"type": "replace", "items": [], "total_items": 0, "candidate_items": 0,
@@ -244,7 +256,7 @@ def main() -> int:
     p5 = FakeSearchChain.last_params
     ok("source" in p5 and "sites" not in p5 and p5.get("keyword") == "流浪地球", f"续页 params = source + 令牌里的 keyword（{p5}）")
     ok(p5["page"] == 1 and out5["sources"][0]["site"] == 3, "页面/站点正确")
-    ok(f5.spent == [(3, "ondemand", 1)], "续页只对令牌里的站计 PV")
+    ok(f5.spent == [], "续页同样不记 PV（19.10.0 口径）")
 
     print("[6] MP 回 error 事件 → 抛错（不私吞）")
     FakeSearchChain.events = [{"type": "error", "message": "搜索来源无效，请重新搜索"}]
@@ -255,13 +267,18 @@ def main() -> int:
         raised = "搜索来源无效" in str(e)
     ok(raised, "error 事件 → RuntimeError")
 
-    print("[7] PV 闸：全被拦 → 空且不调 MP")
+    print("[7] 站点门：全被拦 → 不调 MP，被跳过的站透到 sources[]（19.10.0 不静默丢弃）")
     FakeSearchChain.last_params = {}
-    f7 = Fake(allowed=False)
+    FakeSearchChain.events = []  # 清掉 [6] 的 error 事件，防止泄漏
+    f7 = Fake(blocked=(1, 2))  # 19.10.0 起 _od_site_gate 只查 _pv_block_reason，不判 _pv_allow
     out7 = asyncio.run(f7._ondemand_search_sources("kw", [1, 2], page=0))
-    ok(out7["sources"] == [] and FakeSearchChain.last_params == {}, "被拦 → 空结果 + 未调 MP")
-    f7b = Fake(blocked=(1, 2))
-    ok(asyncio.run(f7b._ondemand_search_sources("kw", [1, 2], page=0))["sources"] == [], "站点封禁 → 空结果")
+    ok(FakeSearchChain.last_params == {}, "被拦 → 未调 MP")
+    ok(out7["candidates"] == [], "被拦 → 候选为空")
+    ok(all(s.get("outcome") == "pv_blocked" for s in out7["sources"]) and len(out7["sources"]) == 2,
+       f"被跳过的 2 站以 pv_blocked 透出（{out7['sources']}）")
+    f7b = Fake(blocked=(1,))
+    out7b = asyncio.run(f7b._ondemand_search_sources("kw", [1, 2], page=0))
+    ok(any(s.get("outcome") == "pv_blocked" for s in out7b["sources"]), "单站封禁 → 该站以 pv_blocked 透出")
 
     print("[8] 登记：/agent/ondemand/search 在清单里 + handler 是协程")
     agentapi = _load_agentapi()

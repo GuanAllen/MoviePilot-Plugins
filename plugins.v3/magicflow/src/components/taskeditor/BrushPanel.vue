@@ -51,7 +51,7 @@ const slowProgressMaxHours = defineModel('slowProgressMaxHours')
           type="number"
           min="0"
           max="365"
-          label="保种天数"
+          label="轮转周期(天)"
           hint="做种满该天数即清理换新；0＝不按天数，改判「无上传」"
           suffix="天"
           persistent-hint
@@ -102,8 +102,8 @@ const slowProgressMaxHours = defineModel('slowProgressMaxHours')
   <section class="editor-section">
     <header class="editor-section__head">
       <div>
-        <div class="text-subtitle-1 font-weight-medium">无上传判定（保种天数 = 0 时启用）</div>
-        <div class="text-body-2 text-medium-emphasis">保种天数填 0 时不按天数轮换，改按「平均上传速率」清理</div>
+        <div class="text-subtitle-1 font-weight-medium">无上传判定（轮转周期 = 0 时启用）</div>
+        <div class="text-body-2 text-medium-emphasis">轮转周期填 0 时不按天数轮换，改按「平均上传速率」清理</div>
       </div>
     </header>
     <VRow>

@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useDisplay } from 'vuetify'
 import { cloneTask, formatBytes, normalizeTask, unwrapResponse } from '../utils'
-import BasePanel from './taskeditor/BasePanel.vue'
+import BasePanel from './taskeditor/BasePanel.js'
 import BrushPanel from './taskeditor/BrushPanel.vue'
 import MagicPanel from './taskeditor/MagicPanel.vue'
 import FormulaPanel from './taskeditor/FormulaPanel.vue'
@@ -28,7 +28,7 @@ const formRef = ref(null)
 const activeTab = ref('base')
 const localTask = ref(cloneTask())
 
-// 刷流模式：做种满设定天数即清理换新（保种天数），不套用魔力门槛。
+// 刷流模式：做种满设定天数即清理换新（轮转周期），不套用魔力门槛。
 const isBrush = computed(() => localTask.value.task_type === 'brush')
 const dialogTitle = computed(() => {
   const kind = isBrush.value ? '刷流任务' : '魔力任务'
@@ -220,6 +220,18 @@ const TASK_PRESETS = [
 const presetKey = ref('bonus')
 const simpleMode = computed(() => presetKey.value !== 'custom')
 const presetInfo = computed(() => TASK_PRESETS.find(p => p.key === presetKey.value) || TASK_PRESETS[1])
+
+// ★ F2：反推该任务当前命中哪个模板 —— 逐个比对 patch 的每个键，全等才算命中；
+//   一个键对不上就说明用户手改过（或历史遗留值），判定为 custom，避免「谎报身份」。
+//   注意：patch 里不含 disk_size_gb（它由磁盘空间单独回填），所以无需排除任何键。
+function detectPresetKey(task) {
+  for (const p of TASK_PRESETS) {
+    if (p.key === 'custom') continue
+    if (p.patch.task_type !== task.task_type) continue
+    if (Object.keys(p.patch).every(k => p.patch[k] === task[k])) return p.key
+  }
+  return 'custom'
+}
 // 磁盘状态（**按目录分盘**，只看任务自己那块盘；80% 阈值 → 本任务可占体积）
 // ★ 不能用 MP 仪表板的「本地存储」：那是把多个目录加起来的总数（例如 /movie + /media），
 //   任务写不到别的池里，拿总和算阈值会严重高估。
@@ -270,8 +282,27 @@ const poolBudgetGb = computed(() => {
 const poolBudgetText = computed(() => (poolBudgetGb.value > 0 ? `${poolBudgetGb.value} GB` : '不限'))
 const poolFreeText = computed(() => (pool.value ? formatBytes(pool.value.budget_gb * 1024 ** 3) : '—'))
 const presetPatchCount = computed(() => Object.keys(presetInfo.value.patch || {}).length + (poolBudgetGb.value > 0 ? 1 : 0))
+// ★ F3（19.10.6）：套用前先 diff —— 只把「会被覆盖、且当前值既不等于新模板值、也不等于旧模板值」
+//   的字段算作用户手调过。点同一张卡且没手改时差异为空 → 直接套用、不打扰。
+//   旧实现 `Object.assign` 不比对、不问，用户把「每轮最多添加」调成 5 后点一下别的模板就静默抹掉。
+const presetConfirm = ref({ open: false, key: '', count: 0 })
 // 选模板 → 只覆盖「程序可决定」的参数（用户已填的站点/目录/目标/名称不动）
 function applyPreset(key) {
+  const p = TASK_PRESETS.find(x => x.key === key)
+  if (!p) return
+  const prev = TASK_PRESETS.find(x => x.key === presetKey.value)
+  const dirty = Object.keys(p.patch || {}).filter(
+    k => localTask.value[k] !== p.patch[k] && (!prev || localTask.value[k] !== prev.patch[k]),
+  )
+  if (dirty.length) {
+    presetConfirm.value = { open: true, key, count: dirty.length }
+    return
+  }
+  doApplyPreset(key)
+}
+
+function doApplyPreset(key) {
+  presetConfirm.value = { open: false, key: '', count: 0 }
   presetKey.value = key
   const p = TASK_PRESETS.find(x => x.key === key)
   if (p && Object.keys(p.patch || {}).length) Object.assign(localTask.value, p.patch)
@@ -282,7 +313,12 @@ function applyPreset(key) {
   if (budget > 0) localTask.value.disk_size_gb = budget
   autoFillName(false)
   autoFillTag()
-  if (key === 'custom') activeTab.value = 'base'
+  // ★ F4（19.10.2）：简单模式下只剩「基础与调度」一个 VWindowItem，
+  //   切模板后 activeTab 必须回到 base，否则 Vuetify 的 forceMandatoryValue()
+  //   在 unregister() 里「先判定、后 splice」，救不了「选中项被 v-if 移除」这一路
+  //   → 所有 VWindowItem 全隐藏，内容区整片空白。
+  //   非 custom 时只剩 base（必须回），custom 时全部标签都在（回 base 无害），合并即无条件。
+  activeTab.value = 'base'
 }
 // 任务名自动填「站点·模板名」；换站点/换模板都会跟着变（用户手改过才不动）
 const autoNameSet = computed(() => {
@@ -332,7 +368,7 @@ watch(
     if (!visible) return
     localTask.value = cloneTask(props.task)
     activeTab.value = 'base'
-    presetKey.value = localTask.value.task_type === 'brush' ? 'brush' : 'bonus'
+    presetKey.value = detectPresetKey(localTask.value)
     readSavePathHistory()
     rememberSavePath(localTask.value.save_path)
     autoFillTag()
@@ -342,10 +378,11 @@ watch(
 )
 
 // 切换任务类型时，若当前标签在新类型下不存在，回到「基础与调度」。
+// ★ 不再回写 presetKey：task_type 只可能由模板 patch 写入（界面没有任何手动改类型的控件），
+//   回写会把 exam/keep 这类「模板名 ≠ 类型名」的选择顶掉（F1），也会顶掉开档时判定的 custom（F2）。
 watch(
   () => localTask.value.task_type,
   () => {
-    presetKey.value = localTask.value.task_type === 'brush' ? 'brush' : 'bonus'
     autoFillTag()
     if (!editorTabs.value.some(tab => tab.value === activeTab.value)) activeTab.value = 'base'
   },
@@ -584,6 +621,26 @@ function confirmSaveWithoutGoal() {
           <VSpacer />
           <VBtn variant="text" @click="goalWarning = false">返回填写</VBtn>
           <VBtn color="warning" variant="flat" @click="confirmSaveWithoutGoal">仍然保存</VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
+
+    <!-- ★ F3：切换模板真的会抹掉用户手调过的参数时，先问一句（差异为空时不弹） -->
+    <VDialog v-model="presetConfirm.open" max-width="30rem">
+      <VCard class="pa-2">
+        <VCardText>
+          <div class="d-flex align-center mb-2">
+            <VIcon icon="mdi-alert-outline" color="warning" class="mr-2" />
+            <span class="text-subtitle-1 font-weight-medium">切换模板会覆盖已调整的参数</span>
+          </div>
+          <div class="text-body-2 text-medium-emphasis">
+            有 {{ presetConfirm.count }} 项参数与模板取值不同（看起来是你手动调过的），继续将用模板值覆盖。
+          </div>
+        </VCardText>
+        <VCardActions>
+          <VSpacer />
+          <VBtn variant="text" @click="presetConfirm.open = false">取消</VBtn>
+          <VBtn color="warning" variant="flat" @click="doApplyPreset(presetConfirm.key)">覆盖并继续</VBtn>
         </VCardActions>
       </VCard>
     </VDialog>

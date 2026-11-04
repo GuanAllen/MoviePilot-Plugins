@@ -8,3 +8,15 @@ __pycache__/
 
 # MCP 写文件自动备份（mf_write_file），勿提交
 backups/
+
+# 本地开发/调试脚本（2026-10-29 同步时纳入忽略）
+dev/
+*.mjs
+sfc-scan-report.json
+vite.dev.config.js
+.publish-result
+
+# 运行时产物（插件在 MP 容器内生成）
+data/
+pyc/
+tmp/

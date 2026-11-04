@@ -23,6 +23,33 @@ export function fmtHoursLeft(h, state) {
   return (v / 24).toFixed(1) + 'd'
 }
 
+// ★ 19.10.11：每颗账单「还差多少工时」= need_h − seeded_h（≤0 即已达标的工时线）。
+//   与 hours_left（站点考核窗口倒计时）是**两个不同概念**：
+//     · 还需 X h → 你给自己/站点定的义务差多久做满，到了就能撤
+//     · 窗口剩 X  → 站点考核的截止时间，到了可能判违约
+//   界面上必须分开措辞，混着显示会让人以为「窗口过了就已经违约」。
+export function hrBillLeftH(it) {
+  if (!it) return 0
+  const need = Number(it.need_h) || 0
+  const seeded = Number(it.seeded_h) || 0
+  return Math.max(0, need - seeded)
+}
+// 已做种 / 需做种，如 "6.1/24.0h"
+export function fmtBillSeeded(it) {
+  const need = Number((it && it.need_h)) || 0
+  const seeded = Number((it && it.seeded_h)) || 0
+  return `${seeded.toFixed(1)}/${need.toFixed(1)}h`
+}
+export function fmtBillLeft(it) {
+  const st = String((it && it.state) || '')
+  if (st === 'settled') return '已结清'
+  if (st === 'void') return '已作废'
+  if (st === 'pending') return '未下完'
+  const left = hrBillLeftH(it)
+  if (left <= 0.05) return st === 'breached' ? '已违约' : '工时已够·待结清'
+  return '还需 ' + (left < 48 ? Math.round(left) + 'h' : (left / 24).toFixed(1) + 'd')
+}
+
 export function useHrBills({ api, error }) {
   const hrBillsOpen = ref(false)
   const hrBillsLive = ref(false)

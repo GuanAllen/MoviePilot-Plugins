@@ -11,7 +11,8 @@ Master 口径（2026-10-02 11:10）：**不装 Prometheus、不暴露 /metrics**
   * **不刷屏**：只在「状态没变化」时不重复报警；状态变化才写日志（见 `_health_log_delta`）。
 
 检查项（v1）：
-  H1 任务上次运行失败（`last_error` / `last_run_status=failed`）
+  H1 任务出错（`last_error` —— 含粘性的「配置错」如保存目录空/下载器不可用，
+     标题显示「配置有误」/ `last_run_status=failed`）
   H2 任务卡死：超过 `max(5×检查间隔, 30min)` 没跑过（或从未成功跑过）
   H3 站点口径时魔下滑：最近采样 vs 24h 前，跌幅 ≥25% 且绝对值 ≥5/h
   H4 磁盘贴上限：任务占用 ≥ 站点 `disk_size_gb` 的 95%
@@ -20,18 +21,18 @@ Master 口径（2026-10-02 11:10）：**不装 Prometheus、不暴露 /metrics**
 
 import os
 import time
-from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
 from app.schemas import Response
 
-from ..common import task_is_participating, task_is_running
+from ..common import task_is_participating
 from .hrbills import (
     BILL_STATE_ACTIVE,
     BILL_STATE_BREACHED,
     RULE_HIT_AND_RUN,
     RULE_SITE_HR,
 )
+from ..norm import now_iso
 
 # H4 阈值：占用达到存储上限的多少比例算「贴上限」
 DISK_NEAR_PCT = 95.0
@@ -53,6 +54,11 @@ class HealthMixin:
     # ------------------------------------------------------------
 
     def _health_issues(self) -> List[Dict[str, Any]]:
+        """聚合并按严重度排序「需要你管」的问题清单（H1~H5，零外部请求）。
+
+        只读本地已落库的任务状态与趋势序列；每条问题带 key（同 key 状态不变不重复报），
+        供 ``GET /health`` 与前端指示灯直接消费。
+        """
         issues: List[Dict[str, Any]] = []
         now = time.time()
         try:
@@ -62,12 +68,15 @@ class HealthMixin:
         # ★ 14.0.0-2：防御——「host」伪任务（__silent_host__ / __hr_host__ / __crossseed__）
         #   本身不在 _task_configs（以 host 卡片呈现），本不应被 H1/H2 看到；
         #   若以后某 host 被错放进来也不会被判卡死（它们是常驻 worker，不是 Check 调度对象）。
-        running = [t for t in tasks if task_is_running(t)
+        # ★ 19.10.37：H1/H2 的范围从「running」放宽到「还在被调度」（running + seeding）——
+        #   seeding 只挂 Check，但下载器不可用照样会让它管不了名下的种，配置错要报；
+        #   stopped 不挂任何 worker，不看。
+        watched = [t for t in tasks if task_is_participating(t)
                    and str(getattr(t, "task_type", "") or "").strip().lower() != "host"]
         participating = [t for t in tasks if task_is_participating(t)]
 
         # H1 / H2：任务维度
-        for t in running:
+        for t in watched:
             stats: Dict[str, Any] = {}
             if self._store:
                 try:
@@ -82,7 +91,13 @@ class HealthMixin:
                 issues.append({
                     "key": f"H1:{getattr(t, 'id', '')}",
                     "level": "error",
-                    "title": f"「{name}」上次运行出错",
+                    # ★ 19.10.37：粘性 last_error = 配置硬伤（保存目录空 / 下载器不可用），
+                    #   跟「上一轮跑挂了」不是一回事，标题分开，别让用户往运行诊断里找。
+                    "title": (
+                        f"「{name}」配置有误"
+                        if bool(stats.get("last_error_sticky"))
+                        else f"「{name}」上次运行出错"
+                    ),
                     "detail": err[:200],
                     "task_id": getattr(t, "id", ""),
                 })
@@ -150,7 +165,7 @@ class HealthMixin:
                 pass
 
         # H4 磁盘贴上限（任务口径）
-        for t in running:
+        for t in watched:
             try:
                 disk = float(getattr(t, "disk_size_gb", 0) or 0)
                 if disk <= 0:
@@ -575,7 +590,7 @@ class HealthMixin:
         - ``limit``：``items`` 条数上限（默认 200，0=不限）；
         - ``max_probe``：逐文件核盘的候选上限（默认 300，超限截断标 ``probe_truncated``）。
         """
-        at = datetime.now().astimezone().isoformat(timespec="seconds")
+        at = now_iso()  # ★19.10.16
         try:
             snap = self._tag_all_torrents() or {}
         except Exception:  # noqa: BLE001

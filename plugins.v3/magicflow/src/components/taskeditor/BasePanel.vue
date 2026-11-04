@@ -1,5 +1,5 @@
 <script setup>
-// MagicFlow · 任务编辑器「基础与调度」面板 —— P6 自 components/TaskEditorDialog.vue **纯搬家**。
+// MagicFlow · 任务编辑器「基础与调度」面板 —— P6 自 components/TaskEditorDialog.js **纯搬家**。
 // props 下 / emit 上：面板不直接读写父状态；双向字段走 defineModel，动作走 emit，只读值走 props。
 import { formatBytes } from '../../utils'
 
@@ -109,6 +109,18 @@ defineProps({
           :items="downloaders"
           label="下载器"
           :rules="[value => !!value || '请选择下载器']"
+        />
+      </VCol>
+      <!-- ★ F5：只有一台下载器时字段整块消失，用户看不到任务会落到哪台 —— 用只读占位补上。
+           范式与下方「下载器标签」一致（readonly + 锁图标 + hint），保证两种情形视觉同构。 -->
+      <VCol v-else-if="downloaders.length === 1" cols="12" md="6">
+        <VTextField
+          :model-value="downloader || downloaders[0].title || downloaders[0].value"
+          label="下载器"
+          readonly
+          prepend-inner-icon="mdi-lock-outline"
+          hint="只接了一台下载器，自动使用（接多台后可切换）"
+          persistent-hint
         />
       </VCol>
       <VCol v-if="!simpleMode" cols="12" md="6">

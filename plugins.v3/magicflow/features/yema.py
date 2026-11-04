@@ -34,8 +34,8 @@ from .hrbills import (
     RULE_HIT_AND_RUN,
     RULE_SITE_HR,
     RULE_UNKNOWN,
-    get_hr_reconcile_cache,
 )
+from .hrreconcile import get_hr_reconcile_cache
 
 # ── 常量（★ 必须在类定义之前求值：写进函数默认参数会在「定义时」求值）
 YEMA_ENABLED = True

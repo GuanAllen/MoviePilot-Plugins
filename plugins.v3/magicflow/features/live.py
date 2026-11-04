@@ -12,9 +12,14 @@ from typing import Any, Dict, List, Optional
 from app.schemas import Response
 from app.sdk.logging import logger
 
+from .. import envops
 from ..common import SITE_FORMULA_STALE_MAX
 from ..live_stats import title_match
 from ..persistence import OperationItem
+#   ★ 19.10.7：本模块唯一会「产生副作用」的 debug 端点（/debug/sitecap?probe=true）
+#      必须过与 debug 面同一道写门，否则「清单说这条会写、代码却不过门」的旧毛病会换这里复现。
+#      debug.py 不 import 本模块，顶层导入无环。
+from .debug import _dbg_guard_write
 from ..sitecap import (
     SiteCap,
     SiteCapRegistry,
@@ -134,6 +139,12 @@ class LiveMixin:
             return ""
 
     def _hd_api_json(self, site_id: int, path: str) -> Optional[Dict[str, Any]]:
+        """HDDolby 官方 API 取 JSON（该站抓页面要过盾，只有 API 能稳定读数据）。
+
+        URL 入口由 ``envops.hd_api_base`` 决定（换域名后 API 从 ``api.*`` 搬到主站，
+        见 19.11.5）；无域名 / 无 apikey / 非 200 / 解析失败一律返回 ``None``，
+        由调用方决定降级，**不抛**。
+        """
         import json as _json
         from app.sdk.network import RequestUtils  # noqa: WPS433
 
@@ -144,7 +155,8 @@ class LiveMixin:
             if not dom or not key:
                 return None
             cli = RequestUtils(headers={"x-api-key": key, "Accept": "application/json"}, timeout=15)
-            r = cli.get_res("https://api." + dom + "/" + str(path or "").lstrip("/"))
+            # ★ 19.11.5：API 入口收进 envops（HDDolby 换域名后 API 从 api.* 搬到主站）
+            r = cli.get_res(envops.hd_api_base(site, dom) + "/" + str(path or "").lstrip("/"))
             if int(getattr(r, "status_code", 0) or 0) != 200:
                 return None
             return _json.loads(getattr(r, "text", "") or "{}")
@@ -176,8 +188,11 @@ class LiveMixin:
                 except (TypeError, ValueError):
                     pass
         dom = ""
+        _api_base = ""
         try:
-            dom = str(getattr(self._get_site(int(site_id)), "domain", "") or "")
+            _site_obj = self._get_site(int(site_id))
+            dom = str(getattr(_site_obj, "domain", "") or "")
+            _api_base = envops.hd_api_base(_site_obj, dom)
         except Exception:  # noqa: BLE001
             dom = ""
         # ★ 19.7.83：新手考核按数据推算（不再写死）
@@ -256,13 +271,15 @@ class LiveMixin:
         return {
             "exam": _exam,
             "ok": True, "site_id": int(site_id), "source": "api",
-            "url": "https://api." + dom + "/api/v1/user/data",
+            "url": _api_base + "/api/v1/user/data",
             "ts": time.time(), "uid": str(u.get("id") or ""),
             "username": u.get("username"), "logged_in": True,
             "upload": up, "download": down,
             "ratio": round(up / down, 2) if down else 0.0,
             "bonus": bonus, "bonus_per_hour": bph,
             "seeding": seed_n, "seeding_size": seed_size,
+            # ★ 19.11.18：入站时间（升级要求 interval 门槛的输入）
+            "join_time": str(u.get("added") or "") or None,
             "message_unread": int(u.get("unread_messages") or 0),
             "fields": ["ratio", "upload", "download", "seeding", "bonus", "uid", "logged_in"],
             "src": {"uid": "api", "upload": "api", "download": "api",
@@ -290,7 +307,7 @@ class LiveMixin:
         except Exception:  # noqa: BLE001
             _hd = {}
         if _hd:
-            return {"live": _hd, "rates": {}, "alerts": [], "level": "ok"}
+            return {"live": self._fill_level_next(int(site_id), _hd), "rates": {}, "alerts": [], "level": "ok"}
         try:
             snap = self._live.snapshot(
                 int(site_id),
@@ -304,7 +321,7 @@ class LiveMixin:
             self._log(f"站点实时数据获取失败(站点 {site_id}):{err}", "warning")
             return {"live": {"ok": False}, "rates": {}, "alerts": [], "level": "ok"}
         # ★★ 19.1.0：站点账号读侧收口 —— 实时为主源，缺项按 公式通道(时魔) → MP 快照(做种) 补齐
-        snap["live"] = self._live_account_fill(int(site_id), snap.get("live") or {})
+        snap["live"] = self._fill_level_next(int(site_id), self._live_account_fill(int(site_id), snap.get("live") or {}))
         # ★ 15.12.0：站点日报（长期趋势/归因用）——挂在快照这一层，worker 与手动 /live 都覆盖；
         #   同日同值不重复落盘。公开方法，不新增跨文件私调。
         try:
@@ -370,6 +387,58 @@ class LiveMixin:
                 src.setdefault(key, "live")
         return live
 
+    def _fill_level_next(self, site_id: int, live: Dict[str, Any]) -> Dict[str, Any]:
+        """★ 19.11.18：等级 / 升级要求收口（抄 PT-depiler 的站点等级模型）。
+
+        ① 等级缺失且有 uid → 补抓 userdetails 认等级（HDDolby 的 API 路径也走这里补）；
+        ② 有等级 + 该域在等级表里 → ``live["level_next"]``（下一级门槛 + 还差多少）。
+        认不出 / 没表 → **什么都不加**（UI 显示「未知」，不拿推算值冒充，铁律 6）。
+        """
+        if not isinstance(live, dict) or not live.get("ok"):
+            return live
+        dom = ""
+        try:
+            dom = str(getattr(self._get_site(int(site_id)), "domain", "") or "")
+        except Exception:  # noqa: BLE001
+            dom = ""
+        if not live.get("level") and live.get("uid"):
+            try:
+                det = self._live.fetch_user_details(int(site_id), int(live["uid"]))
+                src = live.setdefault("src", {})
+                if det.get("level"):
+                    live["level"] = det["level"]
+                    src["level"] = "details"
+                for _k in ("seeding_bonus", "join_time"):
+                    if det.get(_k) is not None and live.get(_k) is None:
+                        live[_k] = det[_k]
+                        src[_k] = "details"
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            from ..level_req import next_level_unmet, reqs_for_domain  # noqa: WPS433
+            reqs = reqs_for_domain(dom)
+            if reqs and live.get("level"):
+                nxt = next_level_unmet(
+                    {
+                        "upload": live.get("upload"),
+                        "download": live.get("download"),
+                        "ratio": live.get("ratio"),
+                        "ratio_inf": live.get("ratio_inf"),
+                        "bonus": live.get("bonus"),
+                        "seeding_bonus": live.get("seeding_bonus"),
+                        "seeding": live.get("seeding"),
+                        "join_time": live.get("join_time"),
+                        "seeding_size": live.get("seeding_size"),
+                    },
+                    reqs,
+                    live.get("level"),
+                )
+                if nxt:
+                    live["level_next"] = nxt
+        except Exception:  # noqa: BLE001
+            pass
+        return live
+
     def get_live_state(self, force: bool = False, site_id: int = 0,
                        block: bool = False, fresh: bool = False,
                        wait: Optional[float] = None) -> Response:
@@ -382,6 +451,10 @@ class LiveMixin:
         「打开插件」这一次调用同时充当预热触发器（按 live_warm_ts 整体 5 分钟节流）。
 
         ★ 19.2.1：新增 ``fresh``（与 ``block=True`` 等价）→ **现抓真值**（= 19.2.0 之前行为）。
+        ★ 19.11.19：``fresh`` 不再只是 block —— 必须**连同 ``force`` 一起给**，绕过 TTL
+          缓存现抓。旧实现 fresh 只阻塞不 force，未过期缓存直接回旧值：19.11.18 修好
+          做种积分解析后 ``/live?fresh=1`` 仍一直读到旧缓存里的 99（三站同值、join_time
+          却是新解析的），直到 TTL 过期才恢复 —— 「现抓真值」名不副实。
         ★★ 铁律：缓存读（``get_cached_or_warm`` / ``block=False``）**只服务人看的 UI**；
         任何**后端决策 / 写路径 / AI 真值读**一律 ``block=True`` / ``fresh=True``，或直接
         ``self._live.get()``。UI 路由 ``/live`` 默认（不传 fresh/block）保持纯缓存秒开。
@@ -398,6 +471,8 @@ class LiveMixin:
         # ★ 19.2.2：wait 给出 → 走**限时真抓**（bounded）；不再走 block/fresh 的不限时真抓。
         _bounded = _wait is not None
         _fresh = bool(fresh or block) and not _bounded
+        # ★ 19.11.19：真值读 = 阻塞 + 绕过 TTL 缓存（见 docstring）
+        _force = bool(force) or _fresh
         sites = self._live_sites(only_site_id=int(site_id or 0))
         if _fresh or _bounded:
             # ★ 19.2.1：真抓路径不排队后台预热 —— 本次同步 get 已是真值，
@@ -414,7 +489,7 @@ class LiveMixin:
         rows: List[Dict[str, Any]] = []
         for sid, meta in sites.items():
             snap = self._live_snapshot(
-                sid, local_managed=meta.get("local_managed"), force=bool(force),
+                sid, local_managed=meta.get("local_managed"), force=_force,
                 block=_fresh, wait=_wait,
             )
             rows.append(
@@ -740,8 +815,18 @@ class LiveMixin:
 
         return self.sitecaps().ensure(site, probe=bool(probe), gate=_gate)
 
-    def debug_site_caps(self, probe: bool = False) -> Response:
-        """站点类型/能力识别结果;``probe=true`` 时对未识别/过期的站联网探测一次。"""
+    def debug_site_caps(self, probe: bool = False, confirm: int = 0) -> Response:
+        """站点类型/能力识别结果;``probe=true`` 时对未识别/过期的站联网探测一次。
+
+        ★ 19.10.7：``probe=true`` 会**逐个站联网探测**，每次走 PV 闸门扣一次配额 →
+        这是 GET + 有副作用的典型（顺手刷一次就把当日刮削预算吃掉一部分，且不可撤销）。
+        故 ``probe=true`` 必须显式 ``confirm=1``；``probe=false`` 是纯读缓存，永不拦。
+        """
+        if probe:
+            _deny = _dbg_guard_write("/debug/sitecap?probe=true（联网探测，消耗站点 PV 配额）",
+                                     confirm)
+            if _deny is not None:
+                return _deny
         try:
             caps = self.sitecaps()
             rows: List[Dict[str, Any]] = []

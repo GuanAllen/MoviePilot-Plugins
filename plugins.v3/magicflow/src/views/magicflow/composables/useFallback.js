@@ -5,7 +5,7 @@ import { computed, ref } from 'vue'
 import { FALLBACK_SOURCE_OPTIONS } from '../../../utils'
 import { unwrapResponse } from '../../../utils'
 
-// ★ P4：纯函数提到 module 级具名导出，供 dialogs/SettingsDialog.vue 复用（单一真值源）。
+// ★ P4：纯函数提到 module 级具名导出，供 dialogs/SettingsDialog.js 复用（单一真值源）。
 export function fallbackSourceLabel(value) {
   const found = FALLBACK_SOURCE_OPTIONS.find(opt => opt.value === value)
   return found ? found.title : String(value || '')

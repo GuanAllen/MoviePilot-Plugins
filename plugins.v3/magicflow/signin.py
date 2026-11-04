@@ -173,7 +173,12 @@ class SigninEngine:
         """调用专用处理器并落库。★ 请求同样过配额闸门（闸门拒了就不发）。"""
         ctx = self._site_ctx(site)
         hname = getattr(handler, "__name__", "handler")
-        allow, why = self._budget_allow(site_id)
+        # ★ 19.10.47：配额按**动作**分桶。旧版一律用 "signin" 桶 → 当天签到已用满 2 次
+        #   （``KIND_DAY_CAP = {"signin": 2}``）时，连**保活登录**都会被拒成「未执行」，
+        #   于是登录结果永远停在上一次的旧记录上（YemaPT 曾因此看不出 cookie 失效）。
+        #   登录走 "login" 桶：该 kind 未设日上限，且与签到互不挤占。
+        _cap_kind = "signin" if kind == "sign" else "login"
+        allow, why = self._budget_allow(site_id, _cap_kind)
         if not allow:
             return self._store_result(kind, site_id, name, False, f"[专用] 未执行：{why}", skipped=True, handler=hname)
         try:
@@ -181,7 +186,7 @@ class SigninEngine:
             ok, msg = fn(ctx)
         except Exception as err:  # noqa: BLE001
             ok, msg = False, f"{'签到' if kind == 'sign' else '模拟登录'}失败：{err}"
-        self._budget_spend(site_id)
+        self._budget_spend(site_id, _cap_kind)
         msg = str(msg or ("成功" if ok else "失败"))
         return self._store_result(kind, site_id, name, bool(ok), f"[专用] {msg}", handler=hname)
 
@@ -514,6 +519,7 @@ class SigninEngine:
 
     # ---------------------------------------------------------------- 登录
     def login(self, site_id: Any) -> Dict[str, Any]:
+        """对单个站点执行登录，返回 ``{ok, message, ...}``；站点不存在时直接返回失败。"""
         site = self._site(site_id)
         name = _site_name(site, site_id)
         if not site:
@@ -527,6 +533,14 @@ class SigninEngine:
             h is None or bool(getattr(h, "api_no_signin", False))
         ):
             return self._store_result("login", site_id, name, False, "不支持登录（API 鉴权站）", skipped=True, na=True)
+        # ★ 19.10.47：**API 鉴权站 + 有专用处理器**（YemaPT）—— 登录判定必须交给处理器。
+        #   原因：这类站的 ``user_bar()`` 走的是 **apikey** 通道（``/openApi``），它只能证明
+        #   apikey 有效，**与 cookie 毫无关系**；而签到走的是 **cookie** 通道（``/api/consumer/*``），
+        #   两套身份互斥。旧版拿 user_bar 的 ``ok/bonus`` 就判「模拟登录成功」，
+        #   结果 cookie 失效三天（10-28~10-30 签到全 FAIL）界面一直全绿，没人发现。
+        #   处理器的 ``login()`` 探的正是 cookie 通道 → 那里才可能如实报失效。
+        if h is not None and (self._collect_is_api(site) or self._is_api_site(site)):
+            return self._run_handler("login", site, h, site_id, name)
         started = time.time()
         # ★ 3.38.0「顺便」：用户栏页（index.php）本来每轮就被站点实时抓（kind=live），
         #   这里直接读同一份事实 → 保活零额外 PV；TTL 内没有才真抓一次（同一 URL，仍只 1 次）。

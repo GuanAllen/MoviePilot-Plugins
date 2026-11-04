@@ -2,28 +2,36 @@
 """魔流 · tags —— 标签账本（状态标签 + 文件组引用计数）。
 
 （由原 `__init__.py` 拆分为 mixin，逐字搬运，行为不变。）
+
+★ 19.10.28：``get_tag_model`` 的动作分发改成表驱动 —— 92 个别名集中在
+  ``_ACT_ALIASES`` / ``TAG_ACTIONS``，落到 40 个 ``_tag_act_*`` 处理函数；
+  原先是一个 443 行、37 个平铺 ``if act ==`` 的长链。
 """
 
 import re
 import threading
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple
 
 
 from app.schemas import Response
 
 from ..fingerprint import fingerprint
+from .. import cacheops
+from .. import shared                # ★ 19.10.25 进程级共享槽（跨热重载单例）
+from ..dutyops import assign, claim_hashes, free_for, release
+from ..dutyreg import duty_manual_states, duty_task_spec
 from ..models import (
     MagicFlowTagStatePayload,
 )
 from ..tags import (
     ASSET_TAGS,
+    duty_assign,
     DUTY_STATES,
     EXTERNAL_TAG,
     KEEP_FOREIGN_TAGS,
     LEASE_TTL,
-    duty_of,
     identity_of,
     is_asset_tags,
     is_external_candidate,
@@ -33,6 +41,7 @@ from ..tags import (
     MARK_REUSE,
     STATE_BONUS,
     STATE_BRUSH,
+    STATE_CLAIM,
     STATE_HR,
     STATE_MUSIC,
     STATE_ONDEMAND,
@@ -66,6 +75,25 @@ from ..common import (
     _torrent_hash,
 )
 from ..ledger import ResourceLedgerStore, SeedLedgerStore, get_backend
+
+
+class TagReq(NamedTuple):
+    """`get_tag_model` 的一次调用：动作名 + 全部入参 + 两个账本句柄。
+
+    38 个 `_tag_act_*` 都收这个对象，参数名与 API 入参一一对应；`act` 已 lower/strip，
+    `store`/`groups` 是分发器取好的账本单例（处理函数只读用，别再各取一次）。
+    """
+    act: str
+    hash: Any
+    state: str
+    site: str
+    limit: Any
+    confirm: Any
+    reason: str
+    tids: Any
+    adopt_reseed: Any
+    store: Any
+    groups: Any
 
 
 class TagsMixin:
@@ -115,15 +143,18 @@ class TagsMixin:
                 pass
         if not cand:
             return hashes
-        now = time.time()
+        # ★ 19.10.21：过期判定 + 校验键改用 cacheops 信封（原来手写
+        #   ``now - ts < TTL and hit["key"] == key``）。空结果**故意不复用**：刚下完
+        #   的历史若被缓存成「不在历史里」，资产保护会迟到 120s（可能误删），
+        #   故 ``not hist`` 一律重算 —— 与 dtier 铁律「不缓存空/失败结果」同向。
         cache = getattr(self, "_asset_hist_cache", None)
         if cache is None:
             cache = self._asset_hist_cache = {}
         uniq = sorted(set(cand))
         key = str(len(uniq)) + ":" + ":".join(uniq[:200])
-        hit = cache.get("__data__")
-        if not (hit and (now - float(hit.get("ts", 0))) < MEDIA_ASSET_HISTORY_TTL and hit.get("key") == key):
-            hist: Set[str] = set()
+        hist = cacheops.value(cache.get("__data__"), MEDIA_ASSET_HISTORY_TTL, key=key)
+        if not hist:
+            hist = set()
             try:
                 from app.db.oper.downloadhistory import DownloadHistoryOper  # noqa: WPS433
                 recs = DownloadHistoryOper().get_by_hashes(uniq) or {}
@@ -132,36 +163,37 @@ class TagsMixin:
                         hist.add(str(h).lower())
             except Exception as err:
                 self._dbg(f"下载历史查询失败(忽略): {err}")
-            hit = cache["__data__"] = {"ts": time.time(), "key": key, "hist": hist}
-        hashes |= set(hit.get("hist") or set())
+            cache["__data__"] = cacheops.entry(hist, key=key)
+        hashes |= set(hist or set())
         # 只统计「本任务托管范围内」的资产(避免把无关 hash 也算进去)
         return {h for h in hashes if h in set(uniq)}
 
-    def _tag_snapshot_ctx(self):
-        """快照缓存 + 锁（惰性初始化，两个取快照入口共用）。"""
-        cache = getattr(self, "_tag_snapshot_cache", None)
-        lock = getattr(self, "_tag_snapshot_lock", None)
-        if cache is None or lock is None:
-            cache = self._tag_snapshot_cache = {}
-            lock = self._tag_snapshot_lock = threading.Lock()
-        return cache, lock
+    def _tag_snapshot_box(self) -> cacheops.SingleFlight:
+        """标签快照容器：TTL + 按下载器单飞 + stale 宽限。
 
-    def _tag_snapshot_fetch(self, downloader_name: str = "qbittorrent") -> Dict[str, List[Any]]:
-        """真正去下载器拉一次全量标签快照（单飞：同一下载器并发只拉一次），并写缓存。"""
-        cache, lock = self._tag_snapshot_ctx()
-        with lock:
-            hit = cache.get(downloader_name)
-            if hit and (time.time() - float(hit.get("ts", 0))) < TAG_SNAPSHOT_TTL:
-                return hit.get("groups") or {}
-            groups: Dict[str, List[Any]] = {}
-            try:
-                dl = self._get_downloader(downloader_name)
-                if dl and dl.is_available:
-                    groups, _err = dl.get_torrents_by_tag()
-            except Exception as err:
-                self._log(f"标签快照获取失败: {err}", "warning")
-            cache[downloader_name] = {"ts": time.time(), "groups": groups}
-            return groups
+        ★ 19.10.26：原先是「裸 ``dict`` 缓存 + 一把全局锁」手写的单飞。换成
+          ``SingleFlight`` 后是**每键一把锁**（不同下载器不再互相等），且有容量上限。
+        ★ **值不进冷层**：装的是 ``Dict[str, List[TorrentInfo]]``，不可 JSON 化，
+          ``json.dumps(default=str)`` 会把对象静默变成字符串 repr —— 语法全绿、业务变错
+          （见 ``docs/ADR-0001-cacheops.md`` 的反例）。
+        """
+        box = getattr(self, "_tag_snapshot_cache", None)
+        if not isinstance(box, cacheops.SingleFlight):
+            box = self._tag_snapshot_cache = cacheops.SingleFlight(
+                "tags.snapshot", ttl=TAG_SNAPSHOT_TTL, max_entries=8,
+                stale_max=TAG_SNAPSHOT_STALE_MAX)
+        return box
+
+    def _tag_snapshot_pull(self, downloader_name: str = "qbittorrent") -> Dict[str, List[Any]]:
+        """真去下载器拉一次「全部种子按标签分组」（一次 torrents_info，供所有任务共用）。"""
+        groups: Dict[str, List[Any]] = {}
+        try:
+            dl = self._get_downloader(downloader_name)
+            if dl and dl.is_available:
+                groups, _err = dl.get_torrents_by_tag()
+        except Exception as err:  # noqa: BLE001
+            self._log(f"标签快照获取失败: {err}", "warning")
+        return groups
 
     def _tag_snapshot(self, downloader_name: str = "qbittorrent") -> Dict[str, List[Any]]:
         """下载器「全部种子按标签分组」快照（阻塞式：需要最新值时用）。
@@ -172,11 +204,8 @@ class TagsMixin:
         「要拿它做决定/写账本」的路径走这里（宁慢一刻，不拿旧数据做决策）。
         纯展示路径请用 `_tag_snapshot_view`。
         """
-        cache, _lock = self._tag_snapshot_ctx()
-        hit = cache.get(downloader_name)
-        if hit and (time.time() - float(hit.get("ts", 0))) < TAG_SNAPSHOT_TTL:
-            return hit.get("groups") or {}
-        return self._tag_snapshot_fetch(downloader_name)
+        box = self._tag_snapshot_box()
+        return box.run(downloader_name, lambda: self._tag_snapshot_pull(downloader_name)) or {}
 
     def _tag_snapshot_view(self, downloader_name: str = "qbittorrent") -> Dict[str, List[Any]]:
         """展示用快照：**stale-while-revalidate**（过期先返回旧值 + 后台单飞刷新）。
@@ -184,38 +213,40 @@ class TagsMixin:
         只有「完全没有缓存」或「过期太久（> TAG_SNAPSHOT_STALE_MAX）」才阻塞。
         总览 / 任务列表这类纯展示路径走这里 —— 界面不再为 qB 全量拉取买单。
         """
-        cache, _lock = self._tag_snapshot_ctx()
-        hit = cache.get(downloader_name)
-        if hit:
-            age = time.time() - float(hit.get("ts", 0))
-            if age < TAG_SNAPSHOT_TTL:
-                return hit.get("groups") or {}
-            if age < TAG_SNAPSHOT_STALE_MAX:
-                self._spawn_tag_snapshot_refresh(downloader_name)
-                return hit.get("groups") or {}
-        return self._tag_snapshot_fetch(downloader_name)
+        box = self._tag_snapshot_box()
+        val, fresh = box.peek(downloader_name)
+        if fresh:
+            return val or {}
+        if val is not None:                     # 陈旧但还在宽限内：先给旧值，后台补
+            self._spawn_tag_snapshot_refresh(downloader_name)
+            return val or {}
+        return box.run(downloader_name, lambda: self._tag_snapshot_pull(downloader_name)) or {}
+
+    def _tag_snapshot_slots(self) -> cacheops.Inflight:
+        """后台刷新名额：同一下载器同时只跑一个刷新线程。"""
+        box = getattr(self, "_tag_snapshot_refreshing", None)
+        if not isinstance(box, cacheops.Inflight):
+            box = self._tag_snapshot_refreshing = cacheops.Inflight("tags.snapshot.refresh", max_entries=8)
+        return box
 
     def _spawn_tag_snapshot_refresh(self, downloader_name: str = "qbittorrent") -> None:
         """后台单飞刷新标签快照（同一个下载器同时只跑一个刷新线程）。"""
-        busy = getattr(self, "_tag_snapshot_refreshing", None)
-        if busy is None:
-            busy = self._tag_snapshot_refreshing = set()
-        if downloader_name in busy:
+        slots = self._tag_snapshot_slots()
+        if not slots.try_enter(downloader_name):
             return
-        busy.add(downloader_name)
 
         def _worker() -> None:
             try:
-                self._tag_snapshot_fetch(downloader_name)
+                self._tag_snapshot(downloader_name)
             except Exception as err:  # noqa: BLE001
                 self._log(f"标签快照后台刷新失败: {err}", "warning")
             finally:
-                busy.discard(downloader_name)
+                slots.leave(downloader_name)
 
         try:
             threading.Thread(target=_worker, name=f"mf-tagsnap-{downloader_name}", daemon=True).start()
         except Exception:  # noqa: BLE001
-            busy.discard(downloader_name)
+            slots.leave(downloader_name)
 
     # ---------------------------------------------------------
     # 标签模型（3.13.0）
@@ -230,34 +261,19 @@ class TagsMixin:
         return ResourceLedgerStore(get_backend(self), log=self._log)
 
     def _tag_state(self) -> SeedLedgerStore:
-        """状态账本（真值源）。★ 进程级单例，与 ``_site_rules`` 同款防热重载整表覆盖。"""
+        """状态账本（真值源）。★ 进程级单例，与 ``_site_rules`` 同款防热重载整表覆盖。
+
+        cls 校验挡的是「热重载后类是新的、单例还是旧类实例」——旧实例没有本次新增的方法，
+        ``AttributeError`` 会被 ``init_plugin`` 的 try 吞掉 → 功能静默失效，所以不匹配就重建
+        （账本重建会从 5 张表重新加载，安全）。
+        """
         obj = getattr(self, "_tag_state_obj", None)
         if obj is not None:
             return obj
         try:
-            import sys as _sys
-            import types as _types
-
-            _key = "__magicflow_shared__"
-            mod = _sys.modules.get(_key)
-            if mod is None:
-                mod = _types.ModuleType(_key)
-                _sys.modules[_key] = mod
-            # ★ 幂等补齐所有共享属性：任一入口先建了模块，都不能少了 lock
-            #   （踩过：__init__ 只建 instances/counters → persistence.__new__ 里 sh.lock 直接 AttributeError，插件加载失败）
-            for _attr, _factory in (("instances", dict), ("counters", dict), ("lock", threading.Lock)):
-                if not hasattr(mod, _attr):
-                    setattr(mod, _attr, _factory())
-            obj = mod.instances.get("seed_ledger")
-            # ★ 热重载后模块里是「新的类」，但单例还是「旧类的实例」→ 方法可能缺失。
-            #   校验过类型，不匹配就重建（否则新加的方法永远 AttributeError）。
-            if obj is not None and not isinstance(obj, SeedLedgerStore):
-                obj = None
-            if obj is None:
-                obj = self._new_tag_state()
-                mod.instances["seed_ledger"] = obj
+            obj = shared.singleton("seed_ledger", self._new_tag_state, SeedLedgerStore)
         except Exception:  # noqa: BLE001
-            obj = self._new_tag_state()
+            obj = self._new_tag_state()     # 共享槽不可用时至少本实例能用（同旧版兜底）
         self._tag_state_obj = obj
         return obj
 
@@ -267,25 +283,7 @@ class TagsMixin:
         if obj is not None:
             return obj
         try:
-            import sys as _sys
-            import types as _types
-
-            _key = "__magicflow_shared__"
-            mod = _sys.modules.get(_key)
-            if mod is None:
-                mod = _types.ModuleType(_key)
-                _sys.modules[_key] = mod
-            # ★ 幂等补齐所有共享属性：任一入口先建了模块，都不能少了 lock
-            #   （踩过：__init__ 只建 instances/counters → persistence.__new__ 里 sh.lock 直接 AttributeError，插件加载失败）
-            for _attr, _factory in (("instances", dict), ("counters", dict), ("lock", threading.Lock)):
-                if not hasattr(mod, _attr):
-                    setattr(mod, _attr, _factory())
-            obj = mod.instances.get("resource_ledger")
-            if obj is not None and not isinstance(obj, ResourceLedgerStore):
-                obj = None
-            if obj is None:
-                obj = self._new_tag_groups()
-                mod.instances["resource_ledger"] = obj
+            obj = shared.singleton("resource_ledger", self._new_tag_groups, ResourceLedgerStore)
         except Exception:  # noqa: BLE001
             obj = self._new_tag_groups()
         self._tag_groups_obj = obj
@@ -343,15 +341,31 @@ class TagsMixin:
         _now = time.time()
         fn = getattr(downloader, "replace_torrent_tags", None)
         snap = self._tag_all_torrents()
+        # ★ 19.10.11：**认领名单硬跳过** —— 认领是站点侧承诺（不做种就违约），
+        #   比任务的「同站纳管/补标签」优先。只看租约不够：账本被别的路径清过 taken_by
+        #   时租约就形同虚设，任务会把 `魔流-<站>-认领` 抢回 `魔流-<站>-魔力`（2026-10-28 实证）。
+        _claim_hs = claim_hashes(self)
+        _skip_why: Dict[str, int] = {}
         for h in hs:
             hh = str(h or "").strip().lower()
             if not hh:
                 continue
-            # ★ 归属唯一：别人持有**未过期**租约的种不抢（显式「交棒/批量转移」走另一条路）
-            _rec0 = store.get(hh) or {}
-            _own0 = str(_rec0.get("taken_by") or "")
-            if _own0 and _own0 != _tid and float(_rec0.get("lease_until") or 0) > _now:
+            if hh in _claim_hs:
                 skipped += 1
+                _skip_why["认领名单"] = int(_skip_why.get("认领名单") or 0) + 1
+                continue
+            _rec0 = store.get(hh) or {}
+            # ★ 19.10.12：占位口径**只看注册表**（``dutyops.free_for`` → ``dutyreg``）——
+            #   真任务岗（刷流/魔力）是绩效岗，``poach=False`` ⇒ 只能招**没岗位**的种：
+            #   · 别人（认领/保种/别的任务）在岗 → 不抢；
+            #   · 未登记任务（动态 task_id）的租约未到期 → 也算有人，不抢；
+            #   · 静默托管/辅种不算占岗（静默=没岗位）→ 可以招。
+            #   加岗位时**不要**回来补「跳过它」：在 ``dutyreg.DUTIES`` 里写 poach 就够。
+            _free, _why = free_for(_rec0, duty_task_spec(state) or _tid, now=_now,
+                                   taker_id=_tid)
+            if not _free:
+                skipped += 1
+                _skip_why[_why] = int(_skip_why.get(_why) or 0) + 1
                 continue
             live = snap.get(hh)
             cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
@@ -364,11 +378,22 @@ class TagsMixin:
             target = tag_for(target_site, state)
             new_tags = retag(cur, site=target_site, state=state, sub=_ident) \
                 if cur else [tag_for(target_site, STATE_SILENT, _ident), target]
+            # ★ 19.10.40：**先占账本，再改标签**（旧顺序反了）。
+            #   账本是归属的唯一真值源，``claim`` 才是「这个种归谁」的闸门 ——
+            #   它会拒绝「已是刷流/魔力且属于别的任务」的种。旧实现先改 qB 标签、
+            #   再 claim（返回值不查）、最后无条件 ``put`` 覆盖 → claim 的 False 被
+            #   put 彻底淹没，同站「刷流 × 魔力」两个任务每轮把对方整批种抢走，
+            #   前端托管数在 2 ↔ 20 之间来回跳（2026-10-30 YemaPT 实证 179 次）。
+            _claim_ok, _claim_why = True, ""
             try:
-                done = fn(hh, new_tags) if callable(fn) else downloader.set_torrent_tags(hh, new_tags)
+                _claim_ok, _claim_why = store.claim(hh, _tid, state=state, site=target_site)
             except Exception:  # noqa: BLE001
-                done = False
-            if not done:
+                # claim 自身不可用（后端异常）→ 不阻断，仍走 put 兜底（旧行为）
+                _claim_ok, _claim_why = True, ""
+            if not _claim_ok:
+                skipped += 1
+                _ck = str(_claim_why or "占用拒绝")[:24]
+                _skip_why[_ck] = int(_skip_why.get(_ck) or 0) + 1
                 continue
             rec = {
                 "site": target_site, "state": state, "sub": _ident,
@@ -378,14 +403,27 @@ class TagsMixin:
                 "title": str(getattr(live, "title", "") or "") if live is not None else "",
                 "size_gb": float(getattr(live, "size_gb", 0) or 0) if live is not None else 0.0,
             }
+            # 立刻落「归属任务名」：``mf_seed.task_id`` 是唯一由 ``rec["task"]`` 推出来的列，
+            # claim 只管 state/taken_by 不碰 task —— 不在这里补写，读回时会按**旧任务名**
+            # 反推职务，账本与标签各说一套。
             try:
-                store.claim(hh, str(getattr(task, "id", "") or ""), state=state, site=target_site)
                 store.put(hh, rec)
             except Exception:  # noqa: BLE001
+                pass
+            try:
+                done = fn(hh, new_tags) if callable(fn) else downloader.set_torrent_tags(hh, new_tags)
+            except Exception:  # noqa: BLE001
+                done = False
+            if not done:
+                # 账本已占但标签没写进去 → 退回静默，不留「账本在岗 / qB 无标签」的半态
+                # （否则该种既不在本任务托管集里，又挡住了别的任务来招）
                 try:
-                    store.put(hh, rec)
+                    store.release(hh, task_id=_tid)
                 except Exception:  # noqa: BLE001
                     pass
+                skipped += 1
+                _skip_why["标签写入失败"] = int(_skip_why.get("标签写入失败") or 0) + 1
+                continue
             ok_n += 1
             if state == STATE_SILENT:
                 # ★ 13.0.2：直接归入静默池 → 入池即判（没下完的当场删）
@@ -396,7 +434,12 @@ class TagsMixin:
         if ok_n and reason:
             self._dbg(f"标签模型:任务「{getattr(task, 'name', '')}」接管 {ok_n} 个 → {target}（{reason}）")
         if skipped:
-            self._dbg(f"标签模型:任务「{getattr(task, 'name', '')}」跳过 {skipped} 个（归别人）")
+            _why_s = "、".join(f"{k}×{v}" for k, v in sorted(
+                _skip_why.items(), key=lambda kv: -kv[1])[:3]) or "归别人"
+            # ★ 19.10.40：跳过原因升到 INFO —— 同站两任务互抢时「纳管 N 个却 0 个接管」
+            #   只有这条能解释清楚（旧行为只在 _dbg 里，排障时等于没有）。
+            self._log(f"标签模型:任务「{getattr(task, 'name', '')}」"
+                      f"跳过 {skipped} 个（{_why_s}）", "info")
         return ok_n
 
     def _tag_ledger_reconcile(
@@ -619,73 +662,17 @@ class TagsMixin:
             self._dbg(f"标签模型:任务「{getattr(task, 'name', '')}」退下 {n} 个（{reason}）")
         return n
 
-
     def _music_assign(self, hashes: Any, *, site: str = "", sub: str = "",
                       reason: str = "") -> int:
-        """★ 19.9.0：音乐「在途」挂 ``__music__`` 伪任务（职务=音乐）。
+        """★ 19.10.11：薄委托 → ``common.duty_assign(kind="music")``。
 
-        Master 2026-10-25：「音乐应该是**伪任务** —— 下载时带任务标签，完成后摘标签」。
-        与点播 15.8.4 同构：贴职务标签（身份轴 ``魔流-<站>-静默-<子类>`` 永久保留）
-        + 写账本 ``taken_by=__music__``。效果：账本 ``state=音乐`` ≠ 静默 ⇒
-        静默池的**暂停闸 / 清理闸**天然跳过 —— 不再靠 15.8.11「音乐线 progress<1
-        不暂停」那条例外打补丁（那是当时没有在途职务的权宜）。
-        **不动下载状态**（正在下，不 pause、不 force_start）。
-        幂等：账本已挂 ``__music__`` **且** qB 职务标签在位 → 跳过。
+        音乐/点播是**同一条流水线**（搜→下→挂职务→入库），只差媒体 type ——
+        挂职务的唯一实现已收归 ``common.duty_assign``，差异全在 ``common.MEDIA_KINDS``。
+        本方法名保留（调用点与测试不动），仅作 ``kind="music"`` 的别名。
         """
-        hs = [hashes] if isinstance(hashes, str) else list(hashes or [])
-        hs = [str(h or "").strip().lower() for h in hs if str(h or "").strip()]
-        if not hs:
-            return 0
-        try:
-            downloader = self._get_downloader("qbittorrent")
-        except Exception:  # noqa: BLE001
-            downloader = None
-        if downloader is None or not getattr(downloader, "is_available", False):
-            return 0
-        try:
-            store = self._tag_state()
-            snap = self._tag_all_torrents()
-        except Exception as err:  # noqa: BLE001
-            self._log(f"音乐线:挂伪任务取账本失败:{err}", "warning")
-            return 0
-        fn = getattr(downloader, "replace_torrent_tags", None)
-        n = 0
-        _now = time.time()
-        for h in hs:
-            hh = str(h or "").strip().lower()
-            _rec0 = store.get(hh) or {}
-            live = (snap or {}).get(hh)
-            cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
-            _i_site, _i_sub = identity_of(cur)
-            _sub = str(sub or "") or str(_rec0.get("sub") or "") or _i_sub or SUB_RESOURCE
-            _site = str(site or "") or str(_rec0.get("site") or "") or _i_site \
-                or self._torrent_site_name(cur, "")
-            if str(_rec0.get("taken_by") or "") == MUSIC_TASK_ID \
-                    and duty_of(cur)[1] == STATE_MUSIC:
-                continue  # 已挂音乐宿主且标签在位
-            if cur:
-                new_tags = retag(cur, site=_site, state=STATE_MUSIC, sub=_sub)
-            else:
-                new_tags = [tag_for(_site, STATE_SILENT, _sub), tag_for(_site, STATE_MUSIC)]
-            try:
-                done = fn(hh, new_tags) if callable(fn) else downloader.set_torrent_tags(hh, new_tags)
-            except Exception:  # noqa: BLE001
-                done = False
-            if not done:
-                continue
-            try:
-                store.put(hh, {
-                    "site": _site, "state": STATE_MUSIC, "sub": _sub,
-                    "taken_by": MUSIC_TASK_ID, "task": MUSIC_TASK_NAME,
-                    "taken_at": _now, "lease_until": 0,
-                    "title": str(getattr(live, "title", "") or "") if live is not None else "",
-                })
-            except Exception:  # noqa: BLE001
-                pass
-            n += 1
-        if n:
-            self._log(f"音乐线:挂 __music__ {n} 个（{reason or '在途'}）")
-        return n
+        return duty_assign(self, hashes, kind="music",
+                           task_id=MUSIC_TASK_ID, task_name=MUSIC_TASK_NAME,
+                           site=site, sub=sub, reason=reason)
 
     def _music_assign_pending(self, *, apply: bool = True, limit: int = 0) -> Dict[str, Any]:
         """★ 19.9.0：音乐在途**补挂**（防漏）—— qB 里进度<1 的音乐种、账本还不是「音乐」→ 补挂。
@@ -809,7 +796,6 @@ class TagsMixin:
                 pass
         return rep
 
-
     def _manual_hold(self, hashes: Any, *, apply: bool = True,
                      reason: str = "") -> Dict[str, Any]:
         """★ 19.9.1：把指定种挂到「手动保种」伪任务（职务=保种）—— 下完也继续做种。
@@ -830,116 +816,75 @@ class TagsMixin:
         hs = [str(h or "").strip().lower() for h in hs if str(h or "").strip()]
         if not hs:
             return {**rep, "ok": False, "error": "缺少 hash"}
-        try:
-            downloader = self._get_downloader("qbittorrent")
-        except Exception:  # noqa: BLE001
-            downloader = None
-        try:
-            store = self._tag_state()
-            snap = self._tag_all_torrents()
-        except Exception as err:  # noqa: BLE001
-            return {**rep, "ok": False, "error": str(err)}
-        fn = getattr(downloader, "replace_torrent_tags", None) if downloader is not None else None
-        _now = time.time()
-        for hh in hs:
-            live = (snap or {}).get(hh)
-            if live is None:
-                rep["skipped"] = int(rep["skipped"]) + 1
-                continue
-            cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])]
-            _i_site, _i_sub = identity_of(cur)
-            rec0 = store.get(hh) or {}
-            _site = str(rec0.get("site") or "") or _i_site or self._torrent_site_name(cur, "")
-            _sub = str(rec0.get("sub") or "") or _i_sub or SUB_RESOURCE
-            if str(rec0.get("taken_by") or "") == KEEP_TASK_ID and duty_of(cur)[1] == STATE_HR:
-                continue  # 已挂手动保种且标签在位
-            rep["candidates"] = int(rep["candidates"]) + 1
-            if len(rep["samples"]) < 10:
-                rep["samples"].append({"hash": hh[:12], "site": _site, "sub": _sub})
-            if not apply:
-                continue
-            if cur:
-                new_tags = retag(cur, site=_site, state=STATE_HR, sub=_sub)
-            else:
-                new_tags = [tag_for(_site, STATE_SILENT, _sub), tag_for(_site, STATE_HR)]
+        # ★ 19.10.12：流程本体在 ``dutyops.assign``（与 H&R 保种 / 认领 / 媒体线共用）。
+        #   人工点名 = 特殊岗位（poach=True, 95）→ 只在「有人占着且优先级更高」时让位；
+        #   这也是唯一保留 ``require_live=True`` 的地方：人工点名的种必须真在 qB 里。
+        _r = assign(self, hs, taker=KEEP_TASK_ID, state=STATE_HR, name=KEEP_TASK_NAME,
+                    default_sub=SUB_RESOURCE, apply=apply, require_live=True,
+                    resume_when="all")
+        rep["candidates"] = int(_r.get("candidates") or 0)
+        rep["held"] = int(_r.get("adopted") or 0)
+        rep["skipped"] = int(_r.get("skipped") or 0) + int(_r.get("blocked") or 0)
+        rep["failed"] = int(_r.get("failed") or 0)
+        rep["samples"] = list(_r.get("samples") or [])
+        if _r.get("error"):
+            return {**rep, "ok": False, "error": str(_r["error"])}
+        if apply and _r.get("resume"):
+            # 挂上即做种：人工点名就是「别停」，逐个拉起（失败不影响纳管结果）
+            #
+            # ★ 19.10.41：拉起结果**必须记账**。旧写法 `_fs([hh])` 把返回值
+            #   `(成功数, 错误)` 直接丢掉、异常也 `pass` —— 于是「挂上去却一直暂停」
+            #   在接口上完全无痕（2026-10-30 实测 18 个手动保种的种全是 pausedUP，
+            #   调 action=hold 回「挂保种 0 个」，看不出到底拉没拉起、为什么没拉起）。
+            rep["resumed"] = 0
+            rep["resume_failed"] = []
             try:
-                done = fn(hh, new_tags) if callable(fn) else (
-                    downloader.set_torrent_tags(hh, new_tags) if downloader is not None else False)
+                _dl = self._get_downloader("qbittorrent")
             except Exception:  # noqa: BLE001
-                done = False
-            if not done:
-                rep["failed"] = int(rep["failed"]) + 1
-                continue
-            try:
-                store.put(hh, {
-                    "site": _site, "state": STATE_HR, "sub": _sub,
-                    "taken_by": KEEP_TASK_ID, "task": KEEP_TASK_NAME,
-                    "taken_at": _now, "lease_until": 0,
-                    "title": str(getattr(live, "title", "") or ""),
-                })
-            except Exception:  # noqa: BLE001
-                pass
-            if downloader is not None:
+                _dl = None
+            for hh in _r["resume"]:
                 try:
-                    _fs = getattr(downloader, "force_start_torrents", None)
+                    _fs = getattr(_dl, "force_start_torrents", None)
                     if callable(_fs):
-                        _fs([hh])
+                        _n, _err = _fs([hh]) or (0, None)
                     else:
-                        downloader.resume_torrents([hh])
-                except Exception:  # noqa: BLE001
-                    pass
-            rep["held"] = int(rep["held"]) + 1
+                        _n, _err = _dl.resume_torrents([hh]) or (0, None)
+                    if int(_n or 0) > 0:
+                        rep["resumed"] = int(rep["resumed"]) + 1
+                    else:
+                        rep["resume_failed"].append(
+                            {"hash": hh[:12], "error": str(_err or "下载器未确认")})
+                except Exception as e:  # noqa: BLE001
+                    rep["resume_failed"].append({"hash": hh[:12], "error": str(e)})
+            # 失败原因经 `rep` 一路上到 `_tag_act_hold` 的 message（前端 notify 直接可见），
+            # 这里不再单独打日志 —— 本方法只有接口一个调用点，重复日志只会把「静默失败」
+            # 换成「日志噪音」，观测价值由返回体承担。
         if rep["held"]:
             self._log(f"手动保种:挂 {rep['held']} 个（{reason or '接口'}）")
         return rep
 
     def _manual_release(self, hashes: Any, *, apply: bool = True) -> Dict[str, Any]:
-        """★ 19.9.1：解除「手动保种」→ 归还静默池（职务轴摘掉、身份轴保留；默认干跑）。"""
+        """★ 19.9.1：解除「手动保种」→ 归还静默池（职务轴摘掉、身份轴保留；默认干跑）。
+
+        ★ 19.10.12：流程本体在 ``dutyops.release``（与 H&R 结清、认领退出共用）。
+        只放 ``taken_by=__keep__`` 的种（不 ``allow_untaken``：手动保种是人工点名，
+        账本没有占位的就不该被这里动）。**不在这里 pause** —— 归还静默池后由
+        ``_silent_pause_gate`` 统一收敛（和原来一致）。
+        """
         rep: Dict[str, Any] = {"ok": True, "applied": bool(apply), "candidates": 0,
                                "released": 0, "skipped": 0, "failed": 0, "samples": []}
         hs = [hashes] if isinstance(hashes, str) else list(hashes or [])
         hs = [str(h or "").strip().lower() for h in hs if str(h or "").strip()]
         if not hs:
             return {**rep, "ok": False, "error": "缺少 hash"}
-        try:
-            downloader = self._get_downloader("qbittorrent")
-        except Exception:  # noqa: BLE001
-            downloader = None
-        try:
-            store = self._tag_state()
-            snap = self._tag_all_torrents()
-        except Exception as err:  # noqa: BLE001
-            return {**rep, "ok": False, "error": str(err)}
-        fn = getattr(downloader, "replace_torrent_tags", None) if downloader is not None else None
-        for hh in hs:
-            rec = (store.items() or {}).get(hh) or {}
-            if str(rec.get("taken_by") or "") != KEEP_TASK_ID:
-                rep["skipped"] = int(rep["skipped"]) + 1
-                continue
-            rep["candidates"] = int(rep["candidates"]) + 1
-            if not apply:
-                continue
-            live = (snap or {}).get(hh)
-            cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
-            _i_site, _i_sub = identity_of(cur)
-            _site = str(rec.get("site") or "") or _i_site
-            _sub = str(rec.get("sub") or "") or _i_sub or SUB_RESOURCE
-            if cur:
-                new_tags = retag(cur, site=_site, state=STATE_SILENT, sub=_sub)
-                try:
-                    done = fn(hh, new_tags) if callable(fn) else (
-                        downloader.set_torrent_tags(hh, new_tags) if downloader is not None else False)
-                except Exception:  # noqa: BLE001
-                    done = False
-                if not done:
-                    rep["failed"] = int(rep["failed"]) + 1
-                    continue
-            try:
-                store.release(hh, task_id=KEEP_TASK_ID)
-            except Exception:  # noqa: BLE001
-                rep["failed"] = int(rep["failed"]) + 1
-                continue
-            rep["released"] = int(rep["released"]) + 1
+        _r = release(self, hs, taker=KEEP_TASK_ID, apply=apply)
+        if _r.get("error"):
+            return {**rep, "ok": False, "error": str(_r["error"])}
+        rep["candidates"] = int(_r.get("candidates") or 0)
+        rep["released"] = int(_r.get("released") or 0)
+        rep["skipped"] = int(_r.get("skipped") or 0)
+        rep["failed"] = int(_r.get("failed") or 0)
+        rep["samples"] = list(_r.get("samples") or [])
         return rep
 
     def _music_asset_pin(self, *, apply: bool = False, limit: int = 0) -> Dict[str, Any]:
@@ -1043,7 +988,6 @@ class TagsMixin:
             rep["pinned"] = int(rep["pinned"]) + 1
         return rep
 
-
     def _tag_site_names(self) -> List[str]:
         """已知站点短名（用于解析 ``魔流-<站点>-<状态>`` 里带连字符的站点）。"""
         names: List[str] = []
@@ -1096,7 +1040,6 @@ class TagsMixin:
                 if h:
                     out[h] = t
         return out
-
 
     def _mp_source_promote(self) -> Dict[str, Any]:
         """★ MP 来源的种若被归成「普通」→ 提为「资源」。
@@ -1749,430 +1692,647 @@ class TagsMixin:
         旧默认 20 会把「不限」暗中变成「限 20」——`hrbills_void_reuse` 等查询会**静默截断**
         （曾致 dry-run 只报 20、漏掉 226 条，误判为「漏检 bug」）。需要限额的展示动作各自
         自带兜底（如 ``list`` 用 ``limit or 20``、``resources`` 用 ``50``）。
+
+        ★ 19.10.28：动作改成**表驱动**（`TAG_ACTIONS`：92 个别名 → 40 个 `_tag_act_*`）。
+        原先是一个 443 行、37 个平铺 `if act ==` 的长链，别名散在条件里、加动作只能往后追加；
+        现在别名集中一张表，表里存**函数对象**而不是名字 —— 写错名字 import 时就炸。
+        各处理函数体是原分支体逐字搬运（唯一改动：参数 `limit` → `req.limit`），行为未变。
         """
         self._tag_sync_names()
-        store = self._tag_state()
-        groups = self._tag_groups()
-        act = str(action or "status").strip().lower()
-        if act == "state":
-            h = str(hash or "").strip().lower()
+        req = TagReq(
+            act=str(action or "status").strip().lower(),
+            hash=hash, state=state, site=site, limit=limit,
+            confirm=confirm, reason=reason, tids=tids, adopt_reseed=adopt_reseed,
+            store=self._tag_state(), groups=self._tag_groups(),
+        )
+        fn = TAG_ACTIONS.get(req.act) or TAG_ACTIONS["status"]
+        return fn(self, req)
+
+    def _tag_act_state(self, req: TagReq) -> Response:
+        """单个 hash 的真相：账本行 + 实时 qB 标签 + 资源组号。"""
+        h = str(req.hash or "").strip().lower()
+        if not h:
+            return Response(success=False, message="缺少 hash")
+        live = self._tag_all_torrents().get(h)
+        return Response(success=True, message="ok", data={
+            "ledger": req.store.get(h),
+            "tags": list(getattr(live, "tags", []) or []) if live else [],
+            "group_id": req.groups.group_of(h),
+        })
+
+    def _tag_act_list(self, req: TagReq) -> Response:
+        """按状态/站点列账本 hash（limit 兜底 20）。"""
+        hs = req.store.hashes_by_state(state=req.state, site=req.site)
+        items = req.store.items()
+        return Response(success=True, message="ok", data={
+            "total": len(hs),
+            "items": [{ "hash": h, **{k: items[h].get(k) for k in ("site", "state", "sub", "taken_by", "origin_sub", "title", "size_gb", "in_library")}} for h in hs[:max(1, int(req.limit or 20))]],
+        })
+
+    def _tag_act_resource(self, req: TagReq) -> Response:
+        """资源组：带 hash 看单组明细，不带则列资源排行（兜底 50）。"""
+        if str(req.hash or "").strip():
+            gid = str(req.hash).strip()
+            rec = req.groups.items().get(gid) or {}
+            return Response(success=True, message="ok", data={"group_id": gid, "resource": rec})
+        rows = req.groups.resources(limit=int(req.limit or 0) if str(req.limit).isdigit() else 0)
+        return Response(success=True, message=f"资源 {len(rows)} 个", data={
+            "count": len(req.groups.items()), "multi": req.groups.stats().get("multi_site_groups", 0),
+            "items": rows[: max(1, int(req.limit)) if str(req.limit).isdigit() and int(req.limit) > 0 else 50],
+        })
+
+    def _tag_act_reconcile(self, req: TagReq) -> Response:
+        """标签 ↔ 账本对账：补漏行、补登无主辅种、报身份漂移。"""
+        # ★ 15.2.0 标签 ↔ 账本对账（人机同源，与 /agent/tags/reconcile 同一实现）
+        _ap = req.act == "reconcile_apply" or str(req.confirm or "").strip().lower() in ("1", "true", "yes", "on")
+        info = self._tag_ledger_reconcile(
+            apply=_ap, adopt_reseed=bool(int(req.adopt_reseed or 0)) if str(req.adopt_reseed or "").strip().isdigit()
+            else str(req.adopt_reseed or "").strip().lower() in ("1", "true", "yes", "on"),
+            limit=int(req.limit or 0),
+        )
+        return Response(
+            success=True,
+            message=(f"标签对账：查 {info.get('checked')} 个在岗种 → 待补 {info.get('items_total', len(info.get('items') or []))} 个"
+                     + (f"（已补 {info.get('repaired')}）" if _ap else "（干跑）")
+                     + (f"；无主辅种副本补登 {info.get('adopted')} 个" if info.get('adopt_items') else "")
+                     + (f"；身份子桶漂移 {info.get('drift_total')} 个（只报不写）" if info.get("drift_total") else "")),
+            data=info,
+        )
+
+    def _tag_act_triage(self, req: TagReq) -> Response:
+        """静默池分拣：分流成推荐 / 普通（欠 H&R 的留在原地）。"""
+        _ap = req.act == "triage_apply"
+        info = self._silent_triage(apply=_ap, limit=int(req.limit or 0))
+        return Response(
+            success=True,
+            message=(
+                f"静默池分拣 {info.get('scanned')} 个 → 推荐 {info.get('promoted')} · "
+                f"普通 {info.get('plain')}（欠H&R {info.get('waiting_hr')}）"
+            ),
+            data=info,
+        )
+
+    def _tag_act_purge(self, req: TagReq) -> Response:
+        """清静默池里「没下完」的种。"""
+        _ap = req.act == "purge_apply"
+        info = self._silent_purge_incomplete(apply=_ap, limit=int(req.limit or 0))
+        return Response(
+            success=True,
+            message=(f"静默池未下完 {info.get('pending')} 个 → 删除 {info.get('deleted')} 个"
+                     + ("" if _ap else "（预演，未删）")),
+            data=info,
+        )
+
+    def _tag_act_missing(self, req: TagReq) -> Response:
+        """清「文件已不在」的空壳种。"""
+        _ap = req.act == "missing_apply"
+        info = self._missing_files_tick(apply=_ap, limit=int(req.limit or 0))
+        return Response(
+            success=True,
+            message=(f"空壳种（文件已不在）{info.get('pending')} 个 → 删除 {info.get('deleted')} 个"
+                     + ("" if _ap else "（预演，未删）")),
+            data=info,
+        )
+
+    def _tag_act_hr(self, req: TagReq) -> Response:
+        """H&R 统一管理：打标 / 强拉起 / 结清摘标 / 松绑。"""
+        _ap = req.act == "hr_apply"
+        info = self._hr_guard_tick(apply=_ap, limit=int(req.limit or 0))
+        return Response(
+            success=True,
+            message=(f"H&R 统一管理:欠 {info.get('obligated')} 个 → 打标 {info.get('tagged')} · "
+                     f"强拉起 {info.get('resumed')} · 结清摘标 {info.get('cleared')} · "
+                     f"松绑 {info.get('released')}"
+                     + ("" if _ap else "（预演）")),
+            data=info,
+        )
+
+    def _tag_act_plain(self, req: TagReq) -> Response:
+        """静默-普通 超时清理（保护期内的不动）。"""
+        _ap = req.act == "plain_apply"
+        info = self._silent_plain_sweep(apply=_ap, limit=int(req.limit or 0))
+        return Response(
+            success=True,
+            message=(f"静默-普通 待清 {info.get('pending')} 个（保护 {info.get('protected')}）→ "
+                     f"删除 {info.get('deleted')} 个" + ("" if _ap else "（预演）")),
+            data=info,
+        )
+
+    def _tag_act_expire_downgrade(self, req: TagReq) -> Response:
+        """推荐过期降级回普通。"""
+        _ap = req.act == "expire_apply"
+        info = self._recommend_downgrade_expired(apply=_ap, limit=int(req.limit or 0))
+        return Response(
+            success=True,
+            message=(f"推荐过期待降级 {info.get('downgraded')} 个"
+                     + ("" if _ap else "（预演）")),
+            data=info,
+        )
+
+    def _tag_act_verify(self, req: TagReq) -> Response:
+        """静默池辅种待校验：逐个 recheck。"""
+        _ap = req.act == "verify_apply"
+        info = self._silent_verify_marks(apply=_ap, limit=int(req.limit or 0))
+        return Response(
+            success=True,
+            message=(f"静默池辅种待校验 {info.get('pending')} 个 → recheck {info.get('checked')} 个"
+                     + ("" if _ap else "（预演）")),
+            data=info,
+        )
+
+    def _tag_act_resume(self, req: TagReq) -> Response:
+        """H&R 保挂：把欠 H&R 的种强制拉起做种。"""
+        _ap = req.act == "resume_apply"
+        info = self._silent_resume_tick(apply=_ap, limit=int(req.limit or 0))
+        return Response(
+            success=True,
+            message=(f"H&R 保挂:静默 {info.get('silent')} · 欠H&R {info.get('hr_pending')}"
+                     f" → 强制挂种 {info.get('resumed')} 个（非H&R {info.get('nonhr')} 不动）"
+                     + ("" if _ap else "（预演）")),
+            data=info,
+        )
+
+    def _tag_act_settle(self, req: TagReq) -> Response:
+        """遣散停用任务名下的种，退回静默池（真写）。"""
+        info = self._settle_disabled_tasks(apply=True)
+        return Response(success=True, message=f"已遣散退回静默 {info.get('settled')} 个", data=info)
+
+    def _tag_act_settle_plan(self, req: TagReq) -> Response:
+        """遣散干跑：只报待遣散数量。"""
+        info = self._settle_disabled_tasks(apply=False)
+        return Response(success=True, message=f"待遣散 {info.get('pending')} 个", data=info)
+
+    def _tag_act_hrhost_run(self, req: TagReq) -> Response:
+        """H&R 保种职务跑一轮（迁移 / 保挂 / 释放）。"""
+        info = self.hr_host()
+        return Response(
+            success=True,
+            message=(f"H&R保种:迁移 {info.get('migrated', 0)} · 保挂 {info.get('resumed', 0)} · "
+                     f"释放 {info.get('released', 0)}（保种 {info.get('assigned', 0)}）"),
+            data=info,
+        )
+
+    def _tag_act_fp(self, req: TagReq) -> Response:
+        """补录种子特征码：缺码的种批量刷一遍。"""
+        _lim = int(req.limit) if str(req.limit).isdigit() else 0
+        return Response(success=True, message="特征码补录完成", data=self.backfill_fingerprints(limit=_lim))
+
+    def _tag_act_syncres(self, req: TagReq) -> Response:
+        """刷新资源账本（文件组引用计数）。"""
+        return Response(success=True, message="资源账本已刷新", data=self.sync_resources(apply=True))
+
+    def _tag_act_assets_recheck(self, req: TagReq) -> Response:
+        """库内资产过一遍推荐流程：达标转资源、不达标转普通。"""
+        _ap = req.act in ("assets_recheck_apply", "recheck")
+        info = self._assets_recheck(apply=_ap, limit=int(req.limit or 0))
+        return Response(
+            success=True,
+            message=(f"已入库资源过推荐流程:复核 {info.get('resources')} 组 · 达标 {info.get('qualified')}"
+                     f" · 不达标 {info.get('unqualified')} · 未识别 {info.get('unrecognized')}"
+                     f" · 无评分(豁免) {info.get('unrated')}"
+                     f" · 已转普通 {info.get('downgraded')} · 回升资源 {info.get('restored')}"
+                     + ("" if _ap else "（预演，未动）")),
+            data=info,
+        )
+
+    def _tag_act_hold(self, req: TagReq) -> Response:
+        """手动保种 / 解除手动保种（hash 可逗号批量）。"""
+        _un = req.act in ("unhold", "hold_clear")
+        _hs = [x for x in re.split(r"[,|\s]+", str(req.hash or "")) if x.strip()]
+        _ap = req.act in ("unhold", "hold_clear") or str(req.confirm or "").strip().lower() in (
+            "1", "true", "yes", "on")
+        info = self._manual_release(_hs, apply=_ap) if _un else self._manual_hold(
+            _hs, apply=_ap, reason=str(req.reason or ""))
+        _n = int(info.get("released") or info.get("held") or 0)
+        # ★ 19.10.41：把「拉起做种」的结果一并说出来 —— 旧版只回「挂保种 0 个」（已在岗时），
+        #   用户看不出这批种到底有没有在做种（实测 18 个全 pausedUP 时也是这句话）。
+        _rs = ""
+        if not _un and _ap:
+            _ok_n = int(info.get("resumed") or 0)
+            _bad = info.get("resume_failed") or []
+            if _ok_n or _bad:
+                _rs = f" · 拉起做种 {_ok_n} 个"
+                if _bad:
+                    _rs += f"（失败 {len(_bad)} 个：{_bad[0].get('error') or '—'}）"
+        return Response(
+            success=bool(info.get("ok")),
+            message=(f"{'解除手动保种' if _un else '手动保种'}:候选 {info.get('candidates')} → "
+                     f"{'归还静默' if _un else '挂保种'} {_n} 个" + _rs
+                     + ("" if _ap else "（预演）")),
+            data=info,
+        )
+
+    def _tag_act_hold_list(self, req: TagReq) -> Response:
+        """★ 19.10.41 「手动保种」名单（只读）：账本 ``taken_by=__keep__`` + 下载器实况。
+
+        为什么需要它：``_manual_hold`` 是 ``__keep__`` 伪任务，**不是**真任务，所以
+        这批种既不在任何任务的种子池里、也不进 ``status.tasks`` —— 挂上之后就
+        「界面上哪儿都看不见」，只能自己记 hash 才能解除（2026-10-30 实测存量为 18 个）。
+        这里把名单与实况一次给出，供前端「手动保种」列表用。
+
+        排序按**异常优先**：不在下载器（幽灵行）→ 没在做种（暂停/未完成）→ 正常做种；
+        同组内体积降序。这样打开列表第一屏就是「该处理的」。
+
+        只读，不写账本、不动标签（写入口仍是 ``action=hold`` / ``action=unhold``）。
+        """
+        try:
+            _lim = int(str(req.limit or "").strip())
+        except (TypeError, ValueError):
+            _lim = 0
+        try:
+            led = dict(self._tag_state().items() or {})
+        except Exception:  # noqa: BLE001
+            led = {}
+        try:
+            snap = self._tag_all_torrents() or {}
+        except Exception:  # noqa: BLE001
+            snap = {}
+        _up = ("uploading", "forcedup", "stalledup", "queuedup", "checkingup")
+        rows: List[Dict[str, Any]] = []
+        for h, rec in led.items():
+            if str((rec or {}).get("taken_by") or "").strip() != KEEP_TASK_ID:
+                continue
+            live = snap.get(h)
+            _state = str(getattr(live, "state", "") or "")
+            _prog = float(getattr(live, "progress", 0) or 0) if live is not None else 0.0
+            rows.append({
+                "hash": h,
+                "site": str((rec or {}).get("site") or "") or self._torrent_site_name(getattr(live, "tags", None)),
+                "title": str(getattr(live, "title", "") or ""),
+                "size_gb": round(float(getattr(live, "size_gb", 0) or (rec or {}).get("size_gb") or 0), 3),
+                "sub": str((rec or {}).get("sub") or ""),
+                "state": _state,
+                "progress": round(_prog, 4),
+                "in_qb": live is not None,
+                # 「在做种」= 在下载器 + 下完了 + 态在上传侧；stalledUP 也算（有人在连，只是暂没流量）
+                "seeding": bool(live is not None and _prog >= 0.999 and _state.lower() in _up),
+                "in_library": bool((rec or {}).get("in_library")),
+            })
+        rows.sort(key=lambda r: (0 if not r["in_qb"] else (1 if not r["seeding"] else 2), -r["size_gb"]))
+        _n_bad = sum(1 for r in rows if not r["seeding"])
+        return Response(
+            success=True,
+            message=f"手动保种 {len(rows)} 个（未在做种 {_n_bad} 个）",
+            data={"total": len(rows), "not_seeding": _n_bad,
+                  "items": rows[:_lim] if _lim > 0 else rows},
+        )
+
+    def _tag_act_hold_candidates(self, req: TagReq) -> Response:
+        """★ 19.10.42 「手动保种」候选池（只读）：**静默池里所有能挂保种的种**。
+
+        为什么需要它：``hold_list`` 只答「已经挂了哪些」（2026-10-30 存量 18 个），
+        而 Master 要的是「从整个静默池里挑」（原话：「才是18个，我要所有静默池里的都能选」）。
+        静默池 1000+ 个种此前没有任何勾选入口 —— 挂保种只能去种子池一页页翻。
+
+        口径**不新造**：直接复用 ``_rv_silent_data``（``/silent/pool`` 同一条真值源），
+        只把每行裁到选择器需要的字段（全量 1000+ 行原样返回是 700KB+，裁完约 200KB）。
+
+        三条排除：
+          ① 已挂在 ``__keep__`` 名下的 —— 它们已不在静默池，重复返回会让「全选」再挂一遍；
+          ② 不在下载器的幽灵行 —— ``assign(require_live=True)`` 会静默跳过，选它等于白选；
+          ③ 其它职务在岗的不会出现在静默池视图里，无需在此过滤。
+
+        只读：不写账本、不动标签（写入口仍是 ``action=hold``）。
+        """
+        try:
+            data = self._rv_silent_data(0, 0)      # limit=0 → 全部；records=0 → 不带操作记录
+        except Exception as e:  # noqa: BLE001
+            return Response(success=False, message=f"读取静默池失败: {e}", data={})
+        try:
+            led = dict(self._tag_state().items() or {})
+        except Exception:  # noqa: BLE001
+            led = {}
+        rows: List[Dict[str, Any]] = []
+        _ghost = 0
+        for it in data.get("items") or []:
+            h = str((it or {}).get("hash") or "").strip().lower()
             if not h:
-                return Response(success=False, message="缺少 hash")
-            live = self._tag_all_torrents().get(h)
-            return Response(success=True, message="ok", data={
-                "ledger": store.get(h),
-                "tags": list(getattr(live, "tags", []) or []) if live else [],
-                "group_id": groups.group_of(h),
+                continue
+            if str((led.get(h) or {}).get("taken_by") or "").strip() == KEEP_TASK_ID:
+                continue
+            if not it.get("in_qb"):
+                _ghost += 1
+                continue
+            _hr = it.get("hr")
+            rows.append({
+                "hash": h,
+                "site": str(it.get("site") or ""),
+                "site_name": str(it.get("site_name") or ""),
+                "title": str(it.get("title") or ""),
+                "size_gb": round(float(it.get("size_gb") or 0), 3),
+                "sub": str(it.get("sub") or ""),
+                "state": str(it.get("state") or ""),
+                "progress": round(float(it.get("progress") or 0), 4),
+                # 「欠 H&R」是选它的最强理由 —— 原样带出来供前端排序/筛选
+                "owed_hr": bool((_hr or {}).get("owed_hr")) if isinstance(_hr, dict) else bool(_hr),
+                "save_path": str(it.get("save_path") or ""),
+                "in_library": bool(it.get("in_library")),
             })
-        if act == "list":
-            hs = store.hashes_by_state(state=state, site=site)
-            items = store.items()
-            return Response(success=True, message="ok", data={
-                "total": len(hs),
-                "items": [{ "hash": h, **{k: items[h].get(k) for k in ("site", "state", "sub", "taken_by", "origin_sub", "title", "size_gb", "in_library")}} for h in hs[:max(1, int(limit or 20))]],
-            })
-        if act == "resource":
-            if str(hash or "").strip():
-                gid = str(hash).strip()
-                rec = groups.items().get(gid) or {}
-                return Response(success=True, message="ok", data={"group_id": gid, "resource": rec})
-            rows = groups.resources(limit=int(limit or 0) if str(limit).isdigit() else 0)
-            return Response(success=True, message=f"资源 {len(rows)} 个", data={
-                "count": len(groups.items()), "multi": groups.stats().get("multi_site_groups", 0),
-                "items": rows[: max(1, int(limit)) if str(limit).isdigit() and int(limit) > 0 else 50],
-            })
-        if act in ("reconcile", "tag_reconcile", "reconcile_apply"):
-            # ★ 15.2.0 标签 ↔ 账本对账（人机同源，与 /agent/tags/reconcile 同一实现）
-            _ap = act == "reconcile_apply" or str(confirm or "").strip().lower() in ("1", "true", "yes", "on")
-            info = self._tag_ledger_reconcile(
-                apply=_ap, adopt_reseed=bool(int(adopt_reseed or 0)) if str(adopt_reseed or "").strip().isdigit()
-                else str(adopt_reseed or "").strip().lower() in ("1", "true", "yes", "on"),
-                limit=int(limit or 0),
-            )
+        # 按站点归堆、组内体积降序：同一站/同一目录的种在列表里挨着，挑起来顺手
+        rows.sort(key=lambda r: (r["site"], -r["size_gb"]))
+        _gb = round(sum(r["size_gb"] for r in rows), 2)
+        _n_hr = sum(1 for r in rows if r["owed_hr"])
+        return Response(
+            success=True,
+            message=(f"静默池候选 {len(rows)} 个（欠 H&R {_n_hr} 个 · 共 {_gb} GB）"
+                     + (f" · 跳过不在下载器 {_ghost} 个" if _ghost else "")),
+            data={"total": len(rows), "size_gb": _gb, "owed_hr": _n_hr,
+                  "skipped_ghost": _ghost,
+                  "sites": sorted({r["site"] for r in rows if r["site"]}),
+                  "items": rows},
+        )
+
+    def _tag_act_adopt_orphans(self, req: TagReq) -> Response:
+        """灾备：用 qB 上的魔流标签把账本补回来（默认干跑）。"""
+        # ★ 19.8.0 灾备恢复：账本被清/迁移后，用 qB 上的「魔流-<站>-静默-*」标签把账本补回来
+        #   （补行 → 补特征码 → sync_resources 建资源 → 身份回写资源）。默认干跑。
+        _confirm = str(req.confirm or "").strip().lower() in ("1", "true", "yes", "on")
+        info = self.adopt_tag_only_seeds(apply=_confirm,
+                                         limit=int(req.limit or 0) if str(req.limit or 0).strip().isdigit() else 0)
+        if _confirm:
+            _msg = (f"孤儿种纳管：候选 {info.get('candidates')} · 已补行 {info.get('adopted')}"
+                    f" · 特征码 {info.get('fp_ok')}（缺 {info.get('fp_fail')}）"
+                    f" · 身份 资源 {info.get('identity_resource')} / 普通 {info.get('identity_plain')}"
+                    f" / 新 {info.get('identity_new')} · 无资源组 {info.get('no_group')}")
+        else:
+            _msg = (f"孤儿种预演：候选 {info.get('candidates')}（在岗跳过 {info.get('skipped_duty')}）"
+                    f"（干跑；加 confirm=1 才写账本）")
+        return Response(success=not info.get("errors"), message=_msg, data=info)
+
+    def _tag_act_asset_untag(self, req: TagReq) -> Response:
+        """摘「假已整理/假辅种」标记，已在库里的留着。"""
+        _ap = req.act == "asset_untag_apply"
+        info = self._asset_untag(apply=_ap, limit=int(req.limit or 0))
+        return Response(
+            success=True,
+            message=(f"假「已整理/辅种」:带标 {info.get('scanned')} · 已在库(留) {info.get('kept_inlib')}"
+                     f" · 待摘 {info.get('fake')} · 已摘 {info.get('removed')}"
+                     + ("" if _ap else "（预演，未动 qB）")),
+            data=info,
+        )
+
+    def _tag_act_asset(self, req: TagReq) -> Response:
+        """同步库内资产标记（qB 标签 ↔ 账本对齐）。"""
+        info = self.sync_tag_assets(apply=True)
+        return Response(success=True, message=f"库内资产 {info.get('asset')} 个（更新 {info.get('changed')}）", data=info)
+
+    def _tag_act_expire(self, req: TagReq) -> Response:
+        """静默-新 超时归普通。"""
+        moved = req.store.expire_new(timeout=float(self._tags_cfg.get("new_timeout") or TAG_NEW_TIMEOUT))
+        return Response(success=True, message=f"静默-新超时归普通 {len(moved)} 个", data={"moved": moved})
+
+    def _tag_act_magicize(self, req: TagReq) -> Response:
+        """魔流化：外部种按资源分组改标（预演 / 写入）。"""
+        _ap = req.act == "magicize_apply"
+        info = self._magicize_plan(limit=req.limit, site_filter=req.site)
+        if not info.get("ok"):
+            return Response(success=False, message=str(info.get("reason") or "魔流化预演失败"), data=info)
+        if not _ap:
             return Response(
                 success=True,
-                message=(f"标签对账：查 {info.get('checked')} 个在岗种 → 待补 {info.get('items_total', len(info.get('items') or []))} 个"
-                         + (f"（已补 {info.get('repaired')}）" if _ap else "（干跑）")
-                         + (f"；无主辅种副本补登 {info.get('adopted')} 个" if info.get('adopt_items') else "")
-                         + (f"；身份子桶漂移 {info.get('drift_total')} 个（只报不写）" if info.get("drift_total") else "")),
-                data=info,
+                message=(f"魔流化预演：非魔流 {info['torrents']} 个种 / {info['groups']} 个资源"
+                         f" → 资源 {info['resource']} 组 · 普通 {info['plain']} 组"
+                         f"（未识别 {info['unrecognized']} · 无评分 {info['unrated']}）"),
+                data={k: v for k, v in info.items() if k != "plan"},
             )
-        if act in ("triage", "silent", "triage_apply"):
-            _ap = act == "triage_apply"
-            info = self._silent_triage(apply=_ap, limit=int(limit or 0))
-            return Response(
-                success=True,
-                message=(
-                    f"静默池分拣 {info.get('scanned')} 个 → 推荐 {info.get('promoted')} · "
-                    f"普通 {info.get('plain')}（欠H&R {info.get('waiting_hr')}）"
-                ),
-                data=info,
-            )
-        if act in ("purge", "purge_incomplete", "purge_apply"):
-            _ap = act == "purge_apply"
-            info = self._silent_purge_incomplete(apply=_ap, limit=int(limit or 0))
-            return Response(
-                success=True,
-                message=(f"静默池未下完 {info.get('pending')} 个 → 删除 {info.get('deleted')} 个"
-                         + ("" if _ap else "（预演，未删）")),
-                data=info,
-            )
-        if act in ("missing", "missing_files", "missing_apply"):
-            _ap = act == "missing_apply"
-            info = self._missing_files_tick(apply=_ap, limit=int(limit or 0))
-            return Response(
-                success=True,
-                message=(f"空壳种（文件已不在）{info.get('pending')} 个 → 删除 {info.get('deleted')} 个"
-                         + ("" if _ap else "（预演，未删）")),
-                data=info,
-            )
-        if act in ("hr", "hr_guard", "hr_apply"):
-            _ap = act == "hr_apply"
-            info = self._hr_guard_tick(apply=_ap, limit=int(limit or 0))
-            return Response(
-                success=True,
-                message=(f"H&R 统一管理:欠 {info.get('obligated')} 个 → 打标 {info.get('tagged')} · "
-                         f"强拉起 {info.get('resumed')} · 结清摘标 {info.get('cleared')} · "
-                         f"松绑 {info.get('released')}"
-                         + ("" if _ap else "（预演）")),
-                data=info,
-            )
-        if act in ("plain", "plain_sweep", "plain_apply"):
-            _ap = act == "plain_apply"
-            info = self._silent_plain_sweep(apply=_ap, limit=int(limit or 0))
-            return Response(
-                success=True,
-                message=(f"静默-普通 待清 {info.get('pending')} 个（保护 {info.get('protected')}）→ "
-                         f"删除 {info.get('deleted')} 个" + ("" if _ap else "（预演）")),
-                data=info,
-            )
-        if act in ("expire_downgrade", "expire_apply"):
-            _ap = act == "expire_apply"
-            info = self._recommend_downgrade_expired(apply=_ap, limit=int(limit or 0))
-            return Response(
-                success=True,
-                message=(f"推荐过期待降级 {info.get('downgraded')} 个"
-                         + ("" if _ap else "（预演）")),
-                data=info,
-            )
-        if act in ("verify", "verify_marks", "verify_apply"):
-            _ap = act == "verify_apply"
-            info = self._silent_verify_marks(apply=_ap, limit=int(limit or 0))
-            return Response(
-                success=True,
-                message=(f"静默池辅种待校验 {info.get('pending')} 个 → recheck {info.get('checked')} 个"
-                         + ("" if _ap else "（预演）")),
-                data=info,
-            )
-        if act in ("resume", "keep_seed", "resume_apply"):
-            _ap = act == "resume_apply"
-            info = self._silent_resume_tick(apply=_ap, limit=int(limit or 0))
-            return Response(
-                success=True,
-                message=(f"H&R 保挂:静默 {info.get('silent')} · 欠H&R {info.get('hr_pending')}"
-                         f" → 强制挂种 {info.get('resumed')} 个（非H&R {info.get('nonhr')} 不动）"
-                         + ("" if _ap else "（预演）")),
-                data=info,
-            )
-        if act in ("settle", "settle_idle"):
-            info = self._settle_disabled_tasks(apply=True)
-            return Response(success=True, message=f"已遣散退回静默 {info.get('settled')} 个", data=info)
-        if act == "settle_plan":
-            info = self._settle_disabled_tasks(apply=False)
-            return Response(success=True, message=f"待遣散 {info.get('pending')} 个", data=info)
-        if act in ("hrhost_run", "hrhost"):
-            info = self.hr_host()
-            return Response(
-                success=True,
-                message=(f"H&R保种:迁移 {info.get('migrated', 0)} · 保挂 {info.get('resumed', 0)} · "
-                         f"释放 {info.get('released', 0)}（保种 {info.get('assigned', 0)}）"),
-                data=info,
-            )
-        if act in ("fp", "fingerprint"):
-            _lim = int(limit) if str(limit).isdigit() else 0
-            return Response(success=True, message="特征码补录完成", data=self.backfill_fingerprints(limit=_lim))
-        if act in ("syncres", "resource_sync"):
-            return Response(success=True, message="资源账本已刷新", data=self.sync_resources(apply=True))
-        if act in ("assets_recheck", "assets_recheck_apply", "recheck"):
-            _ap = act in ("assets_recheck_apply", "recheck")
-            info = self._assets_recheck(apply=_ap, limit=int(limit or 0))
-            return Response(
-                success=True,
-                message=(f"已入库资源过推荐流程:复核 {info.get('resources')} 组 · 达标 {info.get('qualified')}"
-                         f" · 不达标 {info.get('unqualified')} · 未识别 {info.get('unrecognized')}"
-                         f" · 无评分(豁免) {info.get('unrated')}"
-                         f" · 已转普通 {info.get('downgraded')} · 回升资源 {info.get('restored')}"
-                         + ("" if _ap else "（预演，未动）")),
-                data=info,
-            )
-        if act in ("hold", "hold_seed", "manual_hold", "unhold", "hold_clear"):
-            _un = act in ("unhold", "hold_clear")
-            _hs = [x for x in re.split(r"[,|\s]+", str(hash or "")) if x.strip()]
-            _ap = act in ("unhold", "hold_clear") or str(confirm or "").strip().lower() in (
-                "1", "true", "yes", "on")
-            info = self._manual_release(_hs, apply=_ap) if _un else self._manual_hold(
-                _hs, apply=_ap, reason=str(reason or ""))
-            _n = int(info.get("released") or info.get("held") or 0)
-            return Response(
-                success=bool(info.get("ok")),
-                message=(f"{'解除手动保种' if _un else '手动保种'}:候选 {info.get('candidates')} → "
-                         f"{'归还静默' if _un else '挂保种'} {_n} 个"
-                         + ("" if _ap else "（预演）")),
-                data=info,
-            )
-        if act in ("adopt_orphans", "orphan_adopt"):
-            # ★ 19.8.0 灾备恢复：账本被清/迁移后，用 qB 上的「魔流-<站>-静默-*」标签把账本补回来
-            #   （补行 → 补特征码 → sync_resources 建资源 → 身份回写资源）。默认干跑。
-            _confirm = str(confirm or "").strip().lower() in ("1", "true", "yes", "on")
-            info = self.adopt_tag_only_seeds(apply=_confirm,
-                                             limit=int(limit or 0) if str(limit or 0).strip().isdigit() else 0)
-            if _confirm:
-                _msg = (f"孤儿种纳管：候选 {info.get('candidates')} · 已补行 {info.get('adopted')}"
-                        f" · 特征码 {info.get('fp_ok')}（缺 {info.get('fp_fail')}）"
-                        f" · 身份 资源 {info.get('identity_resource')} / 普通 {info.get('identity_plain')}"
-                        f" / 新 {info.get('identity_new')} · 无资源组 {info.get('no_group')}")
-            else:
-                _msg = (f"孤儿种预演：候选 {info.get('candidates')}（在岗跳过 {info.get('skipped_duty')}）"
-                        f"（干跑；加 confirm=1 才写账本）")
-            return Response(success=not info.get("errors"), message=_msg, data=info)
-        if act in ("asset_untag", "asset_untag_apply"):
-            _ap = act == "asset_untag_apply"
-            info = self._asset_untag(apply=_ap, limit=int(limit or 0))
-            return Response(
-                success=True,
-                message=(f"假「已整理/辅种」:带标 {info.get('scanned')} · 已在库(留) {info.get('kept_inlib')}"
-                         f" · 待摘 {info.get('fake')} · 已摘 {info.get('removed')}"
-                         + ("" if _ap else "（预演，未动 qB）")),
-                data=info,
-            )
-        if act == "asset":
-            info = self.sync_tag_assets(apply=True)
-            return Response(success=True, message=f"库内资产 {info.get('asset')} 个（更新 {info.get('changed')}）", data=info)
-        if act == "expire":
-            moved = store.expire_new(timeout=float(self._tags_cfg.get("new_timeout") or TAG_NEW_TIMEOUT))
-            return Response(success=True, message=f"静默-新超时归普通 {len(moved)} 个", data={"moved": moved})
-        if act in ("magicize", "magicize_plan", "magicize_apply"):
-            _ap = act == "magicize_apply"
-            info = self._magicize_plan(limit=limit, site_filter=site)
-            if not info.get("ok"):
-                return Response(success=False, message=str(info.get("reason") or "魔流化预演失败"), data=info)
-            if not _ap:
-                return Response(
-                    success=True,
-                    message=(f"魔流化预演：非魔流 {info['torrents']} 个种 / {info['groups']} 个资源"
-                             f" → 资源 {info['resource']} 组 · 普通 {info['plain']} 组"
-                             f"（未识别 {info['unrecognized']} · 无评分 {info['unrated']}）"),
-                    data={k: v for k, v in info.items() if k != "plan"},
-                )
-            res = self._magicize_apply(info.get("plan") or [], limit=limit)
-            return Response(
-                success=bool(res.get("ok")),
-                message=(f"魔流化完成：改标 {res.get('magicized')} 个种（失败 {res.get('failed')}，跳过 {res.get('skipped')}）"
-                         + (f" / 计划 {info['total']} 个" if info.get("total") else "")),
-                data={"plan_summary": {k: v for k, v in info.items() if k != "plan"}, "applied": res},
-            )
-        if act == "hygiene":
-            info = self._tag_hygiene_round(force=True)
-            return Response(
-                success=bool(info.get("ok")),
-                message=(f"标签主权巡检：摘其他标签 {info.get('cleaned')} · 新纳管 {info.get('adopted')}"
-                         f" · MP 来源提资源 {info.get('promoted')}（失败 {info.get('failed')}）"),
-                data=info,
-            )
+        res = self._magicize_apply(info.get("plan") or [], limit=req.limit)
+        return Response(
+            success=bool(res.get("ok")),
+            message=(f"魔流化完成：改标 {res.get('magicized')} 个种（失败 {res.get('failed')}，跳过 {res.get('skipped')}）"
+                     + (f" / 计划 {info['total']} 个" if info.get("total") else "")),
+            data={"plan_summary": {k: v for k, v in info.items() if k != "plan"}, "applied": res},
+        )
+
+    def _tag_act_hygiene(self, req: TagReq) -> Response:
+        """标签主权巡检：摘别人标签、纳管新种、MP 来源提资源。"""
+        info = self._tag_hygiene_round(force=True)
+        return Response(
+            success=bool(info.get("ok")),
+            message=(f"标签主权巡检：摘其他标签 {info.get('cleaned')} · 新纳管 {info.get('adopted')}"
+                     f" · MP 来源提资源 {info.get('promoted')}（失败 {info.get('failed')}）"),
+            data=info,
+        )
+
+    def _tag_act_external_mark(self, req: TagReq) -> Response:
+        """给「非插件加进来的种」打 `魔流-外部` 预期标记。"""
         # ★ 11.11.1：识别「非插件加进来的种」（MP 下载器 `MOVIEPILOT` + 已纳管）→ 打 `魔流-外部` 预期标记。
         #   只打标，不做别的处置；默认干跑，apply 才写 qB 标签。
-        if act in ("external_mark", "external_mark_plan", "external_mark_apply"):
-            _ap = act == "external_mark_apply"
-            info = self._external_mark_round(apply=_ap, limit=int(limit or 0))
+        _ap = req.act == "external_mark_apply"
+        info = self._external_mark_round(apply=_ap, limit=int(req.limit or 0))
+        return Response(
+            success=bool(info.get("ok")),
+            message=(f"外部来源标记：识别 {info.get('count')} 个「非插件加进来的种」"
+                     f" → 打标 {info.get('marked')} 个（失败 {info.get('failed')}）"
+                     + ("" if _ap else "（干跑，未改 qB；加 action=external_mark_apply 才打标）")),
+            data=info,
+        )
+
+    def _tag_act_clean(self, req: TagReq) -> Response:
+        """清理种上的「其他标签」（预演 / 写入）。"""
+        _ap = req.act == "clean_apply"
+        info = self._tag_clean_plan(limit=int(req.limit or 0))
+        if not _ap:
             return Response(
-                success=bool(info.get("ok")),
-                message=(f"外部来源标记：识别 {info.get('count')} 个「非插件加进来的种」"
-                         f" → 打标 {info.get('marked')} 个（失败 {info.get('failed')}）"
-                         + ("" if _ap else "（干跑，未改 qB；加 action=external_mark_apply 才打标）")),
-                data=info,
+                success=True,
+                message=(f"标签清理预演：待摘 {info['total']} 个种的「其他标签」"
+                         f"（其中库内资产 {info['assets']} 个，会先记账本再摘）"),
+                data={k: v for k, v in info.items() if k != "plan"},
             )
-        if act in ("clean", "clean_plan", "clean_apply"):
-            _ap = act == "clean_apply"
-            info = self._tag_clean_plan(limit=int(limit or 0))
-            if not _ap:
-                return Response(
-                    success=True,
-                    message=(f"标签清理预演：待摘 {info['total']} 个种的「其他标签」"
-                             f"（其中库内资产 {info['assets']} 个，会先记账本再摘）"),
-                    data={k: v for k, v in info.items() if k != "plan"},
-                )
-            res = self._tag_clean_apply(info.get("plan") or [], limit=int(limit or 0))
-            return Response(
-                success=bool(res.get("ok")),
-                message=(f"标签清理完成：清 {res.get('cleaned')} 个种（失败 {res.get('failed')}"
-                         f"，记入库内账本 {res.get('asset_adopted')}）"),
-                data={"plan_summary": {k: v for k, v in info.items() if k != "plan"}, "applied": res},
-            )
+        res = self._tag_clean_apply(info.get("plan") or [], limit=int(req.limit or 0))
+        return Response(
+            success=bool(res.get("ok")),
+            message=(f"标签清理完成：清 {res.get('cleaned')} 个种（失败 {res.get('failed')}"
+                     f"，记入库内账本 {res.get('asset_adopted')}）"),
+            data={"plan_summary": {k: v for k, v in info.items() if k != "plan"}, "applied": res},
+        )
+
+    def _tag_act_music_untag(self, req: TagReq) -> Response:
+        """音乐线：摘职务标签 + 退账本占用 + 钉资源身份。"""
         # ★ 15.8.0 音乐线：摘掉音乐种上的「魔力/刷流」职务标签（默认干跑；apply 才写 qB）。
-        if act in ("music_untag", "music_untag_plan", "music_untag_apply"):
-            _ap = act == "music_untag_apply"
-            info = self._music_untag_duty(apply=_ap, limit=int(limit or 0))
-            # ★ 15.8.11：账本那一半一起做（只看账本 → 「标签早摘了、账本还占着」也能收敛）
-            _led = self._music_ledger_release(apply=_ap, limit=int(limit or 0))
-            # ★ 15.8.11 同版补丁：身份那一半也一起做（音乐=资源，同点播结算后形态；
-            #   不钉的话 ⑦分拣/⑧超时归位把音乐种降成「普通」→ 落进 ⑤普通清理候选）
-            _pin = self._music_asset_pin(apply=_ap, limit=int(limit or 0))
-            info["ledger"] = _led
-            info["asset"] = _pin
-            _failed = (int(info.get("failed") or 0) + int(_led.get("failed") or 0)
-                       + int(_pin.get("failed") or 0))
-            return Response(
-                success=(bool(info.get("ok")) and bool(_led.get("ok")) and bool(_pin.get("ok"))),
-                message=(f"音乐线：扫音乐种 {info.get('scanned')} · 待摘职务 {info.get('candidates')}"
-                         f" · 账本占用 {_led.get('candidates')}"
-                         f" · 身份待归资源 {_pin.get('candidates')}"
-                         + (f" · 已摘 {info.get('cleaned')}、已归还 {_led.get('released')}"
-                            f"、已钉资源 {_pin.get('pinned')}（失败 {_failed}）"
-                            + (f"、跳过(无资源组) {_pin.get('skipped_no_group')}"
-                               if _pin.get("skipped_no_group") else "") if _ap
-                            else "（干跑；加 action=music_untag_apply 才写）")),
-                data=info,
-            )
+        _ap = req.act == "music_untag_apply"
+        info = self._music_untag_duty(apply=_ap, limit=int(req.limit or 0))
+        # ★ 15.8.11：账本那一半一起做（只看账本 → 「标签早摘了、账本还占着」也能收敛）
+        _led = self._music_ledger_release(apply=_ap, limit=int(req.limit or 0))
+        # ★ 15.8.11 同版补丁：身份那一半也一起做（音乐=资源，同点播结算后形态；
+        #   不钉的话 ⑦分拣/⑧超时归位把音乐种降成「普通」→ 落进 ⑤普通清理候选）
+        _pin = self._music_asset_pin(apply=_ap, limit=int(req.limit or 0))
+        info["ledger"] = _led
+        info["asset"] = _pin
+        _failed = (int(info.get("failed") or 0) + int(_led.get("failed") or 0)
+                   + int(_pin.get("failed") or 0))
+        return Response(
+            success=(bool(info.get("ok")) and bool(_led.get("ok")) and bool(_pin.get("ok"))),
+            message=(f"音乐线：扫音乐种 {info.get('scanned')} · 待摘职务 {info.get('candidates')}"
+                     f" · 账本占用 {_led.get('candidates')}"
+                     f" · 身份待归资源 {_pin.get('candidates')}"
+                     + (f" · 已摘 {info.get('cleaned')}、已归还 {_led.get('released')}"
+                        f"、已钉资源 {_pin.get('pinned')}（失败 {_failed}）"
+                        + (f"、跳过(无资源组) {_pin.get('skipped_no_group')}"
+                           if _pin.get("skipped_no_group") else "") if _ap
+                        else "（干跑；加 action=music_untag_apply 才写）")),
+            data=info,
+        )
+
+    def _tag_act_hrbills(self, req: TagReq) -> Response:
+        """H&R 账单总览（只读）。"""
         # ★ 10.2.0 下载即开账（影子记账）：只读端点
-        if act in ("hrbills", "hr_bills"):
-            info = self._hrbills_stats()
-            return Response(success=True, message=f"H&R 账单 {info.get('total')} 张", data=info)
-        if act in ("hr_dryrun", "hrbills_dryrun"):
-            info = self._hrbills_dryrun()
-            return Response(success=True, message="H&R 账单干跑（只读，不落库）", data=info)
+        info = self._hrbills_stats()
+        return Response(success=True, message=f"H&R 账单 {info.get('total')} 张", data=info)
+
+    def _tag_act_hr_dryrun(self, req: TagReq) -> Response:
+        """H&R 账单干跑：只算不落库。"""
+        info = self._hrbills_dryrun()
+        return Response(success=True, message="H&R 账单干跑（只读，不落库）", data=info)
+
+    def _tag_act_hr_tick(self, req: TagReq) -> Response:
+        """手动触发账单巡检 / 存量回填（写动作，需 confirm=1）。"""
         # ★ 11.0.0：手动触发账单巡检/存量回填（**写动作**，必须 confirm=1；
         #   与 syncres 等运维动作同风格，不改任何删除/保护判据本身）
-        if act in ("hr_tick", "hrbills_tick"):
-            if str(confirm or "").strip().lower() not in ("1", "true", "yes"):
-                return Response(success=True, message="需要 confirm=1 才执行账单巡检/回填",
-                                data={"need_confirm": True})
-            info = self._hrbills_tick()
-            return Response(success=True,
-                            message=f"H&R 账单巡检完成：{info}", data=info)
+        if str(req.confirm or "").strip().lower() not in ("1", "true", "yes"):
+            return Response(success=True, message="需要 confirm=1 才执行账单巡检/回填",
+                            data={"need_confirm": True})
+        info = self._hrbills_tick()
+        return Response(success=True,
+                        message=f"H&R 账单巡检完成：{info}", data=info)
+
+    def _tag_act_hr_void(self, req: TagReq) -> Response:
+        """人工作废账单（摘保护），需 confirm=1，hash 可批量。"""
         # ★ 11.7.0：人工作废账单（摘保护）—— 站点侧免罪 / 确认无 H&R 后的落账口子。
         #   写动作，必须 confirm=1；hash 逗号分隔可批量。
-        if act in ("hr_void", "hrbills_void"):
-            if str(confirm or "").strip().lower() not in ("1", "true", "yes"):
-                return Response(success=True, message="需要 confirm=1 才作废 H&R 账单",
-                                data={"need_confirm": True})
-            _raw = str(hash or "").strip().lower()
-            _hs = [x.strip() for x in _raw.replace(",", " ").split() if x.strip()]
-            if not _hs:
-                return Response(success=False, message="缺少 hash（可逗号分隔批量）")
-            _reason = str(reason or "manual").strip() or "manual"
-            done, miss = [], []
-            for _h in _hs:
-                try:
-                    _b = self._hrbills_void(_h, _reason)
-                except Exception:  # noqa: BLE001
-                    _b = None
-                (done if _b else miss).append(_h)
-            return Response(success=True,
-                            message=f"账单作废：成功 {len(done)} / 未找到 {len(miss)}（reason={_reason}）",
-                            data={"voided": done, "missing": miss, "reason": _reason})
+        if str(req.confirm or "").strip().lower() not in ("1", "true", "yes"):
+            return Response(success=True, message="需要 confirm=1 才作废 H&R 账单",
+                            data={"need_confirm": True})
+        _raw = str(req.hash or "").strip().lower()
+        _hs = [x.strip() for x in _raw.replace(",", " ").split() if x.strip()]
+        if not _hs:
+            return Response(success=False, message="缺少 hash（可逗号分隔批量）")
+        _reason = str(req.reason or "manual").strip() or "manual"
+        done, miss = [], []
+        for _h in _hs:
+            try:
+                _b = self._hrbills_void(_h, _reason)
+            except Exception:  # noqa: BLE001
+                _b = None
+            (done if _b else miss).append(_h)
+        return Response(success=True,
+                        message=f"账单作废：成功 {len(done)} / 未找到 {len(miss)}（reason={_reason}）",
+                        data={"voided": done, "missing": miss, "reason": _reason})
+
+    def _tag_act_hrbills_void_reuse(self, req: TagReq) -> Response:
+        """作废存量「辅种账单」（辅种≠真实下载），默认干跑。"""
         # ★ 11.11.1：存量「active 辅种账单」作废（辅种≠真实下载）。默认干跑；confirm=1 才写。
         #   只作废账单、不删种（辅种仍受保护）。
-        if act in ("hrbills_void_reuse", "hr_void_reuse"):
-            _confirm = str(confirm or "").strip().lower() in ("1", "true", "yes")
-            try:
-                _lim = int(str(limit or "0").strip() or 0)
-            except Exception:  # noqa: BLE001
-                _lim = 0
-            info = self._hrbills_void_reuse(confirm=_confirm, limit=_lim)
-            return Response(
-                success=True,
-                message=(f"辅种账单作废：待作废 {info.get('count')} 张"
-                         + (f" · 已作废 {info.get('voided')} 张" if _confirm else "（干跑；加 confirm=1 才写）")),
-                data=info,
-            )
+        _confirm = str(req.confirm or "").strip().lower() in ("1", "true", "yes")
+        try:
+            _lim = int(str(req.limit or "0").strip() or 0)
+        except Exception:  # noqa: BLE001
+            _lim = 0
+        info = self._hrbills_void_reuse(confirm=_confirm, limit=_lim)
+        return Response(
+            success=True,
+            message=(f"辅种账单作废：待作废 {info.get('count')} 张"
+                     + (f" · 已作废 {info.get('voided')} 张" if _confirm else "（干跑；加 confirm=1 才写）")),
+            data=info,
+        )
+
+    def _tag_act_hr_reconcile(self, req: TagReq) -> Response:
+        """站点 myhr 对账（第三视角）：干跑出报告，confirm=1 才重下。"""
         # ★ 11.8.0：站点 myhr 对账（第三视角）。只读报告默认不联网；写动作（同站重下）
         #   必须 confirm=1，且只处理「站点当前仍欠 + 本机没有」的记录。**只加不删**。
-        if act in ("hr_reconcile", "hrreconcile"):
-            _confirm = str(confirm or "").strip().lower() in ("1", "true", "yes")
-            _site = str(site or "").strip()
-            if not _confirm:
-                if _site:
-                    _plan = self._hr_reconcile_apply(_site, tids=tids, confirm=False)
-                    return Response(success=bool(_plan.get("ok")),
-                                    message=f"站点对账干跑：{_site} 待补种 {_plan.get('would_add', 0)} 条"
-                                            f"（未执行；加 confirm=1 才重下）",
-                                    data=_plan)
-                _rep = self._hr_reconcile_report("")
-                return Response(success=True, message="站点对账报告（只读）", data=_rep)
-            if not _site:
-                return Response(success=False, message="写动作必须带 site=<域名>")
-            _out = self._hr_reconcile_apply(_site, tids=tids, confirm=True)
-            return Response(success=bool(_out.get("ok")),
-                            message=f"站点对账重下：{_site} 新增 {_out.get('added', 0)} 条"
-                                    f"（候选 {_out.get('candidates', 0)}）",
-                            data=_out)
+        _confirm = str(req.confirm or "").strip().lower() in ("1", "true", "yes")
+        _site = str(req.site or "").strip()
+        if not _confirm:
+            if _site:
+                _plan = self._hr_reconcile_apply(_site, tids=req.tids, confirm=False)
+                return Response(success=bool(_plan.get("ok")),
+                                message=f"站点对账干跑：{_site} 待补种 {_plan.get('would_add', 0)} 条"
+                                        f"（未执行；加 confirm=1 才重下）",
+                                data=_plan)
+            _rep = self._hr_reconcile_report("")
+            return Response(success=True, message="站点对账报告（只读）", data=_rep)
+        if not _site:
+            return Response(success=False, message="写动作必须带 site=<域名>")
+        _out = self._hr_reconcile_apply(_site, tids=req.tids, confirm=True)
+        return Response(success=bool(_out.get("ok")),
+                        message=f"站点对账重下：{_site} 新增 {_out.get('added', 0)} 条"
+                                f"（候选 {_out.get('candidates', 0)}）",
+                        data=_out)
+
+    def _tag_act_breach_reconcile(self, req: TagReq) -> Response:
+        """违约自动核对：拉站点真值 → 不欠就清账、欠就补种。"""
         # ★ 11.12.0 违约自动核对：对每张 breached 账单拉站点真值 → 站点不欠→清账 / 站点欠→补种。
         #   默认干跑；confirm=1 真写（清账 + 重下补种）。可带 site 只处理单站。
-        if act in ("breach_reconcile", "breachreconcile"):
-            _confirm = str(confirm or "").strip().lower() in ("1", "true", "yes")
-            _info = self._hrbills_breach_reconcile(site=str(site or ""), confirm=_confirm)
-            _t = (_info.get("totals") or {})
-            return Response(
-                success=True,
-                message=(f"违约核对：{_t.get('breached', 0)} 张 · 待清账 {_t.get('will_void', 0)}"
-                         f" · 待补种 {_t.get('will_reseed', 0)}"
-                         f" · 未验证 {_t.get('unverified', 0)}"
-                         + (f" · 已清账 {_t.get('voided', 0)} / 已补种 {_t.get('reseeded', 0)}"
-                            if _confirm else "（干跑；加 confirm=1 才写）")),
-                data=_info,
-            )
+        _confirm = str(req.confirm or "").strip().lower() in ("1", "true", "yes")
+        _info = self._hrbills_breach_reconcile(site=str(req.site or ""), confirm=_confirm)
+        _t = (_info.get("totals") or {})
+        return Response(
+            success=True,
+            message=(f"违约核对：{_t.get('breached', 0)} 张 · 待清账 {_t.get('will_void', 0)}"
+                     f" · 待补种 {_t.get('will_reseed', 0)}"
+                     f" · 未验证 {_t.get('unverified', 0)}"
+                     + (f" · 已清账 {_t.get('voided', 0)} / 已补种 {_t.get('reseeded', 0)}"
+                        if _confirm else "（干跑；加 confirm=1 才写）")),
+            data=_info,
+        )
+
+    def _tag_act_yema(self, req: TagReq) -> Response:
+        """野马PT 逐种 H&R：补开账单（只增保护），confirm=1 才写。"""
         # ★ 11.9.0：野马PT 逐种 H&R（站点后台接口）。默认只读报告；写动作（给「本机有+
         #   站点说欠+账本没记」补开账单）必须 confirm=1，**只增保护**。
-        if act in ("yema", "yema_apply", "yemaapply"):
-            _confirm = str(confirm or "").strip().lower() in ("1", "true", "yes")
-            try:
-                _lim = int(str(limit or "0").strip() or 0)
-            except Exception:  # noqa: BLE001
-                _lim = 0
-            _out = self._yema_apply(confirm=1 if _confirm else 0, limit=_lim)
-            if not _out.get("ok"):
-                return Response(success=False, message=str(_out.get("error") or "野马PT 处理失败"),
-                                data=_out)
-            if _out.get("dry_run"):
-                return Response(success=True,
-                                message=f"野马PT 补开账单干跑：待开 {_out.get('would_open', 0)} 张"
-                                        f"（加 confirm=1 才写）",
-                                data=_out)
-            return Response(success=True,
-                            message=f"野马PT 补开账单：成功 {_out.get('opened', 0)} 张"
-                                    f"（失败 {len(_out.get('failed') or [])}）",
+        _confirm = str(req.confirm or "").strip().lower() in ("1", "true", "yes")
+        try:
+            _lim = int(str(req.limit or "0").strip() or 0)
+        except Exception:  # noqa: BLE001
+            _lim = 0
+        _out = self._yema_apply(confirm=1 if _confirm else 0, limit=_lim)
+        if not _out.get("ok"):
+            return Response(success=False, message=str(_out.get("error") or "野马PT 处理失败"),
                             data=_out)
+        if _out.get("dry_run"):
+            return Response(success=True,
+                            message=f"野马PT 补开账单干跑：待开 {_out.get('would_open', 0)} 张"
+                                    f"（加 confirm=1 才写）",
+                            data=_out)
+        return Response(success=True,
+                        message=f"野马PT 补开账单：成功 {_out.get('opened', 0)} 张"
+                                f"（失败 {len(_out.get('failed') or [])}）",
+                        data=_out)
+
+    def _tag_act_yema_absolve(self, req: TagReq) -> Response:
+        """野马PT 免罪（扣积分、不可逆），需 tids + confirm=1。"""
         # ★ 11.9.0：野马PT「免罪」（写：扣积分、不可逆）。默认干跑，必须 confirm=1；
         #   tid 用逗号分隔批量（逐条人工点名，不做自动）。
-        if act in ("yema_absolve", "yemaabsolve"):
-            _confirm = str(confirm or "").strip().lower() in ("1", "true", "yes")
-            _tids = [x.strip() for x in str(tids or "").split(",") if x.strip()]
-            if not _tids:
-                return Response(success=False, message="缺少 tids=<torrentId[,tid]>")
-            _res = [self._yema_absolve(_t, confirm=1 if _confirm else 0) for _t in _tids]
-            _ok = sum(1 for r in _res if r.get("written"))
-            _mode = "已写" if _confirm else "干跑"
-            return Response(success=all(bool(r.get("ok")) for r in _res),
-                            message=f"野马PT 免罪（{_mode}）：{len(_tids)} 条；写入 {_ok} 条",
-                            data={"mode": _mode, "results": _res})
+        _confirm = str(req.confirm or "").strip().lower() in ("1", "true", "yes")
+        _tids = [x.strip() for x in str(req.tids or "").split(",") if x.strip()]
+        if not _tids:
+            return Response(success=False, message="缺少 tids=<torrentId[,tid]>")
+        _res = [self._yema_absolve(_t, confirm=1 if _confirm else 0) for _t in _tids]
+        _ok = sum(1 for r in _res if r.get("written"))
+        _mode = "已写" if _confirm else "干跑"
+        return Response(success=all(bool(r.get("ok")) for r in _res),
+                        message=f"野马PT 免罪（{_mode}）：{len(_tids)} 条；写入 {_ok} 条",
+                        data={"mode": _mode, "results": _res})
+
+    def _tag_act_status(self, req: TagReq) -> Response:
+        """总览：账本规模 / 状态分布 / 资产 / 资源组 / 分拣规则。"""
         # default: status
-        items = store.items()
+        items = req.store.items()
         return Response(success=True, message="ok", data={
             "enabled": bool(self._tags_cfg.get("enabled", True)),
             "new_timeout_hours": round(float(self._tags_cfg.get("new_timeout") or 0) / 3600.0, 2),
             "ledger_count": len(items),
-            "by_state": store.stats(),
-            "stale": store.stale_count(),
+            "by_state": req.store.stats(),
+            "stale": req.store.stale_count(),
             "unowned": sum(1 for r in items.values()
                            if not str(r.get("taken_by") or "")
                            and str(r.get("state") or "") in DUTY_STATES),
             "assets": {"count": sum(1 for r in items.values() if is_library_asset(r)),
                        "size_gb": round(sum(float(r.get("size_gb") or 0)
                                             for r in items.values() if is_library_asset(r)), 2)},
-            "groups": groups.stats(),
+            "groups": req.groups.stats(),
             "site_names": self._tag_site_names(),
             "sort_rules": [dict(r) for r in (self._tags_cfg.get("rules") or [])],
-            "states": [STATE_BRUSH, STATE_BONUS, STATE_SILENT, STATE_RECOMMEND],
+            "states": [STATE_BRUSH, STATE_BONUS, STATE_SILENT, STATE_RECOMMEND, STATE_CLAIM],
             "subs": [SUB_NEW, SUB_RESOURCE, SUB_PLAIN],
         })
 
@@ -2291,8 +2451,13 @@ class TagsMixin:
         sub = str(getattr(payload, "sub", "") or "").strip()
         if not h or not state:
             return Response(success=False, message="需要 hash 与 state")
-        if state not in (STATE_BRUSH, STATE_BONUS, STATE_SILENT, STATE_RECOMMEND):
-            return Response(success=False, message=f"非法状态：{state}")
+        # ★ 19.10.11：白名单由**岗位注册表**派生（``settable=True`` 的岗位职务 + 静默/推荐）。
+        #   认领可手动设 = 人工纳管/退出（设成认领立刻在种；设回静默/魔力立刻退出）。
+        #   保种不在白名单：那是「欠 H&R」派生出来的，手动设会被下一轮释放。
+        _allow = duty_manual_states()
+        if state not in _allow:
+            return Response(success=False,
+                            message=f"非法状态：{state}（可用 {'/'.join(_allow)}）")
         if state == STATE_SILENT and not sub:
             sub = SUB_PLAIN
         store = self._tag_state()
@@ -2322,7 +2487,6 @@ class TagsMixin:
         return Response(success=True, message=f"已设为 {tag_for(site, state, sub)}", data={
             "hash": h, "site": site, "state": state, "sub": sub, "tags": new_tags,
         })
-
 
     def tags_watch(self) -> None:
         """标签账本维护（worker）：状态账本快照/对账 · 资源账本 · 特征码补录 · 停止任务退静默。
@@ -2426,3 +2590,57 @@ class TagsMixin:
                 self._log(f"音乐线摘职务标签失败:{_mu_err}", "warning")
         except Exception as err:  # noqa: BLE001
             self._log(f"标签维护异常:{err}", "warning")
+
+
+# 动作表：别名 → 处理函数。
+# ★ 别名一律**显式列出**，不做 `act.endswith("_apply")` 推断：`triage_apply` / `purge_apply`
+#   不看 confirm、`reconcile_apply` 看，推断必错（19.10.28 逐分支核对过）。
+# ★ 表里放**函数对象**而不是方法名字符串：拼错名字在 import 时就炸，
+#   不用等某个冷门 action 被调用才发现（`getattr(self, name)` 没有这个性质）。
+_ACT_ALIASES = (
+    (TagsMixin._tag_act_state, "state"),
+    (TagsMixin._tag_act_list, "list"),
+    (TagsMixin._tag_act_resource, "resource"),
+    (TagsMixin._tag_act_reconcile, "reconcile", "tag_reconcile", "reconcile_apply"),
+    (TagsMixin._tag_act_triage, "triage", "silent", "triage_apply"),
+    (TagsMixin._tag_act_purge, "purge", "purge_incomplete", "purge_apply"),
+    (TagsMixin._tag_act_missing, "missing", "missing_files", "missing_apply"),
+    (TagsMixin._tag_act_hr, "hr", "hr_guard", "hr_apply"),
+    (TagsMixin._tag_act_plain, "plain", "plain_sweep", "plain_apply"),
+    (TagsMixin._tag_act_expire_downgrade, "expire_downgrade", "expire_apply"),
+    (TagsMixin._tag_act_verify, "verify", "verify_marks", "verify_apply"),
+    (TagsMixin._tag_act_resume, "resume", "keep_seed", "resume_apply"),
+    (TagsMixin._tag_act_settle, "settle", "settle_idle"),
+    (TagsMixin._tag_act_settle_plan, "settle_plan"),
+    (TagsMixin._tag_act_hrhost_run, "hrhost_run", "hrhost"),
+    (TagsMixin._tag_act_fp, "fp", "fingerprint"),
+    (TagsMixin._tag_act_syncres, "syncres", "resource_sync"),
+    (TagsMixin._tag_act_assets_recheck, "assets_recheck", "assets_recheck_apply", "recheck"),
+    (TagsMixin._tag_act_hold, "hold", "hold_seed", "manual_hold", "unhold", "hold_clear"),
+    (TagsMixin._tag_act_hold_list, "hold_list", "keeps", "manual_hold_list", "holdlist"),
+    (TagsMixin._tag_act_hold_candidates, "hold_candidates", "hold_pick", "keep_candidates"),
+    (TagsMixin._tag_act_adopt_orphans, "adopt_orphans", "orphan_adopt"),
+    (TagsMixin._tag_act_asset_untag, "asset_untag", "asset_untag_apply"),
+    (TagsMixin._tag_act_asset, "asset"),
+    (TagsMixin._tag_act_expire, "expire"),
+    (TagsMixin._tag_act_magicize, "magicize", "magicize_plan", "magicize_apply"),
+    (TagsMixin._tag_act_hygiene, "hygiene"),
+    (TagsMixin._tag_act_external_mark, "external_mark", "external_mark_plan", "external_mark_apply"),
+    (TagsMixin._tag_act_clean, "clean", "clean_plan", "clean_apply"),
+    (TagsMixin._tag_act_music_untag, "music_untag", "music_untag_plan", "music_untag_apply"),
+    (TagsMixin._tag_act_hrbills, "hrbills", "hr_bills"),
+    (TagsMixin._tag_act_hr_dryrun, "hr_dryrun", "hrbills_dryrun"),
+    (TagsMixin._tag_act_hr_tick, "hr_tick", "hrbills_tick"),
+    (TagsMixin._tag_act_hr_void, "hr_void", "hrbills_void"),
+    (TagsMixin._tag_act_hrbills_void_reuse, "hrbills_void_reuse", "hr_void_reuse"),
+    (TagsMixin._tag_act_hr_reconcile, "hr_reconcile", "hrreconcile"),
+    (TagsMixin._tag_act_breach_reconcile, "breach_reconcile", "breachreconcile"),
+    (TagsMixin._tag_act_yema, "yema", "yema_apply", "yemaapply"),
+    (TagsMixin._tag_act_yema_absolve, "yema_absolve", "yemaabsolve"),
+    (TagsMixin._tag_act_status, "status"),
+)
+
+TAG_ACTIONS: Dict[str, Any] = {a: fn for fn, *names in _ACT_ALIASES for a in names}
+# 别名撞车会让某个动作静默失效（后写的覆盖先写的） → 宁可 import 就炸
+if len(TAG_ACTIONS) != sum(len(n) for _f, *n in _ACT_ALIASES):
+    raise RuntimeError("TAG_ACTIONS 别名重复")

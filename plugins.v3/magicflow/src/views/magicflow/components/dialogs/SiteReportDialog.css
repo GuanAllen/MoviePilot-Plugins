@@ -1,0 +1,154 @@
+/* SiteReportDialog 的 scoped 样式，由线上 dist 按 scopeId data-v-83d60f7e 提取。
+   选择器里的属性限定符是 scoped 边界，别去掉。 */
+
+/* ── 弹窗根 / 标题行 / 正文：随「站点报表弹窗」自 index.vue 迁入。
+     下列共享选择器（magicflow-dialog / settings-dialog__head·__title /
+     ops-dialog__spacer·__sub·__body / ceiling-empty）父页其它弹窗也在用
+     → 两处各留一份（纯复制，零改动）。VDialog 会 teleport，父 scoped 够不到子内部，故须自带。── */
+.magicflow-dialog[data-v-83d60f7e] {
+  background: rgb(var(--v-theme-surface)) !important;
+  border: 1px solid var(--magicflow-panel-brd);
+  border-radius: 18px;
+  backdrop-filter: blur(16px) saturate(120%);
+  -webkit-backdrop-filter: blur(16px) saturate(120%);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.magicflow-settings-dialog__head[data-v-83d60f7e] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 12px;
+}
+
+.magicflow-settings-dialog__title[data-v-83d60f7e] {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.magicflow-ops-dialog__spacer[data-v-83d60f7e] { flex: 1 1 auto;
+}
+
+.magicflow-ops-dialog__sub[data-v-83d60f7e] { padding: 6px 18px 4px; font-size: 12px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+}
+
+.magicflow-ops-dialog__body[data-v-83d60f7e] { padding: 6px 18px 20px; overflow: auto; flex: 1 1 auto; min-height: 0;
+}
+
+.magicflow-ceiling-empty[data-v-83d60f7e] { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); text-align: center; padding: 20px 0;
+}
+
+
+/* ── 站点报表（11.10.0）：站点级逐条种子状态（专属选择器，随弹窗迁入）── */
+.magicflow-sitereport__bar[data-v-83d60f7e] { display: flex; align-items: center; gap: 10px;
+}
+
+.magicflow-sitereport__site[data-v-83d60f7e] { flex: 1 1 auto; max-width: 22rem;
+}
+
+.magicflow-sitereport__stats[data-v-83d60f7e] { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-block-end: 10px;
+}
+
+/* ★ 15.16.0 站点流量块（弹窗顶部）：账号实时数据（比例/上传/下载/魔力/做种）── */
+.magicflow-sitereport__live[data-v-83d60f7e] { background: rgba(var(--v-theme-primary), 0.06); border: 1px solid rgba(var(--v-theme-primary), 0.18); border-radius: 10px; padding: 8px 10px; margin-block-end: 10px;
+}
+
+.magicflow-sitereport__live-head[data-v-83d60f7e] { display: flex; align-items: center; gap: 8px; margin-block-end: 6px;
+}
+
+.magicflow-sitereport__live-t[data-v-83d60f7e] { font-size: 12.5px; font-weight: 600;
+}
+
+.magicflow-sitereport__live-uid[data-v-83d60f7e] { font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+}
+
+.magicflow-sitereport__live-grid[data-v-83d60f7e] { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px;
+}
+
+.magicflow-sitereport__live-gap[data-v-83d60f7e] { margin-block-start: 6px; font-size: 11.5px; line-height: 1.5; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+}
+
+.magicflow-sitereport__live-cell[data-v-83d60f7e] { text-align: center; min-width: 0;
+}
+
+.magicflow-sitereport__live-cell b[data-v-83d60f7e] { display: block; font-size: 14px; font-weight: 700; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.magicflow-sitereport__live-cell span[data-v-83d60f7e] { font-size: 10.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+}
+
+.magicflow-sitereport__live-empty[data-v-83d60f7e] { font-size: 12px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+}
+
+.magicflow-sitereport__stat[data-v-83d60f7e] { background: rgba(var(--v-theme-on-surface), 0.04); border-radius: 10px; padding: 8px 10px; text-align: center;
+}
+
+.magicflow-sitereport__stat b[data-v-83d60f7e] { display: block; font-size: 20px; font-weight: 700; line-height: 1.15;
+}
+
+.magicflow-sitereport__stat span[data-v-83d60f7e] { font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+}
+
+.magicflow-sitereport__stat.is-danger b[data-v-83d60f7e] { color: rgb(var(--v-theme-error));
+}
+
+.magicflow-sitereport__chips[data-v-83d60f7e] { display: flex; flex-wrap: wrap; gap: 6px; margin-block-end: 10px;
+}
+
+.magicflow-sitereport__chips--l2[data-v-83d60f7e] { margin-block-end: 8px;
+}
+
+.magicflow-sitereport__chip-label[data-v-83d60f7e] { align-self: center; font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); margin-inline-end: 2px;
+}
+
+.magicflow-sitereport__note[data-v-83d60f7e] { font-size: 12px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); margin-block-end: 8px;
+}
+
+.magicflow-sitereport__err[data-v-83d60f7e] { font-size: 12px; color: rgb(var(--v-theme-error)); margin-block-end: 8px;
+}
+
+.magicflow-sitereport__list[data-v-83d60f7e] { display: flex; flex-direction: column; gap: 2px;
+}
+
+.magicflow-sitereport__row[data-v-83d60f7e] { display: flex; align-items: center; gap: 9px; padding: 7px 4px; border-radius: 8px;
+}
+
+.magicflow-sitereport__row[data-v-83d60f7e]:hover { background: rgba(var(--v-theme-on-surface), 0.04);
+}
+
+.magicflow-sitereport__row-b[data-v-83d60f7e] { flex: 0 0 auto;
+}
+
+.magicflow-sitereport__row-main[data-v-83d60f7e] { flex: 1 1 auto; min-width: 0;
+}
+
+.magicflow-sitereport__row-t[data-v-83d60f7e] { font-size: 13px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.magicflow-sitereport__row-s[data-v-83d60f7e] { font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.magicflow-sitereport__row-size[data-v-83d60f7e] { flex: 0 0 auto; font-size: 12px; font-weight: 600; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+}
+@media (max-width: 959px) {
+
+.magicflow-sitereport__stats[data-v-83d60f7e] { grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.magicflow-sitereport__live-grid[data-v-83d60f7e] { grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.magicflow-sitereport__bar[data-v-83d60f7e] { flex-wrap: wrap;
+}
+
+.magicflow-sitereport__site[data-v-83d60f7e] { max-width: none;
+}
+}
+
+@media (max-width: 959px) {
+
+.magicflow-ops-dialog__body[data-v-83d60f7e] { padding: 4px 14px 18px;
+}
+}

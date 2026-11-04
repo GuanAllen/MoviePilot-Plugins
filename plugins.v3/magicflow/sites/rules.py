@@ -1,12 +1,12 @@
-"""站点规则库：H&R（Hit and Run）/ 最短保种时长 / 做种数上限。
+"""站点规则库：H&R（Hit and Run）/ 义务工时 / 达标期限 / 做种数上限。
 
 **为什么需要**：跨站免费取种会从兄弟站「下回来一份」——那份种在兄弟站仍然背着
-H&R 保种义务（例：学校 BTSchool 要求挂种 10 小时）。这个义务**只跟站点有关**，
+H&R 义务工时（例：学校 BTSchool 要求挂种 10 小时）。这个义务**只跟站点有关**，
 所以必须有一张**按站点**的规则表，否则只能靠人肉硬编码。
 
 **来源优先级**（高 → 低）：
 
-1. ``manual`` —— 设置面板「跨站 → 站点保种时长（域名=小时）」手填；
+1. ``manual`` —— 设置面板「跨站 → 来源站义务工时（域名=小时）」手填；
 2. ``probe`` —— 抓站点页面（``/myhr.php``、``/rules.php``）解析出来的；
 3. ``builtin`` —— 本模块内置的已知规则（人工核对过的常识）；
 4. 全局默认（``CROSSSEED_SEED_HOURS_DEFAULT``）。
@@ -35,7 +35,10 @@ RULES_KEY = "site_rules"
 # ============================================================
 # 字段说明：
 #   hr          : 是否有 H&R 制度（None = 未知）
-#   seed_hours  : H&R 要求的最短保种时长（小时；None = 未知）
+#   seed_hours        : 达标期限(h)——站点给的完成期限;保守取下,同句同时抓到「N天」和「M小时」时取 N×24
+#   seed_window_hours : 达标期限(h)——同上,显式窗口列;与 seed_hours 同义,优先读它
+#   seed_need_hours   : 义务工时(h)——站点要求做满的小时数;结清判定与 need_h 同口径
+#   exam_avg_hours    : 考核均值(h)——新手考核的平均做种要求,**不是** H&R,不进账单
 #   seed_cap    : 同时在册做种数上限（None = 未知/不限）
 #   note        : 人话备注
 BUILTIN_RULES: Dict[str, Dict[str, Any]] = {
@@ -46,7 +49,7 @@ BUILTIN_RULES: Dict[str, Dict[str, Any]] = {
         "seed_hours": 240.0,
         "seed_need_hours": 20.0,
         "seed_cap": None,
-        "note": "学校：10 天内做种≥20 小时（rules.php 原文）；保护期取满窗口 10 天（保守）",
+        "note": "学校：10 天内做种≥20 小时（rules.php 原文）；达标期限取满窗口 10 天（保守）",
     },
     "ptcafe.club": {
         "hr": False,
@@ -58,7 +61,7 @@ BUILTIN_RULES: Dict[str, Dict[str, Any]] = {
         "hr": True,
         "seed_hours": 24.0,
         "seed_cap": None,
-        "note": "红豆饭：有 H&R（默认按 24h 保守保种，待探测核实）",
+        "note": "红豆饭：有 H&R（默认按义务工时 24h 保守，待探测核实）",
     },
     "cspt.top": {
         "hr": False,
@@ -66,7 +69,7 @@ BUILTIN_RULES: Dict[str, Dict[str, Any]] = {
         #   （之前 probe(myhr.php/rules.php) 抓不到条款 → 一直按未知保守 24h，现改为明确「无 H&R」。）
         "seed_hours": 0.0,
         "seed_cap": None,
-        "note": "财神：**无 H&R**（主人确认）→ 不做 H&R 保种保护、不计欠 H&R。",
+        "note": "财神：**无 H&R**（主人确认）→ 不做 H&R 义务工时保护、不计欠 H&R。",
     },
     "cspt.cc": {
         "hr": False,
@@ -116,7 +119,7 @@ BUILTIN_RULES: Dict[str, Dict[str, Any]] = {
 # 分层原则（别越界）：
 #   · **类型级只提供「怎么读」+ 兜底默认**，永远**不给站点阈值结论**——
 #     同一框架下站点差异很大（财神明确无 H&R，而其它 NexusPHP 站有；学校 20h vs 红豆饭 24h）。
-#   · 阈值结论（有无 H&R / 保种小时 / 上限）一律**站点级**（探测或手填）。
+#   · 阈值结论（有无 H&R / 义务工时 / 达标期限 / 上限）一律**站点级**（探测或手填）。
 #   · 兜底默认里 ``hr/seed_hours/...`` 一律 **None = 未知**，交给既有「未知保守」逻辑，
 #     因此**不改变任何既有行为**，只是把「未知」这层写明白、可看。
 FRAMEWORK_RULE_DEFAULTS: Dict[str, Dict[str, Any]] = {
@@ -126,7 +129,7 @@ FRAMEWORK_RULE_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "seed_need_hours": None,
         "seed_cap": None,
         "probe_paths": ("myhr.php", "rules.php"),
-        "note": "NexusPHP 家族：H&R/保种以站点 myhr.php / rules.php 为准；"
+        "note": "NexusPHP 家族：H&R/义务工时以站点 myhr.php / rules.php 为准；"
                 "同类站结构一致，解析走同一套。",
     },
     "gazelle": {
@@ -217,7 +220,7 @@ def framework_probe_paths(framework: str) -> Tuple[str, ...]:
 
 
 def _fw_masks(fw: str):
-    """按框架取（H&R / 排除 / 允许撤种 / 保种动作）四个正则；规则包缺项 → 兜底默认。"""
+    """按框架取（H&R / 排除 / 允许撤种 / 做种动作）四个正则；规则包缺项 → 兜底默认。"""
     fw = str(fw or "unknown").strip().lower() or "unknown"
 
     def _m(kind: str, fallback: str):
@@ -249,7 +252,7 @@ def _hours_in(seg: str, fw: str = "nexusphp"):
 
 
 def parse_hr_generic(html_text: str, framework: str = "unknown") -> Dict[str, Any]:
-    """**通用**（非 NexusPHP）H&R/保种解析：关键词 + 数字，**低可信**。
+    """**通用**（非 NexusPHP）H&R/做种时长解析：关键词 + 数字，**低可信**。
 
     保守纪律：
       · 只有「同一句里同时出现 H&R 关键词 + 明确时长」才判 ``hr=True``；
@@ -389,11 +392,11 @@ _PERMIT_WITHDRAW_RE = _rx(
 )
 # 「同一句里」的 H&R 关键词
 _HR_TOKENS = _rx(f"{_NEXUS}:hr_tokens", _tok_alt(_NEXUS, "hr", _D_HR_TOKENS))
-# 「同一句里」的保种动作词
+# 「同一句里」的做种动作词
 _SEED_TOKENS = _rx(f"{_NEXUS}:seed_tokens", _tok_alt(_NEXUS, "seed", _D_SEED_TOKENS))
 
 # 「考核指标」句式：指标N：平均做种时间, 要求：30 Hour —— 这是**新人考核的达标线**，
-# 不是 H&R 规则，必须分开存（否则会把考核要求误当成保种义务）。
+# 不是 H&R 规则，必须分开存（否则会把考核要求误当成义务工时）。
 _EXAM_RE = _rx(f"{_NEXUS}:exam", str(_fire(_NEXUS, "exam") or r"指标|平均做种时间|考核|达标线|要求\s*[:：]"))
 # 明确的规则句式（最可信）：必须/需/要求/至少 ...
 _RULE_NEED_RE = _rx(f"{_NEXUS}:rule_need", _tok_alt(_NEXUS, "need", _D_RULE_NEED))
@@ -610,11 +613,26 @@ class SiteRules:
         return self._cache
 
     def _write(self) -> None:
-        try:
-            self._save(key=RULES_KEY, value=self.items())
-        except Exception as err:  # noqa: BLE001
-            if self._log:
-                self._log(f"站点规则:写入失败:{err}", "warning")
+        """落库；**死锁/并发写冲突重试**（19.10.10）。
+
+        踩过（2026-10-27 17:04）：多个重载实例同时探测，同一批 ``mf_site`` 行互相覆盖 →
+        ``psycopg2 DeadlockDetected`` 被这里吞掉 → 规则其实没写进去，但调用方以为成功。
+        死锁是**可重试**错误（事务已回滚），退避重试一次通常就过；仍失败才报 warning。
+        根因（并发探测）已在 ``_rules_probe_guard`` 堵住，这里是第二道保险。
+        """
+        last = None
+        for _i in range(3):
+            try:
+                self._save(key=RULES_KEY, value=self.items())
+                return
+            except Exception as err:  # noqa: BLE001
+                last = err
+                _txt = str(err).lower()
+                if "deadlock" not in _txt and "could not serialize" not in _txt:
+                    break
+                time.sleep(0.3 * (_i + 1))
+        if self._log:
+            self._log(f"站点规则:写入失败:{last}", "warning")
 
     def get(self, domain: str) -> Dict[str, Any]:
         d = _norm_domain(domain)

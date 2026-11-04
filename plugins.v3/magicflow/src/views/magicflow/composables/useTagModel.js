@@ -8,7 +8,7 @@
 import { ref } from 'vue'
 import { SORT_RULE_TYPES } from '../../../utils'
 
-// ★ P4：纯函数 / 常量提到 module 级具名导出，供 dialogs/SettingsDialog.vue 复用（单一真值源）。
+// ★ P4：纯函数 / 常量提到 module 级具名导出，供 dialogs/SettingsDialog.js 复用（单一真值源）。
 export const sortRuleTypeOptions = SORT_RULE_TYPES
 export function sortRuleText(r) {
   return (SORT_RULE_TYPES.find(t => t.value === r?.type)?.text) || r?.type || '-'

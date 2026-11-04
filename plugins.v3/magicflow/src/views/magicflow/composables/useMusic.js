@@ -11,6 +11,7 @@ export function useMusic({ api }) {
   const musicItemsBusy = ref(false)
   const musicTab = ref('inflight')   // 'inflight' | 'done'
   const musicActing = ref('')        // `${hash}:${action}`
+  const musicImporting = ref('')     // ★ 19.12.0：正在提交入库的 hash
   const musicMsg = ref('')
   let musicTimer = null
 
@@ -125,14 +126,41 @@ export function useMusic({ api }) {
     }
   }
 
+  // ★ 19.12.0：单颗入库（下完自动那条的**手动补跑**口）
+  //   Master 2026-11-03：「这次是我们手动整理的，这个功能需要做进去」——
+  //   自动入队覆盖不了「下完很久了 / 上次失败 / 老种」这些情况，得留一个人能点的地方。
+  //   后端提交即返回（后台线程跑），所以这里不做 loading 转圈，只回一句「已入队」。
+  async function importMusic(row) {
+    const h = String(row?.hash || '')
+    if (!h) return
+    musicMsg.value = ''
+    musicImporting.value = h
+    try {
+      const res = unwrapResponse(await api.features.musicSettle(h, true))
+      const d = res?.summary || res || {}
+      const route = d.route ? `走 ${d.route === 'mp' ? 'MP 整理' : '硬链接入库'}` : ''
+      const n = Number(d.total || 0)
+      musicMsg.value = d.queued
+        ? `已入队后台入库：${n || '?'} 首${route ? '，' + route : ''}（job ${d.job_id || '—'}，进度看「后台任务」）`
+        : (d.note || '入队未生效，详见插件日志')
+      loadMusicItems()
+    } catch (err) {
+      musicMsg.value = `❌ ${err?.message || String(err)}`
+    } finally {
+      musicImporting.value = ''
+    }
+  }
+
   return {
     actMusic,
     downloadMusic,
+    importMusic,
     loadMusicItems,
     musicActing,
     musicCandidates,
     musicDownloading,
     musicHistory,
+    musicImporting,
     musicInflight,
     musicItems,
     musicItemsBusy,

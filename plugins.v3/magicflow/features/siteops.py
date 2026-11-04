@@ -6,7 +6,6 @@
 
 import random
 import re
-import threading
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -15,7 +14,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.schemas import Response
 from app.sdk.logging import logger
 
-from ..recommend import _norm
+from ..dlops import pause as dl_pause   # ★ 19.10.13 暂停唯一出口（归因 + 防抖）
+from .. import shared                   # ★ 19.10.25 进程级共享槽（跨热重载）
 from ..sites.rules import (
     BUILTIN_RULES,
     SiteRules,
@@ -29,7 +29,10 @@ from ..sites.formula_fetch import (
 
 
 from ..common import (
+    RULES_INTERVAL_MINUTES,
     RULES_PROBE_DELAY,
+    RULES_RETRY_MAX_MINUTES,
+    RULES_RETRY_MIN_MINUTES,
     SITE_FORMULA_STALE_MAX,
     site_guard,
 )
@@ -75,51 +78,31 @@ class SiteOpsMixin:
     def _site_rules(self) -> SiteRules:
         """站点规则账本(H&R / 保种时长 / 做种上限)，save_data 持久化。
 
-        ★ 进程级单例（放 ``__magicflow_shared__``）：热重载会换掉插件实例，
+        ★ 进程级单例（``shared.singleton``）：热重载会换掉插件实例，
         若新旧实例各持一份内存账本，旧实例的整表写入会把新实例的改动**盖回去**
         （踩过：探测写进去的促销规则被旧实例的旧快照覆盖）。
         """
         obj = getattr(self, "_site_rules_obj", None)
         if obj is not None:
             return obj
-        try:
-            import sys as _sys
-            import types as _types
 
-            _key = "__magicflow_shared__"
-            mod = _sys.modules.get(_key)
-            if mod is None:
-                mod = _types.ModuleType(_key)
-                _sys.modules[_key] = mod
-            # ★ 幂等补齐所有共享属性：任一入口先建了模块，都不能少了 lock
-            #   （踩过：__init__ 只建 instances/counters → persistence.__new__ 里 sh.lock 直接 AttributeError，插件加载失败）
-            for _attr, _factory in (("instances", dict), ("counters", dict), ("lock", threading.Lock)):
-                if not hasattr(mod, _attr):
-                    setattr(mod, _attr, _factory())
-            obj = mod.instances.get("site_rules")
-            # ★ 热重载后模块里是「新的类」，但单例可能还是「旧类的实例」→ 新方法会 AttributeError。
-            #   踩过：旧 SiteRules 没有 hr_of → H&R 判定全落到「未知保守」，规则库整块失效。
-            if obj is not None and not isinstance(obj, SiteRules):
-                obj = None
-            if obj is None:
-                _st = get_site_store(self)
-                _get, _save = _st.callbacks("site_rules")
-                obj = SiteRules(
-                    get_data=_get,
-                    save_data=_save,
-                    log=self._log,
-                    framework_of=self._framework_of,
-                )
-                mod.instances["site_rules"] = obj
-        except Exception:  # noqa: BLE001
+        def _build() -> SiteRules:
+            """按本实例的 store 回调新建一份规则账本（singleton 只在需要时调它）。"""
             _st = get_site_store(self)
             _get, _save = _st.callbacks("site_rules")
-            obj = SiteRules(
+            return SiteRules(
                 get_data=_get,
                 save_data=_save,
                 log=self._log,
                 framework_of=self._framework_of,
             )
+
+        try:
+            # cls 校验挡的是「热重载后类是新的、单例还是旧类实例」：
+            # 旧 SiteRules 没有 hr_of → H&R 判定全落到「未知保守」，规则库整块失效（踩过）。
+            obj = shared.singleton("site_rules", _build, SiteRules)
+        except Exception:  # noqa: BLE001
+            obj = _build()          # 共享槽不可用时至少本实例能用（行为同旧版兜底）
         self._site_rules_obj = obj
         return obj
 
@@ -161,20 +144,101 @@ class SiteOpsMixin:
                 return True
         return False
 
+    RULES_PROBE_STATE_KEY = "rules_probe_state"
+
+    def _rules_probe_guard(self):
+        """★ 19.10.10：**进程内跨实例**的探测互斥锁（抢不到返回 None）。
+
+        为什么必须跨实例：每次热重载都会新建实例、并在加载 60s 后补跑一次；旧实例的线程还在跑。
+        实测（2026-10-27 17:04）8 个重载各起一条补跑线程 → 同时探测 8 轮 → 同一批 mf_site
+        行互相覆盖并触发 ``psycopg2 DeadlockDetected``。锁挂在共享槽上
+        （``shared.lock``，与 ``_site_rules`` 单例同源），热重载不重建。
+        """
+        try:
+            # legacy：本处旧代码把同一把锁存在 instances["rules_probe_lock"]，
+            # 迁移那一刻热重载会新旧并存 —— 不改名就是两个实例各拿一把锁。
+            lk = shared.lock("rules_probe", legacy="rules_probe_lock")
+            return lk if lk.acquire(blocking=False) else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _rules_probe_state(self) -> Dict[str, Any]:
+        """上次规则探测的状态（持久化，重载不丢）。
+
+        ``at`` = 最近一次**成功**探测的时刻；``fail`` / ``fail_at`` = 连续失败次数与时刻。
+        """
+        try:
+            st = self.get_data(self.RULES_PROBE_STATE_KEY) or {}
+        except Exception:  # noqa: BLE001
+            st = {}
+        return dict(st) if isinstance(st, dict) else {}
+
+    def _rules_probe_record(self, ok: bool, n: int = 0) -> None:
+        """记一笔探测结果（成功清退避，失败累加）。"""
+        st = self._rules_probe_state()
+        now = float(time.time())
+        if ok:
+            st.update({"at": now, "ok_n": int(n), "fail": 0, "fail_at": 0.0})
+        else:
+            st.update({"fail": int(st.get("fail") or 0) + 1, "fail_at": now})
+        try:
+            self.save_data(key=self.RULES_PROBE_STATE_KEY, value=st)
+        except Exception as err:  # noqa: BLE001
+            self._log(f"站点规则:探测状态落盘失败:{err}", "warning")
+
     def rules_watch(self) -> None:
-        """站点规则库刷新(worker)：逐站探测并入库。"""
+        """站点规则库刷新(worker)：**到点才探**。
+
+        ★ 19.10.9：周期判定不再交给调度器（interval 首轮 = 注册 + 整周期，而插件每次热重载都会
+        重新注册 → 定时器反复归零，实测 157 次重载 0 次探测）。改为：job 每 ``RULES_TICK_MINUTES``
+        醒一次，这里按持久化的 ``rules_probe_state['at']`` 判断是否满一个 ``RULES_INTERVAL_MINUTES``；
+        失败按指数退避重试（30min → 6h 封顶），避免一次抓取失败就等一周。
+        """
         if not bool(getattr(self, "_rules_cfg", {}).get("auto_refresh", True)):
             return
+        now = float(time.time())
+        st = self._rules_probe_state()
+        last_ok = float(st.get("at") or 0.0)
+        if last_ok > 0 and (now - last_ok) < float(RULES_INTERVAL_MINUTES) * 60.0:
+            return                                    # 未到周期
+        _fail = int(st.get("fail") or 0)
+        if _fail > 0:
+            _wait_min = min(float(RULES_RETRY_MAX_MINUTES),
+                            float(RULES_RETRY_MIN_MINUTES) * (2 ** (_fail - 1)))
+            if now - float(st.get("fail_at") or 0.0) < _wait_min * 60.0:
+                return                                # 退避中
+        _lk = self._rules_probe_guard()
+        if _lk is None:
+            return                                    # 已有探测在跑（别的实例/线程）
         if not self._acquire_worker_slot("站点规则"):
+            _lk.release()
             return
         try:
             resp = self.probe_site_rules(site_id=0, persist=True)
+            if not bool(getattr(resp, "success", False)):
+                raise RuntimeError(str(getattr(resp, "message", "") or "探测失败"))
             data = getattr(resp, "data", None) or {}
-            n = len(data.get("results") or [])
-            self._log(f"魔流:站点规则自动刷新完成（{n} 站）")
+            rows = data.get("results") or []
+            if not rows:
+                raise RuntimeError("没有可探测的站点")
+            ok_n = sum(1 for r in rows if r.get("stored") or r.get("parsed"))
+            if ok_n <= 0:
+                # 全站被跳过（无 cookie / PV 预算不足 / 页面都没抓到）→ 不算成功，走退避重试，
+                # 否则会把「什么都没拿到」误记成「已刷新」，然后干等一周。
+                raise RuntimeError(f"{len(rows)} 站全部无结果（无 cookie / PV 预算不足 / 抓取失败）")
+            self._rules_probe_record(ok=True, n=ok_n)
+            self._log(f"魔流:站点规则自动刷新完成（{ok_n}/{len(rows)} 站有结果）")
         except Exception as err:  # noqa: BLE001
-            self._log(f"站点规则刷新异常:{err}", "warning")
+            self._rules_probe_record(ok=False)
+            _n = int(self._rules_probe_state().get("fail") or 1)
+            _nx = min(float(RULES_RETRY_MAX_MINUTES),
+                      float(RULES_RETRY_MIN_MINUTES) * (2 ** (_n - 1)))
+            self._log(f"站点规则刷新失败:{err}（第 {_n} 次，约 {_nx:g} 分钟后重试）", "warning")
         finally:
+            try:
+                _lk.release()
+            except Exception:  # noqa: BLE001
+                pass
             self._release_worker_slot()
 
     def site_lifecycle(self) -> None:
@@ -513,6 +577,28 @@ class SiteOpsMixin:
                 f"站点规则:探测完成 {ok_n}/{len(results)} 站有结果"
                 f"（H&R 只走收件箱欢迎短讯的规则地址；paths={paths or '自动'}）"
             )
+            # ★ 19.10.10：把「没结果的站 + 卡在哪一环」写清楚。
+            #   踩过：只报 10/15，看不出剩下 5 站是因为没 cookie、PV 不够、收件箱读不到，
+            #   还是规则页里真没关键字 —— 于是「自动获取规则好像有问题」只能靠猜。
+            _miss: List[str] = []
+            for _r in results:
+                if _r.get("stored") or _r.get("parsed"):
+                    continue
+                _why = str(_r.get("skipped") or "").strip()
+                if not _why:
+                    _wv2 = _r.get("welcome") or {}
+                    if isinstance(_wv2, dict) and _wv2.get("ok") is False:
+                        _why = f"收件箱读不到({str(_wv2.get('error') or '')[:24]})"
+                    elif _r.get("pages"):
+                        _why = "规则页无 H&R 关键字"
+                    else:
+                        _why = "未解析到规则地址"
+                _miss.append(f"{_r.get('name') or _r.get('domain')}={_why}")
+            if _miss:
+                self._log(
+                    f"站点规则:无结果 {len(_miss)} 站 → " + "；".join(_miss[:12])
+                    + ("…" if len(_miss) > 12 else "")
+                )
             return Response(success=True, message=f"已探测 {len(results)} 个站点，{ok_n} 个有结果并入库", data={
                 "results": results,
                 "rules": self._rules_view(),
@@ -748,7 +834,12 @@ class SiteOpsMixin:
                 }
             except Exception:  # noqa: BLE001
                 _rp_info = {}
-            return Response(success=True, message="OK", data={"rules": self._rules_view(), "rulepack": _rp_info})
+            return Response(success=True, message="OK", data={
+                "rules": self._rules_view(),
+                "rulepack": _rp_info,
+                # ★ 19.10.9：把「上次探测」摊到接口上——之前自动探测从不触发也看不出来
+                "probe": self._rules_probe_state(),
+            })
         except Exception as err:  # noqa: BLE001
             return Response(success=False, message=str(err))
 
@@ -1376,7 +1467,13 @@ def deleted_site_act(host: Any, site_id: Any, action: str, reuse_only: Any = 0,
         base["message"] = "下载器不可用"
         return base
     try:
-        n, err = dl.pause_torrents(hashes) if act == "pause" else dl.resume_torrents(hashes)
+        if act == "pause":
+            # ★ 19.10.13：人工运维点名暂停 → force（用户意图优先），但留归因日志 + 防抖。
+            _pr = dl_pause(host, hashes, by="siteops:deleted_site",
+                           reason=f"站点已删除:{_verb}", force=True)
+            n, err = int(_pr.get("done") or 0), (_pr.get("error") or None)
+        else:
+            n, err = dl.resume_torrents(hashes)
     except Exception as e:  # noqa: BLE001
         base["message"] = f"操作失败:{e}"
         return base

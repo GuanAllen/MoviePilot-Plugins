@@ -7,6 +7,8 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from ..dutyops import claim_hashes
+
 
 class ProtectionMixin:
     """protection 功能集（原 MagicFlow 方法原样搬入）。"""
@@ -20,7 +22,7 @@ class ProtectionMixin:
     ) -> Dict[str, Any]:
         """★ 保护裁决的**唯一真值源**（docs/MODULES.md X3）：判定哪些种「不能动」。
 
-        - ``hard``（永不删、永不换出）：手动保留 / 跨站来源份（H&R 保种期内）/ 欠 H&R / 未下完
+        - ``hard``（永不删、永不换出）：手动保留 / 欠 H&R（账单口径）/ 未下完
         - ``soft``（可换出但不可删）：库内资产（已整理 / 下载历史命中）/ 同站纳管的自有种
           —— 换出只是「暂停做种、不删种」，不具破坏性，故不列入硬保护。
         - ``incomplete``（★ 8.0.2）：**仅因「未下完」**而进 ``hard`` 的子集。单独给出，是为了让
@@ -62,19 +64,22 @@ class ProtectionMixin:
         for h in _assets:
             why.setdefault(h, "库内资产（已整理/下载历史）")
         soft |= _assets
+        # ★ 19.10.11：硬保护里的「H&R 保种责任」改由 **H&R 账单**给出
+        #   （`_hr_bill_owed_hashes`）—— 旧形态是「跨站来源份集合」自己算工时
+        #   （`CrossSeedSources` 的 seeded_sec vs hours），与账单 `seeded_h` 同源却各存一份
+        #   快照 → 站点规则一改两份就漂。现在工时真值源只剩账单一处，跨站来源份 / 刷流 /
+        #   音乐 / 点播同口径。
+        #   （下面「欠 H&R 义务」是**逐种**判定，只覆盖本任务在册的种；这里是**集合式**兜底。）
         try:
-            _cs = set(self._crossseed_source_hashes() or set())
+            _owed = set(self._hr_bill_owed_hashes() or set())
         except Exception:  # noqa: BLE001
-            _cs = set()
-        for h in _cs:
-            why.setdefault(h, "跨站来源份（H&R 保种期）")
-        hard |= _cs
+            _owed = set()
+        for h in _owed:
+            why.setdefault(h, "欠 H&R 义务（账单）")
+        hard |= _owed
         # ★ 认领（claim）= 保种承诺：已认领的种进硬保护、永不删
         #   （否则「认领了又被自己删掉 → 站点判不达标 → 扣魔力」，7.14.0）
-        try:
-            _claim = set(self._claim_protected_hashes(getattr(task, "site_id", None)) or set())
-        except Exception:  # noqa: BLE001
-            _claim = set()
+        _claim = claim_hashes(self, getattr(task, "site_id", None))
         for h in _claim:
             why.setdefault(h, "已认领（保种承诺）")
         hard |= _claim

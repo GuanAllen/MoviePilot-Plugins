@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import time
 import types
 from datetime import datetime
 from pathlib import Path
@@ -95,9 +96,26 @@ class Fake(MusicMixin):
         self._store = SimpleNamespace(journal=_Journal(journal or []))
         self._dl = downloader
         self._music_line_hashes = None  # None=按 _is_music_line；set=白名单
+        self._cachemem = {}             # ★ 19.10.11：候选缓存上 TierCache → 内存桩
 
     def _tag_all_torrents(self):
         return dict(self._snap)
+
+    # --- 缓存层桩（RuntimeMixin._cache_set/_cache_get 的离线等价物）
+    def _cache_set(self, region, key, value, ttl):
+        self._cachemem.setdefault(region, {})[key] = (time.time(), value, ttl)
+
+    def _cache_get(self, region, key, ttl):
+        ent = self._cachemem.get(region, {}).get(key)
+        if not ent:
+            return None
+        ts, value, _ = ent
+        if time.time() - ts > ttl:
+            return None
+        return value
+
+    def _get_site(self, sid):
+        return None  # 站点查不到 → media_cand_hydrate 原样返回（无凭据回填）
 
     def _tag_state(self):
         return _Ledger(self._ledger)

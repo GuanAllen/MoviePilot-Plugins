@@ -63,18 +63,12 @@ class ActionsMixin:
         if not task:
             return Response(success=False, message="任务不存在")
 
-        # ★ 手动删除前的保护闸门（欠 H&R / 跨站来源份保种期）
+        # ★ 手动删除前的保护闸门（欠 H&R）
+        #   19.10.11b：跨站来源份不再单独拦 —— 它的义务已并入 H&R 账单，
+        #   `_hr_obligation` 第三来源（hrbill）自动覆盖。没欠债的来源份可以删。
         try:
             _h = str(hash or "").strip().lower()
             if _h:
-                _src = set()
-                try:
-                    _src = {str(x).lower() for x in (self._crossseed_source_hashes() or set())}
-                except Exception:  # noqa: BLE001
-                    _src = set()
-                if _h in _src:
-                    return Response(success=False,
-                                    message="该种是跨站来源份（H&R 保种期内），不能手动删除")
                 _t = (self._tag_all_torrents() or {}).get(_h)
                 if _t is not None:
                     _rec = (self._tag_state().items() or {}).get(_h) or {}

@@ -362,6 +362,55 @@ def t7_music_inflight_not_paused():
     return None
 
 
+def t8_gate_ledger_guard():
+    """★ 19.10.13：闸门先复核账本 —— 在岗（职务 / 占位）的种不许被静默闸代暂停。
+
+    背景：``_silent_pause_gate`` 原先无条件 pause 传入的 hash，全靠调用方先把 state 写对。
+    点播释放/结算会整批递 hash，集合里混进已认领/已保种的种时，当场把在岗种停掉。
+    口径与 ``_silent_audit`` 同源：账本 state 非静默 → 不动；taken_by 是占岗岗位 → 不动；
+    查不到记录（tag_only 辅种副本）→ 照旧暂停（不变量要守）。
+    """
+    hs = {c * 40: _torrent(c * 40, state="stalledUP") for c in "adefg"}
+    led = {
+        "a" * 40: {"state": STATE_SILENT, "sub": SUB_NEW},                    # 真空闲 → 停
+        "d" * 40: {"state": "认领", "sub": SUB_RESOURCE,
+                   "taken_by": "__claim__"},                                  # 认领在岗 → 不动
+        "e" * 40: {"state": STATE_SILENT, "sub": SUB_RESOURCE,
+                   "taken_by": "__keep__"},                                   # 职务漂移但有人占位 → 不动
+        "f" * 40: {"state": "点播", "sub": SUB_RESOURCE,
+                   "taken_by": "__ondemand__"},                               # 在途管道 → 不动
+        # g 不在账本（tag_only 辅种副本）→ 照旧暂停
+    }
+    h = Harness(led, hs)
+    r = h._silent_pause_gate(list(hs.keys()))
+    _ok(int(r.get("paused") or 0) == 2, "闸门只暂停真空闲 + 无记录的种（2 个）")
+    _ok(int(r.get("skipped_on_duty") or 0) == 3, "闸门跳过 3 个在岗种（认领/占位/点播）")
+    _ok(("d" * 40) not in h.pause_calls and ("e" * 40) not in h.pause_calls
+        and ("f" * 40) not in h.pause_calls, "认领 / 占位 / 点播 种确实没收到 pause 请求")
+    _ok(("a" * 40) in h.pause_calls and ("g" * 40) in h.pause_calls,
+        "真空闲种与无记录种照常被暂停（不变量不放松）")
+    # 全是在岗 → 一个都不 pause（不产生无意义的 qB 调用）
+    h2 = Harness({k: v for k, v in led.items() if k != "a" * 40}, hs)
+    r2 = h2._silent_pause_gate(["d" * 40, "e" * 40, "f" * 40])
+    _ok(int(r2.get("paused") or 0) == 0 and not h2.pause_calls,
+        "整批在岗时闸门零写入（不发空 pause）")
+
+    # ★ 19.10.13：审计侧同口径 —— 账本 state 漂移成「静默」但 taken_by 还占着岗 → 不判违规。
+    #   真值源是账本占位（本地），不是 claim_hashes（打站点，失败就空集 → 豁免整体失效）。
+    hs2 = {"h" * 40: _torrent("h" * 40, state="stalledUP"),
+           "i" * 40: _torrent("i" * 40, state="stalledUP")}
+    led2 = {
+        "h" * 40: {"state": STATE_SILENT, "sub": SUB_RESOURCE, "taken_by": "__claim__"},
+        "i" * 40: {"state": STATE_SILENT, "sub": SUB_NEW},   # 真空闲 → 违规
+    }
+    hz = Harness(led2, hs2)
+    hz._claim_protected_hashes = lambda *a, **k: set()   # 模拟站点侧名单拉空
+    a = hz._silent_audit(limit=0)
+    _ok(int((a.get("counts") or {}).get("stalled_violation") or 0) == 1,
+        "名单拉空时，占岗的种仍不被判违背（只有真空闲那个违规）")
+    return None
+
+
 def main():
     t1_dry_run()
     t2_apply_all_subs()
@@ -370,6 +419,7 @@ def main():
     t5_host_wiring()
     t6_tag_only_reconcile()
     t7_music_inflight_not_paused()
+    t8_gate_ledger_guard()
     print(f"\n✅ PASS —— 静默不变量收敛：{CHECKS} 条断言全过")
     return 0
 

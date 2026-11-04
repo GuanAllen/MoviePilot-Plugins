@@ -14,17 +14,11 @@ import re
 import threading
 import time
 from typing import Any, Dict, List, Optional, Set
+from .norm import norm_key
 
 # 榜单/订阅索引缓存 TTL（秒）
 CHART_TTL = 12 * 3600.0
 SUBSCRIBE_TTL = 600.0
-
-_NORM_RE = re.compile(r"[^0-9a-z\u4e00-\u9fff]+")
-
-
-def _norm(s: Any) -> str:
-    """标题规范化（去标点/空格、小写），用于跨源匹配。"""
-    return _NORM_RE.sub("", str(s or "").lower())
 
 
 def recognize(name: str, source: str = "") -> Optional[Any]:
@@ -217,7 +211,7 @@ class RecommendEngine:
         ms, mid = getattr(info, "media_source", None), getattr(info, "media_id", None)
         if ms and mid:
             keys.add(f"sid:{ms}_{mid}")
-        title = _norm(getattr(info, "title", None) or getattr(info, "name", None))
+        title = norm_key(getattr(info, "title", None) or getattr(info, "name", None))
         year = str(getattr(info, "year", "") or "")
         if title:
             keys.add(f"t:{title}")
@@ -297,7 +291,7 @@ class RecommendEngine:
 
     def _recognize_cached(self, name: str, source: str = "") -> Any:
         """识别（带 TTL 缓存）：同一作品名只走一次识别插件链。"""
-        key = (_norm(name) + (("|" + str(source).lower()) if source else ""))
+        key = (norm_key(name) + (("|" + str(source).lower()) if source else ""))
         if not key:
             return None
         now = time.time()

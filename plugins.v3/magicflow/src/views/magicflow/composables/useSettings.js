@@ -10,7 +10,7 @@ import { normalizeSettings } from '../../../utils'
 import { unwrapResponse } from '../../../utils'
 import { MF_SETTINGS_TABS } from '../constants'
 
-// ★ P4：纯函数提到 module 级具名导出，供 dialogs/SettingsDialog.vue 复用（单一真值源）。
+// ★ P4：纯函数提到 module 级具名导出，供 dialogs/SettingsDialog.js 复用（单一真值源）。
 export function settingsTabLabel(key) {
   return (MF_SETTINGS_TABS.find(t => t.key === key) || {}).label || '插件设置'
 }
@@ -45,6 +45,8 @@ export function useSettings({ api, error, notify, emit, saving, loadStatus, sett
   const siteRules = ref([])
   const rulesLoading = ref(false)
   const rulesProbing = ref(false)
+  // ★ 19.10.9：自动探测「上次跑没跑过」摊到界面上（后端 GET /rules 的 probe 字段）
+  const rulesProbeState = ref({})
   const iyuuLoading = ref(false)
   const iyuuTesting = ref(false)
   const iyuuStatus = ref(null)
@@ -78,8 +80,10 @@ export function useSettings({ api, error, notify, emit, saving, loadStatus, sett
     try {
       const res = await api.settings.rules()
       siteRules.value = res?.data?.rules || []
+      rulesProbeState.value = res?.data?.probe || {}
     } catch (e) {
       siteRules.value = []
+      rulesProbeState.value = {}
     } finally {
       rulesLoading.value = false
     }
@@ -91,6 +95,7 @@ export function useSettings({ api, error, notify, emit, saving, loadStatus, sett
       const res = await api.settings.rulesProbe(q)
       if (res?.success === false) throw new Error(res?.message || '探测失败')
       siteRules.value = res?.data?.rules || siteRules.value
+      await loadRules()   // ★ 19.10.9：探测完再拉一次，把「上次探测时间」刷新出来
       return res
     } finally {
       rulesProbing.value = false
@@ -385,6 +390,7 @@ export function useSettings({ api, error, notify, emit, saving, loadStatus, sett
     refreshRules,
     ruleSourceText,
     rulesLoading,
+    rulesProbeState,
     rulesProbing,
     saveActiveSettings,
     saveCloud,

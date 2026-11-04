@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.schemas import Response
 
+from ..dlops import pause as dl_pause   # ★ 19.10.13 暂停唯一出口（守卫 + 防抖 + 归因）
 from ..bonus import (
     calc_bonus_per_hour,
 )
@@ -43,8 +44,11 @@ from ..common import (
     begin_decision_round,
     note_snapshot_pull,
     torrent_data_key,
+    torrent_done,
 )
 from ..downloader_ops import seed_hours_for_hr
+from ..dutyops import claim_hashes
+from ..dutyreg import duty_spec
 
 
 def _data_key(_t: Any) -> str:
@@ -493,7 +497,7 @@ class SilentMixin:
           - owed_hr：``_hr_obligation`` 真值（欠 H&R）——注意：欠债种应由 hr_host 迁到保种，池里不该有；
           - library_asset：库内资产（★ 12.0.0 真值 = ``mf_resource.in_library`` 随资源回填的
             ``rec["in_library"]`` 或身份「资源」；永不删）；
-          - crossseed：``_crossseed_source_hashes``（跨站来源份 H&R 保种期）；
+          - crossseed：``_crossseed_source_hashes``（跨站来源份·欠 H&R 账单未结清）；
           - claim / manual：``_claim_protected_hashes`` / ``store.protected_torrents``（承诺）；
           - stalled_violation：qB 态不在 paused/stopped/queued（= 违背「静默全 paused」不变量）；
           - 其余 → cleanup（清理候选）。
@@ -514,10 +518,7 @@ class SilentMixin:
             cssrc = {str(x).strip().lower() for x in (self._crossseed_source_hashes() or set())}
         except Exception:  # noqa: BLE001
             cssrc = set()
-        try:
-            claim = {str(x).strip().lower() for x in (self._claim_protected_hashes() or set())}
-        except Exception:  # noqa: BLE001
-            claim = set()
+        claim = claim_hashes(self)
         # ★ 13.0.0（Master「辅种应该按资源的身份打标签」）：副本跟随资源身份。
         #   真值源 = 资源账本成员表；另外再按 **保存目录/名字** 兜一层（同数据的副本共享目录）。
         try:
@@ -571,7 +572,7 @@ class SilentMixin:
         _music_inflight: Set[str] = set()
         for _mh, _mt in (snap or {}).items():
             try:
-                if is_music_line(_mt) and float(getattr(_mt, "progress", 0) or 0) < 0.999:
+                if is_music_line(_mt) and not torrent_done(_mt):
                     _music_inflight.add(str(_mh or "").strip().lower())
             except Exception:  # noqa: BLE001
                 continue
@@ -623,14 +624,26 @@ class SilentMixin:
             else:
                 cls = "cleanup"
             counts[cls] = int(counts.get(cls) or 0) + 1
-            if stalled:
+            # ★ 19.10.11：与 tag_only 分支**口径对齐** —— 承诺类（欠 H&R / 跨站来源份 / 认领 /
+            #   手动保护）一律**不判违背**静默不变量（拿不准就不动）。原来只有标签面分支写了这层
+            #   豁免，账本分支漏了：认领种在账本里 state=静默 → 每轮记违规 → 收敛器 pause →
+            #   __claim__ 15 分钟后 resume，形成无意义拉锯（2026-10-28 实测 11 个违规全是认领种）。
+            # ★ 19.10.13：**再加一条「有人占岗就不动」**——只看 ``taken_by`` 的岗位属性，不看外部
+            #   名单。``claim_hashes()`` 是打站点换来的，站点抖一下就返回空集 → 豁免整体失效 →
+            #   在岗的认领种被判违规整批暂停（qB 日志实证：每小时 :1x 分集中暂停 929 个，
+            #   其中就含认领种）。账本占位是本地真值，不会因为外部接口失败而消失。
+            _own = str((rec or {}).get("taken_by") or "").strip()
+            _spec = duty_spec(_own) if _own else None
+            _on_duty = bool(_spec is not None and _spec.occupancy)
+            _exempt = _on_duty or cls in ("owed_hr", "crossseed", "claim", "manual")
+            if stalled and not _exempt:
                 counts["stalled_violation"] = int(counts["stalled_violation"]) + 1
             if _lim and len(items) >= _lim:
                 continue
             items.append({
                 "hash": hh, "site": site, "sub": sub,
                 "class": cls, "owed_hr": bool(owed),
-                "stalled_violation": bool(stalled),
+                "stalled_violation": bool(stalled and not _exempt),
                 "state": str(getattr(t, "state", "") or "") if t is not None else "",
                 "size_gb": round(float((rec or {}).get("size_gb") or (getattr(t, "size_gb", 0) or 0.0)), 2),
             })
@@ -883,8 +896,10 @@ class SilentMixin:
 
         ★ 15.8.11 同版补丁（口径 #2）：**唯一例外** = 音乐线「下载中」（``progress<1``）不暂停
         —— 与点播 inflight 同等对待；下完（``progress>=1``）自动回到本方法管辖。
+
+        ★ 19.10.13：**暂停前复核账本**（见下方「最后一道闸也看账本」）—— 只暂停真正没岗位的种。
         """
-        rep: Dict[str, Any] = {"paused": 0, "failed": 0}
+        rep: Dict[str, Any] = {"paused": 0, "failed": 0, "skipped_on_duty": 0}
         if not SILENT_HR_SPLIT_ENABLED:
             rep["disabled"] = True
             return rep
@@ -904,25 +919,30 @@ class SilentMixin:
         for _h in live:
             _t = snap.get(_h)
             try:
-                if is_music_line(_t) and float(getattr(_t, "progress", 0) or 0) < 0.999:
+                if is_music_line(_t) and not torrent_done(_t):
                     _inflight.append(_h)
             except Exception:  # noqa: BLE001
                 continue
         if _inflight:
             rep["skipped_music_inflight"] = len(_inflight)
             live = [h for h in live if h not in _inflight]
+        # ★ 19.10.13：守卫 / 防抖 / 归因**全部移到 ``dlops.pause``** —— 这才是「抽公共模块」
+        #   的意义：「在岗不暂停」这条判据只写一处，静默闸、点播释放、H&R 释放、run_mode
+        #   遣散共用同一份。原来四处各写一段、略有出入，实测认领种被反复暂停。
+        #   dlops 的判据与本方法原来那段完全同源（state 非静默 或 taken_by 占岗 → 不动；
+        #   查不到记录 → 照旧暂停，不变量要守），所以直接交给它，不再维护第二份。
         if not live:
             return rep
-        try:
-            dl = self._get_downloader("qbittorrent")
-            if dl is not None:
-                n, _e = dl.pause_torrents(live)
-                rep["paused"] = int(n or 0)
-                if _e:
-                    rep["failed"] = int(rep.get("failed") or 0) + 1
-        except Exception as err:  # noqa: BLE001
+        _pr = dl_pause(self, live, by="silent_gate", reason="静默不变量")
+        rep["paused"] = int(_pr.get("done") or 0)
+        if _pr.get("vetoed"):
+            rep["skipped_on_duty"] = int(_pr.get("vetoed") or 0)
+            rep["skip_reasons"] = dict(_pr.get("reasons") or {})
+        if _pr.get("flapped"):
+            rep["skipped_flapping"] = int(_pr.get("flapped") or 0)
+        if _pr.get("error"):
             rep["failed"] = int(rep.get("failed") or 0) + 1
-            self._log(f"静默闸:暂停失败:{err}", "warning")
+            self._log(f"静默闸:暂停失败:{_pr['error']}", "warning")
         return rep
 
     def _silent_enforce_pause(self, apply: bool = True, limit: int = 0) -> Dict[str, Any]:
@@ -1046,10 +1066,7 @@ class SilentMixin:
             if rec.get("manual_paused"):
                 rep["skipped_manual"] = int(rep["skipped_manual"]) + 1
                 continue
-            try:
-                done = float(getattr(t, "progress", 0) or 0) >= 0.999
-            except (TypeError, ValueError):
-                done = False
+            done = torrent_done(t)
             reuse = (MARK_REUSE in tags) or is_asset_tags(tags) or bool(rec.get("in_library"))
             if not done and not reuse:
                 rep["skipped_incomplete"] = int(rep["skipped_incomplete"]) + 1
@@ -1097,7 +1114,7 @@ class SilentMixin:
         Master 2026-10-07 01:21「统一成身份就好」——取代过去「按 ``魔流-跨站`` / ``魔流-辅种``
         / ``已整理·辅种`` 标签各自硬豁免」的多套判据（那正是「各自保护各自」的分叉之源）。
         身份真值源（全部只读）：
-          ① 跨站来源份 ← ``_crossseed_source_hashes()``（来源账本 active，已剔除义务已履行）
+          ① 跨站来源份 ← ``_crossseed_source_hashes()``（来源账本 active，已剔除账单已结清/无义务）
           ② 已认领     ← ``_claim_protected_hashes()``
           ③ 资源成员   ← ``asset_member_hashes(self._tag_groups())``（资源份本体 + 其副本）
           ④ 同数据副本 ← 「资产份（身份=资源 / 库记 ``in_library`` / 资源成员）」的
@@ -1112,10 +1129,7 @@ class SilentMixin:
             crossseed = set(self._crossseed_source_hashes() or set())
         except Exception:  # noqa: BLE001
             crossseed = set()
-        try:
-            claim = set(self._claim_protected_hashes() or set())
-        except Exception:  # noqa: BLE001
-            claim = set()
+        claim = claim_hashes(self)
         try:
             ledger = dict(self._tag_state().items() or {})
         except Exception:  # noqa: BLE001
@@ -1363,7 +1377,7 @@ class SilentMixin:
         done_keys: Dict[str, Set[str]] = {}
         for _h, _t in (snap or {}).items():
             try:
-                if float(getattr(_t, "progress", 0) or 0) >= 0.999:
+                if torrent_done(_t):
                     _k = _rkey(_t)
                     if _k:
                         done_keys.setdefault(_k, set()).add(str(_h).lower())
@@ -1732,7 +1746,7 @@ class SilentMixin:
         done_keys: Dict[str, Set[str]] = {}
         for _h, _t in (snap or {}).items():
             try:
-                if float(getattr(_t, "progress", 0) or 0) >= 0.999:
+                if torrent_done(_t):
                     _k = _rkey(_t)
                     if _k:
                         done_keys.setdefault(_k, set()).add(str(_h).lower())
@@ -1956,10 +1970,7 @@ class SilentMixin:
 
             def _k(x: Tuple[str, Dict[str, Any], Any]) -> Tuple[int, float]:
                 _t = x[2]
-                try:
-                    _done = 1 if float(getattr(_t, "progress", 0) or 0) >= 0.999 else 0
-                except (TypeError, ValueError):
-                    _done = 0
+                _done = 1 if torrent_done(_t) else 0
                 try:
                     _sz = float(getattr(_t, "size_gb", 0) or 0)
                 except (TypeError, ValueError):

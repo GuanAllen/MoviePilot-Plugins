@@ -147,7 +147,7 @@ def normalize_path(raw: str):
     # 剥尾部「非 / 引导的 {x}」= 查询模板变量（${query}/${q}/${opsQuery()}…），
     # 保留 / 引导的 {x} = 路径参数（/tasks/{x}、/recommend/{x}/{x}）。
     while p.endswith("{x}") and len(p) > 3 and p[-4] != "/":
-        p = p[:-3]
+        p = p.removesuffix("{x}")
     return p
 
 

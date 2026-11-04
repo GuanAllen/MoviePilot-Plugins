@@ -1,0 +1,258 @@
+/* ClaimDialog 的 scoped 样式，由线上 dist 按 scopeId data-v-2acf1ac2 提取。
+   选择器里的属性限定符是 scoped 边界，别去掉。 */
+
+/* ── 弹窗根 / 标题行 / 正文：随「认领」弹窗自 index.vue 迁入。
+     下列共享选择器（magicflow-dialog / settings-dialog__head(` i`) / settings-dialog__title /
+     recommend-dialog__head-actions / table-empty）父页其它弹窗也在用 → 两处各留一份（纯复制，零改动）。
+     VDialog 会 teleport 到 body，父 scoped 够不到子内部，故须自带。── */
+.magicflow-dialog[data-v-2acf1ac2] {
+  background: rgb(var(--v-theme-surface)) !important;
+  border: 1px solid var(--magicflow-panel-brd);
+  border-radius: 18px;
+  backdrop-filter: blur(16px) saturate(120%);
+  -webkit-backdrop-filter: blur(16px) saturate(120%);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.magicflow-settings-dialog__head i[data-v-2acf1ac2] {
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+
+.magicflow-settings-dialog__head[data-v-2acf1ac2] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 12px;
+}
+
+.magicflow-settings-dialog__title[data-v-2acf1ac2] {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.magicflow-recommend-dialog__head-actions[data-v-2acf1ac2] {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.magicflow-table-empty[data-v-2acf1ac2] {
+  padding: 28px 12px;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  text-align: center;
+}
+
+
+/* ── 认领弹窗（专属选择器，随弹窗自 index.vue 迁入并从 index.vue 删除）── */
+/* 站点筛选条（下拉选站，单站/全部站点分别看详情汇总） */
+.magicflow-claim-title[data-v-2acf1ac2] { display: flex; align-items: center; gap: 8px; min-width: 0;
+}
+
+.magicflow-claim-bar[data-v-2acf1ac2] { display: flex; align-items: center; gap: 10px; padding: 8px 18px;
+}
+
+.magicflow-claim-bar__site[data-v-2acf1ac2] { max-width: 240px;
+}
+
+.magicflow-claim-bar__hint[data-v-2acf1ac2] { padding: 0 18px 6px; font-size: 11px; color: rgba(var(--v-theme-warning), .9);
+}
+
+/* 全部站点：逐站汇总（与站点报表同款：浅底统计块，不做跨站求和） */
+.magicflow-claim-sites[data-v-2acf1ac2] { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px;
+}
+
+.magicflow-claim-site[data-v-2acf1ac2] { padding: 10px 12px; border-radius: 10px; background: rgba(var(--v-theme-on-surface), .04); cursor: pointer; transition: background .15s ease; text-align: left;
+}
+
+.magicflow-claim-site[data-v-2acf1ac2]:hover, .magicflow-claim-site[data-v-2acf1ac2]:focus-visible { background: rgba(var(--v-theme-primary), .08); outline: none;
+}
+
+.magicflow-claim-site__head[data-v-2acf1ac2] { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0;
+}
+
+.magicflow-claim-site__name[data-v-2acf1ac2] { font-size: 13px; font-weight: 600;
+}
+
+.magicflow-claim-site__date[data-v-2acf1ac2] { margin-left: auto; font-size: 11.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); white-space: nowrap;
+}
+
+.magicflow-claim-site__stats[data-v-2acf1ac2] { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 8px;
+}
+
+.magicflow-claim-site__stat[data-v-2acf1ac2] { text-align: center; min-width: 0;
+}
+
+.magicflow-claim-site__stat b[data-v-2acf1ac2] { display: block; font-size: 17px; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere;
+}
+
+.magicflow-claim-site__stat span[data-v-2acf1ac2] { font-size: 10.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+}
+
+.magicflow-claim-site__stat.is-accent b[data-v-2acf1ac2] { color: rgb(var(--v-theme-primary));
+}
+
+.magicflow-claim-site__sub[data-v-2acf1ac2] { margin-top: 7px; font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); text-align: center;
+}
+
+/* 可认领为空时的原因行（站点做种数 / 已认领数 / 本地是否对得上）—— 直接答
+   「怎么一颗也没有」，不让人怀疑是漏扫。 */
+.magicflow-claim-empty__why[data-v-2acf1ac2] { margin-top: 5px; font-size: .72rem; opacity: .62; line-height: 1.5;
+}
+
+.magicflow-claim-detail[data-v-2acf1ac2] { margin-bottom: 14px;
+}
+
+.magicflow-claim-detail__rule[data-v-2acf1ac2] { padding: 8px 2px 0; font-size: .72rem; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+}
+@media (max-width: 959px) {
+
+.magicflow-claim-site__stats[data-v-2acf1ac2] { grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+}
+
+
+.magicflow-claim-sec[data-v-2acf1ac2] { margin: 10px 2px 6px; font-size: .74rem; font-weight: 600; opacity: .78;
+}
+
+.magicflow-claim-sec__hint[data-v-2acf1ac2] { margin-left: 8px; font-size: .66rem; font-weight: 400; opacity: .55;
+}
+
+.magicflow-claim-note[data-v-2acf1ac2] { display: flex; align-items: flex-start; gap: 5px; margin: 2px 2px 6px; font-size: 11px; line-height: 1.4; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+}
+
+.magicflow-claim-note .v-icon[data-v-2acf1ac2] { opacity: .65; margin-top: 1px;
+}
+
+.magicflow-claim-note.is-warning[data-v-2acf1ac2] { color: rgb(var(--v-theme-warning));
+}
+
+.magicflow-claim-detail__rule.is-warning[data-v-2acf1ac2] { color: rgb(var(--v-theme-warning));
+}
+
+.magicflow-claim-more[data-v-2acf1ac2] { margin: 6px 2px 0; font-size: .7rem; opacity: .6;
+}
+
+.magicflow-claim-list[data-v-2acf1ac2] { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px;
+}
+
+.magicflow-claim-item[data-v-2acf1ac2] {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 10px;
+}
+
+.magicflow-claim-item.is-claimed[data-v-2acf1ac2] { border-color: rgba(var(--v-theme-success), .35);
+}
+
+.magicflow-claim-item.is-dim[data-v-2acf1ac2] { opacity: .7;
+}
+
+.magicflow-claim-item__main[data-v-2acf1ac2] { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; gap: 2px;
+}
+
+/* ★ 19.10.53：站点名**必须在第一行**——列表默认跨站混排，认领又是有罚则的承诺，
+   「这是哪个站的」比「这是什么片」更不能靠猜（原先挤在第三行小字里容易看漏）。 */
+.magicflow-claim-item__head[data-v-2acf1ac2] { display: flex; align-items: center; gap: 6px; min-width: 0;
+}
+
+.magicflow-claim-item__site[data-v-2acf1ac2] {
+  flex: 0 0 auto;
+  letter-spacing: .02em;
+  font-weight: 600;
+}
+
+.magicflow-claim-item__title[data-v-2acf1ac2] { flex: 1 1 auto; min-width: 0; font-size: .82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ★ 19.10.53：站点把中文片名转成拼音（`Tang Chao Gui Shi Lu Zhi Chang An`），列表里
+   认不出是哪部片。翻译在本机不可用（识别链 32s/次且返空），所以规格行只放标题里
+   **本来就有**的中文 + 本地解析出的规格，另配详情页直达链接 —— 不猜、不编名字。 */
+.magicflow-claim-item__link[data-v-2acf1ac2] {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  opacity: .55;
+  color: inherit;
+  text-decoration: none;
+  transition: opacity .15s;
+}
+
+.magicflow-claim-item__link[data-v-2acf1ac2]:hover { opacity: 1;
+}
+
+.magicflow-claim-item__spec[data-v-2acf1ac2] {
+  font-size: .7rem;
+  letter-spacing: .01em;
+  color: rgba(var(--v-theme-primary), .92);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 「还差几天可领」折叠区：默认收起，避免和可认领主列表抢注意力。 */
+.magicflow-claim-soon[data-v-2acf1ac2] { margin-top: 10px; padding-top: 8px; border-top: 1px dashed rgba(var(--v-border-color), var(--v-border-opacity));
+}
+
+.magicflow-claim-soon__head[data-v-2acf1ac2] {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  padding: 4px 2px; background: none; border: 0; cursor: pointer; text-align: left;
+  font-size: .74rem; font-weight: 600; color: rgba(var(--v-theme-on-surface), .78);
+}
+
+.magicflow-claim-soon__head[data-v-2acf1ac2]:hover { color: rgb(var(--v-theme-primary));
+}
+
+.magicflow-claim-soon__hint[data-v-2acf1ac2] { margin-left: auto; font-weight: 400; font-size: .68rem; opacity: .6;
+}
+
+.magicflow-claim-list--soon[data-v-2acf1ac2] { margin-top: 6px;
+}
+
+.magicflow-claim-item__meta[data-v-2acf1ac2] { font-size: .7rem; opacity: .62; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ★ 19.10.58：放弃认领的「能不能点」口径直接写进 meta 行尾，避免多一个抢眼的 chip。 */
+.magicflow-claim-item__meta .is-safe[data-v-2acf1ac2] { color: rgb(var(--v-theme-success)); opacity: .95;
+}
+
+.magicflow-claim-item__meta .is-blocked[data-v-2acf1ac2] { color: rgb(var(--v-theme-warning)); opacity: .95;
+}
+
+/* ★ 19.10.60：发奖门槛提示（「能领但这个月不计魔力」）—— 与「不能领」是两件事，
+   所以单独一行、用 warning 色，而不混进 meta 的灰字里。 */
+.magicflow-claim-item__reward[data-v-2acf1ac2] { display: flex; align-items: center; gap: 3px; font-size: .68rem; line-height: 1.4; color: rgb(var(--v-theme-warning));
+}
+
+/* 不可点时的原因：单独一行小字（灰按钮不会自己解释）。 */
+.magicflow-claim-item__why[data-v-2acf1ac2] {
+  font-size: .68rem;
+  line-height: 1.35;
+  color: rgb(var(--v-theme-warning));
+  opacity: .9;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.magicflow-claim-item__stat[data-v-2acf1ac2] { display: flex; gap: 4px; flex: 0 0 auto;
+}
+
+.magicflow-claim-summary[data-v-2acf1ac2] { display: flex; gap: 8px; margin: 10px 0 12px;
+}
+
+.magicflow-claim-summary__item[data-v-2acf1ac2] { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 10px; background: rgba(var(--v-theme-on-surface), .04);
+}
+
+.magicflow-claim-summary__item b[data-v-2acf1ac2] { display: block; font-size: 17px; line-height: 1.3;
+}
+
+.magicflow-claim-summary__item span[data-v-2acf1ac2] { font-size: 11px; color: var(--mf-fg-mid);
+}
+
+.magicflow-claim-tabs[data-v-2acf1ac2] { display: flex; gap: 6px; margin-bottom: 8px;
+}

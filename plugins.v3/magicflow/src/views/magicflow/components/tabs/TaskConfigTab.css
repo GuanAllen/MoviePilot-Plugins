@@ -1,0 +1,123 @@
+/* TaskConfigTab 的 scoped 样式，由线上 dist 按 scopeId data-v-0c39928f 提取。
+   选择器里的属性限定符是 scoped 边界，别去掉。 */
+
+/* ── 本面板专属选择器（随面板自 index.vue 迁入并从 index.vue 删除）：magicflow-config-grid / magicflow-config-actions * ──
+   ── 共享选择器（父页多处共用：magicflow-panel / __head / facts *）→ index.vue 原样保留，此处**纯复制**一份，
+      因 Vue scoped 样式不作用于子组件内部 DOM。── */
+.magicflow-config-grid[data-v-0c39928f] {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-block-start: 12px;
+}
+
+
+/* ↓ 共享：magicflow-panel（复制自 index.vue，父页保留）*/
+.magicflow-panel[data-v-0c39928f] {
+  border: var(--app-surface-border);
+  border-radius: var(--app-surface-radius);
+  min-inline-size: 0;
+  padding: 16px;
+}
+
+.magicflow-panel__head[data-v-0c39928f] {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.magicflow-page .magicflow-panel[data-v-0c39928f] {
+  padding: 18px 16px;
+}
+
+.magicflow-page .magicflow-panel__head .text-subtitle-1[data-v-0c39928f] {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.magicflow-page .magicflow-panel__head .text-body-2[data-v-0c39928f] {
+  font-size: 11px;
+}
+
+
+/* ↓ 共享：magicflow-facts（复制自 index.vue，父页保留）*/
+.magicflow-facts[data-v-0c39928f] {
+  display: grid;
+  gap: 11px;
+  margin: 18px 0 0;
+}
+
+.magicflow-facts--two[data-v-0c39928f] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.magicflow-facts > div[data-v-0c39928f] {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  min-inline-size: 0;
+}
+
+.magicflow-facts dt[data-v-0c39928f] {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.magicflow-facts dd[data-v-0c39928f] {
+  margin: 0;
+  text-align: end;
+  overflow-wrap: anywhere;
+}
+
+
+/* ↓ 本面板专属：magicflow-config-actions *（自 index.vue 迁入并删除）*/
+.magicflow-config-actions[data-v-0c39928f] {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-block-start: 16px;
+}
+
+.magicflow-config-actions[data-v-0c39928f] .v-btn {
+  align-self: flex-start;
+  margin-block-start: 8px;
+}
+
+.magicflow-config-actions > div[data-v-0c39928f] {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-inline-size: 0;
+}
+
+.magicflow-config-actions span[data-v-0c39928f] {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 959px) {
+
+.magicflow-config-grid[data-v-0c39928f] {
+    grid-template-columns: 1fr;
+}
+}
+
+@media (max-width: 699px) {
+
+.magicflow-panel__head[data-v-0c39928f] {
+    flex-direction: column;
+    align-items: flex-start;
+}
+
+.magicflow-panel[data-v-0c39928f] {
+    padding: 14px;
+}
+
+.magicflow-panel__head[data-v-0c39928f] {
+    flex-wrap: wrap;
+}
+
+.magicflow-facts--two[data-v-0c39928f] {
+    grid-template-columns: 1fr;
+}
+}

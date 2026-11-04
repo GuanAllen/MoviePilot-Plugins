@@ -30,23 +30,15 @@ REGION = "magicflow"
 KEY_TTL = 365 * 24 * 60 * 60
 # 逻辑名前缀（用于从 items() 里挑出属于某个 Store 的键）
 _PREFIX = "mf:"
-# ★ 跨热重载共享计数器（放独立模块，MP 清模块缓存时不会丢）
-_SHARED_KEY = "__magicflow_shared__"
-
-
 def _counters() -> Dict[str, Any]:
-    """取跨热重载的共享计数器容器。"""
-    import sys as _sys
-    import types as _types
+    """取跨热重载的共享计数器容器（``shared.counters()`` 返回的就是原 dict）。
 
-    mod = _sys.modules.get(_SHARED_KEY)
-    if mod is None:
-        mod = _types.ModuleType(_SHARED_KEY)
-        _sys.modules[_SHARED_KEY] = mod
-    for _attr, _factory in (("instances", dict), ("counters", dict), ("lock", threading.Lock)):
-        if not hasattr(mod, _attr):
-            setattr(mod, _attr, _factory())
-    return mod.counters
+    ★ 19.10.25 起不再自己建槽：取槽 + 幂等补齐属性收进 ``shared.module()`` 一份
+      （原先这里有第 N 份拷贝，各家缺属性时会让另一个入口 AttributeError）。
+    """
+    from . import shared
+
+    return shared.counters()
 
 
 class MpHotStore:

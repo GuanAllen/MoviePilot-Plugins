@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from .fingerprint import fingerprint
 
@@ -417,18 +417,12 @@ class CrossSeedSources:
             out.add(h)
         return out
 
-    def due(self, now: Optional[float] = None) -> List[Tuple[str, Dict[str, Any]]]:
-        """已过 H&R 保种期的条目（可回收）。"""
-        ts = float(now if now is not None else time.time())
-        out: List[Tuple[str, Dict[str, Any]]] = []
-        for h, rec in self.items().items():
-            try:
-                until = float(rec.get("seed_until") or 0.0)
-            except (TypeError, ValueError):
-                until = 0.0
-            if not until or ts >= until:
-                out.append((h, rec))
-        return out
+    # ★ 19.10.11 **删除 `due()`**：它按 ``seed_until = 开账时刻 + hours`` 判「可回收」，但
+    #   ①**零调用方**（`crossseed_reclaim` 在 core/status/settings/crossseed 四处只读不执行，
+    #   UI 那个勾选框因此是装饰品）；②``seed_until`` 是「你给自己定的义务倒计时」，与真实
+    #   工时（下载器 seeding_time）不同源 —— 到点可能没挂够、挂够也可能没到点。
+    #   义务判定已统一移交 H&R 账单（`features/crossseed.py::_cs_bill_settled`），
+    #   本模块不再保留第二套时钟。
 
     def prune(self, live_hashes: Optional[Set[str]] = None) -> List[str]:
         """清掉「下载器里已不存在」的条目（手动删了/被别处删了），返回被清列表。"""

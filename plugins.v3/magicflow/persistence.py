@@ -1,7 +1,6 @@
-"""
-MagicFlow 持久化模块
+"""魔流 · 持久化 —— 热层（Redis 或文件）+ 冷备 JSON 的统一 Store 门面。
 
-负责操作日志和任务状态的持久化存储。
+负责操作日志和任务状态的持久化存储。**写代码只认这个门面**，不直接接触存储介质。
 
 ★ 存储分层（Master 2026-09-27 09:11 定的方案）：
   · **Redis = 在线热存储**（增量写，快）；
@@ -9,6 +8,11 @@ MagicFlow 持久化模块
   · **Redis 不可用 → 完全退回文件模式**（默认装机不装 Redis 也照跑）。
 实现方式：各 Store 的 `_save()` 变成「先写 Redis（增量），失败/不可用才写文件」，
 文件写入由 `MagicFlowStore` 的后台 flusher（或 stop 时）统一触发。
+
+★ 19.10.33 分层：**数据模型 + 冷热桥 + 冷层惯用法**已下沉 ``storekit.py``（L0）——
+  那是「自己处理数据」的一段，与插件运行时零耦合，可离线单测。本模块只管业务表
+  （操作日志 / 任务状态 / seen / 死种 / 下载闸门 / 推荐 / 云归档）与后台 flusher；
+  顶层 re-export ``storekit`` 的全部名字，调用方 import 面不变。
 """
 
 import json
@@ -16,8 +20,7 @@ import os
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -30,6 +33,38 @@ except ImportError:  # pragma: no cover - 仅离线环境（容器内始终有 a
 
     logger = logging.getLogger("magicflow.persistence")
 
+# ★ 19.10.33：数据模型 + 冷热双写桥已下沉到 L0 ``storekit.py``（那一段是「自己处理数据」，
+#   只 import 标准库，可离线加载）。这里**显式列名 re-export**（禁止 ``import *``：
+#   护栏⑫R4 会跳过不校验），40+ 处 ``from .persistence import OperationItem`` 零改动。
+#   ⚠ 双模导入：容器内走包内相对导入；``tools/test_*.py`` 用 spec 直接加载本文件时
+#     **没有包上下文**（``__package__`` 为空），故退回「同目录入 sys.path 后按顶层模块导入」。
+#     生产路径永远走第一个分支，仅离线测试会用到第二个。
+try:
+    from .storekit import (
+        KvBridge,
+        OperationItem,
+        OperationRecord,
+        TaskState,
+        WorkReport,
+        batch_kv_apply,
+        read_json_dict,
+    )
+except ImportError:  # pragma: no cover - 仅离线单文件加载（tools/test_*.py）
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    if str(_Path(__file__).resolve().parent) not in _sys.path:
+        _sys.path.insert(0, str(_Path(__file__).resolve().parent))
+    from storekit import (  # noqa: F401 - re-export
+        KvBridge,
+        OperationItem,
+        OperationRecord,
+        TaskState,
+        WorkReport,
+        batch_kv_apply,
+        read_json_dict,
+    )
+
 # JSON 冷备份落盘间隔（秒）：Redis 热层负责在线读写，文件只作重载恢复
 # 冷备份落盘间隔（秒）。热层才是在线权威；JSON 只用于「Redis 丢了/没装」时恢复。
 # 60s 太密（活跃时 5~6 张表每分钟都脏 → 每分钟 5~6 次全量表 dump，反而比增量写便宜不了多少，
@@ -38,360 +73,26 @@ KV_FILE_FLUSH_SEC = 300.0
 # 热层「载入后未改动」哨兵值：跳过逐条 JSON 指纹重算（加载提速的关键）
 _IN_SYNC = "\x00in-sync"
 
-# ★ 跨热重载共享的进程级容器（放独立模块，MP 不会清它）
-_SHARED_KEY = "__magicflow_shared__"
-
-
 def _shared():
-    """取/建跨热重载共享容器：单例注册表 + 计数器。"""
-    import sys as _sys
-    import types as _types
+    """取/建跨热重载共享容器：单例注册表 + 计数器（统一走 ``shared.module()``）。
 
-    mod = _sys.modules.get(_SHARED_KEY)
-    if mod is None:
-        mod = _types.ModuleType(_SHARED_KEY)
-        _sys.modules[_SHARED_KEY] = mod
-    # ★ 幂等补齐（任何入口先建模块都不能缺属性）
-    for _attr, _factory in (("instances", dict), ("counters", dict), ("singletons", dict), ("lock", threading.Lock)):
-        if not hasattr(mod, _attr):
-            setattr(mod, _attr, _factory())
-    return mod
-
-
-class KvBridge:
-    """JSON 文件 + 热层（走 MP 缓存适配器）的桥接。
-
-    子类只需：① 在 `__init__` 里 `self.kv_bind(kv)`；② 把原来的 `_save()` 改名
-    `_write_file()`，并按模板新增 kv 感知的 `_save()` / `_kv_apply()` / `_kv_load()`。
+    ★ 19.10.25 起不再自己建槽。返回的还是同一个槽对象，``sh.lock`` / ``sh.instances`` /
+      ``sh.singletons`` 用法不变；差别只在「幂等补齐四个属性」现在只有一份实现。
     """
+    from . import shared
 
-    kv: Any = None
-    kv_region: str = ""
-
-    def kv_bind(self, kv: Any) -> None:
-        """绑定热层（None / 非 Redis 后端 = 纯文件模式）。"""
-        self.kv = kv
-        self.dirty = True  # 冷备份待写（保证首次 flusher 会落一次盘）
-
-    def kv_ready(self) -> bool:
-        """热层是否真的可用（未启用 Redis / 连不上 → False → 走文件）。"""
-        kv = getattr(self, "kv", None)
-        if kv is None:
-            return False
-        try:
-            return bool(kv.available())
-        except Exception:  # noqa: BLE001
-            return False
-
-    def kv_key(self, suffix: str = "") -> str:
-        """逻辑键名（`区域:后缀`；region 由热层内部处理）。"""
-        return f"{self.kv_region}:{suffix}" if suffix else self.kv_region
-
-    def kv_items(self, prefix: str = "") -> Dict[str, Any]:
-        """列出本 Store 的所有键值对（键已去掉 region 前缀）。"""
-        if not self.kv_ready():
-            return {}
-        want = f"{self.kv_region}:{prefix}" if prefix else f"{self.kv_region}:"
-        try:
-            rows = self.kv.items(want)
-        except Exception:  # noqa: BLE001
-            return {}
-        out: Dict[str, Any] = {}
-        for key, value in (rows or {}).items():
-            if key.startswith(want):
-                out[key[len(f"{self.kv_region}:"):]] = value
-        return out
-
-    def flush_if_dirty(self) -> bool:
-        """把内存快照写进 JSON 冷备份（仅在标脏时）。
-
-        ★ 只有**确实写出成功**才清 ``dirty``；写失败保留 ``dirty=True``（下次重试）
-        并告警 —— 否则磁盘满/权限错时内存照旧、``hot_stats()`` 报 ``dirty:false``、
-        ``flush_all()`` 还把该 Store 记进 ``written``（**丢了却报告已落盘**）。
-        """
-        if not getattr(self, "dirty", False):
-            return False
-        try:
-            ok = self._write_file()
-        except Exception as err:  # noqa: BLE001 - 子类实现本不应抛，防御性兜底
-            logger.warning(f"[{type(self).__name__}] 冷备份落盘异常，保留脏标记：{err!r}")
-            return False
-        if not ok:
-            logger.warning(f"[{type(self).__name__}] 冷备份落盘失败，保留脏标记（下次重试）")
-            return False
-        self.dirty = False
-        return True
-
-    @staticmethod
-    def _atomic_write_json(path: Path, data: Any) -> None:
-        """原子写 JSON（``tmp + os.replace``）：中途失败 → 原文件保持完好。
-
-        失败**抛异常**（由各 ``_write_file`` 记录具体异常并返回 False）；
-        半截 tmp 会清掉，不留垃圾。磁盘上已有生产数据，格式必须与旧实现一致
-        （``ensure_ascii=False`` + ``indent=2``）。
-        """
-        tmp = path.with_name(path.name + ".tmp")
-        try:
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except BaseException:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-            raise
-        os.replace(tmp, path)
-
-    @staticmethod
-    def _merge_missing(target: Dict[str, Any], incoming: Dict[str, Any]) -> int:
-        """只把 ``incoming`` 中 ``target`` **没有**的键补进去（绝不覆盖已有键）。
-
-        用于「热层 + 冷备份」载入并集：热层是权威，文件只补热层被 LRU 淘汰/丢过的键；
-        方向恒为「补缺」，对更旧的文件值安全。返回补齐条数。
-        """
-        added = 0
-        for key, value in (incoming or {}).items():
-            if key not in target:
-                target[key] = value
-                added += 1
-        return added
+    return shared.module()
 
 
-# ============================================================
-# 数据模型
-# ============================================================
-
-@dataclass
-class OperationItem:
-    """操作项（单个种子的操作）。"""
-    hash: str
-    title: str
-    reason: str = ""
-    bonus_per_hour: float = 0.0
-    size_gb: float = 0.0
-    seeders: int = 0
-    source: str = ""   # 来源/动作：add/reuse/adopt/tag/watchdog…（供流水明细筛选）
-    tags: str = ""     # 标签变更（before→after），仅标签类事件使用
+# 冷层归一的小助手（写成具名函数，避免在每个 Store 里各写一份 lambda）
+def _LOWER(key: Any) -> str:
+    """键统一小写：infohash / 站点路径在两代数据里大小写不一致。"""
+    return str(key).lower()
 
 
-@dataclass
-class OperationRecord:
-    """操作记录。"""
-    operation_id: str
-    request_id: str
-    task_id: str
-    kind: str  # "selection" | "deletion" | "protection" | "unprotection" | "reseed"(辅种;原 reuse/crossseed 已归一)
-    state: str  # "submitting" | "accepted" | "completed" | "failed"
-    items: List[OperationItem] = field(default_factory=list)
-    created_at: float = field(default_factory=time.time)
-    resolved_at: Optional[float] = None
-    error_message: Optional[str] = None
-    duration: Optional[float] = None
-
-    def to_dict(self) -> dict:
-        return {
-            "operation_id": self.operation_id,
-            "request_id": self.request_id,
-            "task_id": self.task_id,
-            "kind": self.kind,
-            "state": self.state,
-            "items": [asdict(item) for item in self.items],
-            "created_at": self.created_at,
-            "resolved_at": self.resolved_at,
-            "error_message": self.error_message,
-            "duration": self.duration,
-        }
-
-    @staticmethod
-    def from_dict(d: dict) -> "OperationRecord":
-        items = [OperationItem(**item) for item in d.get("items", [])]
-        return OperationRecord(
-            operation_id=d["operation_id"],
-            request_id=d["request_id"],
-            task_id=d["task_id"],
-            kind=d["kind"],
-            state=d["state"],
-            items=items,
-            created_at=d.get("created_at", time.time()),
-            resolved_at=d.get("resolved_at"),
-            error_message=d.get("error_message"),
-            duration=d.get("duration"),
-        )
-
-
-@dataclass
-class TaskState:
-    """任务运行状态。"""
-    task_id: str
-    last_run_at: float = 0.0
-    last_success_at: float = 0.0
-    last_error: Optional[str] = None
-    cumulative_added: int = 0
-    cumulative_deleted: int = 0
-    cumulative_kept: int = 0
-    cumulative_reused: int = 0
-    last_added: int = 0
-    last_deleted: int = 0
-    last_kept: int = 0
-    last_reused: int = 0
-    last_run_status: str = ""
-    last_run_reason: str = ""
-    last_run_duration: float = 0.0
-    last_filter_reasons: Dict[str, int] = field(default_factory=dict)
-    last_candidate_total: int = 0
-    last_candidate_passed: int = 0
-    protected_torrents: Set[str] = field(default_factory=set)
-    # 每种子发布时间（unix 秒，key=infohash 小写）。用于把 Ti 统一为「发布时长」口径
-    # （与候选排序一致），而非 qB 的「做种时长」。取不到时回落做种时长。
-    pub_dates: Dict[str, float] = field(default_factory=dict)
-    # 发布时间表所用「站点时区偏移（小时）」。与当前口径不一致时旧 pub_dates 作废（需重采）。
-    # ⚠️ 必须持久化：否则每次重载后 pub_tz 丢失 → get_pub_dates 误判不匹配 → 返回空 →
-    # Ti 回落「做种时长」（远小于发布时长）→ 合计 A / 站点时魔严重偏低。
-    pub_tz: float = 0.0
-    # 「同站纳管」纳入的种子 hash（本机早已存在的同站种子，非本插件下载）。
-    # 这些视为用户自有资源（可能是自己下载的影视资源，而非刷流用），默认保护、不参与删种。
-    adopted_hashes: Set[str] = field(default_factory=set)
-    # 用户手动「暂停做种」的种子 hash（小写）。这些种子不再被自动恢复（auto_resume_paused）
-    # 重新拉起，直到用户在界面上点「恢复做种」或在下载器里手动启动。
-    manual_paused: Set[str] = field(default_factory=set)
-    # 「换种」被下线（暂停做种、**不删种**）的种子 hash（小写）。换种只是不再拉它做种，
-    # 种子与文件全部保留；站点腾出空间后会按需恢复（换回）。
-    enabled: bool = True
-    revision: int = 0  # 配置版本号，用于 optimistic locking
-    # 「考核下载」模式：进入该模式时记录「站点下载量基线」（byte），用于计算本站下载增量。
-    # 任务目标达成（增量 ≥ download_target_gb）或任务重开时会重置。
-    exam_download_base: Optional[float] = None
-    exam_download_note: str = ""
-    # 运行阶段（供前端「运行诊断」流程链转圈用）
-    last_phase: str = ""            # entry|fetch|wash|classify|process|done|error
-    last_phase_label: str = ""      # 阶段中文名
-    last_phase_detail: str = ""     # 阶段内的细粒度进度（如「取种 14/45」），供前端显示避免「像卡住」
-    last_phase_at: float = 0.0
-    page_cursor: int = 0            # 站点列表页游标（游标深翻）
-    # ★ 7.15.0 可观测：上一轮「决策轨迹」（换种闸门 at_cap、门槛、删除原因分布、候选过滤原因…）。
-    last_decision: Dict[str, Any] = field(default_factory=dict)
-    # 种子详情页映射（hash→details 页 URL）。供「检查」时回站点核对促销/免费状态。
-    torrent_pages: Dict[str, str] = field(default_factory=dict)
-    # ★ 限时免费到期时刻（hash→unix 秒）。入种时从列表页记下，到点直接清「未下完」的，
-    # 不必每轮回详情页核对（详情页可能抓不到 → 只能保守跳过）。
-    torrent_free_until: Dict[str, float] = field(default_factory=dict)
-    # 刷流模式：每种子「上传快照」（hash→{up:上次上传字节, idle:连续无上传次数, ts:检查时间}）。
-    # 每次检查比对 uploaded 增量；连续 N 次近乎零上传 → 判定「无上传」→ 清理。
-    brush_upload: Dict[str, dict] = field(default_factory=dict)
-    # 「托管数看门狗」：上一轮观测到的托管（带标签）数。用于检测「种子还在、标签却被抹掉」
-    # 这类**不产生删种记录**的异常（托管骤降但本轮删除为 0）。
-    last_tagged_count: int = 0
-
-    def to_dict(self) -> dict:
-        return {
-            "task_id": self.task_id,
-            "last_run_at": self.last_run_at,
-            "last_success_at": self.last_success_at,
-            "last_error": self.last_error,
-            "cumulative_added": self.cumulative_added,
-            "cumulative_deleted": self.cumulative_deleted,
-            "cumulative_kept": self.cumulative_kept,
-            "cumulative_reused": self.cumulative_reused,
-            "last_added": self.last_added,
-            "last_deleted": self.last_deleted,
-            "last_kept": self.last_kept,
-            "last_reused": self.last_reused,
-            "last_run_status": self.last_run_status,
-            "last_run_reason": self.last_run_reason,
-            "last_run_duration": self.last_run_duration,
-            "last_filter_reasons": dict(self.last_filter_reasons),
-            "last_candidate_total": self.last_candidate_total,
-            "last_candidate_passed": self.last_candidate_passed,
-            "protected_torrents": list(self.protected_torrents),
-            "pub_dates": dict(self.pub_dates),
-            "pub_tz": self.pub_tz,
-            "adopted_hashes": list(self.adopted_hashes),
-            "manual_paused": list(self.manual_paused),
-            "enabled": self.enabled,
-            "revision": self.revision,
-            "last_phase": self.last_phase,
-            "last_phase_label": self.last_phase_label,
-            "last_phase_detail": self.last_phase_detail,
-            "last_phase_at": self.last_phase_at,
-            "page_cursor": self.page_cursor,
-            "last_decision": dict(self.last_decision or {}),
-            "torrent_pages": dict(self.torrent_pages),
-            "torrent_free_until": {str(k).lower(): float(v) for k, v in self.torrent_free_until.items()},
-            "brush_upload": {str(k).lower(): dict(v) for k, v in self.brush_upload.items()},
-            "last_tagged_count": self.last_tagged_count,
-            "exam_download_base": self.exam_download_base,
-            "exam_download_note": self.exam_download_note,
-        }
-
-    @staticmethod
-    def from_dict(d: dict) -> "TaskState":
-        return TaskState(
-            task_id=d["task_id"],
-            last_run_at=d.get("last_run_at", 0.0),
-            last_success_at=d.get("last_success_at", 0.0),
-            last_error=d.get("last_error"),
-            cumulative_added=d.get("cumulative_added", 0),
-            cumulative_deleted=d.get("cumulative_deleted", 0),
-            cumulative_kept=d.get("cumulative_kept", 0),
-            cumulative_reused=d.get("cumulative_reused", 0),
-            last_added=d.get("last_added", 0),
-            last_deleted=d.get("last_deleted", 0),
-            last_kept=d.get("last_kept", 0),
-            last_reused=d.get("last_reused", 0),
-            last_run_status=d.get("last_run_status", ""),
-            last_run_reason=d.get("last_run_reason", ""),
-            last_run_duration=d.get("last_run_duration", 0.0),
-            last_filter_reasons=dict(d.get("last_filter_reasons", {}) or {}),
-            last_candidate_total=d.get("last_candidate_total", 0),
-            last_candidate_passed=d.get("last_candidate_passed", 0),
-            protected_torrents=set(d.get("protected_torrents", [])),
-            pub_dates={str(k).lower(): float(v) for k, v in (d.get("pub_dates") or {}).items() if v},
-            pub_tz=float(d.get("pub_tz", 0.0) or 0.0),
-            adopted_hashes=set(d.get("adopted_hashes", []) or []),
-            manual_paused=set(d.get("manual_paused", []) or []),
-            enabled=d.get("enabled", True),
-            revision=d.get("revision", 0),
-            exam_download_base=(
-                None if d.get("exam_download_base") in (None, "") else float(d.get("exam_download_base"))
-            ),
-            exam_download_note=str(d.get("exam_download_note") or ""),
-            last_phase=d.get("last_phase", ""),
-            last_phase_label=d.get("last_phase_label", ""),
-            last_phase_detail=d.get("last_phase_detail", ""),
-            last_phase_at=d.get("last_phase_at", 0.0),
-            page_cursor=d.get("page_cursor", 0),
-            last_decision=dict(d.get("last_decision") or {}),
-            torrent_pages={str(k).lower(): str(v) for k, v in (d.get("torrent_pages") or {}).items() if k and v},
-            torrent_free_until={str(k).lower(): float(v) for k, v in (d.get("torrent_free_until") or {}).items() if k and v},
-            brush_upload={str(k).lower(): dict(v) for k, v in (d.get("brush_upload") or {}).items() if k and isinstance(v, dict)},
-            last_tagged_count=int(d.get("last_tagged_count", 0) or 0),
-        )
-
-
-# ============================================================
-# 工作报告（分账）
-# ============================================================
-
-@dataclass
-class WorkReport:
-    """一个 worker（刷流/检查/慢扫）一轮工作的「工作报告」。
-
-    设计：worker **只回报告**，由核心 ``_settle`` 统一分账到 TaskState —— 不同 source
-    走不同命名空间，避免并发 worker 互相覆盖。
-    计数器默认 ``None`` = 「本报告不涉及该计数」（不覆盖旧值），避免把字段清零。
-    """
-    task_id: str
-    source: str = "brush"          # brush|check
-    status: str = ""               # done|noop|skipped|failed
-    reason: str = ""
-    duration: Optional[float] = None
-    added: Optional[int] = None
-    deleted: Optional[int] = None
-    kept: Optional[int] = None
-    reused: Optional[int] = None
-    scanned: Optional[int] = None
-    # ★ 7.15.0 可观测：「本轮决策轨迹」——回答「为什么没动作」（闸门/门槛/原因分布/候选过滤）。
-    decision: Optional[Dict[str, Any]] = None
+def _DICT_ONLY(value: Any) -> Optional[Dict[str, Any]]:
+    """只收 dict 值（非 dict → None = 丢弃该条目），顺带拷一份防外部改动。"""
+    return dict(value) if isinstance(value, dict) else None
 
 
 # ============================================================
@@ -1361,18 +1062,14 @@ class SeenStore(KvBridge):
         self._load()
 
     def _load(self) -> None:
-        """载入：热层优先；热层无数据 → 读文件并回灌。"""
+        """载入 seen 表（任务 → {候选键: 首次见到的时刻}）：热层优先，空则读文件并回灌。
+
+        ★ 19.10.33：容错读收进 ``storekit.read_json_dict`` —— 文件不存在 / 半截 JSON /
+        顶层非 dict 一律返回空字典，**不阻断加载**（坏文件留在盘上供取证）。
+        """
         if self._kv_load():
             return
-        if not self.file.exists():
-            return
-        try:
-            with open(self.file, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict):
-                self._data = loaded
-        except Exception:
-            self._data = {}
+        self._data = read_json_dict(self.file)
         if self._data:  # 文件有历史（热层空/丢过）→ 回灌
             try:
                 self._kv_apply()
@@ -1414,14 +1111,8 @@ class SeenStore(KvBridge):
             self.dirty = True
 
     def _write_file(self) -> bool:
-        """写 JSON 冷备份（★ P2：原子写 + 返回成败，失败不再静默）。"""
-        try:
-            self.data_dir.mkdir(parents=True, exist_ok=True)
-            self._atomic_write_json(self.file, self._data)
-            return True
-        except Exception as err:  # noqa: BLE001
-            logger.error(f"[{type(self).__name__}] 写 {self.file} 失败（保留脏标记，待重试）：{err!r}")
-            return False
+        """写 JSON 冷备份（建目录 + 原子写 + 失败保脏，统一走 ``KvBridge._write_json_file``）。"""
+        return self._write_json_file(self._data)
 
     def is_seen(self, task_id: str, key: str, cooldown_seconds: float = 0.0) -> bool:
         """该 key 是否在窗口期内已被处理过。"""
@@ -1547,27 +1238,26 @@ class AddGateStore(KvBridge):
         self._load()
 
     # ---------------------------------------------------------- 载入 / 持久化
+    @staticmethod
+    def _norm_gate_entry(value: Any) -> Optional[Dict[str, Any]]:
+        """闸门条目归一（冷层与热层**同一口径**）：非 dict → None（丢弃）。
+
+        为什么要归一：闸门只认 ``task/ts/state`` 三个字段，历史版本可能多写/漏写，
+        读进来时统一补齐默认值，让 ``claim`` / ``peek`` 只管状态机、不防脏数据。
+        """
+        if not isinstance(value, dict):
+            return None
+        return {
+            "task": str(value.get("task") or ""),
+            "ts": float(value.get("ts") or 0),
+            "state": str(value.get("state") or "done"),
+        }
+
     def _load(self) -> None:
-        """载入：热层优先；热层无数据 → 读文件并回灌。"""
+        """载入：热层优先；热层无数据 → 读文件并回灌（条目归一与热层同口径）。"""
         if self._kv_load():
             return
-        if not self.file.exists():
-            return
-        try:
-            with open(self.file, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict):
-                self._data = {
-                    str(k): {
-                        "task": str((v or {}).get("task") or ""),
-                        "ts": float((v or {}).get("ts") or 0),
-                        "state": str((v or {}).get("state") or "done"),
-                    }
-                    for k, v in loaded.items()
-                    if isinstance(v, dict)
-                }
-        except Exception:
-            self._data = {}
+        self._data = read_json_dict(self.file, norm_value=self._norm_gate_entry)
         if self._data:  # 文件有历史（热层空/丢过）→ 回灌
             try:
                 self._kv_apply()
@@ -1575,17 +1265,15 @@ class AddGateStore(KvBridge):
                 pass
 
     def _kv_load(self) -> bool:
+        """从热层载入闸门表：条目一律过 ``_norm_gate_entry``，脏条目直接丢。"""
         rows = self.kv_items()
         if not rows:
             return False
         loaded = 0
         for k, v in rows.items():
-            if isinstance(v, dict):
-                self._data[str(k)] = {
-                    "task": str(v.get("task") or ""),
-                    "ts": float(v.get("ts") or 0),
-                    "state": str(v.get("state") or "done"),
-                }
+            entry = self._norm_gate_entry(v)
+            if entry is not None:
+                self._data[str(k)] = entry
                 loaded += 1
         return loaded > 0
 
@@ -1620,14 +1308,8 @@ class AddGateStore(KvBridge):
             self.dirty = True
 
     def _write_file(self) -> bool:
-        """写 JSON 冷备份（★ P2：原子写 + 返回成败，失败不再静默）。"""
-        try:
-            self.data_dir.mkdir(parents=True, exist_ok=True)
-            self._atomic_write_json(self.file, self._data)
-            return True
-        except Exception as err:  # noqa: BLE001
-            logger.error(f"[AddGateStore] 写 {self.file} 失败（保留脏标记，待重试）：{err!r}")
-            return False
+        """写 JSON 冷备份（建目录 + 原子写 + 失败保脏，统一走 ``KvBridge._write_json_file``）。"""
+        return self._write_json_file(self._data)
 
     # ---------------------------------------------------------- 对外
     @staticmethod
@@ -1839,7 +1521,10 @@ class RecommendStore(KvBridge):
         self._load()
 
     def _load(self) -> None:
-        """载入：热层优先；热层无数据 → 读文件并回灌。"""
+        """载入推荐甄别结果：热层优先，空则读文件并回灌（键一律小写、值只收 dict）。
+
+        ★ 19.10.33：冷层读取收进 ``storekit.read_json_dict``。
+        """
         rows = self.kv_items()
         if rows:
             for key, item in rows.items():
@@ -1847,18 +1532,7 @@ class RecommendStore(KvBridge):
                     self._items[str(key).lower()] = dict(item)
             if self._items:
                 return
-        try:
-            if self.file.exists():
-                with open(self.file, "r", encoding="utf-8") as f:
-                    data = json.load(f) or {}
-                if isinstance(data, dict):
-                    self._items = {
-                        str(k).lower(): dict(v)
-                        for k, v in data.items()
-                        if isinstance(v, dict)
-                    }
-        except Exception:
-            self._items = {}
+        self._items = read_json_dict(self.file, norm_key=_LOWER, norm_value=_DICT_ONLY)
         if self._items:  # 文件有历史（热层空/丢过）→ 回灌
             try:
                 self._kv_apply()
@@ -1867,41 +1541,10 @@ class RecommendStore(KvBridge):
 
     # ---------------------------------------------------------- 热层（MP 缓存/Redis）
     def _kv_apply(self, key: Optional[str] = None) -> bool:
-        """增量写热层（key 为空 = 全量对比）。★ 批量 pipeline 写。"""
-        if not self.kv_ready():
-            return False
+        """★ 批量 pipeline 写热层：差分口径与指纹表统一由 ``storekit.batch_kv_apply`` 负责。"""
         with self._lock:
             items = dict(self._items)
-        targets = [str(key).lower()] if key else list(items)
-        ok = True
-        batch: Dict[str, Any] = {}
-        for k in targets:
-            item = items.get(k)
-            if item is None:
-                batch[self.kv_key(k)] = None
-                continue
-            fingerprint = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
-            if self._kv_written.get(k) == fingerprint:
-                continue
-            batch[self.kv_key(k)] = item
-        # 内存里已没有的项 → 删键（全量模式才做）
-        if not key:
-            for k in [x for x in self._kv_written if x not in items]:
-                batch[self.kv_key(k)] = None
-                self._kv_written.pop(k, None)
-        if not batch:
-            return True
-        writes = {k: v for k, v in batch.items() if v is not None}
-        drops = [k for k, v in batch.items() if v is None]
-        if writes and not self.kv.set_many(writes):
-            ok = False
-        if drops and not self.kv.delete_many(drops):
-            ok = False
-        if ok:
-            for k, item in items.items():
-                if self.kv_key(k) in writes:
-                    self._kv_written[k] = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
-        return ok
+        return batch_kv_apply(self, items, key, written=self._kv_written, norm_key=_LOWER)
 
     def _save(self, key: Optional[str] = None) -> None:
         """保存（热层增量写；不可用/失败 → 直接写文件）。"""
@@ -1912,7 +1555,11 @@ class RecommendStore(KvBridge):
             self.dirty = True
 
     def _write_file(self) -> bool:
-        """写 JSON 冷备份（★ P2：与磁盘并集合并 + 原子写 + 返回成败）。"""
+        """写推荐冷备份：与磁盘并集合并（按 ``updated_at`` 取新）后原子写。
+
+        为什么要合并而不是直接 dump 内存：另一个 worker 可能刚把更新的条目写进文件，
+        用本表旧快照盖掉就是丢数据。
+        """
         with self._lock:
             try:
                 self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -2034,20 +1681,16 @@ class ArchiveStore(KvBridge):
         self._load()
 
     def _load(self) -> None:
-        """载入：热层优先；热层无数据 → 读文件并回灌。"""
+        """载入云归档记录：热层优先，空则读文件并回灌（键是云盘路径，原样保留大小写）。
+
+        ★ 19.10.33：冷层读取收进 ``storekit.read_json_dict``。
+        """
         rows = self.kv_items()
         if rows:
             self._items = {str(k): dict(v) for k, v in rows.items() if isinstance(v, dict)}
             if self._items:
                 return
-        try:
-            if self.file.exists():
-                with open(self.file, "r", encoding="utf-8") as f:
-                    data = json.load(f) or {}
-                if isinstance(data, dict):
-                    self._items = {str(k): dict(v) for k, v in data.items() if isinstance(v, dict)}
-        except Exception:
-            self._items = {}
+        self._items = read_json_dict(self.file, norm_value=_DICT_ONLY)
         if self._items:  # 文件有历史（热层空/丢过）→ 回灌
             try:
                 self._kv_apply()
@@ -2056,40 +1699,10 @@ class ArchiveStore(KvBridge):
 
     # ---------------------------------------------------------- 热层（MP 缓存/Redis）
     def _kv_apply(self, key: Optional[str] = None) -> bool:
-        """★ 批量 pipeline 写热层。"""
-        if not self.kv_ready():
-            return False
+        """★ 批量 pipeline 写热层：差分口径与指纹表统一由 ``storekit.batch_kv_apply`` 负责。"""
         with self._lock:
             items = dict(self._items)
-        targets = [str(key)] if key else list(items)
-        ok = True
-        batch: Dict[str, Any] = {}
-        for k in targets:
-            item = items.get(k)
-            if item is None:
-                batch[self.kv_key(k)] = None
-                continue
-            fingerprint = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
-            if self._kv_written.get(k) == fingerprint:
-                continue
-            batch[self.kv_key(k)] = item
-        if not key:
-            for k in [x for x in self._kv_written if x not in items]:
-                batch[self.kv_key(k)] = None
-                self._kv_written.pop(k, None)
-        if not batch:
-            return True
-        writes = {k: v for k, v in batch.items() if v is not None}
-        drops = [k for k, v in batch.items() if v is None]
-        if writes and not self.kv.set_many(writes):
-            ok = False
-        if drops and not self.kv.delete_many(drops):
-            ok = False
-        if ok:
-            for k, item in items.items():
-                if self.kv_key(k) in writes:
-                    self._kv_written[k] = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
-        return ok
+        return batch_kv_apply(self, items, key, written=self._kv_written)
 
     def _save(self, key: Optional[str] = None) -> None:
         """保存（热层增量写；不可用/失败 → 直接写文件）。"""
@@ -2100,31 +1713,22 @@ class ArchiveStore(KvBridge):
             self.dirty = True
 
     def _write_file(self) -> bool:
-        """写 JSON 冷备份（★ P2：与磁盘并集合并 + 原子写 + 返回成败）。"""
+        """写云归档冷备份：与磁盘并集合并后原子写。
+
+        合并口径同推荐表 —— 按 ``updated_at`` 取新，防「本表旧快照盖掉别人刚写的记录」。
+        """
         with self._lock:
             try:
-                self.data_dir.mkdir(parents=True, exist_ok=True)
-                disk: Dict[str, Dict[str, Any]] = {}
-                if self.file.exists():
-                    try:
-                        with open(self.file, "r", encoding="utf-8") as f:
-                            d = json.load(f) or {}
-                        if isinstance(d, dict):
-                            disk = {str(k): v for k, v in d.items() if isinstance(v, dict)}
-                    except Exception as err:  # noqa: BLE001
-                        logger.warning(f"[{type(self).__name__}] 冷备份不可读，改用内存快照重建：{err!r}")
-                        disk = {}
-                merged = dict(disk)
+                merged = read_json_dict(self.file, norm_value=_DICT_ONLY)
                 for k, item in self._items.items():
                     cur = merged.get(k)
                     if cur is None or float(item.get("updated_at", 0) or 0) >= float(cur.get("updated_at", 0) or 0):
                         merged[k] = item
                 self._items = merged
-                self._atomic_write_json(self.file, merged)
-                return True
             except Exception as err:  # noqa: BLE001
                 logger.error(f"[{type(self).__name__}] 写 {self.file} 失败（保留脏标记，待重试）：{err!r}")
                 return False
+            return self._write_json_file(self._items)
 
     def get(self, path: str) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -2186,7 +1790,7 @@ class MagicFlowStore:
     可能仍有在飞线程（如跨重载的 brush）。若各自持有独立的内存快照，落盘会「整表互相覆盖」
     → 统计/状态被旧快照回滚（曾实际发生）。共用同一实例即可根治。
 
-    ★★ 单例注册表放在**独立模块**（`sys.modules[_SHARED_KEY]`）里，不能放类属性：
+    ★★ 单例注册表放在**独立模块**（`sys.modules[shared.KEY]`）里，不能放类属性：
     MP 热重载会清掉 `app.plugins.magicflow.*` 模块缓存，类属性会跟着重置
     → 每次重载都新建 store + **再起一个后台落盘线程（线程泄漏）**，
     旧线程还继续用旧常量、旧内存快照落盘。实测现象：文件被 20~36s 间隔乱写。
@@ -2855,13 +2459,19 @@ class MagicFlowStore:
     # -------------------- 任务运行记录 --------------------
 
     def record_run_start(self, task_id: str) -> None:
-        """记录任务开始运行。"""
+        """记录任务开始运行。
+
+        ★ 19.10.37：不清「配置错」（`last_error_sticky`）—— 配置没改好之前，
+        下一轮开始并不能证明它好了；只有配置守卫重新判定通过才清（`clear_run_error`）。
+        """
         state = self.task_states.get(task_id)
         if not state:
             state = self.task_states.create(task_id)
+        state = TaskState.upgrade(state)
 
         state.last_run_at = time.time()
-        state.last_error = None
+        if not state.last_error_sticky:
+            state.last_error = None
         self.task_states.save(state)
 
     def record_run_success(
@@ -2876,9 +2486,11 @@ class MagicFlowStore:
         state = self.task_states.get(task_id)
         if not state:
             state = self.task_states.create(task_id)
+        state = TaskState.upgrade(state)
 
         state.last_success_at = time.time()
         state.last_error = None
+        state.last_error_sticky = False
         state.cumulative_added += added
         state.cumulative_deleted += deleted
         state.cumulative_reused += reused
@@ -2901,6 +2513,7 @@ class MagicFlowStore:
         state = self.task_states.get(report.task_id)
         if not state:
             state = self.task_states.create(report.task_id)
+        state = TaskState.upgrade(state)
         has_counts = any(
             v is not None for v in (report.added, report.deleted, report.kept, report.reused)
         )
@@ -2919,7 +2532,10 @@ class MagicFlowStore:
             state.last_kept = int(report.kept)
         if has_counts:
             state.last_success_at = time.time()
-            state.last_error = None
+            # ★ 19.10.37：计数只清「运行错」，不清「配置错」——检查轮询每分钟带
+            #   added=0/deleted/kept/settle 一次，无条件清会让配置错永远活不过 60 秒。
+            if not state.last_error_sticky:
+                state.last_error = None
         if report.status:
             state.last_run_status = report.status
         if report.reason is not None:
@@ -2956,13 +2572,36 @@ class MagicFlowStore:
         state.last_run_duration = round(float(duration or 0.0), 2)
         self.task_states.save(state)
 
-    def record_run_error(self, task_id: str, error: str) -> None:
-        """记录任务运行错误。"""
+    def record_run_error(self, task_id: str, error: str, sticky: bool = False) -> None:
+        """记录任务运行错误。
+
+        Args:
+            task_id: 任务 ID
+            error: 错误文案（给 health / 前端看）
+            sticky: True = **配置错**（未配置保存目录 / 下载器不可用…）。
+                这类错不会因为「下一轮跑起来了」而消失，所以既不被 ``record_run_start``
+                清、也不被 ``settle`` 的计数清；只有 ``clear_run_error``（配置守卫重判
+                为通过）才清。默认 False = 普通运行错，下一轮成功即自动消失。
+        """
         state = self.task_states.get(task_id)
         if not state:
             state = self.task_states.create(task_id)
+        state = TaskState.upgrade(state)
 
         state.last_error = error
+        state.last_error_sticky = bool(sticky)
+        self.task_states.save(state)
+
+    def clear_run_error(self, task_id: str) -> None:
+        """清掉运行错误（含粘性的配置错）——配置守卫重判为通过时调用。"""
+        state = self.task_states.get(task_id)
+        if not state:
+            return
+        state = TaskState.upgrade(state)
+        if state.last_error is None and not state.last_error_sticky:
+            return
+        state.last_error = None
+        state.last_error_sticky = False
         self.task_states.save(state)
 
     def get_task_stats(self, task_id: str) -> Dict[str, Any]:
@@ -2975,13 +2614,14 @@ class MagicFlowStore:
         Returns:
             统计信息字典
         """
-        state = self.task_states.get(task_id)
+        state = TaskState.upgrade(self.task_states.get(task_id))
         if not state:
             return {
                 "task_id": task_id,
                 "last_run_at": None,
                 "last_success_at": None,
                 "last_error": None,
+                "last_error_sticky": False,
                 "cumulative_added": 0,
                 "cumulative_deleted": 0,
                 "cumulative_kept": 0,
@@ -3010,6 +2650,7 @@ class MagicFlowStore:
             "last_run_at": state.last_run_at,
             "last_success_at": state.last_success_at,
             "last_error": state.last_error,
+            "last_error_sticky": bool(state.last_error_sticky),
             "cumulative_added": state.cumulative_added,
             "cumulative_deleted": state.cumulative_deleted,
             "cumulative_kept": state.cumulative_kept,

@@ -31,6 +31,7 @@ from ..common import (
     MagicFlowTaskConfig,
     begin_decision_round,
     note_snapshot_pull,
+    torrent_done,
 )
 
 
@@ -93,16 +94,6 @@ class CleanupMixin:
         except Exception as _asset_err:
             self._log(f"魔流 [{task.name}] 媒体资产保护计算失败: {_asset_err}", "warning")
 
-        # ★ 跨站来源份（H&R 保种期内）：它们是**别的站点**的保种责任种，
-        #   不是本任务的资产，但绝不能被本任务（或任何任务）删掉。
-        try:
-            _cs_src = self._crossseed_source_hashes()
-            if _cs_src:
-                protected = set(protected) | set(_cs_src)
-                self._dbg(f"[{task.name}] 跨站来源份 H&R 保护 {len(_cs_src)} 个")
-        except Exception as _cs_err:  # noqa: BLE001
-            self._log(f"魔流 [{task.name}] 跨站来源份保护计算失败: {_cs_err}", "warning")
-
         # ★ X3 保护裁决真值源：清理必须消费 `_protection_sets`（docs/MODULES.md X3）。
         #   ★ 7.21.1：保护集合必须与「删除候选」同口径（Master：「清理程序太多太乱，放一起」）。
         #   历史上托管集合只有「站点+职务」一个来源（`_same_site_torrents`），而删除候选
@@ -110,7 +101,9 @@ class CleanupMixin:
         #   仍留在删除候选里、失去硬保护，被「超保留上限按魔力从低到淘汰」误删
         #   （实测 CARPT 37 个 H&R 补种）。这里把三种归属口径（站点+职务 ∪ 标签命中）
         #   并集后统一计算硬保护，全体清理路径共用同一集合，从源头杆绝分叉。
-        #   hard = 永不删：手动保留 / 跨站来源份 / 欠 H&R / 未下完 / 已认领。
+        #   hard = 永不删：手动保留 / 欠 H&R（含跨站来源份）/ 未下完 / 已认领。
+        #   ★ 19.10.11b：跨站来源份不再单独加保护 —— 它的义务已并入 H&R 账单，
+        #   `_protection_sets` 的 `_hr_bill_owed_hashes` 自动覆盖。没欠债的来源份可清。
         _promo_protected = None   # ★ 8.0.2：供「促销失效且未下完」清理用的放行集合
         try:
             _scope = list(all_tagged or [])
@@ -224,12 +217,12 @@ class CleanupMixin:
                         # 下载中:上传考核(每 check 一次,无上传即杀)
                         _incomplete = [
                             t for t in _still
-                            if float(getattr(t, "progress", 0) or 0) < 0.999
+                            if not torrent_done(t)
                         ]
                         # 已下完:满 N 天轮换
                         _complete = [
                             t for t in _still
-                            if float(getattr(t, "progress", 0) or 0) >= 0.999
+                            if torrent_done(t)
                         ]
                         out["no_upload"] = self._cleanup_no_upload(
                             task, downloader, _incomplete, protected
@@ -831,7 +824,7 @@ class CleanupMixin:
             if not h or h in protected_hashes:
                 continue
             # 只处理「还没下完」的种子(已完成/做种中的交给魔力规则管)
-            if float(getattr(t, "progress", 0) or 0) >= 0.999:
+            if torrent_done(t):
                 continue
             if self._is_dead_cached(task.id, h):
                 continue

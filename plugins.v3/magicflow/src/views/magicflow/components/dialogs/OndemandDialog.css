@@ -1,0 +1,202 @@
+/* OndemandDialog 的 scoped 样式，由线上 dist 按 scopeId data-v-0cb84649 提取。
+   选择器里的属性限定符是 scoped 边界，别去掉。 */
+
+/* ── 弹窗根 / 标题行 / 摘要行：随「点播弹窗」自 index.vue 迁入。
+     下列**共享选择器**（magicflow-dialog / settings-dialog__head（含 i）/ settings-dialog__title /
+     recommend-dialog__head-actions / recommend-dialog__summary（含 i）/ recommend-dialog__note）
+     父页其它弹窗也在用 → 两处各留一份（纯复制，零改动）。
+     ⚠️ VDialog 会 teleport 到 body，父页 scoped 规则够不到子内部，组件内必须自带这些共享规则。── */
+.magicflow-dialog[data-v-0cb84649] {
+  background: rgb(var(--v-theme-surface)) !important;
+  border: 1px solid var(--magicflow-panel-brd);
+  border-radius: 18px;
+  backdrop-filter: blur(16px) saturate(120%);
+  -webkit-backdrop-filter: blur(16px) saturate(120%);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.magicflow-settings-dialog__head[data-v-0cb84649] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 12px;
+}
+
+.magicflow-settings-dialog__head i[data-v-0cb84649] {
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+
+.magicflow-settings-dialog__title[data-v-0cb84649] {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.magicflow-recommend-dialog__head-actions[data-v-0cb84649] {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.magicflow-recommend-dialog__summary[data-v-0cb84649] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
+}
+
+.magicflow-recommend-dialog__summary i[data-v-0cb84649] {
+  font-style: normal;
+  opacity: var(--mf-op-dim);
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+
+.magicflow-recommend-dialog__note[data-v-0cb84649] {
+  margin-block: 2px 6px;
+  font-size: 0.78rem;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
+  opacity: 0.85;
+}
+
+
+/* ── 点播弹窗（专属选择器，随组件迁入）────────────────────────────── */
+.magicflow-ondemand-dialog[data-v-0cb84649] {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  max-block-size: 92vh;
+  overflow: hidden;
+}
+
+.magicflow-ondemand-dialog__body[data-v-0cb84649] { padding: 8px 18px 16px; overflow: auto; flex: 1 1 auto; min-height: 0; overscroll-behavior: contain;
+}
+
+/* ★ 19.11.1 分区：搜索 / 切换是固定区，只有中间一块滚动 —— 内容再多也不会把别的东西挤出视野 */
+.magicflow-od-search[data-v-0cb84649] { padding: 10px 18px 8px; flex: 0 0 auto;
+}
+
+.magicflow-od-search__grid[data-v-0cb84649] { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1.3fr) minmax(0, 1fr); gap: 8px; align-items: start;
+}
+
+.magicflow-od-search__acts[data-v-0cb84649] { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap;
+}
+
+.magicflow-od-search__hint[data-v-0cb84649] { margin-top: 8px; padding: 7px 10px; border-radius: 8px; background: rgba(var(--v-theme-primary), 0.09); font-size: 0.78rem; line-height: 1.55;
+}
+
+.magicflow-od-search__hint strong[data-v-0cb84649] { color: rgb(var(--v-theme-primary));
+}
+
+.magicflow-od-switch[data-v-0cb84649] { display: flex; align-items: center; gap: 6px; padding: 6px 18px 6px; flex: 0 0 auto; border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+@media (max-width: 760px) {
+
+.magicflow-od-search__grid[data-v-0cb84649] { grid-template-columns: 1fr;
+}
+
+.magicflow-od-search__acts[data-v-0cb84649] { margin-top: 6px;
+}
+}
+
+
+.magicflow-ondemand-list[data-v-0cb84649] { display: flex; flex-direction: column; gap: 6px;
+}
+
+/* ★ 19.11.0：候选行改为「勾选框 | 内容 | 按钮」三栏 —— 中文主标题 + 规格副标题 + 站点原名小字 */
+.magicflow-ondemand-item[data-v-0cb84649] { display: flex; align-items: flex-start; gap: 4px; border: 1px solid rgba(var(--v-theme-on-surface), 0.14); border-radius: 8px; padding: 6px 8px 6px 2px;
+}
+
+.magicflow-ondemand-item--auto[data-v-0cb84649] { border-color: rgba(var(--v-theme-primary), 0.55); box-shadow: inset 0 0 0 1px rgba(var(--v-theme-primary), 0.22);
+}
+
+.magicflow-ondemand-item--picked[data-v-0cb84649] { background: rgba(var(--v-theme-primary), 0.08); border-color: rgba(var(--v-theme-primary), 0.65);
+}
+
+.magicflow-ondemand-item__check[data-v-0cb84649] { flex: 0 0 auto; margin-top: -2px;
+}
+
+.magicflow-ondemand-item__body[data-v-0cb84649] { flex: 1 1 auto; min-width: 0;
+}
+
+.magicflow-ondemand-item__act[data-v-0cb84649] { flex: 0 0 auto; align-self: center; display: flex; justify-content: flex-end; margin-top: 0;
+}
+
+.magicflow-ondemand-item__title[data-v-0cb84649] { font-size: 0.86rem; font-weight: 600; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word;
+}
+
+.magicflow-ondemand-item__alt[data-v-0cb84649] { font-weight: 400; font-size: 0.94em; color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
+}
+
+.magicflow-ondemand-item__sub[data-v-0cb84649] { margin-top: 2px; font-size: 0.75rem; line-height: 1.45; color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word;
+}
+
+.magicflow-ondemand-item__raw[data-v-0cb84649] { margin-top: 3px; font-size: 0.68rem; line-height: 1.4; opacity: 0.45; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.magicflow-ondemand-item__meta[data-v-0cb84649] { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; font-size: 0.74rem; color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
+}
+
+/* ★ 19.11.0 批量工具条：全选 / 已选计数 / 一并点播
+   ★ 19.11.1 吸顶：候选再多，勾选后也能立刻点到「一并点播」，不用滚回顶部 */
+.magicflow-od-batchbar[data-v-0cb84649] {
+  display: flex; align-items: center; gap: 4px; padding: 4px 8px 4px 2px; border-radius: 8px;
+  background: rgba(var(--v-theme-primary), 0.10);
+  position: sticky; top: 0; z-index: 2;
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+}
+
+.magicflow-od-batchbar__text[data-v-0cb84649] { font-size: 0.78rem; color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
+}
+
+.magicflow-od-batchbar__text strong[data-v-0cb84649] { color: rgb(var(--v-theme-primary)); font-variant-numeric: tabular-nums;
+}
+
+/* ★ 15.4.0 点播清单：进行中（带进度条）+ 历史 */
+.magicflow-od-inventory[data-v-0cb84649] { border: 1px solid rgba(var(--v-theme-on-surface), 0.12); border-radius: 10px; padding: 8px 10px; background: rgba(var(--v-theme-on-surface), 0.03);
+}
+
+.magicflow-od-inventory__head[data-v-0cb84649] { display: flex; align-items: center; gap: 6px; margin-bottom: 6px;
+}
+
+.magicflow-od-inventory__empty[data-v-0cb84649] { font-size: 0.78rem; opacity: 0.7; padding: 6px 2px;
+}
+
+.magicflow-od-tab[data-v-0cb84649] { cursor: pointer; user-select: none;
+}
+
+/* ★ 19.11.0：批量点播的回报带换行（一条失败一行），别糊成一大段 */
+.magicflow-od-msg[data-v-0cb84649] { white-space: pre-line;
+}
+
+.magicflow-od-row[data-v-0cb84649] { border-top: 1px solid rgba(var(--v-theme-on-surface), 0.07); padding: 6px 2px;
+}
+
+.magicflow-od-row[data-v-0cb84649]:first-of-type { border-top: none;
+}
+
+.magicflow-od-row__title[data-v-0cb84649] { font-size: 0.8rem; line-height: 1.45; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.magicflow-od-row__sub[data-v-0cb84649] { font-size: 0.7rem; line-height: 1.4; margin-top: 1px; opacity: 0.55; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.magicflow-od-row__meta[data-v-0cb84649] { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 3px; font-size: 0.72rem; color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
+}
+
+.magicflow-od-row__stage[data-v-0cb84649] { display: flex; align-items: center; gap: 8px; margin-top: 4px;
+}
+
+.magicflow-od-row__pct[data-v-0cb84649] { font-size: 0.72rem; font-variant-numeric: tabular-nums; opacity: 0.85;
+}
+
+.magicflow-od-row__hash[data-v-0cb84649] { font-size: 0.7rem; opacity: 0.55; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.magicflow-od-row__ts[data-v-0cb84649] { font-variant-numeric: tabular-nums; opacity: 0.75;
+}
+
+.magicflow-od-row--done .magicflow-od-row__title[data-v-0cb84649] { color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
+}

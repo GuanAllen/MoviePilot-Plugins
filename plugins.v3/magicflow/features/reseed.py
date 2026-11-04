@@ -31,8 +31,12 @@ from sqlalchemy import select
 from app.sdk.logging import logger
 from app.schemas import Response
 
+from .. import envops
+from ..collect_parse import as_bool_arg, parse_np_search_rows, search_kw_en
 from ..downloader_ops import TorrentFetchFlowControl, TorrentFetchGone
 from ..fingerprint import fingerprint, info_hash
+from ..sites import search_presets as _search_presets
+from .assets import _clean_title_from_torrent
 from ..iyuu_cloud import (
     build_download_url,
     harvest_passkey,
@@ -67,6 +71,59 @@ from ..common import (
 )
 
 
+# ★ 直连搜索站的合成 sid 基址（2026-10-31）
+#   IYUU 站点表里没有的站（实测 104 站不含 pttime.org）当不了辅种目标站 ——
+#   `_reseed_pairs` 第一步 `if sid not in site_map: continue` 就把它排除了。
+#   直连搜索给这类站开第二条腿：自己按片名搜、下种、比特征码。
+#   sid 用 `DIRECT_SID_BASE + MP站点id` 合成，与 IYUU sid（1~200）永不重叠，
+#   于是 `_reseed_one` / `_pv_*` / 台账 / 每日上限这些既有设施**不用改**就能复用。
+DIRECT_SID_BASE = 900000
+
+
+# ---------------------------------------------------------------------------
+# 直连搜索：搜索词提取
+# ---------------------------------------------------------------------------
+# ★ 为什么不能只用 `_clean_title_from_torrent`：它**只认中文**（抽不到中文返回空串），
+#   而实测样本里 225 条待补资源有 44 条是纯英文名（`Toy Story`、`The Phoenician Scheme`）。
+#   纯英文的切词规则在 `collect_parse.search_kw_en`（L0 纯函数，可离线测）；
+#   这里只做「中文优先、英文兜底」的编排。
+def _search_kw_from_title(title: str) -> str:
+    """本机种名 → 站点搜索词（中文优先，纯英文退到「发布标记之前的词序列」）。"""
+    s = str(title or "").strip()
+    if not s:
+        return ""
+    cjk = _clean_title_from_torrent(s)
+    if cjk:
+        return cjk
+    return search_kw_en(s)
+
+
+def _bump(tot: Dict[str, Any], site: Optional[Dict[str, Any]],
+          key: str, n: int = 1) -> None:
+    """搜索计数 +1（同时记总数与**按站**明细）。
+
+    ★ 为什么要按站记：接了第二个直连站之后，合计口径「命中 1 / 无此片 30」无法回答
+      运维唯一关心的问题 —— **哪站在白跑**。站越多越需要，否则下次「要不要关掉某站」
+      只能靠猜。`site` 传 None 表示该计数与站无关（提不出搜索词这种）。
+    """
+    v = int(tot.get(key, 0) or 0) + int(n)
+    tot[key] = v
+    if site is not None:
+        site[key] = int(site.get(key, 0) or 0) + int(n)
+
+
+def _search_site_brief(by_site: Any) -> str:
+    """按站搜索明细 ``（站名 搜词数/命中数 · …）``；单站时返回空串（合计已够看）。"""
+    if not isinstance(by_site, dict) or len(by_site) < 2:
+        return ""
+    parts = []
+    for name, v in by_site.items():
+        v = v or {}
+        parts.append("%s %s/%s" % (name, int(v.get("search_kw") or 0),
+                                   int(v.get("search_hit") or 0)))
+    return "（%s）" % " · ".join(parts)
+
+
 def _rlog(msg: str, level: str = "info") -> None:
     """本文件自有的「魔流:」日志出口（与 `self._log` 输出格式一致）。
 
@@ -86,13 +143,8 @@ def _rlog(msg: str, level: str = "info") -> None:
 # ---------------------------------------------------------------------------
 _SPECIAL_DL_MARKERS = ("hash=", "authkey=")
 _SPECIAL_DL_DOMAINS = ("hdchina.org", "hdsky.me", "hdcity.in", "totheglory.im")
-# 详情页里下载链的抠法（顺序即优先级；与隔壁 IYUU 插件 `_torrent_xpaths` 逐条一致）
-_DETAIL_LINK_XPATHS = (
-    "//form[contains(@action, 'download.php?id=')]/@action",
-    "//a[contains(@href, 'download.php?hash=')]/@href",
-    "//a[contains(@href, 'download.php?id=')]/@href",
-    "//a[@class='index'][contains(@href, '/dl/')]/@href",
-)
+# 详情页里下载链的抠法（顺序即优先级）已搬到 ``collect_parse.DETAIL_LINK_XPATHS``
+#   ★ 19.10.31：xpath 解析归采集（铁律 1）。本文件只留「带 cookie 抓详情页」。
 
 
 def _is_special_dl(template: str, domain: str) -> bool:
@@ -170,7 +222,7 @@ HD_QUOTA_BLOCK_KEY = "reseed_catalog_quota_block_until"
 #   因此取链口径按「有没有 cookie」分两条腿：
 #     · 无 cookie：`mf_rss.downhash` → `download.php?id=&downhash=`（缓存没这颗就本轮不排）；
 #     · 有 cookie：与隔壁 IYUU 插件同口径，带 cookie 抓 `details.php?id=<tid>&hit=1`
-#       → `_DETAIL_LINK_XPATHS` 抠一次性链（见 `_reseed_details_link`）。
+#       → `collect_parse.DETAIL_LINK_XPATHS` 抠一次性链（见 `_reseed_details_link`）。
 #   `downhash` 之外的目录字段仍只做「体积预筛」，不拿 `download_url` 当链（那是抓取时的快照）。
 class ReSeedMixin:
     """全站辅种功能集。"""
@@ -185,19 +237,39 @@ class ReSeedMixin:
             "batch": int(getattr(self, "_reseed_batch", RESEED_BATCH) or RESEED_BATCH),
             "min_size_gb": float(getattr(self, "_reseed_min_size_gb", RESEED_MIN_SIZE_GB) or 0.0),
             "dry": bool(getattr(self, "_reseed_dry", False)),
+            # ★ 2026-10-31 直连搜索：IYUU 不收录的站（如 PT时间）当辅种目标站。
+            #   `search_sites` 默认空 = 不启用（这类站每轮要花真实站点请求，
+            #   不能装上就偷偷跑）；`search_kw` 是每轮每站的搜索词上限。
+            "search_sites": list(getattr(self, "_reseed_search_sites", None) or []),
+            "search_kw": int(getattr(self, "_reseed_search_kw", 0) or 0),
         }
         raw = self.get_data(RESEED_CFG_KEY)
         if isinstance(raw, dict):
             for k in list(cfg.keys()):
+                # ★ 直连搜索是**长期设置**：只认正式配置。覆盖项里即使有（19.10.63
+                #   遗留、或老接口写的），也一律忽略 —— 否则「设置面显示 A / 实际跑 B」。
+                if k in ("search_sites", "search_kw"):
+                    continue
                 if k in raw:
                     cfg[k] = raw[k]
         return cfg
 
     def set_reseed_cfg(self, patch: Dict[str, Any]) -> Dict[str, Any]:
-        """写 plugin data 覆盖项（接口用；传空字典=回到插件配置）。"""
+        """写辅种配置：**长期键落正式配置**，其余写 plugin data 覆盖项。
+
+        ``search_sites`` / ``search_kw`` 与前端设置面同源，是长期设置 ⇒ 必须写正式
+        配置。只写覆盖项会分裂：``_reseed_cfg()`` 的覆盖项优先让实际生效值 ≠ 设置面
+        显示值（19.10.64 踩过），而且下次启动的认领会把它当遗留项摘掉、静默丢失。
+        其余键（enabled/dry/batch/…）本来就是临时开关，继续走覆盖项。
+        传空字典 = 清空全部覆盖项（回到插件配置）。
+        """
+        orig = dict(patch or {})
+        has_sites = "search_sites" in orig
+        has_kw = "search_kw" in orig
+        rest = {k: v for k, v in orig.items() if k not in ("search_sites", "search_kw")}
         raw = self.get_data(RESEED_CFG_KEY)
         cur = dict(raw) if isinstance(raw, dict) else {}
-        for k, v in (patch or {}).items():
+        for k, v in rest.items():
             if k in ("enabled", "dry"):
                 cur[k] = bool(v)
             elif k == "sites":
@@ -208,7 +280,15 @@ class ReSeedMixin:
                 cur[k] = max(1, int(v or 1))
             elif k == "min_size_gb":
                 cur[k] = max(0.0, float(v or 0.0))
-        self.save_data(key=RESEED_CFG_KEY, value=(cur if patch else {}))
+        # 覆盖项里不保留长期键（老版本残留会劫持正式配置，见 `_reseed_cfg`）
+        cur.pop("search_sites", None)
+        cur.pop("search_kw", None)
+        self.save_data(key=RESEED_CFG_KEY, value=(cur if (rest or has_sites or has_kw) else {}))
+        if has_sites or has_kw:
+            self.apply_reseed_search_cfg(
+                sites=(orig.get("search_sites") if has_sites else None),
+                kw=(orig.get("search_kw") if has_kw else None),
+            )
         # ★ 开关可能翻转 → 立刻让宿主重建插件服务（enabled=true 才会注册 ReSeed worker）
         try:
             self._refresh_scheduler()
@@ -302,6 +382,62 @@ class ReSeedMixin:
                 out = []
         return out
 
+    def _reseed_search_options(self) -> List[Dict[str, Any]]:
+        """「哪些站能被直连搜索」—— 供设置面下拉，**不看** ``search_sites`` 白名单。
+
+        ★ 为什么要单独一个函数：白名单为空时 ``_reseed_direct_sites()`` 返回空，
+          设置面就永远列不出候选 → 用户没法把开关打开（鸡生蛋）。
+          这里按「MP 里有这个站」+「``sites/search_presets.py`` 认这个域」两个条件列全。
+        """
+        out: List[Dict[str, Any]] = []
+        for row in self._reseed_mp_sites():
+            dom = str(row.get("domain") or "").strip().lower()
+            if not dom:
+                continue
+            preset = _search_presets.resolve(dom)
+            if not preset:
+                continue
+            out.append({
+                "domain": dom,
+                "name": str(row.get("name") or dom),
+                "site_id": int(row.get("id") or 0),
+                "preset": str(preset.get("name") or dom),
+                "kw_per_round": int(preset.get("kw_per_round") or 0),
+            })
+        return sorted(out, key=lambda x: x["domain"])
+
+    def _reseed_direct_sites(self) -> Dict[int, Dict[str, Any]]:
+        """直连搜索站：IYUU 不收录、但我们自己能搜的站（``sites/search_presets.py``）。
+
+        返回 ``{合成sid: {sid, name, domain, site_id, preset}}``。
+        受两重开关约束：总开关 ``enabled`` 之外，还要在 ``search_sites`` 里显式列出域名
+        —— 默认空表示**不启用**（这类站每轮要花真实请求，不能装上就偷偷跑）。
+        """
+        out: Dict[int, Dict[str, Any]] = {}
+        cfg = self._reseed_cfg()
+        allow = {str(x).strip().lower() for x in (cfg.get("search_sites") or [])
+                 if str(x).strip()}
+        if not allow:
+            return out
+        for row in self._reseed_mp_sites():
+            dom = str(row.get("domain") or "").strip().lower()
+            name = str(row.get("name") or "").strip()
+            if dom not in allow and name.lower() not in allow:
+                continue
+            preset = _search_presets.resolve(dom)
+            if not preset:
+                continue
+            try:
+                mp_id = int(row.get("id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if not mp_id:
+                continue
+            sid = DIRECT_SID_BASE + mp_id
+            out[sid] = {"sid": sid, "name": name or dom, "domain": dom,
+                        "site_id": mp_id, "preset": preset}
+        return out
+
     def _reseed_site_map(self) -> Dict[int, Dict[str, Any]]:
         """IYUU sid → {sid, name, domain, site_id}（只含我们启用、且有 IYUU sid 的站）。"""
         out: Dict[int, Dict[str, Any]] = {}
@@ -324,23 +460,45 @@ class ReSeedMixin:
                 continue
             out[int(sid)] = {"sid": int(sid), "name": name or dom, "domain": dom,
                              "site_id": row.get("id")}
+        # ★ 2026-10-31：直连搜索站并进同一张映射表。下游（`_reseed_one` / `_pv_*` /
+        #   每日上限 / 台账）都只认 sid，不区分「IYUU 反查来的」还是「自己搜来的」。
+        try:
+            out.update(self._reseed_direct_sites())
+        except Exception as err:  # noqa: BLE001
+            _rlog(f"全站辅种:直连搜索站映射失败:{err}", "warning")
         if not out:
             self._log(f"全站辅种:站点映射为空（rows={len(rows)}, 白名单={sorted(allow)[:6]}）", "warning")
         return out
 
     def _reseed_site_conn(self, sid: int) -> Dict[str, Any]:
-        """站点的连接信息（cookie/ua/url/apikey/token），从 MP 站点对象取。"""
+        """站点的连接信息（cookie/ua/url/apikey/token），从 MP 站点对象取。
+
+        ★ 2026-10-31：直连搜索站的合成 sid（``>= DIRECT_SID_BASE``）不走 IYUU 反查 ——
+          ``sid_by_domain`` 对这类站恒返回空，按原逻辑会「站点连接信息缺失」直接判死。
+        """
+        _sid = int(sid or 0)
         site = None
-        cli = getattr(self, "_iyuu_client", None)
-        rows = self._reseed_mp_sites()
-        for row in rows:
-            dom = str(row.get("domain") or "").strip().lower()
-            try:
-                if cli is not None and int(cli.sid_by_domain(dom) or 0) == int(sid):
-                    site = row
-                    break
-            except Exception:  # noqa: BLE001
-                continue
+        if _sid >= DIRECT_SID_BASE:
+            # 直连站：MP 站点 id 就在合成 sid 里，直接定位那一行（`sid_by_domain` 对它恒空）
+            mp_id = _sid - DIRECT_SID_BASE
+            for _row in self._reseed_mp_sites():
+                try:
+                    if int(_row.get("id") or 0) == mp_id:
+                        site = _row
+                        break
+                except (TypeError, ValueError):
+                    continue
+        else:
+            cli = getattr(self, "_iyuu_client", None)
+            rows = self._reseed_mp_sites()
+            for row in rows:
+                dom = str(row.get("domain") or "").strip().lower()
+                try:
+                    if cli is not None and int(cli.sid_by_domain(dom) or 0) == _sid:
+                        site = row
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
         obj = self._get_site(site.get("id")) if site else None
         if obj is None:
             return {}
@@ -482,6 +640,40 @@ class ReSeedMixin:
             return {"ok": False, "error": f"保存失败 {err}"}
         return {"ok": True, "count": len(out)}
 
+    def _reseed_search_link(self, sid: int, tid: Any) -> str:
+        """直连搜索站的下载直链（来自 ``mf_rss.download_url`` —— 搜索行里抠出的链）。
+
+        链有**两种形态**，都要能用：
+        · **自带口令**（PT时间）：``download.php?id=&passkey=&uid=`` —— 免登录，
+          口令就藏在页面里；
+        · **裸链**（Depth Studio）：``download.php?id=N`` —— 没有 passkey 字段，
+          全靠站点 cookie 鉴权（实测带 cookie 拿到 31KB 真种，不带拿到 17KB 登录页）。
+          取种由 ``_reseed_one`` 统一传 ``cookie=conn["cookie"]``，所以这条腿天然可用。
+
+        为什么不用 ``_cred_get(site_id,"passkey")`` 拼：PT时间 这类站的 MP ``passkey``
+        字段是空的（口令只出现在页面的下载链里）。存下来直接用，既不落库口令、
+        也不怕站点换口令（下轮搜索会把新链刷进缓存）。
+        """
+        try:
+            mp_id = int(sid) - DIRECT_SID_BASE
+        except (TypeError, ValueError):
+            return ""
+        if mp_id <= 0:
+            return ""
+        try:
+            row = self._rss_lookup(mp_id, tid) or {}
+        except Exception:  # noqa: BLE001
+            row = {}
+        url = str(row.get("download_url") or "").strip()
+        if not url:
+            return ""
+        if not url.startswith("http"):
+            base = str((self._reseed_site_conn(sid) or {}).get("url") or "").rstrip("/")
+            if not base:
+                return ""
+            url = base + "/" + url.lstrip("/")
+        return url
+
     def _reseed_download_url(self, sid: int, tid: Any,
                              note: Optional[Dict[str, str]] = None) -> Optional[str]:
         """目标站种子下载链（与隔壁 IYUU 插件同口径，特殊站点多一条免登录腿）。
@@ -506,6 +698,16 @@ class ReSeedMixin:
             _why("站点连接信息缺失")
             return None
         site_id = int(conn.get("site_id") or 0)
+        # ⓪ 直连搜索站：链已经在上轮搜索时**原样存进**目录缓存（自带 passkey&uid）——
+        #    不走模板拼链，也不需要站点配口令。
+        if int(sid or 0) >= DIRECT_SID_BASE:
+            link = self._reseed_search_link(sid, tid)
+            if link:
+                if note is not None:
+                    note["chain"] = "search"
+                return link
+            _why("搜索结果里没有这颗的下载直链（需先跑一轮搜索刷新目录）")
+            return None
         c = self._collect_ref()
         # ① API 鉴权站（馒头/叶PT）：`genDlToken`，不用网页 cookie
         if c is not None and site_id:
@@ -669,29 +871,23 @@ class ReSeedMixin:
                 _why(f"详情页不可用（HTTP {status or '?'}）")
             self._dbg(f"全站辅种:{sid} 特殊站 tid={tid} 详情页 HTTP {status or '?'}，抠不到链")
             return None
-        try:
-            from lxml import etree  # noqa: WPS433
-            html = etree.HTML(text)
-        except Exception as err:  # noqa: BLE001
-            _why(f"详情页解析失败：{err}")
-            return None
-        if html is None:
+        # ★ 19.10.31：xpath 抠链已下沉 ``collect_parse.parse_detail_download_link``
+        #   （铁律 1「解析归采集」）。这里只按原因码拼 note 文案 —— HTTP 状态只有
+        #   抓取方知道，所以模板留在本侧。
+        from ..collect_parse import (  # noqa: WPS433
+            DETAIL_LINK_EMPTY_HTML,
+            DETAIL_LINK_NO_HIT,
+            parse_detail_download_link,
+        )
+        link, reason, detail = parse_detail_download_link(text, base)
+        if link:
+            return link
+        if reason == DETAIL_LINK_NO_HIT:
+            _why(f"详情页没有下载链（HTTP {status}，xpath 全未命中）")
+        elif reason == DETAIL_LINK_EMPTY_HTML:
             _why("详情页解析失败（HTML 为空）")
-            return None
-        for xp in _DETAIL_LINK_XPATHS:
-            try:
-                got = html.xpath(xp)
-            except Exception:  # noqa: BLE001
-                continue
-            if not got:
-                continue
-            link = str(got[0] or "").strip()
-            if not link:
-                continue
-            if link.startswith("http"):
-                return link
-            return f"{base}/{link.lstrip('/')}"
-        _why(f"详情页没有下载链（HTTP {status}，xpath 全未命中）")
+        else:
+            _why(f"详情页解析失败：{detail or reason}")
         return None
 
     # ------------------------------------------------------------ 种子目录缓存
@@ -836,13 +1032,22 @@ class ReSeedMixin:
             return {}
         return out
 
-    def _rss_fetch(self, site: Any, rss_url: str) -> List[Dict[str, Any]]:
+    def _reseed_rss_fetch(self, site: Any, rss_url: str) -> List[Dict[str, Any]]:
         """抓一个站点的 RSS 并解析成种子目录行（title/size/downhash/download_url/pub_at）。
 
         兼容两种 enclosure 形态：``download.php?id=X&downhash=...``（HDDolby 类）
         与带 passkey/token 的直链；解析后一律产出（site_id,tid,title,size,pub_at）。
+
+        ★ 19.10.31 **改名**（原 ``_rss_fetch``）：与 ``features/rss.py::RssMixin._rss_fetch``
+        撞名，而 ``MagicFlow`` 的 MRO 里 ``ReSeedMixin`` 排在 ``RssMixin`` **之前** ⇒
+        本方法静默覆盖了那个。两者签名不同（这里 ``(site, rss_url) -> List``，那里
+        ``(site, limit) -> Dict``）⇒ ``brush`` / ``crossseed`` / ``formula`` / ``rss``
+        四处 ``self._rss_fetch(site, limit)`` 全落到本方法，把整数当 URL 传，请求必然
+        失败返回空 list，再被各自 ``except`` 吞掉 → **RSS 页面与刷流 RSS 快路径长期全空**
+        （实测 ``/rss`` 15 站 items=0、0.4s 未发出任何请求）。
+        护栏：``tools/check_mixin_collisions.py``（preflight 第 27 步）。
         """
-        from ..collect import sanitize_site_headers  # noqa: WPS433
+        from ..collect import parse_rss_torrents, sanitize_site_headers  # noqa: WPS433
 
         out: List[Dict[str, Any]] = []
         try:
@@ -852,48 +1057,8 @@ class ReSeedMixin:
             text = resp or ""
             if not text:
                 return out
-            for mt in re.finditer(
-                r"<item>.*?</item>", text, flags=re.S
-            ):
-                item = mt.group(0)
-                m_tid = re.search(r"torrents\.php\?id=(\d+)|details\.php\?id=(\d+)|download\.php\?id=(\d+)", item)
-                tid = (m_tid.group(1) or m_tid.group(2) or m_tid.group(3)) if m_tid else None
-                if not tid:
-                    continue
-                title = ""
-                m_t = re.search(r"<title>(.*?)</title>", item, re.S)
-                if m_t:
-                    title = m_t.group(1).strip()
-                size = None
-                m_s = re.search(r"<size>([\d.]+) ?(GB|MB|KB|B)?</size>", item, re.I)
-                if m_s:
-                    try:
-                        sz = float(m_s.group(1))
-                        unit = (m_s.group(2) or "B").upper()
-                        mult = {"B": 1, "KB": 1024 ** 2, "MB": 1024, "GB": 1}.get(unit, 1)
-                        size = sz * mult / (1024 ** 3)
-                    except ValueError:
-                        size = None
-                pub_at = None
-                m_p = re.search(r"<pubDate>(.*?)</pubDate>", item, re.S)
-                if m_p:
-                    from email.utils import parsedate_to_datetime
-                    try:
-                        pub_at = parsedate_to_datetime(m_p.group(1).strip()).timestamp()
-                    except Exception:  # noqa: BLE001
-                        pub_at = None
-                downhash = ""
-                m_dh = re.search(r"download\.php\?id=\d+&(?:amp;)?downhash=([0-9a-zA-Zx]+)", item)
-                if m_dh:
-                    downhash = m_dh.group(1)
-                m_enc = re.search(r"<enclosure[^>]+url=['\"]([^'\"]+)['\"]", item, re.I)
-                download_url = m_enc.group(1) if m_enc else ""
-                if "&amp;" in download_url:
-                    download_url = download_url.replace("&amp;", "&")  # XML 实体回退真参
-                out.append({
-                    "tid": tid, "title": title, "size": size,
-                    "downhash": downhash, "download_url": download_url, "pub_at": pub_at,
-                })
+            # 19.10.30：解析已下沉 ``collect.parse_rss_torrents``（铁律 1「解析归采集」）
+            out.extend(parse_rss_torrents(text))
         except Exception:  # noqa: BLE001
             self._dbg(f"全站辅种:RSS 解析失败 {rss_url[:80]}")
         return out
@@ -939,7 +1104,7 @@ class ReSeedMixin:
                 except Exception:  # noqa: BLE001
                     rss_url = ""
             if rss_url:
-                rows = self._rss_fetch(site, rss_url)
+                rows = self._reseed_rss_fetch(site, rss_url)
                 if rows:
                     for r in rows:
                         r["site_id"] = site_id
@@ -1131,7 +1296,7 @@ class ReSeedMixin:
         res = RequestUtils(
             headers={"x-api-key": key, "Content-Type": "application/json",
                      "Accept": "application/json, text/plain, */*"}, timeout=20,
-        ).post_res(url=f"https://api.{dom}/api/v1/torrent/search", json=body)
+        ).post_res(url=f"{envops.hd_api_base(site, dom)}/api/v1/torrent/search", json=body)
         if int(getattr(res, "status_code", 0) or 0) != 200:
             _body = str(getattr(res, "text", "") or "")
             if "30005" in _body or "api call per hour" in _body.lower():
@@ -1359,6 +1524,239 @@ class ReSeedMixin:
                 if len(picked) >= limit:
                     break
         return picked
+
+    def _reseed_search_pairs(self, downloader: Any, local_index: Dict[str, Any],
+                             site_map: Dict[int, Dict[str, Any]],
+                             stats: Optional[Dict[str, Any]] = None,
+                             per_round: int = 0,
+                             dry: bool = False) -> List[Dict[str, Any]]:
+        """直连搜索候选源（IYUU 站点表里没有的站）。
+
+        与 ``_reseed_pairs``（云端反查）**并列**，产出同格式的 pair，交给同一个
+        ``_reseed_one`` 执行 —— 取链/指纹/挂种/记账都不另写一套。
+
+        链路：资源组里「目标站还没份」的组 → 种名提搜索词（同词多版本只搜一次）
+              → 站点搜索 → 行解析 → 写 ``mf_rss``（含行内自带的下载直链）
+              → 体积 ±5% 粗筛 → 下种算 info_hash + 特征码 → 与本机组指纹**相等**才算命中。
+
+        ★ **体积只是粗筛，不是判据**。实测同一部片在站点常有「按集发 vs 整季合集」
+          或「不同压制组」的多个版本：体积接近、特征码不同 ⇒ 文件本来就不同，辅不了。
+          必须靠特征码否掉，否则挂上去 recheck 不过（白花一次取种）。
+
+        ★ ``dry``：干跑时**不写 ok 台账**（ok TTL 90 天，写了会让真跑 90 天不碰这颗）。
+          miss/fail 照写 —— 「站点确实没这一版」与干跑无关，不必重复搜。
+        """
+        st = stats if stats is not None else {}
+        out: List[Dict[str, Any]] = []
+        directs = {int(s): i for s, i in (site_map or {}).items()
+                   if int(s) >= DIRECT_SID_BASE}
+        if not directs:
+            return out
+        cfg = self._reseed_cfg()
+        try:
+            groups = self._tag_groups().items()
+        except Exception as err:  # noqa: BLE001
+            _rlog(f"全站辅种:直连搜索读资源组失败 {err}", "warning")
+            return out
+        if not groups:
+            return out
+        ledger = self._reseed_ledger()
+        for sid in sorted(directs):
+            info = directs[sid]
+            site_name = str(info.get("name") or sid)
+            preset = info.get("preset") or {}
+            # 按站明细（合计记 st，按站记 _site）—— 让「哪站在白跑」一眼可见
+            _site: Dict[str, Any] = st.setdefault("by_site", {}).setdefault(site_name, {})
+            quota = int(per_round or cfg.get("search_kw") or preset.get("kw_per_round") or 10)
+            delay = float(preset.get("delay") or 2.5)
+            conn = self._reseed_site_conn(sid)
+            base = str(conn.get("url") or "").rstrip("/")
+            if not base:
+                continue
+            # 候选组 → 搜索词（同词归并：同一部片的多个版本只花一次请求）
+            by_kw: Dict[str, List[Dict[str, Any]]] = {}
+            for gid, rec in groups.items():
+                if not str(gid).startswith("fp:") or len(str(gid)) <= 3:
+                    continue
+                if ledger.get(f"s:{sid}:{gid}"):
+                    continue                      # 最近试过且未过期（miss 30 天 / fail 1 天）
+                members = (rec or {}).get("members") or {}
+                if not isinstance(members, dict) or not members:
+                    continue
+                sites = {str((m or {}).get("site") or "").strip() for m in members.values()}
+                if site_name in sites:
+                    continue                      # 该站已经有份了
+                src_hash = ""
+                src_obj = None
+                for h in members:
+                    obj = local_index.get(str(h).lower())
+                    if obj is not None:
+                        src_hash, src_obj = str(h).lower(), obj
+                        break
+                if src_obj is None:
+                    continue                      # 本机已没有这颗的文件
+                kw = _search_kw_from_title(getattr(src_obj, "title", "") or "")
+                if not kw:
+                    _bump(st, _site, "search_nokw", 1)
+                    continue
+                by_kw.setdefault(kw, []).append({
+                    "gid": str(gid), "fp": str(gid)[3:], "src": src_hash,
+                    "size": float(getattr(src_obj, "size", 0) or 0),
+                    "size_gb": float((rec or {}).get("size_gb")
+                                     or (float(getattr(src_obj, "size", 0) or 0) / 1024 ** 3)),
+                })
+            if not by_kw:
+                continue
+            # 词多的轮次轮转：每个词都排在最前会让「按片名顺序」永远卡在头部
+            kws = sorted(by_kw.keys())
+            random.shuffle(kws)
+            c = self._collect_ref()
+            cli = None
+            if c is not None:
+                try:
+                    cli = c.http.client(int(info.get("site_id") or 0),
+                                        kind="browse", ttl=0)   # ttl=0：搜索不读缓存
+                except Exception as err:  # noqa: BLE001
+                    _rlog(f"全站辅种:直连站 {site_name} 会话构建失败 {err}", "warning")
+            if cli is None:
+                _bump(st, _site, "search_dead", 1)
+                continue
+            used = 0
+            for kw in kws:
+                if used >= quota:
+                    _bump(st, _site, "search_quota", 1)
+                    break
+                used += 1
+                _bump(st, _site, "search_kw", 1)
+                params = {k: str(v).replace("{kw}", kw)
+                          for k, v in ((preset.get("params") or {})).items()}
+                qs = "&".join(f"{quote(str(k))}={quote(str(v))}" for k, v in params.items())
+                url = f"{base}/{str(preset.get('path') or '').lstrip('/')}?{qs}"
+                html = ""
+                try:
+                    resp = cli.get_res(url)
+                    html = str(getattr(resp, "text", "") or "") if resp else ""
+                except Exception as err:  # noqa: BLE001
+                    _bump(st, _site, "search_err", 1)
+                    _rlog(f"全站辅种:直连站 {site_name} 搜索失败 {kw}: {err}", "warning")
+                if not html:
+                    for g in by_kw[kw]:
+                        self._reseed_ledger_put(f"s:{sid}:{g['gid']}", "fail", "搜索页为空")
+                    continue
+                rows = parse_np_search_rows(html)
+                if not rows:
+                    low = html.lower()
+                    if "takelogin" in low or "/login.php" in low:
+                        # ★ 会话失效必须显式报出来：否则表现成「本轮候选 0 条」，
+                        #   看上去像「站点没货」，实际是 cookie/UA 被踢（cookie 绑 UA）。
+                        _bump(st, _site, "search_dead", 1)
+                        _rlog(f"全站辅种:{site_name} 搜索被踢回登录页"
+                              "（cookie 或 UA 失效，本轮该站让路）", "warning")
+                        break
+                    for g in by_kw[kw]:
+                        self._reseed_ledger_put(f"s:{sid}:{g['gid']}", "miss",
+                                                f"站点无此片（{kw[:40]}）")
+                    _bump(st, _site, "search_nomatch", len(by_kw[kw]))
+                    time.sleep(delay)
+                    continue
+                # 目录落地：行内直链自带 passkey&uid，存下来供 `_reseed_search_link` 复用
+                mp_id = int(info.get("site_id") or 0)
+                self._rss_upsert([{
+                    "site_id": mp_id, "tid": r["tid"], "title": r["title"],
+                    "size": r["size_gb"], "download_url": (
+                        r["download_url"] if str(r.get("download_url") or "").startswith("http")
+                        else (f"{base}/{str(r['download_url']).lstrip('/')}"
+                              if r.get("download_url") else "")),
+                    "pub_at": 0,
+                } for r in rows if r.get("tid")])
+                _flow_stop = False
+                for g in by_kw[kw]:
+                    # ★ 19.10.63 取种一旦被流控，本词组的**其余资源组**也别再试了：
+                    #   流控是按站点算的，紧接着再取只会连续撞墙（原先只 break 内层
+                    #   `for r in near`，外层照旧逐组重试，白花 N 次失败的请求额度）。
+                    if _flow_stop:
+                        break
+                    want = float(g.get("size_gb") or 0.0)
+                    tol = max(want * 0.05, 0.05)
+                    near = [r for r in rows
+                            if float(r.get("size_gb") or 0) > 0
+                            and abs(float(r["size_gb"]) - want) <= tol]
+                    if not near:
+                        # 有这片，但只有别的版本（分集/别组/别分辨率）—— 不是本次能辅的
+                        self._reseed_ledger_put(
+                            f"s:{sid}:{g['gid']}", "miss",
+                            f"站点有 {len(rows)} 个版本但体积不符（本机 {want:g}GB）")
+                        _bump(st, _site, "search_size_miss", 1)
+                        continue
+                    hit = None
+                    for r in near[:2]:
+                        link = self._reseed_search_link(sid, r["tid"])
+                        if not link:
+                            continue
+                        try:
+                            raw = downloader.fetch_torrent_bytes(
+                                link, cookie=conn.get("cookie"),
+                                user_agent=conn.get("ua"),
+                                referer=(base + "/"),
+                            )
+                        except TorrentFetchFlowControl as err:
+                            _bump(st, _site, "search_flow", 1)
+                            _rlog(f"全站辅种:{site_name} 搜索取种被流控，本轮让路（{err}）", "warning")
+                            raw = None
+                            _flow_stop = True
+                            break
+                        except Exception:  # noqa: BLE001
+                            raw = None
+                        if not raw:
+                            continue
+                        try:
+                            fp2 = str(fingerprint(raw) or "").lower()
+                        except Exception:  # noqa: BLE001
+                            fp2 = ""
+                        if fp2 and fp2 == str(g["fp"]).lower():
+                            try:
+                                ih = str(info_hash(raw) or "").lower()
+                            except Exception:  # noqa: BLE001
+                                ih = ""
+                            if ih:
+                                hit = {"key": f"{sid}:{ih}", "src": g["src"],
+                                       "src_size": g["size"], "ih": ih,
+                                       "tid": r["tid"], "sid": sid}
+                            break
+                    if hit:
+                        # ★ 19.10.64 干跑命中**不记 ok**：ok 的 TTL 是 90 天，
+                        #   记了就等于「干跑看过一眼 → 真跑 90 天内再也不碰这颗」，
+                        #   这是最典型的「干跑一跑，真跑就废」。干跑只当没发生过。
+                        if not dry:
+                            self._reseed_ledger_put(f"s:{sid}:{g['gid']}", "ok",
+                                                    f"搜索命中 tid={hit['tid']}")
+                        out.append(hit)
+                        _bump(st, _site, "search_hit", 1)
+                    else:
+                        self._reseed_ledger_put(
+                            f"s:{sid}:{g['gid']}", "miss",
+                            f"体积接近但特征码不符（{len(near)} 个候选）")
+                        _bump(st, _site, "search_fp_miss", 1)
+                time.sleep(delay)
+        # ★ 多站时每站各打一行失败构成：汇总行的「命中 1 / 无此片 36 / 体积不符 15」
+        #   是两站相加，回答不了「该留哪站」。而 `last.by_site` 是内存属性，插件一
+        #   重载就没了 —— 所以必须落日志才能回溯（决定加站/关站看的就是这几行）。
+        if len(st.get("by_site") or {}) > 1:
+            for _name, _v in (st.get("by_site") or {}).items():
+                _v = _v or {}
+                if not int(_v.get("search_kw") or 0):
+                    continue
+                _line = (f"全站辅种:直连站 {_name} 搜 {int(_v.get('search_kw') or 0)} 词 → "
+                         f"命中 {int(_v.get('search_hit') or 0)} / "
+                         f"无此片 {int(_v.get('search_nomatch') or 0)} / "
+                         f"体积不符 {int(_v.get('search_size_miss') or 0)} / "
+                         f"特征码不符 {int(_v.get('search_fp_miss') or 0)}")
+                for _k, _t in (("search_dead", "会话失效"), ("search_flow", "流控"),
+                               ("search_quota", "配额截断"), ("search_err", "请求失败")):
+                    if int(_v.get(_k) or 0):
+                        _line += f" / {_t} {int(_v.get(_k) or 0)}"
+                _rlog(_line)
+        return out
 
     # ------------------------------------------------------------------ 执行
     def _reseed_nourl_note(self, sid: int, tid: Any) -> str:
@@ -1621,9 +2019,47 @@ class ReSeedMixin:
                         f"全站辅种:体积线降档到 {_down:g} GB 仍排不出"
                         f"（下限 {RESEED_DOWNSHIFT_MIN_SIZE_GB:g} GB，被拦候选 "
                         f"{report['too_small']} 个）", "warning")
+        # ★ 2026-10-31：直连搜索候选（IYUU 站点表里没有的站）。与云端反查并列、
+        #   产出同格式 pair，交给同一个 `_reseed_one` 执行。
+        #   放在 limit 之前且**排在前**：这些 pair 已经花过搜索+取种成本确证过特征码，
+        #   比云端反查的「待验证候选」更该先执行。
+        _lead = 0
+        try:
+            _sst: Dict[str, Any] = {}
+            _spairs = self._reseed_search_pairs(downloader, local_index, site_map,
+                                                stats=_sst,
+                                                per_round=int(cfg.get("search_kw") or 0),
+                                                dry=bool(dry))
+            for _k in ("search_kw", "search_hit", "search_nomatch", "search_size_miss",
+                       "search_fp_miss", "search_dead", "search_quota", "search_flow",
+                       "search_nokw", "search_err"):
+                if _sst.get(_k):
+                    report[_k] = int(_sst.get(_k) or 0)
+            if _sst.get("by_site"):
+                report["by_site"] = _sst["by_site"]
+            if _spairs:
+                _have = {p.get("key") for p in pairs}
+                _add = [p for p in _spairs if p.get("key") not in _have]
+                report["search_pairs"] = len(_add)
+                pairs = _add + pairs
+                # ★ 搜索命中（已花过搜索+取种、特征码已确证）**不参与洗牌**：
+                #   否则 `limit` 一截，这批最先花成本确证过的反而最容易被挤掉。
+                _lead = len(_add)
+            if int(_sst.get("search_kw") or 0):
+                _rlog(f"全站辅种:直连搜索 搜 {_sst.get('search_kw')} 词 → "
+                      f"命中 {int(_sst.get('search_hit') or 0)} / "
+                      f"无此片 {int(_sst.get('search_nomatch') or 0)} / "
+                      f"体积不符 {int(_sst.get('search_size_miss') or 0)} / "
+                      f"特征码不符 {int(_sst.get('search_fp_miss') or 0)}"
+                      + _search_site_brief(_sst.get("by_site")))
+        except Exception as err:  # noqa: BLE001
+            report["errors"].append(f"直连搜索失败:{err}"[:160])
         if not limit:
-            # ★ 打乱顺序：否则每轮都从同样前 N 个开始（干跑采样看不到全貌、实挂也总眷顾同一批）
-            random.shuffle(pairs)
+            # ★ 打乱顺序：否则每轮都从同样前 N 个开始（干跑采样看不到全貌、实挂也总眷顾同一批）。
+            #   前 `_lead` 个是直连搜索的已确证命中，保持原序不洗牌。
+            _tail = list(pairs[_lead:])
+            random.shuffle(_tail)
+            pairs = list(pairs[:_lead]) + _tail
         if limit:
             pairs = pairs[: max(1, int(limit))]
         report["plan"] = len(pairs)
@@ -1655,16 +2091,35 @@ class ReSeedMixin:
         self._reseed_running = True
         try:
             rep = self.reseed_round()
+            # ★ 19.10.63 直连搜索是「长期跑」的，收益必须落在**每轮那一行汇总**里：
+            #   否则运维只 grep 得到「计划/挂上」，看不出搜索到底搜了多少、命中多少、
+            #   是真的没货还是被配额/会话失效卡住。搜索没启用时这段为空，不污染日志。
+            _sfrag = ""
+            if int(rep.get("search_kw") or 0):
+                _sfrag = ("｜直连搜索 %s词 → 命中 %s / 无此片 %s / 体积不符 %s / 特征码不符 %s"
+                          % (rep.get("search_kw"), rep.get("search_hit") or 0,
+                             rep.get("search_nomatch") or 0,
+                             rep.get("search_size_miss") or 0,
+                             rep.get("search_fp_miss") or 0))
+                for _k, _t in (("search_dead", "会话失效"), ("search_flow", "流控"),
+                               ("search_quota", "配额截断"), ("search_err", "请求失败"),
+                               ("search_nokw", "提不出词")):
+                    if int(rep.get(_k) or 0):
+                        _sfrag += " / %s %s" % (_t, int(rep.get(_k) or 0))
+                # ★ 按站明细：合计看不出「哪站在白跑」，站越多越必须。格式
+                #   `站名 搜词数/命中`，两站都没命中时这一串就是「都白跑」的直接证据。
+                _sfrag += _search_site_brief(rep.get("by_site"))
             logger.info(
                 "全站辅种:计划 %s / 挂上 %s / 已有 %s / 不一致 %s / 失败 %s / 缺链 %s "
                 "/ 缺PV %s / 流控 %s / 无目录 %s / 种不存在 %s / 干跑 %s / 去重 %s "
-                "/ 体积线拦下 %s（%ss）%s"
+                "/ 体积线拦下 %s（%ss）%s%s"
                 % (rep.get("plan"), rep.get("ok"), rep.get("have"), rep.get("mismatch"),
                    rep.get("fail"), rep.get("nourl"), rep.get("pv"), rep.get("flow"),
                    rep.get("nosave"), rep.get("gone"), rep.get("would"), rep.get("dup"),
                    rep.get("too_small"), rep.get("duration"),
                    ("｜体积线自动降档 %.3gGB" % rep["min_size_used"])
-                   if rep.get("downshift") else "")
+                   if rep.get("downshift") else "",
+                   _sfrag)
             )
         except Exception as err:  # noqa: BLE001
             logger.error(f"全站辅种:本轮异常 {err}")
@@ -1708,6 +2163,13 @@ class ReSeedMixin:
                 "daily": int(cfg.get("daily") or 0),
                 "batch": int(cfg.get("batch") or 1),
                 "min_size_gb": float(cfg.get("min_size_gb") or 0.0),
+                # ★ 19.10.63 直连搜索（IYUU 不收录的站）：这两个键必须出现在设置面，
+                #   否则「开了没生效」无从判断 —— 状态接口只输出白名单里的键。
+                "search_sites": [str(x) for x in (cfg.get("search_sites") or [])],
+                "search_kw": int(cfg.get("search_kw") or 0),
+                "search_available": _search_presets.domains(),
+                # ★ 可选的直连搜索站（不受白名单影响，供设置面下拉）
+                "search_options": self._reseed_search_options(),
             },
             "debug": {
                 "client": bool(getattr(self, "_iyuu_client", None)),
@@ -1715,6 +2177,7 @@ class ReSeedMixin:
                 "mp_sites": len(self._reseed_mp_sites()),
                 "iyuu_sites": len((getattr(self, "_iyuu_client", None).sites() or {}) if getattr(self, "_iyuu_client", None) else {}),
                 "mapped": len(site_map),
+                "direct_sites": len([s for s in site_map if int(s) >= DIRECT_SID_BASE]),
             },
             "sites": rows,
             "cloud": {
@@ -1860,7 +2323,11 @@ class ReSeedMixin:
             return Response(success=False, message=f"读取全站辅种状态失败:{err}")
 
     def update_reseed(self, payload: Dict[str, Any]) -> Response:
-        """全站辅种配置：{enabled,dry,sites,daily,batch,min_size_gb}（写 plugin data 覆盖）。"""
+        """全站辅种配置：{enabled,dry,sites,daily,batch,min_size_gb,search_sites,search_kw}。
+
+        ``search_sites``：启用的直连搜索站域名（**默认空 = 关闭**）。这类站不在 IYUU 站点表里，
+        每轮搜索要花真实站点请求，所以必须显式开启；``search_kw`` 是每站每轮的搜索词上限。
+        """
         try:
             return Response(success=True, message="全站辅种配置已保存",
                             data=self.set_reseed_cfg(payload or {}))
@@ -1869,18 +2336,22 @@ class ReSeedMixin:
 
     @staticmethod
     def _as_bool_arg(v: Any) -> Optional[bool]:
-        """查询参数是字符串：''/None = 未传；'0'/'false'/'off' = False；其余非空 = True。"""
-        if v is None:
-            return None
-        s = str(v).strip().lower()
-        if s == "":
-            return None
-        return s not in ("0", "false", "no", "off", "none")
+        """查询参数三态布尔（本名保留兼容；实现已下沉到 ``collect_parse.as_bool_arg``）。
+
+        ★ 2026-10-31：原来这里自带实现，而 ``features/claim.py`` 跨文件
+          ``self._as_bool_arg`` 调它 —— 是 `check_self_calls` 判定的隐式耦合。
+          纯字符串处理、无 self 状态，搬去解析层后两边显式导入。
+        """
+        return as_bool_arg(v)
 
     def run_reseed(self, dry: Any = None, limit: Any = None, catalog: Any = None) -> Response:
         """立刻跑一轮全站辅种（dry=1 = **取种校验但不挂**，会花站点 PV；首轮会做云端反查，可能要几十秒）。
 
         ``catalog=N``：本轮顺带允许 N 次 HDDolby 目录分区枚举 API 调用（0/不传 = 不调）。
+
+        ★ 一轮真实耗时可达 **10 分钟**（云端反查 2 分钟 + 两站搜索 100 秒 + 逐颗取种），
+          常常先撞 HTTP 超时而**拿不到 body**。所以结果同时写进 ``_reseed_last``，
+          超时后用 ``GET /reseed`` 的 ``last`` 补查（含 ``by_site`` 按站明细）。
         """
         try:
             d = self._as_bool_arg(dry)
@@ -1894,7 +2365,13 @@ class ReSeedMixin:
                 cat = int(catalog) if str(catalog or "").strip() != "" else None
             except Exception:  # noqa: BLE001
                 cat = None
-            return Response(success=True, data=self.reseed_round(dry=d, limit=lim, catalog=cat))
+            rep = self.reseed_round(dry=d, limit=lim, catalog=cat)
+            try:
+                self._reseed_last = dict(rep)
+                self._reseed_last["at"] = time.time()
+            except Exception:  # noqa: BLE001
+                pass
+            return Response(success=True, data=rep)
         except Exception as err:  # noqa: BLE001
             return Response(success=False, message=f"全站辅种执行失败:{err}")
 

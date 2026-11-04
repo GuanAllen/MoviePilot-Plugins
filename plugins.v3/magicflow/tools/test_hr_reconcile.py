@@ -47,14 +47,37 @@ def _load(name: str, rel: str):
 _pkg(PKG, ROOT)
 _pkg(PKG + ".features", ROOT / "features")
 
+# ★ 19.10.30：myhr 解析已下沉 ``collect.parse_myhr_rows``（铁律 1「解析归采集」）→
+#   本测试要加载 collect。collect / hrbills 顶部依赖 ``common``，而 common 顶层
+#   import app.*（容器里有、离线没有）→ 造一个最小 stub 顶替。
+#   ⚠ 这里的值必须与 ``common.py`` **逐字一致**（下面带真实行号），否则测试结论失真。
+_common = types.ModuleType(PKG + ".common")
+_common.CACHE_TTL_COUNTER = 30 * 86400.0            # common.py:299
+_common.HR_SEED_MARGIN_HOURS_DEFAULT = 2.0          # common.py:351
+_common.HR_DEADLINE_WARN_HOURS_DEFAULT = 48.0       # common.py:352
+_common.HR_COMPLETE_RATIO_DEFAULT = 0.999           # common.py:355
+sys.modules[PKG + ".common"] = _common
+
 fingerprint = _load(PKG + ".fingerprint", "fingerprint.py")
 crossseed = _load(PKG + ".crossseed", "crossseed.py")
 persistence = _load(PKG + ".persistence", "persistence.py")
 downloader_ops = _load(PKG + ".downloader_ops", "downloader_ops.py")
+# collect 用 ``from . import cacheops``，需要父包上真属性（sys.modules 命中不会补 setattr）
+cacheops = _load(PKG + ".cacheops", "cacheops.py")
+setattr(sys.modules[PKG], "cacheops", cacheops)
+_load(PKG + ".norm", "norm.py")
+_load(PKG + ".kvstore", "kvstore.py")
+collect = _load(PKG + ".collect", "collect.py")
+setattr(sys.modules[PKG], "collect", collect)
 hrbills = _load(PKG + ".features.hrbills", "features/hrbills.py")
+# ★ 19.10.34：对账段已拆到 hrreconcile.py，它用 ``from .hrbills import ...``
+#   → 父包上必须有**真属性**（只命中 sys.modules 不补 setattr，相对 import 会炸）。
+setattr(sys.modules[PKG + ".features"], "hrbills", hrbills)
+hrreconcile = _load(PKG + ".features.hrreconcile", "features/hrreconcile.py")
 
 HrBillsMixin = hrbills.HrBillsMixin
-HrReconcileCache = hrbills.HrReconcileCache
+HrReconcileMixin = hrreconcile.HrReconcileMixin
+HrReconcileCache = hrreconcile.HrReconcileCache
 
 
 def _hex(n: int) -> str:
@@ -154,8 +177,12 @@ class _SimpleRules:
         return dict(self._rows.get(dom) or {})
 
 
-class Harness(HrBillsMixin):
-    """带桩的最小插件实例，只实现站点对账用到的依赖。"""
+class Harness(HrBillsMixin, HrReconcileMixin):
+    """带桩的最小插件实例，只实现站点对账用到的依赖。
+
+    19.10.34：对账方法已从 ``HrBillsMixin`` 拆到 ``HrReconcileMixin`` —— 两个都继承，
+    与线上 ``MagicFlow`` 的拼装方式一致（那边也是两个 Mixin 并列）。
+    """
 
     def __init__(self, data_dir: Path):
         self._data_dir = data_dir
@@ -253,7 +280,7 @@ def main() -> int:  # noqa: WPS213
 
     # ---- 1) myhr 页解析 ----
     print("\n[1] _hr_myhr_parse")
-    rows = hrbills._hr_myhr_parse(MYHR_PAGE1)
+    rows = collect.parse_myhr_rows(MYHR_PAGE1)
     _ok(isinstance(rows, list) and len(rows) == 2, f"解析出 2 行（{len(rows or [])}）")
     r0 = rows[0]
     _ok(r0["tid"] == "209930", f"tid = 209930（{r0['tid']}）")
@@ -261,9 +288,9 @@ def main() -> int:  # noqa: WPS213
     _ok("牧神记" in r0["title"], f"title 含片名（{r0['title']}）")
     _ok(abs(r0["size_gb"] - 2.116) < 0.01, f"size_gb ≈ 2.116（{r0['size_gb']}）")
     _ok(r0["need_left"] == "19:47:35", f"need_left = 19:47:35（{r0['need_left']}）")
-    _ok(hrbills._hr_myhr_parse(MYHR_EMPTY_OK) == [], "可识别但空 → []（= 无欠，不是解析失败）")
-    _ok(hrbills._hr_myhr_parse(MYHR_GARBAGE) is None, "不可识别 → None（整页跳过，不当作无欠）")
-    _ok(hrbills._hr_myhr_parse("") == [], "空串 → []")
+    _ok(collect.parse_myhr_rows(MYHR_EMPTY_OK) == [], "可识别但空 → []（= 无欠，不是解析失败）")
+    _ok(collect.parse_myhr_rows(MYHR_GARBAGE) is None, "不可识别 → None（整页跳过，不当作无欠）")
+    _ok(collect.parse_myhr_rows("") == [], "空串 → []")
 
     # ---- 2) 三方对账 ----
     print("\n[2] _hr_reconcile_site（三方对账）")
@@ -370,12 +397,12 @@ def main() -> int:  # noqa: WPS213
 
     # ---- 8) 解析健壮性（11.8.1）：噪声行 / 嵌套 tr 重复 / 列序 ----------------
     print("\n[8] 解析健壮性（噪声行 / 嵌套 tr / 列字段）")
-    rows8 = hrbills._hr_myhr_parse(MYHR_NOISY)
+    rows8 = collect.parse_myhr_rows(MYHR_NOISY)
     _ok(isinstance(rows8, list) and len(rows8) == 2,
         f"噪声行剔除、恰 2 条真记录（{len(rows8 or [])}）")
     r = [x for x in (rows8 or []) if x["tid"] == "209821"][0]
     _ok(r["tid"] == "209821", f"tid 取自**最长锚文本**（标题）链接（{r['tid']}）")
-    _ok(hrbills._hr_myhr_parse(MYHR_NESTED) is None,
+    _ok(collect.parse_myhr_rows(MYHR_NESTED) is None,
         "标题套在子表里（布局不兼容）→ None（退避，不当作无欠）")
     _ok(abs(r["up_gb"] - 0.219) < 0.005, f"up_gb ≈ 0.219（{r['up_gb']}）")
     _ok(abs(r["down_gb"] - 21.83) < 0.05, f"down_gb ≈ 21.83（{r['down_gb']}）")
@@ -396,14 +423,14 @@ def main() -> int:  # noqa: WPS213
         hOther: types.SimpleNamespace(hash=hOther, title="Lucky Jo 1964 (BD25)"),
     }
     rec_cn = {"tid": "209821", "title": "The Old Story of Yu Hong 2026 S01 E14-E17 2160p WEB-DL H265 DV DDP5.1-PTerWEB"}
-    m = hrbills.HrBillsMixin._hr_reconcile_rough_match(rec_cn, lh)
+    m = HrReconcileMixin._hr_reconcile_rough_match(rec_cn, lh)
     _ok(m == "", "两个孪生候选同分 → 不认（去拉种，宁多拉不误判）")
-    m1 = hrbills.HrBillsMixin._hr_reconcile_rough_match(rec_cn, {hCN: lh[hCN]})
+    m1 = HrReconcileMixin._hr_reconcile_rough_match(rec_cn, {hCN: lh[hCN]})
     _ok(m1 == hCN, f"中英混排 token 命中（{m1[:12]}）")
-    _ok(hrbills.HrBillsMixin._hr_reconcile_rough_match(rec_cn, {hCN: lh[hCN]}, {hCN}) == "",
+    _ok(HrReconcileMixin._hr_reconcile_rough_match(rec_cn, {hCN: lh[hCN]}, {hCN}) == "",
         "已被别的记录占位 → 不认（一对一）")
     rec_jo = {"tid": "209946", "title": "Lucky Jo 1964 1080p GER Blu-ray AVC DTS-HD MA 2.0"}
-    _ok(hrbills.HrBillsMixin._hr_reconcile_rough_match(rec_jo, lh) == "",
+    _ok(HrReconcileMixin._hr_reconcile_rough_match(rec_jo, lh) == "",
         "同片不同版（BD25 ≠ 1080p Blu-ray）→ 不认")
 
     print("\n" + "=" * 64)

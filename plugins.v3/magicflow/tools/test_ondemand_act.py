@@ -170,11 +170,24 @@ r = f._ondemand_act(hash=H, action="remove")
 ok(r.get("ok") is False and f._dl.calls == [], "不可用 → ok=false 且不动下载器")
 
 # ---------------------------------------------------------------- [7] 源码护栏
-print("[7] 源码护栏：remove 不绕过闸门")
+print("[7] 源码护栏：remove 不绕过闸门（★ 19.10.11 升级）")
+# 19.10.11：点播/音乐的 act 写口已并入 ``tags.media_act`` —— 原来只截取
+# ``_ondemand_act`` 段的护栏会「什么都查不到却照样绿」，等于失效。
+# 这里改成三道：守住**共用出口本体** + **两条线都必须走它** + **谁也不许偷开小灶**。
+tags_src = (ROOT / "tags.py").read_text(encoding="utf-8")
+seg_core = tags_src.split("def media_act", 1)[1].split("\ndef ", 1)[0]
+ok("dl.delete_torrents(" in seg_core, "media_act 走 DownloaderAdapter.delete_torrents")
+ok("_downloader.delete_torrents" not in seg_core, "media_act 无底层直调（不绕过闸门）")
+
 src = (ROOT / "features" / "ondemand.py").read_text(encoding="utf-8")
 seg = src.split("def _ondemand_act", 1)[1].split("\n    def ", 1)[0]
-ok("dl.delete_torrents(" in seg, "走 DownloaderAdapter.delete_torrents")
-ok("_downloader.delete_torrents" not in seg, "无底层 _downloader.delete_torrents 直调（不绕过闸门）")
+ok("media_act(self" in seg, "点播 act 委托共用写口 media_act")
+ok("dl.delete_torrents" not in seg, "点播侧不再自留删除调用")
+
+msrc = (ROOT / "features" / "musicgrab.py").read_text(encoding="utf-8")
+mseg = msrc.split("def _music_act", 1)[1].split("\n    def ", 1)[0]
+ok("media_act(self" in mseg, "音乐 act 也委托同一个写口 media_act")
+ok("dl.delete_torrents" not in mseg, "音乐侧不再自留删除调用")
 
 print()
 if FAILS:

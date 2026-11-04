@@ -1,0 +1,84 @@
+
+/* 度量照抄 MP 原生卡片（bundle CSS 原值，仅改类名前缀）。 */
+.magicflow-dashboard[data-v-fe8fae67] {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  min-block-size: 0;
+}
+.mf-stat-grid[data-v-fe8fae67] {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding-block: 0.6rem;
+}
+.mf-stat-item[data-v-fe8fae67] {
+  display: flex;
+  min-inline-size: 0;
+  align-items: center;
+  gap: 0.7rem;
+  padding-inline: 1.1rem;
+}
+.mf-stat-item[data-v-fe8fae67]:first-child {
+  padding-inline-start: 0;
+}
+.mf-stat-item + .mf-stat-item[data-v-fe8fae67] {
+  border-inline-start: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+}
+.mf-stat-copy[data-v-fe8fae67] {
+  display: flex;
+  min-inline-size: 0;
+  flex-direction: column;
+}
+.mf-stat-label[data-v-fe8fae67],
+.mf-stat-addition[data-v-fe8fae67] {
+  font-size: 0.72rem;
+  line-height: 1.25;
+}
+.mf-stat-label[data-v-fe8fae67] {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mf-stat-addition[data-v-fe8fae67] {
+  overflow: hidden;
+  color: rgb(var(--v-theme-success));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mf-number[data-v-fe8fae67] {
+  color: rgba(var(--v-theme-on-surface), var(--v-high-emphasis-opacity));
+  font-size: 1.15rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mf-number--sm[data-v-fe8fae67] {
+  font-size: 0.95rem;
+}
+.mf-task-list[data-v-fe8fae67] {
+  padding-block: 0;
+  margin-block-start: 0.2rem;
+  border-block-start: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+}
+.mf-task-list[data-v-fe8fae67] .v-list-item {
+  min-block-size: 46px;
+}
+@media (max-width: 740px) {
+.mf-stat-grid[data-v-fe8fae67] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 1rem;
+    padding-block: 0.35rem 0.3rem;
+}
+.mf-stat-item[data-v-fe8fae67] {
+    padding-inline: 0.5rem;
+}
+.mf-stat-item[data-v-fe8fae67]:nth-child(odd) {
+    border-inline-start: 0;
+    padding-inline-start: 0;
+}
+}

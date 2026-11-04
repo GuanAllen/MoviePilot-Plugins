@@ -14,9 +14,9 @@ H&R 补种被任务「超保留上限」路径删掉，因为该路径的保护�
   排查「谁删了 X」→ 只读这一个文件，按 hash grep。
 
 闸门硬拦（**任何路径都不得删**，全局口径、不依赖单任务）：
-  手动保留 / 跨站来源份（H&R 保种期）/ 已认领（保种承诺）/ 欠 H&R 义务 / **库内资产（★ 12.3.0）**。
+  手动保留 / 已认领（保种承诺）/ 欠 H&R 义务（含跨站来源份，账单口径）/ **库内资产（★ 12.3.0）**。
 
-★ P3（fail-closed）：第 1~3 类（手动保留 / 跨站来源份 / 已认领）的**保护集合读取失败**
+★ P3（fail-closed）：第 1~2 类（手动保留 / 已认领）的**保护集合读取失败**
   不再被吞成「无保护」——任一类取不到 → ``logger.error`` 记具体异常，且**本批 hash 全部
   按「被拦」返回**（理由前缀 ``保护集合读取失败(<类名>): <err>``）。这样物理删除入口靠既有
   外层 fail-closed 语义（``downloader_ops`` 闸门异常 → 全阻断）直接整批拦住，无需改动
@@ -46,6 +46,7 @@ H&R 补种被任务「超保留上限」路径删掉，因为该路径的保护�
 import json as _json
 import logging
 import sys as _sys
+import threading as _threading      # ★ 熔断窗口锁（只锁 deque/dict，不锁网络 IO）
 import time as _time
 from typing import Any, Dict, Iterable, List, Set
 
@@ -60,6 +61,7 @@ from ..common import (
 )
 from ..common import hr_incomplete, hr_complete_ratio_of
 from ..tags import is_library_asset, is_music_line, STATE_ONDEMAND
+from ..dutyops import claim_hashes
 
 
 # 运行时导入（只有 MoviePilot 环境有 app.sdk）：离线单测无 app 包 → 退回标准 logging
@@ -150,7 +152,7 @@ class DeleteGateMixin:
                             allow_strip_asset: bool = False) -> "Dict[str, str]":
         """返回 ``{hash: 拦截理由}``；未拦截的不出现。理由取值：
 
-        手动保留 / 跨站来源份（H&R 保种期）/ 已认领（保种承诺）/ 欠 H&R 义务 / 库内资产 /
+        手动保留 / 已认领（保种承诺）/ 欠 H&R 义务（含跨站来源份）/ 库内资产 /
         ``保护集合读取失败(<类名>): <err>``（★ P3 fail-closed，见 ``_mark_read_failure``）。
 
         ``force_error=True``：**故障注入**——强制抛异常，供离线测试与线上自检
@@ -193,18 +195,17 @@ class DeleteGateMixin:
         except Exception as _e:  # noqa: BLE001
             _mark_read_failure(why, hs, "手动保留", _e)
 
-        # 2) 跨站来源份（别的站的 H&R 保种责任种）
-        try:
-            _cs = {str(x).strip().lower() for x in (self._crossseed_source_hashes() or set())}
-            for h in hs:
-                if h in _cs:
-                    why.setdefault(h, "跨站来源份（H&R 保种期）")
-        except Exception as _e:  # noqa: BLE001
-            _mark_read_failure(why, hs, "跨站来源份", _e)
+        # 2) ★ 19.10.11 **已移除「跨站来源份」这一档** —— 来源份的保护改由 **H&R 账单**承担。
+        #    旧形态：来源份自己算工时（`CrossSeedSources` 的 seeded_sec vs hours），
+        #    另开一档判「是否还在保种期」——与第 4 档（账单 need_h vs seeded_h）**同一件事
+        #    算两遍**，两份快照还会漂（站点规则一改，两档结论相反）。
+        #    现形态：来源份下完那一刻开账单（`_hrbills_open(crossseed=True)`，直接 active），
+        #    工时真值源只剩账单 `seeded_h` 一处 → 由第 4 档统一拦。
+        #    （`_crossseed_source_hashes()` 仍在，只作**清理候选豁免**用，不再是删除判据。）
 
         # 3) 已认领（保种承诺：删了 → 站点判不达标 → 扣魔力）
         try:
-            _cl = {str(x).strip().lower() for x in (self._claim_protected_hashes() or set())}
+            _cl = claim_hashes(self)
             for h in hs:
                 if h in _cl:
                     why.setdefault(h, "已认领（保种承诺）")
@@ -369,6 +370,9 @@ class DeleteGateMixin:
           - **窗口计数**：模块级滚动队列记录最近 ``DELETE_BREAKER_WINDOW_S`` 秒内实际放行的
             删除时间戳（热重载会重置——可接受，只影响极端边界）；
           - **预估**：``window_count + len(本批) > MAX`` → 熔断；
+          - **预占 + 事后校准**（★ 19.10.5）：未超阈时先按放行量**预占**额度（防并发超发），
+            返回 ``info["ticket"]``；``delete_torrents`` 真删完后调
+            ``_delete_breaker_settle(ticket, 实删数)`` **归还**未消耗的部分；
           - **报警**：一旦熔断，写 ``delete_breaker.json``（审计）+ 返回 ``tripped=True``；
           - **fail-closed**：本函数抛异常时由调用方（``delete_torrents``）全阻断。
 
@@ -381,24 +385,49 @@ class DeleteGateMixin:
         hs = [str(h or "").strip().lower() for h in (hashes or []) if str(h or "").strip()]
         now = _t.time()
         win = float(DELETE_BREAKER_WINDOW_S)
-        # 过期清理
-        while _DELETE_WINDOW and (now - _DELETE_WINDOW[0]) > win:
-            _DELETE_WINDOW.popleft()
-        info["window_count"] = len(_DELETE_WINDOW)
-        if not DELETE_BREAKER_ENABLED or not hs:
-            return set(), info
-        if (len(_DELETE_WINDOW) + len(hs)) > int(DELETE_BREAKER_MAX):
-            info["tripped"] = True
-            info["reason"] = (f"滚动窗口 {win:.0f}s 内删除数将达 "
-                              f"{len(_DELETE_WINDOW) + len(hs)} > 上限 {DELETE_BREAKER_MAX}")
+        # ★ 19.10.5：「过期清理 → 计数 → 判定 → 预占」四步必须在同一把锁内完成。
+        #   拆开会有竞态：两线程同时读到 window_count=25、各批 5 个 → 双双放行 → 实删 35 > 30。
+        #   锁内只有 deque/dict 操作（微秒级），**不含**任何网络 IO；
+        #   ``_breaker_audit`` 要写文件，特意挪到锁外。
+        _ticket = 0
+        with _DELETE_WINDOW_LOCK:
+            while _DELETE_WINDOW and (now - _DELETE_WINDOW[0]) > win:
+                _DELETE_WINDOW.popleft()
+            info["window_count"] = len(_DELETE_WINDOW)
+            if not DELETE_BREAKER_ENABLED or not hs:
+                return set(), info
+            if (len(_DELETE_WINDOW) + len(hs)) > int(DELETE_BREAKER_MAX):
+                info["tripped"] = True
+                info["reason"] = (f"滚动窗口 {win:.0f}s 内删除数将达 "
+                                  f"{len(_DELETE_WINDOW) + len(hs)} > 上限 {DELETE_BREAKER_MAX}")
+            else:
+                # 预占（真正删完后由 delete_torrents 按实删数归还多余部分）
+                _DELETE_WINDOW.extend([now] * len(hs))
+                _ticket = _delete_window_ticket(now, len(hs))
+        if _ticket == 0:
+            # 熔断 / 未启用 / 空批 → 没有预占，无需票根
+            if not info.get("tripped"):
+                return set(), info
             try:
                 self._breaker_audit(info, hs, reason, source)
             except Exception:  # noqa: BLE001
                 pass
             return set(hs), info
-        # 未超阈 → 记账（真正删除时的时间戳由 delete_torrents 在成功后补记；这里先按放行计）
-        _DELETE_WINDOW.extend([now] * len(hs))
+        info["ticket"] = _ticket
         return set(), info
+
+    def _delete_breaker_settle(self, ticket: Any, actually_deleted: int) -> int:
+        """★ 19.10.5 熔断补记入口：``downloader_ops.delete_torrents`` 删完后回调。
+
+        与 ``_delete_breaker_check`` 走**同一款鸭子类型通道**（``getattr(self, ...)``），
+        两侧都不需要互相 import。
+
+        返回归还条数。**任何异常一律吞掉并返回 0**：熔断记账绝不能影响删种结果。
+        """
+        try:
+            return int(_delete_window_settle(ticket, actually_deleted) or 0)
+        except Exception:  # noqa: BLE001
+            return 0
 
     def _breaker_audit(self, info: "Dict[str, Any]", hashes: "List[str]",
                        reason: str, source: str) -> None:
@@ -576,4 +605,64 @@ class DeleteGateMixin:
 import collections as _collections
 
 _DELETE_WINDOW = _collections.deque()  # 元素：实际放行删除的时间戳（float）
+
+# ---------------------------------------------------------------------------
+# ★ 19.10.5 熔断补记：预占 → 事后按实删数校准
+#
+# 机制：``_delete_breaker_check`` 通过时「预占」len(hs) 个时间戳（防并发超发），
+#       ``delete_torrents`` 真正删完后用票根「归还」未消耗掉的部分（防计数虚高）。
+# 锁：只保护 deque/dict 操作（微秒级），**不含**任何网络 IO。
+# ---------------------------------------------------------------------------
+_DELETE_WINDOW_LOCK = _threading.Lock()
+#: 预占票根：ticket_id -> [ts, ...]（本次调用预占的时间戳，用于事后归还）
+_DELETE_WINDOW_TICKETS: "Dict[int, List[float]]" = {}
+_DELETE_TICKET_SEQ = [0]
+
+
+def _delete_window_ticket(now: float, n: int) -> int:
+    """登记预占票根（**调用方必须已持有 ``_DELETE_WINDOW_LOCK``**）。
+
+    返回 ticket id（>0）。顺带清掉窗口外的未结算票（调用方崩了没走 settle 的情况），
+    防止 ``_DELETE_WINDOW_TICKETS`` 无限增长。
+    """
+    _DELETE_TICKET_SEQ[0] += 1
+    _ticket = _DELETE_TICKET_SEQ[0]
+    _DELETE_WINDOW_TICKETS[_ticket] = [now] * n
+    for _k in [k for k, v in _DELETE_WINDOW_TICKETS.items()
+               if v and (now - v[-1]) > float(DELETE_BREAKER_WINDOW_S)]:
+        _DELETE_WINDOW_TICKETS.pop(_k, None)
+    return _ticket
+
+
+def _delete_window_settle(ticket: Any, actually_deleted: int) -> int:
+    """按**实删数**归还预占额度。返回归还条数。
+
+    - **幂等**：``pop`` 拿票根，同一 ticket 重复调用只有第一次生效；
+    - ticket 为 0 / 非法 / 已结算 / 查不到 → 返回 0，无任何副作用；
+    - 只按「实删」占位：被 gate/bill 拦下的、删除失败的、整批异常的，一律归还。
+    """
+    try:
+        _t = int(ticket or 0)
+    except (TypeError, ValueError):
+        return 0
+    if _t <= 0:
+        return 0
+    with _DELETE_WINDOW_LOCK:
+        _ts = _DELETE_WINDOW_TICKETS.pop(_t, None)
+        if not _ts:
+            return 0
+        _kept = min(len(_ts), max(0, int(actually_deleted or 0)))
+        _back = len(_ts) - _kept
+        for _v in (_ts[_kept:] if _back > 0 else []):
+            try:
+                _DELETE_WINDOW.remove(_v)
+            except ValueError:      # 已被过期清理带走 → 少还一条，无害
+                break
+        # ★ 口径打点（一行，便于 grep 聚合；用于后续按分布定 DELETE_BREAKER_MAX）
+        try:
+            logger.info(f"[删除口径] applied={len(_ts)} deleted={_kept} "
+                        f"returned={_back} window={len(_DELETE_WINDOW)}")
+        except Exception:  # noqa: BLE001
+            pass
+        return _back
 

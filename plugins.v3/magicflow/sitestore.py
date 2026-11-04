@@ -59,6 +59,10 @@ SLOT_RESEED_PASSKEYS = "reseed_passkeys"
 SLOT_CLAIM_LEDGER = "claim_ledger"
 SLOT_KEEPALIVE_ALERT_DAY = "keepalive_alert_day"
 SLOT_CROSSSEED_BAN = "crossseed_ban"
+#: ★ 19.12.1 音乐入库账本（每颗种的入库结果：stage/新建/已存在/失败）。
+#: **必须登记在这里**：``get``/``save`` 是白名单路由，未登记的槽既不报错也不落盘
+#: （19.12.0 漏登记 → 账本永远读空 → 同一颗种每轮 Check 都被重新入队，33 个重复任务）。
+SLOT_MUSIC_IMPORT = "music_import"
 SLOTS: Tuple[str, ...] = (
     SLOT_SITE_RULES, SLOT_SITE_CAPS, SLOT_SITECAP_OVERRIDE, SLOT_CROSSSEED_SOURCES,
     SLOT_RESEED_LEDGER, SLOT_SIGNIN_LAST_FULL, SLOT_SIGNIN_RETRY, SLOT_SIGNIN_KEEPALIVE,
@@ -268,16 +272,6 @@ def _int_ok(v: Any) -> bool:
         return False
 
 
-def _float_ok(v: Any) -> bool:
-    try:
-        float(v)
-        return True
-    except (TypeError, ValueError):
-        return False
-
-
-
-
 # ---------------------------------------------------------------------------
 # SiteStore
 # ---------------------------------------------------------------------------
@@ -360,6 +354,8 @@ class SiteStore:
                 return self._get_run(SLOT_KEEPALIVE_ALERT_DAY)
             if slot == SLOT_CROSSSEED_BAN:
                 return self._get_run(SLOT_CROSSSEED_BAN)
+            if slot == SLOT_MUSIC_IMPORT:
+                return self._get_run(SLOT_MUSIC_IMPORT)
         except Exception:  # noqa: BLE001
             return {}
         return {}
@@ -420,6 +416,8 @@ class SiteStore:
             self._save_claim_ledger(value)
         elif slot == SLOT_CROSSSEED_BAN:
             self._save_run(SLOT_CROSSSEED_BAN, value)
+        elif slot == SLOT_MUSIC_IMPORT:
+            self._save_run(SLOT_MUSIC_IMPORT, value)
 
     def callbacks(self, slot: str) -> Tuple[Any, Any]:
         """返回 ``(get, save)`` 回调对，签名兼容旧 ``get_data/save_data``。

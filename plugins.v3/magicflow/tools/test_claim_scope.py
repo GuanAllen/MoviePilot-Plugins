@@ -9,13 +9,14 @@
   (e) write=1 未确认 → need_confirm；确认但设置干跑 → dry_blocked
   (f) 关掉设置干跑后 write=1&confirm=1 才真写
   (g) site_id 筛选只回该站
+  (h) 站点侧认领可见性（claim.php?uid= 站账本为空也显示）+ claim_restore 重建账本
 
 用法：``python3 tools/test_claim_scope.py``（退出码 0=PASS / 1=FAIL）。
 """
 import importlib.util, sys, types
 from pathlib import Path
 
-ROOT = Path('/vol1/@apphome/trim.openclaw/data/workspace/magicflow')
+ROOT = Path(__file__).resolve().parent.parent
 PKG = 'mf_claim_test'
 
 def _pkg(name, path):
@@ -82,6 +83,15 @@ class Tr:
 class Store:
     def __init__(self, pages): self.pages = pages
     def get_torrent_pages(self, tid): return self.pages.get(tid, {})
+    class _States:
+        def __init__(self, outer): self.outer = outer
+        def list_all(self):
+            import types as _t
+            return [_t.SimpleNamespace(task_id=tid, torrent_pages=dict(pg))
+                    for tid, pg in self.outer.pages.items()]
+    @property
+    def task_states(self):
+        return Store._States(self)
 
 class Fake(ClaimMixin):
     def __init__(self, sites, tasks, managed, pages, pub, ni, ledger=None, cfg=None):
@@ -156,4 +166,83 @@ f3 = Fake(sites, tasks, managed, pages, pub, {h1: 5}, cfg={**f.cfg, 'sites': ['y
 rec3 = f3._claim_scan()
 assert [r['site_id'] for r in rec3['sites']] == [2], rec3['sites']
 print('✅ 域名归一 + 白名单 OK')
+
+# =====================================================================
+# (h) 站点侧认领可见性（19.10.11 门槛修复）+ 从站点重建账本
+# =====================================================================
+class FakeSite(Fake):
+    """带站点认领页桩的 Fake：carpt.net 有 claim_list（claim.php?uid= 型，非 viewclaims）。"""
+    def __init__(self, *a, site_claims=None, **kw):
+        super().__init__(*a, **kw)
+        self._site_claims = site_claims or {}
+    def _claim_profile(self, site, refresh=False):
+        d = claim._claim_domain_of(getattr(site, 'domain', '') or getattr(site, 'url', '') or '')
+        if d == 'carpt.net':
+            return {'supported': True, 'source': 'preset', 'claim_list': '/claim.php?uid={uid}',
+                    'min_age_days': 7, 'max_claimers': 20, 'per_user_cap': 1000, 'benefit': 'bonus_x2',
+                    'settlement': {'cycle': 'natural_month', 'cycle_text': '每月结算',
+                                   'payout_hours': 720, 'payout_multiplier': 2}}
+        return dict(pres.preset_for(d) or {})
+    def _claim_site_claims(self, site, refresh=False):
+        return self._site_claims.get(int(getattr(site, 'id', 0) or 0), {})
+    def _claim_ledger_put(self, site_id, hash_string, torrent_id='', st='ok', benefit='', note='', task_id='', title=''):
+        key = f"{site_id}:{str(hash_string or '').lower()}"
+        if not str(hash_string or '').strip():
+            return
+        old = self._ledger.get(key) if isinstance(self._ledger.get(key), dict) else {}
+        if old.get('st') in ('ok', 'already') and st not in ('ok', 'already'):
+            return
+        self._ledger[key] = {'tid': str(torrent_id or old.get('tid') or ''), 'ts': 1.0, 'st': st,
+                             'benefit': benefit or old.get('benefit') or '', 'note': str(note or '')[:160],
+                             'task': task_id or old.get('task') or '',
+                             'title': str(title or old.get('title') or '')[:200]}
+
+row_a = {'claim_id': '7', 'title': 'A', 'size': '1G', 'alive': '是', 'claimed_at': '2026-10-01 12:00:00',
+         'last_settle': '', 'next_settle': '2026-11-01 00:00:00', 'seed_time': '3天 02:00:00',
+         'seed_hours': 74.0, 'upload': '10G', 'qualified': True, 'reward': '100', 'reward_num': 100.0}
+row_b = dict(row_a, claim_id='8', title='B')
+site_claims = {1: {'summary': {'total': 2, 'qualified': 2, 'unqualified': 0},
+                   'by_tid': {'111': row_a, '999': row_b}}}
+fs = FakeSite(sites, tasks, managed, pages, pub, {h1: 5}, site_claims=site_claims)
+rec = fs._claim_scan()
+only = [r for r in rec['claimed'] if r.get('site_only')]
+assert sorted(str(r['torrent_id']) for r in only) == ['111', '999'], only
+assert {r['title'] for r in only} == {'A', 'B'}
+print('✅ 账本为空时 claim.php?uid= 站点侧认领也显示（门槛修复）OK')
+
+# 预览：零写入
+r = fs.claim_restore()
+assert r.success and r.data.get('dry_run') is True, r.message
+assert r.data['would_restore_total'] == 1 and r.data['missing_total'] == 1, r.data
+assert not fs._ledger, '预览不得写账本'
+print('✅ restore 预览（零写入）OK')
+
+# 确认：tid→hash 反查命中写 st=already；反查不到的只报缺
+r = fs.claim_restore(confirm=1)
+assert r.success and r.data['restored_total'] == 1 and r.data['missing_total'] == 1, (r.message, r.data)
+recov = fs._ledger.get('1:' + h1) or {}
+assert recov.get('st') == 'already' and recov.get('tid') == '111', recov
+assert r.data['restored'][0]['title'] == 'A'
+assert r.data['missing'][0]['torrent_id'] == '999' and r.data['missing'][0]['hash'] == ''
+assert r.data['protected_claim'] == 1
+print('✅ 从站点重建账本（st=already + 硬保护）OK')
+
+# 幂等：再跑零新增（111 已在账本，不再进 would_restore）
+r = fs.claim_restore(confirm=1)
+assert r.success and r.data['restored_total'] == 0 and r.data['missing_total'] == 1, (r.message, r.data)
+assert fs._ledger['1:' + h1]['st'] == 'already'
+print('✅ restore 幂等 OK')
+
+# pairs：显式补 hash（torrent_pages 反查不到时）；只认真实认领行，多给的键只报不用
+r = fs.claim_restore(confirm=1, pairs=[{'site_id': 1, 'tid': '999', 'hash': 'F' * 40},
+                                       {'site_id': 1, 'tid': '777', 'hash': 'E' * 40}])
+assert r.success and r.data['restored_total'] == 1, (r.message, r.data)
+assert r.data['restored'][0]['torrent_id'] == '999', r.data['restored']
+assert r.data['restored'][0]['hash_source'] == 'pair', r.data['restored']
+assert r.data['missing_total'] == 0, r.data
+assert r.data['pairs_unused_total'] == 1 and r.data['pairs_unused'][0]['tid'] == '777', r.data
+assert fs._ledger['1:' + 'f' * 40]['st'] == 'already', fs._ledger.keys()
+assert '手工hash' in str(fs._ledger['1:' + 'f' * 40].get('note')), fs._ledger['1:' + 'f' * 40]
+print('✅ pairs 显式补 hash（多给键报 pairs_unused）OK')
+
 print('ALL PASS')

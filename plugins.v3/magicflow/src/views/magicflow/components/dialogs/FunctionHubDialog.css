@@ -1,0 +1,200 @@
+/* FunctionHubDialog 的 scoped 样式，由线上 dist 按 scopeId data-v-69d9b8c3 提取。
+   选择器里的属性限定符是 scoped 边界，别去掉。 */
+
+.mfhub[data-v-69d9b8c3] {
+  display: flex;
+  flex-direction: column;
+  max-height: min(84vh, 900px);
+}
+
+.mfhub__head[data-v-69d9b8c3] {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 18px 12px;
+}
+
+.mfhub__title[data-v-69d9b8c3] {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), .95);
+}
+
+.mfhub__spacer[data-v-69d9b8c3] { flex: 1 1 auto;
+}
+
+.mfhub__search[data-v-69d9b8c3] {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  block-size: 32px;
+  padding: 0 8px;
+  border-radius: 9px;
+  border: 1px solid rgba(var(--v-theme-on-surface), .12);
+  background: rgba(var(--v-theme-on-surface), .04);
+  color: rgba(var(--v-theme-on-surface), .55);
+}
+
+.mfhub__search input[data-v-69d9b8c3] {
+  inline-size: 150px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), .9);
+  font-size: 12.5px;
+}
+
+.mfhub__search-clear[data-v-69d9b8c3] {
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.mfhub__body[data-v-69d9b8c3] {
+  padding: 2px 18px 20px;
+  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.mfhub__primary[data-v-69d9b8c3] {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  inline-size: 100%;
+  padding: 13px 14px;
+  margin-block-end: 16px;
+  text-align: left;
+  border: 1px solid rgba(var(--v-theme-primary), .45);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(var(--v-theme-primary), .22), rgba(var(--v-theme-primary), .08));
+  color: inherit;
+  cursor: pointer;
+  transition: border-color .16s ease, transform .16s ease;
+}
+
+.mfhub__primary[data-v-69d9b8c3]:hover {
+  border-color: rgba(var(--v-theme-primary), .7);
+  transform: translateY(-1px);
+}
+
+.mfhub__primary-icon[data-v-69d9b8c3] {
+  display: grid;
+  place-items: center;
+  inline-size: 34px;
+  block-size: 34px;
+  flex: none;
+  border-radius: 10px;
+  background: rgb(var(--v-theme-primary));
+  color: rgb(var(--v-theme-on-primary));
+}
+
+.mfhub__primary .mfhub__text strong[data-v-69d9b8c3] { font-size: 14px;
+}
+
+.mfhub__primary-chev[data-v-69d9b8c3] { color: rgba(var(--v-theme-on-primary), .7); flex: none;
+}
+
+.mfhub__group + .mfhub__group[data-v-69d9b8c3] {
+  margin-top: 18px;
+}
+
+.mfhub__group-head[data-v-69d9b8c3] {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.mfhub__group-head h3[data-v-69d9b8c3] {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  color: rgba(var(--v-theme-on-surface), .92);
+}
+
+.mfhub__group-head span[data-v-69d9b8c3] {
+  font-size: 11.5px;
+  color: rgba(var(--v-theme-on-surface), .48);
+}
+
+.mfhub__grid[data-v-69d9b8c3] {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(228px, 1fr));
+  gap: 10px;
+}
+
+.mfhub__card[data-v-69d9b8c3] {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  text-align: left;
+  border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), .1);
+  background: rgba(var(--v-theme-on-surface), .03);
+  color: inherit;
+  cursor: pointer;
+  transition: border-color .16s ease, background .16s ease, transform .16s ease;
+}
+
+.mfhub__card[data-v-69d9b8c3]:hover {
+  border-color: rgba(var(--v-theme-primary), .45);
+  background: rgba(var(--v-theme-primary), .1);
+  transform: translateY(-1px);
+}
+
+.mfhub__icon[data-v-69d9b8c3] {
+  color: rgb(var(--v-theme-primary));
+  flex: none;
+}
+
+.mfhub__text[data-v-69d9b8c3] {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.mfhub__text strong[data-v-69d9b8c3] {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), .94);
+}
+
+.mfhub__text em[data-v-69d9b8c3] {
+  font-style: normal;
+  font-size: 11.5px;
+  color: rgba(var(--v-theme-on-surface), .52);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mfhub__badge[data-v-69d9b8c3] { flex: none;
+}
+
+.mfhub__chev[data-v-69d9b8c3] {
+  color: rgba(var(--v-theme-on-surface), .3);
+  flex: none;
+}
+
+.mfhub__empty[data-v-69d9b8c3] {
+  margin: 12px 0;
+  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), .5);
+}
+@media (max-width: 599px) {
+
+.mfhub__grid[data-v-69d9b8c3] {
+    grid-template-columns: 1fr;
+}
+
+.mfhub__search input[data-v-69d9b8c3] { inline-size: 88px;
+}
+}
