@@ -1,6 +1,6 @@
 <script setup>
 // MagicFlow · 任务编辑器「魔力公式」面板
-// P6 拆分：自 components/TaskEditorDialog.vue **纯搬家**（VWindowItem 内层 + 配套 scoped 样式，无行为/样式变更）。
+// P6 拆分：自 components/TaskEditorDialog.js **纯搬家**（VWindowItem 内层 + 配套 scoped 样式，无行为/样式变更）。
 // 数据向下（defineModel）/ 事件向上（emit）：面板不直接改父状态 / 调父方法。
 // 本面板只读写父 localTask 的 bonus_* 字段（无 props、无 emit）。
 const bonusT0 = defineModel('bonusT0')

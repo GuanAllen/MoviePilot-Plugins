@@ -1,6 +1,6 @@
 <script setup>
 // MagicFlow 前端 · 任务编辑器「魔力托管」面板（P6 拆分）
-// 自 components/TaskEditorDialog.vue 的 <VWindowItem value="magic"> **纯搬家**
+// 自 components/TaskEditorDialog.js 的 <VWindowItem value="magic"> **纯搬家**
 //（内层 template + 面板专属样式，零行为/样式变更）。
 // 数据向下（defineModel）、事件向上：面板内不引用父级计算值，也不调父级动作 → 无 props / 无 emit。
 const minBonusPerHour = defineModel('minBonusPerHour')
@@ -252,7 +252,7 @@ const perfectMinWeeks = defineModel('perfectMinWeeks')
                       v-model.number="minSeedTime"
                       type="number"
                       min="0"
-                      label="最短做种时间（小时）"
+                      label="本地保护期（小时）"
                       placeholder="0 = 不设保护期"
                     />
                   </VCol>

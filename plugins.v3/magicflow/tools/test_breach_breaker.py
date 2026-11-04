@@ -162,6 +162,80 @@ def main() -> int:
     blocked3, _ = h._delete_breaker_check(["z0"], reason="t", source="test")
     _ok(blocked3 == set(), "清空窗口后 → 恢复放行")
 
+    # ---- B2) ★ 19.10.5 熔断补记：预占 → 按实删数归还 ----
+    print("\n[B2] 熔断补记（预占 / 归还 / 幂等）")
+    _W = deletegate._DELETE_WINDOW
+    _T = deletegate._DELETE_WINDOW_TICKETS
+    _W.clear()
+    _T.clear()
+
+    # 1) 预占后窗口 = 申请量，且拿到票根
+    _b0, _i0 = h._delete_breaker_check([f"p{i}" for i in range(10)], reason="t", source="test")
+    _ok(len(_W) == 10, "预占 10 → 窗口=10")
+    _ok(int(_i0.get("ticket") or 0) > 0, "通过时返回 ticket（供事后归还）")
+
+    # 2) 实删满额 → 归还 0
+    _ok(h._delete_breaker_settle(_i0["ticket"], 10) == 0, "实删 10/10 → 归还 0")
+    _ok(len(_W) == 10, "实删满额 → 窗口不变")
+
+    # 3) 整批被拦（settle(...,0)）→ 全额归还
+    _b1, _i1 = h._delete_breaker_check([f"q{i}" for i in range(8)], reason="t", source="test")
+    _ok(len(_W) == 18, "再预占 8 → 窗口=18")
+    _ok(h._delete_breaker_settle(_i1["ticket"], 0) == 8, "整批被 gate/bill 拦下 → 归还 8")
+    _ok(len(_W) == 10, "归还后窗口回到 10（不再虚高）")
+
+    # 4) 部分失败：预占 8、实删 5 → 只占 5
+    _b2, _i2 = h._delete_breaker_check([f"r{i}" for i in range(8)], reason="t", source="test")
+    _ok(h._delete_breaker_settle(_i2["ticket"], 5) == 3, "预占 8 实删 5 → 归还 3")
+    _ok(len(_W) == 15, "窗口=10+5（只记实删）")
+
+    # 5) 幂等：同一 ticket 重复结算不得多还
+    _ok(h._delete_breaker_settle(_i2["ticket"], 5) == 0, "重复结算 → 幂等（归还 0）")
+    _ok(len(_W) == 15, "幂等后窗口不变")
+
+    # 6) 非法 / 未知 ticket 容错
+    _ok(h._delete_breaker_settle(0, 0) == 0, "ticket=0 → 无操作")
+    _ok(h._delete_breaker_settle(999999, 0) == 0, "未知 ticket → 无操作")
+    _ok(h._delete_breaker_settle("bad", 0) == 0, "非法 ticket → 无操作")
+
+    # 7) ★ 缺陷 A 核心回归：整批申请但实删 0 → 下一批不该被误熔断
+    _W.clear()
+    _T.clear()
+    _b3, _i3 = h._delete_breaker_check([f"s{i}" for i in range(mx)], reason="t", source="test")
+    h._delete_breaker_settle(_i3["ticket"], 0)          # 一个都没真删
+    _b4, _i4 = h._delete_breaker_check(["slast"], reason="t", source="test")
+    _ok(_b4 == set() and _i4.get("tripped") is False,
+        "★ 缺陷 A 回归：整批申请实删 0 → 下一批不被误熔断")
+
+    # 8) ★ 反向：实删满额后仍然会熔断（补记不能削弱保护）
+    _W.clear()
+    _T.clear()
+    _b5, _i5 = h._delete_breaker_check([f"t{i}" for i in range(mx)], reason="t", source="test")
+    h._delete_breaker_settle(_i5["ticket"], mx)         # 全部真删
+    _b6, _i6 = h._delete_breaker_check(["tlast"], reason="t", source="test")
+    _ok(_b6 == {"tlast"} and _i6.get("tripped") is True,
+        "★ 反向：实删满额 → 仍然熔断（补记不得削弱保护）")
+
+    # 9) 并发：两线程各申请 mx 个，至少一个被熔断（check-and-reserve 原子）
+    import threading as _th
+    _W.clear()
+    _T.clear()
+    _res = []
+
+    def _race():
+        _bb, _ii = h._delete_breaker_check([f"c{i}" for i in range(mx)], reason="t", source="test")
+        _res.append(bool(_ii.get("tripped")))
+
+    _ths = [_th.Thread(target=_race) for _ in range(2)]
+    for _x in _ths:
+        _x.start()
+    for _x in _ths:
+        _x.join()
+    _ok(sum(1 for _r in _res if _r) >= 1,
+        "并发下至少一批被熔断（check-and-reserve 原子）")
+    _W.clear()
+    _T.clear()
+
     # ---- C) 违约自动核对 ----
     print("\n[C] 违约自动核对（站点不欠→清账 / 站点欠→补种）")
     store.put("w1", _bill("w1", "carpt.net", BILL_STATE_BREACHED))   # 站点不欠 → 清账

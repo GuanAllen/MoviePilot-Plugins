@@ -83,6 +83,8 @@ class StatusMixin:
             "site_bonus_age_s": None,
             "site_bonus_stale": False,
             "site_current_bonus": 0.0,
+            # ★ 19.10.48：该站对「魔力」的自称（金元宝/蟹币值/积分…）；空 = 前端兜底「魔力值」
+            "currency": "",
             "site_ceiling": 0.0,
             "site_seed_cap": 0,
             "ceiling_pct": 0.0,
@@ -91,6 +93,7 @@ class StatusMixin:
             "site_user": {},
             "task_uploaded": 0,
             "task_upload_active": 0,
+            "task_up_speed": 0,
             "hr_owed": 0,
             "hr_need_hours": 0.0,
             "bonus_day_delta": None,
@@ -119,6 +122,7 @@ class StatusMixin:
                 # ★ 2026-10-07：时魔值的「新鲜度」（直读缓存旧值 vs 刚抓），供 UI/AI 判定依据链
                 stats["site_bonus_age_s"] = rep.get("age_s")
                 stats["site_bonus_stale"] = bool(rep.get("stale"))
+                stats["currency"] = str(rep.get("currency") or "")
             except Exception as err:
                 self._log(f"统计任务 [{task.name}] 站点魔力失败: {err}", "warning")
         _t_site = time.time()
@@ -147,16 +151,19 @@ class StatusMixin:
             ]
             stats["seeding_count"] = len(managed)
             stats["active_seeding_count"] = len(seeding)
-            # 本任务在下载器的累计上传量 / 有上传的种子数(刷流视角)
+            # 本任务在下载器的累计上传量 / 有上传的种子数 / 当前上传速率(刷流视角)
             uploaded_sum = 0.0
             upload_active = 0
+            speed_sum = 0.0
             for t in managed:
                 up = float(getattr(t, "uploaded", 0) or 0)
                 uploaded_sum += up
                 if up > 0:
                     upload_active += 1
+                speed_sum += float(getattr(t, "up_speed", 0) or 0)
             stats["task_uploaded"] = round(uploaded_sum)
             stats["task_upload_active"] = upload_active
+            stats["task_up_speed"] = round(speed_sum)
             stats["paused_count"] = sum(
                 1 for t in managed
                 if str(getattr(t, "state", "") or "").lower() in QB_PAUSED_STATES
@@ -620,6 +627,10 @@ class StatusMixin:
                 "daily": int(getattr(self, "_reseed_daily", RESEED_DAILY_PER_SITE) or 0),
                 "batch": int(getattr(self, "_reseed_batch", RESEED_BATCH) or 1),
                 "min_size_gb": float(getattr(self, "_reseed_min_size_gb", RESEED_MIN_SIZE_GB) or 0.0),
+                # ★ 19.10.63 直连搜索站（IYUU 不收录的站）：设置面草稿的初始值。
+                #   必须在这里出现，否则前端按默认值（空）回填 → 一保存就静默关掉。
+                "search_sites": list(getattr(self, "_reseed_search_sites", None) or []),
+                "search_kw": int(getattr(self, "_reseed_search_kw", 0) or 0),
             },
             "claim": self._claim_cfg(),
             "live": dict(getattr(self, "_live_cfg", {}) or {}),

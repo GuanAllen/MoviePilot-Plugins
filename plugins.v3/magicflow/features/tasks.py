@@ -49,11 +49,72 @@ from ..common import (
     CROSSSEED_TASK_NAME,
     MagicFlowTaskConfig,
     RUN_MODE_RUNNING,
+    RUN_MODE_SEEDING,
     RUN_MODE_STOPPED,
     SILENT_HOST_TASK_ID,
     normalize_run_mode,
     enabled_of_run_mode,
+    run_mode_of,
 )
+
+
+# 需要「保存目录」的任务类型：这两类都会往盘里**下载**种子。
+# host 类任务（静默托管 / H&R 保种 / 认领 / 跨站取种）只对既有种做挂起与分诊，
+# 不产生下载，保存目录留空是合法的，所以不在必填范围内。
+_DOWNLOAD_TASK_TYPES = ("brush", "bonus")
+
+# 保存目录缺失时的统一话术（创建 / 更新两处共用，避免文案漂移）。
+_SAVE_PATH_REQUIRED_MSG = (
+    "保存目录不能为空：刷流/魔力任务会往这个目录下载种子，留空会让下载器回落到默认目录"
+    "（可能把默认盘灌满）。任务每轮都会跳过不下载，并在「健康自检」里报「配置有误」。"
+    "请填一个下载器上的绝对路径，例如 /vol6/1000/movie/刷流。"
+)
+
+
+def _save_path_blocker(task_type: Any, save_path: Any) -> str:
+    """保存目录必填校验：返回空串=通过，否则返回给用户看的拒绝原因。
+
+    ★ 19.10.36 起因：一次「任务一直在跑但从不下载」——刷流任务 save_path 为空，
+    ``brush._brush_impl`` 的保存目录守卫每轮直接 skipped，而 1 分钟一次的检查轮询又把
+    ``last_run_status`` 覆盖成 done，界面全程绿灯。守卫生效前先在这里拦一道，
+    让配置错误暴露在「保存任务的那一刻」，而不是等用户发现「一直没在下」。
+    """
+    _type = str(task_type or "").strip().lower()
+    if _type not in _DOWNLOAD_TASK_TYPES:
+        return ""
+    if str(save_path or "").strip():
+        return ""
+    return _SAVE_PATH_REQUIRED_MSG
+
+
+def config_blocker(
+    task_type: Any,
+    save_path: Any,
+    downloader_ok: bool,
+    downloader_name: str = "",
+) -> str:
+    """任务配置硬伤判定：返回空串=配置齐全，否则返回要写进 ``last_error`` 的话术。
+
+    ★ 19.10.37 起因：方案 A（19.10.36 的入口必填）堵住了「新建任务就留空」，
+    但存量任务 / 直接改配置文件的任务照样能踩；而且这两类错（保存目录空、下载器
+    不可用）以前只写一条 error 日志，``last_error`` 不写 → health 的 H1 永远不亮，
+    界面还显示「正常」。现在每轮运行开头用它重评一次配置，坏了就写粘性
+    ``last_error``（见 ``persistence.record_run_error(sticky=True)``），好了就清。
+
+    顺序先判下载器：下载器都没了，保存目录填没填已经不是当前最该管的事。
+
+    Args:
+        task_type: 任务类型（brush/bonus 要下载 → 要保存目录；host 类不要）
+        save_path: 保存目录
+        downloader_ok: 下载器是否可用
+        downloader_name: 下载器名（只用于话术）
+
+    Returns:
+        空串 = 通过；非空 = 配置错话术
+    """
+    if not downloader_ok:
+        return f"下载器不可用: {downloader_name or '(未指定)'}"
+    return _save_path_blocker(task_type, save_path)
 
 
 class TasksMixin:
@@ -103,10 +164,18 @@ class TasksMixin:
         return None
 
     def create_task(self, payload: MagicFlowTaskPayload) -> Response:
-        """创建魔流任务。"""
+        """创建魔流任务：校验保存目录必填 / 站点 / 同站唯一，然后落配置并刷新调度。
+
+        保存目录对「刷流 / 魔力」两类任务是必填项（见 `_save_path_blocker`）：留空
+        不会报错，只会让任务每轮静默跳过、永远不出种，所以这里在入口直接拒绝。
+        """
         task_id = payload.id or uuid.uuid4().hex[:12]
         if task_id in self._task_configs:
             return Response(success=False, message="任务 ID 已存在")
+
+        _blocker = _save_path_blocker(getattr(payload, "task_type", "bonus"), payload.save_path)
+        if _blocker:
+            return Response(success=False, message=_blocker)
 
         site = self._get_site(payload.site_id)
         if not site:
@@ -219,7 +288,11 @@ class TasksMixin:
         return Response(success=True, data=detail)
 
     def update_task(self, task_id: str, payload: MagicFlowTaskPayload) -> Response:
-        """更新魔流任务。"""
+        """更新魔流任务：类型不可变、保存目录必填，其余按 payload 覆盖。
+
+        保存目录用「改后的类型」判定（payload 没带类型就沿用原类型），避免前端只改
+        调度参数时被误拦；类型则创建后不可修改，直接拒绝。
+        """
         task = self._get_task_config(task_id)
         if not task:
             return Response(success=False, message="任务不存在")
@@ -238,6 +311,12 @@ class TasksMixin:
                     "再停掉或删除旧任务。"
                 ),
             )
+
+        _blocker = _save_path_blocker(
+            _new_type or _prev_type, getattr(payload, "save_path", "")
+        )
+        if _blocker:
+            return Response(success=False, message=_blocker)
 
         site = self._get_site(payload.site_id)
         if not site:
@@ -683,6 +762,21 @@ class TasksMixin:
         task = self._get_task_config(task_id)
         if not task:
             return Response(success=False, message="任务不存在")
+        # ★ 19.11.10：「做种中 / 已停止」的任务点了「立即运行」，以前照样回
+        #   「魔力优化已启动」，而后台 ``_brush_impl`` 第一行就静默 return ——
+        #   接口在骗人、日志无一字（实测 6 次 POST /run 全无声，排查时被误判成并发闸门满）。
+        #   现在直接如实回执：不启动线程、不假装在跑，并说清该怎么办。
+        _mode = run_mode_of(task)
+        if _mode != RUN_MODE_RUNNING:
+            _label = "做种中" if _mode == RUN_MODE_SEEDING else "已停止"
+            return Response(
+                success=False,
+                message=(
+                    f"任务当前为「{_label}」—— 该状态只做种、不跑刷流/清理流程。"
+                    f"要跑一轮请先把任务切到「运行中」。"
+                ),
+                data={"run_mode": _mode, "started": False},
+            )
         _dry = bool(self._as_bool_arg(dry))
         thread = threading.Thread(target=self.brush, args=(task_id, _dry), daemon=True)
         thread.start()

@@ -1,0 +1,174 @@
+/* TrendDialog 的 scoped 样式，由线上 dist 按 scopeId data-v-94fe1d07 提取。
+   选择器里的属性限定符是 scoped 边界，别去掉。 */
+
+.mf-trend__title[data-v-94fe1d07] {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-block: 12px;
+}
+
+.mf-trend__body[data-v-94fe1d07] {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mf-trend__pick[data-v-94fe1d07] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.mf-trend__sel[data-v-94fe1d07] {
+  flex: 1 1 180px;
+  min-width: 140px;
+  max-width: 320px;
+}
+
+.mf-trend__card[data-v-94fe1d07] {
+  border-radius: 10px;
+  padding: 10px 12px;
+  border-inline-start: 3px solid rgba(var(--v-theme-on-surface), 0.25);
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+
+.mf-trend__card.is-up[data-v-94fe1d07] { border-inline-start-color: rgb(var(--v-theme-success));
+}
+
+.mf-trend__card.is-down[data-v-94fe1d07] { border-inline-start-color: rgb(var(--v-theme-error));
+}
+
+.mf-trend__card.is-flat[data-v-94fe1d07] { border-inline-start-color: rgb(var(--v-theme-info));
+}
+
+.mf-trend__verdict[data-v-94fe1d07] {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.mf-trend__sub[data-v-94fe1d07] {
+  margin-block-start: 4px;
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  line-height: 1.5;
+}
+
+.mf-trend__metrics[data-v-94fe1d07] {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  gap: 8px;
+}
+
+.mf-trend__metric[data-v-94fe1d07] {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+
+.mf-trend__metric-k[data-v-94fe1d07] { font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.6);
+}
+
+.mf-trend__metric strong[data-v-94fe1d07] { font-size: 15px; font-weight: 600;
+}
+
+.mf-trend__metric em[data-v-94fe1d07] { font-style: normal; font-size: 11px;
+}
+
+.mf-trend__metric em.is-up[data-v-94fe1d07], .mf-trend__factor-h strong.is-up[data-v-94fe1d07] { color: rgb(var(--v-theme-success));
+}
+
+.mf-trend__metric em.is-down[data-v-94fe1d07], .mf-trend__factor-h strong.is-down[data-v-94fe1d07] { color: rgb(var(--v-theme-error));
+}
+
+.mf-trend__sec[data-v-94fe1d07] { display: flex; flex-direction: column; gap: 8px;
+}
+
+.mf-trend__sec-t[data-v-94fe1d07] { font-size: 12px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.75);
+}
+
+.mf-trend__factor[data-v-94fe1d07] { display: flex; flex-direction: column; gap: 4px;
+}
+
+.mf-trend__factor-h[data-v-94fe1d07] { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 12px;
+}
+
+.mf-trend__bar[data-v-94fe1d07] { height: 6px; border-radius: 3px; background: rgba(var(--v-theme-on-surface), 0.08); overflow: hidden;
+}
+
+.mf-trend__bar i[data-v-94fe1d07] { display: block; height: 100%; border-radius: 3px; background: rgb(var(--v-theme-primary));
+}
+
+.mf-trend__bar i.is-up[data-v-94fe1d07] { background: rgb(var(--v-theme-success));
+}
+
+.mf-trend__bar i.is-down[data-v-94fe1d07] { background: rgb(var(--v-theme-error));
+}
+
+.mf-trend__factor-d[data-v-94fe1d07] { font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.6); line-height: 1.5;
+}
+
+.mf-spark-grid[data-v-94fe1d07] { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px;
+}
+
+.mf-spark[data-v-94fe1d07] { display: flex; flex-direction: column; gap: 2px;
+}
+
+.mf-spark__head[data-v-94fe1d07] { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.65);
+}
+
+.mf-spark__head strong[data-v-94fe1d07] { font-size: 12px; font-weight: 600; color: rgb(var(--v-theme-on-surface));
+}
+
+.mf-spark__head em[data-v-94fe1d07] { font-style: normal; font-size: 10px; margin-inline-start: 3px;
+}
+
+.mf-spark__head em.is-up[data-v-94fe1d07] { color: rgb(var(--v-theme-success));
+}
+
+.mf-spark__head em.is-down[data-v-94fe1d07] { color: rgb(var(--v-theme-error));
+}
+
+.mf-spark__svg[data-v-94fe1d07] { width: 100%; height: 26px;
+}
+
+.mf-spark__line[data-v-94fe1d07] { stroke: rgb(var(--v-theme-primary)); stroke-width: 1.5;
+}
+
+.mf-spark__foot[data-v-94fe1d07] { display: flex; justify-content: space-between; font-size: 10px; color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+.mf-trend__days[data-v-94fe1d07] { display: flex; align-items: flex-end; gap: 3px; height: 76px; padding-block-start: 4px; overflow-x: auto;
+}
+
+.mf-trend__day[data-v-94fe1d07] { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 3px; min-width: 16px; height: 100%;
+}
+
+.mf-trend__day i[data-v-94fe1d07] { display: block; width: 10px; border-radius: 2px 2px 0 0; background: rgb(var(--v-theme-primary)); opacity: 0.75;
+}
+
+.mf-trend__day span[data-v-94fe1d07] { font-size: 9px; color: rgba(var(--v-theme-on-surface), 0.55); white-space: nowrap;
+}
+
+.mf-trend__advice[data-v-94fe1d07] { margin: 0; padding-inline-start: 18px; font-size: 12px; line-height: 1.6;
+}
+
+.mf-trend__advice li[data-v-94fe1d07] { margin-block-end: 4px; word-break: break-word;
+}
+
+.mf-trend__evi[data-v-94fe1d07] { font-size: 10px; color: rgba(var(--v-theme-on-surface), 0.45); line-height: 1.5;
+}
+@media (max-width: 600px) {
+
+.mf-trend__sel[data-v-94fe1d07] { flex: 1 1 100%; max-width: none;
+}
+
+.mf-trend__metrics[data-v-94fe1d07] { grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+}

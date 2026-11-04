@@ -48,20 +48,27 @@ class ClaimSiteHandler(metaclass=ABCMeta):
         """执行认领 → (成功?, 状态码, 文案)。"""
         raise NotImplementedError
 
-    def abandon(self, site_info: Dict[str, Any], torrent_id: Any, profile: Dict[str, Any]) -> Tuple[bool, str, str]:
-        """放弃认领（默认：无接口模板 → unsupported，绝不猜）。"""
+    def abandon(self, site_info: Dict[str, Any], torrent_id: Any, profile: Dict[str, Any],
+                claim_id: Any = None) -> Tuple[bool, str, str]:
+        """放弃认领（默认：无接口模板 → unsupported，绝不猜）。
+
+        ``claim_id`` = **站点认领记录 id**（认领页 ID 列 / 按钮 ``data-claim_id``），
+        不是种子 id —— 同族插件前端 ``params.id = data-claim_id``（见 claim_presets）。
+        """
         return False, "unsupported", "该站未提供「放弃认领」接口模板，未执行"
 
     # ---------------------------------------------------------------- 工具
     @staticmethod
-    def subst(tpl: Any, torrent_id: Any = None, uid: Any = None) -> Any:
-        """把 endpoint/body 模板里的 ``{id}`` / ``{uid}`` 递归替换掉。"""
+    def subst(tpl: Any, torrent_id: Any = None, uid: Any = None, claim_id: Any = None) -> Any:
+        """把 endpoint/body 模板里的 ``{id}`` / ``{uid}`` / ``{claim_id}`` 递归替换掉。"""
         if isinstance(tpl, dict):
-            return {k: ClaimSiteHandler.subst(v, torrent_id, uid) for k, v in tpl.items()}
+            return {k: ClaimSiteHandler.subst(v, torrent_id, uid, claim_id) for k, v in tpl.items()}
         if isinstance(tpl, list):
-            return [ClaimSiteHandler.subst(v, torrent_id, uid) for v in tpl]
+            return [ClaimSiteHandler.subst(v, torrent_id, uid, claim_id) for v in tpl]
         if isinstance(tpl, str):
             out = tpl
+            if "{claim_id}" in out:
+                out = out.replace("{claim_id}", str(claim_id if claim_id is not None else ""))
             if "{id}" in out:
                 out = out.replace("{id}", str(torrent_id if torrent_id is not None else ""))
             if "{uid}" in out:
@@ -105,10 +112,12 @@ class ClaimSiteHandler(metaclass=ABCMeta):
         torrent_id: Any,
         endpoint: Optional[Dict[str, Any]] = None,
         uid: Any = None,
+        claim_id: Any = None,
     ) -> Tuple[bool, str, str]:
         """按 profile 的 ``endpoint`` 模板发一次写请求 → (成功?, 状态码, 原文)。
 
         只用 ``RequestUtils``（带站点 cookie / UA / 代理），与签到一致；不重试。
+        ``claim_id`` 只为放弃认领模板（``params.id``）服务。
         """
         ep = endpoint or (profile or {}).get("endpoint") or {}
         path = str(ep.get("path") or "").strip()
@@ -116,11 +125,11 @@ class ClaimSiteHandler(metaclass=ABCMeta):
             return False, "unsupported", "缺少接口模板（endpoint.path）"
         # ★ 学校等站的写动作是 GET + query（viewclaims.php?add_torrent_id={id}）
         #   → path 也要做占位符替换（以前只替换 body，GET 模板会带 {} 字面量）。
-        path = self.subst(path, torrent_id=torrent_id, uid=uid)
+        path = self.subst(path, torrent_id=torrent_id, uid=uid, claim_id=claim_id)
         base = self.site_base(site_info)
         url = base + (path if path.startswith("/") else "/" + path)
         method = str(ep.get("method") or "POST").upper()
-        body = self.subst(ep.get("body"), torrent_id=torrent_id, uid=uid)
+        body = self.subst(ep.get("body"), torrent_id=torrent_id, uid=uid, claim_id=claim_id)
         cookie = str(site_info.get("cookie") or "")
         ua = str(site_info.get("ua") or "")
         proxy = bool(site_info.get("proxy"))
@@ -255,6 +264,11 @@ def handlers() -> List[type]:
 def find(url: str) -> Optional[type]:
     """按站点 Url 匹配处理器，未命中返回 None。
 
+    架构：**站点差异全部在 ``sites/claim_presets.py`` 的 preset 表里**，
+    处理器只按 ``profile.endpoint`` 模板发请求 —— 所以这里通常只命中
+    ``NexusPhpClaim`` 一个类。只有当某站接口形态完全脱离模板（既不是
+    ``ajax.php`` 也不是 ``viewclaims.php``）时，才新增专用类。
+
     ★ 2026-10-18 实机：某个处理器模块导入失败（例如文件权限）时，
       ``handlers()`` 只会静默少一个类 → 该站被判「未收录」。
       这里加一层 preset 兜底：只要 preset 声明了 endpoint，就直接走
@@ -277,7 +291,7 @@ def find(url: str) -> Optional[type]:
 
 
 def domains() -> List[str]:
-    """已支持写动作的站点域名列表（专用适配器 + 同族 preset 站点）。"""
+    """已支持写动作的站点域名列表（专用处理器 site_url + preset 表）。"""
     out = {str(getattr(c, "site_url", "") or "") for c in handlers() if getattr(c, "site_url", "")}
     try:
         from ..sites.claim_presets import CLAIM_PRESETS  # noqa: WPS433

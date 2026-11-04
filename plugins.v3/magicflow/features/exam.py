@@ -4,7 +4,6 @@
 （由原 `__init__.py` 拆分为 mixin，逐字搬运，行为不变。）
 """
 
-import threading
 import time
 from dataclasses import fields
 from datetime import datetime
@@ -12,6 +11,8 @@ from typing import Any, Dict, List, Optional
 
 
 from app.schemas import Response
+
+from .. import cacheops                # ★ 19.10.26 签名单锁收成 cacheops.Solo
 
 from ..models import (
     MagicFlowTaskPayload,
@@ -190,6 +191,18 @@ class ExamMixin:
         except Exception as err:  # noqa: BLE001
             return Response(success=False, message=f"签到状态读取失败:{err}")
 
+    def _signin_solo(self) -> cacheops.Solo:
+        """签到「同时只跑一个」的全局单锁（抢不到就回「已有任务在跑」）。
+
+        ★ 19.10.26：``run_signin`` 与 ``signin_watch`` 原先**各抄了一遍**惰性初始化，
+          两处同时首跑会各造一把锁 → 互斥直接失效。收成一个入口；
+          判定按类型，热重载残留的裸 Lock 会被换成容器。
+        """
+        solo = getattr(self, "_signin_lock", None)
+        if not isinstance(solo, cacheops.Solo):
+            solo = self._signin_lock = cacheops.Solo("exam.signin")
+        return solo
+
     def run_signin(self, kind: str = "sign", site_ids: str = "", force: bool = False) -> Response:
         """立即签到/登录一次。site_ids 逗号分隔;force=true 忽略「今日已成功」跳过。"""
         cfg = getattr(self, "_signin_cfg", {}) or {}
@@ -198,11 +211,8 @@ class ExamMixin:
         engine = getattr(self, "_signin", None)
         if engine is None:
             return Response(success=False, message="签到组件未初始化")
-        lock = getattr(self, "_signin_lock", None)
-        if lock is None:
-            lock = threading.Lock()
-            self._signin_lock = lock
-        if not lock.acquire(blocking=False):
+        solo = self._signin_solo()
+        if not solo.try_enter():
             return Response(success=False, message="已有签到任务在跑,稍后再试")
         try:
             ids = [x.strip() for x in str(site_ids or "").split(",") if x.strip()]
@@ -211,10 +221,7 @@ class ExamMixin:
         except Exception as err:  # noqa: BLE001
             return Response(success=False, message=f"签到执行失败:{err}")
         finally:
-            try:
-                lock.release()
-            except Exception:  # noqa: BLE001
-                pass
+            solo.leave()
 
     def signin_watch(self) -> None:
         """签到 worker：① 先补到期的失败重试（按 PV 节奏，间隔+抖动）；② 再按「签到间隔」跑全量。
@@ -229,11 +236,8 @@ class ExamMixin:
         try:
             if not engine.should_run_now():
                 return
-            lock = getattr(self, "_signin_lock", None)
-            if lock is None:
-                lock = threading.Lock()
-                self._signin_lock = lock
-            if not lock.acquire(blocking=False):
+            solo = self._signin_solo()
+            if not solo.try_enter():
                 return
             try:
                 # ① 到期的失败重试（只补签到；已经成功的会被 already_done 跳过）
@@ -266,7 +270,7 @@ class ExamMixin:
                     except Exception as err:  # noqa: BLE001
                         self._log(f"账号保活检查失败:{err}", "debug")
             finally:
-                lock.release()
+                solo.leave()
         except Exception as err:  # noqa: BLE001
             self._log(f"签到 worker 失败:{err}", "warning")
 

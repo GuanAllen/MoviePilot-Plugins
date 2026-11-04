@@ -13,13 +13,13 @@ import re
 import time
 from typing import Any, Dict, List
 from urllib.parse import urlparse
-from xml.etree import ElementTree as ET
 
 from app.schemas import Response
 from app.sdk.logging import logger
 
 from ..common import RSS_PASSKEY_KEY
 from ..kvstore import cache_get, cache_set
+from ..collect import parse_rss_items
 
 RSS_TTL = 300.0
 _PK_RE = re.compile(r"^[A-Za-z0-9._-]{8,128}$")
@@ -146,56 +146,18 @@ class RssMixin:
         except Exception as err:  # noqa: BLE001
             return Response(success=False, message=f"保存 passkey 失败：{err}")
     # ------------------------------------------------------------ 抓取 / 解析
-    @staticmethod
-    def _rss_parse(xml_text: str, limit: int) -> List[Dict[str, Any]]:
-        import re as _re
 
-        root = ET.fromstring(xml_text)
-        out: List[Dict[str, Any]] = []
-        promo_re = _re.compile(r"[\[\(【]\s*(免费|Freeleech|Free|2x|2X|50%|30%|70%)\s*[\]\)】]", _re.I)
-        seed_re = _re.compile(r"(?:seeders?|做种(?:数|者)?|种(?:子)?数)\D{0,8}(\d+)", _re.I)
-        leech_re = _re.compile(r"(?:leechers?|下载(?:数|者)?|完成(?:数)?)\D{0,8}(\d+)", _re.I)
-        for it in root.iter("item"):
-            def _g(tag: str) -> str:
-                el = it.find(tag)
-                return (el.text or "").strip() if el is not None else ""
-            size = ""
-            enc = it.find("enclosure")
-            if enc is not None:
-                size = str(enc.get("length") or "")
-            if not size:
-                # 有些站把体积写进标题（M-Team 的 [大小] 格式）
-                msz = _re.search(r"(\d+(?:\.\d+)?)\s*(TB|TiB|GB|GiB|MB|MiB|KB|KiB)", _g("title"), _re.I)
-                if msz:
-                    _num = float(msz.group(1))
-                    _unit = msz.group(2).upper().rstrip("IB").rstrip("B")
-                    _mult = {"T": 1024 ** 4, "G": 1024 ** 3, "M": 1024 ** 2, "K": 1024}.get(_unit[:1], 0)
-                    if _mult:
-                        size = str(int(_num * _mult))
-            title = _g("title")
-            desc = _g("description")
-            blob = f"{title} {desc[:1200]}"
-            m = promo_re.search(blob)
-            ms = seed_re.search(blob)
-            ml = leech_re.search(blob)
-            out.append({
-                "title": title,
-                "link": _g("link"),
-                "guid": _g("guid"),
-                "pub": _g("pubDate"),
-                "category": _g("category"),
-                "comments": _g("comments"),
-                "size": size,
-                "enclosure": (enc.get("url") if enc is not None else "") or "",
-                "promo": m.group(1) if m else "",
-                "seeders": int(ms.group(1)) if ms else None,
-                "leechers": int(ml.group(1)) if ml else None,
-                "desc": desc[:200],
-            })
-            if len(out) >= limit:
-                break
-        return out
+    # 19.10.30：RSS 解析已下沉 ``collect.parse_rss_items``（铁律 1「解析归采集」）。
+    #   这里只剩「抓 + 判是不是 RSS + 缓存」；调用点见 ``_rss_fetch``。
+
     def _rss_fetch(self, site: Any, limit: int) -> Dict[str, Any]:
+        """抓一次站点 RSS 并给出「能不能用」的结论（**不做解析**）。
+
+        解析已归 ``collect.parse_rss_items``；这里只负责三件事：取 passkey 拼 URL、
+        抓回来判「是不是 RSS」（有些站返回登录页 / passkey 被拒）、把结果连同
+        ``ok/message`` 一起交给上层缓存。失败一律降级成 ``ok=False`` + 人话 message，
+        不抛 —— 这个入口是给 UI 刷新用的，抛异常会白屏。
+        """
         sid = str(getattr(site, "id", "") or "")
         url = self._rss_url_of(site)
         rec = self._rss_entry_of(sid)
@@ -208,36 +170,39 @@ class RssMixin:
         if not url:
             out["message"] = "未配置 passkey / RSS 链接"
             return out
+        # ★ 19.10.31：抓取改走 collect 唯一出口（铁律 2「只有一只手碰网络」）。
+        #   两条实质收益，不只是「统一」：
+        #     · RSS URL 是**用户可配**的（creds.rss_url 任意字符串）→ 裸 RequestUtils
+        #       等于开了一个 SSRF 口子，谁都能让插件去抓内网地址；走门面后自动过
+        #       ``_url_allowed_for_site`` 的同域校验。
+        #     · 原先这 16 个站的 RSS 请求**完全不出现在 PV 账本和观测里**（盲区），
+        #       现在过闸门 + 记账 + ``kind="rss"`` 可观测。
+        #   ⚠ 行为差异（已评估接受）：
+        #     · 门面 timeout 固定 60（原 site.timeout=15）→ 慢站点更宽容、卡住时更久；
+        #     · 原 ``site.proxy`` 分支取消 —— 门面不支持站级代理。实测生产 16 站
+        #       proxy 全为 0，当前无影响；将来真要支持代理，应在门面 ``_request``
+        #       里统一加，而不是让每个采集点自己拼 RequestUtils。
+        coll = getattr(self, "collect", None)
+        if coll is None:
+            out["message"] = "采集门面未就绪（插件尚未初始化完成）"
+            return out
+        got = coll.http.text(sid, url, kind="rss")
+        if not got.ok:
+            out["message"] = got.error or "站点无响应"
+            return out
+        text = got.text or ""
+        low = text[:200].lower()
+        if not text:
+            out["message"] = "站点无响应"
+            return out
+        if "passkey" in low and "<rss" not in low and "<?xml" not in low:
+            out["message"] = text[:80] or "passkey 被拒绝"
+            return out
+        if "rss" not in low and "<rss" not in text and "<?xml" not in text:
+            out["message"] = "返回不是 RSS（可能未登录或被拦截）"
+            return out
         try:
-            from app.utils.http import RequestUtils  # noqa: WPS433
-
-            proxies = None
-            if bool(getattr(site, "proxy", 0)):
-                try:
-                    from app.core.config import settings as _s  # noqa: WPS433
-                    proxies = _s.PROXY
-                except Exception:  # noqa: BLE001
-                    proxies = None
-            req = RequestUtils(
-                cookies=str(getattr(site, "cookie", "") or ""),
-                ua=str(getattr(site, "ua", "") or ""),
-                proxies=proxies,
-                timeout=int(getattr(site, "timeout", 0) or 0) or 20,
-                referer=str(getattr(site, "url", "") or ""),
-            )
-            res = req.get_res(url=url)
-            text = (res.text if res is not None else "") or ""
-            low = text[:200].lower()
-            if not text:
-                out["message"] = "站点无响应"
-                return out
-            if "passkey" in low and "<rss" not in low and "<?xml" not in low:
-                out["message"] = text[:80] or "passkey 被拒绝"
-                return out
-            if "rss" not in low and "<rss" not in text and "<?xml" not in text:
-                out["message"] = "返回不是 RSS（可能未登录或被拦截）"
-                return out
-            out["items"] = self._rss_parse(text, max(1, int(limit or 30)))
+            out["items"] = parse_rss_items(text, max(1, int(limit or 30)))
             out["ok"] = True
             out["message"] = f"{len(out['items'])} 条"
             out["rss_url"] = self._rss_mask_url(url)

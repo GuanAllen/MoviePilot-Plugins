@@ -24,6 +24,31 @@ export function odTraffic(dv) {
   return { text: `流量 ×${Math.round(v * 100)}%`, color: 'warning' }
 }
 
+/** ★ 19.11.0 候选主标题：**中文名优先**，取不到才退回站点原名（拼音/英文）。
+ *  中文名来自站点副标题（`torrent_info.description`），后端 `tags.display_title` 切好。 */
+export function odMainTitle(row) {
+  return String(row?.cn_title || row?.title || '')
+}
+
+/** 候选别名（「粉红猪小妹」这类台的译名）—— 有就淡色跟在主标题后面。 */
+export function odAltTitle(row) {
+  return String(row?.cn_alt || '')
+}
+
+/** 候选副标题：规格串优先；没有规格串才给站点副标题原文。
+ *  但站点副标题常与片名同串（「小猪佩奇 第七季」）或与原标题同串 —— 那两种都不显示，
+ *  否则主标题下面再抄一遍同样的字，纯噪音。 */
+export function odSubTitle(row) {
+  const spec = String(row?.spec || '')
+  if (spec) return spec
+  const sub = String(row?.subtitle || '')
+  const main = String(row?.cn_title || '')
+  const raw = String(row?.title || '')
+  if (!sub || sub === raw) return ''
+  if (main && sub.startsWith(main)) return ''
+  return sub
+}
+
 /** 进度百分比（0–100）。 */
 export function odPct(row) {
   return Math.max(0, Math.min(100, Number(row?.progress || 0) * 100))
@@ -76,6 +101,11 @@ export function useOndemand(api) {
     return Array.isArray(rows) ? rows : []
   })
 
+  // 勾选只存 enclosure（纯 UI 状态）：候选本身在后端池里，本层不缓存真值。
+  // ★ 19.11.0 多选一并下载的 UI 态，声明在 runOndemand 之前（它换搜索结果时要清空）。
+  const odPicked = ref([])
+  const odBatchBusy = ref(false)
+
   function openOndemand() {
     ondemandOpen.value = true
     ondemandResult.value = null
@@ -97,19 +127,80 @@ export function useOndemand(api) {
     }
     ondemandBusy.value = apply ? 'apply' : 'preview'
     ondemandError.value = ''
+    odPicked.value = []          // ★ 19.11.0：换了一次搜索结果 → 旧勾选的 enclosure 已不在列表里
     try {
       const params = [`query=${encodeURIComponent(q)}`, `apply=${apply ? 'true' : 'false'}`]
       if (ondemandTaskId.value) params.push(`task_id=${encodeURIComponent(ondemandTaskId.value)}`)
       const _sites = (Array.isArray(ondemandSiteIds.value) ? ondemandSiteIds.value : []).map(String).filter(Boolean)
       if (_sites.length) params.push(`site_ids=${encodeURIComponent(_sites.join(','))}`)
       if (pick) params.push(`pick=${encodeURIComponent(pick)}`)
-      const res = unwrapResponse(await api.features.ondemandSearch(params.join('&')))
-      if (res) ondemandResult.value = res
+      // ★ 19.11.7：**这里不走 unwrapResponse**。「没认出片名 / 站点里没有匹配资源」后端
+      //   返回 success=false，但 data.candidates 里带着站点粗筛结果 —— unwrapResponse 在
+      //   success===false 时直接抛错，把 data 一起丢掉 → 用户只剩一句报错、一条候选也看不见
+      //   （实测搜「欢迎来到龙餐馆」：20 条候选全被吞成空白）。所以自己分流：
+      //     · data 里真有 candidates → 照常渲染（噪音行后端已标 rel=0，列表灰显/打标）
+      //     · 失败原因保留后端原文 → 用户知道「为什么没自动选源、该自己挑哪条」
+      //   cand_expired / 下载失败这两类 data 没有候选，只显示原因，不动已有列表。
+      const raw = await api.features.ondemandSearch(params.join('&'))
+      const data = raw?.data && typeof raw.data === 'object' ? raw.data : null
+      if (data && Array.isArray(data.candidates)) ondemandResult.value = data
+      else if (data && raw?.success !== false) ondemandResult.value = data
+      if (raw?.success === false) ondemandError.value = String(raw?.message || '操作失败')
       if (apply) loadOndemandItems()   // ★ 15.4.0：下完马上刷新清单（进度/历史可见）
     } catch (err) {
       ondemandError.value = err?.message || String(err)
     } finally {
       ondemandBusy.value = ''
+    }
+  }
+
+  // ── 多选一并下载（★ 19.11.0）──────────────────────────────────────
+  function isOdPicked(row) {
+    const u = String(row?.enclosure || '')
+    return !!u && odPicked.value.includes(u)
+  }
+  function toggleOdPick(row) {
+    const u = String(row?.enclosure || '')
+    if (!u) return
+    const i = odPicked.value.indexOf(u)
+    if (i >= 0) odPicked.value.splice(i, 1)
+    else odPicked.value.push(u)
+  }
+  function pickAllOndemand(on) {
+    const all = (ondemandCandidates.value || []).map((r) => String(r?.enclosure || '')).filter(Boolean)
+    odPicked.value = on ? Array.from(new Set(all)) : []
+  }
+  async function runOndemandBatch() {
+    const picks = odPicked.value.slice()
+    if (!picks.length) {
+      ondemandError.value = '请先勾选要下载的候选'
+      return
+    }
+    odBatchBusy.value = true
+    ondemandError.value = ''
+    odMsg.value = ''
+    try {
+      const params = [`picks=${encodeURIComponent(picks.join('\n'))}`]
+      if (ondemandTaskId.value) params.push(`task_id=${encodeURIComponent(ondemandTaskId.value)}`)
+      // 不走 unwrapResponse：全失败时 success=false 会抛错并丢掉 data.fail 明细，
+      // 而「哪几条没下成、为什么」正是批量最该说清楚的部分。
+      const raw = await api.features.ondemandBatch(params.join('&'))
+      const data = raw?.data || {}
+      const fails = Array.isArray(data.fail) ? data.fail : []
+      const head = raw?.success === false ? '❌ ' : ''
+      let text = head + String(raw?.message || '已提交')
+      if (fails.length) {
+        text += `\n· ${fails.slice(0, 3).map((f) => `${f.title || '（无标题）'}：${f.message || '失败'}`).join('\n· ')}`
+      }
+      odMsg.value = text
+      if (data.ok_count) {
+        odPicked.value = []
+        loadOndemandItems()
+      }
+    } catch (err) {
+      odMsg.value = `❌ ${err?.message || String(err)}`
+    } finally {
+      odBatchBusy.value = false
     }
   }
 
@@ -184,5 +275,7 @@ export function useOndemand(api) {
     ondemandItems, ondemandItemsBusy, ondemandTab, odInflight, odHistory, odActing, odMsg,
     openOndemand, runOndemand, loadOndemandItems, actOndemand,
     odTraffic, odPct, odSpeed, odEtaText, odStageColor, odIsPaused, isOndemandAuto, fmtSizeGb,
+    odMainTitle, odAltTitle, odSubTitle,
+    odPicked, odBatchBusy, isOdPicked, toggleOdPick, pickAllOndemand, runOndemandBatch,
   }
 }

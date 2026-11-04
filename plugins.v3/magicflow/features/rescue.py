@@ -34,11 +34,11 @@ TODO（主 agent 排后续版本）：全站辅种 ``features/reuse.py`` 应对 
 
 import re
 import time
-from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.schemas import Response
+from ..norm import float_ok, now_iso
 
 # 跨站取种标签（= crossseed.CROSSSEED_TAG；此处内联字符串避免模块级 import 拉进
 # crossseed 依赖——离线加载 / 依赖方向都要更干净）。
@@ -142,7 +142,7 @@ class RescueMixin:
             raw = {}
         obj = self._rescue_stall_obj = {
             str(k): float(v) for k, v in raw.items()
-            if str(k).strip() and _float_ok(v)
+            if str(k).strip() and float_ok(v)
         }
         return obj
 
@@ -192,7 +192,8 @@ class RescueMixin:
 
     @staticmethod
     def _rescue_now() -> str:
-        return datetime.now().astimezone().isoformat(timespec="seconds")
+        """当前时间 ISO 串（★19.10.16 实现收归 norm.now_iso，此处仅作调用点）。"""
+        return now_iso()
 
     @staticmethod
     def _rescue_bool(v: Any) -> Optional[bool]:
@@ -994,9 +995,3 @@ class RescueMixin:
         }, t0)
 
 
-def _float_ok(v: Any) -> bool:
-    try:
-        float(v)
-        return True
-    except (TypeError, ValueError):
-        return False

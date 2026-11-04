@@ -8,6 +8,9 @@
 五条铁律：
 
 1. **采集就一个人干**：抓 + **解析** + 配额 + 缓存 + 事实库，全归这里；别人只拿。
+   ★ 19.10.31：解析那一半已下沉到 L0 ``collect_parse.py``（纯函数、零 I/O）——
+   **一个入口、两个文件**：业务模块一律 ``from .collect import ...``（本文件全量
+   re-export），新增解析写 ``collect_parse.py``，别在本文件里写正则。
 2. **采集也是唯一的手**：全仓只有它碰网络（拿数据 + 执行动作都经它）。
 3. **不判断**：促销免不免费是事实；该不该删 / 今天签不签是判断（留在各功能模块）。
 4. **每一次站点请求都过闸门**（预算不足/被熔断 → 直接不发请求）。
@@ -24,14 +27,75 @@
 """
 from __future__ import annotations
 
-import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .kvstore import cache_get, cache_set
 from .common import CACHE_TTL_COUNTER
+from . import cacheops                # ★ 19.10.26 页面锁表收进 KeyLocks
+
+# ── 解析层（★ 19.10.31 拆出 L0 ``collect_parse.py``）─────────────────────
+# 全量 re-export，一个不落：外部与离线测试都按 ``collect.XXX`` 取符号
+# （``test_signin_parse`` 直接查 ``collect.SIGNED_TEXTS`` / ``collect.UNSIGNED_CTRL_RE``），
+# 少导一个就是 AttributeError。**不要**改成 ``import *`` —— 护栏⑫R4 会跳过 import * 不校验。
+# 新增解析请加到 collect_parse.py，这个文件只留「传输 + 配额 + 事实库」。
+from .collect_parse import (  # noqa: E402
+    LOGIN_HINT_RE,
+    LOGIN_TITLE_RE,
+    PV_BLOCK_GRACE,
+    PV_LIMIT_MARKERS,
+    PV_LIMIT_RE,
+    SIGNED_RE,
+    SIGNED_TEXTS,
+    UNSIGNED_CTRL_RE,
+    UNSIGNED_TEXTS,
+    detect_framework,
+    is_pv_limited,
+    next_day_ts,
+    normalize_api_profile,
+    parse_claim_page,
+    parse_leeching_rows,
+    parse_mail_body,
+    parse_mail_links,
+    parse_mail_list,
+    parse_myhr_rows,
+    parse_passkey,
+    parse_rss_items,
+    parse_rss_torrents,
+    parse_signin,
+    parse_size,
+    parse_uid,
+    parse_user_bar,
+    parse_user_details,
+    pick_welcome_mail,
+    _ALNUM_RUN_RE,
+    _CLAIM_TID_RE,
+    _HASH_RE,
+    _KEY_LABEL_RE,
+    _MAIL_FOOT_RE,
+    _MAIL_LINK_RE,
+    _MAIL_NOISE,
+    _MAIL_ROW_RE,
+    _MAIL_TIME_RE,
+    _MYHR_ID_RE,
+    _MYHR_MARKERS,
+    _MYHR_NEED_RE,
+    _MYHR_SIZE_RE,
+    _MYHR_TID_RE,
+    _PASSKEY_RE,
+    _SIZE_UNITS,
+    _TAG_RE,
+    _UID_RE,
+    _WELCOME_SUBJ_RE,
+    _is_free_promotion,
+    _myhr_cell_text,
+    _myhr_row_segments,
+    _num,
+    _passkey_from_label,
+    _to_text,
+)
 
 # ── 采集类型白名单（配额分账用；新增类型必须显式登记）────────────────────────
 SCOPE_SITE = "site"        # 吃站点 PV
@@ -63,28 +127,18 @@ KIND_TTL: Dict[str, float] = {
     "welcome": 604800.0,  # 欢迎短讯正文（7d，基本不变）
     # ★ 11.8.0：站点 H&R 对账（``myhr.php``）——页面便宜、变化慢（对账周期 6h）
     "hr": 1800.0,         # H&R 记录页（30min）
+    # ★ 19.10.31：站点 RSS。**故意 0** —— ``features/rss.py`` 自己有一层 kvstore 缓存
+    #   （``RSS_TTL=300``，键含 limit 与凭据摘要，还带 ``refresh`` 强制刷新语义）。
+    #   这里再缓存一层会让「点刷新」时外层绕过、内层仍命中 → 用户看到旧列表。
+    #   ⚠ 想调 RSS 新鲜度请改 ``rss.py::RSS_TTL``，**不要**动这个 0。
+    "rss": 0.0,
 }
 # 每站每日硬上限（0 = 不限，交给站点 PV 预算管）；签到一天最多一次是事实
 KIND_DAY_CAP: Dict[str, int] = {"signin": 2}
 
-# 站点「每日访问次数已达上限」拦截页特征
-PV_LIMIT_MARKERS = ("访问次数已达上限", "访问次数已达", "今日访问次数")
-PV_BLOCK_GRACE = 600.0
 
 INBOX_PAGE = "/messages.php"
 MAIL_PAGE = "/messages.php?action=viewmessage&id={mid}"
-# 「欢迎来**」主题特征（NexusPHP 注册欢迎短讯）
-_WELCOME_SUBJ_RE = re.compile(r"欢迎|welcome|注册成功|新人", re.I)
-_MAIL_ROW_RE = re.compile(
-    r"viewmessage(?:&amp;|&)id=(\d+)[^>]*>\s*([^<]{0,80})", re.I
-)
-# 邮件正文的**结束**标记（注意：不能把紧随主题的「收件箱/发件箱」表头当结尾）
-_MAIL_FOOT_RE = re.compile(r"删除.*转发|转发短讯|短讯箱|\[\s*删除\s*\]")
-# 邮件页面里的界面噪声行（表头/时间戳），正文里不该有
-_MAIL_NOISE = {"收件箱", "发件箱", "自", "日期", "系统", "搜索短讯", "短讯箱", "MESSAGES", "短讯"}
-_MAIL_TIME_RE = re.compile(
-    r"^(?:\d+\s*(?:天|日|小时|時|分钟|分|秒))+\s*前$|^信息来自|^\d+\s*分钟前$"
-)
 
 
 # ── API 鉴权站（通道表驱动）────────────────────────────────────────────
@@ -250,155 +304,6 @@ _API_CHANNELS_FALLBACK: Dict[str, Any] = {
 }
 
 
-def _num(v: Any) -> Optional[float]:
-    try:
-        if v is None or v == "":
-            return None
-        return float(v)
-    except (TypeError, ValueError):
-        return None
-
-
-def _pick_num(*sources: Any, keys: Tuple[str, ...]) -> Optional[float]:
-    """按顺序从多个 dict 取第一个非 None 的数值（★ 15.16.2 API 档案字段归一）。"""
-    for _s in sources:
-        if not isinstance(_s, dict):
-            continue
-        for _k in keys:
-            _v = _s.get(_k)
-            if _v is not None:
-                return _num(_v)
-    return None
-
-
-def normalize_api_profile(payload: Any) -> Optional[Dict[str, Any]]:
-    """★ API 站档案归一（module-level，便于离线测试）——把各站 JSON 差异折成统一 bar。
-
-    已知形态：
-      * 馒头 / 叶PT：``memberCount{bonus,uploaded,downloaded,shareRate}`` + ``memberStatus{id,vip,warned}``
-      * 野马PT：``data{id,bonus,level,status,promotionUploadSize,promotionDownloadSize}``
-        （**无** shareRate → 用上传/下载现算；下载=0 → 分享率「无限」→ ``ratio_inf``）
-    返回 ``None`` 表示载荷为空/不可识别。
-    """
-    if not isinstance(payload, dict) or not payload:
-        return None
-    d = payload
-    cnt = d.get("memberCount") if isinstance(d.get("memberCount"), dict) else {}
-    st = d.get("memberStatus") if isinstance(d.get("memberStatus"), dict) else {}
-    up = _pick_num(cnt, d, keys=("uploaded", "promotionUploadSize", "upload", "uploadSize"))
-    dl = _pick_num(cnt, d, keys=("downloaded", "promotionDownloadSize", "download", "downloadSize"))
-    rt = _pick_num(cnt, d, keys=("shareRate", "ratio", "shareRatio"))
-    if rt is None and up is not None:
-        if dl and float(dl) > 0:
-            rt = round(float(up) / float(dl), 4)
-    return {
-        "ok": True,
-        "source": "api",
-        "uid": str(st.get("id") or d.get("id") or ""),
-        "ratio": rt,
-        "ratio_inf": bool(rt is None and up and float(up) > 0 and not dl),
-        "upload": up,
-        "download": dl,
-        "bonus": _pick_num(cnt, d, keys=("bonus",)),
-        "seeding": _num(d.get("seeding")),
-        "leeching": _num(d.get("leeching")),
-        "bonus_per_hour": None,
-        "level": _num(d.get("level")),
-        "name": str(d.get("name") or ""),
-        "created": str(d.get("createdDate") or st.get("createdDate") or ""),
-        # ★ 7.17.0 账号保活：站点记录的「最后登入 / 最后浏览」（第三方工具的调用**不会**刷新它们）
-        "last_login": str(st.get("lastLogin") or d.get("lastLogin") or ""),
-        "last_browse": str(st.get("lastBrowse") or d.get("lastBrowse") or ""),
-        "logged_in": str(d.get("status") or st.get("status") or "").upper()
-        in ("CONFIRMED", "ENABLE", "ENABLED", "ACTIVE", "")
-        and (bool(d) or bool(st)),
-        "vip": bool(st.get("vip")),
-        "warned": bool(st.get("warned") or st.get("leechWarn")),
-    }
-
-
-def parse_mail_list(html_text: Any) -> List[Tuple[str, str]]:
-    """收件箱列表 → ``[(短讯 id, 主题), …]``（事实，不做判断）。"""
-    t = str(html_text or "")
-    if not t:
-        return []
-    out: List[Tuple[str, str]] = []
-    seen = set()
-    for mid, subj in _MAIL_ROW_RE.findall(t):
-        mid = str(mid).strip()
-        subj = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", str(subj))).strip()
-        if not mid or mid in seen or not subj:
-            continue
-        seen.add(mid)
-        out.append((mid, subj))
-    return out
-
-
-def pick_welcome_mail(rows: Any) -> Optional[Tuple[str, str]]:
-    """从短讯列表里挑「欢迎短讯」（挑不到 → None；**不猜**）。"""
-    for mid, subj in (rows or []):
-        if _WELCOME_SUBJ_RE.search(str(subj or "")):
-            return str(mid), str(subj)
-    return None
-
-
-_MAIL_LINK_RE = re.compile(r'<a\s[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', re.S | re.I)
-
-
-def parse_mail_links(html_text: Any) -> List[Dict[str, str]]:
-    """短讯页面里的链接 → ``[{"href","label"}]``（去重保序；**事实**，不挑不筛）。"""
-    t = str(html_text or "")
-    if not t:
-        return []
-    out: List[Dict[str, str]] = []
-    seen = set()
-    for href, label in _MAIL_LINK_RE.findall(t):
-        href = str(href or "").strip()
-        label = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", str(label or ""))).replace("&nbsp;", " ").strip()
-        if not href or href.startswith("#") or href.lower().startswith("javascript"):
-            continue
-        key = (href, label)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({"href": href, "label": label[:60]})
-    return out
-
-
-def parse_mail_body(html_text: Any, subject: str = "") -> str:
-    """短讯正文（去掉站点导航/用户栏/页脚 —— 用户栏里的「H&R 0/0/10」是**假的**）。"""
-    t = str(html_text or "")
-    if not t:
-        return ""
-    t = re.sub(r"<script.*?</script>|<style.*?</style>", " ", t, flags=re.S | re.I)
-    t = re.sub(r"<br\s*/?>|</p>|</div>|</tr>|</li>|</td>", "\n", t, flags=re.I)
-    t = re.sub(r"<[^>]+>", " ", t)
-    t = (t.replace("&nbsp;", " ").replace("&#039;", "'")
-          .replace("&amp;", "&").replace("&quot;", '"').replace("&#x2022;", " "))
-    lines = [re.sub(r"[ \t]+", " ", x).strip() for x in t.split("\n")]
-    lines = [x for x in lines if x]
-    start = 0
-    key = str(subject or "")[:12].strip()
-    if key:
-        idxs = [i for i, x in enumerate(lines) if key in x]
-        if len(idxs) >= 2:
-            start = idxs[1] + 1
-        elif idxs:
-            start = idxs[0] + 1
-        else:
-            # 标题行被截断/变形时：退到「短讯箱 / 收件箱」表头之后
-            for i, x in enumerate(lines):
-                if x in ("短讯箱", "收件箱") and i + 1 < len(lines):
-                    start = i + 1
-    end = len(lines)
-    for i in range(start, len(lines)):
-        if _MAIL_FOOT_RE.search(lines[i]) or lines[i].startswith("(c) "):
-            end = i
-            break
-    body = [x for x in lines[start:end] if x not in _MAIL_NOISE and not _MAIL_TIME_RE.search(x)]
-    return "\n".join(body)[:4000]
-
-
 DEFAULT_PAGE = "/index.php"
 LEECH_PAGE = "/getusertorrentlist.php?type=leeching&userid={uid}"
 LEECH_PAGE_ALT = "/userdetails.php?id={uid}"
@@ -424,24 +329,6 @@ def sanitize_site_headers(site: Any) -> Tuple[Optional[str], Optional[str]]:
     except Exception:  # noqa: BLE001
         cookie = None
     return ua, cookie
-
-
-def is_pv_limited(text: Any) -> bool:
-    """页面是否就是「今日访问次数已达上限」的拦截页。"""
-    t = str(text or "")
-    if not t or len(t) > 2000:
-        return False
-    return ("访问次数已达上限" in t) or ("访问次数已达" in t and "上限" in t)
-
-
-def next_day_ts(now: Optional[float] = None) -> float:
-    """下一个本地凌晨（+宽限）的时间戳。"""
-    t = float(now if now is not None else time.time())
-    local = time.localtime(t)
-    nxt = time.mktime(
-        (local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, local.tm_wday, local.tm_yday, -1)
-    ) + 86400.0
-    return nxt + PV_BLOCK_GRACE
 
 
 @dataclass
@@ -499,12 +386,14 @@ class Budget:
             bucket = self._mem.setdefault(day, {}).setdefault(sid, {})
             bucket[str(kind)] = int(bucket.get(str(kind), 0) or 0) + max(int(n), 1)
             # 只保留两天，防无界
+            # 固定切片 = 业务截断（非删换行）：排序后末尾 2 个即最近两天，其余为待淘汰项
             for stale in sorted(self._mem.keys())[:-2]:
                 self._mem.pop(stale, None)
         try:
             data = cache_get(self._p, "collect", "collect_day", CACHE_TTL_COUNTER) or {}
             if not isinstance(data, dict):
                 data = {}
+            # 固定切片 = 业务截断（非删换行）：排序后末尾 7 个即最近七天，其余为待淘汰项
             for stale in sorted(data.keys())[:-7]:
                 data.pop(stale, None)
             site = data.setdefault(day, {}).setdefault(sid, {})
@@ -558,417 +447,11 @@ class Budget:
 
 
 # ============================================================
-# 解析器：页面 → 规整事实（★ 解析也归采集）
-# ============================================================
-
-_SIZE_UNITS = {
-    "B": 1.0, "K": 1024.0, "KB": 1024.0, "KIB": 1024.0,
-    "M": 1024.0 ** 2, "MB": 1024.0 ** 2, "MIB": 1024.0 ** 2,
-    "G": 1024.0 ** 3, "GB": 1024.0 ** 3, "GIB": 1024.0 ** 3,
-    "T": 1024.0 ** 4, "TB": 1024.0 ** 4, "TIB": 1024.0 ** 4,
-    "P": 1024.0 ** 5, "PB": 1024.0 ** 5, "PIB": 1024.0 ** 5,
-}
-_TAG_RE = re.compile(r"<[^>]+>")
-
-
-def parse_size(text: Any) -> float:
-    """'100.91GB' / '1,024.5 MB' → 字节数（float）。解析不出来返回 0.0。"""
-    if text is None:
-        return 0.0
-    s = str(text).strip().replace(",", "").replace(" ", "")
-    m = re.match(r"^([0-9]*\.?[0-9]+)\s*([KMGTP]?I?B?)$", s, re.IGNORECASE)
-    if not m:
-        return 0.0
-    try:
-        val = float(m.group(1))
-    except (TypeError, ValueError):
-        return 0.0
-    unit = (m.group(2) or "B").strip().upper()
-    mult = _SIZE_UNITS.get(unit)
-    if mult is None:
-        mult = _SIZE_UNITS.get(unit.rstrip("B")) if unit.endswith("B") else None
-    if mult is None:
-        mult = 1.0
-    return val * mult
-
-
-def _to_text(raw: Any) -> str:
-    """去标签 + HTML 实体 → 纯文本（保留原换行结构成空格）。"""
-    s = str(raw or "")
-    s = _TAG_RE.sub(" ", s)
-    s = (
-        s.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<")
-        .replace("&gt;", ">").replace("&quot;", '"').replace("&#39;", "'")
-    )
-    return re.sub(r"[ \t\r\f\v]+", " ", s)
-
-
-def _first_num(pattern: str, text: str) -> Optional[float]:
-    m = re.search(pattern, text)
-    if not m:
-        return None
-    try:
-        return float(str(m.group(1)).replace(",", ""))
-    except (TypeError, ValueError, IndexError):
-        return None
-
-
-def parse_uid(raw: Any) -> Optional[int]:
-    """从页面里抠 uid（NexusPHP 通用：userdetails.php?id=123 / userid=123）。"""
-    s = str(raw or "")
-    for pat in (r"userdetails\.php\?id=(\d+)", r"userid=(\d+)", r"/user/(\d+)"):
-        m = re.search(pat, s)
-        if m:
-            try:
-                return int(m.group(1))
-            except (TypeError, ValueError):
-                continue
-    return None
-
-
-def _is_free_promotion(cls: str, text: str) -> bool:
-    blob = f"{cls} {text}".lower()
-    if any(k in blob for k in ("pro_free2up", "twoupfree", "2xfree", "free2up")):
-        return True
-    return bool(re.search(r"\bfree\b|免费", blob))
-
-
-def parse_leeching_rows(raw: Any) -> List[Dict[str, Any]]:
-    """解析「正在下载」列表 → [{name, size, progress, free, ...}]。"""
-    rows: List[Dict[str, Any]] = []
-    try:
-        for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", str(raw or ""), re.S | re.I):
-            cells = re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S | re.I)
-            if len(cells) < 3:
-                continue
-            link = re.search(r'href="(details\.php\?id=\d+|/details\.php\?id=\d+)[^"]*"[^>]*>(.*?)</a>', tr, re.S | re.I)
-            name = _to_text(link.group(2)) if link else ""
-            if not name or len(name) < 2:
-                continue
-            cls = " ".join(re.findall(r'class="([^"]*)"', tr)) + tr
-            size = 0.0
-            progress = None
-            for c in cells:
-                txt = _to_text(c)
-                if not size:
-                    m = re.search(r"([0-9][0-9.,]*\s*[KMGTP]?i?B)\b", txt)
-                    if m:
-                        size = parse_size(m.group(1))
-                m = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*%", txt)
-                if m and progress is None:
-                    try:
-                        progress = float(m.group(1))
-                    except ValueError:
-                        progress = None
-            rows.append({
-                "name": name.strip(),
-                "size": size,
-                "progress": progress,
-                "free": _is_free_promotion(cls, tr),
-            })
-    except Exception:  # noqa: BLE001
-        return []
-    return rows
-
-
-def parse_user_bar(raw: Any) -> Dict[str, Any]:
-    """解析站点用户栏页（NexusPHP ``index.php``）→ 规整事实。
-
-    一次抓全：分享率 / 上传 / 下载 / 当前做种 / 当前下载 / 时魔 / 现魔力 / uid / 登录态。
-    """
-    text = _to_text(raw)
-    raw_s = str(raw or "")
-    out: Dict[str, Any] = {
-        "ratio": None,
-        "ratio_inf": False,
-        "upload": None,
-        "download": None,
-        "seeding": None,
-        "leeching": None,
-        "bonus_per_hour": None,
-        "bonus": None,
-        "uid": parse_uid(raw_s),
-        "logged_in": bool(
-            re.search(r"logout\.php|退出|我的分享率|魔力值", raw_s)
-        ) and not re.search(r'name="password"', raw_s),
-    }
-    # ★ 15.16.1：分隔符**可选**（部分模板「分享率 1.202」不带冒号，旧正则直接漏掉比例/上传/下载）。
-    val = _first_num(r"分享率\s*[：:]?\s*([0-9]+(?:\.[0-9]+)?)", text)
-    if val is not None:
-        out["ratio"] = val
-    elif re.search(r"分享率\s*[：:]?\s*(?:无限|无穷|∞)", text):
-        # 下载量为 0 时站点显示「无限」——这是**有效事实**，必须与「没解析出来」区分
-        out["ratio_inf"] = True
-    m = re.search(r"上传(?:量)?\s*[：:]?\s*([0-9][0-9.,]*\s*[KMGTP]?I?B)", text, re.IGNORECASE)
-    if m:
-        out["upload"] = parse_size(m.group(1))
-    m = re.search(r"下载(?:量)?\s*[：:]?\s*([0-9][0-9.,]*\s*[KMGTP]?I?B)", text, re.IGNORECASE)
-    if m:
-        out["download"] = parse_size(m.group(1))
-    val = _first_num(r"魔力值?\(?\s*([0-9][0-9.,]*)\s*魔力?\s*/\s*(?:小时|時|h)", text)
-    if val is None:
-        val = _first_num(r"每小时\s*([0-9][0-9.,]*)\s*个?魔力", text)
-    if val is not None:
-        out["bonus_per_hour"] = val
-    _m = re.search(r"魔力值?\([^)]*\)", text)
-    val = None
-    if _m:
-        val = _first_num(r"[^0-9]{0,40}?([0-9][0-9,]*(?:\.[0-9]+)?)", text[_m.end():])
-    if val is None:
-        val = _first_num(r"魔力值[^0-9]{0,30}?([0-9][0-9,]*(?:\.[0-9]+)?)", text)
-    if val is None:
-        # ★ 15.16.1：魔力值**别名**（各站自定义币名：财神「元宝」/ 蟹黄堡「蟹币值」/ 金币…）。
-        #   要求数字带千分位或小数（≥3 字符）→ 避开「签到得金元宝] … 0(0)」这类误命中。
-        val = _first_num(
-            r"(?:元宝|蟹币值?|金币|魔力币)[^0-9]{0,30}?([0-9][0-9,]{2,}(?:\.[0-9]+)?)", text
-        )
-    if val is not None:
-        out["bonus"] = val
-    m = re.search(r"title\s*=\s*[\"']?(?:当前做种|做种中|做种)[\"']?[^>]*>[^<]*</font>?\s*([0-9]+)", raw_s)
-    if m:
-        out["seeding"] = int(m.group(1))
-    m = re.search(r"title\s*=\s*[\"']?(?:当前下载|下载中)[\"']?[^>]*>[^<]*</font>?\s*([0-9]+)", raw_s)
-    if m:
-        out["leeching"] = int(m.group(1))
-    if out["seeding"] is None:
-        val = _first_num(r"⬆\s*([0-9]+)", text)
-        if val is None:
-            val = _first_num(r"(?:做种中|正在做种|做种)[：:]?\s*([0-9]+)\s*(?:个|条)?", text)
-        if val is not None:
-            out["seeding"] = int(val)
-    if out["leeching"] is None:
-        val = _first_num(r"⬇\s*([0-9]+)", text)
-        if val is None:
-            val = _first_num(r"(?:下载中|正在下载)[：:]?\s*([0-9]+)\s*(?:个|条)?", text)
-        if val is not None:
-            out["leeching"] = int(val)
-    # ★ 17.2.2：H&R 计数（用户栏页头）——形态「H&R: [考核中/未完成/上限]」。
-    #   ① ``assessing`` 考核中：仍在考核窗口内（计时中）；**到期没做够就记一条 ``unfinished``**；
-    #   ② ``unfinished`` 未完成：欠账成立 —— **它达到 ``limit`` 时账号就被禁用**（封号判据看 y，不看 x+y）；
-    #   ③ ``limit`` 上限：**未完成数达到该数即禁用账号**（非「配额」，是封号线）。实证 Depth Studio=10，
-    #      与其 rules.php 原文「H&R 记录为 10 时账号将被禁用」一致；聆音=15；学校页头只有
-    #      ``H&R: 0/0``（不给第三个数）→ ``limit=None``，**不伪造 0**。
-    #   这里只采事实、不做判断（禁用线预警由健康检查 H7 负责）。
-    #   口径：页面没有这一栏 → ``None``（**不等于 0**）；有栏但解不出数字 → 只留 ``raw``
-    #   （供健康检查区分「采集没读懂」与「确实没有」）；只有单个数（形态罕见）→ 归入
-    #   ``unfinished``（**保守**：宁可早报禁用线，也不把欠账读没）。
-    #   ★ 17.2.2 收口（2026-10-14 真机取证，修三处实机漏读/误报）：
-    #   ① cyanbug.net 页头**没有这一栏**，只剩模板注释 ``<!-- H&R -->`` → 必须先剥 HTML 注释，
-    #      否则注释被当成「有栏但没读懂」，H7 误报 warning；
-    #   ② cspt.top 形态 ``[H&R]:``——标签在 ``R`` 后多一个右括号才跟冒号，旧正则整条漏（真机漏读）；
-    #   ③ 计数数字可能被 ``<font>`` 切开（``0/<font color="red">0</font>/15``）→ 先去标签再匹配；
-    #   ④ 真栏必挂 ``myhr.php`` 链接（各站实证）→ 只留 raw 的兜底**要求上下文含 myhr**，
-    #      免得把导航文案/占位符当计数。
-    out["hr"] = None
-    _hraw = re.sub(r"<!--.*?-->", " ", f"{raw_s or ''}\n{text or ''}", flags=re.DOTALL)
-    _hsrc = re.sub(r"\s+", " ", re.sub(r"<[^>]{0,200}>", " ", _hraw))  # 去标签 + 压空白
-    _hrlab = r"H\s*&\s*R\s*[\])]?\s*[：:]?"  # 标签尾部容忍 ``]``/``)``（[H&R]: 形态）
-    _mhr = re.search(
-        rf"{_hrlab}\s*[\[(]?\s*(\d+)\s*/\s*(\d+)\s*(?:/\s*(\d+))?\s*[\])]?",
-        _hsrc, re.IGNORECASE,
-    )
-    if _mhr:
-        out["hr"] = {
-            "raw": " ".join(_mhr.group(0).split())[:40],
-            "assessing": int(_mhr.group(1)),
-            "unfinished": int(_mhr.group(2)),
-            "limit": int(_mhr.group(3)) if _mhr.group(3) else None,
-        }
-    else:
-        _mhr1 = re.search(rf"{_hrlab}\s*[\[(]?\s*(\d+)\s*[\])]?", _hsrc, re.IGNORECASE)
-        if _mhr1:
-            out["hr"] = {"raw": " ".join(_mhr1.group(0).split())[:40],
-                         "assessing": None, "unfinished": int(_mhr1.group(1)), "limit": None}
-        else:
-            _mr = re.search(r"H\s*&\s*R[^\n]{0,60}", _hraw, re.IGNORECASE)
-            _mctx = _hraw[max(0, _mr.start() - 80):(_mr.end() + 80)] if _mr else ""
-            if _mr and "myhr" in _mctx.lower():  # 只有真栏（挂在 myhr.php 上）才留 raw
-                out["hr"] = {"raw": " ".join(_mr.group(0).split())[:40],
-                             "assessing": None, "unfinished": None, "limit": None}
-    if out["ratio"] in (None, 0.0) and (out["upload"] or 0) > 0 and (out["download"] or 0) > 0:
-        out["ratio"] = round(float(out["upload"]) / float(out["download"]), 3)
-    return out
-
-
-# 签到结果特征
-# ★ 19.2.3 签到判据修正：**以站点「签到状态/记录」为准，不再「没识别到就算成功」**。
-#   铁证（2026-10-16）：通用路径多站记录写着「签到成功」，可本函数根本产不出该文案 → 假成功。
-#   现约定：
-#     1) 明确读到「已签」记录（NexusPHP 标准回显）→ signed=True；
-#     2) 页面是**未签态**（「待签到 / 立即签到 / 未签到 / is-pending」）→ signed=False（未签，非失败）；
-#     3) 什么都读不到（异常页 / 空页 / 抓错页）→ **ambiguous=True**（不再默认成功）。
-SIGNED_RE = re.compile(r"已得\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:个)?魔力")
-# 「今日已签」类回显（NexusPHP 标准）+ 与专用处理器口径对齐（ttg/tjupt/hdsky/pttime 认这些）
-#   ★ 19.2.3 加固（2026-10-17）：剔除 `每日签到` 与裸 `已签` —— 它们不是「已签事实」，是
-#     **页面常驻文案**（导航栏 / 板块标题 / 历史表头都可能出现）。实测铁证：未签页只因导航含
-#     「每日签到」四个字就命中旧表 → 记「今日已签到」= 假成功。此处只收**整短语**，不收半截词；
-#     半截语义（如 pttime 的「今日已签」）另列整词，不靠子串兜。
-SIGNED_TEXTS = (
-    "签到成功", "已签到", "签到已得", "签到已得魔力",
-    "今日已签到", "已经签到", "今天已签到", "无需再签", "您今天已签到", "已签到过",
-    "今日已签", "今天已签", "已经签过",
-)
-# ★ 未签态：页面明确在**要你去签**（而非已签）→ 直接判「未签」，压过任何肯定文案
-#   （治 dstudio 那种页 `<h1>` 固定写「签到成功」的误报）。
-UNSIGNED_TEXTS = ("待签到", "立即签到", "未签到", "尚未签到", "is-pending")
-# ★ 弱未签判据（原始 HTML，19.2.3 加固）：摆着裸「签到」**提交控件** = 站方在等你签
-#   （NexusPHP 标准未签页的 form）。只认 `<input>/<button>` 控件，**不认 `<a>` 导航链接**
-#   （已签页导航里仍可能留「签到」入口）。故它排在弱成功判据**之后**：只要页面给得出任何
-#   已签回显/记录，就不因这个控件翻案（否则会把真成功记成未签、白刷 PV）。
-UNSIGNED_CTRL_RE = re.compile(
-    r"<(?:input|button)[^>]*\bvalue\s*=\s*[\"']?\s*签到\s*[\"']?"
-    r"|<(?:input|button)[^>]*>\s*签到\s*<",
-    re.I,
-)
-LOGIN_HINT_RE = re.compile(r"login\.php|name=\"password\"|登录|登陆")
-# ★ 19.2.3：**标题即登录页**。部分 NexusPHP 站 cookie 失后 ``attendance.php`` 返回的登录页
-#   不含 ``login.php``/``name="password"`` 字面（只 title 写「登录」）→ 旧判据漏判 → 掉兜底假成功。
-#   铁证（2026-10-16，财神/高清时间）：早上 cookie 已失效却报「签到成功」。
-LOGIN_TITLE_RE = re.compile(r"<title>[^<]*(登录|登入|簽到登录|login)\s*[-–—]?\s*(Powered by|::)?", re.I)
-PV_LIMIT_RE = re.compile(r"访问次数已达上限|今日访问次数")
-
-
-def parse_signin(raw: Any) -> Dict[str, Any]:
-    """解析签到页 → {ok, signed, already, bonus, cookie_dead, pv_limited, ambiguous, message}。
-
-    ★ 19.2.3：**未识别到就返回 ambiguous（不再默认 signed=True）**。上层的 recorded
-    成功只认「明确读到已签记录」这一种；其余交给 signin.py 记为「未识别（建议手动确认）」。
-
-    ★ 19.2.3 加固（2026-10-17）判据顺序 —— **强到弱，互相不越权**：
-      ① 强未签：`UNSIGNED_TEXTS`（待签到/未签到/…）→ 未签（压过一切肯定文案）；
-      ② 强已签：`SIGNED_RE`（已得 N 魔力）→ 已签（记录证据，最硬）；
-      ③ 弱已签：`SIGNED_TEXTS`（已签回显整短语）→ 已签；
-      ④ 弱未签：`UNSIGNED_CTRL_RE`（裸「签到」提交控件）→ 未签；
-      ⑤ 都读不到 → `ambiguous=True`（不猜成功）。
-    """
-    text = str(raw or "")
-    flat = _to_text(text)
-    if PV_LIMIT_RE.search(flat):
-        return {"ok": False, "pv_limited": True, "message": "站点每日访问次数已达上限"}
-    # Cookie 失效判据（★ 19.2.3 修正）。**顺序很关键**：先看「是否已登录」。
-    #   铁证（2026-10-16）：财神/高清时间的 attendance.php 带 cookie 是**「签到」页且含 `logout.php`**
-    #   （已登录）；裸抓ー时看到的重定向中间态才是「登录」页。若只看 title 含「登录」就判失效 →
-    #   **把已登录的站误判成失效**（Master 原话：MP 那边没失效）。
-    #   故：① 有 `logout.php`（登出链接 = 已登录）→ **绝不判失效**；
-    #       ② 否则才看密码框 / login.php 等登录特征。
-    _has_logout = "logout.php" in text
-    cookie_dead = False
-    if not _has_logout:
-        cookie_dead = (
-            bool(re.search(r'name="password"', text))
-            or bool(re.search(r"<title>[^<]*(登录|登入|login)", text, re.I))
-            or bool(LOGIN_HINT_RE.search(flat))
-        )
-    if cookie_dead:
-        return {"ok": False, "cookie_dead": True, "message": "Cookie 已失效或未登录"}
-    m = SIGNED_RE.search(flat)
-    bonus = None
-    if m:
-        try:
-            bonus = float(m.group(1).replace(",", ""))
-        except ValueError:
-            bonus = None
-    # ★ 否定态优先：明确「待签到/立即签到」→ 未签（不给成功）
-    if any(t in flat for t in UNSIGNED_TEXTS):
-        return {
-            "ok": False,
-            "signed": False,
-            "ambiguous": False,
-            "bonus": bonus,
-            "message": "未签到（页面显示待签到）",
-        }
-    # ★ 硬成功（19.2.3 加固）：回显「已得 N 魔力」= 有**记录证据**，比文案硬。
-    #   它排在弱未签控件判据之前 —— 已签页若残留一个「签到」按钮，真成功不能被翻成未签。
-    if m:
-        return {
-            "ok": True,
-            "signed": True,
-            "already": True,
-            "bonus": bonus,
-            "message": "今日已签到",
-        }
-    # ★ 弱成功：站点「已签」回显整短语（与专用处理器口径对齐：ttg/tjupt/hdsky/pttime 等）
-    if any(t in flat for t in SIGNED_TEXTS):
-        # `already` 只为**文案**（signin.py:446）：`签到成功` 是「本次刚签」，
-        # 其余整短语（已签到/无需再签/今日已签…）都是「已签态」→ 文案记「今日已签到」。
-        signed_already = any(t in flat for t in SIGNED_TEXTS if t != "签到成功")
-        return {
-            "ok": True,
-            "signed": True,
-            "already": signed_already,
-            "bonus": bonus,
-            "message": "今日已签到" if signed_already else "签到成功",
-        }
-    # ★ 弱未签（19.2.3 加固）：页面没有任何已签回显，却摆着裸「签到」提交控件 → 未签
-    if UNSIGNED_CTRL_RE.search(text):
-        return {
-            "ok": False,
-            "signed": False,
-            "ambiguous": False,
-            "bonus": bonus,
-            "message": "未签到（页面显示待签到）",
-        }
-    # ★ 什么都读不到 → 不猜成功
-    return {
-        "ok": False,
-        "signed": False,
-        "ambiguous": True,
-        "bonus": bonus,
-        "message": "未识别到签到结果（页面可能异常，建议手动确认）",
-    }
-
-
-_PASSKEY_RE = re.compile(r"passkey=([0-9a-fA-F]{16,64})")
-_HASH_RE = re.compile(r"(?:downhash|hash)=([0-9a-zA-Z]{8,64})")
-_UID_RE = re.compile(r"[?&]id=(\d+)")
-# ★ 5.12.0：不少 NexusPHP 站不把 passkey 写成 `passkey=xxx`，而是在个人页/导航里
-# 以「密钥」这一行展示（值可能是 hex/字母数字，偶尔包在 <span> 里）→ 补一条容错抽法。
-_KEY_LABEL_RE = re.compile(r"密钥|密鑰|Passkey|PassKey")
-_ALNUM_RUN_RE = re.compile(r"[0-9a-zA-Z]{16,64}")
-
-
-def _passkey_from_label(s: str) -> str:
-    """从「密钥」标签后面的片段里抠出 passkey（先剥标签再取第一段字母数字）。"""
-    for m in _KEY_LABEL_RE.finditer(s):
-        frag = re.sub(r"<[^>]*>", " ", s[m.end(): m.end() + 400])
-        hit = _ALNUM_RUN_RE.search(frag)
-        if hit:
-            return hit.group(0)
-    return ""
-
-
-def parse_passkey(raw: Any) -> Dict[str, Any]:
-    """从浏览页/个人页抽 passkey / uid / downhash（长期事实）。"""
-    s = str(raw or "")
-    pk = _PASSKEY_RE.search(s)
-    dh = _HASH_RE.search(s)
-    uid = _UID_RE.search(s)
-    pk_val = pk.group(1) if pk else _passkey_from_label(s)
-    return {
-        "passkey": pk_val,
-        "downhash": dh.group(1) if dh else "",
-        "uid": uid.group(1) if uid else "",
-    }
-
-
-def detect_framework(html: str, domain: str = "") -> Tuple[str, str]:
-    """框架识别（NexusPHP / Gazelle / UNIT3D / M-Team …）→ (framework, evidence)。
-
-    识别表本体在 ``sitecap``（站点能力库，属于「数据」），这里只做流水线调用，
-    避免把能力表复制两份。
-    """
-    try:
-        from .sitecap import detect_framework as _df  # noqa: WPS433
-
-        return _df(html, domain)
-    except Exception:  # noqa: BLE001
-        return "", ""
-
-
-# ============================================================
 # 事实库
 # ============================================================
-
+# ★ 19.10.31：原先这里往上 800 行的「解析器：页面 → 规整事实」整段已下沉到
+#   ``collect_parse.py``（L0，纯函数）。本文件只留传输 / 配额 / 事实库 / 观测。
+#   上面的 ``from .collect_parse import (...)`` 把它们全部 re-export 回来了。
 @dataclass
 class Fact:
     value: Any
@@ -1133,16 +616,14 @@ class Http:
         self._facts = facts
         self._obs = observe
         self._tier = tier
-        self._locks: Dict[str, threading.Lock] = {}
-        self._guard = threading.Lock()
+        # ★ 19.10.26：裸 dict 锁表 → KeyLocks（有界）。key 是规范化 URL，深翻时
+        #   每个新 URL 都会建一把锁且**永不回收**；KeyLocks 只丢最久未用且没人持有的。
+        self._locks = cacheops.KeyLocks("collect.page", max_entries=256)
 
     # ------------------------------------------------------------ 工具
-    def _lock_for(self, key: str) -> threading.Lock:
-        with self._guard:
-            lk = self._locks.get(key)
-            if lk is None:
-                lk = self._locks[key] = threading.Lock()
-            return lk
+    def _lock_for(self, key: str) -> Any:
+        """取该 URL 的锁：同键单飞（并发抓同一页只打一次站点），有界回收交给 KeyLocks。"""
+        return self._locks.get(key)
 
     @staticmethod
     def _norm_url(url: str) -> str:
@@ -1493,6 +974,124 @@ class Http:
             if not isinstance(raw, (dict, list)):
                 self._obs.record(f"{kind}:{sid}", ok=False, ms=ms, site=sid, detail="无有效 JSON")
                 return {"ok": False, "error": "无有效 JSON 响应"}
+            self._b.spend(sid, kind, 1)
+            self._obs.record(f"{kind}:{sid}", ok=True, ms=ms, cost=1, site=sid, detail=target)
+            if ttl > 0 and self._tier is not None:
+                try:
+                    self._tier.set(ckey, {"data": raw, "url": target}, ttl)
+                except Exception:  # noqa: BLE001
+                    pass
+            return {"ok": True, "data": raw, "cost": 1}
+
+    def auth_get(
+        self,
+        site_id: Any,
+        url: str,
+        *,
+        kind: str = "api",
+        ttl: Optional[float] = None,
+        force: bool = False,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """★ GET 站点后台接口（**apikey 头鉴权**；与 ``post_json`` 的 cookie 通道相对）。
+
+        补一个真实缺口（2026-10-30，野马PT）：站点后台其实有**两条**鉴权通道，
+        而现有实现各占一半，组合不起来：
+
+        * ``post_json`` —— **cookie** 鉴权（野马PT ``/api/*`` 的写操作，如免罪）；
+        * ``api``       —— **apikey** 鉴权，但**只有 POST**、且 URL 固定拼 ``base=openApi``。
+
+        像 ``/api/consumer/fetchSelfDetail`` 这种「**apikey 鉴权的 GET 只读端点**」
+        （既不在 openApi 前缀下、又不是 POST）两条都用不上，故补本方法。
+
+        鉴权头三件套（header / field / prefix）全部来自通道表 ``auth``，
+        换个站照样表驱动；仍遵守同一套规矩：唯一出口 / 域校验 / 配额闸门 /
+        规范化缓存 + single-flight / 观测登记。
+
+        ★ ``data`` **原样返回（不猜信封）** —— 与 ``post_json`` 对齐：站点要不要信封、
+        成功字段叫什么由调用方判，基层不替业务做假设。JSON 解析不了时退回
+        ``{"_text": 原文}``，让调用方至少能看见站点说了什么。
+        """
+        sid = int(site_id or 0)
+        site = self._p._get_site(sid)
+        if not site:
+            return {"ok": False, "error": "站点不存在"}
+        _tname, cfg = api_channel(site)
+        _auth = (cfg or {}).get("auth") or {}
+        field = str(_auth.get("field") or "apikey")
+        key = str(getattr(site, field, "") or "").strip()
+        if not key:
+            return {"ok": False, "error": "站点未配置 API Key"}
+        hname = str(_auth.get("header") or "Authorization")
+        hprefix = str(_auth.get("prefix") or "")
+        base = self._base(site)
+        target = str(url or "").strip()
+        if target and not target.lower().startswith("http"):
+            target = f"{base}/{target.lstrip('/')}"
+        if not target:
+            return {"ok": False, "error": "缺少 URL"}
+        if not self._p._url_allowed_for_site(target, site):
+            return {"ok": False, "error": "仅允许访问该站点域名下的地址"}
+        ttl = float(KIND_TTL.get(kind, 300.0) if ttl is None else ttl)
+        ckey = f"authget|{sid}|{self._norm_url(target)}"
+
+        def _hit() -> Optional[Dict[str, Any]]:
+            if force or ttl <= 0 or self._tier is None:
+                return None
+            got = self._tier.get(ckey, ttl)
+            if isinstance(got, dict) and got.get("data") is not None:
+                return got
+            return None
+
+        cached = _hit()
+        if cached is not None:
+            self._obs.record(f"{kind}:{sid}", ok=True, cached=True, site=sid, detail=target)
+            return {"ok": True, "data": cached.get("data"), "cached": True, "cost": 0}
+        with self._lock_for(ckey):
+            cached = _hit()
+            if cached is not None:
+                self._obs.record(f"{kind}:{sid}", ok=True, cached=True, site=sid, detail=target)
+                return {"ok": True, "data": cached.get("data"), "cached": True, "cost": 0}
+            allow, why = self._b.allow(sid, kind, 1)
+            if not allow:
+                self._obs.record(f"{kind}:{sid}", ok=False, site=sid, detail=why)
+                return {"ok": False, "error": why}
+            started = time.time()
+            raw: Any = None
+            try:
+                from app.sdk.network import RequestUtils  # noqa: WPS433
+
+                ua, _ck = sanitize_site_headers(site)
+                hdr = {
+                    hname: f"{hprefix}{key}",
+                    # ★ 与 post_json 同教训（野马PT 后端对 Accept 敏感）：
+                    #   不带 Accept 时后端回 {"success":false,"showType":0}，看着像没登录。
+                    "Accept": "application/json, text/plain, */*",
+                    "User-Agent": ua or "Mozilla/5.0",
+                    "Referer": f"{base}/",
+                }
+                if headers:
+                    hdr.update({k: v for k, v in headers.items() if v})
+                req = RequestUtils(headers=hdr, timeout=25)
+                resp = req.get_res(target)
+                if resp is not None:
+                    try:
+                        try:
+                            raw = resp.json()
+                        except Exception:  # noqa: BLE001
+                            raw = {"_text": str(getattr(resp, "text", "") or "")[:4000]}
+                    finally:
+                        try:
+                            resp.close()
+                        except Exception:  # noqa: BLE001
+                            pass
+            except Exception as err:  # noqa: BLE001
+                self._obs.record(f"{kind}:{sid}", ok=False, site=sid, detail=f"GET 失败: {err}")
+                return {"ok": False, "error": f"GET 失败: {err}"}
+            ms = (time.time() - started) * 1000.0
+            if raw is None:
+                self._obs.record(f"{kind}:{sid}", ok=False, ms=ms, site=sid, detail="无响应")
+                return {"ok": False, "error": "无响应"}
             self._b.spend(sid, kind, 1)
             self._obs.record(f"{kind}:{sid}", ok=True, ms=ms, cost=1, site=sid, detail=target)
             if ttl > 0 and self._tier is not None:

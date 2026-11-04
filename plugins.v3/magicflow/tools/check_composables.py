@@ -17,6 +17,8 @@
      → 说明它本该 import 或注入 → 报错。
   B. 解构↔return 对齐：index.vue 里 `const { ... } = useXxx({...})` 的名字集合
      必须与 composables/useXxx.js 的 `return { ... }` 名字集合**完全一致**。
+     ⚠ 仅对**工厂函数**生效：以 `use` 开头但只导出纯取值函数的模块（`useCurrency.js`）
+     不参与 B（见 `is_factory` 的注释），否则是恒假红。
 
 用法：python3 tools/check_composables.py
 退出码 0 = 通过。
@@ -225,6 +227,19 @@ def module_exports(path):
     return None
 
 
+def is_factory(src, fn):
+    """该文件是否**真的**导出与文件名同名的工厂函数 ``fn(...)``。
+
+    规则 B（解构↔return 对齐）只对工厂成立：纯函数模块没有「返回什么给 index.vue
+    解构」这回事。``useCurrency.js`` 是唯一一个反例 —— 它按惯例以 ``use`` 开头
+    （提供 ``currencyOf`` / ``perHourUnit`` / ``currencyAmount`` 这类纯取值函数），
+    但根本没有 ``useCurrency()`` 工厂，index.vue 里是 ``import { currencyOf }`` 用的。
+    旧版只看文件名前缀就要求 ``const { ... } = useCurrency(...)`` → 恒假红。
+    """
+    return bool(re.search(r'export\s+(?:async\s+)?function\s+%s\s*\(' % re.escape(fn), src)
+                or re.search(r'export\s+(?:const|let|var)\s+%s\s*=' % re.escape(fn), src))
+
+
 def main():
     fails = []
     G = index_globals()
@@ -271,9 +286,9 @@ def main():
             fails.append('%s：引用了但既没 import、也没注入 → %s'
                          % (name, ', '.join(sorted(missing))))
 
-        # ---- B. 解构 ↔ return 对齐 ----
-        if name.startswith('use'):
-            fn = name[:-3]
+        # ---- B. 解构 ↔ return 对齐（**只对工厂函数生效**，见 is_factory）----
+        if name.startswith('use') and is_factory(src, name.removesuffix(".js")):
+            fn = name.removesuffix(".js")
             m = re.search(r'const\s*\{([^}]*)\}\s*=\s*%s\s*\(' % re.escape(fn), idx_src, re.S)
             if not m:
                 fails.append('%s：index.vue 里找不到 `const { ... } = %s(...)` 解构' % (name, fn))

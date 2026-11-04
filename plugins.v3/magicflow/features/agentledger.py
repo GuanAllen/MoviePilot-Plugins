@@ -37,6 +37,37 @@ MAX_LIMIT = 500
 # 合法 hex 长度（同 agentapi）
 _HEX = set("0123456789abcdef")
 
+# ---------------------------------------------------------------- 行投影字段白名单
+# （字段不列即不出 = 出口脱敏；credential 密文绝不能进任何一组）
+_SITE_FIELDS: Tuple[str, ...] = (
+    "site_id", "name", "domain", "mp_site_id", "iyuu_sid", "framework",
+    "hr", "hr_src", "seed_hours", "seed_need_hours", "seed_hours_retired",
+    "seed_window_hours", "seed_cap", "exam_avg_hours", "per_torrent_hr",
+    "note", "rule_url", "probed_at", "caps", "pv_budget",
+    "source", "confidence", "created", "updated",
+)
+_CROSSSEED_FIELDS: Tuple[str, ...] = (
+    "sib_hash", "site_b_domain", "site_a", "site_b", "a_hash", "title",
+    "size_gb", "hit_and_run", "hours", "seed_until", "downloader",
+    "seeded_sec", "files_shared", "task_id", "task_name", "backfilled",
+    "done", "created", "updated",
+)
+_RESEED_FIELDS: Tuple[str, ...] = (
+    "key", "site_id", "hash", "st", "note", "created", "updated",
+)
+_RUN_FIELDS: Tuple[str, ...] = ("key", "value", "created", "updated")
+_CLAIM_FIELDS: Tuple[str, ...] = (
+    "key", "site_id", "hash", "tid", "st", "benefit", "note",
+    "task_id", "title", "created", "updated",
+)
+_IDENTITY_FIELDS: Tuple[str, ...] = (
+    "code", "is_asset", "need_observe", "can_cleanup", "order", "label",
+)
+_TASK_FIELDS: Tuple[str, ...] = (
+    "task_id", "name", "site_id", "task_type", "run_mode", "enabled",
+    "downloader", "brush_tag", "save_path", "params", "updated",
+)
+
 # ---------------------------------------------------------------------------
 # 真值表清单（登记制）：账本六表 + 运行台账五表
 # ---------------------------------------------------------------------------
@@ -77,8 +108,9 @@ def _columns() -> Dict[str, List[Dict[str, Any]]]:
         "seed": [
             _col("hash", "hex40", desc="种子 infohash（小写）", nullable=False),
             _col("site", "string", desc="站点名"),
-            _col("state", "enum", enum=["刷流", "魔力", "静默", "推荐", "保种", "点播", "音乐"],
-                 desc="职务（由 task_id 推导；点播=__ondemand__ 在途、音乐=__music__ 在途）"),
+            _col("state", "enum", enum=["刷流", "魔力", "静默", "推荐", "保种", "点播", "音乐", "认领"],
+                 desc="职务（由 task_id 推导；见 dutyreg 岗位表。点播=__ondemand__ 在途、"
+                      "音乐=__music__ 在途、认领=__claim__ 名单驱动）"),
             _col("sub", "enum", enum=["新", "资源", "普通"], desc="身份（顺 mf_resource.identity）"),
             _col("task", "string", desc="所属任务名（空=静默不在岗）"),
             _col("taken_by", "string", desc="占用任务 id（空=不在岗）"),
@@ -125,7 +157,7 @@ def _columns() -> Dict[str, List[Dict[str, Any]]]:
             _col("seed_hours_retired", "float", unit="h", desc="已退役的保种时长（历史值）"),
             _col("seed_window_hours", "float", unit="h", desc="规则窗口（保守保护期）"),
             _col("seed_cap", "int", desc="做种上限"),
-            _col("exam_avg_hours", "float", unit="h", desc="考核平均保种小时"),
+            _col("exam_avg_hours", "float", unit="h", desc="考核均值(h)"),
             _col("per_torrent_hr", "bool", desc="逐种 H&R 站（站点级无法评估）"),
             _col("note", "string", desc="规则备注"),
             _col("rule_url", "string", desc="规则依据 URL"),
@@ -315,6 +347,11 @@ class AgentLedgerMixin:
         next_cursor = keyfn(page[-1]) if (limit_int != 0 and len(rows) > limit_int) else None
         return page, next_cursor
 
+    @staticmethod
+    def _project(r: Any, fields: Tuple[str, ...]) -> Dict[str, Any]:
+        """ORM 行 → dict 纯投影（字段白名单 = 出口脱敏，credential 等不列即不出）。"""
+        return {f: getattr(r, f, None) for f in fields}
+
     def _agent_columns(self, table: str) -> List[Dict[str, Any]]:
         return list(_COLUMNS.get(table, []))
 
@@ -336,126 +373,38 @@ class AgentLedgerMixin:
             return []
 
     def _agent_db_site_rows(self) -> List[Dict[str, Any]]:
-        """mf_site 行（★ 剥掉 ``credential`` 密文与证据链噪声）。
+        """mf_site 行（★ 白名单投影即脱敏：``credential`` 密文不列即不出）。
 
         ★ 12.1.0：站点规则/能力已由 kv 迁入本表（``site_rules`` → 真列、``site_caps`` → ``caps``），
         这里同步把新字段摆出来，AI 一次调用即可看全「某站规则 + 免费能力」。
         """
-        out: List[Dict[str, Any]] = []
-        for r in self._agent_db_rows("SiteRow"):
-            out.append({
-                "site_id": getattr(r, "site_id", None),
-                "name": getattr(r, "name", None),
-                "domain": getattr(r, "domain", None),
-                "mp_site_id": getattr(r, "mp_site_id", None),
-                "iyuu_sid": getattr(r, "iyuu_sid", None),
-                "framework": getattr(r, "framework", None),
-                "hr": getattr(r, "hr", None),
-                "hr_src": getattr(r, "hr_src", None),
-                "seed_hours": getattr(r, "seed_hours", None),
-                "seed_need_hours": getattr(r, "seed_need_hours", None),
-                "seed_hours_retired": getattr(r, "seed_hours_retired", None),
-                "seed_window_hours": getattr(r, "seed_window_hours", None),
-                "seed_cap": getattr(r, "seed_cap", None),
-                "exam_avg_hours": getattr(r, "exam_avg_hours", None),
-                "per_torrent_hr": getattr(r, "per_torrent_hr", None),
-                "note": getattr(r, "note", None),
-                "rule_url": getattr(r, "rule_url", None),
-                "probed_at": getattr(r, "probed_at", None),
-                "caps": getattr(r, "caps", None),
-                "pv_budget": getattr(r, "pv_budget", None),
-                "source": getattr(r, "source", None),
-                "confidence": getattr(r, "confidence", None),
-                "created": getattr(r, "created", None),
-                "updated": getattr(r, "updated", None),
-            })
-        return out
+        return [self._project(r, _SITE_FIELDS)
+                for r in self._agent_db_rows("SiteRow")]
 
     def _agent_db_crossseed_rows(self) -> List[Dict[str, Any]]:
         """mf_crossseed 行（跨站来源份 H&R 保护账本）。"""
-        out: List[Dict[str, Any]] = []
-        for r in self._agent_db_rows("CrossSeedRow"):
-            out.append({
-                "sib_hash": getattr(r, "sib_hash", None),
-                "site_b_domain": getattr(r, "site_b_domain", None),
-                "site_a": getattr(r, "site_a", None),
-                "site_b": getattr(r, "site_b", None),
-                "a_hash": getattr(r, "a_hash", None),
-                "title": getattr(r, "title", None),
-                "size_gb": getattr(r, "size_gb", None),
-                "hit_and_run": getattr(r, "hit_and_run", None),
-                "hours": getattr(r, "hours", None),
-                "seed_until": getattr(r, "seed_until", None),
-                "downloader": getattr(r, "downloader", None),
-                "seeded_sec": getattr(r, "seeded_sec", None),
-                "files_shared": getattr(r, "files_shared", None),
-                "task_id": getattr(r, "task_id", None),
-                "task_name": getattr(r, "task_name", None),
-                "backfilled": getattr(r, "backfilled", None),
-                "done": getattr(r, "done", None),
-                "created": getattr(r, "created", None),
-                "updated": getattr(r, "updated", None),
-            })
-        return out
+        return [self._project(r, _CROSSSEED_FIELDS)
+                for r in self._agent_db_rows("CrossSeedRow")]
 
     def _agent_db_reseed_rows(self) -> List[Dict[str, Any]]:
         """mf_reseed 行（全站辅种账本）。"""
-        out: List[Dict[str, Any]] = []
-        for r in self._agent_db_rows("ReseedRow"):
-            out.append({
-                "key": getattr(r, "key", None),
-                "site_id": getattr(r, "site_id", None),
-                "hash": getattr(r, "hash", None),
-                "st": getattr(r, "st", None),
-                "note": getattr(r, "note", None),
-                "created": getattr(r, "created", None),
-                "updated": getattr(r, "updated", None),
-            })
-        return out
+        return [self._project(r, _RESEED_FIELDS)
+                for r in self._agent_db_rows("ReseedRow")]
 
     def _agent_db_run_rows(self) -> List[Dict[str, Any]]:
         """mf_run 行（全局运行标量）。"""
-        out: List[Dict[str, Any]] = []
-        for r in self._agent_db_rows("RunRow"):
-            out.append({
-                "key": getattr(r, "key", None),
-                "value": getattr(r, "value", None),
-                "created": getattr(r, "created", None),
-                "updated": getattr(r, "updated", None),
-            })
-        return out
+        return [self._project(r, _RUN_FIELDS)
+                for r in self._agent_db_rows("RunRow")]
 
     def _agent_db_claim_rows(self) -> List[Dict[str, Any]]:
         """mf_claim 行（认领账本）。"""
-        out: List[Dict[str, Any]] = []
-        for r in self._agent_db_rows("ClaimRow"):
-            out.append({
-                "key": getattr(r, "key", None),
-                "site_id": getattr(r, "site_id", None),
-                "hash": getattr(r, "hash", None),
-                "tid": getattr(r, "tid", None),
-                "st": getattr(r, "st", None),
-                "benefit": getattr(r, "benefit", None),
-                "note": getattr(r, "note", None),
-                "task_id": getattr(r, "task_id", None),
-                "title": getattr(r, "title", None),
-                "created": getattr(r, "created", None),
-                "updated": getattr(r, "updated", None),
-            })
-        return out
+        return [self._project(r, _CLAIM_FIELDS)
+                for r in self._agent_db_rows("ClaimRow")]
 
     def _agent_db_identity_rows(self) -> List[Dict[str, Any]]:
         """mf_identity 行；空则回退身份枚举真值源（tables.DEFAULT_IDENTITIES）。"""
-        out: List[Dict[str, Any]] = []
-        for r in self._agent_db_rows("IdentityRow"):
-            out.append({
-                "code": getattr(r, "code", None),
-                "is_asset": getattr(r, "is_asset", None),
-                "need_observe": getattr(r, "need_observe", None),
-                "can_cleanup": getattr(r, "can_cleanup", None),
-                "order": getattr(r, "order", None),
-                "label": getattr(r, "label", None),
-            })
+        out = [self._project(r, _IDENTITY_FIELDS)
+               for r in self._agent_db_rows("IdentityRow")]
         if not out:
             try:
                 from .. import tables as T  # noqa: WPS433
@@ -466,21 +415,8 @@ class AgentLedgerMixin:
 
     def _agent_db_task_rows(self) -> List[Dict[str, Any]]:
         """mf_task 行；空则回退运行态任务真值源（``_task_configs``）。"""
-        out: List[Dict[str, Any]] = []
-        for r in self._agent_db_rows("TaskRow"):
-            out.append({
-                "task_id": getattr(r, "task_id", None),
-                "name": getattr(r, "name", None),
-                "site_id": getattr(r, "site_id", None),
-                "task_type": getattr(r, "task_type", None),
-                "run_mode": getattr(r, "run_mode", None),
-                "enabled": getattr(r, "enabled", None),
-                "downloader": getattr(r, "downloader", None),
-                "brush_tag": getattr(r, "brush_tag", None),
-                "save_path": getattr(r, "save_path", None),
-                "params": getattr(r, "params", None),
-                "updated": getattr(r, "updated", None),
-            })
+        out = [self._project(r, _TASK_FIELDS)
+               for r in self._agent_db_rows("TaskRow")]
         if not out:
             try:
                 cfgs = getattr(self, "_task_configs", None) or {}
@@ -1201,6 +1137,25 @@ class AgentLedgerMixin:
         return self._agent_call_read(
             t0, "get_claim_state() → 认领账本 + journal", self.get_claim_state,
             site_id=sid, limit=self._agent_int(limit, 200))
+
+    def agent_claim_restore(self, site_id: Any = None, confirm: Any = False,
+                            pairs: Any = None) -> Dict[str, Any]:
+        """``POST /agent/claim/restore`` —— 从站点认领页**重建本地认领账本**（**写**）。
+
+        与页面端点 ``POST /claim/restore`` **同一实现**（``claim.claim_restore``）：
+
+        - ``confirm`` 非真值 → **预览**（``dry_run=true`` + would_restore/missing，零写入）；
+        - ``confirm=1`` → 站点认领行按 ``torrent_pages``（tid→hash）反查后以
+          ``st=already`` 补账本（幂等），恢复已认领种的硬保护；反查不到 hash 的行只报缺。
+        - ``pairs``：显式 ``[{site_id, tid, hash}]`` 补 hash（种子在别的下载器 /
+          详情页从未入库时用）；无对应认领行的键只进 ``pairs_unused``。
+        - 写入面：**只写本地 mf_claim 账本**——不发站点写请求（认领/放弃都不碰）。
+        """
+        t0 = time.time()
+        sid = self._agent_int(site_id, 0) if site_id not in (None, "") else None
+        return self._agent_call_read(
+            t0, "claim_restore() → 站点认领页 by_tid + torrent_pages/pairs tid→hash 反查，st=already 补账本（只写本地）",
+            self.claim_restore, site_id=sid, confirm=self._agent_bool(confirm), pairs=pairs)
 
     def agent_cloud(self) -> Dict[str, Any]:
         t0 = time.time()

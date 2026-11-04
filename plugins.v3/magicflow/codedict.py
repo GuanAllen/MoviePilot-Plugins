@@ -33,16 +33,16 @@ UPPER_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,}$")
 # ★ 文档 §5 与 /agent/code-dict 的 glossary 都从这里出；改这里即可，别在别处再写一份。
 GLOSSARY: List[Dict[str, Any]] = [
     {"title": "标签", "head": ["概念", "常量 = 值", "位置"], "rows": [
-        ["复用/辅种副本（**非真实下载**，不判 H&R）", "`MARK_REUSE` = `魔流-辅种`", "`tags.py`"],
+        ["复用/辅种副本（**非真实下载**，不判 H&R）", "`MARK_REUSE` = `魔流-辅种`", "`tagspec.py`"],
         ["跨站来源份（H&R 走**资源账**，不走账单）", "`CROSSSEED_TAG` = `魔流-跨站`", "`crossseed.py`"],
-        ["救援补源副本（**非真实下载**）", "`RESCUE_TAG` = `魔流-补源`", "`tags.py` / `rescue.py`"],
-        ["插件外/MP 手动加的种（**只标不动**）", "`EXTERNAL_TAG` = `魔流-外部`", "`tags.py`"],
-        ["「非下载」标签集", "`NON_DOWNLOAD_TAGS` = `(MARK_REUSE, RESCUE_TAG)`", "`tags.py`"],
-        ["MP `已整理/辅种`（**真实下载** → 仍欠 H&R）", "`ASSET_TAGS` = `('已整理','辅种')`", "`tags.py`"],
-        ["retag 不冲掉的特殊标签", "`SPECIAL_TAGS`", "`tags.py`"],
-        ["站点职务标签格式", "`魔流-<站>-<职务>-<身份>`", "`tags.py`"],
+        ["救援补源副本（**非真实下载**）", "`RESCUE_TAG` = `魔流-补源`", "`tagspec.py` / `rescue.py`"],
+        ["插件外/MP 手动加的种（**只标不动**）", "`EXTERNAL_TAG` = `魔流-外部`", "`tagspec.py`"],
+        ["「非下载」标签集", "`NON_DOWNLOAD_TAGS` = `(MARK_REUSE, RESCUE_TAG)`", "`tagspec.py`"],
+        ["MP `已整理/辅种`（**真实下载** → 仍欠 H&R）", "`ASSET_TAGS` = `('已整理','辅种')`", "`tagspec.py`"],
+        ["retag 不冲掉的特殊标签", "`SPECIAL_TAGS`", "`tagspec.py`"],
+        ["站点职务标签格式", "`魔流-<站>-<职务>-<身份>`", "`tagspec.py`"],
     ]},
-    {"title": "职务 / 身份（`tags.py`）", "head": None, "rows": [
+    {"title": "职务 / 身份（`tagspec.py`）", "head": None, "rows": [
         ["职务 `STATE_*`：`刷流`(STATE_BRUSH) / `魔力`(STATE_BONUS) / `静默`(STATE_SILENT) / "
          "`推荐`(STATE_RECOMMEND) / `保种`(**STATE_HR，不可手设**，只由 `_hr_obligation` 派生）。"],
         ["身份 `SUB_*`：`新`(SUB_NEW) / `资源`(SUB_RESOURCE) / `普通`(SUB_PLAIN)。"],
@@ -50,14 +50,67 @@ GLOSSARY: List[Dict[str, Any]] = [
     ]},
     {"title": "H&R 账单（`features/hrbills.py`；真值源 `hr_bills.json`）", "head": None, "rows": [
         ["状态 `BILL_STATE_*`：`active` / `pending` / `settled` / `void` / `breached`。"],
-        ["「不该开账」判定：`_skip_hr_bill`（`features/hrbills.py`）= 跨站 / 复用 / 补源副本。"],
+        ["「不该开账」判定：`_skip_hr_bill`（`features/hrbills.py`）= 复用/补源副本"
+         "（`MARK_REUSE`/`RESCUE_TAG`）；★ 19.10.11 起**跨站来源份不跳过**（那是真实下载，欠来源站 H&R）。"],
         ["站点要求时长：`_hr_need_hours()` → 站规则 `seed_need_hours` → 默认 `HR_NEED_HOURS_DEFAULT=24.0`。"],
         ["存量作废（辅种）：`GET /tags?action=hrbills_void_reuse`（默认干跑，`confirm=1` 才写）。"],
         ["违约：种子消失 + active 账单 → `breached`（**只读报警**，`/agent/hr/breaches`）。"],
         ["站点对账（myhr.php，只判「还欠」不产 settled）：`_hr_reconcile_site`。"],
+        ["★ 19.12.4 **站端确认闸门**：结清前先看站端 myhr 最近一轮对账（`_hr_site_debt_index` / "
+         "`_hr_site_verdict`）—— 站端还欠就**不结清**、已 settled 的会被**重开**；站端说欠的 hash "
+         "一律进保护集合（`_hr_bill_owed_hashes`）。回退开关 `HR_SETTLE_SITE_GATE`。"],
+    ]},
+    {"title": "做种时长四类口径(★ 别再统称「保种」)", "head": ["口径", "字段", "真值源 / 位置"], "rows": [
+        ["**义务工时**(站点要求做满多少小时)", "`seed_need_hours` → 账单 `need_h`",
+         "站点规则库 `sites/rules.py`;取不到 → `HR_NEED_HOURS_DEFAULT=24.0`(`features/hrbills.py:84`)"],
+        ["**达标期限**(多久之内做满;保守取窗口)", "`seed_window_hours` / `seed_hours`",
+         "同上;同句同时命中「N 天」+「M 小时」时 → 窗口进 `seed_window_hours`、小时进 `seed_need_hours`"],
+        ["**本地保护期**(本机删种保护,用户配置)", "`min_seed_time`",
+         "`models.py`;`features/brush.py` 灌进 `MagicPolicy.min_seed_time_hours`"],
+        ["**轮转周期**(刷流做种满几天腾位)", "`brush_seed_days`",
+         "`models.py`(默认 2 天);`features/cleanup.py`"],
+        ["**考核均值**(新手考核的平均做种要求,**不是** H&R)", "`exam_avg_hours`",
+         "`sites/rules.py:_EXAM_RE`(命中即 `continue`);`features/agentledger.py`"],
+    ]},
+    {"title": "本地保护期 `min_seed_time`(★ 唯一本机侧时长,勿与站点侧混)", "head": None, "rows": [
+        ["是**本机删种保护期**:做种时长不足的种子不参与删种(`bonus.py` `MagicPolicy.min_seed_time_hours`);"
+         "**不是**站点 H&R 义务,也**不**参与 H&R 结清判定。"],
+        ["真值源:任务配置 `models.py::MagicFlowTaskPayload.min_seed_time`;`features/tasks.py` 落库、`features/brush.py` 灌给策略。"],
+        ["易混 ①:`crossseed_seed_hours_default`「来源站义务工时(兜底)」——那是**他站**的 H&R 要求,两者同页并列、都带「最短」,但分属站点侧/本机侧。"],
+        ["易混 ②:`brush_seed_days` 轮转周期——那是「满 N 天**主动清理**」,本项是「不足 N 小时**不许清理**」,方向相反。"],
+    ]},
+    {"title": "轮转周期 `brush_seed_days`", "head": None, "rows": [
+        ["刷流模式:**已下完**的种子做种满 N 天即清理换种、腾位(`features/cleanup.py`);"
+         "**不是**保护期——它是「到点就删」而非「到点才可删」。"],
+        ["`0` = 不按天数轮换,回退「无上传」判定(平均上传速率低于 `upload_min_kbps` 才清)。"],
+        ["真值源:任务级 `models.py::MagicFlowTaskPayload`(默认 2) + 默认模板 `MagicFlowDefaultsPayload`(默认 2);`common.py` 同名常量。"],
+        ["易混:UI 三处旧名「保种天数」/「刷流保种天数」/「满 N 天清理」指的都是它 → 统一改「轮转周期(天)」。"],
+    ]},
+    {"title": "考核均值 `exam_avg_hours`(新手考核 ≠ H&R)", "head": None, "rows": [
+        ["站点**新手考核**里「平均做种时间」的达标线(例:指标2:平均做种时间,要求 30 Hour);"
+         "**不是** H&R 义务工时,未达标不产生 H&R 账单、不进 `hr_bills.json`。"],
+        ["真值源:`sites/rules.py::parse_hr_from_html` 走 `_EXAM_RE` 单独分支(命中即 `continue`,不当 H&R 使);证据存 `exam_evidence`。"],
+        ["易混:`seed_need_hours` 义务工时——考核均值只对**升级/考核**生效,且口径是「平均」而非「单种」。"],
+        ["改名前:`features/agentledger.py` 列 desc 写作「考核平均保种小时」,与 `min_seed_time` 共用「保种」→ 已改「考核均值(h)」。"],
+    ]},
+    {"title": "达标期限 vs 义务工时(`seed_hours`/`seed_window_hours` vs `seed_need_hours`)", "head": None, "rows": [
+        ["一句话:「**N 天(达标期限)内做满 M 小时(义务工时)**」;`seed_need_hours`=M,`seed_window_hours`/`seed_hours`=N×24。"],
+        ["★ `seed_hours` 一名三义,看位置:`db.py` = 达标期限;`sites/claim_presets.py` `target_seed_hours` = 认领目标做种时长;"
+         "`features/crossseed.py` 的 `seed_hours` = 跨站来源份兜底时长。**改名只对第一处生效**,另两处是同名不同义,别一起改。"],
+        ["★ 保守原则:同句同时抓到「10 天」和「20 小时」时,`seed_hours` 取**窗口**(240h)而不是达标线(20h)——"
+         "多挂几小时只是占盘,少挂就是真罚款(见 `sites/rules.py` `BUILTIN_RULES[\"pt.btschool.club\"]` 注释)。"],
+        ["变体:`seed_hours_retired`(非权威来源被作废的旧值)、`seed_hours_seen`(低置信度只留证据不生效)——**都不参与**有效时长计算。"],
+    ]},
+    {"title": "H&R 安全垫与临期阈值(`hr_seed_margin_hours` / `hr_deadline_warn_hours`)", "head": None, "rows": [
+        ["`hr_seed_margin_hours`(默认 2):结清**安全垫**——实际做种需 ≥ 义务工时 + 该值才判 `settled`(`features/hrbills.py`;账单 `due_h = need_h + margin`);`0` = 不垫。"],
+        ["`hr_deadline_warn_hours`(默认 48):账单**临期阈值**——种还在 qB、未达标、距达标期限到期 ≤ 该值 → `at_risk`;**预警 ≠ 违约**。"],
+        ["★ 与 `notify_hr_hours`(默认 24)区分:后者是**通知模块**扫描 `hours_left ≤ 阈值` 的发信门槛(`features/notify.py`);"
+         "前者是**账单模块**打 `at_risk` 标记的口径。两者都是「剩余时间阈值」,但消费者不同、默认值不同,**别合并**。"],
+        ["真值源:全局设置 `models.py::MagicFlowSettingsPayload`;`features/core.py` 读入 `self._hr_seed_margin_hours` / `self._hr_deadline_warn_hours`。"],
     ]},
     {"title": "站点报表分类桶（`features/sitereport.py`）", "head": None, "rows": [
-        ["★ 两轴分级：第一级六桶 `BUCKET_BRUSH` 刷流 / `BUCKET_BONUS` 魔力 / `BUCKET_HR` 保种（欠H&R挂补） / "
+        ["★ 两轴分级：第一级七桶 `BUCKET_BRUSH` 刷流 / `BUCKET_BONUS` 魔力 / `BUCKET_CLAIM` 认领（19.10.11，站点认领承诺） / "
+         "`BUCKET_HR` 保种（欠H&R挂补） / "
          "`BUCKET_SILENT` 静默（含 新/资源/普通 三子桶）/ `BUCKET_RESCUE` 补源 / `BUCKET_EXTERNAL` 外部（顺序见 `_BUCKET_ORDER`）。"],
         ["第二级传输三态：`TRANSPORT_DOWNLOADING` 未完成 / `TRANSPORT_PAUSED` 暂停 / `TRANSPORT_SEEDING` 做种中（不单独成桶）。"],
         ["债务/账本只作列字段（`item.hr`/`item.bill`），不再当桶。"],
@@ -67,8 +120,67 @@ GLOSSARY: List[Dict[str, Any]] = [
          "`HR_HOST_TASK_ID='__hr_host__'`（职务「保种」）——见 `common.py`。"],
         ["总开关 `SILENT_HR_SPLIT_ENABLED`（`common.py`）——**关掉 = 整体回滚到 11.10 行为**。"],
         ["静默硬不变量 `_silent_pause_gate`（`features/silent.py`）：静默池一律 pause、无 H&R 例外。"],
+        ["★ 19.10.13 闸门**先复核账本**再 pause：账本 `state` 不是「静默」、或 `taken_by` 是占岗岗位"
+         "（`dutyreg.occupancy`）→ 跳过（记 `skipped_on_duty`）；查不到记录（tag_only 辅种副本）→ 照旧暂停。"
+         "原来无条件 pause 全靠调用方写对 state，点播释放整批递 hash 时会把认领/保种的种一起停掉。"],
+        ["★ 19.10.13 审计侧同口径：`_silent_audit` 的 `stalled_violation` 也按 `taken_by` 占岗豁免，"
+         "**不再只靠 `claim_hashes()`**——那是打站点换来的，站点抖一下返回空集，在岗的认领种就被整批判违规暂停"
+         "（qB 日志实证：每小时 :1x 分集中暂停 929 个，含认领种）。账本占位是本地真值，外部接口失败不该改判据。"],
         ["遣散分诊 `_split_release`（`features/core.py`）：欠 H&R → 保种；否则 → 静默 + pause。"],
         ["保种迁移 `_hr_host_assign` / `_hr_host_release`（`features/hr.py`）。"],
+    ]},
+    {"title": "认领职务（19.10.11）", "head": None, "rows": [
+        ["职务常量 `STATE_CLAIM='认领'`（`tagspec.py`，已进 `STATES`/`DUTY_STATES`）；标签轴 `魔流-<站>-认领`，身份轴原样保留。"],
+        ["宿主 `CLAIM_TASK_ID='__claim__'`（`common.py`）：`taken_by=__claim__` + 长期租约 → 任务分派抢不走。"],
+        ["**名单 = 认领账本 `st∈{ok,already}`**（`_claim_duty_targets`）——与刷流/魔力的「任务分派清单」同构：名单在=上班，名单不在=下班。"],
+        ["纳管/退出 worker：`_claim_host_status(resume=True)`（`features/claim.py`，15 分钟一轮）。退出还原 `prev_state`（只认刷流/魔力），缺省回静默并当场 pause。"],
+        ["手动退出：`set_tag_state` 把职务改成非「认领」→ 账本 `manual=True` → worker 不再拉回；改回「认领」即恢复。"],
+        ["跨职务抢占（19.10.12）：**只认 `dutyreg.duty_take_check`** —— 认领是 `poach=True` 的特殊岗位，"
+         "可从刷流/魔力/点播/音乐/H&R 名下收人；但手动保种（95）比它高，不抢。"
+         "别再加「某处显式跳过 `__claim__`」那种补丁。"],
+    ]},
+    {"title": "岗位注册表 / 占位口径（19.10.12，`dutyreg.py`）", "head": None, "rows": [
+        ["单一真值：岗位 id / 展示名 / 职务 / 优先级 / 租约 / **能不能跨岗挑人**全在 `DUTIES` 一张表；"
+         "`common.py` 的 id 常量、`ledger._task_state|_task_id|_task_name`、`set_tag_state` 白名单都从表派生。"],
+        ["占位唯一闸门 `duty_take_check(taker, holder, lease_until=, now=)` → `(能否, 原因)`；"
+         "读账本那一侧包成 `dutyops.free_for(rec, taker, now=)`，调用方不必再手抠 `taken_by`/`lease_until`。"],
+        ["**默认口径：只从「没岗位」的池子招人**（`poach=False`）—— 静默托管/辅种不算占岗（静默=没岗位）；"
+         "未登记真任务（动态 task_id）看租约，过期即视为空缺。"],
+        ["特殊岗位（`poach=True`）只有三个：**手动保种 95 / 认领 90 / H&R 80** —— 「不做就违约」或「人工点名」。"
+         "它们也只能从**优先级更低**的岗位挑人（同级不抢，先到先得）。"],
+        ["加岗位别回头补「跳过它」：在 `DUTIES` 里写 `priority` / `poach` 就够；"
+         "`tools/test_dutyreg.py` 钉住 8 岗位落库值与这套矩阵。"],
+    ]},
+    {"title": "岗位操作 / 纳管中台（19.10.12，`dutyops.py`）", "head": None, "rows": [
+        ["分工：`dutyreg` = **岗位表 + 判据**（纯数据）；`dutyops` = **交接动作**（读账本 → 判 → 贴标签 → 写账本 → 谁拉起）。"],
+        ["`assign(host, hashes, taker=, state=, ...)`：占岗。四个老实现（`tags.duty_assign` 音乐点播 / "
+         "`_hr_host_assign` / `_manual_hold` / 认领纳管）现在都是它的薄壳，差异只在关键字："
+         "`lease_until` / `prev_from` / `require_live` / `require_site` / `resume_when` / `extra` / `default_sub`。"],
+        ["`release(host, hashes, taker=, ...)`：退岗。`restore_prev` 决定「还原成原职务」还是「回静默」，"
+         "`pause` 决定是否当场暂停，`allow_untaken` 用于清洗 `taken_by` 已空的历史行。"],
+        ["两个不变量：**一个种同一时刻只归一个岗位**；**贴标签成功才写账本**（标签是 qB 真值，账本是镜像）。"
+         "在岗判定 = 账本归本岗 **且** 职务标签在位 —— 任一路径清过 `taken_by` 都能自愈（认领拉锯的根因）。"],
+        ["`claim_hashes(host, site_id=None)`：认领名单归一化（小写集合，取不到 = 空集）；"
+         "删除闸门 / 静默审计 / 保护裁决 / 任务纳管四处原来各写一遍 `{str(x).lower() ...}`，现在统一走它。"],
+        ["`tools/test_dutyops.py` 用桩对象钉住：让位 / 跨岗挑人 / 幂等 / 干跑零写入 / 还原 prev_state。"],
+    ]},
+    {"title": "下载器写操作中台（19.10.14，`dlops.py`）", "head": None, "rows": [
+        ["**为什么有它**：每 60 分钟 qB 固定 930 个被暂停、911 个被恢复，精确对消；"
+         "逐个排除插件内四个 `pause_torrents` 调用点后仍**定位不到** —— 写操作散在 9 个文件、"
+         "成功路径全都不打日志，「谁停的」在当前结构下不可回答。"],
+        ["`pause / resume / recheck(host, hashes, by=, reason=, force=, dry=)`：**唯一出口**。"
+         "`by` 必填（写进日志的就是「谁干的」）；`force=True` 只给「结清 / 遣散 / 人工点名」这类必须停的路径。"],
+        ["**守卫（一处判据）**：`pause` 拒 —— 账本 state 非静默（在别的生命周期）或 `taken_by` 占岗；"
+         "`resume` 拒 —— 静默且无人占岗（休息区）。**只看账本不看标签**（标签会掉、会双写）。"],
+        ["**防抖**：同一 hash 在 `FLAP_WINDOW=90s` 内被**反向**操作 → 拒绝并计 `flapped`。"
+         "这一条直接掐死「停 930 → 起 911 → 再停」的对消，不必先定位凶手。"],
+        ["**归因日志**（成功也打）：`dlops:pause by=silent_gate 请=930 成=907 拒=23(on_duty:23) 抖=0`。"],
+        ["已接的三处：`silent._silent_pause_gate`（by=silent_gate）/ `core._apply_run_mode`（by=run_mode:*，force）"
+         "/ `siteops.deleted_site_act`（by=siteops:*，force）。`tags.set_tag_state` 是单 hash 人工操作，"
+         "留在原地（根模块不能反向 import dlops，会成环）。"],
+        ["**管得住插件自己人，管不住外部进程**（另一个容器/脚本直连 qB）。若某轮日志显示"
+         "「本插件一次 pause 都没发」而 qB 仍在停，即可反证是外部调用方。"],
+        ["`tools/test_dlops.py` 用桩对象钉住：静默可停不可起 / 在岗不可停 / 占岗不可停 / force / 防抖 / 干跑 / 归因。"],
     ]},
     {"title": "真值源清单（改前先认这个，**不造第二份**）", "head": ["真值源", "位置"], "rows": [
         ["账本 5 表（site/resource/identity/task/seed…）", "`ledger.py`"],
@@ -76,7 +188,11 @@ GLOSSARY: List[Dict[str, Any]] = [
         ["标签状态账本", "`SeedLedgerStore`（`ledger.py`，5 表后端）"],
         ["H&R 账单", "`features/hrbills.py` → `hr_bills.json`"],
         ["删除**唯一**出口（闸门）", "`DownloaderAdapter.delete_torrents` + `features/deletegate.py`"],
+        ["下载器写操作**唯一**出口（暂停/恢复/校验）", "`dlops.pause/resume/recheck`（19.10.14）"],
         ["外部取数**唯一**出口", "`collect.py`"],
+        ["模块职责（**文件 → 作用**）", "各文件模块 docstring **首行**（本接口 modules 节现算，不另存）；"
+         "大模块（≥300 行）由 `preflight` 第 19 步 `tools/check_module_doc.py` 守住 —— "
+         "描述与实际不符时，先改描述，改不动就说明该拆文件了"],
     ]},
     {"title": "常见问题 → 一次调用（AI 门面，清单 `GET /agent`）", "head": ["问", "端点"], "rows": [
         ["某 hash 为什么删/留", "`GET /agent/decide?hashes=`"],

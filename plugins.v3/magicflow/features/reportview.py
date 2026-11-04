@@ -33,7 +33,6 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from app.schemas import Response
@@ -43,8 +42,10 @@ from ..tags import (
     RESCUE_TAG,
     STATE_BONUS,
     STATE_BRUSH,
+    STATE_CLAIM,
     STATE_HR,
     STATE_SILENT,
+    STATES,
     SUB_NEW,
     SUB_PLAIN,
     SUB_RESOURCE,
@@ -76,6 +77,7 @@ from .sitereport import (
     _BUCKET_ORDER,
     _ORIGIN_ORDER,
 )
+from ..norm import now_iso
 
 #: 账本有、下载器没有（幽灵行）的传输态标签——不是真实的传输状态，单独命名，避免冒充「暂停」
 TRANSPORT_ABSENT = "不在下载器"
@@ -233,10 +235,6 @@ def _norm_sub(v: Any) -> str:
             return parts[-1] if parts else ""
         return s
     return str(cur).strip().strip("'\"")
-
-
-def _now_iso() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 def _site_key(s: Any) -> str:
@@ -615,7 +613,7 @@ def _summary_of(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 def view_site(ctx: Dict[str, Any], site: str = "", live: int = 0,
               limit: int = 0, offset: int = 0) -> Dict[str, Any]:
     """``view=site``：按站聚合全量（旧 ``/agent/site/seeds`` 口径，台账已收口）。"""
-    at = str(ctx.get("at") or _now_iso())
+    at = str(ctx.get("at") or now_iso())
     available = _available_sites(ctx)
     if not str(site or "").strip():
         return {"site": {}, "at": at, "live": bool(live), "summary": {"total": 0},
@@ -848,7 +846,7 @@ def view_hr(ctx: Dict[str, Any], site: str = "", live: int = 0,
     margin_fn = ctx.get("margin_fn")
     warn_fn = ctx.get("warn_fn")
     return {
-        "at": str(ctx.get("at") or _now_iso()),
+        "at": str(ctx.get("at") or now_iso()),
         "live": bool(live),
         "totals": totals,
         "sites": sites,
@@ -918,7 +916,7 @@ def view_rows(ctx: Dict[str, Any], view: str = "rows", site: str = "", state: st
         shown = shown[_as_int(offset, 0):]
     return {
         "view": "rows",
-        "at": str(ctx.get("at") or _now_iso()),
+        "at": str(ctx.get("at") or now_iso()),
         "filters": {"site": info.get("domain") or site, "state": state, "bucket": bucket,
                     "sub": sub, "origin": origin, "transport": transport,
                     "hr": hr, "protected": protected},
@@ -1039,7 +1037,7 @@ def drift(ctx: Dict[str, Any]) -> Dict[str, Any]:
     _chk("未下完都在下载器", not _inc_bad,
          f"incomplete 含非 in_qb 行 {len(_inc_bad)} 个" if _inc_bad else "incomplete 口径干净")
     return {
-        "at": str(ctx.get("at") or _now_iso()),
+        "at": str(ctx.get("at") or now_iso()),
         "ledger": {"rows": len(rows), "in_qb": len(qb_h & led_h), "ghost": len(ledger_only),
                    "sites": len(by_site)},
         "downloader": {"tagged": len(qb_h)},
@@ -1208,7 +1206,7 @@ class ReportViewMixin:
         except Exception:  # noqa: BLE001
             site_deleted = {}
         return {
-            "at": _now_iso(), "now": time.time(),
+            "at": now_iso(), "now": time.time(),
             "ledger": ledger, "snap": snap, "bills": bills,
             "sites": sites, "site_rows": site_rows, "site_index": site_index,
             "protected": prot, "reseed": reseed, "crossseed": cssrc,
@@ -1338,8 +1336,8 @@ class ReportViewMixin:
         if protected not in ("", None) and str(protected).strip().lower() not in (
                 "0", "1", "true", "false", "yes", "no", "欠", "有"):
             return "protected 只支持 0|1", "protected"
-        if state and state not in (STATE_BRUSH, STATE_BONUS, STATE_HR, STATE_SILENT):
-            return f"state 只支持 {STATE_BRUSH}|{STATE_BONUS}|{STATE_HR}|{STATE_SILENT}", "state"
+        if state and state not in STATES:
+            return (f"state 只支持 {'|'.join(STATES)}"), "state"
         return "", ""
 
     def get_report(self, view: str = "site", site: str = "", state: str = "", bucket: str = "",

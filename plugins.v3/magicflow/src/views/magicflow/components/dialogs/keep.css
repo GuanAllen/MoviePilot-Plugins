@@ -1,0 +1,169 @@
+/* MagicFlow · 「手动保种」弹窗样式（KeepDialog）
+ * 由线上 dist 按 scopeId 原样提取（dist 构建关掉了 JS 压缩，CSS 未重排）。
+ * 选择器里的 [data-v-39c7e08d] 是 scoped 边界，别去掉 —— 去掉就变成全局样式。
+ */
+
+/* ── 弹窗根 / 标题行 / 正文：与其它弹窗同款共享选择器（此处复制一份，VDialog 会 teleport，
+     父 scoped 够不到子内部，故须自带）。── */
+.magicflow-dialog[data-v-39c7e08d] {
+  background: rgb(var(--v-theme-surface)) !important;
+  border: 1px solid var(--magicflow-panel-brd);
+  border-radius: 18px;
+  backdrop-filter: blur(16px) saturate(120%);
+  -webkit-backdrop-filter: blur(16px) saturate(120%);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  color: rgb(var(--v-theme-on-surface));
+}
+.magicflow-settings-dialog__head[data-v-39c7e08d] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 12px;
+}
+.magicflow-settings-dialog__title[data-v-39c7e08d] {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+.magicflow-recommend-dialog__head-actions[data-v-39c7e08d] {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.magicflow-cs-stats[data-v-39c7e08d] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.magicflow-cs-stat[data-v-39c7e08d] {
+  flex: 1 1 6.5rem;
+  min-inline-size: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 12px 10px;
+  border-radius: 14px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+.magicflow-cs-stat b[data-v-39c7e08d] { font-size: 1.05rem; font-weight: 700;
+}
+.magicflow-cs-stat span[data-v-39c7e08d] { font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+}
+.magicflow-cs-status__dim[data-v-39c7e08d] { font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+}
+.magicflow-table-empty[data-v-39c7e08d] {
+  padding: 28px 12px;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  text-align: center;
+}
+.magicflow-settings-hint[data-v-39c7e08d] {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  background: rgba(var(--v-theme-primary), 0.07);
+  border-inline-start: 3px solid rgba(var(--v-theme-primary), 0.45);
+}
+
+/* ── 手动保种（专属）────────────────────────────────────── */
+/* ★ 19.10.43 修「标签页被正文盖住」：原来用 `scrollable` + 正文 `flex: 1 1 auto`，
+   标题行 / 标签条 / 分隔线没有禁止收缩 —— VCard 高度受限时这三行被挤成 0 高，
+   第二个标签页（从静默池挑选）整条消失，只剩默认页内容，看起来像「只有 18 个」。
+   现在改成和 SettingsDialog 同一套：弹窗自己定高、三行固定、只有正文滚动。 */
+.magicflow-keep-dialog[data-v-39c7e08d] {
+  display: flex;
+  flex-direction: column;
+  block-size: min(86vh, 46rem);
+  max-block-size: 92vh;
+  overflow: hidden;
+}
+.magicflow-settings-dialog__head[data-v-39c7e08d],
+.magicflow-keep-tabs[data-v-39c7e08d],
+.magicflow-keep-dialog > .v-divider[data-v-39c7e08d] {
+  flex: 0 0 auto;
+}
+.magicflow-keep-body[data-v-39c7e08d] {
+  flex: 1 1 0;
+  min-block-size: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-block: 8px;
+  padding: 14px 18px 20px;
+}
+.magicflow-cs-stat.is-warn b[data-v-39c7e08d] { color: rgb(var(--v-theme-warning));
+}
+.magicflow-cs-stat.is-pick[data-v-39c7e08d] { background: rgba(var(--v-theme-primary), 0.1);
+}
+.magicflow-keep-tools[data-v-39c7e08d] {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-block: 14px 10px;
+  flex-wrap: wrap;
+}
+.magicflow-keep-search[data-v-39c7e08d] { flex: 1 1 14rem; min-inline-size: 11rem;
+}
+.magicflow-keep-site[data-v-39c7e08d] { flex: 0 1 10rem; min-inline-size: 8rem;
+}
+.magicflow-keep-sort[data-v-39c7e08d] { flex: 0 1 9rem; min-inline-size: 8rem;
+}
+.magicflow-keep-list[data-v-39c7e08d] { display: flex; flex-direction: column; gap: 6px;
+}
+.magicflow-keep-list__head[data-v-39c7e08d] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 6px 6px;
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+  flex-wrap: wrap;
+}
+.magicflow-keep-bulkwarn[data-v-39c7e08d] {
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: rgb(var(--v-theme-on-surface));
+  background: rgba(var(--v-theme-warning), 0.16);
+  border: 1px solid rgba(var(--v-theme-warning), 0.45);
+}
+.magicflow-keep-pager[data-v-39c7e08d] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding-block-start: 10px;
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+}
+.magicflow-keep-row[data-v-39c7e08d] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 4px;
+  border-radius: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.035);
+  border: 1px solid transparent;
+}
+.magicflow-keep-row.is-sel[data-v-39c7e08d] { border-color: rgba(var(--v-theme-primary), 0.55); background: rgba(var(--v-theme-primary), 0.07);
+}
+.magicflow-keep-row__main[data-v-39c7e08d] { flex: 1 1 auto; min-inline-size: 0;
+}
+.magicflow-keep-row__name[data-v-39c7e08d] {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.magicflow-keep-row__meta[data-v-39c7e08d] { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-block-start: 3px;
+}
+@media (max-width: 959px) {
+  /* 窄屏走 fullscreen：高度交给弹窗自己撑满，别再被 86vh 卡住 */
+.magicflow-keep-dialog[data-v-39c7e08d] { block-size: 100%; max-block-size: 100%;
+}
+.magicflow-keep-body[data-v-39c7e08d] { padding: 10px 14px 18px;
+}}

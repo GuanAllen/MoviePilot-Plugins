@@ -1,0 +1,83 @@
+/* PushAuditDialog 的 scoped 样式，由线上 dist 按 scopeId data-v-f88aa3ff 提取。
+   选择器里的属性限定符是 scoped 边界，别去掉。 */
+
+.magicflow-push-dialog__stats[data-v-f88aa3ff] {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+  font-size: 0.82rem;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+
+.magicflow-push-dialog__stat[data-v-f88aa3ff] { display: inline-flex; align-items: baseline; gap: 4px;
+}
+
+.magicflow-push-dialog__stat.is-bad[data-v-f88aa3ff] { color: rgb(var(--v-theme-error));
+}
+
+.magicflow-push-dialog__num[data-v-f88aa3ff] {
+  font-size: 1.02rem;
+  font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+
+.magicflow-push-dialog__stat.is-bad .magicflow-push-dialog__num[data-v-f88aa3ff] { color: rgb(var(--v-theme-error));
+}
+
+.magicflow-push-dialog__empty[data-v-f88aa3ff] {
+  padding: 22px 12px;
+  text-align: center;
+  font-size: 0.85rem;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+
+.magicflow-push-dialog__list[data-v-f88aa3ff] {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.magicflow-push-dialog__list li[data-v-f88aa3ff] {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 8rem) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 3px 8px;
+  padding: 7px 9px;
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 8px;
+  font-size: 0.82rem;
+}
+
+.magicflow-push-dialog__list li.is-bad[data-v-f88aa3ff] { border-color: rgba(var(--v-theme-error), 0.35);
+}
+
+.magicflow-push-dialog__time[data-v-f88aa3ff],
+.magicflow-push-dialog__site[data-v-f88aa3ff],
+.magicflow-push-dialog__task[data-v-f88aa3ff],
+.magicflow-push-dialog__meta[data-v-f88aa3ff] {
+  min-inline-size: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.magicflow-push-dialog__time[data-v-f88aa3ff] { color: rgba(var(--v-theme-on-surface), 0.6);
+}
+
+.magicflow-push-dialog__site[data-v-f88aa3ff] { font-weight: 600;
+}
+
+.magicflow-push-dialog__meta[data-v-f88aa3ff] { color: rgba(var(--v-theme-on-surface), 0.62);
+}
+
+.magicflow-push-dialog__err[data-v-f88aa3ff] {
+  grid-column: 1 / -1;
+  color: rgb(var(--v-theme-error));
+  word-break: break-all;
+  line-height: 1.45;
+}

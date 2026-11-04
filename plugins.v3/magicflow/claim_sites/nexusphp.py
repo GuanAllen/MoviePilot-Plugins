@@ -42,12 +42,17 @@ class NexusPhpClaim(_ClaimSiteHandler):
         """认领一颗种子（请求体模板来自 preset）。"""
         return self.post_endpoint(site_info, profile, torrent_id)
 
-    def abandon(self, site_info: Dict[str, Any], torrent_id: Any, profile: Dict[str, Any]) -> Tuple[bool, str, str]:
+    def abandon(self, site_info: Dict[str, Any], torrent_id: Any, profile: Dict[str, Any],
+                claim_id: Any = None) -> Tuple[bool, str, str]:
         """放弃认领：仅当 preset 显式给出 ``abandon_endpoint`` 时才发（否则 unsupported）。
 
         ★ 放弃 = 主动丢权益 + 可能扣分，**绝不猜接口**。
+        ★ 同族插件的放弃参数是**认领记录 id**（``params.id`` = 按钮 ``data-claim_id``），
+          不是种子 id；拿不到 claim_id 就不发（否则站点点不到记录，纯浪费一次写请求）。
         """
         ep = (profile or {}).get("abandon_endpoint")
         if not ep:
             return False, "unsupported", "该站未提供「放弃认领」接口模板，未执行（本地账本保留）"
-        return self.post_endpoint(site_info, profile, torrent_id, endpoint=ep)
+        if not str(claim_id or "").strip():
+            return False, "unsupported", "站点未回发认领记录 id，无法放弃（请在站点操作）"
+        return self.post_endpoint(site_info, profile, torrent_id, endpoint=ep, claim_id=claim_id)

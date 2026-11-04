@@ -30,6 +30,10 @@ export function makeFeatures(c) {
     musicItems: () => c.get('agent/music/items?limit=50'),
     musicAct: (hash, action) => c.post(
       `agent/music/act?hash=${encodeURIComponent(hash)}&action=${encodeURIComponent(action)}`, {}),
+    // ★ 19.12.0：单颗入库 —— 干跑（不带 confirm）回计划，confirm=1 入队后台跑（提交即返回）
+    musicSettle: (hash, apply = true) => c.post(
+      `agent/music/settle?hash=${encodeURIComponent(hash)}&confirm=${apply ? 1 : 0}`, {}),
+    musicSettlePlan: () => c.post('agent/music/settle?confirm=0', {}),
 
     // ── 补源 ──────────────────────────────────────────────
     rescueScan: () => c.get('rescue?action=scan'),

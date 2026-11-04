@@ -165,7 +165,7 @@ const emit = defineEmits(['open-entry'])
 
         <div class="magicflow-facts__group">选种与保留</div>
         <template v-if="taskIsBrush">
-          <div><dt>保种天数</dt><dd>{{ brushSeedDays > 0 ? `做种满 ${brushSeedDays} 天清理` : '不按天数（按无上传）' }}</dd></div>
+          <div><dt>轮转周期</dt><dd>{{ brushSeedDays > 0 ? `做种满 ${brushSeedDays} 天清理` : '不按天数（按无上传）' }}</dd></div>
           <div><dt>最小下载人数</dt><dd>{{ taskConfig.brush_min_leechers ?? 1 }} 人</dd></div>
         </template>
         <template v-else>

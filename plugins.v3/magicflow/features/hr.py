@@ -5,7 +5,6 @@
 """
 
 import time
-import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -19,12 +18,12 @@ from ..tags import (
     DUTY_STATES,
     STATE_HR,
     STATE_SILENT,
-    identity_of,
     is_library_asset,
     is_reuse_copy,
-    retag,
-    tag_for,
 )
+# ★ 19.10.12：保种上下班流程走 ``dutyops``（与认领 / 手动保种 / 媒体线共用一套）。
+#   原来是硬编码「跳过 __claim__」，每加一个常驻岗位都要回来补一行。
+from ..dutyops import assign, release
 from .hrbills import (
     HR_BILLS_ENFORCE,
     HR_NEED_HOURS_DEFAULT,
@@ -35,7 +34,8 @@ from .hrbills import (
     RULE_HIT_AND_RUN,
 )
 from ..downloader_ops import seed_hours_for_hr
-from ..common import hr_incomplete, hr_complete_ratio_of
+from ..common import hr_incomplete, hr_complete_ratio_of, HR_OWED_TTL
+from .. import cacheops
 
 
 class HrMixin:
@@ -365,16 +365,29 @@ class HrMixin:
         #   只**增**保护：active 且规则已知（非 unknown）且没挂够 → 欠；
         #   settled / void / pending / unknown → 本条不产生欠债（未知站不保护，Master 红线）。
         #   账单读取出任何异常 → 视为「无账单」，回退原判定，绝不能让保护变少或闸门抛错。
+        #   ★ 19.12.4：加**站端口径**——本地工时够、但站端 myhr 说还欠 → 仍然欠。
+        #     这层必须在这里（而不只在 ``_hr_bill_owed_hashes``）才治得了暂停/删除：
+        #     静默池、删除闸门、清理候选、强挂都走本函数。settled 的行也看，
+        #     因为「站端翻案」要等下一轮 tick 才把账单重开，这段空窗期不能让种被 pause。
         if HR_BILLS_ENFORCE:
             try:
                 _hrbill = self._hrbills_store().get(_h)
                 if isinstance(_hrbill, dict) \
-                        and str(_hrbill.get("state") or "") == BILL_STATE_ACTIVE \
                         and str(_hrbill.get("rule") or "") in (RULE_SITE_HR, RULE_HIT_AND_RUN):
                     _bneed = float(_hrbill.get("need_h") or 24.0)
                     _bseed = float(_hrbill.get("seeded_h") or 0.0)
-                    if _bseed + 1e-6 < self._hr_due_hours(_bneed):
+                    if str(_hrbill.get("state") or "") == BILL_STATE_ACTIVE \
+                            and _bseed + 1e-6 < self._hr_due_hours(_bneed):
                         return True, _bneed, _bseed, "hrbill"
+                    if str(_hrbill.get("state") or "") in (BILL_STATE_ACTIVE, BILL_STATE_SETTLED):
+                        try:
+                            _sv, _sleft = self._hr_site_verdict(
+                                _h, str(_hrbill.get("site") or ""))
+                        except Exception:  # noqa: BLE001
+                            _sv, _sleft = "unknown", 0.0
+                        if _sv == "owed":
+                            return True, _bneed, _bseed, "hrbill/site(%s)" % (
+                                "站端还需%.1fh" % (float(_sleft) / 3600.0))
             except Exception:  # noqa: BLE001
                 pass
         # 兜底（种子级）
@@ -388,7 +401,7 @@ class HrMixin:
         return _r if _r[3] else (False, 0.0, 0.0, "不欠")
 
     def _hr_owed_by_site(self) -> Dict[str, Dict[str, float]]:
-        """各站点「欠 H&R」的已完成种子数 / 还需小时数（300s 缓存）。
+        """各站点「欠 H&R」的已完成种子数 / 还需小时数（``HR_OWED_TTL`` 秒缓存）。
 
         站点级口径（H&R 是**账号级**风险，不按任务切分）：同一站点所有种子
         （含静默池 / 跨站来源份）一起统计。
@@ -397,20 +410,21 @@ class HrMixin:
           ① 用阻塞式 `_tag_all_torrents()` 拉快照 —— 快照一过期，9 个任务统计线程
              全堵在 qB 全量重拉上（实测每任务 ~3.5s、一天 1300+ 条「统计任务慢」告警）；
           ② 缓存过期瞬间 9 个线程同时重算（重复劳动 9 份）。
-          现在：改用 stale-while-revalidate 的展示快照 + **单飞锁**（同一时刻只算一次）。
+          现在：改用 stale-while-revalidate 的展示快照 + **单飞**（同一时刻只算一次，
+          19.10.23 起由 ``cacheops.SingleFlight`` 统一提供，不再手写锁 + 手写信封）。
         """
-        now = time.time()
-        cache = getattr(self, "_hr_owed_cache", None)
-        if isinstance(cache, dict) and (now - float(cache.get("ts", 0) or 0)) < 300:
-            return cache.get("data") or {}
-        lock = getattr(self, "_hr_owed_lock", None)
-        if lock is None:
-            lock = self._hr_owed_lock = threading.Lock()
-        with lock:                                   # 单飞：并发统计线程只算一次
-            now = time.time()
-            cache = getattr(self, "_hr_owed_cache", None)
-            if isinstance(cache, dict) and (now - float(cache.get("ts", 0) or 0)) < 300:
-                return cache.get("data") or {}
+        # ★ 19.10.23：TTL 与单飞都交给 cacheops.SingleFlight（原先是手写信封 + 手写锁，
+        #   300 这一行还写了两遍）。本函数是**展示路径**（唯一调用方 status.py:170），
+        #   回源失败不写缓存，下一轮照常重试。
+        box = getattr(self, "_hr_owed_box", None)
+        if box is None:
+            box = self._hr_owed_box = cacheops.SingleFlight("hr.owed", ttl=HR_OWED_TTL)
+
+        def _compute() -> Dict[str, Dict[str, float]]:
+            """真正扫一遍欠账（回源体）：只在缓存过期且抢到单飞锁时才跑。
+
+            内部逐条 try：单个种子解析失败只跳过它，不让整站数字消失。
+            """
             _t0 = time.time()
             out: Dict[str, Dict[str, float]] = {}
             try:
@@ -446,11 +460,12 @@ class HrMixin:
                 except Exception:
                     continue
             data = {k: {"n": int(v["n"]), "h": round(float(v["h"]), 1)} for k, v in out.items()}
-            self._hr_owed_cache = {"ts": time.time(), "data": data}
             _ms = (time.time() - _t0) * 1000.0
             if _ms > 300:
                 self._dbg(f"H&R 欠账扫描 {_ms:.0f}ms（站点 {len(data)}）")
             return data
+
+        return box.run("all", _compute) or {}
 
     def _hr_guard_tick(self, apply: bool = True, limit: int = 0, snap: Any = None) -> Dict[str, Any]:
         """★ H&R **统一管理**（Master 2026-09-28 01:37）：
@@ -644,61 +659,33 @@ class HrMixin:
     def _hr_host_assign(self, hashes: Any, *, reason: str = "") -> int:
         """把欠 H&R 的种挂到 __hr_host__（职务 保种）：贴职务标签 + 写账本（taken_by=__hr_host__）。
 
-        幂等：已 taken_by=__hr_host__ 的种不重复写。不 force_start（保挂由 hr_host()/ _hr_guard_tick 负责）。
+        ★ 19.10.12：流程本体在 ``dutyops.assign``。H&R 保种是 ``poach=True`` 的特殊岗位
+        （先做了就欠债），可以从**优先级更低**的岗位（刷流/魔力/点播/音乐/跨站）挑人；
+        但认领 90、手动保种 95 比它高 → 不抢（认领种照样在种、H&R 时长照样累积，
+        抢只会每轮互贴标签）。等它退出（名单移除/人工解除）后，本方法下一轮自然接管。
+        幂等；**挂上即做种**（入池即暂停的种迁进来后立刻拉起）。
         """
         from ..common import HR_HOST_TASK_ID, SILENT_HR_SPLIT_ENABLED  # 惰性导入（离线测试不碰 common）
         if not SILENT_HR_SPLIT_ENABLED:
             return 0
-        hs = [hashes] if isinstance(hashes, str) else list(hashes or [])
-        hs = [str(h or "").strip().lower() for h in hs if str(h or "").strip()]
-        if not hs:
-            return 0
         downloader = self._get_downloader()
         if downloader is None or not getattr(downloader, "is_available", False):
             return 0
-        store = self._tag_state()
-        fn = getattr(downloader, "replace_torrent_tags", None)
-        snap = self._tag_all_torrents()
-        n = 0
-        _now = time.time()
-        for h in hs:
-            hh = str(h or "").strip().lower()
-            _rec0 = store.get(hh) or {}
-            if str(_rec0.get("taken_by") or "") == HR_HOST_TASK_ID:
-                continue  # 已在保种宿主
-            live = (snap or {}).get(hh)
-            cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
-            _i_site, _i_sub = identity_of(cur)
-            _sub = str(_rec0.get("sub") or "") or _i_sub \
-                or (SUB_RESOURCE if is_library_asset(_rec0) else SUB_NEW)
-            _sub = _sub or SUB_NEW
-            _site = str(_rec0.get("site") or "") or _i_site or self._torrent_site_name(cur, "")
-            new_tags = retag(cur, site=_site, state=STATE_HR, sub=_sub) \
-                if cur else [tag_for(_site, STATE_HR, _sub)]
-            try:
-                done = fn(hh, new_tags) if callable(fn) else downloader.set_torrent_tags(hh, new_tags)
-            except Exception:  # noqa: BLE001
-                done = False
-            if not done:
-                continue
-            try:
-                store.put(hh, {
-                    "site": _site, "state": STATE_HR, "sub": _sub,
-                    "taken_by": HR_HOST_TASK_ID, "task": "H&R保种",
-                    "taken_at": _now, "lease_until": 0,
-                    "title": str(getattr(live, "title", "") or "") if live is not None else "",
-                })
-            except Exception:  # noqa: BLE001
-                pass
-            n += 1
-        # ★ 挂上即做种（保挂 H&R）：入池即暂停的种被迁进保种宿主，立即 force_start 继续挂
-        if n:
+        rep = assign(
+            self, hashes, taker=HR_HOST_TASK_ID, state=STATE_HR, name="H&R保种",
+            # 子类兜底：库内资产记「资源」，其余「新」（保种会继续做种，身份按池内口径定）
+            default_sub=lambda rec: SUB_RESOURCE if is_library_asset(rec) else SUB_NEW,
+            resume_when="new",
+        )
+        n = int(rep.get("adopted") or 0)
+        if n and rep.get("resume"):
+            # ★ 挂上即做种（保挂 H&R）：只拉起**本次真正纳管**的，别惊动在岗的
             try:
                 _fn2 = getattr(downloader, "force_start_torrents", None)
                 if callable(_fn2):
-                    _fn2(hs)
+                    _fn2(rep["resume"])
                 else:
-                    downloader.resume_torrents(hs)
+                    downloader.resume_torrents(rep["resume"])
             except Exception as err:  # noqa: BLE001
                 self._log(f"H&R保种:强挂失败:{err}", "warning")
         return n
@@ -706,45 +693,18 @@ class HrMixin:
     def _hr_host_release(self, hashes: Any, *, reason: str = "") -> int:
         """结清/作废/规则不欠后，把种从 __hr_host__ 释放回静默（退保种职务 + pause）。"""
         from ..common import HR_HOST_TASK_ID  # 惰性导入（离线测试不碰 common）
-        hs = [hashes] if isinstance(hashes, str) else list(hashes or [])
-        hs = [str(h or "").strip().lower() for h in hs if str(h or "").strip()]
-        if not hs:
-            return 0
         downloader = self._get_downloader()
         if downloader is None or not getattr(downloader, "is_available", False):
             return 0
-        store = self._tag_state()
-        fn = getattr(downloader, "replace_torrent_tags", None)
-        snap = self._tag_all_torrents()
-        n = 0
-        _now = time.time()
-        for h in hs:
-            hh = str(h or "").strip().lower()
-            _rec = store.get(hh) or {}
-            if str(_rec.get("taken_by") or "") not in ("", HR_HOST_TASK_ID):
-                continue
-            live = (snap or {}).get(hh)
-            cur = [str(x).strip() for x in (getattr(live, "tags", None) or [])] if live is not None else []
-            _sub = str(_rec.get("sub") or "") or SUB_PLAIN
-            _site = str(_rec.get("site") or "") or self._torrent_site_name(cur, "")
-            new_tags = retag(cur, site=_site, state=STATE_SILENT, sub=_sub) \
-                if cur else [tag_for(_site, STATE_SILENT, _sub)]
-            try:
-                done = fn(hh, new_tags) if callable(fn) else downloader.set_torrent_tags(hh, new_tags)
-            except Exception:  # noqa: BLE001
-                done = False
-            if not done:
-                continue
-            try:
-                store.put(hh, {"site": _site, "state": STATE_SILENT, "sub": _sub,
-                               "taken_by": "", "lease_until": 0,
-                               "hr_released_at": _now, "hr_released_reason": str(reason or "")})
-            except Exception:  # noqa: BLE001
-                pass
-            n += 1
+        rep = release(self, hashes, taker=HR_HOST_TASK_ID, state=STATE_SILENT,
+                      default_sub=SUB_PLAIN,  # 账本没身份时按「普通」兜底（原实现口径）
+                      allow_untaken=True,     # 清洗历史行：账本职务=保种但 taken_by 已空
+                      extra={"hr_released_at": time.time(),
+                             "hr_released_reason": str(reason or "")})
+        n = int(rep.get("released") or 0)
         if n:
             try:
-                self._silent_pause_gate(hs)
+                self._silent_pause_gate(rep.get("released_hashes") or [])
             except Exception:  # noqa: BLE001
                 pass
         return n

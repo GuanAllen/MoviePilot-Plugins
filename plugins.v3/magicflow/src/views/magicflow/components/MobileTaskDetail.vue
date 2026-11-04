@@ -41,7 +41,7 @@ const mobileStrategyText = computed(() => {
   const parts = [t.task_type === 'brush' ? '刷流' : '刷魔力']
   if (t.task_type === 'brush') {
     parts.push(`选种每 ${c.brush_interval ?? '—'} 分钟`)
-    if (c.brush_seed_days) parts.push(`满 ${c.brush_seed_days} 天清理`)
+    if (c.brush_seed_days) parts.push(`轮转 ${c.brush_seed_days} 天`)
   } else {
     parts.push(c.min_bonus_per_hour == null ? '最低魔力自动' : `最低魔力 ${Number(c.min_bonus_per_hour).toFixed(1)}/h`)
     parts.push(c.protect_perfect === false ? '完美种保护关' : '完美种保护开')

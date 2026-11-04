@@ -20,7 +20,7 @@
   [6] 站点不存在 → 报错；
   [7] 干跑：出 plan（counted_gb = size/1e9×dv）、**不落种**；促销拿不到 → dv=1.0 / free=False；
   [8] 真加：free 促销 → dv=0.0 / counted_gb=0.0；**.torrent 只取一次**（content 透传给落种）；
-  [9] 取种失败 → 如实报「取 .torrent 失败」，不落种；
+  [9] 取种失败（站点返回空内容）→ 如实报「取种子失败：站点未返回内容」，不落种；
   [10] 登记：清单含 `/agent/ondemand/add_direct`（POST/写/handler/returns）+ CORE_TOOLS 有
        `magicflow_ondemand_add_direct` + 领域标签 download + 描述带写标记与返回段。
 
@@ -129,6 +129,24 @@ def _site(sid: int = 8):
                                  cookie="c=1", ua="UA", proxy=False)
 
 
+class _FakeDl:
+    """下载器替身 —— 取种通道 19.10.11 起统一走宿主 SDK ``dl.fetch_torrent_bytes``
+    （`tags.media_fetch_torrent`），**不再**调 ``_crossseed_torrent_bytes``。
+
+    桩缺 ``_get_downloader`` 或没有 ``is_available=True`` → 取种前就被
+    「下载器不可用（no_downloader）」拦下，[7][8] 那整组 plan/落种断言会假红
+    （19.11.7 修：这个桩自 19.10.11 起一直没跟上）。
+    """
+    is_available = True
+
+    def __init__(self, host):
+        self._host = host
+
+    def fetch_torrent_bytes(self, url, cookie=None, user_agent=None, referer=None):
+        self._host.fetched += 1
+        return self._host.content
+
+
 def _fake(ondemand, *, sites=(8,), site=None, content=b"x", promo=("none", "")):
     class Fake(ondemand.OnDemandMixin):
         def __init__(self):
@@ -137,6 +155,10 @@ def _fake(ondemand, *, sites=(8,), site=None, content=b"x", promo=("none", "")):
             self.content = content
             self.fetched = 0
             self.download_calls = []
+            self._dl = _FakeDl(self)
+
+        def _get_downloader(self, name="qbittorrent"):
+            return self._dl
 
         def _log(self, *a, **k):
             pass
@@ -247,7 +269,7 @@ def main() -> int:
     print("[9] 取种失败 → 如实报错，不落种")
     f5 = _fake(ondemand, content=b"")
     r = f5._ondemand_add_direct(url="https://cspt.top/details.php?id=5", site_ids="8")
-    ok(r.get("ok") is False and "取 .torrent 失败" in str(r.get("message")), "取种失败 → ok False")
+    ok(r.get("ok") is False and "取种子失败" in str(r.get("message")), "取种失败 → ok False")
     ok(f5.download_calls == [], "取种失败 → 不落种")
 
     print("[10] 登记：清单 + CORE_TOOLS + 领域标签 + 描述标记/返回段")

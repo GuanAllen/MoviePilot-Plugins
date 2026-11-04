@@ -15,6 +15,7 @@ from ..bonus import (
     BonusParams,
     TorrentBonusInfo,
     calc_torrent_bonus,
+    observed_bonus_per_hour,          # ★ 19.10.38 实测时魔兜底（无 mybonus.php 的站）
 )
 from ..downloader_ops import (
     TorrentInfo,
@@ -25,8 +26,8 @@ from ..fetcher import (
     ts_to_age_weeks,
 )
 from ..persistence import OperationItem
-from ..recommend import _norm
 from ..dtier import TierCache
+from .. import cacheops                # ★ 19.10.26 域名单飞/失败冷却收进容器
 from ..sites import get_formula_params, register_formula_preset
 from ..sites.formula_fetch import (
     fetch_site_formula,
@@ -273,22 +274,39 @@ class FormulaMixin:
                 except Exception:  # noqa: BLE001
                     pass
 
+    def _formula_cooldown(self) -> cacheops.Cooldown:
+        """公式抓取失败的域名冷却（原 ``_formula_fail_at`` 手写绝对到期时刻）。
+
+        ★ 19.10.26：手写 dict 存 ``time.time() + RETRY`` → ``cacheops.Cooldown`` 存
+          「标记时刻 + 冷却时长」。语义等价（都从标记起算 ``SITE_FORMULA_RETRY`` 秒），
+          顺带有了容量上限和统一的过期清理（原来过期条目永远留在 dict 里）。
+        """
+        box = getattr(self, "_formula_fail_at", None)
+        if not isinstance(box, cacheops.Cooldown):
+            box = self._formula_fail_at = cacheops.Cooldown(
+                "formula.fail", ttl=SITE_FORMULA_RETRY, max_entries=64)
+        return box
+
+    def _formula_flight(self) -> cacheops.Inflight:
+        """按域名的在飞名额（丢给后台线程前先占位，重入直接跳过）。
+
+        ★ 19.10.26：原先是裸 ``set`` + 一把全局锁，**两处初始化各写一遍**（外层一次、
+          线程启动失败时再来一次）。换 ``Inflight`` 后语义不变（抢不到就跳、不等结果），
+          调用方也不再需要自己持锁增删。
+        """
+        box = getattr(self, "_formula_flights", None)
+        if not isinstance(box, cacheops.Inflight):
+            box = self._formula_flights = cacheops.Inflight("formula.flight", max_entries=64)
+        return box
+
     def _schedule_formula_fetch(self, task: MagicFlowTaskConfig, domain: str, cache: TierCache) -> None:
         """后台抓取站点公式(每域名单飞;失败短冷却;不阻塞调用方)。"""
-        fails = getattr(self, "_formula_fail_at", None)
-        if fails is None:
-            fails = self._formula_fail_at = {}
-        if time.time() < float(fails.get(domain, 0.0) or 0.0):
-            return
-        flights = getattr(self, "_formula_flights", None)
-        lock = getattr(self, "_formula_flight_lock", None)
-        if flights is None or lock is None:
-            lock = self._formula_flight_lock = threading.Lock()
-            flights = self._formula_flights = set()
-        with lock:
-            if domain in flights:
-                return
-            flights.add(domain)
+        cool = self._formula_cooldown()
+        if cool.hot(domain):
+            return                                  # 上次失败后的退避还没到
+        fly = self._formula_flight()
+        if not fly.try_enter(domain):
+            return                                  # 这个域名已经有线程在抓了
 
         def _worker() -> None:
             try:
@@ -316,21 +334,19 @@ class FormulaMixin:
                     cache.set(domain, cap, SITE_FORMULA_STALE_MAX)
                     self._log(f"站点公式已获取 [{domain}] {cap.note} params={cap.params} extra={cap.extra}")
                 else:
-                    fails[domain] = time.time() + SITE_FORMULA_RETRY
+                    cool.mark(domain, ttl=SITE_FORMULA_RETRY)
                 # 公式就绪后让统计/总览失算失效;保留旧 heavy 供下次请求秒回并后台刷新。
                 self._summary_cache = None
                 self._summary_cache_at = 0.0
                 self._stats_cache = {}
                 self._status_heavy_at = 0.0
             finally:
-                with lock:
-                    flights.discard(domain)
+                fly.leave(domain)
 
         try:
             threading.Thread(target=_worker, daemon=True).start()
         except Exception:
-            with lock:
-                flights.discard(domain)
+            fly.leave(domain)
 
 
     def _site_user_id(self, site) -> Optional[str]:
@@ -361,6 +377,24 @@ class FormulaMixin:
             _cred_uid = self._cred_get(int(getattr(site, "id", 0) or 0), "uid")
             if _cred_uid:
                 return str(_cred_uid).strip()
+        except Exception:
+            pass
+        # ★ 19.10.49：9 个站（咖啡/大青虫/聆音/March/NovaHD/蟹黄堡/Depth/YemaPT/馒头）
+        #   的 cookie **只有 c_secure_pass**，没有 c_secure_uid。而 c_secure_pass 是
+        #   ``base64(json).签名``，JSON 里就带 ``user_id`` —— 解它就能拿到 UID，
+        #   不必绕去 userdata 兜底（那条在 ORM/字段缺失时经常空手）。
+        try:
+            mc = re.search(r"c_secure_pass=([^;]+)", cookie)
+            if mc:
+                import base64
+                import json as _j
+                import urllib.parse
+                head = urllib.parse.unquote(mc.group(1)).strip().split(".")[0]
+                head += "=" * (-len(head) % 4)
+                payload = base64.b64decode(head).decode("utf-8", "ignore")
+                uid = str(_j.loads(payload).get("user_id") or "").strip()
+                if uid.isdigit():
+                    return uid
         except Exception:
             pass
         try:
@@ -428,7 +462,14 @@ class FormulaMixin:
                 self._log(f"回填发布时间:无可用来源(uid={uid or '-'}),跳过", "warning")
                 return 0
 
-        def _norm(s: str) -> str:
+        def _title_norm(s: str) -> str:
+            """标题词序列归一（剥 [前缀] / 分隔符转空格 / 压缩空白）。
+
+            ★ 19.10.16 刻意**不复用** ``norm.norm_key``：两者语义不同——
+            ``norm_key`` 删除分隔符且保留中文（跨源键匹配用），这里要保留
+            空格切成词序列并剥掉方括号前缀（发布年份回填按词比对用）。
+            曾一度与本模块 import 的 ``norm_key`` 同名造成遮蔽，故改名留证。
+            """
             t = (s or "").lower()
             t = re.sub(r"^\[[^\]]*\]", "", t)
             t = re.sub(r"[^a-z0-9]+", " ", t)
@@ -443,7 +484,7 @@ class FormulaMixin:
             h = (getattr(t, "hash", "") or "").lower()
             if not h or h in old:
                 continue
-            dtstr = by_title.get(_norm(getattr(t, "title", "")))
+            dtstr = by_title.get(_title_norm(getattr(t, "title", "")))
             if not dtstr and by_size:
                 sz = float(getattr(t, "size_gb", 0) or 0) * (1024 ** 3)
                 if sz > 0:
@@ -715,10 +756,14 @@ class FormulaMixin:
             "harem_hourly": 0.0,
             "table": [],
             "source": "",
+            "approximate": False,     # ★ 19.10.38：True = 实测折算值，非站点上报
             "age_s": None,
             "stale": False,
             "site_domain": getattr(task, "site_domain", "") or "",
             "site_name": getattr(task, "site_name", "") or "",
+            # ★ 19.10.48：该站对「魔力」的自称（魔力值/金元宝/蟹币值/积分…）。
+            #   空串 = 没抓到，前端兜底「魔力值」。各站货币互不通兑，别统一称呼。
+            "currency": "",
             "user": {},
         }
         try:
@@ -728,7 +773,12 @@ class FormulaMixin:
                 total = extra.get("total_bonus_per_hour")
                 if total is None:
                     total = extra.get("current_bonus_per_hour")
-                out["ok"] = True
+                # ★ 19.10.47：解析「成功」≠ 拿到时魔。货币名不认识 / 表锚点抓错时
+                #   ``extra`` 里一个速率字段都没有 —— 旧版在这里写 0 并置 ``ok=True``，
+                #   等于**冒充「时魔 = 0」把下面的实测兜底挡死**（蟹黄堡就是这个症状：
+                #   页面写着「每小时 131.273 个蟹币值」，界面显示 0）。
+                #   没拿到真值就不填，让 observed 分支接手。
+                out["ok"] = total is not None
                 out["bonus_per_hour"] = float(total or 0)
                 out["a"] = float(extra.get("current_a") or extra.get("base_a") or 0)
                 out["base_bonus"] = float(extra.get("base_bonus") or 0)
@@ -739,6 +789,7 @@ class FormulaMixin:
                 out["harem_hourly"] = float(extra.get("harem_hourly") or 0)
                 out["table"] = extra.get("bonus_table") or []
                 out["source"] = getattr(cap, "source", "") or ""
+                out["currency"] = str(extra.get("currency") or "")
                 # ★ 判定依据链：这份值是刚从站点抓的、还是缓存（Redis）里的旧值？
                 try:
                     _dom = str(getattr(task, "site_domain", "") or "").strip().lower()
@@ -749,10 +800,37 @@ class FormulaMixin:
                     pass
         except Exception as err:
             self._log(f"读取站点上报魔力失败: {err}", "warning")
+        # ★ 19.10.38：站点没有 mybonus.php（如野马PT 这类纯 API 站）时上面的分支永远走不到，
+        #   时魔恒为 0 —— UI 看着就像「取不到」。此时改用**实测值**（live 采样窗口内真实
+        #   魔力增量折算），并用 source="observed" 标明出处，不冒充站点公式。
+        if not out["ok"]:
+            _obs = self._observed_rate(int(getattr(task, "site_id", 0) or 0))
+            if _obs is not None:
+                out["ok"] = True
+                out["bonus_per_hour"] = round(_obs, 4)
+                out["source"] = "observed"
+                out["approximate"] = True
         user = self._site_user_stats(task.site_id)
         out["user"] = user
         out["current_bonus"] = float(user.get("bonus") or 0.0)
         return out
+
+    def _observed_rate(self, site_id: int) -> Optional[float]:
+        """站点上报不可用时的**实测**时魔（每小时魔力）。
+
+        ★ 只走缓存快照（``block=False``），不给列表面带来网络等待；样本不够就返回
+        ``None``（调用方保持原状），绝不让 UI 拿到编造的数字。
+        """
+        if not site_id:
+            return None
+        live = getattr(self, "_live", None)
+        if live is None:
+            return None
+        try:
+            rates = live.rates(int(site_id)) or {}
+        except Exception:  # noqa: BLE001 —— 采样历史不可用时沉默退化为「不知道」
+            return None
+        return observed_bonus_per_hour(rates.get("d_bonus"), rates.get("span_sec"))
 
     def _site_current_bonus(self, site_id: int) -> float:
         """读取指定站点当前魔力值(用于自动保护阈值)。"""

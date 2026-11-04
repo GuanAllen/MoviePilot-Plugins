@@ -86,9 +86,49 @@ from ..common import (
     TORRENT_FETCH_WORKERS,
     task_is_participating,
     task_is_running,
+    torrent_done,
     enabled_of_run_mode,
+    run_mode_of,
     RUN_MODE_SEEDING,
+    RUN_MODE_RUNNING,
+    RUN_MODE_STOPPED,
 )
+
+# 运行状态的中文叫法（只用于日志/回执；UI 由前端自己映射）
+_RUN_MODE_LABEL = {
+    RUN_MODE_RUNNING: "运行中",
+    RUN_MODE_SEEDING: "做种中",
+    RUN_MODE_STOPPED: "已停止",
+}
+
+
+def _under_save_path(torrent: Any, task: Any) -> bool:
+    """种子的保存目录是否落在本任务自己的 ``save_path`` 下（⇒ 是本任务自己下的）。
+
+    为什么需要它：纳管判定 ``is_self_added`` 读 seen 记录（24h 冷却），过期就认不出，
+    于是「自己刷流下的种」下一轮被当成「用户自有资源」永久保护，清理通道从此没有候选
+    （实测 Depth Studio 46 颗托管里 55 条 adopted，含 7 颗站点已删的死种）。
+    目录判据不随 TTL 失效，且与「谁下载的」语义直接对应。
+
+    Args:
+        torrent: 下载器原始种（dict / TorrentInfo 均可，经 ``_kv`` 取值）
+        task: 任务配置（读 ``save_path``）
+
+    Returns:
+        是否位于本任务保存目录（或其子目录）下。
+    """
+    base = str(getattr(task, "save_path", "") or "").strip().rstrip("/")
+    if not base:
+        return False
+    raw = str(_kv(torrent, "save_path", "") or "").strip().rstrip("/")
+    if not raw:
+        return False
+    return raw == base or raw.startswith(base + "/")
+from .. import cacheops
+
+# ★ 19.10.37：任务配置硬伤判定（与 tasks.py 入口必填同一套判据）。
+#   每轮运行开头重评一次，坏了写粘性 last_error、好了清掉 —— 见 _recheck_task_config。
+from .tasks import config_blocker
 
 
 class BrushMixin:
@@ -203,11 +243,14 @@ class BrushMixin:
         if hit is not None:
             return [copy.copy(c) for c in hit]
 
+        # ★ 19.10.24：锁表改用 cacheops.KeyLocks，**单飞语义不变**（仍是阻塞等待）。
+        #   不是修无界增长 —— 三个调用点都传 start_page=0，key 只按「站点×变体×pages」分，
+        #   本来就有界。换它的原因是判定要防**热重载残留的旧裸 dict**：
+        #   `dict.get(key)` 返回 None，接着 `with None:` 直接 TypeError。
         locks = getattr(self, "_site_fetch_locks", None)
-        if locks is None:
-            locks = self._site_fetch_locks = {}
-        lock = locks.setdefault(cache_key, threading.Lock())
-        with lock:
+        if not isinstance(locks, cacheops.KeyLocks):
+            locks = self._site_fetch_locks = cacheops.KeyLocks("brush.sitefetch", max_entries=128)
+        with locks.get(cache_key):
             # double-check:可能已被同站的其他任务填充
             hit = cache.get(cache_key, SITE_FETCH_TTL)
             if hit is not None:
@@ -853,10 +896,11 @@ class BrushMixin:
         """
         keys = self._same_site_keys(task)
         if not keys:
-            return {"matched": 0, "adopted": 0, "already": 0, "protected": 0}
+            return {"matched": 0, "adopted": 0, "already": 0, "protected": 0, "self_by_dir": 0}
         store = self._store
         adopted_set = store.get_adopted(task.id) if store else set()
         matched = adopted = already = 0
+        _self_by_dir = 0     # 落在本任务 save_path 下 → 自己下的，不纳管（19.11.11）
         to_tag: List[str] = []
         to_adopt: List[str] = []
         # ★ 跨站来源份（H&R 保种期内）不属于任何任务：不纳管、不改标签、不保护
@@ -907,17 +951,30 @@ class BrushMixin:
             # 本插件自己下载/复用的种子(刷流)→ 不保护,正常按效率清理
             if store and store.is_self_added(task.id, h):
                 continue
+            # ★ 19.11.11：**落在本任务自己保存目录里的种**同样是「自己下的」，不纳管。
+            #   为什么不能只靠 `is_self_added`：它读的是 seen 记录（24h 冷却），过期就认不出来 →
+            #   下一轮纳管就把「自己刷流下的种」认成「用户自有资源」，从此永不删。
+            #   实测 Depth Studio：托管 46 颗里 55 条 adopted（含 7 颗站点已删的死种），
+            #   清理通道被这层软保护全挡住 —— 每轮日志「低效 0」不是判据宽，是根本没候选。
+            #   目录判据不随 TTL 失效：种躺在本任务 save_path 下 ⇒ 是本任务下的。
+            if _under_save_path(t, task):
+                _self_by_dir += 1
+                continue
             # 本机早已存在的同站种子 → 纳管并永久保护(用户自有资源)
             to_adopt.append(h)
             adopted += 1
 
+        _took = 0
         if to_tag:
             # 🔎 标签审计:纳管同站种子(打任务标签)
+            # ★ 19.10.40：先落标签再报数 —— 旧写法在 `_tag_assign` **之前**就打
+            #   「纳管 N 个」，而同站另一个任务名下的种会被占岗闸门整批跳过，
+            #   日志于是天天说「纳管 20 个」但实际 0 个（YemaPT 两任务互抢时误导极强）。
+            _took = self._tag_assign(task, to_tag, reason="同站纳管")
             self._log(
-                f"[标签审计] 纳管同站种子 {len(to_tag)} 个 → 标签「{task.brush_tag}」"
+                f"[标签审计] 同站纳管候选 {len(to_tag)} 个 → 实际接管 {_took} 个"
+                f" → 标签「{task.brush_tag}」"
             )
-        if to_tag:
-            self._tag_assign(task, to_tag, reason="同站纳管")
         if to_tag and self._store:
             try:
                 self._store.journal.record(
@@ -925,7 +982,7 @@ class BrushMixin:
                     kind="tag",
                     items=[OperationItem(
                         hash="",
-                        title=f"同站纳管·补标签 {len(to_tag)} 个",
+                        title=f"同站纳管·补标签 {_took}/{len(to_tag)} 个",
                         reason=f"→「{task.brush_tag}」",
                         source="adopt",
                         tags=f"→{task.brush_tag}",
@@ -946,8 +1003,12 @@ class BrushMixin:
             self._log(
                 f"魔流 [{task.name}] 同站纳管:本站 tracker 种子 {matched} 个,"
                 f"新纳管 {adopted} 个(已在管 {already})"
+                + (f",跳过自有目录 {_self_by_dir} 个(本任务自己下的)" if _self_by_dir else "")
             )
-        return {"matched": matched, "adopted": adopted, "already": already}
+        return {
+            "matched": matched, "adopted": adopted, "already": already,
+            "self_by_dir": _self_by_dir,
+        }
 
     def _watch_tag_integrity(self, task: MagicFlowTaskConfig, count: int) -> None:
         """托管数看门狗:与上一轮对比,骤降至一半以下 → 记「托管种异常丢失」。
@@ -1028,14 +1089,56 @@ class BrushMixin:
         # ★ 基线跟随实况：不再 max(prev,c)（只升不降 → 一次下降后永久误报）
         self._store.set_last_tagged_count(task.id, c)
 
+    def _recheck_task_config(self, task: MagicFlowTaskConfig) -> str:
+        """每轮运行开头重评任务配置硬伤：坏了写**粘性** ``last_error``，好了清掉。
+
+        ★ 19.10.37：保存目录空 / 下载器不可用这两类错，以前只写一条 error 日志，
+        ``last_error`` 不写 → health 的 H1（看 ``last_error``）永远不亮；就算写了，
+        检查轮询每分钟带 ``added=0`` 分账一次也会把它冲掉。现在走粘性通道：
+        只有这里重判为通过才清（``clear_run_error``），``record_run_start`` 与
+        ``settle`` 的计数都清不掉。
+
+        Args:
+            task: 任务配置
+
+        Returns:
+            空串 = 配置齐全；非空 = 配置错话术（已写进 ``last_error``）
+        """
+        _dl = self._get_downloader(getattr(task, "downloader", "") or "")
+        msg = config_blocker(
+            getattr(task, "task_type", "") or "",
+            getattr(task, "save_path", "") or "",
+            bool(_dl and getattr(_dl, "is_available", False)),
+            str(getattr(task, "downloader", "") or ""),
+        )
+        if self._store:
+            if msg:
+                self._store.record_run_error(task.id, msg, sticky=True)
+            else:
+                self._store.clear_run_error(task.id)
+        return msg
+
     def _brush_impl(self, task_id: str, dry: bool = False) -> None:
         """抓取站点候选并补充优质魔力种子(刷流,v5 流程)。"""
         task = self._get_task_config(task_id)
         if not task or not task_is_running(task):
+            # ★ 19.11.10：这条以前**完全没有日志** —— 用户在「做种中/已停止」的任务上点
+            #   「立即运行」，接口回「已启动」、后台一行日志都不留，看着像点了没反应
+            #   （实测 6 次 POST /run 全是这个静默 return，排查时被误当成并发闸门）。
+            #   静默的「什么都没做」必须可见（铁律 8）：写明当前运行状态 + 哪条流程被跳过。
+            if task is not None:
+                _mode = run_mode_of(task)
+                self._log(
+                    f"魔流 [{task.name}] 本轮跳过：任务当前是「{_RUN_MODE_LABEL.get(_mode, _mode)}」"
+                    f"（run_mode={_mode}）—— 该状态不跑刷流/清理流程；"
+                    f"要跑请先把任务切到「运行中」"
+                )
             return {"status": "skipped", "reason": "任务未启用"}
         self._log(f"魔流 [{task.name}] brush 开始(任务 {task_id})")
         if self._store:
             self._store.record_run_start(task.id)
+        # ★ 19.10.37：配置硬伤先重评（写/清粘性 last_error），再谈这一轮干不干活。
+        self._recheck_task_config(task)
         if task.active_time_range and not self._is_in_active_time(task.active_time_range):
             self._log(f"魔流 [{task.name}] 当前不在活跃时间段,跳过")
             return {"status": "skipped", "reason": "不在活跃时间段"}
@@ -1988,12 +2091,14 @@ class BrushMixin:
         """执行魔流核心流程(内部实现)。"""
         self._last_run_times[task.id] = time.time()
         self._store.record_run_start(task.id)
+        # ★ 19.10.37：配置硬伤先重评（写/清粘性 last_error）。
+        self._recheck_task_config(task)
 
         try:
             downloader = self._get_downloader(task.downloader)
             if not downloader or not downloader.is_available:
+                # 粘性 last_error 已由 _recheck_task_config 写好，这里只留日志与短路。
                 self._log(f"下载器不可用: {task.downloader}", "error")
-                self._store.record_run_error(task.id, "下载器不可用")
                 return
 
             # ★ 3.25.0: Check 也要纳管同站已有种。
@@ -2021,13 +2126,19 @@ class BrushMixin:
             except Exception as _ode:  # noqa: BLE001
                 self._log(f"魔流 [{task.name}] 点播结算异常: {_ode}", "warning")
 
-            # ★ 17.2.0 §1 音乐：专辑下完 → MP 手动整理入库（硬链接进 /music，种子继续做种）
+            # ★ 17.2.0 §1 音乐：下完的种 → 入库（★ 19.12.0 起只入队，真正搬动在后台线程）
             try:
-                _ms = self._music_settle_import()
-                if _ms.get("settled"):
-                    self._dbg(f"魔流 [{task.name}] 音乐整理入库 {_ms.get('settled')} 个")
+                self._music_settle_import()
             except Exception as _mse:  # noqa: BLE001
-                self._log(f"魔流 [{task.name}] 音乐整理异常: {_mse}", "warning")
+                self._log(f"魔流 [{task.name}] 音乐入库异常: {_mse}", "warning")
+
+            # ★ 19.12.0：媒体库扫描去抖 —— 入库完成后**不立刻扫**，统一在这里到点触发一次。
+            #   Navidrome 的 startScan 是全局单例，连续入库多颗种时各自触发会互相打断，
+            #   可能一直扫不完（实测 2873→4000 首要几分钟）。这里每轮只做几次比较。
+            try:
+                self._music_scan_tick()
+            except Exception as _sce:  # noqa: BLE001
+                self._log(f"魔流 [{task.name}] 媒体库扫描异常: {_sce}", "warning")
 
             # ★ 3.43.0: 标签主权巡检 —— 别的插件/人私下挂的种立即归流、
             #   其他标签一律摘掉（先记账本再摘），MP 来源（订阅/自下）直接进资源。
@@ -2298,7 +2409,7 @@ class BrushMixin:
             if h and (h or "").lower() in manual_paused:
                 skipped += 1
                 continue
-            if float(getattr(t, "progress", 0) or 0) < 0.999:
+            if not torrent_done(t):
                 skipped += 1
                 continue
             if not h:

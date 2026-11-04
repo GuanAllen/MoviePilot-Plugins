@@ -4,7 +4,7 @@
 // 数据向下（defineModel / props）、事件向上（emit）；子组件不直接改父状态、不调父方法。
 // 展示态纯函数（stateColor / stateLabel / torrentProgressPct / torrentIsPaused /
 // torrentPauseLabel / torrentResumeLabel）真值源仍在 useSeeding；此处为 P4 拆分随模板
-// 搬入的同口径实现（与 components/tabs/SeedingTab.vue 保持一致）。
+// 搬入的同口径实现（与 components/tabs/SeedingTab.js 保持一致）。
 import { formatBytes } from '../../../../utils'
 import { TORRENT_STATE_TEXT, TORRENT_PAUSED_STATES } from '../../constants'
 

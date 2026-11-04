@@ -1,7 +1,21 @@
 # -*- coding: utf-8 -*-
-"""魔流 · core —— 生命周期与调度（init/service/scheduler/运行状态落地）。
+"""魔流 · core —— 生命周期与调度 + 环境能力入口（log / 下载器 / 站点 / 任务配置）。
 
 （由原 `__init__.py` 拆分为 mixin，逐字搬运，行为不变。）
+
+★ 一个文件装**两件事**：调度（init / service / scheduler / 运行状态落地）
+  ＋ **环境能力**（``_log`` / ``_dbg`` / ``_get_downloader`` / ``_get_site`` / ``_list_sites``
+  / ``_get_task_config`` / ``_cred_get`` / ``_torrent_site_name``）。
+  后者是**基础设施寄居**：全库 1691 次跨文件 ``self._`` 调用里这几项占 700+ 次
+  （``_log`` 428 / ``_get_downloader`` 84 / ``_get_site`` 51 / ``_get_task_config`` 31），
+  而 ``_get_downloader`` 在本文件里**一次都没被自己用过** —— 定义在此只是为了"大家都能拿到"。
+
+  ★ 19.10.19：``_get_downloader`` 已下沉到 ``downloader_ops.acquire``（本文件只留一行委托，
+  调用点无需改动），四个删除闸门从此只有一份实现。
+
+  ★ 19.10.21：``_log`` / ``_dbg`` / ``_get_site`` / ``_list_sites`` / ``_list_downloaders``
+  已下沉到 ``envops``（同样只留一行委托，673 处调用点零改动）。留下来的
+  ``_get_task_config`` 是**本插件自己的运行态字典**，不是外部环境，故不进 ``envops``。
 """
 
 import threading
@@ -16,14 +30,17 @@ from app.api.endpoints.plugin import register_plugin_api
 from app.scheduler import Scheduler
 from app.schemas.types import EventType
 from app.sdk.events import Event, eventmanager
+from app.schemas import Response
 from app.sdk.logging import logger
 
+from ..dlops import pause as dl_pause   # ★ 19.10.13 下载器写操作唯一出口（归因 + 防抖）
 from ..downloader_ops import (
     DownloaderAdapter,
     set_dl_gate_base,
     QB_PAUSED_STATES,
 )
 from .. import downloader_ops
+from .. import envops
 from ..fetcher import (
     set_request_interval,
     set_browse_debug,
@@ -45,6 +62,11 @@ from ..tags import (
     STATE_BRUSH,
     is_magicflow_tag,
 )
+
+# ★ 19.11.15 推送审计：每次「加种」记一条（成功也记、失败更记），落插件数据槽的环形表。
+#   用途只有一个 —— 事后能回答「这条推没推、推给谁、报了什么」，不改任何行为。
+_PUSH_AUDIT_KEY = "push_audit"
+_PUSH_AUDIT_KEEP = 300
 
 
 from .. import common  # noqa: F401
@@ -72,10 +94,13 @@ from ..common import (
     OPTIONS_TTL,
     RECOMMEND_INTERVAL_MINUTES,
     RESEED_BATCH,
+    RESEED_CFG_KEY,
     RESEED_DAILY_PER_SITE,
     RESEED_INTERVAL_MINUTES,
     RESEED_MIN_SIZE_GB,
+    RULES_BOOT_DELAY_SEC,
     RULES_INTERVAL_MINUTES,
+    RULES_TICK_MINUTES,
     SEED_UP_LIMIT_APPLY_INTERVAL,
     SEED_UP_LIMIT_KBPS_DEFAULT,
     SIGNIN_INTERVAL_MINUTES,
@@ -323,6 +348,22 @@ class CoreMixin:
             self._reseed_batch = int(_rf(raw_config.get("reseed_batch"), float(RESEED_BATCH)))
             self._reseed_min_size_gb = _rf(raw_config.get("reseed_min_size_gb"), RESEED_MIN_SIZE_GB)
             self._reseed_dry = bool(raw_config.get("reseed_dry", True))
+            # ★ 19.10.63 直连搜索站（IYUU 不收录、我们自己能搜的站）
+            _rs_search = raw_config.get("reseed_search_sites")
+            if isinstance(_rs_search, str):
+                _rs_search = [x.strip() for x in _rs_search.replace("，", ",").split(",")]
+            if not isinstance(_rs_search, list):
+                _rs_search = []
+            self._reseed_search_sites = [
+                str(x).strip().lower() for x in _rs_search if str(x).strip()]
+            self._reseed_search_kw = max(0, int(_rf(raw_config.get("reseed_search_kw"), 0.0)))
+            # ★ 19.10.64 一次性迁移：19.10.63 的直连搜索配置只写过 plugin-data
+            #   （`RESEED_CFG_KEY`），而 `settings.py` 保存设置时会
+            #   `save_data(RESEED_CFG_KEY, {})` 把覆盖项清空 —— 升级后第一次点保存
+            #   就会把「直连搜索站」悄悄清成空。这里在配置加载时把覆盖项「认领」成
+            #   正式配置，用户在设置面看到的就是真值，保存也只会保存这个值。
+            #   覆盖项为空后本步自然无操作（幂等，见 `_adopt_legacy_reseed_search`）。
+            self._adopt_legacy_reseed_search()
         except Exception as err:  # noqa: BLE001
             self._log(f"全站辅种:配置读取失败 {err}", "warning")
 
@@ -640,16 +681,27 @@ class CoreMixin:
         #   ``protected_torrents``（手动保留 / 硬保护）摘除；纳管身份仍留在
         #   ``adopted_hashes``（软保护，``_protection_sets`` 口径不变）。
         #   线上实测 525 条（5 个魔力任务的并集），其中 520 条是纳管灌进去的。
+        # ★ 19.11.10：v1 只跑一次就永久标记，**且只在「摘除数 > 0」时记日志** ——
+        #   于是「跑了但一条没摘」与「压根没跑」在日志里长得一模一样（铁律 8）。
+        #   线上实测残留仍在：3 个任务 20 条（YemaPT 5 / 蟹黄堡 2 / Depth Studio 13），
+        #   且 3 个任务的 protected 集合**全部**落在自己的 adopted 里 = 纯残留、无一条真手动保留。
+        #   故 v2 重跑同一幂等清理，并把「本次摘除数（含 0）」一律写进日志。
+        #   安全性：只摘「既手动保留、又在同任务 adopted 里」的 hash —— 这类种在
+        #   ``_protection_sets`` 里本来就被 ``hard -= adopted`` 剥成软保护，v2 只是让
+        #   删除闸门的读法回到与唯一真值源一致，不会让任何「仅手动保留」的种失去保护。
         try:
             _mig6 = dict(self.get_data("rules_migrations") or {})
-            if not _mig6.get("adopt_unprotect_v1"):
+            if not _mig6.get("adopt_unprotect_v2"):
                 _n6 = int(self._store.purge_adopted_protected() or 0)
                 _mig6["adopt_unprotect_v1"] = True
+                _mig6["adopt_unprotect_v2"] = True
                 self.save_data(key="rules_migrations", value=_mig6)
-                if _n6:
-                    logger.info("纳管即保护:历史保护记录已摘除 %d 条(纳管保留在 adopted_hashes)", _n6)
-        except Exception:  # noqa: BLE001
-            pass
+                logger.info(
+                    f"纳管即保护:历史保护记录已摘除 {_n6} 条"
+                    f"(纳管保留在 adopted_hashes；0 条 = 无残留，不是没跑)"
+                )
+        except Exception as _mig6_err:  # noqa: BLE001
+            logger.warning(f"纳管即保护:历史保护记录摘除失败（不影响启动，下次启动重试）：{_mig6_err!r}")
 
         # ★ 删除唯一入口（Master 2026-10-05「删除令出一门」补洞）：把「硬保护闸门 + 统一台账」
         #   注册成**进程级安装器** —— 之后任何 ``DownloaderAdapter(...)``（含不经 _get_downloader
@@ -699,6 +751,12 @@ class CoreMixin:
                 if callable(_fn):
                     _fn(_hs, _site_domain, _tag)
             _dlops.set_add_journal_hook(_add_journal_hook)
+
+            def _push_audit_hook(_payload):
+                _fn = getattr(self, "_push_audit", None)
+                if callable(_fn):
+                    _fn(_payload)
+            _dlops.set_add_audit_hook(_push_audit_hook)
             self._hrbills_store()
             logger.info("魔流H&R账单:开账钩子已注册（账单已生效，接入 _hr_obligation 第三来源）")
         except Exception as _hr_wire_err:  # noqa: BLE001
@@ -985,11 +1043,17 @@ class CoreMixin:
                     "trigger": "interval",
                     "func": self.rules_watch,
                     "kwargs": {
-                        "minutes": RULES_INTERVAL_MINUTES,
-                        "jitter": self._jitter_seconds(RULES_INTERVAL_MINUTES),
+                        # ★ 19.10.9：节拍 ≠ 周期。job 每 RULES_TICK_MINUTES 醒一次，
+                        #   是否真探由 rules_watch 按持久化的 rules_probe_state 判定。
+                        #   踩过：直接挂 10080min 的 interval，首轮要等满 7 天不被重载，实际永不触发。
+                        "minutes": RULES_TICK_MINUTES,
+                        "jitter": self._jitter_seconds(RULES_TICK_MINUTES),
                     },
                 }
             )
+            # ★ 19.10.9：加载后补跑一次（不阻塞加载）。调度器首轮 = 注册 + 一个周期，
+            #   靠它兜不住「刚起就重载」的场景；rules_watch 自带时间戳门控，重复调用幂等。
+            self._rules_bootstrap_async()
         # ★ 标签模型维护（低频 hourly）：静默-新超时归位 + 状态账本快照。
         services.append(
             {
@@ -1211,6 +1275,10 @@ class CoreMixin:
             "reseed_batch": int(getattr(self, "_reseed_batch", RESEED_BATCH) or 1),
             "reseed_min_size_gb": float(getattr(self, "_reseed_min_size_gb", RESEED_MIN_SIZE_GB) or 0.0),
             "reseed_dry": bool(getattr(self, "_reseed_dry", True)),
+            # ★ 19.10.63 直连搜索（IYUU 不收录的站）：必须出现在设置面输出里，
+            #   否则前端保存时按默认值回填 = 又一次静默关闭。
+            "reseed_search_sites": list(getattr(self, "_reseed_search_sites", None) or []),
+            "reseed_search_kw": int(getattr(self, "_reseed_search_kw", 0) or 0),
             # ★ 认领（claim）
             "claim_enabled": bool(getattr(self, "_claim_enabled", False)),
             "claim_dry": bool(getattr(self, "_claim_dry", True)),
@@ -1580,11 +1648,15 @@ class CoreMixin:
                 if paused and (h or "").lower() not in manual_paused:
                     resume_hashes.append(h)
         if pause_hashes:
-            n, _e = downloader.pause_torrents(pause_hashes)
-            out["paused"] = int(n or 0)
-            if _e:  # ★ P4：下载器错误不再丢弃（旧实现 `n, _e = ...` 后 _e 直接被扔掉）
-                out["pause_error"] = str(_e)
-                logger.warning(f"[run_mode] 暂停 {len(pause_hashes)} 个种时下载器报错：{_e}")
+            # ★ 19.10.13：统一走 dlops。遣散(stopped) / 防非免费偷下(seeding) 都是
+            #   「必须停」→ force 跳过账本守卫；仍留归因日志（by=run_mode:<mode>）与防抖。
+            _pr = dl_pause(self, pause_hashes, by=f"run_mode:{mode}",
+                           reason="按运行状态调整", force=True)
+            out["paused"] = int(_pr.get("done") or 0)
+            _pe = _pr.get("error") or ""
+            if _pe:  # ★ P4：下载器错误不再丢弃（旧实现 `n, _e = ...` 后 _e 直接被扔掉）
+                out["pause_error"] = str(_pe)
+                logger.warning(f"[run_mode] 暂停 {len(pause_hashes)} 个种时下载器报错：{_pe}")
         if resume_hashes:
             n, _e = downloader.resume_torrents(resume_hashes)
             out["resumed"] = int(n or 0)
@@ -1655,6 +1727,71 @@ class CoreMixin:
             self._log(f"魔流 [{task.name}] 切状态后单种限速重算失败:{_lim_exc}", "warning")
         return out
 
+    def _adopt_legacy_reseed_search(self) -> None:
+        """认领 19.10.63 遗留的直连搜索覆盖项，然后**把覆盖项摘掉**。
+
+        两步缺一就是「设置面显示 A、实际跑 B」的分裂：
+
+        ① **认领**：19.10.63 只把 ``search_sites``/``search_kw`` 写进 plugin-data
+           覆盖项，正式配置里没有。正式配置为空时把覆盖项的值接管过来。
+        ② **摘除**：覆盖项里的这两个键**一律删掉**，因为 ``_reseed_cfg()`` 是
+           「覆盖项优先」—— 留着它，正式配置就永远失效（设置面读正式配置、
+           实际跑覆盖项，用户改设置毫无效果）。这是 19.10.64 的 bug：当时想的是
+           「清空留给设置面保存时统一做」，但用户完全可能永远不点保存。
+           其余键（``enabled``/``dry``/``batch``…）是**真·临时覆盖**，保留。
+
+        幂等：覆盖项里没有这两个键时直接返回，可长期挂在启动流程里。
+        """
+        cur = list(getattr(self, "_reseed_search_sites", None) or [])
+        kw = int(getattr(self, "_reseed_search_kw", 0) or 0)
+        try:
+            legacy = self.get_data(RESEED_CFG_KEY)
+        except Exception:  # noqa: BLE001
+            return
+        if not isinstance(legacy, dict):
+            return
+        if ("search_sites" not in legacy) and ("search_kw" not in legacy):
+            return
+        if not cur:
+            doms = [str(x).strip().lower() for x in (legacy.get("search_sites") or [])
+                    if str(x).strip()]
+            if doms:
+                cur = doms
+                try:
+                    kw = max(0, int(legacy.get("search_kw") or 0))
+                except (TypeError, ValueError):
+                    kw = 0
+                self._reseed_search_sites = cur
+                self._reseed_search_kw = kw
+                self._log(f"全站辅种:已接管历史直连搜索配置 {cur}（search_kw={kw}）")
+        rest = {k: v for k, v in legacy.items()
+                if k not in ("search_sites", "search_kw")}
+        try:
+            self.save_data(key=RESEED_CFG_KEY, value=rest)
+            self._log(f"全站辅种:已摘除直连搜索的接口覆盖项（以正式配置为准：{cur or '空'}）")
+        except Exception as err:  # noqa: BLE001
+            self._log(f"全站辅种:摘除直连搜索覆盖项失败 {err}", "warning")
+
+    def apply_reseed_search_cfg(self, sites: Optional[List[str]] = None,
+                                kw: Optional[int] = None) -> Dict[str, Any]:
+        """把直连搜索设置写进**正式配置**并落盘（辅种接口与迁移逻辑共用）。
+
+        为什么不写 plugin-data 覆盖项：``_reseed_cfg()`` 的合并口径是「覆盖项优先」，
+        这些键若只写覆盖项，就会出现「设置面显示 A / 实际跑 B」，而且每次启动的
+        认领会把覆盖项当遗留项摘掉 —— 用户看到的「保存成功」等于静默丢失。
+        单参数传 ``None`` = 该项不动（便于只改一个键）。
+
+        返回写入后的 ``{search_sites, search_kw}``。
+        """
+        if sites is not None:
+            self._reseed_search_sites = [str(x).strip().lower()
+                                         for x in (sites or []) if str(x).strip()]
+        if kw is not None:
+            self._reseed_search_kw = max(0, int(kw or 0))
+        self._save_config()
+        return {"search_sites": list(getattr(self, "_reseed_search_sites", None) or []),
+                "search_kw": int(getattr(self, "_reseed_search_kw", 0) or 0)}
+
     def _save_config(self) -> None:
         """保存全局设置和全部任务配置"""
         self.update_config(self._current_config())
@@ -1683,14 +1820,17 @@ class CoreMixin:
     # ---------------------------------------------------------
 
     def _log(self, message: str, level: str = "info") -> None:
-        """写插件日志。"""
-        text = f"魔流:{message}"
-        getattr(logger, level if hasattr(logger, level) else "info")(text)
+        """写插件日志（★19.10.21 实现已下沉到 ``envops.log``，此处只留委托）。
+
+        为什么搬走：本方法被 532 处跨文件调用，而 core.py 是「生命周期 + 调度」层 ——
+        写日志是基础设施，不该由服务层定义。调用点无需改动（49 个 mixin 继续用
+        ``self._log()``，工具里的假 host 也照旧只认这个名字）。
+        """
+        envops.log(message, level)
 
     def _dbg(self, message: str) -> None:
-        """调试日志:仅在全局「调试日志」开启时输出。"""
-        if getattr(self, "_debug_log", False):
-            self._log(f"[调试] {message}")
+        """调试日志:仅在全局「调试日志」开启时输出（实现在 ``envops.debug``）。"""
+        envops.debug(self, message)
 
     def _set_phase(self, task_id: str, phase: str, detail: str = "") -> None:
         """上报当前运行阶段(detail 为阶段内细粒度进度,供前端显示)。"""
@@ -1702,82 +1842,24 @@ class CoreMixin:
             pass
 
     def _get_site(self, site_id: int):
-        """通过站点 ID 获取站点对象。"""
-        try:
-            from app.db.oper.site import SiteOper
-            return SiteOper().get(site_id)
-        except Exception as err:
-            self._log(f"获取站点失败: {err}", "error")
-            return None
+        """通过站点 ID 获取站点对象（MP SDK 访问，实现在 ``envops.get_site``）。
+
+        调用点 52 处、跨 14 个文件，委托后一律不改；站点对象含 cookie/passkey，
+        调用方不得回显（护栏⑰ ``check_secret_echo`` 盯出口）。
+        """
+        return envops.get_site(self, site_id)
 
     def _list_sites(self) -> List[Dict[str, Any]]:
         """列出可选站点（SitesHelper 优先，空表/异常回落 MP 站点登记表 SiteOper）。
 
-        ``SitesHelper().get_indexers()`` 依赖 MP「用户认证」（``auth_level >= 2``）：
-        认证失效时它返回空表，站点清单、任务编辑器下拉、站点报表选择器会一起空掉。
-        MP 的站点登记表（``app.db.oper.site.SiteOper``）不过这道闸门，故作为回落
-        ——与 ``features/reseed.py:158 _reseed_mp_sites`` 同口径。
-
-        回落告警按「状态变化」去重（``_site_fallback_note``）：``_list_sites`` 被多条
-        worker 线每轮调用，不去重会把日志刷爆（同 15.8.9 的告警去重思路）。
+        实现在 ``envops.list_sites``（19.10.21 下沉）：认证失效的回落策略与告警去重
+        （``_site_fallback_note``）都在那里，本方法只转发 ``self``。
         """
-        out: List[Dict[str, Any]] = []
-        try:
-            from app.sdk.network import SitesHelper
-            for item in SitesHelper().get_indexers() or []:
-                if not isinstance(item, dict):
-                    continue
-                dom = str(item.get("domain") or "").strip().lower()
-                sid = item.get("id")
-                if sid is None and not dom:
-                    continue
-                out.append({
-                    "id": sid,
-                    "name": item.get("name") or dom or "",
-                    "domain": dom,
-                })
-        except Exception as err:
-            self._log(f"列出站点失败: {err}", "error")
-        if out:
-            self._site_fallback_note = False  # 认证恢复 → 下次回落重新告警
-            return out
-        noted = bool(getattr(self, "_site_fallback_note", False))
-        try:
-            from app.db.oper.site import SiteOper
-            for site in SiteOper().list() or []:
-                dom = str(getattr(site, "domain", "") or "").strip().lower()
-                sid = getattr(site, "id", None)
-                if sid is None and not dom:
-                    continue
-                out.append({
-                    "id": sid,
-                    "name": getattr(site, "name", "") or dom,
-                    "domain": dom,
-                })
-            if not noted:
-                self._log(f"站点清单回落站点登记表: {len(out)} 个", "warning")
-        except Exception as err:  # noqa: BLE001
-            if not noted:
-                self._log(f"列出站点失败（站点登记表回落也失败）: {err}", "error")
-        self._site_fallback_note = True
-        return out
+        return envops.list_sites(self)
 
     def _list_downloaders(self) -> List[Dict[str, Any]]:
-        """列出可选下载器。"""
-        out: List[Dict[str, Any]] = []
-        try:
-            from app.sdk.services import DownloaderHelper
-            configs = DownloaderHelper().get_configs() or {}
-            for name in configs.keys():
-                out.append({"title": str(name), "value": str(name)})
-        except Exception as err:
-            self._log(f"列出下载器失败: {err}", "error")
-        if not out:
-            out = [
-                {"title": "qBittorrent", "value": "qbittorrent"},
-                {"title": "Transmission", "value": "transmission"},
-            ]
-        return out
+        """列出可选下载器（实现在 ``envops.list_downloaders``）。"""
+        return envops.list_downloaders(self)
 
 
     def _try_begin_run(self, task_id: str) -> bool:
@@ -1806,6 +1888,29 @@ class CoreMixin:
     # ---------------------------------------------------------
     # 全局并发闸门(插件级):限制同时在飞的 worker 数
     # ---------------------------------------------------------
+
+    def _rules_bootstrap_async(self) -> None:
+        """★ 19.10.9：插件加载后补跑一次站点规则探测（后台线程，不阻塞加载）。
+
+        为什么要它：调度器 interval 的首轮 = 注册时刻 + 一整个周期，而插件每次部署/热重载
+        都会「移除 + 重新注册」服务 → 周期被反复归零（实测 17h 内 157 次重载、0 次探测）。
+        这里在加载 RULES_BOOT_DELAY_SEC 秒后主动调一次 ``rules_watch``，由它自己按持久化的
+        时间戳判断「要不要真探」，所以重复调用是幂等的（多次重载不会重复探测）。
+        """
+        def _run() -> None:
+            try:
+                time.sleep(float(RULES_BOOT_DELAY_SEC))
+                self.rules_watch()
+            except Exception as err:  # noqa: BLE001
+                try:
+                    self._log(f"站点规则:启动补跑失败:{err}", "warning")
+                except Exception:  # noqa: BLE001
+                    pass
+
+        try:
+            threading.Thread(target=_run, name="mf-rules-boot", daemon=True).start()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _acquire_worker_slot(self, label: str = "") -> bool:
         """非阻塞抢一个全局 worker 槽;抢不到就跳过本轮(不排队,避免堆积)。"""
@@ -1847,33 +1952,149 @@ class CoreMixin:
         return int(max(3.0, min(90.0, sec)))
 
     def _get_task_config(self, task_id: str) -> Optional[MagicFlowTaskConfig]:
-        """获取任务配置。"""
+        """获取任务配置（就在本层：它是插件**自己的运行态字典**，不是外部环境）。
+
+        ★ 19.10.21：同批下沉的 ``_log``/``_get_site``/``_list_sites``/``_list_downloaders``
+        都是「访问 MoviePilot 外部世界」，``envops`` 只装这一类；任务配置是内部状态，
+        放进去会把「外」和「内」混成一个模块，故留在 core（调用点 32 处零改动）。
+        """
         return self._task_configs.get(task_id)
 
-    def _get_downloader(self, downloader_name: str = "qbittorrent") -> Optional[DownloaderAdapter]:
-        """获取下载器适配器。"""
+    def _push_task_of_tag(self, tag: str) -> Tuple[str, str]:
+        """标签 → ``(任务 id, 任务名)``。
+
+        标签是加种时唯一可靠的归因线索（``魔流-<站>-<职务>``），而**只有任务知道
+        自己刷哪个标签**，所以先按 ``brush_tag`` 反查任务，再退回「按标签前缀认」。
+        解不出就如实返回空串 —— 审计表里宁可留空，不要瞎猜一个任务。
+        """
+        t = str(tag or "").strip()
+        if not t:
+            return "", ""
         try:
-            dl = DownloaderAdapter(downloader_name=downloader_name)
-            dl.tags_enabled = self._show_qb_tags()
-            # ★ 删除唯一入口（Master 2026-10-05「删除令出一门」）：挂上硬保护闸门 + 统一台账。
-            #   同时打到类属性上，覆盖不走本方法而直接 `DownloaderAdapter(...)` 的调用点。
-            try:
-                dl.gate = self._delete_gate
-                # ★ 15.8.15：手动删库内资产专用闸门（只跳过第 5 类库内资产）。
-                dl.gate_manual = self._delete_gate_manual
-                # ★ 17.4.0：只摘种专用闸门（同样只跳过第 5 类）—— 见 downloader_ops.delete_torrents。
-                dl.gate_strip = self._delete_gate_strip
-                dl.deletion_log = self._delete_log_cb
-                type(dl)._global_gate = self._delete_gate
-                type(dl)._global_gate_manual = self._delete_gate_manual
-                type(dl)._global_gate_strip = self._delete_gate_strip
-                type(dl)._global_dlog = self._delete_log_cb
-            except Exception:  # noqa: BLE001
-                pass
-            return dl
-        except Exception as e:
-            self._log(f"获取下载器失败: {e}", "error")
-            return None
+            for tid, cfg in (self._task_configs or {}).items():
+                if str(getattr(cfg, "brush_tag", "") or "").strip() == t:
+                    return str(tid), str(getattr(cfg, "name", "") or "")
+        except Exception:  # noqa: BLE001
+            pass
+        return "", ""
+
+    def _push_audit(self, payload: Dict[str, Any]) -> None:
+        """记一条推送审计（``downloader_ops`` 加种钩子的落点）。**绝不抛异常**。
+
+        只记事实（谁推的 / 推什么 / 成败 / 原始报错），不做判断、不触发任何动作 ——
+        审计表的用途是排障，不是决策依据。
+        """
+        try:
+            data = dict(payload or {})
+            tag = str(data.get("tag") or "")
+            tid, tname = self._push_task_of_tag(tag)
+            site = str(data.get("site_domain") or "")
+            if not site and tag.startswith("魔流-"):
+                site = tag.split("-")[1] if len(tag.split("-")) > 1 else ""
+            entry = {
+                "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "ok": bool(data.get("ok")),
+                "task_id": tid,
+                "task_name": tname,
+                "site": site,
+                "tag": tag,
+                "hash": str(data.get("hash") or ""),
+                "save_path": str(data.get("save_path") or ""),
+                "hit_and_run": bool(data.get("hit_and_run")),
+                "content": str(data.get("content") or ""),
+                "bytes": int(data.get("bytes") or 0),
+                "error": str(data.get("error") or ""),
+            }
+            rows = self.get_data(_PUSH_AUDIT_KEY)
+            if not isinstance(rows, list):
+                rows = []
+            rows.insert(0, entry)
+            self.save_data(key=_PUSH_AUDIT_KEY, value=rows[:_PUSH_AUDIT_KEEP])
+            if not entry["ok"]:
+                self._log(
+                    "推送失败：%s %s → %s（%s）" % (
+                        entry["task_name"] or tag or "未知任务",
+                        entry["hash"][:12] or "-",
+                        entry["site"] or "?",
+                        entry["error"] or "无报错原文"),
+                    "warning")
+        except Exception:  # noqa: BLE001
+            logger.error("推送审计落盘失败", exc_info=True)
+
+    def _push_audit_rows(self, limit: int = 50, ok: str = "",
+                         task_id: str = "") -> Dict[str, Any]:
+        """读推送审计（只读）：最近 N 条 + 合计（成功/失败）。"""
+        rows = self.get_data(_PUSH_AUDIT_KEY)
+        rows = [r for r in (rows or []) if isinstance(r, dict)]
+        total_ok = sum(1 for r in rows if r.get("ok"))
+        want_ok = str(ok or "").strip().lower()
+        tid = str(task_id or "").strip()
+        picked = [
+            r for r in rows
+            if (not want_ok or (str(bool(r.get("ok"))).lower() == want_ok))
+            and (not tid or str(r.get("task_id") or "") == tid)
+        ]
+        try:
+            n = max(1, min(int(limit or 50), 500))
+        except (TypeError, ValueError):
+            n = 50
+        return {
+            "items": picked[:n],
+            "count": len(picked),
+            "kept": len(rows),
+            "ok_count": total_ok,
+            "failed_count": len(rows) - total_ok,
+            "keep_limit": _PUSH_AUDIT_KEEP,
+            "hook_ready": self._push_audit_hook_ready(),
+        }
+
+    def _push_audit_hook_ready(self) -> bool:
+        """「推送审计」钩子当前是否真的绑着（只读自检）。
+
+        ``kept=0`` 有两种可能：**真的没加过种** 与 **钩子丢了没在记**。
+        不把后者暴露出来，空列表就会被误读成前者 —— 这是审计类功能最容易
+        骗自己的地方。
+        """
+        try:
+            from .. import downloader_ops as _dlops  # noqa: WPS433
+            return bool(_dlops.add_audit_hook_ready())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def pushes(self, limit: int = 50, ok: str = "", task_id: str = "") -> Response:
+        """``GET /pushes`` —— 推送审计（只读）：每次加种一条，含失败原因。"""
+        try:
+            self._ensure_add_audit_hook()  # 幂等：读到审计页时顺手把钩子绑回当前实例
+            return Response(success=True, data=self._push_audit_rows(
+                limit=limit, ok=ok, task_id=task_id))
+        except Exception as e:  # noqa: BLE001
+            return Response(success=False, message=f"读取推送审计失败:{e}")
+
+    def _get_downloader(self, downloader_name: str = "qbittorrent") -> Optional[DownloaderAdapter]:
+        """获取下载器适配器（★19.10.19 实现已下沉到 ``downloader_ops.acquire``，此处只留委托）。
+
+        为什么搬走：本方法被 84 处跨文件调用，而 core.py 自己一次都不调 —— 基础设施
+        寄居在服务层。实现搬到 ``downloader_ops.acquire`` 后归属明确，四个删除闸门
+        只有一份实现；**调用点无需改动**（49 个 mixin 继续用 ``self._get_downloader()``）。
+        """
+        self._ensure_add_audit_hook()
+        return downloader_ops.acquire(self, downloader_name)
+
+    def _ensure_add_audit_hook(self) -> None:
+        """确保「加种审计」钩子指向**当前实例**（幂等，每次取下载器都刷一遍）。
+
+        为什么要在这里补：钩子是 ``downloader_ops`` 的模块级全局，而**热重载不保证
+        重跑插件初始化** —— 初始化里注册的那次可能随重载丢掉，审计就会静默失效。
+        所有推送路径都必然先取下载器，所以在出口处再刷一次；已在也只是重绑一次引用。
+        """
+        try:
+            def _hook(_payload, _host=self):
+                _fn = getattr(_host, "_push_audit", None)
+                if callable(_fn):
+                    _fn(_payload)
+            downloader_ops.set_add_audit_hook(_hook)
+        except Exception:  # noqa: BLE001
+            logger.error("推送审计钩子注册失败", exc_info=True)
 
     def _show_qb_tags(self) -> bool:
         """是否往 qB 写标签（show_qb_tags 开关，默认开=纯投影）。"""

@@ -15,20 +15,21 @@
   - ``get_hr_bills_store``：模块级工厂（照 ``persistence.get_gate_store``），**绝不挂
     ``MagicFlowStore``**（进程级单例热重载不重建 → 新字段/新方法拿不到）；
   - ``HrBillsMixin``：开账 / 巡检（作废·结清·回填，只改账单状态）/ 干跑 / 统计。
+
+★ 19.10.34：站点 ``myhr.php`` 对账（``HrReconcileMixin`` + ``HrReconcileCache``）已拆到
+  ``features/hrreconcile.py`` —— 本文件只留**账单状态机**。「站点说你还欠什么」是只读的
+  第三方视角，「账本记你欠什么」才由本文件维护，两者改动理由不同，见该模块 docstring。
 """
 
-import html
 import json
 import re
 import threading
 import time
-import unicodedata
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ..crossseed import CROSSSEED_TAG
 from ..tags import MARK_REUSE, RESCUE_TAG, is_reuse_copy
-from ..fingerprint import fingerprint, info_hash
+from ..fingerprint import fingerprint
 from ..downloader_ops import seed_hours_for_hr
 from ..persistence import _shared
 from ..common import (
@@ -67,6 +68,27 @@ HR_RECONCILE_BACKOFF_HOURS = (6.0, 12.0, 24.0)
 HR_RECONCILE_TIME_BUDGET = 240.0
 HR_RECONCILE_TAG_SUFFIX = "补种"
 
+# ★★ 19.12.4 站端确认闸门（Master 2026-11-03 23:40「本地说够了站端还欠的逻辑再搞下」）。
+#   账单「挂够」= 本地 qB 活跃做种 ≥ ``need_h + margin``。但**债主是站端**：
+#   CARPT 7 颗账本记 113~151h 而 myhr 仍欠 2~3h（差 92h 全是被站端忽略的墙钟）。
+#   于是三层：
+#     ① 结清前先看站端最近一轮 ``myhr.php`` 对账（``hr_reconcile.json``）：
+#        站端还欠 → **不结清**（账单留在 active，继续挂）；
+#     ② 已 settled 的账单，站端又说欠 → **重开**（settled → active，保挂不中断）；
+#     ③ 站端说欠的 hash 一律进保护集合（**即使本地工时已够**）—— 否则保挂一撤、
+#        种被暂停、站端计时立刻停表，就永远还不清（这个闭环依赖这一条）。
+#   证据**只读缓存、不在 tick 里联网**（联网是 ``_hr_reconcile_round`` 每 6h 的活）；
+#   剩余时间按「证据时刻」做时间衰减外推（保守方向：真被暂停时站端其实不衰减 →
+#   我们多挂，而不是少挂）。
+#   一键回退：改 ``False`` → 回到「只信本地工时」的旧行为。
+HR_SETTLE_SITE_GATE = True
+#   站端证据可信上限（小时）：超过就不再用它推剩余（外推到 0 也不当「清了」），
+#   降级成 unknown（按本地工时判），避免拿一份很旧的报告去结清。
+HR_SITE_EVIDENCE_MAX_HOURS = 48.0
+#   欠账索引的进程内复用窗口（秒）：``_hr_bill_owed_hashes`` / ``_hr_obligation``
+#   每轮会被调几十次，重建索引要遍历全部报告 → 60s 内复用同一份。
+HR_SITE_DEBT_TTL = 60.0
+
 # 账单状态全集
 BILL_STATE_ACTIVE = "active"
 BILL_STATE_PENDING = "pending"
@@ -83,12 +105,16 @@ RULE_UNKNOWN = "unknown"
 #   与 common.CROSSSEED_SEED_HOURS_DEFAULT 同值；不引 common（其拉进 MP 依赖，会破坏离线测试）。
 HR_NEED_HOURS_DEFAULT = 24.0
 
-# ★ 11.11.1：辅种（复用/跨站/补源）都不是「本账单口径的真实下载」→ 开账/回填一律跳过。
+# ★ 11.11.1：辅种（复用/补源）不是「本账单口径的真实下载」→ 开账/回填一律跳过。
 #   - MARK_REUSE(魔流-辅种)：复用副本（add_torrent_reuse，paused+recheck）→ 无真实下载。
-#   - CROSSSEED_TAG(魔流-跨站)：跨站来源份，H&R 由 assets.py 资源账记（不走本账单）。
 #   - RESCUE_TAG(魔流-补源)：死种补源副本，来源站被 rescue_source_blocked 保证 hr=False。
-#   MP 写的「已整理/辅种」(ASSET_TAGS) 是**真实下载被整理**，仍欠 H&R → 不跳过。
-_SKIP_BILL_TAGS = (CROSSSEED_TAG, MARK_REUSE, RESCUE_TAG)
+#  MP 写的「已整理/辅种」(ASSET_TAGS) 是**真实下载被整理**，仍欠 H&R → 不跳过。
+# ★ 19.10.11：CROSSSEED_TAG **从跳过名单移除**。跨站来源份是**真实下载**（只是下在他站
+#   的免费种上），欠的是**来源站**的 H&R —— 与刷流/音乐/点播完全同性质。旧注释说
+#   「H&R 由 assets.py 资源账记」，实际是 `CrossSeedSources` 自己另算一套工时（seeded_sec
+#   vs hours），与账单 seeded_h 同源却各存一份快照 → 规则一改两份就漂。现改为：
+#   下完那一刻直接开账单（`_crossseed_protect_source` → `_hrbills_open`），工时只认账单。
+_SKIP_BILL_TAGS = (MARK_REUSE, RESCUE_TAG)
 
 
 def _skip_hr_bill(tags: Any) -> bool:
@@ -710,10 +736,14 @@ class HrBillsMixin:
 
     # ---------------------------------------------------------- 开账
     def _hrbills_open(self, hash_string: str, site_domain: str, tag: str,
-                      content: Any, hit_and_run: bool = False) -> Optional[Dict[str, Any]]:
+                      content: Any, hit_and_run: bool = False,
+                      crossseed: bool = False) -> Optional[Dict[str, Any]]:
         """下载成功后开一张 H&R 账单（影子记账）。
 
-        跳过：crossseed 自己记账（tag 含 ``CROSSSEED_TAG``）；同 hash 已存在不重复开。
+        跳过：复用/补源副本（``_SKIP_BILL_TAGS``）；同 hash 已存在不重复开。
+        ★ 19.10.11：跨站来源份（``CROSSSEED_TAG``）**不再跳过** —— 它欠的是来源站 H&R，
+        与刷流/音乐同性质，统走本账单。走 ``crossseed=True`` 的**专用口径**（见
+        ``_hrbills_open_crossseed``）：义务判定与工时都取跨站/站点规则的既有真值源。
         规则判定：``_site_hr_flag(dom) is True`` → ``site_hr``；种子 ``hit_and_run`` →
         ``hit_and_run``；两者皆无 → ``unknown``（pending，不保护不罚）。
 
@@ -724,7 +754,8 @@ class HrBillsMixin:
         hs = str(hash_string or "").strip().lower()
         if not hs:
             return None
-        # ★ 11.11.1：辅种（跨站/复用/补源副本）不是本账单口径的真实下载 → 不开账。
+        # ★ 11.11.1：复用/补源副本不是本账单口径的真实下载 → 不开账。
+        #   19.10.11 起跨站来源份**已从名单移除**（真实下载，欠来源站 H&R）。
         if _skip_hr_bill([str(tag or "")]):
             return None
         store = self._hrbills_store()
@@ -732,6 +763,9 @@ class HrBillsMixin:
         if _existing:
             return _existing  # 已存在 → 不重复开（幂等）
         dom = self._hrbills_norm_domain(site_domain)
+        # ★ 19.10.11：来源份走专用口径（义务判定 + 工时都取跨站既有真值源）。
+        if crossseed:
+            return self._hrbills_open_crossseed(hs, dom, hit_and_run=hit_and_run)
         # 规则判定：站点规则库明确 True / 种子自带 H&R 标记；否则 unknown（不猜）
         rule = RULE_UNKNOWN
         try:
@@ -801,6 +835,281 @@ class HrBillsMixin:
             "opened_by": "open",
         }
         return store.put(hs, bill)
+
+    def _hrbills_open_crossseed(self, hs: str, dom: str,
+                                hit_and_run: bool = False) -> Optional[Dict[str, Any]]:
+        """★ 19.10.11：给**跨站来源份**开一张 H&R 账单（义务口径专用）。
+
+        为什么不用通用判定：通用判定对「规则未知的站」不开账（``unknown``，Master 红线
+        「未知站不凭空欠债」）。但跨站来源份的口径一直是**保守兜底**
+        （``_crossseed_hr_decision``：种子标记 > 站点规则 > 未知保守）—— 跨站取种的
+        来源站多半还没在规则库里填过 H&R。若套用通用口径，来源份**永远开不出账**，
+        也就永远不受保护。
+
+        为什么直接开 **active**（不是 pending）：账单口径的 pending = 「刚加入下载，必然
+        未完成」。但来源份是在**下完那一刻**才移交的（``_crossseed_tick``：
+        ``progress >= 0.999`` 才调 ``_crossseed_protect_source``），pending 在这里不成立。
+        直接 active → 立刻受删除闸门第 4 档（账单）保护，不留「已下完却还 pending」的窗口期。
+
+        工时取 ``_hr_need_hours_or_default``（**唯一**义务工时兜底点）：
+        站点规则明确写了真实 0 → 0（不要求做种时长 → 无需挂 → 不开账）；
+        规则缺失 → 24（保守）。
+        """
+        store = self._hrbills_store()
+        _existing = store.get(hs)
+        if _existing:
+            return _existing  # 幂等
+        thr = True if bool(hit_and_run) else False
+        try:
+            protect, _hours, hsrc = self._crossseed_hr_decision(dom, thr)
+        except Exception as err:  # noqa: BLE001
+            self._log(f"跨站账单:义务判定失败 {hs[:12]}:{err}", "warning")
+            return None
+        if not protect:
+            return None       # 该站/该种确实没有 H&R 义务 → 不开账
+        try:
+            need_h = float(self._hr_need_hours_or_default(dom) or 0.0)
+        except Exception:  # noqa: BLE001
+            need_h = 0.0
+        if need_h <= 0:
+            # 站点明确「不要求做种时长」→ 没有挂种约束 → 无需保护，不开账。
+            self._log(
+                f"跨站账单:{dom} 规则明确不要求做种时长 → 来源份 {hs[:12]} 不开账",
+                "info",
+            )
+            return None
+        rule = RULE_HIT_AND_RUN if thr is True else RULE_SITE_HR
+        now = time.time()
+        bill = {
+            "site": dom,
+            "rule": rule,
+            "state": BILL_STATE_ACTIVE,
+            "need_h": float(need_h),
+            "seeded_h": 0.0,
+            "fp": "",
+            "title": self._hrbills_title(hs),
+            "opened_at": now,
+            "last_progress": 1.0,
+            "last_progress_at": now,
+            "progress": 1.0,
+            "opened_by": "crossseed",
+            "src": str(hsrc or ""),
+        }
+        return store.put(hs, bill)
+
+    # ======================================== 19.12.4 站端欠账证据（只读缓存，不联网）
+    @staticmethod
+    def _hr_need_left_sec(text: Any) -> Optional[float]:
+        """站端「还需做种时间」单元格 → 秒。**解析不了返回 ``None``（不是 0）**。
+
+        两种渲染（``collect_parse.parse_myhr_rows`` 已统一收）：
+        剩余 ≥1h 是 ``H:MM:SS`` / ``HH:MM:SS``；<1h 是 ``MM:SS``。
+        返回 ``None`` 与 ``0.0`` 的差别是本模块的安全边界 —— ``0`` 才敢说「站端说清了」。
+        """
+        s = str(text or "").strip()
+        if not s:
+            return None
+        m = re.search(r"(\d+):([0-5]\d)(?::([0-5]\d))?", s)
+        if not m:
+            return None
+        try:
+            if m.group(3) is None:
+                return float(int(m.group(1)) * 60 + int(m.group(2)))
+            return float(int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3)))
+        except (TypeError, ValueError):
+            return None
+
+    def _hr_site_debt_index(self, now: Optional[float] = None) -> Dict[str, Any]:
+        """站端欠账索引（**只读 ``hr_reconcile.json`` 缓存，绝不联网**）。
+
+        返回 ``{"at", "sites", "need", "seen"}``：
+          - ``sites[dom] = {"at", "complete"}``：该站上一轮报告的时刻 / hash 覆盖是否完整；
+          - ``need[hash] = {"left", "at", "dom"}``：站端明确「还需做种 ``left`` 秒」
+            （**已按证据时刻外推到本轮**）；
+          - ``seen``：出现在站端清单里、却判不了「还欠多久」的 hash（解析失败 / 证据过旧）
+            → 调用方只能判 unknown，**不得**当「站端说清了」。
+
+        为什么以 hash 为键：一笔债只挂一颗种。跨站同内容各欠一份时取**最欠**的那份
+        （``max``）—— 宁可多挂，不可提前撒手。
+        为什么失败报告直接跳过：``_hr_reconcile_site`` 抓失败时提前 return、**不覆盖**旧
+        报告，所以缓存里留下的总是最后一次成功的视图；``ok=False`` 的行只可能是历史残留。
+        """
+        _now = float(now or 0) or time.time()
+        try:
+            _box = getattr(self, "_hr_site_debt_box", None)
+            if isinstance(_box, tuple) and (_now - float(_box[0] or 0)) < float(HR_SITE_DEBT_TTL):
+                return _box[1]
+        except Exception:  # noqa: BLE001
+            pass
+        out: Dict[str, Any] = {"at": _now, "sites": {}, "need": {}, "seen": set()}
+        try:
+            cache = self._hr_reconcile_cache()
+            reps = dict(cache.reports() or {})
+            sts = dict(cache.site_status() or {})
+        except Exception:  # noqa: BLE001
+            reps, sts = {}, {}
+        _max_age = max(0.0, float(HR_SITE_EVIDENCE_MAX_HOURS)) * 3600.0
+        _seen: Set[str] = set()
+        for dom, rep in (reps or {}).items():
+            if not isinstance(rep, dict) or not rep.get("ok"):
+                continue
+            d = ""
+            try:
+                d = self._hrbills_norm_domain(dom)
+            except Exception:  # noqa: BLE001
+                d = ""
+            if not d:
+                continue
+            _at = 0.0
+            for _cand in (rep.get("at"), (sts.get(d) or {}).get("last_ok_ts")):
+                try:
+                    _v = float(_cand or 0.0)
+                except (TypeError, ValueError):
+                    _v = 0.0
+                if _v > 0:
+                    _at = _v
+                    break
+            out["sites"][d] = {"at": _at, "complete": bool(rep.get("hash_coverage_complete"))}
+            _age = (_now - _at) if _at > 0 else 0.0
+            _stale = bool(_at > 0 and _age > _max_age)
+            for rec in (rep.get("records") or []):
+                if not isinstance(rec, dict):
+                    continue
+                hh = str(rec.get("infohash") or "").strip().lower()
+                if not hh:
+                    continue
+                sec = self._hr_need_left_sec(rec.get("need_left"))
+                if sec is None or _stale:
+                    # 判不了「还欠多久」：既不敢说欠、也不敢说清
+                    _seen.add(hh)
+                    continue
+                left = sec - max(0.0, _age) if _at > 0 else sec
+                if left <= 0:
+                    continue        # 站端这颗已经挂够（或外推已到期）
+                _cur = out["need"].get(hh)
+                if _cur is None or left > float(_cur.get("left") or 0.0):
+                    out["need"][hh] = {"left": float(left), "at": _at, "dom": d}
+        # 只把「没有任何一站明确说欠」的进 seen（一站清了、另一站判不明 → 以清的为准）
+        out["seen"] = {h for h in _seen if h not in out["need"]}
+        try:
+            self._hr_site_debt_box = (_now, out)
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+
+    def _hr_site_verdict(self, hash_string: str, dom: str, now: Optional[float] = None,
+                         idx: Any = None) -> Tuple[str, float]:
+        """站端对该种的裁决：``("owed", 剩余秒)`` / ``("clear", 0)`` / ``("unknown", 0)``。
+
+        - ``owed``：站端 myhr 明确说这颗还需做种 N 秒（N 已按证据时刻外推）；
+        - ``clear``：站端报告 **ok 且 hash 覆盖完整**，且这颗不在欠列表里 → 敢结清；
+        - ``unknown``：没报告 / 覆盖不完整 / 判不了 → 退回本地工时口径（不改旧行为）。
+        """
+        if not HR_SETTLE_SITE_GATE:
+            return ("unknown", 0.0)
+        _now = float(now or 0) or time.time()
+        hh = str(hash_string or "").strip().lower()
+        try:
+            d = self._hrbills_norm_domain(dom)
+        except Exception:  # noqa: BLE001
+            d = str(dom or "").strip().lower()
+        if not hh or not d:
+            return ("unknown", 0.0)
+        _idx = idx if isinstance(idx, dict) else self._hr_site_debt_index(_now)
+        # ★ 19.12.4 域名两种写法都要认：对账报告的 key 是 MP 站点域名（实测 `pt.btschool.club`），
+        #   而账单 `site` 存的是裸域（`btschool.club`）→ 精确比对会让闸门静默失效。
+        #   与 ``_hr_reconcile_site`` 里「本机该站的种」同一套后缀匹配口径。
+        _sites = _idx.get("sites") or {}
+        _st = _sites.get(d)
+        if not isinstance(_st, dict):
+            _st = None
+            for _k, _v in (_sites or {}).items():
+                _k = str(_k or "")
+                if isinstance(_v, dict) and _k and (
+                        _k == d or _k.endswith("." + d) or d.endswith("." + _k)):
+                    _st = _v
+                    break
+        if not isinstance(_st, dict):
+            return ("unknown", 0.0)
+        _hit = (_idx.get("need") or {}).get(hh)
+        if isinstance(_hit, dict):
+            _built = float(_idx.get("at") or 0.0)
+            _left = float(_hit.get("left") or 0.0)
+            if _built > 0:
+                _left -= max(0.0, _now - _built)   # 索引有 TTL，再衰减一次
+            if _left > 0:
+                return ("owed", float(_left))
+            return ("clear", 0.0)
+        if hh in (_idx.get("seen") or set()):
+            return ("unknown", 0.0)
+        if bool(_st.get("complete")):
+            return ("clear", 0.0)
+        return ("unknown", 0.0)
+
+    def _hr_bill_owed_hashes(self) -> Set[str]:
+        """★ 19.10.11：**账单里仍欠工时**的 hash 集合（账单口径的保护来源）。
+
+        判据与 ``_hr_obligation`` 的第三来源**同源**：``state == active``（已下完、开始计工时）
+        且 ``rule ∈ (site_hr, hit_and_run)``（规则已知才欠），且
+        ``seeded_h < need_h + margin``（margin 走 ``_hr_due_hours``，与账单状态机一致）。
+        区别只在于这是**集合式**的（不需要 ``TorrentInfo``），供「保护集合」类场景使用
+        （硬保护汇总 / 清理候选豁免）。
+
+        ★ 为什么不再拿「跨站来源份集合」当保护判据：那是**第二套工时口径**
+        （``CrossSeedSources`` 自己算 ``seeded_sec`` vs ``hours``），与账单 ``seeded_h``
+        同源却各存一份快照 → 站点规则一改两份就漂。现在工时真值源只剩账单一处。
+
+        ★ 19.12.4：**站端说欠的一律进集合，不看本地工时、也不看 state**。
+        这条是把闭环接上的关键：若只按本地 ``seeded_h`` 判，站端还欠而本地已够的种会被
+        排出保护 → 保挂撤销 → 被静默池 pause → 站端停表 → 债务永远清不掉。所以
+        ``settled`` 的行只要站端还欠，也照样留在集合里（下一轮 tick 会把它重开成 active）。
+        """
+        out: Set[str] = set()
+        try:
+            store = self._hrbills_store()
+            bills = store.all() or {}
+        except Exception:  # noqa: BLE001
+            return out
+        _now = time.time()
+        _idx: Any = None
+        if HR_SETTLE_SITE_GATE:
+            try:
+                _idx = self._hr_site_debt_index(_now)
+            except Exception:  # noqa: BLE001
+                _idx = None
+        for h, b in (bills or {}).items():
+            if not isinstance(b, dict):
+                continue
+            if str(b.get("rule") or "") not in (RULE_SITE_HR, RULE_HIT_AND_RUN):
+                continue
+            _hh = str(h or "").strip().lower()
+            if not _hh:
+                continue
+            # ① 站端口径优先：站端说还欠 → 欠（哪怕本地工时已够、哪怕已 settled）
+            if _idx is not None:
+                try:
+                    if self._hr_site_verdict(_hh, str(b.get("site") or ""), _now, _idx)[0] == "owed":
+                        out.add(_hh)
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass
+            # ② 本地工时口径（原有行为）
+            if str(b.get("state") or "") != BILL_STATE_ACTIVE:
+                continue
+            try:
+                need = float(b.get("need_h") or 0.0)
+                seeded = float(b.get("seeded_h") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if need <= 0:
+                continue
+            try:
+                due = float(self._hr_due_hours(need))
+            except Exception:  # noqa: BLE001
+                due = need
+            if seeded + 1e-6 < due:
+                out.add(_hh)
+        return out
 
     # ---------------------------------------------------------- 站点解析（三级回退，供回填用）
     def _hrbills_resolve_domain(self, rec: Dict[str, Any], t: Any, groups: Any) -> str:
@@ -1033,6 +1342,14 @@ class HrBillsMixin:
                     "backfilled": backfilled, "no_site": no_site}
         now = time.time()
         activated = voided = settled = breached = demoted = titles_filled = dropped = 0
+        reopened = held_by_site = 0   # ★ 19.12.4：站端口径的两个计数
+        # ★ 19.12.4：站端欠账索引（只读缓存，整轮建一次）
+        _hr_idx: Any = None
+        if HR_SETTLE_SITE_GATE:
+            try:
+                _hr_idx = self._hr_site_debt_index(now)
+            except Exception:  # noqa: BLE001
+                _hr_idx = None
         _drop: List[str] = []
         for h, b in list(bills.items()):
             if not isinstance(b, dict):
@@ -1059,6 +1376,27 @@ class HrBillsMixin:
             # ★ 19.0.0 生命周期：还在下载器 → 刷新存活三列（统一对账口径）。
             #   settled 行挂够即销（TTL）→ 账单表只剩「还欠着」的。
             if cur_state == BILL_STATE_SETTLED:
+                # ★ 19.12.4 站端翻案：本地判「挂够」结清了，站端 myhr 却还欠 →
+                #   **重开**（settled → active）。这是「本地够了、站端还欠」的收口：
+                #   不重开的话，这行会一直装作结清、静默池还按「不欠」把它 pause，
+                #   站端计时随之停表 —— 债务永远清不掉，还因为 TTL 到期被销账无痕。
+                if _hr_idx is not None and _known_rule:
+                    try:
+                        _v, _left = self._hr_site_verdict(h, str(b.get("site") or ""), now, _hr_idx)
+                    except Exception:  # noqa: BLE001
+                        _v, _left = "unknown", 0.0
+                    if _v == "owed":
+                        store.patch(h, save=False, state=BILL_STATE_ACTIVE, settled_at=None,
+                                    alive=True, last_seen=now, seen_by="tick_reopen_site")
+                        reopened += 1
+                        try:
+                            self._log(
+                                "魔流:H&R 站端翻案重开 %s（%s）站端还需 %.1fh，本地已挂 %.1fh"
+                                % (str(h)[:12], str(b.get("site") or "?"),
+                                   float(_left) / 3600.0, float(b.get("seeded_h") or 0.0)))
+                        except Exception:  # noqa: BLE001
+                            pass
+                        continue
                 _sa = float(b.get("settled_at") or 0) or now
                 if now - _sa >= HR_BILLS_SETTLED_TTL_DAYS * 86400.0:
                     _drop.append(h)
@@ -1113,12 +1451,31 @@ class HrBillsMixin:
                     activated += 1
                 # ④ 挂够 → settled（★ 11.13.0：达到线额外加冗余安全垫 ``_hr_margin_hours()``）
                 #   ★ 2026-10-11：仅限明确 H&R 规则（unknown 不算欠、不结清）。
+                #   ★ 19.12.4 站端闸门：本地挂够了**不代表站端认账**。结清前先看站端
+                #     myhr 最近一轮对账 —— 站端说还欠就留在 active 继续挂（下一轮再看）；
+                #     只有站端**明确说清了**（或站端数据不可判）才落 settled。
                 need_h = float(b.get("need_h") or 24.0)
                 due_h = need_h + self._hr_margin_hours()
                 if _known_rule and cur_state not in (BILL_STATE_SETTLED, BILL_STATE_VOID) and seeded_h >= due_h:
-                    fields["state"] = BILL_STATE_SETTLED
-                    fields["settled_at"] = now
-                    settled += 1
+                    _v, _left = "unknown", 0.0
+                    if _hr_idx is not None:
+                        try:
+                            _v, _left = self._hr_site_verdict(h, str(b.get("site") or ""), now, _hr_idx)
+                        except Exception:  # noqa: BLE001
+                            _v, _left = "unknown", 0.0
+                    if _v == "owed":
+                        held_by_site += 1
+                        try:
+                            self._log(
+                                "魔流:H&R 站端仍欠 %s（%s）站端还需 %.1fh，本地已挂 %.1fh → 暂不结清"
+                                % (str(h)[:12], str(b.get("site") or "?"),
+                                   float(_left) / 3600.0, float(seeded_h or 0.0)))
+                        except Exception:  # noqa: BLE001
+                            pass
+                    else:
+                        fields["state"] = BILL_STATE_SETTLED
+                        fields["settled_at"] = now
+                        settled += 1
                 fields["last_progress"] = progress
                 fields["last_progress_at"] = now
             else:
@@ -1170,6 +1527,7 @@ class HrBillsMixin:
         return {"bills": len(bills), "activated": activated, "voided": voided,
                 "settled": settled, "breached": breached, "demoted": demoted,
                 "dropped": dropped, "titles_filled": titles_filled,
+                "reopened": reopened, "held_by_site": held_by_site,
                 "backfilled": backfilled, "no_site": no_site}
 
     # ---------------------------------------------------------- 干跑（只读，不落库）
@@ -1717,991 +2075,10 @@ class HrBillsMixin:
             }],
         }
 
-    # ======================================== 11.8.0 站点 myhr 定期对账（第三视角）
-    def _hr_reconcile_cache(self) -> "HrReconcileCache":
-        """对账缓存（模块级工厂，**绝不挂 MagicFlowStore**：进程级单例热重载不重建）。"""
-        try:
-            data_dir = self.get_data_path()
-        except Exception:  # noqa: BLE001
-            data_dir = Path(".")
-        try:
-            kv = getattr(self, "_hot", None)
-        except Exception:  # noqa: BLE001
-            kv = None
-        return get_hr_reconcile_cache(Path(data_dir), kv=kv)
-
-    def _hr_reconcile_sites(self) -> List[Dict[str, Any]]:
-        """对账对象：站点规则里 ``hr is True`` 的站（站点级 H&R）。按 MP 站点 id 去重（含域名别名）。"""
-        cands: List[str] = []
-        try:
-            for row in (self._list_sites() or []):
-                d = str((row or {}).get("domain") or "")
-                if d:
-                    cands.append(d)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            for dom, rec in dict(self._site_rules().items() or {}).items():
-                if (rec or {}).get("hr") is True:
-                    cands.append(str(dom))
-        except Exception:  # noqa: BLE001
-            pass
-        out: List[Dict[str, Any]] = []
-        seen_dom: Set[str] = set()
-        seen_sid: Set[int] = set()
-        for dom in cands:
-            d = self._hrbills_norm_domain(dom)
-            if not d or d in seen_dom:
-                continue
-            seen_dom.add(d)
-            try:
-                if self._site_hr_flag(d) is not True:
-                    continue
-            except Exception:  # noqa: BLE001
-                continue
-            sid = self._hr_reconcile_site_id(d)
-            if sid and sid in seen_sid:
-                continue
-            if sid:
-                seen_sid.add(sid)
-            hours = 24.0
-            try:
-                rec = dict(self._site_rules().get(d) or {})
-                hours = float(rec.get("seed_hours") or 24.0)
-            except Exception:  # noqa: BLE001
-                hours = 24.0
-            out.append({"domain": d, "need_h": hours, "site_id": sid})
-        return out
-
-    def _hr_reconcile_site_id(self, domain: str) -> int:
-        """域名 → MP 站点 id（抓页/取 cookie 用）。找不到返回 0。"""
-        d = self._hrbills_norm_domain(domain)
-        if not d:
-            return 0
-        try:
-            rows = self._list_sites() or []
-        except Exception:  # noqa: BLE001
-            rows = []
-        for row in rows:
-            try:
-                rd = self._hrbills_norm_domain((row or {}).get("domain") or "")
-            except Exception:  # noqa: BLE001
-                rd = ""
-            if rd and (rd == d or rd.endswith("." + d) or d.endswith("." + rd)):
-                try:
-                    return int((row or {}).get("id") or 0)
-                except Exception:  # noqa: BLE001
-                    return 0
-        return 0
-
-    def _hr_reconcile_fetch(self, site_id: int, domain: str,
-                            max_pages: int = HR_RECONCILE_MAX_PAGES) -> Dict[str, Any]:
-        """抓该站 ``myhr.php``（走采集出口：配额闸门 + PV 熔断 + 页缓存）。**只读**。
-
-        失败语义（pro 定）：**任何一页拿不到 → ``ok=False`` + ``partial=True``**，
-        调用方必须**零写入**（绝不从半份数据推「站点说干净」）。
-        """
-        out: Dict[str, Any] = {"ok": False, "records": [], "pages": [], "partial": False,
-                               "error": ""}
-        c = None
-        try:
-            c = self._collect_ref()
-        except Exception:  # noqa: BLE001
-            c = None
-        if c is None:
-            out["error"] = "采集模块未就绪"
-            return out
-        base = f"https://{self._hrbills_norm_domain(domain)}"
-        for page in range(0, max(1, int(max_pages))):
-            if page and len(out["records"]) < page * 10:
-                break  # 上一页明显不满 → 已到末页
-            url = f"{base}/myhr.php" + (f"?page={page}" if page else "")
-            try:
-                if not self._pv_allow(site_id, "hr", want=1):
-                    out["partial"] = True
-                    out["error"] = "站点 PV 预算不足或被熔断"
-                    return out
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                res = c.http.text(int(site_id), url, kind="hr", ttl=HR_RECONCILE_TTL)
-            except Exception as e:  # noqa: BLE001
-                out["partial"] = True
-                out["error"] = f"抓取异常:{e}"
-                return out
-            try:
-                self._pv_spend(int(site_id), "hr", 1)
-            except Exception:  # noqa: BLE001
-                pass
-            if res is None or not bool(getattr(res, "ok", False)):
-                out["partial"] = True
-                out["error"] = str(getattr(res, "error", "") or "抓取失败")
-                return out
-            rows = _hr_myhr_parse(str(getattr(res, "text", "") or ""))
-            if rows is None:
-                out["partial"] = True
-                out["error"] = "页面解析失败（布局不兼容？整页跳过）"
-                return out
-            if not rows:
-                break
-            out["pages"].append(page)
-            out["records"].extend(rows)
-        out["ok"] = True
-        return out
-
-    def _hr_reconcile_site(self, domain: str, snap: Any = None) -> Dict[str, Any]:
-        """单站三方对账（**只读**）：站点欠不欠 × 本机有没有种 × 账本有没有账单。
-
-        产出三桶（**没有 settle 判定**）：
-          - ``missing_local``：站点欠、本机没有 → 「需补种」（写动作走 ``confirm=1``）
-          - ``present_no_bill``：站点欠、本机有、账本没账单 → 提示回填开账
-          - ``safe_rotate_candidate``：本机有、站点未列欠、账本已结清 → 仅**提示**可轮换
-            （**仅当本轮 infohash 覆盖完整时**才输出，避免半份数据误判）
-        """
-        dom = self._hrbills_norm_domain(domain)
-        t0 = time.time()
-        rep: Dict[str, Any] = {
-            "site": dom, "ok": False, "partial": False, "error": "",
-            "records_total": 0, "pages_fetched": 0,
-            "missing_local": [], "present_no_bill": [], "safe_rotate_candidate": [],
-            "cache_hits": 0, "torrents_fetched": 0, "hash_coverage_complete": False,
-            "deferred": 0,
-            "records": [],
-            "took_ms": 0,
-        }
-        site_id = self._hr_reconcile_site_id(dom)
-        if not site_id:
-            rep["error"] = "MP 站点表里找不到该域名（无法取 cookie）"
-            rep["took_ms"] = int((time.time() - t0) * 1000)
-            return rep
-        fetched = self._hr_reconcile_fetch(site_id, dom)
-        rep["pages_fetched"] = len(fetched.get("pages") or [])
-        rep["error"] = str(fetched.get("error") or "")
-        rep["partial"] = bool(fetched.get("partial"))
-        if not fetched.get("ok"):
-            rep["took_ms"] = int((time.time() - t0) * 1000)
-            return rep
-        records: List[Dict[str, Any]] = list(fetched.get("records") or [])
-        rep["records_total"] = len(records)
-        if snap is None:
-            try:
-                snap = self._tag_all_torrents() or {}
-            except Exception:  # noqa: BLE001
-                snap = {}
-        try:
-            store = self._hrbills_store()
-        except Exception:  # noqa: BLE001
-            store = None
-        cache = self._hr_reconcile_cache()
-        now = time.time()
-        # 本机该站的种（hash → TorrentInfo）：域名取 tracker 主机名，回退标签推断
-        local: Dict[str, Any] = {}
-        for h, t in (snap or {}).items():
-            hh = str(h or "").strip().lower()
-            if not hh:
-                continue
-            dt = ""
-            try:
-                tr = str(getattr(t, "tracker", "") or "").strip().lower()
-            except Exception:  # noqa: BLE001
-                tr = ""
-            if tr:
-                dt = tr.split("://")[-1].split("/")[0].split(":")[0].strip()
-            if not dt:
-                try:
-                    dt = self._hrbills_norm_domain(self._hr_domain("", t))
-                except Exception:  # noqa: BLE001
-                    dt = ""
-            if dt and (dt == dom or dt.endswith("." + dom) or dom.endswith("." + dt)):
-                local[hh] = t
-        # 逐条记录解析 infohash（缓存优先；只对未命中且**粗配不上**的记录拉种）
-        fetch_budget = int(HR_RECONCILE_MAX_FETCH)
-        rec_hashes: Set[str] = set()
-        claimed: Set[str] = set()      # 本机种**一对一**占用（防两个站点行粗配到同一种）
-        coverage = True
-        deferred = 0
-        conn: Dict[str, Any] = {}
-        rec_detail: List[Dict[str, Any]] = []   # 逐条明细（供 /agent/site/seeds 等站点级报表）
-        for rec in records:
-            tid = str(rec.get("tid") or "").strip()
-            if not tid:
-                coverage = False
-                continue
-            hit = cache.tid_get(dom, tid)
-            if not hit:
-                rough = self._hr_reconcile_rough_match(rec, local, claimed)
-                if rough:
-                    claimed.add(rough)
-                    cache.tid_put(dom, tid, str(rough), str(rec.get("title") or ""),
-                                  float(rec.get("size_gb") or 0.0), now)
-                    hit = str(rough)
-                elif fetch_budget > 0:
-                    if not conn:
-                        try:
-                            conn = self._reseed_site_conn(site_id) or {}
-                        except Exception:  # noqa: BLE001
-                            conn = {}
-                    hh = self._hr_reconcile_fetch_hash(site_id, dom, tid, conn)
-                    fetch_budget -= 1
-                    rep["torrents_fetched"] = int(rep["torrents_fetched"] or 0) + 1
-                    if hh:
-                        claimed.add(str(hh).strip().lower())
-                        cache.tid_put(dom, tid, hh, str(rec.get("title") or ""),
-                                      float(rec.get("size_gb") or 0.0), now)
-                        hit = str(hh)
-                else:
-                    coverage = False
-                    deferred += 1
-            else:
-                rep["cache_hits"] = int(rep["cache_hits"] or 0) + 1
-                hit = str(hit.get("h") or "")
-                if hit:
-                    claimed.add(str(hit).strip().lower())
-            if not hit:
-                coverage = False
-                rec_detail.append({
-                    "tid": tid, "infohash": "", "title": str(rec.get("title") or "")[:160],
-                    "size_gb": round(float(rec.get("size_gb") or 0.0), 3),
-                    "need_left": str(rec.get("need_left") or ""),
-                    "in_qb": False, "billed": False, "bill_state": "", "bill_rule": "",
-                    "resolved": False,
-                })
-                continue
-            rec_hashes.add(str(hit).strip().lower())
-            hh = str(hit).strip().lower()
-            present = hh in local
-            bill = None
-            try:
-                bill = store.get(hh) if store is not None else None
-            except Exception:  # noqa: BLE001
-                bill = None
-            rec_detail.append({
-                "tid": tid, "infohash": hh, "title": str(rec.get("title") or "")[:160],
-                "size_gb": round(float(rec.get("size_gb") or 0.0), 3),
-                "need_left": str(rec.get("need_left") or ""),
-                "in_qb": bool(present), "billed": bool(bill is not None),
-                "bill_state": str((bill or {}).get("state") or ""),
-                "bill_rule": str((bill or {}).get("rule") or ""),
-                "resolved": True,
-            })
-            if not present:
-                rep["missing_local"].append({
-                    "tid": tid, "infohash": hh, "title": str(rec.get("title") or "")[:120],
-                    "size_gb": float(rec.get("size_gb") or 0.0),
-                    "need_h_left": str(rec.get("need_left") or ""),
-                    "site": dom,
-                    "reason_chain": [{
-                        "rule": "hr_reconcile/missing_local", "verdict": "needs_reseed",
-                        "inputs": {"tid": tid, "infohash": hh, "in_qb": False},
-                        "source_of_truth": f"站点 myhr.php（{dom}） + 下载器快照 + hr_bills.json",
-                        "at": now,
-                    }],
-                })
-            elif bill is None:
-                rep["present_no_bill"].append({
-                    "tid": tid, "infohash": hh, "title": str(rec.get("title") or "")[:120],
-                    "site": dom,
-                    "action_hint": "打魔流标签后跑 hrbills_tick 回填开账（只增保护）",
-                })
-        rep["hash_coverage_complete"] = bool(coverage)
-        rep["deferred"] = int(deferred)
-        rep["records"] = rec_detail
-        if coverage:
-            for hh, t in local.items():
-                if hh in rec_hashes:
-                    continue
-                bill = None
-                try:
-                    bill = store.get(hh) if store is not None else None
-                except Exception:  # noqa: BLE001
-                    bill = None
-                st = str((bill or {}).get("state") or "")
-                if bill is not None and st in (BILL_STATE_SETTLED, BILL_STATE_VOID):
-                    rep["safe_rotate_candidate"].append({
-                        "infohash": hh, "title": str(getattr(t, "title", "") or "")[:120],
-                        "bill_state": st, "site": dom,
-                        "action_hint": "站点未列欠 + 账本已结清 → 可人工考虑轮换（**不自动删**）",
-                    })
-        # ★ 17.3.0：ok 必须在**落盘之前**置 True。此前顺序相反，缓存里每份报告都带
-        #   ok=false（无论 myhr.php 抓得多成功），于是 /agent/site/seeds 的 hr 列、
-        #   records_total、missing_local 全被当成「这站还没对过账」——口径假象的根因。
-        rep["ok"] = True
-        rep["took_ms"] = int((time.time() - t0) * 1000)
-        try:
-            cache.put_report(dom, {k: v for k, v in rep.items() if k != "took_ms"})
-            cache.save()
-        except Exception:  # noqa: BLE001
-            pass
-        return rep
-
-    @staticmethod
-    def _hr_title_tokens(s: Any) -> Set[str]:
-        """标题 → 归一化 token 集合（数字/拉丁/汉字；丢掉分隔符与大小写差异）。"""
-        t = unicodedata.normalize("NFKC", str(s or "")).lower()
-        t = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", " ", t)
-        return {x for x in t.split() if x}
-
-    @classmethod
-    def _hr_reconcile_rough_match(cls, rec: Dict[str, Any], local: Dict[str, Any],
-                                  claimed: Optional[Set[str]] = None) -> str:
-        """标题 token 粗配（压拉种量）：高分且**唯一**才认 → 返回本机 hash，否则 ``""``（去拉种）。
-
-        ★ 实测：站点标题是**罗马化**（``Zheng Tu 2026 S01 E11-E12 ... -PTerWEB``），
-        而 qB 名字常带中文（``征途.Zheng.Tu.2026...``）→ 旧的「前缀相等」命中率 ~0；
-        改 **token Jaccard ≥ 0.80（且交集 ≥ 2）且与次优差距 ≥ 0.1**（避免同剧不同集互吃）。
-        例：站点 ``The Old Story of Yu Hong 2026 S01 E14-E17 2160p ... PTerWEB`` vs qB
-        ``余红旧事.The.Old.Story.of.Yu.Hong.2026.S01.2160p...PTerWEB`` → Jaccard 0.84 → 命中。
-
-        ★ 例外：站点行**不带体积**（myhr 列里的 GB 是上传/下载量，**不是种子体积**）
-        → 粗配**不得拿体积当闸门**（旧版因此把 CARPT 全判不中）。
-        """
-        A = cls._hr_title_tokens(rec.get("title"))
-        if not A:
-            return ""
-        claimed = claimed or set()
-        scored: List[Any] = []
-        for hh, t in (local or {}).items():
-            key = str(hh or "").strip().lower()
-            if not key or key in claimed:
-                continue
-            B = cls._hr_title_tokens(getattr(t, "title", ""))
-            if not B:
-                continue
-            inter = len(A & B)
-            if inter < 2:
-                continue
-            jac = inter / max(1, len(A | B))
-            if jac >= 0.5:
-                scored.append((jac, key))
-        if not scored:
-            return ""
-        scored.sort(reverse=True)
-        top = scored[0]
-        if top[0] < 0.80:
-            return ""
-        if len(scored) > 1 and (top[0] - scored[1][0]) < 0.1:
-            return ""          # 同分双胞胎（同剧不同集）→ 不敢认，去拉种
-        return top[1]
-
-    def _hr_reconcile_fetch_hash(self, site_id: int, dom: str, tid: str,
-                                 conn: Dict[str, Any]) -> str:
-        """取该 tid 的 ``.torrent`` 算 infohash（NexusPHP ``download.php?id=`` 唯一可靠路径）。"""
-        url = f"https://{dom}/download.php?id={tid}"
-        try:
-            dl = self._get_downloader("qbittorrent")
-        except Exception:  # noqa: BLE001
-            dl = None
-        if dl is None:
-            return ""
-        data = None
-        try:
-            data = dl.fetch_torrent_bytes(url, cookie=(conn or {}).get("cookie"),
-                                          user_agent=(conn or {}).get("ua"),
-                                          referer=((conn or {}).get("url") or None))
-        except Exception:  # noqa: BLE001
-            data = None
-        finally:
-            try:
-                self._pv_spend(int(site_id), "hr", 1)
-            except Exception:  # noqa: BLE001
-                pass
-        if not data or data[:1] != b"d":
-            return ""
-        try:
-            return str(info_hash(data) or "").strip().lower()
-        except Exception:  # noqa: BLE001
-            return ""
-
-    def _hr_reconcile_target_task(self, dom: str) -> Dict[str, Any]:
-        """该站对应的任务（取保存目录 + 标签）。找不到 → 空。"""
-        try:
-            tasks = list((self._task_configs or {}).values())
-        except Exception:  # noqa: BLE001
-            tasks = []
-        for task in tasks:
-            cand = ""
-            for attr in ("site_domain", "site"):
-                try:
-                    cand = self._hrbills_norm_domain(getattr(task, attr, "") or "")
-                except Exception:  # noqa: BLE001
-                    cand = ""
-                if cand:
-                    break
-            if cand and (cand == dom or cand.endswith("." + dom) or dom.endswith("." + cand)):
-                return {
-                    "task_id": str(getattr(task, "id", "") or ""),
-                    "save_path": str(getattr(task, "save_path", "") or ""),
-                    "tag": str(getattr(task, "brush_tag", "") or ""),
-                    "site_domain": dom,
-                }
-        return {}
-
-    def _hr_reconcile_add_one(self, dom: str, tid: str, infohash: str = "",
-                              save_path: str = "") -> Dict[str, Any]:
-        """**同站重下**（写动作，必须由 ``confirm=1`` 显式触发后调用）。
-
-        ★ 与 ``rescue`` 的区别（pro 评审否决了复用 rescue）：rescue 语义是「从**无 H&R
-        的他站**补同 Release 来辅」，且 ``rescue_source_blocked`` 对 ``hr=True`` 的站一律
-        禁用 —— 拿它补欠债站自己的种，会被自己拦掉。这里是**还自己的债**：从**同一个
-        欠债站**按 ``download.php?id=<tid>`` 重下原始种。
-        三重保护：① 该 infohash 已在 qB → 不下；② 缓存到 infohash 永久化；③ 只在此函数写。
-        """
-        dom = self._hrbills_norm_domain(dom)
-        tgt = self._hr_reconcile_target_task(dom)
-        dest = str(save_path or tgt.get("save_path") or "").strip()
-        if not dest:
-            return {"tid": tid, "ok": False, "err": "未配置保存目录（避免落到下载器默认目录）"}
-        site_id = self._hr_reconcile_site_id(dom)
-        if not site_id:
-            return {"tid": tid, "ok": False, "err": "MP 站点表里找不到该域名"}
-        if infohash:
-            try:
-                if str(infohash).strip().lower() in (self._tag_all_torrents() or {}):
-                    return {"tid": tid, "ok": False, "skipped": "已在下载器",
-                            "err": "该 infohash 已在下载器（跳过，避免重复下载）"}
-            except Exception:  # noqa: BLE001
-                pass
-        try:
-            conn = self._reseed_site_conn(site_id) or {}
-        except Exception:  # noqa: BLE001
-            conn = {}
-        url = f"https://{dom}/download.php?id={tid}"
-        try:
-            dl = self._get_downloader("qbittorrent")
-        except Exception:  # noqa: BLE001
-            dl = None
-        if dl is None:
-            return {"tid": tid, "ok": False, "err": "下载器不可用"}
-        data = None
-        try:
-            data = dl.fetch_torrent_bytes(url, cookie=conn.get("cookie"),
-                                          user_agent=conn.get("ua"),
-                                          referer=(conn.get("url") or None))
-        except Exception as e:  # noqa: BLE001
-            data = None
-            return {"tid": tid, "ok": False, "err": f"取种失败:{e}"}
-        finally:
-            try:
-                self._pv_spend(site_id, "hr", 1)
-            except Exception:  # noqa: BLE001
-                pass
-        if not data or data[:1] != b"d":
-            return {"tid": tid, "ok": False, "err": "取到的不是种子（站点拒绝 / 需登录 / PV 拦截）"}
-        try:
-            nh = str(info_hash(data) or "").strip().lower()
-        except Exception:  # noqa: BLE001
-            nh = ""
-        if not nh:
-            return {"tid": tid, "ok": False, "err": "算不出 infohash（种子损坏？）"}
-        if nh in (self._tag_all_torrents() or {}):
-            return {"tid": tid, "ok": False, "new_hash": nh, "skipped": "已在下载器"}
-        tag = str(tgt.get("tag") or "") or f"魔流-{dom.split('.')[0]}-{HR_RECONCILE_TAG_SUFFIX}"
-        try:
-            got, err = dl.add_torrent(content=data, download_dir=dest, tag=tag,
-                                      site_domain=dom)
-        except Exception as e:  # noqa: BLE001
-            return {"tid": tid, "ok": False, "err": str(e)}
-        if not got:
-            return {"tid": tid, "ok": False, "err": str(err or "添加失败")}
-        try:
-            cache = self._hr_reconcile_cache()
-            cache.tid_put(dom, str(tid), str(got), "", 0.0, time.time())
-            cache.save()
-        except Exception:  # noqa: BLE001
-            pass
-        self._hr_reconcile_journal(dom, str(tid), str(got))
-        self._log(f"站点对账:按站点 myhr 从 {dom} 重下欠 H&R 种 tid={tid}（{str(got)[:12]}…）")
-        return {"tid": tid, "ok": True, "new_hash": str(got), "tag": tag, "save_path": dest}
-
-    def _hr_reconcile_journal(self, dom: str, tid: str, new_hash: str) -> None:
-        """对账重下台账（journal kind=hr_reconcile；写失败静默）。"""
-        try:
-            journal = getattr(getattr(self, "_store", None), "journal", None)
-            fn = getattr(journal, "record", None) if journal is not None else None
-            if not callable(fn):
-                return
-            from ..persistence import OperationItem  # noqa: WPS433
-            fn(task_id="", kind="hr_reconcile", items=[OperationItem(
-                hash=str(new_hash), title=f"站点对账重下 {dom} tid={tid}",
-                reason=f"站点 myhr 显示欠 H&R、本机没有种 → 同站重下（{str(new_hash)[:12]}…）",
-                size_gb=0.0, source="hr_reconcile")])
-        except Exception:  # noqa: BLE001
-            pass
-
-    def _hr_reconcile_round(self, force: bool = False) -> Dict[str, Any]:
-        """一轮站点对账（**只读 + 只回填提示**；**不**自动重下、**不**改任何账单状态）。
-
-        写动作（重下）只在 ``?action=hr_reconcile&confirm=1`` 里逐条发生。
-        """
-        if not HR_RECONCILE_ENABLED and not force:
-            return {"enabled": False, "reason": "HR_RECONCILE_ENABLED=False"}
-        cache = self._hr_reconcile_cache()
-        now = time.time()
-        try:
-            last = float(cache.last_run_ts() or 0.0)
-        except Exception:  # noqa: BLE001
-            last = 0.0
-        if not force and (now - last) < float(HR_RECONCILE_HOURS) * 3600.0:
-            return {"enabled": True, "skipped": "interval", "last_run_ts": last}
-        reports: List[Dict[str, Any]] = []
-        deadline = now + float(HR_RECONCILE_TIME_BUDGET)
-        for s in self._hr_reconcile_sites():
-            dom = str(s.get("domain") or "")
-            if not force:
-                try:
-                    if not cache.site_due(dom, time.time()):
-                        continue
-                except Exception:  # noqa: BLE001
-                    pass
-            if time.time() > deadline:
-                reports.append({"site": dom, "ok": False, "error": "本轮时间预算用尽，下轮继续"})
-                break
-            try:
-                rep = self._hr_reconcile_site(dom)
-            except Exception as e:  # noqa: BLE001
-                rep = {"site": dom, "ok": False, "error": str(e)}
-            try:
-                cache.note_result(dom, bool(rep.get("ok")), time.time(),
-                                  int(rep.get("fail_count") or 0) + (0 if rep.get("ok") else 1))
-            except Exception:  # noqa: BLE001
-                pass
-            reports.append(rep)
-        if reports:
-            try:
-                cache.set_last_run(time.time())
-            except Exception:  # noqa: BLE001
-                pass
-        try:
-            cache.flush()
-        except Exception:  # noqa: BLE001
-            pass
-        summary = {"enabled": True, "sites": len(reports), "reports": reports,
-                   "missing_total": sum(len(r.get("missing_local") or []) for r in reports),
-                   "at": time.time()}
-        try:
-            _miss = int(summary["missing_total"] or 0)
-            if _miss:
-                self._log(f"站点 H&R 对账:{summary['sites']} 站 · **{_miss} 条「站点说欠、本机没有」**"
-                          f"（需人工确认后重下；只报不动）", "warning")
-        except Exception:  # noqa: BLE001
-            pass
-        return summary
-
-    def _hr_reconcile_report(self, site: str = "") -> Dict[str, Any]:
-        """读上一次对账结果（**默认不联网**，秒回）；``live`` 由 AI 端点显式要求。"""
-        cache = self._hr_reconcile_cache()
-        dom = self._hrbills_norm_domain(site)
-        try:
-            if dom:
-                rep = cache.get_report(dom)
-                if not rep:
-                    return {"enabled": bool(HR_RECONCILE_ENABLED), "site": dom,
-                            "ok": False, "error": "该站还没有对账结果（先跑一轮）",
-                            "sites": [], "write": {"run_now": "GET /agent/hr/reconcile?live=1"}}
-                return {"enabled": bool(HR_RECONCILE_ENABLED), "site": dom, "ok": True,
-                        "report": rep, "last_run_ts": cache.last_run_ts()}
-            return {"enabled": bool(HR_RECONCILE_ENABLED),
-                    "sites": cache.reports(), "last_run_ts": cache.last_run_ts(),
-                    "interval_hours": float(HR_RECONCILE_HOURS),
-                    "site_status": cache.site_status()}
-        except Exception as e:  # noqa: BLE001
-            return {"enabled": bool(HR_RECONCILE_ENABLED), "ok": False, "error": str(e)}
-
-    def _hr_reconcile_apply(self, site: str, tids: Any = None,
-                            confirm: Any = None, save_path: str = "") -> Dict[str, Any]:
-        """按站点 myhr 的「需补种」清单重下（**默认干跑**；真写必须 ``confirm=1``）。
-
-        只处理**站点当前确实还欠**且**本机没有**的记录（重跑一次实时对账取准），
-        逐条走 ``_hr_reconcile_add_one``（同站重下）。**只加不删**。
-        """
-        dom = self._hrbills_norm_domain(site)
-        if not dom:
-            return {"ok": False, "error": "缺少 site（域名）"}
-        try:
-            want = {str(t).strip() for t in (tids if isinstance(tids, (list, tuple, set))
-                                             else str(tids or "").split(",")) if str(t).strip()}
-        except Exception:  # noqa: BLE001
-            want = set()
-        rep = self._hr_reconcile_site(dom)
-        if not rep.get("ok"):
-            return {"ok": False, "error": rep.get("error") or "对账失败", "site": dom}
-        pool = [r for r in (rep.get("missing_local") or [])
-                if not want or str(r.get("tid")) in want]
-        dry = not bool(confirm)
-        plan: List[Dict[str, Any]] = []
-        results: List[Dict[str, Any]] = []
-        for r in pool:
-            if dry:
-                plan.append({"tid": r.get("tid"), "action": "add", "dry": True,
-                             "title": r.get("title"), "size_gb": r.get("size_gb"),
-                             "need_h_left": r.get("need_h_left")})
-                continue
-            res = self._hr_reconcile_add_one(dom, str(r.get("tid") or ""),
-                                             str(r.get("infohash") or ""), save_path=save_path)
-            results.append(res)
-            plan.append({"tid": r.get("tid"), "action": "add", "ok": bool(res.get("ok")),
-                         "new_hash": res.get("new_hash") or "", "err": res.get("err") or ""})
-        out = {"ok": True, "dry_run": dry, "site": dom, "candidates": len(pool),
-               "plan": plan}
-        if not dry:
-            out["results"] = results
-            out["added"] = sum(1 for r in results if r.get("ok"))
-        else:
-            out["would_add"] = len(plan)
-        return out
-
 
 # ============================================================================
-# ★ 11.8.0 模块级：站点 ``myhr.php`` 解析器 + 对账缓存（**不挂 MagicFlowStore**）
+# 19.10.34：站点 myhr 对账（``HrReconcileMixin``）+ 对账缓存（``HrReconcileCache``）
+#   已迁到 ``features/hrreconcile.py`` —— 本文件只剩**账单状态机**
+#   （开账 / 作废 / 结清 / 违约判定 / 回填），改账本口径就只看这里。
+#   两边的唯一连接点是 ``self._hr_reconcile_*``（运行时 self 调用，无模块级反向 import）。
 # ============================================================================
-
-_HR_SIZE_RE = re.compile(r"([\d.]+)\s*(TB|TiB|GB|GiB|MB|MiB|KB|KiB)", re.I)
-# ★ 11.9.2："还需做种时间"列有两种渲染 —— 剩余 ≥1h 为 ``H:MM:SS``/``HH:MM:SS``，
-#   剩余 <1h 为 ``MM:SS``（实测 CARPT：如 ``48:00``）。旧正则只认三段
-#   ``H:MM:SS`` → 把 <1h 的行判成「布局不兼容」→ 整站 ``myhr`` 对账整页跳过。
-#   放宽为「可选第三段」，两种都收。
-_HR_NEED_RE = re.compile(r"^(\d+):([0-5]\d)(?::([0-5]\d))?$")
-_HR_TID_RE = re.compile(r"details\.php\?id=(\d+)", re.I)
-_HR_ID_RE = re.compile(r"<td[^>]*>\s*(\d{5,})\s*</td>", re.I)
-_HR_MARKERS = ("myhr", "h&r", "hit and run", "hit-and-run", "details.php", "hr.php")
-
-
-
-def _hr_cell_text(cell: str) -> str:
-    """单元格 → 纯文本（去标签 + 还原实体 + 压缩空白）。"""
-    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", str(cell or "")))).strip()
-
-
-def _hr_row_segments(raw: str) -> Any:
-    """定位 H&R 表并切出行（兼容嵌套表 / 行内嵌套 ``<table>``）。
-
-    ★ 为什么不用「按 ``<tr>`` 嵌套层级切」：NexusPHP 把内容表嵌套在版式表的 ``<tr>``
-    里 → 顶层行只剩少数几个，真正数据行全被包住。
-    ★ 为什么不用「以链接为锚向前后找 <tr></tr>」：行内可能有多个 ``details.php?id=``
-    链接（头像/用户名/引用）→ 会产生错行（实测 btschool 多出 tid=<uid> 的假行）。
-    做法：**以表头行（含「还需做种时间」）为分界**，之后的 ``<tr>`` 按 ``</tr>`` 切开；
-    只有同时拿到「还需做种时间」单元格 + ``details.php?id=`` 链接 + ≥ 3 个 ``<td>``
-    的行才算数据行（其余表不会同时满足）。
-
-    Returns:
-        ``(rows, candidates)``：``candidates`` = 「看着像数据行但可能没解出来」的候选数
-        （≥3 个 ``<td>`` + 标题链接）；两者不等 → 布局不兼容 → 调用方按不可识别处理。
-    """
-    raw = str(raw or "")
-    m = re.search(r"<tr[^>]*>(?:(?!</tr>).)*还需做种时间(?:(?!</tr>).)*</tr>", raw, re.S)
-    start = m.end() if m else 0
-    rows: List[str] = []
-    candidates = 0
-    for seg in raw[start:].split("</tr>"):
-        if "details.php?id=" not in seg:
-            continue
-        if len(re.findall(r"<td", seg, re.I)) < 3:
-            continue
-        candidates += 1
-        cells = [_hr_cell_text(c) for c in re.findall(r"<td[^>]*>(.*?)</td>", seg, re.S | re.I)]
-        if not any(_HR_NEED_RE.match(c) for c in cells):
-            continue
-        rows.append(seg)
-    return rows, candidates
-
-
-def _hr_myhr_parse(text: str) -> Optional[List[Dict[str, Any]]]:
-    """NexusPHP ``myhr.php`` 页 → 记录列表（**保守解析**）。
-
-    ★ 语义（实测 CARPT / btschool）：行首 id = H&R 记录 id（CARPT）/ 种子 id（btschool）；
-    真种子 id 在行内 ``details.php?id=<tid>``。列序（实测）：
-    ``上传量 | 下载量 | 分享率 | 还需做种时间 | 下载完成时间 | 剩余考察时间 | 操作``。
-
-    ★★ 两个已踩的坑（11.8.1 修）：
-      1. 页面头部（用户名 / 新人考核公告）也含 ``details.php?id=<uid>`` 链接 → 必须靠
-         「还需做种时间」单元格把这类噪声行剔掉，否则产生**假记录**（还会白拉 .torrent）；
-      2. 行内有嵌套 ``<table>`` 时，``<tr[^>]*>(.*?)</tr>`` 非贪婪会**重复匹配**同一行
-         （实测 CARPT 22 行 → 51 条）→ 改为按 ``</tr>`` 切分 + 取最近的 ``<tr`` + 按 tid 去重。
-
-    Returns:
-        ``None`` = **页面不可识别**（布局不兼容 / 登录页）→ 调用方整页跳过并退避；
-        ``[]``   = 页面可识别但**无未完成记录**（= 无欠）；
-        列表     = 逐条 ``{hr_id, tid, title, up_gb, down_gb, size_gb, need_left,
-                   done_at, keep_left, ratio}`；``size_gb`` 是**站点口径的下载量**
-                   （非种子体积，保留旧字段兼容）。
-    """
-    raw = str(text or "")
-    if not raw.strip():
-        return []
-    low = raw.lower()
-    rows: List[Dict[str, Any]] = []
-    seen: Set[str] = set()
-    has_header = ("还需做种时间" in raw) or ("下载完成时间" in raw) or ("hr-table" in low)
-    segs, candidates = _hr_row_segments(raw)
-    for seg in segs:
-        if "details.php?id=" not in seg:
-            continue
-        mtid = _HR_TID_RE.search(seg)
-        # ★ 取**最长锚文本**的链接 = 标题链接（行内可能有其他 link）
-        best_id = ""
-        best_txt = ""
-        for ma in re.finditer(r"<a[^>]*details\.php\?id=(\d+)[^>]*>(.*?)</a>", seg, re.S | re.I):
-            txt = _hr_cell_text(ma.group(2))
-            if len(txt) >= len(best_txt):
-                best_txt, best_id = txt, ma.group(1)
-        if not best_id and mtid:
-            best_id = mtid.group(1)
-        if not best_id:
-            continue
-        tid = best_id
-        if tid in seen:
-            continue
-        cells = [_hr_cell_text(c) for c in re.findall(r"<td[^>]*>(.*?)</td>", seg, re.S | re.I)]
-        need = ""
-        for c in cells:
-            if _HR_NEED_RE.match(c):
-                need = c
-                break
-        if not need:
-            continue          # 头部/公告/导航行 → 丢弃（不是 H&R 记录）
-        seen.add(tid)
-        mid = _HR_ID_RE.search(seg)
-        hr_id = mid.group(1) if mid else ""
-        title = best_txt
-        if not title:
-            mtitle = re.search(r"details\.php\?id=\d+['\"][^>]*>(.*?)</a>", seg, re.S | re.I)
-            if mtitle:
-                title = _hr_cell_text(mtitle.group(1))
-        if not title:
-            title = re.sub(r"<[^>]+>", " ", seg).strip()[:120]
-        up_gb = down_gb = 0.0
-        ratio = done_at = keep_left = ""
-        n_size = 0
-        for c in cells:
-            msz = _HR_SIZE_RE.fullmatch(c)
-            if msz:
-                n_size += 1
-                try:
-                    v = float(msz.group(1))
-                    unit = msz.group(2).lower()
-                    if unit.startswith("t"):
-                        v *= 1024.0
-                    elif unit.startswith("m"):
-                        v /= 1024.0
-                    elif unit.startswith("k"):
-                        v /= (1024.0 * 1024.0)
-                except Exception:  # noqa: BLE001
-                    v = 0.0
-                if n_size == 1:
-                    up_gb = round(v, 3)
-                elif n_size == 2:
-                    down_gb = round(v, 3)
-                continue
-            if not ratio and n_size >= 1 and re.fullmatch(r"\d+(?:\.\d+)?", c):
-                ratio = c
-                continue
-            if not done_at and re.match(r"\d{4}-\d{2}-\d{2}", c):
-                done_at = c
-                continue
-            if not keep_left and re.fullmatch(r"\d+\s*天\s*\d{1,2}:\d{2}:\d{2}", c):
-                keep_left = c
-        rows.append({"hr_id": hr_id, "tid": tid, "title": title[:120],
-                     "up_gb": up_gb, "down_gb": down_gb,
-                     "size_gb": down_gb or up_gb,
-                     "ratio": ratio, "need_left": need,
-                     "done_at": done_at, "keep_left": keep_left})
-    if candidates > len(rows):
-        # ★ 守门：表区里还有「像数据行但没解出来」的候选（如标题被套在子表里）
-        #   → 布局不兼容；宁可整页跳过（退避）也**绝不**当「无欠」。
-        return None
-    if rows:
-        return rows
-    if has_header:
-        return []       # 表头在但无数据行（含全部已达标的情况）→ 无欠
-    if any(mk in low for mk in _HR_MARKERS):
-        return []   # 可识别但无记录（= 无欠）
-    return None     # 不可识别 → 不当作「无欠」
-
-
-class HrReconcileCache:
-    """对账缓存（**派生数据，不是真值源**）：``tid→infohash`` 索引 + 每站退避 + 上次报告。
-
-    持久化 ``hr_reconcile.json``（原子写 tmp→rename）；**绝不挂 ``MagicFlowStore``**
-    （进程级单例热重载不重建）。tid→infohash 对同一种子近似不可变 → 主策略**永久缓存**
-    （按 ``seen_at`` 90 天修剪防无界膨胀）。
-    """
-
-    kv_region = "hrreconcile"
-    FILE_MIN_INTERVAL = 5.0
-    TID_TTL_DAYS = 90.0
-
-    def __init__(self, data_dir: Path, kv: Any = None):
-        self.data_dir = Path(data_dir)
-        self.file = self.data_dir / "hr_reconcile.json"
-        self.data: Dict[str, Any] = {"meta": {}, "sites": {}, "tid_index": {}, "reports": {}}
-        self._lock = threading.RLock()
-        self._last_file_write = 0.0
-        self._pending = False
-        self.kv = kv
-        self.load()
-
-    def kv_bind(self, kv: Any) -> None:
-        self.kv = kv
-
-    # ------------------------------------------------------------ 载入 / 落盘
-    def load(self) -> None:
-        try:
-            if self.file.exists():
-                with open(self.file, "r", encoding="utf-8") as f:
-                    data = json.load(f) or {}
-                if isinstance(data, dict):
-                    base = {"meta": {}, "sites": {}, "tid_index": {}, "reports": {}}
-                    for k in base:
-                        v = data.get(k)
-                        if isinstance(v, dict):
-                            base[k] = v
-                    self.data = base
-        except Exception:  # noqa: BLE001
-            self.data = {"meta": {}, "sites": {}, "tid_index": {}, "reports": {}}
-
-    def _write_file(self) -> None:
-        try:
-            self.data_dir.mkdir(parents=True, exist_ok=True)
-            tmp = self.file.with_name(self.file.name + ".tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(self.data, f, ensure_ascii=False, indent=2)
-            tmp.replace(self.file)
-        except Exception:  # noqa: BLE001
-            pass
-
-    def save(self, force: bool = False) -> None:
-        with self._lock:
-            now = time.time()
-            if force or (now - self._last_file_write) >= self.FILE_MIN_INTERVAL:
-                self._write_file()
-                self._last_file_write = now
-                self._pending = False
-            else:
-                self._pending = True
-
-    def flush(self) -> None:
-        with self._lock:
-            if self._pending or (time.time() - self._last_file_write) >= self.FILE_MIN_INTERVAL:
-                self._write_file()
-                self._last_file_write = time.time()
-                self._pending = False
-
-    # ------------------------------------------------------------ 运行状态
-    def last_run_ts(self) -> float:
-        try:
-            return float((self.data.get("meta") or {}).get("last_run_ts") or 0.0)
-        except Exception:  # noqa: BLE001
-            return 0.0
-
-    def set_last_run(self, ts: float) -> None:
-        with self._lock:
-            self.data.setdefault("meta", {})["last_run_ts"] = float(ts)
-            self.save()
-
-    def site_status(self) -> Dict[str, Any]:
-        with self._lock:
-            return dict(self.data.get("sites") or {})
-
-    def site_due(self, domain: str, now: float) -> bool:
-        d = str(domain or "").strip().lower()
-        with self._lock:
-            st = (self.data.get("sites") or {}).get(d) or {}
-        try:
-            return now >= float(st.get("next_try_ts") or 0.0)
-        except Exception:  # noqa: BLE001
-            return True
-
-    def note_result(self, domain: str, ok: bool, now: float, fail_count: int = 0) -> None:
-        """记一次结果：成功 → 清退避；失败 → 指数退避（阶梯封顶）。"""
-        d = str(domain or "").strip().lower()
-        if not d:
-            return
-        with self._lock:
-            st = dict((self.data.get("sites") or {}).get(d) or {})
-            if ok:
-                st.update({"last_ok_ts": float(now), "fail_count": 0, "next_try_ts": 0.0})
-            else:
-                fc = max(1, int(fail_count or 1))
-                steps = list(HR_RECONCILE_BACKOFF_HOURS) or [6.0]
-                backoff = float(steps[min(fc - 1, len(steps) - 1)]) * 3600.0
-                st.update({"fail_count": fc, "next_try_ts": float(now) + backoff})
-            self.data.setdefault("sites", {})[d] = st
-            self.save()
-
-    # ------------------------------------------------------------ tid 索引
-    def tid_get(self, domain: str, tid: str) -> Optional[Dict[str, Any]]:
-        d = str(domain or "").strip().lower()
-        t = str(tid or "").strip()
-        with self._lock:
-            row = ((self.data.get("tid_index") or {}).get(d) or {}).get(t)
-        return dict(row) if isinstance(row, dict) else None
-
-    def tid_put(self, domain: str, tid: str, infohash: str, title: str = "",
-                size_gb: float = 0.0, now: float = 0.0) -> None:
-        d = str(domain or "").strip().lower()
-        t = str(tid or "").strip()
-        h = str(infohash or "").strip().lower()
-        if not (d and t and h):
-            return
-        with self._lock:
-            idx = self.data.setdefault("tid_index", {}).setdefault(d, {})
-            idx[t] = {"h": h, "t": str(title or "")[:120], "s": round(float(size_gb or 0.0), 3),
-                      "at": float(now or time.time())}
-            self._prune_locked(d)
-
-    def _prune_locked(self, domain: str) -> None:
-        """按 ``seen_at`` 修剪（默认 90 天），防索引无界膨胀。"""
-        try:
-            idx = (self.data.get("tid_index") or {}).get(domain) or {}
-            cutoff = time.time() - float(self.TID_TTL_DAYS) * 86400.0
-            dead = [k for k, v in idx.items()
-                    if isinstance(v, dict) and float(v.get("at") or 0.0) < cutoff]
-            for k in dead:
-                idx.pop(k, None)
-        except Exception:  # noqa: BLE001
-            pass
-
-    # ------------------------------------------------------------ 报告
-    def put_report(self, domain: str, report: Dict[str, Any]) -> None:
-        d = str(domain or "").strip().lower()
-        if not d:
-            return
-        with self._lock:
-            self.data.setdefault("reports", {})[d] = dict(report or {})
-
-    def get_report(self, domain: str) -> Optional[Dict[str, Any]]:
-        d = str(domain or "").strip().lower()
-        with self._lock:
-            rep = (self.data.get("reports") or {}).get(d)
-        return dict(rep) if isinstance(rep, dict) else None
-
-    def reports(self) -> Dict[str, Any]:
-        with self._lock:
-            return dict(self.data.get("reports") or {})
-
-
-def get_hr_reconcile_cache(data_dir: Path, kv: Any = None) -> HrReconcileCache:
-    """取/建**进程级**对账缓存（按 data_dir 单例，跨热重载存活）。
-
-    ★ 照 ``get_hr_bills_store`` / ``persistence.get_gate_store`` 一模一样：用同一套
-    ``_shared()`` 注册表单独持有实例，热重载后仍指向同一对象（否则新类拿不到旧实例）。
-    """
-    key = f"hrreconcile:{Path(data_dir)}"
-    sh = _shared()
-    with sh.lock:
-        obj = sh.singletons.get(key)
-        if obj is not None and not isinstance(obj, HrReconcileCache):
-            try:
-                obj.flush()
-            except Exception:  # noqa: BLE001
-                pass
-            obj = None
-        if obj is None:
-            obj = HrReconcileCache(data_dir, kv=kv)
-            sh.singletons[key] = obj
-        elif kv is not None:
-            try:
-                obj.kv_bind(kv)
-            except Exception:  # noqa: BLE001
-                pass
-    return obj

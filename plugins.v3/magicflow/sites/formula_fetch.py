@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import html as _html
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -140,10 +141,47 @@ def _to_float(raw: Optional[str]) -> Optional[float]:
 # ★ 7.4.0：各站把「魔力」叫法不同——NexusPHP 默认「魔力值」，
 #   财神(cspt.top) 叫「金元宝」，个别站叫「魔力/金币/积分」。解析必须按站点措辞放宽，
 #   否则该站页面里明明写着「你当前每小时能获取X个金元宝 (A = Y)」也解析不出时魔。
-_CUR = r"(?:魔力值|金元宝|元宝|魔力|金币|银币|积分|煤块|Karma)"
+# ★ 19.10.47：还有站点**自造货币名**（蟹黄堡 crabpt.vip 叫「蟹币值」，
+#   原文「你当前每小时能获取 131.273 个蟹币值 (A = 1542.7)」）——
+#   硬编码词表永远追不上站点改名，故追加一条通用形状「N 个汉字 + 值」兜底。
+_CUR_WORDS = r"魔力值|金元宝|元宝|魔力|金币|银币|积分|煤块|Karma"
+_CUR_GENERIC = r"[\u4e00-\u9fa5]{1,6}值"
+_CUR = rf"(?:{_CUR_WORDS}|{_CUR_GENERIC})"
+
+# 顶部状态栏的货币单位可能**不带「值」**（「蟹币值(131.27蟹币/小时)」的左值是「蟹币」）
+_CUR_UNIT = rf"(?:{_CUR_WORDS}|[\u4e00-\u9fa5]{{1,6}})"
 
 # 「每小时获得的合计<货币>」表的锚点（找不到就退回页首）
-_TABLE_ANCHOR = re.compile(r"合计\s*(?:魔力值|金元宝|元宝|魔力|金币|银币|积分)")
+_TABLE_ANCHOR = re.compile(rf"合计\s*{_CUR}")
+
+# ★ 19.10.48：各站把「魔力」叫成自己的名字（蟹币值 / 金元宝 / 积分 / 煤块…），
+#   界面上统一写「魔力」会让两套互不通兑的经济系统看起来像同一个东西。
+#   这里把**站点原文里的货币名**捞出来，往下透传到 API，前端按站点显示。
+#   三级优先：表头「合计<货币>」最权威 → 「每小时能获取 N 个<货币>」→ 顶部状态栏「<货币>(N/h)」。
+_CUR_NAME_ANCHOR = re.compile(rf"合计\s*({_CUR})")
+_CUR_NAME_HOURLY = re.compile(
+    rf"当前每小时[能可]?\s*(?:获取|获得)\s*[\d,.]+\s*个\s*({_CUR})"
+)
+_CUR_NAME_BAR = re.compile(rf"({_CUR})\s*[（(]\s*[\d,.]+\s*(?:{_CUR_WORDS}|[\u4e00-\u9fa5]{{1,6}})?\s*/\s*小时")
+
+
+def detect_currency_name(text: str) -> str:
+    """从 mybonus 页面文本里认出该站对「魔力」的**自称**（纯函数）。
+
+    站点各自命名：默认 NexusPHP「魔力值」、财神「金元宝」、蟹黄堡「蟹币值」、
+    野马PT「积分」。认不出返回空串（调用方兜底「魔力值」），绝不编造。
+    """
+    if not text:
+        return ""
+    for pat in (_CUR_NAME_ANCHOR, _CUR_NAME_HOURLY, _CUR_NAME_BAR):
+        m = pat.search(text)
+        if not m:
+            continue
+        name = (m.group(1) or "").strip()
+        # 粗筛：2~8 个字符、不含「的」（避免从句子中间截出残片）
+        if 2 <= len(name) <= 8 and "的" not in name:
+            return name
+    return ""
 
 
 def _cell_text(raw: str) -> str:
@@ -243,6 +281,10 @@ def parse_nexusphp_formula(html_text: str) -> FormulaCapture:
 
     # 4) 附加系数
     extra: Dict[str, Any] = {}
+    # 站点对该货币的自称（界面按站点显示，不统一叫「魔力」）
+    _cur_name = detect_currency_name(text)
+    if _cur_name:
+        extra["currency"] = _cur_name
     m = re.search(r"官种系数[:：为]*\s*([\d.]+)", text)
     if m:
         extra["official_coef"] = _to_float(m.group(1))
@@ -268,8 +310,8 @@ def parse_nexusphp_formula(html_text: str) -> FormulaCapture:
         extra["current_bonus_per_hour"] = _to_float(m.group(1))
         extra["current_a"] = _to_float(m.group(2))
     else:
-        # 兜底：顶部状态栏「魔力值(15魔力/小时)」
-        m2 = re.search(rf"{_CUR}\s*[（(]\s*([\d,.]+)\s*{_CUR}\s*/\s*小时\s*[)）]", text)
+        # 兜底：顶部状态栏「魔力值(15魔力/小时)」/「蟹币值(131.27蟹币/小时)」
+        m2 = re.search(rf"{_CUR}\s*[（(]\s*([\d,.]+)\s*{_CUR_UNIT}\s*/\s*小时\s*[)）]", text)
         if m2:
             extra["current_bonus_per_hour"] = _to_float(m2.group(1))
 
@@ -346,6 +388,8 @@ def parse_mteam_bonus(payload: Optional[dict]) -> FormulaCapture:
             cap.params[fld] = val
 
     extra: Dict[str, Any] = {}
+    # M-Team 对该货币自称「魔力值」（与 NexusPHP 默认同名，但这里显式写明以便透传）
+    extra["currency"] = "魔力值"
     hourly = _f("finalBs")
     if hourly is None:
         hourly = _f("allBonus")
@@ -452,6 +496,139 @@ def fetch_mteam_bonus(site: Any, timeout: int = 30) -> FormulaCapture:
     return fallback
 
 
+# ============================================================
+# YemaPT（野马PT）：SPA 站点，无 mybonus.php
+#   时魔只在**前端私有接口** ``/api/consumer/fetchPointPageInfo`` 里，
+#   取 ``data.currentHourPoint`` 的「做种贡献 + 基础 + 发布人奖励」**三项之和**
+#   （站点「每小时产出」卡片就是这么算的）
+#   ⚠ 该接口只认 **cookie**；``/openApi/*`` 只认 apikey 且**不提供任何速率字段**，
+#     两条通道互斥（官方 wiki：Cookie 中的登录 auth 不能用于开放 API，反之亦然）。
+# ============================================================
+
+_YEMA_HOSTS = ("yemapt.org",)
+
+
+def is_yema_domain(domain: Optional[str]) -> bool:
+    """是否为 YemaPT（野马PT）站点。"""
+    d = (domain or "").strip().lower()
+    return any(h in d for h in _YEMA_HOSTS)
+
+
+def parse_yema_point(payload: Optional[dict]) -> FormulaCapture:
+    """解析 YemaPT ``/api/consumer/fetchPointPageInfo``（纯函数）。
+
+    ⚠ 时魔 = **三项之和**，不是 ``hourPoint`` 一项。站点前端（growth 页 chunk）原文：
+
+        hourlyPoints = hourPoint + hourBasePoint + hourOwnerPoint
+
+    这个和渲染在标题为「每小时产出」的卡片上，tooltip 拆解为
+    「做种贡献积分 + 基础积分 + 发布人奖励积分」。只取 ``hourPoint`` 会少算
+    基础积分那一块（实测 25 vs 站点显示 47）。
+
+    关键字段：
+      * ``currentHourPoint.hourPoint`` → 做种贡献积分（**不是**总时魔）
+      * ``currentHourPoint.hourBasePoint`` → 基础积分（登录即有的保底）
+      * ``currentHourPoint.hourOwnerPoint`` → 发布人奖励积分（自己发的种）
+      * ``currentHourPoint.hourA`` → 当前 A 值
+      * ``seedPointRule`` 的 ``t0/n0/b0/l`` → 与 NexusPHP 同形的公式参数
+      * ``seedPointRule.seedMaxTorrentNum`` → 计入积分的最多种子数
+      * ``seedPointRule.torrentBasePoint`` → 每个种子的基础分
+    """
+    cap = FormulaCapture(source="yemapt-point")
+    data = ((payload or {}).get("data") or {}) if isinstance(payload, dict) else {}
+    if not data:
+        cap.note = "YemaPT 返回缺少 data"
+        return cap
+    rule = data.get("seedPointRule") or {}
+    for fld in ("t0", "n0", "b0", "l"):
+        val = _to_float(rule.get(fld))
+        if val is not None:
+            cap.params[fld] = val
+    hourly = data.get("currentHourPoint") or {}
+    extra: Dict[str, Any] = {}
+    # 站点自称是「积分」（前端原文：「每小时能获取 X 个积分」）
+    extra["currency"] = "积分"
+    # 三项求和 —— 与站点「每小时产出」卡片同口径
+    parts: Dict[str, float] = {}
+    for key in ("hourPoint", "hourBasePoint", "hourOwnerPoint"):
+        val = _to_float(hourly.get(key))
+        if val is not None:
+            parts[key] = val
+            extra[f"yema_{key}"] = val
+    rate: Optional[float] = None
+    if parts:
+        rate = round(sum(parts.values()), 3)
+        extra["total_bonus_per_hour"] = rate
+        # 只算了做种贡献、不含基础分的旧口径，留作诊断对照
+        if "hourPoint" in parts and len(parts) > 1:
+            extra["yema_seed_only"] = parts["hourPoint"]
+    a_val = _to_float(hourly.get("hourA"))
+    if a_val is not None:
+        extra["current_a"] = a_val
+    bonus = _to_float(data.get("bonus"))
+    if bonus is not None:
+        extra["yema_bonus"] = bonus
+    cap_n = _to_float(rule.get("seedMaxTorrentNum"))
+    if cap_n is not None:
+        extra["seeding_count_cap"] = int(cap_n)
+    flat = _to_float(rule.get("torrentBasePoint"))
+    if flat is not None:
+        extra["per_torrent_flat"] = flat
+    cap.extra = extra
+    cap.ok = bool(rate is not None or cap.params)
+    if cap.ok:
+        cap.note = "YemaPT consumer/fetchPointPageInfo"
+    return cap
+
+
+def fetch_yema_bonus(site: Any, timeout: int = 30) -> FormulaCapture:
+    """用站点 **cookie** 抓 YemaPT 积分页，取站点自报时魔。
+
+    返回 ``FormulaCapture``；``ok=False`` 时 ``note`` 带诊断（缺 cookie / 未授权 /
+    HTTP 码），调用方按既有降级链继续（实测折算 → 趋势值）。
+    """
+    domain = (getattr(site, "domain", "") or "").strip()
+    base = (getattr(site, "url", "") or "").strip().rstrip("/")
+    if not base and domain:
+        base = f"https://{domain}"
+    cookie = getattr(site, "cookie", None)
+    ua = getattr(site, "ua", None) or _DEFAULT_UA
+    if not base:
+        return FormulaCapture(source="yemapt-point", note="站点缺少 url/domain")
+    if not cookie:
+        return FormulaCapture(source="yemapt-point", note="站点未配置 Cookie（该接口只认 cookie）")
+
+    url = f"{base}/api/consumer/fetchPointPageInfo"
+    try:
+        req = _mk_client(site, base, "formula", cookie=cookie, ua=ua, timeout=timeout)
+        resp = req.get_res(url)
+    except Exception as err:  # noqa: BLE001（采集层绝不抛，这里只兜 SDK 通道）
+        return FormulaCapture(source="yemapt-point", note=f"请求失败: {err}")
+    if resp is None:
+        return FormulaCapture(source="yemapt-point", note="无响应")
+    if not getattr(resp, "ok", False):
+        return FormulaCapture(source="yemapt-point", note=f"HTTP {getattr(resp, 'status_code', '?')}")
+    raw = getattr(resp, "text", "") or ""
+    try:
+        resp.close()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        payload = json.loads(raw)
+    except Exception as err:  # noqa: BLE001
+        return FormulaCapture(source="yemapt-point", note=f"非 JSON: {err}")
+    if not isinstance(payload, dict) or not payload.get("success"):
+        # 未登录的典型形态：{"success":false,"showType":2,"errorMessage":"","errorCode":400}
+        code = ""
+        if isinstance(payload, dict):
+            code = str(payload.get("errorCode") or payload.get("errorMessage") or "")
+        return FormulaCapture(source="yemapt-point", note=f"接口未授权（Cookie 可能已失效）{code}")
+    cap = parse_yema_point(payload)
+    if cap.ok:
+        cap.note = f"{domain or base} consumer/fetchPointPageInfo"
+    return cap
+
+
 def fetch_site_formula(site: Any, timeout: int = 60, force: bool = False) -> FormulaCapture:
     """
     用 MoviePilot SDK 抓取站点 ``mybonus.php`` 并解析公式。
@@ -476,6 +653,11 @@ def fetch_site_formula(site: Any, timeout: int = 60, force: bool = False) -> For
     # M-Team（馒头）是 SPA，mybonus.php 无 HTML 可解析 → 走官方 API。
     if is_mteam_domain(domain):
         return fetch_mteam_bonus(site, timeout=timeout)
+
+    # ★ 19.10.47：YemaPT 同样是 SPA（``/mybonus.php`` 返回文档站首页，仅 30 字节），
+    #   时魔只在 cookie 侧的 ``/api/consumer/fetchPointPageInfo`` 里 → 走专用通道。
+    if is_yema_domain(domain):
+        return fetch_yema_bonus(site, timeout=timeout)
 
     url = f"{base}/mybonus.php"
     try:
@@ -633,58 +815,206 @@ def fetch_torrent_promotion(site: Any, page_url: str, timeout: int = 20) -> Dict
     return out
 
 
+def _list_page_text(
+    site: Any, base: str, userid: Any, ttype: str, page: int,
+    cookie: Any, ua: Any, timeout: int,
+) -> str:
+    """抓「我的种子」列表的第 ``page`` 页，返回解码后的 HTML（失败返回空串）。
+
+    ★ 分页参数必须与 ``userid``/``type`` 一起发：裸 ``?page=1`` 站点会返回空
+    （NexusPHP 靠这两个参数定位用户，缺了就当未登录）。
+    """
+    url = f"{base}/getusertorrentlistajax.php?userid={int(userid)}&type={ttype}"
+    if page:
+        url += f"&page={int(page)}"
+    try:
+        from app.sdk.network import RequestUtils  # noqa: WPS433,F401
+    except Exception:  # pragma: no cover - 离线环境
+        return ""
+    try:
+        req = _mk_client(site, base, "seeding", cookie=cookie, ua=ua, timeout=timeout)
+        resp = req.get_res(url)
+    except Exception:
+        return ""
+    if resp is None or not getattr(resp, "ok", False):
+        try:
+            resp and resp.close()
+        except Exception:
+            pass
+        return ""
+    try:
+        raw = resp.content
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return raw.decode("gbk", "ignore")
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+
+
+def _has_next_page(text: str, page: int) -> bool:
+    """页面里是否还有「第 page+1 页」的链接（翻页终止判据，纯函数）。"""
+    if not text:
+        return False
+    return bool(re.search(r"[?&]page=%d(?!\d)" % (int(page) + 1), text))
+
+
+def fetch_user_torrent_rows(
+    site: Any, userid: Any, ttype: str = "seeding",
+    max_pages: int = 20, timeout: int = 25,
+) -> Dict[str, Any]:
+    """**分页**抓取用户种子列表，返回结构化行（认领判定的事实源）。
+
+    NexusPHP 每页 100 条；只抓第一页是 19.10.48 前「认领扫描恒 0」的根因之一
+    （咖啡 160 条只拿到 100 条）。
+
+    返回 ``{'rows': [...], 'declared_total': int|None, 'pages': int, 'error': str}``，
+    每行见 :func:`parse_user_torrent_rows`。任一页失败立即返回已拿到的部分。
+    """
+    domain = (getattr(site, "domain", "") or "").strip()
+    base = (getattr(site, "url", "") or (f"https://{domain}" if domain else "")).rstrip("/")
+    if not base or not userid:
+        return {"rows": [], "declared_total": None, "pages": 0, "error": "no base/uid"}
+    cookie = getattr(site, "cookie", None)
+    ua = getattr(site, "ua", None) or _DEFAULT_UA
+    rows: list = []
+    seen_tid: set = set()
+    declared = None
+    pages = 0
+    for page in range(max(1, min(int(max_pages or 1), 40))):
+        text = _list_page_text(site, base, userid, ttype, page, cookie, ua, timeout)
+        if not text.strip():
+            break
+        pages += 1
+        if declared is None:
+            mt = re.search(r"<b>(\d+)</b>\s*条记录", text)
+            if mt:
+                declared = int(mt.group(1))
+        got = parse_user_torrent_rows(text)
+        fresh = 0
+        for r in got:
+            key = r.get("tid") or r.get("title_norm")
+            if not key or key in seen_tid:
+                continue
+            seen_tid.add(key)
+            rows.append(r)
+            fresh += 1
+        if not got or not _has_next_page(text, page):
+            break
+        if not fresh:
+            break
+    return {"rows": rows, "declared_total": declared, "pages": pages, "error": ""}
+
+
+def selector_marker(selector: str) -> str:
+    """从 CSS selector 里取出可直接搜 HTML 的标记子串（离线纯函数）。
+
+    详情页判定不引第三方选择器库，改用「站点自己声明的关键字」在页面里搜：
+
+    - ``a[href*='add_torrent_id']`` → ``add_torrent_id``（学校这类 viewclaims 站）
+    - ``button[data-action='addClaim']`` → ``addClaim``（新版认领插件）
+    - ``#add-claim`` → ``add-claim``
+
+    取不到就返回空串，调用方必须跳过详情页判定（宁可不判，不可猜）。
+    """
+    s = str(selector or "").strip()
+    if not s:
+        return ""
+    m = re.search(r"\[[a-zA-Z-]+\*?=?['\"]?([^'\"]+)['\"]?\]", s)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"[#.]([A-Za-z0-9_-]+)", s)
+    if m:
+        return m.group(1).strip()
+    return ""
+
+
+def fetch_claim_open_by_details(
+    site: Any, tids: Any, claim_page: str, detail_selector: str,
+    limit: int = 30, timeout: int = 20,
+) -> Dict[str, bool]:
+    """**逐个开种子详情页**判定「这颗能不能认领」—— viewclaims 型站专用通道。
+
+    学校（pt.btschool.club）这类老式认领站，做种列表行里**没有** ``data-claim_id``
+    （实测整页连 ``claim`` 字样都没有），所以 :func:`parse_user_torrent_rows` 对它
+    只能给出 ``claim_state='none'``。它的认领入口只出现在种子详情页：
+
+    - 未认领：详情页有 ``<a href="viewclaims.php?add_torrent_id={id}">[ 认领种子 ]</a>``
+    - 已认领：整行消失，页面里搜不到 ``add_torrent_id``
+
+    代价：一颗一次请求。所以**只对有限候选**（本站在做种的种子）跑，绝不拿它扫
+    全站（学校 2274 页 ≈ 25 万颗，且实测新种也带按钮 → 可认领率 ~100%，
+    扫全站既无筛选价值也会打爆站点）。
+
+    返回 ``{tid: 是否可认领}``；取不到标记/无候选/整页失败都返回空表。
+    """
+    marker = selector_marker(detail_selector)
+    if not marker:
+        return {}
+    ids = [str(t) for t in (tids or []) if str(t).isdigit()]
+    if not ids:
+        return {}
+    domain = (getattr(site, "domain", "") or "").strip()
+    base = (getattr(site, "url", "") or (f"https://{domain}" if domain else "")).rstrip("/")
+    tpl = str(claim_page or "").strip()
+    if not base or "{id}" not in tpl:
+        return {}
+    cookie = getattr(site, "cookie", None)
+    ua = getattr(site, "ua", None) or _DEFAULT_UA
+    try:
+        from app.sdk.network import RequestUtils  # noqa: WPS433,F401
+    except Exception:  # pragma: no cover - 离线环境
+        return {}
+    out: Dict[str, bool] = {}
+    for tid in ids[: max(1, int(limit or 1))]:
+        path = tpl.replace("{id}", tid)
+        url = base + (path if path.startswith("/") else "/" + path)
+        try:
+            req = _mk_client(site, base, "details", cookie=cookie, ua=ua, timeout=timeout)
+            resp = req.get_res(url)
+        except Exception:
+            continue
+        if resp is None or not getattr(resp, "ok", False):
+            try:
+                resp and resp.close()
+            except Exception:
+                pass
+            continue
+        try:
+            raw = resp.content
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                text = raw.decode("gbk", "ignore")
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+        out[tid] = marker in text
+    return out
+
+
 def fetch_user_torrent_urls(
     site: Any, userid: Any, ttype: str = "leeching", timeout: int = 25
 ) -> Dict[str, str]:
     """抓取用户种子列表（``type=leeching/seeding``），返回 ``{规范化标题: 详情页URL}``。
 
     用于给「没记录详情页链接」的种子回填站点链接（由下载中/做种列表反查）。
+    ★ 19.10.49 起分页抓全（原先只抓第一页，>100 条的站会漏）。
     """
     domain = (getattr(site, "domain", "") or "").strip()
     base = (getattr(site, "url", "") or (f"https://{domain}" if domain else "")).rstrip("/")
-    if not base or not userid:
-        return {}
-    cookie = getattr(site, "cookie", None)
-    ua = getattr(site, "ua", None) or _DEFAULT_UA
-    url = f"{base}/getusertorrentlistajax.php?userid={int(userid)}&type={ttype}"
-    try:
-        from app.sdk.network import RequestUtils  # noqa: WPS433
-    except Exception:
-        return {}
-    try:
-        req = _mk_client(site, base, "seeding", cookie=cookie, ua=ua, timeout=timeout)
-        resp = req.get_res(url)
-    except Exception:
-        return {}
-    if resp is None or not getattr(resp, "ok", False):
-        try:
-            resp and resp.close()
-        except Exception:
-            pass
-        return {}
-    try:
-        raw = resp.content
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            text = raw.decode("gbk", "ignore")
-    finally:
-        try:
-            resp.close()
-        except Exception:
-            pass
+    data = fetch_user_torrent_rows(site, userid, ttype=ttype, timeout=timeout)
     out: Dict[str, str] = {}
-    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", text, re.S):
-        mid = re.search(r"details\.php\?id=(\d+)", row)
-        if not mid:
-            continue
-        m = _TITLE_ATTR_RE.search(row) or _TITLE_TEXT_RE.search(row)
-        title = ""
-        if m:
-            title = _html.unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip()
-        if not title:
-            continue
-        out.setdefault(_norm_title(title), f"{base}/details.php?id={mid.group(1)}")
+    for r in data.get("rows") or []:
+        tid = str(r.get("tid") or "").strip()
+        norm = str(r.get("title_norm") or "")
+        if tid and norm:
+            out.setdefault(norm, f"{base}/details.php?id={tid}")
     return out
 
 
@@ -707,74 +1037,243 @@ def _norm_title(title: str) -> str:
     return re.sub(r'\s+', ' ', t).strip()
 
 
-def parse_seeding_list(html_text: str) -> list:
-    """解析 ``getusertorrentlistajax.php?type=seeding`` 页面。
+# 集数标记：站点侧与本地侧写法不一致，是认亲失败的最大单一来源（★ 19.10.51）。
+#   站点「我的种子」列表常把整季折叠成单集：
+#     S01.Complete / S01 Complete / S01E16 / S01E07-S01E08 / S01.E01-E12
+#   本地下载器标题通常是发布名原样（S01.Complete 或 S01E01-E12）。
+# 两边都归一到「季号」，差异即消失。
+_EP_MARK_RE = re.compile(
+    r'\b(s\d{1,2})'                                    # S01（**保留原数字**，别 int：对上要跟 s01 字面相等）
+    r'(?:\s*[.\-_]?\s*e\d{1,3})'                       # 首集：E16 / .E16 / - E16
+    # 可选区间尾。⚠ 分隔符必须含空格 —— ``_norm_title`` 已把 ``-``/``.`` 折成空格，
+    # 进来的是 ``s01e07 s01e08``，只认连字符会漏掉（★ 19.10.51）。
+    r'(?:[\s\-_]+(?:s\d{1,2}\s*[.\-_]?\s*)?e\d{1,3})?',
+    re.I,
+)
+# S01.Complete / S01 Complete / S01-Complete
+_EP_COMPLETE_RE = re.compile(r'\b(s\d{1,2})\s*[.\-_]?\s*complete\b', re.I)
+# 游离的 complete（如 "...2026 Complete 2160p..."，没有季号可依附）
+_LOOSE_COMPLETE_RE = re.compile(r'\bcomplete\b', re.I)
 
-    返回 ``[{'title':..., 'title_norm':..., 'size_bytes':int, 'pubdate':'YYYY-MM-DD HH:MM:SS'}, ...]``。
+
+def _norm_title_loose(title: str) -> str:
+    """标题**松**规范化：在 :func:`_norm_title` 之上再抹平集数写法差异。
+
+    只在精确匹配失败时做**等值**兜底，绝不用于模糊比分 —— 松 key 会丢掉集数信息，
+    拿它算相似度必然引入假阳性（实测「Pokémon 日月」vs「Dogul.Wang」模糊比 0.67）。
+    """
+    t = _norm_title(title)
+    if not t:
+        return t
+    t = _EP_MARK_RE.sub(lambda m: m.group(1), t)
+    t = _EP_COMPLETE_RE.sub(lambda m: m.group(1), t)
+    t = _LOOSE_COMPLETE_RE.sub(' ', t)
+    return re.sub(r'\s+', ' ', t).strip()
+
+
+# ---------------------------------------------------------------- 标题摘要
+#
+# ★ 19.10.53：认领列表此前**只有站点原文标题**，而站点标题长这样：
+#     「Battle of Britain 1969 AUS UHD BluRay 2160p REMUX HEVC DTS-HD MA 5.1 DoVi
+#       HDR 2Audio-UBits」
+#   用户在「可认领」里认不出这是哪部片，也就判断不了「这颗值不值得我承诺保种」
+#   （咖啡不达标 −3000 魔力）。认领是用户行为，看不懂 = 没有决策依据。
+#
+#   这里只做**零成本的结构化**（不联网、不猜片名）：把年份/分辨率/来源/季集/压制组/
+#   标题里自带的中文拆成独立字段，让界面能排成一行规格。
+#   ★ 试过让识别链给中文名，实测**不可用**：MP 识别链一次 32s 还返空，媒体库转移
+#     历史 0 行 → 已撤。界面改为「原文标题 + 本地规格 + 站点详情页直达」，
+#     认片靠点开站点页看原名与简介，不猜。
+_DIGEST_YEAR_RE = re.compile(r'\b(19\d{2}|20\d{2})\b(?!\s*[xXpP])')
+_DIGEST_RES_RE = re.compile(r'\b(4320p|2160p|1080[pi]|720p|576[pi]|480p)\b', re.I)
+# ★ 来源按**具体度**排序取第一个命中，不是按出现位置 —— 发布名常写成
+#   "UHD BluRay 2160p REMUX"，按位置会取到 BLURAY 而丢掉更具体的 REMUX。
+_DIGEST_SRC_ORDER = (
+    ('REMUX', re.compile(r'\bremux\b', re.I)),
+    ('BDRIP', re.compile(r'\b(?:bd|br)rip\b', re.I)),
+    ('BLURAY', re.compile(r'\bblu-?ray\b', re.I)),
+    ('WEB-DL', re.compile(r'\bweb-?dl\b', re.I)),
+    ('WEBRip', re.compile(r'\bweb-?rip\b', re.I)),
+    ('HDTV', re.compile(r'\bhdtv\b', re.I)),
+    ('DVDRip', re.compile(r'\bdvdrip\b', re.I)),
+    ('HDRip', re.compile(r'\bhdrip\b', re.I)),
+)
+_DIGEST_TAG_RE = re.compile(r'(?<![a-z0-9])s(\d{1,2})(?:\s*[.\-_]?\s*e(\d{1,3}))?', re.I)
+_DIGEST_RANGE_RE = re.compile(r'e(\d{1,3})\s*-\s*(?:s\d{1,2}\s*)?e(\d{1,3})', re.I)
+_DIGEST_GROUP_RE = re.compile(r'-([A-Za-z0-9@._]{2,20})$')
+_DIGEST_CJK_RE = re.compile(r'[\u4e00-\u9fff][\u4e00-\u9fff0-9：:·、（）()！!？?\s]{0,40}')
+
+
+def title_digest(title: str) -> dict:
+    """把发布标题拆成结构化规格。**纯函数、零网络、恒有返回**。
+
+    返回::
+
+        {'year': 1969, 'res': '2160p', 'src': 'REMUX',
+         'season': 1, 'ep': '01-12', 'pack': True, 'group': 'UBits', 'cn': ''}
+
+    字段缺失一律 ``None`` / ``''``，不做猜测填充 —— 「未识别」必须可在界面上看出来，
+    不能拿默认值冒充解析结果（铁律 8：算不出来要可见）。
+    """
+    raw = str(title or '')
+    out = {'year': None, 'res': '', 'src': '', 'season': None,
+           'ep': '', 'pack': False, 'group': '', 'cn': ''}
+    if not raw.strip():
+        return out
+    m = _DIGEST_YEAR_RE.search(raw)
+    if m:
+        try:
+            out['year'] = int(m.group(1))
+        except (TypeError, ValueError):
+            out['year'] = None
+    m = _DIGEST_RES_RE.search(raw)
+    if m:
+        out['res'] = m.group(1).lower()
+    for _label, _rx in _DIGEST_SRC_ORDER:
+        if _rx.search(raw):
+            out['src'] = _label
+            break
+    # 中文名：国内站常见「[字幕组]中文名.English.2024...」，取最长的一段 CJK。
+    best = ''
+    for seg in _DIGEST_CJK_RE.findall(raw):
+        seg = seg.strip(' ·、：:')
+        if len(seg) > len(best):
+            best = seg
+    out['cn'] = best[:40]
+    m = _DIGEST_TAG_RE.search(raw)
+    if m:
+        try:
+            out['season'] = int(m.group(1))
+        except (TypeError, ValueError):
+            out['season'] = None
+        ep = m.group(2) or ''
+        rng = _DIGEST_RANGE_RE.search(raw)
+        if ep and rng:
+            # S01E01-E12 / S01E01-E12 这类区间：保留首尾，用户才知道是整季还是单集
+            ep = f'{ep}-{rng.group(2)}'
+        out['ep'] = ep
+        low = raw.lower()
+        # 整季判定：显式 complete / 有区间 / 只给季号不给集号
+        out['pack'] = bool(
+            not ep or rng or 'complete' in low or '全集' in raw or '全季' in raw)
+    m = _DIGEST_GROUP_RE.search(raw.strip())
+    if m:
+        out['group'] = m.group(1)
+    return out
+
+
+_ROW_TR_RE = re.compile(r'<tr[^>]*>(.*?)</tr>', re.S)
+_ROW_TID_RE = re.compile(r'data-torrent_id="(\d+)"')
+_ROW_DETAIL_RE = re.compile(r'details\.php\?id=(\d+)')
+_ROW_CLAIM_ID_RE = re.compile(r'data-claim_id="(\d+)"')
+_ROW_ADD_CLAIM_RE = re.compile(r'data-action="addClaim"', re.I)
+_ROW_DATE_RE = re.compile(r'\d{4}-\d{2}-\d{2}(?:\s+\d{1,2}:\d{2}:\d{2})?')
+_SEED_DAY_RE = re.compile(r'(\d+)\s*天\s*(\d{1,2}):(\d{2}):(\d{2})')
+_SEED_HMS_RE = re.compile(r'(?<![\d:-])(\d{1,2}):(\d{2}):(\d{2})(?![\d])')
+
+
+def _parse_seed_seconds(text: str):
+    """从一行文本里取「做种时长」（秒）；取不到返回 ``None``。
+
+    先剔除完整日期时间（``YYYY-MM-DD HH:MM:SS``，含只到日期的形态），否则发布时间
+    ``2026-09-17 23:17:41`` 里的 ``23:17:41`` 会被当成做种时长。剔除后仍有多段
+    ``HH:MM:SS`` 时取**最后一段**（做种时间列总在发布时间列之后）。
+    """
+    clean = _ROW_DATE_RE.sub(' ', text or '')
+    m = _SEED_DAY_RE.search(clean)
+    if m:
+        return int(m.group(1)) * 86400 + int(m.group(2)) * 3600 + int(m.group(3)) * 60 + int(m.group(4))
+    hits = _SEED_HMS_RE.findall(clean)
+    if not hits:
+        return None
+    h, mi, s = hits[-1]
+    return int(h) * 3600 + int(mi) * 60 + int(s)
+
+
+def parse_user_torrent_rows(html_text: str) -> list:
+    """解析「我的种子」列表（``getusertorrentlistajax.php``）的每一行。**纯函数**。
+
+    每行返回::
+
+        {'tid': '126817', 'title': ..., 'title_norm': ...,
+         'pubdate': 'YYYY-MM-DD HH:MM:SS' | '',
+         'size_bytes': int, 'seed_seconds': int | None,
+         'claim_id': int | None, 'claim_state': 'open' | 'claimed' | 'none'}
+
+    ``claim_state`` 语义（**站点为准，不做本地推断**）：
+
+    - ``open``    —— 站点给了认领按钮且 ``data-claim_id="0"``，即「可认领、尚未认领」
+    - ``claimed`` —— ``data-claim_id`` 非 0，即「已认领」
+    - ``none``    —— 该行没有认领按钮（站点未开放认领：期限未到 / 不在认领范围）
+
+    ``none`` 一律**不**当作可认领：站点没给入口就是不能领，别用本地「满 N 天」
+    去补，那是 19.10.48 前「认领扫描恒 0」的另一半根因。
     """
     out = []
     if not html_text:
         return out
-    for row in re.findall(r'<tr[^>]*>(.*?)</tr>', html_text, re.S):
+    for row in _ROW_TR_RE.findall(html_text):
         if 'details.php' not in row:
             continue
         m = _TITLE_ATTR_RE.search(row) or _TITLE_TEXT_RE.search(row)
         if not m:
             continue
         title = _html.unescape(re.sub(r'<[^>]+>', '', m.group(1))).strip()
+        if not title:
+            continue
+        mid = _ROW_TID_RE.search(row) or _ROW_DETAIL_RE.search(row)
         text = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', row))
         md = _DT_RE.search(text)
         ms = _SIZE_RE.search(text)
-        if not (title and md):
-            continue
         size_bytes = 0
         if ms:
             size_bytes = int(float(ms.group(1)) * _SIZE_UNIT.get(ms.group(2).upper(), 0))
+        cids = _ROW_CLAIM_ID_RE.findall(row)
+        if not cids:
+            claim_state, claim_id = 'none', None
+        else:
+            non_zero = [c for c in cids if c != '0']
+            claim_id = int(non_zero[0]) if non_zero else 0
+            claim_state = 'claimed' if non_zero else 'open'
         out.append({
+            'tid': mid.group(1) if mid else '',
             'title': title,
             'title_norm': _norm_title(title),
+            'pubdate': f"{md.group(1)} {md.group(2)}" if md else '',
             'size_bytes': size_bytes,
-            'pubdate': f"{md.group(1)} {md.group(2)}",
+            'seed_seconds': _parse_seed_seconds(text),
+            'claim_id': claim_id,
+            'claim_state': claim_state,
         })
     return out
 
 
+def parse_seeding_list(html_text: str) -> list:
+    """解析 ``getusertorrentlistajax.php?type=seeding`` 页面。
+
+    返回 ``[{'title':..., 'title_norm':..., 'size_bytes':int, 'pubdate':'YYYY-MM-DD HH:MM:SS'}, ...]``。
+    19.10.49 起由 :func:`parse_user_torrent_rows` 派生（单一解析实现），
+    只保留「有发布时间」的行以维持原契约。
+    """
+    return [
+        {k: r[k] for k in ('title', 'title_norm', 'size_bytes', 'pubdate')}
+        for r in parse_user_torrent_rows(html_text)
+        if r.get('pubdate')
+    ]
+
+
 def fetch_seeding_list(site: Any, userid: Any, timeout: int = 25) -> list:
-    """抓取用户做种列表页，返回 ``parse_seeding_list`` 的结果。cookie/UA 取自站点配置。"""
-    domain = (getattr(site, "domain", "") or "").strip()
-    base = (getattr(site, "url", "") or (f"https://{domain}" if domain else "")).rstrip("/")
-    cookie = getattr(site, "cookie", None)
-    ua = getattr(site, "ua", None) or _DEFAULT_UA
-    if not base or not userid:
-        return []
-    url = f"{base}/getusertorrentlistajax.php?userid={int(userid)}&type=seeding"
-    try:
-        from app.sdk.network import RequestUtils  # noqa: WPS433
-    except Exception:
-        return []
-    try:
-        req = _mk_client(site, base, "seeding", cookie=cookie, ua=ua, timeout=timeout)
-        resp = req.get_res(url)
-    except Exception:
-        return []
-    if resp is None or not getattr(resp, "ok", False):
-        try:
-            resp and resp.close()
-        except Exception:
-            pass
-        return []
-    try:
-        raw = resp.content
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            text = raw.decode("gbk", "ignore")
-    finally:
-        try:
-            resp.close()
-        except Exception:
-            pass
-    return parse_seeding_list(text)
+    """抓取用户做种列表页，返回 ``parse_seeding_list`` 的结果。cookie/UA 取自站点配置。
+
+    ★ 19.10.49：改为分页抓全（经 :func:`fetch_user_torrent_rows`）。原先只抓第一页，
+    做种数 >100 的站（咖啡 160 / 高清时间 117）后半段永远「无发布时间」。
+    """
+    data = fetch_user_torrent_rows(site, userid, ttype="seeding", timeout=timeout)
+    return [
+        {k: r[k] for k in ('title', 'title_norm', 'size_bytes', 'pubdate')}
+        for r in (data.get('rows') or [])
+        if r.get('pubdate')
+    ]
 
 
 # ============================================================

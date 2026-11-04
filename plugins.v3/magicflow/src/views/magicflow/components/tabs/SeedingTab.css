@@ -1,0 +1,245 @@
+/* SeedingTab 的 scoped 样式，由线上 dist 按 scopeId data-v-f0e284f2 提取。
+   选择器里的属性限定符是 scoped 边界，别去掉。 */
+
+/* ── 共享选择器（index.vue 同有，此处复制一份；父页原样保留）────────── */
+.magicflow-panel[data-v-f0e284f2] {
+  border: var(--app-surface-border);
+  border-radius: var(--app-surface-radius);
+  min-inline-size: 0;
+  padding: 16px;
+}
+
+.magicflow-panel__head[data-v-f0e284f2] {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.magicflow-torrent-filters[data-v-f0e284f2] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.magicflow-table-empty[data-v-f0e284f2] {
+  padding: 28px 12px;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  text-align: center;
+}
+
+
+/* ── 本视图专属（自 index.vue 搬入）────────────────────────────────── */
+.magicflow-torrents[data-v-f0e284f2] {
+  margin-block-start: 12px;
+}
+
+.magicflow-status-filter[data-v-f0e284f2] {
+  inline-size: 13rem;
+  max-inline-size: 100%;
+}
+
+.magicflow-bulk-bar[data-v-f0e284f2] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-block: 10px 4px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(var(--v-theme-primary), 0.12);
+  box-shadow: inset 0 0 0 1px rgba(var(--v-theme-primary), 0.28);
+}
+
+.magicflow-bulk-bar__count[data-v-f0e284f2] {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgb(var(--v-theme-primary));
+  margin-inline-end: 4px;
+}
+
+.magicflow-mobile-torrent__check[data-v-f0e284f2] {
+  flex: 0 0 auto;
+  margin-inline-end: 2px;
+}
+
+.magicflow-torrent-table th[data-v-f0e284f2]:first-child,
+.magicflow-torrent-table td[data-v-f0e284f2]:first-child {
+  padding-inline: 6px;
+}
+
+.magicflow-torrent-table[data-v-f0e284f2] {
+  margin-block-start: 8px;
+  background: transparent;
+}
+
+.torrent-table-clickable[data-v-f0e284f2] tbody tr {
+  cursor: pointer;
+}
+
+.torrent-title-cell[data-v-f0e284f2] {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-inline-size: 30rem;
+}
+
+.torrent-title-cell strong[data-v-f0e284f2],
+.torrent-title-cell span[data-v-f0e284f2] {
+  overflow-wrap: anywhere;
+}
+
+.torrent-title-cell span[data-v-f0e284f2] {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  font-size: 0.78rem;
+}
+
+.magicflow-mobile-torrents[data-v-f0e284f2] {
+  display: none;
+}
+
+.magicflow-mobile-torrent__actions[data-v-f0e284f2] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.magicflow-mobile-torrent__title[data-v-f0e284f2] {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-inline-size: 0;
+}
+
+.magicflow-mobile-torrent__title strong[data-v-f0e284f2] {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.magicflow-mobile-torrent__title span[data-v-f0e284f2] {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  font-size: 0.75rem;
+}
+
+.magicflow-mobile-torrent__state[data-v-f0e284f2] {
+  flex: 0 0 auto;
+}
+
+.magicflow-mobile-torrent__bar[data-v-f0e284f2] {
+  margin-block: 2px 4px;
+}
+
+.magicflow-mobile-torrent__grid[data-v-f0e284f2] {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 12px;
+}
+
+.magicflow-mobile-torrent__grid span[data-v-f0e284f2] {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-inline-size: 0;
+  font-size: 0.8rem;
+}
+
+.magicflow-mobile-torrent__grid em[data-v-f0e284f2] {
+  flex: 0 0 auto;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  font-style: normal;
+}
+
+.magicflow-mobile-torrent__grid b[data-v-f0e284f2] {
+  min-inline-size: 0;
+  font-weight: 500;
+  text-align: end;
+  overflow-wrap: anywhere;
+}
+
+.magicflow-mobile-torrent__head[data-v-f0e284f2] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+
+/* ── .magicflow-page 级覆盖（同父页；目标元素已在本组件内）────────── */
+.magicflow-page .magicflow-panel[data-v-f0e284f2] {
+  padding: 18px 16px;
+}
+
+.magicflow-page .magicflow-panel__head .text-subtitle-1[data-v-f0e284f2] {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.magicflow-page .magicflow-panel__head .text-body-2[data-v-f0e284f2] {
+  font-size: 11px;
+}
+
+.magicflow-page .torrent-title-cell strong[data-v-f0e284f2],
+.magicflow-page .magicflow-mobile-torrent__title strong[data-v-f0e284f2] {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+@media (max-width: 699px) {
+
+.magicflow-panel[data-v-f0e284f2] {
+    padding: 14px;
+}
+
+.magicflow-panel__head[data-v-f0e284f2] {
+    flex-direction: column;
+    align-items: flex-start;
+    flex-wrap: wrap;
+}
+
+.magicflow-torrent-table[data-v-f0e284f2] {
+    display: none;
+}
+
+.magicflow-torrent-filters[data-v-f0e284f2] {
+    inline-size: 100%;
+    flex-wrap: wrap;
+}
+
+.magicflow-status-filter[data-v-f0e284f2] {
+    inline-size: 100%;
+}
+
+.magicflow-mobile-torrents[data-v-f0e284f2] {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin-block-start: 12px;
+}
+
+.magicflow-mobile-torrent[data-v-f0e284f2] {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-block: 13px;
+    border-block-end: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+    cursor: pointer;
+}
+
+.magicflow-mobile-torrent__head[data-v-f0e284f2] {
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.magicflow-mobile-torrent__head strong[data-v-f0e284f2] {
+    min-inline-size: 0;
+    overflow-wrap: anywhere;
+}
+}

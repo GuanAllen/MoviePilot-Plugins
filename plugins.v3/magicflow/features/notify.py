@@ -252,6 +252,8 @@ class NotifyMixin:
                 if len(vals) < 3:
                     continue
                 cur = vals[-1]
+                # 固定切片 = 业务截断（非删换行）：末尾 vals[-1] 是当前值，
+                # 此处取其之前 3 个历史值作基线；不足 4 个时取除当前值外的全部历史。
                 prev = vals[-4:-1] if len(vals) >= 4 else vals[:-1]
                 base = sum(prev) / len(prev) if prev else 0.0
                 if base <= 0:

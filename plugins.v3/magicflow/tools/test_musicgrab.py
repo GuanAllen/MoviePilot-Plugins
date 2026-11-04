@@ -50,7 +50,10 @@ _pkg(PKG, ROOT)
 _pkg(PKG + ".features", ROOT / "features")
 musicgrab = _load(PKG + ".features.musicgrab", "features/musicgrab.py")
 MusicGrabMixin = musicgrab.MusicGrabMixin
-musicgrab.info_hash = lambda b: ("H:" + (b.decode("utf-8", "ignore") if isinstance(b, (bytes, bytearray)) else str(b))).lower()
+_fake_ih = lambda b: ("H:" + (b.decode("utf-8", "ignore") if isinstance(b, (bytes, bytearray)) else str(b))).lower()
+musicgrab.info_hash = _fake_ih
+# ★ 19.10.11：加种核心收归 tags.media_grab → info_hash 补丁要打在 tags 上
+sys.modules[PKG + ".tags"].info_hash = _fake_ih
 
 FAILS = []
 N = 0
@@ -127,6 +130,10 @@ class Fake(MusicGrabMixin):
 
     def _crossseed_torrent_bytes(self, row):
         return ("T:" + str(row.title)).encode("utf-8")
+
+    def fetch_torrent_bytes(self, url, cookie=None, user_agent=None, referer=None):
+        # ★ 19.10.11：media_grab 走宿主 SDK 取种（与 _crossseed_torrent_bytes 同一条链）
+        return ("T:" + str(url)).encode("utf-8")
 
     def _tag_all_torrents(self):
         return {h: {} for h in self._exist}

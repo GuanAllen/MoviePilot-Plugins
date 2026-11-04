@@ -36,6 +36,8 @@ KIND_TEXT: Dict[str, str] = {
     "recommend_import": "整理入库",
     "recommend_batch_import": "批量整理入库",
     "recommend_dismiss": "忽略并删除",
+    # ★ 19.12.0：音乐散曲入库（读标签 → 硬链接进库 → 触发媒体库扫描）
+    "music_import": "音乐入库",
 }
 
 KEEP_MAX = 100                      # 队列里最多留多少条记录

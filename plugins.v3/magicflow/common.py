@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "19.10.1"
+__version__ = "19.12.6"
 
 import bisect
 import re
@@ -23,6 +23,18 @@ from .fingerprint import (
     inner_fingerprint,
     load_torrent_entries,
     total_size,
+)
+# ★ 19.10.11：岗位 id 的**唯一真值在 dutyreg.py**，这里只做转发。
+#   dutyreg 只依赖 tags（纯常量），不反向依赖本模块 → 无环；离线测试可直接加载 dutyreg。
+from .dutyreg import (  # noqa: F401
+    ID_CLAIM,
+    ID_CROSSSEED,
+    ID_HR_HOST,
+    ID_KEEP,
+    ID_MUSIC,
+    ID_ONDEMAND,
+    ID_SILENT_HOST,
+    duty_name as _duty_name,
 )
 # ============================================================
 # 以下由 __init__.py 原样搬出（常量 / 工具 / 模型）
@@ -292,7 +304,11 @@ CACHE_TTL_REPORT = 7 * 86400.0     # 「最近一次结果」类报告 / 站点�
 CLAIM_CFG_KEY = "claim_cfg"                  # 接口层覆盖配置（plugin data）
 CLAIM_LEDGER_KEY = "claim_ledger"            # 认领账本 "<site_id>:<hash>" → {...}
 CLAIM_PROFILE_KEY = "claim_profile"          # 站点能力（ClaimProfile）缓存
-CLAIM_TASK_ID = "__claim__"                  # 认领记录归属的伪任务 id（无属地时）
+CLAIM_TASK_ID = ID_CLAIM                  # 认领记录归属的伪任务 id（无属地时）
+#   ★ 19.10.11：它同时是**认领职务的宿主 id**（`state=认领` 的种 taken_by=它）——
+#   「认领」由此与刷流/魔力同构：贴职务轴 + 账本占位（taken_by/lease）+ 名单进出即上下班。
+#   与 __hr_host__ 的区别：那个由「欠 H&R」派生、结清即释放；这个由认领承诺派生，名单在才在岗。
+#   与 __keep__ 的区别：那个人工点名、只能手动解除；这个全自动。
 CLAIM_PROFILE_TTL = 24 * 3600.0              # 能力缓存有效期（秒）
 CLAIM_DAILY_PER_SITE = 20                    # 每站每天最多认领多少颗（防一口气灌爆）
 CLAIM_BATCH = 5                              # 单轮最多认领多少颗
@@ -306,20 +322,22 @@ CLAIM_STATE_STALE = 3600                     # ★ 19.7.22：陈旧窗口（秒�
 SILENT_HOST_INTERVAL_MINUTES = 60  # ⭐「静默托管」常驻 worker 周期(分钟，低频)
 HR_HOST_INTERVAL_MINUTES = 15  # ⭐ 14.0.0：H&R 保种宿主 worker 周期（60→15min，Master 03:17）
 SITE_LIFECYCLE_INTERVAL_MINUTES = 30  # ⭐ 17.5.0：站点生命周期标记 worker 周期（分钟，低频幂等）
-SILENT_HOST_TASK_ID = "__silent_host__"  # ⭐「静默托管」常驻任务在任务列表里的只读条目 id
-CROSSSEED_TASK_ID = "__crossseed__"  # ⭐ 14.0.0「跨站取种」全局真任务 id（承接取种下载；非伪任务）
-CROSSSEED_TASK_NAME = "跨站取种"
-HR_HOST_TASK_ID = "__hr_host__"  # ⭐「H&R 保种」常驻伪任务 id（欠 H&R 的种归它挂，不归静默池）
-ONDEMAND_TASK_ID = "__ondemand__"  # ⭐ 15.8.4「点播在途」伪任务 id（点播加种即挂、settle 摘）。
+SILENT_HOST_TASK_ID = ID_SILENT_HOST  # ⭐「静默托管」常驻任务在任务列表里的只读条目 id
+CROSSSEED_TASK_ID = ID_CROSSSEED  # ⭐ 14.0.0「跨站取种」全局真任务 id（承接取种下载；非伪任务）
+CROSSSEED_TASK_NAME = _duty_name(ID_CROSSSEED)
+HR_HOST_TASK_ID = ID_HR_HOST  # ⭐「H&R 保种」常驻伪任务 id（欠 H&R 的种归它挂，不归静默池）
+ONDEMAND_TASK_ID = ID_ONDEMAND  # ⭐ 15.8.4「点播在途」伪任务 id（点播加种即挂、settle 摘）。
 #   目的：让「还没下完的点播种」账本 state=点播 ≠ 静默 → 免疫静默池的暂停闸与清理闸（防误删，Master 18:40 拍板）。
-ONDEMAND_TASK_NAME = "点播"  # 伪任务展示名（写账本 task / _task_id 反查用）
-MUSIC_TASK_ID = "__music__"  # ⭐ 19.9.0「音乐在途」伪任务 id（音乐加种即挂、下完/入库摘）。
+ONDEMAND_TASK_NAME = _duty_name(ID_ONDEMAND)  # 伪任务展示名（写账本 task / _task_id 反查用）
+MUSIC_TASK_ID = ID_MUSIC  # ⭐ 19.9.0「音乐在途」伪任务 id（音乐加种即挂、下完/入库摘）。
 #   目的同点播：账本 state=音乐 ≠ 静默 → 音乐下载中不靠「progress<1 例外」也天然免疫暂停闸/清理闸。
-MUSIC_TASK_NAME = "音乐线"  # 伪任务展示名（写账本 task / _task_id 反查用）
-KEEP_TASK_ID = "__keep__"  # ⭐ 19.9.1「手动保种」伪任务 id（人工点名的种挂这里）。
+MUSIC_TASK_NAME = _duty_name(ID_MUSIC)  # 伪任务展示名（写账本 task / _task_id 反查用）
+KEEP_TASK_ID = ID_KEEP  # ⭐ 19.9.1「手动保种」伪任务 id（人工点名的种挂这里）。
 #   与 __hr_host__ 的区别：那个由「欠 H&R」驱动、结清/规则不欠就自动释放；这个只由接口写入、
 #   只能由 `action=unhold` 解除 —— 高价值/待做种的种用它长期做种（不会被 hr_host 收回）。
-KEEP_TASK_NAME = "手动保种"  # 伪任务展示名（写账本 task / _task_id 反查用）
+KEEP_TASK_NAME = _duty_name(ID_KEEP)  # 伪任务展示名（写账本 task / _task_id 反查用）
+CLAIM_HOST_TASK_NAME = _duty_name(ID_CLAIM)  # 伪任务展示名
+CLAIM_HOST_LEASE_DAYS = 3650       # 认领占位租约（天）：只防「任务分派抢走」，退出走 store.release 显式清
 SILENT_HR_SPLIT_ENABLED = True  # ⭐ 11.11.0 回退开关：静默池=全 paused + H&R 拆到 __hr_host__（False=退回旧行为）
 # ★ 11.12.0 删除熔断 + 账单一致性断言（Master 2026-10-06：「bug 别再删很多次」；「消违约是正常动作」）
 DELETE_BREAKER_ENABLED = True   # 滚动窗口内删除数超阈 → 阻断 + 报警（防失控循环/重复删）
@@ -352,7 +370,17 @@ CROSSSEED_SEED_HOURS_DEFAULT = 24.0
 #   学校 BTSchool 要求挂种 10h（用户实测告知）。
 CROSSSEED_SITE_HOURS_DEFAULT = ["pt.btschool.club=240"]
 # ★ 站点规则库(3.12.0)：用户不填「域名=小时」也能自动按站保种
-RULES_INTERVAL_MINUTES = 7 * 24 * 60     # 站点规则自动刷新周期(分钟) -- 每周一次(低频探测)
+RULES_INTERVAL_MINUTES = 7 * 24 * 60     # 站点规则**目标**刷新周期(分钟) -- 每周一次(低频探测)
+# ★ 19.10.9：调度**节拍**与目标周期解耦。
+#   踩过（2026-10-27）：直接把 interval=10080min 挂成 job → APScheduler 首轮 = 注册时刻 + 一整个
+#   周期，而魔流几乎每次部署/热重载都会「移除 + 重新注册」服务，定时器被反复归零。实测 17 小时
+#   内 157 次重载、0 次探测 → 规则库永远停在旧值（CARPT 一直「无 H&R 判据」就是这么来的）。
+#   现在：job 每 RULES_TICK_MINUTES 醒一次，真正的周期由持久化的 rules_probe_state 门控，
+#   重载不会把周期清零；另有一次加载后补跑（见 core._rules_bootstrap_async）。
+RULES_TICK_MINUTES = 10                  # 检查节拍(分钟)：醒来看一眼，到点才真探
+RULES_RETRY_MIN_MINUTES = 30             # 探测失败后最短重试间隔(分钟)
+RULES_RETRY_MAX_MINUTES = 360            # 失败指数退避封顶(分钟)
+RULES_BOOT_DELAY_SEC = 60.0              # 插件加载后补跑探测的延迟(秒，避开初始化高峰)
 RULES_PROBE_DELAY = (1.5, 3.5)           # 逐站探测之间的随机间隔(秒，礼貌限速)
 
 # ★ 单种上传限速(KB/s)：按「种子当前状态」分档，对每个托管种子单独限速（0 = 不限）。
@@ -458,6 +486,14 @@ MEDIA_ASSET_TAGS: Tuple[str, ...] = ("已整理", "辅种")
 #  另外,命中「下载历史」的种子也视为资产(覆盖"手动下的、还没被整理"的情况)。
 #  历史集合按任务托管种批量查询,结果在此时长内缓存(秒),避免每轮都打 DB。
 MEDIA_ASSET_HISTORY_TTL = 120.0
+# 跨站「来源份 hash 集合」缓存 TTL(秒):统计/总览逐任务调它,避免每任务读一次来源份 kv。
+# ★ 19.10.21:原为 crossseed.py 里的硬编码 30.0(唯一一处没有走常量的 TTL),提到这里与
+#   其他 TTL 同列;过期判定改由 cacheops.value 统一(见 docs/ADR-0001-cacheops.md)。
+CS_SRC_HASHES_TTL = 30.0
+# H&R「各站点欠账汇总」缓存 TTL(秒):/status 逐任务调一次,9 个统计线程同时到期会
+# 各算一遍(曾一天 1300+ 条「统计任务慢」告警),故除 TTL 外还要单飞(见 cacheops.SingleFlight)。
+# ★ 19.10.23:原为 hr.py 里的硬编码 300(同一函数里出现两次),提到这里与其他 TTL 同列。
+HR_OWED_TTL = 300.0
 # ── 限时免费(促销到期)闸门(2026-09-26)──────────────────────────────
 #  Pttime 等站的「免费/2X免费」是**限时**促销,到期后继续下按原价计流量。
 #  候选已带出剩余免费时间(`SiteCandidateTorrent.free_remaining_sec`):
@@ -953,6 +989,41 @@ def hr_complete_ratio_of(obj: Any, dom: Any = "", default: Any = None) -> float:
                 return HR_COMPLETE_RATIO_DEFAULT
 
 
+# ★ 19.10.11：「已下完」的**结构判定**阈值 —— 与 H&R 可配阈值 ``HR_COMPLETE_RATIO_DEFAULT`` 是两回事。
+#   这里回答的是「本机文件全不全」（辅种源能不能用 / 能不能入库 / 清理时该用 seeding_time 还是 age），
+#   **不随站点配置变化**：某站「下载中即计 H&R」只影响义务，不影响文件是否完整。
+DOWNLOAD_DONE_RATIO = 0.999
+
+
+def torrent_done(torrent: Any, ratio: Any = None) -> bool:
+    """结构判定：该种**已下完**（文件完整）—— 与 H&R 义务口径无关。
+
+    ★ 与 ``hr_incomplete`` 的分工（别混用）：
+      · ``hr_incomplete(t, ratio)`` —— 「站上算不算完成、有没有 H&R 义务」，
+        ``ratio`` **可配**（站点覆盖 > 全局默认），fail-safe 是**不豁免**（读不到 → 当有义务）；
+      · 本函数 —— 「本机文件全不全」，阈值固定 ``DOWNLOAD_DONE_RATIO``，
+        fail-safe 是**当作未下完**（读不到 → False：不去辅种、不入库、不写历史）。
+
+    适用：辅种源校验、下完才入库 / 写历史、清理时取 seeding_time 还是 age。
+    **不适用**：任何「要不要计 H&R 义务」的判断 —— 那些必须走 ``hr_incomplete``
+    或 ``hr_complete_ratio_of``，否则用户把阈值调低会失效
+    （``tools/test_p4_hr_conservative.py`` [E] 段有源码护栏守着 hr.py / core.py）。
+
+    ⚠ 反向 fail-safe 的调用点（读不到 progress 要**放行**，如 ``reuse._reuse_local_complete``）
+    **不要**换成这个函数 —— 那是另一个语义，换了会静默改变行为。
+    """
+    try:
+        p = getattr(torrent, "progress", None)
+    except Exception:  # noqa: BLE001
+        return False
+    if p is None:
+        return False
+    try:
+        return float(p) >= float(ratio if ratio is not None else DOWNLOAD_DONE_RATIO)
+    except (TypeError, ValueError):
+        return False
+
+
 def site_type_rows(indexers: Any) -> List[Dict[str, Any]]:
     """把 MoviePilot 站点索引器列表归一成「站点 → 分类类型」清单（纯函数，2026-10-10）。
 
@@ -1072,22 +1143,14 @@ class SnapshotRound:
 
 
 def _get_snapshot_round() -> "SnapshotRound":
-    """模块级工厂：跨热重载存活的快照轮跟踪器单例（挂 ``__magicflow_shared__``，非决策状态）。"""
-    import sys as _sys
-    import types as _types
-    _key = "__magicflow_shared__"
-    mod = _sys.modules.get(_key)
-    if mod is None:
-        mod = _types.ModuleType(_key)
-        _sys.modules[_key] = mod
-    if not hasattr(mod, "lock"):
-        import threading as _th
-        setattr(mod, "lock", _th.Lock())
-    obj = getattr(mod, "snapshot_round", None)
-    if obj is None or not isinstance(obj, SnapshotRound):
-        obj = SnapshotRound()
-        mod.snapshot_round = obj
-    return obj
+    """模块级工厂：跨热重载存活的快照轮跟踪器单例（走 ``shared.singleton``，非决策状态）。
+
+    ★ 19.10.25 起槽位从「模块属性 ``mod.snapshot_round``」换成「注册表 ``instances``」。
+      没有做旧槽迁移：它只装本轮拉取计数，重建等于归零，下一次 ``begin_decision_round``
+      本来就会重置 —— 与 19.10.17 那次「静默换语义」不同，这里换的是计数起点，不影响判定。
+    """
+    from . import shared
+    return shared.singleton("snapshot_round", SnapshotRound, SnapshotRound)
 
 
 def begin_decision_round() -> int:
@@ -1229,3 +1292,4 @@ def mask_long_tokens(text: Any, min_len: int = 16) -> str:
     """把文本里的长口令串遮成 ``***``（诊断片段回显用；短词/标签不动，保住可读性）。"""
     pat = _LONG_TOKEN_RE if min_len == 16 else re.compile(rf"[A-Za-z0-9_\-]{{{int(min_len)},}}")
     return pat.sub(SECRET_MASK, str(text or ""))
+

@@ -101,7 +101,10 @@ def main() -> int:
         print("✅ 模块登记表已同步")
         return 0
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(text, encoding="utf-8")
+    # ★ 必须显式 newline="\n"：``Path.write_text`` 在 Windows 上默认把 "\n"
+    #   翻译成 os.linesep，产出 CRLF。本仓所有文件是 LF，一旦写成 CRLF，
+    #   git diff 会把 144 行整表标红，实质改动只有 4 行 —— 白噪音掩盖真改动。
+    OUT.write_text(text, encoding="utf-8", newline="\n")
     print(f"已写出 {OUT.relative_to(ROOT)}（{len(text.splitlines())} 行）")
     return 0
 

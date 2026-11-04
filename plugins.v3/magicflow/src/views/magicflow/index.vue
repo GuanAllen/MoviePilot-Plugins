@@ -1,56 +1,56 @@
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
-import TaskEditorDialog from '../../components/TaskEditorDialog.vue'
+import TaskEditorDialog from '../../components/TaskEditorDialog.js'
 import MusicDialog from './components/dialogs/MusicDialog.vue'
 import CeilingDialog from './components/dialogs/CeilingDialog.vue'
 import HealthDialog from './components/dialogs/HealthDialog.vue'
 import DoubanDialog from './components/dialogs/DoubanDialog.vue'
 import ExamDialog from './components/dialogs/ExamDialog.vue'
 import HrBillsDialog from './components/dialogs/HrBillsDialog.vue'
-import CloudDialog from './components/dialogs/CloudDialog.vue'
+import CloudDialog from './components/dialogs/CloudDialog.js'
 import SilentPoolDialog from './components/dialogs/SilentPoolDialog.vue'
+import KeepDialog from './components/dialogs/KeepDialog.js'   // 源码丢失后由 dist 还原，形状是组件对象而非 .vue
 import InvariantDialog from './components/dialogs/InvariantDialog.vue'
-import ClaimConfirm from './components/confirm/ClaimConfirm.vue'
+import ClaimConfirm from './components/confirm/ClaimConfirm.js'
 import EnforceConfirm from './components/confirm/EnforceConfirm.vue'
 import TagReconConfirm from './components/confirm/TagReconConfirm.vue'
-import ClaimDialog from './components/dialogs/ClaimDialog.vue'
+import ClaimDialog from './components/dialogs/ClaimDialog.js'
 import RssDialog from './components/dialogs/RssDialog.vue'
 import ExamConfirm from './components/confirm/ExamConfirm.vue'
-import SiteReportDialog from './components/dialogs/SiteReportDialog.vue'
+import SiteReportDialog from './components/dialogs/SiteReportDialog.js'
 import RecommendDialog from './components/dialogs/RecommendDialog.vue'
 import JobsDialog from './components/dialogs/JobsDialog.vue'
-import TrendDialog from './components/dialogs/TrendDialog.vue'
+import PushAuditDialog from './components/dialogs/PushAuditDialog.js'
+import TrendDialog from './components/dialogs/TrendDialog.js'
 import OptimizerDialog from './components/dialogs/OptimizerDialog.vue'
 import PlanDialog from './components/dialogs/PlanDialog.vue'
 import NotifyDialog from './components/dialogs/NotifyDialog.vue'
 import TorrentDialog from './components/dialogs/TorrentDialog.vue'
 import SigninDialog from './components/dialogs/SigninDialog.vue'
-import OndemandDialog from './components/dialogs/OndemandDialog.vue'
-import FunctionHubDialog from './components/dialogs/FunctionHubDialog.vue'
+import OndemandDialog from './components/dialogs/OndemandDialog.js'
+import FunctionHubDialog from './components/dialogs/FunctionHubDialog.js'
 import OpsDialog from './components/dialogs/OpsDialog.vue'
 import WorkbenchHeader from './components/WorkbenchHeader.vue'
-import MobileTaskDetail from './components/MobileTaskDetail.vue'
-import TaskPane from './components/TaskPane.vue'
+import MobileTaskDetail from './components/MobileTaskDetail.js'
+import TaskPane from './components/TaskPane.js'
 import TorrentDeleteConfirm from './components/confirm/TorrentDeleteConfirm.vue'
-import OverviewTab from './components/tabs/OverviewTab.vue'
+import OverviewTab from './components/tabs/OverviewTab.js'
 import CrossseedDialog from './components/dialogs/CrossseedDialog.vue'
 import RescueDialog from './components/dialogs/RescueDialog.vue'
-import SettingsDialog from './components/dialogs/SettingsDialog.vue'
+import SettingsDialog from './components/dialogs/SettingsDialog.js'
 import BatchDeleteConfirm from './components/confirm/BatchDeleteConfirm.vue'
 import DeleteTaskConfirm from './components/confirm/DeleteTaskConfirm.vue'
-import TaskConfigTab from './components/tabs/TaskConfigTab.vue'
-import JournalTab from './components/tabs/JournalTab.vue'
+import TaskConfigTab from './components/tabs/TaskConfigTab.js'
+import JournalTab from './components/tabs/JournalTab.js'
 import CandidatesTab from './components/tabs/CandidatesTab.vue'
-import SeedingTab from './components/tabs/SeedingTab.vue'
+import SeedingTab from './components/tabs/SeedingTab.js'
 // ★ 15.8.15：库内资产（全局入口 → 独立列表 + 手动删除）
 import AssetsTab from './components/tabs/AssetsTab.vue'
 import MobileHome from './components/MobileHome.vue'
-import OverviewHome from './components/OverviewHome.vue'
-import TransferConfirm from './components/confirm/TransferConfirm.vue'
+import OverviewHome from './components/OverviewHome.js'
+import TransferConfirm from './components/confirm/TransferConfirm.js'
 import {
   cloneTask,
-  formatBonus,
-  formatBytes,
   formatDateTime,
   formatDuration,
   formatDurationSeconds,
@@ -103,7 +103,7 @@ import {
   BATCH_LABEL,
 } from './constants'
 import { createApi } from '../../api/request'
-import { formatRemain, tsText, fmtTs } from './format'
+import { formatRemain, tsText, fmtTs, taskMetrics } from './format'
 import { useOndemand } from './composables/useOndemand'
 import { useRescue } from './composables/useRescue'
 import { useReseed } from './composables/useReseed'
@@ -111,12 +111,14 @@ import { useRecImport } from './composables/useRecImport'
 import { useTagModel } from './composables/useTagModel'
 import { useRecommend } from './composables/useRecommend'
 import { useJobs } from './composables/useJobs'
+import { usePushAudit } from './composables/usePushAudit'
 import { useTrend } from './composables/useTrend'
 import { useOptimizer } from './composables/useOptimizer'
 import { usePlan } from './composables/usePlan'
 import { useNotify } from './composables/useNotify'
 import { useHealth } from './composables/useHealth'
 import { useSilentPool } from './composables/useSilentPool'
+import { useKeep } from './composables/useKeep'
 import { useInvariant } from './composables/useInvariant'
 import { useExam } from './composables/useExam'
 import { useSignin } from './composables/useSignin'
@@ -130,6 +132,8 @@ import { useTasks } from './composables/useTasks'
 import { useTaskDetail } from './composables/useTaskDetail'
 import { useCandidates } from './composables/useCandidates'
 import { useSiteReport } from './composables/useSiteReport'
+// ★ 19.10.48：站点货币名（各站自称：魔力值/金元宝/蟹币值/积分…）
+import { currencyOf } from './composables/useCurrency'
 import { useMusic } from './composables/useMusic'
 import { useHrBills } from './composables/useHrBills'
 import { useOperations } from './composables/useOperations'
@@ -248,6 +252,8 @@ const settingsDraft = ref({
   reseed_daily_per_site: 30,
   reseed_batch: 10,
   reseed_min_size_gb: 1,
+  reseed_search_sites: [],
+  reseed_search_kw: 0,
   claim_enabled: false,
   claim_dry: true,
   claim_sites: [],
@@ -299,11 +305,13 @@ const assetsDialog = ref(false)
 const {
   actMusic,
   downloadMusic,
+  importMusic,
   loadMusicItems,
   musicActing,
   musicCandidates,
   musicDownloading,
   musicHistory,
+  musicImporting,
   musicInflight,
   musicItems,
   musicItemsBusy,
@@ -360,6 +368,21 @@ const {
   jobsOpen, jobs, jobsSummary, jobsRunning, loadJobs, clearJobs, openJobs,
 } = useJobs({ api, notify })
 
+// ★ 19.11.22：推送审计（每次加种一条，成功也记、失败更记；只读排障用）
+//   与「通知」是两件事：通知是发出去的，推送审计是**每次加种**的原始记录（含失败原因）。
+const {
+  pushAuditOpen,
+  pushAuditLoading,
+  pushAuditFilter,
+  pushAudit,
+  pushAuditItems,
+  pushAuditScopeText,
+  loadPushAudit,
+  openPushAudit,
+  setPushAuditFilter,
+  clearPushAuditTask,
+} = usePushAudit({ api, notify })
+
 // ★ 15.13.0：事件通知（H&R 临期 / 容量红线 / 产出骤降 / 任务失败 → MP 通知渠道）
 const {
   notifyOpen, notifyData, notifyLoading, loadNotify, notifyAct, openNotify,
@@ -379,7 +402,7 @@ function trendItemsOf(sc) {
 }
 const {
   trendOpen, trendScope, trendId, trendHours, trendLoading, trendWhy, trendDaily,
-  trendScopeItems, loadTrendReport, openTrend,
+  trendUploadIncrement, trendScopeItems, loadTrendReport, openTrend,
 } = useTrend({ api, notify, itemsOf: trendItemsOf })
 function openTrendDialog() {
   // 默认站点口径：站点由站点监控每轮采样，一定有点可看；任务口径可从弹窗里切。
@@ -628,6 +651,7 @@ function mfOpenPage(page) {
     case 'assets': return (assetsDialog.value = true)
     case 'music': return openMusic()
     case 'jobs': return openJobs()
+    case 'pushes': return openPushAudit()
     case 'trend': return openTrendDialog()
     case 'optimize': return openOptimizeDialog()
     case 'plan': return openPlanDialog()
@@ -641,6 +665,7 @@ function mfOpenPage(page) {
     case 'claim': return openClaim()
     case 'rss': return openRss()
     case 'silent': return openSilent()
+    case 'keep': return openKeep()
     case 'sitereport': return openSiteReport()
     case 'hrbills': return openHrBills()
     case 'ceiling': return openCeiling()
@@ -814,22 +839,23 @@ function mobileRowLine(t) {
   if (t.seeding_count) parts.push(`${t.seeding_count} 种`)
   return parts.join(' · ')
 }
-// 列表行右侧主数：刷魔力任务给时魔（/h），刷流任务给上传量
+// 列表行右侧主数：★ 19.11.0 主指标 = 考核目标（刷流 → 上传量，魔力 → 时魔），走统一口径。
+// 刷流零上传时返回空串（保留原行为：宁可不显示，也不显示「↑ 0 B」）。
 function mobileRowNum(t) {
-  if (t.task_type === 'brush') return t.task_uploaded ? `↑ ${formatBytes(t.task_uploaded)}` : ''
-  if (t.site_bonus_ok && t.site_bonus_per_hour != null) return formatBonus(t.site_bonus_per_hour)
-  return '取数中…'
+  const m = taskMetrics(t)
+  if (m.primary.key === 'upload') return m.upload.value > 0 ? `↑ ${m.upload.text}` : ''
+  return m.hourly.ok ? m.hourly.text : '取数中…'
 }
 function mobileDetailEntry(entry) {
   const e = typeof entry === 'string' ? { key: entry } : entry
   if (e.action === 'ops') return openOperations('task')
   activeTab.value = activeTab.value === e.key ? 'overview' : e.key
 }
-// mobileDetailCards / mobileStrategyText / mobileDetailHint 已随紧凑块搬入 components/MobileTaskDetail.vue（P4 拆分）。
+// mobileDetailCards / mobileStrategyText / mobileDetailHint 已随紧凑块搬入 components/MobileTaskDetail.js（P4 拆分）。
 // 「需要你管」：后端给的信号（出错 / 站点读不到 / 从未成功）
 // 当前任务是否刷流模式（驱动整块工作台按类型显示）
 // 站点账号真实数据（上传/下载/分享率/做种数，来自站点用户页）
-// 刷流保种天数（缺省=2，兼容未写入该字段的旧任务）
+// 轮转周期（缺省=2，兼容未写入该字段的旧任务）
 // 当前任务的「任务目标」完成情况文案
 
 // ★ 可观测：本轮决策轨迹（Why-not） + 每小时趋势序列（sparkline）
@@ -975,6 +1001,8 @@ const {
   ondemandItems, ondemandItemsBusy, ondemandTab, odInflight, odHistory, odActing, odMsg,
   openOndemand, runOndemand, loadOndemandItems, actOndemand,
   odTraffic, odPct, odSpeed, odEtaText, odStageColor, odIsPaused, isOndemandAuto, fmtSizeGb,
+  odMainTitle, odAltTitle, odSubTitle,
+  odPicked, odBatchBusy, isOdPicked, toggleOdPick, pickAllOndemand, runOndemandBatch,
 } = useOndemand(api)
 
 // ── 跨站辅种：队列 / 流量兜底（3.11.0）────────────────────────────────
@@ -1051,6 +1079,28 @@ const siteAccount = computed(() => {
   return { ...mp, source: mp.ok ? 'mp' : '', sampledAt: '' }
 })
 
+// ★ 19.10.39 站点报表弹窗的「魔力/时」：优先取**任务侧**时魔（与任务详情同一真值源，
+//   站点自报优先、无自报时才是本地实测），拿不到才退到 /live 的实测值。
+//   否则同一站点会同时出现两个数（如馒头：任务详情站点自报 76.98 / live 折算 88.79）。
+// ★ 19.10.48：货币名也从同一个任务取（各站叫法不同），避免两个 computed 各查一遍。
+const siteReportTask = computed(() => {
+  const key = String(siteReportSite.value || '')
+  if (!key) return null
+  return (tasks.value || []).find((t) => {
+    const n = String(t.site_name || '')
+    const d = String(t.site_domain || '')
+    return (n !== '' && n === key) || (d !== '' && d === key)
+  }) || null
+})
+const siteReportBonus = computed(() => {
+  const hit = siteReportTask.value
+  if (!hit || !hit.site_bonus_ok || hit.site_bonus_per_hour == null) return null
+  const v = Number(hit.site_bonus_per_hour)
+  return Number.isFinite(v) ? v : null
+})
+// 该站自称的货币名（蟹币值/金元宝/积分…）；认不出时由 currencyOf 兜底「魔力值」
+const siteReportCurrency = computed(() => currencyOf(siteReportTask.value))
+
 
 
 // ── 批量入库（Master 2026-09-28 07:00）────────────────────────────
@@ -1093,7 +1143,7 @@ function onExamStart(payload) {
   examAct(payload.row, payload.kind)
 }
 
-// P4：运行诊断面板已拆到 ./components/tabs/JournalTab.vue —— 「状态 + 派生」整体作为 props.data 下传
+// P4：运行诊断面板已拆到 ./components/tabs/JournalTab.js —— 「状态 + 派生」整体作为 props.data 下传
 // （reactive() 解包其中的 ref/computed）；类型筛选走 :scope + @update:scope，刷新/展开明细走 emit。
 const journalTabData = {
   detail, detailStats, flowNodes, flowPhaseText,
@@ -1116,6 +1166,22 @@ function onSilentInvariant() {
   invariantOpen.value = true
   loadEnforce(0)
 }
+
+// ── 手动保种（keep，★ 19.10.41）：`__keep__` 伪任务的名单 ─────────────────────
+//   ★ 为什么要有这块：手动保种落的不是真任务 —— 这批种不在任何任务的种子池里、
+//     也不进 status.tasks，挂上之后就「界面上哪儿都看不见」，只能自己记 hash 才能解。
+//     后端 `action=hold_list`（账本 taken_by=__keep__ + qB 实况）→ 这里只做 UI 状态。
+//   入口：功能中心「手动保种」格子；挂/解入口：种子池勾选后的批量栏与行内菜单。
+const {
+  keepOpen, keepTab, keepLoading, keepData, keepOnlyBad, keepQ, keepSel, keepBusy,
+  keepItems,
+  loadKeep, openKeep, toggleKeepRow, toggleKeepAll, releaseKeep, resumeKeep,
+  candLoading, candData, candQ, candSite, candSub, candOnlyHr, candSort,
+  candSel, candPage, candList, candRows, candPages, candSubs,
+  candSelGb, candSelOnPage,
+  switchKeepTab, toggleCandRow, toggleCandPage, toggleCandAll, clearCandSel,
+  candGoto, holdSelected,
+} = useKeep({ api, notify, onChanged: () => loadStatus() })
 
 // ── 静默不变量收敛（★ 12.7.1）：账本静默但 qB 没停 → 补 pause（只 pause，不删种、不动文件）──
 // P3：状态 / 动作已抽到 ./composables/useInvariant.js（纯搬家）；tsText → ./format.js
@@ -1142,6 +1208,7 @@ const claimSoon = computed(() => claimData.value.soon || [])
 const claimRecords = computed(() => claimData.value.records || [])
 const claimSupportedSites = computed(() => claimSites.value.filter(s => s.supported))
 const claimSiteOptions = computed(() => claimSupportedSites.value.map(s => s.domain).filter(Boolean))
+
 async function loadClaim(force = false, silent = false) {
   if (!silent) claimLoading.value = true
   try {
@@ -1185,7 +1252,16 @@ async function claimScanRun() {
   }
 }
 function claimAsk(kind, row) {
-  claimConfirm.value = { kind, row }
+  // ★ 19.10.52：认领是**用户行为、有罚则**，确认前必须让用户看到「这一站」的具体代价
+  //   （咖啡 −3000 / Depth −1000 / CARPT −100）。罚则数据早在 sites[].profile.penalty 里，
+  //   此前只在站点卡片显示，确认弹窗只有一句笼统文案 → 用户点「确认」时并不知情。
+  const site = claimSupportedSites.value.find(s => String(s.site_id) === String((row || {}).site_id)) || null
+  claimConfirm.value = {
+    kind,
+    row,
+    profile: (site && site.profile) || {},
+    siteName: (site && site.site_name) || (row || {}).site_name || '',
+  }
 }
 async function claimConfirmRun() {
   const ctx = claimConfirm.value
@@ -1201,8 +1277,12 @@ async function claimConfirmRun() {
       const q = new URLSearchParams({ site_id: String(row.site_id), hash: String(row.hash), confirm: '1' }).toString()
       url = `claim/do?${q}`
     } else {
-      const q = new URLSearchParams({ site_id: String(row.site_id), hash: String(row.hash), confirm: '1' }).toString()
-      url = `claim/abandon?${q}`
+      // ★ 19.10.58：放弃认领按**站点认领记录**走，「站点侧」行没有本地 hash（site_only），
+      //   所以把 torrent_id 一并带上 —— 后端缺 hash 时用 tid 定位账本/站点行。
+      const q = new URLSearchParams({ site_id: String(row.site_id), confirm: '1' })
+      if (row.hash) q.set('hash', String(row.hash))
+      if (row.torrent_id) q.set('torrent_id', String(row.torrent_id))
+      url = `claim/abandon?${q.toString()}`
     }
     const res = unwrapResponse(await api.post(url, {})) || {}
     notify(res.message || '已执行', res.success === false ? 'error' : undefined)
@@ -1426,6 +1506,7 @@ const {
   refreshRules,
   ruleSourceText,
   rulesLoading,
+  rulesProbeState,
   rulesProbing,
   saveActiveSettings,
   saveCloud,
@@ -1663,7 +1744,7 @@ onUnmounted(() => {
     <div v-else-if="!tasks.length" class="magicflow-empty">
       <VIcon icon="mdi-star-four-points-outline" size="52" color="medium-emphasis" />
       <div class="text-h6">还没有任务</div>
-      <div class="text-body-2 text-medium-emphasis">创建任务后按魔力公式养护做种，或刷流保种</div>
+      <div class="text-body-2 text-medium-emphasis">创建任务后按魔力公式养护做种，或刷流轮转</div>
       <VBtn color="primary" variant="flat" prepend-icon="mdi-plus" @click="openCreateTask">创建第一个任务</VBtn>
     </div>
 
@@ -2092,7 +2173,7 @@ onUnmounted(() => {
     <!-- P4：站点容量/魔力一览弹窗已抽到 ./components/dialogs/CeilingDialog.vue（props 下 / emit 上） -->
     <CeilingDialog v-model="ceilingOpen" :rows="siteCeilingRows" :narrow="isNarrow" />
 
-    <!-- P4：站点报表弹窗已抽到 ./components/dialogs/SiteReportDialog.vue（props 下 / emit 上） -->
+    <!-- P4：站点报表弹窗已抽到 ./components/dialogs/SiteReportDialog.js（props 下 / emit 上） -->
     <SiteReportDialog
       v-model="siteReportOpen"
       v-model:site="siteReportSite"
@@ -2108,6 +2189,8 @@ onUnmounted(() => {
       :sites="siteReportSites"
       :items="siteReportItems"
       :summary="siteReportSummary"
+      :site-bonus="siteReportBonus"
+      :site-currency="siteReportCurrency"
       :narrow="isNarrow"
       @refresh="loadSiteReport(false)"
       @live="loadSiteReport(true)"
@@ -2188,7 +2271,7 @@ onUnmounted(() => {
       @save="saveTask"
     />
 
-    <!-- 设置弹窗（多标签）→ P4 已拆到 ./components/dialogs/SettingsDialog.vue（props 下 / emit 上） -->
+    <!-- 设置弹窗（多标签）→ P4 已拆到 ./components/dialogs/SettingsDialog.js（props 下 / emit 上） -->
     <SettingsDialog
       v-model="settingsDialog"
       v-model:settings-tab="settingsTab"
@@ -2212,6 +2295,7 @@ onUnmounted(() => {
       :iyuu-show-more="iyuuShowMore"
       :site-rules="siteRules"
       :rules-loading="rulesLoading"
+      :rules-probe-state="rulesProbeState"
       :rules-probing="rulesProbing"
       :reseed-state="reseedState"
       :reseed-running="reseedRunning"
@@ -2269,7 +2353,7 @@ onUnmounted(() => {
       @delete="requestTorrentDelete"
     />
 
-    <!-- P4：批量转移确认弹窗已拆到 ./components/confirm/TransferConfirm.vue（props 下 / emit 上） -->
+    <!-- P4：批量转移确认弹窗已拆到 ./components/confirm/TransferConfirm.js（props 下 / emit 上） -->
     <TransferConfirm
       v-model="transferDialog"
       v-model:target="transferTarget"
@@ -2310,7 +2394,7 @@ onUnmounted(() => {
       @confirm="confirmDeleteTask"
     />
 
-    <!-- P4：云盘归档弹窗已拆到 ./components/dialogs/CloudDialog.vue（props 下 / emit 上） -->
+    <!-- P4：云盘归档弹窗已拆到 ./components/dialogs/CloudDialog.js（props 下 / emit 上） -->
     <CloudDialog
       v-model="cloudOpen"
       v-model:limit="cloudLimit"
@@ -2324,7 +2408,7 @@ onUnmounted(() => {
     />
 
 <!-- 跨站辅种：队列 + 流量兜底（3.11.0） -->
-    <!-- P4：点播弹窗已拆到 ./components/dialogs/OndemandDialog.vue（props 下 / emit 上） -->
+    <!-- P4：点播弹窗已拆到 ./components/dialogs/OndemandDialog.js（props 下 / emit 上） -->
     <OndemandDialog
       v-model="ondemandOpen"
       v-model:query="ondemandQuery"
@@ -2343,9 +2427,14 @@ onUnmounted(() => {
       :site-select-items="siteSelectItems"
       :tasks="tasks"
       :is-ondemand-auto="isOndemandAuto"
+      :od-picked="odPicked"
+      :od-batch-busy="odBatchBusy"
       @run="runOndemand"
       @refresh-items="loadOndemandItems"
       @act="actOndemand"
+      @pick="toggleOdPick"
+      @pick-all="pickAllOndemand"
+      @batch-run="runOndemandBatch"
     />
 
     <!-- P4：站点健康弹窗已拆到 ./components/dialogs/HealthDialog.vue（props 下 / emit 上） -->
@@ -2441,6 +2530,7 @@ onUnmounted(() => {
       :music-history="musicHistory"
       :music-items-busy="musicItemsBusy"
       :music-acting="musicActing"
+      :music-importing="musicImporting"
       :music-searching="musicSearching"
       :music-candidates="musicCandidates"
       :music-result="musicResult"
@@ -2451,6 +2541,7 @@ onUnmounted(() => {
       @act="actMusic"
       @search="runMusicSearch"
       @download="downloadMusic"
+      @import="importMusic"
     />
 
     <!-- ★ 15.10.0：后台任务队列（Master「加个队列后台跑，让用户等体验不好」） -->
@@ -2463,6 +2554,19 @@ onUnmounted(() => {
       @clear="clearJobs"
     />
 
+    <!-- ★ 19.11.22：推送审计（每次「加种」一条，含失败原因；只读排障） -->
+    <PushAuditDialog
+      v-model="pushAuditOpen"
+      v-model:filter="pushAuditFilter"
+      :items="pushAuditItems"
+      :summary="pushAudit"
+      :task-name="pushAuditScopeText"
+      :loading="pushAuditLoading"
+      :narrow="isNarrow"
+      @refresh="loadPushAudit"
+      @clear-task="clearPushAuditTask"
+    />
+
     <!-- ★ 15.12.0：魔力趋势与归因（时魔走向 / 因子拆解 / 日报） -->
     <TrendDialog
       v-model="trendOpen"
@@ -2473,6 +2577,7 @@ onUnmounted(() => {
       :daily="trendDaily"
       :loading="trendLoading"
       :scope-items="trendScopeItems"
+      :upload-increment="trendUploadIncrement"
       :narrow="isNarrow"
       @refresh="loadTrendReport"
     />
@@ -2585,6 +2690,47 @@ onUnmounted(() => {
       @operations="openOperations('all')"
       @invariant="onSilentInvariant"
       @tag-reconcile="runTagReconcile(false)"
+    />
+
+    <!-- ★ 19.10.41 手动保种名单（`__keep__` 伪任务；不在任何任务的种子池里，必须单独看） -->
+    <KeepDialog
+      v-model="keepOpen"
+      v-model:tab="keepTab"
+      v-model:q="keepQ"
+      v-model:only-bad="keepOnlyBad"
+      v-model:cand-q="candQ"
+      v-model:cand-site="candSite"
+      v-model:cand-sub="candSub"
+      v-model:cand-only-hr="candOnlyHr"
+      v-model:cand-sort="candSort"
+      :data="keepData"
+      :items="keepItems"
+      :sel="keepSel"
+      :loading="keepLoading"
+      :busy="keepBusy"
+      :narrow="isNarrow"
+      :cand-loading="candLoading"
+      :cand-data="candData"
+      :cand-rows="candRows"
+      :cand-list="candList"
+      :cand-sel="candSel"
+      :cand-subs="candSubs"
+      :cand-pages="candPages"
+      :cand-page="candPage"
+      :cand-sel-gb="candSelGb"
+      :cand-sel-on-page="candSelOnPage"
+      @refresh="switchKeepTab(keepTab)"
+      @switch-tab="switchKeepTab"
+      @toggle-row="toggleKeepRow"
+      @toggle-all="toggleKeepAll"
+      @release="releaseKeep"
+      @resume="resumeKeep"
+      @cand-toggle-row="toggleCandRow"
+      @cand-toggle-page="toggleCandPage"
+      @cand-toggle-all="toggleCandAll"
+      @cand-clear="clearCandSel"
+      @cand-goto="candGoto"
+      @cand-hold="holdSelected"
     />
 
     <!-- 认领二次确认（写动作不可逆）★ P4：自有组件（props 下 / emit 上）——原「认领二次确认」弹窗。
@@ -3837,7 +3983,7 @@ onUnmounted(() => {
 /* ── ★ 手机端任务详情：紧凑块 ─────────────────────────── */
 /* .magicflow-mobile-detail 为**外层容器**（显隐由父页控制），留在本页；
    内层 .md-*（md-verdict / md-dot / md-cards / md-strategy / md-entries / md-entry…）
-   全部随内层内容迁入 components/MobileTaskDetail.vue（P4 拆分）。 */
+   全部随内层内容迁入 components/MobileTaskDetail.js（P4 拆分）。 */
 .magicflow-page .magicflow-mobile-detail { display: none; }
 
 @media (max-width: 959px) {
@@ -3853,7 +3999,7 @@ onUnmounted(() => {
 .magicflow-ops-dialog__sub { padding: 6px 18px 4px; font-size: 12px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
 
 .magicflow-ops-dialog__tabs { display: flex; gap: 4px; padding: 0 14px 4px; }
-/* .magicflow-ondemand-* / .magicflow-od-*（专属选择器）随弹窗迁入 components/dialogs/OndemandDialog.vue。 */
+/* .magicflow-ondemand-* / .magicflow-od-*（专属选择器）随弹窗迁入 components/dialogs/OndemandDialog.js。 */
 /* ★ §4.1 辅种流水单表 */
 .magicflow-reseed { display: flex; flex-direction: column; font-size: 12px; }
 

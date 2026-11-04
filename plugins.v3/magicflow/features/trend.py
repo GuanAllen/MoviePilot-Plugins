@@ -126,6 +126,18 @@ class TrendMixin:
                 rep = {}
             if isinstance(rep, dict) and rep.get("ok"):
                 vals["bonus_now"] = rep.get("current_bonus")
+            # ★ 19.11.0：上传口径时序（qB 本地累计 + 当前速率），供「按时间统计活儿」与站点认可量对照
+            try:
+                _mt = self._task_managed_torrents(task, view=False) or []
+                _up = 0.0
+                _sp = 0.0
+                for _t in _mt:
+                    _up += float(getattr(_t, "uploaded", 0) or 0)
+                    _sp += float(getattr(_t, "up_speed", 0) or 0)
+                vals["uploaded"] = round(_up)
+                vals["up_speed"] = round(_sp)
+            except Exception:  # noqa: BLE001
+                pass
             vals = {k: v for k, v in vals.items() if v is not None}
             if vals:
                 self._trend_record(f"task:{task.id}", vals)
@@ -148,6 +160,26 @@ class TrendMixin:
         hours = max(1, min(int(hours or DEFAULT_HOURS), TREND_KEEP))
         point_count = hours  # 每小时一点
         return [dict(p) for p in series[-point_count:]]
+
+    @staticmethod
+    def _trend_window_upload(series: List[Dict[str, Any]]) -> Optional[float]:
+        """窗口内上传增量（字节）。
+
+        按采样点差分取非负累加 —— 种子轮换导致快照回落后不计入，
+        保证「这个窗口里本任务实际传出去多少」单调不丢值（近似监控口径）。
+        """
+        try:
+            pts = [p for p in series if p.get("uploaded") is not None]
+            if len(pts) < 2:
+                return None
+            inc = 0.0
+            for i in range(1, len(pts)):
+                d = float(pts[i].get("uploaded", 0)) - float(pts[i - 1].get("uploaded", 0))
+                if d > 0:
+                    inc += d
+            return round(inc)
+        except Exception:  # noqa: BLE001
+            return None
 
     def get_trend(self, scope: Any = "all", id: Any = "", hours: Any = DEFAULT_HOURS) -> Response:
         """功能端点：趋势序列（默认任务+站点全量，最近 72 小时）。"""
@@ -182,6 +214,11 @@ class TrendMixin:
             except Exception:  # noqa: BLE001
                 names = {}
             data["names"] = names
+            # ★ 19.11.0：每条序列的窗口上传增量（字节），供「按时间统计活儿」直接取用
+            inc: Dict[str, Any] = {}
+            for key, s in data["series"].items():
+                inc[key] = self._trend_window_upload(s)
+            data["uploaded_increment"] = inc
             return Response(success=True, data=data)
         except Exception as err:  # noqa: BLE001
             return Response(success=False, message=f"读取趋势失败：{err}")

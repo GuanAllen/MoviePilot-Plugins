@@ -1,10 +1,11 @@
-"""
-MagicFlow 下载器操作模块
+"""魔流 · 下载器适配 —— qB / Transmission 的连接、快照、加种、暂停/恢复/校验。
 
-封装 qBittorrent 和 Transmission 的操作，
-用于添加种子、同步做种状态、删除种子等。
-
+封装 qBittorrent 和 Transmission 的操作：添加种子、同步做种状态、删除种子等；
 复用 brushflow 的下载器逻辑，适配 MagicFlow 的魔力评分需求。
+
+★ 边界：本层只对**外部系统**说话，只提供**能力**，不含业务判断 ——
+  「谁该停」由 ``dlops`` 判（归因 ``by`` + 账本守卫 + 防抖），「谁该删」由 ``deletegate`` 判。
+  暂停/恢复/校验的**唯一出口**是 ``dlops.pause|resume|recheck``，本文件不决定要不要调用。
 """
 
 import base64
@@ -27,6 +28,10 @@ REUSE_MARK = "魔流-辅种"
 # 运行时导入（在 MoviePilot 环境才导入）
 logger = logging.getLogger("magicflow")
 DownloaderHelper = None
+
+# ★ 19.10.45：qB 删不掉的「标签名自带空白」脏标签 —— 服务端会 trim 输入、永远对不上，
+#   每轮重试纯属空转。只提示一次（进程级，热重载后重来一遍也无妨）。
+_DIRTY_TAG_WARNED: Set[str] = set()
 
 # hash -> (ts, domain)；空 tracker 种的归属兜底缓存（announce 域名几乎不变）
 # ★ 15.3.1：缓存本身挂到 persistence._shared() 进程级单例上（热重载不丢），兜底用模块级 dict。
@@ -92,6 +97,30 @@ def set_hr_open_hook(fn) -> None:
     """
     global _HR_OPEN
     _HR_OPEN = fn
+
+
+_ADD_AUDIT = None
+
+
+def set_add_audit_hook(fn) -> None:
+    """注册「推送审计」钩子：``fn(payload: dict)`` —— 每次 ``add_torrent`` 记一条。
+
+    payload = ``{hash, ok, error, site_domain, tag, save_path, hit_and_run, content, bytes}``。
+    **成功与失败都回调**（失败才是排障最需要的）：在 ``add_torrent`` 返回前 / 抛异常时各一次。
+    异常一律吞掉 —— 审计写不进去绝不能影响加种。
+    """
+    global _ADD_AUDIT
+    _ADD_AUDIT = fn
+
+
+def add_audit_hook_ready() -> bool:
+    """当前是否有实例绑着「推送审计」钩子（只读自检，给 ``/pushes`` 回显）。
+
+    为什么需要它：钩子是**模块级全局**，热重载不保证重跑插件初始化，绑丢时
+    审计会**静默失效**（接口照常返回空列表，看着像「没加过种」）。把状态
+    暴露出来，空列表才分得清「真没有」和「没在记」。
+    """
+    return callable(_ADD_AUDIT)
 
 
 _ADD_JOURNAL = None
@@ -602,6 +631,10 @@ class TorrentInfo:
     #   也不在 ``_from_qb`` 映射里；账单的 ``rule`` 必须在**下载瞬间**用候选值落账，不得回读 qB 快照。
     hit_and_run: bool = False
     tracker: str = ""
+    #: qB ``trackers_count``：announce 条目数（**不含** DHT/Peers 那种 ``**`` 行）。
+    #: 与 ``tracker`` 组合判「announce 地址坏了」：``trackers_count>0`` 却取不到
+    #: 可用 URL（``tracker`` 为空）＝ 条目在、地址解析不出来（19.11.8 那 10 颗坏链种的形态）。
+    trackers_count: int = 0
     volume_factor: float = 1.0
 
     def __post_init__(self):
@@ -624,17 +657,29 @@ class TorrentInfo:
 
 
 def seed_hours_for_hr(torrent: Any, now: float = 0.0) -> float:
-    """H&R 口径的「已挂做种小时数」——**用完成时刻的墙上时间**。
+    """H&R 口径的「已挂做种小时数」——**优先 qB 的活跃做种时长**（``seeding_time``）。
 
-    ★ 15.8.18 修（关键）：已下完 → **直接 ``now - completion_on``**，不再 ``min`` 到 qB
-      ``seeding_time``。原因：qB ``seeding_time`` 是「**活跃**做种时长」，一旦种被暂停
-      （``pausedUP``，静默池/库内资产常态）就**冻结**不再累计。
-      实测：鬼灭无限列车 10-08 16:31 完成（67h 前），seeding_time 却只有 1.06h
-      → 被误判「欠 H&R 未挂满 1.1/24h」，而站点侧早结清（Master 2026-10-11 实测「现在没有欠 H&R 的」）。
-      ``completion_on``（qB 完成时刻）本身就是最可靠的保挂起点，``now - completion_on``
-      才是真实保挂时长；11.6.1 那个 CARPT 例子（seeding_time 虚高 16h）用 completion_on 反而更准。
+    ★ 19.12.3 口径修正（Master 2026-11-03 23:29「改 seeding_time 加 2 小时的 buffer」）：
+    站端 H&R 记的是**实际做种**，不是墙上时间。当日硬证（学校 btschool，H&R 种 194105）：
+    站端 ``myhr.php`` 显示「还需做种 14:02:34」，qB ``seeding_time`` = 6.2h，
+    ``20:00 - 6:12 = 13:48`` —— 差 14 分钟正是站端 announce/统计的同步粒度。
+    本地账本当时也正好记 6.17h，与站端同源。
 
-      边界：未下完（``progress < 0.999``）→ 0；``completion_on`` 缺失（=0）→ 回退 seeding_time。
+    历史（**为什么曾用墙钟**）：15.8.18 拿「鬼灭无限列车」当反例（完成 67h 前、
+    ``seeding_time`` 只有 1.06h、站端已结清），判定「暂停冻结 seeding_time → 不可信」，
+    改成 ``now - completion_on``。但那次是**误判欠账**：那颗是辅种/补源副本
+    （``downloaded <= 0``），本该被 ``_hr_is_reuse`` 拦掉，与「seeding_time 准不准」无关。
+    代价是真欠的种被高估 —— CARPT 7 颗账本记 113~151h（显示早结清）而站端 myhr 仍欠 2~3h，
+    差 92h 全是站端不认的墙上时间（2026-10-30 实测）。
+
+    口径（fail-safe 方向 = **宁多挂、不少挂**）：
+      * 未下完（``progress < 0.999``）→ 0；
+      * ``seeding_time > 0`` → 直接用它（站端口径，暂停不累计、恢复继续累计）；
+      * ``seeding_time == 0``（刚加种/统计丢失）→ 回退 ``now - completion_on``（墙钟是上界）；
+      * 两者都取不到 → 0。
+
+    ⚠ 安全垫**不在这里加**：统一走 ``_hr_due_hours(need) = need + hr_seed_margin_hours``
+      （线上 2.0h），与账单状态机、删除闸门同源；此处再加会变成 4h。
     """
     try:
         prog = float(getattr(torrent, "progress", 0) or 0)
@@ -642,6 +687,13 @@ def seed_hours_for_hr(torrent: Any, now: float = 0.0) -> float:
         prog = 0.0
     if prog < 0.999:
         return 0.0
+    try:
+        sec = float(getattr(torrent, "seed_time", 0) or 0)
+    except (TypeError, ValueError):
+        sec = 0.0
+    if sec > 0:
+        return sec / 3600.0
+    # seeding_time 拿不到（刚加种 / 下载器统计丢失）：回退墙上时间，仍是上界
     try:
         comp = float(getattr(torrent, "completion_on", 0) or 0)
     except (TypeError, ValueError):
@@ -652,12 +704,7 @@ def seed_hours_for_hr(torrent: Any, now: float = 0.0) -> float:
         except Exception:  # noqa: BLE001
             _now = time.time()
         return max(0.0, _now - comp) / 3600.0
-    # completion_on 缺失：回退 qB seeding_time（活跃做种时长，暂停冻结的副作用仍在，但极少见）
-    try:
-        sec = float(getattr(torrent, "seed_time", 0) or 0)
-    except (TypeError, ValueError):
-        sec = 0.0
-    return max(0.0, sec) / 3600.0
+    return 0.0
 
 
 # ============================================================
@@ -687,6 +734,10 @@ class DownloaderAdapter:
         #   ★ 17.4.0 起另有一条具名豁免通道 gate_strip（只摘种、不删文件；见下方 delete_torrents）。
         self.gate = None
         self.gate_strip = None
+        #   ★ 19.10.7：``gate_manual``（手动删库内资产专用闸门）原靠 ``getattr(self, "gate_manual", None)``
+        #      兜着，漏挂时只在真正删库内资产那一刻打一行「回退严格闸门」，排查时极易漏看。
+        #      这里显式初始化为 None，与上面两条同构：**属性一定存在**，安装器没挂上与否一眼可辨。
+        self.gate_manual = None
         self.deletion_log = None
         self._init_downloader()
         # ★ 裸构造也自动挂闸门：注册在案的安装器（见 set_gate_installer）在构造末尾执行 →
@@ -867,7 +918,11 @@ class DownloaderAdapter:
         Returns:
             (做种列表, 错误信息)
         """
-        tags = [tag] if tag else None
+        # ★ 19.10.46：``tag`` 可能是调用方用 ", " 拼好的**多标签串**，必须拆开再下发。
+        #   直接 ``[tag]`` 会把它当**一个**标签名交给 qB 的 ``torrents/add``，而 qB
+        #   对 tags 参数只按 ``,`` 拆、不 trim → 第二个标签带前导空格落库，成为
+        #   删不掉的脏标签（见 ``_add_torrent_qbittorrent`` 的注释与 19.10.45）。
+        tags = _split_tags(tag) or None
         return self.get_torrents(tags=tags, status="seeding")
 
     # ---------------------------------------------------------
@@ -1195,6 +1250,40 @@ class DownloaderAdapter:
             pass
         return None
 
+    def _raw_tags_exact(self, hash_string: str) -> List[str]:
+        """读下载器的标签名**原样**（不 strip）—— 用来揪出带前后空格的脏标签。
+
+        ★ 19.10.45：qB 标签全集里同时存在 ``魔流-CARPT-音乐`` 和
+        ``␠魔流-CARPT-音乐``（前导空格）两个**不同**的标签。业务层一律按 strip 后的
+        名字比较，于是「删 ``魔流-CARPT-音乐``」删不到那个带空格的，qB 还返回 200，
+        看起来像「删不掉」。
+        """
+        raw = self._find_raw_torrent(hash_string)
+        if raw is None:
+            return []
+        raw_tags = getattr(raw, "tags", None)
+        if isinstance(raw_tags, str):
+            # qB 的 ``tags`` 字段是 ``", ".join(names)`` —— 除**首元素**外，每个元素
+            # 前面的那一个空格是分隔符，不算标签名的一部分；首元素前面没有分隔符，
+            # 所以它前面的空格只能是名字自带的（现场那批脏标签正是这种）。
+            out: List[str] = []
+            for i, p in enumerate(raw_tags.split(",")):
+                if i and p.startswith(" "):
+                    p = p[1:]
+                if p.strip():
+                    out.append(p)
+            return out
+        if isinstance(raw_tags, (list, tuple, set)):
+            return [str(x) for x in raw_tags if str(x).strip()]
+        return []
+
+    def _raw_tags(self, hash_string: str) -> List[str]:
+        """读**下载器实际**的标签列表（已 strip；业务层比较用）。
+
+        种不在下载器里 → 返回 ``[]``（调用方按「没有标签」处理）。
+        """
+        return [t.strip() for t in self._raw_tags_exact(hash_string)]
+
     def _wait_checked(self, hash_string: str, timeout: int = 120) -> Optional[float]:
         """等待校验结束，返回进度（0~1）。**超时（仍在校验）返回 None**。"""
         deadline = time.time() + max(timeout, 5)
@@ -1265,15 +1354,16 @@ class DownloaderAdapter:
             return None, "种子内容为空"
 
         # ★ 一律带上「辅种」标记：它是复用种（不是下载种），自动清理/清理机制必须放过它
-        tag_list = [tag] if tag else []
+        # ★ 19.10.46：一律先按逗号拆开再下发（脏标签根因见 add_torrent 的注释）
+        tag_list = _split_tags(tag)
         if REUSE_MARK not in tag_list:
             tag_list.append(REUSE_MARK)
 
         # 添加前记录该标签下的 hash，用于可靠定位「刚添加的这颗」（不靠猜）
         before_hashes: set = set()
-        if tag:
+        if tag_list:
             try:
-                _b, _ = self._downloader.get_torrents(tags=tag)
+                _b, _ = self._downloader.get_torrents(tags=tag_list)
                 before_hashes = {str(t.get("hash", "")).lower() for t in (_b or [])}
             except Exception:
                 before_hashes = set()
@@ -1341,10 +1431,10 @@ class DownloaderAdapter:
 
         if not hash_string:
             hash_string = local_hash
-        if not hash_string and tag:
+        if not hash_string and tag_list:
             # 最后兜底：取该标签下「添加前不存在」的种子（最新的那颗）
             try:
-                _a, _ = self._downloader.get_torrents(tags=tag)
+                _a, _ = self._downloader.get_torrents(tags=tag_list)
                 new = [t for t in (_a or [])
                        if str(t.get("hash", "")).lower() not in before_hashes]
                 if new:
@@ -1357,10 +1447,25 @@ class DownloaderAdapter:
             return None, f"添加成功但未能定位新种子 hash（{_add_note or 'add 无返回'}，已放弃辅种）"
 
         def _delete_added(reason: str) -> str:
-            """撤销刚添加的辅种种（不删文件），并复核确已删除。"""
+            """撤销刚添加的辅种种（不删文件），并复核确已删除。
+
+            ★ 19.10.2（整改 S1）：改走本类唯一删种入口 ``self.delete_torrents``。
+              旧写法直调底层 ``self._downloader.delete_torrents`` —— 不过闸门、不过
+              ``_delete_bill_assert``、不过熔断、不写 ``mf_deletions`` 台账，
+              是插件内**唯一「绕过整条防线」**的删除（其余 20+ 处绕过的是审批，不是防线）。
+              闸门拒删时**保留种子**并记日志（fail-closed），交人工处置 ——
+              不为「看起来干净」而绕过 H&R / 来源份 / 已认领 / 手动保护 / 库内资产这五类硬保护。
+            """
             for _try in range(2):
                 try:
-                    self._downloader.delete_torrents(ids=[hash_string], delete_file=False)
+                    _n, _err = self.delete_torrents(
+                        [hash_string],
+                        delete_file=False,
+                        reason=f"辅种撤销：{reason}",
+                        source="downloader_ops.add_torrent_reuse",
+                    )
+                    if not _n and _err:
+                        logger.warning(f"撤销辅种未执行 {hash_string}: {_err}")
                 except Exception as e:
                     logger.warning(f"撤销辅种删除失败 {hash_string}: {e}")
                 try:
@@ -1558,6 +1663,7 @@ class DownloaderAdapter:
             last_activity=last_activity,
             completion_on=completion_on,
             tracker=str(_kv(torrent, "tracker", "") or ""),
+            trackers_count=int(_kv(torrent, "trackers_count", 0) or 0),
             is_zero_bonus=is_zero_bonus,
             is_free=is_free,
             is_double_free=is_double_free,
@@ -1578,8 +1684,69 @@ class DownloaderAdapter:
         site_domain: str = "",
         hit_and_run: bool = False,
     ) -> Tuple[Optional[str], Optional[str]]:
+        """添加种子到下载器（★ 19.11.15：外面只多一层**推送审计**，行为一字不变）。
+
+        审计记在这里而不是各业务调用点，是因为「加种」在本仓只有一个入口 ——
+        点播 / 辅种 / 刷流 / 套牌复用全部落到它，逐处埋点必漏。
+        失败的推送尤其要记：以前失败了只有一行日志，事后无法回答「这条到底推没推、
+        推给谁、报了什么」。
         """
-        添加种子到下载器。
+        try:
+            hs, err = self._add_torrent_impl(
+                content, download_dir=download_dir, tag=tag, category=category,
+                upload_limit=upload_limit, download_limit=download_limit, cookie=cookie,
+                user_agent=user_agent, proxies=proxies, site_domain=site_domain,
+                hit_and_run=hit_and_run)
+        except Exception as e:  # noqa: BLE001
+            self._audit_push(content, download_dir, tag, site_domain, hit_and_run, None, str(e))
+            raise
+        self._audit_push(content, download_dir, tag, site_domain, hit_and_run, hs, err)
+        return hs, err
+
+    def _audit_push(self, content: Any, download_dir: str, tag: Optional[str],
+                    site_domain: str, hit_and_run: bool,
+                    hash_string: Optional[str], error: Optional[str]) -> None:
+        """把这次推送交给审计钩子（无钩子 / 钩子异常都静默 —— 绝不拖累加种）。"""
+        fn = _ADD_AUDIT
+        if not callable(fn):
+            return
+        try:
+            if isinstance(content, bytes):
+                kind, nbytes = "torrent", len(content)
+            elif str(content).startswith("magnet:"):
+                kind, nbytes = "magnet", 0
+            else:
+                kind, nbytes = "url", 0
+            fn({
+                "hash": str(hash_string or ""),
+                "ok": bool(hash_string) and not error,
+                "error": str(error or ""),
+                "site_domain": str(site_domain or ""),
+                "tag": str(tag or ""),
+                "save_path": str(download_dir or ""),
+                "hit_and_run": bool(hit_and_run),
+                "content": kind,
+                "bytes": nbytes,
+            })
+        except Exception:  # noqa: BLE001
+            logger.error("推送审计钩子异常", exc_info=True)
+
+    def _add_torrent_impl(
+        self,
+        content: Union[str, bytes],
+        download_dir: str = "",
+        tag: Optional[str] = None,
+        category: str = "",
+        upload_limit: Optional[int] = None,
+        download_limit: Optional[int] = None,
+        cookie: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        proxies: Optional[str] = None,
+        site_domain: str = "",
+        hit_and_run: bool = False,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """
+        添加种子到下载器（实现体；对外请走 ``add_torrent``）。
 
         Args:
             content: 种子内容（URL、磁力链或种子文件字节）
@@ -1621,7 +1788,7 @@ class DownloaderAdapter:
                 result = self._add_torrent_transmission(
                     content=content,
                     download_dir=download_dir,
-                    labels=[tag] if tag else None,
+                    labels=_split_tags(tag) or None,
                     upload_limit=upload_limit,
                     download_limit=download_limit,
                     cookie=cookie,
@@ -1668,7 +1835,7 @@ class DownloaderAdapter:
         """添加种子到 qBittorrent。"""
         # 处理磁力链
         if isinstance(content, str) and content.startswith("magnet:"):
-            tag_list = [tag] if tag else []
+            tag_list = _split_tags(tag)
             result = self._downloader.add_torrent(
                 content=content,
                 download_dir=download_dir,
@@ -1682,7 +1849,7 @@ class DownloaderAdapter:
                 return None, "qBittorrent 添加种子失败"
             hash_string = str(ids[0]).lower() if ids else _magnet_infohash(content)
             if not hash_string:
-                hash_string = self._get_torrent_hash_by_tag(tag or "temp")
+                hash_string = self._get_torrent_hash_by_tag((tag_list[0] if tag_list else "") or "temp")
             return hash_string, None
 
         # 处理 URL 或种子文件
@@ -1708,7 +1875,10 @@ class DownloaderAdapter:
                 return None, f"下载种子文件失败: {e}"
 
         # 添加种子
-        tag_list = [tag] if tag else []
+        # ★ 19.10.46：``tag`` 可能是 ", " 拼好的多标签串 → 必须拆成真正的 list。
+        #   整串当单元素下发时，qB 的 ``torrents/add`` 只按 ``,`` 拆、不 trim，
+        #   第二个标签带前导空格落库，成为 removeTags/deleteTags 都删不掉的脏标签。
+        tag_list = _split_tags(tag)
         # 🔎 标签审计：添加种子时带的标签只作用于该种子，不会删除标签定义。
         logger.info(f"[标签审计] ADD dir={download_dir or '-'} tags={tag_list}")
         result = self._downloader.add_torrent(
@@ -1733,7 +1903,7 @@ class DownloaderAdapter:
             except Exception:
                 hash_string = None
         if not hash_string:
-            hash_string = self._get_torrent_hash_by_tag(tag or "temp")
+            hash_string = self._get_torrent_hash_by_tag((tag_list[0] if tag_list else "") or "temp")
         return hash_string, None
 
     @staticmethod
@@ -1978,11 +2148,13 @@ class DownloaderAdapter:
         except Exception as _ba_err:  # noqa: BLE001
             _bill_why = {str(h or "").strip().lower(): f"账单断言异常:{_ba_err}" for h in hashes}
         _brk_why: Dict[str, str] = {}
+        _brk_ticket = 0                       # ★ 19.10.5：熔断预占票根（0 = 无票 / 未通过）
         try:
             _bk = getattr(self, "_delete_breaker_check", None)
             if callable(_bk):
                 _brk_blocked, _brk_info = _bk(
                     hashes, delete_file=delete_file, reason=reason, source=source)
+                _brk_ticket = int((_brk_info or {}).get("ticket") or 0)
                 for h in (_brk_blocked or set()):
                     _brk_why[str(h).strip().lower()] = str(_brk_info.get("reason") or "删除熔断")
         except Exception as _brk_err:  # noqa: BLE001
@@ -2003,6 +2175,8 @@ class DownloaderAdapter:
                 except Exception:  # noqa: BLE001
                     pass
         if not hashes:
+            # ★ 19.10.5：整批被断言拦下（一个都没真删）→ 预占额度全额归还
+            self._delete_breaker_settle_cb(_brk_ticket, 0)
             self._emit_delete_log([], delete_file, reason, source, None, _blocked)
             return 0, "删除被账单断言/熔断阻断"
 
@@ -2051,12 +2225,33 @@ class DownloaderAdapter:
                 for _i, (_ghs, _gdf) in enumerate(_groups):
                     self._emit_delete_log(_ghs, _gdf, reason, source, _err,
                                           _blocked if _i == 0 else [])
+            # ★ 19.10.5 熔断补记：只按**真正删掉的数量**占额度，多预占的归还窗口。
+            #   success_count == len(_ok_df) + len(_ok_keep)（见上面循环），
+            #   即「连文件删成功」+「只摘种成功」；删除失败的、被拦的，一律不占。
+            self._delete_breaker_settle_cb(_brk_ticket, int(success_count or 0))
             return success_count, _err
 
         except Exception as e:
             logger.error(f"删除种子失败: {e}")
+            self._delete_breaker_settle_cb(_brk_ticket, 0)   # ★ 19.10.5：整批没删成 → 全还
             self._emit_delete_log([], delete_file, reason, source, str(e), _blocked)
             return 0, str(e)
+
+    def _delete_breaker_settle_cb(self, ticket: Any, actually_deleted: int) -> None:
+        """★ 19.10.5 把熔断预占的额度按**实删数**结算（容错转发给 deletegate）。
+
+        与拿熔断同款鸭子类型通道（``getattr(self, ...)``）：
+        闸门/熔断回调未安装、抛异常、返回非法值 → 一律静默。
+        **记账绝不能影响删种结果。**
+        """
+        if not ticket:
+            return
+        try:
+            _fn = getattr(self, "_delete_breaker_settle", None)
+            if callable(_fn):
+                _fn(ticket, int(actually_deleted or 0))
+        except Exception:  # noqa: BLE001
+            pass
 
     def _emit_delete_log(
         self,
@@ -2308,40 +2503,122 @@ class DownloaderAdapter:
                 logger.warning(f"取消强挂失败 {h}: {e}")
         return ok, None
 
+    def _drop_torrent_tags(self, hash_string: str, drop: List[str]) -> bool:
+        """从种子上**真删掉**这些标签；``True`` = 回读确认已删干净。
+
+        ★ 19.10.45：原来这里只有一条路 ——
+        ``if drop and hasattr(self._downloader, "remove_torrents_tag")``，而且**只信返回值**。
+        现场（2026-10-30）：
+          * 音乐在途职务 8 个，每小时报「摘职务标签 8 个」，连续 14 轮，逐个回读仍在；
+          * 同一个种上的「已整理」，5 小时被要求删 **291 次**，一次都没删掉。
+        不是「摘完又贴回来」，是**从来没摘掉**。19.10.45 实测还发现：MP 适配器
+        ``remove_torrents_tag`` **方法存在、也返回成功，但标签一动没动** —— 只要
+        「谁先返回成功就 break」，它就把后面真正有效的原生路径挡住了。
+
+        所以这里**不信任任何返回值**，改成「逐条路试 + 每试一条回读一次」：
+          ① 适配器自带删除方法（若有）→ ② qbittorrentapi 原生 ``torrents_remove_tags``
+          （走 ``_qb_call``，含会话重连）。哪一路之后回读为空就在那一路收工。
+        全部试完仍有残留 / 一条路都没有 → 返回 ``False``（**不许假成功**）。
+
+        ★ 另一类删不掉的是**标签名自带空白**（``␠魔流-CARPT-音乐``）。qB 4.6.4 的
+        ``removeTags`` / ``deleteTags`` 都会先 ``trim`` 输入，于是永远只能匹配到干净
+        形态，而种上挂的偏偏是脏形态 —— 返回 200、什么都没删。实测 qB 自己的 API
+        也删不掉（连 ASCII 的 ``␠ZZSP`` 都一样），属服务端限制，重试无意义：这里直接
+        判不可删、提示一次（每个标签只喊一次），不再每小时空转。
+        """
+        if not drop:
+            return True
+
+        # ★ 19.10.45：要删的「名字」不止业务层那个 strip 版 —— 现场有
+        #   ``␠魔流-CARPT-音乐``（前导空格）这种脏标签，strip 后与目标同名却是另一个
+        #   标签，只删干净版永远删不到它（qB 还回 200，看着像成功）。
+        want = set(drop)
+        exact = self._raw_tags_exact(hash_string)
+        clean = [t for t in drop if t in exact]
+        dirty = [t for t in exact if t.strip() in want and t not in clean]
+        if not clean and dirty:
+            for t in dirty:
+                if t in _DIRTY_TAG_WARNED:
+                    continue
+                _DIRTY_TAG_WARNED.add(t)
+                logger.warning(
+                    f"[标签审计] DIRTY-TAG 标签名带空白，qB 删不掉 {t!r}"
+                    f"（removeTags/deleteTags 会 trim 输入，与原名对不上；"
+                    f"需在 qB 侧清理或升级 qB）"
+                )
+            return False
+        names: List[str] = clean + dirty
+
+        paths: List[Tuple[str, Any]] = []
+        for name in ("remove_torrents_tag", "remove_torrents_tags"):
+            fn = getattr(self._downloader, name, None)
+            if callable(fn):
+                paths.append((name, lambda fn=fn: fn(hash_string, names)))
+        if self._qb_client() is not None:
+            paths.append((
+                "torrents_remove_tags",
+                lambda: self._qb_call("torrents_remove_tags",
+                                      torrent_hashes=hash_string, tags=names),
+            ))
+        if not paths:
+            logger.error(
+                f"[标签审计] NO-REMOVE 底层无删标签能力 hash={hash_string} tags={names} "
+                f"downloader={type(self._downloader).__name__}"
+            )
+            return False
+
+        tried: List[str] = []
+        left: List[str] = list(drop)
+        for name, call in paths:
+            try:
+                call()
+            except Exception as e:  # noqa: BLE001
+                tried.append(f"{name}=err({e})")
+                continue
+            left = [t for t in drop if t in self._raw_tags(hash_string)]
+            if not left:
+                return True
+            tried.append(f"{name}=stale")
+        logger.error(
+            f"[标签审计] REMOVE-STALE hash={hash_string} 仍残留 {left}（试过 {tried}）"
+        )
+        return False
+
     def replace_torrent_tags(self, hash_string: str, tags: List[str]) -> bool:
         """★ 真正「替换」标签：先删差集、再补新增。
 
         MP 适配器的 ``set_torrents_tag`` 实际是 ``torrents_add_tags``（只加不删），
         迁移/改状态时必须用本方法，否则老标签会一直堆着。
+
+        ★ 19.10.45：``drop`` 交给 ``_drop_torrent_tags``（多路 + 回读校验），
+        删不掉就**返回 False** —— 上层据此记 ``failed``，不再出现「报成功但没动」。
         """
         if not self.tags_enabled:  # ★ 标签写已关闭（纯账本模式）
             return False
         if not self._downloader or not hash_string:
             return False
         target = [str(t).strip() for t in (tags or []) if str(t).strip()]
-        cur: List[str] = []
-        raw = self._find_raw_torrent(hash_string)
-        if raw is not None:
-            raw_tags = getattr(raw, "tags", None)
-            if isinstance(raw_tags, str):
-                cur = [x.strip() for x in raw_tags.split(",") if x.strip()]
-            elif isinstance(raw_tags, (list, tuple)):
-                cur = [str(x).strip() for x in raw_tags if str(x).strip()]
+        cur = self._raw_tags(hash_string)
         drop = [t for t in cur if t not in target]
         add = [t for t in target if t not in cur]
         if not drop and not add:
             return True
         ok = True
         try:
-            if drop and hasattr(self._downloader, "remove_torrents_tag"):
-                if not self._downloader.remove_torrents_tag(hash_string, drop):
-                    ok = False
+            if drop and not self._drop_torrent_tags(hash_string, drop):
+                ok = False
             if add and hasattr(self._downloader, "set_torrents_tag"):
                 self._downloader.set_torrents_tag(ids=hash_string, tags=add)
         except Exception as e:  # noqa: BLE001
             logger.error(f"[标签审计] REPLACE-ERR hash={hash_string}: {e}")
             return False
-        logger.info(f"[标签审计] REPLACE hash={hash_string} del={drop} add={add}")
+        if ok:
+            logger.info(f"[标签审计] REPLACE hash={hash_string} del={drop} add={add}")
+        else:
+            logger.error(
+                f"[标签审计] REPLACE-FAILED hash={hash_string} del={drop} add={add}"
+                f"（删除未生效，标签仍在）"
+            )
         return ok
 
     def resume_torrent(self, hash_string: str) -> bool:
@@ -2516,6 +2793,55 @@ class DownloaderAdapter:
         except Exception as e:
             logger.error(f"写入 qBittorrent 全局参数失败: {e}")
             return False, str(e)
+
+
+# ============================================================
+# 适配器构造（★ 19.10.19 从 features/core.py 下沉）
+# ============================================================
+def acquire(host: Any, downloader_name: str = "qbittorrent") -> Optional[DownloaderAdapter]:
+    """构造下载器适配器，并挂上「删除令出一门」的四道闸门。
+
+    ``host`` = 插件实例（49 个 mixin 共享的那个 ``self``）。这里的构造逻辑必须收在
+    一处，因为四道闸门（普通删 / 库内资产 / 只摘种 / 删除台账回调）和 ``show_qb_tags``
+    开关都挂在 host 上，而且必须**同时**打到实例属性和**类属性** —— 后者是为了覆盖
+    「不走本方法、直接 ``DownloaderAdapter(...)``」的老调用点。漏一处就会出现绕过
+    闸门的删种。
+
+    原先这段在 ``features/core.py::_get_downloader``：它被 84 处跨文件调用，而 core.py
+    自己一次都不调 —— 基础设施寄居在服务层的典型。下沉到这里后，core 只剩一行委托，
+    **调用点无需改动**（仍是 ``self._get_downloader()``）。
+
+    参数:
+        host: 插件实例，需提供 ``_show_qb_tags`` / ``_delete_gate`` /
+            ``_delete_gate_manual`` / ``_delete_gate_strip`` / ``_delete_log_cb`` / ``_log``。
+        downloader_name: 下载器类型，``qbittorrent``（默认）或 ``transmission``。
+
+    返回:
+        可用的适配器；构造失败返回 None（已记日志，不抛异常给调用方）。
+    """
+    try:
+        dl = DownloaderAdapter(downloader_name=downloader_name)
+        dl.tags_enabled = host._show_qb_tags()
+        try:
+            dl.gate = host._delete_gate
+            # 手动删库内资产专用闸门（只跳过第 5 类库内资产）
+            dl.gate_manual = host._delete_gate_manual
+            # 只摘种专用闸门（同样只跳过第 5 类）—— 见 DownloaderAdapter.delete_torrents
+            dl.gate_strip = host._delete_gate_strip
+            dl.deletion_log = host._delete_log_cb
+            # 类属性：覆盖不经本函数、直接 DownloaderAdapter(...) 的调用点
+            type(dl)._global_gate = host._delete_gate
+            type(dl)._global_gate_manual = host._delete_gate_manual
+            type(dl)._global_gate_strip = host._delete_gate_strip
+            type(dl)._global_dlog = host._delete_log_cb
+        except Exception:  # noqa: BLE001
+            pass
+        return dl
+    except Exception as e:  # noqa: BLE001
+        fn = getattr(host, "_log", None)
+        if callable(fn):
+            fn(f"获取下载器失败: {e}", "error")
+        return None
 
 
 # ============================================================

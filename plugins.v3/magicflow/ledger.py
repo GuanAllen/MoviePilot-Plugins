@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import re
 import threading
@@ -26,24 +27,21 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import delete, func, inspect as sa_inspect, select, text, update
 
 from . import db as mfdb
-from .common import (
-    HR_HOST_TASK_ID,
-    KEEP_TASK_ID,
-    KEEP_TASK_NAME,
-    MUSIC_TASK_ID,
-    MUSIC_TASK_NAME,
-    ONDEMAND_TASK_ID,
-    ONDEMAND_TASK_NAME,
-    task_is_participating,
+from .common import task_is_participating
+# ★ 19.10.11：职务派生/岗位反查走**岗位注册表**（dutyreg.py 是单一真值）。
+#   加岗位只改那张表，不再回头改下面两个 if 串。
+from .dutyreg import (
+    DEFAULT_TASK_STATE,
+    TASK_DUTY,
+    duty_id_of,
+    duty_name as _duty_name,
+    duty_state,
 )
 from .tags import (
     LEASE_TTL,
     SILENT_NEW_TIMEOUT,
     STATE_BONUS,
     STATE_BRUSH,
-    STATE_HR,
-    STATE_MUSIC,
-    STATE_ONDEMAND,
     STATE_SILENT,
     STATES_WITH_SUB,
     SUB_NEW,
@@ -223,64 +221,48 @@ class LedgerBackend:
         return sid
 
     def _task_name(self, task_id: Any) -> str:
+        """任务 id → 展示名。固定 id 的岗位查注册表，真任务查配置。
+
+        ★ 19.10.11：原来又是一串 if（且漏了 __claim__ → 认领种的 task 名落空），
+          改为统一查 ``dutyreg``。
+        """
         tid = str(task_id or "")
-        # ★ 11.11.0：__hr_host__（H&R 保种）伪任务可寻址（不在 _task_configs / mf_task 里）
-        if tid == HR_HOST_TASK_ID:
-            return "H&R保种"
-        # ★ 15.8.4：__ondemand__（点播在途）伪任务可寻址
-        if tid == ONDEMAND_TASK_ID:
-            return ONDEMAND_TASK_NAME
-        # ★ 19.9.0：__music__（音乐在途）伪任务可寻址
-        if tid == MUSIC_TASK_ID:
-            return MUSIC_TASK_NAME
-        # ★ 19.9.1：__keep__（手动保种）伪任务可寻址
-        if tid == KEEP_TASK_ID:
-            return KEEP_TASK_NAME
+        _dn = _duty_name(tid)
+        if _dn:
+            return _dn
         cfg = (getattr(self.plugin, "_task_configs", {}) or {}).get(tid)
         return str(getattr(cfg, "name", "") or "") if cfg is not None else ""
 
     def _task_state(self, task_id: Any) -> str:
-        """任务 id → 职务（刷流/魔力/保种/静默）。7.0.0 退役 state 列后，职务由任务推导。
+        """任务 id → 职务（刷流/魔力/保种/静默/点播/音乐/认领）。7.0.0 退役 state 列后由任务推导。
 
         ★ 关键：任务被停止（遣散）→ 静默，不看 task_type。只有 running/seeding
           （participating）才算在岗（刷流/魔力）。否则 stopped 任务的种会被误算成在岗。
-        ★ 11.11.0：__hr_host__（伪任务）→ 保种（H&R 保挂职务）。
+        ★ 19.10.11：固定 id 的岗位查 ``dutyreg``（**加岗位只改那张表**）；
+          动态 id 的真任务按 participating + task_type 派生。
         """
         tid = str(task_id or "")
-        if tid == HR_HOST_TASK_ID:
-            return STATE_HR
-        # ★ 15.8.4：点播在途伪任务 → 职务「点播」（≠ 静默 → 免疫静默池暂停/清理）
-        if tid == ONDEMAND_TASK_ID:
-            return STATE_ONDEMAND
-        # ★ 19.9.0：音乐在途伪任务 → 职务「音乐」（同上；下完摘职务才回静默池）
-        if tid == MUSIC_TASK_ID:
-            return STATE_MUSIC
-        # ★ 19.9.1：手动保种伪任务 → 职务「保种」（≠ 静默 → 不被静默池暂停/清理）
-        if tid == KEEP_TASK_ID:
-            return STATE_HR
+        _fixed = duty_state(tid)
+        if _fixed:
+            return _fixed
         cfg = (getattr(self.plugin, "_task_configs", {}) or {}).get(tid)
         if cfg is None:
             return STATE_SILENT
         if not task_is_participating(cfg):
             return STATE_SILENT
-        return STATE_BRUSH if str(getattr(cfg, "task_type", "") or "") == "brush" else STATE_BONUS
+        return TASK_DUTY.get(str(getattr(cfg, "task_type", "") or ""), DEFAULT_TASK_STATE)
 
     def _task_id(self, name: str) -> Optional[str]:
         key = str(name or "").strip().lower()
         if not key:
             return None
         # ★ 11.11.0：__hr_host__ / H&R保种 伪任务名 → __hr_host__（不在 _task_configs 里，但账本可寻址）
-        if key in ("__hr_host__", "h&r保种", "hr保种", "保种"):
-            return HR_HOST_TASK_ID
-        # ★ 15.8.4：点播在途伪任务名 → __ondemand__（账本可寻址，seed_row 写 task_id 用）
-        if key in ("__ondemand__", "ondemand", "点播", "点播下载"):
-            return ONDEMAND_TASK_ID
-        # ★ 19.9.0：音乐在途伪任务名 → __music__（账本可寻址，seed_row 写 task_id 用）
-        if key in ("__music__", "music", "音乐", "音乐线"):
-            return MUSIC_TASK_ID
-        # ★ 19.9.1：手动保种伪任务名 → __keep__（不能用「保种」——那是 __hr_host__ 的别名）
-        if key in ("__keep__", "keep", "手动保种"):
-            return KEEP_TASK_ID
+        # ★ 19.10.11：固定 id 的岗位全部走注册表反查（id / 展示名 / 别名，大小写不敏感）。
+        #   注意：**不按职务名查** —— 「保种」同时属于 __keep__ 与 __hr_host__，
+        #   按职务查必然歧义（旧代码把「保种」固定给 __hr_host__ 就是历史妥协）。
+        _did = duty_id_of(key)
+        if _did:
+            return _did
         for tid, cfg in (getattr(self.plugin, "_task_configs", {}) or {}).items():
             if str(tid).lower() == key or str(getattr(cfg, "name", "") or "").strip().lower() == key:
                 return str(tid)
@@ -674,6 +656,16 @@ class LedgerBackend:
         self._transfer_dests_cache = (now, out)
         return out
 
+    def stage_groups(self, data: Dict[str, Dict[str, Any]]) -> None:
+        """★ 19.10.62：把内存快照换成 ``data`` 但**不落盘**（批处理专用）。
+
+        只动 ``_groups``（读侧视图），**不动 ``_group_prev``** —— 后者是「上次落盘的真值」，
+        ``save_groups`` 靠它算 changed；批处理期间把它也换掉，flush 时就比较不出差异、
+        整批变更会静默丢失。
+        """
+        with self._lock:
+            self._groups = dict(data or {})
+
     def load_groups(self) -> Dict[str, Dict[str, Any]]:
         with self._lock:
             if self._groups is None:
@@ -845,7 +837,23 @@ class SeedLedgerStore:
 
     # ---- 读写
     def items(self) -> Dict[str, Dict[str, Any]]:
-        # 缓存 items() 返回接口状态（状态账本写入后会调 _invalidate 失效）
+        """全量账本（``hash -> 记录``）。
+
+        ★ 这是**写失效 memo**，不是 TTL 缓存 —— 没有过期时间，只在写入时失效
+          （``_write`` → ``_invalidate``）。因此 **不适用** ``cacheops``（那是给
+          TTL/单飞语义的），也**不进** ``dtier.TierCache`` 冷层（账本本身就在后端表里，
+          冷层只是多一份副本）。见 ``docs/ADR-0001-cacheops.md``。
+
+        2026-10-29 审计（结论：**保持原样**，三条都过）：
+          ① ``backend.save_seeds`` 全库唯一调用方是本类的 ``_write`` → 写入必失效；
+          ② 无任何调用方原地改动本方法返回的字典 → 缓存不会被偷偷污染；
+          ③ ``SeedLedgerStore`` 由 ``tags._tag_state`` 以进程级单例持有 → 不存在
+             「两个实例各自缓存、一个写了另一个不知道」的问题。
+
+        ⚠ **隐性契约：调用方只读**。这里返回的是缓存字典**本身**（不是拷贝）——
+          账本上千条、``items()`` 调用极频繁，每次浅拷贝是实打实的开销。
+          若哪天需要在调用方修改，必须改走 ``_write`` 路径，别原地改这个字典。
+        """
         cached = getattr(self, "_items_cache", None)
         if cached is not None:
             return cached
@@ -860,6 +868,7 @@ class SeedLedgerStore:
         return out
 
     def _invalidate(self) -> None:
+        """写后失效；异常吞掉是刻意的 —— 「清缓存失败」不该连累已经成功的写入。"""
         try:
             self._items_cache = None
         except Exception:
@@ -1088,11 +1097,13 @@ class SeedLedgerStore:
         lease = float(rec.get("lease_until") or 0)
         if owner and owner != _clean(task_id) and lease > ts:
             return False, f"已被任务 {owner} 占用（租约到 {int(lease)}）"
-        if owner and owner != _clean(task_id) and cur_state in (STATE_BRUSH, STATE_BONUS) and lease <= ts:
-            # 租约过期的孤儿占用：允许抢占，但记一笔
-            self._log and self._log(f"标签:抢占过期占用 {h[:8]}（原 {owner}）", "warning")
+        # ★ 19.10.40：在岗（刷流/魔力）**不看租约**，归属只能靠 ``release`` 交接。
+        #   旧实现在这里打一句「抢占过期占用（允许抢占）」然后紧接着 return False ——
+        #   语义自相矛盾，日志还把人带偏（2026-10-30 排 YemaPT 两任务互抢时差点误判）；
+        #   更根本的是 5 表后端 ``mf_seed`` 不落 ``lease_until``（``_read_seeds`` 读回
+        #   恒 0）⇒ 「租约过期」恒成立，这条旁路等于给「互相抢」盖章。
         if cur_state in (STATE_BRUSH, STATE_BONUS) and owner and owner != _clean(task_id):
-            return False, f"状态已被占用：{cur_state}"
+            return False, f"状态已被占用：{cur_state}（原 {owner}，须先 release）"
         # ★ 5.0.0：``state`` 只表达**职务**；``sub`` 是**身份** —— 占用不改写、不清空，
         #   也就没有「回退目标 origin」这个字段了（旧记录里残留的无害，可忽略）。
         rec.update({
@@ -1159,6 +1170,9 @@ class ResourceLedgerStore:
         self.backend = backend
         self._log = log
         self._lib_pending: Dict[str, Dict[str, Any]] = {}   # 库记待办（进程内缓冲，不再走 kv 键）
+        # ★ 19.10.62 批处理（见 batch()）：深度 >0 时 write 只落内存快照，由 flush 统一落盘
+        self._batch_depth: int = 0
+        self._batch_pending: Optional[Dict[str, Any]] = None
 
     def items(self) -> Dict[str, Dict[str, Any]]:
         try:
@@ -1177,11 +1191,55 @@ class ResourceLedgerStore:
                 out[str(gid)] = rec
         return out
 
-    def _write(self, data: Dict[str, Any]) -> None:
+    def _write(self, data: Dict[str, Any], *, defer: bool = False) -> None:
+        """落盘组账本。``defer=True``（或处于 ``batch()`` 内）只换内存快照，落盘留给 ``flush()``。
+
+        ★ 19.10.62 批量落盘的病根与理由：``add_member`` 原先每调一次就 ``save_groups``
+        一次 —— 而 save_groups 每次都要「全量比较 changed + deepcopy 全组 + 单独 commit」。
+        全站重建（2039 颗种）实测 5 分钟，其中 deepcopy 约 81s、2039 次 commit 占大头（O(n²)）。
+        stage 是**必须**的：``items()`` 每次都从 ``backend.load_groups()`` 重建视图，
+        不换快照的话下一步读不到上一步刚加的成员。
+        """
+        if defer or self._batch_depth > 0:
+            self._batch_pending = data
+            try:
+                self.backend.stage_groups(data)
+            except Exception as err:  # noqa: BLE001
+                self._log and self._log(f"标签:文件组账本暂存失败:{err}", "error")
+            return
         try:
             self.backend.save_groups(data)
         except Exception as err:  # noqa: BLE001
             self._log and self._log(f"标签:文件组账本写入失败:{err}", "error")
+
+    @contextlib.contextmanager
+    def batch(self) -> Any:
+        """批量写上下文：期间所有写只落内存，退出时**统一落一次盘**（异常也落，已改的不丢）。
+
+        用于 ``sync_resources`` 这类「上千次 add_member」的重建动作。语义不变
+        （期间 ``items()`` 立即可见），只是把 N 次事务压成 1 次。
+
+        ★ 注意：**批内不要跑直查库的动作**（``gc_empty_groups`` / ``recompute_sources``）——
+        它们看的是库里的旧值。需要时先 ``flush()``。
+        """
+        self._batch_depth += 1
+        try:
+            yield self
+        finally:
+            self._batch_depth -= 1
+            if self._batch_depth <= 0:
+                self._batch_depth = 0
+                self.flush()
+
+    def flush(self) -> None:
+        """把批处理期间累积的快照落盘一次（无待写则什么都不做）。幂等。"""
+        data, self._batch_pending = self._batch_pending, None
+        if data is None:
+            return
+        try:
+            self.backend.save_groups(data)
+        except Exception as err:  # noqa: BLE001
+            self._log and self._log(f"标签:文件组账本批量写入失败:{err}", "error")
 
     def group_of(self, hash_string: str) -> str:
         h = _clean(hash_string).lower()
@@ -1218,7 +1276,13 @@ class ResourceLedgerStore:
         completed_at: float = 0.0,
         added_at: float = 0.0,
         now: Optional[float] = None,
+        flush: bool = True,
     ) -> Dict[str, Any]:
+        """把一颗种并入资源组（按特征码分组），必要时原地更新该成员的每份事实。
+
+        ``flush=False`` 时只换内存快照（供 ``sync_resources`` 这类上千次调用的重建动作
+        末尾统一落一次盘）；默认 ``True`` 保持逐次落盘的旧行为。
+        """
         gid = _clean(group_id)
         h = _clean(hash_string).lower()
         if not gid or not h:
@@ -1316,7 +1380,7 @@ class ResourceLedgerStore:
         rec.setdefault("created", ts)
         rec["updated"] = ts
         data[gid] = rec
-        self._write(data)
+        self._write(data, defer=not flush)
         return {"group_id": gid, "members": len(members)}
 
     # ---------------------------------------------------------------- 资源级：来源站 / H&R / 库记
@@ -1366,6 +1430,7 @@ class ResourceLedgerStore:
         media_id: str = "",
         path: str = "",
         now: Optional[float] = None,
+        flush: bool = True,
     ) -> bool:
         """资源级「库记」：这份内容是否已整理入库。"""
         gid = _clean(group_id)
@@ -1388,7 +1453,7 @@ class ResourceLedgerStore:
         rec["library"] = lib
         rec["updated"] = ts
         data[gid] = rec
-        self._write(data)
+        self._write(data, defer=not flush)
         return True
 
     # ------------------------------------------------------------ 资源级：身份
@@ -1405,7 +1470,7 @@ class ResourceLedgerStore:
         return SUB_PLAIN
 
     def set_identity(self, group_id: str, identity: str, *, by: str = "",
-                     now: Optional[float] = None) -> bool:
+                     now: Optional[float] = None, flush: bool = True) -> bool:
         """写资源身份（``资源``/``普通``）。"""
         gid = _clean(group_id)
         ident = _clean(identity)
@@ -1423,7 +1488,7 @@ class ResourceLedgerStore:
         rec["identity_at"] = ts
         rec["updated"] = ts
         data[gid] = rec
-        self._write(data)
+        self._write(data, defer=not flush)
         return True
 
     def queue_library(

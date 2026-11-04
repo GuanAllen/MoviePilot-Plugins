@@ -1,0 +1,193 @@
+/* CloudDialog 的 scoped 样式，由线上 dist 按 scopeId data-v-38c304b8 提取。
+   选择器里的属性限定符是 scoped 边界，别去掉。 */
+
+/* ── 弹窗根 / 标题行 / 摘要行 / 面板：随「云盘归档弹窗」自 index.vue 迁入。
+     下列**共享选择器**（magicflow-dialog / settings-dialog__head·__title / recommend-dialog__head-actions /
+     panel / panel__head）父页其它弹窗也在用 → 两处各留一份（纯复制，零改动）。
+     ⚠️ VDialog 会 teleport 到 body，父页 scoped 规则不再命中 → 组件必须自带这些。── */
+.magicflow-dialog[data-v-38c304b8] {
+  background: rgb(var(--v-theme-surface)) !important;
+  border: 1px solid var(--magicflow-panel-brd);
+  border-radius: 18px;
+  backdrop-filter: blur(16px) saturate(120%);
+  -webkit-backdrop-filter: blur(16px) saturate(120%);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.magicflow-settings-dialog__head[data-v-38c304b8] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 12px;
+}
+
+.magicflow-settings-dialog__head i[data-v-38c304b8] {
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+
+.magicflow-settings-dialog__title[data-v-38c304b8] {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.magicflow-recommend-dialog__head-actions[data-v-38c304b8] {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.magicflow-panel[data-v-38c304b8] {
+  border: var(--app-surface-border);
+  border-radius: var(--app-surface-radius);
+  min-inline-size: 0;
+  padding: 16px;
+}
+
+.magicflow-panel__head[data-v-38c304b8] {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+
+/* ── 云盘归档弹窗（专属选择器，随组件迁入）────────────────────── */
+.magicflow-cloud-dialog__body[data-v-38c304b8] {
+  max-block-size: min(70dvh, 44rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.magicflow-cloud-dialog__summary[data-v-38c304b8] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
+}
+
+.magicflow-cloud-dialog__summary strong[data-v-38c304b8] {
+  font-size: 1.05rem;
+  color: rgb(var(--v-theme-primary));
+}
+
+.magicflow-cloud-dialog__summary i[data-v-38c304b8] {
+  font-style: normal;
+  opacity: var(--mf-op-dim);
+}
+
+.magicflow-cloud-dialog__note[data-v-38c304b8] {
+  margin-block: 2px 6px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
+  opacity: 0.85;
+}
+
+.magicflow-cloud-dialog__actions[data-v-38c304b8] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.magicflow-cloud-dialog__limit[data-v-38c304b8] {
+  inline-size: 7.5rem;
+}
+
+.magicflow-cloud-row[data-v-38c304b8] {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding-block: 8px;
+  border-block-end: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+
+.magicflow-cloud-row[data-v-38c304b8]:last-child {
+  border-block-end: 0;
+}
+
+.magicflow-cloud-row__main[data-v-38c304b8] {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.magicflow-cloud-row__title[data-v-38c304b8] {
+  font-size: 0.88rem;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.magicflow-cloud-row__sub[data-v-38c304b8] {
+  font-size: 0.76rem;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
+  overflow-wrap: anywhere;
+}
+
+.magicflow-cloud-row__msg[data-v-38c304b8] {
+  margin-block-start: 2px;
+  font-size: 0.74rem;
+  color: rgb(var(--v-theme-warning));
+  overflow-wrap: anywhere;
+}
+
+.magicflow-cloud-row__side[data-v-38c304b8] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+@media (max-width: 699px) {
+
+.magicflow-cloud-dialog__actions[data-v-38c304b8] {
+    gap: 6px;
+}
+
+.magicflow-cloud-dialog__limit[data-v-38c304b8] {
+    inline-size: 100%;
+}
+
+.magicflow-cloud-row[data-v-38c304b8] {
+    flex-direction: column;
+    align-items: stretch;
+}
+
+.magicflow-cloud-row__side[data-v-38c304b8] {
+    justify-content: space-between;
+}
+}
+
+
+
+/* ── ★ 功能弹窗统一：卡片纵向 flex + 正文吃满（原 index.vue 的共享组里含 .magicflow-cloud-dialog，
+      随组件迁入；放在上方专属块之后，保证 max-block-size 覆盖生效）── */
+.magicflow-cloud-dialog[data-v-38c304b8] {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  max-block-size: 92vh;
+  overflow: hidden;
+}
+
+.magicflow-cloud-dialog__body[data-v-38c304b8] {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  max-block-size: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+@media (max-width: 699px) {
+
+.magicflow-panel[data-v-38c304b8] {
+    padding: 14px;
+}
+
+.magicflow-panel__head[data-v-38c304b8] {
+    flex-wrap: wrap;
+    flex-direction: column;
+    align-items: flex-start;
+}
+}

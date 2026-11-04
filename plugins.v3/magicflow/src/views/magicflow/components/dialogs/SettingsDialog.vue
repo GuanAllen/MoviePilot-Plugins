@@ -41,6 +41,7 @@ defineProps({
   iyuuTesting: { type: Boolean, default: false },
   iyuuShowMore: { type: Object, default: () => ({}) },
   siteRules: { type: Array, default: () => [] },
+  rulesProbeState: { type: Object, default: () => ({}) },
   rulesLoading: { type: Boolean, default: false },
   rulesProbing: { type: Boolean, default: false },
   reseedState: { type: Object, default: null },
@@ -134,8 +135,8 @@ defineProps({
               type="number"
               min="0"
               step="1"
-              label="H&R 提前预警（小时）"
-              hint="距考核到期不足该小时数就提醒（默认 24）"
+              label="H&R 到期提醒提前量（小时）"
+              hint="距达标期限到期不足该小时数就发信（默认 24）；这是通知侧的发信门槛"
               persistent-hint
               variant="outlined"
               density="comfortable"
@@ -755,7 +756,7 @@ defineProps({
               <VTextField v-model.number="defaultsDraft.top_n" type="number" min="1" label="候选 TopN" variant="outlined" density="comfortable" hide-details />
               <VTextField v-model.number="defaultsDraft.browse_pages" type="number" min="1" label="每轮翻页数" variant="outlined" density="comfortable" hide-details />
               <VTextField v-model.number="defaultsDraft.seen_cooldown_hours" type="number" min="0" label="候选去重冷却（小时）" variant="outlined" density="comfortable" hide-details />
-              <VTextField v-model.number="defaultsDraft.brush_seed_days" type="number" min="0" max="365" label="刷流保种天数（0=按无上传）" variant="outlined" density="comfortable" hide-details />
+              <VTextField v-model.number="defaultsDraft.brush_seed_days" type="number" min="0" max="365" label="默认轮转周期(天)（0=按无上传）" variant="outlined" density="comfortable" hide-details />
             </div>
             <div class="magicflow-settings-switches">
               <VSwitch v-model="defaultsDraft.refill_when_empty" label="清理后自动补种" color="primary" hide-details inset />
@@ -1095,13 +1096,16 @@ defineProps({
             </p>
             <div class="magicflow-settings-switches">
               <VSwitch v-model="settingsDraft.rules_auto_refresh" label="每周自动逐站探测规则并入库" color="primary" hide-details inset />
+            <p class="magicflow-settings-hint">
+              到点才跑：每 10 分钟醒来看一眼，满 7 天才真探一次；<strong>重启/更新不会把周期清零</strong>，探测失败按 30 分钟 → 6 小时退避重试（不再一次失败干等一周）。
+            </p>
             </div>
 
             <VDivider class="my-3" />
             <p class="magicflow-settings-hint">
               <strong>H&amp;R 来源</strong>：只认<strong>收件箱「欢迎短讯」里给出的规则地址</strong>（🔗 已存下，可点开）；
               页面里顺带抓到的 H&amp;R 不算数。默认时长给<strong>表里未收录</strong>的站点兜底；
-              每站的时长直接改上表的「<strong>保种(h)</strong>」列（手填覆盖，优先级最高）。
+              每站的时长直接改上表的「<strong>达标期限(h)</strong>」列（手填覆盖，优先级最高）。
             </p>
             <div class="magicflow-settings-grid">
               <VTextField
@@ -1110,8 +1114,8 @@ defineProps({
                 min="0"
                 max="720"
                 step="1"
-                label="默认最短保种时长（小时）"
-                hint="未收录站点的 H&R 保种时长，默认 24h"
+                label="来源站义务工时（小时）"
+                hint="来源站未单独指定时的 H&R 义务工时，默认 24h"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
@@ -1132,8 +1136,8 @@ defineProps({
                 type="number"
                 step="1"
                 min="0"
-                label="H&amp;R 临近到期预警（小时）"
-                hint="距考核窗口到期低于该值且未达标即预警（默认 48）"
+                label="H&amp;R 账单临期阈值（小时）"
+                hint="种还在 qB、未达标、距达标期限到期 ≤ 该值 → 账单标 at_risk（默认 48）"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
@@ -1152,7 +1156,7 @@ defineProps({
               />
             </div>
             <div class="magicflow-settings-switches">
-              <VSwitch v-model="settingsDraft.crossseed_guard_keep_seed" label="来源份 H&R 保护（保种期内不得删/改标签）" color="primary" hide-details inset />
+              <VSwitch v-model="settingsDraft.crossseed_guard_keep_seed" label="来源份 H&R 保护（义务工时内不得删/改标签）" color="primary" hide-details inset />
               <VSwitch v-model="settingsDraft.crossseed_reclaim" label="H&R 期满后回收来源份（只删种子不删文件）" color="warning" hide-details inset />
             </div>
             <div class="magicflow-rules-actions">
@@ -1160,19 +1164,21 @@ defineProps({
                 <VIcon start size="small">mdi-download-network-outline</VIcon>逐站拉取（探测页面）
               </VBtn>
               <VBtn size="small" variant="text" :disabled="rulesLoading" @click="emit('refresh-rules')">按 MP 配置补全</VBtn>
+              <span class="magicflow-settings-hint">上次自动探测：{{ rulesProbeState?.at ? fmtTs(rulesProbeState.at) : '从未探测' }}<template v-if="rulesProbeState?.fail">（连续失败 {{ rulesProbeState.fail }} 次，自动退避重试中）</template></span>
               <VSpacer />
               <span class="magicflow-settings-hint">共 {{ siteRules.length }} 条</span>
             </div>
             <p v-if="rulesProbing" class="magicflow-settings-hint">正在逐站抓取规则页（每站 1~2 个请求，随机歇 1.5~3.5 秒）…</p>
             <div class="magicflow-rules-table">
               <div class="magicflow-rules-row magicflow-rules-row--head">
-                <span>站点</span><span>H&amp;R</span><span>保种(h)</span><span>完成度</span><span>做种上限</span><span>来源</span><span>操作</span>
+                <span>站点 · 来源</span><span>H&amp;R</span><span>期限(h)</span><span>完成度</span><span></span>
               </div>
               <div v-for="row in siteRules" :key="row.domain" class="magicflow-rules-row">
                 <span class="magicflow-rules-row__name" :title="row.domain">
-                  {{ row.site_name || row.domain }}
+                  <b>{{ row.site_name || row.domain }}</b>
                   <em v-if="!row.in_library">未入库</em>
-                  <em v-if="row.exam_avg_hours" :title="row.exam_evidence || '站点考核的平均做种要求（不是 H&R）'">考核均值{{ row.exam_avg_hours }}h</em>
+                  <em v-if="row.exam_avg_hours" :title="row.exam_evidence || '站点考核的平均做种要求（不是 H&R）'">考核{{ row.exam_avg_hours }}h</em>
+                  <i :title="row.evidence || ''">{{ ruleSourceText(row) }}<template v-if="row.seed_cap"> · 上限{{ row.seed_cap }}</template><template v-if="row.seed_need_hours"> · 义务{{ row.seed_need_hours }}h</template><template v-if="row.seed_hours_seen != null"> · 见{{ row.seed_hours_seen }}h</template></i>
                 </span>
                 <span class="magicflow-rules-row__hr">
                   <VChip v-if="row.hr === true" size="x-small" color="error" variant="tonal">有</VChip>
@@ -1184,7 +1190,7 @@ defineProps({
                     <VBtn size="x-small" variant="text" :disabled="rulesProbing" title="该站没有 H&R：直接标无，不做保种保护" @click="emit('set-rule-hr', row, '0')">标无</VBtn>
                   </template>
                 </span>
-                <span>
+                <span class="magicflow-rules-row__hours">
                   <VTextField
                     :model-value="row.effective_hours"
                     type="number"
@@ -1194,11 +1200,11 @@ defineProps({
                     density="compact"
                     variant="outlined"
                     hide-details
-                    style="max-width: 6.5rem"
+                    :title="'达标期限(h)，来自' + ruleSourceText(row) + (row.hours_src === 'manual' ? '（手填覆盖）' : '')"
                     @change="emit('set-rule-hours', row, $event.target.value)"
                   />
                 </span>
-                <span>
+                <span class="magicflow-rules-row__ratio">
                   <VTextField
                     :model-value="row.complete_ratio"
                     type="number"
@@ -1209,18 +1215,11 @@ defineProps({
                     variant="outlined"
                     hide-details
                     placeholder="跟全局"
-                    style="max-width: 6rem"
                     :title="row.complete_ratio == null ? '未覆盖，用全局「H&amp;R 完成度阈值」' : '站点级覆盖（进度达到该值才计 H&amp;R）'"
                     @change="emit('set-rule-ratio', row, $event.target.value)"
                   />
                 </span>
-                <span>{{ row.seed_cap || '-' }}</span>
-                <span class="magicflow-rules-row__src" :title="row.evidence || ''">
-                  {{ ruleSourceText(row) }}
-                  <em v-if="row.seed_need_hours" :title="'规则窗口 ' + (row.seed_window_hours || row.seed_hours || 0) + 'h，达到线 ' + row.seed_need_hours + 'h；保护期取窗口(保守)'">需{{ row.seed_need_hours }}h</em>
-                  <em v-if="row.seed_hours_seen != null">(看到{{ row.seed_hours_seen }}h)</em>
-                </span>
-                <span>
+                <span class="magicflow-rules-row__ops">
                   <VBtn
                     v-if="row.rule_url"
                     size="x-small"
@@ -1231,15 +1230,18 @@ defineProps({
                     rel="noopener"
                     :title="'规则地址（来自收件箱欢迎短讯）：' + row.rule_url"
                   ><VIcon size="x-small">mdi-link-variant</VIcon></VBtn>
-                  <VBtn size="x-small" variant="text" :disabled="rulesProbing" @click="emit('probe-rules', row.domain)">探测</VBtn>
+                  <VBtn size="x-small" variant="text" :disabled="rulesProbing" title="只探测这一站" @click="emit('probe-rules', row.domain)">探测</VBtn>
                 </span>
               </div>
             </div>
-            <p class="magicflow-settings-hint">
-              「保种(h)」直接改 = 写入手填覆盖（最高优先级：手填 &gt; 探测 &gt; 内置 &gt; 全局默认）。
-              「<strong>完成度</strong>」= 该站的 H&amp;R 完成度阈值：<strong>留空 = 跟全局默认</strong>；
-              正常站用全局 0.999（下满才算），某站若说「下载中即计 H&amp;R」→ 在该站填 0.2 之类。
-            </p>
+            <details class="magicflow-rules-help">
+              <summary>怎么改 / 取值说明</summary>
+              <p class="magicflow-settings-hint">
+                「期限(h)」直接改 = 写入手填覆盖（优先级：手填 &gt; 探测 &gt; 内置 &gt; 全局默认）。
+                「<strong>完成度</strong>」是该站的 H&amp;R 完成度阈值：<strong>留空 = 跟全局</strong>（默认 0.999，下满才算）；
+                某站若规定「下载中即计 H&amp;R」→ 在该站填 <code>0.2</code> 之类。
+              </p>
+            </details>
           </div>
 
           <div v-else-if="settingsTab === 'tags'" class="magicflow-settings-form">
@@ -1647,14 +1649,15 @@ defineProps({
 .magicflow-rules-actions {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.5rem;
   margin: 0.75rem 0 0.25rem;
 }
 
 .magicflow-rules-table {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 0.4rem;
   margin-top: 0.5rem;
   max-height: 46vh;
   overflow-y: auto;
@@ -1693,10 +1696,11 @@ defineProps({
 
 .magicflow-rules-row {
   display: grid;
-  grid-template-columns: minmax(8rem, 1.6fr) 5rem 7rem 6rem 6rem 6rem 4.5rem;
+  grid-template-columns: minmax(7rem, 1fr) auto 4.5rem 4.5rem auto;
+  grid-template-areas: "name hr hours ratio ops";
   align-items: center;
   gap: 0.5rem;
-  padding: 0.25rem 0.5rem;
+  padding: 0.3rem 0.5rem;
   border-radius: 6px;
   font-size: 0.875rem;
 }
@@ -1707,26 +1711,89 @@ defineProps({
 
 .magicflow-rules-row--head {
   font-weight: 600;
+  font-size: 0.75rem;
   opacity: var(--mf-op-mid);
 }
 
+.magicflow-rules-row--head > span:nth-child(1) { grid-area: name; }
+.magicflow-rules-row--head > span:nth-child(2) { grid-area: hr; }
+.magicflow-rules-row--head > span:nth-child(3) { grid-area: hours; }
+.magicflow-rules-row--head > span:nth-child(4) { grid-area: ratio; }
+.magicflow-rules-row--head > span:nth-child(5) { grid-area: ops; }
+
 .magicflow-rules-row__name {
-  display: inline-flex;
+  grid-area: name;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.1rem 0.35rem;
+  min-width: 0;
+}
+
+.magicflow-rules-row__name b {
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 600;
 }
 
 .magicflow-rules-row__name em {
+  flex-shrink: 0;
   font-style: normal;
   font-size: 0.7rem;
   opacity: var(--mf-op-dim);
 }
 
-.magicflow-rules-row__src {
+/* 来源/上限/义务工时长 —— 站点名下面那行小字，独占一行 */
+.magicflow-rules-row__name i {
+  flex-basis: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: normal;
+  font-size: 0.7rem;
+  line-height: 1.15;
   opacity: var(--mf-op-soft);
+}
+
+.magicflow-rules-row__hr {
+  grid-area: hr;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.05rem;
+  flex-shrink: 0;
+}
+
+.magicflow-rules-row__hours { grid-area: hours; min-width: 0; }
+.magicflow-rules-row__ratio { grid-area: ratio; min-width: 0; }
+
+.magicflow-rules-row__ops {
+  grid-area: ops;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.05rem;
+  flex-shrink: 0;
+}
+
+.magicflow-rules-help {
+  margin-top: 0.45rem;
+  font-size: 0.8rem;
+}
+
+.magicflow-rules-help summary {
+  cursor: pointer;
+  font-size: 0.75rem;
+  opacity: var(--mf-op-mid);
+}
+
+.magicflow-rules-help summary:hover {
+  opacity: 1;
+}
+
+.magicflow-rules-help p {
+  margin: 0.35rem 0 0;
 }
 
 .magicflow-settings-dialog__head {
@@ -2294,4 +2361,31 @@ defineProps({
  grid-template-columns: minmax(0, 1fr); 
 }
 }
+@media (max-width: 520px) {
+/* ★ 站点规则：5 列在 360~400px 上仍会挤，切成两行卡片式
+     —— 第一行「站点 + 探测」，第二行「H&R + 期限 + 完成度」。 */
+  .magicflow-rules-row--head {
+    display: none;
+  }
+
+.magicflow-rules-row {
+    grid-template-columns: minmax(0, 1fr) 4.5rem 4.5rem auto;
+    grid-template-areas:
+      "name name  name  ops"
+      "hr   hours ratio ratio";
+    gap: 0.35rem 0.4rem;
+    padding: 0.45rem 0.5rem;
+    border: 1px solid rgba(var(--v-border-color), 0.14);
+    border-radius: 8px;
+  }
+
+.magicflow-rules-row:nth-child(even) {
+    background: transparent;
+  }
+
+.magicflow-rules-row__hr {
+    align-self: center;
+  }
+}
+
 </style>

@@ -7,72 +7,129 @@
 # 2026-10-15 新增第 16 步「设置键集输出面」(`tools/check_settings_keys.py`) —— 断言
 # `src/utils.js::normalizeSettings()` 保留 `SettingsDialog.vue` 绑定的每个设置键
 # （背景：该函数曾是闭集，`claim_*`/`hr_*` 改了存不进还提示「已保存」）。
+# 2026-10-27 新增第 18 步「UI 术语护栏」(`tools/check_ui_terms.py`) —— 断言
+# label/hint/placeholder 字面量里不再出现「保种天数/最短做种/保种时长/保种期」等
+# 时长语义混用词（四个定名：达标期限/义务工时/本地保护期/轮转周期，见 GLOSSARY）。
 # 2026-10-17 新增第 17 步「凭据外泄」(`tools/check_secret_echo.py`) —— 背景：Master 指令
 # 「不管理/不自存/不回显站点 cookie·API 凭据」；该步断言凭据类键在出口（Response/data、
 # 插件原生设置表单、诊断回显）一律过 `common.redact_secrets`/`mask_*`，且脱敏实现只有一份。
+# 2026-10-29 新增第 24 步「换行符统一」(`tools/check_eol.py`) ——
+#   `write_text(encoding="utf-8")` 在 Windows 上默认 newline=None，会把 \n 翻译成 \r\n。
+#   实测累积 27 个文件全 CRLF（tags.py / ledger.py / features/silent.py / common.py 等），
+#   后果：git diff 显示整文件重写、备份比对失真。修法：字节级 replace(b"\r\n", b"\n")。
+# 2026-10-29 新增第 23 步「函数注释棘轮」(`tools/check_func_doc.py`) ——
+#   Master 定的约束：构造函数时必须在固定位置（def 下一行第一句 docstring）写注释。
+#   方案 A 棘轮：1876 个存量函数指纹冻结进 `tools/.func_doc_baseline.json`（不查历史），
+#   新函数与**函数体改动过**的函数必须过 4 条（空话 / 太薄 / 复读 / 换名）。
+# 2026-10-28 新增第 22 步「import 名字可达性」(`tools/check_import_names.py`) ——
+#   事故起因：``_norm`` 收进 norm.py 后，多行括号 import 未同步，语法全绿但生产
+#   ``ImportError: cannot import name '_norm'``，插件连续 8 次加载失败、下线约 13 分钟。
+#   该步断言每条 ``from X import ...`` 的名字都能在 X 模块级作用域取到（含 try/if 内定义）。
+# 2026-10-28 新增第 21 步「固定偏移切片」(tools/check_slice_guard.py) ——
+#   禁止用 s[:-1]/s[:-2] 删换行；固定切片必须加注释说明业务截断意图。
+# 2026-10-28 新增第 20 步「数据清洗重复实现」(tools/check_norm_dup.py) ——
+#   norm.py 之外不得再定义同名的 norm_key/first_num/float_ok/now_iso，
+#   也不得换名字重写一遍（AST 同实现照抓）。
+# 2026-10-28 新增第 19 步「模块职责」(`tools/check_module_doc.py`) —— 大模块（≥300 行）的
+# docstring 首行必须说清「装什么 + 还兼了什么」。背景：`GET /agent/code-dict` 的 modules 节
+# 「职责」字段就是摘 docstring 首行现算；2026-10-10 砍掉字典同步检查后再没人强制它跟上代码，
+# 于是 tags.py 1042 行里 440 行媒体编排完全不体现在职责上，判分层时会据此判错。
 # 理由：本地 agent 有文件系统，grep/glob/read 即工作区真值；字典镜像只是「已部署构建的
 # 滞后近似」且成本必付。`codedict.py` + `GET /agent/code-dict` 保留（运行时现算，本地 0 成本）。
 set -e
 cd "$(dirname "$0")/.."
 
-echo "── 1/17 语法编译 ─────────────────────────────"
+echo "── 1/25 语法编译 ─────────────────────────────"
 python3 -m py_compile $(find . -name '*.py' -not -path './node_modules/*' -not -path './_backup/*')
 echo "✅ py_compile"
 
-echo "── 2/17 依赖方向（护栏①）─────────────────────"
+echo "── 2/25 依赖方向（护栏①）─────────────────────"
 python3 tools/check_deps.py
 
-echo "── 3/17 未定义名（护栏④）────────────────────"
+echo "── 3/25 未定义名（护栏④）────────────────────"
 python3 tools/check_names.py
 
-echo "── 4/17 契约（护栏③）────────────────────────"
+echo "── 4/25 契约（护栏③）────────────────────────"
 python3 tools/check_contracts.py
 
-echo "── 5/17 功能页对齐（契约③）──────────────────"
+echo "── 5/25 功能页对齐（契约③）──────────────────"
 python3 tools/check_pages.py
 
-echo "── 6/17 模块登记表（护栏②）──────────────────"
+echo "── 6/25 模块登记表（护栏②）──────────────────"
 python3 tools/gen_modules.py --check
 
-echo "── 7/17 棘轮（禁止新增跨界 self._ 调用）──"
+echo "── 7/25 棘轮（禁止新增跨界 self._ 调用）──"
 python3 tools/check_self_calls.py
 
-echo "── 8/17 能力清单漂移（登记制：路由表 ↔ GET /agent 清单求差）──"
+echo "── 8/25 能力清单漂移（登记制：路由表 ↔ GET /agent 清单求差）──"
 python3 tools/check_agent_manifest.py
 
-echo "── 9/17 AI 对齐校验（前端覆盖=下限 + 真值源覆盖=目标）──"
+echo "── 9/25 AI 对齐校验（前端覆盖=下限 + 真值源覆盖=目标）──"
 python3 tools/check_agent_parity.py
 
-echo "── 10/17 补源来源站护栏（hr != False 一律禁用）──"
+echo "── 10/25 补源来源站护栏（hr != False 一律禁用）──"
 python3 tools/check_rescue_guard.py
 
-echo "── 11/17 Vue 模板 ref 误用（护栏⑤）──"
+echo "── 11/25 Vue 模板 ref 误用（护栏⑤）──"
 python3 tools/check_vue_template_refs.py
 
 echo
-echo "── 12/17 前端 composables 依赖闭环 + 解构对齐（护栏⑥）──"
+echo "── 12/25 前端 composables 依赖闭环 + 解构对齐（护栏⑥）──"
 python3 tools/check_composables.py
 
 echo
-echo "── 13/17 Vue 模板绑定漏声明（护栏⑦）──"
+echo "── 13/25 Vue 模板绑定漏声明（护栏⑦）──"
 python3 tools/check_template_bindings.py
 
 
 
 echo
-echo "── 14/17 Vue API 未导入（护栏⑧，防白屏：无 auto-import 须显式 import）──"
+echo "── 14/25 Vue API 未导入（护栏⑧，防白屏：无 auto-import 须显式 import）──"
 python3 tools/check_vue_imports.py
 
 echo
-echo "── 15/17 MCP 工具描述/参数类型/截断（护栏⑨）──"
+echo "── 15/25 MCP 工具描述/参数类型/截断（护栏⑨）──"
 python3 tools/check_mcptools_desc.py
 
 echo
-echo "── 16/17 设置键集输出面（前端 normalizeSettings ⊇ UI 绑定）──"
+echo "── 16/25 设置键集输出面（前端 normalizeSettings ⊇ UI 绑定）──"
 python3 tools/check_settings_keys.py
 
 echo
-echo "── 17/17 凭据外泄（出口遮罩 / 日志回显 / 单一真值源）──"
+echo "── 17/25 凭据外泄（出口遮罩 / 日志回显 / 单一真值源）──"
 python3 tools/check_secret_echo.py
+
+echo
+echo "── 18/25 UI 术语护栏（四个时长概念不再统称「保种」）──"
+python3 tools/check_ui_terms.py
+
+
+echo
+echo "── 19/25 模块职责（字典「文件→作用」的来源）──"
+python3 tools/check_module_doc.py
+
+echo
+echo "── 20/25 数据清洗重复实现（norm.py 唯一出口，护栏⑩）──"
+python3 tools/check_norm_dup.py
+
+echo
+echo "── 21/25 固定偏移切片（删换行只能用 removesuffix/rstrip）──"
+python3 tools/check_slice_guard.py
+
+echo
+echo "── 22/25 import 名字可达性（删符号必须同步 import，护栏⑫）──"
+python3 tools/check_import_names.py
+
+echo
+echo "── 23/25 函数注释棘轮（新/改动函数必须有 docstring，护栏⑬）──"
+python3 tools/check_func_doc.py
+
+echo
+echo "── 24/25 换行符统一（仓库内 .py/.sh 必须纯 LF，护栏⑭）──"
+python3 tools/check_eol.py
+
+echo
+echo "── 25/25 API 路由表（142 条：无重复、无遮蔽、handler 可达）──"
+python3 tools/check_api_routes.py
 
 echo "✅✅ preflight 全通过"

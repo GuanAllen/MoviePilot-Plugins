@@ -68,7 +68,7 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
         <span class="magicflow-logo"><VIcon icon="mdi-magnet" size="20" /></span>
         <div>
           <h1>魔流<span class="magicflow-page__brand-en">MagicFlow</span></h1>
-          <p>PT 做种 · 魔力养护 / 刷流保种</p>
+          <p>PT 做种 · 魔力养护 / 刷流轮转</p>
         </div>
       </div>
       <div class="magicflow-page__actions">

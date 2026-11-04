@@ -30,10 +30,13 @@ from .collect import (  # noqa: E402
     parse_leeching_rows,
     parse_uid,
     parse_user_bar,
+    parse_user_details,
 )
 from .sitestore import slot_callbacks
 from .kvstore import cache_get, cache_set
 from .common import CACHE_TTL_HISTORY
+from . import cacheops                # ★ 19.10.26 页面锁 / 失败冷却收进容器
+from .bonus import apply_observed_rate  # ★ 19.10.39 实测时魔兜底（纯函数，无反向依赖）
 
 # 采样历史：每站保留多少个点（按 240s 一点 ≈ 8 小时）
 SAMPLE_MAX = 120
@@ -80,16 +83,6 @@ def _to_text(raw: str) -> str:
     s = _html.unescape(s)
     s = s.replace("\xa0", " ").replace("\u3000", " ")
     return re.sub(r"[ \t\r\f\v]+", " ", s)
-
-
-def _first_num(pattern: str, text: str) -> Optional[float]:
-    m = re.search(pattern, text)
-    if not m:
-        return None
-    try:
-        return float(str(m.group(1)).replace(",", ""))
-    except (TypeError, ValueError, IndexError):
-        return None
 
 
 def _is_free_promotion(cls: str, text: str) -> bool:
@@ -562,8 +555,12 @@ class LiveStats:
         except Exception:  # noqa: BLE001
             _tier = None
         self._cache: Any = _LiveCache(_tier)
-        self._locks: Dict[str, threading.Lock] = {}
-        self._cooldown: Dict[str, float] = {}
+        # ★ 19.10.26：页面级单飞锁 → KeyLocks（按 URL 分键，有界）；
+        #   失败冷却 → Cooldown（原手写 dict 存「到期时刻」，且**过期条目永不清理**）。
+        self._locks = cacheops.KeyLocks("live.page", max_entries=256)
+        self._cooldown = cacheops.Cooldown("live.cool", ttl=FAIL_COOLDOWN_MAX, max_entries=256)
+        # 连续失败次数：有界（站点数 × 页数）且语义是「计数」不是「缓存」，故意留裸 dict ——
+        # 套 TTLCache 会给它加一个原本没有的过期语义（久未重试的站点会从慢退避重新开始）。
         self._fail_count: Dict[str, int] = {}
         self._samples: Dict[str, List[List[float]]] = {}
         self._loaded = False
@@ -692,6 +689,23 @@ class LiveStats:
                 node = inner.get(field)
         return parse_exam_task(node, ep.get("metrics"))
 
+    def fetch_user_details(self, site_id: int, uid: int) -> Dict[str, Any]:
+        """抓 ``userdetails.php?id=…`` → 等级 / 做种积分 / 入站时间（★ 19.11.18 抄 PTD）。
+
+        首页用户栏不印等级的站（多数 NPHP 模板）只能从详情页「等级」行认。
+        失败返回空 dict（**不抛出**）；走同一 PV 预算与页面缓存（kind="live"）。
+        """
+        try:
+            if not site_id or not uid:
+                return {}
+            page = "/userdetails.php?id=%d" % int(uid)
+            text, err, _st = self._get_text(int(site_id), page, kind="live")
+            if err or not text:
+                return {}
+            return parse_user_details(text) or {}
+        except Exception:  # noqa: BLE001
+            return {}
+
     def _fetch_once(self, site_id: int, page: str = DEFAULT_PAGE) -> Dict[str, Any]:
         """真抓一次（无缓存）。返回 {ok, ...}；异常一律 ok=False（绝不抛出）。"""
         site = self._site(site_id)
@@ -722,6 +736,23 @@ class LiveStats:
             # ★ 17.2.2：``hr``（页头 H&R 计数事实，API 站没有这栏 → None）
             for _k in ("uid", "ratio", "ratio_inf", "upload", "download", "seeding", "leeching", "bonus", "bonus_per_hour", "logged_in", "hr"):
                 out[_k] = bar.get(_k)
+            # ★ 19.11.18：API 站的等级是**数字 id**（叶PT data.level / 馒头 data.role），
+            #   抄 PTD 的表反查名字；没表的站不把数字当名字展示（不猜）
+            try:
+                from .level_req import api_level_name, reqs_for_domain  # noqa: WPS433
+                _dom = str(getattr(site, "domain", "") or "")
+                _nm = api_level_name(bar.get("level"), reqs_for_domain(_dom))
+                if _nm:
+                    out["level"] = _nm
+                    out["src"] = {"level": "api"}
+            except Exception:  # noqa: BLE001
+                pass
+            # ★ 19.11.21：入站时间（馒头 data.createdDate → normalize 的 created）——
+            #   升级要求 interval 门槛的输入；_fill_level_next 读的是 join_time。
+            _created = bar.get("created")
+            if _created:
+                out["join_time"] = str(_created)
+                out.setdefault("src", {})["join_time"] = "api"
             out["fields"] = [
                 _k
                 for _k in ("uid", "ratio", "upload", "download", "bonus")
@@ -754,6 +785,28 @@ class LiveStats:
         out = {"ok": True, "site_id": int(site_id), "url": url, "status": status, "ts": time.time()}
         out.update(parsed)
         out["fields"] = got
+        # ★ 19.11.18：等级抄 PTD —— 首页用户栏不印等级的站（carpt/hdtime/cyanbug 实测
+        #   皆如此），补抓 userdetails.php 的「等级」行（<img title> 口径）。
+        #   顺路带回做种积分/入站时间（升级要求的输入）。一次抓取、同一 PV 预算，失败不碍事。
+        #   ★ 详情页是**权威源**：只要 uid 在就抓，抓到就覆盖用户栏正则的结果
+        #   （真机 PT时间 实测用户栏正则把导航「个人中心」当过等级；行头结构可靠得多）。
+        if out.get("uid"):
+            try:
+                det = self.fetch_user_details(site_id, int(out["uid"]))
+                src = out.setdefault("src", {})
+                if det.get("level"):
+                    out["level"] = det["level"]
+                    if "level" not in out.setdefault("fields", []):
+                        out.setdefault("fields", []).append("level")
+                    src["level"] = "details"
+                elif out.get("level"):
+                    src["level"] = "userbar"
+                for _k in ("seeding_bonus", "join_time"):
+                    if det.get(_k) is not None:
+                        out[_k] = det[_k]
+                        src[_k] = "details"
+            except Exception:  # noqa: BLE001
+                pass
         try:
             if bool(getattr(self, "exam_enabled", False)):
                 exam = parse_exam(text)
@@ -1054,13 +1107,13 @@ class LiveStats:
             out = dict(hit)
             out["cached"] = True
             return out
-        if not force and float(self._cooldown.get(key, 0)) > now:
+        if not force and self._cooldown.hot(key):
             if hit:
                 out = dict(hit)
                 out.update({"cached": True, "stale": True, "error": out.get("error") or "冷却中"})
                 return out
             return {"ok": False, "error": "冷却中"}
-        lock = self._locks.setdefault(key, threading.Lock())
+        lock = self._locks.get(key)
         with lock:
             hit = self._cache.get(key)
             if hit and not force and (time.time() - float(hit.get("_at", 0))) < self.ttl:
@@ -1070,7 +1123,7 @@ class LiveStats:
             res = self._fetch_once(int(site_id), page=page)
             res["_at"] = time.time()
             if res.get("ok"):
-                self._cooldown.pop(key, None)
+                self._cooldown.clear(key)
                 self._fail_count.pop(key, None)
                 self._cache[key] = res
                 self._push_sample(key, res)
@@ -1079,7 +1132,7 @@ class LiveStats:
                 _n = self._fail_count.get(key, 0) + 1
                 self._fail_count[key] = _n
                 _delay = min(FAIL_COOLDOWN * (2 ** (_n - 1)), FAIL_COOLDOWN_MAX)
-                self._cooldown[key] = time.time() + _delay
+                self._cooldown.mark(key, ttl=_delay)
                 if res.get("pv_limited"):
                     self._pv_block_site(int(site_id), str(res.get("error") or "访问次数已达上限"))
                 else:
@@ -1245,6 +1298,12 @@ class LiveStats:
                 return {"ok": False, "alerts": alerts0, "level": "warn", "rates": rates, "live": live}
             return {"ok": False, "alerts": [], "rates": rates, "live": live}
 
+        # ★ 19.10.39：API 站（野马PT 这类没有 mybonus.php 的站）解析层恒给
+        #   bonus_per_hour=None，前端「魔力/时」拿 Number(null||0) 就画成 0 —— 看着像取数失败。
+        #   这里用采样窗口里的**真实魔力增量**折算补上，并标 source 区分「站点自报」与「本地实测」。
+        #   ★ 取不到就保持 None（窗口太短 / 期间兑换过 → 速率口径已坏），绝不假装成 0。
+        live = apply_observed_rate(live, rates)
+
         # ① 下载量增长（唯一真危险信号：免费种不吃下载）
         thr_mb = float(cfg.get("download_alert_mb") or 50.0)
         down_mb_min = float(rates.get("down_mb_min") or 0.0)
@@ -1352,7 +1411,9 @@ class LiveStats:
             live = self.get_cached_or_warm(site_id)
         ev = self.evaluate(site_id, cfg=cfg, live=live, local_managed=local_managed)
         return {
-            "live": live,
+            # ★ 19.10.39：必须用 ev["live"] —— evaluate 可能补了实测时魔（apply_observed_rate
+            #   返回新 dict），这里若还用外层的 live，兜底结果会被静默丢掉（曾经就踩了）。
+            "live": ev.get("live") or live,
             "rates": ev.get("rates") or {},
             "alerts": ev.get("alerts") or [],
             "level": ev.get("level") or "ok",

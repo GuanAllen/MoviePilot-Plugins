@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -17,6 +18,31 @@ ROOT = Path(__file__).resolve().parent.parent
 REGISTRY = ROOT / "features" / "registry.py"
 # 前端 MF_PAGES 注册表：P1 拆分后从 views/magicflow/index.vue 外提到 constants.js
 PAGES = ROOT / "src" / "views" / "magicflow" / "constants.js"
+
+
+def _registered_paths(api_src: str) -> set[str]:
+    """从 features/api.py 取全部已注册路径。
+
+    19.10.29 起路由表是 ``_ROUTES`` 里的 4 元组（``(path, handler, methods, summary)``），
+    不再是 ``{"path": ...}`` 字典，所以按 AST 取元组首元素；顺手兼容字典写法
+    （agentapi 的 ``_agent_endpoints()`` 仍是字典），免得将来又改一次格式就漏检。
+    """
+    out: set[str] = set()
+    try:
+        tree = ast.parse(api_src)
+    except SyntaxError:
+        return set(re.findall(r'"path":\s*"([^"]+)"', api_src))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if [t.id for t in node.targets if isinstance(t, ast.Name)] != ["_ROUTES"]:
+            continue
+        for elt in getattr(node.value, "elts", []):
+            first = elt.elts[0] if isinstance(elt, ast.Tuple) and elt.elts else None
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                out.add(first.value)
+    out |= set(re.findall(r'"path":\s*"([^"]+)"', api_src))
+    return out
 
 
 def backend_keys() -> list[str]:
@@ -58,7 +84,7 @@ def main() -> int:
         p.read_text(encoding="utf-8") for p in sorted((ROOT / "features").glob("*.py"))
     )
     api_src = (ROOT / "features" / "api.py").read_text(encoding="utf-8")
-    registered = set(re.findall(r'"path":\s*"([^"]+)"', api_src))
+    registered = _registered_paths(api_src)
     reg_src = REGISTRY.read_text(encoding="utf-8")
     for sp in re.finditer(
         r'FeatureSpec\(\s*"([a-z0-9_]+)"(.*?)\)\s*,\s*\n', reg_src, re.S

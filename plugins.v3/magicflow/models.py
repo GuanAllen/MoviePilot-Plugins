@@ -96,7 +96,11 @@ class MagicFlowTaskPayload(BaseModel):
     upload_idle_minutes: int = Field(10, ge=0, le=1440, description="刷流模式:连续多少分钟无上传则清理(0=自动≈2×检查间隔)")
     upload_min_kbps: int = Field(200, ge=1, le=102400, description="刷流模式:平均上传速率门槛(KB/s),低于此值视为「无上传」")
     brush_min_leechers: int = Field(1, ge=0, le=100000, description="刷流模式:最小下载人数(有下载需求才值得下)")
-    brush_seed_days: int = Field(2, ge=0, le=365, description="刷流模式:做种满多少天后清理换新(默认 2 天;0=不按天数,改回「无上传」判定)")
+    brush_seed_days: int = Field(
+        2, ge=0, le=365,
+        description="轮转周期(天):已下完的种子做种满该天数即清理换种、腾位(默认 2 天;"
+                    "0=不按天数轮换,改回「无上传」判定)",
+    )
 
     # 产出换种(刷流):以「产出」而非「时间」为口径换新 -- 单种已上传达标 / 分享率达标即清理
     rotate_upload_gb: Optional[float] = Field(None, ge=0, description="刷流:单种已上传达到该 GB 数即清理换新(留空=不看上传量)")
@@ -133,15 +137,22 @@ class MagicFlowTaskPayload(BaseModel):
     hr: Optional[str] = None
 
     # 删除配置
-    min_seed_time: Optional[float] = Field(None, ge=0)
-    min_ratio: Optional[float] = Field(None, ge=0)
+    min_seed_time: Optional[float] = Field(
+        None, ge=0,
+        description="本地保护期(小时):做种时长不足的种子不参与删种;留空/0=不保护。"
+                    "★ 是**本机**删种保护,与站点 H&R 义务工时无关,也不参与 H&R 结清判定",
+    )
+    min_ratio: Optional[float] = Field(
+        None, ge=0,
+        description="本地保护期(分享率):分享率低于该值的种子不参与删种;留空/0=不按分享率保护",
+    )
     delete_files: bool = True
     exclude_zero_bonus: bool = True
 
     # RSS / 限速
     rss_support: bool = False
-    up_speed: Optional[float] = Field(None, gt=0)
-    dl_speed: Optional[float] = Field(None, gt=0)
+    up_speed: Optional[float] = Field(None, gt=0, description="本任务单种上传限速 KB/s,留空=不限")
+    dl_speed: Optional[float] = Field(None, gt=0, description="本任务单种下载限速 KB/s,留空=不限")
 
     @field_validator(
         "min_bonus_per_hour", "max_keep_torrents", "bonus_protect_threshold",
@@ -260,12 +271,16 @@ class MagicFlowSettingsPayload(BaseModel):
     agent_mcp_scope: str = "core"             # core|all
     # ★ 15.13.0：事件通知（H&R 临期 / 容量红线 / 产出骤降 / 任务失败 / 日报）
     notify_enabled: bool = True
-    notify_hr_hours: float = 24.0
+    notify_hr_hours: float = Field(
+        24.0, ge=0, le=1680,
+        description="H&R 到期提醒提前量(小时):通知模块扫描时「距到期剩余 ≤ 该值」才发信(默认 24);"
+                    "★ 与 hr_deadline_warn_hours 不同——那是账单打 at_risk 的口径(默认 48)",
+    )
     notify_capacity_pct: float = 80.0
     notify_drop_pct: float = 20.0
     notify_task_fail: bool = True
     notify_daily: bool = False
-    notify_daily_hour: int = 9
+    notify_daily_hour: int = Field(9, ge=0, le=23, description="日报发送钟点(0-23,默认 9)")
     notify_quiet: str = ""                   # 免打扰，如 23:00-08:00（空=不静音）
 
     # 运行
@@ -330,11 +345,12 @@ class MagicFlowSettingsPayload(BaseModel):
     # ★ 11.13.0 H&R 安全垫 + 临近到期预警
     hr_seed_margin_hours: float = Field(
         2.0, ge=0, le=168,
-        description="H&R 结清安全垫(小时):实际做种需 ≥ 站点要求 + 该值才判结清(默认 2,0 = 不留垫)"
+        description="H&R 结清安全垫(小时):实际做种需 ≥ 义务工时 + 该值才判结清(默认 2,0 = 不垫)",
     )
     hr_deadline_warn_hours: float = Field(
         48.0, ge=0, le=1680,
-        description="H&R 临近到期预警阈值(小时):距站点窗口到期低于该值且未达标 → 预警(默认 48)"
+        description="H&R 账单临期阈值(小时):种还在 qB、未达标、距达标期限到期 ≤ 该值 → 账单标 at_risk"
+                    "(默认 48);★ 与通知的 notify_hr_hours 是两个消费者,别合并",
     )
     hr_complete_ratio: float = Field(
         0.999, ge=0, le=1,
@@ -354,13 +370,21 @@ class MagicFlowSettingsPayload(BaseModel):
     crossseed_guard_pct: float = Field(5.0, ge=0, le=100, description="流量兜底阈值:来源站下载增量 > 目标体积 × 该百分比 即视为「不免费」")
     crossseed_guard_min_mb: float = Field(50.0, ge=0, description="流量兜底最小判定增量(MB),避免统计抖动误判")
     crossseed_guard_interval_min: float = Field(15.0, ge=0, le=1440, description="同一来源站的兜底核对间隔(分钟)")
-    #  ★ H&R 保护:他站免费下载到的数据,那份来源种在来源站的保种义务还没结束
-    #  (例:学校 BTSchool 要求挂种 10h)。保种期内任何任务不得删它/改它的标签。
-    crossseed_guard_keep_seed: bool = Field(True, description="来源站着 H&R 保种要求:来源份在保种期内永久保护、不回收(默认开)")
-    crossseed_seed_hours_default: float = Field(24.0, ge=0, le=720, description="来源站未单独指定时的最短保种时长(小时)")
-    crossseed_site_hours: List[str] = Field(default_factory=lambda: ["pt.btschool.club=10"], description="站点保种时长覆盖:格式 域名=小时(例:pt.btschool.club=10 学校要10h)")
-    crossseed_reclaim: bool = Field(False, description="H&R 保种期满后自动回收来源份:只删种子不删文件(默认关,继续做种)")
-    rules_auto_refresh: bool = Field(True, description="每周自动逐站探测站点规则(H&R/最短保种时长/做种上限)并入库")
+    #  ★ H&R 保护:他站免费下载到的数据,那份来源种在来源站的义务工时还没结束
+    #  (例:学校 BTSchool 要求挂种 10h)。义务工时内任何任务不得删它/改它的标签。
+    crossseed_guard_keep_seed: bool = Field(True, description="来源站有 H&R 义务工时:来源份在义务工时内永久保护、不回收(默认开)")
+    crossseed_seed_hours_default: float = Field(
+        24.0, ge=0, le=720,
+        description="来源站义务工时(小时):来源站未单独指定时,他站那份要挂够的 H&R 时长(默认 24);"
+                    "★ 是**站点侧**要求,不是本机删种保护期",
+    )
+    crossseed_site_hours: List[str] = Field(
+        default_factory=lambda: ["pt.btschool.club=10"],
+        description="来源站义务工时覆盖:格式 域名=小时(例:pt.btschool.club=10 学校要10h);"
+                    "优先于「来源站义务工时」的兜底值",
+    )
+    crossseed_reclaim: bool = Field(False, description="H&R 义务工时届满后自动回收来源份:只删种子不删文件(默认关,继续做种)")
+    rules_auto_refresh: bool = Field(True, description="每周自动逐站探测站点规则(H&R/义务工时/做种上限)并入库")
 
     # ── 全站辅种（本机驱动，7.10.0 接入设置面；插件级单例，非任务级）────────────
     #  本机已有资源 → 去各站挂种落户（零下载）：暂停加入 → recheck → 通过才做种。
@@ -371,6 +395,17 @@ class MagicFlowSettingsPayload(BaseModel):
     reseed_batch: int = Field(10, ge=1, le=200, description="每轮最多处理多少个「本机种×目标站」对")
     reseed_min_size_gb: float = Field(1.0, ge=0, le=1000, description="小于该体积的本机种不参与(GB)")
     reseed_dry: bool = Field(True, description="干跑:只算不挂(先看能挂多少);默认开，确认链路后再关")
+    # ★ 19.10.63 直连搜索：IYUU 站点表不收录的站（PT时间 等）当辅种目标站。
+    #   与上面 `reseed_sites`（IYUU 反查路线）**并列**，两条候选源汇进同一个执行器。
+    #   ⚠️ 必须落在 models 上而不是只写 plugin data：`settings.py` 保存时会
+    #   `save_data(RESEED_CFG_KEY, {})` 清掉覆盖项，只写 plugin data 的话
+    #   「下次点保存就静默关掉直连搜索」——这种回归排查成本极高。
+    reseed_search_sites: List[str] = Field(
+        default_factory=list,
+        description="直连搜索站(域名;IYUU 不收录但我们能自己搜的站;空=不启用)")
+    reseed_search_kw: int = Field(
+        0, ge=0, le=100,
+        description="每轮每站最多搜几个关键词(0=用站点预设值;搜过的组进台账不重复搜)")
 
     # ── 认领（claim，7.14.0）：把「我们在做种」的种在站点侧认领掉，换站点权益 ────────
     #  CARPT：达标种子魔力奖励 = 正常值 ×2；代价：不达标 −100 魔力 / 主动放弃 −500。
@@ -547,7 +582,7 @@ class MagicFlowDefaultsPayload(BaseModel):
     top_n: int = Field(30, ge=1, le=1000, description="每轮处理候选上限 TopN")
     browse_pages: int = Field(3, ge=1, le=50, description="每轮站点翻页数")
     seen_cooldown_hours: float = Field(24.0, ge=0, le=8760, description="候选去重冷却(小时)")
-    brush_seed_days: int = Field(2, ge=0, le=365, description="默认刷流保种天数(0=按无上传判定)")
+    brush_seed_days: int = Field(2, ge=0, le=365, description="默认轮转周期(天):新建任务预填的「做种满 N 天清理换种」(0=按无上传判定)")
     refill_when_empty: bool = True
     crossseed_enabled: bool = False
     crossseed_max_per_round: int = 3

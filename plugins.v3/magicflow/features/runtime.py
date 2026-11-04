@@ -1,7 +1,15 @@
 # -*- coding: utf-8 -*-
-"""魔流 · runtime —— 运行时状态（活跃实例、热层缓存、进程内锁）。
+"""魔流 · runtime —— 运行时状态：缓存分层 / PV 配额 / 进程内锁。
 
 （由原 `__init__.py` 拆分为 mixin，逐字搬运，行为不变。）
+
+★ 三类内容，性质不同，别一起看：
+  · **缓存分层**：``_cache_tier`` / ``_cache_get|set|del`` / ``live_cache`` —— 委托 ``dtier.TierCache``；
+  · **PV 配额**：``_pv_ledger`` / ``_pv_budget`` / ``_pv_spend`` / ``_pv_allow`` ——
+    12 文件 34 处调用。真账本是 L0 的 ``dtier.PvLedger``，这里只剩「站点覆盖 → 全局默认」
+    的配置读取 + 一次算术（``used + want <= budget - RESERVE``）。**这是配额器（基础设施），
+    不是业务**：它不判断「什么算一次 PV」「哪个站特殊」，``kind`` 由调用方给。
+  · **进程内锁 / 快照**：``pv_snapshot`` / ``cache_status``。
 """
 
 import time

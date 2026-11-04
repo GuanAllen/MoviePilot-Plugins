@@ -251,6 +251,17 @@ class SettingsMixin:
             self._reseed_batch = int(_rf(getattr(payload, "reseed_batch", 10.0), 10.0))
             self._reseed_min_size_gb = _rf(getattr(payload, "reseed_min_size_gb", 1.0), 1.0)
             self._reseed_dry = bool(getattr(payload, "reseed_dry", True))
+            # ★ 19.10.63 直连搜索：IYUU 站点表里没有的站（PT时间 等）走「自己搜」路线。
+            #   这两项必须在这里落成运行时属性 —— 下面 `save_data(RESEED_CFG_KEY, {})`
+            #   会把 plugin-data 覆盖清空，覆盖项是临时开关，长期值只能靠设置面。
+            _rs_search = getattr(payload, "reseed_search_sites", None)
+            if isinstance(_rs_search, str):
+                _rs_search = [x.strip() for x in _rs_search.replace("，", ",").split(",")]
+            self._reseed_search_sites = [
+                str(x).strip().lower() for x in (_rs_search or []) if str(x).strip()
+            ]
+            self._reseed_search_kw = max(
+                0, int(_rf(getattr(payload, "reseed_search_kw", 0.0), 0.0)))
             # ★ 设置面是权威：清掉历史遗留的 plugin-data 覆盖（旧 reseed_cfg 会盖住这里的值）
             self.save_data(key=RESEED_CFG_KEY, value={})
         except Exception:  # noqa: BLE001

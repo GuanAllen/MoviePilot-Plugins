@@ -27,7 +27,7 @@
           </VChip>
         </div>
         <div class="mf-notify__thr">
-          阈值：H&amp;R 提前 <strong>{{ cfg.hr_hours }}</strong> 小时 ·
+          阈值：H&amp;R 到期前 <strong>{{ cfg.hr_hours }}</strong> 小时内提醒 ·
           池盘 <strong>{{ cfg.capacity_pct }}%</strong> ·
           时魔骤降 <strong>{{ cfg.drop_pct }}%</strong>
           <span class="mf-notify__hint">（改阈值去「设置 → 通知」）</span>

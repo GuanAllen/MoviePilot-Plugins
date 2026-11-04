@@ -20,8 +20,8 @@
   - 不引入新的进程级单例字段。
 """
 
+import os
 import time
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from ..common import (
@@ -35,6 +35,8 @@ from ..common import (
     site_type_rows,
 )
 from .pool import POOL_THRESHOLD
+from ..dutyops import claim_hashes
+from ..norm import now_iso
 
 # 契约版本（§2 信封 meta.schema_version）。字段/端点只增不改，改 = MAJOR。
 AGENT_SCHEMA_VERSION = "1.0"
@@ -334,10 +336,11 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
          "summary": "音乐种暂停/恢复/删除：仅音乐线，过唯一删种闸门（即时生效）"},
         {"path": "/agent/music/settle", "method": "POST", "handler": "agent_music_settle",
          "write": True,
-         "params": {"confirm": "1=真结算（写 MP 下载历史 + 调 MP 整理）；否则只回将结算的清单（干跑）",
-                    "limit": "int 本轮最多结算几张（默认 3）"},
+         "params": {"confirm": "1=真结算（入队后台入库）；否则只回将结算的清单（干跑）",
+                    "limit": "int 本轮最多结算几张（默认 3）",
+                    "hash": "str（可选；指定则只处理这一颗种，用于手动补跑。干跑时回它的入库计划）"},
          "returns": "MusicSettle", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "下完成的音乐专辑 → MP 整理入库（硬链接，种子继续做种）"},
+         "summary": "下完成的音乐 → 入队后台入库（标签齐走 MP 整理，散曲走硬链接；种子继续做种）"},
         # ---- 15.8.15 库内资产手动删除（Master「希望增加魔流库内资产手动删除的入口」）----
         #   AI 侧与前端**同口径**：两个 handler 都直接复用 AssetsMixin.assets_library /
         #   assets_delete（AI ⊇ 前端），不另写一套判定。
@@ -439,6 +442,14 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
                     "limit": "int 可认领条数上限（默认 200，按满月预计收益降序；0=全部）"},
          "returns": "ClaimReport",
          "version": AGENT_ENDPOINT_VERSION, "summary": "认领现状（全站纳入，含结算口径与预计魔力收益）"},
+        {"path": "/agent/claim/restore", "method": "POST", "handler": "agent_claim_restore",
+         "write": True,
+         "params": {"site_id": "站点 id（可选，缺省全站）",
+                    "confirm": "bool（默认否=预览 dry_run；true/1 才写本地账本）",
+                    "pairs": "list[{site_id,tid,hash}]（可选，显式补 hash；反查不到时用，多给的键只报 pairs_unused）"},
+         "returns": "ClaimRestore",
+         "version": AGENT_ENDPOINT_VERSION,
+         "summary": "从站点认领页重建本地认领账本（数据丢失恢复；只写本地，不发站点写请求）"},
         {"path": "/agent/cloud", "method": "GET", "handler": "agent_cloud", "write": False,
          "params": {}, "returns": "CloudReport", "version": AGENT_ENDPOINT_VERSION,
          "summary": "云盘归档到哪了、通不通：归档现状 + 连通性"},
@@ -512,8 +523,12 @@ class AgentApiMixin:
 
     @staticmethod
     def _agent_now() -> str:
-        """判定时间戳（ISO 8601 带时区）。可被离线测试覆盖。"""
-        return datetime.now().astimezone().isoformat(timespec="seconds")
+        """判定时间戳（ISO 8601 带时区）。可被离线测试覆盖。
+
+        ★ 19.10.16：实现收归 ``norm.now_iso``；本方法保留为**测试接缝**
+        （tools/test_plan.py / test_musicgrab.py 靠覆盖它来固定时间）。
+        """
+        return now_iso()
 
     # ------------------------------------------------------------------ 路由注册
     def get_api(self) -> List[Dict[str, Any]]:
@@ -559,6 +574,7 @@ class AgentApiMixin:
                 "CleanupPreview": "{task_id, mode?, total_torrents?, to_delete_count?/count?, deletion_candidates?[{hash,title,size_gb,seeders,age_weeks,bonus_per_hour,reason,priority}], estimated_bonus_gain?, message?}",
                 "OptimizePlan": "{task_id, method, granularity_gb, budget_gb, budget_source, infeasible, pool{count,size_gb,bonus_per_hour}, mandatory{count,size_gb,bonus_per_hour}, plan{keep_count,delete_count,kept_size_gb,freed_gb,kept_bonus_per_hour,lost_bonus_per_hour,kept_bonus_pct,keep[],delete[]}, frontier[{budget_gb,kept_size_gb,kept_count,delete_count,kept_bonus_per_hour,lost_bonus_per_hour,kept_bonus_pct}], compare{threshold,optimized_at_same_freed,saved_bonus_per_hour,note}}",
                 "ExamAct": "{dry_run?, site_id, kind, confirm?, hint?} 或写入结果 {task_name/task_id/enabled/noop?, notes[]?, message}（confirm!=1 恒零写入）",
+                "ClaimRestore": "{dry_run, would_restore[], would_restore_total, missing[], missing_total} 或 {restored[], restored_total, missing[], missing_total, protected_claim}（confirm!=1 恒零写入；只写本地账本）",
             },
         }
 
@@ -593,10 +609,7 @@ class AgentApiMixin:
             return set()
 
     def _agent_claim_hashes(self) -> set:
-        try:
-            return {str(h).strip().lower() for h in (self._claim_protected_hashes() or set())}
-        except Exception:  # noqa: BLE001
-            return set()
+        return claim_hashes(self)
 
     @staticmethod
     def _agent_bill_view(h: str, bill: Dict[str, Any]) -> Dict[str, Any]:
@@ -1682,28 +1695,44 @@ class AgentApiMixin:
             ("写操作 → DownloaderAdapter.pause_torrents/resume_torrents/delete_torrents；"
              "remove 过唯一删除闸门（deletegate）；仅限 qB 音乐线种"))
 
-    def agent_music_settle(self, confirm: str = "", limit: int = 0) -> Dict[str, Any]:
-        """``POST /agent/music/settle`` —— 音乐结算：下完成的专辑 → MP 整理入库（写）。
+    def agent_music_settle(self, confirm: str = "", limit: int = 0,
+                           hash: str = "") -> Dict[str, Any]:
+        """``POST /agent/music/settle`` —— 音乐结算：下完成的 → 入队后台入库（写）。
 
-        跟点播同一条链：补 MP ``downloadhistory``（type=音乐 / music_type=album）→
-        ``TransferChain().manual_transfer()`` 硬链接进库（种子继续做种）。只认落在音乐下载目录下的
-        qB 音乐线种；已成功整理过的只补历史、不重复搬。``confirm`` 缺省=干跑。
+        ★ 19.12.0（Master 2026-11-03：「这个功能需要做进去，是不是要增加排队机制」）：
+        真正的搬动全部进 JobQueue 后台线程，本端点**提交即返回**（页面关掉也会跑完）。
+
+        两条入库路线由标签完备度自动分流（``_music_import_route``）：
+          * 标签齐（artist+album+title 都有）+ 曲目 ≤24 + 同一张专辑 → MP ``manual_transfer``
+            （要它的刮削与媒体库回写）；
+          * 散曲合集 / 缺 Album 标签 → 自建硬链接（读标签算 ``歌手/专辑/歌名``，秒级完成）。
+
+        ``confirm`` 缺省=干跑；``hash`` 指定单颗（手动补跑，不看「3 天内下完」限制），
+        干跑时回它的完整入库计划（每首落到哪个路径）。
         """
         t0 = time.time()
         _ok = str(confirm).strip().lower() in ("1", "true", "yes", "y", "on")
-        try:
-            rep = self._music_settle_import(apply=_ok, limit=int(limit or 0))
-        except Exception as e:  # noqa: BLE001
-            return self._agent_err("internal", f"音乐结算失败:{e}", t0, trace_id=str(e))
-        payload = dict(rep or {})
+        h = str(hash or "").strip().lower()
+        if h:
+            rep = self._music_import_one(h, apply=_ok)
+            if not rep.get("ok"):
+                return self._agent_err("invalid", str(rep.get("error") or "未生效"),
+                                       t0, trace_id=h)
+            payload = dict(rep.get("payload") or {})
+            _summary = ("单颗入库 = 读标签算目标路径 → route=mp 走 MP 整理 / route=link 走硬链接"
+                        "（源文件 links +1，零额外占用，做种不受影响）")
+        else:
+            try:
+                payload = dict(self._music_settle_import(apply=_ok,
+                                                         limit=int(limit or 0)) or {})
+            except Exception as e:  # noqa: BLE001
+                return self._agent_err("internal", f"音乐结算失败:{e}", t0, trace_id=str(e))
+            _summary = ("音乐结算 = qB 音乐线 + 完成度≥0.999 + 下载目录内 → 入队后台入库"
+                        "（标签齐走 MP manual_transfer，散曲走硬链接，都是链接不占额外空间）")
         payload["applied"] = _ok
         if not _ok:
-            payload["note"] = "干跑（confirm 未置 1，未写历史、未整理）"
-        return self._agent_report(
-            payload, t0,
-            ("音乐结算 = qB 音乐线 + 完成度≥0.999 + 下载目录内 → 幂等写 downloadhistory"
-             " → MP manual_transfer(mtype=音乐, music_type=album)；含 note.music 会触发本机 MP 的"
-             "MusicInfo.from_dict 缺陷，故只写列字段"))
+            payload["note"] = "干跑（confirm 未置 1，未入队）"
+        return self._agent_report(payload, t0, _summary)
 
     def agent_yema(self, live: int = 0, force: int = 0) -> Dict[str, Any]:
         """``GET /agent/yema`` —— ★ **野马PT 逐种 H&R 对账**（站点 × 本机 × 账本；只读）。

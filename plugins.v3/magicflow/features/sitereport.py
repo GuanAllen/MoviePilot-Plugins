@@ -34,6 +34,7 @@ from ..tags import (
     EXTERNAL_TAG,
     STATE_BRUSH,
     STATE_BONUS,
+    STATE_CLAIM,
     STATE_HR,
     SUB_NEW,
     SUB_RESOURCE,
@@ -54,11 +55,12 @@ from .hrbills import (
 BUCKET_BRUSH = "刷流"
 BUCKET_BONUS = "魔力"
 BUCKET_HR = "保种"          # 欠 H&R 挂补（__hr_host__ 保种 ∪ 仍欠债）
+BUCKET_CLAIM = "认领"       # ★ 19.10.11：站点认领承诺（__claim__ 职务）—— 名单驱动的做种
 BUCKET_SILENT = "静默"      # 无职务（身份轴：新 / 资源 / 普通 三子桶）
 BUCKET_RESCUE = "补源"      # 死种补源副本（``魔流-补源``）
 BUCKET_EXTERNAL = "外部"    # 插件外来源、已纳管（``魔流-外部``）
 
-_BUCKET_ORDER = (BUCKET_RESCUE, BUCKET_HR, BUCKET_BRUSH, BUCKET_BONUS,
+_BUCKET_ORDER = (BUCKET_RESCUE, BUCKET_HR, BUCKET_BRUSH, BUCKET_BONUS, BUCKET_CLAIM,
                  BUCKET_EXTERNAL, BUCKET_SILENT)
 
 # 静默三子桶（身份轴，仅静默桶使用）
@@ -234,6 +236,10 @@ class SiteReportMixin:
             return BUCKET_BRUSH
         if duty == STATE_BONUS:
             return BUCKET_BONUS
+        # ★ 19.10.11：认领职务自成一桶 —— 必须先判它，否则会掉进「静默」桶
+        #   （认领 = 承诺做种，不是静默待清理；混进静默会让资产/流量分布看歪）。
+        if duty == STATE_CLAIM:
+            return BUCKET_CLAIM
         if EXTERNAL_TAG in _tags:
             return BUCKET_EXTERNAL
         return BUCKET_SILENT

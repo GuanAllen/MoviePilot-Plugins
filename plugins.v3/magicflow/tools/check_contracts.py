@@ -46,7 +46,11 @@ def modules() -> list[str]:
         rel = p.relative_to(ROOT)
         if any(part in SKIP_DIRS for part in rel.parts):
             continue
-        out.append(str(rel))
+        # ★ 必须归一化成 POSIX（正斜杠）：下面的白名单集合（ENABLED_OWNERS /
+        #   RUNMODE_LITERAL_OWNERS / CROSSSEED_ALLOW）都写作 `features/xxx.py`。
+        #   在 Windows 上 `str(rel)` 产出 `features\xxx.py`，与白名单永不相等 →
+        #   白名单整体失效，把「自己人」全判成违规。R1/R2/R3 三类都受此影响。
+        out.append(rel.as_posix())
     return out
 
 

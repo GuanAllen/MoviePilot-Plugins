@@ -51,7 +51,9 @@ def _load(name: str, rel: str):
 
 def main() -> int:
     print("== 15.8.13 孤儿魔流标签不再算「已管控」 ==")
-    t = _load("mf_orphan_tag_test_tags", "tags.py")
+    # 19.10.27：被测函数全部是纯函数，已下沉 L0 ``tagspec.py``（tags.py 只剩媒体编排，
+    # 且它 `from .tagspec import` 需要包上下文，单文件加载会 ImportError）。
+    t = _load("mf_orphan_tag_test_tags", "tagspec.py")
 
     # --- 1) is_managed_tag：能认出来才算归我们管 ---
     print("[1] is_managed_tag")

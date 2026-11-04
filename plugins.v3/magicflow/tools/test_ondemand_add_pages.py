@@ -173,6 +173,16 @@ def main() -> int:
         def _log(self, *a, **k):
             pass
 
+        def _cache_get(self, region, key, ttl):
+            # ★ 19.10.11：候选池走 TierCache（_cache_set/_cache_get），替身补内存桩
+            return getattr(self, "_cachemem", {}).get((region, key))
+
+        def _cache_set(self, region, key, value, ttl):
+            if not hasattr(self, "_cachemem") or self._cachemem is None:
+                self._cachemem = {}
+            self._cachemem[(region, key)] = value
+
+
         def _pv_block_reason(self, i):
             return ""
 
@@ -231,7 +241,7 @@ def main() -> int:
     f = Fake({("kw", 2): [_row("http://a/p2.torrent")]})
     rows = f._ondemand_search("kw", [1, 2], page=2)
     ok(len(rows) == 1 and f.calls == [("kw", 2)], f"page 透传（{f.calls}）")
-    ok(f.spent == [(1, "ondemand", 1), (2, "ondemand", 1)], f"PV 按站计 1（{f.spent}）")
+    ok(f.spent == [], f"搜索不记 PV（19.10.0 起 _pv_spend 零调用）（{f.spent}）")
     f2 = Fake({("kw", 0): [_row("http://a/p0.torrent")]})
     f2._ondemand_search("kw", [1, 2])
     ok(f2.calls == [("kw", 0)], "缺省仍是第 0 页（老调用点行为不变）")
@@ -248,7 +258,7 @@ def main() -> int:
     r2 = f._ondemand_add("流浪地球", site_ids="1,2", pick=pick7, apply=False)
     ok(r2.get("ok") is True and len(f.calls) == n_before, "第二次同 query → 吃 _od_last，不再重搜")
     r3 = f._ondemand_add("流浪地球", site_ids="1,2", pick="http://a/never.torrent", apply=False)
-    ok(r3.get("ok") is False and "候选未命中" in str(r3.get("message") or ""), "缓存里没有的 pick → 如实回报未命中")
+    ok(r3.get("ok") is False and "候选已不在" in str(r3.get("message") or ""), "缓存里没有的 pick → 如实回报未命中")
 
     print("[8] 静态护栏：crossseed._mp_search_title 带 page 形参并真透传")
     tree = ast.parse(_crossseed_source())

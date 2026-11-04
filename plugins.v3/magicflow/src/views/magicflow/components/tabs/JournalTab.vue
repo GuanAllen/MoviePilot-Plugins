@@ -5,8 +5,18 @@
 // 契约见 docs/REFACTOR-FRONTEND.md §5：props `data` `scope` `task`；emits `update:scope` `refresh`。
 // —— 运行诊断含：运行流程 / 过滤原因 / 操作记录（类型筛选可展开明细）。
 import { computed, reactive } from 'vue'
-import { KIND_ICON, KIND_TEXT, STATE_TEXT, ITEM_SOURCE_TEXT } from '../../constants'
-import { formatDateTime, formatDuration, formatDurationSeconds } from '../../../../utils'
+import { formatDateTime } from '../../../../utils'
+import {
+  hasOpDetail,
+  itemSourceText,
+  opDetailItems,
+  operationColor,
+  operationDuration,
+  operationIcon,
+  operationKindText,
+  operationStateText,
+  operationSummary,
+} from '../../opsDisplay'
 
 // props：data = useTaskDetail / useCandidates / useOperations 的「状态 + 派生」整体下传（含 expandedOps），只读；
 //        scope = 操作记录的类型筛选（原 opsKind），双向：emit update:scope；
@@ -25,45 +35,10 @@ const taskIsBrush = computed(() => props.task?.task_type === 'brush')
 
 function onScopeChange(value) { emit('update:scope', value) }
 
-// —— 操作记录展示纯函数（本地实现，与 useOperations 同口径；避免把函数当 prop 传）——
-function operationKindText(kind) {
-  return KIND_TEXT[kind] || kind
-}
-function operationStateText(state) {
-  return STATE_TEXT[state] || state
-}
-function operationIcon(kind) {
-  return KIND_ICON[kind] || 'mdi-circle-small'
-}
-function operationColor(record) {
-  if (record.state === 'failed') return 'error'
-  if (record.kind === 'deletion') return 'warning'
-  if (record.kind === 'tag') return 'purple'
-  if (record.kind === 'run') return 'secondary'
-  return 'primary'
-}
-function opDetailItems(record) {
-  if (!record) return []
-  return (record.items || []).filter((it) => String((it && it.source) || '') !== 'run')
-}
-function hasOpDetail(record) {
-  return opDetailItems(record).length > 0
-}
+// —— 只属于本文件的展示函数 ——
+// 展开态：本面板的展开表来自 props.data.expandedOps（弹窗读的是 props.expandedOps，不是同一份）
 function isOpDetailOpen(opId) {
   return !!(data.expandedOps || {})[opId]
-}
-function itemSourceText(src) {
-  return ITEM_SOURCE_TEXT[src] || ''
-}
-function operationDuration(record) {
-  if (record.duration != null && Number(record.duration) > 0) return formatDurationSeconds(record.duration)
-  return formatDuration(record.created_at, record.resolved_at)
-}
-function operationSummary(record) {
-  const first = (record.items || [])[0]
-  if (first && first.title) return first.title
-  const count = (record.items || []).length
-  return count ? `${count} 个条目` : ''
 }
 </script>
 

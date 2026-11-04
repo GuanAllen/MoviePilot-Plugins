@@ -1,6 +1,6 @@
 <script setup>
 // MagicFlow 前端 · 任务编辑器「高级」面板（P6）
-// P6 拆分：自 components/TaskEditorDialog.vue 的
+// P6 拆分：自 components/TaskEditorDialog.js 的
 //   <VWindowItem v-if="!simpleMode" value="advanced"> 内层内容 **纯搬家**
 //   （template 块 + 配套 scoped 样式，无行为/样式变更）。
 // 数据向下（defineModel / props）、事件向上（emit）；子组件不直接改父状态 / 调父方法。

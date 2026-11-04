@@ -13,26 +13,19 @@
 """
 import json
 import os
-import re
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Dict, Optional
+from .norm import norm_key
 
 DEFAULT_SERVICE_URL = os.environ.get("MAGICFLOW_DOUBAN_URL", "http://magicflow-douban:18789")
 HTTP_TIMEOUT = float(os.environ.get("MAGICFLOW_DOUBAN_TIMEOUT", "6"))
 
-_NORM_RE = re.compile(r"[^0-9a-z\u4e00-\u9fff]+")
-
 _PLUGIN_REGISTRY: Dict[int, "DoubanRating"] = {}
 _REG_LOCK = threading.Lock()
-
-
-def _norm(s: Any) -> str:
-    """标题归一化（与服务端 & 旧快照实现保持一致）。"""
-    return _NORM_RE.sub("", str(s or "").lower())
 
 
 class DoubanRating:
@@ -77,7 +70,7 @@ class DoubanRating:
 
     # ---------- public API（与旧实现兼容）----------
     def lookup(self, title: str, year: Any = "", *, use_cache: bool = True) -> Optional[Dict[str, Any]]:
-        if not _norm(title):
+        if not norm_key(title):
             return None
         payload = self._req("/search?" + urllib.parse.urlencode({"title": title or "", "year": year or ""}))
         if not payload:

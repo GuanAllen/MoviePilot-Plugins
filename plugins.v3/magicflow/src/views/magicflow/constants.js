@@ -90,6 +90,7 @@ export const MF_SETTINGS_TABS = [
 export const SITE_REPORT_BUCKETS = [
   { key: '刷流', color: 'indigo' },
   { key: '魔力', color: 'purple' },
+  { key: '认领', color: 'cyan' },
   { key: '保种', color: 'deep-orange' },
   { key: '静默', color: 'blue-grey' },
   { key: '补源', color: 'teal' },
@@ -260,6 +261,11 @@ export const TORRENT_ACTION_LABEL = {
   resume: '已恢复做种',
   recheck: '已开始重新校验',
   delete: '已删除种子',
+  // ★ 19.10.41：手动保种（__keep__ 伪任务）—— 与「保留(protect)」是两件事：
+  //   protect 只落任务级白名单、不挡自动释放；hold 会把种挂到 __keep__ 名下，
+  //   静默闸/清理闸/hr_host 都不再碰它，只有 unhold 能退。
+  hold: '已挂手动保种（不会被自动释放）',
+  unhold: '已解除手动保种（退回静默池）',
 }
 
 // ---------------- 批量操作 ----------------
@@ -271,4 +277,6 @@ export const BATCH_LABEL = {
   resume: '批量恢复',
   recheck: '批量校验',
   delete: '批量删除',
+  hold: '批量手动保种',
+  unhold: '批量解除保种',
 }

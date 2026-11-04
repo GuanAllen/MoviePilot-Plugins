@@ -15,7 +15,7 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path('/vol1/@apphome/trim.openclaw/data/workspace/magicflow')
+ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("mf_claim_presets", ROOT / "sites/claim_presets.py")
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)

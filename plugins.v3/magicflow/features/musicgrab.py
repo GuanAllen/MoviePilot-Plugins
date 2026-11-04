@@ -14,17 +14,22 @@
 只读铁律：不写 json、不写账本、不碰 qB；``grab``（真下载）另做（下一步）。
 """
 
+import errno
 import hashlib
+import os
 import re
 import time
-from datetime import datetime, timezone
-from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..fingerprint import info_hash
 from ..persistence import OperationItem
-from ..tags import (MUSIC_CATEGORY, SUB_RESOURCE, STATE_MUSIC, STATE_SILENT,
-                    identity_of, is_music_line, tag_for)
+from ..sitestore import slot_callbacks
+from .. import shared                      # ★ 19.12.0：入库账本读改写锁 + 扫描去抖状态（跨热重载）
+from ..tags import (MEDIA_CAND_TTL, MUSIC_CATEGORY, SUB_RESOURCE, STATE_HR, STATE_MUSIC,
+                    STATE_SILENT, fmt_iso_ts, identity_of, is_freeleech, is_music_line,
+                    media_act, media_cand_get, media_cand_put, media_grab,
+                    media_pin_location, media_row_from_ti, media_totals,
+                    strip_media_prefix, tag_for)
 
 # ---------------------------------------------------------------------------
 # 常量（打分口径，集中在这里，便于以后做成可配权重）
@@ -47,8 +52,48 @@ MUSIC_SETTLE_MAX_AGE = 3 * 86400
 MUSIC_RELOCATE_COOLDOWN = 3600
 #: qB 分类 = ``音乐``（常量与判定在 ``common.py``：清理/纳管/任务也要用，必须是纯函数）
 MUSIC_GRAB_SLEEP = 1.0               # 两次加种之间的小间隔（别猛打站点/下载器）
-MUSIC_CAND_TTL = 30 * 60             # 候选缓存有效期（秒）：search→download 之间 AI 挑选窗口
-MUSIC_CAND_MAX = 500                 # 候选缓存上限（条）
+
+# ---------------------------------------------------------------------------
+# ★ 19.12.0 · 散曲自建入库（Master 2026-11-03：「这次是我们手动整理的，这个功能需要做进去，
+#   是不是要增加排队机制」）
+# ---------------------------------------------------------------------------
+#: MP 目录配置里音乐库的 ``media_type`` 取值（真值源 = MoviePilot「设置 → 目录」）
+MUSIC_MEDIA_TYPE = "音乐"
+#: 读不到 MP 目录配置时的库根兜底（容器视角）
+MUSIC_LIBRARY_FALLBACK = "/music/library"
+#: 判「像专辑」的曲目数上限 —— 超过这个数基本是「合集」而不是专辑。
+#: 依据：MP 历史成功整理的专辑平均 9 首、最大 24 首；1258 首那种平铺合集交过去，
+#: MP 会逐首走在线识别（每请求 16 次预算，无 Album 的曲子一首吃约 8 次）→ 实际跑不完。
+MUSIC_ALBUM_MAX_TRACKS = 24
+#: 入库账本槽（``mf_run``）：每颗种的入库结果 —— 幂等判断 + 断点续的真值源
+MUSIC_IMPORT_KEY = "music_import"
+#: 账本最多留多少条（超出按时间淘汰最旧）
+MUSIC_IMPORT_KEEP = 400
+#: 每处理多少首落一次账 —— 插件重启后可接着跑，不必重读全部标签
+MUSIC_IMPORT_FLUSH_EVERY = 25
+#: 扫描去抖：最后一次入库完成后等这么久才触发媒体库扫描（秒）——
+#: 连续入库多颗种时不能每颗都触发一次全扫（Navidrome 的 startScan 是全局单例，会互相打断）
+MUSIC_SCAN_DEBOUNCE_SEC = 45.0
+#: 扫描单飞：上一次请求后多久内不再重复触发（秒）
+MUSIC_SCAN_COOLDOWN_SEC = 600.0
+#: 只有这些类型的媒体服务器会被刷新 —— MP 的 ``refresh_root_library`` 是**整根库重扫**，
+#: 配了影视服务器（trimemedia / emby / jellyfin）时按名字刷会把几 TB 的影视库一起扫一遍。
+#: Navidrome 是音乐库；Subsonic/Airsonic 同族（若装了也一并刷）。其余类型一律跳过并记日志。
+MUSIC_SCAN_SERVER_TYPES = frozenset(("navidrome", "subsonic", "airsonic"))
+#: 可入库的音频扩展名（小写，含点）
+MUSIC_AUDIO_EXTS = frozenset((
+    ".flac", ".mp3", ".m4a", ".aac", ".wav", ".ape", ".wv", ".dsf", ".dff",
+    ".ogg", ".opus", ".wma", ".aif", ".aiff", ".tak", ".tta",
+))
+#: 文件名里不能出现的字符（Linux 只有 ``/`` 与 NUL 致命，其余一并替换：
+#: 库会被 SMB / Navidrome / 播放器跨系统读，统一按最严口径清洗）
+_MUSIC_BAD_CHARS = re.compile(r'[/\\:*?"<>|\x00-\x1f]')
+
+#: 候选缓存有效期 —— ★ 19.10.11 统一到 tags.MEDIA_CAND_TTL（音乐/点播同一「候选有效期」口径，
+#: 人/AI 同一挑选入口）。保留别名供旧引用；MUSIC_CAND_MAX（LRU 上限）随底座换 TierCache 移除
+#: —— TierCache 无 scan，靠 TTL 过期控规模（候选一次几十条，上限本就不触发）。
+MUSIC_CAND_TTL = MEDIA_CAND_TTL
+_MUSIC_CAND_REGION = "musiccand"     # 候选缓存分区（与点播 odpool 分开，互不串味）
 
 #: ★ 音乐线职务标签（不许出现在音乐种上）：音乐单独一条线，**不进魔力/刷流任务**
 #: 匹配形如 ``魔流-<站点>-魔力`` / ``魔流-<站点>-刷流``（任务标签）。
@@ -88,14 +133,6 @@ _MUSIC_W_SIZE_OK = 5
 
 def _music_lower(s: Any) -> str:
     return str(s or "").strip().lower()
-
-
-def _music_is_free(dv: Any) -> bool:
-    """是否免费（downloadvolumefactor <= 0）。"""
-    try:
-        return float(dv if dv is not None else 1.0) <= MUSIC_FREE_RATIO
-    except Exception:  # noqa: BLE001
-        return False
 
 
 class MusicGrabMixin:
@@ -198,78 +235,28 @@ class MusicGrabMixin:
 
     @staticmethod
     def _music_row_from_ti(ti: Any) -> Optional[Dict[str, Any]]:
-        """TorrentInfo（对象 / dict）→ 音乐候选行（只读归一，含 ``uploadvolumefactor``）。"""
-        def _g(k: str, d: Any = None) -> Any:
-            if isinstance(ti, dict):
-                return ti.get(k, d)
-            return getattr(ti, k, d)
+        """TorrentInfo（对象 / dict）→ 音乐候选行（含 ``uploadvolumefactor``）。
 
-        url = str(_g("enclosure", "") or "")
-        if not url:
-            return None
-
-        def _f(k: str, d: float) -> float:
-            try:
-                return float(_g(k, d) or 0.0)
-            except Exception:  # noqa: BLE001
-                return d
-
-        def _i(k: str, d: int = 0) -> int:
-            try:
-                return int(_g(k, d) or 0)
-            except Exception:  # noqa: BLE001
-                return d
-
-        return {
-            "title": str(_g("title", "") or ""),
-            "size": _f("size", 0.0),
-            "seeders": _i("seeders"),
-            "site": _i("site"),
-            "site_name": str(_g("site_name", "") or ""),
-            "downloadvolumefactor": _f("downloadvolumefactor", 1.0),
-            "uploadvolumefactor": _f("uploadvolumefactor", 1.0),
-            "hit_and_run": bool(_g("hit_and_run", False)),
-            "enclosure": url,
-            "page_url": str(_g("page_url", "") or ""),
-            "site_cookie": _g("site_cookie", None),
-            "site_ua": _g("site_ua", None),
-            "site_proxy": bool(_g("site_proxy", False)),
-        }
-
-    # ---------------------------------------------------------- 候选缓存（★ 15.9.0 §1）
-    def _music_cand_cache(self) -> Dict[str, Any]:
-        """候选缓存 ``{cid: [ts, row]}``（进程级实例属性）。
-
-        只用于 search→download 之间存回**下载所需的凭据真值**（enclosure/cookie/ua/page_url）；
-        对外候选一律不带这些（防 passkey 外泄）。reload 即清空 → AI 重搜即可。
+        ★ 19.10.11：本体搬到 ``tags.media_row_from_ti``（与点播同源），这里只留薄委托。
         """
-        c = getattr(self, "_music_cand_store", None)
-        if not isinstance(c, dict):
-            c = {}
-            self._music_cand_store = c
-        return c
+        return media_row_from_ti(ti)
 
+    # ---------------------------------------------------------- 候选缓存（★ 15.9.0 §1 → 19.10.11 统一到底座）
     @staticmethod
     def _music_cid(row: Dict[str, Any]) -> str:
         key = f"{int(row.get('site') or 0)}|{str(row.get('enclosure') or '')}"
         return hashlib.sha1(key.encode("utf-8", "ignore")).hexdigest()[:12]
 
     def _music_cand_put(self, cid: str, row: Dict[str, Any]) -> None:
-        cache = self._music_cand_cache()
-        cache[cid] = [time.time(), row]
-        if len(cache) > MUSIC_CAND_MAX:
-            for k in sorted(cache, key=lambda x: cache[x][0])[: len(cache) - MUSIC_CAND_MAX]:
-                cache.pop(k, None)
+        """候选入池 —— 委托 ``tags.media_cand_put``（脱敏 + 落 TierCache）。"""
+        media_cand_put(self, _MUSIC_CAND_REGION, cid, row, MUSIC_CAND_TTL)
 
     def _music_cand_get(self, cid: str) -> Optional[Dict[str, Any]]:
+        """取候选 —— 委托 ``tags.media_cand_get``（过期→None + 按 site 回填凭据）。"""
         cid = str(cid or "").strip()
-        ent = self._music_cand_cache().get(cid)
-        if not ent:
+        if not cid:
             return None
-        if time.time() - float(ent[0]) > MUSIC_CAND_TTL:
-            self._music_cand_cache().pop(cid, None)
-            return None
-        return ent[1]
+        return media_cand_get(self, _MUSIC_CAND_REGION, cid, MUSIC_CAND_TTL)
 
     @staticmethod
     def _music_cand_public(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -287,7 +274,7 @@ class MusicGrabMixin:
             "seeders": int(row.get("seeders") or 0),
             "downloadvolumefactor": _dv("downloadvolumefactor"),
             "uploadvolumefactor": _dv("uploadvolumefactor"),
-            "free": _music_is_free(row.get("downloadvolumefactor")),
+            "free": is_freeleech(row.get("downloadvolumefactor")),
             "hit_and_run": bool(row.get("hit_and_run")),
             "score": int(row.get("score") or 0),
             "relevance": float(row.get("relevance") or 0.0),
@@ -318,7 +305,7 @@ class MusicGrabMixin:
             base = {"cid": cid, "title": str(row.get("title") or ""),
                     "site": int(row.get("site") or 0), "site_name": str(row.get("site_name") or ""),
                     "size_gb": round(float(row.get("size") or 0) / 1024 ** 3, 2),
-                    "free": _music_is_free(row.get("downloadvolumefactor"))}
+                    "free": is_freeleech(row.get("downloadvolumefactor"))}
             if res.get("ok") and res.get("hash"):
                 existing.add(str(res["hash"]).lower())
                 rec = {**base, "hash": res["hash"]}
@@ -336,6 +323,7 @@ class MusicGrabMixin:
                     task_id="", kind="selection",
                     items=[OperationItem(hash=a["hash"], title=f"音乐 {a['title']}",
                                          reason=f"源 {a['site_name']}" + ("·免费" if a.get("free") else ""),
+                                         free=bool(a.get("free")),
                                          source="music") for a in added],
                 )
             except Exception as e:  # noqa: BLE001
@@ -644,59 +632,26 @@ class MusicGrabMixin:
 
     def _music_grab_one(self, row: Dict[str, Any], save_path: str,
                         existing: Optional[set] = None) -> Dict[str, Any]:
-        """加一颗音乐种（走现有词子：取 .torrent → 下载器加种 → H&R 开账）。
+        """加一颗音乐种（★ 19.10.11：核心收归 ``tags.media_grab``，本方法只做音乐尾段）。
 
         ★ 19.9.0：加种即打「身份 ``魔流-<站>-静默-资源`` + 职务 ``魔流-<站>-音乐``」，
         并挂 ``__music__`` 伪任务（账本 ``state=音乐``）→ 下载中免疫静默池；下完由
         ``_music_untag_duty`` 摘职务、``_music_ledger_release`` 归还静默池（成为「资源」）。
-        幂等：本地先算 infohash，已在下载器 → ``skipped``，不重复加。
+        取种/标签/幂等/钉目录全在共享实现里；这里只挂伪任务（task_id 真值源在 common.py）。
         """
-        dl = self._get_downloader("qbittorrent")
-        if dl is None or not getattr(dl, "is_available", False):
-            return {"ok": False, "message": "下载器不可用"}
-        sid = int(row.get("site") or 0)
-        if sid and (self._pv_block_reason(sid) or not self._pv_allow(sid, "crossseed", want=1)):
-            return {"ok": False, "message": "PV 闸门拦截（站点预算不足/被封，稍后再试）"}
-        content = self._crossseed_torrent_bytes(SimpleNamespace(**row))
-        if not content:
-            return {"ok": False, "message": "取 .torrent 失败（站点拒绝/种子已删，换一条候选）"}
-        try:
-            h0 = str(info_hash(content)).lower()
-        except Exception:  # noqa: BLE001
-            h0 = ""
-        if h0 and existing and h0 in existing:
-            return {"ok": True, "hash": h0, "skipped": True, "message": "已在下载器"}
+        res = media_grab(self, row, save_path, kind="music",
+                         existing=existing, downloader_name="qbittorrent",
+                         pv_gate=True, infohash=info_hash)
+        if not res.get("ok") or res.get("skipped"):
+            return res
+        h = res["hash"]
         site_name = str(row.get("site_name") or "")
-        # ★ 19.9.0：**加种即打「身份 + 职务」两个标签**（同点播 15.8.6）——
-        #   身份轴 ``静默-资源`` 永久保留；职务轴 ``音乐`` 让账本 state=音乐 ≠ 静默，
-        #   下载中天然免疫静默池（不再依赖 15.8.11 的 progress<1 例外）。
-        if site_name:
-            tag = ", ".join([tag_for(site_name, STATE_SILENT, SUB_RESOURCE),
-                             tag_for(site_name, STATE_MUSIC)])
-        else:
-            tag = ""
-        try:
-            dom = self._site_domain_by_name(site_name) or ""
-        except Exception:  # noqa: BLE001
-            dom = ""
-        try:
-            hs, err = dl.add_torrent(content=content, download_dir=save_path, tag=tag,
-                                     category=MUSIC_CATEGORY, site_domain=dom,
-                                     hit_and_run=bool(row.get("hit_and_run")))
-        except Exception as e:  # noqa: BLE001
-            return {"ok": False, "message": f"添加失败: {e}"}
-        if not hs:
-            return {"ok": False, "message": f"添加失败: {err or '未知'}"}
-        h = str(hs[0] if isinstance(hs, (list, tuple)) else hs).lower()
         # ★ 19.9.0：加种即挂 __music__ 伪任务（职务=音乐）→ 同点播语义
         try:
             self._music_assign([h], site=site_name, sub=SUB_RESOURCE, reason="加种")
         except Exception as _mae:  # noqa: BLE001
             self._log(f"音乐线:挂伪任务失败 {str(h)[:12]}: {_mae}", "warning")
-        # qB「自动管理」会把任务改放到默认下载目录（/vol6/1000/movie/下载），
-        # 那里属 movie project → 硬链进 /music 会被 EXDEV 拒绝；加完立刻钉到音乐目录。
-        self._music_relocate(h, save_path)
-        return {"ok": True, "hash": h, "tag": tag, "save_path": save_path}
+        return res
 
     # ---------------------------------------------------------- MP 整理入库（★ 17.2.0）
 
@@ -780,6 +735,21 @@ class MusicGrabMixin:
                 return False
             if not ok:
                 return False
+        # ★ 19.10.8：下完**先过 H&R 检查站**——欠债的交 ``__hr_host__`` 保种。
+        #   （静默池不变量是「一律 pause」，裸归静默 = 把做种时钟停在那一刻；
+        #   2026-10-27 现场：CARPT 8 颗音乐种只挂到 ~22h，站方 H&R 还差 2h。）
+        try:
+            _owed = bool(live is not None
+                         and self._hr_obligation(_site, live, snap=self._tag_all_torrents())[0])
+        except Exception:  # noqa: BLE001
+            _owed = False
+        if _owed:
+            try:
+                if self._hr_host_assign([hh], reason="音乐下完欠 H&R"):
+                    self._log(f"音乐:{hh[:12]} 下完仍欠 H&R → 交保种宿主（不归静默）")
+                    return True
+            except Exception as err:  # noqa: BLE001
+                self._log(f"音乐:交保种失败 {hh[:12]}:{err}", "warning")
         try:
             store.release(hh)
         except Exception as err:  # noqa: BLE001
@@ -793,15 +763,48 @@ class MusicGrabMixin:
         身份保持「下载中」（原来直接 set_asset(sub="资源") → 清单把它算进「已完成」，
         现场症状：「进行中不显示，反而出现在已完成里」）。
         """
+        # ★ 19.10.8：**幂等** —— 同一 (hash, 库路径) 只处理一次。
+        #   原来每轮 Check 对每颗已整理的音乐种都跑一遍 ``release()``：
+        #   ① 实测每 5 秒刷 8 行「音乐:库记」（日志风暴，把真问题埋掉）；
+        #   ② 更致命：``release()`` 会把 ``taken_by=__hr_host__`` 清掉 →
+        #      欠 H&R 的种被踢出保种宿主 → 静默闸立刻 pause → 做种时长冻住。
+        _hh0 = str(h or "").strip().lower()
+        try:
+            _seen = getattr(self, "_music_lib_seen", None)
+            if not isinstance(_seen, set):
+                _seen = set()
+                self._music_lib_seen = _seen
+            _sig = f"{_hh0}:{str(dest or '')[:48]}"
+            if _hh0 and _sig in _seen:
+                return
+            if _hh0:
+                if len(_seen) > 5000:
+                    _seen.clear()
+                _seen.add(_sig)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from ..common import HR_HOST_TASK_ID  # noqa: WPS433 惰性导入（离线测试不碰 common）
+        except Exception:  # noqa: BLE001
+            HR_HOST_TASK_ID = "__hr_host__"
         try:
             gid = self._tag_groups().queue_library(h, path=dest or "", media_id="")
             _state_store = self._tag_state()  # 复用
             try:
-                _live = (self._tag_all_torrents() or {}).get(str(h or "").strip().lower())
+                _live = (self._tag_all_torrents() or {}).get(_hh0)
             except Exception:  # noqa: BLE001
                 _live = None
+            # ★ 19.10.8：欠 H&R 的种归 ``__hr_host__`` 保种 —— 账本**一个字都不许动**。
+            try:
+                _rec = _state_store.get(h) or {}
+            except Exception:  # noqa: BLE001
+                _rec = {}
+            _hr_hosted = (str(_rec.get("taken_by") or "") == HR_HOST_TASK_ID
+                          or str(_rec.get("state") or "") == STATE_HR)
             # 19.9.4: 职务与身份分开写 ---- 下载中的种保留 __music__ 职务，只把身份钉成下载中
-            if _live is None or float(getattr(_live, "progress", 0) or 0.0) >= 0.999:
+            if _hr_hosted:
+                pass
+            elif _live is None or float(getattr(_live, "progress", 0) or 0.0) >= 0.999:
                 _state_store.release(h)
             else:
                 _state_store.set_asset(h, sub=self.SUB_DOWNLOADING)
@@ -811,24 +814,13 @@ class MusicGrabMixin:
             self._log(f"音乐:库记失败 {h[:12]}:{err}", "warning")
 
     def _music_relocate(self, h: str, dest: str) -> bool:
-        """把种子数据搬回指定目录（qB 自动管理会把任务放到默认下载目录）。
+        """把种子数据搬回指定目录 → 薄委托 ``tags.media_pin_location``（★ 19.10.11 合一）。
 
-        先关该任务的自动管理，再 ``setLocation``；搬完（qB 重新写入文件）后
-        文件就落在音乐 project 里，硬链进 ``/music`` 才不会被 EXDEV 拒绝。
+        qB「自动管理」会把任务放到默认下载目录（movie project）→ 硬链进 ``/music``
+        被 EXDEV 拒绝。音乐踩过的坑，点播加种同样受益（`media_grab` 统一钉目录）。
+        本方法名保留（settle 路径与测试调用点不动）。
         """
-        try:
-            dl = self._get_downloader("qbittorrent")
-            mod = getattr(dl, "_downloader", None)
-            qbc = getattr(mod, "qbc", None)
-            if qbc is None or mod is None:
-                return False
-            try:
-                qbc.torrents_set_auto_management(hashes=h, enable=False)
-            except Exception:  # noqa: BLE001
-                pass
-            return bool(mod.set_torrent_location(h, dest))
-        except Exception:  # noqa: BLE001
-            return False
+        return media_pin_location(self, h, dest)
 
     def _music_transfer_now(self, h: str, t: Any, mp_path: str) -> Tuple[bool, str]:
         """直调 MP ``manual_transfer`` 整理入库（与点播同一条路线）。
@@ -870,18 +862,21 @@ class MusicGrabMixin:
         return bool(ok), str(msg or "")
 
     def _music_settle_import(self, apply: bool = True, limit: int = 0) -> Dict[str, int]:
-        """★ 17.2.0 §1 音乐：下完成的专辑 → MP 整理入库（与点播同一条链）。
+        """★ 17.2.0 §1 音乐：下完成的专辑 → 入库（★ 19.12.0 起**入队后台跑**）。
 
         - 只认**音乐线**（qB 分类 ``音乐``）且落在音乐下载目录下、``progress >= 0.999`` 的种；
         - 只结算 3 天内下完的种（历史手工硬链专辑不能再搬一次）；
-        - **直调** ``TransferChain().manual_transfer``（``mtype=MUSIC, music_type=album``）：
-          不打 MP 的 ``TORRENT_TAG``、不写 downloadhistory ⇒ MP 定时整理任务扫不到这些种，
-          不会与它并发；成功后补库记（``TransferComplete`` 事件偶发收不到时兜底）。
+        - ★ 19.12.0：本方法只做**发现 + 入队**，真正的搬动在 JobQueue 后台线程里
+          （``_music_import_run``）。原因：原来是同步直调 MP ``manual_transfer``，
+          而它一次要几十秒到几小时 —— 挂在刷流 Check 里会被全局并发闸门常年饿死，
+          挂在前端请求里则客户端一断就中止（手动整理那次就是这么断的）。
+        - 入库路线由 ``_music_import_route`` 按标签完备度分流：标签齐的走 MP 整理，
+          散曲/缺 Album 的走自建硬链接；
         - 已有成功整理记录的直接 skipped + 补库记；失败只计数，下轮重试。
         """
         rep: Dict[str, int] = {"scanned": 0, "pending": 0, "settled": 0,
                                "skipped": 0, "failed": 0, "written": 0,
-                               "relocated": 0, "reloc_skip": 0}
+                               "relocated": 0, "reloc_skip": 0, "queued": 0}
         try:
             idx = self._tag_all_torrents() or {}
         except Exception as err:  # noqa: BLE001
@@ -939,6 +934,16 @@ class MusicGrabMixin:
                     rep["skipped"] += 1
                     self._music_mark_library(key, self._music_transfer_dest(key))
                     continue
+                # ★ 19.12.0：自建入库完成的种（账本 done 且无失败）同样算结案 ——
+                #   本方法只认 MP transferhistory 的话，散曲合集会被每轮重复入队
+                #   （虽然队列里会被账本立即挡回，但白占槽位、日志也会刷屏）。
+                if self._music_import_done(key):
+                    rep["skipped"] += 1
+                    try:
+                        self._music_release_done(key)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    continue
                 if done >= cap:
                     continue
                 done += 1
@@ -946,22 +951,20 @@ class MusicGrabMixin:
                 if not mp_path:
                     rep["failed"] += 1
                     continue
-                ok, msg = self._music_transfer_now(key, t, mp_path)
-                if ok:
+                # ★ 19.12.0：入库改为**入队**（原来是同步直调 MP 整理）。
+                #   同一 hash 在队列里已有 queued/running 任务时 ``dedup_key`` 直接返回既有那条，
+                #   所以每轮 Check 都能放心调，不会把同一颗种排 N 次。
+                _title = str(getattr(t, "title", "") or getattr(t, "name", "") or "")
+                _job = self._music_import_submit(key, _title, reason="下完自动")
+                if _job.get("id"):
                     rep["settled"] += 1
-                    # ★ 19.9.3：直调整理耗时数十秒，期间可能又有分片/新轨在下载 →
-                    #   mark_library 内部会重读 qB 进度决定写「资源」还是「下载中」。
-                    self._music_mark_library(key, self._music_transfer_dest(key))
-                    # 19.9.4: 下完即摘音乐职务（点播同构）---- 清单此时才算已完成
-                    try:
-                        self._music_release_done(key)
-                    except Exception:  # noqa: BLE001
-                        pass
-                    self._log(f"音乐:整理入库 {key[:12]} 「{getattr(t, 'title', '')}」"
-                              f"→ 完成{('（' + msg[:40] + '）') if msg else ''}".rstrip())
+                    rep["queued"] = int(rep["queued"]) + 1
+                    if not _job.get("dedup"):
+                        self._log(f"音乐:入库已入队 {key[:12]}「{_title[:40]}」"
+                                  f"（job {_job.get('id')}，后台跑，关页面不中断）", "debug")
                 else:
                     rep["failed"] += 1
-                    self._log(f"音乐:整理入库失败 {key[:12]}: {msg[:160]}", "warning")
+                    self._log(f"音乐:入库入队失败 {key[:12]}", "warning")
             except Exception as err:  # noqa: BLE001
                 rep["failed"] += 1
                 self._log(f"音乐:整理入库异常 {str(h)[:12]}: {err}", "warning")
@@ -971,27 +974,26 @@ class MusicGrabMixin:
 
     _MUSIC_ACTS = ("pause", "resume", "remove")
 
-    @staticmethod
-    def _music_hist_title(title: str) -> str:
-        """历史行展示名：把 journal 里的「音乐 xxx」前缀去掉。"""
-        t = str(title or "").strip()
-        if t.startswith("音乐"):
-            t = t[len("音乐"):].strip()
-        return t
 
     @staticmethod
-    def _m_iso(ts: Any) -> Optional[str]:
-        """裸 epoch 秒 → ISO8601（带本地时区）；缺/非法/``<=0`` → ``None``。"""
-        try:
-            v = float(ts or 0.0)
-        except (TypeError, ValueError):
-            return None
-        if v <= 0.0:
-            return None
-        try:
-            return datetime.fromtimestamp(v, tz=timezone.utc).astimezone().isoformat(timespec="seconds")
-        except (OverflowError, OSError, ValueError):
-            return None
+    def _music_free(op: Any, t: Any) -> bool:
+        """音乐线「是否免费」：qB 有折扣值就信 qB，没有就回落到加种当时记的站点真值。
+
+        ★ 19.11.23：``downloadvolumefactor`` **不在** qB ``/torrents/info`` 的返回字段里，
+        只读 qB 恒得 ``None`` → ``is_freeleech(None)`` 全判「非免费」，与 ``source_note``
+        写的「源 xx·免费」自相矛盾（会让人以为在下计下载量的种）。
+        qB 真给了值以 qB 为准；给不出才用 journal 操作项上留的底。
+        """
+        dvf = getattr(t, "downloadvolumefactor", None) if t is not None else None
+        if dvf is not None:
+            return is_freeleech(dvf)
+        if getattr(op, "free", False):
+            return True
+        # 老记录（19.11.23 之前落盘）没有 free 字段，从 dict 还原只会拿到默认 False。
+        # reason 是**本模块自己写的固定格式**（"源 xx" / "源 xx·免费"，见 _music_download_cids），
+        # 属于同源折扣数据的降级表示，不是对站点事实的猜测；只认明确带「·免费」的。
+        return "·免费" in str(getattr(op, "reason", "") or "")
+
 
     def _music_item_row(self, h: str, t: Any, rec: Dict[str, Any],
                         op: Any = None, jr: Any = None) -> Dict[str, Any]:
@@ -1006,7 +1008,7 @@ class MusicGrabMixin:
         if t is not None:
             title = str(getattr(t, "title", "") or "")
         else:
-            title = self._music_hist_title(str(getattr(op, "title", "") or ""))
+            title = strip_media_prefix(str(getattr(op, "title", "") or ""), "music")
         base_ts = float(getattr(jr, "created_at", 0) or 0.0)
         row: Dict[str, Any] = {
             "hash": h,
@@ -1017,13 +1019,13 @@ class MusicGrabMixin:
             "progress": 0.0, "percent": 0.0, "state": "",
             "size_gb": round(size_gb, 3), "downloaded_gb": round(size_gb * prog, 3),
             "left_gb": round(left_gb, 3), "speed": 0.0, "eta_s": None, "ratio": 0.0,
-            "free": _music_is_free(getattr(t, "downloadvolumefactor", None) if t is not None else None),
+            "free": self._music_free(op, t),
             "hit_and_run": bool(getattr(t, "hit_and_run", False)) if t is not None else bool((rec or {}).get("hit_and_run")),
             "in_qb": t is not None,
             "in_library": bool((rec or {}).get("in_library")),
             "save_path": str(getattr(t, "save_path", "") or "") if t is not None else "",
-            "added_at": self._m_iso(base_ts),
-            "settled_at": self._m_iso((rec or {}).get("identity_at")),
+            "added_at": fmt_iso_ts(base_ts),
+            "settled_at": fmt_iso_ts((rec or {}).get("identity_at")),
             "source_note": str(getattr(op, "reason", "") or ""),
             "_ts": base_ts,
         }
@@ -1068,7 +1070,7 @@ class MusicGrabMixin:
         if t is not None:
             title = str(getattr(t, "title", "") or "")
         else:
-            title = self._music_hist_title(str(getattr(op, "title", "") or ""))
+            title = strip_media_prefix(str(getattr(op, "title", "") or ""), "music")
         inlib = bool((rec or {}).get("in_library"))
         stage = "resource" if prog else "gone"
         base_ts = float(getattr(jr, "created_at", 0) or 0.0)
@@ -1084,14 +1086,14 @@ class MusicGrabMixin:
             "size_gb": round(size_gb, 3),
             "downloaded_gb": round(size_gb * prog, 3),
             "left_gb": 0.0, "speed": 0.0, "eta_s": None, "ratio": 0.0,
-            "free": _music_is_free(getattr(t, "downloadvolumefactor", None) if t is not None else None),
+            "free": self._music_free(op, t),
             "hit_and_run": (bool(getattr(t, "hit_and_run", False)) if t is not None
                             else bool((rec or {}).get("hit_and_run"))),
             "in_qb": False,
             "in_library": inlib,
             "save_path": "",
-            "added_at": self._m_iso(base_ts),
-            "settled_at": self._m_iso((rec or {}).get("identity_at")),
+            "added_at": fmt_iso_ts(base_ts),
+            "settled_at": fmt_iso_ts((rec or {}).get("identity_at")),
             "source_note": str(getattr(op, "reason", "") or ""),
             "_ts": base_ts,
         }
@@ -1203,61 +1205,549 @@ class MusicGrabMixin:
         rows = rows[:cap]
         for x in rows:
             x.pop("_ts", None)
-        totals = {
-            "count": len(rows),
-            "downloading": sum(1 for r in rows if r.get("stage") == "downloading"),
-            "settling": sum(1 for r in rows if r.get("stage") == "settling"),
-            "resource": sum(1 for r in rows if r.get("stage") == "resource"),
-            "gone": sum(1 for r in rows if r.get("stage") == "gone"),
-            "left_gb": round(sum(float(r.get("left_gb") or 0.0) for r in rows), 3),
-        }
+        totals = media_totals(rows)
         return {"items": rows, "totals": totals}
 
     def _music_act(self, hash: str = "", action: str = "") -> Dict[str, Any]:
         """音乐行内操作：``pause`` / ``resume`` / ``remove``（音乐线仅限 qB 分类=音乐的种）。
 
+        ★ 19.10.11：写口搬到 ``tags.media_act``（与点播**共用同一个删除闸门**），
+        本方法只剩「归属判定」（在下载器 + qB 分类=音乐）这一个音乐特有的前置。
         回执统一 ``{ok, hash, action, message, blocked}``；``remove`` 走唯一删除闸门（不绕）。
         """
-        h = str(hash or "").strip().lower()
-        act = str(action or "").strip().lower()
-
-        def _rep(ok: bool, msg: str, *, blocked: bool = False) -> Dict[str, Any]:
-            return {"ok": bool(ok), "hash": h, "action": act,
-                    "message": str(msg or ""), "blocked": bool(blocked)}
-
-        if not h:
-            return _rep(False, "缺少 hash")
-        if act not in self._MUSIC_ACTS:
-            return _rep(False, f"未知操作:{action}")
-        try:
-            snap = {str(k).lower(): v for k, v in (self._tag_all_torrents() or {}).items()}
-        except Exception as e:  # noqa: BLE001
-            return _rep(False, f"下载器不可用:{e}")
-        t = snap.get(h)
-        if t is None:
-            return _rep(False, "该种不在下载器（音乐清单只操作在库种）")
-        if not self._is_music_line(t):
-            return _rep(False, "该种不属于音乐线（拒绝操作）")
-        try:
-            dl = self._get_downloader("qbittorrent")
-        except Exception as e:  # noqa: BLE001
-            return _rep(False, f"下载器不可用:{e}")
-        if dl is None or not getattr(dl, "is_available", False):
-            return _rep(False, "下载器不可用")
-        if act in ("pause", "resume"):
+        def _belong(h: str) -> Optional[str]:
             try:
-                n, err = (dl.pause_torrents([h]) if act == "pause" else dl.resume_torrents([h]))
+                snap = {str(k).lower(): v for k, v in (self._tag_all_torrents() or {}).items()}
             except Exception as e:  # noqa: BLE001
-                return _rep(False, f"{act} 失败:{e}")
-            if err or not n:
-                return _rep(False, f"{act} 失败:{err or '未命中'}")
-            return _rep(True, "已暂停" if act == "pause" else "已继续")
+                return f"下载器不可用:{e}"
+            t = snap.get(h)
+            if t is None:
+                return "该种不在下载器（音乐清单只操作在库种）"
+            if not self._is_music_line(t):
+                return "该种不属于音乐线（拒绝操作）"
+            return None
+
+        return media_act(self, hash, action, kind="music",
+                         acts=self._MUSIC_ACTS, belong=_belong)
+
+    # ============================================================
+    # ★ 19.12.0 · 音乐散曲自建入库（Master 2026-11-03）
+    #
+    # 「这次是我们手动整理的，这个功能需要做进去，是不是要增加排队机制」——手动那次的做法
+    # （全量读标签 → 按 ``歌手/专辑`` 算目标路径 → ``ln`` 硬链接 → 触发媒体库扫描）固化成能力。
+    #
+    # 为什么不能只靠 MP 整理（实测，不是推测）：
+    #   1258 首的散曲合集里 **1139 首没有 Album 标签**。MP 的 ``music_tags_are_usable`` 要求
+    #   title+album+artist 齐全，缺一个就转 MusicBrainz 在线识别；而每次请求只有
+    #   ``request_limit=16`` 次识别预算，无专辑曲目一首吃约 8 次 → **一次只能过 2 首**，
+    #   第 3 首直接 ``budget_exhausted``（不可重试兜底）。1139 首要 600+ 次请求、十几小时，
+    #   且中文老歌 MB 基本查不到 → 表现就是「一直在扫、库零新增、没有任何报错」。
+    #
+    # 所以按标签完备度分流（判据见 ``_music_import_route``），两条路都留：
+    #   * 标签齐 + 曲目数像专辑 → MP ``manual_transfer``（要它的刮削与媒体库回写）
+    #   * 其余（散曲合集 / 缺专辑标签）→ 自建硬链接（读标签算路径，秒级完成）
+    #
+    # 三条硬约束：
+    #   1. **只硬链接，不复制不移动** —— 源文件 links 从 1→2，零额外占用，qB 做种不受影响；
+    #   2. 目标已存在先比 inode：同 inode = 自己链过的（幂等跳过）；不同 = 真重名 →
+    #      加 `` (2)`` 后缀，**绝不覆盖**（500 位歌手 1258 首里一定有同名不同版本）；
+    #   3. 跨 project 链不动（fnOS 的 project quota 让 ``/movie`` 与 ``/music`` 同盘也报 EXDEV）
+    #      → 记 ``exdev`` 并明确报出，**不静默降级成复制**（复制会真占空间、且没人知道）。
+    # ============================================================
+
+    def _music_lib_dirs(self) -> Tuple[str, str]:
+        """音乐库 / 音乐下载目录（**MP 视角**路径）→ ``(library_path, download_path)``。
+
+        真值源 = MoviePilot「设置 → 目录」里 ``media_type == 音乐`` 的那条记录。
+        不写死路径：用户换盘/改目录后这里自动跟上，写死会默默往旧盘写。
+        读不到配置时回退 ``MUSIC_LIBRARY_FALLBACK`` / ``MUSIC_SAVE_PATH_DEFAULT``。
+        """
+        lib = dl = ""
         try:
-            n, err = dl.delete_torrents(hashes=[h], delete_file=True,
-                                        reason="音乐移除", source="music")
-        except Exception as e:  # noqa: BLE001
-            return _rep(False, f"移除失败:{e}")
-        if not n:
-            return _rep(False, err or "被删除闸门拦下（欠 H&R / 受保护），未移除", blocked=True)
-        self._log(f"音乐:{h[:12]} 已移除（删种+删文件）")
-        return _rep(True, "已移除（删种+删文件）")
+            from app.application.directory import DirectoryHelper  # noqa: WPS433
+            for d in (DirectoryHelper().get_dirs() or []):
+                if str(getattr(d, "media_type", "") or "").strip() != MUSIC_MEDIA_TYPE:
+                    continue
+                lib = str(getattr(d, "library_path", "") or "").strip().rstrip("/")
+                dl = str(getattr(d, "download_path", "") or "").strip().rstrip("/")
+                break
+        except Exception as err:  # noqa: BLE001
+            self._log(f"音乐入库:读 MP 目录配置失败（回退默认路径）: {err}", "warning")
+        return (lib or MUSIC_LIBRARY_FALLBACK), (dl or MUSIC_SAVE_PATH_DEFAULT)
+
+    @staticmethod
+    def _music_audio_files(root: str, limit: int = 0) -> List[str]:
+        """递归列出 ``root`` 下的音频文件（按路径排序，便于断点续时顺序稳定）。
+
+        ``root`` 可能是单文件（单轨种）也可能是目录（合集）；非音频扩展名一律跳过。
+        """
+        try:
+            if os.path.isfile(root):
+                ext = os.path.splitext(root)[1].lower()
+                return [root] if ext in MUSIC_AUDIO_EXTS else []
+            if not os.path.isdir(root):
+                return []
+        except OSError:
+            return []
+        out: List[str] = []
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for name in sorted(filenames):
+                if os.path.splitext(name)[1].lower() not in MUSIC_AUDIO_EXTS:
+                    continue
+                out.append(os.path.join(dirpath, name))
+                if limit and len(out) >= limit:
+                    return sorted(out)
+        return sorted(out)
+
+    @staticmethod
+    def _music_read_tags(path: str) -> Dict[str, str]:
+        """读一首歌的 ``artist`` / ``album`` / ``title``（mutagen easy 模式，缺的留空串）。
+
+        容器内 mutagen 1.47.0 可用（实测）。用 ``easy=True`` 拿规整后的字符串列表，
+        不碰二进制帧；读失败不抛（标签坏了不该让整批整理停摆），只把 title 用文件名兜底。
+        """
+        out: Dict[str, str] = {"artist": "", "album": "", "title": ""}
+        try:
+            from mutagen import File as _MutagenFile  # noqa: WPS433
+            f = _MutagenFile(path, easy=True)
+            if f is not None:
+                for k in out:
+                    v = f.get(k)
+                    if isinstance(v, (list, tuple)):
+                        v = v[0] if v else ""
+                    out[k] = str(v or "").strip()
+        except Exception:  # noqa: BLE001
+            pass
+        if not out["title"]:
+            out["title"] = os.path.splitext(os.path.basename(path))[0]
+        return out
+
+    @staticmethod
+    def _music_safe_name(raw: Any, default: str = "") -> str:
+        """文件名/目录名清洗：替换跨系统非法字符、压空白、去首尾点、截断到 120 字。
+
+        库会被 SMB / Navidrome / 各种播放器读，按最严口径（Windows 非法字符）清洗，
+        免得只在一部分客户端上炸。
+        """
+        t = _MUSIC_BAD_CHARS.sub("_", str(raw or "")).strip().strip(".")
+        t = re.sub(r"\s+", " ", t)
+        return t[:120] or default or "未知"
+
+    def _music_import_plan(self, h: str, t: Any, lib: str, cap: int = 0) -> Dict[str, Any]:
+        """扫一颗种 → 入库计划（**干跑**：只读标签、算目标路径，不碰文件系统）。
+
+        返回 ``{"route": mp|link|skip, "items": [...], "total", "reason"}``；
+        每项 ``{src, dst, artist, album, title, ext, size}``。
+        """
+        raw = (str(getattr(t, "content_path", "") or "").strip()
+               or str(getattr(t, "save_path", "") or "").strip())
+        mp_path = self._music_mp_path(raw)
+        if not mp_path:
+            return {"route": "skip", "items": [], "total": 0, "reason": "该种没有落盘路径"}
+        files = self._music_audio_files(mp_path, limit=cap)
+        if not files:
+            return {"route": "skip", "items": [], "total": 0,
+                    "reason": "种内没有可入库的音频文件"}
+        items: List[Dict[str, Any]] = []
+        for src in files:
+            tg = self._music_read_tags(src)
+            ext = os.path.splitext(src)[1].lower()
+            artist = self._music_safe_name(tg.get("artist"), "未知歌手")
+            title = self._music_safe_name(tg.get("title"),
+                                          os.path.splitext(os.path.basename(src))[0])
+            # ★ 空专辑**不兜底**：``_music_safe_name`` 的 default 会兜成「未知」，
+            #   那等于凭空造一张「未知」专辑 —— 与手工那次落的 ``库/歌手/歌名.flac`` 不是同一路径，
+            #   重跑会再链一份（1258 首全被复制一遍）。空就是空，路径直接省掉专辑层。
+            album = (self._music_safe_name(tg.get("album"), "")
+                     if str(tg.get("album") or "").strip() else "")
+            parts = [lib, artist] + ([album] if album else []) + [title + ext]
+            items.append({
+                "src": src,
+                "dst": "/".join(parts),
+                "artist": artist,
+                "album": album,
+                "title": title,
+                "ext": ext,
+                "size": 0,
+            })
+        return {"route": self._music_import_route(items), "items": items,
+                "total": len(items), "reason": ""}
+
+    @staticmethod
+    def _music_import_route(items: List[Dict[str, Any]]) -> str:
+        """分流判据：``mp``（交给 MP 整理）/ ``link``（自建硬链接）/ ``skip``。
+
+        走 MP 的条件**全部满足**才算专辑：
+          * 每首的 artist / album / title 都不为空（MP 的 ``music_tags_are_usable`` 同口径）；
+          * 全部曲目属于同一张专辑（专辑名只有一个）；
+          * 曲目数 ≤ ``MUSIC_ALBUM_MAX_TRACKS``（24）—— 超过就是合集，MP 会逐首在线识别。
+        任一条不满足就走自建：散曲、多专辑、缺标签，都别指望 MP。
+        """
+        if not items:
+            return "skip"
+        if len(items) > MUSIC_ALBUM_MAX_TRACKS:
+            return "link"
+        albums = {str(i.get("album") or "") for i in items}
+        complete = all(str(i.get("artist") or "") and str(i.get("album") or "")
+                       and str(i.get("title") or "") for i in items)
+        if complete and len(albums) == 1 and "" not in albums:
+            return "mp"
+        return "link"
+
+    @staticmethod
+    def _music_link_one(src: str, dst: str) -> Tuple[str, str]:
+        """把一个文件硬链接到目标 → ``(状态, 实际落点)``。
+
+        状态口径：
+          * ``same``    —— 目标已是同一 inode（自己链过的），幂等跳过；
+          * ``created`` —— 新建链接（零额外占用，源文件 links +1）；
+          * ``renamed`` —— 目标被别的内容占着 → 落到 `` (2)`` / `` (3)`` …，**不覆盖**；
+          * ``exdev``   —— 跨 project 链不动（fnOS project quota），调用方须明确报出；
+          * ``error``   —— 其他失败，第二项带原因。
+
+        覆盖是绝对禁止的：源文件是种子本体，覆盖别人的文件等于毁库，而且找不回来。
+        """
+        try:
+            src_st = os.stat(src)
+        except OSError as err:
+            return "error", f"源文件不可读:{err}"
+        base, ext = os.path.splitext(dst)
+        for idx in range(0, 10):
+            target = dst if idx == 0 else f"{base} ({idx + 1}){ext}"
+            try:
+                tst = os.stat(target)
+            except OSError:
+                tst = None
+            if tst is not None:
+                if tst.st_dev == src_st.st_dev and tst.st_ino == src_st.st_ino:
+                    return "same", target
+                continue                       # 真重名（不同内容）→ 换下一个后缀
+            try:
+                parent = os.path.dirname(target)
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
+                os.link(src, target)
+                return ("created" if idx == 0 else "renamed"), target
+            except OSError as err:
+                if getattr(err, "errno", 0) == errno.EXDEV:
+                    return "exdev", target
+                return "error", f"{target}|{err}"
+        return "error", f"{dst}|重名后缀已用尽"
+
+    # ------------------------------------------------------------------ 账本
+    def _music_import_records(self) -> Dict[str, Any]:
+        """读入库账本（``mf_run[music_import]``）→ ``{hash: 记录}``。
+
+        账本是真值源，不是缓存：入库是否做过、做到第几首，全看它。
+        直接改库后要让账本失效得 touch ``common.py``（进程级 memo，非 TTL）。
+        """
+        try:
+            data = slot_callbacks(self, MUSIC_IMPORT_KEY)[0]() or {}
+        except Exception:  # noqa: BLE001
+            data = {}
+        rows = (data.get("rows") if isinstance(data, dict) else data) or {}
+        if not isinstance(rows, dict):
+            return {}
+        return {str(k): v for k, v in rows.items() if isinstance(v, dict)}
+
+    def _music_import_rec(self, h: str, **fields: Any) -> None:
+        """落一条入库记录（按 hash 幂等覆盖；超出 ``MUSIC_IMPORT_KEEP`` 淘汰最旧）。
+
+        整表读改写必须持锁：多颗种同时下完会并发入队，两个线程各自读到同一份旧快照
+        再写回，后写的那份会把先写的整条冲掉（点播历史 19.10.72 踩过同一个坑）。
+        """
+        hh = str(h or "").strip().lower()
+        if not hh:
+            return
+        try:
+            with shared.lock("music_import_rec"):
+                rows = self._music_import_records()
+                rec = dict(rows.get(hh) or {})
+                rec.update(fields)
+                rec["hash"] = hh
+                rec["ts"] = float(fields.get("ts") or time.time())
+                rows[hh] = rec
+                if len(rows) > MUSIC_IMPORT_KEEP:
+                    keep = sorted(rows.values(), key=lambda r: float(r.get("ts") or 0.0))
+                    rows = {str(r.get("hash")): r for r in keep[-MUSIC_IMPORT_KEEP:]}
+                slot_callbacks(self, MUSIC_IMPORT_KEY)[1](
+                    value={"seeded": True, "rows": rows})
+                # ★ 写完**读回一次**：``sitestore.get/save`` 是**白名单路由**，未登记的槽
+                #   既不抛错也不落盘（19.12.0 就漏登记了 ``SLOT_MUSIC_IMPORT`` → 账本永远空
+                #   → 同一颗种每轮 Check 都被重新入队，实测堆出 33 个重复任务）。
+                #   这种「静默失效」必须在第一次就喊出来，否则表现为「老是重复整理」查不到根。
+                if (not getattr(self, "_music_import_slot_warned", False)
+                        and hh not in self._music_import_records()):
+                    self._music_import_slot_warned = True
+                    self._log("音乐入库:账本写入后读不回来（槽未登记或落盘失败）—— "
+                              "入库会被反复重跑，先查 sitestore 的 SLOT_MUSIC_IMPORT 登记",
+                              "warning")
+        except Exception as err:  # noqa: BLE001
+            self._log(f"音乐入库:账本落盘失败 {hh[:12]}: {err}", "warning")
+
+    def _music_import_done(self, h: str) -> Optional[Dict[str, Any]]:
+        """该 hash 是否已「全部入库完成」（账本 stage=done 且没有失败项）。"""
+        rec = self._music_import_records().get(str(h or "").strip().lower())
+        if not rec:
+            return None
+        if str(rec.get("stage") or "") == "done" and not int(rec.get("failed") or 0):
+            return rec
+        return None
+
+    # -------------------------------------------------------------- 媒体库扫描
+    def _music_scan_state(self) -> Dict[str, Any]:
+        """扫描去抖状态（进程级共享槽，热重载不丢）。"""
+        return shared.singleton("music_scan_state",
+                                lambda: {"pending": 0.0, "last": 0.0, "hits": 0})
+
+    def _music_scan_request(self, reason: str = "") -> None:
+        """登记「有新的入库，需要扫一次库」——**只登记，不立刻扫**。
+
+        为什么不当场扫：Navidrome 的 ``startScan`` 是**全局单例**。连续入库多颗种时
+        每颗都触发一次，后一次会打断前一次，可能一直扫不完（实测扫描 2873→4000 首要几分钟）。
+        所以统一走 ``_music_scan_tick``：最后一次入库后静默 ``MUSIC_SCAN_DEBOUNCE_SEC`` 再扫一次。
+        """
+        try:
+            st = self._music_scan_state()
+            st["pending"] = time.time()
+            self._log(f"音乐入库:登记媒体库扫描（{reason or '入库完成'}）", "debug")
+        except Exception as err:  # noqa: BLE001
+            self._log(f"音乐入库:登记扫描失败（忽略）: {err}", "warning")
+
+    def _music_scan_tick(self) -> Dict[str, Any]:
+        """到点触发一次媒体库扫描（在 Check 里每轮调，开销只有几次比较）。
+
+        三个闸门同时满足才动手：有 pending、静默期已过、距上次请求超过冷却期。
+        扫描用的是 MP 自己的媒体服务器实例（``refresh_root_library``）——
+        凭据在 MP 配置里，插件不另存一份密码。
+
+        ★ 只扫**音乐类**媒体服务器（``MUSIC_SCAN_SERVER_TYPES``）。实测这台机器上配了
+        「Navidrome」(navidrome) 与「服务器1」(trimemedia 影视库) 两台，第一版没做类型过滤，
+        于是每入库一次都会顺带把**影视库**整根刷一遍 —— 那是几 TB 的重扫，与音乐无关。
+        """
+        out: Dict[str, Any] = {"scanned": False, "reason": ""}
+        try:
+            st = self._music_scan_state()
+            pend = float(st.get("pending") or 0.0)
+            if not pend:
+                out["reason"] = "无待扫请求"
+                return out
+            now = time.time()
+            if now - pend < MUSIC_SCAN_DEBOUNCE_SEC:
+                out["reason"] = "等静默期"
+                return out
+            if now - float(st.get("last") or 0.0) < MUSIC_SCAN_COOLDOWN_SEC:
+                out["reason"] = "冷却中"
+                return out
+            ok = False
+            try:
+                from app.sdk.services import MediaServerHelper as _MSH  # noqa: WPS433
+            except Exception:  # noqa: BLE001
+                try:
+                    from app.application.mediaserver import MediaServerHelper as _MSH  # noqa: WPS433, WPS440
+                except Exception:  # noqa: BLE001
+                    _MSH = None  # type: ignore[assignment]
+            if _MSH is None:
+                out["reason"] = "MP 媒体服务器服务不可用"
+                return out
+            services = _MSH().get_services() or {}
+            names: List[str] = []
+            skipped: List[str] = []
+            for name, svc in services.items():
+                stype = str(getattr(svc, "type", "") or "").strip().lower()
+                if stype and stype not in MUSIC_SCAN_SERVER_TYPES:
+                    # 非音乐库（影视/图库）一律不碰：刷它的整根库既慢又与音乐无关
+                    skipped.append(f"{name}({stype})")
+                    continue
+                # 取不到 type（宿主改名/包装变化）时**放行**：宁可多刷一次，也不能让入库后
+                # 静默不扫 —— 那会让「库里没有新歌」看起来像入库失败，排查方向全错。
+                inst = getattr(svc, "instance", None)
+                refresh = getattr(inst, "refresh_root_library", None)
+                if not callable(refresh):
+                    continue
+                try:
+                    if refresh() is not False:
+                        names.append(str(name))
+                        ok = True
+                except Exception as err:  # noqa: BLE001
+                    self._log(f"音乐入库:媒体库 {name} 扫描请求失败: {err}", "warning")
+            st["pending"] = 0.0
+            st["last"] = now
+            st["hits"] = int(st.get("hits") or 0) + 1
+            out["scanned"] = ok
+            out["servers"] = names
+            out["reason"] = "" if ok else "没有可刷新的媒体服务器"
+            if skipped:
+                out["skipped"] = skipped
+            if ok:
+                self._log(f"音乐入库:已请求媒体库扫描（{', '.join(names)}）"
+                          f"{('；跳过非音乐库 ' + ', '.join(skipped)) if skipped else ''}")
+        except Exception as err:  # noqa: BLE001
+            out["reason"] = f"扫描异常:{err}"
+        return out
+
+    # ---------------------------------------------------------------- 主流程
+    def _music_import_apply(self, h: str, plan: Dict[str, Any]) -> Dict[str, int]:
+        """按计划执行硬链接（**每 MUSIC_IMPORT_FLUSH_EVERY 首落一次账**，可断点续）。
+
+        断点续的意义：1258 首规模下插件中途重启/热重载会很常见；不落账就得从头再读一遍
+        全部标签（那一步是整条链最慢的）。落了账，重启后账本里记着做到第几首，
+        下一轮直接跳过已完成的。
+        """
+        rep: Dict[str, int] = {"created": 0, "same": 0, "renamed": 0,
+                               "exdev": 0, "error": 0, "total": 0}
+        items = list(plan.get("items") or [])
+        rep["total"] = len(items)
+        lib, _dl = self._music_lib_dirs()
+        done_n = 0
+        for it in items:
+            status, _where = self._music_link_one(str(it.get("src") or ""),
+                                                  str(it.get("dst") or ""))
+            if status in rep:
+                rep[status] = int(rep[status]) + 1
+            else:
+                rep["error"] = int(rep["error"]) + 1
+            done_n += 1
+            if done_n % MUSIC_IMPORT_FLUSH_EVERY == 0:
+                self._music_import_rec(h, stage="running", lib=lib, **rep)
+        return rep
+
+    def _music_import_run(self, h: str) -> Tuple[bool, str]:
+        """单颗种的完整入库（★ JobQueue 的执行体，跑在后台线程里）。
+
+        三条出口：
+          * 账本已 done → 直接返回（幂等，重复入队不会重复搬）；
+          * 分流 ``mp`` → 走 MP ``manual_transfer``（要刮削与库回写）；
+          * 分流 ``link`` → 自建硬链接（散曲合集走这条，秒级完成）。
+        完成后**只登记**一次媒体库扫描，不在这里直接触发（去抖见 ``_music_scan_tick``）。
+        """
+        hh = str(h or "").strip().lower()
+        try:
+            idx = self._tag_all_torrents() or {}
+        except Exception as err:  # noqa: BLE001
+            return False, f"下载器快照不可用:{err}"
+        t = None
+        for k, v in idx.items():
+            if str(k).strip().lower() == hh:
+                t = v
+                break
+        if t is None:
+            return False, "该种不在下载器"
+        if self._music_import_done(hh):
+            return True, "已入库过（账本 done），跳过"
+        raw = (str(getattr(t, "content_path", "") or "").strip()
+               or str(getattr(t, "save_path", "") or "").strip())
+        mp_path = self._music_mp_path(raw)
+        lib, _dl = self._music_lib_dirs()
+        plan = self._music_import_plan(hh, t, lib)
+        route = str(plan.get("route") or "skip")
+        if route == "skip":
+            self._music_import_rec(hh, stage="skip", reason=str(plan.get("reason") or ""))
+            return False, str(plan.get("reason") or "没有可入库内容")
+        title = str(getattr(t, "title", "") or getattr(t, "name", "") or "")[:80]
+        # ---- 走 MP 整理（标签齐、像专辑）----
+        if route == "mp":
+            ok, msg = self._music_transfer_now(hh, t, mp_path)
+            if ok:
+                dest = self._music_transfer_dest(hh)
+                self._music_mark_library(hh, dest)
+                try:
+                    self._music_release_done(hh)
+                except Exception:  # noqa: BLE001
+                    pass
+                self._music_import_rec(hh, stage="done", route="mp", total=plan.get("total"),
+                                       failed=0, dest=dest, msg=msg[:160])
+                self._music_scan_request(f"MP 整理 {hh[:12]}")
+            else:
+                self._music_import_rec(hh, stage="failed", route="mp", msg=msg[:160])
+            return bool(ok), (f"MP 整理「{title}」" + ("完成" if ok else f"失败：{msg[:120]}"))
+        # ---- 自建硬链接（散曲 / 缺专辑标签 / 合集）----
+        self._music_import_rec(hh, stage="running", route="link", total=plan.get("total"))
+        rep = self._music_import_apply(hh, plan)
+        bad = int(rep.get("exdev") or 0) + int(rep.get("error") or 0)
+        stage = "done" if not bad else "partial"
+        self._music_import_rec(hh, stage=stage, route="link", failed=bad,
+                               lib=lib, **rep)
+        if int(rep.get("created") or 0) or int(rep.get("renamed") or 0):
+            self._music_scan_request(f"入库 {hh[:12]}")
+        got = int(rep.get("created") or 0) + int(rep.get("renamed") or 0)
+        msg = (f"硬链接入库「{title}」：新建 {got}"
+               f"（已存在 {rep.get('same', 0)} / 重名另存 {rep.get('renamed', 0)}"
+               f" / 跨盘 {rep.get('exdev', 0)} / 失败 {rep.get('error', 0)}）")
+        if int(rep.get("exdev") or 0):
+            msg += "；跨 project 链不动，需把库与下载区放同一 project"
+        return (not bad), msg
+
+    def _music_import_submit(self, h: str, title: str = "", reason: str = "") -> Dict[str, Any]:
+        """把一颗种丢进后台队列（**提交即返回**，页面关掉也会跑完）。
+
+        为什么必须入队：手动那次整理跑在一个前端请求里，客户端一断就中止；
+        挂在刷流 Check 里则会被全局并发闸门（``GLOBAL_WORKER_LIMIT=6``）常年饿死。
+        入队后这两件事都不再成立：任务跑在插件进程的后台线程，进度到「后台任务」面板看。
+        """
+        hh = str(h or "").strip().lower()
+        try:
+            return self._job_submit(
+                kind="music_import",
+                title=f"音乐入库「{str(title or hh[:12])[:40]}」",
+                fn=(lambda _h=hh: self._music_import_run(_h)),
+                dedup_key=f"music_import:{hh}",
+                params={"hash": hh, "reason": str(reason or "")[:60]},
+            )
+        except Exception as err:  # noqa: BLE001
+            self._log(f"音乐入库:入队失败 {hh[:12]}: {err}", "warning")
+            return {}
+
+    def _music_import_one(self, h: str, apply: bool = False) -> Dict[str, Any]:
+        """单颗种的入库：干跑回计划 / 真跑入队。**AI 路由层只调这一个口**。
+
+        收成一个口的理由：路由层（``agentapi``）不该知道「库目录怎么找、标签怎么读、
+        队列怎么投」这些细节 —— 它只需要「给我这颗种的处理结果」。本方法**不抛异常**，
+        所有失败都折成 ``{"ok": False, "error": "..."}``，调用方只管转信封。
+        """
+        hh = str(h or "").strip().lower()
+        out: Dict[str, Any] = {"ok": False, "error": "", "payload": {}}
+        try:
+            idx = self._tag_all_torrents() or {}
+        except Exception as err:  # noqa: BLE001
+            out["error"] = f"下载器不可用:{err}"
+            return out
+        t = None
+        for k, v in idx.items():
+            if str(k).strip().lower() == hh:
+                t = v
+                break
+        if t is None:
+            out["error"] = "该种不在下载器"
+            return out
+        lib, dl = self._music_lib_dirs()
+        plan = self._music_import_plan(hh, t, lib)
+        items = list(plan.get("items") or [])
+        payload: Dict[str, Any] = {
+            "hash": hh,
+            "route": str(plan.get("route") or ""),
+            "total": int(plan.get("total") or 0),
+            "library": lib,
+            "download_dir": dl,
+            "reason": str(plan.get("reason") or ""),
+            # 只回前 20 条：1258 首全回会把 MCP 响应撑爆（有 30KB 截断护栏）
+            "sample": [{"from": os.path.basename(str(i.get("src") or "")),
+                        "to": str(i.get("dst") or "")} for i in items[:20]],
+            "sample_truncated": len(items) > 20,
+        }
+        if apply:
+            _title = str(getattr(t, "title", "") or getattr(t, "name", "") or "")
+            job = self._music_import_submit(hh, _title, reason="手动")
+            payload["queued"] = bool(job.get("id"))
+            payload["job_id"] = job.get("id")
+            payload["dedup"] = bool(job.get("dedup"))
+            payload["note"] = ("已入队后台入库，可在「后台任务」看进度"
+                               if job.get("id") else "入队失败（详见插件日志）")
+            out["ok"] = bool(job.get("id"))
+            out["error"] = "" if out["ok"] else "入队失败（详见插件日志）"
+        else:
+            payload["note"] = "干跑（confirm 未置 1，只回计划未入队）"
+            out["ok"] = bool(plan.get("route") and plan.get("route") != "skip")
+            out["error"] = str(plan.get("reason") or "没有可入库内容")
+        out["payload"] = payload
+        return out
