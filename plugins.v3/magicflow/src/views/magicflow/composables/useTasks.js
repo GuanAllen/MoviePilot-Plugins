@@ -245,7 +245,8 @@ export function useTasks({ selectedTaskId, api, emit, hostToast, settingsDraft, 
       })
       statusLoaded.value = true
       if (!selectedTaskId.value && tasks.value.length) {
-        selectTask(tasks.value[0].id)
+        // auto:true → 只是兜底填一个当前任务（顶栏要显示名字），不切出概览页
+        selectTask(tasks.value[0].id, { auto: true })
       } else if (selectedTaskId.value && !tasks.value.some(item => item.id === selectedTaskId.value)) {
         selectedTaskId.value = ''
       }

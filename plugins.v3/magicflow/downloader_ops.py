@@ -16,6 +16,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from urllib.parse import quote
 
 from .fingerprint import Entry, entries_fingerprint, info_hash
 from .qbsync import QB_SYNC_INCREMENTAL, get_qb_sync_store
@@ -265,25 +266,29 @@ def _resolve_indirect_download_url(
     user_agent: Optional[str] = None,
     proxies: Optional[str] = None,
     referer: Optional[str] = None,
-) -> Tuple[str, Optional[str]]:
-    """把换票地址解析成真实下载地址，返回 ``(直接可用地址, 错误信息)``。
+) -> Tuple[str, Optional[str], Optional[Dict[str, str]]]:
+    """把换票地址解析成真实下载地址，返回 ``(直接可用地址, 错误信息, 换票用的 header)``。
 
-    非换票地址原样返回（``err=None``）；解析失败返回 ``("", 原因)``。
+    非换票地址原样返回（``err=None``、header=None）；解析失败返回 ``("", 原因, None)``。
     参数语义与 MoviePilot 下载链保持一致（`params` 走查询串、`header` 整包替换）。
+
+    ★ 19.10.1：第三个返回值是**取种时必须复用的 header**。API 站的下载口
+    （如野马PT ``api/torrent/download1?token=``）除了 token 还校验 ``Authorization``，
+    只带 cookie/UA 去 GET 会 403 → 上层看到的是「无法打开链接 / 站点未返回内容」。
     """
     raw = str(url or "").strip()
     match = _INDIRECT_URL_RE.match(raw)
     if not match:
-        return raw, None
+        return raw, None, None
     encoded, request_url = match.group(1), match.group(2)
     if not encoded:
-        return request_url, None
+        return request_url, None, None
     try:
         spec = json.loads(base64.b64decode(encoded.encode("utf-8")).decode("utf-8"))
     except Exception as e:  # noqa: BLE001
-        return "", f"换票请求解析失败:{e}"
+        return "", f"换票请求解析失败:{e}", None
     if not isinstance(spec, dict):
-        return "", "换票请求格式错误"
+        return "", "换票请求格式错误", None
     _headers = spec.get("header") if isinstance(spec.get("header"), dict) else None
     _params = spec.get("params") if isinstance(spec.get("params"), dict) else None
     _cookie = cookie if spec.get("cookie") else None
@@ -304,24 +309,24 @@ def _resolve_indirect_download_url(
         else:
             resp = req.post_res(url=request_url, params=_params)
     except Exception as e:  # noqa: BLE001
-        return "", f"换票请求异常:{e}"
+        return "", f"换票请求异常:{e}", None
     if resp is None:
-        return "", "换票请求无响应"
+        return "", "换票请求无响应", None
     if not getattr(resp, "ok", False):
         _code = getattr(resp, "status_code", "?")
         if _code in (429, 503):
             _dl_note_flow_control()
-        return "", f"换票请求失败:{_code}"
+        return "", f"换票请求失败:{_code}", None
     result_path = spec.get("result")
     if not result_path:
-        return str(resp.text or "").strip(), None
+        return str(resp.text or "").strip(), None, _headers
     try:
         data: Any = resp.json()
     except Exception as e:  # noqa: BLE001
-        return "", f"换票响应非 JSON:{e}"
+        return "", f"换票响应非 JSON:{e}", None
     success_key = spec.get("success")
     if success_key and isinstance(data, dict) and not data.get(success_key):
-        return "", "换票接口返回失败标记"
+        return "", "换票接口返回失败标记", None
     for key in str(result_path).split("."):
         if not isinstance(data, dict):
             data = None
@@ -330,8 +335,77 @@ def _resolve_indirect_download_url(
         if not data:
             break
     if not data:
-        return "", "换票响应缺少下载地址"
-    return str(data).strip(), None
+        return "", "换票响应缺少下载地址", None
+    # ★ 19.10.1：换票结果可能是**密钥**而不是地址。API 站（野马PT openApi）``result`` 取到的是
+    #   裸 token，真正地址要按 ``result_base_url + result_path + ?result_query_param=token`` 拼。
+    #   旧代码把 token 当 URL 丢给 TorrentHelper → 「无法打开链接」→ 点播点了下载没反应。
+    _val = str(data).strip()
+    _base = str(spec.get("result_base_url") or "").strip()
+    _rpath = str(spec.get("result_path") or "").strip()
+    _qparam = str(spec.get("result_query_param") or "").strip()
+    if _base:
+        _url = _base.rstrip("/") + ("/" + _rpath.lstrip("/") if _rpath else "")
+        if _qparam:
+            _sep = "&" if "?" in _url else "?"
+            return f"{_url}{_sep}{_qparam}={quote(_val, safe='')}", None, _headers
+        if "://" in _val:
+            return _val, None, _headers
+        return _url, None, _headers
+    if "://" in _val or _val.startswith("magnet:"):
+        return _val, None, _headers
+    return "", f"换票响应不是可用地址（缺 result_base_url）：{_val[:40]}", None
+
+
+def _indirect_torrent_bytes(
+    url: str,
+    cookie: Optional[str] = None,
+    user_agent: Optional[str] = None,
+    proxies: Optional[str] = None,
+    referer: Optional[str] = None,
+) -> Tuple[Optional[bytes], str]:
+    """换票地址 → 种子字节：**换票与取种用同一套 header**。
+
+    返回 ``(bytes|None, 错误)``。站点只回磁力 → ``(None, "magnet")``（上层当「跳过」处理）。
+    为什么自己取而不交给 ``TorrentHelper``：它没有 headers 入参，带不上 ``Authorization``，
+    API 站的下载口会直接 403 —— 这正是「点播点了下载，提示站点未返回内容」的根因。
+    """
+    _direct, _err, _headers = _resolve_indirect_download_url(
+        url, cookie=cookie, user_agent=user_agent, proxies=proxies, referer=referer
+    )
+    if not _direct:
+        return None, str(_err or "换票失败")
+    if _direct.startswith("magnet:"):
+        return None, "magnet"
+    try:
+        from app.sdk.network import RequestUtils  # noqa: WPS433
+    except Exception as e:  # noqa: BLE001
+        return None, f"SDK 不可用:{e}"
+    try:
+        _dl_gate()
+        _req = RequestUtils(
+            headers=_headers or None,
+            cookies=cookie if _headers else cookie,
+            proxies=proxies,
+            ua=user_agent,
+            referer=referer,
+        )
+        resp = _req.get_res(url=_direct)
+    except Exception as e:  # noqa: BLE001
+        return None, f"取种异常:{e}"
+    if resp is None:
+        return None, "取种无响应"
+    if not getattr(resp, "ok", False):
+        _code = getattr(resp, "status_code", "?")
+        if _code in (429, 503):
+            _dl_note_flow_control()
+        return None, f"取种失败:HTTP {_code}"
+    _bytes = getattr(resp, "content", None)
+    if not isinstance(_bytes, (bytes, bytearray)) or not _bytes:
+        return None, "取种失败：响应无内容"
+    if not _looks_like_torrent(bytes(_bytes)):
+        return None, "取种失败：响应不是有效种子"
+    _dl_note_success()
+    return bytes(_bytes), ""
 
 
 def _dl_gate() -> None:
@@ -991,23 +1065,26 @@ class DownloaderAdapter:
             return _cached
         _ensure_sdk()
 
-        # 0.5) 换票地址（API 站）：先解出真实下载地址，再走原来的下载逻辑。
+        # 0.5) 换票地址（API 站）：**换票 + 取种自己做完**（同一套 header）。
+        #   ★ 19.10.1：不再「先解成直链再交给 TorrentHelper」—— TorrentHelper 没有 headers 入参，
+        #   带不上 API 站要求的 Authorization，取种必然 403；旧写法还会把裸 token 当地址
+        #   （result 里给的是密钥）→「无法打开链接」→ 点播点了下载没反应。
         _raw_url = url
         if str(url).lstrip().startswith("["):
-            _direct, _err = _resolve_indirect_download_url(
+            _hit = _torrent_cache_get(_raw_url)
+            if _hit is not None:
+                return _hit
+            _ib, _ierr = _indirect_torrent_bytes(
                 url, cookie=cookie, user_agent=user_agent, proxies=proxies, referer=referer
             )
-            if not _direct:
-                logger.warning(f"换票地址解析失败 {str(url)[:60]}: {_err}")
-                return None
-            if str(_direct).startswith("magnet:"):
-                logger.info(f"换票地址返回磁力链接，跳过字节下载：{str(_direct)[:60]}")
-                return None
-            _hit = _torrent_cache_get(_direct)
-            if _hit is not None:
-                _torrent_cache_put(_raw_url, _hit)
-                return _hit
-            url = _direct
+            if _ib:
+                _torrent_cache_put(_raw_url, _ib)
+                return _ib
+            if str(_ierr) == "magnet":
+                logger.info(f"换票地址返回磁力链接，跳过字节下载：{str(url)[:60]}")
+            else:
+                logger.warning(f"换票地址取种失败 {str(url)[:60]}: {_ierr}")
+            return None
 
         # 1) 全局自适应限速闸门（流控时自动降速）
         _dl_gate()
