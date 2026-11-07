@@ -70,6 +70,18 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
           <h1>魔流<span class="magicflow-page__brand-en">MagicFlow</span></h1>
           <p>PT 做种 · 魔力养护 / 刷流轮转</p>
         </div>
+        <!-- 19.12.15：统计胶囊从右侧按钮行挪到标题块 —— 它是「概览信息」不是「操作」，
+             留在按钮行会挤掉功能中心与新建任务的视线优先级；窄屏（≤959）本就不显示。 -->
+        <VChip
+          v-if="summary.total_tasks"
+          class="magicflow-enabled-chip"
+          size="small"
+          variant="tonal"
+          :title="`共 ${summary.total_tasks} 个任务 · 运行中跑流程+做种 · 做种中只保种 · 已停止全暂停`"
+        >
+          <span class="magicflow-enabled-chip__dot" aria-hidden="true" />
+          运行 {{ summary.running_tasks || 0 }} · 做种 {{ summary.seeding_tasks || 0 }} · 停 {{ summary.stopped_tasks || 0 }}
+        </VChip>
       </div>
       <div class="magicflow-page__actions">
         <VMenu v-if="tasks.length" :close-on-content-click="true" location="bottom end">
@@ -105,18 +117,8 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
             </VListItem>
           </VList>
         </VMenu>
-        <VChip
-          v-if="summary.total_tasks"
-          class="magicflow-enabled-chip"
-          size="small"
-          variant="tonal"
-          :title="`共 ${summary.total_tasks} 个任务 · 运行中跑流程+做种 · 做种中只保种 · 已停止全暂停`"
-        >
-          <span class="magicflow-enabled-chip__dot" aria-hidden="true" />
-          运行 {{ summary.running_tasks || 0 }} · 做种 {{ summary.seeding_tasks || 0 }} · 停 {{ summary.stopped_tasks || 0 }}
-        </VChip>
-        <!-- ★ 新建任务：设计稿页头没有它，但它是主操作 —— 放在「运行/做种/停」之后、
-             与右侧「铃铛 / 齿轮 / 功能中心」用竖分隔隔开，避免和实心紫的功能中心撞色成一对 -->
+        <!-- ★ 新建任务：设计稿页头没有它，但它是主操作 —— 与右侧「铃铛 / 齿轮 / 功能中心」
+             用竖分隔隔开，避免和实心紫的功能中心撞色成一对 -->
         <VBtn
           class="magicflow-header-create"
           color="primary"
@@ -229,6 +231,19 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
   display: inline-flex;
   align-items: center;
   gap: 7px;
+}
+
+/* 19.12.15：胶囊挂在标题块里（不再占按钮位），与品牌文字留一点间距 */
+.magicflow-page__identity .magicflow-enabled-chip {
+  margin-inline-start: 4px;
+  flex: 0 0 auto;
+}
+
+/* 中等屏（960–1199）标题块与按钮行会挤到同一行，先收掉信息胶囊保住按钮 */
+@media (max-width: 1199px) {
+  .magicflow-page__identity .magicflow-enabled-chip {
+    display: none;
+  }
 }
 
 .magicflow-page .magicflow-enabled-chip__dot {

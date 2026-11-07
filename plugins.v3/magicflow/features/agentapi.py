@@ -1255,6 +1255,9 @@ class AgentApiMixin:
         payload = dict(data or {})
         payload["write"] = {
             "void": "GET /tags?action=hrbills_void&hash=<h>&reason=..&confirm=1",
+            # ★ 任务 96：人工结清动作 19.12.44 起已存在，补进自描述（任务 95 漏登记）
+            "settle_manual": ("GET /tags?action=hrbills_settle_manual&hash=<h>"
+                              "&reason=<必填>&by=<登录用户名>&confirm=1"),
             "reconcile": "GET /agent/hr/reconcile?site=<dom>&live=1",
             "breaches": "GET /agent/hr/breaches",
         }

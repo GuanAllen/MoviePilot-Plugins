@@ -161,6 +161,11 @@ class SiteCap:
     page_param: str = "unknown"      # works | ignored | ratelimited | unknown
     promo_in_list: bool = False
     probe_ver: int = 0              # 当时用的识别/解析逻辑版本（<PROBE_VER 视为过期）
+    # ★ 19.12.9：该站对「魔力」的**自称**（魔力值/金元宝/蟹币值/积分/鲸币…）。
+    #   这是站点静态属性 —— 除非站改名，否则不会变。原先只在 mybonus 公式缓存里透传，
+    #   缓存 1h 过期 / 任务停用不重抓 / PV 预算不足 都会让它凭空消失，界面退回「魔力值」。
+    #   现在**认出一次就落 mf_site.caps**，之后零网络读取。
+    currency: str = ""
     notes: List[str] = field(default_factory=list)
 
     # ------------------------------------------------------------------ 便捷
@@ -184,6 +189,11 @@ class SiteCap:
         return self
 
     def to_dict(self) -> Dict[str, Any]:
+        """序列化成可写进 ``mf_site.caps`` 的纯 JSON 结构。
+
+        为什么显式逐字段写：caps 是一整列 JSON，凡是没在这里列出的属性，落盘时都会
+        静默消失（下次读回就是默认值）—— 加字段必须同时改 ``to_dict`` 与 ``from_dict``。
+        """
         return {
             "domain": self.domain,
             "framework": self.framework,
@@ -195,11 +205,18 @@ class SiteCap:
             "page_param": self.page_param,
             "promo_in_list": self.promo_in_list,
             "probe_ver": int(self.probe_ver or 0),
+            "currency": str(self.currency or ""),
             "notes": list(self.notes),
         }
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "SiteCap":
+        """从 ``mf_site.caps`` 的 JSON 列还原站点静态属性，缺字段一律落默认值。
+
+        为什么要容错：这份 JSON 跨版本读回（老版本没有 currency / probe_ver 等字段），
+        一个字段缺失就整条抛异常 → 该站的币名与框架全丢、界面退回「魔力值」，
+        而这正是「币名老是消失」的成因之一。宁可丢一个脏字段，也不能让整条记录报废。
+        """
         cap = cls(domain=str(d.get("domain") or ""))
         cap.framework = str(d.get("framework") or FW_UNKNOWN)
         cap.source = str(d.get("source") or "default")
@@ -210,6 +227,7 @@ class SiteCap:
         cap.page_param = str(d.get("page_param") or "unknown")
         cap.promo_in_list = bool(d.get("promo_in_list"))
         cap.probe_ver = int(d.get("probe_ver") or 0)
+        cap.currency = str(d.get("currency") or "")
         cap.notes = [str(x) for x in (d.get("notes") or [])]
         return cap
 
@@ -352,13 +370,57 @@ class SiteCapRegistry:
         ★ 顺序要紧：先 apply_defaults 补默认，再上 flags —— 否则「显式学到的 False」
         （如 free_index=False）会被框架默认值又盖回 True。
         """
-        cap = SiteCap(domain=norm_domain(domain), framework=framework,
+        dom = norm_domain(domain)
+        # ★ 19.12.9：learn 是**整条重建**（框架重探 / PROBE_VER 升级都会走这里），
+        #   而币名与框架无关、且认出来极贵（要抓一次 mybonus）—— 必须跨重建继承，
+        #   否则每次站点能力重探都会把「鲸币」打回「魔力值」。
+        with self._lock:
+            self._load()
+            _old = self._caps.get(dom)
+        cap = SiteCap(domain=dom, framework=framework,
                       source=source, evidence=evidence)
+        cap.currency = str(getattr(_old, "currency", "") or "")
         cap.apply_defaults()
         for k, v in (flags or {}).items():
             if hasattr(cap, k):
                 setattr(cap, k, v)
         return self.record(cap.domain, cap)
+
+    # --------------------------------------------------------- 币名（静态属性）
+    def currency_of(self, domain: str) -> str:
+        """该站对「魔力」的自称（纯读持久层，零网络）。认不出返回空串。"""
+        dom = norm_domain(domain or "")
+        if not dom:
+            return ""
+        with self._lock:
+            self._load()
+            cap = self._caps.get(dom)
+            return str(getattr(cap, "currency", "") or "")
+
+    def learn_currency(self, domain: str, name: str) -> bool:
+        """记住该站的币名（认得就长期有效，不必每次抓页面）。
+
+        只在**值变化**时才写库；返回是否真的写了。
+        站点没有 cap 记录时建一条 ``framework=unknown`` 的——不臆断框架，
+        ``get()`` 末尾有「未知也返回已存记录」的兜底，读得回来。
+        """
+        name = str(name or "").strip()
+        dom = norm_domain(domain or "")
+        if not dom or not (2 <= len(name) <= 8):
+            return False
+        changed = False
+        with self._lock:
+            self._load()
+            cap = self._caps.get(dom)
+            if cap is None:
+                cap = self._caps[dom] = SiteCap(domain=dom)
+                changed = True
+            if str(getattr(cap, "currency", "") or "") != name:
+                cap.currency = name
+                changed = True
+        if changed:
+            self._save()
+        return changed
 
     def override(self, domain: str, **flags: Any) -> SiteCap:
         """人工覆盖（优先级最高，不落 site_caps，由调用方持久化覆盖表）。"""

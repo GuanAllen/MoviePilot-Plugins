@@ -1991,32 +1991,91 @@ class MagicFlowStore:
 
     # -------------------- 运行阶段 / 游标 --------------------
 
+    # 五个运行阶段的固定顺序。前端「五阶段运行流程」按它渲染，两边必须一致
+    # （刷流：入口检查→抓取候选→免费筛选→下载人数排序→复用·入库；
+    #   魔力：入口检查→抓取候选→洗池过滤→魔力排序→保种入库 —— 只是标签不同，键相同）。
+    RUN_STAGE_KEYS = ("entry", "fetch", "wash", "classify", "process")
+
     def record_phase(self, task_id: str, phase: str, label: str = "", detail: str = "") -> None:
         """记录当前运行阶段（供前端「运行诊断」流程链转圈）。
 
         detail 为阶段内的细粒度进度（如「取种 14/45」），前端显示以避免长时间无变化「像卡住」。
+
+        ★ 19.12.20：除「当前位置」外，同时维护 **逐阶段执行结果** ``run_stages``。
+        只看 ``last_phase`` 表达不了五步各自的实情：一轮跑完它被写成 ``done`` → 五步整片变绿；
+        任务不跑（做种/停止）时它是空 → 五步全灰、第一步孤零零挂着「待运行」，而右上角还按
+        ``last_run_status`` 说「完成」，自相矛盾。这里逐阶段留痕（进入= running，离开= done
+        并结算耗时，出错= error），一轮结束后**保留**，前端据此渲染每步「跑没跑 / 跑多久 / 成没成」。
         """
         if not task_id:
             return
         state = self.task_states.get(task_id)
         if not state:
             state = self.task_states.create(task_id)
+        # 换代：热重载后内存里的旧实例不认识新字段（写上去 to_dict 也会静默丢）→ 必须先换类
+        state = TaskState.upgrade(state)
+        prev = str(getattr(state, "last_phase", "") or "")
+        now = time.time()
+        stages: Dict[str, Dict[str, Any]] = {
+            str(k): dict(v) for k, v in (getattr(state, "run_stages", None) or {}).items() if isinstance(v, dict)
+        }
+
+        def _settle(row: Optional[Dict[str, Any]], mark: str) -> None:
+            """把仍在 running 的某阶段落定为 mark，并结算耗时（毫秒）。"""
+            if not row or row.get("state") != "running":
+                return
+            started = float(row.get("at") or now)
+            row["ms"] = int(max(now - started, 0.0) * 1000)
+            row["state"] = mark
+
+        if phase in self.RUN_STAGE_KEYS:
+            if prev not in self.RUN_STAGE_KEYS:
+                # 上一条记录是「本轮结束 / 出错 / 空」→ 这是一轮新的，重新记
+                stages = {}
+            elif prev != phase:
+                # 顺序推进：上一阶段算跑完（耗时按它自己的 at 结算）
+                _settle(stages.get(prev), "done")
+            row = stages.get(phase)
+            if not row or row.get("state") != "running":
+                # 首次进入本阶段（或上一轮残留）→ 重新开一个 running 段
+                # 注意：同一阶段的重复打点只更新 detail，不重置 at，否则耗时会被截断
+                row = {"state": "running", "at": now, "ms": 0}
+            stages[phase] = row
+        elif phase == "done":
+            for row in stages.values():
+                _settle(row, "done")
+        elif phase == "error":
+            for row in stages.values():
+                _settle(row, "error")
+
+        state.run_stages = stages
         state.last_phase = phase or ""
         state.last_phase_label = label or ""
         state.last_phase_detail = detail or ""
-        state.last_phase_at = time.time()
+        state.last_phase_at = now
         self.task_states.save(state)
 
     def get_phase(self, task_id: str) -> Dict[str, Any]:
-        """读取当前运行阶段。"""
+        """读取当前运行阶段 + 逐阶段执行结果。"""
         state = self.task_states.get(task_id)
         if not state:
-            return {"last_phase": "", "last_phase_label": "", "last_phase_detail": "", "last_phase_at": 0.0}
+            return {
+                "last_phase": "",
+                "last_phase_label": "",
+                "last_phase_detail": "",
+                "last_phase_at": 0.0,
+                "run_stages": {},
+            }
         return {
             "last_phase": state.last_phase,
             "last_phase_label": state.last_phase_label,
             "last_phase_detail": state.last_phase_detail,
             "last_phase_at": state.last_phase_at,
+            "run_stages": {
+                str(k): dict(v)
+                for k, v in (getattr(state, "run_stages", None) or {}).items()
+                if isinstance(v, dict)
+            },
         }
 
     def get_page_cursor(self, task_id: str) -> int:
@@ -2641,6 +2700,7 @@ class MagicFlowStore:
                 "last_phase_label": "",
                 "last_phase_detail": "",
                 "last_phase_at": 0.0,
+                "run_stages": {},
                 "page_cursor": 0,
                 "last_decision": {},
             }
@@ -2670,6 +2730,11 @@ class MagicFlowStore:
             "last_phase_label": state.last_phase_label,
             "last_phase_detail": state.last_phase_detail,
             "last_phase_at": state.last_phase_at,
+            "run_stages": {
+                str(k): dict(v)
+                for k, v in (getattr(state, "run_stages", None) or {}).items()
+                if isinstance(v, dict)
+            },
             "page_cursor": state.page_cursor,
             "last_decision": dict(getattr(state, "last_decision", {}) or {}),
         }

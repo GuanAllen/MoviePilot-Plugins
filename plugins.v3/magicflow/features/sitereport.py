@@ -36,6 +36,7 @@ from ..tags import (
     STATE_BONUS,
     STATE_CLAIM,
     STATE_HR,
+    STATE_KEEP,
     SUB_NEW,
     SUB_RESOURCE,
     SUB_PLAIN,
@@ -230,7 +231,7 @@ class SiteReportMixin:
         if RESCUE_TAG in _tags:
             return BUCKET_RESCUE
         _dsite, duty = duty_of(_tags)
-        if duty == STATE_HR or is_hr:
+        if duty in (STATE_HR, STATE_KEEP) or is_hr:
             return BUCKET_HR
         if duty == STATE_BRUSH:
             return BUCKET_BRUSH

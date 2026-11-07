@@ -234,7 +234,11 @@ class LedgerBackend:
         return str(getattr(cfg, "name", "") or "") if cfg is not None else ""
 
     def _task_state(self, task_id: Any) -> str:
-        """任务 id → 职务（刷流/魔力/保种/静默/点播/音乐/认领）。7.0.0 退役 state 列后由任务推导。
+        """任务 id → 职务（刷流/魔力/H&R/保种/静默/点播/音乐/认领）。7.0.0 退役 state 列后由任务推导。
+
+        ★ 19.12.38：「保种」与「H&R」是两个职务 —— 前者 ``__keep__``（人工点名长期做种），
+          后者 ``__hr_host__``（欠债派生）。拆开前共用「保种」，统计只能靠 taken_by 区分。
+        
 
         ★ 关键：任务被停止（遣散）→ 静默，不看 task_type。只有 running/seeding
           （participating）才算在岗（刷流/魔力）。否则 stopped 任务的种会被误算成在岗。

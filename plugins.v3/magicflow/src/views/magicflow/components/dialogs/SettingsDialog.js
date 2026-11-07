@@ -24,7 +24,6 @@ const {
   withCtx: _withCtx$a,
 } = __vue
 
-import index from '../../index.vue'
 import { MF_SETTINGS_TABS, TILE_OPTIONS, agentToolScopeItems, episodePolicyItems, ratingSourceItems } from '../../constants.js'
 import { fallbackSourceLabel } from '../../composables/useFallback.js'
 import { fmtTs } from '../../format.js'

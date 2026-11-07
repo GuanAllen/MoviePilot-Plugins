@@ -1552,7 +1552,9 @@ class CoreMixin:
                 silent_hashes.append(h)
                 continue
             try:
-                owed = bool(self._hr_obligation("", t, snap=snap)[0])
+                # ★ 19.12.37：用 ``_hr_should_hold``（过「该不该记」两道门槛）——
+                #   否则规则未知的站（馒头）会被「未知保守 24h」判成欠，遣散时误交保种。
+                owed = bool(self._hr_should_hold("", t, snap=snap))
             except Exception:  # noqa: BLE001
                 owed = False
             if owed:

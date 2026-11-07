@@ -44,9 +44,11 @@ from ..sites.formula_fetch import (
 
 from ..common import (
     BROWSE_PAGES,
+    CLAIM_TASK_ID,
     CROSSSEED_TASK_INTERVAL_MINUTES,
     CROSSSEED_TASK_ID,
     CROSSSEED_TASK_NAME,
+    HR_HOST_TASK_ID,
     MagicFlowTaskConfig,
     RUN_MODE_RUNNING,
     RUN_MODE_SEEDING,
@@ -56,6 +58,25 @@ from ..common import (
     enabled_of_run_mode,
     run_mode_of,
 )
+
+
+# ★ 19.12.27：内置宿主任务（任务列表里的只读条目）—— 它们**没有任务配置行**，
+#   但在界面上「存在」（详情走各自 host card：_silent_host_card / _hr_host_card /
+#   _claim_host_card / _crossseed_host_card）。
+#   此前只有静默托管被逐处特判，H&R 保种 / 认领保挂 / 跨站取种 落到普通任务分支
+#   → `_get_task_config()` 返回 None → 回「任务不存在」，用户点一下就弹错误。
+#   凡「按任务 id 取配置」的读取型接口，都要先认这张表。
+_HOST_TASK_IDS = (
+    SILENT_HOST_TASK_ID,
+    HR_HOST_TASK_ID,
+    CLAIM_TASK_ID,
+    CROSSSEED_TASK_ID,
+)
+
+
+def _is_host_task(task_id: Any) -> bool:
+    """是否内置宿主任务（只读条目，无配置行）。"""
+    return str(task_id or "") in _HOST_TASK_IDS
 
 
 # 需要「保存目录」的任务类型：这两类都会往盘里**下载**种子。
@@ -293,6 +314,8 @@ class TasksMixin:
         保存目录用「改后的类型」判定（payload 没带类型就沿用原类型），避免前端只改
         调度参数时被误拦；类型则创建后不可修改，直接拒绝。
         """
+        if _is_host_task(task_id):
+            return Response(success=False, message="这是内置任务，没有可编辑的配置")
         task = self._get_task_config(task_id)
         if not task:
             return Response(success=False, message="任务不存在")
@@ -667,6 +690,8 @@ class TasksMixin:
 
     def get_task_handover(self, task_id: str) -> Response:
         """预览：删掉该任务时名下种子能交给谁 / 有多少要处理。"""
+        if _is_host_task(task_id):
+            return Response(success=False, message="这是内置任务，没有可交棒的配置与种子归属")
         task = self._get_task_config(task_id)
         if not task:
             return Response(success=False, message="任务不存在")
@@ -674,6 +699,8 @@ class TasksMixin:
 
     def post_task_handover(self, task_id: str, payload: MagicFlowHandoverPayload) -> Response:
         """执行：交棒给目标任务 或 退回静默池。"""
+        if _is_host_task(task_id):
+            return Response(success=False, message="这是内置任务，不支持交棒")
         task = self._get_task_config(task_id)
         if not task:
             return Response(success=False, message="任务不存在")
@@ -698,6 +725,8 @@ class TasksMixin:
         - ``settle=idle``：名下种子退回静默池（保文件），再删任务；
         - 都不传：只删配置（种子会变孤儿，不推荐）。
         """
+        if _is_host_task(task_id):
+            return Response(success=False, message="这是内置任务，不能删除")
         if task_id not in self._task_configs:
             return Response(success=False, message="任务不存在")
 
@@ -759,6 +788,13 @@ class TasksMixin:
         if str(task_id or "") == SILENT_HOST_TASK_ID:
             threading.Thread(target=self.silent_host, daemon=True).start()
             return Response(success=True, message="静默托管已启动")
+        if _is_host_task(task_id):
+            # 其它内置宿主由各自后台上岗/结清驱动，没有「跑一轮」这回事；
+            # 回明确文案，别让用户以为是任务丢了。
+            return Response(
+                success=False,
+                message="这是内置任务，由后台按周期自动执行，没有可手动触发的轮次",
+            )
         task = self._get_task_config(task_id)
         if not task:
             return Response(success=False, message="任务不存在")
@@ -793,6 +829,8 @@ class TasksMixin:
           1 seen 记录(hash↔cand 同时间戳配对);2 站点「我的种子」列表按标题回填。
         只写本地记录,**不删任何种子**。
         """
+        if _is_host_task(task_id):
+            return Response(success=False, message="这是内置任务，没有可回填的分页")
         task = self._get_task_config(task_id)
         if not task:
             return Response(success=False, message="任务不存在")
@@ -870,11 +908,156 @@ class TasksMixin:
             data={"managed": total_managed, "resolved": total_resolved, "unresolved": total_unresolved},
         )
 
+    # --------------------------------------------- 19.12.28 内置宿主任务的种子明细
+    #  19.12.27 只做到「不报错」（统一回空集），但点进去看到 0 个种反而更迷惑 ——
+    #  这几个宿主明明各挂着种。现在按各自真值源反查 hash，再补下载器实况，
+    #  返回结构与普通任务**完全同构**，前端种子池表格（含分页 / H&R 列）直接复用。
+    def _bonus_torrent_rows(self, torrents: List[Any], protected_hashes: Any = ()) -> List[Dict[str, Any]]:
+        """把下载器种子对象转成 ``/bonus`` 的 torrents 数组（普通任务 / 宿主任务共用）。
+
+        黑盒原则不变：只给托管状态与进度，不给自算魔力/评分/排名。
+        """
+        prot = protected_hashes or ()
+        protected = set()
+        try:
+            protected = {str(x or "").lower() for x in prot}
+        except TypeError:
+            protected = set()
+        rows: List[Dict[str, Any]] = []
+        for t in torrents or []:
+            hkey = str(getattr(t, "hash", "") or "").lower()
+            # 19.12.16：种子池列表按设计稿要有「做种时长」列。取值走下载器**活跃做种**
+            # 时长（qB ``seeding_time`` / MP 归一后的 ``seed_time``，二者同源），
+            # 与 H&R 判据 ``downloader_ops._x_seeded_hours`` 同一口径 —— 不用
+            # ``now - added_on`` 墙钟，暂停期间不该继续累积。
+            _seed_sec = 0.0
+            for _attr in ("seed_time", "seeding_time"):
+                try:
+                    _seed_sec = float(getattr(t, _attr, 0) or 0)
+                except (TypeError, ValueError):
+                    _seed_sec = 0.0
+                if _seed_sec > 0:
+                    break
+            rows.append({
+                "hash": getattr(t, "hash", ""),
+                "title": getattr(t, "title", ""),
+                "size_gb": round(float(getattr(t, "size_gb", 0) or 0), 2),
+                "is_protected": hkey in protected,
+                "state": str(getattr(t, "state", "") or ""),
+                "progress": round(float(getattr(t, "progress", 0) or 0), 4),
+                "uploaded": round(float(getattr(t, "uploaded", 0) or 0)),
+                "ratio": round(float(getattr(t, "ratio", 0) or 0), 3),
+                "seed_time": round(_seed_sec),
+            })
+        return rows
+
+    def _host_task_hashes(self, task_id: str) -> set:
+        """内置宿主任务「名下种」的 hash 集合 —— **四个宿主口径各不相同，别互相套用**。
+
+        - ``__silent_host__``：账本职务=静默（= ``mf_seed.task_id`` 空 = 不在岗/待分诊）
+        - ``__claim__``      ：认领纳管名单 ``_claim_duty_targets``（站点认领页解析出来，不含已退出）
+        - ``__hr_host__``    ：H&R **账单未结清**（active/pending/breached）。
+          刻意不是 ``task_id='__hr_host__'`` —— 2026-11-05 实测线上后者只挂 1 个种，
+          而 ``mf_bills`` 待结清 22 条；按 task_id 出明细这一页会空得离谱，
+          且与「H&R 账单」自相矛盾。用户点「H&R保种」要的是「我还欠哪些」。
+        - ``__crossseed__``  ：跨站取种台账 ``_crossseed_pending`` 的 hash
+        """
+        hid = str(task_id or "")
+        out: set = set()
+
+        if hid == CROSSSEED_TASK_ID:
+            try:
+                out = {str(k or "").lower() for k in (self._crossseed_pending().items() or {})}
+            except Exception:  # noqa: BLE001
+                out = set()
+            return {h for h in out if h}
+
+        if hid == HR_HOST_TASK_ID:
+            # ★ 19.12.36（Master「不管什么任务下完都判定 h&r，判定欠直接摘原来的任务标签
+            #   挂 H&r」）：口径改为**保种职务**（``state=保种``），与 ``hr._hr_host_card``
+            #   和迁移判据同源。理由是迁移不再等账单开户 —— 工时不足即移交，一颗跨站/点播
+            #   加种的种可能从没开过账，但职务已经说明它欠着；再按账单数就会漏显示。
+            from ..tagspec import STATE_HR  # noqa: WPS433 惰性导入（离线测试不碰 tagspec）
+            try:
+                for h, rec in (self._tag_state().items() or {}).items():
+                    if not isinstance(rec, dict):
+                        continue
+                    if str(rec.get("state") or "") != STATE_HR:
+                        continue
+                    # ★ 19.12.38：职务已拆开 —— ``H&R``(STATE_HR) 归 ``__hr_host__``，
+                    #   ``保种``(STATE_KEEP) 归 ``__keep__``。上面那条 state 判定已足够；
+                    #   ``taken_by`` 留作双保险（旧账本可能有 state 对、taken_by 空的孤儿行）。
+                    if str(rec.get("taken_by") or "") != HR_HOST_TASK_ID:
+                        continue
+                    hh = str(h or "").lower()
+                    if hh:
+                        out.add(hh)
+            except Exception:  # noqa: BLE001
+                pass
+            return {h for h in out if h}
+
+        if hid == CLAIM_TASK_ID:
+            try:
+                out = {str(h or "").lower() for h in (self._claim_duty_targets() or {})}
+            except Exception:  # noqa: BLE001
+                out = set()
+            return {h for h in out if h}
+
+        # 静默托管（默认分支）：账本职务=静默且无归属
+        from ..tagspec import STATE_SILENT  # noqa: WPS433 惰性导入（离线测试不碰 tagspec）
+        try:
+            for h, rec in (self._tag_state().items() or {}).items():
+                if not isinstance(rec, dict):
+                    continue
+                if str(rec.get("state") or "") != STATE_SILENT:
+                    continue
+                if str(rec.get("taken_by") or ""):
+                    continue
+                out.add(str(h or "").lower())
+        except Exception:  # noqa: BLE001
+            pass
+        return {h for h in out if h}
+
+    def _host_task_torrents(self, task_id: str) -> List[Any]:
+        """宿主任务名下的种子对象：账本/账单给 hash，下载器快照补实况。
+
+        账本里有、qB 里已经没有的（删过的老账），这里**不显示** —— 列表要能点能操作。
+        """
+        hashes = self._host_task_hashes(task_id)
+        if not hashes:
+            return []
+        try:
+            groups = self._tag_snapshot_view("qbittorrent")
+        except Exception:  # noqa: BLE001
+            groups = {}
+        flat: Dict[str, Any] = {}
+        for rows in (groups or {}).values():
+            for t in rows or []:
+                hh = str(getattr(t, "hash", "") or "").lower()
+                if hh:
+                    flat[hh] = t
+        return [flat[h] for h in hashes if h in flat]
+
     def get_task_bonus(self, task_id: str) -> Response:
         """获取任务魔力统计及种子列表。"""
-        if str(task_id or "") == SILENT_HOST_TASK_ID:
-            return Response(success=True, message="ok", data={
-                "torrents": [], "total_bonus": 0.0, "torrent_count": 0, "protected_count": 0})
+        if _is_host_task(task_id):
+            # 内置宿主任务（静默 / H&R 保种 / 认领 / 跨站取种）没有配置行、也没有
+            # 「任务标签」，但各有自己的真值源（见 ``_host_task_hashes``）。
+            # ★ 必须回 success：回「任务不存在」会让用户点一下任务就弹错误提示。
+            try:
+                rows = self._host_task_torrents(task_id)
+                return Response(success=True, message="ok", data={
+                    "torrents": self._bonus_torrent_rows(rows),
+                    "total_bonus": 0.0,
+                    "torrent_count": len(rows),
+                    "protected_count": 0,
+                    "host": True,
+                })
+            except Exception as e:  # noqa: BLE001
+                self._log(f"宿主任务明细失败:{task_id}:{e}", "warning")
+                return Response(success=True, message="ok", data={
+                    "torrents": [], "total_bonus": 0.0, "torrent_count": 0,
+                    "protected_count": 0, "host": True})
         task = self._get_task_config(task_id)
         if not task:
             return Response(success=False, message="任务不存在")
@@ -897,37 +1080,9 @@ class TasksMixin:
                 return Response(success=True, data={"torrents": [], "total_bonus": 0, "torrent_count": 0, "protected_count": 0, "site": self._site_reported(task)})
             rep = self._site_reported(task)
             protected_hashes = self._store.get_protected_torrents(task_id) if self._store else set()
-            state_by_hash = {
-                (t.hash or "").lower(): str(getattr(t, "state", "") or "")
-                for t in task_torrents
-            }
-            progress_by_hash = {
-                (t.hash or "").lower(): round(float(getattr(t, "progress", 0) or 0), 4)
-                for t in task_torrents
-            }
-            uploaded_by_hash = {
-                (t.hash or "").lower(): round(float(getattr(t, "uploaded", 0) or 0))
-                for t in task_torrents
-            }
-            ratio_by_hash = {
-                (t.hash or "").lower(): round(float(getattr(t, "ratio", 0) or 0), 3)
-                for t in task_torrents
-            }
-
             # 黑盒:不展示自算魔力/评分/排名,只展示托管状态与进度。
-            torrents_data = []
-            for t in task_torrents:
-                hkey = (t.hash or "").lower()
-                torrents_data.append({
-                    "hash": t.hash,
-                    "title": t.title,
-                    "size_gb": round(t.size_gb, 2),
-                    "is_protected": t.hash in protected_hashes,
-                    "state": state_by_hash.get(hkey, ""),
-                    "progress": progress_by_hash.get(hkey, 0.0),
-                    "uploaded": uploaded_by_hash.get(hkey, 0),
-                    "ratio": ratio_by_hash.get(hkey, 0.0),
-                })
+            # 19.12.28：组装逻辑抽到 ``_bonus_torrent_rows``，与宿主任务明细共用一份。
+            torrents_data = self._bonus_torrent_rows(task_torrents, protected_hashes)
 
             return Response(success=True, data={
                 "torrents": torrents_data,
@@ -943,7 +1098,8 @@ class TasksMixin:
 
     def get_task_candidates(self, task_id: str) -> Response:
         """获取候选种子(黑盒:不对外暴露自算魔力评分,仅返回名次与基础属性)。"""
-        if str(task_id or "") == SILENT_HOST_TASK_ID:
+        if _is_host_task(task_id):
+            # 内置宿主任务只读、不选种；回空候选而不是「任务不存在」
             return Response(success=True, message="ok", data={
                 "candidates": [], "total": 0, "reason_counts": {}})
         task = self._get_task_config(task_id)

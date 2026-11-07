@@ -766,6 +766,14 @@ class FormulaMixin:
             "currency": "",
             "user": {},
         }
+        # ★ 19.12.9：币名是**站点静态属性**（除非站改名，否则不变），真值源是台账
+        #   ``mf_site.caps.currency``，不是 1h 就过期的公式缓存。先读持久层：
+        #   缓存过期 / 任务停用不重抓 / PV 预算不足，都不会再让币名凭空消失。
+        _cur_dom = str(getattr(task, "site_domain", "") or "").strip().lower()
+        try:
+            out["currency"] = self.sitecaps().currency_of(_cur_dom)
+        except Exception:  # noqa: BLE001
+            out["currency"] = ""
         try:
             cap = self._acquire_site_formula(task)
             if cap and getattr(cap, "ok", False):
@@ -789,7 +797,15 @@ class FormulaMixin:
                 out["harem_hourly"] = float(extra.get("harem_hourly") or 0)
                 out["table"] = extra.get("bonus_table") or []
                 out["source"] = getattr(cap, "source", "") or ""
-                out["currency"] = str(extra.get("currency") or "")
+                # ★ 19.12.9：抓到的币名优先，并且**认得就记进台账**（一次认领、长期有效）。
+                #   公式缓存只是「第一次认出它」的入口，不是真值源。
+                _cap_cur = str(extra.get("currency") or "").strip()
+                if _cap_cur:
+                    out["currency"] = _cap_cur
+                    try:
+                        self.sitecaps().learn_currency(_cur_dom, _cap_cur)
+                    except Exception:  # noqa: BLE001
+                        pass
                 # ★ 判定依据链：这份值是刚从站点抓的、还是缓存（Redis）里的旧值？
                 try:
                     _dom = str(getattr(task, "site_domain", "") or "").strip().lower()
@@ -813,6 +829,26 @@ class FormulaMixin:
         user = self._site_user_stats(task.site_id)
         out["user"] = user
         out["current_bonus"] = float(user.get("bonus") or 0.0)
+        # ★ 19.12.9：台账里还没这站的币名 → 值得为「认得它叫啥」打一次站点。
+        #   与 ``_acquire_site_formula`` 规则③不冲突：规则③管的是**时魔**要不要刷新
+        #   （停用任务不白打请求），而币名是一次性认领、认出即止（下面 learn_currency
+        #   写进台账后，这条路再也不会走）。单飞 + 失败冷却由 ``_schedule_formula_fetch`` 兜住。
+        if not out["currency"] and _cur_dom:
+            try:
+                self._schedule_formula_fetch(task, _cur_dom, self._cache_formula())
+                # 每个站只提示一次，别让 /status 轮询把日志刷满
+                _seen = getattr(self, "_currency_probe_logged", None)
+                if _seen is None:
+                    _seen = self._currency_probe_logged = set()
+                if _cur_dom not in _seen:
+                    _seen.add(_cur_dom)
+                    self._log(
+                        f"站点货币名未记录，后台认一次 [{_cur_dom}]"
+                        f"（认出即长期有效，不再重抓）",
+                        "info",
+                    )
+            except Exception:  # noqa: BLE001
+                pass
         return out
 
     def _observed_rate(self, site_id: int) -> Optional[float]:
@@ -867,7 +903,18 @@ class FormulaMixin:
         if hit is not None and (now - float(hit.get("ts", 0))) < 30:
             return dict(hit.get("data") or {})
         is_brush = str(getattr(task, "task_type", "bonus") or "bonus").strip().lower() == "brush"
-        unit = "GB" if is_brush else "魔力值"
+        if is_brush:
+            unit = "GB"
+        else:
+            # ★ 19.12.10：目标单位跟站点自称走（鲸币/金元宝/蟹币值/积分/电力值…），
+            #   与 /status 的 `currency` 同一真值源（`mf_site.caps`，读台账零网络）。
+            #   原来写死「魔力值」——于是「6309 / 10000 魔力值」出现在一个自称鲸币的站上，
+            #   跟同一页的「站点当前鲸币」自相矛盾。认不出站名才回退「魔力值」，不编造（铁律 6）。
+            _goal_dom = str(getattr(task, "site_domain", "") or "").strip().lower()
+            try:
+                unit = (self.sitecaps().currency_of(_goal_dom) if _goal_dom else "") or "魔力值"
+            except Exception:  # noqa: BLE001 - 台账读不出来不影响目标进度本身
+                unit = "魔力值"
         out: Dict[str, Any] = {
             "goal_has": False,
             "goal_reached": False,

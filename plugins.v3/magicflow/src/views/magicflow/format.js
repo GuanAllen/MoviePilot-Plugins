@@ -27,14 +27,29 @@ export function fmtTs(ts) {
   return n > 0 ? new Date(n * 1000).toLocaleString() : '—'
 }
 
-/** 任务类型：brush（刷流，考核上传量）/ bonus（刷魔力，考核魔力）。 */
+/** 任务类型：brush（刷流，考核上传量）/ bonus（刷魔力，考核魔力）/ host（内置常驻托管，只读）。 */
 export function taskKind(task) {
+  // ★ 19.12.31：host 必须单列 —— 原先落到 bonus 分支，宿主行被按「魔力」渲染
+  //   （芯片写魔力、tooltip 写「魔力考核」、主数取不到时魔就恒「—」/「取数中…」）。
+  if (task?.builtin || task?.task_type === 'host') return 'host'
   return task?.task_type === 'brush' ? 'brush' : 'bonus'
 }
 
 /** 任务类型的中文名。 */
 export function taskKindText(task) {
-  return taskKind(task) === 'brush' ? '刷流' : '魔力'
+  const k = taskKind(task)
+  return k === 'brush' ? '刷流' : (k === 'host' ? '托管' : '魔力')
+}
+
+/** 内置宿主任务「名下种子」的口径短语（与宿主卡 hostPoolHint 同源口径）。 */
+export function hostSeedsText(task) {
+  const seeds = Number(task?.seeding_count || 0)
+  const id = String(task?.id || '')
+  if (id === '__hr_host__') return `还欠 ${seeds}`
+  if (id === '__claim__') return `保挂 ${seeds}`
+  if (id === '__crossseed__') return `台账 ${seeds}`
+  if (id === '__silent_host__') return `静默 ${seeds}`
+  return `${seeds} 个`
 }
 
 /**
@@ -52,6 +67,24 @@ export function taskMetrics(task) {
   const upSpeed = Number(t.task_up_speed || 0);
   const bonusOk = !!t.site_bonus_ok && t.site_bonus_per_hour != null;
   const bonus = bonusOk ? Number(t.site_bonus_per_hour) : null;
+
+  // ★ 19.12.31：宿主任务没有「上传考核/时魔」两个口径 —— 它的主指标就是名下种子数
+  //   （各宿主真值源不同，语义用 hostSeedsText 带出来）。原先走 bonus 分支时
+  //   主数恒「—」、手机列表恒「取数中…」（时魔永远取不到）。
+  if (kind === 'host') {
+    return {
+      kind,
+      isBrush: false,
+      isHost: true,
+      seeds,
+      upload: { key: 'upload', label: '上传', value: 0, text: '—', speed: '', active: 0, noUpload: false },
+      hourly: { key: 'bonus', label: '时魔', value: null, text: '—', ok: false },
+      primary: { key: 'host', label: '名下', value: seeds, text: hostSeedsText(t) },
+      secondary: { key: 'readonly', label: '', value: 0, text: '' },
+      primaryText: hostSeedsText(t),
+      secondaryText: '',
+    };
+  }
 
   // 上传：任务级（本任务种子池累计）。有托管种子却一个都没在上传 → 空跑信号。
   const upload = {

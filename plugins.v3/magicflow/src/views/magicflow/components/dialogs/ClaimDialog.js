@@ -25,7 +25,6 @@ const {
   withModifiers: _withModifiers$3,
 } = __vue
 
-import index from '../../index.vue'
 
 const _hoisted_1$x = { class: "magicflow-settings-dialog__head" };
 const _hoisted_2$v = { class: "magicflow-claim-title" };

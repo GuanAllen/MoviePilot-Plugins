@@ -26,7 +26,6 @@ const {
 } = __vue
 
 import SilentPoolDialog from './SilentPoolDialog.vue'
-import index from '../../index.vue'
 import { fmtSizeGb, odAltTitle, odEtaText, odIsPaused, odMainTitle, odPct, odSpeed, odStageColor, odSubTitle, odTraffic, useOndemand } from '../../composables/useOndemand.js'
 import { tsText } from '../../format.js'
 import { useSignin } from '../../composables/useSignin.js'

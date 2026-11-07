@@ -19,6 +19,8 @@ export function makeFeatures(c) {
 
     // ── 点播 ──────────────────────────────────────────────
     ondemandSearch: (params) => c.post(`ondemand?${params}`, {}),
+    // ★ 批量：一次落多条候选（picks=enclosure，换行/逗号分隔；不重搜、逐条独立成败）
+    ondemandBatch: (params) => c.post(`ondemand/batch?${params}`, {}),
     ondemandItems: () => c.get('ondemand/items?limit=50'),
     ondemandAct: (hash, action) => c.post(
       `ondemand/act?hash=${encodeURIComponent(hash)}&action=${encodeURIComponent(action)}`, {}),

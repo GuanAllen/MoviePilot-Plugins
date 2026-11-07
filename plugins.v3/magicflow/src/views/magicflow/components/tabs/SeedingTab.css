@@ -243,3 +243,427 @@
     overflow-wrap: anywhere;
 }
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   19.12.16 · 按设计稿「种子池」(2:1534 / 2:1590) 重排
+   稿的尺寸：
+     统计行   4 格 · pad 9/14 · r10 · 状态点 8 · 文字 11.5 · 值 12.5 SemiBold
+     列表卡   pad 16/20 · r14 · 标题 14 SemiBold · 提示 11 Medium
+     列头     h16 · 10.5 Medium · 列宽 80/72/96/88/104（+ 24 复选框 + 7 状态点 + 24 操作）
+     行       h33 · pad 7/12 · r10 · 状态点 7 · 名 11.5 · 数值 11 · 状态 10.5
+   颜色仍走 var(--v-theme-*) + rgba(on-surface, α)，不写死稿里的深色十六进制。
+   ══════════════════════════════════════════════════════════════════════ */
+
+.mf-pool[data-v-f0e284f2] {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-inline-size: 0;
+}
+
+/* ── 统计行 ─────────────────────────────────────────────────────────── */
+.mf-pool__stats[data-v-f0e284f2] {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.mf-pool__stat[data-v-f0e284f2] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-inline-size: 0;
+  padding: 9px 14px;
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.035);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+}
+
+.mf-pool__stat-dot[data-v-f0e284f2] {
+  flex: 0 0 auto;
+  inline-size: 8px;
+  block-size: 8px;
+  border-radius: 50%;
+  background: rgba(var(--v-theme-on-surface), 0.4);
+}
+
+.mf-pool__stat-dot.is-ok[data-v-f0e284f2] { background: rgb(var(--v-theme-success)); }
+.mf-pool__stat-dot.is-silent[data-v-f0e284f2] { background: rgb(var(--v-theme-primary)); }
+.mf-pool__stat-dot.is-prot[data-v-f0e284f2] { background: rgb(var(--v-theme-info)); }
+.mf-pool__stat-dot.is-hr[data-v-f0e284f2] { background: rgb(var(--v-theme-warning)); }
+
+.mf-pool__stat-label[data-v-f0e284f2] {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: rgba(var(--v-theme-on-surface), 0.84);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.mf-pool__stat-label em[data-v-f0e284f2] {
+  font-style: normal;
+  font-size: 10.5px;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mf-pool__stat-val[data-v-f0e284f2] {
+  flex: 0 0 auto;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: rgba(var(--v-theme-on-surface), 0.95);
+}
+
+.mf-pool__stat-val.is-warn[data-v-f0e284f2] { color: rgb(var(--v-theme-warning)); }
+
+/* ── 列表卡 ─────────────────────────────────────────────────────────── */
+/* 父级有 `.magicflow-page .magicflow-panel { padding: 18px 16px }`（同 specificity 2），
+   这里用 `.mf-pool .mf-pool__card` 同为 2 但更靠后 → 覆盖成功。 */
+.mf-pool .mf-pool__card[data-v-f0e284f2] {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 20px;
+  border-radius: 14px;
+  min-inline-size: 0;
+}
+
+.mf-pool__head[data-v-f0e284f2] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mf-pool__titles[data-v-f0e284f2] {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-inline-size: 0;
+}
+
+.mf-pool__title[data-v-f0e284f2] {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: rgba(var(--v-theme-on-surface), 0.95);
+  white-space: nowrap;
+}
+
+.mf-pool__hint[data-v-f0e284f2] {
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(var(--v-theme-primary), 0.82);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mf-pool__tools[data-v-f0e284f2] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.mf-pool__bulk[data-v-f0e284f2] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-block: 2px 4px;
+}
+
+.mf-pool__count[data-v-f0e284f2] {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.86);
+  white-space: nowrap;
+}
+
+/* ── 列头 / 行：共用同一套 9 列栅格 ─────────────────────────────────── */
+.mf-pool__thead[data-v-f0e284f2],
+.mf-pool__row[data-v-f0e284f2] {
+  display: grid;
+  grid-template-columns:
+    24px 7px minmax(0, 1fr)
+    80px 72px 96px 88px 104px
+    24px;
+  gap: 10px;
+  align-items: center;
+  min-inline-size: 0;
+}
+
+.mf-pool__thead[data-v-f0e284f2] {
+  block-size: 16px;
+  padding-inline: 12px;
+}
+
+.mf-pool__th[data-v-f0e284f2] {
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  white-space: nowrap;
+}
+
+.mf-pool__th.is-num[data-v-f0e284f2],
+.mf-pool__num[data-v-f0e284f2] {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.mf-pool__rows[data-v-f0e284f2] {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-inline-size: 0;
+}
+
+.mf-pool__row[data-v-f0e284f2] {
+  min-block-size: 33px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.028);
+  cursor: pointer;
+  transition: background-color 0.14s ease;
+}
+
+.mf-pool__row:hover[data-v-f0e284f2] {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+}
+
+/* 稿的第一行：H&R 临期 → 紫调底 + 紫描边 */
+.mf-pool__row.is-hr[data-v-f0e284f2] {
+  background: rgba(var(--v-theme-primary), 0.1);
+  box-shadow: inset 0 0 0 1px rgba(var(--v-theme-primary), 0.3);
+}
+
+.mf-pool__row.is-hr:hover[data-v-f0e284f2] {
+  background: rgba(var(--v-theme-primary), 0.15);
+}
+
+/* 有 H&R 但没到临期线：只给左侧一点点提示，不抢视觉 */
+.mf-pool__row.is-hr-soft[data-v-f0e284f2] {
+  background: rgba(var(--v-theme-on-surface), 0.045);
+}
+
+.mf-pool__row.is-hr-error[data-v-f0e284f2] {
+  background: rgba(var(--v-theme-error), 0.1);
+  box-shadow: inset 0 0 0 1px rgba(var(--v-theme-error), 0.3);
+}
+
+/* 行首复选框：稿里没有，但批量操作需要 —— 平时隐形，hover/选中才现身 */
+.mf-pool__check[data-v-f0e284f2] {
+  opacity: 0;
+  transition: opacity 0.14s ease;
+  margin: 0;
+}
+
+.mf-pool__row:hover .mf-pool__check[data-v-f0e284f2],
+.mf-pool__thead .mf-pool__check[data-v-f0e284f2] {
+  opacity: 1;
+}
+
+.mf-pool__dot[data-v-f0e284f2] {
+  inline-size: 7px;
+  block-size: 7px;
+  border-radius: 50%;
+  background: rgba(var(--v-theme-on-surface), 0.42);
+}
+
+.mf-pool__dot.is-success[data-v-f0e284f2] { background: rgb(var(--v-theme-success)); }
+.mf-pool__dot.is-info[data-v-f0e284f2] { background: rgb(var(--v-theme-info)); }
+.mf-pool__dot.is-warning[data-v-f0e284f2],
+.mf-pool__dot.is-warn[data-v-f0e284f2] { background: rgb(var(--v-theme-warning)); }
+.mf-pool__dot.is-error[data-v-f0e284f2],
+.mf-pool__dot.is-hr-error[data-v-f0e284f2] { background: rgb(var(--v-theme-error)); }
+.mf-pool__dot.is-hr-info[data-v-f0e284f2] { background: rgb(var(--v-theme-primary)); }
+.mf-pool__dot.is-silent[data-v-f0e284f2] { background: rgba(var(--v-theme-primary), 0.55); }
+.mf-pool__dot.is-grey[data-v-f0e284f2] { background: rgba(var(--v-theme-on-surface), 0.34); }
+
+.mf-pool__name[data-v-f0e284f2] {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-inline-size: 0;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: rgba(var(--v-theme-on-surface), 0.92);
+}
+
+.mf-pool__name strong[data-v-f0e284f2] {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.mf-pool__prot[data-v-f0e284f2] {
+  flex: 0 0 auto;
+  color: rgb(var(--v-theme-info));
+}
+
+.mf-pool__num[data-v-f0e284f2] {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mf-pool__state[data-v-f0e284f2] {
+  font-size: 10.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.mf-pool__state.st-success[data-v-f0e284f2] { color: rgb(var(--v-theme-success)); }
+.mf-pool__state.st-info[data-v-f0e284f2] { color: rgb(var(--v-theme-info)); }
+.mf-pool__state.st-warning[data-v-f0e284f2] { color: rgb(var(--v-theme-warning)); }
+.mf-pool__state.st-error[data-v-f0e284f2] { color: rgb(var(--v-theme-error)); }
+.mf-pool__state.hr-warn[data-v-f0e284f2] { color: rgb(var(--v-theme-warning)); }
+.mf-pool__state.hr-error[data-v-f0e284f2] { color: rgb(var(--v-theme-error)); }
+.mf-pool__state.hr-info[data-v-f0e284f2] { color: rgba(var(--v-theme-primary), 0.9); }
+
+.mf-pool__acts[data-v-f0e284f2] {
+  display: flex;
+  justify-content: flex-end;
+  opacity: 0;
+  transition: opacity 0.14s ease;
+}
+
+.mf-pool__row:hover .mf-pool__acts[data-v-f0e284f2] {
+  opacity: 1;
+}
+
+/* ── 空态 / 分页 ────────────────────────────────────────────────────── */
+.mf-pool__empty[data-v-f0e284f2] {
+  padding: 22px 16px;
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  text-align: center;
+}
+
+.mf-pool__empty p[data-v-f0e284f2] {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.mf-pool__empty-sub[data-v-f0e284f2] {
+  margin-block-start: 4px;
+  font-size: 10.5px;
+  color: rgba(var(--v-theme-on-surface), 0.42);
+}
+
+.mf-pool__pager[data-v-f0e284f2] {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-block-start: 4px;
+}
+
+.mf-pool__pager-info[data-v-f0e284f2],
+.mf-pool__pager-page[data-v-f0e284f2] {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  white-space: nowrap;
+}
+
+/* 移动端卡片里的状态文字（原来用 VChip tonal，现在与桌面同源的纯文字）*/
+.magicflow-mobile-torrent__state.st-success[data-v-f0e284f2] { color: rgb(var(--v-theme-success)); }
+.magicflow-mobile-torrent__state.st-info[data-v-f0e284f2] { color: rgb(var(--v-theme-info)); }
+.magicflow-mobile-torrent__state.st-warning[data-v-f0e284f2] { color: rgb(var(--v-theme-warning)); }
+.magicflow-mobile-torrent__state.st-error[data-v-f0e284f2] { color: rgb(var(--v-theme-error)); }
+.magicflow-mobile-torrent__state.hr-warn[data-v-f0e284f2] { color: rgb(var(--v-theme-warning)); }
+.magicflow-mobile-torrent__state.hr-error[data-v-f0e284f2] { color: rgb(var(--v-theme-error)); }
+.magicflow-mobile-torrent__state.hr-info[data-v-f0e284f2] { color: rgba(var(--v-theme-primary), 0.9); }
+.magicflow-mobile-torrent__state[data-v-f0e284f2] {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.magicflow-mobile-torrent.is-hr[data-v-f0e284f2] {
+  border-inline-start: 2px solid rgb(var(--v-theme-warning));
+  padding-inline-start: 10px;
+}
+
+/* ── 响应式 ─────────────────────────────────────────────────────────── */
+/* ≤1199：先把「上传量」整列让出来（它最不缺信息量，做种时长更有用） */
+@media (max-width: 1199px) {
+  .mf-pool__thead[data-v-f0e284f2],
+  .mf-pool__row[data-v-f0e284f2] {
+    grid-template-columns:
+      24px 7px minmax(0, 1fr)
+      76px 68px 88px 96px
+      24px;
+  }
+
+  .mf-pool__thead > :nth-child(7),
+  .mf-pool__row > :nth-child(7) {
+    display: none;
+  }
+}
+
+/* ≤959：统计行 2×2，表格让位给移动卡片 */
+@media (max-width: 959px) {
+  .mf-pool__stats[data-v-f0e284f2] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mf-pool .mf-pool__card[data-v-f0e284f2] {
+    display: none;
+  }
+
+  .magicflow-mobile-torrents[data-v-f0e284f2] {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .magicflow-mobile-torrent[data-v-f0e284f2] {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-block: 13px;
+    border-block-end: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+    cursor: pointer;
+  }
+
+  .magicflow-mobile-torrent__head[data-v-f0e284f2] {
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .magicflow-mobile-torrent__head strong[data-v-f0e284f2] {
+    min-inline-size: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
+@media (max-width: 699px) {
+  .mf-pool__stats[data-v-f0e284f2] {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .mf-pool__stat[data-v-f0e284f2] {
+    padding: 8px 12px;
+  }
+}

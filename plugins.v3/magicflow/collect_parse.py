@@ -502,6 +502,9 @@ def parse_user_bar(raw: Any) -> Dict[str, Any]:
     #   口径：页面没有这一栏 → ``None``（**不等于 0**）；有栏但解不出数字 → 只留 ``raw``
     #   （供健康检查区分「采集没读懂」与「确实没有」）；只有单个数（形态罕见）→ 归入
     #   ``unfinished``（**保守**：宁可早报禁用线，也不把欠账读没）。
+    #   ★ 19.12.42：返回里多记一个 ``form``（``pair``/``single``/``raw``）—— 「一个数」在
+    #   报警场景按 ``unfinished`` 读是对的，但在**结清**场景恰好是危险方向（把未知读成 0），
+    #   所以消费方要靠 ``form`` 区分，别自己盯 ``unfinished`` 猜形态。
     #   ★ 17.2.2 收口（2026-10-14 真机取证，修三处实机漏读/误报）：
     #   ① cyanbug.net 页头**没有这一栏**，只剩模板注释 ``<!-- H&R -->`` → 必须先剥 HTML 注释，
     #      否则注释被当成「有栏但没读懂」，H7 误报 warning；
@@ -512,6 +515,13 @@ def parse_user_bar(raw: Any) -> Dict[str, Any]:
     out["hr"] = None
     _hraw = re.sub(r"<!--.*?-->", " ", f"{raw_s or ''}\n{text or ''}", flags=re.DOTALL)
     _hsrc = re.sub(r"\s+", " ", re.sub(r"<[^>]{0,200}>", " ", _hraw))  # 去标签 + 压空白
+    # ★ 19.12.42：**先解 HTML 实体再匹配**。真机取证（uhddolby 首页原文）：
+    #   ``<a href="myhr.php"> <font class="color_bonus">H&amp;R: </font> 0``
+    #   —— 标签里的 ``&`` 是转义过的 ``&amp;``，旧正则只认字面 ``H&R``，于是整条栏被读成
+    #   ``None``（报警侧看不见这条事实，结清闸门则永远 unknown）。实体只在**本地副本**上解，
+    #   不改 ``_hraw``（它还要用于按原文取上下文）。
+    _hsrc = html.unescape(_hsrc)
+    _hraw_ut = html.unescape(_hraw)
     _hrlab = r"H\s*&\s*R\s*[\])]?\s*[：:]?"  # 标签尾部容忍 ``]``/``)``（[H&R]: 形态）
     _mhr = re.search(
         rf"{_hrlab}\s*[\[(]?\s*(\d+)\s*/\s*(\d+)\s*(?:/\s*(\d+))?\s*[\])]?",
@@ -523,18 +533,24 @@ def parse_user_bar(raw: Any) -> Dict[str, Any]:
             "assessing": int(_mhr.group(1)),
             "unfinished": int(_mhr.group(2)),
             "limit": int(_mhr.group(3)) if _mhr.group(3) else None,
+            # ★ 19.12.42：形态显式化。只有 ``pair`` 才是「考核中/未完成」两个独立计数，
+            #   可用于状态判断；``single`` 只是**一个数**，语义站点没在页面上说清
+            #   → 结清闸门一律按 unknown 处理（见 ``hrbills._hr_bar_cert``）。
+            "form": "pair",
         }
     else:
         _mhr1 = re.search(rf"{_hrlab}\s*[\[(]?\s*(\d+)\s*[\])]?", _hsrc, re.IGNORECASE)
         if _mhr1:
             out["hr"] = {"raw": " ".join(_mhr1.group(0).split())[:40],
-                         "assessing": None, "unfinished": int(_mhr1.group(1)), "limit": None}
+                         "assessing": None, "unfinished": int(_mhr1.group(1)), "limit": None,
+                         "form": "single"}
         else:
-            _mr = re.search(r"H\s*&\s*R[^\n]{0,60}", _hraw, re.IGNORECASE)
-            _mctx = _hraw[max(0, _mr.start() - 80):(_mr.end() + 80)] if _mr else ""
+            _mr = re.search(r"H\s*&\s*R[^\n]{0,60}", _hraw_ut, re.IGNORECASE)
+            _mctx = _hraw_ut[max(0, _mr.start() - 80):(_mr.end() + 80)] if _mr else ""
             if _mr and "myhr" in _mctx.lower():  # 只有真栏（挂在 myhr.php 上）才留 raw
                 out["hr"] = {"raw": " ".join(_mr.group(0).split())[:40],
-                             "assessing": None, "unfinished": None, "limit": None}
+                             "assessing": None, "unfinished": None, "limit": None,
+                             "form": "raw"}
     if out["ratio"] in (None, 0.0) and (out["upload"] or 0) > 0 and (out["download"] or 0) > 0:
         out["ratio"] = round(float(out["upload"]) / float(out["download"]), 3)
     return out
@@ -755,7 +771,27 @@ _MYHR_SIZE_RE = re.compile(r"([\d.]+)\s*(TB|TiB|GB|GiB|MB|MiB|KB|KiB)", re.I)
 _MYHR_NEED_RE = re.compile(r"^(\d+):([0-5]\d)(?::([0-5]\d))?$")
 _MYHR_TID_RE = re.compile(r"details\.php\?id=(\d+)", re.I)
 _MYHR_ID_RE = re.compile(r"<td[^>]*>\s*(\d{5,})\s*</td>", re.I)
-_MYHR_MARKERS = ("myhr", "h&r", "hit and run", "hit-and-run", "details.php", "hr.php")
+_MYHR_MARKERS = ("myhr", "h&r", "hit and run", "hit-and-run", "hr.php")
+
+# ★ 19.12.41：「details.php」从标记里删掉 —— 它出现在**每一个**登录后页面（导航/头像/
+#   任何种子链接），拿它当「页面可识别」等于恒真 → 登录页/报错页也返回 ``[]``（= 无欠）
+#   → 结清闸门看到「站端说清」。它只能当**噪声行特征**，不能当**页面有效性**特征。
+#
+# 登录页特征：只认**登录表单本身**（密码输入框）或**明确的未登录文案**。
+# 不用 ``login.php`` 单独判定：登录后的页面底部/JS 里也可能出现这个字符串。
+_MYHR_LOGIN_HINTS = (
+    "你还没有登录", "請先登錄", "请先登录", "未登录", "not logged in",
+)
+_MYHR_EMPTY_HINTS = (
+    "森马都没有找到", "森馬都沒有找到", "神马都没有找到", "神馬都沒有找到",
+    "没有找到", "沒有找到",
+)
+# 「暂无 H&R 记录 / 无记录 / 没有任何记录」——中间允许夹币名/类别词（实测 btschool
+# 页眉是「0 H&R记录」，页体是「森马都没有找到」；别的站写「暂无 H&R 记录」）。
+_MYHR_EMPTY_RE = re.compile(
+    r"(?:没有|沒有|暂无|暫無|无|無)[^。；;,.!?\n]{0,10}?(?:记录|記錄)"
+)
+_MYHR_TOTAL_RE = re.compile(r"共\s*([\d,]+)\s*(?:条|個|个|項|项)")
 
 
 def _myhr_cell_text(cell: str) -> str:
@@ -801,8 +837,25 @@ def _myhr_row_segments(raw: str) -> Any:
     return rows, candidates
 
 
-def parse_myhr_rows(text: Any) -> Optional[List[Dict[str, Any]]]:
-    """NexusPHP ``myhr.php`` 页 → H&R 记录列表（**保守解析**）。
+def parse_myhr_page(text: Any) -> Dict[str, Any]:
+    """NexusPHP ``myhr.php`` 页 → **页面凭证 + 记录列表**（★ 19.12.41）。
+
+    为什么要有「凭证」这一层：``parse_myhr_rows`` 以前把「空 body」「只有导航的登录页」
+    「只含 ``details.php`` 的报错页」统统返回 ``[]``，而 ``[]`` 在结清闸门里就是
+    **「站端说清了」** —— 于是一次登录失效就能把欠账销掉。页面「能不能当证据」和
+    「里面有几条记录」是两件事，必须分开说。
+
+    Returns（dict）：
+        ``ok``：页面**有效**（已登录 + 有 H&R 表头 / 站点自己的空断言），且表区里没有
+            「看着是数据行却没解出来」的候选；
+        ``rows``：逐条 ``{hr_id, tid, title, up_gb, down_gb, size_gb, need_left,
+            done_at, keep_left, ratio}``（``size_gb`` 是站点口径的下载量，非种子体积）；
+        ``visible_rows``：表区里**看着像数据行**的条数（> ``len(rows)`` = 布局不兼容）；
+        ``empty_asserted``：站点自己渲染了「没有找到」这类**空结果断言**
+            （★ 这是站点的断言，不是我们的观察：「表头在但没行」不算）；
+        ``total_declared``：分页文案里的「共 N 条」（**没有就是 None，不伪造 0**；
+            本轮审计只记录、不参与放行 —— 语义尚未在真实有行页面上验证过）；
+        ``has_header`` / ``login_hint`` / ``why``（``ok=False`` 的原因，便于审计回溯）。
 
     ★ 语义（实测 CARPT / btschool）：行首 id = H&R 记录 id（CARPT）/ 种子 id（btschool）；
     真种子 id 在行内 ``details.php?id=<tid>``。列序（实测）：
@@ -813,22 +866,37 @@ def parse_myhr_rows(text: Any) -> Optional[List[Dict[str, Any]]]:
          「还需做种时间」单元格把这类噪声行剔掉，否则产生**假记录**（还会白拉 .torrent）；
       2. 行内有嵌套 ``<table>`` 时，``<tr[^>]*>(.*?)</tr>`` 非贪婪会**重复匹配**同一行
          （实测 CARPT 22 行 → 51 条）→ 改为按 ``</tr>`` 切分 + 取最近的 ``<tr`` + 按 tid 去重。
-
-    Returns:
-        ``None`` = **页面不可识别**（布局不兼容 / 登录页）→ 调用方整页跳过并退避；
-        ``[]``   = 页面可识别但**无未完成记录**（= 无欠）；
-        列表     = 逐条 ``{hr_id, tid, title, up_gb, down_gb, size_gb, need_left,
-                   done_at, keep_left, ratio}``；``size_gb`` 是**站点口径的下载量**
-                   （非种子体积，保留旧字段兼容）。
     """
     raw = str(text or "")
+    page: Dict[str, Any] = {
+        "ok": False, "why": "", "rows": [], "visible_rows": 0,
+        "empty_asserted": False, "total_declared": None,
+        "has_header": False, "login_hint": False,
+    }
     if not raw.strip():
-        return []
+        page["why"] = "empty_body"
+        return page
     low = raw.lower()
     rows: List[Dict[str, Any]] = []
     seen: Set[str] = set()
     has_header = ("还需做种时间" in raw) or ("下载完成时间" in raw) or ("hr-table" in low)
     segs, candidates = _myhr_row_segments(raw)
+    # ★ 登录页判定只看**登录表单本身**与**明确的未登录文案**（见 _MYHR_LOGIN_HINTS 注释）
+    login_hint = bool(re.search(r"""name\s*=\s*["']password["']""", raw, re.I)) or any(
+        h in raw for h in _MYHR_LOGIN_HINTS
+    )
+    # ★ 站点自己的空断言：只认「没有找到 / 暂无记录」这类文案（登录页的「找不到页面」
+    #   靠 login_hint 先排掉）。这是**站端断言**，与「我们没看见行」是两回事。
+    _plain = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]{0,300}>", " ", raw)))
+    empty_asserted = (any(h in _plain for h in _MYHR_EMPTY_HINTS)
+                      or bool(_MYHR_EMPTY_RE.search(_plain)))
+    _mtot = _MYHR_TOTAL_RE.search(_plain)
+    total_declared: Optional[int] = None
+    if _mtot:
+        try:
+            total_declared = int(str(_mtot.group(1)).replace(",", ""))
+        except (TypeError, ValueError):
+            total_declared = None
     for seg in segs:
         if "details.php?id=" not in seg:
             continue
@@ -901,17 +969,48 @@ def parse_myhr_rows(text: Any) -> Optional[List[Dict[str, Any]]]:
                      "size_gb": down_gb or up_gb,
                      "ratio": ratio, "need_left": need,
                      "done_at": done_at, "keep_left": keep_left})
+    page["rows"] = rows
+    page["visible_rows"] = int(candidates)
+    page["has_header"] = bool(has_header)
+    page["empty_asserted"] = bool(empty_asserted)
+    page["total_declared"] = total_declared
+    page["login_hint"] = bool(login_hint)
+    # 判定顺序很重要：**先排除无效页面**，再谈「有几条记录」。
+    if login_hint:
+        page["why"] = "login_page"
+        return page
     if candidates > len(rows):
         # ★ 守门：表区里还有「像数据行但没解出来」的候选（如标题被套在子表里）
-        #   → 布局不兼容；宁可整页跳过（退避）也**绝不**当「无欠」。
-        return None
+        #   → 布局不兼容；宁可整页作废（unknown）也**绝不**当「无欠」。
+        page["why"] = "unparsed_rows"
+        return page
     if rows:
-        return rows
-    if has_header:
-        return []       # 表头在但无数据行（含全部已达标的情况）→ 无欠
-    if any(mk in low for mk in _MYHR_MARKERS):
-        return []   # 可识别但无记录（= 无欠）
-    return None     # 不可识别 → 不当作「无欠」
+        page["ok"] = True     # 有解出来的行 → 页面有效（欠侧判据不依赖完整性）
+        return page
+    if has_header or empty_asserted or total_declared is not None:
+        page["ok"] = True     # 表头 / 站点空断言 / 声明总数，三者有一即可认为页面有效
+        return page
+    # ★ 只剩「含 myhr 字样但没有任何可判特征」的页面 → 不作数。
+    #   （旧版这里 ``any(mk in low)`` 就返回 ``[]`` —— 而 ``myhr`` 在登录页的跳转链接里
+    #   也有，等于恒判「无欠」。）
+    page["why"] = "no_hr_table"
+    return page
+
+
+def parse_myhr_rows(text: Any) -> Optional[List[Dict[str, Any]]]:
+    """NexusPHP ``myhr.php`` 页 → H&R 记录列表（**保守解析**；薄封装 ``parse_myhr_page``）。
+
+    Returns:
+        ``None`` = **页面不可作证据**（空 body / 登录页 / 布局不兼容 / 无 H&R 表）→
+                   调用方整页跳过并退避，结清闸门必须判 ``unknown``；
+        ``[]``   = 页面有效但**无未完成记录**（★ 仍需页头计数交叉验证才能判清）；
+        列表     = 逐条记录（字段见 ``parse_myhr_page``）。
+    """
+    page = parse_myhr_page(text)
+    if not page.get("ok"):
+        return None
+    return list(page.get("rows") or [])
+
 
 # ------------------------------------------------------------
 # 站点认领页（``claim.php``）→ 事实

@@ -18,7 +18,6 @@ const {
   useModel: _useModel
 } = __vue
 
-import index from '../../index.vue'
 import { useSeeding } from '../../composables/useSeeding.js'
 
 const _sfc_main$1 = {

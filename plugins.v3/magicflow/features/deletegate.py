@@ -60,7 +60,7 @@ from ..common import (
     ONDEMAND_TASK_ID,
 )
 from ..common import hr_incomplete, hr_complete_ratio_of
-from ..tags import is_library_asset, is_music_line, STATE_ONDEMAND
+from ..tags import is_library_asset, is_music_line, STATE_ONDEMAND, STATE_HR, STATE_KEEP
 from ..dutyops import claim_hashes
 
 
@@ -322,6 +322,25 @@ class DeleteGateMixin:
         hs = [str(h or "").strip().lower() for h in (hashes or []) if str(h or "").strip()]
         if not hs:
             return why
+        # ★ 19.12.36：**先查「保种类职务」**——迁移（下完即判、欠则摘原任务标挂 H&R 标）
+        #   之后，「欠 H&R」在账本上的直接证据就是 ``state=H&R``。这一条独立于
+        #   ``_hr_obligation`` 推导链（与闸门第 4 档形成两份互不代偿的证据），
+        #   推导链被 bug 绕过时仍能靠职务记录拦住。
+        # ★ 19.12.38（职务拆分）：``保种``(STATE_KEEP, __keep__) 与 ``H&R``(STATE_HR,
+        #   __hr_host__) 已是**两个**职务。这里必须两条都查 —— 拆开前 keep 的种是靠
+        #   「state=保种」这一档被拦的；只改常量不改这里，手动保种的种会当场失去删除保护。
+        try:
+            _led = dict(self._tag_state().items() or {})
+        except Exception:  # noqa: BLE001
+            _led = {}
+        for h in hs:
+            _rec = _led.get(h) or {}
+            _st = str(_rec.get("state") or "")
+            _site = _rec.get("site") or "站点未知"
+            if _st == STATE_HR:
+                why.setdefault(h, f"H&R 保种职务（{_site}·未挂满）")
+            elif _st == STATE_KEEP:
+                why.setdefault(h, f"手动保种职务（{_site}·人工点名，不自动释放）")
         # ★ 15.5.0：未下载完成的种无 H&R 义务 → 不拦（Master 2026-10-07 16:19）。
         #   真值源：qB 快照 progress（读不到 / 不在下载器 → 不豁免，fail-safe）。
         _snap: Dict[str, Any] = {}
@@ -358,8 +377,9 @@ class DeleteGateMixin:
                         continue
                 except Exception:  # noqa: BLE001
                     pass
-            why[h] = (f"欠 H&R 账单（直查 state={b.get('state')}·rule={b.get('rule')}·"
-                      f"site={b.get('site')}）")
+            # ★ 19.12.36：``setdefault`` —— 已按「保种职务」拦下的保留原理由（更直接）
+            why.setdefault(h, (f"欠 H&R 账单（直查 state={b.get('state')}·rule={b.get('rule')}·"
+                               f"site={b.get('site')}）"))
         return why
 
     def _delete_breaker_check(self, hashes: Iterable[str], delete_file: bool = False,

@@ -204,8 +204,8 @@ const slowProgressMaxHours = defineModel('slowProgressMaxHours')
 }
 
 .editor-section + .editor-section {
-  margin-block-start: 28px;
-  padding-block-start: 24px;
+  margin-block-start: 24px;
+  padding-block-start: 22px;
   border-block-start: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
 }
 
@@ -214,6 +214,32 @@ const slowProgressMaxHours = defineModel('slowProgressMaxHours')
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+}
+
+/* 分组标题左侧一条渐隐竖线，压住「一屏都是字」的平铺感 */
+.editor-section__head > div {
+  position: relative;
+  padding-inline-start: 12px;
+}
+
+.editor-section__head > div::before {
+  content: '';
+  position: absolute;
+  inset-block: 3px;
+  inset-inline-start: 0;
+  inline-size: 2px;
+  border-radius: 2px;
+  background: linear-gradient(
+    180deg,
+    rgba(var(--v-theme-primary), 0.9),
+    rgba(var(--v-theme-primary), 0.15)
+  );
+}
+
+.editor-section__head .text-subtitle-1 {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
 }
 
 .editor-switches {

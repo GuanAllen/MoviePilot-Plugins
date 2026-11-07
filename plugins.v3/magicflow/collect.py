@@ -60,6 +60,7 @@ from .collect_parse import (  # noqa: E402
     parse_mail_body,
     parse_mail_links,
     parse_mail_list,
+    parse_myhr_page,
     parse_myhr_rows,
     parse_passkey,
     parse_rss_items,
@@ -343,6 +344,11 @@ class Fetched:
     stale: bool = False
     cost: int = 0
     pv_limited: bool = False
+    # ★ 19.12.41：最终 URL 与「是否被重定向」。结清闸门要区分「这是 myhr.php 的正文」与
+    #   「请求被踢到 login.php、正文其实是登录页」——后者旧版会被解析成空列表（= 无欠）。
+    #   ``requests`` 的 ``resp.url`` 即重定向后的最终地址；拿不到就留空（= 不可判定）。
+    url: str = ""
+    redirected: bool = False
 
     def get(self, key: str, default: Any = None) -> Any:
         return getattr(self, key, default)
@@ -680,7 +686,7 @@ class Http:
                 self._obs.record(f"{kind}:{sid}", ok=False, site=sid, detail=why)
                 return Fetched(ok=False, error=why)
             started = time.time()
-            text, err, status = self._request(site, base, url)
+            text, err, status, final_url = self._request(site, base, url)
             ms = (time.time() - started) * 1000.0
             if err:
                 pvlim = err == "站点每日访问次数已达上限"
@@ -693,14 +699,17 @@ class Http:
                     self._tier.set(key, {"text": text, "status": status, "url": url}, ttl)
                 except Exception:  # noqa: BLE001
                     pass
-            return Fetched(ok=True, text=text, status=status, cost=1)
+            return Fetched(ok=True, text=text, status=status, cost=1,
+                           url=str(final_url or ""),
+                           redirected=bool(final_url and self._norm_url(final_url) != self._norm_url(url)))
 
     # ------------------------------------------------------------ 单次请求
-    def _request(self, site: Any, base: str, url: str) -> Tuple[str, str, int]:
+    def _request(self, site: Any, base: str, url: str) -> Tuple[str, str, int, str]:
+        """返回 ``(text, error, status, final_url)``。``final_url`` = 重定向后的最终地址。"""
         try:
             from app.sdk.network import RequestUtils  # noqa: WPS433
         except Exception as err:  # noqa: BLE001
-            return "", f"SDK 不可用: {err}", 0
+            return "", f"SDK 不可用: {err}", 0, ""
         try:
             _ua, _cookie = sanitize_site_headers(site)
             req = RequestUtils(
@@ -711,10 +720,12 @@ class Http:
             )
             resp = req.get_res(url)
         except Exception as err:  # noqa: BLE001
-            return "", f"请求失败: {err}", 0
+            return "", f"请求失败: {err}", 0, ""
         if resp is None:
-            return "", "无响应", 0
+            return "", "无响应", 0, ""
         status = int(getattr(resp, "status_code", 0) or 0)
+        # ★ 先取最终 URL（重定向后的地址），再 close —— 关掉响应体后属性不一定还在
+        final_url = str(getattr(resp, "url", "") or "")
         try:
             raw = resp.content or b""
         except Exception:  # noqa: BLE001
@@ -729,11 +740,11 @@ class Http:
         except UnicodeDecodeError:
             text = raw.decode("gbk", "ignore")
         if status >= 400 or not text:
-            return "", f"HTTP {status}", status
+            return "", f"HTTP {status}", status, final_url
         if is_pv_limited(text):
             self._mark_pv_blocked(int(site.id if getattr(site, "id", None) else 0))
-            return "", "站点每日访问次数已达上限", status
-        return text, "", status
+            return "", "站点每日访问次数已达上限", status, final_url
+        return text, "", status, final_url
 
     def is_api_site(self, site_id: Any) -> bool:
         """该站是否走 API 鉴权（馒头）。"""

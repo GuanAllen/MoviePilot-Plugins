@@ -15,6 +15,7 @@
     mf_claim     站点认领/收益表
     mf_run       运行时 kv 表
     mf_bills     H&R 账单表（★ 19.0.0：hr_bills.json + Redis hrbills:* → 本表）
+    mf_bill_events H&R 账单审计事件表（★ 任务 98：append-only，只增不改不删）
     mf_deletions 删除台账表（★ 19.0.0：deletions.jsonl → 本表，只增不减）
     mf_journal   操作日志表（★ 19.0.0：operations.json + Redis ops:* → 本表）
 
@@ -47,7 +48,10 @@ except Exception:  # noqa: BLE001  # 本地/离线（无 app.*）时退化为标
     from sqlalchemy.orm import DeclarativeBase as _DeclarativeBase
 
     def plugin_declarative_base():  # type: ignore[misc]
-        return _DeclarativeBase
+        # ★ 19.12.43：sqlalchemy 2.x 禁止直接拿 DeclarativeBase 当基类
+        #   （InvalidRequestError: Cannot use 'DeclarativeBase' directly）——
+        #   必须返回一个**子类**。只影响离线单测路径（生产走上面 app.sdk）。
+        return type("_MFOfflineBase", (_DeclarativeBase,), {})
 
 Base = plugin_declarative_base()
 
@@ -371,15 +375,66 @@ class BillRow(Base):
     title: Mapped[str | None] = mapped_column(String(400))
     opened_at: Mapped[float | None] = mapped_column(Float)
     opened_by: Mapped[str | None] = mapped_column(String(24))          # open | backfill | reconcile
+    src: Mapped[str | None] = mapped_column(String(24))                # ★ 19.12.43：义务判定来源（跨站开账的 hsrc）
     settled_at: Mapped[float | None] = mapped_column(Float)
+    settlement_method: Mapped[str | None] = mapped_column(String(24))  # ★ 19.12.44: auto|manual, None=auto
+    settled_by: Mapped[str | None] = mapped_column(String(64))         # ★ 19.12.44: 人工结清操作人
+    settlement_reason: Mapped[str | None] = mapped_column(String(200)) # ★ 19.12.44: 人工结清原因
+    settle_block: Mapped[str | None] = mapped_column(String(24))       # ★ 19.12.43：结清被挡原因 site_owed | site_unknown
+    settle_block_at: Mapped[float | None] = mapped_column(Float)       # ★ 19.12.43：被挡时刻
     breached_at: Mapped[float | None] = mapped_column(Float)
     voided_at: Mapped[float | None] = mapped_column(Float)
     void_reason: Mapped[str | None] = mapped_column(String(60))
     alive: Mapped[bool | None] = mapped_column(Boolean, default=True)
     last_seen: Mapped[float | None] = mapped_column(Float)
     seen_by: Mapped[str | None] = mapped_column(String(40))
+    missing_since: Mapped[float | None] = mapped_column(Float)         # ★ 19.12.43：qB 缺席起点（缺席 TTL 闸门）
+    stalled_at: Mapped[float | None] = mapped_column(Float)            # ★ 19.12.43：停滞标记（在 qB 但无进度）
     created: Mapped[float | None] = mapped_column(Float)
     updated: Mapped[float | None] = mapped_column(Float)
+
+
+class BillEventRow(Base):
+    """H&R 账单审计事件表（★ 任务 98）：**append-only 历史档案**。
+
+    为什么必须有这张表：``mf_bills`` 是「1 hash = 1 行」的**当前结论** schema，
+    结清审计只有行上 4 个标量列（``settled_at`` / ``settlement_method`` /
+    ``settled_by`` / ``settlement_reason``）。一次
+    ``manual settle → 站端翻案重开 → auto settle → 再人工 settle`` 循环后，行上
+    只剩最后一次的值，中间每一次结论都不可逆丢失；而 ``_emit_event`` 只是 300 条
+    热层环形缓冲，不是档案。纠错重开更是「推翻人工结论」的强动作，必须留下
+    「谁、何时、凭哪份 myhr 证据、推翻了哪一次结清」的不可变记录。
+
+    契约：
+      - **只 INSERT，绝不 UPDATE / DELETE**（无对外改写入口）；
+      - ``bill_snapshot`` 保存事件发生**之前**的结清四列 + 规则/工时快照
+        —— 原人工结清记录的可追溯副本，行上四列即使被清空也不丢；
+      - ``evidence_*`` 只对「站端纠错重开」有值；人工/自动事件留空；
+      - ``dedup_key`` 唯一索引 = 同一纠错事件的业务幂等键（连续 tick 不重复记）；
+      - 事件写入必须与 ``mf_bills`` 的 CAS 状态变更在**同一事务 / 同一把锁**内，
+        失败时整次状态变更一起失败，不允许「状态改了但历史没记」；
+      - 表由 ``ledger._ensure_columns`` 的 ``create_all`` 自动建立，历史库无需手写
+        SQL；旧账单无事件行时展示层按「兼容历史」渲染（不假造事件）。
+
+    ``event_type`` 取值：``manual_settled`` / ``auto_settled`` / ``reopened`` /
+    ``manual_void`` / ``auto_void`` / ``legacy_manual_settled``（历史账单补录）。
+    """
+
+    __tablename__ = "mf_bill_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hash: Mapped[str | None] = mapped_column(String(64), index=True)
+    event_type: Mapped[str | None] = mapped_column(String(32), index=True)
+    at: Mapped[float | None] = mapped_column(Float, index=True)      # 事件时刻
+    actor: Mapped[str | None] = mapped_column(String(64))             # 操作人；自动事件记 system/hrbills_tick
+    reason: Mapped[str | None] = mapped_column(String(300))
+    prev_state: Mapped[str | None] = mapped_column(String(24))
+    new_state: Mapped[str | None] = mapped_column(String(24))
+    bill_snapshot: Mapped[Any | None] = mapped_column(_JSON, default=dict)
+    evidence_source: Mapped[str | None] = mapped_column(String(120))  # myhr.php:<domain> / manual / tick
+    evidence_at: Mapped[float | None] = mapped_column(Float)          # 对账报告 rep["at"]
+    evidence_digest: Mapped[Any | None] = mapped_column(_JSON, default=dict)
+    dedup_key: Mapped[str | None] = mapped_column(String(160), unique=True, index=True)
 
 
 class DeletionRow(Base):
@@ -432,7 +487,7 @@ class JournalRow(Base):
 
 ALL_MODELS: List[type] = [
     SiteRow, ResourceRow, SeedRow, IdentityRow, TaskRow, DeckRow, CrossSeedRow,
-    ReseedRow, RssRow, RunRow, ClaimRow, BillRow, DeletionRow, JournalRow,
+    ReseedRow, RssRow, RunRow, ClaimRow, BillRow, BillEventRow, DeletionRow, JournalRow,
 ]
 
 

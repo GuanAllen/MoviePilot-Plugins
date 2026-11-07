@@ -24,7 +24,6 @@ const {
   vModelText: _vModelText
 } = __vue
 
-import index from '../../index.vue'
 import { MF_PAGES } from '../../constants.js'
 
 const _hoisted_1$j = { class: "mfhub__head" };

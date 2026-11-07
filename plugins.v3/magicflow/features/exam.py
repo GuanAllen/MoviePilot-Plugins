@@ -146,14 +146,36 @@ class ExamMixin:
                 notes.append(f"目标:本站上传 {target:.2f}GB(当前 {up / (1024 ** 3):.2f}GB,还差 {short:.2f}GB)达到后自动停")
             elif ("魔力" in label or "积分" in label) and short_num is not None:
                 short = float(short_num)
-                target = round(bonus + short, 1)
+                # ★ 19.12.7：目标基准要用**考核项自己的当前值**，不能用站点的「魔力」。
+                #   高清杜比有两个计数器（鲸币 seedbonus / 做种积分 sebonus），
+                #   考核要的是做种积分；原来拿鲸币当基准再加做种积分的差额，
+                #   算出 10120 这种既不是鲸币目标、也不是做种积分目标的数。
+                #   考核项 cur + short 恒等于它的 target（如 10000），是唯一正确的口径。
+                base = bonus
+                try:
+                    _it_cur = float(it.get("cur"))
+                    base = _it_cur
+                except (TypeError, ValueError):
+                    base = bonus
+                target = round(base + short, 1)
                 entry.update({
                     "kind": "bonus",
                     "short_num": short,
                     "task_name": f"{site_name}-考核魔力",
                     "params": {"task_type": "bonus", "goal_value": target, "brush_interval": 5, "check_interval": 1},
                 })
-                notes.append(f"目标:本站魔力 {target:.0f}(当前 {bonus:.0f},还差 {short:.0f})达到后自动停;魔力靠多挂种 / 挂老种")
+                notes.append(f"目标:{label} {target:.0f}(当前 {base:.0f},还差 {short:.0f})达到后自动停")
+                if exam.get("bonus_diverged"):
+                    # 站点侧显式声明：考核要的积分 ≠ 站点「魔力」字段（如高清杜比：
+                    # 做种积分 sebonus / 鲸币 seedbonus）。任务结算读的是后者，
+                    # 与考核不是同一个数 → 必须说清楚，别让人以为过线=考核过。
+                    # 不用百分比阈值判，是因为别的站考核项与实时快照本来就有时差，会误伤。
+                    notes.append(
+                        f"注意:本站「{label}」与「站点魔力」是两个独立计数器"
+                        f"(当前 {base:.0f} / {bonus:.0f});任务达标按站点魔力结算,"
+                        f"可能与考核不同步,过线后请复核考核"
+                    )
+                notes.append("该积分靠多挂种 / 挂老种累积")
             else:
                 # 简版考核（没给具体数值）：只放行「上传/下载/魔力/积分」类，不硬套「保持做种」
                 if any(k in label for k in ("上传", "下载", "魔力", "积分", "分享率")):

@@ -20,7 +20,6 @@ const {
   withCtx: _withCtx$7,
 } = __vue
 
-import index from '../../index.vue'
 import { currencyOf } from '../../composables/useCurrency.js'
 
 const _hoisted_1$8 = { class: "magicflow-config-grid" };

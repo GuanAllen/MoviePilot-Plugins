@@ -135,7 +135,7 @@ import { useSiteReport } from './composables/useSiteReport'
 // ★ 19.10.48：站点货币名（各站自称：魔力值/金元宝/蟹币值/积分…）
 import { currencyOf } from './composables/useCurrency'
 import { useMusic } from './composables/useMusic'
-import { useHrBills } from './composables/useHrBills'
+import { useHrBills, canManualSettle } from './composables/useHrBills'
 import { useOperations } from './composables/useOperations'
 import { useSettings } from './composables/useSettings'
 import { useSeeding } from './composables/useSeeding'
@@ -506,6 +506,7 @@ const {
   taskIsBrush,
   taskSiteIcon,
   trendCards,
+  trendMain,
   trendSeries,
   trendSite,
   trendTask,
@@ -739,8 +740,8 @@ const mobileHomeGroups = computed(() => {
   const mk = (key, label, hint, pred) => ({ key, label, hint, sites: list.filter(pred).sort(byBonus) })
   const groups = [
     mk('need', '需要你管', '有问题或待决策', s => s.rank === 0),
-    mk('live', '在跑', '正常养护中', s => s.rank === 1),
-    mk('rest', '不用管', '已停用 / 静默托管', s => s.rank >= 2),
+    mk('live', '在跑', '正常运行中', s => s.rank === 1),
+    mk('rest', '不用管', '已停用 / 内置托管', s => s.rank >= 2),
   ].filter(g => g.sites.length)
   groups.forEach(g => { g.count = g.sites.reduce((n, s) => n + s.tasks.length, 0) })
   return groups
@@ -781,6 +782,7 @@ const siteCeilingRows = computed(() => {
     if (!prev || pct > prev.pct) {
       by.set(k, {
         site: k,
+        cur: t.currency || '',
         bonus: Number(t.site_bonus_per_hour || 0),
         ceiling: Number(t.site_ceiling || 0),
         pct,
@@ -827,10 +829,302 @@ const {
   hrBillsOpen,
   loadHrBills,
   openHrBills,
-} = useHrBills({ api, error })
+  hrOperator,
+  hrOperatorError,
+  loadHrOperator,
+  settleHrBill,
+  hrSettleNotice,
+} = useHrBills({ api, error, notify })
+
+// ★ 任务 98：人工结清入口归位到魔流插件自己的「任务详情 → 种子明细 → 每颗种子
+//   操作区」（SeedingTab）。这里只承担「填原因 + 二次确认 + 提交」，因为操作人身份、
+//   提交动作、成功后刷新都在父级；H&R 账单弹窗不再有任何改状态入口。
+const hrSettleOpen = ref(false)
+const hrSettleStep = ref(1)          // 1 = 填写原因；2 = 二次确认
+const hrSettleTarget = ref(null)
+const hrSettleReason = ref('')
+const hrSettleBusy = ref(false)
+const hrSettleError = ref('')
+const hrSettleOperatorOk = computed(() => {
+  const by = String(hrOperator.value || '').trim()
+  return !!by && by.toLowerCase() !== 'manual'
+})
+// 登录身份有效且当前没有提交在进行中，才开放种子行上的「人工结清」按钮。
+const hrSettleEnabled = computed(() => hrSettleOperatorOk.value && !hrSettleBusy.value)
+const hrSettleReasonOk = computed(() => String(hrSettleReason.value || '').trim().length > 0)
+const hrSettleCanSubmit = computed(() => (
+  !hrSettleBusy.value && hrSettleOperatorOk.value && hrSettleReasonOk.value &&
+  !!hrSettleTarget.value
+))
+
+async function openHrSettle(item) {
+  const h = String(item?.hash || '').trim().toLowerCase()
+  if (!h) return
+  const bill = hrMapByHash.value[h]
+  // 按 hash 精确关联；无账单 / 终态 / 已人工结清 → 不给入口，也不提交。
+  if (!bill || !canManualSettle(bill)) {
+    notify('该种子没有可人工结清的 H&R 账单', 'warning')
+    return
+  }
+  // 会话可能已过期 → 打开前复核一次登录身份，拿不到就禁用提交。
+  await loadHrOperator()
+  hrSettleTarget.value = {
+    hash: h,
+    title: bill.title || item.title || h.slice(0, 12),
+    site: bill.site_name || bill.site || '',
+    state: bill.state || '',
+    rule: bill.rule || '',
+    need_h: bill.need_h,
+    seeded_h: bill.seeded_h,
+    progress: bill.progress,
+  }
+  hrSettleReason.value = ''
+  hrSettleError.value = ''
+  hrSettleStep.value = 1
+  hrSettleOpen.value = true
+}
+function closeHrSettle() {
+  if (hrSettleBusy.value) return
+  hrSettleOpen.value = false
+  hrSettleStep.value = 1
+  hrSettleTarget.value = null
+  hrSettleReason.value = ''
+  hrSettleError.value = ''
+}
+function backHrSettle() {
+  if (hrSettleBusy.value) return
+  hrSettleError.value = ''
+  hrSettleStep.value = 1
+}
+// 后端错误码 → 人话；already 是成功（幂等），conflict / void_terminal 单独提示。
+function friendlyHrSettleError(r) {
+  const k = String((r && r.kind) || '')
+  const hints = {
+    concurrent_modified: '账单在读写之间被其它任务修改（并发冲突），本次未写入。请复核后重试。',
+    conflict: '账单在读写之间被其它任务修改（并发冲突），本次未写入。请复核后重试。',
+    void_terminal: '该账单已作废（void 是终态），不能人工结清。',
+    not_found: '账单不存在，可能已被清理。请刷新后复核。',
+    missing_reason: '人工结清必须填写原因。',
+    missing_settled_by: '缺少操作人，后端拒绝写入。',
+    missing_operator: '缺少操作人，后端拒绝写入。',
+    operator_conflict: '操作人参数冲突，请刷新页面后重试。',
+    store_unavailable: '账单存储不可用，本次未落库。请稍后重试。',
+    event_write_failed: '审计事件写入失败，账单状态未变更。请稍后重试。',
+  }
+  return hints[k] || String((r && r.message) || '人工结清失败')
+}
+async function confirmHrSettle() {
+  if (hrSettleStep.value === 1) {
+    if (!hrSettleReasonOk.value || !hrSettleOperatorOk.value) return
+    hrSettleStep.value = 2
+    return
+  }
+  if (!hrSettleCanSubmit.value) return
+  hrSettleBusy.value = true
+  hrSettleError.value = ''
+  try {
+    const res = await settleHrBill({
+      hash: String(hrSettleTarget.value?.hash || '').trim().toLowerCase(),
+      reason: String(hrSettleReason.value || '').trim(),
+      by: String(hrOperator.value || '').trim(),
+    })
+    const r = (res && typeof res === 'object') ? res : { ok: false, kind: 'failed', message: '人工结清返回异常' }
+    if (!r.ok) {
+      hrSettleError.value = friendlyHrSettleError(r)
+      notify(hrSettleError.value, 'error')
+      return   // 保留确认界面与原因，便于复核 / 重试
+    }
+    notify(r.message || (r.kind === 'already' ? '该账单此前已人工结清' : '人工结清成功'),
+      r.kind === 'already' ? 'info' : 'success')
+    hrSettleOpen.value = false
+    hrSettleStep.value = 1
+    hrSettleTarget.value = null
+    hrSettleReason.value = ''
+    // ★ 成功后刷新 H&R 账单统计（live=1 强刷）与任务种子明细（hrMap 随之更新）。
+    await loadHrBills(true)
+    try {
+      if (selectedTaskId.value) await loadBonus(selectedTaskId.value, { silent: true })
+    } catch (e) { /* 明细刷新失败不影响已落库的结清结论 */ }
+  } catch (e) {
+    hrSettleError.value = `人工结清失败：${e?.message || e}`
+    notify(hrSettleError.value, 'error')
+  } finally {
+    hrSettleBusy.value = false
+  }
+}
+
+// ★ 19.12.16 种子池要按 hash 标 H&R，而账单平时只在「打开账单弹窗」时才拉。
+//   这里给一条**静默**的预取：进任务详情跑一次，失败不写全局 error
+//   （H&R 标记是增强信息，取不到就让统计卡显示「—」，不能因为账本读不到而弹红条）。
+const hrBillsTried = ref(false)
+async function ensureHrBills() {
+  if (hrBillsTried.value) return
+  hrBillsTried.value = true
+  try {
+    const data = unwrapResponse(await api.poolstats.hrBills('')) || {}
+    hrBills.value = data
+  } catch (e) {
+    // 静默：见上
+  }
+}
 // 站点折叠：多任务行可展开
 function toggleSite(key) { mhSiteOpen.value = { ...mhSiteOpen.value, [key]: !mhSiteOpen.value[key] } }
 const mobileSilentCount = computed(() => tasks.value.find(t => t.builtin)?.seeding_count || 0)
+
+// ★ 19.12.28：内置宿主任务的种子列表是**只读浏览**。
+//   后端 `_control_torrent` / `batch_torrents` 都以 `_get_task_config(task_id)` 开头，
+//   宿主没有配置行，点了只会再弹一次「任务不存在」；而且 H&R 保种 / 认领名下的种
+//   本来就不该手动暂停或删除（会直接违约）。这里统一拦下并指路，别让人白点。
+const HOST_READONLY_TIP = '内置任务只读：这一页用来看它名下挂着哪些种；要操作请到对应功能页（H&R 账单 / 认领 / 静默池）'
+function _hostReadonly() {
+  if (selectedTask.value && selectedTask.value.builtin) {
+    notify(HOST_READONLY_TIP)
+    return true
+  }
+  return false
+}
+function torrentActionGuarded(torrent, action) {
+  if (_hostReadonly()) return
+  torrentAction(torrent, action)
+}
+function batchActionGuarded(action) {
+  if (_hostReadonly()) return
+  batchAction(action)
+}
+function requestTorrentDeleteGuarded(torrent) {
+  if (_hostReadonly()) return
+  requestTorrentDelete(torrent)
+}
+function openBatchDeleteGuarded() {
+  if (_hostReadonly()) return
+  batchDeleteDialog.value = true
+}
+function detailTorrentActionGuarded(action) {
+  if (_hostReadonly()) return
+  detailTorrentAction(action)
+}
+function openTransferGuarded(...args) {
+  // 移交/转闲也是操作：宿主名下的种手动移交会打乱义务，统一拦下（同上指路）
+  if (_hostReadonly()) return
+  openTransfer(...args)
+}
+// ★ 19.12.28：宿主任务的「种子池」不是「已托管」——四者语义各不相同。
+//   统一说「已托管 N 个」，会让人以为这些种都是这个任务管着的（H&R 那边其实
+//   数的是「还欠着的」）。这里按任务给一句话，先说清这页在看什么。
+const hostPoolHint = computed(() => {
+  const t = selectedTask.value
+  if (!t || !t.builtin) return ''
+  const n = Number(bonusData.value.torrent_count || 0)
+  const id = String(t.id || '')
+  if (id === '__hr_host__') {
+    // ★ 19.12.33：两道门槛后不再产生「未定性」账 —— 只在存量尚未清理时提示一句，
+    //   清完就只剩「还欠 / 没有」两种说法。
+    const un = Number(t.hr_unknown_count || 0)
+    if (!n) {
+      const tail = un ? `（另有 ${un} 张历史未定性账单待清理，不算欠）` : ''
+      return `当前没有欠 H&R 的种${tail}`
+    }
+    return `还欠 H&R 的种：共 ${n} 个 · 只算明确规则（站点级 / 逐种标记），只列 qB 里在种的`
+  }
+  if (id === '__silent_host__') return `静默池：共 ${n} 个 · 不在岗不上传，等分诊`
+  if (id === '__claim__') return `认领保挂：共 ${n} 个 · 站点认领名单内向的种`
+  if (id === '__crossseed__') return `跨站取种台账：共 ${n} 个`
+  return `共 ${n} 个`
+})
+// ★ 19.12.30：内置任务详情卡原来整卡写死「静默托管」，点进 H&R/认领/跨站全是
+//   静默文案 —— 说明文案=行为承诺，写错等于说谎。这里按宿主分标题/口径。
+const hostCardMeta = computed(() => {
+  const t = selectedTask.value || {}
+  const id = String(t.id || '')
+  const interval = t.host_interval_minutes || 60
+  // ★ 19.12.31：run_task 只有静默托管真能手动跑一轮（tasks.py:788），其余三个宿主
+  //   后端直接回「没有可手动触发的轮次」——按钮不能四个任务都摆着（文案=行为承诺）。
+  const autoRun = `按周期自动执行（约 ${interval} 分钟一轮）· 无手动轮次`
+  if (id === '__hr_host__') return {
+    title: 'H&R 保种 · 常驻 worker',
+    sub: '还欠 H&R 的种统一挂住：只算明确规则（站点级 / 逐种标记）∩ qB 里在种（只读，操作去 H&R 账单页）',
+    classifyHint: '按站点拆分（同口径：明确规则 ∩ qB 在种）',
+    canRun: false,
+    runHint: autoRun,
+    opsHint: 'H&R 保种不落运行流水 —— 欠还与结清进度看 H&R 账单页',
+  }
+  if (id === '__claim__') return {
+    title: '认领保挂 · 常驻 worker',
+    sub: '站点认领名单内的种自动保挂（只读，操作去认领页）',
+    classifyHint: '认领名单口径（明细见认领页）',
+    canRun: false,
+    runHint: autoRun,
+    opsHint: '认领保挂不落运行流水 —— 名单与缺种看认领页',
+  }
+  if (id === '__crossseed__') return {
+    title: '跨站取种 · 常驻 worker',
+    sub: '跨站取种台账与承接校验（低频自动跑）',
+    classifyHint: '台账状态拆分（明细见跨站取种页）',
+    canRun: false,
+    runHint: autoRun,
+    opsHint: '跨站取种暂不落独立运行流水 —— 台账见上方种子明细',
+  }
+  return {
+    title: '静默托管 · 常驻 worker',
+    sub: '静默池：清理未下完 / 保挂 / H&R 统一管理 / 辅种校验 / 分拣（低频自动跑）',
+    classifyHint: '静默池按子类 / 义务 / 站点拆分（见 docs/静默托管.md）',
+    canRun: true,
+    runHint: '',
+    opsHint: '每次运行一条流水（展开看九步结果）',
+  }
+})
+// 三个统计格的口径也按宿主分（跨站的主数是台账数，不是 seeding_count=0）
+const hostStatCells = computed(() => {
+  const t = selectedTask.value || {}
+  const id = String(t.id || '')
+  const interval = t.host_interval_minutes || 60
+  const last = t.host_last_run || '—'
+  const tail = [
+    { strong: `${interval} 分钟`, span: id === '__silent_host__' ? '托管周期 · silent_host_interval_minutes 可调' : '托管周期' },
+    { strong: last, span: '上次运行' },
+  ]
+  if (id === '__hr_host__') {
+    return [{ strong: String(Number(t.seeding_count || 0)), span: '还欠 H&R 的种（账单未结清 ∩ qB 在种）' }, ...tail]
+  }
+  if (id === '__claim__') {
+    return [{ strong: String(Number(t.seeding_count || 0)), span: `认领保挂中 · 名单共 ${Number(t.claim_count || 0)} · 缺种 ${Number(t.missing_count || 0)}` }, ...tail]
+  }
+  if (id === '__crossseed__') {
+    const c = t.classify || {}
+    return [{ strong: String(Number(c.pending_total || 0)), span: `跨站台账 · 在途 ${Number(c.pending_inflight || 0)} · 违规 ${Number(c.violations || 0)}` }, ...tail]
+  }
+  return [{ strong: String(Number(t.seeding_count || 0)), span: `静默池种子 · 其中隔离区（欠 H&R 工时）${Number(t.hr_count || 0)} / 其他 ${Number(t.nonhr_count || 0)}` }, ...tail]
+})
+// 分类 chips 同理：by_state 只有静默卡有，别在别的宿主上摆一排 0
+const hostClassifyChips = computed(() => {
+  const t = selectedTask.value || {}
+  const id = String(t.id || '')
+  const c = t.classify || {}
+  if (id === '__claim__') return [
+    { text: `名单共 ${Number(t.claim_count || 0)}`, color: 'info' },
+    { text: `缺种 ${Number(t.missing_count || 0)}`, color: Number(t.missing_count || 0) > 0 ? 'error' : 'success' },
+  ]
+  if (id === '__crossseed__') return [
+    { text: `台账 ${Number(c.pending_total || 0)}`, color: 'info' },
+    { text: `在途 ${Number(c.pending_inflight || 0)}`, color: '' },
+    { text: `违规 ${Number(c.violations || 0)}`, color: Number(c.violations || 0) > 0 ? 'error' : 'success' },
+  ]
+  if (id === '__hr_host__') {
+    // ★ 19.12.33：未定性账不再产生（两道门槛），只有存量遗留才可能 >0 → 有才显示。
+    const chips = [{ text: `还欠 H&R ${Number(t.hr_count || 0)}`, color: 'error' }]
+    const un = Number(t.hr_unknown_count || 0)
+    if (un > 0) chips.push({ text: `历史未定性 ${un}（待清理）`, color: '' })
+    return chips
+  }
+  const byState = c.by_state || {}
+  return [
+    { text: `静默-新 ${Number(byState['新'] || 0)}`, color: 'info' },
+    { text: `静默-资源 ${Number(byState['资源'] || 0)}`, color: 'success' },
+    { text: `静默-普通 ${Number(byState['普通'] || 0)}`, color: '' },
+    { text: `隔离区（欠 H&R 工时）${Number(t.hr_count || 0)}`, color: 'error' },
+    { text: `其他 ${Number(t.nonhr_count || 0)}`, color: '' },
+  ]
+})
 // 列表行副标题：状态词 + 关键数
 function mobileRowLine(t) {
   const parts = []
@@ -843,6 +1137,8 @@ function mobileRowLine(t) {
 // 刷流零上传时返回空串（保留原行为：宁可不显示，也不显示「↑ 0 B」）。
 function mobileRowNum(t) {
   const m = taskMetrics(t)
+  // ★ 19.12.31：宿主任务没有时魔可取 —— 原先落到「取数中…」永远装加载，改给口径主数
+  if (m.isHost) return m.primary.text
   if (m.primary.key === 'upload') return m.upload.value > 0 ? `↑ ${m.upload.text}` : ''
   return m.hourly.ok ? m.hourly.text : '取数中…'
 }
@@ -1145,10 +1441,74 @@ function onExamStart(payload) {
 
 // P4：运行诊断面板已拆到 ./components/tabs/JournalTab.js —— 「状态 + 派生」整体作为 props.data 下传
 // （reactive() 解包其中的 ref/computed）；类型筛选走 :scope + @update:scope，刷新/展开明细走 emit。
+// ── 诊断页「做种实况」数据块（★ 19.12.24）────────────────────────────────
+//   ★ 为什么要有：做种模式根本不跑刷流那五步（抓种 / 筛种 / 入库都是 brush 的事），把它摆在
+//     最上面且永远不动，读起来就是「坏了」。做种期间真正会变、也真正该盯的只有四件：
+//     在管做种数、占的盘、待结清的 H&R、下一轮维护什么时候来。
+//   口径：前两件是**本任务**（detail.last_kept / disk_size_gb）；H&R 是**全站账本**
+//   —— 账单按 hash 记，没有任务归属字段，所以下游必须显式标「全站」，别混着读。
+const diagSeed = computed(() => {
+  const d = detail.value || {}
+  const bills = hrBills.value
+  const sites = (bills && Array.isArray(bills.sites)) ? bills.sites : []
+  let pending = 0
+  let atRisk = 0
+  let known = 0
+  let owed = 0        // 工时还不够：这才叫欠
+  let waiting = 0     // 工时已够、站端还没确认
+  const tight = []    // 只收「真欠」的，用来给最紧那颗做注脚
+  const waitSites = new Set()
+  // ★ Number(null) 是 0，不是 NaN —— 站端没给 hours_left 时会被算成「0 小时、已超时」，
+  //   于是把「等确认」误报成「已超时」。必须先判空再转数。
+  const num = (v) => {
+    if (v === null || v === undefined || v === '') return null
+    const n = Number(v)
+    return Number.isFinite(n) ? n : null
+  }
+  for (const site of sites) {
+    for (const it of (site.items || [])) {
+      known += 1
+      const st = String((it && it.state) || '')
+      if (!st || st === 'settled') continue
+      pending += 1
+      if (it && it.at_risk) atRisk += 1
+      const left = num(it && it.hours_left)
+      const seeded = num(it && it.seeded_h)
+      const need = num(it && it.need_h)
+      const siteName = String(site.name || site.domain || '')
+      // need 缺失（站端没给要求）不当成欠：按「等确认」处理，宁可少报一个欠账
+      const enough = need !== null && need > 0 ? (seeded || 0) >= need : true
+      if (enough) {
+        waiting += 1
+        if (siteName) waitSites.add(siteName)
+      } else {
+        owed += 1
+        tight.push({ site: siteName, left, seeded: seeded || 0, need: need || 0 })
+      }
+    }
+  }
+  // 剩余时间最紧的排前面；站端没给 deadline（hours_left=null）当最宽松，不冒充「很急」
+  tight.sort((a, b) => (a.left === null ? 1e9 : a.left) - (b.left === null ? 1e9 : b.left))
+  return {
+    count: Number(d.last_kept || 0),
+    sizeGb: Number(d.disk_size_gb || 0),
+    cumKept: Number(d.cumulative_kept || 0),
+    hrPending: pending,
+    hrOwed: owed,
+    hrWaiting: waiting,
+    hrAtRisk: atRisk,
+    hrKnown: known,
+    hrSites: sites.length,
+    hrWaitSites: Array.from(waitSites).slice(0, 3),
+    hrTightest: tight.slice(0, 2),
+  }
+})
+
 const journalTabData = {
   detail, detailStats, flowNodes, flowPhaseText,
   candidateData, candidateRawTotal, candidateLoadedAt, reasonEntries, maxReasonCount,
   opsFiltered, opsKindItems, expandedOps,
+  diagSeed,
 }
 
 // ── 静默池（silent，7.16.0）：无主种池（跨站 / 跨任务）的全局视图 ────────────────
@@ -1341,6 +1701,37 @@ const hrBillsList = computed(() => {
   return []
 })
 
+// ★ 19.12.16：账单按**种子 hash** 建索引，供种子池列表给每颗种标「H&R 剩 N 天」。
+//   `hrBillsList` 只吃扁平数组，而真实接口形态是 `{sites:[{domain,name,items:[...]}]}`
+//   —— 所以它上面那个 computed 对真实数据恒为 []，不能拿它当数据源。
+//   这里摊平 sites[].items；同一 hash 多站出现时保留「窗口最紧」的那条（先到期先喊）。
+const hrMapByHash = computed(() => {
+  const out = {}
+  const v = hrBills.value
+  const sites = (v && Array.isArray(v.sites)) ? v.sites : []
+  const rank = (it) => {
+    const st = String((it && it.state) || '')
+    if (st === 'breached') return -1
+    const left = Number(it && it.hours_left)
+    return Number.isFinite(left) && left > 0 ? left : 9999
+  }
+  for (const s of sites) {
+    for (const it of (s.items || [])) {
+      const h = String((it && it.hash) || '').toLowerCase()
+      if (!h) continue
+      const prev = out[h]
+      if (!prev || rank(it) < rank(prev)) {
+        out[h] = Object.assign({}, it, {
+          hash: h,
+          site: s.domain,
+          site_name: s.name,
+        })
+      }
+    }
+  }
+  return out
+})
+
 // 概览右栏「快速功能」：走 MF_PAGES 的全局功能页（scope=global），点开即原弹窗
 const homeQuickPages = computed(() => [
   { key: 'ondemand', label: '点播', icon: 'mdi-cloud-download-outline', hint: '片名 / 链接 → 选源下载' },
@@ -1360,6 +1751,11 @@ function selectTask(taskId, opts = {}) {
   }
   if (taskId === selectedTaskId.value) return
   selectedTaskId.value = taskId
+  // ★ 19.12.28：内置宿主任务（静默托管 / H&R 保种 / 认领保挂 / 跨站取种）不选种，
+  //   「候选」页恒为空 —— 停在候选页只会让人觉得「点进去还是什么都没有」。
+  //   切到「托管」页，直接看它名下到底挂着哪些种（明细由后端按各自真值源给）。
+  const _hostTask = (tasks.value || []).find(t => t.id === taskId)
+  poolView.value = _hostTask && _hostTask.builtin ? 'torrents' : 'candidates'
   reloadSelected()
   if (activeTab.value === 'pool' && poolView.value === 'candidates') loadCandidates(taskId)
 }
@@ -1385,6 +1781,7 @@ function reloadSelected(taskId = selectedTaskId.value) {
   loadDetail(taskId)
   loadBonus(taskId, { silent: !!cachedBonus })
   loadOperations(taskId)
+  ensureHrBills()
 }
 
 // 立即为当前任务执行一次。
@@ -1831,6 +2228,7 @@ onUnmounted(() => {
           :ops="(operationData && operationData.operations) || []"
           :notify-count="notifyCount"
           :pages="homeQuickPages"
+          :active-task-id="selectedTaskId"
           :loading="homeTrendLoading"
           @open-task="openTaskFromHome"
           @open-ceiling="openCeiling"
@@ -1859,7 +2257,7 @@ onUnmounted(() => {
               返回概览
             </VBtn>
             <div class="magicflow-task-head__identity">
-              <VAvatar color="primary" variant="tonal" rounded size="42" class="magicflow-task-head__avatar">
+              <VAvatar color="primary" variant="tonal" rounded size="34" class="magicflow-task-head__avatar">
                 <img v-if="taskSiteIcon" class="magicflow-task-head__site-icon" :src="taskSiteIcon" alt="" />
                 <VIcon v-else icon="mdi-web" />
               </VAvatar>
@@ -1973,6 +2371,7 @@ onUnmounted(() => {
                 :decision-cap-text="decisionCapText"
                 :decision-reasons="decisionReasons"
                 :trend-cards="trendCards"
+                :trend-main="trendMain"
                 @open-entry="activeTab = $event"
               />
             </VWindowItem>
@@ -1996,6 +2395,9 @@ onUnmounted(() => {
                     <template v-if="poolView === 'candidates'">
                       待办队列 · 共 {{ candidateData.total || 0 }} 个通过过滤
                     </template>
+                    <template v-else-if="selectedTask && selectedTask.builtin">
+                      {{ hostPoolHint }}
+                    </template>
                     <template v-else>
                       已托管：共 {{ bonusData.torrent_count || 0 }} 个
                     </template>
@@ -2003,11 +2405,12 @@ onUnmounted(() => {
                 </div>
                 <div class="magicflow-torrent-filters">
                   <VBtnToggle :model-value="poolView" mandatory color="primary" density="compact" @update:model-value="value => (poolView = value)">
-                    <VBtn value="candidates" prepend-icon="mdi-filter-variant">候选</VBtn>
-                    <VBtn value="torrents" prepend-icon="mdi-seed-outline">托管（{{ bonusData.torrent_count || 0 }}）</VBtn>
+                    <!-- 宿主任务不选种，「候选」恒空 —— 不摆一个点了没内容的页签 -->
+                    <VBtn v-if="!selectedTask || !selectedTask.builtin" value="candidates" prepend-icon="mdi-filter-variant">候选</VBtn>
+                    <VBtn value="torrents" prepend-icon="mdi-seed-outline">{{ selectedTask && selectedTask.builtin ? '种子' : '托管' }}（{{ bonusData.torrent_count || 0 }}）</VBtn>
                   </VBtnToggle>
                   <VBtn
-                    v-if="poolView === 'torrents'"
+                    v-if="poolView === 'torrents' && !(selectedTask && selectedTask.builtin)"
                     size="small"
                     variant="tonal"
                     color="primary"
@@ -2025,22 +2428,26 @@ onUnmounted(() => {
                 v-model:status-filter="torrentStatusFilter"
                 :rows="sortedTorrents"
                 :headers="torrentHeaders"
+                :hr-map="hrMapByHash"
+                :hr-settle-enabled="hrSettleEnabled"
+                :hr-settle-busy="hrSettleBusy"
                 :status-options="torrentStatusOptions"
                 :selected-hashes="selectedHashes"
                 :all-selected="allFilteredSelected"
                 :loading="taskLoading"
                 :busy="batchBusy"
                 :task="selectedTask"
-                @batch="batchAction"
+                @batch="batchActionGuarded"
                 @transfer="openTransfer"
-                @batch-delete="batchDeleteDialog = true"
+                @batch-delete="openBatchDeleteGuarded"
                 @select-all="selectAllFiltered"
                 @clear-selection="clearSelection"
                 @toggle-row="toggleTorrentSelection"
                 @row-click="onTorrentRowClick"
-                @torrent-action="torrentAction"
-                @delete="requestTorrentDelete"
+                @torrent-action="torrentActionGuarded"
+                @delete="requestTorrentDeleteGuarded"
                 @open-detail="openTorrentDetail"
+                @hr-settle="openHrSettle"
               />
             </VWindowItem>
 
@@ -2065,38 +2472,63 @@ onUnmounted(() => {
             <VSheet class="magicflow-panel app-surface-static" style="margin-top:16px;">
               <header class="magicflow-panel__head">
                 <div>
-                  <div class="text-subtitle-1 font-weight-medium">静默托管 · 常驻 worker</div>
-                  <div class="text-body-2 text-medium-emphasis">静默池：清理未下完 / 保挂 / H&R 统一管理 / 辅种校验 / 分拣（低频自动跑）</div>
+                  <div class="text-subtitle-1 font-weight-medium">{{ hostCardMeta.title }}</div>
+                  <div class="text-body-2 text-medium-emphasis">{{ hostCardMeta.sub }}</div>
                 </div>
                 <VChip color="primary" size="small" variant="tonal" prepend-icon="mdi-access-point">常驻</VChip>
               </header>
               <div class="magicflow-stat-grid">
-                <VSheet class="magicflow-stat app-surface-static">
-                  <strong>{{ selectedTask.seeding_count || 0 }}</strong>
-                  <span>静默池种子 · 其中隔离区（欠 H&R 工时）{{ selectedTask.hr_count || 0 }} / 其他 {{ selectedTask.nonhr_count || 0 }}</span>
-                </VSheet>
-                <VSheet class="magicflow-stat app-surface-static">
-                  <strong>{{ selectedTask.host_interval_minutes || 60 }} 分钟</strong>
-                  <span>托管周期 · silent_host_interval_minutes 可调</span>
-                </VSheet>
-                <VSheet class="magicflow-stat app-surface-static">
-                  <strong>{{ selectedTask.host_last_run || '—' }}</strong>
-                  <span>上次运行</span>
+                <VSheet v-for="(cell, ci) in hostStatCells" :key="ci" class="magicflow-stat app-surface-static">
+                  <strong>{{ cell.strong }}</strong>
+                  <span>{{ cell.span }}</span>
                 </VSheet>
               </div>
+              <!-- ★ 19.12.30：宿主名下的种子明细 —— 之前明细挂在只对非内置任务渲染的
+                   页签分支里，内置任务走到这张死卡就断了，界面上等于没有变化。
+                   这里直接上 SeedingTab（行操作走 _hostReadonly 只读守卫）。 -->
+              <VSheet tag="section" class="magicflow-panel app-surface-static mt-4">
+                <header class="magicflow-panel__head">
+                  <div>
+                    <div class="text-subtitle-1 font-weight-medium">种子明细</div>
+                    <div class="text-body-2 text-medium-emphasis">{{ hostPoolHint }}</div>
+                  </div>
+                </header>
+                <SeedingTab
+                  v-model:filter="torrentFilter"
+                  v-model:status-filter="torrentStatusFilter"
+                  :rows="sortedTorrents"
+                  :headers="torrentHeaders"
+                  :hr-map="hrMapByHash"
+                  :hr-settle-enabled="hrSettleEnabled"
+                  :hr-settle-busy="hrSettleBusy"
+                  :status-options="torrentStatusOptions"
+                  :selected-hashes="selectedHashes"
+                  :all-selected="allFilteredSelected"
+                  :loading="taskLoading"
+                  :busy="batchBusy"
+                  :task="selectedTask"
+                  @batch="batchActionGuarded"
+                  @transfer="openTransferGuarded"
+                  @batch-delete="openBatchDeleteGuarded"
+                  @select-all="selectAllFiltered"
+                  @clear-selection="clearSelection"
+                  @toggle-row="toggleTorrentSelection"
+                  @row-click="onTorrentRowClick"
+                  @torrent-action="torrentActionGuarded"
+                  @delete="requestTorrentDeleteGuarded"
+                  @open-detail="openTorrentDetail"
+                  @hr-settle="openHrSettle"
+                />
+              </VSheet>
               <VSheet tag="section" class="magicflow-panel app-surface-static mt-4">
                 <header class="magicflow-panel__head">
                   <div>
                     <div class="text-subtitle-1 font-weight-medium">分类</div>
-                    <div class="text-body-2 text-medium-emphasis">静默池按子类 / 义务 / 站点拆分（见 docs/静默托管.md）</div>
+                    <div class="text-body-2 text-medium-emphasis">{{ hostCardMeta.classifyHint }}</div>
                   </div>
                 </header>
                 <div class="d-flex flex-wrap ga-2 mb-2">
-                  <VChip size="small" variant="tonal" color="info">静默-新 {{ (selectedTask.classify && selectedTask.classify.by_state && selectedTask.classify.by_state['新']) || 0 }}</VChip>
-                  <VChip size="small" variant="tonal" color="success">静默-资源 {{ (selectedTask.classify && selectedTask.classify.by_state && selectedTask.classify.by_state['资源']) || 0 }}</VChip>
-                  <VChip size="small" variant="tonal">静默-普通 {{ (selectedTask.classify && selectedTask.classify.by_state && selectedTask.classify.by_state['普通']) || 0 }}</VChip>
-                  <VChip size="small" variant="tonal" color="error">隔离区（欠 H&R 工时）{{ selectedTask.hr_count || 0 }}</VChip>
-                  <VChip size="small" variant="tonal">其他 {{ selectedTask.nonhr_count || 0 }}</VChip>
+                  <VChip v-for="(chip, hi) in hostClassifyChips" :key="hi" size="small" variant="tonal" :color="chip.color || undefined">{{ chip.text }}</VChip>
                 </div>
                 <div v-if="silentHostSites.length" class="text-body-2 text-medium-emphasis">
                   <span v-for="(row, i) in silentHostSites" :key="row.name">{{ i ? '  ·  ' : '' }}{{ row.name }} {{ row.total }}<template v-if="row.hr">（隔离 {{ row.hr }}）</template></span>
@@ -2107,7 +2539,7 @@ onUnmounted(() => {
                 <header class="magicflow-panel__head">
                   <div>
                     <div class="text-subtitle-1 font-weight-medium">操作记录</div>
-                    <div class="text-body-2 text-medium-emphasis">每次运行一条流水（展开看九步结果）</div>
+                    <div class="text-body-2 text-medium-emphasis">{{ hostCardMeta.opsHint }}</div>
                   </div>
                   <VBtn variant="text" color="primary" prepend-icon="mdi-refresh" @click="loadOperations(selectedTaskId)">刷新</VBtn>
                 </header>
@@ -2160,8 +2592,11 @@ onUnmounted(() => {
                   <div v-if="!opsFiltered.length" class="magicflow-table-empty">暂无操作记录</div>
                 </div>
               </VSheet>
-              <div style="margin-top:14px;display:flex;gap:8px;">
-                <VBtn size="small" color="primary" variant="tonal" prepend-icon="mdi-sync" :loading="saving" @click="runOperation">立即执行</VBtn>
+              <div style="margin-top:14px;display:flex;gap:8px;align-items:center;">
+                <!-- ★ 19.12.31：只有静默托管有手动轮次（run_task 真跑 silent_host）；
+                     其余宿主后端回「没有可手动触发的轮次」，摆按钮=骗点击，改给如实说明 -->
+                <VBtn v-if="hostCardMeta.canRun" size="small" color="primary" variant="tonal" prepend-icon="mdi-sync" :loading="saving" @click="runOperation">立即执行</VBtn>
+                <span v-else class="text-body-2 text-medium-emphasis">{{ hostCardMeta.runHint }}</span>
                 <VBtn size="small" variant="text" prepend-icon="mdi-refresh" @click="reloadSelected()">刷新</VBtn>
               </div>
             </VSheet>
@@ -2206,14 +2641,84 @@ onUnmounted(() => {
       @open="mfOpenPage"
     />
 
-    <!-- ★ P4：H&R 账单（自有组件；props 下 / emit 上） -->
+    <!-- ★ P4：H&R 账单弹窗（★ 任务 98：只查看账单 + 审计 + 历史事件，
+         不承担人工结清操作；入口在任务详情 → 种子明细 → 每颗种子的操作区） -->
     <HrBillsDialog
       v-model="hrBillsOpen"
       :data="hrBills"
       :loading="hrBillsLoading"
       :narrow="isNarrow"
-      @refresh="loadHrBills(false)"
+      @refresh="loadHrBills(true)"
     />
+
+    <!-- ★ 任务 98：人工结清确认（两步：填写原因 → 二次确认）。
+         操作人只取自当前 MoviePilot 登录身份；提交期间禁用按钮防重复；
+         成功后刷新 H&R 账单统计与任务种子明细。 -->
+    <VDialog v-model="hrSettleOpen" max-width="32rem" :persistent="hrSettleBusy">
+      <VCard class="magicflow-dialog">
+        <header class="magicflow-settings-dialog__head">
+          <span class="magicflow-settings-dialog__title">
+            {{ hrSettleStep === 2 ? '人工结清 · 二次确认' : '人工结清 · 填写原因' }}
+          </span>
+          <span class="magicflow-ops-dialog__spacer" />
+          <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" :disabled="hrSettleBusy" @click="closeHrSettle" />
+        </header>
+        <div class="magicflow-ops-dialog__body" v-if="hrSettleTarget">
+          <div class="magicflow-hrsettle__title" :title="hrSettleTarget.title">{{ hrSettleTarget.title }}</div>
+          <div class="magicflow-hrsettle__meta">
+            <span>站点：{{ hrSettleTarget.site || '—' }}</span>
+            <span>状态：{{ hrSettleTarget.state || '—' }}</span>
+            <span>规则：{{ hrSettleTarget.rule || '—' }}</span>
+            <span>需做种：{{ Number(hrSettleTarget.need_h || 0).toFixed(1) }}h</span>
+            <span>已做种：{{ Number(hrSettleTarget.seeded_h || 0).toFixed(1) }}h</span>
+            <span class="magicflow-hrsettle__hash" :title="hrSettleTarget.hash">hash：{{ hrSettleTarget.hash }}</span>
+          </div>
+          <VAlert v-if="hrSettleTarget.state === 'pending'" type="warning" variant="tonal" density="compact" class="my-2">
+            该账单尚未下载完成（pending）。人工结清会直接标记为已结清，请确认已线下核实。
+          </VAlert>
+          <VAlert type="info" variant="tonal" density="compact" class="my-2">
+            人工结清会写入审计（操作人 / 原因 / 时间）；若站端 myhr 之后可靠证明义务仍存在，账单会被纠错重开并保留本次结清历史。
+          </VAlert>
+          <div class="magicflow-hrsettle__op">
+            操作人：<b>{{ hrOperator || '—' }}</b><span>（取自当前 MoviePilot 登录身份，不可修改）</span>
+          </div>
+          <div v-if="hrOperatorError || !hrSettleOperatorOk" class="magicflow-hrsettle__err">
+            {{ hrOperatorError || '当前会话没有有效登录用户名，不能提交人工结清。' }}
+          </div>
+          <template v-if="hrSettleStep === 1">
+            <label class="magicflow-hrsettle__label" for="mf-hr-settle-reason">人工结清原因（必填）</label>
+            <textarea
+              id="mf-hr-settle-reason"
+              v-model="hrSettleReason"
+              class="magicflow-hrsettle__input"
+              rows="3"
+              maxlength="200"
+              :disabled="hrSettleBusy"
+              placeholder="例如：站端 myhr 已确认不欠，本地工时记录异常，人工核实后结清"
+            />
+          </template>
+          <template v-else>
+            <div class="magicflow-hrsettle__confirm">
+              <div>即将把该账单标记为<b>已人工结清</b>，写入操作人 / 原因 / 时间，并停止自动任务覆盖。</div>
+              <div class="magicflow-hrsettle__reason">原因：{{ hrSettleReason }}</div>
+            </div>
+          </template>
+          <div v-if="hrSettleError" class="magicflow-hrsettle__err">{{ hrSettleError }}</div>
+          <div class="magicflow-hrsettle__actions">
+            <VBtn variant="text" :disabled="hrSettleBusy" @click="hrSettleStep === 2 ? backHrSettle() : closeHrSettle()">
+              {{ hrSettleStep === 2 ? '返回修改' : '取消' }}
+            </VBtn>
+            <VBtn
+              color="primary"
+              variant="tonal"
+              :disabled="hrSettleStep === 1 ? !hrSettleReasonOk || !hrSettleOperatorOk : !hrSettleCanSubmit"
+              :loading="hrSettleBusy"
+              @click="confirmHrSettle"
+            >{{ hrSettleStep === 2 ? '确认人工结清' : '下一步' }}</VBtn>
+          </div>
+        </div>
+      </VCard>
+    </VDialog>
 
     <!-- P4：签到弹窗已拆到 ./components/dialogs/SigninDialog.vue（props 下 / emit 上） -->
     <SigninDialog
@@ -2349,8 +2854,8 @@ onUnmounted(() => {
       :saving="saving"
       :narrow="isNarrow"
       @copy-hash="copyTorrentHash"
-      @action="detailTorrentAction"
-      @delete="requestTorrentDelete"
+      @action="detailTorrentActionGuarded"
+      @delete="requestTorrentDeleteGuarded"
     />
 
     <!-- P4：批量转移确认弹窗已拆到 ./components/confirm/TransferConfirm.js（props 下 / emit 上） -->
@@ -2772,10 +3277,16 @@ onUnmounted(() => {
 </template>
 <style scoped>
 /* ★ 主页「整体概览」：任务头左上返回按钮（设计稿方案①·常驻钮） */
-.magicflow-task-head__back {
+.magicflow-page .magicflow-task-head__back {
   flex: none;
   margin-right: 2px;
-  color: rgba(var(--v-theme-on-surface), 0.62);
+  min-block-size: 32px;
+  padding-inline: 10px 12px;
+  border: 1px solid rgba(var(--v-theme-primary), 0.45);
+  border-radius: 8px;
+  color: rgb(var(--v-theme-primary));
+  font-size: 11.5px;
+  font-weight: 500;
 }
 .magicflow-task-head__back:hover {
   color: rgb(var(--v-theme-primary));
@@ -3706,8 +4217,8 @@ onUnmounted(() => {
 }
 
 .magicflow-page .magicflow-task-head h2 {
-  font-size: 15px;
-  font-weight: 650;
+  font-size: 17px;
+  font-weight: 600;
 }
 
 .magicflow-page .magicflow-task-head p {
@@ -3718,9 +4229,9 @@ onUnmounted(() => {
 .magicflow-page .magicflow-tabs {
   display: flex;
   gap: 4px;
-  padding: 6px;
+  padding: 4px;
   border: 1px solid var(--magicflow-panel-brd);
-  border-radius: 16px;
+  border-radius: 10px;
   background: var(--magicflow-panel-bg);
   backdrop-filter: blur(14px) saturate(120%);
   -webkit-backdrop-filter: blur(14px) saturate(120%);
@@ -3730,13 +4241,15 @@ onUnmounted(() => {
 .magicflow-page .magicflow-tab {
   flex: 1 1 0;
   min-inline-size: 0;
-  padding: 9px 4px;
+  min-block-size: 32px;
+  padding: 6px 16px;
   border: 0;
-  border-radius: 11px;
+  border-radius: 8px;
   color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
   background: transparent;
   font: inherit;
-  font-size: 12px;
+  font-size: 11.5px;
+  font-weight: 500;
   text-align: center;
   white-space: nowrap;
   cursor: pointer;
@@ -4167,4 +4680,21 @@ onUnmounted(() => {
   .magicflow-music-body { padding-bottom: 92px; }
   .magicflow-torrent-dialog { padding-bottom: 92px; }
 }
+</style>
+
+<!-- ★ 任务 98：人工结清两步确认框（入口在「任务详情 → 种子明细 → 种子操作区」）。
+     纯自有类名，不碰任何 .v- / .mdi- 规则，避免构建期样式过滤。 -->
+<style>
+.magicflow-hrsettle__title { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.magicflow-hrsettle__meta { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-block-start: 6px; font-size: 11.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
+.magicflow-hrsettle__hash { word-break: break-all; }
+.magicflow-hrsettle__op { margin-block: 10px 4px; font-size: 12px; }
+.magicflow-hrsettle__op span { font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
+.magicflow-hrsettle__confirm { margin-block-start: 10px; padding: 10px 12px; border: 1px solid var(--magicflow-panel-brd); border-radius: 10px; font-size: 12px; line-height: 1.6; }
+.magicflow-hrsettle__reason { margin-block-start: 6px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); word-break: break-all; }
+.magicflow-hrsettle__err { margin-block: 6px; padding: 6px 10px; border-radius: 8px; font-size: 11.5px; font-weight: 600; color: rgb(var(--v-theme-error)); background: rgba(var(--v-theme-error), 0.09); }
+.magicflow-hrsettle__label { display: block; margin-block-start: 8px; font-size: 12px; font-weight: 600; }
+.magicflow-hrsettle__input { display: block; width: 100%; margin-block-start: 5px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--magicflow-panel-brd); background: rgba(var(--v-theme-on-surface), 0.04); color: rgb(var(--v-theme-on-surface)); font-size: 12px; line-height: 1.5; resize: vertical; box-sizing: border-box; }
+.magicflow-hrsettle__input:focus { outline: 1px solid rgb(var(--v-theme-primary)); }
+.magicflow-hrsettle__actions { display: flex; justify-content: flex-end; gap: 8px; margin-block-start: 12px; }
 </style>

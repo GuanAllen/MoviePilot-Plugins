@@ -18,6 +18,7 @@ import { makeJobs } from './jobs'
 import { makeTrend } from './trend'
 import { makeNotify } from './notify'
 import { makePlan } from './plan'
+import { makePush } from './push'
 
 /** 插件 API 基址。 */
 export function pluginBaseOf(pluginId) {
@@ -57,5 +58,6 @@ export function createApi(http, pluginId = 'MagicFlow') {
   c.trend = makeTrend(c)
   c.notify = makeNotify(c)
   c.plan = makePlan(c)
+  c.push = makePush(c)
   return c
 }
