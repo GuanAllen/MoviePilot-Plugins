@@ -275,16 +275,23 @@ class CrossSeedMixin:
         """
         hours, hsrc = self._crossseed_seed_hours_detail(domain)
         site_hr = self._site_hr_flag(domain)
+        try:
+            _pt = bool(self._site_per_torrent_hr(domain))
+        except Exception:  # noqa: BLE001
+            _pt = False
+        # ★ 19.12.36：判据顺序从「种子标记优先」改成「**站点制度优先**」。
+        #   站点**明确无 H&R**（``site_hr is False``）且非逐种站 → 种子级标记一律不采信。
+        #   线上实证：馒头没有 H&R 制度，列表页解析出的 ``hit_and_run`` 是误读；旧顺序里
+        #   `torrent_hr is True` 排在最前 → 判「欠 24h」→ 下完即判的新流程会把它们迁进保种。
+        #   与 ``_hrbills_open`` 的两道门槛（19.12.33）、``_hr_obligation_by_seed`` 同源。
+        if site_hr is False and not _pt:
+            return False, 0.0, f"站点规则({hsrc})无H&R"
         if torrent_hr is True:
             use = float(hours) if float(hours or 0.0) > 0 else float(CROSSSEED_SEED_HOURS_DEFAULT)
             return True, use, f"种子标记/{hsrc}"
         # ★ 17.2.2：逐种站（YemaPT ``hrPunishEnable`` / Depth Studio 黑色标签）—— 站点级结论
         #   （无论 True/False/未知）**对它都不适用**：这颗种没逐种标记 → 不保护。
         #   时长/窗口仍留在站点规则库里（逐种标记命中时按它算 need）。
-        try:
-            _pt = bool(self._site_per_torrent_hr(domain))
-        except Exception:  # noqa: BLE001
-            _pt = False
         if _pt:
             return False, 0.0, "逐种站未标H&R"
         if torrent_hr is False and site_hr is False:

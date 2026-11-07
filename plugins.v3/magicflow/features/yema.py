@@ -34,6 +34,7 @@ from .hrbills import (
     RULE_HIT_AND_RUN,
     RULE_SITE_HR,
     RULE_UNKNOWN,
+    _is_manual_settled,   # ★ 19.12.46（任务 89）：跨模块状态覆盖必须过同一判据
 )
 from .hrreconcile import get_hr_reconcile_cache
 
@@ -471,15 +472,25 @@ class YemaHrMixin:
         rows = list(rep.get("present_no_bill") or [])
         if int(limit or 0) > 0:
             rows = rows[: int(limit)]
+        # ★ 19.12.46（任务 89）：人工结清账的 action 必须单独标注 —— 否则计划里写着
+        #   "upgrade"（承诺会改成 active），实际却跳过，等于给运维一个假承诺。
+        def _plan_action(r: Dict[str, Any]) -> str:
+            _bill = r.get("bill") or {}
+            if _is_manual_settled(_bill):
+                return "skip_manual"
+            if str(_bill.get("rule") or "") == RULE_UNKNOWN \
+                    and str(_bill.get("state") or "") != BILL_STATE_VOID:
+                return "upgrade"
+            return "open"
+
         plan = [{"hash": r.get("hash"), "tid": r.get("tid"), "name": r.get("name"),
                  "hr_status": r.get("hr_status"), "size_gb": r.get("size_gb"),
-                 "action": ("upgrade" if str((r.get("bill") or {}).get("rule") or "") == RULE_UNKNOWN
-                            and str((r.get("bill") or {}).get("state") or "") != BILL_STATE_VOID
-                            else "open")} for r in rows]
+                 "action": _plan_action(r)} for r in rows]
         if not int(confirm or 0):
             return {"ok": True, "dry_run": True, "would_open": len(plan), "plan": plan, "source": "yema"}
         opened: List[str] = []
         upgraded: List[str] = []
+        skipped_manual: List[str] = []
         failed: List[Dict[str, Any]] = []
         for r in rows:
             h = str(r.get("hash") or "")
@@ -489,16 +500,37 @@ class YemaHrMixin:
             _rule = str(_b.get("rule") or "")
             _state = str(_b.get("state") or "")
             try:
+                # ★ 19.12.46（任务 89）：**人工结清账不得被跨模块状态覆盖**。
+                #   本站行说「欠」只证明站点还要工时，不证明人工核实过的结论作废；
+                #   无条件 patch 成 active 会让 manual 静默变回普通待处理账单。
+                if _is_manual_settled(_b):
+                    skipped_manual.append(h)
                 # ★ 11.7.0-E 收口：存量 rule=unknown 的账单 → **升级**为 hit_and_run
                 #   （站点逐种确认 punish=True；不新增账单、不造第二真值源）。
-                if _rule == RULE_UNKNOWN and _state != BILL_STATE_VOID:
-                    got = self._hrbills_store().patch(
-                        h, rule=RULE_HIT_AND_RUN, state=BILL_STATE_ACTIVE,
-                        site="yemapt.org", upgraded_from=RULE_UNKNOWN, upgraded_at=time.time())
+                elif _rule == RULE_UNKNOWN and _state != BILL_STATE_VOID:
+                    # ★ 19.12.47（任务 91）：``_b`` 来自**对账报告的快照**，无条件 patch
+                    #   会把期间落下的人工结清/作废盖成 active（比 tick 更扭曲：会写出
+                    #   ``state=active`` + ``settlement_method=manual`` 的自相矛盾行）。
+                    #   带守卫的条件写（期望值 = 快照时的 state + settlement_method）。
+                    _store = self._hrbills_store()
+                    _flds = dict(rule=RULE_HIT_AND_RUN, state=BILL_STATE_ACTIVE,
+                                 site="yemapt.org", upgraded_from=RULE_UNKNOWN,
+                                 upgraded_at=time.time())
+                    _pf = getattr(_store, "patch_if", None)
+                    if callable(_pf):
+                        _pres = _pf(h, {"state": _b.get("state"),
+                                        "settlement_method": _b.get("settlement_method")},
+                                    **_flds)
+                        _pres = _pres if isinstance(_pres, dict) else {}
+                        got = _pres.get("row") if _pres.get("ok") else None
+                        _perr = "已被并发修改（%s）" % (_pres.get("reason") or "conflict")
+                    else:  # 旧版 store（不支持 CAS）：退回原行为并如实标注
+                        got = _store.patch(h, **_flds)
+                        _perr = "账单不存在"
                     if got:
                         upgraded.append(h)
                     else:
-                        failed.append({"hash": h, "error": "升级失败（账单不存在）"})
+                        failed.append({"hash": h, "error": "升级失败（%s）" % _perr})
                 else:
                     got = self._hrbills_open(h, "yemapt.org", "魔流-野马PT-做种", None, True)
                     if got:
@@ -514,6 +546,8 @@ class YemaHrMixin:
             pass
         return {"ok": True, "dry_run": False, "opened": len(opened), "hashes": opened,
                 "upgraded": len(upgraded), "upgraded_hashes": upgraded, "failed": failed,
+                "skipped_manual": len(skipped_manual),
+                "skipped_manual_hashes": skipped_manual,
                 "source": "yema"}
 
     # ------------------------------------------------------------ 免罪（写）

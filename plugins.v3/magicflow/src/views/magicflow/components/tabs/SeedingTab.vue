@@ -6,9 +6,13 @@ import { formatBytes } from '../../../../utils'
 import { TORRENT_STATE_TEXT } from '../../constants'
 import { TORRENT_TRANSIENT_STATES } from '../../constants'
 import { TORRENT_PAUSED_STATES } from '../../constants'
+// ★ 任务 98：人工结清入口（与运行态 SeedingTab.js 同口径）。
+//   注意：index.vue 当前 import 的是编译产物 SeedingTab.js；本 SFC 同步改动只为
+//   避免源码漂移，若将来切回 SFC 编译，行为与运行态一致。
+import { canManualSettle } from '../../composables/useHrBills'
 
 // rows=已按筛选/状态过滤+排序后的行；真值源仍在 useSeeding。
-defineProps({
+const props = defineProps({
   rows: { type: Array, default: () => [] },
   headers: { type: Array, default: () => [] },
   statusOptions: { type: Array, default: () => [] },
@@ -17,6 +21,9 @@ defineProps({
   loading: { type: Boolean, default: false },
   busy: { type: Boolean, default: false },
   task: { type: Object, default: () => ({}) },
+  hrMap: { type: Object, default: () => ({}) },
+  hrSettleEnabled: { type: Boolean, default: false },
+  hrSettleBusy: { type: Boolean, default: false },
 })
 
 // 子组件不直接改父状态 → 用 model 回传（父 v-model:filter / v-model:status-filter）。
@@ -34,6 +41,7 @@ const emit = defineEmits([
   'torrent-action',
   'delete',
   'open-detail',
+  'hr-settle',
 ])
 
 // 展示态纯函数（真值源仍在 useSeeding；此处为 P4 拆分随模板搬入的同口径实现）。
@@ -71,6 +79,17 @@ function torrentPauseLabel(item) {
 }
 function torrentResumeLabel(item) {
   return torrentProgressPct(item) >= 100 ? '恢复做种' : '继续下载'
+}
+// ★ 任务 98：按当前种子 hash 精确关联 H&R 账单，只有后端允许结清的账单才显示入口。
+function hrOf(item) {
+  const h = String(item?.hash || '').toLowerCase()
+  if (!h) return null
+  return (props.hrMap || {})[h] || null
+}
+function hrCanSettle(item) {
+  if (!props.hrSettleEnabled) return false
+  const b = hrOf(item)
+  return !!b && canManualSettle(b)
 }
 </script>
 
@@ -188,6 +207,14 @@ function torrentResumeLabel(item) {
               @click="emit('torrent-action', item, 'pause')"
             />
             <VListItem prepend-icon="mdi-sync" title="强制校验" @click="emit('torrent-action', item, 'recheck')" />
+            <VListItem
+              v-if="hrCanSettle(item)"
+              prepend-icon="mdi-check-decagram-outline"
+              title="人工结清"
+              subtitle="按该种子 hash 关联 H&R 账单，需填写原因并二次确认"
+              :disabled="hrSettleBusy"
+              @click="emit('hr-settle', item)"
+            />
             <VDivider class="my-1" />
             <VListItem prepend-icon="mdi-delete-outline" title="删除种子" base-color="error" @click="emit('delete', item)" />
           </VList>
@@ -247,6 +274,15 @@ function torrentResumeLabel(item) {
           >{{ torrentProgressPct(item) >= 100 ? '恢复' : '继续' }}</VBtn>
           <VBtn v-else size="small" variant="tonal" prepend-icon="mdi-pause-circle-outline" @click.stop="emit('torrent-action', item, 'pause')">暂停</VBtn>
           <VBtn size="small" variant="tonal" prepend-icon="mdi-sync" @click.stop="emit('torrent-action', item, 'recheck')">校验</VBtn>
+          <VBtn
+            v-if="hrCanSettle(item)"
+            size="small"
+            variant="tonal"
+            color="primary"
+            prepend-icon="mdi-check-decagram-outline"
+            :disabled="hrSettleBusy"
+            @click.stop="emit('hr-settle', item)"
+          >人工结清</VBtn>
         </div>
       </article>
       <div v-if="!rows.length" class="magicflow-table-empty">当前筛选下没有托管种子</div>

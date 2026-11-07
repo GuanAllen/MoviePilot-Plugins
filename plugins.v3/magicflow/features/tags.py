@@ -43,6 +43,7 @@ from ..tags import (
     STATE_BRUSH,
     STATE_CLAIM,
     STATE_HR,
+    STATE_KEEP,
     STATE_MUSIC,
     STATE_ONDEMAND,
     STATE_RECOMMEND,
@@ -92,6 +93,13 @@ class TagReq(NamedTuple):
     reason: str
     tids: Any
     adopt_reseed: Any
+    days: Any
+    # ★ 19.12.46（任务 89）：操作人**独立参数**。历史实现把 ``site`` 当操作人，
+    #   而任务 85 文档写的是 ``by=`` —— 按文档调用会被 FastAPI 静默丢弃（无 **kwargs），
+    #   操作人落到占位串 "manual"。现在 ``by`` 与 ``site`` 都接，冲突/缺失/空白一律拒绝。
+    by: str
+    # ★ 19.12.46：人工作废「人工结清账单」的显式授权作用域串（不是布尔）。
+    manual_void: str
     store: Any
     groups: Any
 
@@ -710,7 +718,7 @@ class TagsMixin:
             if str(rec.get("taken_by") or "") == MUSIC_TASK_ID:
                 continue
             if str(rec.get("state") or "") in (STATE_BRUSH, STATE_BONUS,
-                                               STATE_HR, STATE_ONDEMAND):
+                                               STATE_HR, STATE_KEEP, STATE_ONDEMAND):
                 continue  # 在别的任务/职务上，不抢
             rep["candidates"] = int(rep["candidates"]) + 1
             if len(rep["samples"]) < 10:
@@ -819,7 +827,7 @@ class TagsMixin:
         # ★ 19.10.12：流程本体在 ``dutyops.assign``（与 H&R 保种 / 认领 / 媒体线共用）。
         #   人工点名 = 特殊岗位（poach=True, 95）→ 只在「有人占着且优先级更高」时让位；
         #   这也是唯一保留 ``require_live=True`` 的地方：人工点名的种必须真在 qB 里。
-        _r = assign(self, hs, taker=KEEP_TASK_ID, state=STATE_HR, name=KEEP_TASK_NAME,
+        _r = assign(self, hs, taker=KEEP_TASK_ID, state=STATE_KEEP, name=KEEP_TASK_NAME,
                     default_sub=SUB_RESOURCE, apply=apply, require_live=True,
                     resume_when="all")
         rep["candidates"] = int(_r.get("candidates") or 0)
@@ -1685,6 +1693,9 @@ class TagsMixin:
         reason: str = "",
         tids: str = "",
         adopt_reseed: str = "",
+        days: str = "",
+        by: str = "",
+        manual_void: str = "",
     ) -> Response:
         """标签模型：状态账本 / 文件组 / 分拣规则 / 迁移计划。
 
@@ -1703,6 +1714,7 @@ class TagsMixin:
             act=str(action or "status").strip().lower(),
             hash=hash, state=state, site=site, limit=limit,
             confirm=confirm, reason=reason, tids=tids, adopt_reseed=adopt_reseed,
+            days=days, by=by, manual_void=manual_void,
             store=self._tag_state(), groups=self._tag_groups(),
         )
         fn = TAG_ACTIONS.get(req.act) or TAG_ACTIONS["status"]
@@ -1869,6 +1881,16 @@ class TagsMixin:
             success=True,
             message=(f"H&R保种:迁移 {info.get('migrated', 0)} · 保挂 {info.get('resumed', 0)} · "
                      f"释放 {info.get('released', 0)}（保种 {info.get('assigned', 0)}）"),
+            data=info,
+        )
+
+    def _tag_act_hrhost_plan(self, req: TagReq) -> Response:
+        """H&R 保种干跑：只算会迁移/释放多少，零写入零贴标（上机前对数字用）。"""
+        info = self.hr_host(apply=False)
+        return Response(
+            success=True,
+            message=(f"H&R保种干跑:将迁移 {info.get('would_migrate', 0)} · "
+                     f"将释放 {info.get('would_release', 0)}（当前保种 {info.get('assigned', 0)}）"),
             data=info,
         )
 
@@ -2196,7 +2218,19 @@ class TagsMixin:
                         message=f"H&R 账单巡检完成：{info}", data=info)
 
     def _tag_act_hr_void(self, req: TagReq) -> Response:
-        """人工作废账单（摘保护），需 confirm=1，hash 可批量。"""
+        """人工作废账单（摘保护），需 confirm=1，hash 可批量。
+
+        ★ 19.12.43：作废 = 落 ``state=void`` **墓碑**（不再删行），回填不会把同一 hash
+        重新开账；``miss`` 里既含「本来就没有」也含「早已作废」。
+
+        ★ 19.12.46（任务 89 · 人工结清保护闭环）：**人工结清账默认不会被作废**
+        （``_hrbills_void`` 内拦截，进 ``manual_blocked`` 列表）。要撤销人工结清结论，
+        必须显式走**人工作废旁路**，三件套缺一不可：
+        ``manual_void=manual-void``（显式作用域串，不是布尔）+ ``by=<操作人>``
+        + ``reason=<纠错原因>`` + ``confirm=1``。原始结清审计
+        （``settled_by`` / ``settlement_reason`` / ``settled_at``）保留在行上，
+        另记一条「人工作废」审计事件，不覆盖历史。
+        """
         # ★ 11.7.0：人工作废账单（摘保护）—— 站点侧免罪 / 确认无 H&R 后的落账口子。
         #   写动作，必须 confirm=1；hash 逗号分隔可批量。
         if str(req.confirm or "").strip().lower() not in ("1", "true", "yes"):
@@ -2206,17 +2240,125 @@ class TagsMixin:
         _hs = [x.strip() for x in _raw.replace(",", " ").split() if x.strip()]
         if not _hs:
             return Response(success=False, message="缺少 hash（可逗号分隔批量）")
-        _reason = str(req.reason or "manual").strip() or "manual"
-        done, miss = [], []
+        _reason = str(req.reason or "").strip() or "manual"
+        # ---- 人工作废旁路凭证（仅当显式声明 manual_void 时才启用）----
+        from .hrbills import MANUAL_VOID_SCOPE, _void_ok   # 局部 import：避免模块级循环
+        _ov: Optional[Dict[str, Any]] = None
+        _scope = str(req.manual_void or "").strip()
+        if _scope:
+            if _scope != MANUAL_VOID_SCOPE:
+                return Response(
+                    success=False,
+                    message=f"manual_void 取值无效（撤销人工结清须显式传 manual_void={MANUAL_VOID_SCOPE}）")
+            _op = self._resolve_operator(req.by, "")
+            if not _op.get("ok"):
+                return Response(
+                    success=False,
+                    message=str(_op.get("message")) + "（人工作废必须记录操作人）",
+                    data={"error": _op.get("error")})
+            if not str(req.reason or "").strip():
+                return Response(
+                    success=False,
+                    message="人工作废人工结清账单必须填写纠错原因（reason 参数）")
+            _ov = {"authorization": MANUAL_VOID_SCOPE,
+                   "authorized_by": str(_op["by"]),
+                   "reason": str(req.reason or "").strip()}
+        done, miss, blocked, conflict = [], [], [], []
         for _h in _hs:
             try:
-                _b = self._hrbills_void(_h, _reason)
+                _b = self._hrbills_void(_h, _reason, manual_override=_ov)
             except Exception:  # noqa: BLE001
                 _b = None
-            (done if _b else miss).append(_h)
+            if _void_ok(_b):
+                done.append(_h)
+            elif isinstance(_b, dict) and _b.get("error") == "manual_protected":
+                blocked.append(_h)      # ★ 人工结清：自动作废被拦（非「找不到」）
+            elif isinstance(_b, dict) and _b.get("error") == "concurrent_modified":
+                # ★ 19.12.47（任务 91）：读→写之间账单被别的写入改过（多半是刚落下的
+                #   人工结清）。**不冒充「未找到或已作废」** —— 那是两种完全不同的处置。
+                conflict.append(_h)
+            else:
+                miss.append(_h)
         return Response(success=True,
-                        message=f"账单作废：成功 {len(done)} / 未找到 {len(miss)}（reason={_reason}）",
-                        data={"voided": done, "missing": miss, "reason": _reason})
+                        message=(f"账单作废：成功 {len(done)} / 未找到或已作废 {len(miss)}"
+                                 + (f" / 人工结清已拦截 {len(blocked)}" if blocked else "")
+                                 + (f" / 并发变更未作废 {len(conflict)}（请复核后重试）"
+                                    if conflict else "")
+                                 + (f"（reason={_reason}；作废后留 void 墓碑，不会被回填重开）")
+                                 + ("；撤销人工结清请传 manual_void=manual-void + by= + reason="
+                                    if blocked else "")),
+                        data={"voided": done, "missing": miss,
+                              "manual_blocked": blocked,
+                              "conflict": conflict,
+                              "manual_override": bool(_ov),
+                              "reason": _reason, "state": "void"})
+
+    @staticmethod
+    def _resolve_operator(by: Any, site: Any) -> Dict[str, Any]:
+        """解析「操作人」：``by`` 优先、兼容旧 ``site``；**绝不静默丢弃**。
+
+        ★ 19.12.46（任务 89）：历史实现只认 ``site``，而任务 85 的文档写的是 ``by=``；
+        ``get_tag_model`` 没有 ``**kwargs``，FastAPI 会把未知的 ``by`` 直接扔掉 →
+        按文档调用的人以为记了操作人，实际落库是占位串 "manual"。现在两个都接，
+        冲突就拒绝（不猜），缺失/空白也拒绝（不兜底）。
+
+        返回 ``{"ok": True, "by": <归一后的操作人>}``，或
+        ``{"ok": False, "error": <码>, "message": <中文>}``。
+        """
+        b = str(by or "").strip()
+        s = str(site or "").strip()
+        if b and s and b != s:
+            return {"ok": False, "error": "operator_conflict",
+                    "message": ("by 与 site 取值不一致，拒绝执行"
+                                "（site 是旧版操作人参数；请只传 by）")}
+        op = b or s
+        if not op:
+            return {"ok": False, "error": "missing_operator",
+                    "message": "缺少操作人：请传 by=（site= 仅作旧版兼容）"}
+        return {"ok": True, "by": op[:64]}
+
+    def _tag_act_hrbills_settle_manual(self, req: TagReq) -> Response:
+        """★ 19.12.44 人工结清 H&R 账单（自动处理 + 人工兜底）。
+
+        写动作，必须 confirm=1；hash 单个指定（不批量）。
+        参数映射：``hash`` → 账单 hash；``reason`` → 结清原因（必填）；
+        ``by`` → 操作人 settled_by（**必填**，★ 19.12.46）；``site`` → 旧版操作人参数，
+        仅作兼容（与 by 冲突/一致时按 ``_resolve_operator`` 规则处理）。
+        幂等：重复结清同一 hash 返回 already=True。void 墓碑拒绝。
+        """
+        if str(req.confirm or "").strip().lower() not in ("1", "true", "yes"):
+            return Response(success=True, message="需要 confirm=1 才人工结清 H&R 账单",
+                            data={"need_confirm": True})
+        _h = str(req.hash or "").strip().lower()
+        if not _h:
+            return Response(success=False, message="缺少 hash（人工结清不支持批量）")
+        _reason = str(req.reason or "").strip()
+        if not _reason:
+            return Response(success=False, message="人工结清必须填写原因（reason 参数）")
+        # ★ 19.12.46：操作人硬校验（by 优先 / site 兼容 / 冲突或缺失拒绝 / 不用 "manual" 兜底）
+        _op = self._resolve_operator(req.by, req.site)
+        if not _op.get("ok"):
+            return Response(success=False, message=str(_op.get("message")),
+                            data={"error": _op.get("error")})
+        _by = str(_op["by"])
+        try:
+            result = self._hrbills_settle_manual(_h, reason=_reason, settled_by=_by)
+        except Exception as e:  # noqa: BLE001
+            return Response(success=False, message=f"人工结清失败：{e}")
+        if result is None:
+            return Response(success=False, message="账单不存在")
+        if "error" in result:
+            return Response(success=False, message=str(result.get("message") or "未知错误"),
+                            data=result)
+        if result.get("already"):
+            return Response(success=True,
+                            message=f"账单已人工结清（幂等跳过）hash={_h[:12]}",
+                            data=result)
+        return Response(success=True,
+                        message=(f"人工结清成功 hash={_h[:12]}"
+                                 f" · 原状态 {result.get('prev_state')} → settled"
+                                 f" · 操作人 {_by} · 原因 {_reason[:40]}"),
+                        data=result)
 
     def _tag_act_hrbills_void_reuse(self, req: TagReq) -> Response:
         """作废存量「辅种账单」（辅种≠真实下载），默认干跑。"""
@@ -2232,6 +2374,41 @@ class TagsMixin:
             success=True,
             message=(f"辅种账单作废：待作废 {info.get('count')} 张"
                      + (f" · 已作废 {info.get('voided')} 张" if _confirm else "（干跑；加 confirm=1 才写）")),
+            data=info,
+        )
+
+    def _tag_act_hrbills_purge_unknown(self, req: TagReq) -> Response:
+        """清理「规则未定性」僵尸账单（19.12.33 两道门槛后的存量清理），默认干跑。"""
+        _confirm = str(req.confirm or "").strip().lower() in ("1", "true", "yes")
+        try:
+            _lim = int(str(req.limit or "0").strip() or 0)
+        except Exception:  # noqa: BLE001
+            _lim = 0
+        info = self._hrbills_purge_unknown(confirm=_confirm, limit=_lim)
+        return Response(
+            success=True,
+            message=(f"未定性账单清理：待摘 {info.get('count')} 张"
+                     + (f" · 已摘 {info.get('dropped')} 张" if _confirm else "（干跑；加 confirm=1 才写）")),
+            data=info,
+        )
+
+    def _tag_act_hrbills_purge_missing(self, req: TagReq) -> Response:
+        """列出/摘除「qB 长期缺席 + 站端没说欠」的孤儿账单（19.12.40），默认干跑。"""
+        _confirm = str(req.confirm or "").strip().lower() in ("1", "true", "yes")
+        try:
+            _lim = int(str(req.limit or "0").strip() or 0)
+        except Exception:  # noqa: BLE001
+            _lim = 0
+        try:
+            _days = float(str(req.days or "0").strip() or 0)
+        except Exception:  # noqa: BLE001
+            _days = 0.0
+        info = self._hrbills_purge_missing(confirm=_confirm, limit=_lim, min_days=_days)
+        return Response(
+            success=True,
+            message=(f"孤儿账单清理：待摘 {info.get('count')} 张"
+                     f"（其中站端不明 {info.get('site_unknown')} 张）"
+                     + (f" · 已摘 {info.get('dropped')} 张" if _confirm else "（干跑；加 confirm=1 才写）")),
             data=info,
         )
 
@@ -2613,6 +2790,7 @@ _ACT_ALIASES = (
     (TagsMixin._tag_act_settle, "settle", "settle_idle"),
     (TagsMixin._tag_act_settle_plan, "settle_plan"),
     (TagsMixin._tag_act_hrhost_run, "hrhost_run", "hrhost"),
+    (TagsMixin._tag_act_hrhost_plan, "hrhost_plan"),
     (TagsMixin._tag_act_fp, "fp", "fingerprint"),
     (TagsMixin._tag_act_syncres, "syncres", "resource_sync"),
     (TagsMixin._tag_act_assets_recheck, "assets_recheck", "assets_recheck_apply", "recheck"),
@@ -2632,7 +2810,10 @@ _ACT_ALIASES = (
     (TagsMixin._tag_act_hr_dryrun, "hr_dryrun", "hrbills_dryrun"),
     (TagsMixin._tag_act_hr_tick, "hr_tick", "hrbills_tick"),
     (TagsMixin._tag_act_hr_void, "hr_void", "hrbills_void"),
+    (TagsMixin._tag_act_hrbills_settle_manual, "hrbills_settle_manual", "hr_settle_manual"),
     (TagsMixin._tag_act_hrbills_void_reuse, "hrbills_void_reuse", "hr_void_reuse"),
+    (TagsMixin._tag_act_hrbills_purge_unknown, "hrbills_purge_unknown", "hr_purge_unknown"),
+    (TagsMixin._tag_act_hrbills_purge_missing, "hrbills_purge_missing", "hr_purge_missing"),
     (TagsMixin._tag_act_hr_reconcile, "hr_reconcile", "hrreconcile"),
     (TagsMixin._tag_act_breach_reconcile, "breach_reconcile", "breachreconcile"),
     (TagsMixin._tag_act_yema, "yema", "yema_apply", "yemaapply"),

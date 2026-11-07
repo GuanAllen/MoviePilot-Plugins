@@ -295,6 +295,8 @@ class StatusMixin:
             "last_phase": "",
             "last_phase_label": "",
             "last_phase_at": 0.0,
+            # 逐阶段执行结果（key → {state, at, ms}）；空表示后端还没跑到任何阶段
+            "run_stages": {},
             "page_cursor": 0,
             "run_active": False,
         }
@@ -355,6 +357,14 @@ class StatusMixin:
         ceiling = 0.0
         site_upload = 0.0
         site_download = 0.0
+        # ★ 19.12.11 容量口径：
+        #   - 全站同名币 → 给「总时魔 ÷ 总模型上限」的占比（可横向比）
+        #   - 混币 → 各站货币互不通兑（前端 useCurrency.js 同口径），相加无意义，
+        #     改给「几站已达模型上限」的计数。
+        # 只统计「上限 > 0 且时魔 > 0」的站：时魔没取到 = 不给结论（不能算作「还有空间」）。
+        ceiling_sites = 0
+        ceiling_full_sites = 0
+        currency_names = set()
 
         # 站点上报魔力按「站点」去重(同一站点多任务不重复计)
         site_tasks: Dict[int, MagicFlowTaskConfig] = {}
@@ -375,16 +385,27 @@ class StatusMixin:
             site_tasks.setdefault(int(task.site_id or 0), task)
         for task in site_tasks.values():
             rep = self._site_reported(task)
-            bonus_per_hour += rep["bonus_per_hour"]
+            site_bph = float(rep.get("bonus_per_hour") or 0.0)
+            bonus_per_hour += site_bph
             current_bonus += rep["current_bonus"]
+            # 空 = 还没认出该站自称，前端兜底「魔力值」→ 这里也必须按兜底算，否则混币判定与界面不一致
+            currency_names.add(str(rep.get("currency") or "").strip() or "魔力值")
             user = rep.get("user") or {}
             site_upload += float(user.get("upload") or 0)
             site_download += float(user.get("download") or 0)
             try:
-                ceiling += float(site_ceiling(self._build_formula_params(task)))
+                site_cap = float(site_ceiling(self._build_formula_params(task)))
             except Exception:
-                pass
+                site_cap = 0.0
+            ceiling += site_cap
+            if site_cap > 0 and site_bph > 0:
+                ceiling_sites += 1
+                # 模型上限「不含」官种/后宫等用户级加成（bonus.py::site_ceiling 注释），
+                # 而站点实报的时魔含 → 超过 100% 是口径差，不是数据错。判「已达」用 >=。
+                if site_bph >= site_cap:
+                    ceiling_full_sites += 1
         _t_sites = time.time()
+        currency_mixed = len(currency_names) > 1
 
         summary = {
             "total_tasks": total_tasks,
@@ -397,7 +418,15 @@ class StatusMixin:
             "bonus_per_hour": round(bonus_per_hour, 4),
             "current_bonus": round(current_bonus, 2),
             "ceiling": round(ceiling, 2),
-            "ceiling_pct": round(min(bonus_per_hour / ceiling * 100.0, 999.0), 1) if ceiling > 0 else 0.0,
+            # 混币时不给总占比（各站货币互不通兑，相加无意义）→ 0，前端据此切「计数」口径
+            "ceiling_pct": (
+                0.0
+                if currency_mixed or ceiling <= 0
+                else round(min(bonus_per_hour / ceiling * 100.0, 999.0), 1)
+            ),
+            "ceiling_sites": ceiling_sites,
+            "ceiling_full_sites": ceiling_full_sites,
+            "currency_mixed": currency_mixed,
             "site_upload": round(site_upload),
             "site_download": round(site_download),
             "site_ratio": round(site_upload / site_download, 3) if site_download > 0 else 0.0,

@@ -174,7 +174,10 @@ class LiveMixin:
             up = float(u.get("uploaded") or 0)
             down = float(u.get("downloaded") or 0)
             bonus = float(u.get("seedbonus") or 0)
-            bph = float(u.get("sebonus")) if u.get("sebonus") not in (None, "") else None
+            # ★ 19.12.7：`sebonus` 是**做种积分总额**（= 考核要的那个 10000），
+            #   不是「每小时」。以前直接塞给 bonus_per_hour → 界面「时魔」显示 3690/h，
+            #   纯属编造。站点 API 没有时魔字段 → 老老实实 None（读不到就是读不到）。
+            bph = None
         except (TypeError, ValueError):
             return {}
         seed_n = 0
@@ -197,8 +200,12 @@ class LiveMixin:
             dom = ""
         # ★ 19.7.83：新手考核按数据推算（不再写死）
         #   下载量 = downloaded/1024³；做种积分 = sebonus；
-        #   上传量 = max(API uploaded, qB 本站标签上传)；
-        #   做种率 = 做种体积 / 实际下载字节（qB 本站标签 downloaded，含免费）。
+        #   上传量 = API uploaded；
+        #   做种率 = 做种体积 / 站点下载量（★ 19.12.7 修）。
+        # ★ 19.12.7：做种率此前一律记 None → 恒判「未通过」，与站点实测相反
+        #   （高清杜比页面明写「做种率：已通过」）。分母不能用 qB 的 downloaded
+        #   （含其它 tracker 流量），但**站点 API 的 downloaded 本身就是站点口径**，
+        #   做种体积也来自站点 peers 接口 → 两边同源，可以直接算。
         _GB2 = 1024.0 ** 3
         _down_gb = down / _GB2
         _up_api_gb = up / _GB2
@@ -222,9 +229,12 @@ class LiveMixin:
         except Exception:  # noqa: BLE001
             pass
         _up_gb = _up_api_gb
-        # 做种率：站点口径 = 做种体积 / 实际下载字节（含免费）。
-        # qB 的 downloaded 含其它 tracker 流量，和站点口径不一致 → 仅作参考，不直接当分母。
+        # 做种率：站点口径 = 做种体积 / 站点下载量（两边都取自站点 API，同源）。
+        # ★ 19.12.7：以前写死 None，等于**恒判未通过**；站点侧早就是「已通过」。
+        #   下载量为 0（新号还没下过）时按「无穷大」处理 → 直接算通过。
         _seed_ratio = None
+        if seed_size > 0:
+            _seed_ratio = (seed_size / down) if down > 0 else float("inf")
         _items = []
         for _label, _cur, _tgt, _unit in (
             ("下载量", _down_gb, 30.0, "GB"),
@@ -237,12 +247,14 @@ class LiveMixin:
         if _seed_ratio is None:
             _items.append({"label": "做种率", "cur": None, "target": 6.0,
                            "unit": "", "pass": False, "short_num": None,
-                           "note": "站点无接口；qB 下载字节含其它 tracker，口径不一致"})
+                           "note": "站点未返回做种体积，算不出做种率"})
         else:
             _short_seed = max(0.0, 6.0 - _seed_ratio)
-            _items.append({"label": "做种率", "cur": round(_seed_ratio, 3), "target": 6.0,
+            _cur_seed = "∞" if _seed_ratio == float("inf") else round(_seed_ratio, 2)
+            _items.append({"label": "做种率", "cur": _cur_seed, "target": 6.0,
                            "unit": "", "pass": _short_seed <= 0.01,
-                           "short_num": round(_short_seed, 3) if _short_seed > 0.01 else 0.0})
+                           "short_num": round(_short_seed, 2) if _short_seed > 0.01 else 0.0,
+                           "note": "做种体积 ÷ 站点下载量（均取站点 API）"})
         _sebonus = 0.0
         try:
             _sebonus = float(u.get("sebonus") or 0)
@@ -252,22 +264,33 @@ class LiveMixin:
         _items.append({"label": "做种积分", "cur": round(_sebonus, 1), "target": 10000.0,
                        "unit": "", "pass": _short_bonus <= 0.01,
                        "short_num": round(_short_bonus, 1) if _short_bonus > 0.01 else 0.0})
-        # 考核截止：加入时间 + 36 天（HDDolby 新手期为 5 周+1 天，页面口径）
+        # 考核截止：加入时间 + 35 天。
+        # ★ 19.12.7：原来写 36 天 → 剩余天数永远比站点多 1 天（实测站点
+        #   「离新人考核结束还有 17天23时」，插件算 19.0）。真值：2026-10-18 16:33
+        #   加入 → 2026-11-22 16:33 截止，正好 35 天。
         _days_left = None
         try:
             from datetime import datetime as _dt, timedelta as _td
 
             _join = _dt.strptime(str(u.get("added") or ""), "%Y-%m-%d %H:%M:%S")
-            _days_left = round((_join + _td(days=36) - _dt.now()).total_seconds() / 86400.0, 1)
+            _days_left = round((_join + _td(days=35) - _dt.now()).total_seconds() / 86400.0, 1)
         except Exception:  # noqa: BLE001
             _days_left = None
         _exam = {"items": _items,
                  "failed": [i["label"] for i in _items if not i["pass"]],
                  "days_left": _days_left, "hardcoded": False,
                  "source": "computed",
-                 "raw": {"uploaded": up, "downloaded": down, "sebonus": bonus,
+                 # ★ 19.12.7：本站「考核要的积分」和「站点魔力字段」**不是同一个计数器**
+                 #   （做种积分 sebonus ≠ 鲸币 seedbonus）。下游建考核任务时结算读的是
+                 #   站点魔力 → 必须让它知道这两个数不能互相顶替，否则会以为过线=考核过。
+                 "bonus_diverged": abs(_sebonus - bonus) > 0.001,
+                 # ★ 19.12.7：原来这里写了两个 "sebonus"（前一个是站点魔力，被后者覆盖），
+                 #   排查时极易看错。现在把两个计数器分开命名：本站有 **鲸币(seedbonus)**
+                 #   与 **做种积分(sebonus)** 两个币种，考核要的是后者。
+                 "raw": {"uploaded": up, "downloaded": down,
+                         "seedbonus": bonus, "sebonus": _sebonus,
                          "qb_uploaded": _up_qb, "qb_downloaded": _act_down,
-                         "sebonus": _sebonus, "seeding_size": seed_size}}
+                         "seeding_size": seed_size}}
         return {
             "exam": _exam,
             "ok": True, "site_id": int(site_id), "source": "api",

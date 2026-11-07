@@ -23,7 +23,6 @@ const {
   withCtx: _withCtx$z,
 } = __vue
 
-import index from '../../index.vue'
 
 const _hoisted_1$y = {
   key: 2,

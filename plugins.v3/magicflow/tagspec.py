@@ -37,6 +37,7 @@ __all__ = [
     "STATE_SILENT",
     "STATE_RECOMMEND",
     "STATE_HR",
+    "STATE_KEEP",
     "STATE_ONDEMAND",
     "STATE_MUSIC",
     "STATE_CLAIM",
@@ -80,7 +81,15 @@ STATE_BRUSH = "刷流"
 STATE_BONUS = "魔力"
 STATE_SILENT = "静默"
 STATE_RECOMMEND = "推荐"
-STATE_HR = "保种"  # ★ 11.11.0：H&R 保种职务（归 __hr_host__ 伪任务；只由 _hr_obligation 派生，不可手动设）
+STATE_KEEP = "保种"  # ★ 19.12.38：手动保留职务（归 __keep__；人工点名长期做种，只能人工解除）
+STATE_HR = "H&R"  # ★ 11.11.0/19.12.38：H&R 保种职务（归 __hr_host__；只由欠债派生，结清即释放）
+#   ★ 19.12.38（用户指出「保种是 keep，H&R 有自己的标签啊」）：这两个职务此前共用
+#   ``STATE_HR="保种"``，于是「保种」这个标签同时表示人工保留和欠 H&R，统计只能靠
+#   ``taken_by`` 区分（漏一处就把 keep 的种算成「H&R 还欠着」）。现在拆开：
+#     保种 → __keep__（标签 ``魔流-<站>-保种``）
+#     H&R  → __hr_host__（标签 ``魔流-<站>-H&R``）
+#   ``state`` 不是落库字段（``ledger._task_state`` 由 ``task_id`` 现推），所以拆开零迁移；
+#   只有 qB 标签名要重贴，而线上 hr_host 名下此刻为 0 颗，实际零动作。
 STATE_ONDEMAND = "点播"  # ★ 15.8.4：点播在途职务（归 __ondemand__ 伪任务；加种即挂、settle 摘）。
 STATE_CLAIM = "认领"  # ★ 19.10.11：站点认领职务（归 __claim__ 宿主；**名单驱动**）。
 #   与刷流/魔力同构（贴职务轴 + 账本占位 + 到期退出），差别只在「名单」来源：
@@ -96,11 +105,13 @@ SUB_RESOURCE = "资源"
 SUB_PLAIN = "普通"
 
 STATES = (STATE_BRUSH, STATE_BONUS, STATE_SILENT, STATE_RECOMMEND, STATE_HR,
-          STATE_ONDEMAND, STATE_MUSIC, STATE_CLAIM)
+          STATE_KEEP, STATE_ONDEMAND, STATE_MUSIC, STATE_CLAIM)
 # 职务轴（上班贴 / 下班摘）：辅种不单列职务 —— 它只给**身份**，之后由该站任务照常让它上班。
-# 保种也是职务（__hr_host__ 的「上班」= 保挂 H&R），但**不可手动设**（set_tag_state 不含它）。
+# 保种（__keep__）与 H&R（__hr_host__）是**两个**职务，都不可手动设（set_tag_state 不含它们）：
+#   保种 = 人工点名长期做种，只由 action=hold/unhold 进出；
+#   H&R  = 欠债派生，结清/规则不欠即释放。
 # 点播（__ondemand__ 的在途职务）：只为了把「下没下完」的种**划出静默池**，同样不可手动设。
-DUTY_STATES = (STATE_BRUSH, STATE_BONUS, STATE_HR, STATE_ONDEMAND, STATE_MUSIC,
+DUTY_STATES = (STATE_BRUSH, STATE_BONUS, STATE_HR, STATE_KEEP, STATE_ONDEMAND, STATE_MUSIC,
                STATE_CLAIM)
 SUBS = (SUB_NEW, SUB_RESOURCE, SUB_PLAIN)
 
@@ -286,6 +297,12 @@ def parse_tag(tag: str) -> Optional[Dict[str, str]]:
     """
     raw = _clean(tag)
     if not raw or not raw.startswith(PREFIX):
+        return None
+    # ★ 19.12.38：``魔流-H&R`` 是**种子级标记**（``MARK_HR``，7.0.0 起已退役、老种可能残留），
+    #   不是「站点为空 + 职务 H&R」。职务标签一定带站点：``魔流-<站>-H&R``。
+    #   不加这条，``parse_tag("魔流-H&R")`` 会返回 ``{"site": "", "state": "H&R"}``，
+    #   于是 ``duty_of(["魔流-H&R"])`` 返回 H&R —— 历史老标会被当成「正在挂 H&R」。
+    if raw == MARK_HR:
         return None
     body = raw[len(PREFIX):].lstrip("-")
     if not body:

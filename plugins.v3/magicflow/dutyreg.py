@@ -68,6 +68,7 @@ from .tags import (
     STATE_BRUSH,
     STATE_CLAIM,
     STATE_HR,
+    STATE_KEEP,
     STATE_MUSIC,
     STATE_ONDEMAND,
     STATE_RECOMMEND,
@@ -170,9 +171,9 @@ DUTIES: Tuple[DutySpec, ...] = (
     # ---- 常驻岗位（host）：名单驱动，进出即上下班 ----
     # ★ 这三个 poach=True：名单/义务是硬承诺，允许从**优先级更低**的岗位挑人。
     DutySpec(
-        id=ID_KEEP, name="手动保种", state=STATE_HR, kind=KIND_HOST,
+        id=ID_KEEP, name="手动保种", state=STATE_KEEP, kind=KIND_HOST,
         priority=95, lease_days=0, poach=True, settable=False,
-        aliases=("keep",),
+        aliases=("keep", "保种"),
         desc="人工点名长期做种；只能人工解除（入口 action=hold/unhold，不走职务接口）",
     ),
     DutySpec(
@@ -184,7 +185,7 @@ DUTIES: Tuple[DutySpec, ...] = (
     DutySpec(
         id=ID_HR_HOST, name="H&R保种", state=STATE_HR, kind=KIND_HOST,
         priority=80, lease_days=0, poach=True, settable=False,
-        aliases=("hr保种", "h&r保种", "保种"),
+        aliases=("hr保种", "h&r保种", "h&r", "hr"),
         desc="由「欠 H&R」派生；结清/作废即释放，不可手动设职务",
     ),
     # ---- 在途管道（pipe）：加种即挂、下完/入库即摘 —— 绩效岗，默认不抢 ----
@@ -423,7 +424,7 @@ if __name__ == "__main__":  # 离线自检：python -m magicflow.dutyreg
     assert duty_state("__keep__") == STATE_HR
     assert duty_state("__nope__") == ""
     assert duty_id_of("认领保种") == "__claim__"
-    assert duty_id_of("保种") == "__hr_host__"      # 兼容旧别名
+    assert duty_id_of("保种") == "__keep__"          # ★ 19.12.38 职务拆分：保种=keep
     assert duty_id_of("手动保种") == "__keep__"
     assert duty_rank("__keep__") > duty_rank("__claim__") > duty_rank("__hr_host__")
     assert set(duty_manual_states()) >= {STATE_CLAIM, STATE_SILENT, STATE_RECOMMEND}

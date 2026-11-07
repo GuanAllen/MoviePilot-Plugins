@@ -23,7 +23,6 @@ const {
   withCtx: _withCtx$D,
 } = __vue
 
-import index from '../../index.vue'
 import { cloudStatusMeta } from '../../../../utils.js'
 import { pickCloudRecord, useCloud } from '../../composables/useCloud.js'
 

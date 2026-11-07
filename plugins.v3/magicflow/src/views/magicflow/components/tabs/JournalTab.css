@@ -51,7 +51,7 @@
 }
 
 
-/* 待执行：细空心灰圈，无填充、无光晕 */
+/* 未执行 / 待执行：细空心灰圈，无填充、无光晕（本轮没跑到就是它） */
 .magicflow-flow__dot[data-v-d0146d4d] {
   position: relative;
   display: inline-flex;
@@ -456,4 +456,615 @@
 .magicflow-flow .magicflow-panel__head > div[data-v-d0146d4d] {
     min-inline-size: 0;
 }
+}
+/* ══════════════════════════════════════════════════════════════════════
+   19.12.15 · 按设计稿「运行诊断」(2:1399) 重排
+   稿的尺寸：流程卡 pad 18/24 r14 · 明细卡 pad 16/20 r14 · 说明卡 pad 16/20 gap20 r14
+            阶段圆点 34 / 阶段名 12 / 指标 10 · 明细行 33 高 r8 pad 8/12 · 表头 10.5
+            列宽：本轮 80 · 结果 88 · 名称与「输入→输出」各占 1fr
+   颜色仍走 var(--v-theme-*) + rgba(on-surface, α)，不写死稿里的深色十六进制 ——
+   浅色主题下不能崩。
+   ══════════════════════════════════════════════════════════════════════ */
+
+.magicflow-panel.mf-diag__card[data-v-d0146d4d] {
+  padding: 16px 20px;
+  border-radius: 14px;
+  min-inline-size: 0;
+}
+
+/* 流程卡按稿给到 18/24（它内容最轻，需要更松的呼吸） */
+.magicflow-panel.mf-diag__card.magicflow-flow[data-v-d0146d4d] {
+  padding-block: 18px;
+  padding-inline: 24px;
+}
+
+/* ── 卡片头：标题 14 / 副标 11 / 右侧指标 11 ───────────────────────── */
+.mf-diag__head[data-v-d0146d4d] {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mf-diag__titles[data-v-d0146d4d] {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-inline-size: 0;
+}
+
+.mf-diag__title[data-v-d0146d4d] {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: 0.2px;
+  color: rgba(var(--v-theme-on-surface), 0.95);
+}
+
+.mf-diag__sub[data-v-d0146d4d] {
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  overflow-wrap: anywhere;
+}
+
+.mf-diag__metric[data-v-d0146d4d] {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  white-space: nowrap;
+}
+
+/* ── 阶段圆点：稿是 34 直径实心圆 + 内部 ✓ / 序号 ───────────────────── */
+.magicflow-flow__dot[data-v-d0146d4d] {
+  inline-size: 34px;
+  block-size: 34px;
+  border-radius: 17px;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  color: rgb(var(--v-theme-on-primary));
+  background: rgba(var(--v-theme-on-surface), 0.14);
+}
+
+.magicflow-flow__node.is-done .magicflow-flow__dot[data-v-d0146d4d],
+.magicflow-flow__node.is-running .magicflow-flow__dot[data-v-d0146d4d] {
+  background: rgb(var(--v-theme-success));
+  color: rgb(var(--v-theme-on-success));
+}
+
+.magicflow-flow__node.is-error .magicflow-flow__dot[data-v-d0146d4d] {
+  background: rgb(var(--v-theme-error));
+  color: rgb(var(--v-theme-on-error));
+}
+
+.mf-diag__seq[data-v-d0146d4d] {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.66);
+}
+
+.magicflow-flow__label[data-v-d0146d4d] {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+
+/* 阶段指标（稿里的 10px 第三行） */
+.mf-diag__metric[data-v-d0146d4d].mf-diag__metric--stage,
+.magicflow-flow__node .mf-diag__metric[data-v-d0146d4d] {
+  font-size: 10px;
+  line-height: 1.4;
+  margin-block-start: 1px;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  white-space: nowrap;
+}
+
+.magicflow-flow__chain[data-v-d0146d4d] {
+  margin-block-start: 14px;
+}
+
+/* ── 阶段明细表：表头与行共用同一套栅格 ─────────────────────────────── */
+.mf-diag__thead[data-v-d0146d4d],
+.mf-diag__row[data-v-d0146d4d] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 80px minmax(0, 1fr) 88px;
+  gap: 12px;
+  align-items: center;
+}
+
+.mf-diag__thead[data-v-d0146d4d] {
+  margin-block-start: 12px;
+  padding-inline: 12px;
+}
+
+.mf-diag__th[data-v-d0146d4d] {
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.mf-diag__th--num[data-v-d0146d4d],
+.mf-diag__num[data-v-d0146d4d] {
+  font-variant-numeric: tabular-nums;
+}
+
+.mf-diag__rows[data-v-d0146d4d] {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-block-start: 6px;
+}
+
+.mf-diag__row[data-v-d0146d4d] {
+  min-block-size: 33px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(var(--v-theme-on-surface), 0.075);
+  /* 首列留出状态点的位置 */
+  grid-template-columns: 7px minmax(0, 1fr) 80px minmax(0, 1fr) 88px;
+  gap: 12px;
+}
+
+.mf-diag__dot[data-v-d0146d4d] {
+  inline-size: 7px;
+  block-size: 7px;
+  border-radius: 50%;
+  background: rgba(var(--v-theme-on-surface), 0.34);
+}
+
+.mf-diag__row.is-done .mf-diag__dot[data-v-d0146d4d],
+.mf-diag__row.is-running .mf-diag__dot[data-v-d0146d4d] {
+  background: rgb(var(--v-theme-success));
+}
+
+.mf-diag__row.is-error .mf-diag__dot[data-v-d0146d4d] {
+  background: rgb(var(--v-theme-error));
+}
+
+.mf-diag__name[data-v-d0146d4d] {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mf-diag__num[data-v-d0146d4d],
+.mf-diag__io[data-v-d0146d4d] {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mf-diag__res[data-v-d0146d4d] {
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.86);
+}
+
+.mf-diag__row.is-error .mf-diag__res[data-v-d0146d4d] {
+  color: rgb(var(--v-theme-error));
+}
+
+/* ── 明细空态：不是「没数据」，而是「这个任务还没跑过流程」──────────── */
+.mf-diag__empty[data-v-d0146d4d] {
+  margin-block-start: 12px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.045);
+}
+
+.mf-diag__empty p[data-v-d0146d4d] {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.mf-diag__empty p + p[data-v-d0146d4d] {
+  margin-block-start: 4px;
+}
+
+/* ── 诊断说明卡：两栏 ─────────────────────────────────────────────── */
+.mf-diag__notes[data-v-d0146d4d] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 20px;
+}
+
+.mf-diag__note-col[data-v-d0146d4d] {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-inline-size: 0;
+}
+
+.mf-diag__note-title[data-v-d0146d4d] {
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: rgba(var(--v-theme-on-surface), 0.94);
+}
+
+.mf-diag__note[data-v-d0146d4d] {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.65;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.mf-diag__rule-row[data-v-d0146d4d] {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.mf-diag__rule-dot[data-v-d0146d4d] {
+  inline-size: 6px;
+  block-size: 6px;
+  margin-block-start: 5px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: rgba(var(--v-theme-on-surface), 0.34);
+}
+
+.mf-diag__rule-dot.is-warn[data-v-d0146d4d] { background: rgb(var(--v-theme-warning)); }
+.mf-diag__rule-dot.is-error[data-v-d0146d4d] { background: rgb(var(--v-theme-error)); }
+.mf-diag__rule-dot.is-ok[data-v-d0146d4d] { background: rgb(var(--v-theme-success)); }
+.mf-diag__rule-dot.is-info[data-v-d0146d4d] { background: rgb(var(--v-theme-info)); }
+
+.mf-diag__rule-text[data-v-d0146d4d] {
+  font-size: 10.5px;
+  line-height: 1.65;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+/* ── 响应式：≤959 说明卡并成一栏；≤699 明细行改两行 ─────────────────── */
+@media (max-width: 959px) {
+  .mf-diag__notes[data-v-d0146d4d] {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+}
+
+@media (max-width: 699px) {
+  .magicflow-panel.mf-diag__card[data-v-d0146d4d],
+  .magicflow-panel.mf-diag__card.magicflow-flow[data-v-d0146d4d] {
+    padding: 14px 16px;
+  }
+
+  .mf-diag__thead[data-v-d0146d4d] {
+    display: none;
+  }
+
+  .mf-diag__row[data-v-d0146d4d] {
+    grid-template-columns: 7px minmax(0, 1fr) auto;
+    row-gap: 3px;
+  }
+
+  .mf-diag__io[data-v-d0146d4d] {
+    grid-column: 2 / -1;
+    white-space: normal;
+  }
+}
+
+/* 圆点放大到 34 后要抹掉旧版的 2px 空心描边，并把连接线落到圆心高度 */
+.magicflow-flow__dot[data-v-d0146d4d] {
+  border: 0;
+}
+
+.magicflow-flow__node[data-v-d0146d4d] {
+  gap: 6px;
+}
+
+.magicflow-flow__line[data-v-d0146d4d] {
+  top: 16px;
+}
+
+/* 五阶段卡底部说明：本轮没跑（做种/停止）时的原因，或上一轮的执行时间 —— 一行 11px 灰字。
+   存在的意义是回答「为什么五个点都不动」，不要删掉它当成装饰。 */
+.magicflow-flow__hint[data-v-d0146d4d] {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(var(--v-border-color), 0.45);
+  font-size: 11px;
+  line-height: 1.55;
+  color: rgba(var(--v-theme-on-surface), 0.52);
+}
+
+/* ===== 做种实况（★ 19.12.24）==================================================
+   做种 / 停止模式下顶替「五阶段运行流程」卡。
+   为什么换：做种不抓种、不筛种，五个阶段本来就不会动 —— 摆一条永远不动的流程链，
+   用户读到的就是「坏了」。这里改成回答做种真正会变的三件事：
+   在管多少 / 占多少盘 / 欠不欠 H&R，以及下一轮维护什么时候来。
+   视觉要点：满出血的渐变底 + 大号 tabular 数字 + 呼吸点。克制的地方：不用环形进度，
+   因为「做种数」「体积」都没有真实的分母，画个环就是在编比例。 */
+.mf-seed[data-v-d0146d4d] {
+  position: relative;
+  margin: -16px;
+  padding: 20px 22px 18px;
+  border-radius: var(--app-surface-radius);
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    radial-gradient(125% 150% at 0% 0%, rgba(var(--v-theme-primary), 0.14), transparent 58%),
+    radial-gradient(95% 130% at 100% 0%, rgba(var(--v-theme-success), 0.11), transparent 62%),
+    rgba(var(--v-theme-on-surface), 0.025);
+  box-shadow: inset 0 0 0 1px rgba(var(--v-theme-primary), 0.14);
+}
+
+/* 顶部一行：eyebrow + 状态徽标 */
+.mf-seed__top[data-v-d0146d4d] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mf-seed__eyebrow[data-v-d0146d4d] {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(var(--v-theme-primary), 0.85);
+}
+
+.mf-seed__badge[data-v-d0146d4d] {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px 3px 7px;
+  border: 1px solid rgba(var(--v-theme-success), 0.22);
+  border-radius: 999px;
+  background: rgba(var(--v-theme-success), 0.12);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: rgba(var(--v-theme-success), 1);
+  white-space: nowrap;
+}
+
+/* 呼吸点：只在「在做种 / 在跑」时跳；已停止时静止，别假装还活着 */
+.mf-seed__pulse[data-v-d0146d4d] {
+  inline-size: 6px;
+  block-size: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: mf-seed-beat 2.6s ease-out infinite;
+}
+
+@keyframes mf-seed-beat {
+  0% { box-shadow: 0 0 0 0 rgba(var(--v-theme-success), 0.5); }
+  70% { box-shadow: 0 0 0 7px rgba(var(--v-theme-success), 0); }
+  100% { box-shadow: 0 0 0 0 rgba(var(--v-theme-success), 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mf-seed__pulse[data-v-d0146d4d] { animation: none; }
+}
+
+.mf-seed__title[data-v-d0146d4d] {
+  margin-top: 10px;
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: rgba(var(--v-theme-on-surface), 0.94);
+}
+
+.mf-seed__sub[data-v-d0146d4d] {
+  margin-top: 4px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+
+/* 四格指标：靠细竖线分隔，不用卡片框（框一多就变仪表盘噪音） */
+.mf-seed__grid[data-v-d0146d4d] {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(var(--v-border-color), 0.5);
+}
+
+.mf-seed__cell[data-v-d0146d4d] {
+  position: relative;
+  min-inline-size: 0;
+  padding-inline: 14px;
+}
+
+.mf-seed__cell:first-child[data-v-d0146d4d] {
+  padding-inline-start: 0;
+}
+
+.mf-seed__cell + .mf-seed__cell[data-v-d0146d4d]::before {
+  content: '';
+  position: absolute;
+  inset-block: 1px;
+  inset-inline-start: 0;
+  inline-size: 1px;
+  background: rgba(var(--v-border-color), 0.5);
+}
+
+.mf-seed__num[data-v-d0146d4d] {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(var(--v-theme-on-surface), 0.95);
+}
+
+.mf-seed__num b[data-v-d0146d4d] {
+  font-size: 25px;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+.mf-seed__num span[data-v-d0146d4d] {
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+
+.mf-seed__label[data-v-d0146d4d] {
+  margin-top: 3px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 「全站」这个标记不能省：H&R 是跨站账本口径，和左边三个本任务口径的格子不同源 */
+.mf-seed__celltag[data-v-d0146d4d] {
+  position: absolute;
+  top: -3px;
+  inset-inline-end: 14px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  font-size: 9px;
+  line-height: 1.5;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+.mf-seed__note[data-v-d0146d4d] {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 14px;
+  padding: 8px 11px;
+  border-radius: 9px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(var(--v-theme-on-surface), 0.62);
+}
+
+.mf-seed__notedot[data-v-d0146d4d] {
+  flex: none;
+  inline-size: 5px;
+  block-size: 5px;
+  border-radius: 50%;
+  background: rgba(var(--v-theme-warning), 0.85);
+}
+
+/* 下一轮倒计时：进度条是真的在走（宽度 = 已过时间 / 检查间隔），transition 让它平滑推进，
+   每 10s 一次的数据刷新不会表现为「跳一下」。 */
+.mf-seed__next[data-v-d0146d4d] {
+  margin-top: 14px;
+}
+
+.mf-seed__bar[data-v-d0146d4d] {
+  block-size: 3px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+
+.mf-seed__bar i[data-v-d0146d4d] {
+  display: block;
+  block-size: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(var(--v-theme-primary), 0.55), rgba(var(--v-theme-success), 0.95));
+  transition: width 8s linear;
+}
+
+.mf-seed__nexttext[data-v-d0146d4d] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 7px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+/* 执行中：徽标换成主题色（这时候跑的是维护检查，不是做种本身） */
+.mf-seed.is-live .mf-seed__badge[data-v-d0146d4d] {
+  border-color: rgba(var(--v-theme-primary), 0.24);
+  background: rgba(var(--v-theme-primary), 0.12);
+  color: rgba(var(--v-theme-primary), 1);
+}
+
+.mf-seed.is-live .mf-seed__pulse[data-v-d0146d4d] {
+  animation-duration: 1.6s;
+}
+
+@keyframes mf-seed-beat-live {
+  0% { box-shadow: 0 0 0 0 rgba(var(--v-theme-primary), 0.5); }
+  70% { box-shadow: 0 0 0 7px rgba(var(--v-theme-primary), 0); }
+  100% { box-shadow: 0 0 0 0 rgba(var(--v-theme-primary), 0); }
+}
+
+.mf-seed.is-live .mf-seed__pulse[data-v-d0146d4d] {
+  animation-name: mf-seed-beat-live;
+}
+
+/* 已停止：整体降饱和，呼吸点不在跳 —— 停止的任务不该看起来还活着 */
+.mf-seed.is-idle[data-v-d0146d4d] {
+  background: rgba(var(--v-theme-on-surface), 0.022);
+  box-shadow: inset 0 0 0 1px rgba(var(--v-border-color), 0.6);
+}
+
+.mf-seed.is-idle .mf-seed__badge[data-v-d0146d4d] {
+  border-color: rgba(var(--v-theme-on-surface), 0.16);
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+.mf-seed.is-idle .mf-seed__pulse[data-v-d0146d4d] {
+  animation: none;
+}
+
+.mf-seed.is-idle .mf-seed__bar i[data-v-d0146d4d] {
+  background: rgba(var(--v-theme-on-surface), 0.25);
+}
+
+/* 窄屏：2 列，去掉第 3 格之后多余的竖线 */
+@media (max-width: 959px) {
+  .mf-seed__grid[data-v-d0146d4d] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 0;
+  }
+
+  .mf-seed__cell:nth-child(3)[data-v-d0146d4d] {
+    padding-inline-start: 0;
+  }
+
+  .mf-seed__cell:nth-child(3)[data-v-d0146d4d]::before {
+    display: none;
+  }
+}
+
+@media (max-width: 699px) {
+  .mf-seed[data-v-d0146d4d] {
+    padding: 16px 16px 14px;
+  }
+
+  .mf-seed__title[data-v-d0146d4d] {
+    font-size: 18px;
+  }
+
+  .mf-seed__num b[data-v-d0146d4d] {
+    font-size: 21px;
+  }
+
+  .mf-seed__note[data-v-d0146d4d] {
+    align-items: flex-start;
+  }
 }

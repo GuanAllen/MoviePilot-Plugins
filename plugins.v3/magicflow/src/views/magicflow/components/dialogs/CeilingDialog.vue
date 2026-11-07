@@ -19,7 +19,8 @@ defineProps({
         <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="open = false" />
       </header>
       <div class="magicflow-ops-dialog__sub">
-        时魔 ÷ 站点上限。占用高 = 快满，占用低 = 还有空间加种
+        时魔 ÷ 模型上限（B0 + 做种数×固定奖励，<b>不含</b>官种/后宫等用户级加成）。
+        「已达上限」= 按模型再加种收益很小；站点实报值含加成，可以超过这个上限
       </div>
       <div class="magicflow-ops-dialog__body">
         <div class="magicflow-ceiling-list">
@@ -27,15 +28,17 @@ defineProps({
             <div class="magicflow-ceiling-row__head">
               <span class="magicflow-ceiling-row__nm">{{ r.site }}</span>
               <span class="magicflow-ceiling-row__val">
-                {{ r.bonus ? r.bonus.toFixed(1) : '—' }}<small>/h</small>
-                <template v-if="r.ceiling"> · 上限 {{ r.ceiling.toFixed(0) }}</template>
+                {{ r.bonus ? r.bonus.toFixed(1) : '—' }}<small>{{ r.cur }}/h</small>
+                <template v-if="r.ceiling"> · 模型上限 {{ r.ceiling.toFixed(0) }}</template>
               </span>
             </div>
             <div class="magicflow-ceiling-bar">
               <i :style="{ width: Math.min(r.pct, 100) + '%' }" :class="{ 'is-full': r.pct >= 85 }" />
             </div>
             <div class="magicflow-ceiling-row__foot">
-              <span>占用 {{ r.pct }}%</span>
+              <span :class="{ 'is-capped': r.bonus && r.pct >= 100 }">
+                {{ !r.bonus ? '时魔未取到' : (r.pct >= 100 ? '已达模型上限' : '占用 ' + r.pct + '%') }}
+              </span>
               <span>{{ r.seeds }} 种</span>
             </div>
           </div>
@@ -87,6 +90,7 @@ defineProps({
 .magicflow-ceiling-bar i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary))); }
 .magicflow-ceiling-bar i.is-full { background: linear-gradient(90deg, rgb(var(--v-theme-warning)), rgb(var(--v-theme-error))); }
 .magicflow-ceiling-row__foot { display: flex; justify-content: space-between; margin-block-start: 5px; font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
+.magicflow-ceiling-row__foot .is-capped { color: rgb(var(--v-theme-warning)); font-weight: 600; }
 
 @media (max-width: 959px) {
   .magicflow-ops-dialog__body { padding: 4px 14px 18px; }

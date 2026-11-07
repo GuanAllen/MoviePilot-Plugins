@@ -3,7 +3,7 @@
     "name": "魔流",
     "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
     "labels": "站点,做种,魔力,刷流",
-    "version": "19.12.6",
+    "version": "19.12.43",
     "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
     "author": "GuanAllen",
     "level": 1,
@@ -22,7 +22,8 @@
       "7.13.1": "修去重闸门命中的「seen 污染」：命中时不再一律打 seen（打上就 24h 不再碰该候选，会把后续**辅种**机会一起挡掉）。改为区分状态：对方**在飞**→只让位本轮、不打 seen（下轮本机有了副本自动走辅种）；对方**已下过且本机已无副本**→才算真没得辅，终局跳过并记 seen。新增 AddGateStore.conflict_states / DupGateMixin._dup_conflict_states。",
       "7.13.0": "把「全局资源下载去重」抽成**公共模块**：新增 dupgate.py（+DupGateMixin）——统一入口 self._dup_claim / _dup_peek / _dup_finish / _dup_release，所有会「往下载器加新种」的路径共用同一张全局占用表：刷流、跨站取种（_crossseed_start）、换种（swap 本站免费分支）。同一资源（同 infohash / 同完整特征码）全插件只下一次，防并发抢种与「清理后又下」。行为不变，纯结构化归位（闸门存储仍在 persistence.AddGateStore；仍只拦 ①同 infohash ②同完整特征码，③同内容不同打包仍允许下载）。",
       "7.12.0": "跨任务去重——同一资源（同 infohash / 同完整特征码）全插件只下载一次。新增全局「下载占用」闸门 persistence.AddGateStore（冷备 add_gate.json / 热键 addgate）：分类排队前先 peek 一次（避免占下载槽），下载前再原子占用（冲突=别的任务已下/在飞→跳过，防**并发**各下一份）；下载成功登记 24h「已下载」记忆（防「清理掉之后又下」的抖动），失败则释放占用允许重试。落实 MODEL.md「一个资源只从一个站下载」。仅拦截 ①同 infohash ②同完整特征码；③同内容不同打包（仅内层特征码相同）按既定策略**仍允许下载**。",
-      "19.12.6": "与运行副本对齐：19.10.71 → 19.12.6 期间的站点/作业/缓存层改动（dutyreg 岗位真值、collect 拆分、cacheops 等）。本条为版本同步记录，无单独条目说明。"
+      "19.12.6": "与运行副本对齐：19.10.71 → 19.12.6 期间的站点/作业/缓存层改动（dutyreg 岗位真值、collect 拆分、cacheops 等）。本条为版本同步记录，无单独条目说明。",
+      "19.12.43": "同步运行副本 19.12.43：H&R 账单/对账、报表视图（reportview/rvstate）、采集链路（collect/collect_parse）、任务编辑面板拆分。"
     }
   },
   "version": "19.2.4",

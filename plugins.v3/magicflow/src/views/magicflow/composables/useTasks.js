@@ -54,8 +54,12 @@ export function useTasks({ selectedTaskId, api, emit, hostToast, settingsDraft, 
   const silentHostSites = computed(() => {
     const src = (selectedTask.value && selectedTask.value.classify && selectedTask.value.classify.by_site) || null
     if (!src) return []
+    // ★ 19.12.30：by_site 有两种形状——静默卡是 {站点:{total,hr}}，H&R 卡是 {站点:int}。
+    //   只认对象形状会让 H&R 的站点行全部显示 0；这里归一成 {name,total,hr}。
     return Object.entries(src)
-      .map(([name, v]) => ({ name, total: (v && v.total) || 0, hr: (v && v.hr) || 0 }))
+      .map(([name, v]) => (typeof v === 'number'
+        ? { name, total: v, hr: 0 }
+        : { name, total: (v && v.total) || 0, hr: (v && v.hr) || 0 }))
       .sort((a, b) => b.total - a.total)
   })
   const summary = computed(() => status.value.summary || {})

@@ -32,6 +32,9 @@
 
 from __future__ import annotations
 
+import math
+import sys
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -44,6 +47,7 @@ from ..tags import (
     STATE_BRUSH,
     STATE_CLAIM,
     STATE_HR,
+    STATE_KEEP,
     STATE_SILENT,
     STATES,
     SUB_NEW,
@@ -56,6 +60,9 @@ from .hrbills import (
     BILL_STATE_ACTIVE,
     BILL_STATE_BREACHED,
     BILL_STATE_PENDING,
+    BILL_STATE_SETTLED,
+    BILL_STATE_VOID,
+    HR_MANUAL_SETTLE,
     RULE_HIT_AND_RUN,
     RULE_SITE_HR,
 )
@@ -93,6 +100,24 @@ RV_HR_FILTERS = ("1", "0", "欠", "有", "hr", "unclassified", "未定性")
 
 _HR_RULES = (RULE_SITE_HR, RULE_HIT_AND_RUN)
 _ALL_TRANSPORT = (TRANSPORT_SEEDING, TRANSPORT_PAUSED, TRANSPORT_DOWNLOADING, TRANSPORT_ABSENT)
+
+# ★ 19.12.48（任务 96）：报表快照缓存的**短 TTL + 写失效 + 单飞**。
+#   任务 95 实证：原 ``_rv_ctx_cache`` 自插件重载首采后永不失效（``_rv_reset()`` 全项目
+#   零调用），开账/结清/作废后 H&R 页面永远显示启动时的 51 张。这里把失效收口到
+#   ``features/rvstate.py`` 的写代次：两个账单存储每次成功写入都会 bump，下一次读必然重采。
+_RV_CTX_LOCK = threading.RLock()
+_RV_CTX_TTL_FALLBACK = 8.0
+
+
+def _rv_state() -> Any:
+    """取共享失效信号；离线或未加载时返回 None（退化为纯 TTL，不报错）。"""
+    m = sys.modules.get("magicflow_rv_state_v1")
+    if m is None:
+        try:
+            from . import rvstate as m  # noqa: WPS433
+        except Exception:  # noqa: BLE001
+            return None
+    return m
 
 
 # --------------------------------------------------------------------------- 小工具
@@ -158,6 +183,37 @@ def _opt_bool(v: Any) -> Optional[bool]:
     """参数里的三态：空 = 不过滤；否则按 ``_truthy``。"""
     s = str(v if v is not None else "").strip()
     return None if not s else _truthy(s)
+
+
+def _hr_settlement_audit_incomplete(settled_by: Any, settlement_reason: Any,
+                                    settled_at: Any) -> bool:
+    """★ 19.12.45（任务 86 · P2 结清审计）：人工结清**审计完整性**判定（纯只读）。
+
+    True（审计不完整）= 下面任一成立：
+      · ``settled_by`` / ``settlement_reason`` 缺失 —— None / 空串 / 纯空白；
+      · ``settled_by`` 是占位串 ``"manual"``（★ 19.12.46：旧版 API 在操作人缺失时
+        用 ``or "manual"`` 兜底落库，那不是人名、不可追溯，**必须当作缺失**、
+        不能因为「非空」就当成完整审计；历史数据原样保留，不做自动改写）；
+      · ``settled_at`` 缺失或无效 —— None / 非数值 / 非有限（NaN/inf）/ 布尔 /
+        ``≤ 0``（0 = 未写入，与 ``_hr_deadline`` 判 ``opened_at≤0`` 同口径，
+        账单不可能结清于 1970 之前）。
+
+    只做展示层提示：不改原始审计字段、不降级 manual、不动 state、不阻断展示。
+    """
+    def _blank(v: Any) -> bool:
+        return v is None or (isinstance(v, str) and not v.strip())
+
+    if _blank(settled_by) or _blank(settlement_reason):
+        return True
+    if isinstance(settled_by, str) and settled_by.strip() == HR_MANUAL_SETTLE:
+        return True
+    if isinstance(settled_at, bool):
+        return True
+    try:
+        f = float(settled_at)
+    except (TypeError, ValueError):
+        return True
+    return (not math.isfinite(f)) or f <= 0
 
 
 def _norm_dom(s: Any) -> str:
@@ -246,7 +302,9 @@ def _bucket_from_ledger(lb_state: str, is_hr: bool, tags: List[str]) -> str:
     """账本职务 → 六桶（优先级与 ``_site_report_bucket`` 一致，账本优先）。"""
     if RESCUE_TAG in tags:
         return BUCKET_RESCUE
-    if is_hr or lb_state == STATE_HR:
+    # ★ 19.12.38：职务拆开（保种=__keep__ / H&R=__hr_host__），但报表桶仍合并为一个
+    #   「保种」桶 —— 对资产分布来说两者都是「不下车、长期做种」，拆桶只会让图更碎。
+    if is_hr or lb_state in (STATE_HR, STATE_KEEP):
         return BUCKET_HR
     if lb_state == STATE_BRUSH:
         return BUCKET_BRUSH
@@ -742,6 +800,32 @@ def view_hr(ctx: Dict[str, Any], site: str = "", live: int = 0,
               "active": 0, "pending": 0, "settled": 0, "void": 0, "breached": 0,
               "owed": 0, "missing": 0, "at_risk": 0}
     by_site: Dict[str, Dict[str, Any]] = {}
+    # ★ 任务 98：按 hash 分组的 append-only 结清/纠错历史。
+    #   **只在确有事件时才往 item 注入 `history`** —— 老夹具 / 历史账单无事件时
+    #   精确键集合保持任务 96 的 14 展示键（+6 结清键）不变，不产生契约漂移。
+    hist_by_hash: Dict[str, List[Dict[str, Any]]] = {}
+    for ev in (ctx.get("bill_events") or []):
+        if not isinstance(ev, dict):
+            continue
+        eh = str(ev.get("hash") or "").strip().lower()
+        if not eh:
+            continue
+        hist_by_hash.setdefault(eh, []).append({
+            "event_type": str(ev.get("event_type") or ""),
+            "at": ev.get("at"),
+            "actor": ev.get("actor"),
+            "reason": ev.get("reason"),
+            "prev_state": ev.get("prev_state"),
+            "new_state": ev.get("new_state"),
+            "bill_snapshot": ev.get("bill_snapshot")
+            if isinstance(ev.get("bill_snapshot"), dict) else {},
+            "evidence_source": ev.get("evidence_source"),
+            "evidence_at": ev.get("evidence_at"),
+            "evidence_digest": ev.get("evidence_digest")
+            if isinstance(ev.get("evidence_digest"), dict) else {},
+        })
+    for _lst in hist_by_hash.values():
+        _lst.sort(key=lambda x: float(x.get("at") or 0.0))
 
     def _bucket(dom: str) -> Dict[str, Any]:
         if dom in by_site:
@@ -802,12 +886,54 @@ def view_hr(ctx: Dict[str, Any], site: str = "", live: int = 0,
             totals["owed"] += 1
         item = {
             "hash": hh, "title": str(b.get("title") or "")[:120],
-            "state": st, "rule": rule, "class": cls,
+            "site": dom, "state": st, "rule": rule, "class": cls,
             "seeded_h": round(_as_float(b.get("seeded_h")), 2),
             "need_h": round(_as_float(b.get("need_h")), 2),
+            # ★ 任务 96：pending 明细要显示真实下载进度。账单里 progress 是 0..1
+            #   （与 qB 同口径，``_hrbills_tick`` 直接写 qB 的 progress），
+            #   前端 ``Math.round(progress * 100)`` 之前缺这个字段 → 恒 0%。
+            "progress": round(_as_float(b.get("progress")), 4),
             "in_qb": in_qb, "opened_by": str(b.get("opened_by") or ""),
             "breached_at": b.get("breached_at") or 0,
         }
+        # ★ 任务 102（审计可见性）：已结清 / 已作废的行**一律**给出结清轨迹原值，
+        #   不再只给 ``settlement_method == "manual"``。
+        #   为什么改：生产 51 条 settled 的 ``settlement_method`` 为 None（19.12.40 前
+        #   由 backfill/迁移直接置为 settled），旧口径下接口连 ``settled_at`` 都不返回
+        #   → 弹窗标题写着「审计」却一条审计信息都没有。
+        #   改的只是「可见性」，不是「口径」：
+        #     · 原值直出（None 就是 None），**不推断、不补造**操作人与原因；
+        #     · ``manual`` 仍独占「需人工复核」与完整性提示（manual 是唯一承诺四列
+        #       齐全的路径），auto / None 不带这两个标记；
+        #     · ``settlement_tracked`` 让前端能区分「历史未记录」与「真无轨迹」。
+        if st in (BILL_STATE_SETTLED, BILL_STATE_VOID):
+            _sm = b.get("settlement_method")
+            _sby = b.get("settled_by")
+            _srn = b.get("settlement_reason")
+            _sat = b.get("settled_at")
+            if st == BILL_STATE_VOID:
+                _vat = b.get("voided_at")
+                _vrn = b.get("void_reason")
+                item.update({"voided_at": _vat, "void_reason": _vrn})
+                _tracked = bool(_vat or _vrn or _sm or _sat)
+            else:
+                _tracked = bool(_sat or _sby or _srn or _sm)
+            item.update({
+                "settlement_method": _sm,
+                "settled_by": _sby,
+                "settlement_reason": _srn,
+                "settled_at": _sat,
+                "settlement_tracked": _tracked,
+            })
+            if _sm == "manual":
+                item["settlement_review"] = "需人工复核"
+                item["settlement_audit_incomplete"] = _hr_settlement_audit_incomplete(
+                    _sby, _srn, _sat)
+        # ★ 任务 98：历史时间线（人工结清 / 自动结清 / 纠错重开 / 作废）。
+        #   重开后行上四列已清空、``settlement_method=reopened``，界面靠这里
+        #   回答「谁在什么时候结清过、凭哪份证据被推翻」。老账单零事件 → 零注入。
+        if hist_by_hash.get(hh):
+            item["history"] = hist_by_hash[hh][-20:]
         dfn = ctx.get("deadline_fn")
         if callable(dfn):
             try:
@@ -860,6 +986,9 @@ def view_hr(ctx: Dict[str, Any], site: str = "", live: int = 0,
                             "_tag_all_torrents()", "_site_rules()"],
         "write": {
             "void": "GET /tags?action=hrbills_void&hash=<h>&reason=..&confirm=1",
+            # ★ 任务 96：后端 19.12.44 起就有人工结清动作，任务 95 发现自描述里漏登记
+            "settle_manual": ("GET /tags?action=hrbills_settle_manual&hash=<h>"
+                              "&reason=<必填>&by=<登录用户名>&confirm=1"),
             "reconcile": "GET /agent/hr/reconcile?site=<dom>&live=1",
             "reseed_missing": "GET /tags?action=hr_reconcile&site=<dom>&confirm=1",
         },
@@ -1033,7 +1162,14 @@ def drift(ctx: Dict[str, Any]) -> Dict[str, Any]:
                 # ★ 19.0.0 hotfix：ledger_only 幽灵行（已不在下载器）的 progress 是
                 # 账本历史残值，其口径问题由「幽灵行不带传输态」check 单独负责，
                 # 不算 incomplete 断言的失败。
-                and not r.get("ledger_only")]
+                and not r.get("ledger_only")
+                # ★ 任务 82（E4，方案 A）：bill-only 行（active/settled/void/breached/
+                #   pending 账单残留，无账本无下载器）的 progress=0.0 是 build_rows
+                #   对非 in_qb 行的默认值（见 build_rows 中 `if in_qb else 0.0`），
+                #   不是真实进度；账单状态即其完整解释（settled TTL 保留 / void 墓碑
+                #   永久保留 / breached 留档 / pending 回填窗口均为合法业务状态），
+                #   不算 incomplete 断言的失败。
+                and r.get("bill") is None]
     _chk("未下完都在下载器", not _inc_bad,
          f"incomplete 含非 in_qb 行 {len(_inc_bad)} 个" if _inc_bad else "incomplete 口径干净")
     return {
@@ -1095,11 +1231,22 @@ class ReportViewMixin:
         except Exception:  # noqa: BLE001
             ledger = {}
         bills: Dict[str, Any] = {}
+        bill_events: List[Dict[str, Any]] = []
+        bstore = None
         try:
             bstore = self._rv_call("_site_report_bills_store")
             bills = dict(bstore.all() or {}) if bstore is not None else {}
         except Exception:  # noqa: BLE001
             bills = {}
+        # ★ 任务 98：读 append-only 账单事件档案。**独立于 bills 的 try** —— 事件表
+        #   迁移未跑 / 离线夹具无该方法时只让历史区为空，绝不能连带清空账单视图。
+        try:
+            _efn = getattr(bstore, "events_for", None) if bstore is not None else None
+            if callable(_efn):
+                bill_events = [dict(x) for x in (_efn("") or [])
+                               if isinstance(x, dict)][:2000]
+        except Exception:  # noqa: BLE001
+            bill_events = []
         try:
             rules = self._rv_call("_site_rules") or {}
             rule_items = dict((rules.get("items") or {})) if isinstance(rules, dict) else {}
@@ -1208,6 +1355,7 @@ class ReportViewMixin:
         return {
             "at": now_iso(), "now": time.time(),
             "ledger": ledger, "snap": snap, "bills": bills,
+            "bill_events": bill_events,
             "sites": sites, "site_rows": site_rows, "site_index": site_index,
             "protected": prot, "reseed": reseed, "crossseed": cssrc,
             "owed": owed, "known_sites": known, "reconcile": reconcile,
@@ -1224,17 +1372,103 @@ class ReportViewMixin:
             "warn_fn": getattr(self, "_hr_warn_hours", None),
         }
 
-    def _rv_ctx(self) -> Dict[str, Any]:
-        """带缓存的采集（同一次请求内多视图复用）。"""
-        ctx = getattr(self, "_rv_ctx_cache", None)
-        if not isinstance(ctx, dict):
+    def _rv_ctx(self, force: bool = False) -> Dict[str, Any]:
+        """采集一次报表上下文：**短 TTL + 写失效 + 单飞**（★ 19.12.48 / 任务 96）。
+
+        四条不变量：
+
+        1. **TTL**：``rvstate.RV_CTX_TTL_SECONDS``（默认 8s）内、且写代次未变 →
+           复用同一份快照（同一次请求里多视图共享，不重复全量采集）。
+        2. **写失效**：账单/账本公共写入路径成功后 ``rvstate.bump()`` → 代次变化，
+           下一次读**立即**重采，不等 TTL。
+        3. **live=1**：``force=True`` → 必然重新采集，``view_hr`` 返回的 ``at``
+           是本次采集时间（不是启动时刻的旧时间戳）。
+        4. **并发**：单飞（同代次只有一个线程在采集）；采集期间若又发生写，
+           这份快照带的是**旧代次**，不许写回缓存 —— 旧请求永远覆盖不了新快照。
+
+        退化：``rvstate`` 不可用（离线测试）时按纯 TTL 工作，绝不因此报错。
+        """
+        st = _rv_state()
+        try:
+            gen = int(st.generation()) if st is not None else 0
+            ttl = float(st.ttl()) if st is not None else _RV_CTX_TTL_FALLBACK
+        except Exception:  # noqa: BLE001
+            gen, ttl, st = 0, _RV_CTX_TTL_FALLBACK, None
+        if ttl <= 0:
+            ttl = _RV_CTX_TTL_FALLBACK
+        now = time.time()
+        seq = 0
+        with _RV_CTX_LOCK:
+            cached = getattr(self, "_rv_ctx_cache", None)
+            fresh = (isinstance(cached, dict)
+                     and cached.get("gen") == gen
+                     and (now - float(cached.get("ts") or 0)) < ttl)
+            if not force and fresh:
+                return cached["ctx"]
+            flight = getattr(self, "_rv_ctx_flight", None)
+            if not force and isinstance(flight, dict) and flight.get("gen") == gen:
+                ev = flight.get("event")
+                owner = False
+            else:
+                ev = threading.Event()
+                # ★ 采集序号：同代次下也可能有多个并发采集（例如慢的普通读 + 快的
+                #   live=1）。只有「最后一个开始的采集」允许写缓存，防止旧请求收尾时
+                #   把它那份更旧的快照盖到新快照上。
+                seq = int(getattr(self, "_rv_ctx_seq", 0)) + 1
+                self._rv_ctx_seq = seq
+                self._rv_ctx_flight = {"gen": gen, "event": ev,
+                                       "force": bool(force), "seq": seq}
+                owner = True
+        # 单飞等待：最多等 15s，超时自己采一份（但绝不写缓存，避免污染新快照）
+        if not owner:
+            try:
+                ev.wait(timeout=15.0)
+            except Exception:  # noqa: BLE001
+                pass
+            with _RV_CTX_LOCK:
+                cached = getattr(self, "_rv_ctx_cache", None)
+                if isinstance(cached, dict) and cached.get("gen") == gen:
+                    return cached["ctx"]
+            return self._rv_context()
+        try:
             ctx = self._rv_context()
-            self._rv_ctx_cache = ctx
+        except Exception:
+            with _RV_CTX_LOCK:
+                f = getattr(self, "_rv_ctx_flight", None)
+                if isinstance(f, dict) and f.get("event") is ev:
+                    self._rv_ctx_flight = None
+                ev.set()
+            raise
+        with _RV_CTX_LOCK:
+            # ★ 采集期间发生过写 → 这份快照已过期，不写回缓存（旧不盖新）
+            cur_gen = gen
+            if st is not None:
+                try:
+                    cur_gen = int(st.generation())
+                except Exception:  # noqa: BLE001
+                    pass
+            f = getattr(self, "_rv_ctx_flight", None)
+            mine = isinstance(f, dict) and f.get("event") is ev
+            latest = int(getattr(self, "_rv_ctx_seq", 0)) == seq
+            if cur_gen == gen and mine and latest:
+                self._rv_ctx_cache = {"ctx": ctx, "ts": time.time(), "gen": gen}
+            # 不是最新采集 / 期间又被 force 抢了：本次结果只返回给调用方，绝不写缓存
+            if mine:
+                self._rv_ctx_flight = None
+            ev.set()
         return ctx
 
     def _rv_reset(self) -> None:
-        """让下一次 ``_rv_ctx`` 重新采集（写动作后调用；报表本身不写）。"""
-        self._rv_ctx_cache = None
+        """立即丢弃当前快照（人工调用点；写动作已由 rvstate.bump() 自动兜住）。"""
+        with _RV_CTX_LOCK:
+            self._rv_ctx_cache = None
+            f = getattr(self, "_rv_ctx_flight", None)
+            self._rv_ctx_flight = None
+        if isinstance(f, dict):
+            try:
+                f["event"].set()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _rv_rows(self) -> Dict[str, Dict[str, Any]]:
         ctx = self._rv_ctx()
@@ -1246,10 +1480,12 @@ class ReportViewMixin:
 
     # ------------------------------------------------- 旧三面兼容投影
     def _rv_site_data(self, site: str = "", live: int = 0, limit: int = 0) -> Dict[str, Any]:
-        return view_site(self._rv_ctx(), site=site, live=live, limit=limit)
+        # ★ 任务 96：live=1 真的重采（原来只把 live 塞进返回字段，快照仍是启动时的旧数据）
+        return view_site(self._rv_ctx(force=bool(live)), site=site, live=live, limit=limit)
 
     def _rv_hr_data(self, site: str = "", live: int = 0, limit: int = 0) -> Dict[str, Any]:
-        return view_hr(self._rv_ctx(), site=site, live=live, limit=limit)
+        """``/hr/bills`` 与 ``/agent/hr/bills`` 的共同数据源。"""
+        return view_hr(self._rv_ctx(force=bool(live)), site=site, live=live, limit=limit)
 
     def _rv_silent_data(self, limit: Any = 400, records: Any = 60) -> Dict[str, Any]:
         """旧静默池视图（统计口径来自台账；host/records/settings 仍为运营细节）。"""
@@ -1358,7 +1594,8 @@ class ReportViewMixin:
                                 data={"bad_param": True, "field": field})
             limit_i = _as_int(limit, 200)
             offset_i = max(0, _as_int(offset, 0))
-            data = view_any(self._rv_ctx(), view=view, site=site, state=state, bucket=bucket,
+            data = view_any(self._rv_ctx(force=bool(_as_int(live, 0))),
+                            view=view, site=site, state=state, bucket=bucket,
                             sub=sub, origin=origin, transport=transport, hr=hr,
                             protected=protected, limit=limit_i, offset=offset_i,
                             live=_as_int(live, 0))

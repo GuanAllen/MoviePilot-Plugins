@@ -162,6 +162,14 @@ _CUR_NAME_ANCHOR = re.compile(rf"合计\s*({_CUR})")
 _CUR_NAME_HOURLY = re.compile(
     rf"当前每小时[能可]?\s*(?:获取|获得)\s*[\d,.]+\s*个\s*({_CUR})"
 )
+# ★ 19.12.8：上面三条都要求币名**以「值」结尾或落在词表里**，遇到自造名字就集体落空。
+#   高清杜比(uhddolby.com) 自称「鲸币」——不在词表、也不带「值」，三条全 None，
+#   于是 currency 恒为空、前端只显示兜底的「魔力值」。
+#   补两条**结构锚点**（不依赖名字长什么样）：
+#   ① NexusPHP 顶部状态栏固定形状「<币名> [ 使用 ]: 3,829.7」—— 几乎所有 NexusPHP 站都有
+#   ② 部分站把页面标题写成「站点 :: 用户名 + 的 + 币名」（高清杜比：「alanguan的鲸币」）
+_CUR_NAME_USAGE = re.compile(r"([\u4e00-\u9fa5]{2,6})\s*\[\s*使用\s*\]")
+_CUR_NAME_TITLE = re.compile(r"::\s*[^\s]{1,24}?的([\u4e00-\u9fa5]{2,6})")
 _CUR_NAME_BAR = re.compile(rf"({_CUR})\s*[（(]\s*[\d,.]+\s*(?:{_CUR_WORDS}|[\u4e00-\u9fa5]{{1,6}})?\s*/\s*小时")
 
 
@@ -169,15 +177,22 @@ def detect_currency_name(text: str) -> str:
     """从 mybonus 页面文本里认出该站对「魔力」的**自称**（纯函数）。
 
     站点各自命名：默认 NexusPHP「魔力值」、财神「金元宝」、蟹黄堡「蟹币值」、
-    野马PT「积分」。认不出返回空串（调用方兜底「魔力值」），绝不编造。
+    野马PT「积分」、高清杜比「鲸币」。认不出返回空串（调用方兜底「魔力值」），绝不编造。
     """
     if not text:
         return ""
-    for pat in (_CUR_NAME_ANCHOR, _CUR_NAME_HOURLY, _CUR_NAME_BAR):
+    for pat in (
+        _CUR_NAME_ANCHOR,    # 表头「合计<币名>」—— 最权威
+        _CUR_NAME_HOURLY,    # 「当前每小时能获取 N 个<币名>」
+        _CUR_NAME_USAGE,     # 顶部状态栏「<币名> [ 使用 ]」—— 结构锚点，不挑名字形状
+        _CUR_NAME_BAR,       # 顶部状态栏「<币名>(N/小时)」
+        _CUR_NAME_TITLE,     # 页面标题「站点 :: 用户名 + 的 + <币名>」
+    ):
         m = pat.search(text)
         if not m:
             continue
-        name = (m.group(1) or "").strip()
+        # 各模式捕获组位置不同（TITLE 是第 2 组），统一取**最后一个**参与匹配的组
+        name = (m.group(m.lastindex or 1) or "").strip()
         # 粗筛：2~8 个字符、不含「的」（避免从句子中间截出残片）
         if 2 <= len(name) <= 8 and "的" not in name:
             return name

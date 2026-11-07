@@ -281,6 +281,11 @@ class TaskState:
     last_phase_label: str = ""      # 阶段中文名
     last_phase_detail: str = ""     # 阶段内的细粒度进度（如「取种 14/45」），供前端显示避免「像卡住」
     last_phase_at: float = 0.0
+    # ★ 19.12.20：上一轮**每个阶段各自的执行结果**（key → {state, at, ms}）。
+    #   为什么不能只用 last_phase：那是一个「当前位置」单值 —— 运行中能推出前几步已完成，
+    #   但一轮结束被写成 done 就整片变绿，任务不跑（做种/停止模式）时又是空 → 五步全灰；
+    #   两种情形都看不出「哪一步真的跑过、跑了多久、成没成」。这里逐阶段留痕，跑完也保留。
+    run_stages: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     page_cursor: int = 0            # 站点列表页游标（游标深翻）
     # ★ 7.15.0 可观测：上一轮「决策轨迹」（换种闸门 at_cap、门槛、删除原因分布、候选过滤原因…）。
     last_decision: Dict[str, Any] = field(default_factory=dict)
@@ -370,6 +375,7 @@ class TaskState:
             "last_phase_label": self.last_phase_label,
             "last_phase_detail": self.last_phase_detail,
             "last_phase_at": self.last_phase_at,
+            "run_stages": {str(k): dict(v) for k, v in (self.run_stages or {}).items() if isinstance(v, dict)},
             "page_cursor": self.page_cursor,
             "last_decision": dict(self.last_decision or {}),
             "torrent_pages": dict(self.torrent_pages),
@@ -422,6 +428,7 @@ class TaskState:
             last_phase_label=d.get("last_phase_label", ""),
             last_phase_detail=d.get("last_phase_detail", ""),
             last_phase_at=d.get("last_phase_at", 0.0),
+            run_stages={str(k): dict(v) for k, v in (d.get("run_stages") or {}).items() if isinstance(v, dict)},
             page_cursor=d.get("page_cursor", 0),
             last_decision=dict(d.get("last_decision") or {}),
             torrent_pages={str(k).lower(): str(v) for k, v in (d.get("torrent_pages") or {}).items() if k and v},

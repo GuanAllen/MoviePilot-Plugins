@@ -1,11 +1,19 @@
 /* OverviewHome 的 scoped 样式，由线上 dist 按 scopeId data-v-d02f7544 提取。
-   选择器里的属性限定符是 scoped 边界，别去掉。 */
+   选择器里的属性限定符是 scoped 边界，别去掉。
 
-/* ── 骨架：主列自适应 + 右栏 340px（对应设计稿 1440 下约 24%）───────── */
+   ★ 19.12.12：按设计稿 Ardot 740112280764561「重新设计·主页整体概览」(2:647) 逐项对齐。
+   之前那版是照 (2:1) 旧稿做的，尺寸/字号系统性偏大一号：
+     右栏 340→360、列间 gap 12→14；标题 21→18（副标与标题同一行，gap10 基线对齐）；
+     摘要 chip 28h/r14/12px → 34h/r8/11px（点 6→8）；KPI 26px 值 → 22px，卡 12/14/r12 → 14/16/r14；
+     面板 12/14/r12 → 16/20/r14，标题 13.5→14；矩阵由「分隔线行」改为「卡片行 gap5 r10」，
+     列宽 92/68 → 72/48；趋势图 196→152，轴/图例 10.5→10；
+     右列卡 11/12 → 14/16，监控行与快捷行改为内嵌卡（对应稿里 #221d30），快捷项 46 高 + 28×28 图标块。 */
+
+/* ── 骨架：主列自适应 + 右栏 360px（设计稿 2:696 定宽 360）────────────── */
 .mfh[data-v-d02f7544] {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 14px;
   align-items: start;
   /* 外层 .magicflow-page 已有 18px padding，这里不再叠加 */
   padding: 0;
@@ -14,39 +22,47 @@
 .mfh__main[data-v-d02f7544] {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
   min-width: 0;
 }
 
 .mfh__side[data-v-d02f7544] {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
   min-width: 0;
 }
 
 
-/* ── 标题行 ───────────────────────────────────────────── */
+/* ── 标题行：标题 18 与副标 11.5 同一行（稿里「标题组」gap10 基线对齐）── */
 .mfh__head[data-v-d02f7544] {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
-  padding: 2px 2px 0;
+  padding: 0;
+}
+
+.mfh__head-text[data-v-d02f7544] {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .mfh__head-text h2[data-v-d02f7544] {
   margin: 0;
-  font-size: 21px;
+  font-size: 18px;
   font-weight: 600;
-  letter-spacing: 0.2px;
+  letter-spacing: 0;
   color: rgba(var(--v-theme-on-surface), 0.95);
 }
 
 .mfh__head-text p[data-v-d02f7544] {
-  margin: 2px 0 0;
-  font-size: 12.5px;
+  margin: 0;
+  font-size: 11.5px;
   color: rgba(var(--v-theme-on-surface), 0.5);
 }
 
@@ -54,9 +70,10 @@
   opacity: 0.75;
 }
 
+/* 监控摘要条：34 高、8 圆角、11px/Medium、点 8（稿 2:682） */
 .mfh__chips[data-v-d02f7544] {
   display: flex;
-  gap: 6px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
@@ -64,13 +81,14 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 28px;
-  padding: 0 10px;
-  border-radius: 14px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
-  background: rgba(var(--v-theme-on-surface), 0.04);
-  color: rgba(var(--v-theme-on-surface), 0.72);
-  font-size: 12px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.09);
+  background: rgba(var(--v-theme-on-surface), 0.035);
+  color: rgba(var(--v-theme-on-surface), 0.8);
+  font-size: 11px;
+  font-weight: 500;
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease;
 }
@@ -93,11 +111,11 @@
 }
 
 
-/* ── 状态圆点 ─────────────────────────────────────────── */
+/* ── 状态圆点：稿里统一 8（chip 内）／6（动态行） ───────────────────── */
 .mfh-dot[data-v-d02f7544],
 .mfh-chip__dot[data-v-d02f7544] {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   flex: none;
   background: rgba(var(--v-theme-on-surface), 0.3);
@@ -134,26 +152,26 @@
 }
 
 
-/* ── KPI 卡 ───────────────────────────────────────────── */
+/* ── KPI 卡：pad 14/16、r14、gap4；值 22、名 11、单位 11、脚 10.5（2:698）── */
 .mfh__kpis[data-v-d02f7544] {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  gap: 14px;
 }
 
 .mfh-kpi[data-v-d02f7544] {
-  padding: 12px 14px 13px;
-  border-radius: 12px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-  background: rgba(var(--v-theme-on-surface), 0.03);
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.09);
+  background: rgba(var(--v-theme-on-surface), 0.035);
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  min-height: 104px;
+  gap: 4px;
+  min-height: 0;
 }
 
 .mfh-kpi__label[data-v-d02f7544] {
-  font-size: 12px;
+  font-size: 11px;
   color: rgba(var(--v-theme-on-surface), 0.55);
 }
 
@@ -167,13 +185,13 @@
   align-items: flex-end;
   justify-content: space-between;
   gap: 10px;
-  min-height: 38px;
+  min-height: 30px;
 }
 
 .mfh-kpi__value[data-v-d02f7544] {
-  font-size: 26px;
+  font-size: 22px;
   font-weight: 600;
-  line-height: 1.1;
+  line-height: 1.15;
   color: rgba(var(--v-theme-on-surface), 0.95);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -181,7 +199,7 @@
 
 .mfh-kpi__unit[data-v-d02f7544] {
   margin-left: 3px;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 400;
   color: rgba(var(--v-theme-on-surface), 0.45);
 }
@@ -189,12 +207,12 @@
 .mfh-kpi__spark[data-v-d02f7544] {
   width: 170px;
   height: 36px;
-  flex: none;
+  flex: 0 1 170px;
   opacity: 0.9;
 }
 
 .mfh-kpi__foot[data-v-d02f7544] {
-  font-size: 11.5px;
+  font-size: 10.5px;
   color: rgba(var(--v-theme-on-surface), 0.45);
   line-height: 1.4;
 }
@@ -231,17 +249,17 @@
 }
 
 
-/* ── 面板通用 ─────────────────────────────────────────── */
+/* ── 面板通用：r14、pad 16/20（右列 14/16），标题 14 ────────────────── */
 .mfh-panel[data-v-d02f7544] {
-  border-radius: 12px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-  background: rgba(var(--v-theme-on-surface), 0.03);
-  padding: 12px 14px 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.09);
+  background: rgba(var(--v-theme-on-surface), 0.035);
+  padding: 16px 20px;
   min-width: 0;
 }
 
 .mfh-panel--side[data-v-d02f7544] {
-  padding: 11px 12px 8px;
+  padding: 14px 16px;
 }
 
 .mfh-panel__head[data-v-d02f7544] {
@@ -249,27 +267,34 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 
 .mfh-panel__title[data-v-d02f7544] {
-  font-size: 13.5px;
+  font-size: 14px;
   font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.92);
+  color: rgba(var(--v-theme-on-surface), 0.94);
 }
 
 .mfh-panel__sub[data-v-d02f7544] {
-  font-size: 11.5px;
+  font-size: 11px;
   color: rgba(var(--v-theme-on-surface), 0.45);
-  margin-top: 1px;
+  margin-top: 2px;
+}
+
+/* 矩阵头那句提示在稿里是浅紫（#b9a8f5），不是灰 —— 它是可点提示，得有引导感 */
+.mfh-panel__sub--accent[data-v-d02f7544] {
+  color: rgba(var(--v-theme-primary), 0.9);
+  font-weight: 500;
 }
 
 .mfh-link[data-v-d02f7544] {
   border: 0;
   background: none;
   padding: 0 2px;
-  font-size: 12px;
-  color: rgb(var(--v-theme-primary));
+  font-size: 11.5px;
+  font-weight: 500;
+  color: rgba(var(--v-theme-primary), 0.9);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -278,48 +303,55 @@
 }
 
 
-/* ── 任务矩阵 ─────────────────────────────────────────── */
+/* ── 任务矩阵：列头 10.5、行是卡片（gap5 / r10 / 33 高 / pad 7,12）──── */
 .mfh-matrix[data-v-d02f7544] {
   display: flex;
   flex-direction: column;
+  gap: 5px;
 }
 
+/* 列头右内缩 36 = 行右 padding 12 + 箭头列 12 + gap 12，保证标签与行内文字对齐 */
 .mfh-matrix__head[data-v-d02f7544] {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 92px 68px 20px;
-  gap: 8px;
-  padding: 0 6px 5px;
-  font-size: 11px;
+  grid-template-columns: minmax(0, 1fr) 72px 48px 12px;
+  gap: 12px;
+  padding: 0 36px 0 12px;
+  font-size: 10.5px;
+  font-weight: 500;
   color: rgba(var(--v-theme-on-surface), 0.42);
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+  border-bottom: 0;
 }
 
 .mfh-matrix__row[data-v-d02f7544] {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 92px 68px 20px;
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 72px 48px 12px;
+  gap: 12px;
   align-items: center;
-  padding: 7px 6px;
-  border: 0;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.05);
-  background: none;
+  padding: 7px 12px;
+  border: 1px solid transparent;
+  background: rgba(var(--v-theme-on-surface), 0.055);
   color: inherit;
   text-align: left;
   cursor: pointer;
-  border-radius: 6px;
-  transition: background 0.13s ease;
+  border-radius: 10px;
+  transition: background 0.13s ease, border-color 0.13s ease;
 }
 
-.mfh-matrix__row[data-v-d02f7544]:last-child { border-bottom: 0;
+.mfh-matrix__row[data-v-d02f7544]:hover {
+  background: rgba(var(--v-theme-primary), 0.1);
+  border-color: rgba(var(--v-theme-primary), 0.34);
 }
 
-.mfh-matrix__row[data-v-d02f7544]:hover { background: rgba(var(--v-theme-primary), 0.08);
+/* 当前任务（顶栏切换器里那个）：稿里首行是浅紫底 + 紫描边 */
+.mfh-matrix__row.is-active[data-v-d02f7544] {
+  background: rgba(var(--v-theme-primary), 0.16);
+  border-color: rgba(var(--v-theme-primary), 0.55);
 }
 
 .mfh-matrix__name[data-v-d02f7544] {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   min-width: 0;
 }
 
@@ -331,7 +363,7 @@
 }
 
 .mfh-matrix__label strong[data-v-d02f7544] {
-  font-size: 12.8px;
+  font-size: 12.5px;
   font-weight: 500;
   color: rgba(var(--v-theme-on-surface), 0.9);
   overflow: hidden;
@@ -341,7 +373,7 @@
 
 .mfh-matrix__label em[data-v-d02f7544] {
   font-style: normal;
-  font-size: 11px;
+  font-size: 10.5px;
   color: rgba(var(--v-theme-on-surface), 0.4);
   white-space: nowrap;
 }
@@ -349,7 +381,7 @@
 .mfh-matrix__num[data-v-d02f7544] {
   font-size: 12.5px;
   font-variant-numeric: tabular-nums;
-  color: rgba(var(--v-theme-on-surface), 0.82);
+  color: rgba(var(--v-theme-on-surface), 0.8);
   text-align: right;
 }
 
@@ -363,20 +395,20 @@
 
 .mfh-matrix__empty[data-v-d02f7544] {
   padding: 18px 6px;
-  font-size: 12.5px;
+  font-size: 12px;
   color: rgba(var(--v-theme-on-surface), 0.45);
   text-align: center;
 }
 
 
-/* ── 趋势图 ───────────────────────────────────────────── */
+/* ── 趋势图：图高 152、轴/图例 10（2:789）───────────────────────────── */
 .mfh-panel--chart[data-v-d02f7544] { padding-bottom: 12px;
 }
 
 .mfh-legend[data-v-d02f7544] {
   display: flex;
-  gap: 12px;
-  font-size: 11.5px;
+  gap: 14px;
+  font-size: 10px;
   color: rgba(var(--v-theme-on-surface), 0.5);
 }
 
@@ -400,14 +432,14 @@
 
 .mfh-chart[data-v-d02f7544] {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
+  grid-template-columns: 30px minmax(0, 1fr);
   gap: 4px;
-  height: 196px;
+  height: 152px;
 }
 
 .mfh-chart__yaxis[data-v-d02f7544] {
   position: relative;
-  font-size: 10.5px;
+  font-size: 10px;
   color: rgba(var(--v-theme-on-surface), 0.4);
 }
 
@@ -425,7 +457,7 @@
 
 .mfh-chart__svg[data-v-d02f7544] {
   width: 100%;
-  height: calc(100% - 18px);
+  height: calc(100% - 16px);
   display: block;
   overflow: visible;
 }
@@ -461,7 +493,7 @@
 .mfh-chart__xaxis[data-v-d02f7544] {
   display: flex;
   justify-content: space-between;
-  font-size: 10.5px;
+  font-size: 10px;
   color: rgba(var(--v-theme-on-surface), 0.4);
   padding-top: 2px;
 }
@@ -469,23 +501,23 @@
 .mfh-chart__empty[data-v-d02f7544] {
   padding: 28px 0 30px;
   text-align: center;
-  font-size: 12.5px;
+  font-size: 12px;
   color: rgba(var(--v-theme-on-surface), 0.42);
 }
 
 
-/* ── 右栏：全局动态 ───────────────────────────────────── */
+/* ── 右栏：全局动态（行 = 6 点 + 文案 + 右侧 60 宽时间）─────────────── */
 .mfh-ops[data-v-d02f7544] {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 0;
 }
 
 .mfh-ops__row[data-v-d02f7544] {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
-  padding: 6px 4px;
+  padding: 5px 0;
   border: 0;
   border-radius: 6px;
   background: none;
@@ -496,7 +528,9 @@
 .mfh-ops__row[data-v-d02f7544]:hover { background: rgba(var(--v-theme-on-surface), 0.05);
 }
 
-.mfh-ops__row .mfh-dot[data-v-d02f7544] { margin-top: 5px;
+.mfh-ops__row .mfh-dot[data-v-d02f7544] {
+  width: 6px;
+  height: 6px;
 }
 
 .mfh-ops__body[data-v-d02f7544] {
@@ -504,12 +538,13 @@
   flex-direction: column;
   gap: 1px;
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .mfh-ops__title[data-v-d02f7544] {
-  font-size: 12px;
+  font-size: 11.5px;
   line-height: 1.45;
-  color: rgba(var(--v-theme-on-surface), 0.82);
+  color: rgba(var(--v-theme-on-surface), 0.8);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -517,8 +552,12 @@
 }
 
 .mfh-ops__time[data-v-d02f7544] {
-  font-size: 10.5px;
-  color: rgba(var(--v-theme-on-surface), 0.4);
+  flex: none;
+  width: 60px;
+  text-align: right;
+  font-size: 10px;
+  color: rgba(var(--v-theme-on-surface), 0.42);
+  white-space: nowrap;
 }
 
 .mfh-ops__empty[data-v-d02f7544] {
@@ -528,39 +567,54 @@
 }
 
 
-/* ── 右栏：站点监控 ───────────────────────────────────── */
+/* ── 右栏：站点监控（行 = 内嵌卡 pad 9,12 / r8 / 轨道 6）────────────── */
 .mfh-mon[data-v-d02f7544] {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 8px;
 }
 
 .mfh-mon__row[data-v-d02f7544] {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 6px 4px;
+  gap: 10px;
+  padding: 9px 12px;
   border: 0;
-  border-radius: 6px;
-  background: none;
+  border-radius: 8px;
+  background: rgba(var(--v-theme-on-surface), 0.075);
   cursor: pointer;
   color: inherit;
 }
 
-.mfh-mon__row[data-v-d02f7544]:hover { background: rgba(var(--v-theme-on-surface), 0.05);
+.mfh-mon__row[data-v-d02f7544]:hover { background: rgba(var(--v-theme-primary), 0.12);
+}
+
+/* 容量行是「头 + 轨道」两段（稿 2:847），所以竖排 */
+.mfh-mon__row--stack[data-v-d02f7544] {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.mfh-mon__head[data-v-d02f7544] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .mfh-mon__label[data-v-d02f7544] {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  font-size: 12px;
-  color: rgba(var(--v-theme-on-surface), 0.68);
+  gap: 10px;
+  font-size: 11.5px;
+  color: rgba(var(--v-theme-on-surface), 0.72);
 }
 
 .mfh-mon__value[data-v-d02f7544] {
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
   color: rgba(var(--v-theme-on-surface), 0.85);
 }
@@ -575,17 +629,17 @@
 }
 
 .mfh-mon__bar[data-v-d02f7544] {
-  height: 4px;
-  border-radius: 2px;
-  background: rgba(var(--v-theme-on-surface), 0.09);
-  margin: 0 4px 6px;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(var(--v-theme-on-surface), 0.12);
+  margin: 0;
   overflow: hidden;
 }
 
 .mfh-mon__bar span[data-v-d02f7544] {
   display: block;
   height: 100%;
-  border-radius: 2px;
+  border-radius: 3px;
 }
 
 .mfh-mon__bar span.is-success[data-v-d02f7544] { background: rgb(var(--v-theme-success)) !important;
@@ -598,28 +652,42 @@
 }
 
 
-/* ── 右栏：快速功能 ───────────────────────────────────── */
+/* ── 右栏：快捷功能（46 高 / r10 / pad 8,12 / 28×28 图标块）──────────── */
 .mfh-quick[data-v-d02f7544] {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 8px;
 }
 
 .mfh-quick__item[data-v-d02f7544] {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 7px 6px;
-  border: 0;
-  border-radius: 7px;
-  background: rgba(var(--v-theme-on-surface), 0.03);
-  color: rgba(var(--v-theme-on-surface), 0.82);
+  gap: 10px;
+  height: 46px;
+  padding: 8px 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.09);
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.075);
+  color: rgba(var(--v-theme-on-surface), 0.9);
   cursor: pointer;
   text-align: left;
 }
 
 .mfh-quick__item[data-v-d02f7544]:hover {
-  background: rgba(var(--v-theme-primary), 0.1);
+  background: rgba(var(--v-theme-primary), 0.14);
+  border-color: rgba(var(--v-theme-primary), 0.4);
+  color: rgb(var(--v-theme-primary));
+}
+
+.mfh-quick__ico[data-v-d02f7544] {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(var(--v-theme-primary), 0.16);
   color: rgb(var(--v-theme-primary));
 }
 
@@ -631,18 +699,21 @@
 }
 
 .mfh-quick__item strong[data-v-d02f7544] {
-  font-size: 12.2px;
-  font-weight: 500;
+  font-size: 12.5px;
+  font-weight: 600;
 }
 
 .mfh-quick__item em[data-v-d02f7544] {
   font-style: normal;
-  font-size: 10.5px;
+  font-size: 10px;
   color: rgba(var(--v-theme-on-surface), 0.42);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+
+/* ── 响应式 ───────────────────────────────────────────── */
 @media (max-width: 1279px) {
 
 .mfh[data-v-d02f7544] {
@@ -663,15 +734,22 @@
 .mfh__kpis[data-v-d02f7544] { grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.mfh-kpi[data-v-d02f7544] { min-height: 96px;
+.mfh-kpi[data-v-d02f7544] { padding: 12px 14px;
 }
 
 .mfh-kpi__spark[data-v-d02f7544] { display: none;
 }
 
+.mfh-panel[data-v-d02f7544] { padding: 14px 14px 12px;
+}
+
 .mfh-matrix__head[data-v-d02f7544],
   .mfh-matrix__row[data-v-d02f7544] {
-    grid-template-columns: minmax(0, 1fr) 72px 52px 16px;
+    grid-template-columns: minmax(0, 1fr) 64px 40px 12px;
+    gap: 8px;
+}
+
+.mfh-matrix__head[data-v-d02f7544] { padding: 0 32px 0 12px;
 }
 
 .mfh-matrix__label em[data-v-d02f7544] { display: none;

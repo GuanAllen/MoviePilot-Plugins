@@ -24,6 +24,7 @@ import index from '../index.vue'
 import { MF_DETAIL_ENTRIES } from '../constants.js'
 import { formatBytes, formatDateTime } from '../../../utils.js'
 import { taskMetrics } from '../format.js'
+import { currencyOf } from '../composables/useCurrency.js'
 
 const _hoisted_1$g = { class: "md-verdict__body" };
 const _hoisted_2$e = { class: "md-v" };
@@ -70,8 +71,11 @@ const mobileDetailCards = computed$w(() => {
     cards.push({ v: m.upload.text, k: '本任务上传' });
     cards.push({ v: props.siteAccount?.ok ? formatBytes(props.siteAccount.upload || 0) : '—', k: '站点上传' });
   } else {
-    cards.push({ v: m.hourly.ok ? Number(m.hourly.value).toFixed(2) : '取数中…', k: '时魔 /h' });
-    cards.push({ v: t.site_current_bonus != null ? Number(t.site_current_bonus).toFixed(0) : '—', k: '站点魔力' });
+    // ★ 19.12.10：这两格都是该站自己的计量单位，标签跟站点自称走（鲸币/蟹币值/积分…），
+    //   写死「时魔 /h」「站点魔力」会让手机端成为全站唯一还用通用名的地方。
+    const cur = currencyOf(t);
+    cards.push({ v: m.hourly.ok ? Number(m.hourly.value).toFixed(2) : '取数中…', k: `${cur}/时` });
+    cards.push({ v: t.site_current_bonus != null ? Number(t.site_current_bonus).toFixed(0) : '—', k: `站点${cur}` });
   }
   return cards
 });

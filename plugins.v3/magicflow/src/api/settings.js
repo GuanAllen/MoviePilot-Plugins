@@ -48,5 +48,30 @@ export function makeSettings(c) {
     setRuleRatio: (dom, ratio) => c.get(
       `rules?action=set_ratio&site=${encodeURIComponent(dom)}&ratio=${encodeURIComponent(ratio)}`,
     ),
+
+    // ── 手动保种（`__keep__` 伪任务，★ 19.10.41/42）────────────
+    // 三个入口都在 `tags` 域按 `action` 分发（`features/tags.py` 的 TAG_ACTIONS）：
+    //   hold_list         名单（账本 taken_by=__keep__ + 下载器实况）
+    //   hold_candidates   静默池候选（挑种用）
+    //   hold / unhold     挂 / 解除（confirm=1 才真写；unhold 恒真写）
+    /** 已挂的手动保种名单 */
+    keepList: () => c.get('tags?action=hold_list'),
+    /** 静默池候选（从这里挑要保的种） */
+    holdCandidates: () => c.get('tags?action=hold_candidates'),
+    /**
+     * 挂 / 解除手动保种。
+     * @param {string|string[]} hashes 一个或多个 hash（后端按逗号批量）
+     * @param {boolean} hold true=挂保种（并拉起做种）· false=解除（退回静默池）
+     */
+    holdSeeds: (hashes, hold = true) => {
+      const hs = (Array.isArray(hashes) ? hashes : [hashes])
+        .map((h) => String(h || '').trim().toLowerCase())
+        .filter(Boolean);
+      const act = hold ? 'hold' : 'unhold';
+      return c.get(
+        `tags?action=${act}&hash=${encodeURIComponent(hs.join(','))}`
+        + `&confirm=1&reason=${encodeURIComponent('界面手动保种')}`,
+      );
+    },
   }
 }

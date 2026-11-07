@@ -81,7 +81,10 @@ const metrics = computed(() => {
       icon: 'mdi-chart-donut',
       label: '当前魔力',
       value: Number(s.current_bonus || 0).toLocaleString('en-US', { maximumFractionDigits: 0 }),
-      addition: `上限 ${Number(s.ceiling_pct || 0).toFixed(0)}%`,
+      // 容量口径同工作台首页（19.12.11）：各站货币互不通兑，混币时不报总占比，改报达上限站数
+      addition: s.currency_mixed
+        ? `${Number(s.ceiling_full_sites || 0)} 站已达上限`
+        : `已占 ${Number(s.ceiling_pct || 0).toFixed(0)}%`,
     },
   ]
 });
@@ -259,6 +262,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Dashboard = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-fe8fae67"]]);
+const Dashboard = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-62b4a4b2"]]);
 
 export { Dashboard as default };

@@ -80,9 +80,9 @@ const _hoisted_32$1 = { class: "mfh-kpi__value" };
 const _hoisted_33$1 = { class: "mfh-kpi__foot" };
 const _hoisted_34$1 = { class: "mfh-panel" };
 const _hoisted_35$1 = { class: "mfh-panel__head" };
-const _hoisted_36$1 = { class: "mfh-panel__sub" };
+const _hoisted_36$1 = { class: "mfh-panel__sub mfh-panel__sub--accent" };
 const _hoisted_37$1 = { class: "mfh-matrix" };
-const _hoisted_38$1 = ["onClick"];
+const _hoisted_38$1 = ["onClick", "class"];
 const _hoisted_39$1 = { class: "mfh-matrix__name" };
 const _hoisted_40$1 = { class: "mfh-matrix__label" };
 const _hoisted_41$1 = { class: "mfh-matrix__num" };
@@ -164,6 +164,8 @@ const _sfc_main$2 = {
   ops: { type: Array, default: () => [] }, // 操作记录（最近 N 条）
   notifyCount: { type: Number, default: 0 },
   pages: { type: Array, default: () => [] }, // 功能中心快捷入口 [{key,label,icon,hint}]
+  // 当前任务（顶栏切换器里选中的那个）：矩阵里给它浅紫底 + 紫描边（设计稿 2:743 首行）
+  activeTaskId: { type: [String, Number], default: '' },
   now: { type: Number, default: () => Date.now() },
   loading: { type: Boolean, default: false },
 },
@@ -199,6 +201,25 @@ const currentBonus = computed$m(() => Number(s.value.current_bonus || 0));
 // 各站货币名一致才用站点的叫法，否则「魔力值」（各站货币互不通兑，不能假装同名）
 const currencyLabel = computed$m(() => currencyOfMany(props.tasks));
 const ceilingPct = computed$m(() => Number(s.value.ceiling_pct || 0));
+// 站点容量口径（19.12.11）：各站货币互不通兑（useCurrency.js 同口径）。混币时后端不再给
+// 「总时魔 ÷ 总上限」（相加无意义，ceiling_pct 置 0），改给「几站已达模型上限」。
+// 模型上限 = B0 + 做种数×固定奖励，不含官种/后宫等用户级加成 → 实报时魔超过它是正常口径差。
+const ceilingMixed = computed$m(() => !!s.value.currency_mixed);
+const ceilingSites = computed$m(() => Number(s.value.ceiling_sites || 0));
+const ceilingFullSites = computed$m(() => Number(s.value.ceiling_full_sites || 0));
+const ceilingChipText = computed$m(() => (ceilingMixed.value
+  ? `${ceilingFullSites.value} 站已达上限`
+  : `${ceilingPct.value.toFixed(0)}%`));
+const ceilingRowText = computed$m(() => (ceilingMixed.value
+  ? `${ceilingFullSites.value} / ${ceilingSites.value} 站`
+  : `${ceilingPct.value.toFixed(0)}%`));
+// 混币时进度条 = 达上限站数占比；同名币时 = 时魔占用率
+const ceilingBarPct = computed$m(() => (ceilingMixed.value
+  ? (ceilingSites.value ? (ceilingFullSites.value / ceilingSites.value) * 100 : 0)
+  : ceilingPct.value));
+const ceilingHint = computed$m(() => (ceilingMixed.value
+  ? '各站货币互不通兑、不能相加 → 这里统计「已达模型上限」的站点数'
+  : '时魔 ÷ 模型上限（不含官种/后宫等加成，实报值可超过它）'));
 const taskTotal = computed$m(() => Number(s.value.total_tasks || props.tasks.length || 0));
 const runningCount = computed$m(() => Number(s.value.running_tasks || 0));
 computed$m(() => Number(s.value.seeding_tasks || 0));
@@ -423,7 +444,13 @@ const healthChip = computed$m(() => ({
   color: props.healthColor || (props.health?.ok === false ? 'error' : 'success'),
 }));
 
-const ceilingColor = computed$m(() => (ceilingPct.value >= 85 ? 'error' : ceilingPct.value >= 70 ? 'warning' : 'success'));
+const ceilingColor = computed$m(() => {
+  if (ceilingMixed.value) {
+    if (!ceilingFullSites.value) return 'success'
+    return ceilingFullSites.value >= ceilingSites.value ? 'error' : 'warning'
+  }
+  return ceilingPct.value >= 85 ? 'error' : ceilingPct.value >= 70 ? 'warning' : 'success'
+});
 
 const quickPages = computed$m(() => (props.pages || []).slice(0, 3));
 
@@ -459,12 +486,13 @@ return (_ctx, _cache) => {
           _createElementVNode$2("button", {
             type: "button",
             class: "mfh-chip",
+            title: ceilingHint.value,
             onClick: _cache[1] || (_cache[1] = $event => (emit('open-ceiling')))
           }, [
             _createElementVNode$2("span", {
               class: _normalizeClass$1(["mfh-chip__dot", `is-${ceilingColor.value}`])
             }, null, 2),
-            _createTextVNode$2(" 站点容量 · " + _toDisplayString$2(ceilingPct.value.toFixed(0)) + "% ", 1)
+            _createTextVNode$2(" 站点容量 · " + _toDisplayString$2(ceilingChipText.value) + " ", 1)
           ]),
           _createElementVNode$2("button", {
             type: "button",
@@ -607,7 +635,7 @@ return (_ctx, _cache) => {
             return (_openBlock$2(), _createElementBlock$1("button", {
               key: t.id,
               type: "button",
-              class: "mfh-matrix__row",
+              class: _normalizeClass$1(["mfh-matrix__row", { "is-active": String(t.id) === String(__props.activeTaskId) }]),
               onClick: $event => (emit('open-task', t.id))
             }, [
               _createElementVNode$2("span", _hoisted_39$1, [
@@ -731,9 +759,9 @@ return (_ctx, _cache) => {
                 class: _normalizeClass$1(["mfh-dot", stateDotClass(o.state)])
               }, null, 2),
               _createElementVNode$2("span", _hoisted_62, [
-                _createElementVNode$2("span", _hoisted_63, _toDisplayString$2(opText(o)), 1),
-                _createElementVNode$2("span", _hoisted_64, _toDisplayString$2(opTime(o)), 1)
-              ])
+                _createElementVNode$2("span", _hoisted_63, _toDisplayString$2(opText(o)), 1)
+              ]),
+              _createElementVNode$2("span", _hoisted_64, _toDisplayString$2(opTime(o)), 1)
             ]))
           }), 128))
         ])
@@ -765,22 +793,25 @@ return (_ctx, _cache) => {
           ]),
           _createElementVNode$2("button", {
             type: "button",
-            class: "mfh-mon__row",
+            class: "mfh-mon__row mfh-mon__row--stack",
+            title: ceilingHint.value,
             onClick: _cache[9] || (_cache[9] = $event => (emit('open-ceiling')))
           }, [
-            _createElementVNode$2("span", _hoisted_69, [
-              _createElementVNode$2("span", {
-                class: _normalizeClass$1(["mfh-dot", `is-${ceilingColor.value}`])
-              }, null, 2),
-              _cache[29] || (_cache[29] = _createTextVNode$2("站点容量", -1))
+            _createElementVNode$2("span", { class: "mfh-mon__head" }, [
+              _createElementVNode$2("span", _hoisted_69, [
+                _createElementVNode$2("span", {
+                  class: _normalizeClass$1(["mfh-dot", `is-${ceilingColor.value}`])
+                }, null, 2),
+                _cache[29] || (_cache[29] = _createTextVNode$2("站点容量", -1))
+              ]),
+              _createElementVNode$2("span", _hoisted_70, _toDisplayString$2(ceilingRowText.value), 1)
             ]),
-            _createElementVNode$2("span", _hoisted_70, _toDisplayString$2(ceilingPct.value.toFixed(0)) + "%", 1)
-          ]),
-          _createElementVNode$2("div", _hoisted_71, [
-            _createElementVNode$2("span", {
-              class: _normalizeClass$1(`is-${ceilingColor.value}`),
-              style: _normalizeStyle({ width: `${Math.min(100, ceilingPct.value)}%` })
-            }, null, 6)
+            _createElementVNode$2("div", _hoisted_71, [
+              _createElementVNode$2("span", {
+                class: _normalizeClass$1(`is-${ceilingColor.value}`),
+                style: _normalizeStyle({ width: `${Math.min(100, ceilingBarPct.value)}%` })
+              }, null, 6)
+            ])
           ]),
           _createElementVNode$2("button", {
             type: "button",
@@ -814,10 +845,12 @@ return (_ctx, _cache) => {
               class: "mfh-quick__item",
               onClick: $event => (emit('open-page', p.key))
             }, [
-              _createVNode$2(_component_VIcon, {
-                icon: p.icon,
-                size: "18"
-              }, null, 8, ["icon"]),
+              _createElementVNode$2("span", { class: "mfh-quick__ico" }, [
+                _createVNode$2(_component_VIcon, {
+                  icon: p.icon,
+                  size: "16"
+                }, null, 8, ["icon"])
+              ]),
               _createElementVNode$2("span", null, [
                 _createElementVNode$2("strong", null, _toDisplayString$2(p.label), 1),
                 (p.hint)

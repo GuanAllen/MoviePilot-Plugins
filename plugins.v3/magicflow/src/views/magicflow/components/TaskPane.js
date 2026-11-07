@@ -25,6 +25,7 @@ import index from '../index.vue'
 import { runModeMeta, taskStateMeta } from '../../../utils.js'
 import { taskKindText, taskMetrics } from '../format.js'
 import { useTasks } from '../composables/useTasks.js'
+import { currencyOf } from '../composables/useCurrency.js'
 
 const _hoisted_1$f = { class: "magicflow-task-rail__head" };
 const _hoisted_2$d = { class: "magicflow-task-list" };
@@ -72,11 +73,27 @@ function taskBadge(task) {
 
 // ★ 19.11.0：指标按任务类型并列展示（主指标 = 考核目标），不再用 v-if/v-else 互斥，
 // 使魔力任务也能看到配额下的实际上传产出，且两类任务的数字口径一致、可横向对比。
-const rows = computed$v(() => props.tasks.map(task => ({
-  task,
-  metrics: taskMetrics(task),
-  kindText: taskKindText(task),
-})));
+const rows = computed$v(() => props.tasks.map(task => {
+  const metrics = taskMetrics(task);
+  // ★ 19.12.31：宿主行原来按 bonus 渲染（芯片「魔力」、tooltip「魔力考核鲸币」、
+  //   主数「—」/「↑ 0 B」）——标题与口径改为按任务类型/宿主分。
+  const isHost = !!(task && (task.builtin || task.task_type === 'host'));
+  const currencyName = currencyOf(task);
+  return {
+    task,
+    metrics,
+    kindText: taskKindText(task),
+    currencyName,
+    typeTitle: isHost
+      ? '任务类型：内置常驻托管（只读浏览，操作到对应功能页）'
+      : (metrics.isBrush ? '任务类型：刷流考核上传量' : `任务类型：魔力考核${currencyName}`),
+    metricTitle: isHost
+      ? '名下种子（按各宿主真值源口径计数）'
+      : (metrics.upload.noUpload
+          ? `有 ${metrics.seeds} 个托管种子，但当前 0 个在上传`
+          : (metrics.isBrush ? '本任务上传（任务级累计）' : '站点时魔（站点级自报）')),
+  };
+}));
 
 return (_ctx, _cache) => {
   const _component_VChip = _resolveComponent$h("VChip");
@@ -109,8 +126,8 @@ return (_ctx, _cache) => {
             _createVNode$g(_component_VChip, {
               size: "x-small",
               variant: "tonal",
-              color: row.metrics.isBrush ? 'info' : 'primary',
-              title: "任务类型：刷流考核上传量，魔力考核魔力值"
+              color: row.metrics.isBrush ? 'info' : (row.metrics.isHost ? 'secondary' : 'primary'),
+              title: row.typeTitle
             }, {
               default: _withCtx$f(() => [
                 _createTextVNode$g(_toDisplayString$h(row.kindText), 1)
@@ -153,9 +170,7 @@ return (_ctx, _cache) => {
             _createElementVNode$h("span", null, _toDisplayString$h(row.metrics.seeds) + " 个种子", 1),
             _createElementVNode$h("span", {
               class: _normalizeClass$6(["magicflow-task-item__main", { 'is-idle': row.metrics.upload.noUpload }]),
-              title: row.metrics.upload.noUpload
-            ? `有 ${row.metrics.seeds} 个托管种子，但当前 0 个在上传`
-            : (row.metrics.isBrush ? '本任务上传（任务级累计）' : '站点时魔（站点级自报）')
+              title: row.metricTitle
             }, [
               _createTextVNode$g(_toDisplayString$h(row.metrics.primary.text), 1),
               (row.metrics.upload.noUpload)

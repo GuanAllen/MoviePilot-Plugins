@@ -23,7 +23,6 @@ const {
   withCtx: _withCtx$t,
 } = __vue
 
-import index from '../../index.vue'
 import { SITE_REPORT_BUCKETS, SITE_REPORT_ORIGINS, SITE_REPORT_SILENT_SUBS, SITE_REPORT_TRANSPORT } from '../../constants.js'
 import { currencyOf } from '../../composables/useCurrency.js'
 import { levelNextText } from '../../format.js'

@@ -17,6 +17,7 @@ from ..tags import (
     SUB_NEW,
     DUTY_STATES,
     STATE_HR,
+    STATE_KEEP,
     STATE_SILENT,
     is_library_asset,
     is_reuse_copy,
@@ -36,6 +37,13 @@ from .hrbills import (
 from ..downloader_ops import seed_hours_for_hr
 from ..common import hr_incomplete, hr_complete_ratio_of, HR_OWED_TTL
 from .. import cacheops
+
+# ★ 19.12.36：H&R 移交要能「归位」——把来源职务记进账本 ``prev_state``，
+#   结清释放时还原成原职务（刷流/魔力/点播/音乐），种回到原任务名下继续做种。
+#   ★ 19.12.38：排除 ``STATE_HR``（H&R 自己）与 ``STATE_KEEP``（手动保种的长期职务）——
+#   前者会让释放绕死循环，后者是人工点名、不该被 H&R 移交改写（结清后该回原任务，
+#   不是变成「手动保种」）。
+_HR_PREV_STATES = tuple(x for x in DUTY_STATES if x not in (STATE_HR, STATE_KEEP))
 
 
 class HrMixin:
@@ -235,6 +243,13 @@ class HrMixin:
             _pt = bool(self._site_per_torrent_hr(dom))
         except Exception:  # noqa: BLE001
             _pt = False
+        # ★ 19.12.36：站点**明确无 H&R**（``hr_flag is False``）且非逐种站 → 种子级标记一律不采信。
+        #   与 19.12.33 开账「两道门槛」的第一道同源 —— 「判欠」与「开账」必须同一口径。
+        #   线上实证：馒头（无 H&R 制度）有三颗种带 ``hit_and_run`` 标记（列表页解析误读），
+        #   旧逻辑里 `thr is True` 优先于站点规则，于是被判「欠 24h」→ 下完即判的新流程
+        #   会把它们迁进保种，凭空多挂三颗。逐种站豁免：它们本来就只认种子标记。
+        if hr_flag is False and not _pt:
+            return False, 0.0, 0.0, f"本站({dom})无H&R规则"
         if not (thr is True or (hr_flag is True and not _pt)):
             return False, 0.0, 0.0, (f"逐种站({dom})未标H&R" if _pt else f"本站({dom})无H&R规则")
         try:
@@ -656,6 +671,34 @@ class HrMixin:
 
     # ------------------------------------------------------- 11.11.0 H&R 保种宿主 __hr_host__
 
+    def _hr_should_hold(self, site: str, torrent: Any, snap: Any = None) -> bool:
+        """★ 19.12.37：**该不该进保种**的唯一判据（迁移 / 音乐下完 / 任务遣散共用）。
+
+        与 ``_hr_obligation`` 只差一步：先过「**该不该记**」的两道门槛
+        （``_hr_obligation_rule``，与开账 ``_hrbills_open`` 同源）。
+
+        为什么必须多这一步：``_hr_obligation`` 对「站点规则未知」走的是**未知保守 24h**
+        —— 那是跨站选源/删除保护的正确方向（宁可多保护），但用在**改变归属**上就成了灾难：
+        馒头（``m-team.cc``，规则库 ``hr=f`` 但 ``source=builtin`` 不被 ``hr_of`` 采信 →
+        返回 ``None``）被判「欠 24h」，2026-11-05 线上实测 5 颗音乐种被反复搬进保种、
+        又被释放，日志每秒刷屏。判据不明的种，**既不记账也不接管**。
+
+        异常一律返回 ``False``（不接管）：接管是破坏性动作（摘标换标），拿不准就别动。
+        """
+        if torrent is None:
+            return False
+        try:
+            dom = self._hr_domain(site, torrent)
+            thr = True if bool(getattr(torrent, "hit_and_run", False)) else None
+            if not self._hr_obligation_rule(dom, thr):
+                return False
+        except Exception:  # noqa: BLE001
+            return False
+        try:
+            return bool(self._hr_obligation(site, torrent, snap=snap)[0])
+        except Exception:  # noqa: BLE001
+            return False
+
     def _hr_host_assign(self, hashes: Any, *, reason: str = "") -> int:
         """把欠 H&R 的种挂到 __hr_host__（职务 保种）：贴职务标签 + 写账本（taken_by=__hr_host__）。
 
@@ -675,6 +718,9 @@ class HrMixin:
             self, hashes, taker=HR_HOST_TASK_ID, state=STATE_HR, name="H&R保种",
             # 子类兜底：库内资产记「资源」，其余「新」（保种会继续做种，身份按池内口径定）
             default_sub=lambda rec: SUB_RESOURCE if is_library_asset(rec) else SUB_NEW,
+            # ★ 19.12.36：记下来源职务（刷流/魔力/点播/音乐），结清时还原回去。
+            #   没有这一步，移交就是「单向」的 —— 释放只能回静默池，把原本正常做种的种停了。
+            prev_from=_HR_PREV_STATES,
             resume_when="new",
         )
         n = int(rep.get("adopted") or 0)
@@ -691,12 +737,15 @@ class HrMixin:
         return n
 
     def _hr_host_release(self, hashes: Any, *, reason: str = "") -> int:
-        """结清/作废/规则不欠后，把种从 __hr_host__ 释放回静默（退保种职务 + pause）。"""
+        """结清/作废/规则不欠后释放：**有来源职务就归位**（回刷流/魔力/点播/音乐），否则回静默。"""
         from ..common import HR_HOST_TASK_ID  # 惰性导入（离线测试不碰 common）
         downloader = self._get_downloader()
         if downloader is None or not getattr(downloader, "is_available", False):
             return 0
         rep = release(self, hashes, taker=HR_HOST_TASK_ID, state=STATE_SILENT,
+                      # ★ 19.12.36：移交时记了 prev_state → 这里还原（摘保种标、贴回原职务标）。
+                      #   账本没有 prev_state（历史种 / 移交前就欠的）→ 照旧回静默。
+                      restore_prev=_HR_PREV_STATES,
                       default_sub=SUB_PLAIN,  # 账本没身份时按「普通」兜底（原实现口径）
                       allow_untaken=True,     # 清洗历史行：账本职务=保种但 taken_by 已空
                       extra={"hr_released_at": time.time(),
@@ -709,17 +758,21 @@ class HrMixin:
                 pass
         return n
 
-    def hr_host(self) -> Dict[str, Any]:
+    def hr_host(self, apply: bool = True) -> Dict[str, Any]:
         """★ 11.11.0：__hr_host__ 常驻 worker —— 保挂 H&R + 结清释放。
 
         只处理 taken_by=__hr_host__（职务 保种）的种：
         ① 欠 H&R → force_start（保挂）；② 已结清（seed 时长达标）/ 账单 settled/void → 释放回静默（pause）。
         种消失的违约由 ``_hrbills_tick`` 转 breached，这里不重复处理。
+
+        ``apply=False``：**干跑**——只算「会迁移哪些、会释放哪些」，零写入零贴标。
+        迁移会摘掉原任务标（刷流→保种），破坏性最强，上机前必须先干跑对数字。
         """
         from ..common import SILENT_HR_SPLIT_ENABLED, HR_HOST_TASK_ID  # 惰性导入（离线测试不碰 common）
         if not SILENT_HR_SPLIT_ENABLED:
             return {"enabled": False}
-        rep: Dict[str, Any] = {"assigned": 0, "migrated": 0, "resumed": 0, "released": 0}
+        rep: Dict[str, Any] = {"apply": bool(apply), "assigned": 0, "migrated": 0,
+                               "would_migrate": 0, "resumed": 0, "released": 0}
         try:
             snap = self._tag_all_torrents() or {}
         except Exception:  # noqa: BLE001
@@ -733,36 +786,89 @@ class HrMixin:
             store = self._hrbills_store()
         except Exception:  # noqa: BLE001
             store = None
-        # ① 统一迁移（堵洞）：账本里欠 H&R、不在岗（非刷流/魔力）、未 taken_by=__hr_host__ → 保种。
-        #    覆盖 reseed/ondemand/crossseed 等入池口只补了 pause 的欠债种，保证「静默全 paused」∧「欠债照挂」。
+        # ① 统一迁移（堵洞）：**任何任务的种，下完就判 H&R** —— 欠 → 摘原职务标、挂保种标（移交）。
+        #    ★ 19.12.36（Master 2026-11-05「不管什么任务下完都判定 h&r，判定欠直接摘原来的任务标签挂 H&r」）：
+        #    旧口径只在「不在岗（非刷流/魔力）」时才迁移，于是同一颗种同时被两处认领 ——
+        #    刷流任务卡把它算进「在刷 N 种」，H&R 卡又列一次「还欠 M 颗」，两处数字重叠。
+        #    现在取消「在岗跳过」：任务只负责下载阶段，下完即移交保种，归属唯一。
+        #    原职务记进 ``prev_state``（``_hr_host_assign`` 的 ``prev_from``），
+        #    结清后由 ``_hr_host_release`` 还原回去，种回到原任务名下，不丢归属。
         to_migrate: List[str] = []
         for hh, rec in ledger.items():
             _st = str((rec or {}).get("state") or "")
-            if _st in DUTY_STATES and _st != STATE_HR:
-                continue  # 在岗（刷流/魔力）→ 任务在挂，不迁移
+            if _st in (STATE_HR, STATE_KEEP):
+                # ★ 19.12.38：H&R 自己不用再判；手动保种（``STATE_KEEP``）是**人工点名**的
+                #   稳定态，优先级 95 > H&R 80，迁过去也会被 ``dutyops.assign`` 拒，
+                #   只会每轮空跑一次。直接跳过。
+                continue
             if str((rec or {}).get("taken_by") or "") == HR_HOST_TASK_ID:
                 continue  # 已在保种宿主
             t = snap.get(hh)
             if t is None:
                 continue
             site = str((rec or {}).get("site") or "") or self._torrent_site_name(getattr(t, "tags", None), "")
+            # 未下完 → 无 H&R 义务（15.5.0）；这是本地判断，先跳过免得白跑整套规则链。
             try:
-                if bool(self._hr_obligation(site, t, snap=snap)[0]):
-                    to_migrate.append(hh)
+                if self._hr_incomplete_of(site, t):
+                    continue
             except Exception:  # noqa: BLE001
                 continue
+            # 账单已结清/作废 → 站端已认账，不再迁移。
+            #   ★ 19.12.36：工时口径（``_hr_obligation``）与账单状态可能不同步（站端提前结清、
+            #   人工核销），若照迁，下一轮 ② 段又按 ``bstate in (settled, void)`` 释放 → 来回抖。
+            if store is not None:
+                try:
+                    _bs = str((store.get(hh) or {}).get("state") or "")
+                except Exception:  # noqa: BLE001
+                    _bs = ""
+                if _bs in (BILL_STATE_SETTLED, BILL_STATE_VOID):
+                    continue
+            # ★ 19.12.37（关键）：迁移前先过「**该不该记**」的两道门槛 + 工时判定 ——
+            #   统一走 ``_hr_should_hold``（与开账同源）。只用 ``_hr_obligation`` 的话，
+            #   「站点规则未知」会走**未知保守 24h**，在馒头（m-team.cc，规则库
+            #   ``hr=f`` 但 source=builtin 不被采信 → hr_of 返回 None）身上判出「欠 24h」，
+            #   线上实测 4 颗种因此被迁进保种。开账那边 19.12.33 已改成「规则不明就不记」，
+            #   执行层没跟，两处口径分裂才露出来。
+            if self._hr_should_hold(site, t, snap=snap):
+                to_migrate.append(hh)
         if to_migrate:
-            rep["migrated"] = int(self._hr_host_assign(to_migrate, reason="欠 H&R 迁移") or 0)
+            if apply:
+                rep["migrated"] = int(self._hr_host_assign(to_migrate, reason="欠 H&R 迁移") or 0)
+            else:
+                rep["would_migrate"] = len(to_migrate)
+                rep["migrate_samples"] = [
+                    {"hash": str(h)[:12],
+                     "from": str(((ledger.get(h) or {}).get("state")) or ""),
+                     "site": str(((ledger.get(h) or {}).get("site")) or "")}
+                    for h in to_migrate[:20]
+                ]
         to_resume: List[str] = []
         to_release: List[str] = []
         for hh, rec in ledger.items():
             if str(rec.get("state") or "") != STATE_HR:
+                continue
+            # ★ 19.12.37：职务「保种」两个岗位共用 —— H&R 保种（``__hr_host__``）与
+            #   手动保留/长期做种（``__keep__``，``tags.py`` 同样 ``assign(state=STATE_HR)``）。
+            #   本岗只管自己占的种；不分这一下，8 颗手动保留种会进「将释放」名单
+            #   （真跑又放不掉，因为 ``release`` 只放本岗的），干跑数字虚高、看着像卡住。
+            if str(rec.get("taken_by") or "") != HR_HOST_TASK_ID:
                 continue
             rep["assigned"] = int(rep["assigned"]) + 1
             t = snap.get(hh)
             if t is None:
                 continue  # 消失 → 由 _hrbills_tick 违约；账本稍后对账
             site = str(rec.get("site") or "") or self._torrent_site_name(getattr(t, "tags", None), "")
+            # ★ 19.12.37：与开账同源的门槛 —— 站点明确无 H&R / 规则未知且非逐种站 → 本来
+            #   就不该记，也不该继续挂在保种上（「未知保守 24h」会让这种永远出不来）。
+            try:
+                _dom_r = self._hr_domain(site, t)
+                _thr_r = True if bool(getattr(t, "hit_and_run", False)) else None
+                _rule_ok = bool(self._hr_obligation_rule(_dom_r, _thr_r))
+            except Exception:  # noqa: BLE001
+                _rule_ok = True     # 判不出来 → 按「还欠」处理，不误放
+            if not _rule_ok:
+                to_release.append(hh)
+                continue
             try:
                 obl = bool(self._hr_obligation(site, t, snap=snap)[0])
             except Exception:  # noqa: BLE001
@@ -779,9 +885,11 @@ class HrMixin:
             st = str(getattr(t, "state", "") or "").strip().lower()
             if st.startswith("paused") or st.startswith("stopped") or st.startswith("queued"):
                 to_resume.append(hh)
-        if to_release:
+        if apply and to_release:
             rep["released"] = int(self._hr_host_release(to_release, reason="结清/作废/规则不欠") or 0)
-        if to_resume:
+        elif to_release:
+            rep["would_release"] = len(to_release)
+        if apply and to_resume:
             try:
                 dl = self._get_downloader("qbittorrent")
                 fn = getattr(dl, "force_start_torrents", None) if dl is not None else None
@@ -806,14 +914,70 @@ class HrMixin:
         from ..common import HR_HOST_TASK_ID, HR_HOST_INTERVAL_MINUTES  # 惰性导入
         n_hr = 0
         by_site: Dict[str, int] = {}
+        # ★ 19.12.28 口径对齐：这张卡数的是「**还欠着的 H&R**」，与「H&R保种」明细
+        #   （``tasks._host_task_hashes``）同源 —— 账单未结清 ∩ qB 里在种。
+        #   旧版数的是 ``task_id='__hr_host__'``：2026-11-05 线上只有 1 个，而账单页
+        #   有 22 条待结清 —— 卡片说 1、账单页说 22、点进去列表又是另一回事，三处打架。
+        _qb_ok = True
+        _qb_hashes: set = set()
         try:
-            for _h, _rec in (self._tag_state().items() or {}).items():
-                if str((_rec or {}).get("state") or "") == STATE_HR:
-                    n_hr += 1
-                    _s = str((_rec or {}).get("site") or "未知")
-                    by_site[_s] = int(by_site.get(_s) or 0) + 1
+            _groups = self._tag_snapshot_view("qbittorrent")
+            for _rows in (_groups or {}).values():
+                for _t in _rows or []:
+                    _hh = str(getattr(_t, "hash", "") or "").lower()
+                    if _hh:
+                        _qb_hashes.add(_hh)
         except Exception:  # noqa: BLE001
-            pass
+            _qb_ok = False          # 快照拿不到就不过滤（宁可多算，绝不因缺数据少算）
+        try:
+            _store = self._site_report_bills_store()
+            _bills = dict(_store.all() or {}) if _store is not None else {}
+        except Exception:  # noqa: BLE001
+            _bills = {}
+        n_unknown = 0               # ★ 19.12.33：未定性笔数（不算欠，单独计数）
+        # ★ 19.12.36（Master 2026-11-05「不管什么任务下完都判定 h&r，判定欠直接摘原来的
+        #   任务标签挂 H&r」）：本卡主口径改为**H&R 职务**（``state=H&R`` ∩ qB 在种）。
+        #   迁移是本轮新增的判据 —— 工时不足即移交，**不等账单开户**：一颗跨站/点播加种的种
+        #   可能从没开过账，但职务已经说明它欠着。账单退为补充，只数「未定性」。
+        #   这样卡片 / 明细 / 执行层三处同源，不再「卡片说欠 N、职务里却是 0」。
+        try:
+            _ledger = dict(self._tag_state().items() or {})
+        except Exception:  # noqa: BLE001
+            _ledger = {}
+        for _h, _rec in _ledger.items():
+            if not isinstance(_rec, dict):
+                continue
+            if str(_rec.get("state") or "") != STATE_HR:
+                continue
+            # ★ 19.12.38：职务已经拆开（``保种``=__keep__ / ``H&R``=__hr_host__），
+            #   上面那条 ``state != STATE_HR`` 已足够。``taken_by`` 仍作双保险 ——
+            #   旧账本里可能有「state=H&R 但 taken_by 已空」的孤儿行。
+            if str(_rec.get("taken_by") or "") != HR_HOST_TASK_ID:
+                continue
+            _hh = str(_h or "").lower()
+            if not _hh:
+                continue
+            if _qb_ok and _hh not in _qb_hashes:
+                continue            # qB 里已经没了：不挂在「在做种」的卡上
+            n_hr += 1
+            # ★ 19.12.32：站点域名归一 —— 同一站会同时存在 ``yemapt.org`` /
+            #   ``www.yemapt.org`` 两种写法，直接当 key 会让卡片「按站点」拆成两行。
+            _s = str(_rec.get("site") or "未知")
+            if _s.startswith("www."):
+                _s = _s[4:]
+            by_site[_s] = int(by_site.get(_s) or 0) + 1
+        for _h, _b in (_bills or {}).items():
+            if not isinstance(_b, dict):
+                continue
+            if str(_b.get("state") or "") in ("settled", "void"):
+                continue            # 已结清 / 已作废：不再欠
+            # ★ 19.12.33：``rule=unknown``（逐种站站点级规则未知时开的「跟踪漏记」账）
+            #   永不开账也永不结清 → 只计「未定性」，不算欠。
+            if str(_b.get("rule") or "") not in (RULE_SITE_HR, RULE_HIT_AND_RUN):
+                n_unknown += 1
+        # ★ 19.12.36：原「账单整份丢失时兜底数 taken_by=__hr_host__」一段已删 ——
+        #   现在主口径就是保种职务覆盖的 ``taken_by``（同一份账本），兜底与之重复；
+        #   保留只会把「馒头」这类无 H&R 规则的站又凭空算进欠账（19.12.32 修过一轮）。
         try:
             _min = float(getattr(self, "_tags_cfg", {}).get("hr_host_interval") or HR_HOST_INTERVAL_MINUTES)
         except Exception:  # noqa: BLE001
@@ -825,7 +989,10 @@ class HrMixin:
             "downloader": "所有下载器", "brush_tag": "魔流-<站点>-保种", "save_path": "",
             "seeding_count": n_hr, "hr_count": n_hr, "nonhr_count": 0,
             "active_seeding_count": n_hr, "downloading_count": 0, "paused_count": 0,
-            "classify": {"by_site": by_site},
+            "classify": {"by_site": by_site, "unknown_count": n_unknown},
+            # ★ 19.12.33：未定性（站点无 H&R 规则、逐种站又没标记）→ 不算欠，
+            #   但数字仍要可见，否则「账单页 22 / 卡片 0」又成了新的说不清。
+            "hr_unknown_count": n_unknown,
             "host_interval_minutes": round(_min, 1),
             "host_last_run": "—",
         }

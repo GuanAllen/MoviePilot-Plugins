@@ -44,7 +44,8 @@ GLOSSARY: List[Dict[str, Any]] = [
     ]},
     {"title": "职务 / 身份（`tagspec.py`）", "head": None, "rows": [
         ["职务 `STATE_*`：`刷流`(STATE_BRUSH) / `魔力`(STATE_BONUS) / `静默`(STATE_SILENT) / "
-         "`推荐`(STATE_RECOMMEND) / `保种`(**STATE_HR，不可手设**，只由 `_hr_obligation` 派生）。"],
+         "`推荐`(STATE_RECOMMEND) / `H&R`(**STATE_HR，不可手设**，只由 `_hr_obligation` 派生) / "
+         "`保种`(STATE_KEEP，不可手设，只由 `action=hold` 进）。"],
         ["身份 `SUB_*`：`新`(SUB_NEW) / `资源`(SUB_RESOURCE) / `普通`(SUB_PLAIN)。"],
         ["状态账本真值源：`SeedLedgerStore`（`ledger.py`，5 表后端）。"],
     ]},

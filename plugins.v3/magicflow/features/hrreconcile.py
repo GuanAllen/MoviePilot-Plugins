@@ -24,15 +24,16 @@
     **不挂 ``MagicFlowStore``**（进程级单例热重载不重建）。
 """
 
+import hashlib
 import json
 import re
 import threading
 import time
 import unicodedata
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ..collect import parse_myhr_rows as _hr_myhr_parse
+from ..collect import parse_myhr_page as _hr_myhr_page
 from ..fingerprint import info_hash
 from ..persistence import _shared
 from .hrbills import (
@@ -47,6 +48,41 @@ from .hrbills import (
     HR_RECONCILE_TIME_BUDGET,
     HR_RECONCILE_TTL,
 )
+
+
+def _hr_list_complete(page_ok: Any, records_total: Any,
+                      cert: Any) -> Tuple[bool, str]:
+    """★ 19.12.41：这份 ``myhr.php`` 列表**能不能自证完整** → ``(bool, 原因)``。
+
+    列表本身没有完整性的自证能力（实测四站：分页控件是纯文本、没有「下一页」href、
+    也没有「共 N 条」；``?page=1`` 只有一条指回首页）。所以完整性只能靠**页头 H&R 聚合
+    计数**反向检验 —— 它是同一份债的另一种渲染，且不受分页/改版影响：
+
+      · 计数不可解（``H&R: 0`` 这种单数字形态 / 缺栏 / 没抓到）→ 判不了；
+      · 计数过期（> ``HR_SITE_EVIDENCE_MAX_HOURS``）→ 判不了；
+      · 计数 ≠ 明细条数 → **明确矛盾**（抓漏了 / 抓到登录页或改版页）→ 判不了；
+      · 计数 == 明细条数 → 这份列表就是该站的全部未结清记录（0 条也成立）。
+
+    ★ 为什么「相等」也认：分页只影响「能看多少行」，而计数是**总数**；两者相等即证明
+    本页已经包含了全部记录。这一条同时灭掉「中途空页」问题 —— 空页若真，计数必为 0。
+    """
+    if not page_ok:
+        return False, "page_invalid"
+    c = cert if isinstance(cert, dict) else {}
+    if not c.get("known"):
+        return False, "bar_unknown"
+    if c.get("stale"):
+        return False, "bar_stale"
+    _total = c.get("total")
+    if not isinstance(_total, int) or isinstance(_total, bool):
+        return False, "bar_unknown"
+    try:
+        _n = int(records_total or 0)
+    except (TypeError, ValueError):
+        _n = 0
+    if int(_total) != _n:
+        return False, "bar_mismatch"
+    return True, ""
 
 
 class HrReconcileMixin:
@@ -141,7 +177,8 @@ class HrReconcileMixin:
         调用方必须**零写入**（绝不从半份数据推「站点说干净」）。
         """
         out: Dict[str, Any] = {"ok": False, "records": [], "pages": [], "partial": False,
-                               "error": ""}
+                               "error": "", "page_ok": False, "empty_asserted": False,
+                               "visible_rows": 0, "total_declared": None, "audit": []}
         c = None
         try:
             c = self._collect_ref()
@@ -152,8 +189,9 @@ class HrReconcileMixin:
             return out
         base = f"https://{self._hrbills_norm_domain(domain)}"
         for page in range(0, max(1, int(max_pages))):
-            if page and len(out["records"]) < page * 10:
-                break  # 上一页明显不满 → 已到末页
+            # ★ 19.12.41：删掉「上一页不满 10 条 → 已到末页」这条推断。实测四站分页控件
+            #   没有可用 ``href``、也没有「共 N 条」，这个 10 完全是猜的；默认 ``max_pages=1``
+            #   只抓首页，完整性交给页头 H&R 计数交叉验证（``hrbills._hr_bar_cert``）。
             url = f"{base}/myhr.php" + (f"?page={page}" if page else "")
             try:
                 if not self._pv_allow(site_id, "hr", want=1):
@@ -176,15 +214,40 @@ class HrReconcileMixin:
                 out["partial"] = True
                 out["error"] = str(getattr(res, "error", "") or "抓取失败")
                 return out
-            rows = _hr_myhr_parse(str(getattr(res, "text", "") or ""))
-            if rows is None:
-                out["partial"] = True
-                out["error"] = "页面解析失败（布局不兼容？整页跳过）"
-                return out
-            if not rows:
+            text = str(getattr(res, "text", "") or "")
+            cert = _hr_myhr_page(text)
+            # ★ 审计只留**必要元数据**：页码 / 状态 / 是否重定向 / 字节数 / sha1 前 12 位 /
+            #   解析结论 / 两类行数。**不存正文、cookie、UA、标题、用户名**。
+            out["audit"].append({
+                "page": page,
+                "status": int(getattr(res, "status", 0) or 0),
+                "redirected": bool(getattr(res, "redirected", False)),
+                "bytes": len(text.encode("utf-8")),
+                "sha1": hashlib.sha1(text.encode("utf-8")).hexdigest()[:12] if text else "",
+                "parse": "ok" if cert.get("ok") else str(cert.get("why") or "invalid"),
+                "n_rows": len(cert.get("rows") or []),
+                "visible_rows": int(cert.get("visible_rows") or 0),
+                "empty_asserted": bool(cert.get("empty_asserted")),
+                "total_declared": cert.get("total_declared"),
+            })
+            if not cert.get("ok"):
+                if page == 0:
+                    # 首页都不可作证据 → 整份报告作废（调用方零写入）
+                    out["partial"] = True
+                    out["error"] = "页面不可作证据:%s" % (cert.get("why") or "invalid")
+                    return out
+                # 额外页不可读 → 停止翻页，但首页结论仍然有效（完整性不靠翻页）
                 break
+            if page == 0:
+                out["page_ok"] = True
+                out["empty_asserted"] = bool(cert.get("empty_asserted"))
+                out["visible_rows"] = int(cert.get("visible_rows") or 0)
+                out["total_declared"] = cert.get("total_declared")
+            rows = list(cert.get("rows") or [])
             out["pages"].append(page)
             out["records"].extend(rows)
+            if not rows:
+                break
         out["ok"] = True
         return out
 
@@ -206,6 +269,9 @@ class HrReconcileMixin:
             "cache_hits": 0, "torrents_fetched": 0, "hash_coverage_complete": False,
             "deferred": 0,
             "records": [],
+            "page_ok": False, "list_complete": False, "list_complete_why": "",
+            "empty_asserted": False, "visible_rows": 0, "total_declared": None,
+            "bar": {}, "audit": [],
             "took_ms": 0,
         }
         site_id = self._hr_reconcile_site_id(dom)
@@ -222,6 +288,8 @@ class HrReconcileMixin:
             return rep
         records: List[Dict[str, Any]] = list(fetched.get("records") or [])
         rep["records_total"] = len(records)
+        rep["page_ok"] = bool(fetched.get("page_ok"))
+        rep["audit"] = list(fetched.get("audit") or [])
         if snap is None:
             try:
                 snap = self._tag_all_torrents() or {}
@@ -361,6 +429,37 @@ class HrReconcileMixin:
                         "bill_state": st, "site": dom,
                         "action_hint": "站点未列欠 + 账本已结清 → 可人工考虑轮换（**不自动删**）",
                     })
+        # ★ 19.12.41：列表能不能自证完整 —— 用**页头聚合计数**做反向检验。
+        #   · 计数不可解（单数字 / 缺栏 / 没抓到）或过期 → 判不了；
+        #   · 计数与明细条数**不相等** → 明确矛盾（抓漏了 / 抓住改版页）→ 判不了；
+        #   · 两者相等 → 这份列表就是该站的全部未结清记录（0 条也成立）。
+        #   这一条取代了旧的「上一页不满 10 条 → 已到末页」猜测（实测无分页证据）。
+        try:
+            _cert0 = self._hr_bar_cert(dom, site_id=site_id, now=now)
+        except Exception:  # noqa: BLE001
+            _cert0 = {}
+        rep["page"] = (fetched.get("audit") or [{}])[0] if fetched.get("audit") else {}
+        rep["audit"] = list(fetched.get("audit") or [])
+        rep["empty_asserted"] = bool(fetched.get("empty_asserted"))
+        rep["visible_rows"] = int(fetched.get("visible_rows") or 0)
+        rep["total_declared"] = fetched.get("total_declared")
+        # 报告里只留**薄快照**（供闸门在实时快照缺失时回退；不含 cookie/正文）
+        rep["bar"] = {
+            "ok": bool(_cert0.get("src")),
+            "ts": float(_cert0.get("ts") or 0.0),
+            "hr": {"raw": _cert0.get("raw") or "",
+                   "form": _cert0.get("form") or "",
+                   "assessing": _cert0.get("assessing"),
+                   "unfinished": _cert0.get("unfinished"),
+                   "limit": _cert0.get("limit")},
+        }
+        _bar_total = _cert0.get("total")
+        rep["bar_known"] = bool(_cert0.get("known"))
+        rep["bar_stale"] = bool(_cert0.get("stale"))
+        rep["bar_total"] = _bar_total
+        _lc, _lc_why = _hr_list_complete(rep.get("page_ok"), rep.get("records_total"), _cert0)
+        rep["list_complete"] = bool(_lc)
+        rep["list_complete_why"] = _lc_why
         # ★ 17.3.0：ok 必须在**落盘之前**置 True。此前顺序相反，缓存里每份报告都带
         #   ok=false（无论 myhr.php 抓得多成功），于是 /agent/site/seeds 的 hr 列、
         #   records_total、missing_local 全被当成「这站还没对过账」——口径假象的根因。
@@ -711,8 +810,10 @@ class HrReconcileMixin:
 # ============================================================================
 # ★ 11.8.0 模块级：对账缓存（**不挂 MagicFlowStore**）
 # ============================================================================
-#   页面解析（``myhr.php`` → 行 dict）已按铁律 1 搬进 ``collect.parse_myhr_rows``，
-#   上面以 ``_hr_myhr_parse`` 别名导入，调用点零改动。
+#   页面解析（``myhr.php`` → 行 dict / 页面凭证）已按铁律 1 搬进
+#   ``collect_parse.parse_myhr_page``，上面经 ``collect`` 的 re-export 以
+#   ``_hr_myhr_page`` 别名导入（★ 19.12.41：只要这一个符号 —— 旧的
+#   ``parse_myhr_rows`` 别名已无用，留着只会多一条 import 期契约）。
 
 class HrReconcileCache:
     """对账缓存（**派生数据，不是真值源**）：``tid→infohash`` 索引 + 每站退避 + 上次报告。

@@ -2,9 +2,9 @@
 // P3 拆分：自 views/magicflow/index.vue **纯搬家**（无行为变更）。
 // 依赖注入：api, siteIcons, error, selectedTask, selectedTaskId, taskLoading（★ 真值源仍在后端；本域只放 UI 状态与动作）。
 import { computed, ref } from 'vue'
-import { runStatusText } from '../../../utils'
 import { unwrapResponse } from '../../../utils'
 import { FLOW_STEPS_BONUS, FLOW_STEPS_BRUSH } from '../constants'
+import { currencyOf } from './useCurrency'
 
 export function useTaskDetail({ api, siteIcons, error, selectedTask, selectedTaskId, taskLoading }) {
   const detail = ref(null)
@@ -25,7 +25,9 @@ export function useTaskDetail({ api, siteIcons, error, selectedTask, selectedTas
   const goalFactText = computed(() => {
     const t = taskConfig.value || {}
     if (!t.goal_has) return '未设置'
-    const unit = t.goal_unit || (t.task_type === 'brush' ? 'GB' : '魔力值')
+    // ★ 19.12.10：单位优先用后端下发的 `goal_unit`（已按站点自称算好，19.12.10 起不再恒为
+    //   「魔力值」）；后端没给时才本地兜底 —— 兜底也要跟着站点币名，不能写死「魔力值」。
+    const unit = t.goal_unit || (t.task_type === 'brush' ? 'GB' : currencyOf(t))
     const tgt = Number(t.goal_target || 0)
     if (t.goal_source === 'pending') {
       return `— / ${tgt} ${unit} · 加载中`
@@ -95,32 +97,81 @@ export function useTaskDetail({ api, siteIcons, error, selectedTask, selectedTas
       { key: 'reuse_gb', label: '辅种体积（不计占用）', unit: ' GB', s: sparkline(src, 'reuse_gb'), color: 'success' },
     ].filter(c => c.s)
   })
+  // ★ 19.12.13：任务详情左栏「本任务时魔趋势」大图（设计稿 2:1242）。
+  // 与小 sparkline 同源（task: 优先，退回 site:），但输出真实序列点的折线与坐标刻度 ——
+  // sparkline 的 path 只有 26 高、且被 normalize 到 100 宽，放大到 132 高会糊掉细节。
+  // 算不出（<2 点）返回 null，由模板整卡不渲染（铁律 6：宁可没有，不给假曲线）。
+  const trendMain = computed(() => {
+    const src = trendTask.value.length ? trendTask.value : trendSite.value
+    const vs = (src || [])
+      .filter(p => p && p.bonus !== null && p.bonus !== undefined)
+      .map(p => Number(p.bonus) || 0)
+    if (vs.length < 2) return null
+    const min = Math.min(...vs)
+    const max = Math.max(...vs)
+    const span = max - min || 1
+    const W = 1000
+    const H = 100
+    const step = W / (vs.length - 1)
+    const y = v => (H - ((v - min) / span) * H).toFixed(2)
+    const line = vs.map((v, i) => `${i ? 'L' : 'M'}${(i * step).toFixed(2)},${y(v)}`).join(' ')
+    const hours = Math.max(vs.length - 1, 1)
+    return {
+      scope: trendTask.value.length ? '任务' : '站点',
+      path: line,
+      // 面积填充：折线 → 右下角 → 左下角闭合（渐变 fill 用）
+      area: `${line} L${W},${H} L0,${H} Z`,
+      count: vs.length,
+      min,
+      max,
+      last: vs[vs.length - 1],
+      // 4 条水平刻度：从上到下 max → min
+      ticks: [0, 1, 2, 3].map(i => ({ value: max - (span * i) / 3, y: (H * i) / 3 })),
+      // 3 个横轴标签：跨度按点数估（每小时一个采样）
+      xLabels: [`${hours}h 前`, `${Math.round(hours / 2)}h 前`, '现在'],
+    }
+  })
   const flowSteps = computed(() => (taskIsBrush.value ? FLOW_STEPS_BRUSH : FLOW_STEPS_BONUS))
+  // 五阶段各自的状态。**唯一真值源是后端的逐阶段记录 `run_stages`**（19.12.20 起 record_phase 逐阶段留痕）。
+  // 为什么不再用 `last_phase` 兜底：它只是一个「当前位置」——
+  //   · 一轮结束被写成 done → 拿它推出来五步全绿，可它只证明「这一轮结束了」，不证明每步都跑过；
+  //   · 任务不跑（做种/停止模式）时它是空 → 五步全灰，而右上角又按 last_run_status 说「完成」；
+  //   · 这轮只跑完入口（并发满提前收工）时它也是 done → 五步全绿，实际后四步根本没跑。
+  // 没有逐阶段记录 = 没有证据 = 显示「未执行」，别再给假绿（用户报的就是这个）。
   const flowNodes = computed(() => {
-    const phase = detail.value?.last_phase || ''
-    const active = !!detail.value?.run_active
+    const d = detail.value || {}
     const steps = flowSteps.value
-    const idx = steps.findIndex(step => step.key === phase)
-    return steps.map((step, i) => {
-      let state = 'idle'
-      if (active) {
-        if (idx >= 0 && i < idx) state = 'done'
-        else if (i === idx) state = 'running'
-      } else if (phase === 'done') {
-        state = 'done'
-      } else if (phase === 'error' && idx >= 0) {
-        state = i < idx ? 'done' : i === idx ? 'error' : 'idle'
+    const active = !!d.run_active
+    const stages = d.run_stages || {}
+    return steps.map((step) => {
+      const rec = stages[step.key] || null
+      let state = rec?.state ? String(rec.state) : 'idle'
+      let ms = Number(rec?.ms || 0)
+      const at = Number(rec?.at || 0)
+      // running 只在「本轮真的还在跑」时成立。进程崩溃/重启后残留的 running 是中断，不是正在跑
+      if (state === 'running' && !active) {
+        state = 'error'
+        ms = 0
       }
-      return { ...step, state }
+      return { ...step, state, ms, at, recorded: !!rec }
     })
   })
   const flowPhaseText = computed(() => {
-    if (detail.value?.run_active) {
-      const running = flowNodes.value.find(item => item.state === 'running')
+    const d = detail.value || {}
+    const nodes = flowNodes.value
+    const recorded = nodes.some(item => item.recorded)
+    if (d.run_active) {
+      const running = nodes.find(item => item.state === 'running')
       if (running) return running.label
+      // 在跑但一个阶段都没打点 → 此刻跑的不是刷流流程（「做种中」模式跑的是检查/优化周期）。
+      return recorded ? '执行中' : '维护中'
     }
-    const step = flowSteps.value.find(item => item.key === (detail.value?.last_phase || ''))
-    return step ? step.label : runStatusText(detail.value?.last_run_status)
+    // 一轮跑完 / 中断：说这一轮自己的结论
+    const bad = nodes.find(item => item.state === 'error')
+    if (bad) return `中断于${bad.label}`
+    if (recorded) return '完成'
+    // 一条阶段记录都没有 = 这一轮没跑（做种/停止模式）。别用 last_run_status 冒充「完成」
+    return '未执行'
   })
   async function loadDetail(taskId) {
     try {
@@ -188,6 +239,7 @@ export function useTaskDetail({ api, siteIcons, error, selectedTask, selectedTas
     taskIsBrush,
     taskSiteIcon,
     trendCards,
+    trendMain,
     trendSeries,
     trendSite,
     trendTask,

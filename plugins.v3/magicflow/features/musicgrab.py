@@ -25,7 +25,8 @@ from ..fingerprint import info_hash
 from ..persistence import OperationItem
 from ..sitestore import slot_callbacks
 from .. import shared                      # ★ 19.12.0：入库账本读改写锁 + 扫描去抖状态（跨热重载）
-from ..tags import (MEDIA_CAND_TTL, MUSIC_CATEGORY, SUB_RESOURCE, STATE_HR, STATE_MUSIC,
+from ..tags import (MEDIA_CAND_TTL, MUSIC_CATEGORY, SUB_RESOURCE, STATE_HR, STATE_KEEP,
+                    STATE_MUSIC,
                     STATE_SILENT, fmt_iso_ts, identity_of, is_freeleech, is_music_line,
                     media_act, media_cand_get, media_cand_put, media_grab,
                     media_pin_location, media_row_from_ti, media_totals,
@@ -738,9 +739,11 @@ class MusicGrabMixin:
         # ★ 19.10.8：下完**先过 H&R 检查站**——欠债的交 ``__hr_host__`` 保种。
         #   （静默池不变量是「一律 pause」，裸归静默 = 把做种时钟停在那一刻；
         #   2026-10-27 现场：CARPT 8 颗音乐种只挂到 ~22h，站方 H&R 还差 2h。）
+        # ★ 19.12.37：判据改用 ``_hr_should_hold`` —— 先过「该不该记」的两道门槛。
+        #   直接用 ``_hr_obligation`` 会让「站点规则未知」走未知保守 24h，馒头（m-team.cc）
+        #   的音乐种因此被反复搬进保种又被释放（线上日志每秒刷屏）。
         try:
-            _owed = bool(live is not None
-                         and self._hr_obligation(_site, live, snap=self._tag_all_torrents())[0])
+            _owed = bool(live is not None and self._hr_should_hold(_site, live))
         except Exception:  # noqa: BLE001
             _owed = False
         if _owed:
@@ -784,9 +787,10 @@ class MusicGrabMixin:
         except Exception:  # noqa: BLE001
             pass
         try:
-            from ..common import HR_HOST_TASK_ID  # noqa: WPS433 惰性导入（离线测试不碰 common）
+            from ..common import HR_HOST_TASK_ID, KEEP_TASK_ID  # noqa: WPS433 惰性导入（离线测试不碰 common）
         except Exception:  # noqa: BLE001
             HR_HOST_TASK_ID = "__hr_host__"
+            KEEP_TASK_ID = "__keep__"
         try:
             gid = self._tag_groups().queue_library(h, path=dest or "", media_id="")
             _state_store = self._tag_state()  # 复用
@@ -799,8 +803,10 @@ class MusicGrabMixin:
                 _rec = _state_store.get(h) or {}
             except Exception:  # noqa: BLE001
                 _rec = {}
-            _hr_hosted = (str(_rec.get("taken_by") or "") == HR_HOST_TASK_ID
-                          or str(_rec.get("state") or "") == STATE_HR)
+            #   ★ 19.12.38：职务拆开后「保种」= __keep__（STATE_KEEP），「H&R」= __hr_host__。
+            #   两者都不许动（人工点名的种被 H&R 线 release 掉 = 让「长期做种」名存实亡）。
+            _hr_hosted = (str(_rec.get("taken_by") or "") in (HR_HOST_TASK_ID, KEEP_TASK_ID)
+                          or str(_rec.get("state") or "") in (STATE_HR, STATE_KEEP))
             # 19.9.4: 职务与身份分开写 ---- 下载中的种保留 __music__ 职务，只把身份钉成下载中
             if _hr_hosted:
                 pass
