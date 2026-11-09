@@ -386,7 +386,14 @@ class HrMixin:
         #     因为「站端翻案」要等下一轮 tick 才把账单重开，这段空窗期不能让种被 pause。
         if HR_BILLS_ENFORCE:
             try:
-                _hrbill = self._hrbills_store().get(_h)
+                _hstore = self._hrbills_store()
+                _hres = _hstore.get_result(_h) if hasattr(_hstore, "get_result") else None
+                from .hrbills import _hr_read_ok as _hr_ok, _hr_read_confirmed as _hr_confirmed  # noqa: WPS433
+                if _hr_ok is None or not _hr_confirmed(_hres):
+                    # ★ 任务 111（HR-03 / F11）：账单存储不可用 → 不能当作「无账单」放过；
+                    #   按欠 H&R 保守处理（需要工时取站点默认，由调用方按保守方向使用）。
+                    return True, 0.0, 0.0, "账单存储不可用(保守按欠 H&R)"
+                _hrbill = _hres.get("value")
                 if isinstance(_hrbill, dict) \
                         and str(_hrbill.get("rule") or "") in (RULE_SITE_HR, RULE_HIT_AND_RUN):
                     _bneed = float(_hrbill.get("need_h") or 24.0)

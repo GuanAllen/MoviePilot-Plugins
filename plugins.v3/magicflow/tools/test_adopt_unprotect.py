@@ -36,10 +36,19 @@ def _ok(cond: bool, msg: str) -> None:
         print(f"  ❌ {msg}")
 
 
+_PKG = "mf_adopt_unprotect_pkg"
+if _PKG not in sys.modules:
+    _pkg = type(sys)(_PKG)
+    _pkg.__path__ = [str(ROOT)]
+    sys.modules[_PKG] = _pkg
+
+
 def _load(name: str, rel: str):
-    spec = importlib.util.spec_from_file_location(name, ROOT / rel)
+    """按「包内模块」加载：模块里的 ``from . import shared`` 才能解析（19.10.x 起共享层为包）。"""
+    full = _PKG + "." + name
+    spec = importlib.util.spec_from_file_location(full, ROOT / rel)
     mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
+    sys.modules[full] = mod
     spec.loader.exec_module(mod)
     return mod
 

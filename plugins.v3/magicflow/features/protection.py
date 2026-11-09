@@ -73,7 +73,13 @@ class ProtectionMixin:
         try:
             _owed = set(self._hr_bill_owed_hashes() or set())
         except Exception:  # noqa: BLE001
-            _owed = set()
+            # ★ 任务 111（HR-03 / F12）：读失败不得把保护集合清空 → 用 last-good 缓存；
+            #   删除侧另有 deletegate fail-closed 兜底。
+            try:
+                from .hrbills import _hr_owed_cache_hashes  # noqa: WPS433
+                _owed = set(_hr_owed_cache_hashes() or set())
+            except Exception:  # noqa: BLE001
+                _owed = set()
         for h in _owed:
             why.setdefault(h, "欠 H&R 义务（账单）")
         hard |= _owed

@@ -91,7 +91,7 @@ ok(len(_SNAPSHOT) == len(dr.DUTY_BY_ID), f"固定 id 数量 = 快照数量（{le
 # ---------------------------------------------------------------- [3] 派生
 print("[3] 派生：id→职务 / id→展示名 / 名字·别名→id")
 _EXPECT_STATE = {
-    "__keep__": tags.STATE_HR,
+    "__keep__": tags.STATE_KEEP,  # 19.12.38 起「保种」职务归 __keep__
     "__claim__": tags.STATE_CLAIM,
     "__hr_host__": tags.STATE_HR,
     "__music__": tags.STATE_MUSIC,
@@ -112,7 +112,7 @@ for d in dr.DUTIES:
     ok(dr.duty_id_of(d.id) == d.id, f"id「{d.id}」反查自身")
 # 历史别名（老代码/老账本/人肉输入都这么叫）
 _ALIAS = {
-    "保种": "__hr_host__",       # 历史：职务名直接当岗位名用
+    "保种": "__keep__",          # 19.12.38 起「保种」= STATE_KEEP（H&R 叫「H&R」）
     "h&r保种": "__hr_host__",
     "hr保种": "__hr_host__",
     "手动保种": "__keep__",

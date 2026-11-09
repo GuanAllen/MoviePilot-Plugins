@@ -175,6 +175,10 @@ class Harness(YemaHrMixin, HrBillsMixin):
     def _site_hr_flag(self, dom):
         return self.site_hr.get(dom)
 
+    def _site_per_torrent_hr(self, dom):
+        """逐种站标记：与生产同口径，读规则库 ``per_torrent_hr``。"""
+        return bool((self.rules.get(str(dom or "").strip().lower()) or {}).get("per_torrent_hr"))
+
     def _site_rules(self):
         return _SimpleRules(self.rules)
 
@@ -195,6 +199,61 @@ class Harness(YemaHrMixin, HrBillsMixin):
 
     def _get_site(self, sid):
         return None
+
+    def _hrbills_store(self):
+        """内存账单后端（19.12.x 起生产只有 PG/Unavailable；离线用同接口的字典桩）。"""
+        if getattr(self, "_bills_mem", None) is None:
+            _d = self.bills
+            class _S:
+                @staticmethod
+                def get(h):
+                    return _d.get(str(h).strip().lower())
+
+                @staticmethod
+                def all():
+                    return dict(_d)
+
+                @staticmethod
+                def put(h, b):
+                    k = str(h).strip().lower()
+                    _d[k] = dict(b or {})
+                    return dict(_d[k])
+
+                @staticmethod
+                def get_result(h):
+                    v = _d.get(str(h).strip().lower())
+                    return {"status": "found" if v is not None else "absent", "value": v}
+
+                @staticmethod
+                def all_result():
+                    return {"status": "found", "value": dict(_d)}
+
+                @staticmethod
+                def patch(h, **kw):
+                    k = str(h).strip().lower()
+                    if k not in _d:
+                        return None
+                    _d[k].update(kw)
+                    return dict(_d[k])
+
+                @staticmethod
+                def patch_if(h, guard, **kw):
+                    k = str(h).strip().lower()
+                    cur = _d.get(k)
+                    if cur is None:
+                        return None
+                    for gk, gv in dict(guard or {}).items():
+                        if cur.get(gk) != gv:
+                            return {"ok": False, "reason": "guard_mismatch"}
+                    cur.update(kw)
+                    return {"ok": True, "row": dict(cur)}
+
+                @staticmethod
+                def put_result(h, b):
+                    _d[str(h).strip().lower()] = dict(b or {})
+                    return {"ok": True, "status": "found"}
+            self._bills_mem = _S()
+        return self._bills_mem
 
     def _preload_bills(self):
         store = self._hrbills_store()
@@ -292,11 +351,11 @@ def main() -> int:  # noqa: WPS213
     # 本机：1 / 3 / 6 有；2 没有
     h.torrents = {
         h1: types.SimpleNamespace(hash=h1, name="Owes And Local No Bill", size=5 * 1024 ** 3,
-                                  tracker="https://tracker.yemapt.org/announce", state="stalledUP", tags=[]),
+                                  tracker="https://tracker.yemapt.org/announce", state="stalledUP", tags=[], downloaded=1e9),
         h3: types.SimpleNamespace(hash=h3, name="Owes And Protected", size=3 * 1024 ** 3,
-                                  tracker="https://tracker.yemapt.org/announce", state="uploading", tags=[]),
+                                  tracker="https://tracker.yemapt.org/announce", state="uploading", tags=[], downloaded=1e9),
         h6: types.SimpleNamespace(hash=h6, name="Owes And No Bill At All", size=7 * 1024 ** 3,
-                                  tracker="https://tracker.yemapt.org/announce", state="uploading", tags=[]),
+                                  tracker="https://tracker.yemapt.org/announce", state="uploading", tags=[], downloaded=1e9),
         _hex(0xDEAD): types.SimpleNamespace(hash=_hex(0xDEAD), name="x",
                                             tracker="https://carpt.net/announce", tags=[]),
     }
@@ -344,7 +403,7 @@ def main() -> int:  # noqa: WPS213
     _ok(h._hrbills_store().get(h1).get("rule") == "unknown", "干跑不改账本（仍 unknown）")
     done = h._yema_apply(confirm=1)
     _ok(done["dry_run"] is False and done["opened"] == 1 and done["upgraded"] == 1,
-        f"confirm=1：新开 1 / 升级 1（{done['opened']}/{done['upgraded']}）")
+        f"confirm=1：新开 1 / 升级 1（{done['opened']}/{done['upgraded']}；failed={done.get('failed')}）")
     _ok(h._hrbills_store().get(h1).get("rule") == "hit_and_run"
         and h._hrbills_store().get(h1).get("state") == "active",
         "存量 unknown 账单 → 升级为 hit_and_run / active（受保护）")

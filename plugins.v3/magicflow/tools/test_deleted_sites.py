@@ -51,6 +51,9 @@ from __future__ import annotations
 import importlib.util
 import sys
 import types
+
+import _app_stub  # noqa: E402
+_app_stub.install()
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -157,12 +160,19 @@ sys.modules[PKG + ".sitestore"] = _ss
 _tags = types.ModuleType(PKG + ".tags")
 _tags.MARK_REUSE = "魔流-辅种"
 _tags.SUB_RESOURCE = "资源"
+_tags.STATE_BONUS = "魔力"
+_tags.STATE_CLAIM = "认领"
+_tags.STATE_HR = "H&R"
+_tags.STATE_KEEP = "保种"
+_tags.STATE_BRUSH = "刷流"
+_tags.STATE_SILENT = "静默"
 # ★ 17.4.0：本体（库内资产）判据三腿必须与 tags.py 一致（真值源 tags.py:80/92/97）
 _tags.ASSET_TAGS = ("已整理", "辅种")
 _tags.is_asset_tags = lambda t: any(str(x) in _tags.ASSET_TAGS for x in (t or []))
 _tags.is_library_asset = lambda rec: (bool((rec or {}).get("in_library"))
                                       or str((rec or {}).get("sub") or "") == _tags.SUB_RESOURCE)
 sys.modules[PKG + ".tags"] = _tags
+_app_stub.fill_tags(_tags, ROOT)
 sys.modules[PKG + ".fingerprint"] = _Stub(PKG + ".fingerprint")
 
 common = _load(PKG + ".common", "common.py")
@@ -244,7 +254,8 @@ class Host:
             return list(RESEED_ROWS)
         return []
 
-    def _get_downloader(self):
+    def _get_downloader(self, kind="qbittorrent"):
+        # 19.10.13 起暂停/恢复统一走 dlops，会按名字取下载器
         return self._dl
 
     def _delete_gate_detail(self, hashes, **kw):
@@ -324,7 +335,7 @@ ok(rep.get("planned") == 3, f"[5] pause 干跑 planned=3（实际 {rep.get('plan
 ok(h5._dl.calls == [], "[5] 干跑不动下载器")
 
 rep = siteops.deleted_site_act(h5, 2, "pause", dry_run=0)
-ok(rep["ok"] is True and rep["affected"] == 3, "[5] pause 真做：affected=3")
+ok(rep["ok"] is True and rep["affected"] == 3, f"[5] pause 真做：affected=3（实际 {rep.get('affected')}；{ {k: rep.get(k) for k in ('ok','dry_run','skipped','error','gate')} }）")
 ok(h5._dl.calls and h5._dl.calls[0][0] == "pause" and len(h5._dl.calls[0][1]) == 3, "[5] 调 pause_torrents(3 个)")
 
 # remove（★ 17.4.0 三档）：复用副本 + 本体/资源 **只摘种** / 自有非本体 **连文件删**

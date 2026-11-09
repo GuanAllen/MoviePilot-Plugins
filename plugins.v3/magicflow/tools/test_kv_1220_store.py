@@ -165,7 +165,7 @@ def _load_modules():
     _cp.preset_for = lambda domain: None  # noqa: E731
     sys.modules[PKG + ".sites.claim_presets"] = _cp
     for modname, attrs in (
-        ("bonus", ("TorrentBonusInfo", "calc_bonus_per_hour")),
+        ("bonus", ("TorrentBonusInfo", "calc_bonus_per_hour", "BonusParams")),
         ("fetcher", ("SiteCandidateTorrent",)),
         ("recommend", ("recognize",)),
     ):

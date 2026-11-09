@@ -22,6 +22,7 @@
 
 import os
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..common import (
@@ -493,6 +494,20 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
     ]
 
 
+def _agent_hr_store_meta(data_dir: Path) -> Dict[str, Any]:
+    """只读当前 H&R 账单存储状态（任务 132：PG 单一权威）。
+
+    优先用 hrbills 的权威 meta；离线 harness 不加载重依赖时退回最小事实。
+    """
+    try:
+        from .hrbills import hr_bills_store_meta as _meta_fn  # noqa: WPS433
+        return dict(_meta_fn(Path(data_dir)) or {})
+    except Exception:  # noqa: BLE001
+        return {"backend": "unknown", "authority": "none", "mode": "unknown",
+                "available": False, "degraded_reason": "meta_unavailable",
+                "generation": 0, "checked_at": 0}
+
+
 class AgentApiMixin:
     """AI 友好只读门面（P1.5a）。"""
 
@@ -663,11 +678,13 @@ class AgentApiMixin:
             managed["protected_claim"] = len(self._agent_claim_hashes())
         except Exception:  # noqa: BLE001
             pass
-        # 账单（复用 bills store 自带 stats，只读）
+        # 账单（★ 任务 111：带三态；UNKNOWN 不能显示成正常空表）
         try:
-            bills = self._hrbills_store().stats()
+            bills = self._hrbills_stats()
         except Exception:  # noqa: BLE001
-            bills = {"total": 0, "by_state": {}, "by_rule": {}, "by_site": {}, "opened_by": {}}
+            bills = {"total": 0, "by_state": {}, "by_rule": {}, "by_site": {},
+                     "opened_by": {}, "store_status": "unknown",
+                     "store_error": "stats_failed"}
         # 池（每个下载目录一个池；watermark 与 pool.POOL_THRESHOLD 同源）
         pool: Dict[str, Any] = {"volumes": [], "watermark": round(POOL_THRESHOLD * 100.0, 1)}
         try:
@@ -785,15 +802,44 @@ class AgentApiMixin:
                     "at": now,
                 })
         # 账单（bills store 单条；欠债/已结清/作废都照实回，不自己判）
+        # ★ 任务 113（N-04）：三态读 —— UNKNOWN 不能当成「没有这张账单」，
+        #   否则删除解释会给出 delete_candidate（虽然执行层会被 F10 拦，但解释是错的）。
         bill = None
+        _gres = None
+        bill_store_status = "unknown"
+        bill_store_error = ""
         try:
-            bill = self._hrbills_store().get(h)
-        except Exception:  # noqa: BLE001
+            _bstore = self._hrbills_store()
+            _gres = (_bstore.get_result(h)
+                     if hasattr(_bstore, "get_result") else None)
+            if _gres is not None:
+                bill_store_status = str(_gres.get("status") or "unknown")
+                bill_store_error = str(_gres.get("error") or "")[:160]
+                bill = dict(_gres.get("value") or {}) if bill_store_status == "found" else None
+            else:
+                bill = _bstore.get(h)
+                bill_store_status = "found" if isinstance(bill, dict) else "absent"
+        except Exception as err:  # noqa: BLE001
             bill = None
+            bill_store_status = "unknown"
+            bill_store_error = repr(err)[:160]
+        entry["bill_store_status"] = bill_store_status
+        if bill_store_error:
+            entry["bill_store_error"] = bill_store_error
         if bill:
             entry["bills"].append(self._agent_bill_view(h, bill))
         if blocked:
             entry["verdict"] = "blocked"
+        elif bill_store_status == "unknown":
+            # ★ 任务 132（N-129-03）：存储读不到 → 结构化 degraded，绝不给删除候选。
+            entry["verdict"] = "degraded"
+            entry["reason_chain"].append({
+                "rule": "hr/bill_store",
+                "verdict": "degraded",
+                "inputs": {"status": bill_store_status, "error": bill_store_error},
+                "source_of_truth": "hr bills store (UNKNOWN)",
+                "at": now,
+            })
         elif t is not None or h in ledger:
             entry["verdict"] = "delete_candidate"
         return entry
@@ -955,10 +1001,19 @@ class AgentApiMixin:
         空 → 已到末页。
         """
         t0 = time.time()
+        # ★ 任务 111：三态读取；UNKNOWN 明确报错，不返回空列表冒充「没有账单」
+        res = None
         try:
-            all_bills = self._hrbills_store().all()
+            st = self._hrbills_store()
+            res = st.all_result() if hasattr(st, "all_result") else None
         except Exception as e:  # noqa: BLE001
-            return self._agent_err("internal", f"读账单失败:{e}", t0, trace_id=str(e))
+            return self._agent_err("store_unavailable", f"读账单失败:{e}", t0,
+                                   trace_id=str(e), degraded=True)
+        if res is not None and str(res.get("status") or "") not in ("found", "absent"):
+            return self._agent_err("store_unavailable",
+                                   f"账单存储不可用:{res.get('error') or ''}", t0,
+                                   degraded=True)
+        all_bills = (res.get("value") if res is not None else st.all()) or {}
         items = self._agent_filter_bills(all_bills, site, state, rule)
         # 游标：只取 hash 严格大于 cursor 的（字典序）
         cursor = str(cursor or "").strip().lower()
@@ -986,10 +1041,19 @@ class AgentApiMixin:
         if len(h) not in (40, 64) or any(c not in _HEX for c in h):
             return self._agent_err("bad_param", f"hash 非法（需要 40/64 位 hex）：{h[:16]}…",
                                    t0, field="hash")
+        # ★ 任务 111：not_found（确认不存在）与 store_unavailable（读不到）必须分开
+        res = None
         try:
-            bill = self._hrbills_store().get(h)
+            st = self._hrbills_store()
+            res = st.get_result(h) if hasattr(st, "get_result") else None
         except Exception as e:  # noqa: BLE001
-            return self._agent_err("internal", f"读账单失败:{e}", t0, trace_id=str(e))
+            return self._agent_err("store_unavailable", f"读账单失败:{e}", t0,
+                                   trace_id=str(e), degraded=True)
+        if res is not None and str(res.get("status") or "") not in ("found", "absent"):
+            return self._agent_err("store_unavailable",
+                                   f"账单存储不可用:{res.get('error') or ''}", t0,
+                                   degraded=True)
+        bill = (res.get("value") if res is not None else st.get(h))
         if not bill:
             return self._agent_err("not_found", "账单不存在", t0)
         return self._agent_ok(self._agent_bill_view(h, bill), t0)
@@ -1253,6 +1317,26 @@ class AgentApiMixin:
         except Exception as e:  # noqa: BLE001
             return self._agent_err("internal", f"H&R账单失败:{e}", t0, trace_id=str(e))
         payload = dict(data or {})
+        # ★ 任务 128（Q-127-07）：只读存储状态契约（字段真实来自当前 meta/状态文件，
+        #   不得为满足字段名而伪造默认值；异常一律如实表达）。
+        try:
+            # 懒加载：正常运行时用 hrbills 的权威 meta；离线/隔离 harness 不加载
+            # 重依赖链（check_agent_manifest 会以桩包加载本模块）。
+            from .hrbills import hr_bills_store_meta as _meta_fn
+            _m = _meta_fn(Path(self.get_data_path()))
+        except Exception:  # noqa: BLE001
+            _m = _agent_hr_store_meta(Path(self.get_data_path()))
+        _state = {
+            "authority": (_m or {}).get("authority") or "",
+            "mode": (_m or {}).get("mode") or (_m or {}).get("backend") or "unknown",
+            "available": bool((_m or {}).get("available", True)),
+            "degraded_reason": (_m or {}).get("degraded_reason") or "",
+            "generation": int((_m or {}).get("generation") or 0),
+            "checked_at": (_m or {}).get("checked_at") or 0,
+        }
+        payload["bill_store_status"] = _state
+        payload["store_state"] = _state
+        payload["store_meta"] = dict(_m or {})
         payload["write"] = {
             "void": "GET /tags?action=hrbills_void&hash=<h>&reason=..&confirm=1",
             # ★ 任务 96：人工结清动作 19.12.44 起已存在，补进自描述（任务 95 漏登记）

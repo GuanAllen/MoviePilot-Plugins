@@ -31,6 +31,18 @@ const emit = defineEmits(['refresh'])
 
 const totals = computed(() => (props.data && props.data.totals) || {})
 
+// ★ 任务 113（N-04）：账单存储 UNKNOWN 时，页面必须显示「读不到」而不是「0 张账单」。
+//   后端 view_hr 输出 store_status/store_error/store_backend/degraded_reason；
+//   旧后端没有这些字段 → 按 found 处理（向后兼容）。
+const storeStatus = computed(() => String((props.data && props.data.store_status) || 'found'))
+const storeDegraded = computed(() => storeStatus.value !== 'found')
+const degradedReason = computed(() => {
+  const d = props.data || {}
+  return String(d.degraded_reason || d.store_error || '账单存储不可读')
+})
+// ★ 任务 132：PG 单一权威 —— 不再有「已提交但不可见/待提交」分层；
+//   只剩 found / unknown（PG 不可用）。
+
 // ★ 19.12.34：「已结清」是**机器的记忆**，不是**人的待办**。
 //   账本里必须留着 —— ① 幂等锚：防回填反复开账/结清；② 站端翻案（myhr 又说欠）时
 //   settled → active 重开，保挂不中断。但它对使用者没有任何可执行信息，所以：
@@ -198,6 +210,13 @@ function reopenedSnapshotText(e) {
              所以看着像"审计没内容"，实际连统计块和站点卡片都没渲染）。
              已删除包裹层，内容直接挂在 .magicflow-ops-dialog__body 下。
              勿再引入同类包裹：SSR 仍会把子节点输出成字符串，测不出这个洞。 -->
+        <!-- ★ 任务 113：存储不可用/降级必须显式可见（否则 0 张账单会被误读成「没有欠账」） -->
+        <div v-if="storeDegraded" class="magicflow-hrbills__mismatch" role="alert">
+          账单存储不可用（{{ storeStatus }}）：{{ degradedReason }} —— 下方数字可能不完整，请先修存储（PG）再操作，不要据此删种。
+        </div>
+        <div v-else class="magicflow-hrbills__consistent">
+          账单存储：PG 单一权威（{{ (props.data && props.data.store_backend) || 'pg' }}）
+        </div>
         <div class="magicflow-sitereport__stats">
           <div class="magicflow-sitereport__stat"><b>{{ openTotal }}</b><span>未结清</span></div>
           <div class="magicflow-sitereport__stat is-danger"><b>{{ totals.active || 0 }}</b><span>欠债</span></div>
@@ -394,6 +413,14 @@ function reopenedSnapshotText(e) {
   background: rgba(var(--v-theme-success), 0.08);
   border: 1px solid rgba(var(--v-theme-success), 0.22);
 }
+.magicflow-hrbills__consistent {
+  margin-block-end: 8px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 11px;
+  opacity: 0.72;
+}
+
 .magicflow-hrbills__mismatch {
   margin-block-end: 8px;
   padding: 6px 10px;

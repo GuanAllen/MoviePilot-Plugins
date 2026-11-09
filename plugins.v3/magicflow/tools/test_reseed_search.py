@@ -204,6 +204,9 @@ def main() -> int:
     check("reseed_search_kw" in models_src, "models.py 有 reseed_search_kw")
     check("_reseed_search_sites" in status_src, "status.py 设置面输出 search_sites")
     check("reseed_search_sites" in utils_src, "src/utils.js 归一化 search_sites")
+    use_tasks_src = (ROOT / "src/views/magicflow/composables/useTasks.js").read_text(encoding="utf-8")
+    check("reseed_search_sites: Array.isArray(status.value.reseed.search_sites)"
+          in use_tasks_src, "useTasks.js 回填 search_sites（API-02）")
 
     print("[I] 汇总行实执行：把 reseed_scan 里那段 % 格式化**真跑一遍**")
     #   ★ 为什么不用「grep 到关键字就算过」：占位符与参数个数错位在运行时才炸，而且被

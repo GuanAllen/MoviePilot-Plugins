@@ -165,7 +165,7 @@ def api_level_name(level: Any, reqs: Optional[List[Dict[str, Any]]]) -> Optional
         return None
     key = str(level).strip()
     if key.endswith(".0"):
-        key = key[:-2]
+        key = key.removesuffix(".0")
     if not key:
         return None
     for r in reqs:

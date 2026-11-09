@@ -279,7 +279,7 @@ class Harness(AgentApiMixin, AgentLedgerMixin):
     def silent_pool(self, limit=400, records=60):
         return FakeResp({"torrents": [], "stats": {"total": 0}})
 
-    def get_claim_state(self, site_id=None):
+    def get_claim_state(self, site_id=None, limit=200):
         return FakeResp({"sites": [], "cap_total": 0, "records": []})
 
     def get_cloud_state(self):

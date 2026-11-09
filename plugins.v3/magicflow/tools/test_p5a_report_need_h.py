@@ -23,6 +23,9 @@ import importlib.util
 import sys
 import time
 import types
+
+import _app_stub  # noqa: E402
+_app_stub.install()
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -94,10 +97,22 @@ _tags.duty_of = lambda tags: next((s for s in (_tags.STATE_BRUSH, _tags.STATE_BO
                                    if s in [str(t) for t in (tags or [])]), "")
 _tags.parse_tag = lambda tag: tuple(str(tag).split("-", 1))
 sys.modules[PKG + ".tags"] = _tags
+_app_stub.fill_tags(_tags, ROOT)
 
 _hrbills = types.ModuleType(PKG + ".features.hrbills")
 _hrbills.BILL_STATE_ACTIVE, _hrbills.BILL_STATE_BREACHED = "active", "breached"
+_hrbills.BILL_STATE_PENDING, _hrbills.BILL_STATE_SETTLED = "pending", "settled"
+_hrbills.BILL_STATE_VOID = "void"
+_hrbills.PURGE_STATES = ("settled", "void")
 _hrbills.RULE_SITE_HR, _hrbills.RULE_HIT_AND_RUN = "site_hr", "hit_and_run"
+_hrbills.RULE_UNKNOWN = "unknown"
+_hrbills.HR_MANUAL_SETTLE, _hrbills.HR_REOPEN_SETTLE = "manual", "reopened"
+_hrbills.HR_NEED_HOURS_DEFAULT = 24.0
+_hrbills.HR_BILLS_SETTLED_TTL_DAYS = 30.0
+_hrbills.HR_SITE_EVIDENCE_MAX_HOURS = 48.0
+_hrbills.EVT_MANUAL_SETTLED, _hrbills.EVT_AUTO_SETTLED = "manual_settled", "auto_settled"
+_hrbills.EVT_REOPENED, _hrbills.EVT_MANUAL_VOID = "reopened", "manual_void"
+_hrbills.EVT_AUTO_VOID, _hrbills.EVT_LEGACY_MANUAL = "auto_void", "legacy_manual_settled"
 sys.modules[PKG + ".features.hrbills"] = _hrbills
 
 _sr = _load(PKG + ".features.sitereport", "features/sitereport.py")

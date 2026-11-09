@@ -83,7 +83,8 @@ dtier = _load(PKG + ".dtier", "dtier.py")
 
 # ---- 桩兄弟模块（formula.py 的 import 依赖）----
 for _sub, _attrs in {
-    "bonus": ["BonusParams", "TorrentBonusInfo", "calc_torrent_bonus"],
+    "bonus": ["BonusParams", "TorrentBonusInfo", "calc_torrent_bonus", "observed_bonus_per_hour",
+              "THEORETICAL_BONUS_PER_HOUR"],
     "downloader_ops": ["TorrentInfo"],
     "fetcher": ["SITE_TZ_OFFSET_HOURS", "pubdate_to_ts", "ts_to_age_weeks"],
     "persistence": ["OperationItem"],

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """魔流 · 标签动作表（★ 19.10.28）离线回归 —— 真跑 features/tags.py，不需 MoviePilot。
 
-背景：`get_tag_model` 原先是 443 行、37 个平铺 `if act == ...` 的长链，85 个动作别名
+背景：`get_tag_model` 原先是 443 行、37 个平铺 `if act == ...` 的长链，99 个动作别名
 散落在条件里，没有任何地方能一次说清「/tags 支持哪些 action」。19.10.28 改成表驱动：
 别名集中在 `_ACT_ALIASES`，落到 38 个 `_tag_act_*` 处理函数，分发器只剩 4 行。
 
@@ -99,11 +99,11 @@ MIXIN = ftags.TagsMixin
 
 def main() -> int:
     print("== 1. 表结构 ==")
-    _ok(len(TABLE) == 85, f"别名 85 个（实际 {len(TABLE)}）")
-    _ok(len(ALIASES) == 38, f"分组 38 组（实际 {len(ALIASES)}）")
+    _ok(len(TABLE) == 99, f"别名 99 个（实际 {len(TABLE)}；19.12.38 起 keep/claim 职务别名并入）")
+    _ok(len(ALIASES) == 44, f"分组 44 组（实际 {len(ALIASES)}；19.12.38/19.12.x 新增 keep/claim 等）")
     _ok(len(TABLE) == sum(len(n) for _f, *n in ALIASES), "组内别名数之和 == 表条目数（无撞车）")
     handlers = [fn for fn, *_n in ALIASES]
-    _ok(len(set(handlers)) == 38, "38 个处理函数互不重复")
+    _ok(len(set(handlers)) == 44, "44 个处理函数互不重复")
     _ok(all(getattr(fn, "__name__", "").startswith("_tag_act_") for fn in handlers),
         "表里挂的都是 _tag_act_* 函数对象")
     _ok(all(getattr(MIXIN, fn.__name__, None) is fn for fn in handlers),

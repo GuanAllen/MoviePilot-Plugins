@@ -97,12 +97,15 @@ class _Resp:
 
 
 class _Payload:
-    def __init__(self, resource_ids=None, hashes=None, delete_files=0, confirm=0, reason=""):
+    def __init__(self, resource_ids=None, hashes=None, delete_files=0, confirm=0, reason="",
+                 background=0, action=""):
         self.resource_ids = list(resource_ids or [])
         self.hashes = list(hashes or [])
         self.delete_files = delete_files
         self.confirm = confirm
         self.reason = reason
+        self.background = background
+        self.action = action
 
 
 class _Item:
@@ -114,6 +117,7 @@ class _Item:
 
 _m = types.ModuleType(PKG + ".models")
 _m.MagicFlowAssetDeletePayload = _Payload
+_m.MagicFlowAssetActPayload = _Payload
 sys.modules[PKG + ".models"] = _m
 
 _m = types.ModuleType(PKG + ".persistence")
@@ -184,6 +188,13 @@ class Host(assets.AssetsMixin):
 
     def _log(self, *_a, **_k):
         return None
+
+    def _job_submit(self, kind, title, fn, dedup_key="", params=None):
+        """资源删除现在走后台队列（jobs.py）；本测试只验「入队 + 返回 job_id」。"""
+        self.jobs = getattr(self, "jobs", [])
+        job = {"id": f"job-{len(self.jobs)+1}", "kind": kind, "title": title}
+        self.jobs.append((job, fn, params or {}))
+        return job
 
     def _tag_groups(self):
         return self._groups

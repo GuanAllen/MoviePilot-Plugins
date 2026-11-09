@@ -777,6 +777,29 @@ def view_silent(ctx: Dict[str, Any], limit: int = 0, offset: int = 0) -> Dict[st
             "generated_at": _as_float(ctx.get("now"), time.time())}
 
 
+def hr_store_state_of(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """把账单存储三态转成视图字段（任务 132：PG 单一权威）。
+
+    UNKNOWN 绝不折成「正常空表」；旧夹具没有三态信息时按 ``found`` 处理。
+    """
+    meta: Dict[str, Any] = {}
+    try:
+        fn = ctx.get("store_meta_fn")
+        meta = dict(fn() or {}) if callable(fn) else {}
+    except Exception:  # noqa: BLE001
+        meta = {}
+    status = str(ctx.get("bill_store_status") or "found")
+    return {
+        "store_status": status,
+        "store_error": str(ctx.get("bill_store_error") or ""),
+        "store_backend": str(meta.get("backend") or "pg"),
+        "store_authority": str(meta.get("authority") or "pg"),
+        "store_available": bool(meta.get("available", True)),
+        "degraded_reason": str(meta.get("degraded_reason") or "")
+        or ("store_unknown" if status == "unknown" else ""),
+    }
+
+
 def view_hr(ctx: Dict[str, Any], site: str = "", live: int = 0,
             limit: int = 0) -> Dict[str, Any]:
     """``view=hr``：H&R 账单按站分组（旧 ``/agent/hr/bills``，**未知规则不再丢弃**）。
@@ -971,9 +994,19 @@ def view_hr(ctx: Dict[str, Any], site: str = "", live: int = 0,
     totals["sites"] = len(sites)
     margin_fn = ctx.get("margin_fn")
     warn_fn = ctx.get("warn_fn")
+    _store_state = hr_store_state_of(ctx)
+    _store_status = _store_state["store_status"]
+    _store_error = _store_state["store_error"]
+    _store_meta = _store_state
     return {
         "at": str(ctx.get("at") or now_iso()),
         "live": bool(live),
+        "store_status": _store_status,
+        "store_error": _store_error,
+        "store_backend": str(_store_meta.get("store_backend") or ""),
+        "degraded_reason": str(_store_meta.get("degraded_reason") or ""),
+        "store_authority": str(_store_meta.get("store_authority") or ""),
+        "store_available": bool(_store_meta.get("store_available", True)),
         "totals": totals,
         "sites": sites,
         "policy": {
@@ -1233,11 +1266,26 @@ class ReportViewMixin:
         bills: Dict[str, Any] = {}
         bill_events: List[Dict[str, Any]] = []
         bstore = None
+        # ★ 任务 113（N-04）：账单存储 UNKNOWN 不得折成「正常空表」——把三态状态
+        #   带进上下文，视图层据此展示降级（而不是显示 0 张账单）。
+        bill_store_status = "unknown"
+        bill_store_error = ""
         try:
             bstore = self._rv_call("_site_report_bills_store")
-            bills = dict(bstore.all() or {}) if bstore is not None else {}
-        except Exception:  # noqa: BLE001
+            _bres = (bstore.all_result()
+                     if bstore is not None and hasattr(bstore, "all_result") else None)
+            if _bres is not None:
+                bill_store_status = str(_bres.get("status") or "unknown")
+                bill_store_error = str(_bres.get("error") or "")[:200]
+                bills = (dict(_bres.get("value") or {})
+                         if bill_store_status == "found" else {})
+            else:
+                bills = dict(bstore.all() or {}) if bstore is not None else {}
+                bill_store_status = "found" if bstore is not None else "unknown"
+        except Exception as err:  # noqa: BLE001
             bills = {}
+            bill_store_status = "unknown"
+            bill_store_error = repr(err)[:200]
         # ★ 任务 98：读 append-only 账单事件档案。**独立于 bills 的 try** —— 事件表
         #   迁移未跑 / 离线夹具无该方法时只让历史区为空，绝不能连带清空账单视图。
         try:
@@ -1355,6 +1403,8 @@ class ReportViewMixin:
         return {
             "at": now_iso(), "now": time.time(),
             "ledger": ledger, "snap": snap, "bills": bills,
+            "bill_store_status": bill_store_status,
+            "bill_store_error": bill_store_error,
             "bill_events": bill_events,
             "sites": sites, "site_rows": site_rows, "site_index": site_index,
             "protected": prot, "reseed": reseed, "crossseed": cssrc,
@@ -1368,6 +1418,7 @@ class ReportViewMixin:
             "deadline_fn": getattr(self, "_hr_deadline", None),
             "hr_obligation_fn": getattr(self, "_hr_obligation", None),
             "site_hr_fn": getattr(self, "_site_report_hr", None),
+            "store_meta_fn": getattr(self, "_hrbills_store_meta", None),
             "margin_fn": getattr(self, "_hr_margin_hours", None),
             "warn_fn": getattr(self, "_hr_warn_hours", None),
         }

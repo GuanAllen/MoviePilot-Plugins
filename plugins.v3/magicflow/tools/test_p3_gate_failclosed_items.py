@@ -266,18 +266,21 @@ def main() -> int:
             for m in cap.messages), f"logger.error 记录了具体异常（{cap.messages}）")
 
     # ---- B. 跨站来源份：抛异常 → 全批被拦 ----
-    print("\n[B] 跨站来源份：_crossseed_source_hashes 抛异常 → 本批全部被拦")
+    print("\n[B] 跨站来源份：不再作为删除判据（19.10.11 起改由 H&R 账单拦截）")
     p = Host(protected=set(), crossseed_boom=True)
     w = _why(p, [H_FREE, H_CS])
-    _ok(set(w.keys()) == {H_FREE, H_CS}, f"本批 2 个 hash 全部被拦（实际 {sorted(w)}）")
-    _ok(all(str(v).startswith(_PREFIX_CS) for v in w.values()), f"理由带跨站前缀（实际 {w}）")
+    # _crossseed_source_hashes 仍存在，只作清理候选豁免；抛异常不得放大成删除拦截，
+    # 跨站义务由第 4 类（欠 H&R 义务，账本真值）拦住，不再靠这份可失败的清单。
+    _ok(w == {}, f"跨站清单异常不影响删除闸门（实际 {w}）")
 
     # ---- C. 已认领：抛异常 → 全批被拦 ----
-    print("\n[C] 已认领：_claim_protected_hashes 抛异常 → 本批全部被拦")
+    print("\n[C] 已认领：名单接口异常 → dutyops.claim_hashes 按设计返回空集（不整轮拦截）")
     p = Host(protected=set(), claim_boom=True)
     w = _why(p, [H_FREE, H_CL])
-    _ok(set(w.keys()) == {H_FREE, H_CL}, f"本批 2 个 hash 全部被拦（实际 {sorted(w)}）")
-    _ok(all(str(v).startswith(_PREFIX_CL) for v in w.values()), f"理由带已认领前缀（实际 {w}）")
+    # ★ dutyops.claim_hashes 明确「取不到 = 空集，不因为认领接口异常就把整轮拦下」；
+    #   认领是站外真值，接口抖动不该变成整批删除放行/全拦的放大器。真正的删除保护
+    #   仍由手动保留 + H&R 账单（第 4 档，账本真值 fail-closed）负责。
+    _ok(w == {}, f"认领名单异常不影响闸门（实际 {w}）")
 
     # ---- D. 内层单桶失败：保守 = 整类不可信 ----
     print("\n[D] 手动保留：单个 task 桶读失败 → 整类不可信 → 全批被拦（保守选择）")
@@ -292,10 +295,10 @@ def main() -> int:
     p = Host(protected={H_MAN}, crossseed={H_CS}, claim={H_CL})
     w = _why(p, [H_MAN, H_CS, H_CL, H_FREE])
     _ok(w.get(H_MAN) == "手动保留", f"手动保留 → 拦（{w.get(H_MAN)!r}）")
-    _ok(w.get(H_CS) == "跨站来源份（H&R 保种期）", f"跨站来源份 → 拦（{w.get(H_CS)!r}）")
+    _ok(H_CS not in w, f"跨站来源份不再单独拦（义务走 H&R 账单，{w.get(H_CS)!r}）")
     _ok(w.get(H_CL) == "已认领（保种承诺）", f"已认领 → 拦（{w.get(H_CL)!r}）")
     _ok(H_FREE not in w, "无保护种 → 放行（不出现）")
-    _ok(len(w) == 3, f"恰好 3 个被拦（实际 {len(w)}）")
+    _ok(len(w) == 2, f"恰好 2 个被拦（手动/已认领，实际 {len(w)}）")
 
     # ---- F. 第 4 类（欠 H&R 义务）行为不变 ----
     print("\n[F] 第 4 类（欠 H&R 义务）现有行为不变")
@@ -315,16 +318,16 @@ def main() -> int:
     hs = [H_MAN, H_CS, H_CL, H_HR, H_LIB, H_FREE]
     strict = _why(p, hs)
     _ok(strict.get(H_LIB) == "库内资产（已入库，永不删）", f"严格闸门：库内资产被拦（{strict.get(H_LIB)!r}）")
-    _ok(all(strict.get(h) for h in (H_MAN, H_CS, H_CL, H_HR)), "严格闸门：第 1~4 类照拦")
+    _ok(all(strict.get(h) for h in (H_MAN, H_CL, H_HR)), "严格闸门：第 1/3/4 类照拦（跨站已归入 H&R）")
     _ok(H_FREE not in strict, "严格闸门：无保护种放行")
     _manual = dict(p._delete_gate_detail(hs, allow_asset=True))
     _strip = dict(p._delete_gate_detail(hs, allow_strip_asset=True))
     _ok(H_LIB not in _manual, "allow_asset=True → 只放行库内资产")
     _ok(H_LIB not in _strip, "allow_strip_asset=True → 只放行库内资产")
-    _ok(all(_manual.get(h) for h in (H_MAN, H_CS, H_CL, H_HR)),
-        "allow_asset=True → 第 1~4 类照拦（未变）")
-    _ok(all(_strip.get(h) for h in (H_MAN, H_CS, H_CL, H_HR)),
-        "allow_strip_asset=True → 第 1~4 类照拦（未变）")
+    _ok(all(_manual.get(h) for h in (H_MAN, H_CL, H_HR)),
+        "allow_asset=True → 第 1/3/4 类照拦（跨站已归入 H&R）")
+    _ok(all(_strip.get(h) for h in (H_MAN, H_CL, H_HR)),
+        "allow_strip_asset=True → 第 1/3/4 类照拦（跨站已归入 H&R）")
     _ok(p._delete_gate_manual(hs) == set(_manual.keys()),
         "_delete_gate_manual == detail(allow_asset=True).keys()")
     _ok(p._delete_gate_strip(hs) == set(_strip.keys()),

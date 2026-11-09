@@ -87,22 +87,32 @@ hr = _load(PKG + ".features.hr", "features/hr.py")
 
 HrMixin = hr.HrMixin
 HrBillsMixin = hrbills.HrBillsMixin
-HrBillsStore = hrbills.HrBillsStore
 MARK_REUSE = tags.MARK_REUSE
 RESCUE_TAG = tags.RESCUE_TAG
 EXTERNAL_TAG = tags.EXTERNAL_TAG
 CROSSSEED_TAG = crossseed.CROSSSEED_TAG
 is_reuse_copy = tags.is_reuse_copy
 is_external_candidate = tags.is_external_candidate
+from _hr_mem_store import MemHrBillsStore  # noqa: E402
+
 
 CHECKS = 0
+FAILS: list[str] = []
 
 
 def _ok(cond: bool, msg: str) -> None:
+    """★ 任务 134：断言失败不再中断脚本——收集后继续跑，保证后续断言仍被执行。
+
+    失败仍然计入 ``FAILS`` 并让退出码非 0（不降低强度，只是不早停）。
+    """
     global CHECKS
-    assert cond, f"❌ {msg}"
     CHECKS += 1
-    print(f"  ✅ {msg}")
+    if cond:
+        print(f"  ✅ {msg}")
+    else:
+        print(f"  ❌ {msg}")
+        FAILS.append(msg)
+
 
 
 def _torrent(hash_string="", progress=1.0, seed_time=0.0, title="test", tracker="hdfans.org",
@@ -152,6 +162,11 @@ class Harness(HrMixin, HrBillsMixin):
         self.name2dom: dict = {}
         self.groups_data: dict = {}
         self.group_of_map: dict = {}
+
+    def _hrbills_store(self):
+        if getattr(self, "_mem_store", None) is None:
+            self._mem_store = MemHrBillsStore()
+        return self._mem_store
 
     def get_data_path(self):
         return self._data_dir
@@ -221,8 +236,11 @@ def main() -> int:
     b_rescue = h._hrbills_open("r2", "hdfans.org", RESCUE_TAG, _torrent_bytes("b"))
     _ok(b_rescue is None, "补源副本(RESCUE_TAG) 开账被跳过")
     b_cross = h._hrbills_open("r3", "hdfans.org", CROSSSEED_TAG, _torrent_bytes("c"))
-    _ok(b_cross is None, "跨站(CROSSSEED_TAG) 开账被跳过")
-    _ok(len(store.all()) == n0, "账单数不变（辅种一律不开账）")
+    # ★ 19.10.11 起跨站来源份是「真实下载」，欠来源站 H&R ⇒ 不再跳过开账（旧断言已过时）。
+    _ok(b_cross is not None and b_cross.get("state") == "pending",
+        "跨站(CROSSSEED_TAG) 正常开账（pending，19.10.11 起不再跳过）")
+    _ok(len(store.all()) == n0 + 1,
+        "只多出跨站这一张（复用/补源仍不开账）")
 
     # ---- 2) 回填跳过辅种 ----
     print("\n[2] 回填跳过辅种")
@@ -240,7 +258,10 @@ def main() -> int:
     _ok(store.get("real") is not None, "真实下载种照常开账")
     _ok(store.get("r1") is None, "复用辅种回填跳过")
     _ok(store.get("r2") is None, "补源副本回填跳过")
-    _ok(store.get("r3") is None, "跨站种回填跳过")
+    _r3 = store.get("r3") or {}
+    # ★ 19.10.11：跨站来源份不再是「跳过」，而是按来源站口径开账（欠他站 H&R）
+    _ok(_r3.get("state") == "pending" and _r3.get("rule") in ("site_hr", "hit_and_run"),
+        f"跨站种按来源站口径开账（实际 {_r3.get('state')}/{_r3.get('rule')}）")
     _ok(int(bf.get("opened") or 0) == 1, f"回填只开 1 张（实际 {bf.get('opened')}）")
 
     # ---- 3) _hr_obligation / _hr_obligation_by_seed：辅种不判 H&R ----
@@ -273,7 +294,7 @@ def main() -> int:
     _ok(store.get("v1")["state"] == "active", "干跑不改账单状态")
     res = h._hrbills_void_reuse(confirm=True)
     _ok(res["voided"] == 2, f"confirm 作废 2 张（实际 {res['voided']}）")
-    _ok(store.get("v1") is None, "作废后账单已删除（作废即删）")
+    _ok((store.get("v1") or {}).get("state") == "void", "作废后保留 void 墓碑（19.12.33 起不物理删除）")
     _ok(store.get("v3")["state"] == "active", "真实下载种账单不动（仍 active）")
 
     # ---- 5) _hr_need_hours 取值链 ----
@@ -316,6 +337,11 @@ def main() -> int:
     _ok(_default == 0, f"get_tag_model(limit=…) 路由默认 = 0（实际 {_default}）")
 
     print("\n" + "=" * 64)
+    if FAILS:
+        print(f"\nFAIL：{len(FAILS)} / {CHECKS} 项断言失败（历史口径漂移，逐条见上）")
+        for m in FAILS:
+            print("  - " + m)
+        return 1
     print(f"PASS：{CHECKS} 项断言全部通过 ✅")
     print("=" * 64)
     return 0

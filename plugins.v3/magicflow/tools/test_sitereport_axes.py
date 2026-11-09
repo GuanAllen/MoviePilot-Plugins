@@ -60,6 +60,14 @@ _hrbills.BILL_STATE_ACTIVE = "active"
 _hrbills.BILL_STATE_BREACHED = "breached"
 _hrbills.RULE_SITE_HR = "site_hr"
 _hrbills.RULE_HIT_AND_RUN = "hit_and_run"
+_hrbills.BILL_STATE_PENDING = "pending"
+_hrbills.BILL_STATE_SETTLED = "settled"
+_hrbills.BILL_STATE_VOID = "void"
+_hrbills.HR_MANUAL_SETTLE = "manual"
+_hrbills.BILL_STATE_PENDING = "pending"
+_hrbills.BILL_STATE_SETTLED = "settled"
+_hrbills.BILL_STATE_VOID = "void"
+_hrbills.HR_MANUAL_SETTLE = "manual"
 sys.modules[PKG + ".features.hrbills"] = _hrbills
 
 # 桩 app.schemas
@@ -68,6 +76,7 @@ _app_schemas.Response = type("Response", (), {})
 sys.modules["app.schemas"] = _app_schemas
 
 sitereport = _load(PKG + ".features.sitereport", "features/sitereport.py")
+reportview = _load(PKG + ".features.reportview", "features/reportview.py")
 
 SR = sitereport
 BUCKET_BRUSH = SR.BUCKET_BRUSH
@@ -118,6 +127,12 @@ class FakeBills(_WriteGuard):
     def all(self):
         return dict(self._bills)
 
+    def all_result(self):
+        return {"status": "found", "value": dict(self._bills), "error": ""}
+
+    def events_for(self, h=""):
+        return []
+
 
 class FakeStore(_WriteGuard):
     def __init__(self, protected=None):
@@ -133,7 +148,7 @@ class _EmptyCache:
         return {}
 
 
-class Plug(sitereport.SiteReportMixin):
+class Plug(reportview.ReportViewMixin, sitereport.SiteReportMixin):
     def __init__(self, snap=None, bills=None, protected=None, site_map=None, sites=None):
         self._snap = dict(snap or {})
         self._bills = FakeBills(bills) if bills is not None else FakeBills()
@@ -300,7 +315,7 @@ def main() -> int:
     # item 字段
     items = {it["hash"]: it for it in data["items"]}
     _ok(items["brush"]["bucket"] == BUCKET_BRUSH and items["brush"]["transport"] == TRANSPORT_SEEDING
-        and items["brush"]["sub"] == "", "item（刷流）bucket/transport/sub")
+        and items["brush"]["sub"] == "普通", "item（刷流）bucket/transport/sub（sub 取自标签=普通）")
     _ok(items["silent-res"]["bucket"] == BUCKET_SILENT and items["silent-res"]["sub"] == "资源"
         and items["silent-res"]["protected"] is True, "item（静默-资源）sub=资源 + protected")
     _ok(items["silent-plain"]["transport"] == TRANSPORT_DOWNLOADING,
@@ -308,12 +323,15 @@ def main() -> int:
     _ok(items["hr-debt"]["bucket"] == BUCKET_HR and items["hr-debt"]["hr"] is not None
         and items["hr-debt"]["hr"]["owed"] is True,
         "item（欠 H&R）bucket=保种 + hr 列字段（债务不再当桶）")
-    _ok(items["hr-dut"]["hr"] is None, "item（保种职务未违约）hr 列为 None")
+    # 任务 113 起 hr 列恒为三态字典（不再用 None 表示「无债务」，前端字段同构）
+    _ok((items["hr-dut"].get("hr") or {}).get("owed") is False,
+        "item（保种职务未违约）hr.owed=False")
     _ok(items["silent-new"]["origin"] == SR.ORIGIN_POOL
         and items["silent-res"]["origin"] == SR.ORIGIN_RESEED
         and items["silent-plain"]["origin"] == SR.ORIGIN_NONE,
         "item.origin：静默桶逐条出身（池/辅种副本/无主）")
-    _ok(items["brush"]["origin"] == "", "非静默桶 origin 为空")
+    # 17.3.0：origin 字段全行同构；非静默行落 ORIGIN_NONE（不再用空串）
+    _ok(items["brush"]["origin"] in ("", SR.ORIGIN_NONE), "非静默桶 origin 为空/无主")
 
     # 排序：保种（桶序 1）应排在刷流/魔力（桶序 2/3）之前
     ordered = [it["bucket"] for it in data["items"]]

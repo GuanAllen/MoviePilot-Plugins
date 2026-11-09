@@ -262,6 +262,10 @@ function normalizeSettings(settings = {}) {
     reseed_min_size_gb: Math.max(0, num(settings.reseed_min_size_gb, 1)),
     rules_auto_refresh: settings.rules_auto_refresh === undefined ? true : Boolean(settings.rules_auto_refresh),
     fallback_enabled: settings.fallback_enabled === undefined ? true : Boolean(settings.fallback_enabled),
+    reseed_search_sites: Array.isArray(settings.reseed_search_sites)
+      ? settings.reseed_search_sites.map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
+      : [],
+    reseed_search_kw: Math.max(0, Math.round(num(settings.reseed_search_kw, 0))),
     fallback_sources: normalizeFallbackSources(settings.fallback_sources),
     fallback_paths: normalizePathList(settings.fallback_paths),
     fallback_interval_minutes: Math.max(5, num(settings.fallback_interval_minutes, 30)),

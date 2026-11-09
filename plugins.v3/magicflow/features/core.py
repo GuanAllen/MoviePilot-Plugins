@@ -1099,6 +1099,19 @@ class CoreMixin:
                 },
             }
         )
+        # ★ 任务 132：H&R 账单过期清理（settled/void 满 30 天；每天一次，幂等）。
+        services.append(
+            {
+                "id": "HrPurge",
+                "name": "H&R账单清理",
+                "trigger": "interval",
+                "func": self.hr_purge,
+                "kwargs": {
+                    "minutes": 24 * 60,
+                    "jitter": self._jitter_seconds(24 * 60),
+                },
+            }
+        )
         # ★ 19.7.0：认领保挂宿主（__claim__ 常驻 worker）——已认领的种被暂停/停止时拉回做种。
         _cl_min = float(getattr(self, "_tags_cfg", {}).get("claim_host_interval") or CLAIM_HOST_INTERVAL_MINUTES)
         services.append(

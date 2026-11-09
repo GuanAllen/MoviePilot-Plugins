@@ -59,6 +59,9 @@ class FakeStore:
         self.data.setdefault(h, {}).update(patch)
         return self.data[h]
 
+    def drop(self, h):
+        self.data.pop(str(h).strip().lower(), None)
+
     def prune(self, live):
         dead = [h for h in list(self.data) if h not in live]
         for h in dead:
@@ -71,6 +74,25 @@ class Host(CrossSeedMixin):
         self._store = store
         self._dl = dl
         self.logs = []
+
+    def _hrbills_store(self):
+        """跨站来源份的 H&R 账单判据：19.12.x 起只认 PG 三态（离线用内存字典）。"""
+        bills = getattr(self, "bills", {}) or {}
+
+        class _S:
+            @staticmethod
+            def get_result(h):
+                v = bills.get(str(h).strip().lower())
+                return {"status": "found" if v else "absent", "value": v}
+
+            @staticmethod
+            def all_result():
+                return {"status": "found", "value": dict(bills)}
+
+            @staticmethod
+            def all():
+                return dict(bills)
+        return _S()
 
     def _log(self, msg, level="info"):
         self.logs.append(str(msg))
@@ -90,8 +112,11 @@ def main():
     infos = {"h1": FakeInfo(seed_time=10 * 3600, completion_on=NOW - 10 ** 7, tags=[CROSSSEED_TAG])}
     store = FakeStore({"h1": {"hours": 10.0, "downloader": "qbittorrent", "site_b": "红豆饭"}})
     h = Host(store, FakeDL(infos))
+    # 19.10.11：达标 = H&R 账单已结清 → 直接摘记录（不再写历史 done 标记）
+    h.bills = {"h1": {"site": "hongdou", "rule": "site_hr", "state": "settled",
+                      "need_h": 24.0, "seeded_h": 30.0}}
     r = h._crossseed_sources_tick()
-    ok(store.data["h1"].get("done") is True, "done=True 已置")
+    ok("h1" not in store.data, "账单已结清 → 摘来源份记录（释放保护）")
     ok(r["completed"] == 1, "res.completed=1")
     ok(any("义务完成" in x for x in h.logs), "日志有「义务完成」")
 
@@ -100,6 +125,8 @@ def main():
     store = FakeStore({"h2": {"hours": 10.0, "downloader": "qbittorrent"}})
     dl = FakeDL(infos)
     h = Host(store, dl)
+    h.bills = {"h2": {"site": "hongdou", "rule": "site_hr", "state": "active",
+                      "need_h": 24.0, "seeded_h": 1.0}}
     r = h._crossseed_sources_tick()
     ok(not store.data["h2"].get("done"), "未达标 → 不置 done")
     ok(r["retagged"] == 1 and dl.retagged and dl.retagged[0][1] == (CROSSSEED_TAG,), "标签确权到 魔流-跨站")
@@ -108,6 +135,9 @@ def main():
     infos = {}
     store = FakeStore({"h3": {"hours": 10.0, "downloader": "qbittorrent"}})
     h = Host(store, FakeDL(infos))
+    # 账单仍开放 → 不走「结清摘除」，交给 prune 清理（19.10.11 口径）
+    h.bills = {"h3": {"site": "hongdou", "rule": "site_hr", "state": "active",
+                      "need_h": 24.0, "seeded_h": 1.0}}
     r = h._crossseed_sources_tick()
     ok(r["pruned"] == 1 and "h3" not in store.data, "消失条目被 prune")
 

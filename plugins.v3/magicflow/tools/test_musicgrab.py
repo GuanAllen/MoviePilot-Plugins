@@ -93,6 +93,15 @@ class Fake(MusicGrabMixin):
         self.lib_marks = []
         self.asset_marks = []
         self._qb_index = {}
+        self.queued = []
+
+    # --- 19.12.0 入库改为后台队列（JobQueue）：桩返回 job id 即视为已入队
+    def _music_import_submit(self, key, title="", reason=""):
+        self.queued.append((key, title))
+        return {"id": "job-" + str(key)[:8]}
+
+    def _music_import_done(self, key):
+        return False
 
     # --- 库记桩（_music_mark_library）
     def _tag_groups(self):
@@ -355,16 +364,15 @@ ok(r["scanned"] == 5 and r["pending"] == 2 and r["settled"] == 0,
    f"干跑：扫 5（音乐线；非音乐下载目录/老种不算）= 待转 2（{r}）")
 ok(_calls == [], "干跑：零动作")
 r = f11._music_settle_import(apply=True)
-ok(r["settled"] == 1 and _calls and _calls[0][0] == "m" * 40,
-   f"执行：只直调下完且未整理的那颗（{_calls}）")
-ok(_calls and _calls[0][1].startswith("/music/下载"), f"整理路径是 MP 视角路径（{_calls}）")
+ok(r["settled"] == 1 and r["queued"] == 1 and f11.queued and f11.queued[0][0] == "m" * 40,
+   f"执行：只把下完未整理的那颗入队（{f11.queued}）")
 ok(all(w[0] != "x" * 40 for w in _calls), "不在音乐下载目录的种（老 movie 目录）不整理")
 ok(all(w[0] != "y" * 40 for w in _calls), "3 周前的老种不重复结算")
 ok(f11.tag_calls == [], "直调路线不再打 MOVIEPILOT 标签（否则 MP 定时任务重复扫描）")
 _done.add("m" * 40)  # 模拟整理成功（transferhistory 已记）
 _calls.clear()
 r = f11._music_settle_import(apply=True)
-ok(r["settled"] == 0 and _calls == [], "幂等：已整理过的不再重复调用")
+ok(r["settled"] == 0 and f11.queued == [("m" * 40, "Album X - Artist")], "幂等：已整理过的不再重复入队")
 ok(any(h == "o" * 40 for h, _p in f11.lib_marks),
    f"已整理过的种补写库记（事件偶发收不到；{f11.lib_marks}）")
 
@@ -380,9 +388,9 @@ f13 = Fake()
 f13._qb_index = {}
 f13._tag_all_torrents = lambda: {"z" * 40: _S("音乐", 1.0)}
 f13._music_transferred = lambda h: False
-f13._music_transfer_now = lambda h, t, p: (False, "整理任务处理失败")
+f13._music_import_submit = lambda key, title="", reason="": {}   # 入队失败（JobQueue 拒绝）
 r = f13._music_settle_import(apply=True)
-ok(r["failed"] == 1 and r["settled"] == 0, "整理失败只计数，不抛异常（下轮再试）")
+ok(r["failed"] == 1 and r["settled"] == 0, "入队失败只计数，不抛异常（下轮再试）")
 ok(f11._music_mp_path("/vol6/1000/music/下载/X").startswith("/"), "宿主路径 → MP 路径兜底可用")
 
 # ------------------------ [23] 19.9.2 relocate 防抖（空转修复）

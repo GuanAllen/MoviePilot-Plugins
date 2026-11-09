@@ -108,12 +108,16 @@ class CrossSeedMixin:
         live: Set[str] = set()
         for h, rec in list(items.items()):
             # ★ 账单结清 → 义务履行完毕：摘记录、不再确权标签（后续归清理口径正常释放）
-            if self._cs_bill_settled(h):
+            _verdict, _bill = self._cs_bill_verdict(h)
+            if _verdict in ("settled", "absent"):
+                # ★ 任务 111：只有「确认结清 / 确认无账单」才允许永久摘来源份；
+                #   UNKNOWN 一律跳过（既不 drop，也不改标签，等下一轮再判）。
                 store.drop(h)
                 res["completed"] = int(res["completed"]) + 1
+                _why = "账单已结清" if _verdict == "settled" else "确认无 H&R 账单（不欠）"
                 self._log(
                     f"跨站:H&R 义务完成 —— {rec.get('site_b', '') or rec.get('site_b_domain', '')} "
-                    f"「{str(rec.get('title') or '')[:50]}」账单已结清 → 释放保护"
+                    f"「{str(rec.get('title') or '')[:50]}」{_why} → 释放保护"
                 )
                 continue
             if rec.get("done"):
@@ -146,25 +150,44 @@ class CrossSeedMixin:
         res["protected"] = len(store.items())
         return res
 
+    def _cs_bill_verdict(self, h: str):
+        """来源份账单三态判定：``settled`` / ``open`` / ``absent`` / ``unknown``。
+
+        ★ 任务 111（HR-03）：账单存储的 ``get()`` 会把 DB 异常折叠成 ``None``，
+        与「确实没有这张账单」不可区分。这里必须读三态结果（``get_result``）：
+        UNKNOWN 时**绝不放行**，也绝不 drop 来源份记录。
+        """
+        hs = str(h or "").strip().lower()
+        try:
+            store = self._hrbills_store()
+            res = store.get_result(hs) if hasattr(store, "get_result") else None
+            from .hrbills import _hr_read_confirmed  # noqa: WPS433
+        except Exception:  # noqa: BLE001
+            return "unknown", None
+        if not _hr_read_confirmed(res):
+            return "unknown", None
+        bill = res.get("value")
+        if not isinstance(bill, dict):
+            return "absent", None
+        return ("settled" if str(bill.get("state") or "") == "settled" else "open"), bill
+
+    @staticmethod
+    def _cs_bill_verdict_from_map(bills, h: str):
+        """批量口径的同一判定（``abs_result`` 全量读成功后使用）。"""
+        b = bills.get(str(h or "").strip().lower()) if isinstance(bills, dict) else None
+        if not isinstance(b, dict):
+            return "absent"
+        return "settled" if str(b.get("state") or "") == "settled" else "open"
+
     def _cs_bill_settled(self, h: str) -> bool:
         """该来源份的 H&R 账单是否**可以放行**（不再保护）。
 
-        ★ 19.10.11：来源份的义务判定统一以账单为准（工时 = ``seeded_h``，实时取自下载器），
-        不再由本模块自己算 ``seeded_sec >= hours``。
-
-        ★ 19.10.11b（Master「不欠保种不欠静默」）：**无账单 = 无欠债 = 放行**。
-        旧逻辑对「没开账」也保守保护 —— 但没开账恰恰说明 `_hrbills_open_crossseed`
-        判过了「该站/该种没有 H&R 义务」，再保护就是凭空占位。
-        只有 ``settled`` 才是「义务已履行」；``active`` / ``void`` / 读取异常仍保守不放。
+        ★ 19.10.11b：无账单 = 无欠债 = 放行；settled = 已履行；active/void 不放行。
+        ★ 任务 111（HR-03）：读取失败/超时（UNKNOWN）→ **一律不放行**（False），
+        不能把存储异常当成「没有义务」。
         """
-        try:
-            bill = self._hrbills_store().get(str(h or "").strip().lower())
-        except Exception:  # noqa: BLE001
-            return False        # 读不到账单 → 保守：不释放
-        if not isinstance(bill, dict):
-            return True         # 没开账 = 判过无义务 → 放行（不欠不保）
-        from .hrbills import BILL_STATE_SETTLED  # noqa: WPS433（features 内延迟导入，避免模块级环）
-        return str(bill.get("state") or "") == BILL_STATE_SETTLED
+        verdict, _bill = self._cs_bill_verdict(h)
+        return verdict in ("settled", "absent")
 
     def _crossseed_source_hashes(self) -> Set[str]:
         """当前受 H&R 保护的来源份 hash 集合（并入清理保护集合）。
@@ -183,10 +206,10 @@ class CrossSeedMixin:
             _raw = self._crossseed_sources().active()
         except Exception:  # noqa: BLE001
             _raw = set()
-        try:
-            val = {h for h in _raw if not self._cs_bill_settled(h)}
-        except Exception:  # noqa: BLE001
-            val = set(_raw)
+        # ★ 任务 111：逐条走三态判定 —— UNKNOWN 视为「仍然保护」（不缩小集合），
+        #   只有「确认结清 / 确认无账单」才放行；复用既有判定入口，避免新增跨 mixin 调用。
+        val = {h for h in _raw
+               if self._cs_bill_verdict(h)[0] not in ("settled", "absent")}
         self._cs_src_hashes_cache = cacheops.entry(val)
         return val
 

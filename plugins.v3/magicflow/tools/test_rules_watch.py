@@ -33,6 +33,10 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+
+sys.path.insert(0, str(__import__('pathlib').Path(__file__).resolve().parent.parent / 'tools'))
+import _app_stub  # noqa: E402
+_app_stub.install()
 import time
 import types
 from pathlib import Path
@@ -128,6 +132,7 @@ _tags.SUB_RESOURCE = "资源"
 _tags.is_asset_tags = lambda *a, **k: False
 _tags.is_library_asset = lambda *a, **k: False
 sys.modules[PKG + ".tags"] = _tags
+_app_stub.fill_tags(_tags, ROOT)
 
 sys.modules[PKG + ".fingerprint"] = _Stub(PKG + ".fingerprint")
 

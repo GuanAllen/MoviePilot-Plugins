@@ -111,7 +111,11 @@ def main() -> int:
     data_dir2 = "/tmp/pgbill_data2"
     os.makedirs(data_dir2, exist_ok=True)
     store2 = hrb.get_hr_bills_store(Path(data_dir2), kv=None)
-    _ok(type(store2).__name__ == "HrBillsStore", f"unbind 后工厂回退 JSON 版（实际 {type(store2).__name__}）")
+    _ok(isinstance(store2, hrb.UnavailableHrBillsStore),
+        f"★ 任务 132：db 不可用 → Unavailable（不回落 JSON，实际 {type(store2).__name__}）")
+    _ok(isinstance(store2.all_result().get("value"), type(None))
+        and store2.all_result().get("status") == "unknown",
+        "db 不可用读取返回 UNKNOWN（不得当空账单）")
 
     # ---- 清场 ----
     mfdb.bind_database(handle)

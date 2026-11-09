@@ -242,7 +242,34 @@ class Harness(HrBillsMixin, HrReconcileMixin):
         tr = str(getattr(torrent, "tracker", "") or "")
         return tr.split("://")[-1].split("/")[0].split(":")[0].strip().lower()
 
-    # 账单库：直接用真 store（HrBillsMixin._hrbills_store 走 get_data_path/_hot）
+    # 账单库：19.12.x 生产只有 PG；离线用同三态接口的内存桩
+    def _hrbills_store(self):
+        if getattr(self, "_mem", None) is None:
+            _d = {}
+            class _S:
+                @staticmethod
+                def get(h): return _d.get(str(h).strip().lower())
+                @staticmethod
+                def all(): return dict(_d)
+                @staticmethod
+                def put(h, b, events=None):
+                    k = str(h).strip().lower(); _d[k] = dict(b or {}); return dict(_d[k])
+                @staticmethod
+                def get_result(h):
+                    v = _d.get(str(h).strip().lower())
+                    return {"status": "found" if v is not None else "absent", "value": v}
+                @staticmethod
+                def all_result(): return {"status": "found", "value": dict(_d)}
+                @staticmethod
+                def patch_if(h, guard, events=None, **kw):
+                    k = str(h).strip().lower(); cur = _d.get(k)
+                    if cur is None: return {"ok": False, "reason": "absent"}
+                    for gk, gv in dict(guard or {}).items():
+                        if cur.get(gk) != gv: return {"ok": False, "reason": "guard_mismatch"}
+                    cur.update(kw); return {"ok": True, "row": dict(cur)}
+            self._mem = _S()
+        return self._mem
+
     def _preload_bills(self):
         store = self._hrbills_store()
         for h, b in self.bills.items():
@@ -290,7 +317,8 @@ def main() -> int:  # noqa: WPS213
     _ok(r0["need_left"] == "19:47:35", f"need_left = 19:47:35（{r0['need_left']}）")
     _ok(collect.parse_myhr_rows(MYHR_EMPTY_OK) == [], "可识别但空 → []（= 无欠，不是解析失败）")
     _ok(collect.parse_myhr_rows(MYHR_GARBAGE) is None, "不可识别 → None（整页跳过，不当作无欠）")
-    _ok(collect.parse_myhr_rows("") == [], "空串 → []")
+    # ★ 19.12.42：空串 = 页面没拿到内容（登录页/改版/超时）→ 不可当「无欠」，必须回 None
+    _ok(collect.parse_myhr_rows("") is None, "空串 → None（不当作无欠）")
 
     # ---- 2) 三方对账 ----
     print("\n[2] _hr_reconcile_site（三方对账）")

@@ -179,13 +179,80 @@ class Harness(HrBillsMixin, DeleteGateMixin):
         return self.name2dom.get(name, "")
 
 
+
+class _MemStore:
+    """任务 132 测试夹具：内存版三态存储（PG 单一权威后的离线替身）。"""
+
+    def __init__(self) -> None:
+        self._d = {}
+
+    def get(self, h):
+        return dict(self._d[h]) if h in self._d else None
+
+    def all(self):
+        return {k: dict(v) for k, v in self._d.items()}
+
+    def put(self, h, rec, **kw):
+        self._d[h] = dict(rec)
+        return dict(self._d[h])
+
+    def delete(self, h):
+        self._d.pop(h, None)
+
+    def flush(self):
+        return None
+
+    def get_result(self, h):
+        v = self.get(h)
+        return hrbills._hr_store_read(
+            hrbills.STORE_FOUND if v is not None else hrbills.STORE_ABSENT, v, "", "mem")
+
+    def all_result(self):
+        return hrbills._hr_store_read(hrbills.STORE_FOUND, self.all(), "", "mem")
+
+    def events_result(self, h):
+        return hrbills._hr_store_read(hrbills.STORE_FOUND, [], "", "mem")
+
+    def all_events_result(self):
+        return hrbills._hr_store_read(hrbills.STORE_FOUND, [], "", "mem")
+
+    def put_result(self, h, rec, **kw):
+        self.put(h, rec)
+        return hrbills._hr_store_write(True)
+
+
+    def patch_if(self, h, expect=None, save=True, events=None, **fields):
+        cur = self.get(h)
+        if cur is None:
+            return {"ok": False, "reason": "absent", "row": None}
+        exp = expect if isinstance(expect, dict) else {}
+        if exp:
+            for k, v in exp.items():
+                if cur.get(k) != v:
+                    return {"ok": False, "reason": "conflict", "row": None}
+        cur.update(fields or {})
+        self.put(h, cur)
+        return {"ok": True, "reason": "", "row": dict(cur)}
+
+    def patch_result(self, h, fields, **kw):
+        cur = self.get(h)
+        if cur is None:
+            return hrbills._hr_store_write(True, value=None)
+        exp = kw.get("expect_state")
+        if exp is not None and str(cur.get("state")) != str(exp):
+            return hrbills._hr_store_write(True, value=None)
+        cur.update(fields or {})
+        self.put(h, cur)
+        return hrbills._hr_store_write(True, value=dict(cur))
+
 def main() -> int:
     print("=" * 64)
     print("魔流 · H&R 规则闸（三口径归一）回归测试")
     print("=" * 64)
     tmp = tempfile.mkdtemp(prefix="hr_rule_gate_")
     h = Harness(Path(tmp))
-    store = h._hrbills_store()
+    store = _MemStore()
+    h._hrbills_store = lambda: store  # type: ignore[method-assign]
 
     # ---- A) 开账规则闸 ----
     print("\n[A] 开账规则闸")

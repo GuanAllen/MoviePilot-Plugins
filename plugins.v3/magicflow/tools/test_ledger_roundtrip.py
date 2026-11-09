@@ -204,17 +204,20 @@ def main() -> int:
         #   任意自造名字 ``_task_id()`` 都反查不到 → task_id 落 NULL，测不出差别。
         #   ``__hr_host__`` 是不依赖任务配置的伪任务名（common.HR_HOST_TASK_ID），
         #   既能落出非空 task_id，又能验「保种 → release → 静默」整条推导链。
+        import importlib as _il
+        _common = _il.import_module(pkg.__name__ + ".common")
+        _hr_host_id = str(_common.HR_HOST_TASK_ID)  # 19.12.4x 起常量收口到 common，ledger 不再 re-export
         st.put(H, {"task": "__hr_host__"})
         be3 = ledger.LedgerBackend(p)
         be3.ensure_schema()
         rec_hr = ledger.SeedLedgerStore(be3).get(H) or {}
         _ok(
-            str(rec_hr.get("state") or "") == "保种",
-            f"put task=__hr_host__ → state=保种（实际 {rec_hr.get('state')!r}）",
+            str(rec_hr.get("state") or "") == "H&R",
+            f"put task=__hr_host__ → state=H&R（19.12.38 起职务标签改名，实际 {rec_hr.get('state')!r}）",
         )
         _ok(
-            str(rec_hr.get("taken_by") or "") == ledger.HR_HOST_TASK_ID,
-            f"put task=__hr_host__ → taken_by={ledger.HR_HOST_TASK_ID}（实际 {rec_hr.get('taken_by')!r}）",
+            str(rec_hr.get("taken_by") or "") == _hr_host_id,
+            f"put task=__hr_host__ → taken_by={_hr_host_id}（实际 {rec_hr.get('taken_by')!r}）",
         )
         sess = be._session()
         try:
@@ -223,8 +226,8 @@ def main() -> int:
             ).scalars().first()
         finally:
             sess.close()
-        _ok(srow is not None and str(srow.task_id or "") == ledger.HR_HOST_TASK_ID,
-            f"直查 mf_seed.task_id == {ledger.HR_HOST_TASK_ID}（实际 {getattr(srow, 'task_id', None)!r}）")
+        _ok(srow is not None and str(srow.task_id or "") == _hr_host_id,
+            f"直查 mf_seed.task_id == {_hr_host_id}（实际 {getattr(srow, 'task_id', None)!r}）")
 
         st.release(H)
         be4 = ledger.LedgerBackend(p)

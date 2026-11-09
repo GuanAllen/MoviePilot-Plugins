@@ -282,10 +282,13 @@ def main() -> int:
     h.torrents["s2"].content_path = "/lib/copy"
     rep = h._silent_purge_incomplete(apply=True)
     deleted = [x[0][0] for x in h.delete_calls]
-    _ok(rep["pending"] == 1, f"只有 1 个进「未下完」范围（实测 {rep['pending']}）")
-    _ok(deleted == ["s6"], f"只删 s6（无身份/无推荐）；实测删 {deleted}")
-    _ok(h.delete_calls[0][1] is True, "s6 独享数据 → 删条目+删文件")
-    _ok("s6" not in h.ledger and "s1" in h.ledger, "删成功的（s6）摘掉；被保护的（s1）保留")
+    # ★ 15.8.16：未下完（progress<1）的资产 = 数据已不在 → 不再享受「库内资产/副本」保护，
+    #   只有跨站来源份（欠他站 H&R）与推荐待确认仍然豁免。
+    _ok(rep["pending"] == 4 and sorted(i["hash"] for i in rep["items"]) == ["s2", "s3", "s4", "s6"],
+        f"4 个进「未下完」范围（s2/s3/s4/s6；s1 跨站、s5 推荐豁免），实测 {[i['hash'] for i in rep['items']]}")
+    _ok(sorted(deleted) == ["s2", "s3", "s4", "s6"], f"删 s2/s3/s4/s6；实测删 {deleted}")
+    _ok(all(x[1] is True for x in h.delete_calls), "都无完成种共享同路径 → 全删条目+文件")
+    _ok("s1" in h.ledger and "s2" not in h.ledger, "跨站来源份（s1）保留，半成品资产被摘")
 
     # ---- ⑥ 标签不再是判据（对照：只有标签、没有身份 → 不再豁免）----
     print("\n[6] ★ 标签判据已删：只有 `魔流-辅种`/`已整理` 标签、无身份 → 照删")
@@ -302,8 +305,9 @@ def main() -> int:
                  "r1": _torrent("r1", progress=0.3, title="res"),
                  "p1": _torrent("p1", progress=0.3, title="plain")})
     rep = h._silent_purge_incomplete(apply=True)
-    _ok(sorted(x[0][0] for x in h.delete_calls) == ["n1", "p1"],
-        "「新/普通」没下完都删（不限 sub）；「资源」被身份保护挡住（实测 "
+    # ★ 15.8.16：资源份未下完 = 数据已不在 → 同样可清（身份保护只对「有数据」的资产生效）
+    _ok(sorted(x[0][0] for x in h.delete_calls) == ["n1", "p1", "r1"],
+        "「新/普通/资源」没下完都删（资源份不再豁免，实测 "
         f"{sorted(x[0][0] for x in h.delete_calls)}）")
 
     # ---- ⑦b ★15.8.11：音乐线（分类=音乐）= 资源（同点播）→ 在途也不删 ----
