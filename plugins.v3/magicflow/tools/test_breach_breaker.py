@@ -103,6 +103,48 @@ class Harness(HrBillsMixin, DeleteGateMixin):
         self.reports = {}
         self.applied = []
 
+    def _hrbills_store(self):
+        """内存账单后端（19.12.x 生产只有 PG；离线用同三态接口的字典桩）。"""
+        if getattr(self, "_mem", None) is None:
+            _d = {}
+            class _S:
+                @staticmethod
+                def get(h):
+                    return _d.get(str(h).strip().lower())
+
+                @staticmethod
+                def put(h, b, events=None):
+                    k = str(h).strip().lower(); _d[k] = dict(b or {}); return dict(_d[k])
+
+                @staticmethod
+                def all():
+                    return dict(_d)
+
+                @staticmethod
+                def get_result(h):
+                    v = _d.get(str(h).strip().lower())
+                    return {"status": "found" if v is not None else "absent", "value": v}
+
+                @staticmethod
+                def all_result():
+                    return {"status": "found", "value": dict(_d)}
+
+                @staticmethod
+                def patch(h, **kw):
+                    k = str(h).strip().lower()
+                    if k not in _d: return None
+                    _d[k].update(kw); return dict(_d[k])
+
+                @staticmethod
+                def patch_if(h, guard, events=None, **kw):
+                    k = str(h).strip().lower(); cur = _d.get(k)
+                    if cur is None: return {"ok": False, "reason": "absent"}
+                    for gk, gv in dict(guard or {}).items():
+                        if cur.get(gk) != gv: return {"ok": False, "reason": "guard_mismatch"}
+                    cur.update(kw); return {"ok": True, "row": dict(cur)}
+            self._mem = _S()
+        return self._mem
+
     def get_data_path(self):
         return self._data_dir
 
@@ -242,19 +284,28 @@ def main() -> int:
     store.put("w2", _bill("w2", "carpt.net", BILL_STATE_BREACHED))   # 站点仍欠 → 补种
     h.reports["carpt.net"] = {
         "site": "carpt.net", "ok": True, "hash_coverage_complete": True,
-        "records": [{"tid": "209930", "infohash": "w2", "resolved": True, "in_qb": False}],
+        # ★ 19.12.42：与结清闸门共用折叠 → 必须带页首完整性证据，否则 verdict=unknown
+        "page_ok": True, "list_complete": True, "at": __import__("time").time(),
+        # 页头「两数形态」证书：assessing=0 / unfinished=0 + 新鲜 ts，clear 闸门才敢放行
+        "bar": {"ok": True, "logged_in": True, "ts": __import__("time").time(),
+                "hr": {"raw": "0 0", "form": "pair", "assessing": 0, "unfinished": 0}},
+        "records": [{"tid": "209930", "infohash": "w2", "resolved": True, "in_qb": False,
+                     "need_left": "01:00:00", "hr_status": "Running"}],
     }
     dry = h._hrbills_breach_reconcile(site="carpt.net")
     _ok(dry["dry_run"] is True, "默认干跑")
     _ok(dry["totals"]["breached"] == 2, f"识别 2 张 breached（实际 {dry['totals']['breached']}）")
     s0 = dry["sites"][0]
     _ok(set(s0["will_void"]) == {"w1"} and set(s0["will_reseed"]) == {"w2"},
-        "站点不欠 w1 → 清账；站点仍欠 w2 → 补种")
+        f"站点不欠 w1 → 清账；站点仍欠 w2 → 补种（实际 {s0}）")
     _ok(store.get("w1")["state"] == BILL_STATE_BREACHED, "干跑不落库（w1 仍 breached）")
 
     res = h._hrbills_breach_reconcile(site="carpt.net", confirm=True)
     _ok(res["totals"]["voided"] == 1, f"confirm 清账 1 张（实际 {res['totals']['voided']}）")
-    _ok(store.get("w1") is None, "w1 清账 → 账单已删除（作废即删）")
+    _w1 = store.get("w1") or {}
+    # ★ 任务 136：清账 = 落 void 墓碑（保留 30 天审计），不再物理删除
+    _ok(_w1.get("state") == BILL_STATE_VOID and bool(_w1.get("void_reason")),
+        f"w1 清账 → void 墓碑 + reason（实际 {_w1.get('state')}/{_w1.get('void_reason')}）")
     _ok(any(a["site"] == "carpt.net" and a["tids"] == ["209930"] and a["confirm"]
             for a in h.applied), "站点仍欠 w2 → 调 _hr_reconcile_apply(tids=[209930], confirm=True)")
 

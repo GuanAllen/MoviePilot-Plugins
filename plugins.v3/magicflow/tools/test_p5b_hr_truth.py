@@ -288,7 +288,9 @@ def main() -> int:
     _sites = _count_call_sites("note_hr_progress")
     _ok(_sites == 0, f"★ note_hr_progress 全仓调用点 = 0（settled 无推进方 → 历史只读，实测 {_sites}）")
     _ledger_src = (ROOT / "ledger.py").read_text(encoding="utf-8")
-    _ok("历史只读" in _ledger_src, "ledger.py 已标注 settled「历史只读」")
+    # 19.12.4x：注释文案改为「退役」，结构性锁死仍以「零推进方」为准（见上一条断言）
+    _ok(("note_hr_progress" in _ledger_src) and ("退役" in _ledger_src),
+        "ledger.py 的 note_hr_progress 已标注退役（settled 无推进方）")
 
     # ---- ⑤ 前端字段名保持不变 ----
     print("\n[5] 前端在用的字段名保持不变")

@@ -11,9 +11,10 @@
     做**存量回填**（给账本托管种补开账单，幂等，每轮限量）。
 
 ★ 一键回退：把 ``HR_BILLS_ENFORCE`` 改回 ``False`` 即恢复「不接保护」（其余逻辑照跑）。
-  - ``HrBillsStore``：纯数据（零业务逻辑），JSON 持久化到 ``hr_bills.json``；
-  - ``get_hr_bills_store``：模块级工厂（照 ``persistence.get_gate_store``），**绝不挂
-    ``MagicFlowStore``**（进程级单例热重载不重建 → 新字段/新方法拿不到）；
+  - ``PgHrBillsStore``：**唯一运行时权威**（19.12.44 起）——账单与审计事件同库同事务；
+  - ``UnavailableHrBillsStore``：PG 不可用时的失败关闭占位（读 UNKNOWN / 写失败，**绝不回落 JSON**）；
+  - ``get_hr_bills_store``：模块级工厂（PG 不可用 30s 重探，恢复后自动换回；不挂
+    ``MagicFlowStore``，避免进程级单例热重载拿不到新方法）；
   - ``HrBillsMixin``：开账 / 巡检（作废·结清·回填，只改账单状态）/ 干跑 / 统计。
 
 ★ 19.10.34：站点 ``myhr.php`` 对账（``HrReconcileMixin`` + ``HrReconcileCache``）已拆到
@@ -84,6 +85,9 @@ HR_BILLS_MISSING_TTL_DAYS = 30.0
 # ★ 19.0.0：settled 行保留天数（挂够结清后仍暂存作幂等锚，防回填反复开/结；
 # 到期即销）。种消失**不再**当轮直接销（19.12.40 起走 HR_BILLS_MISSING_TTL_DAYS）。
 HR_BILLS_SETTLED_TTL_DAYS = 30.0
+# ★ 任务 136（N-136-03）：void 墓碑在保留期内（30 天）允许同 hash 重新下载重开，
+#   超过保留期后由 HrPurge 清理，重开走全新账单。
+HR_BILLS_VOID_REOPEN_DAYS = 30.0
 
 # ★ 11.7.0 逐种 H&R 标记（YemaPT ``hrPunishEnable`` 这类「无站点级规则、逐种开关」）。
 #   一键回退：改 ``False`` → 忽略候选的逐种标记，退回「只认站点规则」的旧行为
@@ -234,411 +238,116 @@ def _void_ok(res: Any) -> bool:
     return isinstance(res, dict) and not res.get("error")
 
 
-class HrBillsStore:
-    """纯数据存储：``hash -> 账单 dict``。零业务逻辑。
-
-    持久化：``hr_bills.json``（原子写 tmp→rename）；``save()`` 节流（热层即时、
-    文件至少间隔 ``FILE_MIN_INTERVAL`` 秒）；``load()`` 容错（坏文件 → 空）。
-    """
-
-    kv_region = "hrbills"
-    FILE_MIN_INTERVAL = 5.0
-
-    EVENTS_FILE = "hr_bill_events.json"
+class _StoreBase:
+    """账单存储公共面（任务 132：PG 单一权威，JSON 退出运行时）。"""
 
     def __init__(self, data_dir: Path, kv: Any = None):
+        # ★ 任务 134：``kv`` 参数仅为兼容工厂签名（旧热层随 JSON 运行时退役，不再使用）。
         self.data_dir = Path(data_dir)
-        self.file = self.data_dir / "hr_bills.json"
-        self.bills: Dict[str, Dict[str, Any]] = {}
-        self._lock = threading.RLock()
-        self._last_file_write = 0.0
-        self._pending = False
-        self._dirty: Set[str] = set()   # ★ 脏键集合：save/flush 只写变化的键（避免 O(N) 全量热层写）
-        self.kv = kv
-        # ★ 任务 98：append-only 审计事件（JSON 降级后端）。与 bills **共用同一把锁**，
-        #   事件追加 + 账单状态变更必须是同一个临界区，才不会「状态改了历史没记」。
-        self.events_file = self.data_dir / self.EVENTS_FILE
-        self.events: List[Dict[str, Any]] = []
-        self._event_keys: Set[str] = set()
-        self.load()
-        self._load_events()
-
-    # ------------------------------------------------------ 热层桥接（可选）
-    def kv_bind(self, kv: Any) -> None:
-        """重绑热层（工厂每次调用都会做，保证热重载后拿到新热层）。"""
-        self.kv = kv
-
-    def _kv_ready(self) -> bool:
-        kv = getattr(self, "kv", None)
-        if kv is None:
-            return False
-        try:
-            return bool(kv.available())
-        except Exception:  # noqa: BLE001
-            return False
-
-    # ------------------------------------------------------ 载入 / 持久化
-    def load(self) -> None:
-        """载入：热层优先；热层无数据 → 读文件并回灌；坏文件容错为空。"""
-        try:
-            if self._kv_ready():
-                rows = self.kv.items(self.kv_region + ":")
-                if rows:
-                    out: Dict[str, Dict[str, Any]] = {}
-                    for key, value in (rows or {}).items():
-                        if isinstance(value, dict):
-                            out[str(key).split(":", 1)[-1].lower()] = dict(value)
-                    if out:
-                        self.bills = out
-                        return
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            if self.file.exists():
-                with open(self.file, "r", encoding="utf-8") as f:
-                    data = json.load(f) or {}
-                if isinstance(data, dict):
-                    self.bills = {
-                        str(k).strip().lower(): dict(v)
-                        for k, v in data.items()
-                        if isinstance(v, dict)
-                    }
-        except Exception:  # noqa: BLE001
-            self.bills = {}
-
-    def _write_file(self, strict: bool = False) -> None:
-        """写账单冷备。``strict=True`` 时**不吞异常**（任务 98 原子事件写用）。"""
-        try:
-            self.data_dir.mkdir(parents=True, exist_ok=True)
-            tmp = self.file.with_name(self.file.name + ".tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(self.bills, f, ensure_ascii=False, indent=2)
-            tmp.replace(self.file)
-        except Exception:  # noqa: BLE001
-            if strict:
-                raise
-            pass
-
-    # ------------------------------------------------------ ★ 任务 98：审计事件（JSON 后端）
-    def _load_events(self) -> None:
-        """载入 append-only 事件档案；坏文件容错为空（**不删文件**，交给人工修）。"""
-        try:
-            if self.events_file.exists():
-                with open(self.events_file, "r", encoding="utf-8") as f:
-                    data = json.load(f) or []
-                if isinstance(data, list):
-                    self.events = [dict(x) for x in data if isinstance(x, dict)]
-        except Exception:  # noqa: BLE001
-            self.events = []
-        self._event_keys = {
-            str(e.get("dedup_key") or "").strip()
-            for e in self.events if str(e.get("dedup_key") or "").strip()
-        }
-
-    def _write_events_file(self) -> None:
-        """写事件档案（**故意不吞异常**）：写失败必须让整次状态变更一起失败。"""
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        tmp = self.events_file.with_name(self.events_file.name + ".tmp")
-        # ★ 项目铁律：写文件用 write_bytes（write_text 在 Windows 会静默 LF→CRLF）。
-        tmp.write_bytes(json.dumps(self.events, ensure_ascii=False, indent=2).encode("utf-8"))
-        tmp.replace(self.events_file)
-
-    def _append_events_locked(self, events: Any) -> Tuple[int, str]:
-        """在 ``self._lock`` 内追加事件。返回 ``(新增条数, 错误码)``。
-
-        ``dedup_key`` 已存在 → 跳过（幂等）。写文件失败 → **内存回滚**并返回错误码，
-        调用方据此放弃整次账单状态变更（fail-closed，绝不留下「有状态没历史」）。
-        """
-        new: List[Dict[str, Any]] = []
-        for e in (events or []):
-            if not isinstance(e, dict):
-                continue
-            key = str(e.get("dedup_key") or "").strip()[:160]
-            if key and key in self._event_keys:
-                continue
-            row = {c: e.get(c) for c in BILL_EVENT_FIELDS}
-            row["hash"] = str(row.get("hash") or "").strip().lower()[:64]
-            try:
-                row["at"] = float(row.get("at") or 0.0) or time.time()
-            except (TypeError, ValueError):
-                row["at"] = time.time()
-            row["dedup_key"] = key
-            new.append(row)
-        if not new:
-            return 0, ""
-        mark = len(self.events)
-        self.events.extend(new)
-        try:
-            self._write_events_file()
-        except Exception as err:  # noqa: BLE001
-            del self.events[mark:]
-            return 0, "event_write_failed:%s" % err
-        for r in new:
-            if r.get("dedup_key"):
-                self._event_keys.add(str(r["dedup_key"]))
-        return len(new), ""
-
-    def events_for(self, hash_string: str = "", limit: int = 0) -> List[Dict[str, Any]]:
-        """按 hash 读事件历史（默认全量、按时间升序）；``hash_string=""`` = 全部。"""
-        h = str(hash_string or "").strip().lower()
-        with self._lock:
-            rows = [dict(e) for e in self.events
-                    if not h or str(e.get("hash") or "").strip().lower() == h]
-        rows.sort(key=lambda x: (float(x.get("at") or 0.0), str(x.get("event_type") or "")))
-        if limit and limit > 0:
-            rows = rows[-int(limit):]
-        return rows
-
-    def _write_hot(self, keys: Optional[Any] = None) -> None:
-        """写热层。``keys=None`` = 全量（强制），否则只写指定键（增量）。"""
-        if not self._kv_ready():
-            return
-        try:
-            if keys is None:
-                keys = list(self.bills.keys())
-            batch = {f"{self.kv_region}:{k}": self.bills[k] for k in keys if k in self.bills}
-            if batch:
-                self.kv.set_many(batch)
-        except Exception:  # noqa: BLE001
-            pass
-
-    def save(self, force: bool = False, strict: bool = False) -> None:
-        """保存：热层（**只写脏键**）+ 文件节流（``force`` 立即落盘）。
-
-        ``strict=True``（★ 任务 98）：文件写失败**抛异常**而不是静默吞掉，供
-        ``patch_if(events=...)`` 做「事件 + 状态」同生共死的回滚。普通写路径行为不变。
-        """
-        with self._lock:
-            _dirty = set(self._dirty)
-            self._dirty.clear()
-            if _dirty or force:
-                try:
-                    self._write_hot(sorted(_dirty) if _dirty else None)
-                except Exception:  # noqa: BLE001
-                    pass
-            now = time.time()
-            if force or (now - self._last_file_write) >= self.FILE_MIN_INTERVAL:
-                self._write_file(strict=strict)
-                self._last_file_write = time.time()
-                self._pending = False
-            else:
-                self._pending = True
 
     def flush(self) -> None:
-        """把待写热层 + 冷备落盘（巡检收尾 / 停机前调用，防节流丢末笔）。"""
-        with self._lock:
-            _dirty = set(self._dirty)
-            self._dirty.clear()
-            if _dirty:
-                try:
-                    self._write_hot(sorted(_dirty))
-                except Exception:  # noqa: BLE001
-                    pass
-            if _dirty or self._pending or (time.time() - self._last_file_write) >= self.FILE_MIN_INTERVAL:
-                self._write_file()
-                self._last_file_write = time.time()
-                self._pending = False
+        """兼容调用面：PG 直写直读，没有需要刷盘的内存热层。"""
+        return None
 
-    # ------------------------------------------------------ 对外（纯数据）
+    def purge_expired(self, retention_days: float = 30.0,
+                      batch: int = 200) -> Dict[str, Any]:
+        """过期清理：仅 PG 后端支持；其它后端明确失败（不伪装成功）。"""
+        return {"ok": False, "error": "purge_unsupported", "deleted_bills": 0,
+                "deleted_events": 0, "eligible": 0, "scanned": 0, "batches": 0}
+
+
+class UnavailableHrBillsStore(_StoreBase):
+    """PG 不可用时的占位 store：读一律 UNKNOWN、写一律失败。
+
+    ★ 任务 132：这是「存储不可用」的唯一运行时表达。禁止把它当作空账单、
+    禁止回落到 JSON、禁止让调用方从异常里推断「没有账单」。
+    """
+
+    def __init__(self, data_dir: Path, reason: str = "db_unavailable"):
+        super().__init__(data_dir)
+        self.reason = str(reason or "db_unavailable")[:200]
+        self.checked_at = time.time()
+
+    def _unknown(self, detail: str = "") -> Dict[str, Any]:
+        err = self.reason + ((":" + detail) if detail else "")
+        return _hr_unknown(err, source="unavailable")
+
+    def get_result(self, hash_string: str) -> Dict[str, Any]:
+        return self._unknown("get")
+
+    def all_result(self) -> Dict[str, Any]:
+        return self._unknown("all")
+
+    def events_result(self, hash_string: str = "", limit: int = 0) -> Dict[str, Any]:
+        return self._unknown("events")
+
+    def all_events_result(self) -> Dict[str, Any]:
+        return self._unknown("all_events")
+
     def get(self, hash_string: str) -> Optional[Dict[str, Any]]:
-        h = str(hash_string or "").strip().lower()
-        return self.bills.get(h)
+        return None
+
+    def all(self) -> Dict[str, Dict[str, Any]]:
+        return {}
+
+    def events_for(self, hash_string: str = "", limit: int = 0) -> List[Dict[str, Any]]:
+        return []
 
     def put(self, hash_string: str, bill: Dict[str, Any],
             save: bool = True) -> Optional[Dict[str, Any]]:
-        """写入账单；同 hash 已存在 → 返回已有账单（不重复开）。
-
-        ``save=False``：只标脏，由调用方结尾统一 ``flush()`` —— 批量开账（回填 200 张）
-        走这条，避免「每张一次全量热层写」把一轮拖到分钟级。
-        """
-        h = str(hash_string or "").strip().lower()
-        with self._lock:
-            if h in self.bills:
-                return self.bills[h]
-            self.bills[h] = dict(bill)
-            self._dirty.add(h)
-            _rv_invalidate()
-            if save:
-                self.save()
-            return self.bills[h]
+        return None
 
     def patch(self, hash_string: str, save: bool = True,
               **fields: Any) -> Optional[Dict[str, Any]]:
-        """改字段（``save=False`` 同 ``put``：只标脏，等结尾一次性 flush）。"""
-        h = str(hash_string or "").strip().lower()
-        with self._lock:
-            b = self.bills.get(h)
-            if not isinstance(b, dict):
-                return None
-            b.update(fields)
-            self._dirty.add(h)
-            _rv_invalidate()
-            if save:
-                self.save()
-            return b
+        return None
 
     def patch_if(self, hash_string: str, expect: Any = None,
-                 save: bool = True, events: Any = None, **fields: Any) -> Dict[str, Any]:
-        """**条件写（CAS）**：仅当账单当前值仍等于 ``expect`` 时才改字段。
+                 **kwargs: Any) -> Dict[str, Any]:
+        """占位 store 的条件写：必须与 PG 同契约返回失败结果（不得返回 None）。
 
-        ★ 任务 98：``events`` 是可选的 append-only 审计事件列表。给定时，事件的
-        落盘与账单状态变更在**同一把锁**内完成，且强制 ``force + strict`` 落盘：
-        事件写失败 / 账单写失败 → 两边一起回滚，返回 ``{"ok": False,
-        "reason": "event_write_failed:*" | "bill_write_failed:*"}``。
-        不允许「账单重开了但历史没记」，也不允许「历史记了但状态没变」。
-
-        ★ 19.12.47（任务 91）为什么必须有它：``patch`` 是**整块覆盖**，而调用方的判定
-        基于**更早**读到的快照（``_hrbills_tick`` 的 ``store.all()``）。两者之间若有人工
-        结清落地，``patch`` 会把人工结论盖掉 —— 实测 ``settlement_method`` 从 ``manual``
-        被写成 ``auto``、``settled_by`` 还留着（行自相矛盾），8 个 manual 保护点同时失效
-        且**无日志**。CAS 把「读到的值」变成写前提，冲突即放弃本轮。
-
-        ``expect``：``{字段: 期望值}``；值为 ``None`` 表示期望「空/无此结论」。
-        返回三态（**调用方必须判 ``ok``**，不得只看有没有异常）：
-          · ``{"ok": True,  "reason": "",        "row": {...}}``  写入成功
-          · ``{"ok": False, "reason": "missing", "row": None}``   行不存在
-          · ``{"ok": False, "reason": "conflict","row": {...}}``  期望值不符（**未写入**）
+        任务 134（N-133-01）：``None`` 会被调用方当作「结果未知」，虽然 CAS 层仍
+        fail-closed，但契约不一致；这里直接返回 ``ok=False + status=unknown``。
         """
-        h = str(hash_string or "").strip().lower()
-        with self._lock:
-            b = self.bills.get(h)
-            if not isinstance(b, dict):
-                return {"ok": False, "reason": "missing", "row": None}
-            for k, v in (expect or {}).items():
-                if b.get(k) != v:
-                    return {"ok": False, "reason": "conflict", "row": dict(b)}
-            evs = list(events) if isinstance(events, (list, tuple)) else []
-            mark = len(self.events)
-            keys_before = set(self._event_keys)
-            if evs:
-                _n, _err = self._append_events_locked(evs)
-                if _err:
-                    # 事件落盘失败 → 账单一步都不动（fail-closed）
-                    return {"ok": False, "reason": _err, "row": dict(b)}
-            before = dict(b)
-            b.update(fields)
-            self._dirty.add(h)
-            if evs:
-                try:
-                    self.save(force=True, strict=True)
-                except Exception as err:  # noqa: BLE001
-                    self.bills[h] = before
-                    del self.events[mark:]
-                    self._event_keys = keys_before
-                    try:
-                        self._write_events_file()
-                    except Exception:  # noqa: BLE001
-                        pass
-                    return {"ok": False, "reason": "bill_write_failed:%s" % err,
-                            "row": before}
-            elif save:
-                self.save()
-            _rv_invalidate()
-            return {"ok": True, "reason": "", "row": dict(b),
-                    "events": len(evs) if evs else 0}
+        return _hr_store_write(False, self.reason, source="unavailable")
 
     def drop(self, hash_string: str) -> bool:
-        """删除一张账单（**误开账单清理 / 人工兜底**用，正常作废走 ``_hrbills_void``）。"""
-        h = str(hash_string or "").strip().lower()
-        with self._lock:
-            if h not in self.bills:
-                return False
-            del self.bills[h]
-            self._dirty.discard(h)
-            try:
-                self.kv.delete(f"{self.kv_region}:{h}")
-            except Exception:  # noqa: BLE001
-                pass
-            self._write_file()
-            _rv_invalidate()
-            return True
+        return False
 
     def drop_void(self) -> int:
-        """批量删除所有 ``state=void`` 墓碑。**只作人工清理入口，tick 已不再调用**。
-
-        ★ 19.12.43：墓碑是「这颗种已被判为不欠」的唯一凭证，删了就等于**允许回填
-        重新开账**（``_hrbills_backfill`` 幂等判据就是 ``store.get(h)`` 是否存在）。
-        所以 ``_hrbills_tick`` 每轮调用 ``drop_void()`` 的老逻辑已移除 —— 本方法只留给
-        「确认墓碑过期、要人工重开」的场合。返回删除条数。
-        """
-        with self._lock:
-            voids = [h for h, b in self.bills.items()
-                     if isinstance(b, dict) and str(b.get("state") or "") == BILL_STATE_VOID]
-            if not voids:
-                return 0
-            for h in voids:
-                del self.bills[h]
-                self._dirty.discard(h)
-            try:
-                self.kv.delete_many([f"{self.kv_region}:{h}" for h in voids])
-            except Exception:  # noqa: BLE001
-                pass
-            self._write_file()
-            _rv_invalidate()
-            return len(voids)
+        return 0
 
     def drop_many(self, hashes: Any) -> int:
-        """批量删除指定 hash 的账单（误开账单清理）。返回删除条数。"""
-        with self._lock:
-            hs = [str(h or "").strip().lower() for h in (hashes or [])]
-            hs = [h for h in hs if h in self.bills]
-            if not hs:
-                return 0
-            for h in hs:
-                del self.bills[h]
-                self._dirty.discard(h)
-            try:
-                self.kv.delete_many([f"{self.kv_region}:{h}" for h in hs])
-            except Exception:  # noqa: BLE001
-                pass
-            self._write_file()
-            _rv_invalidate()
-            return len(hs)
+        return 0
 
     def drop_many_if(self, items: Any) -> Dict[str, Any]:
-        """**条件批量删**：每项 ``(hash, expect)``，当前值仍等于 ``expect`` 才删。
+        return {"dropped": 0, "requested": len(items or ()), "skipped": {}}
 
-        ★ 19.12.47（任务 91）：tick 的销账/复用份清理都是「按快照判定 → 事后批量删」，
-        期间若有人工结清落地，删行会让 ``_hrbills_backfill`` 的幂等判据（行存在）失效 →
-        同 hash 被重开成 active，人工结论反转成「还欠」。条件删除把判定固化成删除前提。
+    def put_result(self, hash_string: str, bill: Dict[str, Any],
+                   save: bool = True) -> Dict[str, Any]:
+        return _hr_store_write(False, self.reason, source="unavailable")
 
-        返回 ``{"dropped": [...], "skipped": [...]}``（skipped = 行不存在或期望值已变）。
-        """
-        out: Dict[str, Any] = {"dropped": [], "skipped": []}
-        with self._lock:
-            for item in (items or []):
-                try:
-                    hs = item[0]
-                    expect = item[1] if len(item) > 1 else None
-                except Exception:  # noqa: BLE001
-                    continue
-                h = str(hs or "").strip().lower()
-                b = self.bills.get(h)
-                if not isinstance(b, dict):
-                    out["skipped"].append(h)
-                    continue
-                if any(b.get(k) != v for k, v in (expect or {}).items()):
-                    out["skipped"].append(h)
-                    continue
-                del self.bills[h]
-                self._dirty.discard(h)
-                out["dropped"].append(h)
-            if out["dropped"]:
-                try:
-                    self.kv.delete_many([f"{self.kv_region}:{h}" for h in out["dropped"]])
-                except Exception:  # noqa: BLE001
-                    pass
-                self._write_file()
-                _rv_invalidate()
-        return out
+    def patch_result(self, hash_string: str, save: bool = True,
+                     **kwargs: Any) -> Dict[str, Any]:
+        return _hr_store_write(False, self.reason, source="unavailable")
 
-    def all(self) -> Dict[str, Dict[str, Any]]:
-        with self._lock:
-            return dict(self.bills)
+    def drop_result(self, hash_string: str) -> Dict[str, Any]:
+        return _hr_store_write(False, self.reason, source="unavailable")
+
+    def drop_many_result(self, hashes: Any) -> Dict[str, Any]:
+        return _hr_store_write(False, self.reason, source="unavailable")
 
     def stats(self) -> Dict[str, Any]:
-        with self._lock:
-            return _bills_stats(dict(self.bills))
+        """统计必须如实表达 UNKNOWN，绝不伪造零账单。"""
+        return {"total": 0, "by_state": {}, "by_rule": {}, "by_site": {},
+                "no_site": 0, "opened_by": {},
+                "store_status": STORE_UNKNOWN, "store_error": self.reason,
+                "checked_at": time.time()}
+
+    def purge_expired(self, retention_days: float = 30.0,
+                      batch: int = 200) -> Dict[str, Any]:
+        return {"ok": False, "error": "store_unavailable",
+                "reason": self.reason, "deleted_bills": 0, "deleted_events": 0,
+                "eligible": 0, "scanned": 0, "batches": 0}
 
 
 
@@ -663,6 +372,114 @@ def _bills_stats(bills: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     return out
 
 
+# ══════════════════════════════════════════════════════════════════════
+# 三态存储结果契约（任务 111 / HR-03）
+#   FOUND   = 读取成功，确认存在记录
+#   ABSENT  = 读取成功，确认不存在记录
+#   UNKNOWN = 读取失败/超时/连接异常/结果不完整 → **绝不能当 ABSENT**
+# 写操作同样返回显式结果；批量操作无法确认全部成功时必须报 UNKNOWN，
+# 不允许把部分成功包装成整体成功。
+# ══════════════════════════════════════════════════════════════════════
+STORE_FOUND = "found"
+STORE_ABSENT = "absent"
+STORE_UNKNOWN = "unknown"
+# 任务 132：可见性分层已删除；PG 读失败一律 UNKNOWN。
+
+
+def _hr_store_read(status: str, value: Any = None, error: str = "",
+                   source: str = "") -> Dict[str, Any]:
+    """构造读结果（内部口径，勿直接改字段）。"""
+    return {
+        "status": str(status),
+        "value": value,
+        "error": str(error or "")[:300],
+        "source": str(source or ""),
+        "checked_at": time.time(),
+    }
+
+
+def _hr_found(value: Any, source: str = "") -> Dict[str, Any]:
+    return _hr_store_read(STORE_FOUND, value=value, source=source)
+
+
+def _hr_absent(source: str = "") -> Dict[str, Any]:
+    return _hr_store_read(STORE_ABSENT, source=source)
+
+
+def _hr_unknown(error: str, source: str = "") -> Dict[str, Any]:
+    return _hr_store_read(STORE_UNKNOWN, error=error, source=source)
+
+
+def _hr_read_ok(res: Any) -> bool:
+    """读结果是否为 FOUND（只有此时 value 可信）。"""
+    return isinstance(res, dict) and str(res.get("status") or "") == STORE_FOUND
+
+
+def _hr_read_unknown(res: Any) -> bool:
+    return not isinstance(res, dict) or str(res.get("status") or "") == STORE_UNKNOWN
+
+
+def _hr_read_absent(res: Any) -> bool:
+    return isinstance(res, dict) and str(res.get("status") or "") == STORE_ABSENT
+
+
+def _hr_read_confirmed(res: Any) -> bool:
+    """读结果是否**已确认**：FOUND（有值）或 ABSENT（确认没有）。
+
+    与 ``_hr_read_ok`` 的区别：ABSENT 也是一次成功读取，调用方可以据此
+    「确认没有这张账单」；只有 UNKNOWN 才是「不知道」。凡是需要区分
+    「不存在」与「读不到」的消费面都必须用本函数。
+    """
+    return isinstance(res, dict) and str(res.get("status") or "") in (
+        STORE_FOUND, STORE_ABSENT)
+
+
+def _hr_store_write(ok: bool, reason: str = "", value: Any = None,
+                    source: str = "", partial: bool = False,
+                    status: str = "") -> Dict[str, Any]:
+    """构造写结果。``status`` 缺省时由 ``ok/partial`` 推导。
+
+    语义：``ok=True`` 且 ``partial=False`` = 确定成功；``ok=False`` 或
+    ``partial=True`` = 失败/不确定（调用方不得当作成功）。``reason`` 必须可读。
+    """
+    if not status:
+        status = STORE_FOUND if (ok and not partial) else STORE_UNKNOWN
+    return {
+        "ok": bool(ok and not partial),
+        "partial": bool(partial),
+        "status": str(status),
+        "reason": str(reason or "")[:300],
+        "value": value,
+        "source": str(source or ""),
+        "checked_at": time.time(),
+    }
+
+
+# 欠账集合的 last-good 缓存：UNKNOWN 时**不得缩小保护集合**，用最近一次成功结果
+_HR_OWED_CACHE: Dict[str, Any] = {"hashes": set(), "at": 0.0}
+_HR_OWED_CACHE_TTL = 600.0
+
+
+def _hr_owed_cache_put(hashes: Any) -> None:
+    """记录最近一次成功读到的欠账单集合（UNKNOWN 时的保护依据）。
+    """
+    try:
+        _HR_OWED_CACHE["hashes"] = set(hashes or set())
+        _HR_OWED_CACHE["at"] = time.time()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _hr_owed_cache_hashes() -> Set[str]:
+    """取 last-good 欠账集合（TTL 内）；无可用缓存 → 空集（删除侧另有 fail-closed）。"""
+    try:
+        if time.time() - float(_HR_OWED_CACHE.get("at") or 0.0) <= _HR_OWED_CACHE_TTL:
+            return set(_HR_OWED_CACHE.get("hashes") or set())
+    except Exception:  # noqa: BLE001
+        pass
+    return set()
+
+
 def _mfdb_module() -> Any:
     """懒取插件 db 模块（离线无 sqlalchemy → None，调用方走 JSON 降级）。"""
     try:
@@ -672,7 +489,25 @@ def _mfdb_module() -> Any:
         return None
 
 
-class PgHrBillsStore(HrBillsStore):
+# ★ 任务 134（N-133-02）：清理候选的最终状态时间合法性上限（2100-01-01）。
+#   时间必须 > 0、<= 当前时间、< 上限；缺时间/0/负数/NaN/Inf/未来时间都不是候选。
+_PURGE_TS_MAX = 4102444800.0
+
+
+def _purge_ts_ok(ts: Any, now: float) -> bool:
+    """最终状态时间是否可作为清理依据（保守：任何可疑值都拒绝）。"""
+    try:
+        v = float(ts)
+    except (TypeError, ValueError):
+        return False
+    if v != v or v in (float("inf"), float("-inf")):  # NaN / ±Inf
+        return False
+    if v <= 0.0 or v > float(now) or v >= _PURGE_TS_MAX:
+        return False
+    return True
+
+
+class PgHrBillsStore(_StoreBase):
     """mf_bills 表后端（★ 19.0.0 存储收口：hr_bills.json + Redis hrbills:* → PG）。
 
     - 真值源 = PG 表 ``mf_bills``，直写直读（每操作一事务）；无热层、无 JSON 冷备、
@@ -698,29 +533,8 @@ class PgHrBillsStore(HrBillsStore):
                "settlement_method", "settled_by", "settlement_reason")
 
     def __init__(self, data_dir: Path, kv: Any = None):
-        # 不调父类 __init__（其会 load() JSON——PG 模式下那不是真值源）
         self.data_dir = Path(data_dir)
-        self.file = self.data_dir / "hr_bills.json"
-        self.bills: Dict[str, Dict[str, Any]] = {}
-        self._lock = threading.RLock()
-        self._last_file_write = 0.0
-        self._pending = False
-        self._dirty: Set[str] = set()
-        self.kv = kv
-        # ★ 任务 98：PG 后端事件走 mf_bill_events 表；这几个属性只为保持双后端接口同形。
-        self.events_file = self.data_dir / self.EVENTS_FILE
-        self.events: List[Dict[str, Any]] = []
-        self._event_keys: Set[str] = set()
-
-    # ------------------------------------------------------ 兼容面（no-op）
-    def load(self) -> None:
-        return None
-
-    def save(self, force: bool = False, strict: bool = False) -> None:
-        return None
-
-    def flush(self) -> None:
-        return None
+        self.generation = 0
 
     # ------------------------------------------------------ 内部
     def _run(self, fn: Any, default: Any = None) -> Any:
@@ -738,9 +552,13 @@ class PgHrBillsStore(HrBillsStore):
 
     @classmethod
     def _to_dict(cls, row: Any) -> Dict[str, Any]:
+        """把 ORM 行转成与 JSON 账单一致的 dict（含 hash，供各消费面共用）。"""
         out: Dict[str, Any] = {}
         for c in cls._FIELDS:
             out[c] = getattr(row, c, None)
+        # ★ 任务 113（N-05）：行投影补主键 —— 视图/消费面按 ``bill["hash"]`` 取身份时，
+        #   PG 模式不能与 JSON 模式行为不同（JSON 账单本身就带 hash 键）。
+        out["hash"] = getattr(row, "hash", None) or out.get("hash")
         return out
 
     # ------------------------------------------------------ 对外（同 HrBillsStore API）
@@ -757,6 +575,7 @@ class PgHrBillsStore(HrBillsStore):
 
     def put(self, hash_string: str, bill: Dict[str, Any],
             save: bool = True) -> Optional[Dict[str, Any]]:
+        """PG 单条写入：行已存在则返回旧行、不覆盖（幂等）；失效引用返回 None。"""
         h = str(hash_string or "").strip().lower()
         if not h:
             return None
@@ -788,6 +607,7 @@ class PgHrBillsStore(HrBillsStore):
 
     def patch(self, hash_string: str, save: bool = True,
               **fields: Any) -> Optional[Dict[str, Any]]:
+        """PG 读改写：行不存在返回 None；retired 引用直接 None（不伪装成功）。"""
         h = str(hash_string or "").strip().lower()
         if not h:
             return None
@@ -864,6 +684,7 @@ class PgHrBillsStore(HrBillsStore):
 
     def patch_if(self, hash_string: str, expect: Any = None,
                  save: bool = True, events: Any = None, **fields: Any) -> Dict[str, Any]:
+        """PG 条件更新（CAS）：状态与事件同事务；返回 ok/reason 三态结果。"""
         """**条件写（CAS）· 存储层原子版**（★ 19.12.47 / 任务 91）。
 
         实现：**单条** ``UPDATE mf_bills SET … WHERE hash = ? AND state IS NOT DISTINCT
@@ -924,6 +745,7 @@ class PgHrBillsStore(HrBillsStore):
         return res
 
     def drop(self, hash_string: str) -> bool:
+        """PG 单条删除；retired 引用返回 False（不得伪装成功）。"""
         h = str(hash_string or "").strip().lower()
         if not h:
             return False
@@ -933,6 +755,10 @@ class PgHrBillsStore(HrBillsStore):
             if row is None:
                 return False
             sess.delete(row)
+            # ★ 任务 136（N-136-06）：账单与其审计事件必须同事务删除；
+            #   ``mf_bill_events`` 无外键，漏删会留下永久孤儿。
+            sess.query(mf.BillEventRow).filter(mf.BillEventRow.hash == h).delete(
+                synchronize_session=False)
             return True
 
         changed = bool(self._run(_op, default=False))
@@ -941,11 +767,20 @@ class PgHrBillsStore(HrBillsStore):
         return changed
 
     def drop_void(self) -> int:
-        """删所有 void 墓碑（人工清理口，tick 不调用；见 ``HrBillsStore.drop_void``）。"""
+        """删所有 void 墓碑**及其审计事件**（人工清理口，tick 不调用）。
 
+        ★ 任务 136 契约：物理删除必须不产孤儿事件。``mf_bill_events`` 无外键，
+        所以这里与 ``drop/drop_many`` 一样，在同一 session/事务里先按 hash 删事件
+        再删账单；返回被删的**账单**行数（0 表示无墓碑或存储不可用）。
+        """
         def _op(sess: Any, mf: Any) -> int:
-            return int(sess.query(mf.BillRow)
-                       .filter(mf.BillRow.state == BILL_STATE_VOID)
+            hs = [str(r[0]) for r in sess.query(mf.BillRow.hash)
+                  .filter(mf.BillRow.state == BILL_STATE_VOID).all()]
+            if not hs:
+                return 0
+            sess.query(mf.BillEventRow).filter(mf.BillEventRow.hash.in_(hs)).delete(
+                synchronize_session=False)
+            return int(sess.query(mf.BillRow).filter(mf.BillRow.hash.in_(hs))
                        .delete(synchronize_session=False))
 
         n = int(self._run(_op, default=0) or 0)
@@ -954,15 +789,20 @@ class PgHrBillsStore(HrBillsStore):
         return n
 
     def drop_many(self, hashes: Any) -> int:
+        """PG 批量删除；后端异常返回 0（不得伪装成功）。"""
         hs = sorted({str(x or "").strip().lower() for x in (hashes or [])
                      if str(x or "").strip()})
         if not hs:
             return 0
 
         def _op(sess: Any, mf: Any) -> int:
-            return int(sess.query(mf.BillRow)
-                       .filter(mf.BillRow.hash.in_(hs))
-                       .delete(synchronize_session=False))
+            n = int(sess.query(mf.BillRow)
+                    .filter(mf.BillRow.hash.in_(hs))
+                    .delete(synchronize_session=False))
+            # ★ 任务 136（N-136-06）：同事务清事件（无外键，必须显式删）。
+            sess.query(mf.BillEventRow).filter(mf.BillEventRow.hash.in_(hs)).delete(
+                synchronize_session=False)
+            return n
 
         n = int(self._run(_op, default=0) or 0)
         if n:
@@ -970,7 +810,9 @@ class PgHrBillsStore(HrBillsStore):
         return n
 
     def drop_many_if(self, items: Any) -> Dict[str, Any]:
-        """**条件批量删 · 存储层原子版**（★ 19.12.47 / 任务 91）。
+        """PG 条件批量删（原子 WHERE）；retired 引用把每一项都算 skipped。
+
+        **条件批量删 · 存储层原子版**（★ 19.12.47 / 任务 91）。
 
         每行一条 ``DELETE … WHERE hash = ? AND state IS NOT DISTINCT FROM ? AND
         settlement_method IS NOT DISTINCT FROM ?``，用 ``rowcount`` 判是否真删。
@@ -1001,6 +843,10 @@ class PgHrBillsStore(HrBillsStore):
                     col = getattr(mf.BillRow, k)
                     q = q.filter(col.is_(None) if v is None else col == v)
                 n = int(q.delete(synchronize_session=False) or 0)
+                if n:
+                    # ★ 任务 136（N-136-06）：删除成功 → 同事务删该 hash 的事件。
+                    sess.query(mf.BillEventRow).filter(
+                        mf.BillEventRow.hash == h).delete(synchronize_session=False)
                 (got["dropped"] if n else got["skipped"]).append(h)
             return got
 
@@ -1017,49 +863,516 @@ class PgHrBillsStore(HrBillsStore):
 
         return self._run(_op, default={}) or {}
 
+    # ---------- 三态读/写结果（任务 111 / HR-03） ----------
+    def _run_read(self, fn: Any) -> Dict[str, Any]:
+        """带三态的只读执行；**不再把异常折成 default**。"""
+        mf = _mfdb_module()
+        if mf is None:
+            return _hr_unknown("db_module_missing", "pg")
+        if not mf.db_available():
+            return _hr_unknown("db_unavailable", "pg")
+        try:
+            with mf.db_session() as sess:
+                if sess is None:
+                    raise RuntimeError("db_session_unavailable")
+                return _hr_found(fn(sess, mf), "pg")
+        except Exception as err:  # noqa: BLE001
+            return _hr_unknown(f"pg:{err!r}", "pg")
+
+    def get_result(self, hash_string: str) -> Dict[str, Any]:
+        """读取单条账单的三态结果（FOUND/ABSENT/UNKNOWN）。
+
+        存储异常不得折叠成「没有这条账单」：调用方据此决定是否保守放行。
+        """
+        h = str(hash_string or "").strip().lower()
+
+        def _op(sess: Any, mf: Any) -> Any:
+            row = sess.get(mf.BillRow, h)
+            return None if row is None else self._to_dict(row)
+
+        res = self._run_read(_op)
+        if res["status"] == STORE_FOUND and res.get("value") is None:
+            return _hr_absent("pg")
+        return res
+
+    def all_result(self) -> Dict[str, Any]:
+        """读取全量账单的三态结果。
+
+        UNKNOWN 时调用方必须保留保护集合，不能当成空账本。
+        """
+        def _op(sess: Any, mf: Any) -> Dict[str, Dict[str, Any]]:
+            rows = sess.query(mf.BillRow).all()
+            return {str(r.hash): self._to_dict(r) for r in rows}
+
+        return self._run_read(_op)
+
+    def events_result(self, hash_string: str = "", limit: int = 0) -> Dict[str, Any]:
+        """三态事件读；``hash=""`` = 全量（与 JSON 语义一致）；不可读 → UNKNOWN。"""
+        h = str(hash_string or "").strip().lower()
+        lim = int(limit or 0)
+
+        def _op(sess: Any, mf: Any) -> List[Dict[str, Any]]:
+            q = sess.query(mf.BillEventRow)
+            if h:
+                q = q.filter(mf.BillEventRow.hash == h)
+            q = q.order_by(mf.BillEventRow.id.desc())
+            if lim > 0:
+                q = q.limit(lim)
+            return [self._event_row_dict(r) for r in q.all()]
+
+        return self._run_read(_op)
+
+    def all_events_result(self) -> Dict[str, Any]:
+        """全量事件档案三态读（PG 全表；异常/表缺失 → UNKNOWN）。"""
+        def _op(sess: Any, mf: Any) -> List[Dict[str, Any]]:
+            rows = sess.query(mf.BillEventRow).order_by(mf.BillEventRow.id.asc()).all()
+            return [self._event_row_dict(r) for r in rows]
+
+        return self._run_read(_op)
+
+    def put_result(self, hash_string: str, bill: Dict[str, Any],
+                   save: bool = True) -> Dict[str, Any]:
+        """PG 写入：以落库后的行对象为成功证据，拿不到行即失败。
+        """
+        mf = _mfdb_module()
+        if mf is None or not mf.db_available():
+            return _hr_store_write(False, "db_unavailable", source="pg")
+        existing = self.get_result(hash_string)
+        try:
+            b = self.put(hash_string, bill, save=save)
+        except Exception as err:  # noqa: BLE001
+            return _hr_store_write(False, f"pg:put:{err!r}", source="pg")
+        if not isinstance(b, dict):
+            if not mf.db_available():
+                return _hr_store_write(False, "db_unavailable", source="pg")
+            return _hr_store_write(False, "pg:put:no_row", source="pg")
+        out = _hr_store_write(True, "ok", value=b, source="pg")
+        out["updated"] = existing.get("status") != STORE_FOUND
+        return out
+
+    def patch_result(self, hash_string: str, save: bool = True,
+                     **fields: Any) -> Dict[str, Any]:
+        """PG 读改写：行不存在返回 ABSENT，写失败返回 ok=False。
+        """
+        mf = _mfdb_module()
+        if mf is None or not mf.db_available():
+            return _hr_store_write(False, "db_unavailable", source="pg")
+        try:
+            b = self.patch(hash_string, save=save, **fields)
+        except Exception as err:  # noqa: BLE001
+            return _hr_store_write(False, f"pg:patch:{err!r}", source="pg")
+        if isinstance(b, dict):
+            return _hr_store_write(True, "ok", value=b, source="pg")
+        res = self.get_result(hash_string)
+        if _hr_read_absent(res):
+            return _hr_store_write(True, "missing", source="pg", status=STORE_ABSENT)
+        return _hr_store_write(False, "pg:patch:failed", source="pg")
+
+    def drop_result(self, hash_string: str) -> Dict[str, Any]:
+        """PG 删除：删除成功才算 ok；未命中再读一次区分 ABSENT 与失败。
+        """
+        mf = _mfdb_module()
+        if mf is None or not mf.db_available():
+            return _hr_store_write(False, "db_unavailable", source="pg")
+        try:
+            ok = self.drop(hash_string)
+        except Exception as err:  # noqa: BLE001
+            return _hr_store_write(False, f"pg:drop:{err!r}", source="pg")
+        if ok:
+            return _hr_store_write(True, "dropped", source="pg", value=True)
+        res = self.get_result(hash_string)
+        if _hr_read_absent(res):
+            return _hr_store_write(True, "not_found", source="pg", value=False,
+                                   status=STORE_ABSENT)
+        return _hr_store_write(False, "pg:drop:failed", source="pg")
+
+    def drop_many_result(self, hashes: Any) -> Dict[str, Any]:
+        """PG 批量删除：以 DELETE 的 rowcount 为唯一成功证据；异常一律报失败。
+        """
+        hs = sorted({str(h or "").strip().lower() for h in (hashes or [])
+                     if str(h or "").strip()})
+        mf = _mfdb_module()
+        if mf is None or not mf.db_available():
+            return _hr_store_write(False, "db_unavailable", source="pg")
+        _miss = object()
+
+        def _op(sess: Any, _mf: Any) -> int:
+            if not hs:
+                return 0
+            return int(sess.query(_mf.BillRow)
+                       .filter(_mf.BillRow.hash.in_(hs))
+                       .delete(synchronize_session=False))
+
+        # ★ 任务 111：批量写不能把「异常 → 0 条」和「确实 0 条」混为一谈。
+        n = self._run(_op, default=_miss)
+        if n is _miss:
+            return _hr_store_write(False, "pg:drop_many:failed", source="pg")
+        return _hr_store_write(True, "ok",
+                               value={"dropped": int(n or 0), "requested": len(hs)},
+                               source="pg")
+
+    def _purge_batch(self, mf: Any, cutoff: float, limit: int,
+                     now: float = 0.0) -> Dict[str, int]:
+        """一批清理：事件与账单在**同一事务**里删除；行数不符整批回滚。
+
+        任务 134：SQL 过滤后仍在 Python 侧复验最终状态时间；不合法行整批剔除、
+        不删除（SQL 已排除，这里是防御性二次校验）。
+        """
+        _now = float(now or time.time())
+
+        def _op(sess: Any, mfdb: Any) -> Dict[str, int]:
+            rows = (sess.query(mfdb.BillRow.hash, mfdb.BillRow.state,
+                               mfdb.BillRow.settled_at, mfdb.BillRow.voided_at)
+                    .filter(self._purge_candidate_filter(mfdb, cutoff, _now))
+                    .order_by(mfdb.BillRow.hash).limit(limit).all())
+            good: List[str] = []
+            skipped = 0
+            for r in rows:
+                st = str(r[1] or "")
+                ts = r[2] if st == "settled" else r[3]
+                if st in ("settled", "void") and _purge_ts_ok(ts, _now) and float(ts) < cutoff:
+                    good.append(str(r[0]))
+                else:
+                    skipped += 1
+            hashes = [h for h in good if h]
+            if not hashes:
+                return {"scanned": int(skipped), "deleted_bills": 0,
+                        "deleted_events": 0, "skipped_invalid": int(skipped)}
+            ev = (sess.query(mfdb.BillEventRow)
+                  .filter(mfdb.BillEventRow.hash.in_(hashes)).delete(
+                      synchronize_session=False))
+            bl = (sess.query(mfdb.BillRow)
+                  .filter(mfdb.BillRow.hash.in_(hashes),
+                          self._purge_candidate_filter(mfdb, cutoff, _now)).delete(
+                              synchronize_session=False))
+            if int(bl) != len(hashes):
+                raise RuntimeError("purge_concurrent_change")
+            return {"scanned": len(hashes) + int(skipped),
+                    "deleted_bills": int(bl), "deleted_events": int(ev),
+                    "skipped_invalid": int(skipped)}
+
+        out = self._run(_op)
+        if not isinstance(out, dict):
+            raise RuntimeError("purge_batch_failed")
+        return out
+
+    # ------------------------------------------------------ 过期清理（任务 132）
+    PURGE_STATES = ("settled", "void")
+
+    def _purge_invalid_count(self, mf: Any, now: float,
+                             cutoff: float) -> int:
+        """统计「最终状态时间非法」的到期候选（0/负数/NaN/Inf/未来时间）。
+
+        任务 134（N-133-02）：这些行**不得进入清理**；单独计数 + 告警，便于发现
+        历史脏数据，而不是静默跳过或按默认时间处理。
+        """
+        from sqlalchemy import and_, not_, or_  # noqa: WPS433
+
+        def _bad(col: Any) -> Any:
+            ok = and_(col.isnot(None), col > 0, col <= now, col < _PURGE_TS_MAX)
+            return and_(col.isnot(None), not_(ok))
+
+        def _op(sess: Any, mfdb: Any) -> int:
+            return int(sess.query(mfdb.BillRow.hash)
+                       .filter(and_(or_(mfdb.BillRow.state == "settled",
+                                        mfdb.BillRow.state == "void"),
+                                    _bad(mfdb.BillRow.settled_at),
+                                    mfdb.BillRow.state == "settled")).count()
+                       or 0) + int(sess.query(mfdb.BillRow.hash)
+                                   .filter(and_(mfdb.BillRow.state == "void",
+                                                _bad(mfdb.BillRow.voided_at)))
+                                   .count() or 0)
+
+        return int(self._run(_op, default=0) or 0)
+
+    def _purge_candidate_filter(self, mf: Any, cutoff: float,
+                                now: float = 0.0) -> Any:
+        """settled/void 的「最终状态时间」必须**合法**且早于 cutoff。
+
+        任务 134（N-133-02）：时间必须 > 0、<= now、< 2100-01-01（``_PURGE_TS_MAX``），
+        且早于 cutoff。缺时间 / 0 / 负数 / NaN / ±Inf / 未来时间一律不是候选
+        （NaN 在 PG 中大于一切数值，会被 ``<= now`` 排除；Inf 同理）。
+        """
+        from sqlalchemy import and_, or_  # noqa: WPS433
+        _now = float(now or time.time())
+
+        def _valid(col: Any) -> Any:
+            return and_(col.isnot(None), col > 0, col <= _now,
+                        col < _PURGE_TS_MAX, col < cutoff)
+
+        return or_(
+            and_(mf.BillRow.state == "settled", _valid(mf.BillRow.settled_at)),
+            and_(mf.BillRow.state == "void", _valid(mf.BillRow.voided_at)),
+        )
+
+    def _purge_association_error(self, mf: Any) -> str:
+        """清理前置安全检查：不允许存在孤立事件（事件 hash 找不到账单）。"""
+        def _op(sess: Any, mfdb: Any) -> str:
+            orph = (sess.query(mfdb.BillEventRow.id)
+                    .outerjoin(mfdb.BillRow, mfdb.BillRow.hash == mfdb.BillEventRow.hash)
+                    .filter(mfdb.BillRow.hash.is_(None))
+                    .limit(1).all())
+            if orph:
+                return "association_orphan_events"
+            nulls = (sess.query(mfdb.BillEventRow.id)
+                     .filter(mfdb.BillEventRow.hash.is_(None)).limit(1).all())
+            if nulls:
+                return "association_null_hash"
+            return ""
+
+        return self._run(_op, default="association_check_failed") or ""
+
+
+    def purge_expired(self, retention_days: float = 30.0,
+                      batch: int = 200) -> Dict[str, Any]:
+        """清理 settled/void 超过保留期的账单及其事件（任务 132）。
+
+        安全约束：最终状态时间缺失不清理；事件与账单同事务；行数不符整批回滚；
+        孤立事件/空 hash 事件 → 整轮中止；PG 不可用 → 明确失败；重复/并发执行安全。
+        """
+        mf = _mfdb_module()
+        stats: Dict[str, Any] = {
+            "ok": False, "cutoff": 0.0, "retention_days": float(retention_days),
+            "batch": int(batch), "scanned": 0, "eligible": 0,
+            "deleted_bills": 0, "deleted_events": 0, "batches": 0,
+            "error": "", "started_at": time.time(), "finished_at": 0.0,
+        }
+        if mf is None:
+            stats["error"] = "db_module_missing"
+            stats["finished_at"] = time.time()
+            return stats
+        if not mf.db_available():
+            stats["error"] = "db_unavailable"
+            stats["finished_at"] = time.time()
+            return stats
+        limit = max(1, int(batch or 200))
+        _now = time.time()
+        cutoff = _now - max(1.0, float(retention_days or 30.0)) * 86400.0
+        stats["cutoff"] = cutoff
+        assoc = self._purge_association_error(mf)
+        if assoc:
+            stats["error"] = assoc
+            stats["finished_at"] = time.time()
+            return stats
+        # ★ 任务 134（N-133-02）：不合法最终状态时间 → 不清理 + 计数告警（不静默）。
+        try:
+            invalid = self._purge_invalid_count(mf, _now, cutoff)
+        except Exception:  # noqa: BLE001
+            invalid = 0
+        stats["invalid_times"] = int(invalid or 0)
+        if invalid:
+            _hr_log("魔流·H&R 账单过期清理：%d 条账单最终状态时间非法（0/负数/NaN/Inf/未来），"
+                    "已跳过且不删除" % int(invalid), "warning")
+        for _i in range(1000):
+            try:
+                one = self._purge_batch(mf, cutoff, limit, _now)
+            except Exception as err:  # noqa: BLE001
+                stats["error"] = "batch_failed:%s" % type(err).__name__
+                stats["finished_at"] = time.time()
+                return stats
+            stats["batches"] = int(stats["batches"]) + 1
+            stats["scanned"] = int(stats["scanned"]) + int(one["scanned"])
+            stats["deleted_bills"] = int(stats["deleted_bills"]) + int(one["deleted_bills"])
+            stats["deleted_events"] = int(stats["deleted_events"]) + int(one["deleted_events"])
+            stats["skipped_invalid"] = int(stats.get("skipped_invalid") or 0) + int(
+                one.get("skipped_invalid") or 0)
+            if int(one["scanned"]) < limit:
+                break
+        else:
+            stats["limit_reached"] = True
+        stats["eligible"] = int(stats["deleted_bills"])
+        stats["ok"] = not stats["error"]
+        stats["finished_at"] = time.time()
+        return stats
+
+
     def stats(self) -> Dict[str, Any]:
-        return _bills_stats(self.all())
+        """PG 统计：读不到 → 0 + store_status=unknown（视图据此展示降级）。"""
+        res = self.all_result()
+        if not _hr_read_ok(res):
+            _st = str((res or {}).get("status") or STORE_UNKNOWN)
+            out = _bills_stats({})
+            out.update({"store_status": _st,
+                        "store_error": str((res or {}).get("error") or "")[:160],
+                        "backend": "pg", "degraded_reason": _st})
+            return out
+        out = _bills_stats(dict(res.get("value") or {}))
+        out.update({"store_status": STORE_FOUND, "store_error": "",
+                    "backend": "pg", "degraded_reason": ""})
+        return out
 
 
-def get_hr_bills_store(data_dir: Path, kv: Any = None) -> HrBillsStore:
-    """取/建**进程级** H&R 账单存储（按 data_dir 单例，跨热重载存活）。
+def _hr_log(message: str, level: str = "warning") -> None:
+    """模块级日志（无宿主 logger 时退 stderr），不因日志失败影响主流程。"""
+    try:
+        from app.sdk.logging import logger  # noqa: WPS433
+        getattr(logger, level)(str(message))
+        return
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        print(f"[hrbills] {message}", file=sys.stderr)
+    except Exception:  # noqa: BLE001
+        pass
 
-    ★ 照 ``persistence.get_gate_store`` 一模一样：用同一套 ``_shared()`` 注册表
-    单例持有实例，热重载后仍指向同一对象；**不挂 ``MagicFlowStore``**（其是进程级
-    单例，热重载不重建 → 新字段/新方法拿不到）。
-    ★ 19.0.0：db 句柄已绑定（生产）→ ``PgHrBillsStore``（mf_bills 表）；离线
-    （单测/工具，无 app.*）→ 原 JSON 版。两代类不同 → isinstance 校验自动重建。
+
+_HR_STORE_META: Dict[str, Dict[str, Any]] = {}
+_HR_STORE_PROBE_SEC = 30.0
+
+
+def get_hr_bills_store(data_dir: Path, kv: Any = None) -> _StoreBase:
+    """取/建**进程级** H&R 账单存储（任务 132：PG 单一权威）。
+
+    - PG 可用 → ``PgHrBillsStore``（唯一运行时权威）；
+    - PG 不可用 → ``UnavailableHrBillsStore``（读 UNKNOWN / 写失败，禁止回落 JSON）；
+    - PG 恢复后按 30s 节流重新探测，读成功才替换占位 store。
     """
     key = f"hrbills:{Path(data_dir)}"
     sh = _shared()
     with sh.lock:
         store = sh.singletons.get(key)
-        # ★ 热重载后：模块里是**新类**，而单例还可能是**旧类的实例** → 方法过时/缺失
-        #   （实测踩过：`stats()` 新增字段在 reload 后仍不出现）。校验类型，不匹配就重建
-        #   （PG 模式数据本来就在库里；JSON 模式从冷备恢复）。
-        if store is not None and not isinstance(store, HrBillsStore):
-            try:
-                store.flush()
-            except Exception:  # noqa: BLE001
-                pass
+        if store is not None and not isinstance(store, _StoreBase):
             store = None
+        mf = _mfdb_module()
+        db_ok = bool(mf is not None and mf.db_available())
+        meta = _HR_STORE_META.setdefault(key, {})
+        if isinstance(store, UnavailableHrBillsStore):
+            _last = float(meta.get("last_probe") or 0.0)
+            if db_ok and time.time() - _last >= _HR_STORE_PROBE_SEC:
+                meta["last_probe"] = time.time()
+                try:
+                    cand = PgHrBillsStore(data_dir, kv=kv)
+                    if _hr_read_ok(cand.all_result()):
+                        store = cand
+                        _hr_log("魔流·H&R 账单：PG 已恢复，切回 PG 单一权威", "info")
+                except Exception as err:  # noqa: BLE001
+                    meta["degraded_reason"] = "probe_error:%s" % type(err).__name__
         if store is None:
-            mf = _mfdb_module()
-            if mf is not None and mf.db_available():
+            if db_ok:
                 store = PgHrBillsStore(data_dir, kv=kv)
+                meta.update({"backend": "pg", "degraded_reason": "",
+                             "checked_at": time.time()})
             else:
-                store = HrBillsStore(data_dir, kv=kv)
+                store = UnavailableHrBillsStore(
+                    data_dir, "db_unavailable" if mf is not None else "db_module_missing")
+                meta.update({"backend": "unavailable",
+                             "degraded_reason": store.reason,
+                             "checked_at": time.time()})
+                _hr_log("魔流·H&R 账单：PG 不可用，账单存储进入 UNKNOWN（不回落 JSON）",
+                        "warning")
             sh.singletons[key] = store
-        elif kv is not None:
-            try:
-                store.kv_bind(kv)
-            except Exception:  # noqa: BLE001
-                pass
+        meta["checked_at"] = time.time()
     return store
+
+
+def _hr_purge_last(data_dir: Path) -> Dict[str, Any]:
+    """读最近一次清理执行记录（只读；损坏/缺失 → 空 dict，不影响权威判定）。
+
+    ★ 任务 136（N-136-04）：清理失败必须可见（API/健康检查），并把
+    ``next_retry_at`` 暴露给调用方；真正的重试由常驻服务每日再次触发。
+    """
+    try:
+        path = Path(data_dir) / "hr_purge_status.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+    rows = data.get("runs") if isinstance(data, dict) else None
+    if not isinstance(rows, list) or not rows:
+        return {}
+    last = rows[-1] if isinstance(rows[-1], dict) else {}
+    if not last:
+        return {}
+    out = {k: last.get(k) for k in ("at", "ok", "error", "deleted_bills",
+                                    "deleted_events", "scanned", "batches",
+                                    "retention_days") if k in last}
+    if not out.get("ok"):
+        out["next_retry_at"] = float(last.get("at") or 0) + 86400.0
+    return out
+
+
+def hr_bills_store_meta(data_dir: Path) -> Dict[str, Any]:
+    """只读查询当前账单后端状态（PG 单一权威；供视图/健康检查/API 使用）。"""
+    key = f"hrbills:{Path(data_dir)}"
+    sh = _shared()
+    store = sh.singletons.get(key)
+    now = time.time()
+    if isinstance(store, PgHrBillsStore):
+        return {"backend": "pg", "authority": "pg", "mode": "pg",
+                "available": True, "degraded_reason": "",
+                "generation": int(getattr(store, "generation", 0) or 0),
+                "checked_at": now, "purge_last": _hr_purge_last(data_dir)}
+    if isinstance(store, UnavailableHrBillsStore):
+        return {"backend": "unavailable", "authority": "none",
+                "mode": "unavailable", "available": False,
+                "degraded_reason": store.reason, "generation": 0,
+                "checked_at": now, "purge_last": _hr_purge_last(data_dir)}
+    mf = _mfdb_module()
+    db_ok = bool(mf is not None and mf.db_available())
+    return {"backend": "pg" if db_ok else "uninitialized",
+            "authority": "pg" if db_ok else "none",
+            "mode": "pg" if db_ok else "uninitialized",
+            "available": db_ok, "degraded_reason": "" if db_ok else "not_initialized",
+            "generation": 0, "checked_at": now, "purge_last": _hr_purge_last(data_dir)}
 
 
 class HrBillsMixin:
     """下载即开账功能集（第一阶段：影子记账，不接保护）。"""
+
+    # ---------------------------------------------------------- 过期清理
+    def hr_purge(self) -> Dict[str, Any]:
+        """每日清理：settled/void 超过 30 天的账单 + 关联事件（同事务）。
+
+        ★ 任务 132：只清最终状态时间可靠的 settled/void；pending/active/breached
+        永不自动清理；存储不可用或关联异常时整轮不动并返回明确错误。
+        """
+        store = self._hrbills_store()
+        res = store.purge_expired(retention_days=30.0, batch=200)
+        try:
+            self._hr_purge_record(res)
+        except Exception:  # noqa: BLE001
+            pass
+        if not res.get("ok"):
+            # ★ 任务 136（N-136-04）：失败不重试当下（避免放大故障），
+            #   由常驻服务下一轮（次日）再次执行；状态经 API 可见。
+            _hr_log("魔流·H&R 账单过期清理未执行（下轮重试）：%s"
+                    % str(res.get("error") or "")[:160], "warning")
+        elif int(res.get("deleted_bills") or 0) > 0:
+            _hr_log("魔流·H&R 账单过期清理：删除 %d 张账单 / %d 条事件（保留 %s 天）"
+                    % (int(res.get("deleted_bills") or 0),
+                       int(res.get("deleted_events") or 0),
+                       res.get("retention_days")), "info")
+        return res
+
+    def _hr_purge_record(self, res: Dict[str, Any]) -> None:
+        """清理执行记录（最多保留 30 条，避免产生新的永久堆积）。"""
+        path = Path(self.get_data_path()) / "hr_purge_status.json"
+        entry = {"at": time.time(), "ok": bool(res.get("ok")),
+                 "error": str(res.get("error") or "")[:120],
+                 "deleted_bills": int(res.get("deleted_bills") or 0),
+                 "deleted_events": int(res.get("deleted_events") or 0),
+                 "scanned": int(res.get("scanned") or 0),
+                 "batches": int(res.get("batches") or 0),
+                 "retention_days": res.get("retention_days")}
+        rows: List[Dict[str, Any]] = []
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and isinstance(data.get("runs"), list):
+                    rows = [r for r in data["runs"] if isinstance(r, dict)]
+        except Exception:  # noqa: BLE001
+            rows = []
+        rows.append(entry)
+        rows = rows[-30:]
+        tmp = path.with_name(path.name + ".tmp")
+        try:
+            tmp.write_text(json.dumps({"runs": rows}, ensure_ascii=False, indent=1),
+                           encoding="utf-8")
+            tmp.replace(path)
+        except Exception:  # noqa: BLE001
+            try:
+                tmp.unlink()
+            except Exception:  # noqa: BLE001
+                pass
 
     # ---------------------------------------------------------- 工具
     @staticmethod
@@ -1182,7 +1495,7 @@ class HrBillsMixin:
         )
         return out
 
-    def _hrbills_store(self) -> HrBillsStore:
+    def _hrbills_store(self) -> _StoreBase:
         # ★ 19.12.43（P0）：PG 路径先过账本后端触发 ``ensure_schema``（建表 + _ensure_columns
         #   补列）——``create_all`` 只建表不加列，新列没补上时 put/patch 会静默丢字段
         #   （BillRow 没这列）。只在 db 句柄已绑定时触发（= 工厂会选 PgHrBillsStore 的
@@ -1203,6 +1516,17 @@ class HrBillsMixin:
         except Exception:  # noqa: BLE001
             kv = None
         return get_hr_bills_store(Path(data_dir), kv=kv)
+
+    def _hrbills_store_meta(self) -> Dict[str, Any]:
+        """当前账单后端状态（PG/JSON、降级原因、是否冻结），供视图/健康检查使用。"""
+        try:
+            data_dir = self.get_data_path()
+        except Exception:  # noqa: BLE001
+            data_dir = Path(".")
+        try:
+            return hr_bills_store_meta(Path(data_dir))
+        except Exception as err:  # noqa: BLE001
+            return {"backend": "unknown", "degraded_reason": f"{err!r}", "frozen": False}
 
     # ---------------------------------------------------------- 并发守卫（CAS）
     @staticmethod
@@ -1408,8 +1732,24 @@ class HrBillsMixin:
         if _skip_hr_bill([str(tag or "")]):
             return None
         store = self._hrbills_store()
-        _existing = store.get(hs)
+        _eread = store.get_result(hs) if hasattr(store, "get_result") else None
+        if _eread is not None and not _hr_read_confirmed(_eread):
+            # ★ 任务 111：读不到「是否已存在」→ 不盲目开账（可能重复）；本轮跳过，下轮再开。
+            try:
+                _hr_log(f"H&R账单:开账读取失败（UNKNOWN），本轮跳过 {hs[:12]}", "warning")
+            except Exception:  # noqa: BLE001
+                pass
+            return None
+        _existing = (_eread.get("value") if _eread is not None else store.get(hs))
         if _existing:
+            # ★ 任务 136（N-136-03）：void 墓碑在保留期内允许同 hash 重新下载重开。
+            #   墓碑不能被「作废即删除」抹掉（否则审计丢失），也不能永久挡住重下；
+            #   这里按 CAS 把行从 void 重开为 pending，并写 reopened 事件。
+            if (isinstance(_existing, dict)
+                    and str(_existing.get("state") or "") == BILL_STATE_VOID):
+                _reopened = self._hrbills_reopen_voided(hs, _existing, site_domain)
+                if _reopened is not None:
+                    return _reopened
             return _existing  # 已存在 → 不重复开（幂等）
         dom = self._hrbills_norm_domain(site_domain)
         # ★ 19.10.11：来源份走专用口径（义务判定 + 工时都取跨站既有真值源）。
@@ -1460,6 +1800,60 @@ class HrBillsMixin:
         }
         return store.put(hs, bill)
 
+    def _hrbills_reopen_voided(self, hash_string: str, cur: Dict[str, Any],
+                               site_domain: Any = "") -> Optional[Dict[str, Any]]:
+        """墓碑重开（★ 任务 136 / N-136-03）。
+
+        规则：
+          - 仅 ``void`` 且 ``voided_at`` 合法、距今 < ``HR_BILLS_VOID_REOPEN_DAYS``；
+          - 人工作废（``void_reason`` 以 manual 开头或事件含 manual_void）不自动重开；
+          - 重开 = CAS 回 ``pending``、清空 void 列、写 ``reopened`` 事件（重开次数以
+            事件表为准——``mf_bills`` 没有 ``reopen_count`` 列，不新增 schema）；
+          - 超过窗口 → 返回 None（调用方按「已存在」处理，等待 HrPurge 清理）。
+        """
+        hs = str(hash_string or "").strip().lower()
+        b = cur if isinstance(cur, dict) else {}
+        now = time.time()
+        try:
+            _va = float(b.get("voided_at") or 0)
+        except (TypeError, ValueError):
+            _va = 0.0
+        if not (0 < _va <= now):
+            return None
+        if now - _va >= max(1.0, float(HR_BILLS_VOID_REOPEN_DAYS)) * 86400.0:
+            return None
+        if str(b.get("void_reason") or "").startswith("manual"):
+            return None
+        store = self._hrbills_store()
+        dom = self._hrbills_norm_domain(site_domain or b.get("site") or "")
+        _rule = str(b.get("rule") or "")
+        if _rule not in (RULE_SITE_HR, RULE_HIT_AND_RUN):
+            _rule = self._hr_obligation_rule(dom, None) or ""
+        _ev = self._hr_bill_event(
+            hs, EVT_REOPENED, b, at=now, actor=EVT_SYSTEM_ACTOR,
+            reason="void 墓碑保留期内重新下载 → 重开账单",
+            prev_state=BILL_STATE_VOID, new_state=BILL_STATE_PENDING,
+            evidence_source="reopen_after_void",
+            dedup_key="%s|reopen_after_void|%.6f" % (hs, _va))
+        _res = self._hrbills_cas(
+            store, hs, self._hrbills_guard(b), events=[_ev],
+            state=BILL_STATE_PENDING, voided_at=None, void_reason=None,
+            settle_block=None, settled_at=None, settlement_method=None,
+            settled_by=None, settlement_reason=None,
+            opened_at=now, seeded_h=0.0, progress=0.0, alive=True, last_seen=now,
+            last_progress=0.0, last_progress_at=now,
+            rule=_rule or b.get("rule") or "",
+            site=dom or b.get("site") or "")
+        if not _res.get("ok"):
+            return None
+        try:
+            _hr_log("魔流:H&R 账单墓碑重开 %s（作废 %.1f 天前，重新下载）"
+                    % (hs[:12], (now - _va) / 86400.0), "info")
+        except Exception:  # noqa: BLE001
+            pass
+        row = _res.get("row")
+        return row if isinstance(row, dict) else None
+
     def _hrbills_open_crossseed(self, hs: str, dom: str,
                                 hit_and_run: bool = False) -> Optional[Dict[str, Any]]:
         """★ 19.10.11：给**跨站来源份**开一张 H&R 账单（义务口径专用）。
@@ -1480,7 +1874,14 @@ class HrBillsMixin:
         规则缺失 → 24（保守）。
         """
         store = self._hrbills_store()
-        _existing = store.get(hs)
+        _eread = store.get_result(hs) if hasattr(store, "get_result") else None
+        if _eread is not None and not _hr_read_confirmed(_eread):
+            try:
+                _hr_log(f"跨站账单:开账读取失败（UNKNOWN），本轮跳过 {hs[:12]}", "warning")
+            except Exception:  # noqa: BLE001
+                pass
+            return None
+        _existing = (_eread.get("value") if _eread is not None else store.get(hs))
         if _existing:
             return _existing  # 幂等
         thr = True if bool(hit_and_run) else False
@@ -2038,9 +2439,23 @@ class HrBillsMixin:
         out: Set[str] = set()
         try:
             store = self._hrbills_store()
-            bills = store.all() or {}
         except Exception:  # noqa: BLE001
-            return out
+            return _hr_owed_cache_hashes()
+        if hasattr(store, "all_result"):
+            try:
+                res = store.all_result()
+            except Exception:  # noqa: BLE001
+                return _hr_owed_cache_hashes()
+            if not _hr_read_ok(res):
+                # ★ 任务 111：UNKNOWN 不得缩小保护集合 → 用 last-good 缓存
+                return _hr_owed_cache_hashes()
+            bills = dict(res.get("value") or {})
+        else:
+            # 兼容无三态 API 的旧存储：读异常 → last-good；成功 → 旧口径
+            try:
+                bills = dict(store.all() or {})
+            except Exception:  # noqa: BLE001
+                return _hr_owed_cache_hashes()
         _now = time.time()
         _idx: Any = None
         if HR_SETTLE_SITE_GATE:
@@ -2080,6 +2495,7 @@ class HrBillsMixin:
                 due = need
             if seeded + 1e-6 < due:
                 out.add(_hh)
+        _hr_owed_cache_put(out)
         return out
 
     # ---------------------------------------------------------- 站点解析（三级回退，供回填用）
@@ -2145,7 +2561,7 @@ class HrBillsMixin:
                 return rid if (len(rid) == 40 and re.fullmatch(r"[0-9a-f]{40}", rid)) else ""
         except Exception:  # noqa: BLE001
             return ""
-    def _hrbills_backfill(self, store: HrBillsStore, snap: Dict[str, Any],
+    def _hrbills_backfill(self, store: _StoreBase, snap: Dict[str, Any],
                           limit: int = 200) -> Dict[str, Any]:
         """给「本插件托管种」补开账单（**不是**下载器全量）。
 
@@ -2179,14 +2595,23 @@ class HrBillsMixin:
         _cand: List[Any] = list((ledger or {}).items()) + list(_extra.items())
         now = time.time()
         opened = no_site = 0
+        skipped_unknown = 0
+        failed = 0
         for h, rec in _cand:
             if opened >= int(limit or 0):
                 break
             h = str(h or "").strip().lower()
             if not h:
                 continue
-            if store.get(h):
-                continue  # 已有账单 → 跳过（幂等）
+            _eread = store.get_result(h) if hasattr(store, "get_result") else None
+            if _eread is not None:
+                if not _hr_read_confirmed(_eread):
+                    skipped_unknown += 1   # ★ 111：读不到 ≠ 没开账 → 本轮不补
+                    continue
+                if isinstance(_eread.get("value"), dict):
+                    continue               # 已有账单 → 跳过（幂等）
+            elif store.get(h):
+                continue
             t = (snap or {}).get(h)
             if t is None:
                 continue  # 快照里没有 → 这轮不补（下轮可能补上）
@@ -2246,9 +2671,18 @@ class HrBillsMixin:
                 "progress": progress,
                 "opened_by": "backfill",
             }
-            store.put(h, bill, save=False)
-            opened += 1
-        return {"opened": opened, "no_site": no_site}
+            if hasattr(store, "put_result"):
+                _w = store.put_result(h, bill, save=False)
+                if _w.get("ok"):
+                    opened += 1
+                else:
+                    failed += 1
+            elif store.put(h, bill, save=False):
+                opened += 1
+            else:
+                failed += 1
+        return {"opened": opened, "no_site": no_site,
+                "skipped_unknown": skipped_unknown, "failed": failed}
 
     # ---------------------------------------------------------- 巡检（只改账单状态，不影响删除）
     def _hrbills_tick(self) -> Dict[str, Any]:
@@ -2273,6 +2707,27 @@ class HrBillsMixin:
           种挂在 H&R / 保种 / 认领 / 刷流名下都能结清，结清也不改别人的归属。
         """
         store = self._hrbills_store()
+        # ★ 任务 113（N-03）：长任务开头就拿住 store；若此时已因切回被 fence，
+        #   整轮直接放弃（旧引用写不进去，继续跑只会产生「看似成功」的假账）。
+        if getattr(store, "retired", False):
+            return {"bills": 0, "activated": 0, "voided": 0, "settled": 0,
+                    "breached": 0, "demoted": 0, "conflicted": 0,
+                    "backfilled": 0, "no_site": 0, "degraded": True,
+                    "error": "stale_store"}
+        # ★ 任务 111（HR-03）：先读三态全量。UNKNOWN → 本轮**不做任何状态流转/销账/回填**
+        #   （更不能把空结果当「账本为空」而去 flush / 重开）。
+        _bres = store.all_result() if hasattr(store, "all_result") else None
+        if _bres is not None and not _hr_read_ok(_bres):
+            try:
+                _hr_log(
+                    "魔流:H&R 账单读取失败（UNKNOWN）——本轮跳过回填与状态判定："
+                    + str(_bres.get("error") or "")[:160], "warning")
+            except Exception:  # noqa: BLE001
+                pass
+            return {"bills": 0, "activated": 0, "voided": 0, "settled": 0,
+                    "breached": 0, "demoted": 0, "conflicted": 0,
+                    "backfilled": 0, "no_site": 0,
+                    "degraded": True, "error": str(_bres.get("error") or "")[:200]}
         try:
             snap = self._tag_all_torrents() or {}
         except Exception:  # noqa: BLE001
@@ -2289,7 +2744,7 @@ class HrBillsMixin:
                 self._log(f"魔流:H&R账单回填异常:{err}", "warning")
             except Exception:  # noqa: BLE001
                 pass
-        bills = store.all()
+        bills = (_bres.get("value") if _bres is not None else None) or store.all()
         if not bills:
             store.flush()
             return {"bills": 0, "activated": 0, "voided": 0, "settled": 0,
@@ -2305,7 +2760,8 @@ class HrBillsMixin:
                     "backfilled": backfilled, "no_site": no_site}
         now = time.time()
         activated = voided = settled = breached = demoted = titles_filled = dropped = 0
-        unknown_dropped = 0           # ★ 19.12.33：未定性且已做满 → 销账笔数
+        unknown_dropped = 0           # ★ 任务 136：未定性且已做满 → 作废（墓碑），不再物理删
+        voided_auto = 0               # ★ 任务 136：tick 自动作废（墓碑）笔数
         reopened = held_by_site = 0   # ★ 19.12.4：站端口径的两个计数
         reopen_blocked = 0            # ★ 任务 98：人工账单对账未达标 → 保持 settled（fail-closed 可见）
         held_unknown = 0              # ★ 19.12.40：站端判不明 → 保留账单（不结清）
@@ -2320,9 +2776,13 @@ class HrBillsMixin:
                 _hr_idx = self._hr_site_debt_index(now)
             except Exception:  # noqa: BLE001
                 _hr_idx = None
-        _drop: List[Any] = []          # ★ 19.12.47：(hash, 守卫, 通道) —— 删除也要过 CAS
+        # ★ 任务 136（A）：tick **不再物理删除账单**。物理删除只有 HrPurge 一条通路
+        #   （settled/void 满 30 天、最终时间合法、事件同事务）。tick 需要摘账时一律
+        #   落 void 墓碑，保留审计与幂等挡板。
         conflicted = 0                 # ★ 19.12.47：CAS 冲突 → 本轮放弃的条数（下轮重判）
         _conflict_hashes: List[str] = []
+
+        stale_seen = False
 
         def _cas_patch(_h: str, _guard: Dict[str, Any], events: Any = None,
                        **fields: Any) -> bool:
@@ -2334,15 +2794,45 @@ class HrBillsMixin:
             ★ 任务 98：``events`` 随同一次 CAS 写入事件表（同锁 / 同事务）；
             事件写失败 → CAS 整体失败 → 计 conflicted，绝不留下「状态改了没历史」。
             """
-            nonlocal conflicted
-            if self._hrbills_cas(store, _h, _guard, events=events, **fields).get("ok"):
+            nonlocal conflicted, stale_seen
+            _res = self._hrbills_cas(store, _h, _guard, events=events, **fields)
+            if _res.get("ok"):
                 return True
+            if str(_res.get("reason") or "") == "stale_store":
+                stale_seen = True
             conflicted += 1
             if len(_conflict_hashes) < 5:
                 _conflict_hashes.append(_h)
             return False
 
+        def _void_auto(_h: str, _guard: Dict[str, Any], _reason: str,
+                       _why: str) -> bool:
+            """自动作废（墓碑）：★ 任务 136 删除通道归一的唯一落点。
+
+            tick 判定「该摘账」时不再 DELETE，而是 CAS 到 ``void`` + ``voided_at``；
+            墓碑与事件同一次 CAS 写入（同事务），30 天后由 HrPurge 统一清理。
+            """
+            nonlocal voided, voided_auto
+            _cur = bills.get(_h) if isinstance(bills, dict) else None
+            _b = _cur if isinstance(_cur, dict) else {}
+            _now = time.time()
+            _ev = self._hr_bill_event(
+                _h, EVT_AUTO_VOID, _b, at=_now, actor=EVT_SYSTEM_ACTOR,
+                reason=_why, prev_state=str(_b.get("state") or ""),
+                new_state=BILL_STATE_VOID, evidence_source="tick_auto_void",
+                dedup_key="%s|auto_void|%s|%s" % (
+                    _h, _reason, str(_b.get("voided_at") or _b.get("opened_at") or "")))
+            if not _cas_patch(_h, _guard, events=[_ev], state=BILL_STATE_VOID,
+                              voided_at=_now, void_reason=_reason[:60],
+                              settle_block=None):
+                return False
+            voided += 1
+            voided_auto += 1
+            return True
+
         for h, b in list(bills.items()):
+            if stale_seen:
+                break
             if not isinstance(b, dict):
                 continue
             t = (snap or {}).get(h)
@@ -2402,7 +2892,9 @@ class HrBillsMixin:
                 #   期间若有人工结清落地，这行已变成 manual，必须删不动。
                 _aged = (now - _ms) >= max(0.0, float(HR_BILLS_MISSING_TTL_DAYS)) * 86400.0
                 if _gv == "clear" and _aged and not _is_manual_settled(b):
-                    _drop.append((h, _guard, "clear"))
+                    # ★ 任务 136（A）：站端明确 clear + 缺席超期 → 作废墓碑，不删行。
+                    _void_auto(h, _guard, "site_no_longer_owed_auto",
+                               "站端明确 clear 且缺席超过宽限期 → 自动作废（墓碑保留）")
                     continue
                 if _cas_patch(h, _guard, **_gone):
                     if _is_manual_settled(b):
@@ -2521,10 +3013,8 @@ class HrBillsMixin:
                                 except Exception:  # noqa: BLE001
                                     pass
                             continue
-                    _sa = float(b.get("settled_at") or 0) or now
-                    if now - _sa >= HR_BILLS_SETTLED_TTL_DAYS * 86400.0:
-                        _drop.append((h, _guard, "ttl"))
-                        continue
+                    # ★ 任务 136（A）：settled 的物理删除只由 HrPurge 执行
+                    #   （30 天 + 最终时间合法 + 事件同事务）；tick 不再按 TTL 删行。
             try:
                 progress = float(getattr(t, "progress", 0) or 0)
             except (TypeError, ValueError):
@@ -2560,10 +3050,10 @@ class HrBillsMixin:
                 demoted += 1
             elif cur_state == BILL_STATE_SETTLED and not _known_rule \
                     and str(b.get("settlement_method") or "") != "manual":
-                # ★ 2026-10-11 自愈：存量 unknown-settled（无 H&R 规则却记结清）降回 pending。
-                #   ★ 19.12.44：人工结清的不降级 —— 自动任务不得覆盖人工结论。
-                fields["state"] = BILL_STATE_PENDING
-                demoted += 1
+                # ★ 任务 136（B）：删除 ``settled → pending`` 状态倒退。
+                #   settled 是结论（无论规则后来是否可读），只能由站端硬证据重开
+                #   （``_hr_reopen_evidence``）或 30 天清理收尾；不得因规则暂缺而降级。
+                fields["settled_rule_missing"] = True
             # ★ 15.5.1（Master 16:33）：未完成的种不产生 H&R 义务 → active 账单降回 pending。
             #   兼容 15.5.1 之前「下载即 active」开出的历史账单（下一轮自动清掉虚欠）。
             elif progress < self._hr_complete_ratio(str(b.get("site") or "")) and cur_state == BILL_STATE_ACTIVE:
@@ -2583,7 +3073,11 @@ class HrBillsMixin:
                 if (not _known_rule) and cur_state == BILL_STATE_PENDING \
                         and not _is_manual_settled(b) \
                         and seeded_h >= float(b.get("need_h") or 24.0) + self._hr_margin_hours():
-                    _drop.append((h, _guard, "unknown"))
+                    # ★ 任务 136（A）：未定性僵尸账不再物理删除（D-02），改作废墓碑；
+                    #   账本留痕，30 天后由 HrPurge 清理。
+                    if _void_auto(h, _guard, "legacy_rule_unknown_fulfilled",
+                                  "规则不可读且已做满最保守工时 → 作废墓碑（不再物理删）"):
+                        unknown_dropped += 1
                     continue
                 # ① 完成 → active（★ 2026-10-10：仅限**明确 H&R 规则**才激活）
                 if cur_state == BILL_STATE_PENDING and _known_rule:
@@ -2665,26 +3159,8 @@ class HrBillsMixin:
             #   这一步就是「tick 用旧快照把 manual 写成 auto」的修复点。
             if not _cas_patch(h, _guard, events=(_events or None), **fields):
                 activated, demoted, settled, titles_filled = _cnt0
-        if _drop:
-            # ★ 19.12.47（任务 91）：删除同样带守卫 —— 判定基于旧快照，期间若有人工
-            #   结清落地，行已不是「可销账」状态，必须删不动（删了会被回填重开成 active）。
-            try:
-                _dres = store.drop_many_if([(x[0], x[1]) for x in _drop])
-            except Exception:  # noqa: BLE001
-                _dres = None
-            _gone_set = set((_dres or {}).get("dropped") or []) if isinstance(_dres, dict) else set()
-            if not isinstance(_dres, dict):
-                conflicted += len(_drop)   # store 不支持/异常 → 全部视为未删（fail-closed）
-            for _h2, _g2, _tag in _drop:
-                if _h2 not in _gone_set:
-                    if isinstance(_dres, dict):
-                        conflicted += 1
-                        if len(_conflict_hashes) < 5:
-                            _conflict_hashes.append(_h2)
-                    continue
-                dropped += 1
-                if _tag == "unknown":
-                    unknown_dropped += 1
+        # ★ 任务 136（A）：tick 无物理删除。所有「摘账」均在循环内落 void 墓碑；
+        #   物理删除统一由 HrPurge（``purge_expired``）负责。
         store.flush()
         # ★ 2026-10-11：清理误开账单（unknown 规则 + 复用份 downloaded≈0）→ 批量删。
         _wrong: List[Any] = []
@@ -2712,18 +3188,10 @@ class HrBillsMixin:
                 except (TypeError, ValueError):
                     pass
         if _wrong:
-            try:
-                _wres = store.drop_many_if(_wrong)
-            except Exception:  # noqa: BLE001
-                _wres = None
-            if isinstance(_wres, dict):
-                _wskip = list(_wres.get("skipped") or [])
-                conflicted += len(_wskip)
-                for _h3 in _wskip[:5]:
-                    if len(_conflict_hashes) < 5:
-                        _conflict_hashes.append(str(_h3))
-            else:
-                conflicted += len(_wrong)
+            # ★ 任务 136（A）：复用份误开账同样落 void 墓碑（不再物理删）。
+            for _h3, _g3 in _wrong:
+                _void_auto(_h3, _g3, "reuse_copy",
+                           "复用份（已完成却从未下载字节）→ 自动作废（墓碑保留）")
         # ★ 19.12.43：``drop_void()`` 已从这里移除 —— 墓碑必须活过每一轮，否则回填会把
         #   人工作废的账重新开回来（旧 2026-10-11 口径「作废就删了」的坑）。
         #   要清墓碑只能人工走 ``drop_void()``（与 ``hrbills_void`` 成对，且不可逆）。
@@ -2739,7 +3207,7 @@ class HrBillsMixin:
                 pass
         return {"bills": len(bills), "activated": activated, "voided": voided,
                 "settled": settled, "breached": breached, "demoted": demoted,
-                "dropped": dropped, "titles_filled": titles_filled,
+                "dropped": dropped, "voided_auto": voided_auto, "titles_filled": titles_filled,
                 "reopened": reopened, "reopen_blocked": reopen_blocked,
                 "held_by_site": held_by_site,
                 "held_unknown": held_unknown,
@@ -2748,13 +3216,19 @@ class HrBillsMixin:
                 "void_kept": void_kept,
                 "unknown_dropped": unknown_dropped,
                 "conflicted": conflicted,
-                "backfilled": backfilled, "no_site": no_site}
+                "backfilled": backfilled, "no_site": no_site,
+                "degraded": bool(stale_seen),
+                "error": "stale_store" if stale_seen else ""}
 
     # ---------------------------------------------------------- 干跑（只读，不落库）
     def _hrbills_dryrun(self) -> Dict[str, Any]:
         """对当前所有本插件托管的种算「如果现在就开账会怎样」的分桶（只读）。"""
         store = self._hrbills_store()
-        _bills = store.all() or {}
+        _dres = store.all_result() if hasattr(store, "all_result") else None
+        if _dres is not None and not _hr_read_ok(_dres):
+            return {"ok": False, "error": "store_unavailable",
+                    "buckets": {}, "degraded": True}
+        _bills = (_dres.get("value") if _dres is not None else store.all()) or {}
         existing = set(_bills.keys())
         try:
             snap = self._tag_all_torrents() or {}
@@ -2850,8 +3324,32 @@ class HrBillsMixin:
 
     # ---------------------------------------------------------- 统计
     def _hrbills_stats(self) -> Dict[str, Any]:
-        """落库账单按 state/rule/site 计数 + 生效开关 + 回填/无站点观测。"""
-        out = self._hrbills_store().stats()
+        """落库账单按 state/rule/site 计数 + 生效开关 + 后端状态。
+
+        ★ 任务 111：存储 UNKNOWN 时**不显示成正常空表** —— 返回 ``store_status=unknown``
+        与错误摘要，计数保留 0 但调用方/UI 必须据此提示「读取失败」。
+        """
+        store = self._hrbills_store()
+        res = store.all_result() if hasattr(store, "all_result") else None
+        if res is not None and not _hr_read_ok(res):
+            _st = str((res or {}).get("status") or STORE_UNKNOWN)
+            out = _bills_stats({})
+            out["store_status"] = _st
+            out["store_error"] = str((res or {}).get("error") or "")[:200]
+        else:
+            bills = ((res or {}).get("value") if res is not None else None) or store.all() or {}
+            out = _bills_stats(bills)
+            out["store_status"] = STORE_FOUND
+        _meta = self._hrbills_store_meta()
+        out["backend"] = _meta.get("backend") or "unknown"
+        out["degraded_reason"] = _meta.get("degraded_reason") or ""
+        out["store_meta"] = {
+            "authority": _meta.get("authority") or "",
+            "available": bool(_meta.get("available", True)),
+            "mode": _meta.get("mode") or "",
+            "generation": int(_meta.get("generation") or 0),
+            "checked_at": _meta.get("checked_at") or 0,
+        }
         out["enforcing"] = bool(HR_BILLS_ENFORCE)
         return out
 
@@ -3063,7 +3561,13 @@ class HrBillsMixin:
         now = time.time()
         dom_filter = self._hrbills_norm_domain(site) if site else ""
         by_site: Dict[str, List[str]] = {}
-        for h, b in (store.all() or {}).items():
+        _bres = store.all_result() if hasattr(store, "all_result") else None
+        if _bres is not None and not _hr_read_ok(_bres):
+            return {"ok": False, "error": "store_unavailable",
+                    "message": "账单存储不可用：本轮不对账、不重下、不作废",
+                    "sites": {}, "voided": 0, "reseeded": 0, "skipped": 0}
+        _bills_all = (_bres.get("value") if _bres is not None else store.all()) or {}
+        for h, b in _bills_all.items():
             if not isinstance(b, dict):
                 continue
             if str(b.get("state") or "") != BILL_STATE_BREACHED:
@@ -3242,7 +3746,11 @@ class HrBillsMixin:
         if not hs:
             return None
         store = self._hrbills_store()
-        cur = store.get(hs)
+        _vres = store.get_result(hs) if hasattr(store, "get_result") else None
+        if _vres is not None and not _hr_read_confirmed(_vres):
+            return {"error": "store_unavailable",
+                    "message": "账单存储不可用，作废未执行（不会静默成功）"}
+        cur = (_vres.get("value") if _vres is not None else store.get(hs))
         if not cur:
             return None
         if str(cur.get("state") or "") == BILL_STATE_VOID:
@@ -3347,7 +3855,11 @@ class HrBillsMixin:
         _ok_write = False
         _last_reason = ""
         for _attempt in (1, 2):
-            cur = store.get(hs)
+            _sres = store.get_result(hs) if hasattr(store, "get_result") else None
+            if _sres is not None and not _hr_read_confirmed(_sres):
+                return {"error": "store_unavailable",
+                        "message": "账单存储不可用，人工结清未执行"}
+            cur = (_sres.get("value") if _sres is not None else store.get(hs))
             if not cur:
                 return {"error": "not_found", "message": "账单不存在"}
             cur_state = str(cur.get("state") or "")
@@ -3491,8 +4003,9 @@ class HrBillsMixin:
 
         处置：走 ``_hrbills_void``（★ 19.12.43 起**留 void 墓碑**，不再删行）。理由：它们的
         ``rule`` 说明「站点没给规则、逐种站又没标记」= 本就不该有账。**只摘账，不删种**；
-        墓碑挡住回填，同一颗种不会再被自动开成账（旧「摘完会按新口径重开」的自愈已取消 ——
-        要重开必须人工先 ``drop_void()`` 清墓碑）。
+        墓碑挡住回填，同一颗种不会再被自动开成账（旧「摘完会按新口径重开」的自愈已取消）。
+        重开走 ``_hrbills_reopen_voided``：保留期内（默认 30 天）且非人工作废才允许；
+        超期或人工作废的墓碑不自动重开。
 
         默认干跑（confirm=False）只列清单。
         """

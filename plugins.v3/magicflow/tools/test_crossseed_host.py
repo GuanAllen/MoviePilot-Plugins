@@ -330,8 +330,10 @@ _ok(not any(s.startswith("Task___crossseed__") for s in _ids),
     f"get_service 不再含 Task___crossseed__*（实际 ids={_ids}）")
 cs_i = _ids.index("CrossSeed") if "CrossSeed" in _ids else -1
 hr_i = _ids.index("HrHost") if "HrHost" in _ids else -1
-_ok(hr_i >= 0 and cs_i == hr_i + 1,
-    f"CrossSeed 紧挨 HrHost 后注册（HrHost={hr_i} / CrossSeed={cs_i}）")
+# 19.12.4x：HrPurge（过期清理）与 ClaimHost 插在 HrHost 与 CrossSeed 之间，
+# 契约从「紧挨」退化为「HrHost 之后注册」（插入顺序不再承载语义）。
+_ok(hr_i >= 0 and cs_i > hr_i,
+    f"CrossSeed 在 HrHost 之后注册（HrHost={hr_i} / CrossSeed={cs_i}）")
 
 
 # -----------------------------------------------------------------------

@@ -232,7 +232,9 @@ ok(len(byh) == 2, "2 条历史")
 ok(all(k in byh[H1] for k in FIELDS), "历史行含全部约定字段")
 ok(byh[H1]["title"] == "流浪地球", "标题 = 记录")
 ok(byh[H1]["stage"] == "resource" and byh[H1]["stage_text"] == "已转「资源」·已入库", "resource·已入库")
-ok(byh[H2]["stage"] == "gone" and byh[H2]["stage_text"] == "已结案", "未转资源 → 已结案")
+# ★ 19.10.72：缺 stage 不再兜底「已结案」（那等于把丢状态说成办完了）→ 明确写「已结束·未转资源」
+ok(byh[H2]["stage"] == "gone" and byh[H2]["stage_text"] == "已结束·未转资源",
+   f"未转资源 → gone（{byh[H2]['stage_text']}）")
 ok(all(x["stage"] != "downloading" for x in items5), "历史行绝不 downloading（进行中只认 pending）")
 ok(abs((_iso_ts(byh[H1]["added_at"]) or 0) - 2000.0) < 1.0, "added_at ISO（来自记录）")
 ok(byh[H1]["size_gb"] == 3.0, "size 来自记录")

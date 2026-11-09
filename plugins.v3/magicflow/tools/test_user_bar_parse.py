@@ -26,8 +26,13 @@ def _load_collect():
     src = (ROOT / "collect.py").read_text(encoding="utf-8")
     src = src.replace("from .kvstore import cache_get, cache_set", "cache_get = cache_set = None")
     src = src.replace("from .common import CACHE_TTL_COUNTER", "CACHE_TTL_COUNTER = 0")
-    mod = types.ModuleType("collect_offline")
-    sys.modules["collect_offline"] = mod
+    src = src.replace("from . import cacheops", "cacheops = None")
+    # 作为「包内模块」执行：``from .collect_parse import ...`` 才能按包语义解析
+    _pkg = "collect_offline"
+    mod = types.ModuleType(_pkg)
+    mod.__path__ = [str(ROOT)]
+    mod.__package__ = _pkg
+    sys.modules[_pkg] = mod
     exec(compile(src, "collect.py", "exec"), mod.__dict__)  # noqa: S102
     return mod
 

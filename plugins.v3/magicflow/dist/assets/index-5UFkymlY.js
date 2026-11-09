@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { _ as _export_sfc, a as formatBytes, u as unwrapResponse$1, c as cloneTask, n as normalizeTask, f as formatBonus, b as cloudStatusMeta, r as recommendStatusMeta, d as formatDateTime, t as taskStateMeta, e as runModeMeta, g as normalizeSettings, h as normalizeSortRules, i as formatDurationSeconds, j as formatDuration, k as runStatusText, F as FALLBACK_SOURCE_OPTIONS, l as normalizeDownloaderPrefs, m as normalizeDownloaderPaths, o as normalizeDefaults, p as normalizeIyuuSites, S as SORT_RULE_TYPES, q as epLabelFromName, R as RUN_MODES } from './utils-BH95gFd9.js';
+import { _ as _export_sfc, a as formatBytes, u as unwrapResponse, c as cloneTask, n as normalizeTask, f as formatBonus, b as cloudStatusMeta, r as recommendStatusMeta, d as formatDateTime, t as taskStateMeta, e as runModeMeta, g as normalizeSettings, h as normalizeSortRules, i as formatDurationSeconds, j as formatDuration, k as runStatusText, F as FALLBACK_SOURCE_OPTIONS, l as normalizeDownloaderPrefs, m as normalizeDownloaderPaths, o as normalizeDefaults, p as normalizeIyuuSites, S as SORT_RULE_TYPES, q as epLabelFromName, R as RUN_MODES } from './utils-DCr21hMS.js';
 
 const {useModel:_useModel$A,mergeModels:_mergeModels$y} = await importShared('vue');
 
@@ -9,8 +9,8 @@ const {createElementVNode:_createElementVNode$S,resolveComponent:_resolveCompone
 const _hoisted_1$M = { class: "editor-section" };
 const _hoisted_2$K = { class: "editor-switches" };
 const _hoisted_3$I = { class: "editor-section" };
-const _hoisted_4$I = { class: "editor-section" };
-const _hoisted_5$H = { class: "magicflow-facts magicflow-facts--two" };
+const _hoisted_4$H = { class: "editor-section" };
+const _hoisted_5$G = { class: "magicflow-facts magicflow-facts--two" };
 
 
 const _sfc_main$S = {
@@ -194,14 +194,14 @@ return (_ctx, _cache) => {
         _: 1
       })
     ]),
-    _createElementVNode$S("section", _hoisted_4$I, [
+    _createElementVNode$S("section", _hoisted_4$H, [
       _cache[13] || (_cache[13] = _createElementVNode$S("header", { class: "editor-section__head" }, [
         _createElementVNode$S("div", null, [
           _createElementVNode$S("div", { class: "text-subtitle-1 font-weight-medium" }, "生效预览"),
           _createElementVNode$S("div", { class: "text-body-2 text-medium-emphasis" }, "保存后立即写入调度，无需重启插件")
         ])
       ], -1)),
-      _createElementVNode$S("dl", _hoisted_5$H, [
+      _createElementVNode$S("dl", _hoisted_5$G, [
         _createElementVNode$S("div", null, [
           _cache[8] || (_cache[8] = _createElementVNode$S("dt", null, "站点", -1)),
           _createElementVNode$S("dd", null, _toDisplayString$P(__props.siteName), 1)
@@ -766,8 +766,8 @@ const {createElementVNode:_createElementVNode$R,createTextVNode:_createTextVNode
 const _hoisted_1$L = { class: "editor-section" };
 const _hoisted_2$J = { class: "editor-switches" };
 const _hoisted_3$H = { class: "editor-section" };
-const _hoisted_4$H = { class: "editor-section" };
-const _hoisted_5$G = { class: "editor-section" };
+const _hoisted_4$G = { class: "editor-section" };
+const _hoisted_5$F = { class: "editor-section" };
 const _hoisted_6$D = { class: "editor-switches" };
 
 
@@ -1053,7 +1053,7 @@ return (_ctx, _cache) => {
         _: 1
       })
     ]),
-    _createElementVNode$R("section", _hoisted_4$H, [
+    _createElementVNode$R("section", _hoisted_4$G, [
       _cache[26] || (_cache[26] = _createElementVNode$R("header", { class: "editor-section__head" }, [
         _createElementVNode$R("div", null, [
           _createElementVNode$R("div", { class: "text-subtitle-1 font-weight-medium" }, "抓取与并发"),
@@ -1143,7 +1143,7 @@ return (_ctx, _cache) => {
         _: 1
       })
     ]),
-    _createElementVNode$R("section", _hoisted_5$G, [
+    _createElementVNode$R("section", _hoisted_5$F, [
       _cache[27] || (_cache[27] = _createElementVNode$R("header", { class: "editor-section__head" }, [
         _createElementVNode$R("div", null, [
           _createElementVNode$R("div", { class: "text-subtitle-1 font-weight-medium" }, "清理"),
@@ -1477,8 +1477,8 @@ const {createElementVNode:_createElementVNode$P,createTextVNode:_createTextVNode
 const _hoisted_1$I = { class: "editor-section" };
 const _hoisted_2$G = { class: "editor-section__head" };
 const _hoisted_3$G = { class: "editor-switches" };
-const _hoisted_4$G = { class: "editor-section" };
-const _hoisted_5$F = { class: "editor-switches" };
+const _hoisted_4$E = { class: "editor-section" };
+const _hoisted_5$E = { class: "editor-switches" };
 const _hoisted_6$C = { class: "editor-section" };
 const _hoisted_7$z = { class: "editor-switches" };
 
@@ -1935,7 +1935,7 @@ return (_ctx, _cache) => {
           }))
         : _createCommentVNode$K("", true)
     ]),
-    _createElementVNode$P("section", _hoisted_4$G, [
+    _createElementVNode$P("section", _hoisted_4$E, [
       _cache[28] || (_cache[28] = _createElementVNode$P("header", { class: "editor-section__head" }, [
         _createElementVNode$P("div", null, [
           _createElementVNode$P("div", { class: "text-subtitle-1 font-weight-medium" }, "删种保护"),
@@ -1982,7 +1982,7 @@ return (_ctx, _cache) => {
         ]),
         _: 1
       }),
-      _createElementVNode$P("div", _hoisted_5$F, [
+      _createElementVNode$P("div", _hoisted_5$E, [
         _createVNode$O(_component_VSwitch, {
           modelValue: deleteFiles.value,
           "onUpdate:modelValue": _cache[21] || (_cache[21] = $event => ((deleteFiles).value = $event)),
@@ -2090,8 +2090,8 @@ const {createElementVNode:_createElementVNode$O,toDisplayString:_toDisplayString
 const _hoisted_1$H = { class: "editor-section" };
 const _hoisted_2$F = { class: "editor-section__head" };
 const _hoisted_3$E = { class: "text-body-2 text-medium-emphasis" };
-const _hoisted_4$E = { class: "editor-section" };
-const _hoisted_5$E = { class: "editor-section__head" };
+const _hoisted_4$D = { class: "editor-section" };
+const _hoisted_5$D = { class: "editor-section__head" };
 const _hoisted_6$B = { class: "text-body-2 text-medium-emphasis" };
 const _hoisted_7$y = { class: "editor-switches" };
 
@@ -2209,8 +2209,8 @@ return (_ctx, _cache) => {
         _: 1
       })
     ]),
-    _createElementVNode$O("section", _hoisted_4$E, [
-      _createElementVNode$O("header", _hoisted_5$E, [
+    _createElementVNode$O("section", _hoisted_4$D, [
+      _createElementVNode$O("header", _hoisted_5$D, [
         _createElementVNode$O("div", null, [
           _cache[9] || (_cache[9] = _createElementVNode$O("div", { class: "text-subtitle-1 font-weight-medium" }, "候选过滤", -1)),
           _createElementVNode$O("div", _hoisted_6$B, _toDisplayString$O(__props.isBrush ? '留空＝不限；可填单值或「最小-最大」范围' : '范围字段支持单值或「最小值-最大值」'), 1)
@@ -2732,8 +2732,8 @@ function createApi(http, pluginId = 'MagicFlow') {
     hostGet: (path) => http.get(path),
     hostPost: (path, body) => http.post(path, body),
     /** 顺手拆包版（等价于 unwrapResponse(await get/post)） */
-    getU: async (path) => unwrapResponse$1(await http.get(`${base}/${path}`)),
-    postU: async (path, body) => unwrapResponse$1(await http.post(`${base}/${path}`, body)),
+    getU: async (path) => unwrapResponse(await http.get(`${base}/${path}`)),
+    postU: async (path, body) => unwrapResponse(await http.post(`${base}/${path}`, body)),
   };
   c.tasks = makeTasks(c);
   c.pool = makePool(c);
@@ -3037,7 +3037,7 @@ async function loadPool() {
     //   原来这里又拼了一次 `pluginBase` → `plugin/MagicFlow/plugin/MagicFlow/pool` → 404 Not Found
     //   （新建任务弹窗每次都报「Not Found」）。
     const raw = await props.api.get(`pool${query}`);
-    const data = unwrapResponse$1(raw) || {};
+    const data = unwrapResponse(raw) || {};
     if (!data.total) throw new Error('empty')
     pool.value = {
       name: data.name || '',
@@ -4130,7 +4130,7 @@ function useOndemand(api) {
   async function loadOndemandItems() {
     ondemandItemsBusy.value = true;
     try {
-      const res = unwrapResponse$1(await api.features.ondemandItems());
+      const res = unwrapResponse(await api.features.ondemandItems());
       if (res) ondemandItems.value = res;
     } catch (err) {
       // 清单是增强信息，失败不打断搜索/下载主流程
@@ -4171,7 +4171,7 @@ function useOndemand(api) {
     odMsg.value = '';
     odActing.value = `${h}:${action}`;
     try {
-      const res = unwrapResponse$1(await api.features.ondemandAct(h, action));
+      const res = unwrapResponse(await api.features.ondemandAct(h, action));
       odMsg.value = res?.message || '已执行';
     } catch (err) {
       odMsg.value = `❌ ${err?.message || String(err)}`;
@@ -4200,8 +4200,8 @@ const {createElementVNode:_createElementVNode$M,resolveComponent:_resolveCompone
 const _hoisted_1$G = { class: "magicflow-settings-dialog__head" };
 const _hoisted_2$E = { class: "magicflow-recommend-dialog__head-actions" };
 const _hoisted_3$D = { class: "magicflow-music-search" };
-const _hoisted_4$D = { class: "magicflow-music-search__row" };
-const _hoisted_5$D = {
+const _hoisted_4$C = { class: "magicflow-music-search__row" };
+const _hoisted_5$C = {
   key: 0,
   class: "magicflow-music-cands"
 };
@@ -4335,7 +4335,7 @@ return (_ctx, _cache) => {
           _createVNode$L(_component_VCardText, { class: "magicflow-music-dialog__body" }, {
             default: _withCtx$J(() => [
               _createElementVNode$M("div", _hoisted_3$D, [
-                _createElementVNode$M("div", _hoisted_4$D, [
+                _createElementVNode$M("div", _hoisted_4$C, [
                   _createVNode$L(_component_VTextField, {
                     modelValue: musicQuery.value,
                     "onUpdate:modelValue": _cache[1] || (_cache[1] = $event => ((musicQuery).value = $event)),
@@ -4371,7 +4371,7 @@ return (_ctx, _cache) => {
                   }, 8, ["loading"])
                 ]),
                 (__props.musicCandidates.length)
-                  ? (_openBlock$M(), _createElementBlock$G("div", _hoisted_5$D, [
+                  ? (_openBlock$M(), _createElementBlock$G("div", _hoisted_5$C, [
                       _createElementVNode$M("div", _hoisted_6$A, " 候选 " + _toDisplayString$M(__props.musicCandidates.length) + "（相关度 → 评分）· 点「下这条」 ", 1),
                       (_openBlock$M(true), _createElementBlock$G(_Fragment$F, null, _renderList$C(__props.musicCandidates, (c) => {
                         return (_openBlock$M(), _createElementBlock$G("article", {
@@ -4708,8 +4708,8 @@ const {createElementVNode:_createElementVNode$L,resolveComponent:_resolveCompone
 const _hoisted_1$F = { class: "magicflow-settings-dialog__head" };
 const _hoisted_2$D = { class: "magicflow-ops-dialog__body" };
 const _hoisted_3$C = { class: "magicflow-ceiling-list" };
-const _hoisted_4$C = { class: "magicflow-ceiling-row__head" };
-const _hoisted_5$C = { class: "magicflow-ceiling-row__nm" };
+const _hoisted_4$B = { class: "magicflow-ceiling-row__head" };
+const _hoisted_5$B = { class: "magicflow-ceiling-row__nm" };
 const _hoisted_6$z = { class: "magicflow-ceiling-row__val" };
 const _hoisted_7$w = { class: "magicflow-ceiling-bar" };
 const _hoisted_8$v = { class: "magicflow-ceiling-row__foot" };
@@ -4776,8 +4776,8 @@ return (_ctx, _cache) => {
                   key: r.site,
                   class: "magicflow-ceiling-row"
                 }, [
-                  _createElementVNode$L("div", _hoisted_4$C, [
-                    _createElementVNode$L("span", _hoisted_5$C, _toDisplayString$L(r.site), 1),
+                  _createElementVNode$L("div", _hoisted_4$B, [
+                    _createElementVNode$L("span", _hoisted_5$B, _toDisplayString$L(r.site), 1),
                     _createElementVNode$L("span", _hoisted_6$z, [
                       _createTextVNode$K(_toDisplayString$L(r.bonus ? r.bonus.toFixed(1) : '—'), 1),
                       _createElementVNode$L("small", null, _toDisplayString$L(r.cur) + "/h", 1),
@@ -4830,8 +4830,8 @@ const _hoisted_1$E = {
 };
 const _hoisted_2$C = { class: "mf-health__hint" };
 const _hoisted_3$B = { class: "mf-health__body" };
-const _hoisted_4$B = { class: "mf-health__title" };
-const _hoisted_5$B = { class: "mf-health__detail" };
+const _hoisted_4$A = { class: "mf-health__title" };
+const _hoisted_5$A = { class: "mf-health__detail" };
 
 
 const _sfc_main$K = {
@@ -4935,8 +4935,8 @@ return (_ctx, _cache) => {
                           class: "mf-health__icon"
                         }, null, 8, ["icon"]),
                         _createElementVNode$K("div", _hoisted_3$B, [
-                          _createElementVNode$K("div", _hoisted_4$B, _toDisplayString$K(issue.title), 1),
-                          _createElementVNode$K("div", _hoisted_5$B, _toDisplayString$K(issue.detail), 1)
+                          _createElementVNode$K("div", _hoisted_4$A, _toDisplayString$K(issue.title), 1),
+                          _createElementVNode$K("div", _hoisted_5$A, _toDisplayString$K(issue.detail), 1)
                         ]),
                         (issue.task_id)
                           ? (_openBlock$K(), _createBlock$H(_component_VBtn, {
@@ -4994,8 +4994,8 @@ const {createElementVNode:_createElementVNode$J,createTextVNode:_createTextVNode
 const _hoisted_1$D = { class: "magicflow-settings-dialog__head" };
 const _hoisted_2$B = { class: "magicflow-recommend-dialog__head-actions" };
 const _hoisted_3$A = { class: "magicflow-recommend-dialog__summary" };
-const _hoisted_4$A = { class: "magicflow-recommend-dialog__note" };
-const _hoisted_5$A = { class: "magicflow-panel__head" };
+const _hoisted_4$z = { class: "magicflow-recommend-dialog__note" };
+const _hoisted_5$z = { class: "magicflow-panel__head" };
 const _hoisted_6$y = { class: "magicflow-douban-crawl" };
 const _hoisted_7$v = { class: "magicflow-douban-crawl__row" };
 const _hoisted_8$u = { class: "text-medium-emphasis" };
@@ -5140,13 +5140,13 @@ return (_ctx, _cache) => {
                 _cache[14] || (_cache[14] = _createElementVNode$J("i", null, "·", -1)),
                 _createElementVNode$J("span", null, "缓存 " + _toDisplayString$J(fmtCount(__props.state.data.cache?.total)) + " 条 · 负缓存 " + _toDisplayString$J(__props.state.data.cache?.negative || 0), 1)
               ]),
-              _createElementVNode$J("div", _hoisted_4$A, " 地址：" + _toDisplayString$J(__props.state.data.service || '（未配置）') + "。独立服务 magicflow-douban，本地查询 <1ms，不受豆瓣限流影响。 ", 1),
+              _createElementVNode$J("div", _hoisted_4$z, " 地址：" + _toDisplayString$J(__props.state.data.service || '（未配置）') + "。独立服务 magicflow-douban，本地查询 <1ms，不受豆瓣限流影响。 ", 1),
               _createVNode$I(_component_VSheet, {
                 tag: "section",
                 class: "magicflow-panel app-surface-static mt-2"
               }, {
                 default: _withCtx$G(() => [
-                  _createElementVNode$J("header", _hoisted_5$A, [
+                  _createElementVNode$J("header", _hoisted_5$z, [
                     _cache[15] || (_cache[15] = _createElementVNode$J("div", null, [
                       _createElementVNode$J("div", { class: "text-subtitle-2 font-weight-medium" }, "后台数据采集（慢爬）"),
                       _createElementVNode$J("div", { class: "text-body-2 text-medium-emphasis" }, " 从豆瓣「选电影」接口（一次 20 条带评分）按类型×题材×排序逐步枚举，限速 + 每日上限，进度落库可续跑 ")
@@ -5418,8 +5418,8 @@ const {createElementVNode:_createElementVNode$I,createTextVNode:_createTextVNode
 const _hoisted_1$B = { class: "magicflow-settings-dialog__head" };
 const _hoisted_2$z = { class: "magicflow-recommend-dialog__head-actions" };
 const _hoisted_3$z = { class: "magicflow-exam-hero__left" };
-const _hoisted_4$z = { class: "magicflow-exam-hero__num" };
-const _hoisted_5$z = { class: "magicflow-exam-hero__right" };
+const _hoisted_4$x = { class: "magicflow-exam-hero__num" };
+const _hoisted_5$x = { class: "magicflow-exam-hero__right" };
 const _hoisted_6$x = {
   key: 0,
   class: "magicflow-exam-hero__line"
@@ -5537,10 +5537,10 @@ return (_ctx, _cache) => {
                 class: _normalizeClass$n(["magicflow-exam-hero", data.examUrgent ? 'is-urgent' : ''])
               }, [
                 _createElementVNode$I("div", _hoisted_3$z, [
-                  _createElementVNode$I("span", _hoisted_4$z, _toDisplayString$I(data.examPendingSites), 1),
+                  _createElementVNode$I("span", _hoisted_4$x, _toDisplayString$I(data.examPendingSites), 1),
                   _cache[4] || (_cache[4] = _createElementVNode$I("span", { class: "magicflow-exam-hero__cap" }, "站考核未过", -1))
                 ]),
-                _createElementVNode$I("div", _hoisted_5$z, [
+                _createElementVNode$I("div", _hoisted_5$x, [
                   (data.examNext)
                     ? (_openBlock$I(), _createElementBlock$C("div", _hoisted_6$x, [
                         _createVNode$H(_component_VIcon, {
@@ -5866,7 +5866,7 @@ function useHrBills({ api, error, notify } = {}) {
     try {
       const q = new URLSearchParams();
       if (liveOverride === true || (liveOverride === undefined && hrBillsLive.value)) q.set('live', '1');
-      const data = unwrapResponse$1(await api.poolstats.hrBills(q.toString())) || {};
+      const data = unwrapResponse(await api.poolstats.hrBills(q.toString())) || {};
       hrBills.value = data;
     } catch (e) {
       if (error && typeof error === 'object' && 'value' in error) {
@@ -5882,7 +5882,7 @@ function useHrBills({ api, error, notify } = {}) {
     if (hrOperator.value) return hrOperator.value
     try {
       const raw = await api.poolstats.currentUser();
-      const d = unwrapResponse$1(raw) || {};
+      const d = unwrapResponse(raw) || {};
       const name = normalizeOperator(d && (d.name || d.username || d.user_name));
       hrOperator.value = name;
       hrOperatorError.value = name ? '' : '当前会话未返回有效登录用户名，不能人工结清';
@@ -5950,123 +5950,132 @@ function useHrBills({ api, error, notify } = {}) {
 
 const {useModel:_useModel$q,mergeModels:_mergeModels$q} = await importShared('vue');
 
-const {createElementVNode:_createElementVNode$H,createTextVNode:_createTextVNode$G,resolveComponent:_resolveComponent$H,withCtx:_withCtx$E,openBlock:_openBlock$H,createBlock:_createBlock$E,createCommentVNode:_createCommentVNode$C,toDisplayString:_toDisplayString$H,createVNode:_createVNode$G,normalizeClass:_normalizeClass$m,createElementBlock:_createElementBlock$B,renderList:_renderList$y,Fragment:_Fragment$A,unref:_unref$j} = await importShared('vue');
+const {createElementVNode:_createElementVNode$H,createTextVNode:_createTextVNode$G,resolveComponent:_resolveComponent$H,withCtx:_withCtx$E,openBlock:_openBlock$H,createBlock:_createBlock$E,createCommentVNode:_createCommentVNode$C,toDisplayString:_toDisplayString$H,createVNode:_createVNode$G,createElementBlock:_createElementBlock$B,normalizeClass:_normalizeClass$m,renderList:_renderList$y,Fragment:_Fragment$A,unref:_unref$j} = await importShared('vue');
 
 
 const _hoisted_1$z = { class: "magicflow-settings-dialog__head" };
 const _hoisted_2$x = { class: "magicflow-ops-dialog__body" };
-const _hoisted_3$x = { class: "magicflow-sitereport__stats" };
-const _hoisted_4$x = { class: "magicflow-sitereport__stat" };
-const _hoisted_5$x = { class: "magicflow-sitereport__stat is-danger" };
-const _hoisted_6$v = { class: "magicflow-sitereport__stat is-danger" };
-const _hoisted_7$s = { class: "magicflow-sitereport__stat is-danger" };
-const _hoisted_8$s = {
+const _hoisted_3$x = {
   key: 0,
+  class: "magicflow-hrbills__mismatch",
+  role: "alert"
+};
+const _hoisted_4$v = {
+  key: 1,
+  class: "magicflow-hrbills__consistent"
+};
+const _hoisted_5$v = { class: "magicflow-sitereport__stats" };
+const _hoisted_6$v = { class: "magicflow-sitereport__stat" };
+const _hoisted_7$s = { class: "magicflow-sitereport__stat is-danger" };
+const _hoisted_8$s = { class: "magicflow-sitereport__stat is-danger" };
+const _hoisted_9$q = { class: "magicflow-sitereport__stat is-danger" };
+const _hoisted_10$q = {
+  key: 2,
   class: "magicflow-hrbills__mismatch"
 };
-const _hoisted_9$q = {
-  key: 1,
+const _hoisted_11$o = {
+  key: 3,
   class: "magicflow-hrbills__allclear"
 };
-const _hoisted_10$q = { class: "magicflow-hrbills__list" };
-const _hoisted_11$o = { class: "magicflow-hrbills__head" };
-const _hoisted_12$m = { class: "magicflow-hrbills__name" };
-const _hoisted_13$k = { class: "magicflow-hrbills__nums" };
-const _hoisted_14$j = { class: "magicflow-hrbills__chips" };
-const _hoisted_15$j = {
+const _hoisted_12$m = { class: "magicflow-hrbills__list" };
+const _hoisted_13$k = { class: "magicflow-hrbills__head" };
+const _hoisted_14$j = { class: "magicflow-hrbills__name" };
+const _hoisted_15$j = { class: "magicflow-hrbills__nums" };
+const _hoisted_16$j = { class: "magicflow-hrbills__chips" };
+const _hoisted_17$j = {
   key: 0,
   class: "magicflow-hrbills__detail"
 };
-const _hoisted_16$j = { class: "magicflow-hrbills__rows" };
-const _hoisted_17$j = ["title"];
-const _hoisted_18$j = { class: "magicflow-hrbills__row-seed" };
-const _hoisted_19$i = {
+const _hoisted_18$j = { class: "magicflow-hrbills__rows" };
+const _hoisted_19$i = ["title"];
+const _hoisted_20$g = { class: "magicflow-hrbills__row-seed" };
+const _hoisted_21$f = {
   key: 0,
   class: "magicflow-hrbills__history"
 };
-const _hoisted_20$g = { class: "magicflow-hrbills__history-tag" };
-const _hoisted_21$f = { key: 0 };
-const _hoisted_22$e = { key: 1 };
-const _hoisted_23$d = { key: 2 };
-const _hoisted_24$d = {
+const _hoisted_22$e = { class: "magicflow-hrbills__history-tag" };
+const _hoisted_23$d = { key: 0 };
+const _hoisted_24$d = { key: 1 };
+const _hoisted_25$e = { key: 2 };
+const _hoisted_26$c = {
   key: 1,
   open: "",
   class: "magicflow-hrbills__detail magicflow-hrbills__detail--pending"
 };
-const _hoisted_25$e = {
+const _hoisted_27$c = {
   key: 0,
   class: "magicflow-hrbills__mismatch"
 };
-const _hoisted_26$c = { class: "magicflow-hrbills__prows" };
-const _hoisted_27$c = ["title"];
-const _hoisted_28$b = { class: "magicflow-hrbills__pmeta" };
+const _hoisted_28$b = { class: "magicflow-hrbills__prows" };
 const _hoisted_29$6 = ["title"];
-const _hoisted_30$a = {
+const _hoisted_30$a = { class: "magicflow-hrbills__pmeta" };
+const _hoisted_31$a = ["title"];
+const _hoisted_32$a = {
   key: 0,
   class: "magicflow-hrbills__history"
 };
-const _hoisted_31$a = { class: "magicflow-hrbills__history-tag" };
-const _hoisted_32$a = { key: 0 };
-const _hoisted_33$8 = { key: 1 };
-const _hoisted_34$8 = { key: 2 };
-const _hoisted_35$3 = {
+const _hoisted_33$8 = { class: "magicflow-hrbills__history-tag" };
+const _hoisted_34$8 = { key: 0 };
+const _hoisted_35$3 = { key: 1 };
+const _hoisted_36$6 = { key: 2 };
+const _hoisted_37$5 = {
   key: 2,
   class: "magicflow-hrbills__detail magicflow-hrbills__detail--done"
 };
-const _hoisted_36$6 = { class: "magicflow-hrbills__rows" };
-const _hoisted_37$5 = ["title"];
-const _hoisted_38$5 = { class: "magicflow-hrbills__row-seed" };
-const _hoisted_39$5 = { class: "magicflow-hrbills__row-left is-ok" };
-const _hoisted_40$5 = {
+const _hoisted_38$5 = { class: "magicflow-hrbills__rows" };
+const _hoisted_39$5 = ["title"];
+const _hoisted_40$5 = { class: "magicflow-hrbills__row-seed" };
+const _hoisted_41$5 = { class: "magicflow-hrbills__row-left is-ok" };
+const _hoisted_42$4 = {
   key: 0,
   class: "magicflow-hrbills__audit"
 };
-const _hoisted_41$5 = { class: "magicflow-hrbills__audit-kv" };
-const _hoisted_42$4 = { class: "magicflow-hrbills__audit-kv" };
 const _hoisted_43$3 = { class: "magicflow-hrbills__audit-kv" };
-const _hoisted_44$3 = {
+const _hoisted_44$3 = { class: "magicflow-hrbills__audit-kv" };
+const _hoisted_45$3 = { class: "magicflow-hrbills__audit-kv" };
+const _hoisted_46$3 = {
   key: 0,
   class: "magicflow-hrbills__audit-warn"
 };
-const _hoisted_45$3 = {
+const _hoisted_47$3 = {
   key: 1,
   class: "magicflow-hrbills__audit"
 };
-const _hoisted_46$3 = { class: "magicflow-hrbills__audit-tag" };
-const _hoisted_47$3 = {
+const _hoisted_48$3 = { class: "magicflow-hrbills__audit-tag" };
+const _hoisted_49$3 = {
   key: 0,
   class: "magicflow-hrbills__audit-kv"
 };
-const _hoisted_48$3 = { class: "magicflow-hrbills__audit-kv" };
-const _hoisted_49$3 = {
-  key: 1,
-  class: "magicflow-hrbills__audit-kv"
-};
-const _hoisted_50$3 = {
-  key: 2,
-  class: "magicflow-hrbills__audit-kv"
-};
+const _hoisted_50$3 = { class: "magicflow-hrbills__audit-kv" };
 const _hoisted_51$3 = {
-  key: 3,
+  key: 1,
   class: "magicflow-hrbills__audit-kv"
 };
 const _hoisted_52$3 = {
+  key: 2,
+  class: "magicflow-hrbills__audit-kv"
+};
+const _hoisted_53$3 = {
+  key: 3,
+  class: "magicflow-hrbills__audit-kv"
+};
+const _hoisted_54$3 = {
   key: 4,
   class: "magicflow-hrbills__audit-warn"
 };
-const _hoisted_53$3 = {
+const _hoisted_55$3 = {
   key: 2,
   class: "magicflow-hrbills__history"
 };
-const _hoisted_54$3 = { class: "magicflow-hrbills__history-tag" };
-const _hoisted_55$3 = { key: 0 };
-const _hoisted_56$2 = { key: 1 };
-const _hoisted_57$3 = { key: 2 };
-const _hoisted_58$3 = {
+const _hoisted_56$2 = { class: "magicflow-hrbills__history-tag" };
+const _hoisted_57$3 = { key: 0 };
+const _hoisted_58$3 = { key: 1 };
+const _hoisted_59$3 = { key: 2 };
+const _hoisted_60$2 = {
   key: 3,
   class: "magicflow-ops-dialog__sub"
 };
-const _hoisted_59$3 = {
+const _hoisted_61$2 = {
   key: 0,
   class: "magicflow-ceiling-empty"
 };
@@ -6108,6 +6117,18 @@ const props = __props;
 const emit = __emit;
 
 const totals = computed$O(() => (props.data && props.data.totals) || {});
+
+// ★ 任务 113（N-04）：账单存储 UNKNOWN 时，页面必须显示「读不到」而不是「0 张账单」。
+//   后端 view_hr 输出 store_status/store_error/store_backend/degraded_reason；
+//   旧后端没有这些字段 → 按 found 处理（向后兼容）。
+const storeStatus = computed$O(() => String((props.data && props.data.store_status) || 'found'));
+const storeDegraded = computed$O(() => storeStatus.value !== 'found');
+const degradedReason = computed$O(() => {
+  const d = props.data || {};
+  return String(d.degraded_reason || d.store_error || '账单存储不可读')
+});
+// ★ 任务 132：PG 单一权威 —— 不再有「已提交但不可见/待提交」分层；
+//   只剩 found / unknown（PG 不可用）。
 
 // ★ 19.12.34：「已结清」是**机器的记忆**，不是**人的待办**。
 //   账本里必须留着 —— ① 幂等锚：防回填反复开账/结清；② 站端翻案（myhr 又说欠）时
@@ -6331,20 +6352,23 @@ return (_ctx, _cache) => {
             })
           ]),
           _createElementVNode$H("div", _hoisted_2$x, [
-            _createElementVNode$H("div", _hoisted_3$x, [
-              _createElementVNode$H("div", _hoisted_4$x, [
+            (storeDegraded.value)
+              ? (_openBlock$H(), _createElementBlock$B("div", _hoisted_3$x, " 账单存储不可用（" + _toDisplayString$H(storeStatus.value) + "）：" + _toDisplayString$H(degradedReason.value) + " —— 下方数字可能不完整，请先修存储（PG）再操作，不要据此删种。 ", 1))
+              : (_openBlock$H(), _createElementBlock$B("div", _hoisted_4$v, " 账单存储：PG 单一权威（" + _toDisplayString$H((props.data && props.data.store_backend) || 'pg') + "） ", 1)),
+            _createElementVNode$H("div", _hoisted_5$v, [
+              _createElementVNode$H("div", _hoisted_6$v, [
                 _createElementVNode$H("b", null, _toDisplayString$H(openTotal.value), 1),
                 _cache[6] || (_cache[6] = _createElementVNode$H("span", null, "未结清", -1))
               ]),
-              _createElementVNode$H("div", _hoisted_5$x, [
+              _createElementVNode$H("div", _hoisted_7$s, [
                 _createElementVNode$H("b", null, _toDisplayString$H(totals.value.active || 0), 1),
                 _cache[7] || (_cache[7] = _createElementVNode$H("span", null, "欠债", -1))
               ]),
-              _createElementVNode$H("div", _hoisted_6$v, [
+              _createElementVNode$H("div", _hoisted_8$s, [
                 _createElementVNode$H("b", null, _toDisplayString$H(totals.value.breached || 0), 1),
                 _cache[8] || (_cache[8] = _createElementVNode$H("span", null, "违约", -1))
               ]),
-              _createElementVNode$H("div", _hoisted_7$s, [
+              _createElementVNode$H("div", _hoisted_9$q, [
                 _createElementVNode$H("b", null, _toDisplayString$H(totals.value.missing || 0), 1),
                 _cache[9] || (_cache[9] = _createElementVNode$H("span", null, "本机缺失", -1))
               ]),
@@ -6356,19 +6380,19 @@ return (_ctx, _cache) => {
               ], 2)
             ]),
             (countsMismatch.value)
-              ? (_openBlock$H(), _createElementBlock$B("div", _hoisted_8$s, " 接口统计 " + _toDisplayString$H(totals.value.bills || 0) + " 张，站点列表合计 " + _toDisplayString$H(listTotal.value) + " 张，数量不一致 —— 请点刷新复核 ", 1))
+              ? (_openBlock$H(), _createElementBlock$B("div", _hoisted_10$q, " 接口统计 " + _toDisplayString$H(totals.value.bills || 0) + " 张，站点列表合计 " + _toDisplayString$H(listTotal.value) + " 张，数量不一致 —— 请点刷新复核 ", 1))
               : _createCommentVNode$C("", true),
             (!openTotal.value && sites.value.length)
-              ? (_openBlock$H(), _createElementBlock$B("div", _hoisted_9$q, " 当前没有 H&R 欠账 —— 下面 " + _toDisplayString$H(sites.value.length) + " 个站共 " + _toDisplayString$H(totals.value.settled || 0) + " 颗已结清，到期自动清除 ", 1))
+              ? (_openBlock$H(), _createElementBlock$B("div", _hoisted_11$o, " 当前没有 H&R 欠账 —— 下面 " + _toDisplayString$H(sites.value.length) + " 个站共 " + _toDisplayString$H(totals.value.settled || 0) + " 颗已结清，到期自动清除 ", 1))
               : _createCommentVNode$C("", true),
-            _createElementVNode$H("div", _hoisted_10$q, [
+            _createElementVNode$H("div", _hoisted_12$m, [
               (_openBlock$H(true), _createElementBlock$B(_Fragment$A, null, _renderList$y(sites.value, (s) => {
                 return (_openBlock$H(), _createElementBlock$B("div", {
                   key: s.domain,
                   class: "magicflow-hrbills__card"
                 }, [
-                  _createElementVNode$H("div", _hoisted_11$o, [
-                    _createElementVNode$H("span", _hoisted_12$m, _toDisplayString$H(s.name || s.domain), 1),
+                  _createElementVNode$H("div", _hoisted_13$k, [
+                    _createElementVNode$H("span", _hoisted_14$j, _toDisplayString$H(s.name || s.domain), 1),
                     (s.per_torrent_hr)
                       ? (_openBlock$H(), _createBlock$E(_component_VChip, {
                           key: 0,
@@ -6409,7 +6433,7 @@ return (_ctx, _cache) => {
                         }))
                       : _createCommentVNode$C("", true),
                     _cache[13] || (_cache[13] = _createElementVNode$H("span", { class: "magicflow-ops-dialog__spacer" }, null, -1)),
-                    _createElementVNode$H("span", _hoisted_13$k, [
+                    _createElementVNode$H("span", _hoisted_15$j, [
                       _createTextVNode$G("欠 " + _toDisplayString$H(s.owed) + " · 在qb " + _toDisplayString$H(s.in_qb) + " · 缺 " + _toDisplayString$H(s.missing), 1),
                       (s.at_risk)
                         ? (_openBlock$H(), _createElementBlock$B(_Fragment$A, { key: 0 }, [
@@ -6431,7 +6455,7 @@ return (_ctx, _cache) => {
                         }, 1024))
                       : _createCommentVNode$C("", true)
                   ]),
-                  _createElementVNode$H("div", _hoisted_14$j, [
+                  _createElementVNode$H("div", _hoisted_16$j, [
                     (_openBlock$H(true), _createElementBlock$B(_Fragment$A, null, _renderList$y(openChips(s.bills), (n, st) => {
                       return (_openBlock$H(), _createBlock$E(_component_VChip, {
                         key: st,
@@ -6473,9 +6497,9 @@ return (_ctx, _cache) => {
                       : _createCommentVNode$C("", true)
                   ]),
                   (openItems(s).length)
-                    ? (_openBlock$H(), _createElementBlock$B("details", _hoisted_15$j, [
+                    ? (_openBlock$H(), _createElementBlock$B("details", _hoisted_17$j, [
                         _createElementVNode$H("summary", null, "还欠 " + _toDisplayString$H(openItems(s).length) + " 颗（逐颗）", 1),
-                        _createElementVNode$H("div", _hoisted_16$j, [
+                        _createElementVNode$H("div", _hoisted_18$j, [
                           (_openBlock$H(true), _createElementBlock$B(_Fragment$A, null, _renderList$y(openItems(s), (it) => {
                             return (_openBlock$H(), _createElementBlock$B("div", {
                               key: it.hash,
@@ -6484,30 +6508,30 @@ return (_ctx, _cache) => {
                               _createElementVNode$H("span", {
                                 class: "magicflow-hrbills__row-title",
                                 title: it.title || it.hash
-                              }, _toDisplayString$H(it.title || it.hash.slice(0, 8)), 9, _hoisted_17$j),
-                              _createElementVNode$H("span", _hoisted_18$j, _toDisplayString$H(_unref$j(fmtBillSeeded)(it)), 1),
+                              }, _toDisplayString$H(it.title || it.hash.slice(0, 8)), 9, _hoisted_19$i),
+                              _createElementVNode$H("span", _hoisted_20$g, _toDisplayString$H(_unref$j(fmtBillSeeded)(it)), 1),
                               _createElementVNode$H("span", {
                                 class: _normalizeClass$m(["magicflow-hrbills__row-left", { 'is-ok': _unref$j(hrBillLeftH)(it) <= 0.05 }])
                               }, _toDisplayString$H(_unref$j(fmtBillLeft)(it)), 3),
                               (historyOf(it).length)
-                                ? (_openBlock$H(), _createElementBlock$B("details", _hoisted_19$i, [
+                                ? (_openBlock$H(), _createElementBlock$B("details", _hoisted_21$f, [
                                     _createElementVNode$H("summary", null, "结清 / 纠错历史 " + _toDisplayString$H(historyOf(it).length) + " 条", 1),
                                     (_openBlock$H(true), _createElementBlock$B(_Fragment$A, null, _renderList$y(historyOf(it), (e, i) => {
                                       return (_openBlock$H(), _createElementBlock$B("div", {
                                         key: i,
                                         class: "magicflow-hrbills__history-row"
                                       }, [
-                                        _createElementVNode$H("span", _hoisted_20$g, _toDisplayString$H(eventLabel(e)), 1),
+                                        _createElementVNode$H("span", _hoisted_22$e, _toDisplayString$H(eventLabel(e)), 1),
                                         _createElementVNode$H("span", null, _toDisplayString$H(eventTime(e)), 1),
                                         _createElementVNode$H("span", null, "操作人：" + _toDisplayString$H(e.actor || '—'), 1),
                                         (e.reason)
-                                          ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_21$f, "原因：" + _toDisplayString$H(e.reason), 1))
+                                          ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_23$d, "原因：" + _toDisplayString$H(e.reason), 1))
                                           : _createCommentVNode$C("", true),
                                         (evidenceText(e))
-                                          ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_22$e, _toDisplayString$H(evidenceText(e)), 1))
+                                          ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_24$d, _toDisplayString$H(evidenceText(e)), 1))
                                           : _createCommentVNode$C("", true),
                                         (e.event_type === 'reopened')
-                                          ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_23$d, _toDisplayString$H(reopenedSnapshotText(e)), 1))
+                                          ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_25$e, _toDisplayString$H(reopenedSnapshotText(e)), 1))
                                           : _createCommentVNode$C("", true)
                                       ]))
                                     }), 128))
@@ -6519,12 +6543,12 @@ return (_ctx, _cache) => {
                       ]))
                     : _createCommentVNode$C("", true),
                   (pendingItems(s).length)
-                    ? (_openBlock$H(), _createElementBlock$B("details", _hoisted_24$d, [
+                    ? (_openBlock$H(), _createElementBlock$B("details", _hoisted_26$c, [
                         _createElementVNode$H("summary", null, "待起表 " + _toDisplayString$H(pendingItems(s).length) + " 颗（未下完，完成即计 H&R）", 1),
                         (pendingCountMismatch(s))
-                          ? (_openBlock$H(), _createElementBlock$B("div", _hoisted_25$e, " 接口统计 " + _toDisplayString$H((s.bills || {}).pending || 0) + " 颗，明细 " + _toDisplayString$H(pendingItems(s).length) + " 颗，数量不一致 —— 请点刷新复核 ", 1))
+                          ? (_openBlock$H(), _createElementBlock$B("div", _hoisted_27$c, " 接口统计 " + _toDisplayString$H((s.bills || {}).pending || 0) + " 颗，明细 " + _toDisplayString$H(pendingItems(s).length) + " 颗，数量不一致 —— 请点刷新复核 ", 1))
                           : _createCommentVNode$C("", true),
-                        _createElementVNode$H("div", _hoisted_26$c, [
+                        _createElementVNode$H("div", _hoisted_28$b, [
                           (_openBlock$H(true), _createElementBlock$B(_Fragment$A, null, _renderList$y(pendingItems(s), (it) => {
                             return (_openBlock$H(), _createElementBlock$B("div", {
                               key: it.hash,
@@ -6533,8 +6557,8 @@ return (_ctx, _cache) => {
                               _createElementVNode$H("div", {
                                 class: "magicflow-hrbills__prow-title",
                                 title: it.title || it.hash
-                              }, _toDisplayString$H(it.title || hashShort(it.hash)), 9, _hoisted_27$c),
-                              _createElementVNode$H("div", _hoisted_28$b, [
+                              }, _toDisplayString$H(it.title || hashShort(it.hash)), 9, _hoisted_29$6),
+                              _createElementVNode$H("div", _hoisted_30$a, [
                                 _createElementVNode$H("span", null, "站点：" + _toDisplayString$H(s.name || s.domain), 1),
                                 _createElementVNode$H("span", null, "规则：" + _toDisplayString$H(it.rule || '—'), 1),
                                 _createElementVNode$H("span", null, [
@@ -6547,27 +6571,27 @@ return (_ctx, _cache) => {
                                 _createElementVNode$H("span", {
                                   class: "magicflow-hrbills__phash",
                                   title: it.hash
-                                }, "hash：" + _toDisplayString$H(it.hash), 9, _hoisted_29$6)
+                                }, "hash：" + _toDisplayString$H(it.hash), 9, _hoisted_31$a)
                               ]),
                               (historyOf(it).length)
-                                ? (_openBlock$H(), _createElementBlock$B("details", _hoisted_30$a, [
+                                ? (_openBlock$H(), _createElementBlock$B("details", _hoisted_32$a, [
                                     _createElementVNode$H("summary", null, "结清 / 纠错历史 " + _toDisplayString$H(historyOf(it).length) + " 条", 1),
                                     (_openBlock$H(true), _createElementBlock$B(_Fragment$A, null, _renderList$y(historyOf(it), (e, i) => {
                                       return (_openBlock$H(), _createElementBlock$B("div", {
                                         key: i,
                                         class: "magicflow-hrbills__history-row"
                                       }, [
-                                        _createElementVNode$H("span", _hoisted_31$a, _toDisplayString$H(eventLabel(e)), 1),
+                                        _createElementVNode$H("span", _hoisted_33$8, _toDisplayString$H(eventLabel(e)), 1),
                                         _createElementVNode$H("span", null, _toDisplayString$H(eventTime(e)), 1),
                                         _createElementVNode$H("span", null, "操作人：" + _toDisplayString$H(e.actor || '—'), 1),
                                         (e.reason)
-                                          ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_32$a, "原因：" + _toDisplayString$H(e.reason), 1))
+                                          ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_34$8, "原因：" + _toDisplayString$H(e.reason), 1))
                                           : _createCommentVNode$C("", true),
                                         (evidenceText(e))
-                                          ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_33$8, _toDisplayString$H(evidenceText(e)), 1))
+                                          ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_35$3, _toDisplayString$H(evidenceText(e)), 1))
                                           : _createCommentVNode$C("", true),
                                         (e.event_type === 'reopened')
-                                          ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_34$8, _toDisplayString$H(reopenedSnapshotText(e)), 1))
+                                          ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_36$6, _toDisplayString$H(reopenedSnapshotText(e)), 1))
                                           : _createCommentVNode$C("", true)
                                       ]))
                                     }), 128))
@@ -6579,9 +6603,9 @@ return (_ctx, _cache) => {
                       ]))
                     : _createCommentVNode$C("", true),
                   (closedItems(s).length)
-                    ? (_openBlock$H(), _createElementBlock$B("details", _hoisted_35$3, [
+                    ? (_openBlock$H(), _createElementBlock$B("details", _hoisted_37$5, [
                         _createElementVNode$H("summary", null, "已结清 " + _toDisplayString$H(closedItems(s).length) + " 颗（到期自动清除，无需操作）", 1),
-                        _createElementVNode$H("div", _hoisted_36$6, [
+                        _createElementVNode$H("div", _hoisted_38$5, [
                           (_openBlock$H(true), _createElementBlock$B(_Fragment$A, null, _renderList$y(closedItems(s), (it) => {
                             return (_openBlock$H(), _createElementBlock$B("div", {
                               key: it.hash,
@@ -6590,58 +6614,58 @@ return (_ctx, _cache) => {
                               _createElementVNode$H("span", {
                                 class: "magicflow-hrbills__row-title",
                                 title: it.title || it.hash
-                              }, _toDisplayString$H(it.title || it.hash.slice(0, 8)), 9, _hoisted_37$5),
-                              _createElementVNode$H("span", _hoisted_38$5, _toDisplayString$H(_unref$j(fmtBillSeeded)(it)), 1),
-                              _createElementVNode$H("span", _hoisted_39$5, _toDisplayString$H(_unref$j(fmtBillLeft)(it)), 1),
+                              }, _toDisplayString$H(it.title || it.hash.slice(0, 8)), 9, _hoisted_39$5),
+                              _createElementVNode$H("span", _hoisted_40$5, _toDisplayString$H(_unref$j(fmtBillSeeded)(it)), 1),
+                              _createElementVNode$H("span", _hoisted_41$5, _toDisplayString$H(_unref$j(fmtBillLeft)(it)), 1),
                               (isManualSettled(it))
-                                ? (_openBlock$H(), _createElementBlock$B("div", _hoisted_40$5, [
+                                ? (_openBlock$H(), _createElementBlock$B("div", _hoisted_42$4, [
                                     _cache[15] || (_cache[15] = _createElementVNode$H("span", { class: "magicflow-hrbills__audit-tag" }, "人工结清", -1)),
-                                    _createElementVNode$H("span", _hoisted_41$5, "操作人：" + _toDisplayString$H(auditByBad(it.settled_by) ? '—' : it.settled_by), 1),
-                                    _createElementVNode$H("span", _hoisted_42$4, "原因：" + _toDisplayString$H(auditBlank(it.settlement_reason) ? '—' : it.settlement_reason), 1),
-                                    _createElementVNode$H("span", _hoisted_43$3, "结清时间：" + _toDisplayString$H(fmtSettleTime(it.settled_at)), 1),
+                                    _createElementVNode$H("span", _hoisted_43$3, "操作人：" + _toDisplayString$H(auditByBad(it.settled_by) ? '—' : it.settled_by), 1),
+                                    _createElementVNode$H("span", _hoisted_44$3, "原因：" + _toDisplayString$H(auditBlank(it.settlement_reason) ? '—' : it.settlement_reason), 1),
+                                    _createElementVNode$H("span", _hoisted_45$3, "结清时间：" + _toDisplayString$H(fmtSettleTime(it.settled_at)), 1),
                                     _cache[16] || (_cache[16] = _createElementVNode$H("span", { class: "magicflow-hrbills__audit-review" }, "需人工复核", -1)),
                                     (it.settlement_audit_incomplete)
-                                      ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_44$3, "审计信息不完整，请人工核查"))
+                                      ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_46$3, "审计信息不完整，请人工核查"))
                                       : _createCommentVNode$C("", true)
                                   ]))
-                                : (_openBlock$H(), _createElementBlock$B("div", _hoisted_45$3, [
-                                    _createElementVNode$H("span", _hoisted_46$3, _toDisplayString$H(settleTagText(it)), 1),
+                                : (_openBlock$H(), _createElementBlock$B("div", _hoisted_47$3, [
+                                    _createElementVNode$H("span", _hoisted_48$3, _toDisplayString$H(settleTagText(it)), 1),
                                     (!settleMethodKnown(it))
-                                      ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_47$3, "方式未记录"))
+                                      ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_49$3, "方式未记录"))
                                       : _createCommentVNode$C("", true),
-                                    _createElementVNode$H("span", _hoisted_48$3, _toDisplayString$H(settleTimeLabel(it)), 1),
+                                    _createElementVNode$H("span", _hoisted_50$3, _toDisplayString$H(settleTimeLabel(it)), 1),
                                     (!auditByBad(it.settled_by))
-                                      ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_49$3, "操作人：" + _toDisplayString$H(it.settled_by), 1))
+                                      ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_51$3, "操作人：" + _toDisplayString$H(it.settled_by), 1))
                                       : _createCommentVNode$C("", true),
                                     (!auditBlank(it.settlement_reason))
-                                      ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_50$3, "原因：" + _toDisplayString$H(it.settlement_reason), 1))
+                                      ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_52$3, "原因：" + _toDisplayString$H(it.settlement_reason), 1))
                                       : _createCommentVNode$C("", true),
                                     (!auditBlank(it.void_reason))
-                                      ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_51$3, "作废原因：" + _toDisplayString$H(it.void_reason), 1))
+                                      ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_53$3, "作废原因：" + _toDisplayString$H(it.void_reason), 1))
                                       : _createCommentVNode$C("", true),
                                     (!settleTracked(it))
-                                      ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_52$3, "该账单未留下结清记录（19.12.40 前结清，事件表尚未启用）"))
+                                      ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_54$3, "该账单未留下结清记录（19.12.40 前结清，事件表尚未启用）"))
                                       : _createCommentVNode$C("", true)
                                   ])),
                               (historyOf(it).length)
-                                ? (_openBlock$H(), _createElementBlock$B("details", _hoisted_53$3, [
+                                ? (_openBlock$H(), _createElementBlock$B("details", _hoisted_55$3, [
                                     _createElementVNode$H("summary", null, "结清 / 纠错历史 " + _toDisplayString$H(historyOf(it).length) + " 条", 1),
                                     (_openBlock$H(true), _createElementBlock$B(_Fragment$A, null, _renderList$y(historyOf(it), (e, i) => {
                                       return (_openBlock$H(), _createElementBlock$B("div", {
                                         key: i,
                                         class: "magicflow-hrbills__history-row"
                                       }, [
-                                        _createElementVNode$H("span", _hoisted_54$3, _toDisplayString$H(eventLabel(e)), 1),
+                                        _createElementVNode$H("span", _hoisted_56$2, _toDisplayString$H(eventLabel(e)), 1),
                                         _createElementVNode$H("span", null, _toDisplayString$H(eventTime(e)), 1),
                                         _createElementVNode$H("span", null, "操作人：" + _toDisplayString$H(e.actor || '—'), 1),
                                         (e.reason)
-                                          ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_55$3, "原因：" + _toDisplayString$H(e.reason), 1))
+                                          ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_57$3, "原因：" + _toDisplayString$H(e.reason), 1))
                                           : _createCommentVNode$C("", true),
                                         (evidenceText(e))
-                                          ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_56$2, _toDisplayString$H(evidenceText(e)), 1))
+                                          ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_58$3, _toDisplayString$H(evidenceText(e)), 1))
                                           : _createCommentVNode$C("", true),
                                         (e.event_type === 'reopened')
-                                          ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_57$3, _toDisplayString$H(reopenedSnapshotText(e)), 1))
+                                          ? (_openBlock$H(), _createElementBlock$B("span", _hoisted_59$3, _toDisplayString$H(reopenedSnapshotText(e)), 1))
                                           : _createCommentVNode$C("", true)
                                       ]))
                                     }), 128))
@@ -6653,7 +6677,7 @@ return (_ctx, _cache) => {
                       ]))
                     : _createCommentVNode$C("", true),
                   (s.at_risk)
-                    ? (_openBlock$H(), _createElementBlock$B("div", _hoisted_58$3, [
+                    ? (_openBlock$H(), _createElementBlock$B("div", _hoisted_60$2, [
                         _cache[17] || (_cache[17] = _createTextVNode$G(" 临近到期： ", -1)),
                         (_openBlock$H(true), _createElementBlock$B(_Fragment$A, null, _renderList$y(_unref$j(hrBillsAtRisk)(s), (it, i) => {
                           return (_openBlock$H(), _createElementBlock$B("span", {
@@ -6665,7 +6689,7 @@ return (_ctx, _cache) => {
                 ]))
               }), 128)),
               (!__props.loading && !sites.value.length)
-                ? (_openBlock$H(), _createElementBlock$B("div", _hoisted_59$3, "暂无 H&R 账单（无欠债站）"))
+                ? (_openBlock$H(), _createElementBlock$B("div", _hoisted_61$2, "暂无 H&R 账单（无欠债站）"))
                 : _createCommentVNode$C("", true)
             ])
           ])
@@ -6679,7 +6703,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const HrBillsDialog = /*#__PURE__*/_export_sfc(_sfc_main$H, [['__scopeId',"data-v-9e723f8e"]]);
+const HrBillsDialog = /*#__PURE__*/_export_sfc(_sfc_main$H, [['__scopeId',"data-v-54beff00"]]);
 
 // MagicFlow 前端 · useCloud 域 composable
 // P3 拆分：自 views/magicflow/index.vue **纯搬家**（无行为变更）。
@@ -6709,7 +6733,7 @@ function useCloud({ api, error, notify }) {
   async function loadCloud() {
     cloudLoading.value = true;
     try {
-      cloudState.value = unwrapResponse$1(await api.features.cloud());
+      cloudState.value = unwrapResponse(await api.features.cloud());
       if (!cloudPlanStats.value) cloudPlanStats.value = (cloudState.value?.plan_stats || null);
     } catch (err) {
       error.value = err?.message || String(err);
@@ -6721,7 +6745,7 @@ function useCloud({ api, error, notify }) {
     cloudTesting.value = true;
     cloudTestMsg.value = '';
     try {
-      const res = unwrapResponse$1(await api.features.cloudTest());
+      const res = unwrapResponse(await api.features.cloudTest());
       cloudTestOk.value = Boolean(res?.ok);
       cloudTestMsg.value = res?.ok
         ? `连通正常 · 源挂载 ${res.source_items ?? '?'} 项 · strm 视图 ${res.strm_items ?? '?'} 项`
@@ -6736,7 +6760,7 @@ function useCloud({ api, error, notify }) {
   async function planCloud() {
     cloudPlanning.value = true;
     try {
-      const res = unwrapResponse$1(await api.features.cloudPlan(cloudLimit.value || 50));
+      const res = unwrapResponse(await api.features.cloudPlan(cloudLimit.value || 50));
       cloudPlanItems.value = res?.items || [];
       cloudPlanStats.value = res?.stats || null;
     } catch (err) {
@@ -6749,7 +6773,7 @@ function useCloud({ api, error, notify }) {
     if (!item?.path) return
     cloudUploadingPath.value = item.path;
     try {
-      const res = unwrapResponse$1(await api.features.cloudUpload(item.path));
+      const res = unwrapResponse(await api.features.cloudUpload(item.path));
       item.status = res?.status || 'uploading';
       item.message = res?.message || '';
       notify(item.message || '已开始上传');
@@ -6779,7 +6803,7 @@ function useCloud({ api, error, notify }) {
   async function runCloud(dryRun = true) {
     cloudRunning.value = true;
     try {
-      const res = unwrapResponse$1(await api.features.cloudRun(dryRun, cloudLimit.value || 50));
+      const res = unwrapResponse(await api.features.cloudRun(dryRun, cloudLimit.value || 50));
       notify(res?.message || (dryRun ? '归档演练已开始' : '归档任务已开始'));
       setTimeout(() => { loadCloud(); }, 3000);
     } catch (err) {
@@ -7492,7 +7516,7 @@ function useSilentPool({ api, notify }) {
   async function loadSilent() {
     silentLoading.value = true;
     try {
-      silentData.value = unwrapResponse$1(await api.poolstats.silentPool()) || silentData.value;
+      silentData.value = unwrapResponse(await api.poolstats.silentPool()) || silentData.value;
     } catch (err) {
       notify(`读取静默池失败：${err?.message || err}`, 'error');
     } finally {
@@ -7541,8 +7565,8 @@ const {createElementVNode:_createElementVNode$F,createTextVNode:_createTextVNode
 const _hoisted_1$w = { class: "magicflow-settings-dialog__head" };
 const _hoisted_2$u = { class: "magicflow-recommend-dialog__head-actions" };
 const _hoisted_3$v = { class: "magicflow-cs-stats" };
-const _hoisted_4$v = { class: "magicflow-cs-stat" };
-const _hoisted_5$v = { class: "magicflow-cs-stat" };
+const _hoisted_4$s = { class: "magicflow-cs-stat" };
+const _hoisted_5$s = { class: "magicflow-cs-stat" };
 const _hoisted_6$t = { class: "magicflow-cs-stat" };
 const _hoisted_7$n = { class: "magicflow-cs-stat" };
 const _hoisted_8$q = { class: "magicflow-silent-chips" };
@@ -7732,11 +7756,11 @@ return (_ctx, _cache) => {
           _createVNode$E(_component_VCardText, { class: "magicflow-silent-body" }, {
             default: _withCtx$C(() => [
               _createElementVNode$F("div", _hoisted_3$v, [
-                _createElementVNode$F("div", _hoisted_4$v, [
+                _createElementVNode$F("div", _hoisted_4$s, [
                   _createElementVNode$F("b", null, _toDisplayString$F(__props.summary.total || 0), 1),
                   _cache[16] || (_cache[16] = _createElementVNode$F("span", null, "池内总数", -1))
                 ]),
-                _createElementVNode$F("div", _hoisted_5$v, [
+                _createElementVNode$F("div", _hoisted_5$s, [
                   _createElementVNode$F("b", null, _toDisplayString$F(__props.summary.hr || 0), 1),
                   _cache[17] || (_cache[17] = _createElementVNode$F("span", null, "欠 H&R", -1))
                 ]),
@@ -8703,8 +8727,8 @@ const {createElementVNode:_createElementVNode$D,resolveComponent:_resolveCompone
 const _hoisted_1$v = { class: "magicflow-settings-dialog__head" };
 const _hoisted_2$t = { class: "magicflow-recommend-dialog__head-actions" };
 const _hoisted_3$s = { class: "magicflow-settings-hint mt-2" };
-const _hoisted_4$s = { key: 0 };
-const _hoisted_5$s = { key: 1 };
+const _hoisted_4$q = { key: 0 };
+const _hoisted_5$q = { key: 1 };
 const _hoisted_6$p = { key: 2 };
 
 
@@ -8781,12 +8805,12 @@ return (_ctx, _cache) => {
                 _cache[13] || (_cache[13] = _createElementVNode$D("strong", null, "只暂停、不删种、不动文件", -1)),
                 _cache[14] || (_cache[14] = _createTextVNode$C("）。 ", -1)),
                 (__props.counts.violations)
-                  ? (_openBlock$D(), _createElementBlock$x("span", _hoisted_4$s, [
+                  ? (_openBlock$D(), _createElementBlock$x("span", _hoisted_4$q, [
                       _cache[7] || (_cache[7] = _createTextVNode$C("当前违背不变量 ", -1)),
                       _createElementVNode$D("b", null, _toDisplayString$D(__props.counts.violations), 1),
                       _cache[8] || (_cache[8] = _createTextVNode$C(" 个。", -1))
                     ]))
-                  : (_openBlock$D(), _createElementBlock$x("span", _hoisted_5$s, "当前不变量成立（全 paused）。")),
+                  : (_openBlock$D(), _createElementBlock$x("span", _hoisted_5$q, "当前不变量成立（全 paused）。")),
                 (__props.counts.tag_only)
                   ? (_openBlock$D(), _createElementBlock$x("span", _hoisted_6$p, [
                       _cache[9] || (_cache[9] = _createTextVNode$C("（其中 ", -1)),
@@ -10426,8 +10450,8 @@ const _hoisted_1$t = {
 };
 const _hoisted_2$r = { class: "text-caption text-medium-emphasis ml-2" };
 const _hoisted_3$q = { key: 0 };
-const _hoisted_4$q = { key: 1 };
-const _hoisted_5$q = { class: "rss-row-actions" };
+const _hoisted_4$p = { key: 1 };
+const _hoisted_5$p = { class: "rss-row-actions" };
 
 const {computed: computed$H,ref: ref$y,watch: watch$c} = await importShared('vue');
 
@@ -10470,7 +10494,7 @@ async function load() {
   loading.value = true;
   msg.value = '';
   try {
-    const res = unwrapResponse$1(await props.api.get('rss/config')) || {};
+    const res = unwrapResponse(await props.api.get('rss/config')) || {};
     rows.value = res.sites || [];
     drafts.value = {};
   } catch (e) {
@@ -10494,7 +10518,7 @@ async function save(row) {
   msg.value = '';
   try {
     const q = new URLSearchParams({ site_id: String(row.site_id), passkey: pk }).toString();
-    const res = unwrapResponse$1(await props.api.post(`rss/passkey?${q}`, {})) || {};
+    const res = unwrapResponse(await props.api.post(`rss/passkey?${q}`, {})) || {};
     if (res.success === false) {
       msg.value = res.message || '保存失败';
       return
@@ -10514,7 +10538,7 @@ async function syncToMp() {
   syncing.value = true;
   msg.value = '';
   try {
-    const res = unwrapResponse$1(await props.api.post('creds/sync?confirm=1', {})) || {};
+    const res = unwrapResponse(await props.api.post('creds/sync?confirm=1', {})) || {};
     msg.value = res.success === false ? (res.message || '同步失败') : (res.message || '已同步到 MP');
     await load();
   } catch (e) {
@@ -10529,7 +10553,7 @@ async function clear(row) {
   msg.value = '';
   try {
     const q = new URLSearchParams({ site_id: String(row.site_id), passkey: '' }).toString();
-    const res = unwrapResponse$1(await props.api.post(`rss/passkey?${q}`, {})) || {};
+    const res = unwrapResponse(await props.api.post(`rss/passkey?${q}`, {})) || {};
     if (res.success === false) {
       msg.value = res.message || '清除失败';
       return
@@ -10654,7 +10678,7 @@ return (_ctx, _cache) => {
                             }, 1032, ["color"])
                           ]),
                           append: _withCtx$v(() => [
-                            _createElementVNode$y("div", _hoisted_5$q, [
+                            _createElementVNode$y("div", _hoisted_5$p, [
                               _createVNode$x(_component_v_text_field, {
                                 modelValue: drafts.value[row.site_id],
                                 "onUpdate:modelValue": $event => ((drafts.value[row.site_id]) = $event),
@@ -10704,7 +10728,7 @@ return (_ctx, _cache) => {
                               default: _withCtx$v(() => [
                                 (row.has_passkey)
                                   ? (_openBlock$y(), _createElementBlock$u("span", _hoisted_3$q, "passkey：" + _toDisplayString$y(row.masked), 1))
-                                  : (_openBlock$y(), _createElementBlock$u("span", _hoisted_4$q, "passkey：未填")),
+                                  : (_openBlock$y(), _createElementBlock$u("span", _hoisted_4$p, "passkey：未填")),
                                 (row.mp_rss_set)
                                   ? (_openBlock$y(), _createBlock$v(_component_v_chip, {
                                       key: 2,
@@ -11049,7 +11073,7 @@ function useSiteReport({ api, error, notify }) {
     }
     siteReportLiveLoading.value = true;
     try {
-      const data = unwrapResponse$1(await api.poolstats.live(sid)) || {};
+      const data = unwrapResponse(await api.poolstats.live(sid)) || {};
       const row = ((data || {}).sites || []).find(r => Number(r.site_id) === sid) || null;
       siteReportLiveStats.value = row
         ? {
@@ -11080,7 +11104,7 @@ function useSiteReport({ api, error, notify }) {
       const q = new URLSearchParams();
       if (siteReportSite.value) q.set('site', siteReportSite.value);
       if (liveOverride === true || (liveOverride === undefined && siteReportLive.value)) q.set('live', '1');
-      const data = unwrapResponse$1(await api.poolstats.siteSeeds(q.toString())) || {};
+      const data = unwrapResponse(await api.poolstats.siteSeeds(q.toString())) || {};
       siteReport.value = data;
       siteReportFilter.value = '';
       siteReportTransport.value = '';
@@ -11775,7 +11799,7 @@ let recommendTimer = null;
 
   async function loadRecommend() {
     try {
-      recommendData.value = unwrapResponse$1(await api.features.recommend()) || { items: [], total: 0 };
+      recommendData.value = unwrapResponse(await api.features.recommend()) || { items: [], total: 0 };
     } catch (err) {
       error.value = err?.message || String(err);
     }
@@ -11785,7 +11809,7 @@ let recommendTimer = null;
     if (!hash || recommendActing.value) return
     recommendActing.value = hash + action;
     try {
-      const data = unwrapResponse$1(await api.features.recommendAct(hash, action)) || {};
+      const data = unwrapResponse(await api.features.recommendAct(hash, action)) || {};
       notify(data.message || `${label}完成`);
       await loadRecommend();
     } catch (err) {
@@ -11839,8 +11863,8 @@ const {createElementVNode:_createElementVNode$v,createTextVNode:_createTextVNode
 const _hoisted_1$p = { class: "magicflow-settings-dialog__head" };
 const _hoisted_2$n = { class: "magicflow-recommend-dialog__head-actions" };
 const _hoisted_3$p = { class: "magicflow-recommend-dialog__summary" };
-const _hoisted_4$p = { class: "magicflow-recommend-dialog__note" };
-const _hoisted_5$p = { class: "magicflow-panel__head" };
+const _hoisted_4$n = { class: "magicflow-recommend-dialog__note" };
+const _hoisted_5$n = { class: "magicflow-panel__head" };
 const _hoisted_6$o = { class: "d-flex align-center flex-wrap ga-2 justify-end" };
 const _hoisted_7$k = { class: "magicflow-recs" };
 const _hoisted_8$l = { class: "magicflow-rec__poster" };
@@ -11997,7 +12021,7 @@ return (_ctx, _cache) => {
                 _cache[15] || (_cache[15] = _createElementVNode$v("i", null, "·", -1)),
                 _createElementVNode$v("span", null, "标签 " + _toDisplayString$v(__props.data.tag || '魔流-推荐'), 1)
               ]),
-              _createElementVNode$v("div", _hoisted_4$p, [
+              _createElementVNode$v("div", _hoisted_4$n, [
                 _createTextVNode$u(" 评分 > " + _toDisplayString$v(__props.data.min_rating ?? 7.5), 1),
                 (__props.data.require_chart !== false)
                   ? (_openBlock$v(), _createElementBlock$r(_Fragment$r, { key: 0 }, [
@@ -12025,7 +12049,7 @@ return (_ctx, _cache) => {
                 class: "magicflow-panel app-surface-static mt-2"
               }, {
                 default: _withCtx$s(() => [
-                  _createElementVNode$v("header", _hoisted_5$p, [
+                  _createElementVNode$v("header", _hoisted_5$n, [
                     _cache[18] || (_cache[18] = _createElementVNode$v("div", null, [
                       _createElementVNode$v("div", { class: "text-subtitle-2 font-weight-medium" }, "甄别结果"),
                       _createElementVNode$v("div", { class: "text-body-2 text-medium-emphasis" }, "全部任务汇总 · 确认＝入库；忽略＝删临时种（也可手动确认）")
@@ -12867,8 +12891,6 @@ const _hoisted_3$n = {
   key: 0,
   class: "mf-trend__sub"
 };
-const _hoisted_4$n = { class: "mf-trend__verdict" };
-const _hoisted_5$n = { class: "mf-trend__sub" };
 const _hoisted_6$m = {
   key: 1,
   class: "mf-trend__metrics"
@@ -12926,7 +12948,6 @@ const _sfc_main$s = {
   daily: { type: Array, default: () => [] },
   loading: { type: Boolean, default: false },
   scopeItems: { type: Array, default: () => [] },
-  uploadIncrement: { type: Number, default: null },
 },
   emits: ['update:modelValue', 'update:scope', 'update:ident', 'update:hours', 'refresh'],
   setup(__props, { emit: __emit }) {
@@ -13189,20 +13210,6 @@ return (_ctx, _cache) => {
                       ]),
                       _: 1
                     }, 8, ["class"]),
-                    (__props.scope === 'task' && __props.uploadIncrement != null)
-                      ? (_openBlock$s(), _createBlock$p(_component_VSheet, {
-                          key: 0,
-                          tag: "section",
-                          class: "mf-trend__card is-up",
-                          style: {"margin-top":"8px"}
-                        }, {
-                          default: _withCtx$p(() => [
-                            _createElementVNode$s("div", _hoisted_4$n, "该窗口（" + _toDisplayString$s(__props.hours) + "h）本任务实际上传", 1),
-                            _createElementVNode$s("div", _hoisted_5$n, _toDisplayString$s(_unref$c(formatBytes)(__props.uploadIncrement)) + "（qB 本地累计，按采样差分取非负累加，种子轮换不丢值）", 1)
-                          ]),
-                          _: 1
-                        }))
-                      : _createCommentVNode$p("", true),
                     (metrics.value.length)
                       ? (_openBlock$s(), _createElementBlock$o("div", _hoisted_6$m, [
                           (_openBlock$s(true), _createElementBlock$o(_Fragment$o, null, _renderList$m(metrics.value, (m) => {
@@ -15200,11 +15207,11 @@ function useSignin({ api, notify, status }) {
     try {
       // ★ 插件 API 的 POST 参数只从 query 绑定（body 不生效）→ 参数拼在 URL 上
       const query = new URLSearchParams({ kind: String(kind) }).toString();
-      const res = unwrapResponse$1(await api.features.signinRun(query)) || {};
+      const res = unwrapResponse(await api.features.signinRun(query)) || {};
       const s = res.summary || {};
       notify(`${kind === 'sign' ? '签到' : '登录'}完成：成功 ${s.ok || 0} / 失败 ${s.fail || 0}`);
       // 只刷新 status（不重载 settingsDraft，避免把正在编辑的设置冲掉）
-      status.value = unwrapResponse$1(await api.tasks.status()) || status.value;
+      status.value = unwrapResponse(await api.tasks.status()) || status.value;
       if (signinOpen.value) loadSigninReport();
     } catch (err) {
       notify(`执行失败：${err?.message || err}`, 'error');
@@ -15219,7 +15226,7 @@ function useSignin({ api, notify, status }) {
   async function loadSigninReport() {
     signinReportLoading.value = true;
     try {
-      signinReport.value = unwrapResponse$1(await api.features.signinReport()) || signinReport.value;
+      signinReport.value = unwrapResponse(await api.features.signinReport()) || signinReport.value;
     } catch (err) {
       notify(`签到报表读取失败：${err?.message || err}`, 'error');
     } finally {
@@ -15384,6 +15391,46 @@ function useSignin({ api, notify, status }) {
   return { siteSelectItems, signinRunning, runSigninNow, signinOpen, signinReport, signinReportLoading, loadSigninReport, openSignin, signinFilter, signinSearch, signinStatusText, signinDateLabel, signinReportTodayRows, signinTodayCounts, signinFilterItems, signinTodayList, signinKeepalive, signinKeepaliveNote, signinMatrix }
 }
 
+// MagicFlow 前端 · 设置映射（纯函数，无 Vue 依赖；useTasks 与离线测试共用）
+//
+// 背景（任务 105 / API-01）：后端 GET /status 的 fallback 段用的是短键
+//   enabled / sources / paths / interval / scan_max / sp_to_s00 / after_import / dry_run
+// 而 settingsDraft（normalizeSettings）要的是长键
+//   fallback_enabled / fallback_sources / fallback_paths / fallback_interval_minutes / ...
+// 旧代码直接 `...(status.value.fallback || {})`：
+//   1) 兜底段里的 enabled 把「插件总开关」enabled 覆盖掉（总开关被兜底开关污染）；
+//   2) 短键 name 与长键对不上，fallback_* 一个都没填，保存时被 normalizeSettings 的
+//      默认值（fallback_enabled=true / interval=30 / scan_max=30）静默覆盖。
+// 本模块只做「短键 → 长键」的显式映射，绝不产出 enabled（总开关只从 status.enabled 来）。
+
+const DEFAULT_INTERVAL_MINUTES = 30;
+const DEFAULT_SCAN_MAX = 30;
+
+function positiveNumber(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback
+}
+
+/**
+ * 把 /status 的 fallback 段映射成 settingsDraft 的 fallback_* 字段。
+ * 缺失字段按「后端默认」处理（is_true 缺省 = true，路径缺省 = 空数组）。
+ * @param {object|null|undefined} fallback 后端 status.fallback
+ * @returns {object} 仅含 fallback_* 键（不含 enabled）
+ */
+function fallbackSettingsFrom(fallback) {
+  const fb = fallback && typeof fallback === 'object' ? fallback : {};
+  return {
+    fallback_enabled: fb.enabled !== false,
+    fallback_sources: Array.isArray(fb.sources) ? fb.sources.slice() : [],
+    fallback_paths: Array.isArray(fb.paths) ? fb.paths.slice() : [],
+    fallback_interval_minutes: positiveNumber(fb.interval, DEFAULT_INTERVAL_MINUTES),
+    fallback_scan_max: Math.max(1, Math.trunc(positiveNumber(fb.scan_max, DEFAULT_SCAN_MAX))),
+    fallback_sp_to_s00: fb.sp_to_s00 === true,
+    fallback_after_import: fb.after_import !== false,
+    fallback_dry_run: fb.dry_run === true,
+  }
+}
+
 // MagicFlow 前端 · useTasks 域 composable
 // P3 拆分：自 views/magicflow/index.vue **纯搬家**（无行为变更）。
 // 依赖注入：selectedTaskId, api, emit, hostToast, settingsDraft, selectTask, warmingTimer（★ 真值源仍在后端；本域只放 UI 状态与动作）。
@@ -15490,7 +15537,7 @@ function useTasks({ selectedTaskId, api, emit, hostToast, settingsDraft, selectT
   async function loadStatus() {
     loading.value = true;
     try {
-      status.value = unwrapResponse$1(await api.tasks.status()) || status.value;
+      status.value = unwrapResponse(await api.tasks.status()) || status.value;
       settingsDraft.value = normalizeSettings({
         enabled: status.value.enabled,
         show_sidebar_nav: status.value.show_sidebar_nav,
@@ -15543,6 +15590,9 @@ function useTasks({ selectedTaskId, api, emit, hostToast, settingsDraft, selectT
           reseed_daily_per_site: status.value.reseed.daily,
           reseed_batch: status.value.reseed.batch,
           reseed_min_size_gb: status.value.reseed.min_size_gb,
+          // ★ API-02（任务 45 补漏）：直连搜索站必须回填，否则一保存就被空值覆盖
+          reseed_search_sites: Array.isArray(status.value.reseed.search_sites) ? status.value.reseed.search_sites : [],
+          reseed_search_kw: Number(status.value.reseed.search_kw) || 0,
         } : {}),
         ...(status.value.claim ? {
           claim_enabled: status.value.claim.enabled,
@@ -15575,7 +15625,7 @@ function useTasks({ selectedTaskId, api, emit, hostToast, settingsDraft, selectT
           rescue_stall_hours: status.value.rescue.stall_hours,
           rescue_max_candidates: status.value.rescue.max_candidates,
         } : {}),
-        ...(status.value.fallback || {}),
+        ...fallbackSettingsFrom(status.value.fallback),
         ...(status.value.live ? {
           live_enabled: status.value.live.enabled,
           live_interval_minutes: status.value.live.interval,
@@ -15667,10 +15717,10 @@ function useTasks({ selectedTaskId, api, emit, hostToast, settingsDraft, selectT
     try {
       const normalized = normalizeTask(payload);
       if (normalized.id) {
-        unwrapResponse$1(await api.tasks.update(normalized.id, normalized));
+        unwrapResponse(await api.tasks.update(normalized.id, normalized));
       } else {
         delete normalized.id;
-        unwrapResponse$1(await api.tasks.create(normalized));
+        unwrapResponse(await api.tasks.create(normalized));
       }
       editorOpen.value = false;
       notify('任务已保存');
@@ -15702,7 +15752,7 @@ function useTasks({ selectedTaskId, api, emit, hostToast, settingsDraft, selectT
     if (!selectedTask.value) return
     handoverLoading.value = true;
     try {
-      handover.value = unwrapResponse$1(await api.tasks.handoverInfo(selectedTask.value.id)) || null;
+      handover.value = unwrapResponse(await api.tasks.handoverInfo(selectedTask.value.id)) || null;
       // ★ 默认退回静默池（正常就该这样）；要指定交棒得自己选 —— 同标签任务本来就会自动接管，无需交棒
       handoverTarget.value = 'idle';
     } catch (err) {
@@ -19040,7 +19090,7 @@ function useCrossseed({ api, notify }) {
   let crossseedTimer = null;
   async function loadCrossseed() {
     try {
-      crossseedData.value = unwrapResponse$1(await api.features.crossseed())
+      crossseedData.value = unwrapResponse(await api.features.crossseed())
         || { count: 0, pending: [], enabled_tasks: [] };
     } catch (err) {
       // 跨站取种是增强信息，失败不打断界面
@@ -19079,7 +19129,7 @@ function useCrossseed({ api, notify }) {
     if (!h) return
     crossseedActing.value = `drop:${h}`;
     try {
-      const res = unwrapResponse$1(await api.features.crossseedDrop(h)) || {};
+      const res = unwrapResponse(await api.features.crossseedDrop(h)) || {};
       notify(res.message || '已删除跨站种', 'success');
       await loadCrossseed();
     } catch (err) {
@@ -19091,7 +19141,7 @@ function useCrossseed({ api, notify }) {
   async function unbanCrossseed(domain = '') {
     crossseedActing.value = `unban:${domain}`;
     try {
-      const res = unwrapResponse$1(await api.features.crossseedUnban(domain)) || {};
+      const res = unwrapResponse(await api.features.crossseedUnban(domain)) || {};
       notify(res.message || '已解除来源站黑名单', 'success');
       await loadCrossseed();
     } catch (err) {
@@ -19103,7 +19153,7 @@ function useCrossseed({ api, notify }) {
   async function runCrossseedGuard() {
     crossseedActing.value = 'guard';
     try {
-      const res = unwrapResponse$1(await api.features.crossseedGuard()) || {};
+      const res = unwrapResponse(await api.features.crossseedGuard()) || {};
       if (res) crossseedData.value = res;
       notify(res.message || '流量兜底核对完成', 'success');
     } catch (err) {
@@ -19115,7 +19165,7 @@ function useCrossseed({ api, notify }) {
   async function clearCrossseed() {
     crossseedActing.value = 'clear';
     try {
-      const res = unwrapResponse$1(await api.features.crossseedClear()) || {};
+      const res = unwrapResponse(await api.features.crossseedClear()) || {};
       notify(res.message || '已清空取种台账', 'success');
       await loadCrossseed();
     } catch (err) {
@@ -19914,7 +19964,7 @@ function useFallback({ api, error, notify, settingsDraft }) {
   async function loadFallback() {
     fallbackLoading.value = true;
     try {
-      fallbackState.value = unwrapResponse$1(await api.features.fallback());
+      fallbackState.value = unwrapResponse(await api.features.fallback());
     } catch (err) {
       error.value = err?.message || String(err);
     } finally {
@@ -19925,7 +19975,7 @@ function useFallback({ api, error, notify, settingsDraft }) {
   async function runFallback(dryRun = false) {
     fallbackRunning.value = true;
     try {
-      unwrapResponse$1(
+      unwrapResponse(
         await api.features.fallbackRun(dryRun),
       );
       notify(dryRun ? '演练扫描已开始（不会写 NFO）' : '元数据兜底已开始');
@@ -20083,7 +20133,7 @@ function useSettings({ api, error, notify, emit, saving, loadStatus, settingsDra
   async function loadIyuuSites() {
     iyuuLoading.value = true;
     try {
-      const data = unwrapResponse$1(await api.settings.iyuuSites());
+      const data = unwrapResponse(await api.settings.iyuuSites());
       iyuuStatus.value = data || null;
       const draftFill = normalizeIyuuSites(settingsDraft.value.iyuu_sites);
       // ★ 服务端只回 `***`（密钥已脱敏）：掩码 → 输入框留空（占位符说「已保存」），
@@ -20134,7 +20184,7 @@ function useSettings({ api, error, notify, emit, saving, loadStatus, settingsDra
     iyuuTesting.value = true;
     try {
       syncIyuuToDraft();
-      const data = unwrapResponse$1(await api.settings.iyuuTest());
+      const data = unwrapResponse(await api.settings.iyuuTest());
       notify(`IYUU Token 有效（账号 ${data?.username || data?.id || '-'}，站点表 ${data?.sites ?? 0} 条）`);
     } catch (err) {
       notify(err?.message || String(err));
@@ -20155,7 +20205,7 @@ function useSettings({ api, error, notify, emit, saving, loadStatus, settingsDra
     saving.value = true;
     try {
       syncIyuuToDraft();
-      unwrapResponse$1(await api.settings.saveSettings(normalizeSettings(settingsDraft.value)));
+      unwrapResponse(await api.settings.saveSettings(normalizeSettings(settingsDraft.value)));
       notify('IYUU 设置已保存');
       await loadStatus();
       await loadIyuuSites();
@@ -20169,7 +20219,7 @@ function useSettings({ api, error, notify, emit, saving, loadStatus, settingsDra
   async function loadDownloaderPrefs() {
     downloaderPrefsLoading.value = true;
     try {
-      const data = unwrapResponse$1(await api.settings.downloaderPrefs());
+      const data = unwrapResponse(await api.settings.downloaderPrefs());
       if (data && data.available) {
         downloaderPrefsDraft.value = normalizeDownloaderPrefs(data);
         downloaderPathsDraft.value = normalizeDownloaderPaths(data);
@@ -20191,7 +20241,7 @@ function useSettings({ api, error, notify, emit, saving, loadStatus, settingsDra
   async function saveDownloaderPrefs() {
     saving.value = true;
     try {
-      const data = unwrapResponse$1(
+      const data = unwrapResponse(
         await api.settings.saveDownloaderPrefs(normalizeDownloaderPrefs(downloaderPrefsDraft.value)),
       );
       if (data && data.available) {
@@ -20209,7 +20259,7 @@ function useSettings({ api, error, notify, emit, saving, loadStatus, settingsDra
   async function saveDownloaderPaths() {
     saving.value = true;
     try {
-      const data = unwrapResponse$1(
+      const data = unwrapResponse(
         await api.settings.saveDownloaderPaths(normalizeDownloaderPaths(downloaderPathsDraft.value)),
       );
       if (data && data.available) {
@@ -20227,7 +20277,7 @@ function useSettings({ api, error, notify, emit, saving, loadStatus, settingsDra
   async function loadDefaults() {
     defaultsLoading.value = true;
     try {
-      const data = unwrapResponse$1(await api.settings.defaults());
+      const data = unwrapResponse(await api.settings.defaults());
       defaultsDraft.value = normalizeDefaults(data || {});
     } catch (err) {
       error.value = err?.message || String(err);
@@ -20238,7 +20288,7 @@ function useSettings({ api, error, notify, emit, saving, loadStatus, settingsDra
   async function saveDefaults() {
     saving.value = true;
     try {
-      unwrapResponse$1(await api.settings.saveDefaults(normalizeDefaults(defaultsDraft.value)));
+      unwrapResponse(await api.settings.saveDefaults(normalizeDefaults(defaultsDraft.value)));
       notify('默认任务模板已保存');
       await loadStatus();
       emit('action');
@@ -20265,17 +20315,17 @@ function useSettings({ api, error, notify, emit, saving, loadStatus, settingsDra
   async function saveDownloaderAndPaths() {
     saving.value = true;
     try {
-      const data = unwrapResponse$1(
+      const data = unwrapResponse(
         await api.settings.saveDownloaderPrefs(normalizeDownloaderPrefs(downloaderPrefsDraft.value)),
       );
       if (data && data.available) {
         downloaderPrefsDraft.value = normalizeDownloaderPrefs(data);
         downloaderPrefsRaw.value = data.raw || null;
       }
-      unwrapResponse$1(
+      unwrapResponse(
         await api.settings.saveDownloaderPaths(normalizeDownloaderPaths(downloaderPathsDraft.value)),
       );
-      unwrapResponse$1(await api.settings.saveDefaults(normalizeDefaults(defaultsDraft.value)));
+      unwrapResponse(await api.settings.saveDefaults(normalizeDefaults(defaultsDraft.value)));
       notify('下载与目录已保存');
       await loadStatus();
       emit('action');
@@ -20288,10 +20338,10 @@ function useSettings({ api, error, notify, emit, saving, loadStatus, settingsDra
   async function savePathsTab() {
     saving.value = true;
     try {
-      unwrapResponse$1(
+      unwrapResponse(
         await api.settings.saveDownloaderPaths(normalizeDownloaderPaths(downloaderPathsDraft.value)),
       );
-      unwrapResponse$1(await api.settings.saveDefaults(normalizeDefaults(defaultsDraft.value)));
+      unwrapResponse(await api.settings.saveDefaults(normalizeDefaults(defaultsDraft.value)));
       notify('下载目录已保存');
       await loadStatus();
       emit('action');
@@ -20303,7 +20353,7 @@ function useSettings({ api, error, notify, emit, saving, loadStatus, settingsDra
   }
   async function saveSettings() {  saving.value = true;
     try {
-      unwrapResponse$1(await api.settings.saveSettings(normalizeSettings(settingsDraft.value)));
+      unwrapResponse(await api.settings.saveSettings(normalizeSettings(settingsDraft.value)));
       notify('设置已保存');
       await loadStatus();
       emit('action');
@@ -26525,7 +26575,7 @@ async function act(item, action, label) {
   acting.value = rid + action;
   try {
     const res = await client.actAssets({ action, resource_ids: [rid] });
-    const data = unwrapResponse$1(res) || {};
+    const data = unwrapResponse(res) || {};
     const row = (data.results || [])[0] || {};
     const ok = row.ok === true;
     flash.value = {
@@ -26564,7 +26614,7 @@ async function load() {
   loading.value = true;
   error.value = '';
   try {
-    const data = unwrapResponse$1(await client.getAssets(0, includeStale.value)) || {};
+    const data = unwrapResponse(await client.getAssets(0, includeStale.value)) || {};
     items.value = Array.isArray(data.items) ? data.items : [];
     counts.value = data.counts || {};
     pruneSelection();
@@ -26600,7 +26650,7 @@ async function submitDelete(payload) {
       confirm: 1,
       reason: '手动删除库内资产',
     });
-    const data = unwrapResponse$1(res) || {};
+    const data = unwrapResponse(res) || {};
     const reasons = {};
     for (const row of (data.results || [])) {
       const block = String(row?.block ?? '').trim();
@@ -28270,7 +28320,7 @@ function useSeeding({ api, emit, bonusData, error, loadBonus, loadDetail, notify
   async function torrentAction(torrent, action) {
     saving.value = true;
     try {
-      unwrapResponse$1(
+      unwrapResponse(
         await api.tasks.torrentAction(selectedTask.value.id, torrent.hash, action),
       );
       notify(torrentActionMessage(torrent, action));
@@ -28303,7 +28353,7 @@ function useSeeding({ api, emit, bonusData, error, loadBonus, loadDetail, notify
     if (!hashes.length || !selectedTask.value) return
     batchBusy.value = true;
     try {
-      const res = unwrapResponse$1(
+      const res = unwrapResponse(
         await api.tasks.torrentsBatch(selectedTask.value.id, { action, hashes }),
       );
       const done = Number(res?.success_count ?? hashes.length);
@@ -28572,7 +28622,7 @@ function useRescue({ api, notify, error }) {
 
   async function loadRescue() {
     try {
-      rescueData.value = unwrapResponse$1(await api.features.rescueScan()) || null;
+      rescueData.value = unwrapResponse(await api.features.rescueScan()) || null;
     } catch (err) {
       // 补源是增强信息，失败不打断界面
     }
@@ -28602,7 +28652,7 @@ function useRescue({ api, notify, error }) {
       const params = [`action=apply`, `hashes=${encodeURIComponent(hashes.join(','))}`];
       if (confirm) params.push('confirm=1');
       else params.push('dry_run=1');
-      const res = unwrapResponse$1(await api.features.rescueRun(params.join('&'))) || {};
+      const res = unwrapResponse(await api.features.rescueRun(params.join('&'))) || {};
       if (confirm) {
         notify(`死种补源：已补 ${res.added ?? 0} 个副本`);
       } else {
@@ -28645,7 +28695,7 @@ function useReseed({ api, notify, settingsDraft, loadStatus, error }) {
   );
   async function loadReseed() {
     try {
-      reseedState.value = unwrapResponse$1(await api.pool.reseed()) || null;
+      reseedState.value = unwrapResponse(await api.pool.reseed()) || null;
     } catch (err) {
       // 全站辅种是增强信息，失败不打断界面
     }
@@ -28654,7 +28704,7 @@ function useReseed({ api, notify, settingsDraft, loadStatus, error }) {
     reseedRunning.value = true;
     try {
       const dry = forceReal ? 0 : (settingsDraft.value.reseed_dry ? 1 : 0);
-      const rep = unwrapResponse$1(await api.pool.reseedRun(dry)) || {};
+      const rep = unwrapResponse(await api.pool.reseedRun(dry)) || {};
       const parts = [];
       if (rep.plan != null) parts.push(`计划 ${rep.plan}`);
       if (rep.would) parts.push(`可挂 ${rep.would}`);
@@ -28713,7 +28763,7 @@ function useRecImport({ api, notify, recommendItems, recommendActionable, loadRe
     recBatchActing.value = true;
     try {
       const qs = useAll ? 'all=1' : `hashes=${encodeURIComponent(list.join(','))}`;
-      const data = unwrapResponse$1(await api.features.recommendBatchImport(qs)) || {};
+      const data = unwrapResponse(await api.features.recommendBatchImport(qs)) || {};
       notify(data.message || '批量入库完成');
       recSelected.value = {};
       await loadRecommend();
@@ -28747,7 +28797,7 @@ function useJobs({ api, notify }) {
 
   async function loadJobs() {
     try {
-      const data = unwrapResponse$1(await api.jobs.getJobs(60)) || {};
+      const data = unwrapResponse(await api.jobs.getJobs(60)) || {};
       jobs.value = Array.isArray(data.items) ? data.items : [];
       jobsSummary.value = data.summary || {};
     } catch (err) {
@@ -28757,7 +28807,7 @@ function useJobs({ api, notify }) {
 
   async function clearJobs() {
     try {
-      const data = unwrapResponse$1(await api.jobs.clearJobs()) || {};
+      const data = unwrapResponse(await api.jobs.clearJobs()) || {};
       notify(data.message || '已清理历史任务');
       await loadJobs();
     } catch (err) {
@@ -28793,7 +28843,6 @@ function useJobs({ api, notify }) {
 // MagicFlow 前端 · 推送审计域 composable（★ 19.11.22）
 // 由线上 dist 还原（源文件在 11-03 之后丢失）：dist 关闭了 minify，保留了完整实现与注释。
 const __vue$1 = await importShared('vue');
-
 
 // MagicFlow 前端 · 推送审计（★ 19.11.22）
 // 定位：⑤「推送审计」的**看**那一半。后端每次「加种」落一条（成功也记、失败更记），
@@ -28909,9 +28958,9 @@ function useTrend({ api, notify, itemsOf }) {
         api.trend.why({ scope, id: ident, hours: trendHours.value }),
         api.trend.daily({ scope, id: ident, days: 30 }),
       ]);
-      const w = unwrapResponse$1(whyResp) || {};
+      const w = unwrapResponse(whyResp) || {};
       trendWhy.value = w;
-      const d = unwrapResponse$1(dayResp) || {};
+      const d = unwrapResponse(dayResp) || {};
       const seriesMap = d.series || {};
       trendDaily.value = seriesMap[`${scope}:${ident}`] || [];
     } catch (err) {
@@ -28938,7 +28987,7 @@ function useTrend({ api, notify, itemsOf }) {
     }
     try {
       const resp = await api.trend.hours({ scope: 'all', hours: trendHours.value });
-      const series = (unwrapResponse$1(resp) || {}).series || {};
+      const series = (unwrapResponse(resp) || {}).series || {};
       const keys = Object.keys(series);
       if (keys.length && !keys.includes(`${trendScope.value}:${ident}`)) {
         const pool = keys.filter(k => k.startsWith(`${trendScope.value}:`));
@@ -28990,7 +29039,7 @@ function useOptimizer({ api, notify, itemsOf }) {
     try {
       const budget = String(optimizerBudget.value ?? '').trim();
       const resp = await api.tasks.optimize(ident, budget === '' ? {} : { budget_gb: budget });
-      optimizerData.value = unwrapResponse$1(resp) || null;
+      optimizerData.value = unwrapResponse(resp) || null;
     } catch (err) {
       notify(err?.response?.data?.message || err?.message || '优化读取失败', 'error');
       optimizerData.value = null;
@@ -29062,7 +29111,7 @@ function usePlan({ api, notify, itemsOf }) {
       const budget = String(planBudget.value ?? '').trim();
       if (params.action === 'optimize' && budget !== '') params.budget_gb = budget;
       const resp = await api.plan.plan(params);
-      planData.value = unwrapResponse$1(resp) || null;
+      planData.value = unwrapResponse(resp) || null;
     } catch (err) {
       notify(err?.response?.data?.message || err?.message || '计划生成失败', 'error');
       planData.value = null;
@@ -29110,7 +29159,7 @@ function usePlan({ api, notify, itemsOf }) {
         delete_files: deleteFiles ? 1 : 0,
         confirm: confirm ? 1 : 0,
       });
-      const out = unwrapResponse$1(resp) || {};
+      const out = unwrapResponse(resp) || {};
       planApplied.value = out;
       if (out.dry_run) {
         notify(`干跑：将删 ${out.would_delete || 0} 条（零写入）`, 'info');
@@ -29158,7 +29207,7 @@ function useNotify({ api, notify }) {
     if (!notifyOpen.value) return
     notifyLoading.value = true;
     try {
-      const data = unwrapResponse$1(await api.notify.getNotify(60)) || {};
+      const data = unwrapResponse(await api.notify.getNotify(60)) || {};
       notifyData.value = data;
     } catch (err) {
       notify(err?.response?.data?.message || err?.message || '通知状态读取失败', 'error');
@@ -29169,7 +29218,7 @@ function useNotify({ api, notify }) {
 
   async function notifyAct(action, text = '') {
     try {
-      const data = unwrapResponse$1(await api.notify.actNotify(action, text)) || {};
+      const data = unwrapResponse(await api.notify.actNotify(action, text)) || {};
       notify(data.message || '已执行');
       await loadNotify();
     } catch (err) {
@@ -29233,7 +29282,7 @@ function useHealth({ api, selectTask }) {
   });
   async function loadHealth() {
     try {
-      healthData.value = unwrapResponse$1(await api.pool.health())
+      healthData.value = unwrapResponse(await api.pool.health())
         || { level: 'ok', ok: true, counts: {}, issues: [] };
     } catch (err) {
       // 自检是增强信息，失败不打断界面
@@ -29304,7 +29353,7 @@ function useKeep({ api, notify, onChanged }) {
   async function loadKeep() {
     keepLoading.value = true;
     try {
-      keepData.value = unwrapResponse$1(await api.settings.keepList()) || keepData.value;
+      keepData.value = unwrapResponse(await api.settings.keepList()) || keepData.value;
     } catch (err) {
       notify(`读取手动保种名单失败：${err?.message || err}`, 'error');
     } finally {
@@ -29371,7 +29420,7 @@ function useKeep({ api, notify, onChanged }) {
   async function loadCandidates(resetPage = true) {
     candLoading.value = true;
     try {
-      candData.value = unwrapResponse$1(await api.settings.holdCandidates()) || candData.value;
+      candData.value = unwrapResponse(await api.settings.holdCandidates()) || candData.value;
       candLoaded.value = true;
       candAt.value = Date.now();
       if (resetPage) candPage.value = 1;
@@ -29458,7 +29507,7 @@ function useKeep({ api, notify, onChanged }) {
     if (!target.length) return
     keepBusy.value = true;
     try {
-      const r = unwrapResponse$1(await api.settings.holdSeeds(target, false));
+      const r = unwrapResponse(await api.settings.holdSeeds(target, false));
       const n = Number(r?.released ?? 0);
       notify(n > 0 ? `已解除手动保种 ${n} 个 · 已退回静默池` : '没有可解除的种（可能已归别的岗位）');
       keepSel.value = [];
@@ -29497,7 +29546,7 @@ function useKeep({ api, notify, onChanged }) {
     try {
       for (let i = 0; i < target.length; i += HOLD_CHUNK) {
         const part = target.slice(i, i + HOLD_CHUNK);
-        const r = unwrapResponse$1(await api.settings.holdSeeds(part, true)) || {};
+        const r = unwrapResponse(await api.settings.holdSeeds(part, true)) || {};
         held += Number(r.held || 0);
         resumed += Number(r.resumed || 0);
         if (Array.isArray(r.resume_failed)) fails.push(...r.resume_failed);
@@ -29536,7 +29585,7 @@ function useKeep({ api, notify, onChanged }) {
     if (!target.length) return
     keepBusy.value = true;
     try {
-      const r = unwrapResponse$1(await api.settings.holdSeeds(target, true));
+      const r = unwrapResponse(await api.settings.holdSeeds(target, true));
       const okN = Number(r?.resumed ?? 0);
       const bad = r?.resume_failed || [];
       if (okN > 0) notify(`已拉起做种 ${okN} 个${bad.length ? ` · 失败 ${bad.length} 个` : ''}`);
@@ -29587,7 +29636,7 @@ function useInvariant({ api, notify, loadSilent, silentOpen }) {
   async function runTagReconcile(confirm = false) {
     tagReconLoading.value = true;
     try {
-      const res = unwrapResponse$1(await api.settings.tagReconcile(confirm)) || {};
+      const res = unwrapResponse(await api.settings.tagReconcile(confirm)) || {};
       const pend = res.items_total ?? (res.items || []).length;
       tagReconPending.value = pend;
       const drift = res.drift_total ?? (res.drift || []).length;
@@ -29612,7 +29661,7 @@ function useInvariant({ api, notify, loadSilent, silentOpen }) {
   async function loadEnforce(confirm = 0) {
     enforceLoading.value = true;
     try {
-      const res = unwrapResponse$1(await api.poolstats.silentEnforce(confirm)) || {};
+      const res = unwrapResponse(await api.poolstats.silentEnforce(confirm)) || {};
       enforceData.value = res;
       notify(res.message || (confirm ? '已补 pause' : '干跑完成'));
       if (confirm) loadSilent();
@@ -29753,7 +29802,7 @@ function useExam({ api, notify, loadStatus }) {
   }
   async function loadExam() {
     try {
-      examData.value = unwrapResponse$1(await api.features.exam()) || examData.value;
+      examData.value = unwrapResponse(await api.features.exam()) || examData.value;
     } catch (err) {
       // 考核是增强信息，失败不打断界面
     }
@@ -29781,7 +29830,7 @@ function useExam({ api, notify, loadStatus }) {
     try {
       // ★ 插件 API 的 POST 参数只在 query 绑定
       const q = new URLSearchParams({ site_id: String(ctx.row.site_id), kind: String(ctx.kind), confirm: 'true' }).toString();
-      const res = unwrapResponse$1(await api.features.examAct(q)) || {};
+      const res = unwrapResponse(await api.features.examAct(q)) || {};
       notify(res.message || '已执行');
       examConfirm.value = null;
       await loadExam();
@@ -29828,7 +29877,7 @@ function useDouban({ api }) {
 
   async function loadDoubanService() {
     try {
-      doubanServiceData.value = unwrapResponse$1(await api.features.doubanService())
+      doubanServiceData.value = unwrapResponse(await api.features.doubanService())
         || { ok: false, records: 0, cache: {}, crawl: {} };
     } catch (err) {
       // 豆瓣服务是增强信息，失败不打断界面
@@ -29843,7 +29892,7 @@ function useDouban({ api }) {
   async function doubanCrawlAction(action) {
     doubanServiceActing.value = action;
     try {
-      const res = unwrapResponse$1(await api.features.doubanAction(action));
+      const res = unwrapResponse(await api.features.doubanAction(action));
       if (res) doubanServiceData.value = res;
     } catch (err) {
       // 静默
@@ -29972,7 +30021,7 @@ function useTaskDetail({ api, siteIcons, error, selectedTask, selectedTaskId, ta
   const trendSeries = ref$4({});
   async function loadTrend(taskId) {
     try {
-      const data = unwrapResponse$1(await api.tasks.trend()) || {};
+      const data = unwrapResponse(await api.tasks.trend()) || {};
       trendSeries.value = data.series || {};
     } catch (err) {
       trendSeries.value = {};
@@ -30086,7 +30135,7 @@ function useTaskDetail({ api, siteIcons, error, selectedTask, selectedTaskId, ta
   });
   async function loadDetail(taskId) {
     try {
-      detail.value = unwrapResponse$1(await api.tasks.detail(taskId));
+      detail.value = unwrapResponse(await api.tasks.detail(taskId));
     } catch (err) {
       error.value = err?.message || String(err);
     }
@@ -30095,7 +30144,7 @@ function useTaskDetail({ api, siteIcons, error, selectedTask, selectedTaskId, ta
   async function loadBonus(taskId, { silent = false } = {}) {
     if (!silent) taskLoading.value = true;
     try {
-      const data = unwrapResponse$1(await api.tasks.bonus(taskId)) || bonusData.value;
+      const data = unwrapResponse(await api.tasks.bonus(taskId)) || bonusData.value;
       bonusData.value = data;
       bonusCache[taskId] = data;
       bonusLoadedFor.value = taskId;
@@ -30108,7 +30157,7 @@ function useTaskDetail({ api, siteIcons, error, selectedTask, selectedTaskId, ta
   async function loadCandidates(taskId) {
     taskLoading.value = true;
     try {
-      candidateData.value = unwrapResponse$1(await api.tasks.candidates(taskId)) || {
+      candidateData.value = unwrapResponse(await api.tasks.candidates(taskId)) || {
         candidates: [],
         total: 0,
         reason_counts: {},
@@ -30225,7 +30274,7 @@ function useMusic({ api }) {
       const params = [`query=${encodeURIComponent(q)}`, 'page=0'];
       const _sites = (Array.isArray(musicSiteIds.value) ? musicSiteIds.value : []).map(String).filter(Boolean);
       if (_sites.length) params.push(`site_ids=${encodeURIComponent(_sites.join(','))}`);
-      const res = unwrapResponse$1(await api.features.musicSearch(params.join('&')));
+      const res = unwrapResponse(await api.features.musicSearch(params.join('&')));
       if (res) musicResult.value = res;
     } catch (err) {
       musicMsg.value = `❌ ${err?.message || String(err)}`;
@@ -30239,7 +30288,7 @@ function useMusic({ api }) {
     musicMsg.value = '';
     musicDownloading.value = String(cid);
     try {
-      const res = unwrapResponse$1(await api.features.musicDownload(cid));
+      const res = unwrapResponse(await api.features.musicDownload(cid));
       const d = res?.summary || {};
       musicMsg.value = `已提交下载：新增 ${d.added || 0} / 跳过 ${d.skipped || 0} / 失败 ${d.failed || 0}`;
       loadMusicItems();
@@ -30266,7 +30315,7 @@ function useMusic({ api }) {
   async function loadMusicItems() {
     musicItemsBusy.value = true;
     try {
-      const res = unwrapResponse$1(await api.features.musicItems());
+      const res = unwrapResponse(await api.features.musicItems());
       if (res) musicItems.value = res;
     } catch (err) {
       // 清单是增强信息，失败不打断主流程
@@ -30303,7 +30352,7 @@ function useMusic({ api }) {
     musicMsg.value = '';
     musicActing.value = `${h}:${action}`;
     try {
-      const res = unwrapResponse$1(await api.features.musicAct(h, action));
+      const res = unwrapResponse(await api.features.musicAct(h, action));
       musicMsg.value = res?.message || '已执行';
     } catch (err) {
       musicMsg.value = `❌ ${err?.message || String(err)}`;
@@ -30323,7 +30372,7 @@ function useMusic({ api }) {
     musicMsg.value = '';
     musicImporting.value = h;
     try {
-      const res = unwrapResponse$1(await api.features.musicSettle(h, true));
+      const res = unwrapResponse(await api.features.musicSettle(h, true));
       const d = res?.summary || res || {};
       const route = d.route ? `走 ${d.route === 'mp' ? 'MP 整理' : '硬链接入库'}` : '';
       const n = Number(d.total || 0);
@@ -30392,7 +30441,7 @@ function useOperations({ api, error, notify, selectedTaskId, tasks }) {
       if (eventLevel.value === 'warning') qs += '&min_level=warning';
       if (eventLevel.value === 'info') qs += '&level=info';
       if (opsScope.value === 'task' && selectedTaskId.value) qs += `&task_id=${encodeURIComponent(selectedTaskId.value)}`;
-      const data = unwrapResponse$1(await api.pool.events(qs)) || {};
+      const data = unwrapResponse(await api.pool.events(qs)) || {};
       eventRows.value = (data.events || []).slice().reverse();
     } catch (err) {
       eventRows.value = [];
@@ -30470,7 +30519,7 @@ function useOperations({ api, error, notify, selectedTaskId, tasks }) {
     if (!taskId || backfilling.value) return
     backfilling.value = true;
     try {
-      const data = unwrapResponse$1(await api.tasks.backfillPages(taskId)) || {};
+      const data = unwrapResponse(await api.tasks.backfillPages(taskId)) || {};
       notify(`已回填 ${data.resolved || 0} 个详情页链接${data.unresolved ? `（${data.unresolved} 个未匹配）` : ''}`);
     } catch (err) {
       notify(err?.response?.data?.message || err?.message || '回填失败', 'error');
@@ -30484,7 +30533,7 @@ function useOperations({ api, error, notify, selectedTaskId, tasks }) {
   }
   async function loadOperations(taskId) {
     try {
-      operationData.value = unwrapResponse$1(
+      operationData.value = unwrapResponse(
         await api.tasks.taskOperations(taskId, opsQuery()),
       ) || {
         operations: [],
@@ -30497,7 +30546,7 @@ function useOperations({ api, error, notify, selectedTaskId, tasks }) {
   async function loadOperationsAll() {
     opsLoadingAll.value = true;
     try {
-      operationData.value = unwrapResponse$1(await api.pool.operations(opsQuery())) || {
+      operationData.value = unwrapResponse(await api.pool.operations(opsQuery())) || {
         operations: [],
         total: 0,
       };
@@ -30839,7 +30888,7 @@ async function loadSiteIcon(siteId) {
   if (!id || siteIcons.value[id] !== undefined || siteIconPending.has(id)) return
   siteIconPending.add(id);
   try {
-    const data = unwrapResponse$1(await api.features.siteIcon(id));
+    const data = unwrapResponse(await api.features.siteIcon(id));
     siteIcons.value = { ...siteIcons.value, [id]: (data && data.icon) || '' };
   } catch (err) {
     siteIcons.value = { ...siteIcons.value, [id]: '' };
@@ -30950,7 +30999,7 @@ function trendItemsOf(sc) {
 }
 const {
   trendOpen, trendScope, trendId, trendHours, trendLoading, trendWhy, trendDaily,
-  trendUploadIncrement, trendScopeItems, loadTrendReport, openTrend,
+  trendScopeItems, loadTrendReport, openTrend,
 } = useTrend({ api, notify, itemsOf: trendItemsOf });
 function openTrendDialog() {
   // 默认站点口径：站点由站点监控每轮采样，一定有点可看；任务口径可从弹窗里切。
@@ -31476,7 +31525,7 @@ async function ensureHrBills() {
   if (hrBillsTried.value) return
   hrBillsTried.value = true;
   try {
-    const data = unwrapResponse$1(await api.poolstats.hrBills('')) || {};
+    const data = unwrapResponse(await api.poolstats.hrBills('')) || {};
     hrBills.value = data;
   } catch (e) {
     // 静默：见上
@@ -31831,7 +31880,7 @@ async function loadLive() {
   const sid = Number(selectedTask.value?.site_id || 0);
   liveLoading.value = true;
   try {
-    liveState.value = unwrapResponse$1(await api.poolstats.live(sid)) || liveState.value;
+    liveState.value = unwrapResponse(await api.poolstats.live(sid)) || liveState.value;
   } catch (err) {
     // 站点实时数据是增强信息，失败不打断界面
   } finally {
@@ -32083,7 +32132,7 @@ async function loadClaim(force = false, silent = false) {
     if (force) params.set('refresh', '1');
     const qs = params.toString();
     const q = qs ? `?${qs}` : '';
-    claimData.value = unwrapResponse$1(await api.features.claim(q)) || claimData.value;
+    claimData.value = unwrapResponse(await api.features.claim(q)) || claimData.value;
   } catch (err) {
     notify(`读取认领状态失败：${err?.message || err}`, 'error');
   } finally {
@@ -32108,7 +32157,7 @@ async function claimScanRun() {
   try {
     // ★ 19.5.0：扫描只读（dry=1）。干跑/真跑两个动作彻底分开：
     //   扫描从不写；真写必须先关设置里的「干跑」，再点「认领本轮」二次确认。
-    const res = unwrapResponse$1(await api.features.claimScan()) || {};
+    const res = unwrapResponse(await api.features.claimScan()) || {};
     notify(res.message || '已扫描（只读）');
     await loadClaim();
   } catch (err) {
@@ -32150,7 +32199,7 @@ async function claimConfirmRun() {
       if (row.torrent_id) q.set('torrent_id', String(row.torrent_id));
       url = `claim/abandon?${q.toString()}`;
     }
-    const res = unwrapResponse$1(await api.post(url, {})) || {};
+    const res = unwrapResponse(await api.post(url, {})) || {};
     notify(res.message || '已执行', res.success === false ? 'error' : undefined);
     claimConfirm.value = null;
     await loadClaim();
@@ -32174,7 +32223,7 @@ async function loadHomeTrend() {
   homeTrendLoading.value = true;
   try {
     const resp = await api.trend.hours({ scope: 'all', hours: 168 });
-    homeTrend.value = unwrapResponse$1(resp) || {};
+    homeTrend.value = unwrapResponse(resp) || {};
   } catch (err) {
     homeTrend.value = {};
   } finally {
@@ -32296,7 +32345,7 @@ async function runOperation() {
   const taskId = selectedTask.value.id;
   saving.value = true;
   try {
-    unwrapResponse$1(await api.tasks.run(taskId));
+    unwrapResponse(await api.tasks.run(taskId));
     notify('已提交执行请求，稍候刷新结果');
     emit('action');
     window.setTimeout(() => loadStatus(), 1500);
@@ -32320,7 +32369,7 @@ async function setRunMode(mode) {
   if (target === (selectedTask.value.run_mode || 'running')) return
   saving.value = true;
   try {
-    unwrapResponse$1(
+    unwrapResponse(
       await api.tasks.setState(selectedTask.value.id, target),
     );
     notify(`运行状态已切换为「${runModeMeta(target).text}」`);
@@ -34073,10 +34122,9 @@ return (_ctx, _cache) => {
       daily: _unref(trendDaily),
       loading: _unref(trendLoading),
       "scope-items": _unref(trendScopeItems),
-      "upload-increment": _unref(trendUploadIncrement),
       narrow: _unref(isNarrow),
       onRefresh: _unref(loadTrendReport)
-    }, null, 8, ["modelValue", "scope", "ident", "hours", "why", "daily", "loading", "scope-items", "upload-increment", "narrow", "onRefresh"]),
+    }, null, 8, ["modelValue", "scope", "ident", "hours", "why", "daily", "loading", "scope-items", "narrow", "onRefresh"]),
     _createVNode(PlanDialog, {
       modelValue: _unref(planOpen),
       "onUpdate:modelValue": _cache[87] || (_cache[87] = $event => (_isRef(planOpen) ? (planOpen).value = $event : null)),
@@ -34310,6 +34358,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-c515bbf0"]]);
+const MagicFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-b9042f59"]]);
 
 export { MagicFlowWorkbench as M };

@@ -179,8 +179,25 @@ def index_globals():
 
 
 def factory_params(src):
-    """导出工厂函数的解构参数（= 注入依赖名）。"""
-    m = re.search(r'export\s+function\s+use[A-Za-z0-9_$]*\s*\(\s*\{([^}]*)\}', src)
+    """工厂函数的解构参数（= 注入依赖名）。
+
+    任务 109 修复：旧版只认 ``export function useX({...})``，而 dist 还原出来的
+    ``useKeep.js`` / ``usePushAudit.js`` 是 ``function useX({...})`` + 末尾 ``export { useX }``
+    —— 注入其实发生了，却被报成「引用了但没注入」（假红）。这里改为同时识别：
+      · ``export function useX({...})``
+      · ``function useX({...})``（导出语句在别处）
+      · ``const/let/var useX = ({...}) => ...``
+    **只扩大「注入」的识别面，不排除任何文件、不减少被扫描的标识符**。
+    """
+    patterns = (
+        r'(?:export\s+)?(?:async\s+)?function\s+use[A-Za-z0-9_$]*\s*\(\s*\{([^}]*)\}',
+        r'(?:export\s+)?(?:const|let|var)\s+use[A-Za-z0-9_$]*\s*=\s*(?:async\s*)?\(?\s*\{([^}]*)\}',
+    )
+    m = None
+    for pat in patterns:
+        m = re.search(pat, src)
+        if m:
+            break
     if not m:
         return set()
     out = set()

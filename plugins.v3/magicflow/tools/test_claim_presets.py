@@ -93,7 +93,9 @@ _ok(_school["claim_page"] == "/details.php?id={id}", "学校: 认领详情页应
 _ok(_school["endpoint"]["method"] == "GET", "学校: 认领动作应为 GET")
 _ok("viewclaims.php?add_torrent_id={id}" in _school["endpoint"]["path"], "学校: GET 模板应是 viewclaims.php?add_torrent_id=")
 _ok("viewclaims" in _school["claim_entry"], "学校: 入口应是 viewclaims.php")
-_ok(_school["min_age_days"] == 30, "学校: 发布满30天")
+_ok(_school["min_age_days"] == 0,
+    "学校: 认领无发布天数门槛（19.10.60 纠错：30 天是「发奖」条件）")
+_ok(_school["reward_min_age_days"] == 30.0, "学校: 发奖满30天")
 _ok(_school["max_claimers"] == 20, "学校: 每颗20人")
 _ok(_school["per_user_cap"] == 100, "学校: 每人100")
 _ok(_school["settlement"]["target_seed_hours"] == 300, "学校: 月做种300h")

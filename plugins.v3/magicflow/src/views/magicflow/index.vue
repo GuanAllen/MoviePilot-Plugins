@@ -402,7 +402,7 @@ function trendItemsOf(sc) {
 }
 const {
   trendOpen, trendScope, trendId, trendHours, trendLoading, trendWhy, trendDaily,
-  trendUploadIncrement, trendScopeItems, loadTrendReport, openTrend,
+  trendScopeItems, loadTrendReport, openTrend,
 } = useTrend({ api, notify, itemsOf: trendItemsOf })
 function openTrendDialog() {
   // 默认站点口径：站点由站点监控每轮采样，一定有点可看；任务口径可从弹窗里切。
@@ -3082,7 +3082,6 @@ onUnmounted(() => {
       :daily="trendDaily"
       :loading="trendLoading"
       :scope-items="trendScopeItems"
-      :upload-increment="trendUploadIncrement"
       :narrow="isNarrow"
       @refresh="loadTrendReport"
     />

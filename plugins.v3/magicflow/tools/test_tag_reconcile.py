@@ -285,7 +285,7 @@ def t3_identity_drift():
     _ok(it["missing_duty"] is True and it["missing_identity"] is False,
         "判据：缺职务、不缺身份")
     _h, new = h.dl.calls[0]
-    _ok("魔流-学校-保种" in new, f"补回保种职务（{new}）")
+    _ok("魔流-学校-H&R" in new, f"补回 H&R 职务（19.12.38 起 STATE_HR=「H&R」，{new}）")
 
 
 def t4_skips():
@@ -353,7 +353,7 @@ def t8_music_exempt():
     rep = h._tag_ledger_reconcile(apply=True)
     _ok(rep["skipped_music"] == 1, f"跳过 1 个音乐魔力/刷流种（实际 {rep['skipped_music']}）")
     _ok([c[0] for c in h.dl.calls] == ["m2"], "只写音乐「保种」种，不写音乐「魔力」种")
-    _ok("魔流-CARPT-保种" in h.dl.calls[0][1], "音乐也要走 H&R → 保种职务照补")
+    _ok("魔流-CARPT-H&R" in h.dl.calls[0][1], "音乐也要走 H&R → H&R 职务照补（19.12.38 改名）")
 
 
 def t9_music_ledger_release():
@@ -505,7 +505,7 @@ def t12_manual_hold():
     _ok(app["held"] == 1, f"执行：挂 1 个（{app['held']}）")
     _ok("魔流-聆音-保种" in snap["d1"].tags and "魔流-聆音-静默-资源" in snap["d1"].tags,
         f"qB = 身份轴保留 + 职务轴换保种（{snap['d1'].tags}）")
-    _ok(rec.get("state") == STATE_HR, f"账本 state=保种（{rec.get('state')}）")
+    _ok(rec.get("state") == tags_root.STATE_KEEP, f"账本 state=保种（19.12.38 起 STATE_KEEP，实际 {rec.get('state')}）")
     _ok(rec.get("taken_by") == common.KEEP_TASK_ID and rec.get("task") == common.KEEP_TASK_NAME,
         f"归属 __keep__（{rec.get('taken_by')} / {rec.get('task')}）")
     _ok(rec.get("sub") == "资源", "身份轴没被改")

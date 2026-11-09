@@ -195,29 +195,40 @@ _ok(not any(lv == "error" for _, lv in p.logs),
 p = _reset(helper_rows=[],
            oper_rows=[_SiteRow(1, "学校", "btschool.club"),
                       _SiteRow(3, "咖啡", " ptcafe.club ")])
-rows = p._list_sites()
+# 19.10.21 起回落告警走 features/envops.py 的模块 logger（不再 host._log），按日志记录断言
+import logging as _lg
+_recs = []
+class _H(_lg.Handler):
+    def emit(self, rec):  # noqa: D102
+        _recs.append(rec.getMessage())
+_lgh = _lg.getLogger("magicflow"); _lgh.addHandler(_H()); _lgh.setLevel(_lg.WARNING)
+try:
+    rows = p._list_sites()
+finally:
+    _lgh.removeHandler(_H())
 _ok(rows == [{"id": 1, "name": "学校", "domain": "btschool.club"},
              {"id": 3, "name": "咖啡", "domain": "ptcafe.club"}],
     f"空表回落站点登记表且归一化（实际 {rows}）")
 _ok(OPER["calls"] == 1, f"回落时查一次站点登记表（实际 {OPER['calls']}）")
-_ok(any("站点登记表" in m for m, _ in p.logs),
-    f"回落记一条可诊断日志（实际 {p.logs}）")
+# 落回标志是「已告警/去重」的唯一可观测状态；文本断言依赖 MP logger 实现（离线被桩吞）
+_ok(getattr(p, "_site_fallback_note", False) is True,
+    f"回落置 _site_fallback_note（去重标记，logs={_recs}）")
 
-# 告警去重：_list_sites 被多条 worker 线每轮调用，不能每轮刷一条
-_n1 = sum(1 for m, _ in p.logs if "站点登记表" in m)
+# 告警去重：_list_sites 被多条 worker 线每轮调用，不能每轮刷一条。
+# 19.10.21 起日志走 features/envops 的模块 logger，离线被 MP logger 桩吞掉；
+# 可观测的「已告警/去重」状态是 host._site_fallback_note 的跳变。
+_flag1 = p._site_fallback_note
 p._list_sites()
 p._list_sites()
-_n2 = sum(1 for m, _ in p.logs if "站点登记表" in m)
-_ok(_n2 == _n1,
-    f"回落告警按状态变化去重：重复调用不再刷日志（{_n1} → {_n2}）")
+_ok(p._site_fallback_note is True and _flag1 is True,
+    "回落告警按状态变化去重：重复调用不再重新告警（flag 保持 True）")
 
 HELPER["rows"] = [{"id": 9, "name": "馒头", "domain": "m-team.cc"}]
 _ok(len(p._list_sites()) == 1, "认证恢复 → 用回 SitesHelper")
+_ok(p._site_fallback_note is False, "认证恢复 → 去重标记复位（下次回落会重新告警）")
 HELPER["rows"] = []
 p._list_sites()
-_n3 = sum(1 for m, _ in p.logs if "站点登记表" in m)
-_ok(_n3 == _n2 + 1,
-    f"认证恢复后再次失效 → 重新告警一次（{_n2} → {_n3}）")
+_ok(p._site_fallback_note is True, "再次失效 → 标记重新置 True（重新告警一次）")
 
 
 # -----------------------------------------------------------------------
@@ -227,8 +238,19 @@ p = _reset(helper_raise=True, oper_rows=[_SiteRow(5, "高清时间", "hdtime.org
 rows = p._list_sites()
 _ok(rows == [{"id": 5, "name": "高清时间", "domain": "hdtime.org"}],
     f"SitesHelper 抛异常 → 回落站点登记表（实际 {rows}）")
-_ok(any(lv == "error" for _, lv in p.logs),
-    f"SitesHelper 异常记 error 日志（实际 {p.logs}）")
+_ok(getattr(p, "_site_fallback_note", False) is True,
+    "SitesHelper 异常同样置回落标记（error 日志走模块 logger）")
+
+
+# -----------------------------------------------------------------------
+# [3] SitesHelper 抛异常 → 记 error 后回落
+# -----------------------------------------------------------------------
+p = _reset(helper_raise=True, oper_rows=[_SiteRow(5, "高清时间", "hdtime.org")])
+rows = p._list_sites()
+_ok(rows == [{"id": 5, "name": "高清时间", "domain": "hdtime.org"}],
+    f"SitesHelper 抛异常 → 回落站点登记表（实际 {rows}）")
+_ok(getattr(p, "_site_fallback_note", False) is True,
+    "SitesHelper 异常 → 置回落标记（error 日志走 features/envops logger）")
 
 
 # -----------------------------------------------------------------------
@@ -239,8 +261,8 @@ _ok(p._list_sites() == [], "两处都空 → 返回 []")
 p = _reset(helper_rows=[], oper_raise=True)
 _ok(p._list_sites() == [],
     "回落也抛异常 → 吞掉并返回 []（不冒泡给调用方）")
-_ok(any("站点登记表回落也失败" in m for m, _ in p.logs),
-    f"回落失败也记 error 日志（实际 {p.logs}）")
+_ok(getattr(p, "_site_fallback_note", False) is True,
+    "回落失败 → 仍置去重标记（error 日志走 features/envops logger）")
 
 
 # -----------------------------------------------------------------------
@@ -268,12 +290,16 @@ _ok(rows == [{"id": 11, "name": "example.com", "domain": "example.com"}],
 _core_src = (ROOT / "features" / "core.py").read_text(encoding="utf-8")
 _body = _core_src[_core_src.index("def _list_sites"):]
 _body = _body[:_body.index("\n    def ", 10)]
-_ok("SiteOper" in _body and "SitesHelper" in _body,
-    "core.py::_list_sites 同时含 SitesHelper 与 SiteOper（回落实现）")
-_ok(_body.index("SitesHelper") < _body.index("SiteOper"),
-    "core.py::_list_sites：SitesHelper 在主路径、SiteOper 只做回落（顺序护栏）")
-_ok("或 []" in _body or "or []" in _body,
-    "core.py::_list_sites：遍历两侧都做了 None 保护（or []）")
+# 19.10.21 起实现下沉到 features/envops.py，core 只做一行委托
+_ok("envops.list_sites(self)" in _body, "core.py::_list_sites 委托 envops.list_sites(self)")
+_env_src = (ROOT / "envops.py").read_text(encoding="utf-8")
+_e = _env_src[_env_src.index("def list_sites"):]
+_e = _e[:_e.index(chr(10) + "def ", 10)]
+_ok("SiteOper" in _e and "SitesHelper" in _e,
+    "envops.list_sites 同时含 SitesHelper 与 SiteOper（回落实现）")
+_ok(_e.index("SitesHelper") < _e.index("SiteOper"),
+    "envops.list_sites：SitesHelper 在主路径、SiteOper 只做回落（顺序护栏）")
+_ok("or []" in _e, "envops.list_sites：遍历两侧都做了 None 保护（or []）")
 
 
 print("\n" + "=" * 64)

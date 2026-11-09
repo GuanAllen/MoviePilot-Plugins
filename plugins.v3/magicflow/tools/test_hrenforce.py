@@ -24,6 +24,9 @@ import types
 import time
 from pathlib import Path
 
+import _app_stub  # noqa: E402
+_app_stub.install()
+
 ROOT = Path(__file__).resolve().parent.parent
 
 PKG = "mf_hrenforce_test"
@@ -58,14 +61,14 @@ hr = _load(PKG + ".features.hr", "features/hr.py")
 
 HrMixin = hr.HrMixin
 HrBillsMixin = hrbills.HrBillsMixin
-HrBillsStore = hrbills.HrBillsStore
 
 
 def _torrent(hash_string="", progress=0.0, seed_time=0.0, hit_and_run=False,
              title="test", tracker=""):
     return types.SimpleNamespace(
         hash=str(hash_string).lower(), title=title, progress=progress,
-        seed_time=seed_time, hit_and_run=hit_and_run, tags=[], tracker=tracker, downloaded=1e9,
+        seed_time=seed_time, seeding_time=seed_time, hit_and_run=hit_and_run,
+        tags=[], tracker=tracker, downloaded=1e9,
     )
 
 
@@ -106,11 +109,20 @@ class Harness(HrMixin, HrBillsMixin):
         self.group_of_map: dict = {}  # hash -> group_id
 
     # ---- hrbills / hr 依赖桩 ----
+    def _hrbills_store(self):
+        if getattr(self, "_mem_store", None) is None:
+            self._mem_store = MemHrBillsStore()
+        return self._mem_store
+
     def get_data_path(self):
         return self._data_dir
 
     def _site_hr_flag(self, dom):
         return self.site_hr.get(dom)   # 未登记 → None（未知）
+
+    def _hr_site_verdict(self, hash_string, dom, now=None, idx=None):
+        """站端裁决桩：默认 clear（本测试只验证回填/结算编排，不测站端采集）。"""
+        return getattr(self, "verdicts", {}).get(hash_string, ("clear", 0.0))
 
     def _crossseed_seed_need_hours(self, dom):
         return self.need_hours.get(dom, 0.0)
@@ -138,15 +150,26 @@ class Harness(HrMixin, HrBillsMixin):
     def _hr_obligation_by_seed(self, site, torrent):
         return (False, 0.0, 0.0, "")
 
+from _hr_mem_store import MemHrBillsStore  # noqa: E402
+
 
 CHECKS = 0
+FAILS: list[str] = []
 
 
 def _ok(cond: bool, msg: str) -> None:
+    """★ 任务 134：断言失败不再中断脚本——收集后继续跑，保证后续断言仍被执行。
+
+    失败仍然计入 ``FAILS`` 并让退出码非 0（不降低强度，只是不早停）。
+    """
     global CHECKS
-    assert cond, f"❌ {msg}"
     CHECKS += 1
-    print(f"  ✅ {msg}")
+    if cond:
+        print(f"  ✅ {msg}")
+    else:
+        print(f"  ❌ {msg}")
+        FAILS.append(msg)
+
 
 
 def _open_bill(h, hs, *, state="active", rule="site_hr", need_h=20.0, seeded_h=0.0):
@@ -213,8 +236,8 @@ def main() -> int:
     _open_bill(h, "ffff", state="active", rule="unknown", need_h=24.0, seeded_h=1.0)
     _ok(h._hr_obligation("hdfans.org", t6)[0] is False, "active+unknown → 不欠（不猜）")
 
-    # ---- 4) 账单读取抛异常 → 不欠（回退原逻辑） ----
-    print("\n[4] 账单读取抛异常 → 不欠")
+    # ---- 4) 账单读取抛异常 → 保守按欠（任务 111/113：UNKNOWN 不放行） ----
+    print("\n[4] 账单读取抛异常 → 保守按欠")
     class _Boom:
         def get(self, _h):
             raise RuntimeError("boom")
@@ -222,7 +245,7 @@ def main() -> int:
     h.torrents["abab"] = t7
     h._hrbills_store = lambda: _Boom()   # 覆盖实例方法 → 第三来源读账单必炸
     owed7 = h._hr_obligation("hdfans.org", t7)
-    _ok(owed7[0] is False, f"账单读取异常 → 不欠（回退，实际 owed={owed7[0]}）")
+    _ok(owed7[0] is True, f"账单读取异常 → 保守按欠（UNKNOWN 不放行，实际 owed={owed7[0]}）")
 
     # ---- 5) 回填幂等（跑两次账单数不变） ----
     print("\n[5] 回填幂等")
@@ -259,7 +282,14 @@ def main() -> int:
     b = h3._hrbills_store().get("9999")
     _ok(b is not None, "回填后账单存在")
     _ok(tick["backfilled"] == 1, f"tick 回报 backfilled=1（{tick['backfilled']}）")
-    _ok(b["state"] == "settled", f"已完成且挂够 → 当轮即 settled（{b['state']}）")
+    # ★ 任务 134：backfill 在结算阶段之后 → 需先激活、再结算（最多两轮）。
+    for _ in range(2):
+        h3._hrbills_tick()
+        b = h3._hrbills_store().get("9999")
+        if b and b.get("state") == "settled":
+            break
+    _ok(b is not None and b["state"] == "settled",
+        f"回填后两轮内结算 → settled（{b and b['state']}）")
 
     # ---- 7) 站点解析三级回退 ----
     print("\n[7] 站点解析三级回退")
@@ -296,6 +326,11 @@ def main() -> int:
     _ok("would_protect_hashes" in dry, "干跑返回 would_protect_hashes")
 
     print("\n" + "=" * 64)
+    if FAILS:
+        print(f"\nFAIL：{len(FAILS)} / {CHECKS} 项断言失败（历史口径漂移，逐条见上）")
+        for m in FAILS:
+            print("  - " + m)
+        return 1
     print(f"PASS：{CHECKS} 项断言全部通过 ✅")
     print("=" * 64)
     return 0

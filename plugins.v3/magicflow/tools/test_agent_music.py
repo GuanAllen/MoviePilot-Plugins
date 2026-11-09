@@ -50,10 +50,8 @@ _pkg(PKG + ".features", ROOT / "features")
 
 tags = _load(PKG + ".tags", "tags.py")
 _load(PKG + ".persistence", "persistence.py")
-# fingerprint 可能依赖 MP；只提供 info_hash 桩
-_fp = types.ModuleType(PKG + ".fingerprint")
-_fp.info_hash = lambda *_a, **_k: ""
-sys.modules[PKG + ".fingerprint"] = _fp
+# fingerprint.py 是纯标准库（gzip/hashlib），直接加载真实现（桩会缺 load_torrent_entries 等）
+_fp = _load(PKG + ".fingerprint", "fingerprint.py")
 
 musicgrab = _load(PKG + ".features.musicgrab", "features/musicgrab.py")
 MusicMixin = musicgrab.MusicGrabMixin

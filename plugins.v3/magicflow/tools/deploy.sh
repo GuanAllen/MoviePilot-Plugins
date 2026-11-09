@@ -94,10 +94,14 @@ if [ "$DO_PREFLIGHT" = 1 ]; then
   echo "── 2) preflight ──"
   if [ "$DRY" = 1 ]; then
     echo "  (dry-run) python3 tools/gen_modules.py"
+    echo "  (dry-run) python3 tools/gen_modules.py --check"
     echo "  (dry-run) sh tools/preflight.sh"
   else
+    # ★ 发布路径保留严格口径（任务 110）：开发态 preflight 用 --check-modules
+    #   （允许行数/职责漂移），但发布前必须先重生成，再逐字节 --check。
     ( cd "$DEV" && python3 tools/gen_modules.py >/dev/null ) \
-      && echo "  ▸ 模块登记 已重生成" \
+      && ( cd "$DEV" && python3 tools/gen_modules.py --check >/dev/null ) \
+      && echo "  ▸ 模块登记 已重生成（严格校验通过）" \
       && sh "$DEV/tools/preflight.sh"
   fi
 fi

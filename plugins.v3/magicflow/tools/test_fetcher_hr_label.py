@@ -47,6 +47,19 @@ def _load_fetcher():
     name = "mf_fetcher_hr_label"
     src = (ROOT / "fetcher.py").read_text(encoding="utf-8")
     code = compile("from __future__ import annotations\n" + src, str(ROOT / "fetcher.py"), "exec")
+    # 离线运行：fetcher 经由 chain 组合根取运行时上下文；未启动 MP 时给一个空上下文，
+    # 只让「导入期构造服务对象」通过（测试只用纯解析函数，不跑站点请求）。
+    try:
+        import app.application.chain.context as _cc
+        class _LooseCtx:
+            """任意属性都返回 None：只为让 Chain 基类导入期构造通过。"""
+
+            def __getattr__(self, _name):
+                return None
+
+        _cc.configure_chain_runtime_context_provider(lambda: _LooseCtx())
+    except Exception:  # noqa: BLE001
+        pass
     mod = types.ModuleType(name)
     mod.__file__ = str(ROOT / "fetcher.py")
     sys.modules[name] = mod
@@ -77,7 +90,8 @@ def _row(tid: int, title: str, *, hr_label: bool, promo: str = "pro_50pctdown") 
 
 def main() -> int:
     mod = _load_fetcher()
-    fetcher = mod.SiteFetcher()
+    # 只测纯解析：不经 __init__（那里会构造 TorrentsChain，需要 MP 组合根真实服务）
+    fetcher = object.__new__(mod.SiteFetcher)
 
     print("[A/B/C] 逐种 H&R 标签按行解析")
     html = (

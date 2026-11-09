@@ -11,6 +11,7 @@ import { normalizeTask } from '../../../utils'
 import { runModeMeta } from '../../../utils'
 import { taskStateMeta } from '../../../utils'
 import { unwrapResponse } from '../../../utils'
+import { fallbackSettingsFrom } from './settingsMap'
 
 export function useTasks({ selectedTaskId, api, emit, hostToast, settingsDraft, selectTask, warmingTimer }) {
   const loading = ref(false)
@@ -166,6 +167,9 @@ export function useTasks({ selectedTaskId, api, emit, hostToast, settingsDraft, 
           reseed_daily_per_site: status.value.reseed.daily,
           reseed_batch: status.value.reseed.batch,
           reseed_min_size_gb: status.value.reseed.min_size_gb,
+          // ★ API-02（任务 45 补漏）：直连搜索站必须回填，否则一保存就被空值覆盖
+          reseed_search_sites: Array.isArray(status.value.reseed.search_sites) ? status.value.reseed.search_sites : [],
+          reseed_search_kw: Number(status.value.reseed.search_kw) || 0,
         } : {}),
         ...(status.value.claim ? {
           claim_enabled: status.value.claim.enabled,
@@ -198,7 +202,7 @@ export function useTasks({ selectedTaskId, api, emit, hostToast, settingsDraft, 
           rescue_stall_hours: status.value.rescue.stall_hours,
           rescue_max_candidates: status.value.rescue.max_candidates,
         } : {}),
-        ...(status.value.fallback || {}),
+        ...fallbackSettingsFrom(status.value.fallback),
         ...(status.value.live ? {
           live_enabled: status.value.live.enabled,
           live_interval_minutes: status.value.live.interval,

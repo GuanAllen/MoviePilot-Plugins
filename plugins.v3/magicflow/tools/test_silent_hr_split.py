@@ -22,6 +22,9 @@ import tempfile
 import types
 from pathlib import Path
 
+import _app_stub  # noqa: E402
+_app_stub.install()
+
 ROOT = Path(__file__).resolve().parent.parent
 
 PKG = "mf_hr_split_test"
@@ -55,20 +58,30 @@ downloader_ops = _load(PKG + ".downloader_ops", "downloader_ops.py")
 hrbills = _load(PKG + ".features.hrbills", "features/hrbills.py")
 
 HrBillsMixin = hrbills.HrBillsMixin
-HrBillsStore = hrbills.HrBillsStore
 BILL_STATE_ACTIVE = hrbills.BILL_STATE_ACTIVE
 BILL_STATE_VOID = hrbills.BILL_STATE_VOID
 BILL_STATE_BREACHED = hrbills.BILL_STATE_BREACHED
 CROSSSEED_TAG = crossseed.CROSSSEED_TAG
+from _hr_mem_store import MemHrBillsStore  # noqa: E402
+
 
 CHECKS = 0
+FAILS: list[str] = []
 
 
 def _ok(cond: bool, msg: str) -> None:
+    """★ 任务 134：断言失败不再中断脚本——收集后继续跑，保证后续断言仍被执行。
+
+    失败仍然计入 ``FAILS`` 并让退出码非 0（不降低强度，只是不早停）。
+    """
     global CHECKS
-    assert cond, f"❌ {msg}"
     CHECKS += 1
-    print(f"  ✅ {msg}")
+    if cond:
+        print(f"  ✅ {msg}")
+    else:
+        print(f"  ❌ {msg}")
+        FAILS.append(msg)
+
 
 
 def _torrent(progress=0.0, seed_time=0.0, title="test", tracker="hdfans.org", completion_on=0.0):
@@ -98,8 +111,33 @@ class HrHarness(HrBillsMixin):
         self.ledger: dict = {}
         self.name2dom: dict = {}
 
+    def _hrbills_store(self):
+        if getattr(self, "_mem_store", None) is None:
+            self._mem_store = MemHrBillsStore()
+        return self._mem_store
+
     def get_data_path(self):
         return self._data_dir
+
+    def _agent_deletions_rows(self):
+        """删除审计读取口（生产走 mf_deletions；测试读 del_file JSONL）。"""
+        import json as _json
+        f = getattr(self, "del_file", None)
+        if f is None:
+            return []
+        try:
+            out = []
+            for line in Path(f).read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(_json.loads(line))
+                except ValueError:
+                    continue
+            return out
+        except OSError:
+            return []
 
     def _site_hr_flag(self, dom):
         return self.site_hr.get(dom)
@@ -120,6 +158,14 @@ class HrHarness(HrBillsMixin):
 
             def items(self):
                 return dict(self._d)
+
+            def get(self, h):
+                return dict(self._d.get(str(h).strip().lower()) or {})
+
+            def put(self, h, rec):
+                k = str(h).strip().lower()
+                self._d.setdefault(k, {}).update(dict(rec or {}))
+                return dict(self._d[k])
         return _S(self.ledger)
 
     def _site_domain_by_name(self, name):
@@ -174,6 +220,7 @@ class _FakeDownloader:
 
     def __init__(self):
         self.paused = []
+        self.tags_set = []
         self.resumed = []
         self.force_started = []
         self.deleted = []
@@ -193,6 +240,10 @@ class _FakeDownloader:
         self.resumed.extend(hashes)
         return len(hashes), None
 
+    def set_torrent_tags(self, h, tags):
+        self.tags_set.append((h, list(tags)))
+        return True
+
     def force_start_torrents(self, hashes):
         self.force_started.extend(hashes)
         return len(hashes), None
@@ -210,8 +261,19 @@ class CoreHarness(silent.SilentMixin, hr.HrMixin):
         self.torrents = {}
         self.ledger = {}
         self.dl = _FakeDownloader()
+        self.dl.is_available = True   # _hr_host_assign 要求下载器可用
         self.oblig = {}       # hash -> (owed, need, seeded, src)
+        self.site_hr = {}     # 站点 H&R 制度（None/True/False），迁移判据要用
         self._tags_cfg = {"host_interval": 60}
+
+    def _site_hr_flag(self, dom):
+        return self.site_hr.get(str(dom or "").strip().lower())
+
+    def _site_per_torrent_hr(self, dom):
+        return False
+
+    def _hr_incomplete_of(self, site, t):
+        return False
 
     def _tag_all_torrents(self):
         return dict(self.torrents)
@@ -246,12 +308,25 @@ class CoreHarness(silent.SilentMixin, hr.HrMixin):
     def _torrent_site_name(self, tags, fallback=""):
         return "hdfans.org"
 
+    def _hr_obligation_rule(self, dom, torrent_hr=None):
+        """与 hrbills 同口径的两道门槛（离线桩）。"""
+        if torrent_hr is True:
+            return "hit_and_run"
+        if self._site_per_torrent_hr(dom):
+            return None
+        return "site_hr" if self._site_hr_flag(dom) is True else None
+
+    def _hr_domain(self, site, torrent=None):
+        return str(site or "hdfans.org").strip().lower()
+
     def _hr_obligation(self, site, torrent, snap=None):
         h = str(getattr(torrent, "hash", "") or "").lower()
         return self.oblig.get(h, (False, 24.0, 100.0, "test"))
 
     def _hrbills_store(self):
-        return None
+        if getattr(self, "_mem_store", None) is None:
+            self._mem_store = MemHrBillsStore()
+        return self._mem_store
 
     def _silent_pause_gate(self, hashes):
         hs = [hashes] if isinstance(hashes, str) else list(hashes or [])
@@ -306,7 +381,7 @@ def main() -> int:
 
     # ---- ① 保种职务进状态机 ----
     print("\n[1] 保种职务 STATE_HR 进状态机")
-    _ok(tags.STATE_HR == "保种", f"STATE_HR = '保种'（{tags.STATE_HR!r}）")
+    _ok(tags.STATE_HR == "H&R", f"STATE_HR = 'H&R'（{tags.STATE_HR!r}）")
     _ok(tags.STATE_HR in tags.STATES, "STATE_HR 在 STATES（parse_tag 能解析）")
     _ok(tags.STATE_HR in tags.DUTY_STATES, "STATE_HR 在 DUTY_STATES（retag 能贴职务标签）")
     _ok(tags.STATE_HR not in ("刷流", "魔力", "静默", "推荐"), "保种是独立状态，不与老四态混")
@@ -314,13 +389,13 @@ def main() -> int:
     # ---- ② retag(state=保种) 产职务标签 + 保留静默身份；手动态不含保种 ----
     print("\n[2] retag(保种) 产出 魔流-<站>-保种，不覆盖身份")
     out = tags.retag(["魔流-hdfans-静默-资源", "魔流-hdfans-魔力"], site="hdfans", state=tags.STATE_HR, sub=tags.SUB_RESOURCE)
-    _ok("魔流-hdfans-保种" in out, f"retag 产出保种职务标签（{out}）")
+    _ok("魔流-hdfans-H&R" in out, f"retag 产出 H&R 职务标签（{out}）")
     _ok("魔流-hdfans-静默-资源" in out, f"静默身份保留（{out}）")
     _ok("魔流-hdfans-魔力" not in out, "原魔力职务被摘（换保种）")
     # set_tag_state 的合法态（静态断言：不含保种）
     legal = (tags.STATE_BRUSH, tags.STATE_BONUS, tags.STATE_SILENT, tags.STATE_RECOMMEND)
     _ok(tags.STATE_HR not in legal, "set_tag_state 合法态不含保种（保种只由 _hr_obligation 派生）")
-    _ok(tags.tag_for("hdfans", tags.STATE_HR) == "魔流-hdfans-保种", "tag_for(保种) 正确拼标签")
+    _ok(tags.tag_for("hdfans", tags.STATE_HR) == "魔流-hdfans-H&R", "tag_for(H&R) 正确拼标签")
 
     # ---- ③ forget_torrents 释放陈旧保护 ----
     print("\n[3] forget_torrents 释放陈旧保护")
@@ -368,6 +443,10 @@ def main() -> int:
     _ok(h._hrbills_store().get("a111")["state"] == "active", "已完成 → 转 active（欠债）")
     _ok(h._hrbills_store().get("a111")["progress"] >= 0.999, "tick 后 bill.progress 刷到 1.0")
     h.torrents.pop("a111")  # 从下载器消失
+    # ★ 快照不能为空（19.0.0 空快照安全闸会整轮跳过）；放一颗无关种保持快照非空。
+    _keep = _torrent(progress=1.0, title="无关种", tracker="hdfans.org")
+    _keep.hash = "zzzz"
+    h.torrents["zzzz"] = _keep
     h._hrbills_tick()
     b = h._hrbills_store().get("a111")
     _ok(b["state"] == BILL_STATE_BREACHED, f"消失 + active → breached（{b['state']}）")
@@ -382,8 +461,9 @@ def main() -> int:
     h.torrents.pop("a222")
     h._hrbills_tick()
     b2 = h._hrbills_store().get("a222")
-    _ok(b2 is None, "消失 + 未完成 → void 账单已删除")
-    _ok("a222" not in h._hrbills_store().all(), "确认不再存在于账单表（作废即删）")
+    # ★ 19.12.40：摘账不再物理删/立墓碑 —— 保留行 + alive=False + missing_since，等站端证据
+    _ok((b2 or {}).get("state") == "pending" and b2.get("alive") is False
+        and b2.get("missing_since"), f"消失 + 未完成 → 保留 pending + missing_since（实际 {(b2 or {}).get('state')}/{b2.get('alive')}）")
 
     # ---- ⑥ breached 种重新出现 → 恢复 active ----
     print("\n[6] breached 种重新出现 → 恢复 active（复欠重进）")
@@ -397,13 +477,20 @@ def main() -> int:
     # ---- ⑦ _hr_breaches 归因：deletions.jsonl ok=true → plugin_deleted ----
     print("\n[7] _hr_breaches 归因")
     # 再让它消失，并写一条 deletions.jsonl 记录（ok=true = 本插件删 → gate bug）
+    # ★ 任务 136：tick 不再自动把「消失」判成 breached；这里显式置 breached 以验归因链
+    _st = h._hrbills_store()
+    _st.patch_if("a111", {"state": BILL_STATE_ACTIVE}, state=BILL_STATE_BREACHED,
+                 breached_at=__import__("time").time())
     h.torrents.pop("a111")
     h._hrbills_tick()
+    h.del_file = del_file
     del_file.write_text(json.dumps({
         "ts": "2026-10-06 08:00:00", "hash": "a111", "site": "hdfans.org",
         "title": "欠债种", "source": "test", "reason": "x", "delete_file": False,
         "ok": True, "blocked": False, "err": "", "blocked_by": "",
     }) + "\n", encoding="utf-8")
+    print("DEBUG a111:", h._hrbills_store().get("a111"))
+    print("DEBUG del_file:", del_file, del_file.exists() if hasattr(del_file,"exists") else "?")
     rep = h._hr_breaches()
     _ok(rep["totals"]["breached"] >= 1, f"breaches 清单非空（{rep['totals']['breached']}）")
     row = next((x for x in rep["breaches"] if x["hash"] == "a111"), None)
@@ -444,11 +531,13 @@ def main() -> int:
     hc4 = CoreHarness()
     t11 = _torrent(progress=1.0); t11.hash = "aaaa"; t11.tags = []
     hc4.torrents["aaaa"] = t11
+    hc4.site_hr["hdfans.org"] = True   # 19.12.37：迁移先过「该不该记」两道门槛（与开账同源）
     hc4.ledger["aaaa"] = {"site": "hdfans.org", "state": "静默", "sub": "普通", "taken_by": ""}
     hc4.oblig["aaaa"] = (True, 24.0, 0.0, "test")   # 欠 H&R
     rep11 = hc4.hr_host()
     _ok(rep11.get("migrated", 0) >= 1, f"hr_host 统一迁移（migrated={rep11.get('migrated')}）")
-    _ok(hc4.ledger["aaaa"].get("state") == "保种", "迁移后 state=保种")
+    # ★ 19.12.38 职务拆分：H&R 保种是独立职务 STATE_HR（"H&R"），不再复用「保种」状态
+    _ok(hc4.ledger["aaaa"].get("state") == "H&R", f"迁移后 state=H&R（{hc4.ledger['aaaa'].get('state')}）")
     _ok(hc4.ledger["aaaa"].get("taken_by") == "__hr_host__", "迁移后 taken_by=__hr_host__")
     _ok("aaaa" in hc4.dl.force_started, "迁移后立即 force_start（保挂 H&R）")
 
@@ -501,6 +590,11 @@ def main() -> int:
     _ok(rm.get("deleted", 0) >= 1, f"返回 deleted={rm.get('deleted')}")
 
     print("\n" + "=" * 64)
+    if FAILS:
+        print(f"FAIL：{len(FAILS)} / {CHECKS} 项断言失败")
+        for m in FAILS:
+            print("  - " + m)
+        return 1
     print(f"✅ 全部通过：{CHECKS} 项断言")
     return 0
 

@@ -5,7 +5,7 @@
 `tools/check_api_routes.py` 是 preflight 第 25 步。一个永远绿的检查器等于没有，
 所以这里用临时目录造四类坏表，逐条验证检查器确实报错，再验证干净表确实通过：
 
-  [1] 干净表通过（146 条真实表 → 零错误）；
+  [1] 干净表通过（147 条真实表 → 零错误）；
   [2] 同一 (path, method) 注册两次 → R3 报「重复路由」；
   [3] 同一 path 不同 method → 合法（GET/POST 并存是常态），不报；
   [4] handler 名字不存在 → R4 报「改名或搬走后没跟上」；
@@ -126,7 +126,7 @@ def main() -> int:
     ok(not chk._ERRORS, f"[1] 真实表零错误，实际 {chk._ERRORS[:2]}")
     # 条数快照：**加/删路由要一起改这里**（它是「表被人动过」的锚，不是业务断言）。
     # 143 → 145：19.11.0 加 /ondemand/batch（多选一并点播），另有一条同批新增。
-    ok(len(real) == 146, f"[1] 真实表 146 条（实际 {len(real)}）")
+    ok(len(real) == 147, f"[1] 真实表 147 条（实际 {len(real)}；19.12.x 新增 /agent/hr/bills 后 +1）")
     chk._ERRORS.clear()
 
     GOOD = '("/pool", "pool_info", "GET", "池盘空间"),'
