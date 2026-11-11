@@ -851,13 +851,19 @@ class RecommendMixin:
         return True
 
     def _recommend_import(self, h: str, rec: Optional[Dict[str, Any]] = None,
-                          media_hint: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
+                          media_hint: Optional[Dict[str, Any]] = None,
+                          transfer_type: str = "") -> Tuple[bool, str]:
         """确认后自动整理入库:识别 → 用 TransferChain 手动整理该资源。
 
         ``media_hint``（★ 19.11.2）= ``{media_id, media_source, media_type}``，调用方
         （点播）**下载那一刻**就识别好并落过台账的身份。给了就跳过 ``recognize(title)``：
         那次识别用的是站点完整标题（带季号/来源），比这里的中文短名准；而且整理不再
         依赖 TMDB 可达 —— 缓存命中与否、网络通不通，都不再影响入库。
+
+        ``transfer_type``（★ 19.12.64）= 显式整理方式。默认空串 = 沿用 MP 系统默认
+        （点播/推荐链路保持原行为）。**库内资产整理必须传 ``"link"``**：一份资源常是
+        十余颗种共用同一个 content_path，一旦系统默认被改回 move，源文件会被搬走，
+        整组一起坏种。显式传参才能把这个风险锁死，不依赖任何人的配置。
         """
         try:
             from app.chain.transfer import TransferChain  # type: ignore  # noqa: WPS433
@@ -925,6 +931,10 @@ class RecommendMixin:
                 path=save_path, storage="local", type="dir" if _is_dir else "file",
                 name=_os.path.basename(clean) or _os.path.basename(save_path),
             )
+            _xfer_kw: Dict[str, Any] = {}
+            if transfer_type:
+                # ★ 19.12.64：资产整理显式锁死 link，不吃 MP 系统默认（见本函数 docstring）
+                _xfer_kw["transfer_type"] = str(transfer_type)
             ok, msg = TransferChain().manual_transfer(
                 fileitem=fileitem,
                 media_source=_ms,
@@ -932,6 +942,7 @@ class RecommendMixin:
                 mtype=_mt,
                 downloader="qbittorrent",
                 download_hash=str(h).lower(),
+                **_xfer_kw,
             )
             _note = ""
             if not ok and self._transfer_already_done(msg):

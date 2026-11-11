@@ -11,8 +11,25 @@ export function useTrend({ api, notify, itemsOf }) {
   const trendLoading = ref(false)
   const trendWhy = ref(null)
   const trendDaily = ref([])
+  // ★ 19.12.44：本窗口「实际上传增量」（后端 ``uploaded_increment``，按采样差分取非负累加）。
+  //   之前 index.vue 解构 ``trendUploadIncrement`` 并作为 ``:upload-increment`` 传给
+  //   TrendDialog，但本 composable 从未返回它 → 任务口径那张「本任务实际上传」卡片永远不显示。
+  const trendUploadIncrement = ref(null)
 
   const trendScopeItems = computed(() => (typeof itemsOf === 'function' ? itemsOf(trendScope.value) : []))
+
+  /** 取当前口径在该窗口的上传增量（后端按序列 key 返回；取不到就 null = 不显示该卡）。 */
+  async function loadTrendUploadIncrement(scope, ident) {
+    try {
+      const resp = await api.trend.hours({ scope, id: ident, hours: trendHours.value })
+      const inc = (unwrapResponse(resp) || {}).uploaded_increment || {}
+      const v = inc[`${scope}:${ident}`]
+      trendUploadIncrement.value = v == null ? null : Number(v)
+    } catch (err) {
+      // 增量只是附加信息：拿不到不影响趋势主体
+      trendUploadIncrement.value = null
+    }
+  }
 
   async function loadTrendReport() {
     const scope = trendScope.value
@@ -20,6 +37,7 @@ export function useTrend({ api, notify, itemsOf }) {
     if (!ident) {
       trendWhy.value = null
       trendDaily.value = []
+      trendUploadIncrement.value = null
       return
     }
     trendLoading.value = true
@@ -33,10 +51,12 @@ export function useTrend({ api, notify, itemsOf }) {
       const d = unwrapResponse(dayResp) || {}
       const seriesMap = d.series || {}
       trendDaily.value = seriesMap[`${scope}:${ident}`] || []
+      await loadTrendUploadIncrement(scope, ident)
     } catch (err) {
       notify(err?.response?.data?.message || err?.message || '趋势读取失败', 'error')
       trendWhy.value = null
       trendDaily.value = []
+      trendUploadIncrement.value = null
     } finally {
       trendLoading.value = false
     }
@@ -81,6 +101,6 @@ export function useTrend({ api, notify, itemsOf }) {
 
   return {
     trendOpen, trendScope, trendId, trendHours, trendLoading, trendWhy, trendDaily,
-    trendScopeItems, loadTrendReport, openTrend,
+    trendUploadIncrement, trendScopeItems, loadTrendReport, openTrend,
   }
 }

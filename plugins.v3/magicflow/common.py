@@ -5,9 +5,11 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "19.12.44"
+__version__ = "19.12.65"
 
 import bisect
+import hashlib
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -208,6 +210,15 @@ class SiteGuard:
         """MP 当前站点 id 集合；判不出返回 ``None``（同 ``mp_sites``）。"""
         sites = self.mp_sites()
         return None if sites is None else set(sites.keys())
+
+    def invalidate(self) -> None:
+        """★ 事件驱动的强制失效：MP 侧刚发生过站点写入，缓存一律作废。
+
+        站点增删改事件是在 MP **事务提交之后**才广播的，所以事件一到，旧缓存必然是
+        过期值。这里只清缓存、不查库 —— 把「下一次读」变成真查，由调用方决定何时读。
+        """
+        self._cache.clear()
+        self._sites_cache = None
 
     def missing(self, task: Any) -> bool:
         """任务绑的站点是否已被删除（无 site_id → False，不查库）。"""
@@ -1292,4 +1303,82 @@ def mask_long_tokens(text: Any, min_len: int = 16) -> str:
     """把文本里的长口令串遮成 ``***``（诊断片段回显用；短词/标签不动，保住可读性）。"""
     pat = _LONG_TOKEN_RE if min_len == 16 else re.compile(rf"[A-Za-z0-9_\-]{{{int(min_len)},}}")
     return pat.sub(SECRET_MASK, str(text or ""))
+
+
+def payload_ver(payload: Any, drop_keys: Tuple[str, ...] = ()) -> str:
+    """内容指纹（16 位 sha1 前缀）：给「数据没变就别重传」用（19.12.62）。
+
+    为什么不是 HTTP ETag / Last-Modified：浏览器与中间层（FRP、宿主的响应包装）
+    对 304 的处理不受我们控制，而这条链路是 `插件前端 → 宿主 → 反代`，任何一个
+    环节把条件请求吃掉，前端就会拿到空体。改成**应用层版本号**后，判据完全在我们
+    自己手里：前端带上上次的 `ver`，服务端算完比对，不同才回全量。
+
+    `drop_keys` 用来剔除**纯随时间长跑**的字段（如 `site_bonus_age_s` 这类
+    「距上次采样过去多少秒」）。它们每轮询一次就变一个值，留着会让指纹永远变，
+    优化直接归零；剔除只影响指纹，下发的全量里照样有这些字段。
+
+    `sort_keys` + 紧凑分隔符保证同一份数据每次得到同一个值；`default=str` 让
+    偶发的 datetime / Decimal 之类不至于抛异常（宁可退化也不报错）。
+    """
+    raw = json.dumps(_ver_project(payload, frozenset(drop_keys)), ensure_ascii=False,
+                     sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+#: 19.12.63 —— 服务端快照差分。
+#:
+#: 指纹只回答「变没变」，差分回答「变了哪几个叶子」。把 payload 展平成
+#: ``路径 JSON 数组字符串 → 叶子值``（如 ``["tasks",12,"state"]``），
+#: 路径用 JSON 编码而不是点号拼接，是因为站点名 / 域名做 key 时会带点号，
+#: 点号路径会歧义；数组下标用整数，前端按段逐层走即可。
+#:
+#: **判据是「结构完全一致」**：只要叶子路径集合发生增减（新增/删除任务、
+#: 阶段链多一个节点），就不发补丁、直接回全量。这样前端补丁只需做赋值，
+#: 永远不用猜「这个数组该不该缩容」，不可能出现半应用状态。
+def payload_leaves(payload: Any, drop_keys: Tuple[str, ...] = ()) -> Dict[str, Any]:
+    """展平 payload；返回 ``{路径JSON: 叶子值}``。不修改入参。"""
+    out: Dict[str, Any] = {}
+    _walk_leaves(_ver_project(payload, frozenset(drop_keys)), (), out)
+    return out
+
+
+def _walk_leaves(obj: Any, path: Tuple[Any, ...], out: Dict[str, Any]) -> None:
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            _walk_leaves(v, path + (str(k),), out)
+    elif isinstance(obj, (list, tuple)):
+        for i, v in enumerate(obj):
+            _walk_leaves(v, path + (i,), out)
+    else:
+        out[json.dumps(list(path), ensure_ascii=False, separators=(",", ":"))] = obj
+
+
+def _same_leaf(a: Any, b: Any) -> bool:
+    """严格比较叶子：类型不同即视为变化（避免 true/1 在 json 里不同而 == 相同）。"""
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, float) and a != a and b != b:  # 双 NaN
+        return True
+    return bool(a == b)
+
+
+def payload_patch(old: Dict[str, Any], new: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """结构一致时返回「变化的叶子」补丁；结构变化返回 None（调用方回全量）。
+
+    返回空 dict 表示内容完全没变（等价于 `changed:false`）。
+    """
+    if len(old) != len(new) or set(old) != set(new):
+        return None
+    return {k: v for k, v in new.items() if not _same_leaf(old[k], v)}
+
+
+def _ver_project(obj: Any, drop: "frozenset[str]") -> Any:
+    """按 `drop` 剔除键后重建结构（不修改入参）。"""
+    if not drop:
+        return obj
+    if isinstance(obj, dict):
+        return {k: _ver_project(v, drop) for k, v in obj.items() if k not in drop}
+    if isinstance(obj, (list, tuple)):
+        return [_ver_project(v, drop) for v in obj]
+    return obj
 

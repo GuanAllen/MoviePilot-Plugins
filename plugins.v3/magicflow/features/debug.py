@@ -903,12 +903,22 @@ class DebugMixin:
                 _ids = [str(hid) for hid, _ in self._event_handlers(_MFEventType.TransferComplete)]
             except Exception:  # noqa: BLE001
                 _ids = []
+            _site_h: Dict[str, Any] = {}
+            for _nm in ("SiteUpdated", "SiteDeleted", "SiteRefreshed"):
+                try:
+                    _site_h[_nm] = [str(hid) for hid, _ in
+                                    self._event_handlers(getattr(_MFEventType, _nm))]
+                except Exception:  # noqa: BLE001
+                    _site_h[_nm] = []
             return Response(success=True, message="ok", data=self._jsonable({
                 "handlers": _ids,
                 "registered": "app.plugins.magicflow.MagicFlow._on_transfer_complete" in _ids,
                 "active_is_self": common._mf_active_is(self),
                 "enabled": bool(getattr(self, "_enabled", False)),
                 "lib_events": dict(getattr(self, "_lib_events", {}) or {}),
+                # ★ 站点事件（2026-11-10）：三段都在才算订阅接通
+                "site_handlers": _site_h,
+                "site_events": dict(getattr(self, "_site_events", {}) or {}),
             }))
         if clear:
             _g0 = self._tag_groups()

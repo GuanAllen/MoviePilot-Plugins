@@ -4,6 +4,7 @@
 （由原 `__init__.py` 拆分为 mixin，逐字搬运，行为不变。）
 """
 
+import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -42,6 +43,9 @@ from ..common import (
     HR_COMPLETE_RATIO_DEFAULT,
     STATS_TTL,
     STATUS_TTL,
+    payload_leaves,
+    payload_patch,
+    payload_ver,
     redact_secrets,
     run_mode_of,
     site_guard,
@@ -52,6 +56,61 @@ from ..common import (
 
 class StatusMixin:
     """status 功能集（原 MagicFlow 方法原样搬入）。"""
+
+    #: 算内容指纹时**剔除**的字段（19.12.62）。
+    #:
+    #: 依据是实测：30 s 间隔连拍 4 次 `/status`，3099 个叶子里有 27 个在变，
+    #: 其中 19 个是 `tasks[*].site_bonus_age_s`（「距上次站点采样过去多少秒」，
+    #: 每轮询必然 +30）、3 个是 `store.*`（存储层自增计数 / 文件 mtime）。
+    #: 这些**前端一个都不读**（全仓 grep 零命中），留着只会让指纹永远在变、
+    #: 优化归零，所以算指纹时投影掉；真正下发的全量里它们照旧存在，外部
+    #: 调用方（agent / 脚本，不带 `ver`）看到的东西和以前完全一样。
+    #:
+    #: 注意：剔除的是**时间流逝型**字段，不是「变化型」字段 —— `host_last_run`、
+    #: `state`、`run_active` 这类真变化必须留着，它们变了就该重传。
+    _STATUS_VER_DROP = ("site_bonus_age_s", "store")
+
+    #: 19.12.63 —— 允许走「差分补丁」的顶层路径。
+    #: 只有这几块是高频抖动且前端按字段读取的；其余（配置 / 选项 / 凭据视图）
+    #: 一旦变化就直接回全量，避免补丁把设置草稿、规则表这类结构改出半应用状态。
+    _STATUS_PATCH_ROOTS = frozenset({"tasks", "summary"})
+
+    #: 快照缓存上限：几个浏览器标签页各持一个不同 ver 时要都能命中；再多就淘汰最旧的。
+    _STATUS_SNAP_MAX = 6
+
+    def _status_snap(self, client_ver: str, etag: str,
+                     leaves: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """登记本轮(etag)快照，返回客户端 `client_ver` 对应的基准快照。
+
+        快照键一律用**本轮算出的 etag**（客户端下次带来的就是它）；找不到
+        （插件重载 / 缓存淘汰 / 客户端 ver 来自别处）返回 None，调用方回全量，
+        宁可多传一次也绝不发一个对不上基准的补丁。
+        """
+        from collections import OrderedDict
+        lock = getattr(self, "_status_snap_lock", None)
+        if lock is None:
+            lock = self._status_snap_lock = threading.RLock()
+        with lock:
+            cache = getattr(self, "_status_snaps", None)
+            if cache is None:
+                cache = self._status_snaps = OrderedDict()
+            base = cache.get(client_ver) if client_ver else None
+            cache[etag] = leaves
+            cache.move_to_end(etag)
+            while len(cache) > self._STATUS_SNAP_MAX:
+                cache.popitem(last=False)
+            return base
+
+    def _status_patch_ok(self, diff: Dict[str, Any]) -> bool:
+        """补丁是否全部落在允许的顶层路径内。"""
+        for key in diff:
+            try:
+                seg = json.loads(key)
+            except Exception:
+                return False
+            if not seg or str(seg[0]) not in self._STATUS_PATCH_ROOTS:
+                return False
+        return True
 
     # ---------------------------------------------------------
     # 任务数据构建
@@ -572,13 +631,25 @@ class StatusMixin:
         except Exception:
             pass
 
-    def get_status(self) -> Response:
+    def get_status(self, ver: str = "", patch: str = "") -> Response:
         """获取插件总览状态(重数据带 STATUS_TTL 缓存 + 后台静默刷新)。
 
         冷启动不再同步阻塞:首次调用立即返回**轻量壳**(配置/阶段/目标,不算下载器
         实时统计)并后台构建重数据,前端见 `warming=true` 会快速重拉;后台连续失败
         时才同步兜底(正确性优先)。
+
+        ★ 19.12.62：带 `ver` 参数时做内容比对 —— 数据没变只回
+        ``{"changed": false, "ver": ...}``（约 60 B），不再把 67 KB 整包重传。
+        收包方只有本插件前端（30 s 轮询那条路径），其它调用方不带 `ver`，行为不变。
+
+        ★ 19.12.63：新增 `patch=1` **能力协商**。只有显式声明支持补丁的新前端
+        才可能收到 ``{"changed": true, "ver": ..., "patch": {...}}``；
+        旧前端（19.12.62）不带 `patch`，永远只收到 `changed:false` 或全量，
+        不会因为不认识 `patch` 形状而把页面刷空。
+        服务端按 ver 缓存快照，只回「变化的叶子路径 → 新值」；结构变化
+        （增删任务 / 阶段链新增节点）或变化落在配置类顶层时，一律回全量。
         """
+        want_patch = str(patch or "").strip().lower() in ("1", "true", "yes", "on")
         now = time.time()
         heavy = getattr(self, "_status_heavy", None)
         warming = False
@@ -670,4 +741,25 @@ class StatusMixin:
         # ★ 出口过「唯一脱敏闸」（common.redact_secrets）：凭据只回 `***` + `<key>_set`。
         #   本方法同时被 agentledger 的 /agent/overview、/agent/settings 复用（那边再过 `_agent_ok`），
         #   两处都**不需要**明文 —— 内部逻辑一律直接读 `self._iyuu_token` 等内存字段，不读出口。
-        return Response(success=True, data=redact_secrets(data))
+        payload = redact_secrets(data)
+        etag = payload_ver(payload, drop_keys=self._STATUS_VER_DROP)
+        # 顺序要紧：etag 必须在**塞 ver 之前**取，否则下次指纹又变了，永远 changed。
+        # ★ 19.12.63：快照登记必须放在**任何 return 之前**。稳定期（ver == etag）
+        #   占了绝大多数轮询，如果那时提前 return 而不登记，等数据真变化时客户端
+        #   带来的旧 ver 在缓存里根本没有基准 → 只能回全量，差分永远不生效。
+        if want_patch:
+            leaves = payload_leaves(payload, drop_keys=self._STATUS_VER_DROP)
+            base = self._status_snap(str(ver or ""), etag, leaves)
+            if ver and ver == etag:
+                return Response(success=True, data={"changed": False, "ver": etag})
+            # warming 期间是轻量壳，结构和全量差一大截，绝不发补丁
+            if base is not None and not warming:
+                diff = payload_patch(base, leaves)
+                if diff and self._status_patch_ok(diff):
+                    return Response(success=True, data={
+                        "changed": True, "ver": etag, "patch": diff,
+                    })
+        elif ver and ver == etag:
+            return Response(success=True, data={"changed": False, "ver": etag})
+        payload["ver"] = etag
+        return Response(success=True, data=payload)

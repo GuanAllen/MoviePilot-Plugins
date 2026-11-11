@@ -1396,22 +1396,34 @@ class TagsMixin:
         if not host:
             _m = re.search(r"([a-z0-9.-]+\.[a-z]{2,})", trk.lower()) if trk else None
             host = _m.group(1) if _m else ""
-        if not host and hash_string:  # ③ 逐 hash 兜底（qB tracker 字段常为空）
+        # ★ 19.12.54：空 tracker 时看「全部 announce 域名」，任一命中已知站点即可。
+        #   首公告常是历史域名（财神 cspt.cc），只认第一个会把本站种判成外站。
+        hosts = [host] if host else []
+        if not hosts and hash_string:  # ③ 逐 hash 兜底（qB tracker 字段常为空）
             try:
-                host = str(self._get_downloader().tracker_domain(hash_string) or "")
+                _dl = self._get_downloader()
+                _all = getattr(_dl, "tracker_domains", None)
+                if callable(_all):
+                    hosts = [str(x or "").strip().lower()
+                             for x in (_all(hash_string) or []) if str(x or "").strip()]
+                else:
+                    _one = str(_dl.tracker_domain(hash_string) or "").strip().lower()
+                    hosts = [_one] if _one else []
             except Exception:  # noqa: BLE001
-                host = ""
-        if host:
+                hosts = []
+        if hosts:
             try:
                 for it in self._list_sites() or []:
                     d = str((it or {}).get("domain") or "").lower().strip()
                     nm = str((it or {}).get("name") or "")
-                    if d and nm and (d.split(":")[0] in host or host in d):
+                    if d and nm and any(
+                            d.split(":")[0] in hd or hd in d for hd in hosts):
                         return nm, d
             except Exception:  # noqa: BLE001
                 pass
-        # ④ 实在认不出来：用 tracker 域名当站点名（比空好，且不丢信息）
-        return (host, host) if host else ("", "")
+        # ④ 实在认不出来：用首个公告域名当站点名（比空好，且不丢信息）
+        _fallback = hosts[0] if hosts else ""
+        return (_fallback, _fallback) if _fallback else ("", "")
 
     def _magicize_scope(self, snap: Dict[str, Any], *, site_filter: str = "") -> Dict[str, List[str]]:
         """圈出「非魔流」种：一个**能认出来的**魔流标签都没有；按资源组归桶。

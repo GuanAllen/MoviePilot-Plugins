@@ -402,7 +402,7 @@ function trendItemsOf(sc) {
 }
 const {
   trendOpen, trendScope, trendId, trendHours, trendLoading, trendWhy, trendDaily,
-  trendScopeItems, loadTrendReport, openTrend,
+  trendUploadIncrement, trendScopeItems, loadTrendReport, openTrend,
 } = useTrend({ api, notify, itemsOf: trendItemsOf })
 function openTrendDialog() {
   // 默认站点口径：站点由站点监控每轮采样，一定有点可看；任务口径可从弹窗里切。
@@ -2248,6 +2248,7 @@ onUnmounted(() => {
         <main v-if="selectedTask" class="magicflow-workspace">
           <section class="magicflow-task-head">
             <VBtn
+              v-if="!isNarrow"
               class="magicflow-task-head__back"
               variant="text"
               size="small"
@@ -2384,6 +2385,7 @@ onUnmounted(() => {
                 @update:scope="v => (opsKind = v)"
                 @refresh="loadOperations(selectedTaskId)"
                 @toggle-detail="toggleOpDetail"
+                @open-pushes="openPushAudit"
               />
             </VWindowItem>
 
@@ -3082,6 +3084,7 @@ onUnmounted(() => {
       :daily="trendDaily"
       :loading="trendLoading"
       :scope-items="trendScopeItems"
+      :upload-increment="trendUploadIncrement"
       :narrow="isNarrow"
       @refresh="loadTrendReport"
     />

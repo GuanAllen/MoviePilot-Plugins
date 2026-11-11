@@ -62,6 +62,7 @@ from ..common import (
     task_is_participating,
 )
 from ..sitestore import get_site_store, slot_callbacks
+from ..sites.rules import span_hours
 
 
 class CrossSeedMixin:
@@ -262,10 +263,8 @@ class CrossSeedMixin:
     def _crossseed_seed_window_hours(self, domain: str) -> float:
         """站点 H&R 的**考核窗口**（小时）：多久之内要做满 ``seed_need_hours``；取不到 → 0。
 
-        取值链（高 → 低）：
-          ① 规则库 ``seed_window_hours``（探测时从原文「10 天内做种 20 小时」拆出来的窗口）；
-          ② 规则库 ``seed_hours``（保护期长，如学校 240h，本身就含窗口语义）。
-        ★ 17.2.2：不再回退内置表（内置表 = 出厂建议，不自动生效）。
+        唯一读点 = ``sites.rules.span_hours``（``seed_window_hours`` + 旧键回退）。
+        ★ 17.2.2：不回退内置表（内置表 = 出厂建议，不自动生效）。
         """
         dom = str(domain or "").strip().lower()
         dom = re.sub(r"^https?://", "", dom).split("/")[0].strip()
@@ -273,18 +272,36 @@ class CrossSeedMixin:
             rec = dict(self._site_rules().get(dom) or {})
         except Exception:  # noqa: BLE001
             rec = {}
-        for key in ("seed_window_hours", "seed_hours"):
-            try:
-                val = float(rec.get(key) or 0.0)
-            except (TypeError, ValueError):
-                val = 0.0
-            if val > 0:
-                return val
-        # ★ 17.2.2：同 ``_crossseed_seed_need_hours`` —— 考核窗口也是**站点级阈值结论**，
-        #   不回退内置表（内置表只是出厂建议，不自动生效）。
-        return 0.0
+        val = span_hours(rec) or 0.0
+        return val if val > 0 else 0.0
 
     def _crossseed_hr_decision(
+        self, domain: str, torrent_hr: Any = None
+    ) -> Tuple[bool, float, str]:
+        """★ 任务 121：跨站不再自己算 H&R —— 转发唯一判定 ``hrjudge.judge``。
+
+        这里问的是「**这笔债该不该有**」（种子刚 add、progress=0，账本里还没有
+        这张账单），所以走 ``skip_bill=True`` 这条与开账同源的路：只看站点规则
+        和种子标记。之后的保护/删除全部改问账本，不再走这里。
+
+        返回保持旧三元组 ``(是否保护, 工时, 来源说明)``，调用点无需改动。
+        """
+        try:
+            from .hrjudge import judge  # noqa: WPS433
+            v = judge(self, str(domain or "").strip().lower(), None,
+                      hr_flag=(True if torrent_hr is True else None),
+                      skip_bill=True)
+            if v.state == "owe":
+                return True, float(v.need_hours or 0.0) or 24.0, str(v.reason or "judge")
+            if v.state == "clear":
+                return False, 0.0, str(v.reason or "judge")
+            if v.state == "unknown":
+                return True, 24.0, "未探明(保守保护)/%s" % (v.reason or "")
+            return False, 0.0, str(v.reason or "judge")
+        except Exception:  # noqa: BLE001
+            return self._crossseed_hr_decision_legacy(domain, torrent_hr)
+
+    def _crossseed_hr_decision_legacy(
         self, domain: str, torrent_hr: Any = None
     ) -> Tuple[bool, float, str]:
         """★ H&R 判定优先级：**种子里有 H&R 信息 → 以种子为准；没有 → 兜底站点规则库**。
@@ -1106,10 +1123,13 @@ class CrossSeedMixin:
             "task_id": str(rec.get("task_id") or ""),
             "task_name": str(rec.get("task_name") or ""),
         })
-        # ★ 19.10.11：**下完那一刻直接开 H&R 账单** —— 与刷流 / 音乐 / 点播同口径。
+        # ★ 19.10.11：**下完那一刻 H&R 义务成立** —— 与刷流 / 音乐 / 点播同口径。
         #   旧形态是来源份自己算工时（`seeded_sec` vs `hours`），与账单 `seeded_h` 同源
         #   却各存一份快照 → 站点规则一改两份就漂（第 2 档说还在保护、第 4 档说早该结清）。
         #   现在义务判定只剩一处：`_hrbills_tick` 的 pending→active→settled。
+        # ★ 任务 128：账**不是在这里开的** —— 加种时（`_crossseed_start` 传 site_domain +
+        #   hit_and_run）就已开成 pending。这里 `crossseed=True` 只做提升：门2 发现已存在
+        #   pending → `_hrbills_promote_crossseed` 改 active 并重置 opened_at。
         #   开不出账（规则库明确无 H&R / 逐种站这颗没标）不是错误：说明来源站不欠工时，
         #   但保护登记仍保留 —— `_crossseed_source_hashes` 只在**账单结清**时才放行。
         try:
@@ -1124,7 +1144,7 @@ class CrossSeedMixin:
             self._log(f"跨站:来源份开 H&R 账单失败 {h[:12]}:{err}", "warning")
         self._log(
             f"跨站:H&R 保护 {rec.get('site_b', '') or dom} 「{str(rec.get('title') or '')[:50]}」"
-            f" → 已开 H&R 账单（{hours:g}h，工时挂够自动放行；期内任何任务不得删/改）"
+            f" → 已进入 H&R 账本（{hours:g}h，工时挂够自动放行；期内任何任务不得删/改）"
         )
 
     def _crossseed_guard(self) -> Dict[str, Any]:
@@ -1329,10 +1349,22 @@ class CrossSeedMixin:
         if _gkeys and self._dup_claim(task.id, keys=_gkeys):
             self._log(f"跨站:跳过·重复资源（其它任务已下载/在飞）:{cand.title}")
             return None
+        # ★ 任务 128：开账所需的两样信息**只在加种这一刻拿得到**，必须先算好再交给钩子 ——
+        #   ① ``site_domain``：来源站真实域名（下完只能靠 tag / fingerprint 反推，跨站 tag
+        #      是通用的 ``CROSSSEED_TAG``，推不准）；
+        #   ② ``hit_and_run``：逐种标记只在搜索行里，种进了 qB（``TorrentInfo``）就没这个字段。
+        #   以前这两样要到下完 ``_crossseed_protect_source`` 才用上，于是跨站成了唯一
+        #   「加种不开账、下完才补开」的入口。现在提前算好、随加种交给同一套开账逻辑，
+        #   四个入口口径一致。判定本身无副作用（``_crossseed_hr_decision`` 是纯规则查询）。
+        _b_dom = str(src.get("site_domain") or "").strip().lower()
+        _t_hr = getattr(src.get("row"), "hit_and_run", None)
+        _hr_flag, _hr_use, _hr_origin = self._crossseed_hr_decision(_b_dom, _t_hr)
         hs, err = downloader.add_torrent(
             content=sib_bytes,
             download_dir=task.save_path or "",
             tag=CROSSSEED_TAG,
+            site_domain=_b_dom,
+            hit_and_run=bool(_hr_flag),
         )
         if not hs:
             self._log(f"跨站:在他站 {sname} 添加失败:{cand.title}({err or '未知'})", "warning")
@@ -1346,10 +1378,7 @@ class CrossSeedMixin:
         except Exception:  # noqa: BLE001
             _fp = ""
         # ★ 流量兜底基线：记下来源站此刻的下载量（后结增量超阈值 = 其实不免费）
-        _b_dom = str(src.get("site_domain") or "").strip().lower()
-        # ★ 种子里有 H&R 信息 → 以种子为准；没有 → 兜底站点规则库（见 _crossseed_hr_decision）
-        _t_hr = getattr(src.get("row"), "hit_and_run", None)
-        _hr_flag, _hr_use, _hr_origin = self._crossseed_hr_decision(_b_dom, _t_hr)
+        #   ``_b_dom`` / ``_t_hr`` / ``_hr_flag`` 已在加种前算好（见上方任务 128 注释），此处不再重算。
         _hr_hours, _hr_src = _hr_use, _hr_origin
         if not _hr_flag:
             self._log(

@@ -29,14 +29,42 @@ _NEXUS = "nexusphp"
 
 RULES_KEY = "site_rules"
 
+# ============================================================
+# 站点的「期限」只有**一个**数：多久之内要做满 need_hours。
+# 历史上有两个键指向同一个数（旧 seed_hours → 新 seed_window_hours），
+# 值恒等（见下方字段说明），当年为了向后兼容两边都写着，结果每个读点都要写一遍
+# 「window → seed_hours」的回退链，越写越乱。这里收成**唯一读点**：
+#   写 → 只写 seed_window_hours；读 → 一律走 span_hours()，旧记录照样读得出。
+# ============================================================
+SPAN_KEY = "seed_window_hours"
+SPAN_LEGACY_KEYS = ("seed_hours",)
+
+
+def span_hours(rec: Optional[Dict[str, Any]]) -> Optional[float]:
+    """从一条站点规则取「期限(h)」：``seed_window_hours`` → 旧键 ``seed_hours``。
+
+    取不到（无记录 / 两键都空 / 值不可解析）→ ``None``（未知，由调用方兜底）。
+    **任何地方要读期限都必须经过这里**，不要再自己写回退链。
+    """
+    r = rec if isinstance(rec, dict) else {}
+    for key in (SPAN_KEY,) + tuple(SPAN_LEGACY_KEYS):
+        raw = r.get(key)
+        if raw is None or raw == "":
+            continue
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            continue
+    return None
+
 
 # ============================================================
 # 内置已知规则（人工核对过的「常识」，可被 probe / manual 覆盖）
 # ============================================================
 # 字段说明：
 #   hr          : 是否有 H&R 制度（None = 未知）
-#   seed_hours        : 达标期限(h)——站点给的完成期限;保守取下,同句同时抓到「N天」和「M小时」时取 N×24
-#   seed_window_hours : 达标期限(h)——同上,显式窗口列;与 seed_hours 同义,优先读它
+#   seed_window_hours : 达标期限(h)——多久之内要做满 seed_need_hours;同句同时抓到「N天」和「M小时」时取 N×24
+#                       ★ 唯一期限字段。旧键 seed_hours 与它同义、已停写，只在 span_hours() 里做旧数据回退。
 #   seed_need_hours   : 义务工时(h)——站点要求做满的小时数;结清判定与 need_h 同口径
 #   exam_avg_hours    : 考核均值(h)——新手考核的平均做种要求,**不是** H&R,不进账单
 #   seed_cap    : 同时在册做种数上限（None = 未知/不限）
@@ -46,20 +74,20 @@ BUILTIN_RULES: Dict[str, Dict[str, Any]] = {
         "hr": True,
         # 保守：按**规则窗口**保护（10 天），而不是最低做种线（20h）。
         # 因为我们的账本按「墙钟」计时，暂停/无 peer 时墙钟≠实际做种时长。
-        "seed_hours": 240.0,
+        "seed_window_hours": 240.0,
         "seed_need_hours": 20.0,
         "seed_cap": None,
         "note": "学校：10 天内做种≥20 小时（rules.php 原文）；达标期限取满窗口 10 天（保守）",
     },
     "ptcafe.club": {
         "hr": False,
-        "seed_hours": 0.0,
+        "seed_window_hours": 0.0,
         "seed_cap": None,
         "note": "咖啡：**无 H&R**（rules.php 无 H&R 条款，主人确认）。另有「撤种规定」(≤10集 10 天 / 10-50集 15 天 / >50集 1 个月) 与随机促销 90% FREE、>20GB 自动免费。",
     },
     "hdfans.org": {
         "hr": True,
-        "seed_hours": 24.0,
+        "seed_window_hours": 24.0,
         "seed_cap": None,
         "note": "红豆饭：有 H&R（默认按义务工时 24h 保守，待探测核实）",
     },
@@ -67,13 +95,13 @@ BUILTIN_RULES: Dict[str, Dict[str, Any]] = {
         "hr": False,
         # ★ 主人 2026-09-28 06:08 确认：财神 **没有 H&R**。
         #   （之前 probe(myhr.php/rules.php) 抓不到条款 → 一直按未知保守 24h，现改为明确「无 H&R」。）
-        "seed_hours": 0.0,
+        "seed_window_hours": 0.0,
         "seed_cap": None,
         "note": "财神：**无 H&R**（主人确认）→ 不做 H&R 义务工时保护、不计欠 H&R。",
     },
     "cspt.cc": {
         "hr": False,
-        "seed_hours": 0.0,
+        "seed_window_hours": 0.0,
         "seed_cap": None,
         "note": "财神（备用域名 cspt.cc）：同 cspt.top，**无 H&R**。",
     },
@@ -81,7 +109,7 @@ BUILTIN_RULES: Dict[str, Dict[str, Any]] = {
     #   站点级无法评估具体种子的标记 ⇒ 补源（站点级预筛）必须**保守排除**。
     "yemapt.org": {
         "hr": False,
-        "seed_hours": None,
+        "seed_window_hours": None,
         "seed_cap": None,
         "per_torrent_hr": True,
         "note": "野马PT：**无站点级 H&R**；H&R 由**发布者逐种开关**（openApi `hrPunishEnable`），"
@@ -91,14 +119,14 @@ BUILTIN_RULES: Dict[str, Dict[str, Any]] = {
     },
     "www.yemapt.org": {
         "hr": False,
-        "seed_hours": None,
+        "seed_window_hours": None,
         "seed_cap": None,
         "per_torrent_hr": True,
         "note": "野马PT（别名域名 www.）：同 yemapt.org，无站点级 H&R、H&R 逐种开关 ⇒ 补源禁用。",
     },
     "kp.m-team.cc": {
         "hr": False,
-        "seed_hours": None,
+        "seed_window_hours": None,
         "seed_cap": None,
         "note": "馒头：**无 H&R**（官方 wiki 规则页 0 处提及，2026-09-29 全站扫描确认）；"
                 "**无做种数上限**。曾误记的「100」出自官方魔力公式参数 ``torrentMsSum``"
@@ -106,7 +134,7 @@ BUILTIN_RULES: Dict[str, Dict[str, Any]] = {
     },
     "m-team.cc": {
         "hr": False,
-        "seed_hours": None,
+        "seed_window_hours": None,
         "seed_cap": None,
         "note": "馒头（备用域名）：同 kp.m-team.cc，无 H&R、无做种数上限。",
     },
@@ -120,12 +148,12 @@ BUILTIN_RULES: Dict[str, Dict[str, Any]] = {
 #   · **类型级只提供「怎么读」+ 兜底默认**，永远**不给站点阈值结论**——
 #     同一框架下站点差异很大（财神明确无 H&R，而其它 NexusPHP 站有；学校 20h vs 红豆饭 24h）。
 #   · 阈值结论（有无 H&R / 义务工时 / 达标期限 / 上限）一律**站点级**（探测或手填）。
-#   · 兜底默认里 ``hr/seed_hours/...`` 一律 **None = 未知**，交给既有「未知保守」逻辑，
+#   · 兜底默认里 ``hr/seed_window_hours/...`` 一律 **None = 未知**，交给既有「未知保守」逻辑，
 #     因此**不改变任何既有行为**，只是把「未知」这层写明白、可看。
 FRAMEWORK_RULE_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "nexusphp": {
         "hr": None,
-        "seed_hours": None,
+        "seed_window_hours": None,
         "seed_need_hours": None,
         "seed_cap": None,
         "probe_paths": ("myhr.php", "rules.php"),
@@ -134,7 +162,7 @@ FRAMEWORK_RULE_DEFAULTS: Dict[str, Dict[str, Any]] = {
     },
     "gazelle": {
         "hr": None,
-        "seed_hours": None,
+        "seed_window_hours": None,
         "seed_need_hours": None,
         "seed_cap": None,
         "probe_paths": ("rules.php", "wiki.php"),
@@ -143,7 +171,7 @@ FRAMEWORK_RULE_DEFAULTS: Dict[str, Dict[str, Any]] = {
     },
     "unit3d": {
         "hr": None,
-        "seed_hours": None,
+        "seed_window_hours": None,
         "seed_need_hours": None,
         "seed_cap": None,
         "probe_paths": ("rules", "pages/1"),
@@ -151,7 +179,7 @@ FRAMEWORK_RULE_DEFAULTS: Dict[str, Dict[str, Any]] = {
     },
     "mteam": {
         "hr": None,
-        "seed_hours": None,
+        "seed_window_hours": None,
         "seed_need_hours": None,
         "seed_cap": None,
         "probe_paths": ("rules.php",),
@@ -159,7 +187,7 @@ FRAMEWORK_RULE_DEFAULTS: Dict[str, Dict[str, Any]] = {
     },
     "custom": {
         "hr": None,
-        "seed_hours": None,
+        "seed_window_hours": None,
         "seed_need_hours": None,
         "seed_cap": None,
         "probe_paths": ("rules.php", "myhr.php"),
@@ -167,7 +195,7 @@ FRAMEWORK_RULE_DEFAULTS: Dict[str, Dict[str, Any]] = {
     },
     "unknown": {
         "hr": None,
-        "seed_hours": None,
+        "seed_window_hours": None,
         "seed_need_hours": None,
         "seed_cap": None,
         "probe_paths": ("rules.php", "myhr.php"),
@@ -272,7 +300,7 @@ def parse_hr_generic(html_text: str, framework: str = "unknown") -> Dict[str, An
         if hours is None or not _seed_re.search(seg):
             continue
         out["hr"] = True
-        out["seed_hours"] = float(hours)
+        out["seed_window_hours"] = float(hours)
         out["evidence"] = seg[:120]
         out["confidence"] = "medium" if need_re.search(seg) else "low"
         break
@@ -422,12 +450,12 @@ def parse_hr_from_html(html_text: str) -> Dict[str, Any]:
     """从站点页面文本里尽力解析 H&R 规则（**保守 + 分级可信度**）。
 
     Returns:
-        ``{"hr": bool|None, "seed_hours": float|None, "confidence": "high"|"low",
+        ``{"hr": bool|None, "seed_window_hours": float|None, "confidence": "high"|"low",
            "seed_cap": int|None, "evidence": str, "hits": int}``
 
     规则：
       * ``hr``：出现 H&R 关键词 → True（站点有 H&R 制度）；否则看「做种…小时」句式 → True；都没有 → None。
-      * ``seed_hours`` **只在 ``confidence="high"`` 时可信**：
+      * ``seed_window_hours`` **只在 ``confidence="high"`` 时可信**：
         - 同一句里既有 H&R/做种 关键词，又有明确的「必须/至少/需」+ 小时数；
         - 且该句**不含**考核/达标/魔力/上传者/发布者/每月 等排除词（那些是别处的数字）。
         - 解析到的值 > 336h（14 天）一律降级为 low（H&R 极少要求挂两周以上，
@@ -435,7 +463,7 @@ def parse_hr_from_html(html_text: str) -> Dict[str, Any]:
       * ``confidence="low"`` 的值**只作展示证据**，不参与生效时长计算。
     """
     out: Dict[str, Any] = {
-        "hr": None, "seed_hours": None, "confidence": "low",
+        "hr": None, "seed_window_hours": None, "confidence": "low",
         "seed_cap": None, "evidence": "", "hits": 0,
         "exam_avg_hours": None,
         "seed_need_hours": None, "seed_window_hours": None,
@@ -506,11 +534,11 @@ def parse_hr_from_html(html_text: str) -> Dict[str, Any]:
         out["hr"] = True
     out["hits"] = hits
     if best_high is not None:
-        out["seed_hours"] = float(best_high)
+        out["seed_window_hours"] = float(best_high)
         out["confidence"] = "high"
         out["evidence"] = ev_high[:300]
     elif best_low is not None:
-        out["seed_hours"] = float(best_low)
+        out["seed_window_hours_seen"] = float(best_low)
         out["confidence"] = "low"
         out["evidence"] = ev_low[:300]
     elif ev_low or ev_high:
@@ -575,7 +603,7 @@ class SiteRules:
     记录形如::
 
         {"domain": "pt.btschool.club", "site_id": 1, "name": "学校",
-         "hr": true, "seed_hours": 10.0, "seed_cap": null,
+         "hr": true, "seed_window_hours": 10.0, "seed_cap": null,
          "source": "probe", "updated": 1758000000,
          "evidence": "...", "note": "..."}
     """
@@ -688,13 +716,10 @@ class SiteRules:
                 out["exam_avg_hours"] = (probed or {}).get("exam_avg_hours")
                 if (probed or {}).get("exam_evidence"):
                     out["exam_evidence"] = (probed or {}).get("exam_evidence")
-            val = (probed or {}).get("seed_hours")
-            if val is not None and conf == "high":
-                out["seed_hours"] = val
-            elif val is not None:
-                # 低可信：只留证据，不参与生效时长（宁保守勿乐观）
-                out["seed_hours_seen"] = val
-                out.pop("seed_hours", None)
+            # 期限已在上面的 ``seed_window_hours`` 并入；旧键 seed_hours 只做清理，不再写。
+            out.pop("seed_hours", None)
+            if out.get("seed_window_hours") is None and probed.get("seed_window_hours_seen") is not None:
+                out["seed_window_hours_seen"] = probed.get("seed_window_hours_seen")
         if not manual:
             # ★ 3.41.0：来源以「探测结果自带来源」为准（欢迎短讯链路 = ``welcome``），不要硬写 probe
             out["source"] = str((probed or {}).get("source") or "probe")
@@ -731,7 +756,7 @@ class SiteRules:
         except Exception:  # noqa: BLE001
             fw = "unknown"
         dflt = framework_rule_defaults(fw)
-        rec = {k: dflt.get(k) for k in ("hr", "seed_hours", "seed_need_hours", "seed_cap")}
+        rec = {k: dflt.get(k) for k in ("hr", "seed_window_hours", "seed_need_hours", "seed_cap")}
         rec["framework"] = fw
         rec["note"] = dflt.get("note", "")
         return self.put(d, rec, source="framework")
@@ -749,12 +774,14 @@ class SiteRules:
             src = str(r.get("source") or "")
             if src in HR_TRUSTED_SOURCES:
                 continue
-            if r.get("hr") is None and r.get("seed_hours") is None:
+            _span = span_hours(r)
+            if r.get("hr") is None and _span is None:
                 continue
             if r.get("hr") is not None:
                 r["hr"] = None
-            if r.get("seed_hours") is not None:
-                r["seed_hours_retired"] = r.get("seed_hours")
+            if _span is not None:
+                r["seed_hours_retired"] = _span
+                r["seed_window_hours"] = None
                 r["seed_hours"] = None
             r["hr_src"] = "retired"
             note = str(r.get("note") or "").strip()
@@ -880,7 +907,15 @@ class SiteRules:
                     rec = dict(v or {})
                     break
         src = str(rec.get("source") or "")
-        h = rec.get("seed_hours")
+        # ★ 19.12.44：记录**明确**「无 H&R 且 0 小时」→ 生效就是 0，不回落全局默认。
+        #   踩过：内置表 ptcafe/cspt 是 {hr: False, 期限: 0}，但下面「内置表不参与
+        #   生效时长」把 0 吞掉 → 「恢复为内置判定」后保种时长从 0 静默跳到 24h，
+        #   用户看到的是「恢复把无 H&R 站变成按 24h 保护」。
+        #   只认「显式 0」；期限=None（welcome / 逐种 H&R 站）仍走默认，保持保守。
+        script_span = span_hours(rec)
+        if rec.get("hr") is False and script_span is not None and script_span <= 0:
+            return 0.0, src or "store"
+        h = script_span
         if h is not None and src not in HR_TRUSTED_SOURCES:
             h = None            # ★ 3.41.0：非权威来源的保种时长不参与生效
         if h is not None and src == "probe" and str(rec.get("confidence") or "") != "high":

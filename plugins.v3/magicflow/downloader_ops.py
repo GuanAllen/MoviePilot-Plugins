@@ -72,6 +72,38 @@ def _tracker_domain_store(cache: Dict[str, Tuple[float, str]], h: str, ts: float
         pass
 
 
+# ★ 19.12.54：hash -> (ts, 全部 announce 域名)。与上面「首域名」缓存分开，
+#   互不污染 ``tracker_domain()`` 的契约与 tools/test_tracker_cache.py 断言。
+_TRACKER_DOMAINS_KEY = "tracker_domains_cache"
+_TRACKER_DOMAINS_CACHE: Dict[str, Tuple[float, Tuple[str, ...]]] = {}
+
+
+def _tracker_domains_cache() -> Dict[str, Tuple[float, Tuple[str, ...]]]:
+    """取/建「hash → (ts, 全部公告域名)」缓存（跨热重载共享的进程级单例）。"""
+    try:
+        from .persistence import _shared  # noqa: PLC0415
+        sh = _shared()
+        with sh.lock:
+            cache = sh.singletons.get(_TRACKER_DOMAINS_KEY)
+            if not isinstance(cache, dict):
+                cache = {}
+                sh.singletons[_TRACKER_DOMAINS_KEY] = cache
+        return cache
+    except Exception:  # noqa: BLE001
+        return _TRACKER_DOMAINS_CACHE
+
+
+def _tracker_domains_store(cache, h: str, ts: float, hosts) -> None:
+    """写「全部域名」缓存 + 同样的软上限淘汰。"""
+    try:
+        if len(cache) >= _TRACKER_DOMAIN_MAX and h not in cache:
+            for k in sorted(cache, key=lambda k: cache[k][0])[: len(cache) // 2]:
+                cache.pop(k, None)
+        cache[h] = (ts, tuple(hosts or ()))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # ---------------------------------------------------------------------------
 # ★ 删除闸门安装器 / fail-closed 策略（Master 2026-10-05「删除令出一门」补洞）
 #   - set_gate_installer(fn)：注册「适配器一构造就自动挂闸门」的进程级安装器。
@@ -1053,6 +1085,43 @@ class DownloaderAdapter:
                 return host
         _tracker_domain_store(_cache, h, _now, "")
         return ""
+
+    def tracker_domains(self, hash_string: str) -> List[str]:
+        """★ 19.12.54：返回该种子的**全部**有效 announce 域名（保序去重、去前缀）。
+
+        qB 对暂停种的 ``tracker`` 字段常为空，而 ``torrents_trackers`` 的首公告
+        可能是站点**历史域名**：财神实测首 ``tracker.cspt.cc``、次 ``tracker.cspt.top``。
+        旧 ``tracker_domain()`` 只取第一个就 return → 同站判定把它认成外站
+        （26 颗静默种连 ``_adopt_same_site`` 的 matched 都进不去）。
+        同站归属应看「**任一**公告属于本站」，故新增本方法；
+        ``tracker_domain()`` 的语义与缓存结构一律不动，旧调用方零回归。
+        """
+        h = str(hash_string or "").strip().lower()
+        if not h:
+            return []
+        _cache = _tracker_domains_cache()
+        _now = time.time()
+        _hit = _cache.get(h)
+        if _hit and (_now - _hit[0]) < _TRACKER_DOMAIN_TTL:
+            return list(_hit[1])
+        hosts: List[str] = []
+        try:
+            rows = self._qb_call("torrents_trackers", torrent_hash=h) or []
+        except Exception:  # noqa: BLE001
+            rows = []
+        for x in rows:
+            url = str((x or {}).get("url") or "")
+            if not url or url.startswith("**"):
+                continue
+            m = re.search(r"https?://([^/]+)", url)
+            host = (m.group(1) if m else url).lower().split(":")[0]
+            for pre in ("tracker.", "www."):
+                if host.startswith(pre) and len(host) > len(pre) + 3:
+                    host = host[len(pre):]
+            if host and host not in hosts:
+                hosts.append(host)
+        _tracker_domains_store(_cache, h, _now, tuple(hosts))
+        return hosts
 
     def get_torrents_by_tag(self) -> Tuple[Dict[str, List[TorrentInfo]], Optional[str]]:
         """**一次**拉取全部种子，按标签分组返回：tag -> [TorrentInfo]。

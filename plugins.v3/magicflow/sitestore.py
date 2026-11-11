@@ -561,12 +561,13 @@ class SiteStore:
                     cols = rec_to_site_columns(dom, rec, now)
                     row = _find_site_row(sess, dom)
                     if row is None:
-                        row = mfdb.SiteRow(
-                            site_id=self._next_site_id(sess),
-                            domain=dom,
-                            created=now,
-                        )
-                        sess.add(row)
+                        # ★ 19.12.53：MP 里认不出这个域名 → **不建行**（幽灵站根因）
+                        mid = self._mp_id_for(domain=dom)
+                        if not mid:
+                            continue
+                        row = self._new_site_row(sess, mid, domain=dom, name=dom, now=now)
+                        if row is None:
+                            continue
                     for k, v in cols.items():
                         if k != "domain":
                             setattr(row, k, v)
@@ -582,16 +583,88 @@ class SiteStore:
             if lock is not None:
                 lock.release()
 
-    def _next_site_id(self, sess: Any) -> int:
-        from sqlalchemy import func, select
+    # ---------------------------------------------------------- 19.12.53：身份收敛
+    def _mp_sites_index(self) -> Dict[int, Dict[str, str]]:
+        """MP **当前**站点表 ``{id: {name, domain}}``；读不到返回 ``{}``（判不出就不建行）。
 
+        真值源优先 ``SiteOper().list()``（与 ``SiteGuard.mp_sites`` / 删站事件回查同源，
+        就是 ``public.site`` 全表）；拿不到才退到 ``SitesHelper().get_indexers()``。
+        两者都拿不到返回 ``{}`` —— **判不出就不建行**。
+        """
+        rows = None
         try:
-            top = sess.execute(
-                select(func.max(mfdb.SiteRow.site_id))
-            ).scalar()
+            from app.db.oper.site import SiteOper
+            rows = SiteOper().list() or []
         except Exception:  # noqa: BLE001
-            top = None
-        return int(top or 0) + 1
+            rows = None
+        out: Dict[int, Dict[str, str]] = {}
+        if rows is not None:
+            for it in rows:
+                try:
+                    mid = int(getattr(it, "id", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if mid > 0:
+                    out[mid] = {"name": str(getattr(it, "name", "") or ""),
+                                "domain": str(getattr(it, "domain", "") or "")}
+            if out:
+                return out
+        try:
+            from app.sdk.network import SitesHelper
+            items = SitesHelper().get_indexers() or []
+        except Exception:  # noqa: BLE001
+            return {}
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            try:
+                mid = int(it.get("id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if mid > 0:
+                out[mid] = {"name": str(it.get("name") or ""),
+                            "domain": str(it.get("domain") or "")}
+        return out
+
+    def _mp_id_for(self, *, domain: str = "", name: str = "") -> Optional[int]:
+        """域名/站名 → MP 站点 id（**唯一发号入口**）。查不到返回 ``None`` → 调用方跳过。
+
+        ★ 19.12.53：``mf_site`` 已降级为「以 MP id 为主键的属性表」，不再有自己的编号。
+          过去 ``max(site_id)+1`` 会回收旧号、按域名「确保有行」会造无主行（20/21），
+          两者都是幽灵站的根因。现在没有 MP 权威 id 就**一字不写**。
+        """
+        dom = _norm_domain(domain)
+        nm = str(name or "").strip().lower()
+        if not dom and not nm:
+            return None
+        for mid, rec in self._mp_sites_index().items():
+            d = _norm_domain(rec.get("domain"))
+            if dom and d and (d == dom or d.endswith("." + dom) or dom.endswith("." + d)):
+                return mid
+            if nm and str(rec.get("name") or "").strip().lower() == nm:
+                return mid
+        return None
+
+    def _new_site_row(self, sess: Any, mp_id: Any, *, domain: Any = None,
+                      name: Any = None, now: Any = None, **extra: Any) -> Any:
+        """★ 全插件唯一建行入口：``site_id == mp_site_id == MP 站点 id``。
+
+        没有权威 id 一律返回 ``None``；调用方必须判空。**禁止**再写 ``site_id=max+1``。
+        """
+        try:
+            mid = int(mp_id or 0)
+        except (TypeError, ValueError):
+            return None
+        if mid <= 0:
+            return None
+        row = mfdb.SiteRow(
+            site_id=mid, mp_site_id=mid, domain=domain,
+            name=name or domain, created=now or _now(),
+        )
+        for k, v in extra.items():
+            setattr(row, k, v)
+        sess.add(row)
+        return row
 
     # ---------------------------------------------------------- site_caps / override
     def _get_site_caps(self) -> Dict[str, Any]:
@@ -656,12 +729,13 @@ class SiteStore:
                         continue
                     row = _find_site_row(sess, dom)
                     if row is None:
-                        row = mfdb.SiteRow(
-                            site_id=self._next_site_id(sess),
-                            domain=dom,
-                            created=now,
-                        )
-                        sess.add(row)
+                        # ★ 19.12.53：同上，没有 MP 权威 id 就不建行
+                        mid = self._mp_id_for(domain=dom)
+                        if not mid:
+                            continue
+                        row = self._new_site_row(sess, mid, domain=dom, name=dom, now=now)
+                        if row is None:
+                            continue
                     elif row.domain != dom:
                         # ★ 19.7.96：历史行存的是 ``www.`` 形态 → 就地收敛，防止同一站两行
                         row.domain = dom
@@ -848,12 +922,22 @@ class SiteStore:
                     row.deleted_at = None
                     row.deleted_reason = None
                 return row
-        row = mfdb.SiteRow(
-            site_id=self._next_site_id(sess), domain=dom or None,
-            name=(info.get("name") or dom or f"site:{sid}"), created=now,
+        # ★ 19.12.53：建行必须有 MP 权威 id。
+        #   ``prefer="mp_site_id"`` → 调用方给的就是 MP id（属性槽的键本来就是 MP 口径）。
+        #   ``prefer="iyuu_sid"``  → 只有 IYUU 号，先按域名/真名反查 MP；查不到就返回 None，
+        #                          由调用方跳过（IYUU 是外部索引的编号，不是站点身份）。
+        if prefer == "mp_site_id":
+            mid = int(sid)
+        else:
+            mid = self._mp_id_for(domain=dom, name=info.get("name") or "")
+        row = self._new_site_row(
+            sess, mid, domain=dom or None,
+            name=(info.get("name") or dom or f"site:{sid}"), now=now,
         )
-        setattr(row, col, sid)
-        sess.add(row)
+        if row is None:
+            return None
+        if col == "iyuu_sid":
+            row.iyuu_sid = sid
         return row
 
     def _site_row_by_mp_id(self, sess: Any, mp_id: int, now: float) -> Any:
@@ -866,10 +950,9 @@ class SiteStore:
         dom = _norm_domain(domain)
         row = _find_site_row(sess, dom)
         if row is None:
-            row = mfdb.SiteRow(
-                site_id=self._next_site_id(sess), domain=dom, name=dom, created=now,
-            )
-            sess.add(row)
+            # ★ 19.12.53：按域名反查 MP id，查不到返回 None（调用方已判空）
+            return self._new_site_row(
+                sess, self._mp_id_for(domain=dom), domain=dom, name=dom, now=now)
         elif row.domain != dom:
             row.domain = dom
         return row
@@ -1338,6 +1421,8 @@ class SiteStore:
                     if not d or not isinstance(sub, dict):
                         continue
                     row = self._site_row_by_domain(sess, d, now)
+                    if row is None:            # ★ 19.12.53：MP 无此站 → 不落属性
+                        continue
                     cred = dict(getattr(row, "credential", None) or {})
                     cred[_CRED_IYUU] = dict(sub)
                     row.credential = cred
@@ -1388,6 +1473,8 @@ class SiteStore:
                     if not _int_ok(k):
                         continue
                     row = self._site_row_by_iyuu_sid(sess, int(k), now)
+                    if row is None:            # ★ 19.12.53：只有 IYUU 号、MP 里没有 → 跳过
+                        continue
                     cred = dict(getattr(row, "credential", None) or {})
                     cred[_CRED_RESEED_PK] = str(pk)
                     row.credential = cred

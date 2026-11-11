@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional
 
 from app.schemas import Response
 
-from ..common import CACHE_TTL_HISTORY
+from ..common import CACHE_TTL_HISTORY, payload_ver
 from ..kvstore import cache_get, cache_set
 
 TREND_KEY = "trend_v1"          # 热层里的逻辑键（★ 12.6.0 起不再落 kv）
@@ -181,8 +181,13 @@ class TrendMixin:
         except Exception:  # noqa: BLE001
             return None
 
-    def get_trend(self, scope: Any = "all", id: Any = "", hours: Any = DEFAULT_HOURS) -> Response:
-        """功能端点：趋势序列（默认任务+站点全量，最近 72 小时）。"""
+    def get_trend(self, scope: Any = "all", id: Any = "", hours: Any = DEFAULT_HOURS,
+                  ver: str = "") -> Response:
+        """功能端点：趋势序列（默认任务+站点全量，最近 72 小时）。
+
+        ★ 19.12.62：带 `ver` 时做内容比对。这个包 355 KB、前端 5 分钟拉一次，
+        而序列每整点才落一个点 —— 绝大多数轮询其实什么都没变。
+        """
         try:
             scope = str(scope or "all").strip().lower()
             ident = str(id or "").strip()
@@ -219,6 +224,11 @@ class TrendMixin:
             for key, s in data["series"].items():
                 inc[key] = self._trend_window_upload(s)
             data["uploaded_increment"] = inc
+            etag = payload_ver(data)
+            # 顺序要紧：etag 必须在**塞 ver 之前**取。
+            if ver and ver == etag:
+                return Response(success=True, data={"changed": False, "ver": etag})
+            data["ver"] = etag
             return Response(success=True, data=data)
         except Exception as err:  # noqa: BLE001
             return Response(success=False, message=f"读取趋势失败：{err}")

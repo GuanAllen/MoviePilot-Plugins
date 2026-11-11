@@ -108,8 +108,14 @@ export function useSettings({ api, error, notify, emit, saving, loadStatus, sett
       if (res?.success === false) throw new Error(res?.message || '失败')
       siteRules.value = res?.data?.rules || siteRules.value
       await loadRules()
+      // ★ 19.12.44：标记/恢复成功要回话。之前成功路径静默 ——
+      //   在「内置也是无 H&R」的站上恢复后界面几乎不变，用户只能判成「点了没用」。
+      const _msg = res?.message || (hr === 'unknown' ? '已恢复为探测/内置判定' : '站点规则已更新')
+      if (typeof notify === 'function') notify(_msg)
     } catch (e) {
-      alert(`标记失败: ${e?.message || e}`)
+      const _err = `标记失败: ${e?.message || e}`
+      if (typeof notify === 'function') notify(_err, 'error')
+      else alert(_err)
     }
   }
   async function setRuleHours(row, hours) {

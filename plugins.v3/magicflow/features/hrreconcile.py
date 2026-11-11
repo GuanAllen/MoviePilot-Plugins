@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from ..collect import parse_myhr_page as _hr_myhr_page
 from ..fingerprint import info_hash
 from ..persistence import _shared
+from ..sites.rules import span_hours
 from .hrbills import (
     BILL_STATE_SETTLED,
     BILL_STATE_VOID,
@@ -142,7 +143,7 @@ class HrReconcileMixin:
             hours = 24.0
             try:
                 rec = dict(self._site_rules().get(d) or {})
-                hours = float(rec.get("seed_hours") or 24.0)
+                hours = float(span_hours(rec) or 24.0)
             except Exception:  # noqa: BLE001
                 hours = 24.0
             out.append({"domain": d, "need_h": hours, "site_id": sid})

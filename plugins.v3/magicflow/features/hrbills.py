@@ -71,6 +71,14 @@ def _rv_invalidate() -> None:
 #   ``_hr_obligation`` 不再读账单 → 自下载种回到「仅资源级/种子级」判定）。
 HR_BILLS_ENFORCE = True
 
+# ★ 2026-11-09：**存量回填默认关闭**。
+#   账本的定义是「欠账清单」：开账只有一个时刻 —— 种下载完成（加种钩子 / 跨站移交）。
+#   回填是拿**当前**站点规则去判历史种，等于替存量重新记一笔债，与新契约直接冲突
+#   （实测：学校规则 ``hr=true``，一开回填就把它压箱底的老种全开成 active）。
+#   用户裁决：「不用判断，现在所有种子都不欠帐，逻辑只管以后的帐」。
+#   一键恢复：改 ``True`` → 每轮给托管种补开账单（≤200 张，幂等）。
+HR_BILLS_BACKFILL = False
+
 # 连续多少天进度无增长 → 作废（死账）
 # ★ 19.12.40：**不再作废/删账**。种还在 qB 却没进度 = 暂停/无 peer，正是 H&R 该挂住的
 #   状态，删账等于「眼不见为净」。现在只记 ``stalled_at`` 计数，账单保留。
@@ -1382,25 +1390,17 @@ class HrBillsMixin:
         return dom
 
     def _hr_need_hours(self, dom: str) -> float:
-        """★ 11.11.1 站点「实际做种达标小时」取值链（不再写死 24）：
+        """★ 任务 121：委托 ``_hr_need_hours_or_default``（**唯一**工时兜底点）。
 
-        ① 站点规则库 ``seed_need_hours``（如学校 20h）—— ``_crossseed_seed_need_hours``
-           （rule → 内置表 BUILTIN_RULES，取到 >0 即用）；
-        ② 取不到 → 保守默认 ``HR_NEED_HOURS_DEFAULT``（24h，挂久点不要紧）。
-
-        说明：站点对账 myhr 的 ``need_left`` 是「剩余做种时间」而非「总要求」，只在
-        ``_hr_reconcile_site`` / ``_hr_bills_by_site`` 里作**逐条展示/人工核对**用，
-        **不**反推改写账单 ``need_h``（避免账单口径与站点口径漂移）。
+        原实现走 ``_crossseed_seed_need_hours``，那条链**会回退内置表 BUILTIN_RULES**，
+        与 17.2.2 的裁决冲突（内置表只是出厂建议、不自动生效）。后果是同一颗种
+        「开账记 24h、判债按站点规则」，账单与判定从头就不一致。
         """
         try:
-            need = float(self._crossseed_seed_need_hours(dom) or 0.0)
+            return float(self._hr_need_hours_or_default(dom) or 0.0)
         except Exception:  # noqa: BLE001
-            need = 0.0
-        if need <= 0:
-            need = float(HR_NEED_HOURS_DEFAULT)
-        return need
+            return float(HR_NEED_HOURS_DEFAULT)
 
-    # ---------------------------------------------------------- 11.13.0 安全垫 / 到期预警
     def _hr_margin_hours(self) -> float:
         """★ 11.13.0 **结清冗余安全垫**（小时，默认 ``HR_SEED_MARGIN_HOURS_DEFAULT``）。
 
@@ -1445,7 +1445,7 @@ class HrBillsMixin:
     def _hr_window_hours(self, dom: str) -> float:
         """站点 H&R **考核窗口**（小时）：多久之内要做满 ``need_h``。取不到 → 0（= 无窗口信息）。
 
-        链：``_crossseed_seed_window_hours``（规则库 ``seed_window_hours`` → ``seed_hours`` 保护期 → 内置表）。
+        链：``_crossseed_seed_window_hours``（唯一读点 ``sites.rules.span_hours``，含旧键回退）。
         """
         try:
             return float(self._crossseed_seed_window_hours(dom) or 0.0)
@@ -1669,6 +1669,23 @@ class HrBillsMixin:
     # ---------------------------------------------------------- 义务判定（两道门槛）
     def _hr_obligation_rule(self, domain: str,
                             torrent_hr: Any = None) -> Optional[str]:
+        """★ 任务 121：开账口径转发 ``hrjudge.judge``（唯一判定）。
+
+        与判债只差方向：这里问的是「**该不该有这笔债**」，未探明一律不记
+        （19.12.33 的裁决：僵尸账比漏记更坏）。判债那边未探明按保守保护，
+        两处不再是两套推断，而是同一棵树的两个出口。
+        """
+        try:
+            from .hrjudge import judge  # noqa: WPS433
+            v = judge(self, str(domain or "").strip().lower(), None,
+                      hr_flag=(True if torrent_hr is True else None),
+                      skip_bill=True)
+            return v.bill_rule()
+        except Exception:  # noqa: BLE001
+            return self._hr_obligation_rule_legacy(domain, torrent_hr)
+
+    def _hr_obligation_rule_legacy(self, domain: str,
+                            torrent_hr: Any = None) -> Optional[str]:
         """★ 19.12.33：H&R 义务的**唯一**判定入口（开账 / 回填共用）。
 
         两道门槛，任一不过就**不记账**（``None``）：
@@ -1711,14 +1728,42 @@ class HrBillsMixin:
     def _hrbills_open(self, hash_string: str, site_domain: str, tag: str,
                       content: Any, hit_and_run: bool = False,
                       crossseed: bool = False) -> Optional[Dict[str, Any]]:
-        """下载成功后开一张 H&R 账单（影子记账）。
+        """开一张 H&R 账单。**四个开账入口共用本函数，不存在第二种开账口径。**
 
-        跳过：复用/补源副本（``_SKIP_BILL_TAGS``）；同 hash 已存在不重复开。
-        ★ 19.10.11：跨站来源份（``CROSSSEED_TAG``）**不再跳过** —— 它欠的是来源站 H&R，
-        与刷流/音乐同性质，统走本账单。走 ``crossseed=True`` 的**专用口径**（见
-        ``_hrbills_open_crossseed``）：义务判定与工时都取跨站/站点规则的既有真值源。
-        规则判定：``_site_hr_flag(dom) is True`` → ``site_hr``；种子 ``hit_and_run`` →
-        ``hit_and_run``；两者皆无 → ``unknown``（pending，不保护不罚）。
+        入口：① 加种钩子（``core.py`` → ``downloader_ops._HR_OPEN``；**跨站也走这里**）
+              ② 跨站来源份下完移交（``_crossseed_protect_source``，只做 pending → active 提升）
+              ③ void 墓碑期内重下（本函数内部转 ``_hrbills_reopen_voided``）
+              ④ 野马PT 补保护（``yema.py`` 站点权威行说欠）
+        任一入口进来都过同样四道门：
+
+          门1 ``_skip_hr_bill(tag)``          复用 / 补源副本 → 不记账
+          门2 ``store.get_result(hash)``      **写前防护，不是查账**（见下）
+          门3 同 hash 已有账                 幂等返回；void 墓碑期内 → 重开为 pending
+          门4 ``_hr_obligation_rule(...)``    该不该有这笔债；``None`` → 不记账
+
+        ★ 门2 读的不是「要不要记账」（那是门4 的事），是「这一行能不能写」。
+          ``store.put`` 是 upsert（覆盖）语义，直接写会把已有账冲掉：``seeded_h`` 归零、
+          ``opened_at`` 刷新、``settlement_method=manual`` 的人工结清标记消失。
+          它同时要区分「没有账」与「问不出来」—— 账本读不到时**不得盲写**
+          （可能写重复行、盖掉并发写），故用 ``get_result`` 而非 ``get``：读不到就本轮
+          跳过、下轮再来。所以门2 一人管三件事：可用性检查 + 幂等 + 墓碑重开的入口。
+          删掉它不会立刻出事，但下一次人工结清被覆盖时没人会想到是这里 —— 别当冗余删。
+          （若日后 store 补上 ``put_if_absent``，门2 可退化成「只在冲突时读」。）
+
+        ★ 门4 是**全插件唯一一次规则推断**：站点明确 True → ``site_hr``；明确 False /
+          未探明 / 逐种站这颗没标 / 站点要求 0 工时 → 一律不记账
+          （19.12.33：僵尸账比漏记更坏）。其余三个入口与全部判债路径都**不再推断规则**，
+          判债只查账本（``hrjudge.judge(skip_bill=False)``：账本没有 = 不欠）。
+
+        ★ 19.10.11：跨站来源份（``CROSSSEED_TAG``）**不再跳过** —— 它欠的是来源站 H&R。
+        ★ 任务 121：跨站没有专用口径，与刷流 / 音乐 / 普通下载同一套判定、同一套工时、
+        同一个状态机。
+        ★ 任务 128：跨站**也在加种时开账**（与另外三个入口完全一致）—— ``_crossseed_start``
+        已把 ``site_domain`` / ``hit_and_run`` 随 ``add_torrent`` 交给钩子。下完那一刻
+        ``_crossseed_protect_source`` 带 ``crossseed=True`` 进来，走门2 的
+        ``_hrbills_promote_crossseed``：不新建、只把 ``pending`` 提升为 ``active`` 并重置
+        ``opened_at``（H&R 自下载完成起算，见 15.5.1）。``crossseed=True`` 只在**新建**时
+        还有意义（历史路径 / 绕过钩子的调用），此时初始状态直接 ``active``。
 
         11.7.0：``hit_and_run`` 由**下载调用点**从候选带入（qB 侧无此信息）；为兼容旧调用，
         未传时回退读 qB 快照的 ``TorrentInfo.hit_and_run``（历史上恒 False）。
@@ -1731,6 +1776,8 @@ class HrBillsMixin:
         #   19.10.11 起跨站来源份**已从名单移除**（真实下载，欠来源站 H&R）。
         if _skip_hr_bill([str(tag or "")]):
             return None
+        # ★ 门2：**写前防护，不是查账**。``put`` 是覆盖语义 —— 先确认这一行能不能写，
+        #   否则会把 seeded_h / opened_at / 人工结清标记冲掉（详见 docstring）。
         store = self._hrbills_store()
         _eread = store.get_result(hs) if hasattr(store, "get_result") else None
         if _eread is not None and not _hr_read_confirmed(_eread):
@@ -1750,11 +1797,20 @@ class HrBillsMixin:
                 _reopened = self._hrbills_reopen_voided(hs, _existing, site_domain)
                 if _reopened is not None:
                     return _reopened
+            # ★ 任务 128：跨站来源份**加种时已开 pending**（五入口一致），下完这一刻才是
+            #   债的真正起点 → CAS 提升为 active 并把 opened_at 重置到此刻。
+            #   不这么做的话，deadline（``opened_at + window``）会把整段下载时长算进窗口，
+            #   大种会凭空少几个小时。
+            if (crossseed and isinstance(_existing, dict)
+                    and str(_existing.get("state") or "") == BILL_STATE_PENDING):
+                _promoted = self._hrbills_promote_crossseed(hs, _existing)
+                if _promoted is not None:
+                    return _promoted
             return _existing  # 已存在 → 不重复开（幂等）
         dom = self._hrbills_norm_domain(site_domain)
-        # ★ 19.10.11：来源份走专用口径（义务判定 + 工时都取跨站既有真值源）。
-        if crossseed:
-            return self._hrbills_open_crossseed(hs, dom, hit_and_run=hit_and_run)
+        # ★ 任务 121：跨站来源份**不再有专用口径** —— 与刷流 / 音乐 / 普通下载
+        #   同一套判定、同一套工时、同一个状态机。差别只在「移交时已下完」
+        #   这一点，由下方 state 计算处理（crossseed=True → 直接 active）。
         # 逐种标记：优先取「钩子传入」（下载瞬间最准），没传（旧路径）才回退 qB 快照。
         thr = None
         if HR_PER_TORRENT:
@@ -1774,7 +1830,9 @@ class HrBillsMixin:
         #   刚加入下载 → 必然未完成。**H&R 义务自「下载完成」起算**，故开账只挂
         #   观测（pending：不算欠、不拦删、不进 owed）；完成那一刻由 ``_hrbills_tick``
         #   ① 转 active 开始计 need_h。与 ``common.hr_incomplete`` 同一口径。
-        state = BILL_STATE_PENDING
+        # ★ 任务 121：跨站来源份在「下完那一刻」移交 → 直接 active；
+        #   普通下载仍 pending（H&R 义务自下载完成起算，15.5.1）。
+        state = BILL_STATE_ACTIVE if crossseed else BILL_STATE_PENDING
         need_h = self._hr_need_hours(dom)
         fp = ""
         try:
@@ -1854,75 +1912,36 @@ class HrBillsMixin:
         row = _res.get("row")
         return row if isinstance(row, dict) else None
 
-    def _hrbills_open_crossseed(self, hs: str, dom: str,
-                                hit_and_run: bool = False) -> Optional[Dict[str, Any]]:
-        """★ 19.10.11：给**跨站来源份**开一张 H&R 账单（义务口径专用）。
+    def _hrbills_promote_crossseed(self, hash_string: str,
+                                   cur: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """跨站来源份 ``pending`` → ``active``（★ 任务 128）。
 
-        为什么不用通用判定：通用判定对「规则未知的站」不开账（``unknown``，Master 红线
-        「未知站不凭空欠债」）。但跨站来源份的口径一直是**保守兜底**
-        （``_crossseed_hr_decision``：种子标记 > 站点规则 > 未知保守）—— 跨站取种的
-        来源站多半还没在规则库里填过 H&R。若套用通用口径，来源份**永远开不出账**，
-        也就永远不受保护。
+        跨站加种时已经开过一张 ``pending`` 账（与刷流 / 音乐 / 点播同一个入口、同一道门），
+        下完那一刻 ``_crossseed_protect_source`` 带着 ``crossseed=True`` 再进来时：
+        **不新建、不覆盖**，只把状态推到 ``active``、``opened_at`` 重置到此刻。
 
-        为什么直接开 **active**（不是 pending）：账单口径的 pending = 「刚加入下载，必然
-        未完成」。但来源份是在**下完那一刻**才移交的（``_crossseed_tick``：
-        ``progress >= 0.999`` 才调 ``_crossseed_protect_source``），pending 在这里不成立。
-        直接 active → 立刻受删除闸门第 4 档（账单）保护，不留「已下完却还 pending」的窗口期。
+        为什么必须重置 ``opened_at``：H&R 义务自「下载完成」起算（15.5.1），而
+        ``_hr_deadline`` 用的是 ``opened_at + window_h`` —— 若不重置，整段下载时长会被
+        算进窗口，大种会凭空少掉几小时 deadline。
 
-        工时取 ``_hr_need_hours_or_default``（**唯一**义务工时兜底点）：
-        站点规则明确写了真实 0 → 0（不要求做种时长 → 无需挂 → 不开账）；
-        规则缺失 → 24（保守）。
+        守卫走 ``_hrbills_guard``（``state`` + ``settlement_method`` 原值）：只有当前仍是
+        ``pending`` 且未被人工结清才写；返回 ``None`` 时调用方按「已存在」处理（幂等）。
+        与 tick 里的 ``pending → active`` 一致：常规状态流转**不写事件**。
         """
+        hs = str(hash_string or "").strip().lower()
+        b = cur if isinstance(cur, dict) else {}
+        if str(b.get("state") or "") != BILL_STATE_PENDING:
+            return None
         store = self._hrbills_store()
-        _eread = store.get_result(hs) if hasattr(store, "get_result") else None
-        if _eread is not None and not _hr_read_confirmed(_eread):
-            try:
-                _hr_log(f"跨站账单:开账读取失败（UNKNOWN），本轮跳过 {hs[:12]}", "warning")
-            except Exception:  # noqa: BLE001
-                pass
-            return None
-        _existing = (_eread.get("value") if _eread is not None else store.get(hs))
-        if _existing:
-            return _existing  # 幂等
-        thr = True if bool(hit_and_run) else False
-        try:
-            protect, _hours, hsrc = self._crossseed_hr_decision(dom, thr)
-        except Exception as err:  # noqa: BLE001
-            self._log(f"跨站账单:义务判定失败 {hs[:12]}:{err}", "warning")
-            return None
-        if not protect:
-            return None       # 该站/该种确实没有 H&R 义务 → 不开账
-        try:
-            need_h = float(self._hr_need_hours_or_default(dom) or 0.0)
-        except Exception:  # noqa: BLE001
-            need_h = 0.0
-        if need_h <= 0:
-            # 站点明确「不要求做种时长」→ 没有挂种约束 → 无需保护，不开账。
-            self._log(
-                f"跨站账单:{dom} 规则明确不要求做种时长 → 来源份 {hs[:12]} 不开账",
-                "info",
-            )
-            return None
-        rule = RULE_HIT_AND_RUN if thr is True else RULE_SITE_HR
         now = time.time()
-        bill = {
-            "site": dom,
-            "rule": rule,
-            "state": BILL_STATE_ACTIVE,
-            "need_h": float(need_h),
-            "seeded_h": 0.0,
-            "fp": "",
-            "title": self._hrbills_title(hs),
-            "opened_at": now,
-            "last_progress": 1.0,
-            "last_progress_at": now,
-            "progress": 1.0,
-            "opened_by": "crossseed",
-            "src": str(hsrc or ""),
-        }
-        return store.put(hs, bill)
+        _res = self._hrbills_cas(
+            store, hs, self._hrbills_guard(b),
+            state=BILL_STATE_ACTIVE, opened_at=now, last_seen=now, alive=True)
+        if not _res.get("ok"):
+            return None
+        row = _res.get("row")
+        return row if isinstance(row, dict) else None
 
-    # ======================================== 19.12.4 站端欠账证据（只读缓存，不联网）
     @staticmethod
     def _hr_need_left_sec(text: Any) -> Optional[float]:
         """站端「还需做种时间」单元格 → 秒。**解析不了返回 ``None``（不是 0）**。
@@ -2733,17 +2752,19 @@ class HrBillsMixin:
         except Exception:  # noqa: BLE001
             snap = {}
         # ★ 11.0.0 第二阶段：存量回填（放在状态判定前 → 新补账单当轮即判定结清）
+        # ★ 2026-11-09：默认关闭（``HR_BILLS_BACKFILL``）——存量不判，只管以后的账。
         backfilled = 0
         no_site = 0
-        try:
-            _bf = self._hrbills_backfill(store, snap, limit=200)
-            backfilled = int((_bf or {}).get("opened") or 0)
-            no_site = int((_bf or {}).get("no_site") or 0)
-        except Exception as err:  # noqa: BLE001
+        if HR_BILLS_BACKFILL:
             try:
-                self._log(f"魔流:H&R账单回填异常:{err}", "warning")
-            except Exception:  # noqa: BLE001
-                pass
+                _bf = self._hrbills_backfill(store, snap, limit=200)
+                backfilled = int((_bf or {}).get("opened") or 0)
+                no_site = int((_bf or {}).get("no_site") or 0)
+            except Exception as err:  # noqa: BLE001
+                try:
+                    self._log(f"魔流:H&R账单回填异常:{err}", "warning")
+                except Exception:  # noqa: BLE001
+                    pass
         bills = (_bres.get("value") if _bres is not None else None) or store.all()
         if not bills:
             store.flush()
@@ -2854,6 +2875,20 @@ class HrBillsMixin:
                 void_kept += 1
                 continue
             _known_rule = str(b.get("rule") or "") in (RULE_SITE_HR, RULE_HIT_AND_RUN)
+            # ★ 任务 128：**复用副本不该有账**。开账门1 只看标签，标签被别的逻辑抢走时
+            #   （`_hr_is_reuse` 注释里的「魔流-学校-保种」）会漏进来记一笔 `site_hr`；
+            #   而判债的 judge 第 1 步按 `downloaded<=0` 永远判 NONE → 账本说「还欠」、
+            #   执行层说「不欠」的僵尸账。这里用**同一判据**（`_hr_is_reuse`）在 tick 内收口：
+            #   种还在 qB 且确属复用副本 → 作废墓碑，这类账最多活 1 个 tick。
+            #   人工结清过的不动（`_is_manual_settled`）。
+            if t is not None and not _is_manual_settled(b):
+                try:
+                    if self._hr_is_reuse(t):
+                        if _void_auto(h, _guard, "reuse_copy",
+                                      "复用副本（无真实下载，H&R 义务不成立）→ 作废墓碑"):
+                            continue
+                except Exception:  # noqa: BLE001
+                    pass
             if t is None:
                 # ★ 19.12.40（Master 2026-11-05「qB 中暂时找不到种子的账单，不得直接删除」）：
                 #   旧口径**默认删**（只有 active/breached 例外），把「qB 抖一下、recheck、
@@ -3271,36 +3306,32 @@ class HrBillsMixin:
                 continue
             buckets["would_open"].append(example)
             try:
-                site_hr = self._site_hr_flag(dom) if dom else None
-            except Exception:  # noqa: BLE001
-                site_hr = None
-            try:
                 thr = bool(getattr(t, "hit_and_run", False))
             except Exception:  # noqa: BLE001
                 thr = False
-            if site_hr is False and not thr:
-                # 站点规则**明确无 H&R** → 不需要账单（与「未知」区分开）
+            # ★ 任务 121：与开账**同一判据**（judge），不再自己拼 site_hr / known。
+            #   预览与实际开账必须同源，否则会出现「预览说会开 5 张、实际开 3 张」。
+            try:
+                from .hrjudge import judge  # noqa: WPS433
+                v = judge(self, dom, None, hr_flag=(True if thr else None),
+                          skip_bill=True)
+            except Exception:  # noqa: BLE001
+                v = None
+            if v is None or not v.should_open_bill():
                 buckets["no_hr_site"].append(example)
                 continue
-            known = (site_hr is True) or thr
-            try:
-                need = self._hr_need_hours(dom)
-            except Exception:  # noqa: BLE001
-                need = float(HR_NEED_HOURS_DEFAULT)
+            need = float(v.need_hours or 0.0)
             try:
                 seeded_h = seed_hours_for_hr(t)
             except Exception:  # noqa: BLE001
                 seeded_h = 0.0
-            if known:
-                buckets["would_active"].append(example)
-                if seeded_h >= need:
-                    buckets["already_enough"].append(example)
-                else:
-                    buckets["needs_protection_now"].append(example)
-                    if len(would_protect) < 200:
-                        would_protect.append(h)
+            buckets["would_active"].append(example)
+            if seeded_h >= need:
+                buckets["already_enough"].append(example)
             else:
-                buckets["would_pending"].append(example)
+                buckets["needs_protection_now"].append(example)
+                if len(would_protect) < 200:
+                    would_protect.append(h)
         # no_fp：已开账单里没算出特征码的（自动路径「无 fp 不下载」的观测面）
         for _h, _b in (_bills or {}).items():
             if isinstance(_b, dict) and not str(_b.get("fp") or "").strip():

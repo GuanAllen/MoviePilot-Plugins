@@ -426,7 +426,7 @@ class CoreMixin:
             if not _mig.get("ptcafe_nohr_v1"):
                 _st = self._site_rules()
                 _st.put("ptcafe.club", {
-                    "hr": False, "seed_hours": 0.0, "source": "manual", "confidence": "high",
+                    "hr": False, "seed_window_hours": 0.0, "source": "manual", "confidence": "high",
                     "evidence": "手填：咖啡无 H&R 条款（rules.php 原文无），不做 H&R 保护",
                 })
                 _mig["ptcafe_nohr_v1"] = True
@@ -441,7 +441,7 @@ class CoreMixin:
             if not _mig3.get("mteam_nohr_v1"):
                 _st3 = self._site_rules()
                 _st3.put("m-team.cc", {
-                    "hr": False, "seed_hours": 0.0, "source": "manual", "confidence": "high",
+                    "hr": False, "seed_window_hours": 0.0, "source": "manual", "confidence": "high",
                     "evidence": "手填：馒头无 H&R（Master 2026-09-29：规则里没有 H&R）",
                 })
                 _mig3["mteam_nohr_v1"] = True
@@ -491,8 +491,7 @@ class CoreMixin:
                     "hr": False,                            # 无**站点级** H&R（逐种判定）
                     "per_torrent_hr": True,                 # ★ H&R 逐种（发布者打黑色标签）
                     "seed_need_hours": 48.0,                # 命中后：10 天内做种 ≥48h
-                    "seed_window_hours": 240.0,             # 考核窗口 = 10 天
-                    "seed_hours": 240.0,                    # 保护期取满窗口（保守，同学校口径）
+                    "seed_window_hours": 240.0,             # 考核窗口 = 10 天（保护期取满窗口，保守，同学校口径）
                     "share_ratio_exempt": 3.0,              # 分享率 >3 自动免除（记录站点事实）
                     "source": "manual",
                     "confidence": "high",
@@ -1210,7 +1209,10 @@ class CoreMixin:
             self._log(f"状态落盘失败:{err}", "debug")
         return None
 
-    @eventmanager.register(EventType.PluginReload)
+    # ★ 19.12.52：装饰器移到插件主类（`__init__.py` 的 `MagicFlow.reload`）。
+    #   MP v3.2.2 按 handler 的**声明类名**取运行实例
+    #   （`runtime/extensions/plugin/manager.py:resolve_event_handler_instance`），
+    #   声明在 CoreMixin 上时 owner_class=CoreMixin 查不到 → 处理器被静默跳过。
     def reload(self, event: Event) -> None:
         """插件重载后重新注册动态 API 和任务调度"""
         if event and event.event_data.get("plugin_id") == self.__class__.__name__:

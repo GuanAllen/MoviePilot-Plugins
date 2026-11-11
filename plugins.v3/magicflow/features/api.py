@@ -57,13 +57,14 @@ _ROUTES = (
     # ── 操作记录（1 条）
     ("/operations", "get_all_operations", "GET", "获取全部任务的操作记录（主页全局视图）"),
 
-    # ── 标签 / 资产（6 条）
+    # ── 标签 / 资产（7 条）
     ("/site/seeds", "get_site_seeds", "GET", "站点级种子报表（逐条种子状态：分类/保护/账单/qB）"),
     ("/tags", "get_tag_model", "GET", "标签模型：状态账本/文件组/分拣规则"),
     ("/tags/set", "set_tag_state", "POST", "手动设置种子状态（改标签 + 写账本）"),
-    ("/assets", "assets_library", "GET", "库内资产列表（★ 资产粒度：一条=一份资源；name=资源名；members=本体+各站辅种；block=被哪道闸拦住）"),
+    ("/assets", "assets_library", "GET", "库内资产列表（★ 资产粒度：一条=一份资源；name=资源名；members=本体+各站辅种；block=被哪道闸拦住；media_library=媒体库状态）"),
     ("/assets/act", "assets_act", "POST", "★库内资源管理动作（protect/unprotect/subscribe/unsubscribe/organize/scrape）"),
     ("/assets/delete", "assets_delete", "POST", "删除库内资产（★ 按资源整组：删种+连带所有辅种+文件；只破「库内资产」一道闸；默认干跑）"),
+    ("/assets/organize/preview", "assets_organize_preview", "GET", "★19.12.64 整理预演清单（只读：挑一颗代表种 link 入库 + 其余成员仅只读核验；不触发整理/不 recheck/不写账本）"),
 
     # ── H&R 账单 / 站点规则（3 条）
     ("/hr/bills", "get_hr_bills", "GET", "H&R 账单按站分组（欠债/状态分布/need_left/in_qb/missing/per_torrent_hr/规则来源）"),

@@ -227,12 +227,26 @@ class DeleteGateMixin:
                 _ridx = self._resource_source_index()
             except Exception:  # noqa: BLE001
                 _ridx = {}
+            # ★ 性能（任务 111）：账单**一次读全量**再逐条内存查 —— 原来每个种各开一次
+            #   DB 会话（实测 1741 个种 = 14.0s，占 /agent/assets 全部耗时）。
+            #   all_result() 读不到（UNKNOWN/异常）→ None → 退回逐条路径，fail-safe 语义不变。
+            _bills_batch = None
+            try:
+                _bs = self._hrbills_store()
+                _br = _bs.all_result() if hasattr(_bs, "all_result") else None
+                if isinstance(_br, dict) and str(_br.get("status") or "") in ("found", "absent"):
+                    # key 归一化：DB 主键存小写，历史数据可能混大小写 → 统一 lower 再查。
+                    _bills_batch = {str(_k).strip().lower(): _v
+                                    for _k, _v in (_br.get("value") or {}).items()}
+            except Exception:  # noqa: BLE001
+                _bills_batch = None
             for h in _rest:
                 t = snap.get(h)
                 if t is None:
                     continue
                 try:
-                    owed, _need, _seeded, _src = self._hr_obligation("", t, snap=snap)
+                    owed, _need, _seeded, _src = self._hr_obligation(
+                        "", t, snap=snap, bills=_bills_batch)
                 except Exception:  # noqa: BLE001
                     owed, _need, _seeded, _src = False, 0.0, 0.0, ""
                 if owed:
