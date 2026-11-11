@@ -1184,7 +1184,9 @@ defineProps({
                   <VChip v-if="row.hr === true" size="x-small" color="error" variant="tonal">有</VChip>
                   <VChip v-else-if="row.hr === false" size="x-small" color="success" variant="tonal">无</VChip>
                   <VChip v-else size="x-small" variant="tonal">未知</VChip>
-                  <VBtn v-if="row.hr === false" size="x-small" variant="text" :disabled="rulesProbing" title="恢复为探测/内置判定" @click="emit('set-rule-hr', row, 'unknown')">恢复</VBtn>
+                  <!-- ★ 只对「手填覆盖」给恢复入口：来源已是内置/探测/收件箱时，恢复是语义 no-op
+                       （回落后结论相同），旧条件只判 hr===false → 按钮永远在、点了看不出变化。 -->
+                  <VBtn v-if="row.hr === false && row.hr_source === 'manual'" size="x-small" variant="text" :disabled="rulesProbing" title="恢复为探测/内置判定（清除手动标记）" @click="emit('set-rule-hr', row, 'unknown')">恢复</VBtn>
                   <template v-else>
                     <VBtn size="x-small" variant="text" :disabled="rulesProbing" title="该站有 H&R：手动确认「有」并按当前时长保护" @click="emit('set-rule-hr', row, '1')">标有</VBtn>
                     <VBtn size="x-small" variant="text" :disabled="rulesProbing" title="该站没有 H&R：直接标无，不做保种保护" @click="emit('set-rule-hr', row, '0')">标无</VBtn>

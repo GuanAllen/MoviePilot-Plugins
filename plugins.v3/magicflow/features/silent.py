@@ -725,6 +725,21 @@ class SilentMixin:
     # ---------------------------------------------------------
 
     def _silent_hr_done(self, site: str, torrent: Any) -> Tuple[bool, str]:
+        """★ 任务 121：静默池「义务做完没」转发唯一判定 ``hrjudge.judge``。
+
+        只有**确定不欠**（clear / 结构上无义务）才算做完；欠和未探明都不算 ——
+        静默池的清出是不可逆动作，拿不准就继续挂着。
+        """
+        try:
+            from .hrjudge import judge  # noqa: WPS433
+            v = judge(self, site, torrent)
+            if v.state in ("owe", "unknown"):
+                return False, str(v.reason or "欠 H&R")
+            return True, str(v.reason or "无 H&R 义务")
+        except Exception:  # noqa: BLE001
+            return self._silent_hr_done_legacy(site, torrent)
+
+    def _silent_hr_done_legacy(self, site: str, torrent: Any) -> Tuple[bool, str]:
         """静默种的 H&R/保种义务是否完成（站点规则 + 实测做种时长）。无 H&R → 直接算完成。
 
         ★ 7.20.1：站点短名 → 域名再查规则库。规则库（``sites/rules.py``）的键是**域名**，
@@ -1793,10 +1808,9 @@ class SilentMixin:
                     _seeded_h = round(seed_hours_for_hr(t), 1)
                 except Exception:  # noqa: BLE001
                     _seeded_h = 0.0
-                try:
-                    _hsrc = str(self._crossseed_hr_decision(str(site or "").strip(), None)[2] or "")
-                except Exception:  # noqa: BLE001
-                    _hsrc = ""
+                # ★ 2026-11-09：不再为取原因串重算一次判定 —— ``_why`` 就是同一次
+                #   判定的 reason（每条种少一次 judge 调用）。
+                _hsrc = str(_why or "")
                 rep.setdefault("protected_hr", []).append({
                     "hash": hh, "site": site,
                     "title": str(getattr(t, "title", "") or "")[:64],

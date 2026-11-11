@@ -3,7 +3,7 @@
     "name": "魔流",
     "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
     "labels": "站点,做种,魔力,刷流",
-    "version": "19.12.44",
+    "version": "19.12.65",
     "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
     "author": "GuanAllen",
     "level": 1,
@@ -24,7 +24,8 @@
       "7.12.0": "跨任务去重——同一资源（同 infohash / 同完整特征码）全插件只下载一次。新增全局「下载占用」闸门 persistence.AddGateStore（冷备 add_gate.json / 热键 addgate）：分类排队前先 peek 一次（避免占下载槽），下载前再原子占用（冲突=别的任务已下/在飞→跳过，防**并发**各下一份）；下载成功登记 24h「已下载」记忆（防「清理掉之后又下」的抖动），失败则释放占用允许重试。落实 MODEL.md「一个资源只从一个站下载」。仅拦截 ①同 infohash ②同完整特征码；③同内容不同打包（仅内层特征码相同）按既定策略**仍允许下载**。",
       "19.12.6": "与运行副本对齐：19.10.71 → 19.12.6 期间的站点/作业/缓存层改动（dutyreg 岗位真值、collect 拆分、cacheops 等）。本条为版本同步记录，无单独条目说明。",
       "19.12.43": "同步运行副本 19.12.43：H&R 账单/对账、报表视图（reportview/rvstate）、采集链路（collect/collect_parse）、任务编辑面板拆分。",
-      "19.12.44": "H&R 通知闸（hrnotify_gate）+ 设置映射单一真值（settingsMap.js）；补 H&R/设置契约与集成测试。"
+      "19.12.44": "H&R 通知闸（hrnotify_gate）+ 设置映射单一真值（settingsMap.js）；补 H&R/设置契约与集成测试。",
+      "19.12.65": "同步运行副本 19.12.44 → 19.12.65：HR 判定/对账/报表收敛（新增 hrjudge）、silent/siteops/status 调整、前端设置与页面接线、dist 重建。"
     }
   },
   "version": "19.2.4",

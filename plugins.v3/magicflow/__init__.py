@@ -12,6 +12,7 @@ from .common import (
     CLAIM_INTERVAL_SEC,
     MagicFlowTaskConfig,
     __version__,
+    _mf_on_event,
 )
 
 import re
@@ -94,6 +95,50 @@ class MagicFlow(DupGateMixin, CoreMixin, RuntimeMixin, AgentApiMixin, AgentLedge
     auth_level = 1
 
     DATA_SCHEMA_VERSION = 1
+
+    # ============================================================
+    # ★ 19.12.51 事件入口 —— **必须声明在插件主类上，不能留在 mixin 里**
+    #
+    # MP v3.2.2 的事件绑定按 handler 的**声明类名**去运行实例表取实例：
+    #   runtime/extensions/plugin/manager.py:resolve_event_handler_instance
+    #       plugin_id = owner_class.__name__
+    #       if self._plugins.get(plugin_id) is not owner_class: return None
+    # 声明在 EventsMixin / CoreMixin 上时 owner_class 是 mixin 名，插件表里没有
+    # ⇒ resolver 返回 None ⇒ binding 报一行
+    #   「事件处理器未绑定显式 resolver，已跳过：...EventsMixin._on_xxx」
+    # 然后**永不执行**，且不抛异常、不影响插件启停，只在宿主日志里留一行 WARNING。
+    #
+    # 现场证据（2026-11-10 查 moviepilot-v3 日志）：拆 mixin 之后
+    #   TransferComplete（库记入口）、PluginReload（重载后重注册 API/调度）
+    # 一直是死的，站点事件自然也是死的。修法是「声明上浮」：
+    # 装饰器与入口只留在主类，实现仍在各 mixin 里（显式传 self，不走 super）。
+    # ============================================================
+
+    @_mf_on_event("TransferComplete")
+    def _on_transfer_complete(self, event: Any = None) -> None:
+        """整理完成 → 写库记（实现在 ``features/events.py``）。"""
+        return EventsMixin._on_transfer_complete(self, event)
+
+    @_mf_on_event("SiteUpdated")
+    def _on_site_updated(self, event: Any = None) -> None:
+        """MP 站点新增/修改/CookieCloud 同步（建站复用 site.updated）。"""
+        return EventsMixin._on_site_updated(self, event)
+
+    @_mf_on_event("SiteDeleted")
+    def _on_site_deleted(self, event: Any = None) -> None:
+        """MP 站点删除（载荷只有 site_id，域名要靠台账反查）。"""
+        return EventsMixin._on_site_deleted(self, event)
+
+    @_mf_on_event("SiteRefreshed")
+    def _on_site_refreshed(self, event: Any = None) -> None:
+        """MP 站点用户数据刷新（做种量/分享率）。"""
+        return EventsMixin._on_site_refreshed(self, event)
+
+    @_mf_on_event("PluginReload")
+    def reload(self, event: Any = None) -> None:
+        """插件重载后重新注册动态 API 与任务调度（实现在 ``features/core.py``）。"""
+        return CoreMixin.reload(self, event)
+
 
     def get_agent_tools(self) -> list:
         """★ 15.11.0：把魔流 AI 入口注册进 MoviePilot Agent / MCP。

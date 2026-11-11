@@ -31,6 +31,8 @@ from .hrbills import (
     BILL_STATE_ACTIVE,
     BILL_STATE_SETTLED,
     BILL_STATE_VOID,
+    STORE_ABSENT,
+    STORE_FOUND,
     RULE_SITE_HR,
     RULE_HIT_AND_RUN,
 )
@@ -104,7 +106,9 @@ class HrMixin:
         _h = str(getattr(torrent, "hash", "") or "").strip().lower()
         if _h:
             try:
-                rec = dict(self._tag_state() or {}).get(_h) or {}
+                # ★ 性能（任务 113）：账本 store 自带 O(1) ``get()``；原来写 ``dict(self._tag_state())``
+                #   是把 1700+ 条账本整本浅拷贝一次，每个种一次 → 删除闸门 1549 个种多花 9.4s。
+                rec = self._tag_state().get(_h) or {}
                 dom = _norm(rec.get("site"))
             except Exception:  # noqa: BLE001
                 dom = ""
@@ -147,7 +151,7 @@ class HrMixin:
         * 旧 ``_crossseed_seed_need_hours`` 薄壳（无 ``_ex``）→ 视作未知 → 24.0。
 
         ★ 不回退内置表（17.2.2 拍板：内置表只是出厂建议，不自动生效）。
-        * 规则值本身有理解歧义的取值链（``seed_need_hours`` → 保护期 ``seed_hours``）不在本函数内，
+        * 规则值本身有理解歧义的取值链（``seed_need_hours`` → 期限 ``seed_window_hours``）不在本函数内，
           由调用方先自行回退，仍取不到再落到这里（见 ``_hr_obligation_by_seed``）。
         """
         _known = self._hr_need_hours_known(dom)
@@ -274,7 +278,31 @@ class HrMixin:
             seeded = 0.0
         return (seeded + 1e-6 < self._hr_due_hours(need)), float(need), seeded, f"本站规则({dom})"
 
-    def _hr_obligation(self, site: str, torrent: Any, snap: Any = None) -> Tuple[bool, float, float, str]:
+    def _hr_obligation(self, site: str, torrent: Any, snap: Any = None,
+                       bills: Optional[Dict[str, Dict[str, Any]]] = None
+                       ) -> Tuple[bool, float, float, str]:
+        """★ 2026-11-09：H&R 判定**唯一入口** ``hrjudge.judge`` 的薄包装。
+
+        这里只做一件事：把判定结果按**保护方向**转成旧四元组。
+
+        **账本里没有这笔债 = 不欠**，直接放行。删除 / 暂停 / 接管 / 静默清出
+        都只认账本，不再自己推一遍站点规则 —— 旧实现各推各的，才有「开账说
+        不记、判债说欠 24h、静默说不许清」三种答案。
+
+        唯一保留的保守方向是**账本读不到**（PG 抖动）：那不等于「没有账」，按欠
+        处理、不动种。两者不冲突：一个是问不到，一个是问到了、没有。
+
+        旧的四路实现保留在 ``_hr_obligation_legacy``，只在 judge 抛错时兜底。
+        """
+        try:
+            from .hrjudge import judge, HR_UNKNOWN_CONSERVATIVE  # noqa: WPS433
+            v = judge(self, site, torrent, snap=snap, bills=bills)
+            return v.as_tuple(conservative_unknown=HR_UNKNOWN_CONSERVATIVE)
+        except Exception:  # noqa: BLE001
+            return self._hr_obligation_legacy(site, torrent, snap=snap, bills=bills)
+
+    def _hr_obligation_legacy(self, site: str, torrent: Any, snap: Any = None,
+                       bills: Optional[Dict[str, Dict[str, Any]]] = None) -> Tuple[bool, float, float, str]:
         """该种是否**欠 H&R**：``(欠?, 要求小时, 已挂小时, 来源)``。
 
         ★ 性能（P0）：``snap`` = 本轮已拉好的 qB 全量快照（``{hash: TorrentInfo}``）。
@@ -294,15 +322,24 @@ class HrMixin:
 
         ★ 14.0.0：所有四路的「做满」比较统一走 ``_hr_due_hours(need) = need + margin``，
         与账单状态机同源（避免「账单还欠、闸门已放行」的假违约）。
+
+        ★ 任务 111（性能）：``bills`` = 调用方**一次性读好的全量账单** ``{hash: bill}``
+        （``HrBillsStore.all_result()`` 的 value）。给了就用内存查，避免逐条 DB 会话；
+        不给（默认 None）→ 原逐条 ``get_result`` 路径，语义完全一致。
         """
-        # ★ 15.5.0（Master 16:19「没有下完的内容没有 h&r」）：未完成 → 无 H&R 义务。
-        #   未下载完成 = 未达站点 H&R 触发阈（阈值可站点级覆盖），三/四路都不算欠。
-        if self._hr_incomplete_of(site, torrent):
-            return False, 0.0, 0.0, "未下载完成(无 H&R 义务)"
+        # ★ 性能（任务 113）：**复用判定先跑**。它只看 tags / downloaded（纯内存 O(1)），
+        #   实测 1549 个复用副本曾在这里花 9.42s —— 因为原顺序先走 ``_hr_incomplete_of``，
+        #   而它要 ``_hr_domain`` 反推站点域（读账本 + 站点规则），每颗都付一遍。
+        #   两者结论都是「不欠」，先后**不影响闸门判定**；只有两者同时成立时，
+        #   审计来源文案取「复用」（更具体、也更贴近真实原因）。
         # ★ 11.11.1 / 15.8.18：复用/补源副本不继承资源的来源站 H&R 债（副本自己不是真实下载）。
         #   判据统一走 ``_hr_is_reuse``（标签 OR downloaded<=0），与账单同源。
         if self._hr_is_reuse(torrent):
             return False, 0.0, 0.0, "复用/补源副本(非真实下载)"
+        # ★ 15.5.0（Master 16:19「没有下完的内容没有 h&r」）：未完成 → 无 H&R 义务。
+        #   未下载完成 = 未达站点 H&R 触发阈（阈值可站点级覆盖），三/四路都不算欠。
+        if self._hr_incomplete_of(site, torrent):
+            return False, 0.0, 0.0, "未下载完成(无 H&R 义务)"
         _h = str(getattr(torrent, "hash", "") or "").strip().lower()
         src_site, src_hash, settled = "", "", False
         _bills: List[Dict[str, Any]] = []
@@ -387,8 +424,16 @@ class HrMixin:
         if HR_BILLS_ENFORCE:
             try:
                 _hstore = self._hrbills_store()
-                _hres = _hstore.get_result(_h) if hasattr(_hstore, "get_result") else None
                 from .hrbills import _hr_read_ok as _hr_ok, _hr_read_confirmed as _hr_confirmed  # noqa: WPS433
+                from .hrbills import _hr_store_read as _hr_sread  # noqa: WPS433
+                if bills is not None:
+                    # ★ 性能（任务 111）：调用方已一次性读全量账单 → 纯内存查，
+                    #   不再逐条开 DB 会话（1741 个种曾耗 14.0s）。
+                    _bv = bills.get(_h)
+                    _hres = _hr_sread(STORE_FOUND if _bv is not None else STORE_ABSENT,
+                                      value=_bv, source="batch")
+                else:
+                    _hres = _hstore.get_result(_h) if hasattr(_hstore, "get_result") else None
                 if _hr_ok is None or not _hr_confirmed(_hres):
                     # ★ 任务 111（HR-03 / F11）：账单存储不可用 → 不能当作「无账单」放过；
                     #   按欠 H&R 保守处理（需要工时取站点默认，由调用方按保守方向使用）。
@@ -679,27 +724,18 @@ class HrMixin:
     # ------------------------------------------------------- 11.11.0 H&R 保种宿主 __hr_host__
 
     def _hr_should_hold(self, site: str, torrent: Any, snap: Any = None) -> bool:
-        """★ 19.12.37：**该不该进保种**的唯一判据（迁移 / 音乐下完 / 任务遣散共用）。
+        """★ 2026-11-09：**该不该进保种**的唯一判据 —— 只查账本。
 
-        与 ``_hr_obligation`` 只差一步：先过「**该不该记**」的两道门槛
-        （``_hr_obligation_rule``，与开账 ``_hrbills_open`` 同源）。
+        账本是欠账清单：有这笔债（未结清）→ 接管；没有 → 不接管。
 
-        为什么必须多这一步：``_hr_obligation`` 对「站点规则未知」走的是**未知保守 24h**
-        —— 那是跨站选源/删除保护的正确方向（宁可多保护），但用在**改变归属**上就成了灾难：
-        馒头（``m-team.cc``，规则库 ``hr=f`` 但 ``source=builtin`` 不被 ``hr_of`` 采信 →
-        返回 ``None``）被判「欠 24h」，2026-11-05 线上实测 5 颗音乐种被反复搬进保种、
-        又被释放，日志每秒刷屏。判据不明的种，**既不记账也不接管**。
+        旧实现先过一遍「该不该记」（``_hr_obligation_rule``）。那是在重复开账
+        已经做过的判断，而且方向是错的：账本明明有账、只是站点规则现在读不到，
+        会被它判成「不该记」而拒绝接管，留下一笔无主的债。19.12.37 加这层
+        是为了挡「规则未知 → 保守 24h」的误接管，而那个保守现在已不存在。
 
-        异常一律返回 ``False``（不接管）：接管是破坏性动作（摘标换标），拿不准就别动。
+        异常一律返回 ``False``（不接管）：接管是破坏性动作，拿不准就别动。
         """
         if torrent is None:
-            return False
-        try:
-            dom = self._hr_domain(site, torrent)
-            thr = True if bool(getattr(torrent, "hit_and_run", False)) else None
-            if not self._hr_obligation_rule(dom, thr):
-                return False
-        except Exception:  # noqa: BLE001
             return False
         try:
             return bool(self._hr_obligation(site, torrent, snap=snap)[0])
@@ -865,21 +901,13 @@ class HrMixin:
             if t is None:
                 continue  # 消失 → 由 _hrbills_tick 违约；账本稍后对账
             site = str(rec.get("site") or "") or self._torrent_site_name(getattr(t, "tags", None), "")
-            # ★ 19.12.37：与开账同源的门槛 —— 站点明确无 H&R / 规则未知且非逐种站 → 本来
-            #   就不该记，也不该继续挂在保种上（「未知保守 24h」会让这种永远出不来）。
-            try:
-                _dom_r = self._hr_domain(site, t)
-                _thr_r = True if bool(getattr(t, "hit_and_run", False)) else None
-                _rule_ok = bool(self._hr_obligation_rule(_dom_r, _thr_r))
-            except Exception:  # noqa: BLE001
-                _rule_ok = True     # 判不出来 → 按「还欠」处理，不误放
-            if not _rule_ok:
-                to_release.append(hh)
-                continue
+            # ★ 2026-11-09：释放**只看账本** —— 没有这笔债 / 已结清 → 释放。
+            #   不再先问「站点规则该不该有」：那是开账做的事；重复判断会让
+            #   「账本有账、但规则临时读不到」的种被误放。
             try:
                 obl = bool(self._hr_obligation(site, t, snap=snap)[0])
             except Exception:  # noqa: BLE001
-                obl = False
+                obl = True      # 判不出来 → 按「还欠」处理，不误放
             bstate = ""
             if store is not None:
                 try:

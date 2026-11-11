@@ -154,6 +154,13 @@ _CUR_UNIT = rf"(?:{_CUR_WORDS}|[\u4e00-\u9fa5]{{1,6}})"
 # 「每小时获得的合计<货币>」表的锚点（找不到就退回页首）
 _TABLE_ANCHOR = re.compile(rf"合计\s*{_CUR}")
 
+# ★ 19.12.65：高清杜比(uhddolby.com) 把表名写成
+#   「您目前每小时可以获取到的鲸币/做种积分如下」，合计行是「合计 | - | 460 | 75 / 75」，
+#   币名根本不跟在「合计」后面 → 原锚点整页失配，表格解析不到，时魔恒为 0。
+#   补一条**只在原锚点落空时**才用的备用锚点：不挑币名形状，只认「获得/获取到的<币名>」。
+#   标准站一律走原锚点，行为不变。
+_TABLE_ANCHOR_ALT = re.compile(r"(?:获取|获得)(?:到)?(?:的)?\s*[\u4e00-\u9fa5]{1,8}[值币]")
+
 # ★ 19.10.48：各站把「魔力」叫成自己的名字（蟹币值 / 金元宝 / 积分 / 煤块…），
 #   界面上统一写「魔力」会让两套互不通兑的经济系统看起来像同一个东西。
 #   这里把**站点原文里的货币名**捞出来，往下透传到 API，前端按站点显示。
@@ -217,35 +224,88 @@ def parse_bonus_table(html_text: str) -> Dict[str, Any]:
     if not html_text:
         return out
     _am = _TABLE_ANCHOR.search(html_text)
+    # ★ 19.12.65：高清杜比的表比标准 NexusPHP **多一列「当前上限」**。
+    #   备用锚点只在「确实找到带该表头的表格」时才生效；否则一律保持原行为
+    #   （学校等站原锚点也失配，但它们本来就靠状态栏拿时魔，不能挪动锚点）。
+    _cap_table = None
+    _CAP_HEAD = re.compile(r"<t[dh][^>]*>\s*当前上限\s*</t[dh]>", re.I)
+    if not _am:
+        _alt = _TABLE_ANCHOR_ALT.search(html_text)
+        if _alt:
+            _seg_try = html_text[_alt.start():_alt.start() + 4000]
+            _cap_table = next(
+                (x for x in re.findall(r"<table[^>]*>(.*?)</table>", _seg_try, re.S | re.I)
+                 if _CAP_HEAD.search(x)), None
+            )
+            if _cap_table is not None:
+                _am = _alt
     anchor = _am.start() if _am else 0
     seg = html_text[anchor:anchor + 4000]
-    m = re.search(r"<table[^>]*>(.*?)</table>", seg, re.S | re.I)
-    if not m:
+    tables = re.findall(r"<table[^>]*>(.*?)</table>", seg, re.S | re.I)
+    if not tables:
         return out
-    table = m.group(1)
+    table = tables[0]
+    capped = _cap_table is not None
+    if capped:
+        table = _cap_table
     rows = re.findall(r"<tr[^>]*>(.*?)</tr>", table, re.S | re.I)
+    earned_idx = 6
+    if capped:
+        # 「获得」列按表头定位（标准站固定第 7 列，此形态多了一列 → 第 8 列）
+        for _row in rows:
+            _hc = [_cell_text(c) for c in
+                   re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", _row, re.S | re.I)]
+            if any("当前上限" in c for c in _hc):
+                _hit = next((i for i, c in enumerate(_hc) if "获得" in c), None)
+                if _hit is not None:
+                    earned_idx = _hit
+                break
     for row in rows:
         cells = [_cell_text(c) for c in re.findall(r"<td[^>]*>(.*?)</td>", row, re.S | re.I)]
         if not cells:
             continue
         if "奖励类型" in cells[0] or cells[0].startswith("奖励"):
             continue
-        item = {
-            "label": cells[0],
-            "count": cells[1] if len(cells) > 1 else "",
-            "size_text": cells[2] if len(cells) > 2 else "",
-            "a_value": _to_float(cells[3]) if len(cells) > 3 else None,
-            "base_bonus": _to_float(cells[4]) if len(cells) > 4 else None,
-            "coef": _to_float(cells[5]) if len(cells) > 5 else None,
-            "earned": _to_float(cells[6]) if len(cells) > 6 else None,
-        }
-        if len(cells) > 7:
-            tot = _to_float(cells[7])
-            if tot is not None:
-                out["total"] = tot
+        # 表头行 / 表名行（高清杜比形态）：不是数据，别混进 rows
+        if capped and (len(cells) < 2 or "数量" in cells or "获取到的" in cells[0]):
+            continue
+        if capped:
+            # 该形态最后一列是「实得 / 上限」，如「24.15 / 24.15」「75 / 75」，
+            # 取斜杠前的**实得值**。rowspan 造成的残缺行没有 earned_idx 列 → 退回最后一列。
+            raw = cells[earned_idx] if len(cells) > earned_idx else cells[-1]
+            _m = re.match(r"\s*([\d,.]+)", raw or "")
+            earned = _to_float(_m.group(1)) if _m else None
+            full = len(cells) > earned_idx
+            item = {
+                "label": cells[0],
+                "count": cells[1] if len(cells) > 1 else "",
+                "size_text": cells[2] if len(cells) > 2 else "",
+                "a_value": _to_float(cells[3]) if full else None,
+                "base_bonus": _to_float(cells[4]) if full else None,
+                "coef": _to_float(cells[5]) if full else None,
+                "earned": earned,
+            }
+            # 合计行是站点自己算出来的权威值（本例 75），优先于逐行相加（74.99）
+            if cells[0].startswith("合计") and earned is not None:
+                out["total"] = earned
+        else:
+            item = {
+                "label": cells[0],
+                "count": cells[1] if len(cells) > 1 else "",
+                "size_text": cells[2] if len(cells) > 2 else "",
+                "a_value": _to_float(cells[3]) if len(cells) > 3 else None,
+                "base_bonus": _to_float(cells[4]) if len(cells) > 4 else None,
+                "coef": _to_float(cells[5]) if len(cells) > 5 else None,
+                "earned": _to_float(cells[6]) if len(cells) > 6 else None,
+            }
+            if len(cells) > 7:
+                tot = _to_float(cells[7])
+                if tot is not None:
+                    out["total"] = tot
         out["rows"].append(item)
         label = item["label"]
-        if "基本" in label and out["base"] is None:
+        # 高清杜比把「基本奖励」叫「非官种」，认作基础行才能带出 A 值 / 基础鲸币
+        if ("基本" in label or (capped and "非官种" in label)) and out["base"] is None:
             out["base"] = item
         elif "官种" in label and out["official"] is None:
             out["official"] = item

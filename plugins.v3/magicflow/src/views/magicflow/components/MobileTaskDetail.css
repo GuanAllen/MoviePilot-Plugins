@@ -68,3 +68,13 @@
 
 .magicflow-page .md-entry.is-active[data-v-cc4581d6] { color: rgb(var(--v-theme-primary)); border-color: rgba(var(--v-theme-primary), 0.5); background: rgba(var(--v-theme-primary), 0.16);
 }
+
+/* ── 2026-11-09 · 手机端隐藏任务头的「← 返回概览」──────────────────────────
+   这个钮（index.vue 的 .magicflow-task-head__back）只在「整体概览 ↔ 单任务」
+   两级切换里成立；手机端没有这一级（列表 → 详情由 .magicflow-mobile-back 负责），
+   点它只是把 homeScope 置回 home，视觉与行为都没有可感知变化 —— 隐藏。
+   断点与 JS 侧 isNarrow 同源：useWorkbench.js = matchMedia('(max-width: 959px)')。
+   桌面端不受影响。 */
+@media (max-width: 959px) {
+  .magicflow-page .magicflow-task-head__back { display: none !important; }
+}

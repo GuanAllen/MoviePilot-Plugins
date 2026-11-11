@@ -22,6 +22,7 @@ from ..sites.rules import (
     framework_note,
     parse_hr_from_mail,
     parser_for_framework,
+    span_hours,
 )
 from ..sites.formula_fetch import (
     fetch_site_formula,
@@ -339,11 +340,14 @@ class SiteOpsMixin:
             "source": "welcome",
             "hr_src": "welcome",
         }
-        if (got or {}).get("seed_hours") is not None and str((got or {}).get("confidence")) == "high":
-            out["seed_hours"] = (got or {})["seed_hours"]
-        for _nk in ("seed_need_hours", "seed_window_hours"):
-            if (got or {}).get(_nk) is not None:
-                out[_nk] = (got or {})[_nk]
+        # 期限只写 seed_window_hours（旧键 seed_hours 已停写，读取统一走 rules.span_hours）
+        _span = (got or {}).get("seed_window_hours")
+        if _span is None:
+            _span = (got or {}).get("seed_hours")
+        if _span is not None and str((got or {}).get("confidence")) == "high":
+            out["seed_window_hours"] = _span
+        if (got or {}).get("seed_need_hours") is not None:
+            out["seed_need_hours"] = (got or {})["seed_need_hours"]
         return out
 
     def probe_site_rules(self, site_id: int = 0, persist: bool = True, paths: str = "") -> Response:
@@ -512,7 +516,8 @@ class SiteOpsMixin:
                         parsed["seed_cap"] = got["seed_cap"]
                 # 多个候选页 → 优先「带保种时长」的那条（其余只保 hr）
                 if _hr_cands:
-                    _best = next((c for c in _hr_cands if c.get("seed_hours") is not None), _hr_cands[0])
+                    _best = next((c for c in _hr_cands
+                                  if c.get("seed_window_hours") is not None), _hr_cands[0])
                     mail_hr = {k: v for k, v in _best.items() if k != "from"}
                     item["hr_source_page"] = _best.get("from")
                 elif pages:
@@ -540,7 +545,7 @@ class SiteOpsMixin:
                     rec = store.merge_probe(dom, _payload) if _site_manual else store.put(dom, _payload)
                     _stored.update({
                         k: rec.get(k)
-                        for k in ("hr", "seed_hours", "seed_need_hours", "seed_cap", "source")
+                        for k in ("hr", "seed_window_hours", "seed_need_hours", "seed_cap", "source")
                     })
                 if persist and (
                     parsed.get("seed_cap") is not None
@@ -648,7 +653,7 @@ class SiteOpsMixin:
         for dom, rec in store.items().items():
             g = _group_for(dom)
             g["aliases"].append(_norm(dom))
-            if (rec.get("seed_hours") is not None) or (not g["rec"]):
+            if (span_hours(rec) is not None) or (not g["rec"]):
                 g["rec"] = dict(rec)
             if rec.get("name"):
                 g["site_name"] = str(rec.get("name"))
@@ -664,12 +669,16 @@ class SiteOpsMixin:
             g = _group_for(dom)
             g["aliases"].append(_norm(dom))
             g["manual"] = hrs
-        # 4) 内置已知（不在列表也不在库里的也展示）
+        # 4) 内置已知：**只给已在列表里的行补默认值，不再凭空造行**。
+        #    旧形态是「不在 MP 也不在库里 → 新建一行」，于是站点在 MP 删掉之后
+        #    （如 hdfans.org / 红豆饭，台账行与账单早已清空）仍会被内置表复活成
+        #    一行 `layer=none / source=None` 的幽灵，看着像还活着。
+        #    内置表是**判定层知识库**（`resolve()` 仍在用），不是站点台账。
         for dom, b in BUILTIN_RULES.items():
-            if not any(_alias(g["domain"], dom) for g in groups):
-                g = _group_for(dom)
-                g["aliases"].append(dom)
-                g["rec"] = dict(b or {})
+            for g in groups:
+                if _alias(g["domain"], dom) and not g["rec"]:
+                    g["rec"] = dict(b or {})
+                    break
 
         out: List[Dict[str, Any]] = []
         for g in groups:
@@ -713,8 +722,8 @@ class SiteOpsMixin:
             except Exception:  # noqa: BLE001
                 row["complete_ratio"] = None
             row["in_library"] = bool(g["rec"])
-            if row.get("seed_hours") is None and row.get("seed_hours_seen") is not None:
-                row["evidence_hours"] = row.get("seed_hours_seen")
+            if row.get("seed_window_hours") is None and row.get("seed_window_hours_seen") is not None:
+                row["evidence_hours"] = row.get("seed_window_hours_seen")
             out.append(row)
         out.sort(key=lambda r: (str(r.get("site_name") or r.get("domain") or "")))
         return out
@@ -755,38 +764,80 @@ class SiteOpsMixin:
                 dom = str(site or "").strip().lower().replace("https://", "").replace("http://", "").strip("/")
                 if not dom:
                     return Response(success=False, message="缺少 site(域名)")
+                _raw = str(hours if hours is not None else "").strip()
+                if _raw in ("", "none", "null", "-"):
+                    # 清空输入框 = 撤销手填，回到「未探明」（下一次探测会补值）
+                    store.put(dom, {"seed_need_hours": None})
+                    return Response(success=True, message=f"{dom} 已清空「达标小时」（等下次探测补值）",
+                                    data={"rules": self._rules_view()})
                 try:
-                    hv = float(hours)
+                    hv = float(_raw)
                 except (TypeError, ValueError):
                     return Response(success=False, message="hours 必须是数字")
-                manual = dict((getattr(self, "_cs_cfg", {}) or {}).get("site_hours") or {})
-                manual[dom] = max(0.0, hv)
-                self._cs_cfg["site_hours"] = manual
-                self.save_data(key="crossseed_cfg", value=dict(self._cs_cfg))
-                return Response(success=True, message=f"{dom} 保种时长已设为 {hv:g}h", data={"rules": self._rules_view()})
+                hv = max(0.0, hv)
+                # ★ 这一列就是「做满多少小时」，只写 seed_need_hours —— 判结清读的就是它。
+                #   以前它写的是 crossseed_cfg.site_hours（跨站来源份保多久），跟判债完全不相交，
+                #   所以在这一列改数字对账单毫无影响（CARPT 因此一直走 24h 兜底）。
+                #   期限（多少天内做满）是另一个字段 seed_window_hours，由探测写、这里不碰。
+                try:
+                    store.put(dom, {"seed_need_hours": hv})
+                except Exception as err:  # noqa: BLE001
+                    try:
+                        self._log(f"站点规则:写入达标小时失败:{dom}:{err}", "warning")
+                    except Exception:  # noqa: BLE001
+                        pass
+                return Response(success=True,
+                                message=f"{dom} 达标小时已设为 {hv:g}h（判结清按此）",
+                                data={"rules": self._rules_view()})
             if act in ("hr", "nohr"):
                 dom = str(site or "").strip().lower().replace("https://", "").replace("http://", "").strip("/")
                 if not dom:
                     return Response(success=False, message="缺少 site(域名)")
                 val = str(hr or "").strip().lower()
                 if val in ("0", "false", "no", "none", "off"):
+                    # ★ 任务 125：标「无」= 这站没有任何 H&R 义务，**时长一律清空**。
+                    #   以前只清 seed_hours，seed_need_hours / seed_window_hours 原样留着
+                    #   （dstudio 实测：hr=false 却还挂着 need=48 / window=240），
+                    #   既误导界面，也让「未知 → 24h 兜底」有机会借这些残留值复活。
                     store.put(dom, {
-                        "hr": False, "seed_hours": 0.0, "source": "manual", "confidence": "high",
+                        "hr": False,
+                        "seed_need_hours": None,
+                        "seed_window_hours": None,
+                        "source": "manual", "confidence": "high",
                         "evidence": "手填：该站无 H&R，不做 H&R 保种保护",
                     })
-                    return Response(success=True, message=f"{dom} 已标记为「无 H&R」(不做保护)", data={"rules": self._rules_view()})
+                    # 跨站那张手填时长表也要清，否则「期限(h)」列还显示旧值、选源仍按它保护
+                    try:
+                        manual = dict((getattr(self, "_cs_cfg", {}) or {}).get("site_hours") or {})
+                        if manual.pop(dom, None) is not None:
+                            self._cs_cfg["site_hours"] = manual
+                            self.save_data(key="crossseed_cfg", value=dict(self._cs_cfg))
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return Response(success=True, message=f"{dom} 已标记为「无 H&R」（保种时长已一并清空）",
+                                    data={"rules": self._rules_view()})
                 if val in ("1", "true", "yes", "on"):
                     prev = dict(store.items().get(dom) or {})
-                    hours = prev.get("seed_hours")
-                    if not hours:
-                        hours = self._crossseed_seed_hours(dom) or 24.0
+                    hours = prev.get("seed_need_hours")
+                    if hours is None:
+                        # 只认「达标工时」，不拿期限（窗口，通常 240h）冒充
+                        try:
+                            _known = self._crossseed_seed_need_hours(dom)
+                        except Exception:  # noqa: BLE001
+                            _known = 0.0
+                        hours = _known or 24.0
+                    hours = float(hours)
+                    # ★ 标「有」必须同时给出 **seed_need_hours**，
+                    #   否则判结清读不到达标小时、只能兜底 24h（CARPT 就是 NULL）。
                     store.put(dom, {
-                        "hr": True, "seed_hours": float(hours), "source": "manual", "confidence": "high",
+                        "hr": True,
+                        "seed_need_hours": hours,
+                        "source": "manual", "confidence": "high",
                         "evidence": "手填：该站有 H&R（按此保护）",
                     })
                     return Response(
                         success=True,
-                        message=f"{dom} 已标记为「有 H&R」（手动，按 {float(hours):g}h 保护；如需改时长直接编辑「保种(h)」）",
+                        message=f"{dom} 已标记为「有 H&R」（按 {hours:g}h 达标；改时长直接编辑「达标小时」列）",
                         data={"rules": self._rules_view()},
                     )
                 # 其余（unknown/空/其它）= 取消手填，交还探测

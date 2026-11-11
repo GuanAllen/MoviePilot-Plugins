@@ -90,6 +90,7 @@ const _sfc_main$s = {
   daily: { type: Array, default: () => [] },
   loading: { type: Boolean, default: false },
   scopeItems: { type: Array, default: () => [] },
+  uploadIncrement: { type: Number, default: null },
 },
   emits: ['update:modelValue', 'update:scope', 'update:ident', 'update:hours', 'refresh'],
   setup(__props, { emit: __emit }) {
@@ -352,6 +353,20 @@ return (_ctx, _cache) => {
                       ]),
                       _: 1
                     }, 8, ["class"]),
+                    (__props.scope === 'task' && __props.uploadIncrement != null)
+                      ? (_openBlock$s(), _createBlock$p(_component_VSheet, {
+                          key: 0,
+                          tag: "section",
+                          class: "mf-trend__card is-up",
+                          style: {"margin-top":"8px"}
+                        }, {
+                          default: _withCtx$p(() => [
+                            _createElementVNode$s("div", _hoisted_4$n, "该窗口（" + _toDisplayString$s(__props.hours) + "h）本任务实际上传", 1),
+                            _createElementVNode$s("div", _hoisted_5$n, _toDisplayString$s(_unref$c(formatBytes)(__props.uploadIncrement)) + "（qB 本地累计，按采样差分取非负累加，种子轮换不丢值）", 1)
+                          ]),
+                          _: 1
+                        }))
+                      : _createCommentVNode$p("", true),
                     (metrics.value.length)
                       ? (_openBlock$s(), _createElementBlock$o("div", _hoisted_6$m, [
                           (_openBlock$s(true), _createElementBlock$o(_Fragment$o, null, _renderList$m(metrics.value, (m) => {

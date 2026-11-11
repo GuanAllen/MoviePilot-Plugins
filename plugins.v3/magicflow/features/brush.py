@@ -864,16 +864,25 @@ class BrushMixin:
             for _pre in ("tracker.", "www."):
                 if host.startswith(_pre) and len(host) > len(_pre) + 3:
                     host = host[len(_pre):]
-            if not host:
+            # ★ 19.12.54：主 tracker 为空时看「全部 announce 域名」，任一命中本站即可。
+            #   qB 首公告常是站点历史域名（财神 tracker.cspt.cc），只取第一个会判成外站。
+            hosts = [host] if host else []
+            if not hosts:
                 # 逐 hash 兜底（qB tracker 字段常为空）
                 try:
                     if dl is None:
                         dl = self._get_downloader()
                     if dl is not None:
-                        host = str(dl.tracker_domain(hh) or "").strip().lower()
+                        _all = getattr(dl, "tracker_domains", None)
+                        if callable(_all):
+                            hosts = [str(x or "").strip().lower()
+                                     for x in (_all(hh) or []) if str(x or "").strip()]
+                        else:
+                            _one = str(dl.tracker_domain(hh) or "").strip().lower()
+                            hosts = [_one] if _one else []
                 except Exception:  # noqa: BLE001
-                    host = ""
-            if host and any(k in host for k in keys):
+                    hosts = []
+            if any(k in hd for hd in hosts for k in keys):
                 out.append(hh)
                 seen.add(hh)
         return out
@@ -897,6 +906,30 @@ class BrushMixin:
         keys = self._same_site_keys(task)
         if not keys:
             return {"matched": 0, "adopted": 0, "already": 0, "protected": 0, "self_by_dir": 0}
+        # ★ 19.12.55：职务真值是**账本 state**（ledger.py 由 mf_seed.task_id 推导：
+        #   空=静默 / 非空=按任务类型刷流·魔力），qB 标签只是它的镜像。历史遣散/半态
+        #   会留下「账本=静默、qB 仍挂本任务职务标签」的脱节种 —— 旧判据只看标签，
+        #   把它们当成「已在岗」永久跳过 → 账本不改写 → 静默池硬不变量每轮补 pause，
+        #   dlops 的 resume 守卫又因 state=静默 拒恢复 ⇒ 没有自动出口（财神实测 67 颗）。
+        #   只补这一种**脱节态**；且**只对 running 任务**生效：静默池招人应由真正在
+        #   跑加种循环的任务按需发起，避免 seeding/stopped 任务的 Check 巡检一次性
+        #   把全库同类脱节种拉起来（实测全库 422 颗 / 财神 69 颗）。
+        _duty_state = ""
+        try:
+            _, _duty_state = self._task_site_state(task)
+        except Exception:  # noqa: BLE001
+            _duty_state = (STATE_BRUSH if str(getattr(task, "task_type", "bonus")
+                                              or "bonus").lower() == "brush"
+                           else STATE_BONUS)
+        _reclaim_stale = False
+        _ledger_map: Dict[str, Dict[str, Any]] = {}
+        try:
+            _reclaim_stale = bool(task_is_running(task))
+            if _reclaim_stale:
+                # items() 是「写失效 memo」，返回只读缓存字典本身（不拷贝）
+                _ledger_map = self._tag_state().items() or {}
+        except Exception:  # noqa: BLE001
+            _reclaim_stale, _ledger_map = False, {}
         store = self._store
         adopted_set = store.get_adopted(task.id) if store else set()
         matched = adopted = already = 0
@@ -917,16 +950,27 @@ class BrushMixin:
                     host = (urlparse(tr).hostname or "").lower()
                 except Exception:
                     host = ""
-            if not host and h:
+            # ★ 19.12.54：主 tracker 为空时取「全部 announce 域名」，任一命中本站即可。
+            #   qB 首公告常是历史域名（财神 tracker.cspt.cc）、次公告才是现行
+            #   tracker.cspt.top —— 旧 tracker_domain() 只返回第一个，实测 26 颗
+            #   静默种因此被判成外站，连 matched 都进不去（13:15 日志 matched=161）。
+            hosts = [host] if host else []
+            if not hosts and h:
                 # ★ 7.16.1 兜底：qB 的 tracker 字段对「暂停 / 未汇报」的种**常为空**
                 #   （本机实测 250/726），但逐 hash 的 torrents_trackers 能拿到真实
                 #   announce 域名。旧代码 `if not tr: continue` 直接把这类种排除 →
                 #   做种中任务永远纳管不到它们（PT时间 27 个种全被漏掉的实际 bug）。
                 try:
-                    host = str(downloader.tracker_domain(h) or "").strip().lower()
+                    _all = getattr(downloader, "tracker_domains", None)
+                    if callable(_all):
+                        hosts = [str(x or "").strip().lower()
+                                 for x in (_all(h) or []) if str(x or "").strip()]
+                    else:
+                        _one = str(downloader.tracker_domain(h) or "").strip().lower()
+                        hosts = [_one] if _one else []
                 except Exception:  # noqa: BLE001
-                    host = ""
-            if not host or not any(k in host for k in keys):
+                    hosts = []
+            if not hosts or not any(k in hd for hd in hosts for k in keys):
                 continue
             if not h:
                 continue
@@ -941,7 +985,16 @@ class BrushMixin:
             # ★ 跨站来源份（H&R 保种期内）不属于任何任务：不纳管、不改标签
             if h in _cs_src_hashes:
                 continue
-            if task.brush_tag not in list(tags):
+            _has_duty_tag = task.brush_tag in list(tags)
+            _stale = False
+            if _has_duty_tag and _reclaim_stale:
+                try:
+                    _rec_stale = _ledger_map.get(h) or {}
+                    _stale = str(_rec_stale.get("state") or "") != _duty_state
+                except Exception:  # noqa: BLE001
+                    _stale = False
+            # 没标签 → 旧行为照常补；有标签但账本职务不是本任务 → 脱节态重新纳管
+            if (not _has_duty_tag) or _stale:
                 to_tag.append(h)
 
             if h in adopted_set:

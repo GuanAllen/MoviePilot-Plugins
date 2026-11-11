@@ -196,29 +196,17 @@ class LedgerBackend:
         return self._name_by_id
 
     def _site_id(self, name: str, *, create: bool = True) -> Optional[int]:
+        """按站名查 ``mf_site`` 行的 id（= MP 站点 id）。**不再补建行**。
+
+        ★ 19.12.53：``mf_site`` 是以 MP id 为主键的属性表，没有 MP 权威 id 就不能建行；
+          过去这里 ``max(site_id)+1`` 凭一个名字造行，是 20/21 号无主行的来源之一。
+          ``create`` 仅为兼容既有调用签名保留，恒不生效。
+        """
         key = str(name or "").strip()
         if not key:
             return None
         self._site_names()
-        sid = self._site_by_name.get(key.lower())
-        if sid is not None or not create:
-            return sid
-        try:                                     # 新站点：补一行，保持引用完整
-            sess = self._session()
-            try:
-                top = sess.execute(select(mfdb.SiteRow.site_id).order_by(mfdb.SiteRow.site_id.desc()).limit(1)).scalar()
-                sid = int(top or 0) + 1
-                now = time.time()
-                sess.merge(mfdb.SiteRow(site_id=sid, name=key, created=now, updated=now))
-                sess.commit()
-            finally:
-                sess.close()
-        except Exception as err:  # noqa: BLE001
-            self._log(f"账本:补站点「{key}」失败:{err}", "warning")
-            return None
-        self._name_by_id[sid] = key
-        self._site_by_name[key.lower()] = sid
-        return sid
+        return self._site_by_name.get(key.lower())
 
     def _task_name(self, task_id: Any) -> str:
         """任务 id → 展示名。固定 id 的岗位查注册表，真任务查配置。

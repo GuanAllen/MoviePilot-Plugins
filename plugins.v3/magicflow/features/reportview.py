@@ -165,12 +165,20 @@ def _site_need_hours(rec: Dict[str, Any]) -> float:
 
 
 def _site_protect_hours(rec: Dict[str, Any]) -> float:
-    """站点行的**保护窗口**（h）：规则库 ``seed_hours``（保守取满窗口，学校站 = 240h）。
+    """站点行的**保护窗口**（h）：规则库期限（``seed_window_hours``，学校 = 240h）。
 
+    取值统一走 ``rules.span_hours``（含旧键 ``seed_hours`` 回退）。
     与 ``need_h``（义务工时）是**两个不同的量**，字段名必须分开（见 ``_site_need_hours``）。
     取不到 → 与旧行为一致保守 ``NEED_HOURS_DEFAULT``（24.0）。
     """
-    return _as_float((rec or {}).get("seed_hours"), NEED_HOURS_DEFAULT)
+    try:
+        from ..sites.rules import span_hours
+        v = span_hours(rec)
+    except Exception:  # noqa: BLE001
+        v = None
+    if v is None:
+        return float(NEED_HOURS_DEFAULT)
+    return float(v)
 
 
 def _truthy(v: Any) -> bool:
@@ -808,7 +816,7 @@ def view_hr(ctx: Dict[str, Any], site: str = "", live: int = 0,
 
     - ``need_h``    = **义务工时**（h）：站点行取规则 ``seed_need_hours``（学校站 20h），
       账单行/``items[].need_h`` 取账单 ``need_h``；两处同名同义。
-    - ``protect_h`` = **保护窗口**（h）：站点行取规则 ``seed_hours``（保守取满窗口，学校站 240h），
+    - ``protect_h`` = **保护窗口**（h）：站点行取规则期限 ``seed_window_hours``（学校站 240h），
       仅站点行有；与 ``need_h`` 不是一个量，**不要混用**。
     - ``window_h``  = 实测考核窗口（``_hr_window_hours``），语义不变。
     """

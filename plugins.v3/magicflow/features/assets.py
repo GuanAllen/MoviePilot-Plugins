@@ -4,6 +4,7 @@
 （由原 `__init__.py` 拆分为 mixin，逐字搬运，行为不变。）
 """
 
+import json
 import re
 import time
 from datetime import datetime
@@ -724,6 +725,16 @@ class AssetsMixin:
         except Exception:  # noqa: BLE001
             gitems = {}
 
+        # ★ 19.12.64：「媒体库状态」的另一套真值 = MP 整理历史 dest（60s 缓存）。
+        #   与 ``in_library``（魔流资源账本）**彻底分开**：这里回答「飞牛影视/MP 媒体库
+        #   里能不能点开看」，那里回答「魔流是否把它当保种资产」。二者不等价，
+        #   历史上有 59% 的资源账本资产在媒体库里查无此片（多为刷流原盘电影）。
+        try:
+            _dests = dict(get_backend(self)._transfer_dests() or {})
+        except Exception:  # noqa: BLE001
+            _dests = {}
+        _verify_cache = dict(getattr(self, "_asset_verify_cache", {}) or {})
+
         # ★ 15.8.18：媒体库内容名索引（media_id → 干净剧名/片名），供 name 优先显示，
         #   查不到的回退种子标题兜底。一次拉取、全列表复用。
         try:
@@ -835,6 +846,25 @@ class AssetsMixin:
                     _sg = max([float(m.get("size_gb") or 0) for m in mrows] or [0.0])
                 except Exception:  # noqa: BLE001
                     _sg = 0.0
+            # ★ 19.12.64：媒体库状态（四态，纯派生、零写库）
+            #   in_media      = MP 整理历史有落点且落点仍存在 → 媒体库里能看到
+            #   dest_missing  = 有整理记录但落点已不在（库目录被挪/删）
+            #   seeding_only  = 从未整理入库，只在下载器做种（刷流原盘绝大多数属此类）
+            #   stale         = 连下载器里都没有（仅账本残留）
+            _mdest = ""
+            for _m in mrows:
+                _mdest = str(_dests.get(str(_m.get("hash") or "").lower()) or "").strip()
+                if _mdest:
+                    break
+            if _mdest:
+                try:
+                    _ml = "in_media" if Path(_mdest).exists() else "dest_missing"
+                except Exception:  # noqa: BLE001
+                    _ml = "dest_missing"
+            elif not live:
+                _ml = "stale"
+            else:
+                _ml = "seeding_only"
             rows.append({
                 "resource_id": str(gid),
                 "name": name or "(未命名资源)",
@@ -842,6 +872,9 @@ class AssetsMixin:
                 "source_site": str(rec.get("source_site") or ""),
                 "identity": str(rec.get("identity") or ""),
                 "in_library": in_lib,
+                "media_library": _ml,
+                "media_dest": _mdest,
+                "organize_verify": _verify_cache.get(str(gid)) or None,
                 "sites": sites,
                 "site_count": len(sites),
                 "member_count": len(mrows),
@@ -984,7 +1017,18 @@ class AssetsMixin:
             return False, str(err)
 
     def _asset_organize(self, item: Dict[str, Any]) -> Tuple[bool, str]:
-        """重新整理入库：让 MP 把这份资源的文件**再换个地方**（复用推荐链路的整理实现）。"""
+        """★ 19.12.64 重新整理入库：**以 link 方式只整理代表种，其余成员只核验**。
+
+        一份资源 = 同一份文件被多站各挂一颗种（Toy Story 14 站共用一个 BDMV 原盘）。
+        这里只把 ``source_hash``（缺则第一颗 live 成员）交给 MP 整理；同组其余成员
+        **不整理、不 recheck、不改任何状态**。三点护栏：
+
+        1. 显式 ``transfer_type="link"``，不吃系统默认 —— 默认若被改回 move，
+           会把十余颗共用的源文件搬走，整组坏种；
+        2. 整理后回读整理历史 ``dest``、确认落点存在；
+        3. 只读确认同组其余成员仍 online / 100%，**绝不做 qB 强制校验**（那是重读盘
+           校验种子完整性，与「媒体库有没有这片」无关，57G×13 纯 IO 浪费还会改状态）。
+        """
         seed = ""
         for m in (item.get("members") or []):
             if str(m.get("hash") or "").lower() == str(item.get("source_hash") or "").lower():
@@ -1003,8 +1047,96 @@ class AssetsMixin:
             best = str(item.get("source_hash") or "").lower()
         else:
             best = live[0]
-        ok, msg = self._recommend_import(best, {"title": seed or str(item.get("name") or "")})
-        return bool(ok), str(msg)
+        ok, msg = self._recommend_import(
+            best, {"title": seed or str(item.get("name") or "")}, transfer_type="link")
+        if not ok:
+            return False, str(msg)
+        return True, self._asset_organize_verify(item, best, str(msg))
+
+    def _asset_organize_verify(self, item: Dict[str, Any], seed_hash: str,
+                               base_msg: str = "") -> str:
+        """★ 19.12.64 整理后**按组核验**（全只读，不 recheck、不改种子状态）。
+
+        核验结果同时写进 ``self._asset_verify_cache``（进程内派生视图，**不落账本**，
+        避开 sitestore 白名单），下次 ``_asset_rows`` 会把它挂到资源行 ``organize_verify``。
+        """
+        rid = str(item.get("resource_id") or "")
+        members = list(item.get("members") or [])
+        others = max(0, len(members) - 1)
+        # ① 整理落点：刚整理完，60s 缓存可能还是旧的 → 主动失效再回读
+        dest = ""
+        dest_ok = False
+        try:
+            _be = get_backend(self)
+            _be._transfer_dests_cache = None
+            dest = str((dict(_be._transfer_dests() or {})).get(str(seed_hash).lower()) or "").strip()
+            if dest:
+                dest_ok = Path(dest).exists()
+        except Exception:  # noqa: BLE001
+            dest = ""
+        # ② 同组其余成员：只读下载器快照（progress / online），绝不 recheck
+        try:
+            snap = self._tag_all_torrents() or {}
+        except Exception:  # noqa: BLE001
+            snap = {}
+        online = 0
+        full = 0
+        for m in members:
+            h = str(m.get("hash") or "").lower()
+            t = snap.get(h)
+            if t is None:
+                continue
+            online += 1
+            try:
+                if float(getattr(t, "progress", 0) or 0) >= 0.999:
+                    full += 1
+            except Exception:  # noqa: BLE001
+                pass
+        # ③ 硬护栏：代表种的源路径是否还在（link 不动源；move 会把它搬走）
+        src_ok: Optional[bool] = None
+        try:
+            _t0 = snap.get(str(seed_hash).lower())
+            _p = ""
+            if _t0 is not None:
+                _p = str(getattr(_t0, "content_path", "") or getattr(_t0, "path", "")
+                         or getattr(_t0, "save_path", "") or "")
+            if _p:
+                try:
+                    _dl = self._get_downloader("qbittorrent")
+                    if _dl is not None:
+                        _p = str(_dl.normalize_path(_p) or _p)
+                except Exception:  # noqa: BLE001
+                    pass
+                src_ok = Path(_p).exists()
+        except Exception:  # noqa: BLE001
+            src_ok = None
+        report = {
+            "at": time.time(), "seed_hash": str(seed_hash).lower(),
+            "dest": dest, "dest_ok": bool(dest_ok),
+            "members": len(members), "others": others,
+            "online": online, "full": full,
+            "source_intact": src_ok, "recheck": False,
+        }
+        try:
+            cache = getattr(self, "_asset_verify_cache", None)
+            if cache is None:
+                cache = {}
+                self._asset_verify_cache = cache
+            cache[rid] = report
+        except Exception:  # noqa: BLE001
+            pass
+        parts = [str(base_msg or "").strip() or "整理完成", "方式=link（源文件不动）"]
+        if dest:
+            parts.append("落点=%s%s" % (dest, "" if dest_ok else "（落点尚不可见，等下一轮回读）"))
+        else:
+            parts.append("落点=暂无整理记录（可能识别失败/仍在队列，下一轮回读）")
+        parts.append("同组其余 %d 颗：在线 %d / 100%% %d（未 recheck）" % (others, max(0, online - 1), full))
+        if src_ok is True:
+            parts.append("源路径仍在 ✓")
+        elif src_ok is False:
+            parts.append("源路径未确认可达（可能是路径映射，需人工看一眼）")
+        self._log("资产整理核验 %s: %s" % (rid[:16], json.dumps(report, ensure_ascii=False)), "info")
+        return "；".join(parts)
 
     def _asset_scrape(self, name: str, source: str = "", hashes: Optional[List[str]] = None
                       ) -> Tuple[bool, str]:
@@ -1179,22 +1311,159 @@ class AssetsMixin:
                 _b = str(r.get("block") or "")
                 if _b:
                     by_reason[_b] = by_reason.get(_b, 0) + 1
+            _ml_stat: Dict[str, int] = {}
+            for r in rows:
+                _k = str(r.get("media_library") or "")
+                _ml_stat[_k] = _ml_stat.get(_k, 0) + 1
             counts = {
                 "total": len(rows),
                 "deletable": sum(1 for r in rows if r.get("deletable")),
                 "blocked": sum(1 for r in rows if r.get("block")),
                 "manual_keep": sum(1 for r in rows if r.get("protected")),
                 "by_reason": by_reason,
+                # ★ 19.12.64：媒体库状态分布（与 in_library 分开看）
+                "in_media": _ml_stat.get("in_media", 0),
+                "seeding_only": _ml_stat.get("seeding_only", 0),
+                "dest_missing": _ml_stat.get("dest_missing", 0),
+                "by_media_library": _ml_stat,
             }
             return Response(
                 success=True,
                 message=(f"库内资产 {counts['total']} 份资源"
-                         f"（可删 {counts['deletable']} / 被拦 {counts['blocked']}）"),
+                         f"（可删 {counts['deletable']} / 被拦 {counts['blocked']}"
+                         f" / 媒体库已入库 {counts['in_media']}）"),
                 data={"items": rows, "counts": counts, "scanned_at": time.time()},
             )
         except Exception as e:  # noqa: BLE001
             self._log(f"库内资产列表失败: {e}", "error")
             return Response(success=False, message=str(e))
+
+    def assets_organize_preview(self, limit: int = 0, only_missing: int = 1) -> Response:
+        """★ 19.12.64 整理预演清单（**纯只读**）：挑一颗代表种整理 + 其余只核验。
+
+        不调用 ``TransferChain``、不 recheck、不写账本、不改任何种子状态、不删任何东西。
+        判据 = MP 整理历史 ``dest``（媒体库状态）+ qB ``content_path``（源在哪）
+        + 同组成员只读快照。给 Master 先看清单再决定要不要真跑，避免全量整理。
+
+        - ``only_missing=1``（默认）：只看还没进媒体库的；``=0`` 连已入库的也列出。
+        - ``limit``：截断条数（0 = 全部）。
+        """
+        try:
+            snap = self._tag_all_torrents() or {}
+        except Exception as e:  # noqa: BLE001
+            return Response(success=False, message=f"读取下载器快照失败：{e}")
+        try:
+            rows = self._asset_rows(snap=snap, include_stale=False)
+        except Exception as e:  # noqa: BLE001
+            return Response(success=False, message=f"读取资源行失败：{e}")
+        try:
+            dl = self._get_downloader("qbittorrent")
+        except Exception:  # noqa: BLE001
+            dl = None
+
+        def _norm(p: str) -> str:
+            if not p:
+                return ""
+            if dl is not None:
+                try:
+                    return str(dl.normalize_path(str(p)) or p)
+                except Exception:  # noqa: BLE001
+                    pass
+            return str(p)
+
+        items: List[Dict[str, Any]] = []
+        for r in rows:
+            ml = str(r.get("media_library") or "")
+            if int(only_missing or 0) and ml == "in_media":
+                continue
+            live = [m for m in (r.get("members") or []) if m.get("in_qb")]
+            src = str(r.get("source_hash") or "").lower()
+            rep = next((m for m in live if str(m.get("hash") or "").lower() == src), None)
+            if rep is None:
+                rep = live[0] if live else {}
+            h = str(rep.get("hash") or "").lower()
+            t = snap.get(h) if h else None
+            raw_path = ""
+            if t is not None:
+                raw_path = str(getattr(t, "content_path", "") or getattr(t, "path", "")
+                               or getattr(t, "save_path", "") or "")
+            p = _norm(raw_path)
+            exists = False
+            is_dir = False
+            bdmv = False
+            if p:
+                try:
+                    _pp = Path(p)
+                    exists = _pp.exists()
+                    is_dir = _pp.is_dir()
+                    bdmv = is_dir and ((_pp / "BDMV").exists() or p.lower().endswith(".iso"))
+                except Exception:  # noqa: BLE001
+                    pass
+            if ml == "in_media":
+                verdict, reason = "skip_in_media", "媒体库里已有落点，无需整理"
+            elif not live:
+                verdict, reason = "skip_no_qb", "不在下载器（仅账本残留）"
+            elif not p or not exists:
+                verdict, reason = "manual_path", "源路径不可达（路径映射/跨卷/账本残留），需人工核"
+            else:
+                verdict, reason = "ready", "可整理：只取代表种，link 入库，其余成员不动"
+            name = str(r.get("name") or "")
+            items.append({
+                "resource_id": str(r.get("resource_id") or ""),
+                "name": name,
+                "kind": "movie" if re.search(r"\((19|20)\d{2}\)", name) else "other",
+                "media_library": ml,
+                "media_dest": str(r.get("media_dest") or ""),
+                "seed_hash": h,
+                "seed_title": str(rep.get("title") or ""),
+                "content_path": p,
+                "path_exists": bool(exists),
+                "is_dir": bool(is_dir),
+                "is_bdmv": bool(bdmv),
+                "member_count": int(r.get("member_count") or 0),
+                "members_in_qb": int(r.get("members_in_qb") or 0),
+                "size_gb": float(r.get("size_gb") or 0),
+                "verdict": verdict,
+                "reason": reason,
+            })
+        items.sort(key=lambda x: (0 if x["verdict"] == "ready" else 1,
+                                  -float(x.get("size_gb") or 0), str(x.get("name") or "")))
+        # 统计先按**全量**算，再截断返回，避免 limit 让计数对不上
+        vc: Dict[str, int] = {}
+        for it in items:
+            _k = str(it["verdict"])
+            vc[_k] = vc.get(_k, 0) + 1
+        counts = {
+            "total": len(items),
+            "returned": 0,
+            "ready": vc.get("ready", 0),
+            "manual_path": vc.get("manual_path", 0),
+            "skip_in_media": vc.get("skip_in_media", 0),
+            "movie": sum(1 for x in items if x["kind"] == "movie"),
+            "bdmv": sum(1 for x in items if x["is_bdmv"]),
+            "by_verdict": vc,
+        }
+        if limit and int(limit) > 0:
+            items = items[: int(limit)]
+        counts["returned"] = len(items)
+        return Response(
+            success=True,
+            message=(f"整理预演（只读，未触发任何整理）：{counts['total']} 份待看，"
+                     f"可整理 {counts['ready']} / 需人工 {counts['manual_path']}"),
+            data={
+                "items": items,
+                "counts": counts,
+                "policy": {
+                    "pick": "每份资源只取 source_hash（缺失则第一颗 live 成员）",
+                    "transfer_type": "link（显式指定，不吃系统默认）",
+                    "others": "同组其余成员不整理、不 recheck、不改状态，仅只读核验 online/progress",
+                    "verify": "整理后回读 transferhistory.dest + 源路径仍在",
+                    "on_failure": "失败项单列，不自动重试、不自动删",
+                    "readonly": True,
+                },
+                "scanned_at": time.time(),
+            },
+        )
 
     def assets_view(self, view: str = "summary", q: str = "", resource_id: str = "",
                     sort: str = "size", limit: int = 50, cursor: str = "",

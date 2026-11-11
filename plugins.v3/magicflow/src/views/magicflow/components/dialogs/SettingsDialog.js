@@ -2590,13 +2590,13 @@ return (_ctx, _cache) => {
                                                           ]))]),
                                                           _: 1
                                                         })),
-                                                  (row.hr === false)
+                                                  (row.hr === false && row.hr_source === 'manual')
                                                     ? (_openBlock$c(), _createBlock$a(_component_VBtn, {
                                                         key: 3,
                                                         size: "x-small",
                                                         variant: "text",
                                                         disabled: __props.rulesProbing,
-                                                        title: "恢复为探测/内置判定",
+                                                        title: "恢复为探测/内置判定（清除手动标记）",
                                                         onClick: $event => (emit('set-rule-hr', row, 'unknown'))
                                                       }, {
                                                         default: _withCtx$a(() => [...(_cache[234] || (_cache[234] = [
