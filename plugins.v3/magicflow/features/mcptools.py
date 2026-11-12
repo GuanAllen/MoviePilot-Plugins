@@ -9,7 +9,7 @@ MP v3 的插件可以实现 ``get_agent_tools()`` 返回 ``MoviePilotTool`` 子�
 本模块把 ``_agent_endpoints()``（**唯一真值源**）里的端点机械地包成工具，不手抄一遍参数：
 
 - ``scope="core"``（默认）：常用业务工具（任务/站点/账单/H&R/补源/点播/库内资源/推荐/音乐/队列/设置…）
-- ``scope="all"``：76 个端点全注册（= ``_agent_endpoints()`` 当前条数）
+- ``scope="all"``：84 个端点全注册（= ``_agent_endpoints()`` 当前条数）
 - 另附万能 ``magicflow_agent_api``：按 path 调**任意已登记** ``/agent/*`` 端点（含未进 core 的）
 
 约定
@@ -75,6 +75,7 @@ CORE_TOOLS: Tuple[Tuple[str, str], ...] = (
     ("/agent/ondemand/add_direct", "magicflow_ondemand_add_direct"),
     # ---- 库内资源 / 推荐 ----
     ("/agent/assets", "magicflow_assets"),
+    ("/agent/assets/organize/preview", "magicflow_assets_organize_preview"),
     ("/agent/recommend", "magicflow_recommend"),
     # ---- 音乐 ----
     ("/agent/music/search", "magicflow_music_search"),
@@ -84,11 +85,13 @@ CORE_TOOLS: Tuple[Tuple[str, str], ...] = (
     ("/agent/settings", "magicflow_settings"),
     # ---- 写（会动下载器/账本/订阅）----
     ("/agent/ondemand/act", "magicflow_ondemand_act"),
+    ("/agent/ondemand/repair", "magicflow_ondemand_repair"),
     ("/agent/assets/act", "magicflow_assets_act"),
     ("/agent/assets/delete", "magicflow_assets_delete"),
     ("/agent/recommend/act", "magicflow_recommend_act"),
     ("/agent/music/download", "magicflow_music_download"),
     ("/agent/music/act", "magicflow_music_act"),
+    ("/agent/music/settle", "magicflow_music_settle"),
     ("/agent/silent/enforce", "magicflow_silent_enforce"),
     ("/agent/tags/reconcile", "magicflow_tags_reconcile"),
     ("/agent/yema/absolve", "magicflow_yema_absolve"),

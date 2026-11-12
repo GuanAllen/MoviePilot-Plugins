@@ -310,6 +310,12 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
                     "confirm": "1=真加种；否则只回干跑计划（干跑也取一次 .torrent 读元数据，不落种）"},
          "returns": "OnDemandAddDirect", "version": AGENT_ENDPOINT_VERSION,
          "summary": "有种子链接但搜不到时直接加：按链接取种落种（不 search、不选源）"},
+        {"path": "/agent/ondemand/repair", "method": "POST", "handler": "agent_ondemand_repair",
+         "write": True,
+         "params": {"confirm": "1=真跑补整理；缺省/非 1 = 干跑（只回报将要做什么，零写入）",
+                    "force": "1=忽略退避与次数上限并清零计数（默认）；0=按退避跳过"},
+         "returns": "OnDemandRepair", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "点播补整理：把「已转资源·未入库」的历史行重跑 MP 整理（修好识别能力后一次补回来；写，需 confirm=1）"},
         {"path": "/agent/music/search", "method": "POST", "handler": "agent_music_search",
          "write": False,
          "params": {"query": "str 关键词（首页必填；缺了报 bad_param；续页留空）",
@@ -359,11 +365,18 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
         {"path": "/agent/assets/delete", "method": "POST", "handler": "agent_assets_delete",
          "write": True,
          "params": {"resource_ids": "逗号/空格分隔的资源 id（只认库内资产；其余拒收）",
+                    "hashes": "兼容：成员 hash（逗号/空格分隔；与 resource_ids 二选一，给了资源 id 就忽略它）",
                     "delete_files": "1=连文件一起删（不可恢复）；缺省 0=只删种保文件",
                     "confirm": "1=真删；缺省/非 1 = 干跑（零写入）",
                     "reason": "删除原因（进统一删除台账 mf_deletions）"},
          "returns": "AssetDeleteReport", "version": AGENT_ENDPOINT_VERSION,
          "summary": "⚠不可恢复：真删整份库内资产（全组删完才连文件删，只破「永不删」一道闸）"},
+        {"path": "/agent/assets/organize/preview", "method": "GET",
+         "handler": "agent_assets_organize_preview", "write": False,
+         "params": {"limit": "int 最多列几条（默认 0=全部；counts 恒按全量算，不受 limit 影响）",
+                    "only_missing": "int 1=只看还没进媒体库的（默认）；0=连已入库的也列"},
+         "returns": "AssetOrganizePreview", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "整理前先看清单：哪些资源能 link 入库、哪些要人工核（纯只读，不触发整理/不 recheck/不写账本/不改种子状态）"},
         # ---- P1.5c：功能域只读（AI ⊇ 前端，收编 19 个只读豁免域）----
         {"path": "/agent/tasks/{id}/bonus", "method": "GET", "handler": "agent_task_bonus", "write": False,
          "params": {"id": "任务 id 路径参数"}, "returns": "TaskBonusReport",
@@ -375,9 +388,10 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
          "params": {"id": "任务 id 路径参数"}, "returns": "TaskHandoverReport",
          "version": AGENT_ENDPOINT_VERSION, "summary": "任务交棒预览"},
         {"path": "/agent/recommend", "method": "GET", "handler": "agent_recommend", "write": False,
-         "params": {}, "returns": "RecommendReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "有什么值得订：推荐甄别结果"
-                    "（注意：无参数可缩，实测约 255KB —— 超 30k 会被截断，只能看到开头几条）"},
+         "params": {"status": "按状态收窄：recommended（待定，最有用）/ pending / confirmed / downgraded / dismissed；逗号分隔可多选；空=全部",
+                    "limit": "int 最多返回几条（默认 50，0=全部；status_counts/total 恒按全量算）"},
+         "returns": "RecommendReport", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "有什么值得订：推荐甄别结果（全量约 400KB / 479 条会被 30k 截断，务必用 status=recommended 或 limit 收窄）"},
         {"path": "/agent/jobs", "method": "GET", "handler": "agent_jobs", "write": False,
          "params": {"limit": "int 最多返回多少条（默认 50）"},
          "returns": "JobList", "version": AGENT_ENDPOINT_VERSION,
@@ -2020,3 +2034,64 @@ class AgentApiMixin:
             "results": data.get("results") or [],
             "note": str(getattr(resp, "message", "") or ""),
         }, t0)
+
+    # ---------------------------------------------------------- 19.12.66 · MCP P0/P1
+    def agent_assets_organize_preview(self, limit: Any = 0,
+                                      only_missing: Any = 1) -> Dict[str, Any]:
+        """``GET /agent/assets/organize/preview`` —— 整理预演清单（**纯只读**）。
+
+        与前端 ``GET /assets/organize/preview`` 同一实现（``assets_organize_preview``）：
+        不调 TransferChain、不 recheck、不写账本、不改种子状态、不删任何东西。
+        AI 侧只做参数归一化 + 信封规整，不另写一套判定（AI ⊇ 前端同口径）。
+        """
+        t0 = time.time()
+        fn = getattr(self, "assets_organize_preview", None)
+        if not callable(fn):
+            return self._agent_err("unavailable", "当前版本没有整理预演入口", t0)
+        try:
+            _lim = max(0, int(limit or 0))
+        except (TypeError, ValueError):
+            return self._agent_err("bad_param", "limit 需要整数", t0, field="limit")
+        _miss = 0 if str(only_missing).strip().lower() in ("0", "false", "no", "off") else 1
+        try:
+            resp = fn(limit=_lim, only_missing=_miss)
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"整理预演失败: {e}", t0)
+        if not getattr(resp, "success", False):
+            return self._agent_err(
+                "internal", str(getattr(resp, "message", "") or "整理预演失败"), t0)
+        data = dict(getattr(resp, "data", None) or {})
+        data.setdefault("message", str(getattr(resp, "message", "") or ""))
+        return self._agent_ok(data, t0)
+
+    def agent_ondemand_repair(self, confirm: Any = "", force: Any = 1) -> Dict[str, Any]:
+        """``POST /agent/ondemand/repair`` —— 点播补整理（写，confirm 门禁）。
+
+        与前端 ``POST /ondemand/repair`` 同一实现（``ondemand_repair``）：把
+        ``stage=resource && in_library=False`` 的历史行重跑 MP 整理。
+        AI 侧多一道 ``confirm``：缺省恒零写入（干跑只回报将要做什么），
+        避免一句话把带退避/次数上限的重试全烧掉。
+        """
+        t0 = time.time()
+        _ok = str(confirm).strip().lower() in ("1", "true", "yes", "y", "on")
+        _force = 0 if str(force).strip().lower() in ("0", "false", "no", "off", "") else 1
+        if not _ok:
+            return self._agent_ok({
+                "dry_run": True,
+                "would_run": ("ondemand_repair(force=%d)：把「已转资源·未入库」的"
+                              "历史行重跑 MP 整理" % _force),
+                "hint": "确认后带 confirm=1 再调；缺省零写入",
+            }, t0)
+        fn = getattr(self, "ondemand_repair", None)
+        if not callable(fn):
+            return self._agent_err("unavailable", "当前版本没有补整理入口", t0)
+        try:
+            resp = fn(force=str(_force))
+        except Exception as e:  # noqa: BLE001
+            return self._agent_err("internal", f"补整理失败: {e}", t0)
+        if not getattr(resp, "success", False):
+            return self._agent_err(
+                "internal", str(getattr(resp, "message", "") or "补整理失败"), t0)
+        data = dict(getattr(resp, "data", None) or {})
+        data.setdefault("message", str(getattr(resp, "message", "") or ""))
+        return self._agent_ok(data, t0)
