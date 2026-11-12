@@ -3,7 +3,7 @@
     "name": "魔流",
     "description": "PT 自动选种与做种管理：魔力养护 + 刷流双模式。",
     "labels": "站点,做种,魔力,刷流",
-    "version": "19.12.65",
+    "version": "19.12.66",
     "icon": "https://raw.githubusercontent.com/GuanAllen/MoviePilot-Plugins/main/icons/magicflow.png",
     "author": "GuanAllen",
     "level": 1,
@@ -25,7 +25,8 @@
       "19.12.6": "与运行副本对齐：19.10.71 → 19.12.6 期间的站点/作业/缓存层改动（dutyreg 岗位真值、collect 拆分、cacheops 等）。本条为版本同步记录，无单独条目说明。",
       "19.12.43": "同步运行副本 19.12.43：H&R 账单/对账、报表视图（reportview/rvstate）、采集链路（collect/collect_parse）、任务编辑面板拆分。",
       "19.12.44": "H&R 通知闸（hrnotify_gate）+ 设置映射单一真值（settingsMap.js）；补 H&R/设置契约与集成测试。",
-      "19.12.65": "同步运行副本 19.12.44 → 19.12.65：HR 判定/对账/报表收敛（新增 hrjudge）、silent/siteops/status 调整、前端设置与页面接线、dist 重建。"
+      "19.12.65": "同步运行副本 19.12.44 → 19.12.65：HR 判定/对账/报表收敛（新增 hrjudge）、silent/siteops/status 调整、前端设置与页面接线、dist 重建。",
+      "19.12.66": "MCP P0/P1 补齐（只改后端 Python，dist 不变）：music/settle 与 assets/organize/preview、ondemand/repair 补具名工具，recommend 加 status/limit 收窄，护栏计数 84/58/59。"
     }
   },
   "version": "19.2.4",
