@@ -28,7 +28,5 @@
       "19.12.65": "同步运行副本 19.12.44 → 19.12.65：HR 判定/对账/报表收敛（新增 hrjudge）、silent/siteops/status 调整、前端设置与页面接线、dist 重建。",
       "19.12.66": "MCP P0/P1 补齐（只改后端 Python，dist 不变）：music/settle 与 assets/organize/preview、ondemand/repair 补具名工具，recommend 加 status/limit 收窄，护栏计数 84/58/59。"
     }
-  },
-  "version": "19.2.4",
-  "history": {}
+  }
 }
