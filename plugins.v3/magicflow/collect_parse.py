@@ -475,9 +475,14 @@ def parse_user_bar(raw: Any) -> Dict[str, Any]:
     if val is not None:
         out["bonus"] = val
     m = re.search(r"title\s*=\s*[\"']?(?:当前做种|做种中|做种)[\"']?[^>]*>[^<]*</font>?\s*([0-9]+)", raw_s)
+    if not m:
+        # ★ 2026-11-12：icon 模板（Depth Studio 实测）——数量前先过「价格图标」片段，中间可能夹 <img>。
+        m = re.search(r"title\s*=\s*[\"']?(?:当前做种|做种中|做种)[\"']?[^>]*>(?:[^<0-9]|<[^>]+>)*?([0-9]+)", raw_s)
     if m:
         out["seeding"] = int(m.group(1))
     m = re.search(r"title\s*=\s*[\"']?(?:当前下载|下载中)[\"']?[^>]*>[^<]*</font>?\s*([0-9]+)", raw_s)
+    if not m:
+        m = re.search(r"title\s*=\s*[\"']?(?:当前下载|下载中)[\"']?[^>]*>(?:[^<0-9]|<[^>]+>)*?([0-9]+)", raw_s)
     if m:
         out["leeching"] = int(m.group(1))
     if out["seeding"] is None:

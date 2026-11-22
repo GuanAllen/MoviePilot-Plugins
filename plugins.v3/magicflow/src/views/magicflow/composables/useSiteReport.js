@@ -14,15 +14,39 @@ export function siteReportBucketColor(b) {
 }
 
 // 明细副标题 = 列字段：传输 / 身份子桶 / qB 状态 / 债务 / 账单（不再当桶）
-export function siteReportItemSub(it) {
+// ★ 19.16.10：拆成逐段返回（保留 stall 标记），供渲染层给「低速」单独上琥珀色（设计稿 .rs .stall）。
+export function siteReportItemParts(it) {
   const parts = []
-  if (it.sub) parts.push(it.sub)
-  if (it.origin) parts.push(it.origin)
-  if (it.transport) parts.push(it.transport)
-  if (it.state) parts.push(it.state)
-  if (it.hr && it.hr.need_left) parts.push(`欠H&R 还需 ${it.hr.need_left}h`)
-  if (it.bill && it.bill.state) parts.push(`账单 ${it.bill.state}${it.bill.rule ? '/' + it.bill.rule : ''}`)
-  return parts.join(' · ')
+  if (it.sub) parts.push({ t: it.sub })
+  if (it.origin) parts.push({ t: it.origin })
+  if (it.transport) parts.push({ t: it.transport })
+  // ★ 19.16.7：qB 内部术语翻成人话（stalledUP = 做种中但速度低），别把术语甩给用户
+  if (it.state) {
+    const st = String(it.state).replace(/stalledUP/gi, '低速')
+    parts.push({ t: st, stall: st.indexOf('低速') >= 0 })
+  }
+  if (it.hr && it.hr.need_left) parts.push({ t: `欠H&R 还需 ${it.hr.need_left}h`, warn: true })
+  if (it.bill && it.bill.state) parts.push({ t: `账单 ${it.bill.state}${it.bill.rule ? '/' + it.bill.rule : ''}` })
+  return parts
+}
+
+export function siteReportItemSub(it) {
+  return siteReportItemParts(it).map(p => p.t).join(' · ')
+}
+
+// ★ 19.16.7：明细主标题拆分且只拆不译——把「中文识别名.English.Release.Name.2026.1080p…」
+//   切成 { main: 中文名, orig: 剩余发布名 }。主行只显示中文名，原名默认折叠、点击展开。
+//   没中文（纯英文发布名）→ 整串作主名、orig 空。只认「.英文/数字」「空格+年份/大写技术词」
+//   两类技术分隔点，避免把中文里的顿号/数字误切。
+export function siteReportTitleParts(title) {
+  const raw = String(title || '').trim()
+  if (!raw) return { main: '', orig: '' }
+  if (!/[\u4e00-\u9fa5]/.test(raw)) return { main: raw, orig: '' }
+  const cut = raw.search(/\.(?=[A-Za-z0-9])|\s+(?=(?:19|20)\d{2}\b|[A-Z][A-Za-z0-9])/)
+  if (cut < 0) return { main: raw, orig: '' }
+  const main = raw.slice(0, cut).trim()
+  const orig = raw.slice(cut).replace(/^[.\s]+/, '').trim()
+  return { main: main || raw, orig }
 }
 
 // 传输三态计数：选中某桶时看该桶内三态（bucket_transport），否则看全局（by_transport）。

@@ -793,6 +793,23 @@ class MusicGrabMixin:
             KEEP_TASK_ID = "__keep__"
         try:
             gid = self._tag_groups().queue_library(h, path=dest or "", media_id="")
+            if not gid:
+                # ★ 19.13.0：`queue_library` 拿不到组 ⇒ 账本里**没有合法文件特征码**
+                #   （建组只认 fp，10.0.0 定的规则）。没有组，`sub` 就无处可写
+                #   → 清单的 `stage` 永远停在 settling（「已下完，待转资源」）——
+                #   现场那条挂了 3 小时就是这么来的。
+                #   原来这里只会打「尚未纳管,已记待办」，然后指望 60 分钟一轮的
+                #   `tags_watch` 补码；而它的节拍被热重载反复归零（实测当天 25 次重载、
+                #   最长空闲 55 分钟，一次没跑到）→ 待办永远兑现不了。
+                #   改成当场补：一次 qB 文件清单调用 + 单颗入组（O(1)），再登记一次。
+                #   ``getattr`` 兜一层：本 mixin 在离线单测里可能不挂 assets，缺方法时退回旧行为。
+                _ensure = getattr(self, "asset_ensure_fp", None)
+                _fp = str((_ensure(_hh0) if callable(_ensure) else "") or "")
+                if _fp:
+                    gid = self._tag_groups().queue_library(h, path=dest or "", media_id="")
+                    if gid:
+                        self._log(f"音乐:补码建组后纳管 {_hh0[:12]} → 资源 {gid[:46]}"
+                                  f"（fp {_fp[:12]}…）")
             _state_store = self._tag_state()  # 复用
             try:
                 _live = (self._tag_all_torrents() or {}).get(_hh0)
@@ -828,44 +845,34 @@ class MusicGrabMixin:
         """
         return media_pin_location(self, h, dest)
 
-    def _music_transfer_now(self, h: str, t: Any, mp_path: str) -> Tuple[bool, str]:
-        """直调 MP ``manual_transfer`` 整理入库（与点播同一条路线）。
+    def _music_transfer_now(self, h: str, t: Any, mp_path: str,
+                            reorganize: bool = False,
+                            transfer_type: str = "link") -> Tuple[bool, str]:
+        """音乐线的**整理壳子** —— 执行体在 ``TransferMixin._transfer_execute``。
 
-        ★ 2026-10-24 铁牛复核：音乐线不再「补历史 + 打 MOVIEPILOT → 等 MP 定时任务」——
-        那条路在 ``transfer_type=link`` 下会让 MP 每分钟重扫同一批源文件（日志刷
-        「已整理过」），且魔流的标签卫生会把 MP 的「已整理」摘掉，两个插件互相打架。
-        直调一次完成：不打 MP 标签 → MP 定时任务天然扫不到，不会并发；
-        失败时用 ``_transfer_already_done`` 兜底（「已整理过」= 文件早在库）。
+        ★ 19.12.95：原来这里是第二份 ``manual_transfer`` 实现，和推荐线各写一遍参数
+        语义，于是同一个坑被各踩一次（``transfer_type`` 漏传变成 copy、``skip_success``
+        与 ``reorganize`` 互斥、redo 被兜成假成功）。现在这里只剩「音乐该用什么参数」，
+        执行 / 异常折叠 / 「已整理过」兜底全在公共层。
+
+        两个仍然是音乐线**专属**的取舍，转成公共层的参数：
+
+        * ``transfer_type`` = **显式锁 ``link``**（★ 19.12.94）。不传时 MP 默认 copy，
+          实测音乐库已积攒 521 个独立副本 / 18.87 GB；``move`` 会搬走源文件整组坏种。
+          前提是库与下载区同文件系统（``/music/library`` 与 ``/music/下载`` 同
+          ``st_dev``），跨盘会明确报错，不静默 copy。
+        * ``reorganize`` → ``mode="redo"``（★ 19.12.93），平时 → ``mode="fresh"``：
+          MP 里 ``skip_success`` **优先于** ``reorganize``，只能二选一。
+
+        ``t`` 是历史签名遗留（本函数从拿种那一刻就被调用，但重试/取路径都在
+        ``_music_import_run`` 里做过），保留只为调用点稳定。
         """
-        key = str(h or "").strip().lower()
-        try:
-            import os  # noqa: WPS433
-
-            from app.chain.transfer import TransferChain  # noqa: WPS433
-            from app.schemas.file import FileItem  # noqa: WPS433
-            from app.schemas.types import MediaType  # noqa: WPS433
-        except Exception as err:  # noqa: BLE001
-            return False, f"MP 整理接口不可用: {err}"
-        path = str(mp_path or "").rstrip("/")
-        if not path or not key:
-            return False, "缺少整理路径或 hash"
-        fileitem = FileItem(path=path, storage="local",
-                            type="dir" if os.path.isdir(path) else "file",
-                            name=os.path.basename(path))
-        try:
-            ok, msg = TransferChain().manual_transfer(
-                fileitem=fileitem,
-                mtype=MediaType.MUSIC,
-                music_type="album",
-                downloader="qbittorrent",
-                download_hash=key,
-                skip_success=True,
-            )
-        except Exception as err:  # noqa: BLE001
-            return False, f"整理异常: {err}"
-        if not ok and self._transfer_already_done(str(msg or "")):
-            return True, str(msg or "已整理过")
-        return bool(ok), str(msg or "")
+        ok, msg, _already = self._transfer_execute(
+            h, path=mp_path, kind="music",
+            target=str(transfer_type or "link"),
+            mode="redo" if reorganize else "fresh",
+        )
+        return bool(ok), msg
 
     def _music_settle_import(self, apply: bool = True, limit: int = 0) -> Dict[str, int]:
         """★ 17.2.0 §1 音乐：下完成的专辑 → 入库（★ 19.12.0 起**入队后台跑**）。
@@ -1001,8 +1008,52 @@ class MusicGrabMixin:
         return "·免费" in str(getattr(op, "reason", "") or "")
 
 
+    @staticmethod
+    def _music_import_fields(irec: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """入库账本 → 清单行上的 4 个只读字段（★ 19.12.87）。
+
+        为什么放进清单：入库失败是**唯一必须人动手**的场景（文件不在原路径 / 标签不全 /
+        目标库写不进），而它原来只活在日志里 —— 用户在「已完成」里看到几十行，分不出
+        哪一首在等他重试。``import_state`` 取值与 ``_music_import_rec`` 一致：
+        ``running`` / ``done`` / ``partial`` / ``failed`` / ``skip``（没做过入库 → 空串）。
+        """
+        r = irec or {}
+        return {
+            "import_state": str(r.get("stage") or ""),
+            "import_failed": int(r.get("failed") or 0),
+            "import_reason": str(r.get("reason") or r.get("msg") or ""),
+            "import_at": fmt_iso_ts(r.get("ts")),
+        }
+
+    def _music_in_library(self, h: str, rec: Optional[Dict[str, Any]] = None) -> bool:
+        """「已入库」的真值 = **资源组的库记**（``mf_resource.library.in_library``）。
+
+        ★ 19.13.1：原来直接读账本行的 ``in_library``，而那个字段从 12.0.0 起**就没人写了**
+        （库记只落资源侧，见 ``SeedLedgerStore.set_asset`` 的注释）→ 恒 False。
+        症状：资产页明明「已入库」（还带着 ``media_dest``），音乐清单却只显示「已转「资源」」，
+        两处对不上 —— 用户分不清「进库了没」。
+
+        账本行若显式有值（老数据/手工修过）仍以它为准，没有才回落到资源组。
+        """
+        r = rec if isinstance(rec, dict) else {}
+        try:
+            if r.get("in_library") is not None:
+                return bool(r.get("in_library"))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            groups = self._tag_groups()
+            gid = groups.group_of(str(h or "").strip().lower())
+            if not gid:
+                return False
+            g = groups.items().get(gid) or {}
+            return bool((g.get("library") or {}).get("in_library"))
+        except Exception:  # noqa: BLE001
+            return False
+
     def _music_item_row(self, h: str, t: Any, rec: Dict[str, Any],
-                        op: Any = None, jr: Any = None) -> Dict[str, Any]:
+                        op: Any = None, jr: Any = None,
+                        irec: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """音乐清单一行（**字段与点播 Item 同构**，``module="music"``）。
 
         ``t``=qB 快照对象（历史行可为 None）；``rec``=账本行；``op``=journal 操作项；``jr``=journal 记录。
@@ -1028,11 +1079,12 @@ class MusicGrabMixin:
             "free": self._music_free(op, t),
             "hit_and_run": bool(getattr(t, "hit_and_run", False)) if t is not None else bool((rec or {}).get("hit_and_run")),
             "in_qb": t is not None,
-            "in_library": bool((rec or {}).get("in_library")),
+            "in_library": self._music_in_library(h, rec),
             "save_path": str(getattr(t, "save_path", "") or "") if t is not None else "",
             "added_at": fmt_iso_ts(base_ts),
             "settled_at": fmt_iso_ts((rec or {}).get("identity_at")),
             "source_note": str(getattr(op, "reason", "") or ""),
+            **self._music_import_fields(irec),
             "_ts": base_ts,
         }
         if t is None:
@@ -1061,7 +1113,8 @@ class MusicGrabMixin:
         return row
 
     def _music_hist_row(self, h: str, t: Any, rec: Dict[str, Any],
-                        op: Any = None, jr: Any = None) -> Dict[str, Any]:
+                        op: Any = None, jr: Any = None,
+                        irec: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """音乐**下载记录**一行（与点播 ``_ondemand_hist_row`` 同口径）。
 
         ★ 19.8.1（2026-10-25 Master「任务结束了，你什么状态跟我音乐任务没关系了，你顶多留个
@@ -1077,7 +1130,7 @@ class MusicGrabMixin:
             title = str(getattr(t, "title", "") or "")
         else:
             title = strip_media_prefix(str(getattr(op, "title", "") or ""), "music")
-        inlib = bool((rec or {}).get("in_library"))
+        inlib = self._music_in_library(h, rec)
         stage = "resource" if prog else "gone"
         base_ts = float(getattr(jr, "created_at", 0) or 0.0)
         return {
@@ -1101,6 +1154,7 @@ class MusicGrabMixin:
             "added_at": fmt_iso_ts(base_ts),
             "settled_at": fmt_iso_ts((rec or {}).get("identity_at")),
             "source_note": str(getattr(op, "reason", "") or ""),
+            **self._music_import_fields(irec),
             "_ts": base_ts,
         }
 
@@ -1130,7 +1184,7 @@ class MusicGrabMixin:
                 continue
         return out
 
-    def _music_items(self, limit: int = 50) -> Dict[str, Any]:
+    def _music_items(self, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
         """音乐干净清单（★ 15.9.0）：**单列表** ``items[]``（与点播同构）+ ``totals``。
 
         真值源（只读，不新造）：
@@ -1138,12 +1192,26 @@ class MusicGrabMixin:
             （进度/状态/速度）；
           - **下载记录** = 已交棒静默池（账本 ``sub=资源``）或已不在下载器的行 —— 静态记录，
             **不取 qB 现况**（``_music_hist_row``；★ 19.8.1 参照点播历史口径）；
-          - 身份/入库标记 = 种子账本（site/sub/in_library/identity_at）。
+          - 身份/入库标记 = 种子账本（site/sub/in_library/identity_at）；
+          - 入库结果 = 入库账本（``import_state`` / ``import_failed`` / ``import_reason``）。
+
+        ★ 19.12.87：``total`` 是**截断前**的真实条数、``totals`` 也按全量算，
+        ``shown``/``offset`` 描述当前页 —— 以前两者都在 ``rows[:cap]`` 之后算，
+        超过 50 首的部分既看不到也不计数。
         """
         try:
             cap = max(1, min(int(limit or 50), 200))
         except (TypeError, ValueError):
             cap = 50
+        try:
+            off = max(0, int(offset or 0))
+        except (TypeError, ValueError):
+            off = 0
+        # 入库账本读**一次**（进程级 memo，但循环里逐条读仍会放大调用次数）
+        try:
+            irecs = self._music_import_records()
+        except Exception:  # noqa: BLE001
+            irecs = {}
         snap_l: Dict[str, Any] = {}
         try:
             for k, v in (self._tag_all_torrents() or {}).items():
@@ -1194,9 +1262,11 @@ class MusicGrabMixin:
             rec = self._ondemand_seed_rec(h)
             # ★ 19.8.1：已交棒静默池（账本 sub=资源）→ 只留下载记录，不取 qB 现况。
             if str((rec or {}).get("sub") or "") == SUB_RESOURCE:
-                rows.append(self._music_hist_row(h, t, rec, jop.get(h), jr.get(h)))
+                rows.append(self._music_hist_row(h, t, rec, jop.get(h), jr.get(h),
+                                                 irecs.get(h)))
             else:
-                rows.append(self._music_item_row(h, t, rec, jop.get(h), jr.get(h)))
+                rows.append(self._music_item_row(h, t, rec, jop.get(h), jr.get(h),
+                                                 irecs.get(h)))
         for h, it in jop.items():
             if h in seen:
                 continue
@@ -1206,13 +1276,18 @@ class MusicGrabMixin:
                 continue
             # ★ 19.8.1：只剩 journal/账本、或已交棒 → 记录行（与点播历史同口径）。
             rows.append(self._music_hist_row(h, snap_l.get(h), self._ondemand_seed_rec(h),
-                                             it, jr.get(h)))
+                                             it, jr.get(h), irecs.get(h)))
         rows.sort(key=lambda x: float(x.get("_ts") or 0.0), reverse=True)
-        rows = rows[:cap]
-        for x in rows:
-            x.pop("_ts", None)
+        # ★ 19.12.87：先记真实条数、先算全量 totals，再切片。
+        #   以前是 ``rows = rows[:cap]`` 之后才算 total/totals —— 前端那个「已完成 50」
+        #   永远停在 50，超过 50 首的部分既不显示也不计数，用户会以为自己只有 50 首。
+        total_n = len(rows)
         totals = media_totals(rows)
-        return {"items": rows, "totals": totals}
+        page = rows[off:off + cap]
+        for x in page:
+            x.pop("_ts", None)
+        return {"items": page, "totals": totals, "total": total_n,
+                "shown": len(page), "offset": off, "limit": cap}
 
     def _music_act(self, hash: str = "", action: str = "") -> Dict[str, Any]:
         """音乐行内操作：``pause`` / ``resume`` / ``remove``（音乐线仅限 qB 分类=音乐的种）。
@@ -1618,7 +1693,8 @@ class MusicGrabMixin:
                 self._music_import_rec(h, stage="running", lib=lib, **rep)
         return rep
 
-    def _music_import_run(self, h: str) -> Tuple[bool, str]:
+    def _music_import_run(self, h: str, reorganize: bool = False,
+                          force: bool = False) -> Tuple[bool, str]:
         """单颗种的完整入库（★ JobQueue 的执行体，跑在后台线程里）。
 
         三条出口：
@@ -1626,6 +1702,11 @@ class MusicGrabMixin:
           * 分流 ``mp`` → 走 MP ``manual_transfer``（要刮削与库回写）；
           * 分流 ``link`` → 自建硬链接（散曲合集走这条，秒级完成）。
         完成后**只登记**一次媒体库扫描，不在这里直接触发（去抖见 ``_music_scan_tick``）。
+
+        ★ 19.12.93：``reorganize`` / ``force`` 供**库内资产整理**复用同一条整理能力。
+        - ``force`` 不看本插件入库账本（资产里的种从来没走过音乐线，账本天然为空，
+          但显式关掉更符合「按落点重建」的语义）；
+        - ``reorganize`` 一路传到 MP，清掉旧成功记录后重整（落点丢失的唯一解）。
         """
         hh = str(h or "").strip().lower()
         try:
@@ -1639,7 +1720,7 @@ class MusicGrabMixin:
                 break
         if t is None:
             return False, "该种不在下载器"
-        if self._music_import_done(hh):
+        if not force and self._music_import_done(hh):
             return True, "已入库过（账本 done），跳过"
         raw = (str(getattr(t, "content_path", "") or "").strip()
                or str(getattr(t, "save_path", "") or "").strip())
@@ -1650,23 +1731,39 @@ class MusicGrabMixin:
         if route == "skip":
             self._music_import_rec(hh, stage="skip", reason=str(plan.get("reason") or ""))
             return False, str(plan.get("reason") or "没有可入库内容")
-        title = str(getattr(t, "title", "") or getattr(t, "name", "") or "")[:80]
         # ---- 走 MP 整理（标签齐、像专辑）----
         if route == "mp":
-            ok, msg = self._music_transfer_now(hh, t, mp_path)
+            ok, msg = self._music_transfer_now(hh, t, mp_path, reorganize=reorganize)
             if ok:
                 dest = self._music_transfer_dest(hh)
-                self._music_mark_library(hh, dest)
-                try:
-                    self._music_release_done(hh)
-                except Exception:  # noqa: BLE001
-                    pass
+                # ★ 19.12.93：资产整理（reorganize）**只补落点**，不动职务与账本 ——
+                #   ``_asset_organize`` 对外的承诺是「只整理代表种，其余成员状态一律不改」，
+                #   而这两步会改 qB 标签 / 清 taken_by，那是下载线结算该做的事。
+                if not reorganize:
+                    self._music_mark_library(hh, dest)
+                    try:
+                        self._music_release_done(hh)
+                    except Exception:  # noqa: BLE001
+                        pass
                 self._music_import_rec(hh, stage="done", route="mp", total=plan.get("total"),
                                        failed=0, dest=dest, msg=msg[:160])
                 self._music_scan_request(f"MP 整理 {hh[:12]}")
-            else:
-                self._music_import_rec(hh, stage="failed", route="mp", msg=msg[:160])
-            return bool(ok), (f"MP 整理「{title}」" + ("完成" if ok else f"失败：{msg[:120]}"))
+                # ★ 19.12.99：job 面板的 message 只讲**结果**，不再重复专辑名 ——
+                #   标题已经是「音乐入库「专辑名」」，message 再写一遍等于浪费一整行
+                #   （手机上一行很贵，且两行都会被截断成同样的前缀）。
+                _n = int(plan.get("total") or 0)
+                _d = str(dest or "")
+                _tail = _d.rsplit("/", 1)[-1]
+                if "/" in _d and "." in _tail:
+                    _d = _d.rsplit("/", 1)[0]     # dest 常是专辑里的某个文件，取目录
+                _parts = ["MP 整理完成"]
+                if _n > 0:
+                    _parts.append(f"{_n} 个文件")
+                if _d:
+                    _parts.append(f"落点 {_d}")
+                return True, " · ".join(_parts)
+            self._music_import_rec(hh, stage="failed", route="mp", msg=msg[:160])
+            return False, f"MP 整理失败：{msg[:120]}"
         # ---- 自建硬链接（散曲 / 缺专辑标签 / 合集）----
         self._music_import_rec(hh, stage="running", route="link", total=plan.get("total"))
         rep = self._music_import_apply(hh, plan)
@@ -1677,12 +1774,29 @@ class MusicGrabMixin:
         if int(rep.get("created") or 0) or int(rep.get("renamed") or 0):
             self._music_scan_request(f"入库 {hh[:12]}")
         got = int(rep.get("created") or 0) + int(rep.get("renamed") or 0)
-        msg = (f"硬链接入库「{title}」：新建 {got}"
+        # ★ 19.12.99：同上，message 只讲结果（标题里已有专辑名）
+        msg = (f"硬链接入库：新建 {got}"
                f"（已存在 {rep.get('same', 0)} / 重名另存 {rep.get('renamed', 0)}"
                f" / 跨盘 {rep.get('exdev', 0)} / 失败 {rep.get('error', 0)}）")
         if int(rep.get("exdev") or 0):
             msg += "；跨 project 链不动，需把库与下载区放同一 project"
         return (not bad), msg
+
+    def _music_organize_hash(self, h: str) -> Tuple[bool, str]:
+        """★ 19.12.93 **独立整理入口**：按落点重建一颗音乐种（资产整理调用）。
+
+        为什么需要它：库内资源整理的 ``_asset_organize`` 原来把这批音乐也丢给
+        ``_recommend_import``，而那条路的第一道坎是**影视** ``recognize()``——
+        ``周杰倫 - 八度空間 (2002) [FLAC]`` 这类专辑名必然认不出来，直接
+        「未能识别媒体信息」。音乐线本来就有更成熟的一条：``mtype=MUSIC`` 交给 MP
+        自己按音频标签识别（标签不够整的走自建硬链接），两条都不经过影视识别。
+
+        所以这里**不新写整理逻辑**，只把音乐线那颗整理器按「重建」语义暴露出来：
+        ``force`` 绕开本插件入库账本（资产的种没走过音乐线），``reorganize``
+        让 MP 清掉旧成功记录——否则「记录在、落点没了」会被当已整理过跳过。
+        """
+        return self._music_import_run(str(h or "").strip().lower(),
+                                      reorganize=True, force=True)
 
     def _music_import_submit(self, h: str, title: str = "", reason: str = "") -> Dict[str, Any]:
         """把一颗种丢进后台队列（**提交即返回**，页面关掉也会跑完）。

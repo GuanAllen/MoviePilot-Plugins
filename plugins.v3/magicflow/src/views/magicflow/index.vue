@@ -1,4 +1,5 @@
 <script setup>
+import { startPolling, stopPolling } from '../../polling'
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import TaskEditorDialog from '../../components/TaskEditorDialog.js'
 import MusicDialog from './components/dialogs/MusicDialog.vue'
@@ -27,14 +28,18 @@ import PlanDialog from './components/dialogs/PlanDialog.vue'
 import NotifyDialog from './components/dialogs/NotifyDialog.vue'
 import TorrentDialog from './components/dialogs/TorrentDialog.vue'
 import SigninDialog from './components/dialogs/SigninDialog.vue'
-import OndemandDialog from './components/dialogs/OndemandDialog.js'
+// ★ 19.12.86：改回直接吃 .vue 源（原来吃的是从 dist 还原的 .js 编译产物，
+//   .vue 只是参考副本，改它不生效）。旧 .js/.css 留在原地，回滚只需把这一行改回去。
+import OndemandDialog from './components/dialogs/OndemandDialog.vue'
 import FunctionHubDialog from './components/dialogs/FunctionHubDialog.js'
 import OpsDialog from './components/dialogs/OpsDialog.vue'
 import WorkbenchHeader from './components/WorkbenchHeader.vue'
-import MobileTaskDetail from './components/MobileTaskDetail.js'
+// ★ 19.15.0：MobileTaskDetail 改回 .vue 源码形态（v2 三态切换 + 1主2辅卡 + 策略 chips）
+import MobileTaskDetail from './components/MobileTaskDetail.vue'
 import TaskPane from './components/TaskPane.js'
 import TorrentDeleteConfirm from './components/confirm/TorrentDeleteConfirm.vue'
 import OverviewTab from './components/tabs/OverviewTab.js'
+import OverviewObs from './components/tabs/OverviewObs.vue'
 import CrossseedDialog from './components/dialogs/CrossseedDialog.vue'
 import RescueDialog from './components/dialogs/RescueDialog.vue'
 import SettingsDialog from './components/dialogs/SettingsDialog.js'
@@ -44,6 +49,11 @@ import TaskConfigTab from './components/tabs/TaskConfigTab.js'
 import JournalTab from './components/tabs/JournalTab.js'
 import CandidatesTab from './components/tabs/CandidatesTab.vue'
 import SeedingTab from './components/tabs/SeedingTab.js'
+// ★ 19.15.0：手机端任务详情 v2 四面板（桌面沿用上面的 .js 组件）
+import MobileOverviewTab from './components/tabs/MobileOverviewTab.vue'
+import MobileDiagnosticsTab from './components/tabs/MobileDiagnosticsTab.vue'
+import MobilePoolTab from './components/tabs/MobilePoolTab.vue'
+import MobileConfigTab from './components/tabs/MobileConfigTab.vue'
 // ★ 15.8.15：库内资产（全局入口 → 独立列表 + 手动删除）
 import AssetsTab from './components/tabs/AssetsTab.vue'
 import MobileHome from './components/MobileHome.vue'
@@ -276,6 +286,10 @@ let refreshTimer
 let homeTrendTimer = null
 let phaseTimer
 let warmingTimer
+// ★ 19.12.69：H&R 账单常驻轮询。种子明细行内的「人工结清」按钮判据依赖
+//   `hrBills`，而它原来只在打开「H&R 账单」弹窗时才加载 —— 弹窗在概览/工具栏，
+//   按钮在任务页的种子明细行上，两个界面互不相干，用户不可能知道要先去点一次弹窗。
+let hrBillsTimer = null
 
 // 任务图标使用站点自身图标（走 MoviePilot /site/icon/{id}，服务端带 cookie 抓取，私有站也能取到）
 const siteIcons = ref({})
@@ -305,25 +319,37 @@ const assetsDialog = ref(false)
 const {
   actMusic,
   downloadMusic,
+  downloadMusicPicked,
   importMusic,
+  loadMoreMusic,
   loadMusicItems,
   musicActing,
+  musicBatchBusy,
+  musicBroken,
   musicCandidates,
   musicDownloading,
+  musicGone,
+  musicHasMore,
   musicHistory,
   musicImporting,
   musicInflight,
+  musicInLibrary,
   musicItems,
   musicItemsBusy,
   musicMsg,
   musicOpen,
+  musicPending,
+  musicPicked,
   musicQuery,
   musicResult,
   musicSearching,
   musicSiteIds,
   musicTab,
+  musicTotal,
   openMusic,
+  pickAllMusic,
   runMusicSearch,
+  toggleMusicPick,
 } = useMusic({ api })
 // ── useTasks（P3 已抽）────────────────────────────────
 // P3：状态 / 取数 / 动作 已抽到 ./composables/useTasks.js（纯搬家）。
@@ -365,7 +391,8 @@ const {
 // ★ 15.10.0：后台任务队列（慢动作都在后台跑，关页面不断）
 //   ⚠️ 必须放在 useTasks 解构之后：notify 出自那里，提前引用会 TDZ → 整页白屏。
 const {
-  jobsOpen, jobs, jobsSummary, jobsRunning, loadJobs, clearJobs, openJobs,
+  jobsOpen, jobs, jobsSummary, jobsBatches, jobsRunning,
+  loadJobs, clearJobs, retryJobs, openJobs,
 } = useJobs({ api, notify })
 
 // ★ 19.11.22：推送审计（每次加种一条，成功也记、失败更记；只读排障用）
@@ -1142,11 +1169,7 @@ function mobileRowNum(t) {
   if (m.primary.key === 'upload') return m.upload.value > 0 ? `↑ ${m.upload.text}` : ''
   return m.hourly.ok ? m.hourly.text : '取数中…'
 }
-function mobileDetailEntry(entry) {
-  const e = typeof entry === 'string' ? { key: entry } : entry
-  if (e.action === 'ops') return openOperations('task')
-  activeTab.value = activeTab.value === e.key ? 'overview' : e.key
-}
+// ★ 19.15.0：mobileDetailEntry 已随 MobileTaskDetail v2（无 md-entries）移除，入口切换由四 tab 直接驱动
 // mobileDetailCards / mobileStrategyText / mobileDetailHint 已随紧凑块搬入 components/MobileTaskDetail.js（P4 拆分）。
 // 「需要你管」：后端给的信号（出错 / 站点读不到 / 从未成功）
 // 当前任务是否刷流模式（驱动整块工作台按类型显示）
@@ -1191,6 +1214,14 @@ function mobileDetailEntry(entry) {
 /** ★ §4.1 辅种流水：把「辅种」类记录（kind=reseed，含历史 reuse/crossseed）摊平成一张表。 */
 watch(opsView, (v) => {
   if (v === 'timeline') loadEventRows()
+  // ★ 19.12.71：辅种流水的取数口径与「全部流水」不同（服务端按 reseed 类筛），切页必须重拉，
+  //   否则拿到的是全部流水那 500 条，前端再筛只会得到 0 条。
+  else if (opsOpen.value) reloadOperations()
+})
+
+/** ★ 19.12.71：事件流的「级别」筛选原来只是个 v-model —— 改了不重拉，得关掉弹窗再开才生效。 */
+watch(eventLevel, () => {
+  if (opsOpen.value && opsView.value === 'timeline') loadEventRows()
 })
 
 /** 操作记录的耗时文本（优先用后端记录，回退到创建/完成时间差）。 */
@@ -1242,10 +1273,10 @@ watch(opsKind, () => reloadOperations())
 // ── 推荐（批量入库候选）──────────────────────────────────
 // P3：状态 / 取数 / 排序去重 / 动作 已抽到 ./composables/useRecommend.js（纯搬家）；60s 定时器随域自管。
 const {
-  recommendData, recommendOpen, recommendActing, showAllRecs,
-  recommendItems, hiddenRecCount, confirmedCount, pendingCount,
-  recWorthShowing, recName, recommendActionable,
-  loadRecommend, actRecommend, confirmRecommend, dismissRecommend, openRecommend,
+  recommendData, recommendOpen, recommendActing,
+  recAllItems, recStatusCounts, recFailedItems, recommendActionable,
+  loadRecommend, confirmRecommend, dismissRecommend,
+  importRecommend, subscribeRecommend, unsubscribeRecommend, openRecommend,
 } = useRecommend({ api, notify, error })
 
 
@@ -1349,6 +1380,7 @@ const {
   signinReportLoading, loadSigninReport, openSignin, signinFilter, signinSearch,
   signinStatusText, signinDateLabel, signinReportTodayRows, signinTodayCounts, signinFilterItems,
   signinTodayList, signinKeepalive, signinKeepaliveNote, signinMatrix,
+  signinRowsAll, signinPendingRows, signinDoneRows, signinSkipCount, signinRate,
 } = useSignin({ api, notify, status })
 const siteLiveLevel = computed(() => (siteLive.value || {}).level || 'ok')
 const siteLiveInfo = computed(() => (siteLive.value || {}).live || {})
@@ -1379,13 +1411,37 @@ const siteAccount = computed(() => {
 //   站点自报优先、无自报时才是本地实测），拿不到才退到 /live 的实测值。
 //   否则同一站点会同时出现两个数（如馒头：任务详情站点自报 76.98 / live 折算 88.79）。
 // ★ 19.10.48：货币名也从同一个任务取（各站叫法不同），避免两个 computed 各查一遍。
+// ★ 19.12.67：**按 MP 站点 id 匹配**（原先按字符串比，永远不相等 —— 见下）。
+//   siteReportSite 存的是 available_sites[].domain，即「完整 URL」（https://pt.btschool.club/），
+//   而任务的 site_name / site_domain 分别是中文名「学校」与裸域「btschool.club」，
+//   三方做 === 恒为假 → siteReportTask 永远 null → 时魔恒空、货币名退化「魔力值」、
+//   整块只能退到 /live 的折算值（站点取数失败时干脆空白）。
+//   改成 id 对齐（报表 site.id === 任务 site_id，两边同源）后不再依赖 URL 形态；
+//   id 取不到时再退回**归一化后**的字符串比较，保证降级路径也真能命中。
+function siteKeyOf(raw) {
+  return String(raw || '')
+    .trim()
+    .replace(/^https?:\/\//i, '')
+    .replace(/^www\./i, '')
+    .replace(/\/+$/, '')
+    .toLowerCase()
+}
 const siteReportTask = computed(() => {
-  const key = String(siteReportSite.value || '')
+  const list = tasks.value || []
+  const sid = Number((siteReport.value.site || {}).id || 0)
+  if (sid > 0) {
+    const hits = list.filter((t) => Number(t.site_id) === sid)
+    // 同站可能并存「刷魔力 / 刷流」多条任务：优先取带站点自报时魔的那条，其次取第一条
+    const withBonus = hits.find((t) => t.site_bonus_ok && t.site_bonus_per_hour != null)
+    if (withBonus) return withBonus
+    if (hits.length) return hits[0]
+  }
+  const key = siteKeyOf(siteReportSite.value)
   if (!key) return null
-  return (tasks.value || []).find((t) => {
+  return list.find((t) => {
     const n = String(t.site_name || '')
-    const d = String(t.site_domain || '')
-    return (n !== '' && n === key) || (d !== '' && d === key)
+    const d = siteKeyOf(t.site_domain)
+    return (n !== '' && n === String(siteReportSite.value || '')) || (d !== '' && d === key)
   }) || null
 })
 const siteReportBonus = computed(() => {
@@ -1402,9 +1458,9 @@ const siteReportCurrency = computed(() => currencyOf(siteReportTask.value))
 // ── 批量入库（Master 2026-09-28 07:00）────────────────────────────
 // P3：勾选态 / 动作已抽到 ./composables/useRecImport.js（纯搬家）
 const {
-  recSelected, recBatchActing, recSelectable, recSelectedList, recAllChecked,
+  recSelected, recBatchActing, recSelectedList,
   toggleRec, toggleAllRecs, batchImportRecommend,
-} = useRecImport({ api, notify, recommendItems, recommendActionable, loadRecommend })
+} = useRecImport({ api, notify, allItems: recAllItems, recommendActionable, loadRecommend })
 
 // ── 新手考核（顶栏入口 + 汇总弹窗 + 一键起任务）────────────────────────
 //   含原「板面重设」块（那块其实整块是考核域：站点排序 / 每项进度 / 同任务合并 / 警告前置）。
@@ -1577,7 +1633,13 @@ async function loadClaim(force = false, silent = false) {
     if (force) params.set('refresh', '1')
     const qs = params.toString()
     const q = qs ? `?${qs}` : ''
-    claimData.value = unwrapResponse(await api.features.claim(q)) || claimData.value
+    const payload = unwrapResponse(await api.features.claim(q))
+    if (payload) claimData.value = payload
+    // 19.16.19：刷新改为后台刷新——接口秒回缓存，不让人干等 12s；
+    // 但要点个提示说明「已开始刷新、稍后重开可见最新」，否则按钮闪一下像没生效。
+    if (force && !silent && payload && payload.refreshing) {
+      notify('已开始后台刷新，稍后重新打开认领页即可看到最新数据')
+    }
   } catch (err) {
     notify(`读取认领状态失败：${err?.message || err}`, 'error')
   } finally {
@@ -1663,12 +1725,24 @@ const homeTrend = ref({})
 const homeTrendLoading = ref(false)
 
 // 全站趋势（168h = 本周 72 + 上周 72，用于「本周实线 / 上周虚线」对比）
-async function loadHomeTrend() {
+// ★ 19.12.62：趋势包 355 KB、5 分钟拉一次，而序列每整点才落一个点 —— 绝大多数
+// 轮询其实什么都没变。轮询路径带上内容指纹，服务端没变只回 {changed:false}。
+let homeTrendVer = ''
+async function loadHomeTrend(opts) {
   if (homeTrendLoading.value) return
+  const poll = !!(opts && opts.poll)
   homeTrendLoading.value = true
   try {
-    const resp = await api.trend.hours({ scope: 'all', hours: 168 })
-    homeTrend.value = unwrapResponse(resp) || {}
+    const params = { scope: 'all', hours: 168 }
+    if (poll && homeTrendVer) params.ver = homeTrendVer
+    const resp = await api.trend.hours(params)
+    const data = unwrapResponse(resp)
+    if (poll && data && data.changed === false) {
+      homeTrendVer = data.ver || homeTrendVer
+      return
+    }
+    if (data && data.ver) homeTrendVer = data.ver
+    homeTrend.value = data || {}
   } catch (err) {
     homeTrend.value = {}
   } finally {
@@ -2035,36 +2109,47 @@ watch(
 onMounted(() => {
   loadHomeTrend()
   // 概览「每 5 分钟刷新」口径：全站趋势单独低频拉（status 走 30s 轮询已覆盖指标）
-  homeTrendTimer = window.setInterval(loadHomeTrend, 300000)
+  homeTrendTimer = startPolling(() => loadHomeTrend({ poll: true }), 300000)
   loadStatus()
   loadRecommend()
-  refreshTimer = window.setInterval(loadStatus, 30000)
+  refreshTimer = startPolling(() => loadStatus({ poll: true }), 30000)
   // 推荐列表是全局的，低频刷新一下角标计数
   // 豆瓣评分服务（库容量 + 慢爬进度，低频刷）
   loadDoubanService()
-  doubanServiceTimer = window.setInterval(loadDoubanService, 60000)
-  healthTimer = window.setInterval(loadHealth, 60000)
+  doubanServiceTimer = startPolling(loadDoubanService, 60000)
+  healthTimer = startPolling(loadHealth, 60000)
   loadHealth()
   // 站点实时数据：采样周期 240s，这里 120s 轮询（服务端有缓存，不会重复打站点）
   loadLive()
-  liveTimer = window.setInterval(loadLive, 120000)
+  liveTimer = startPolling(loadLive, 120000)
+  // ★ 19.12.69：「人工结清」按钮常驻。按钮的显示判据是「该行 hash 命中 H&R 账单」，
+  //   而账单数据（hrBills）与操作人原来只在 openHrBills() 里加载 —— 也就是必须先去
+  //   概览/工具栏点开「H&R 账单」弹窗，任务页的种子明细行才会出现入口。两处不在同一个
+  //   界面，等于默认不可发现，刷新页面后按钮还会消失。这里改为进页面即加载 + 低频轮询，
+  //   使新开出的账单也能自己长出入口，不依赖用户先去点别的地方。
+  loadHrBills()
+  loadHrOperator()
+  hrBillsTimer = startPolling(() => loadHrBills(), 300000)
   // 预热认领数据：点「认领」时直接显示缓存，不再等 /claim
   window.setTimeout(() => { loadClaim(false, true) }, 1500)
   // 运行诊断页每秒多刷新一次任务阶段，驱动流程链转圈
-  phaseTimer = window.setInterval(() => {
+  phaseTimer = startPolling(() => {
     if (activeTab.value === 'diagnostics' && selectedTaskId.value) loadDetail(selectedTaskId.value)
   }, 1500)
 })
 
 onUnmounted(() => {
-  if (refreshTimer) window.clearInterval(refreshTimer)
-  if (homeTrendTimer) window.clearInterval(homeTrendTimer)
-  if (phaseTimer) window.clearInterval(phaseTimer)
-  if (doubanServiceTimer) window.clearInterval(doubanServiceTimer)
-  if (healthTimer) window.clearInterval(healthTimer)
-  if (liveTimer) window.clearInterval(liveTimer)
+  if (refreshTimer) stopPolling(refreshTimer)
+  if (homeTrendTimer) stopPolling(homeTrendTimer)
+  if (phaseTimer) stopPolling(phaseTimer)
+  if (doubanServiceTimer) stopPolling(doubanServiceTimer)
+  if (healthTimer) stopPolling(healthTimer)
+  if (liveTimer) stopPolling(liveTimer)
+  if (hrBillsTimer) stopPolling(hrBillsTimer)
   if (warmingTimer) window.clearTimeout(warmingTimer)
-  if (ondemandItemsTimer) window.clearInterval(ondemandItemsTimer)
+  // 19.12.63：原有一行 `if (ondemandItemsTimer) ...` 引用的是 useOndemand.js 的
+  // 局部变量，本页从未声明 → 卸载时必抛 ReferenceError。该轮询器由 composable
+  // 的 watch(ondemandOpen) 自行开关，这里不需要也不应该重复清理。
 })
 </script>
 
@@ -2246,7 +2331,7 @@ onUnmounted(() => {
         </VSheet>
 
         <main v-if="selectedTask" class="magicflow-workspace">
-          <section class="magicflow-task-head">
+          <section class="magicflow-task-head" :class="{ 'magicflow-task-head--mobile-owned': !selectedTask.builtin }">
             <VBtn
               v-if="!isNarrow"
               class="magicflow-task-head__back"
@@ -2332,8 +2417,12 @@ onUnmounted(() => {
               :config="taskConfig"
               :site-account="siteAccount"
               :active-tab="activeTab"
-              @entry="mobileDetailEntry"
+              :run-mode="selectedTask.run_mode || 'running'"
+              :saving="saving"
+              @set-run-mode="setRunMode"
               @navigate="activeTab = $event"
+              @edit="openEditTask"
+              @delete="deleteDialog = true"
             />
           </div>
 
@@ -2348,13 +2437,46 @@ onUnmounted(() => {
               :aria-selected="activeTab === tab.value"
               @click="activeTab = tab.value"
             >
-              {{ tab.label }}
+              {{ isNarrow && tab.short ? tab.short : tab.label }}
             </button>
           </div>
 
           <VWindow v-model="activeTab" :touch="false" class="magicflow-window">
 <VWindowItem value="overview" class="magicflow-window-ov">
+              <!-- ★ 19.16.3：OverviewObs 是桌面可观测卡，手机端由 MobileOverviewTab 全权接管。
+                   此前漏了 v-if，手机端两套一起渲染 → 概览页新旧元素并存（决策/趋势各出现两遍）。 -->
+              <OverviewObs
+                v-if="!isNarrow"
+                :decision="decision"
+                :decision-cap-text="decisionCapText"
+                :decision-reasons="decisionReasons"
+                :trend-cards="trendCards"
+              />
+              <!-- ★ 19.15.0：手机端 overview → MobileOverviewTab；桌面沿用 OverviewTab（OverviewObs 保留） -->
+              <MobileOverviewTab
+                v-if="isNarrow"
+                :selected-task="selectedTask"
+                :task-is-brush="taskIsBrush"
+                :task-config="taskConfig"
+                :brush-seed-days="brushSeedDays"
+                :goal-fact-text="goalFactText"
+                :selected-state="selectedState"
+                :detail-stats="detailStats"
+                :site-account="siteAccount"
+                :site-user="siteUser"
+                :site-live-level="siteLiveLevel"
+                :site-live-rates="siteLiveRates"
+                :site-live-cfg="siteLiveCfg"
+                :site-live-alerts="siteLiveAlerts"
+                :decision="decision"
+                :decision-cap-text="decisionCapText"
+                :decision-reasons="decisionReasons"
+                :trend-cards="trendCards"
+                :trend-main="trendMain"
+                @open-entry="activeTab = $event"
+              />
               <OverviewTab
+                v-else
                 :selected-task="selectedTask"
                 :task-is-brush="taskIsBrush"
                 :task-config="taskConfig"
@@ -2378,7 +2500,22 @@ onUnmounted(() => {
             </VWindowItem>
 
             <VWindowItem value="diagnostics">
+              <!-- ★ 19.15.0：手机端 diagnostics → MobileDiagnosticsTab（flow/seedview 分叉）；桌面沿用 JournalTab -->
+              <MobileDiagnosticsTab
+                v-if="isNarrow"
+                :saving="saving"
+                @run="runOperation"
+                :data="journalTabData"
+                :scope="opsKind"
+                :task="selectedTask"
+                :run-mode="selectedTask.run_mode || 'running'"
+                @update:scope="v => (opsKind = v)"
+                @refresh="loadOperations(selectedTaskId)"
+                @toggle-detail="toggleOpDetail"
+                @open-pushes="openPushAudit"
+              />
               <JournalTab
+                v-else
                 :data="journalTabData"
                 :scope="opsKind"
                 :task="selectedTask"
@@ -2390,6 +2527,8 @@ onUnmounted(() => {
             </VWindowItem>
 
             <VWindowItem value="pool">
+              <!-- ★ 19.15.0：桌面端保持原样（诊断头 + 候选/托管 toggle + 表格） -->
+              <template v-if="!isNarrow">
               <div class="magicflow-diagnostic-head">
                 <div>
                   <div class="text-subtitle-1 font-weight-medium">种子池</div>
@@ -2451,10 +2590,56 @@ onUnmounted(() => {
                 @open-detail="openTorrentDetail"
                 @hr-settle="openHrSettle"
               />
+                          </template>
+              <!-- ★ 19.15.0：手机端 pool → MobilePoolTab（卡片流 + 状态筛选 + 批量栏横滚；自带 托管/候选 seg） -->
+              <MobilePoolTab
+                v-else
+                v-model:pool-view="poolView"
+                v-model:status-filter="torrentStatusFilter"
+                :candidate-data="candidateData"
+                :task-is-brush="taskIsBrush"
+                :rows="sortedTorrents"
+                :status-options="torrentStatusOptions"
+                :selected-hashes="selectedHashes"
+                :all-selected="allFilteredSelected"
+                :loading="taskLoading"
+                :busy="batchBusy"
+                :task="selectedTask"
+                :backfilling="backfilling"
+                :hr-map="hrMapByHash"
+                :hr-settle-enabled="hrSettleEnabled"
+                :hr-settle-busy="hrSettleBusy"
+                @batch="batchActionGuarded"
+                @transfer="openTransfer"
+                @batch-delete="openBatchDeleteGuarded"
+                @select-all="selectAllFiltered"
+                @clear-selection="clearSelection"
+                @toggle-row="toggleTorrentSelection"
+                @open-detail="openTorrentDetail"
+                @torrent-action="torrentActionGuarded"
+                @delete="requestTorrentDeleteGuarded"
+                @hr-settle="openHrSettle"
+                @backfill="backfillPages"
+              />
             </VWindowItem>
 
             <VWindowItem value="config">
+              <!-- ★ 19.15.0：手机端 config → MobileConfigTab（六格 + 站点卡 + 三按钮）；桌面沿用 TaskConfigTab -->
+              <MobileConfigTab
+                v-if="isNarrow"
+                :task="selectedTask"
+                :config="taskConfig"
+                :run-mode="selectedRunMode"
+                :goal-text="goalFactText"
+                :is-brush="taskIsBrush"
+                :brush-seed-days="brushSeedDays"
+                :saving="saving"
+                @run="runOperation"
+                @edit="openEditTask"
+                @delete="deleteDialog = true"
+              />
               <TaskConfigTab
+                v-else
                 :task="selectedTask"
                 :config="taskConfig"
                 :run-mode="selectedRunMode"
@@ -2737,6 +2922,10 @@ onUnmounted(() => {
       :signin-filter-items="signinFilterItems"
       :signin-today-list="signinTodayList"
       :signin-matrix="signinMatrix"
+      :signin-pending-rows="signinPendingRows"
+      :signin-done-rows="signinDoneRows"
+      :signin-skip-count="signinSkipCount"
+      :signin-rate="signinRate"
       :narrow="isNarrow"
       @refresh="loadSigninReport"
       @run="runSigninNow"
@@ -2923,6 +3112,7 @@ onUnmounted(() => {
       v-model:task-id="ondemandTaskId"
       v-model:tab="ondemandTab"
       v-model:msg="odMsg"
+      :narrow="isNarrow"
       :ondemand-result="ondemandResult"
       :ondemand-candidates="ondemandCandidates"
       :od-inflight="odInflight"
@@ -3005,22 +3195,22 @@ onUnmounted(() => {
     <!-- 推荐甄别（价值生命周期）→ P4 已拆到 ./components/dialogs/RecommendDialog.vue（props 下 / emit 上） -->
     <RecommendDialog
       v-model="recommendOpen"
-      v-model:showAllRecs="showAllRecs"
       :data="recommendData"
-      :items="recommendItems"
+      :items="recAllItems"
+      :raw="recommendData.items || []"
+      :counts="recStatusCounts"
+      :failed="recFailedItems"
       :acting="recommendActing"
-      :hidden="hiddenRecCount"
-      :confirmed="confirmedCount"
-      :pending="pendingCount"
       :selected="recSelected"
-      :selectable="recSelectable"
       :selected-list="recSelectedList"
-      :all-checked="recAllChecked"
       :batch-acting="recBatchActing"
       :narrow="isNarrow"
       @refresh="loadRecommend"
       @confirm="confirmRecommend"
       @dismiss="dismissRecommend"
+      @import-rec="importRecommend"
+      @subscribe-rec="subscribeRecommend"
+      @unsubscribe-rec="unsubscribeRecommend"
       @toggle-rec="toggleRec"
       @toggle-all="toggleAllRecs"
       @batch-import="batchImportRecommend"
@@ -3044,11 +3234,22 @@ onUnmounted(() => {
       :music-downloading="musicDownloading"
       :site-select-items="siteSelectItems"
       :narrow="isNarrow"
+      :music-picked="musicPicked"
+      :music-batch-busy="musicBatchBusy"
+      :music-total="musicTotal"
+      :music-pending="musicPending"
+      :music-broken="musicBroken"
+      :music-in-library="musicInLibrary"
+      :music-gone="musicGone"
+      :music-has-more="musicHasMore"
       @refresh-items="loadMusicItems"
       @act="actMusic"
       @search="runMusicSearch"
-      @download="downloadMusic"
       @import="importMusic"
+      @toggle-pick="toggleMusicPick"
+      @pick-all="pickAllMusic"
+      @download-picked="downloadMusicPicked"
+      @load-more="loadMoreMusic"
     />
 
     <!-- ★ 15.10.0：后台任务队列（Master「加个队列后台跑，让用户等体验不好」） -->
@@ -3056,9 +3257,11 @@ onUnmounted(() => {
       v-model="jobsOpen"
       :jobs="jobs"
       :summary="jobsSummary"
+      :batches="jobsBatches"
       :narrow="isNarrow"
       @refresh="loadJobs"
       @clear="clearJobs"
+      @retry="retryJobs"
     />
 
     <!-- ★ 19.11.22：推送审计（每次「加种」一条，含失败原因；只读排障） -->
@@ -3129,19 +3332,21 @@ onUnmounted(() => {
 
     <!-- ★ 15.8.15：库内资产（Master「希望增加魔流库内资产手动删除的入口」）——
          全局独立入口：列出所有库内资产（跨任务），可手选删除；后端默认干跑、
-         二次确认弹窗默认勾选「同时删除文件（不可恢复）」；只破「库内资产」一道闸。 -->
-    <VDialog v-model="assetsDialog" max-width="1160" scrollable>
+         二次确认弹窗**默认不勾**「同时删除文件」；只破「库内资产」一道闸。
+         ★ 19.12.92：窄屏走全屏 + 三屏（概览/清单/详情），标题改「库内资源」
+         （原来叫「库内资源管理」还得跟一段注释解释「库」是哪一种库）。 -->
+    <VDialog v-model="assetsDialog" max-width="1160" :fullscreen="isNarrow" scrollable>
       <VCard class="magicflow-assets-card">
         <VCardTitle class="d-flex align-center">
           <VIcon icon="mdi-folder-cog-outline" class="me-2" />
-          库内资源管理
+          库内资源
           <VSpacer />
           <VBtn icon="mdi-close" variant="text" aria-label="关闭" @click="assetsDialog = false" />
         </VCardTitle>
         <VDivider />
         <VCardText class="pa-0">
           <!-- v-if：每次打开重新挂载 → 重新拉最新列表（VDialog 首次打开后内容常驻） -->
-          <AssetsTab v-if="assetsDialog" :api="api" :reload-key="0" />
+          <AssetsTab v-if="assetsDialog" :api="api" :reload-key="0" :narrow="isNarrow" />
         </VCardText>
       </VCard>
     </VDialog>
@@ -4201,15 +4406,27 @@ onUnmounted(() => {
 
 @media (max-width: 959px) {
   /* 移动工具栏沿用「方案 B」胶囊：站点图标 + 任务名·站点 + 状态点 + ⌄ */
+  /* ★ 19.16.2：按设计稿收干净 —— 淡浅底（原来是紫色渐变 + 紫色发光投影，手机上一块发亮紫卡）、
+     字号 k 9 / v 12·650（原来 10 / 14，整条比设计稿高约 13px） */
   .magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch {
     display: inline-flex;
     flex: 1 1 auto;
     min-inline-size: 0;
     max-inline-size: none;
-  }.magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch__k {
-    display: none;
-  }.magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch__v {
-    font-size: 14px;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 11px;
+    border-color: rgba(139, 124, 246, 0.35);
+    background: rgba(255, 255, 255, 0.035);
+    box-shadow: none;
+  }
+  .magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch__k {
+    font-size: 9px;
+    color: #7d8296;
+  }
+  .magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch__v {
+    font-size: 12px;
+    font-weight: 650;
   }
 }
 
@@ -4493,6 +4710,9 @@ onUnmounted(() => {
   .magicflow-page--m-detail .magicflow-mobile-home { display: none; }
   /* 详情页显示返回列表按钮 */
   .magicflow-page .magicflow-mobile-back { display: inline-flex; }
+  /* ★ 19.16.0：非 builtin 任务的身份/操作已由 MobileTaskDetail 身份卡接管，
+     手机端隐藏桌面工具栏那套（头像+状态chip+5图标），避免「5图标 + 编辑删除」两套并存 */
+  .magicflow-page--m-detail .magicflow-task-head--mobile-owned { display: none; }
 }
 
 /* ── ★ 手机端任务详情：紧凑块 ─────────────────────────── */
@@ -4502,8 +4722,55 @@ onUnmounted(() => {
 .magicflow-page .magicflow-mobile-detail { display: none; }
 
 @media (max-width: 959px) {
-.magicflow-page--m-detail .magicflow-mobile-detail { display: block; }/* 手机端：取消平级四 tab，改为紧凑块 + 次级入口 */
-  .magicflow-page .magicflow-tabs { display: none; }.magicflow-page .magicflow-window { padding-block-start: 12px; }
+.magicflow-page--m-detail .magicflow-mobile-detail { display: block; }/* ★ 19.15.0：手机端任务详情 v2 = 紧凑结论块 + 全页四 tab */
+  /* ★ 19.16.2：手机端页签栏回到设计稿口径 —— 与页面同底（不再是一条亮色带）、
+     极淡 1px 分隔线、去掉桌面浮卡继承来的 30px 黑投影、选中态改淡紫底 + 底部 2px 下划线。 */
+  .magicflow-page .magicflow-tabs {
+    display: flex;
+    gap: 4px;
+    position: sticky;
+    top: 0;
+    z-index: 8;
+    margin-inline: -12px;
+    margin-block-start: 0;
+    border-radius: 0;
+    border-inline: 0;
+    border-block: 1px solid rgba(255, 255, 255, 0.07);
+    background: rgb(var(--v-theme-background));
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    padding: 9px 12px;
+  }
+  .magicflow-page .magicflow-tab {
+    position: relative;
+    min-block-size: 30px;
+    padding: 8px 2px;
+    border-radius: 9px;
+    font-size: 11.5px;
+    font-weight: 600;
+  }
+  .magicflow-page .magicflow-tab.is-active {
+    color: #cfc6ff;
+    background: rgba(139, 124, 246, 0.14);
+    box-shadow: none;
+    font-weight: 600;
+  }
+  .magicflow-page .magicflow-tab.is-active::after {
+    content: '';
+    position: absolute;
+    left: 22%;
+    right: 22%;
+    bottom: -9px;
+    height: 2px;
+    border-radius: 2px;
+    background: #8b7cf6;
+  }
+  /* ★ 19.16.1：设计稿 mockup 的任务下拉是两行（当前任务小字 + 任务名），恢复 __k */
+  .magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch__k {
+    display: block;
+  }
+  .magicflow-page .magicflow-window { padding-block-start: 13px; }
 }
 
 /* ── ★ 操作记录独立页 ─────────────────────────────── */
@@ -4680,7 +4947,8 @@ onUnmounted(() => {
   .magicflow-claim-body,
   .magicflow-recommend-dialog__body { padding-bottom: 92px; }
   .magicflow-music-body { padding-bottom: 92px; }
-  .magicflow-torrent-dialog { padding-bottom: 92px; }
+  /* ★ 19.12.59：种子详情弹窗的底部安全区改由 TorrentDialog.vue 自己在 ≤959 段设置
+     （这里只有单类优先级，会被组件内的 padding 简写覆盖，等于没写）。 */
 }
 </style>
 

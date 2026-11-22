@@ -39,6 +39,13 @@ DISK_NEAR_PCT = 95.0
 # H3 阈值：时魔跌幅（相对 + 绝对都要超）
 BONUS_DROP_PCT = 25.0
 BONUS_DROP_ABS = 5.0
+# ★ 19.12.84：趋势序列的「新鲜度」闸。采样是每小时一点，末点超过这个年龄就说明序列
+#   已经停更（任务停了 / 站点被删 / 采样链路断了）—— 此时末点**不是「现在」**，
+#   拿它和 24 小时前比得出的「下滑」是历史事实，不是当前状态，不该进健康告警。
+#   实测事故：site:17 停更于 11-02 06:00（站点已不在 MP 与账本里），17 天后仍被
+#   H3 报成「时魔下滑 52% · 现在 14.8/h」，而真实情况是「那一天掉过一次，之后没数据」。
+TREND_STALE_HOURS = 6.0
+TREND_STALE_SEC = TREND_STALE_HOURS * 3600.0
 # H2：卡死判定 = max(5×检查间隔, 30 分钟)
 STALE_MIN_SECONDS = 1800.0
 STALE_INTERVAL_FACTOR = 5
@@ -138,6 +145,14 @@ class HealthMixin:
                 continue
             last_point = series[-1]
             if not isinstance(last_point, dict):
+                continue
+            # ★ 19.12.84：**停更的序列不参与「下滑/贴上限」判定**。
+            #   理由见 TREND_STALE_HOURS 注释：末点才是「现在」，停更后它只是历史。
+            try:
+                _age = now - float(last_point.get("t") or 0)
+            except (TypeError, ValueError):
+                _age = 0.0
+            if _age > TREND_STALE_SEC:
                 continue
             # H3 站点口径时魔下滑（任务/站点序列都看，站点优先）
             try:
@@ -399,7 +414,9 @@ class HealthMixin:
                     "task_id": "",
                 })
             # ② 页头说欠了，规则表却说本站没有 H&R → 规则与事实冲突（🟡，手填「无 H&R」尤其要看）
-            elif n_open and n_open > 0 and hr_flag is False:
+            #   ★ 19.12.83：逐种站（per_torrent_hr=True）的 hr=False 是**合法配置**（按种标记，
+            #   不整站启用），页头 y>0 只是逐种欠账累计 —— 不算「规则冲突」，交给下面的④报欠账。
+            elif n_open and n_open > 0 and hr_flag is False and not per_torrent:
                 out.append({
                     "key": f"H7:{sid or dom}",
                     "level": "warning",
@@ -408,17 +425,7 @@ class HealthMixin:
                                f"请核对：是站点在实行，还是皮肤自带计数"),
                     "task_id": "",
                 })
-            # ③ 规则说本站有 H&R，页头与 myhr 都是 0 → 仅提示（ℹ️ 不降级）
-            elif (hr_flag is True and not per_torrent and (n_open or 0) == 0
-                  and rec_ok and rec_total == 0):
-                out.append({
-                    "key": f"H7:{sid or dom}",
-                    "level": "info",
-                    "title": f"「{name}」标有 H&R 但当前无记录",
-                    "detail": f"页头计数 0（{raw}）且 myhr 对账 0 条，本站当前无欠账（口径一致）",
-                    "task_id": "",
-                })
-            # ④ 页头有欠条，规则库里却没有判据 → 规则库该补（ℹ️ 只升不降的证据）
+            # ③ 页头有欠条，规则库里却没有判据 → 规则库该补（ℹ️ 只升不降的证据）
             elif (n_open or 0) > 0 and hr_flag is None:
                 out.append({
                     "key": f"H7:{sid or dom}",
@@ -426,6 +433,23 @@ class HealthMixin:
                     "title": f"「{name}」页头有 H&R 欠条，规则库无判据",
                     "detail": (f"页头 H&R 计数 考核中 {n_assess}/未完成 {n_unfin}（{raw}）→ 建议在设置里给本站标「有 H&R」"
                                f"（逐种站另标逐种）"),
+                    "task_id": "",
+                })
+            # ④ 确实欠着、但还没到禁用线 → 提示补做（ℹ️ **这才是「欠账告警」**）
+            #   ★ 19.12.83：这一格原来报的是「规则标有 H&R 但当前无记录」—— 即**不欠账也每轮报一条**。
+            #   学校（H&R 0/ 0）、CARPT（0/0/20）在稳态下永久各占一条 info，「健康告警 4 种」里
+            #   3 种是「没事」，把真正该看的欠账淹了；而真正的「欠了几条、还没到禁用线」
+            #   （1 ≤ y < z-1）反而**一个字都不报**。现改为只在页头**未完成 y > 0** 时报；
+            #   判据仍只看 y（x=考核中 是缓冲，不算欠）。
+            elif (n_unfin or 0) > 0:
+                _left = (f"，上限 {n_limit}（差 {n_limit - n_unfin} 条到禁用线）"
+                         if (n_limit and n_limit > n_unfin) else "")
+                out.append({
+                    "key": f"H7:{sid or dom}",
+                    "level": "info",
+                    "title": f"「{name}」欠 {n_unfin} 条 H&R（未到禁用线）",
+                    "detail": (f"页头 {raw}：未完成 {n_unfin} 条{_left}{_buf}"
+                               f" → 把这 {n_unfin} 条补做/补种结清，别攒到禁用线"),
                     "task_id": "",
                 })
         return out

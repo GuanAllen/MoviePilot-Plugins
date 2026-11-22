@@ -29,7 +29,6 @@ import { MF_PAGES } from '../../constants.js'
 const _hoisted_1$j = { class: "mfhub__head" };
 const _hoisted_2$h = { class: "mfhub__search" };
 const _hoisted_3$g = { class: "mfhub__body" };
-const _hoisted_4$g = { class: "mfhub__primary-icon" };
 const _hoisted_5$g = { class: "mfhub__group-head" };
 const _hoisted_6$f = { key: 0 };
 const _hoisted_7$e = { class: "mfhub__grid" };
@@ -119,10 +118,33 @@ const EXTRA_PAGES = [
   { key: 'notify', label: '事件通知', icon: 'mdi-bell-ring-outline', scope: 'view' },
 ];
 
-// 页头级主操作：新建任务（原来在页头那颗实心按钮，收进这里当第一格）
-const CREATE_PAGE = { key: 'create', label: '新建任务', icon: 'mdi-plus', scope: 'action' };
+// 19.13.4：原「新建任务」页头实心按钮已从功能中心移除（首页 hero / 桌面页头仍保留入口）。
 // 页头原先的 ✕：设计稿没有它，但功能不能丢 —— 放进「配置」组
 const CLOSE_PAGE = { key: 'close', label: '关闭插件页', icon: 'mdi-close', scope: 'settings' };
+
+// ★ 功能分类映射（key → 5 类）：与手机端设计稿 v3 一致。
+//   不用 scope（global/view/settings 是技术分层），改按用户找功能的语义归类。
+const CAT_OF = {
+  recommend:'pick', crossseed:'pick', claim:'pick', rss:'pick', ondemand:'pick', keep:'pick', rescue:'pick',
+  exam:'daily', signin:'daily', silent:'daily', hrbills:'daily', health:'daily', notify:'daily',
+  cloud:'lib', assets:'lib', music:'lib', jobs:'lib', optimize:'lib',
+  douban:'data', sitereport:'data', ceiling:'data', ops:'data', pushes:'data', trend:'data', plan:'data',
+  settings:'cfg', close:'cfg',
+};
+const CAT_META = [
+  { key: 'pick', title: '选种与下载', hint: '找种 · 下单 · 补源' },
+  { key: 'daily', title: '保种与日常', hint: '签到 · 考核 · 风控' },
+  { key: 'lib', title: '库与整理', hint: '归档 · 入库 · 刮削' },
+  { key: 'data', title: '报表与诊断', hint: '汇总 · 趋势 · 审批' },
+  { key: 'cfg', title: '配置', hint: '' },
+];
+// 冷启动（本地无任何埋点记录）时的默认高频兜底
+const DEFAULT_FREQ = ['recommend', 'signin', 'ondemand', 'music', 'jobs', 'sitereport'];
+// 本地埋点：localStorage['mfPageUse'] = { <key>: {n: 次数, t: 最近时间戳} }，用户不可见。
+function readUse() {
+  try { return JSON.parse(localStorage.getItem('mfPageUse') || '{}') || {} }
+  catch (e) { return {} }
+}
 
 const q = ref$t('');
 
@@ -139,12 +161,24 @@ const allPages = computed$x(() => {
 
 const groups = computed$x(() => {
   const list = allPages.value;
-  const out = [
-    { key: 'global', title: '常用功能', hint: '插件级单例', items: list.filter(p => p.scope === 'global' && p.key !== 'settings') },
-    { key: 'view', title: '报表与工具', hint: '只读汇总 / 诊断 / 审批', items: list.filter(p => p.scope === 'view') },
-    { key: 'settings', title: '配置', hint: '', items: [...list.filter(p => p.key === 'settings'), CLOSE_PAGE] },
-  ];
-  return out.filter(g => g.items.length)
+  const byKey = Object.fromEntries(list.map(p => [p.key, p]));
+  const use = readUse();
+  // ★ 常用 = 真实使用频率 Top6：次数降序、同次数按最近时间降序；次数只排序、不显示。
+  const ranked = list
+    .filter(p => { const c = CAT_OF[p.key]; return c && c !== 'cfg' })
+    .map(p => ({ key: p.key, n: Number((use[p.key] || {}).n) || 0, t: Number((use[p.key] || {}).t) || 0 }))
+    .filter(x => x.n > 0)
+    .sort((a, b) => (b.n - a.n) || (b.t - a.t))
+    .slice(0, 6)
+    .map(x => x.key);
+  const topKeys = ranked.length ? ranked : DEFAULT_FREQ.filter(k => byKey[k]);
+  const out = [{ key: 'fav', title: '★ 常用', hint: '你常点的，都在前面', items: topKeys.map(k => byKey[k]).filter(Boolean) }];
+  for (const c of CAT_META) {
+    const items = list.filter(p => CAT_OF[p.key] === c.key);
+    if (c.key === 'cfg') items.push(CLOSE_PAGE);
+    if (items.length) out.push({ key: c.key, title: c.title, hint: c.hint, items });
+  }
+  return out
 });
 
 // 搜索：命中名称或说明即保留（组标题保留，空组丢弃）
@@ -160,7 +194,8 @@ const filteredGroups = computed$x(() => {
     .filter(g => g.items.length)
 });
 
-const total = computed$x(() => allPages.value.length + 1);
+// 19.13.4：去掉「新建任务」横条，入口数不再 +1（create 不在此宫格内）
+const total = computed$x(() => allPages.value.length);
 
 // ★ 模板只能用「本文件显式声明过的标识符」（preflight 13/17 守卫）：props 字段要包一层再到模板用
 const isFullscreen = computed$x(() => !!props.narrow);
@@ -171,6 +206,17 @@ function badgeFor(key) {
 }
 
 function pick(page) {
+  // ★ 本地埋点：每次点功能记一笔次数+时间（用户不可见，只用于「常用」排序）。
+  //   create/close 是一次性动作、不进功能列表，不计入频率。
+  try {
+    const key = page && page.key;
+    if (key && key !== 'create' && key !== 'close') {
+      const use = readUse();
+      const prev = use[key] || { n: 0, t: 0 };
+      use[key] = { n: (Number(prev.n) || 0) + 1, t: Date.now() };
+      localStorage.setItem('mfPageUse', JSON.stringify(use));
+    }
+  } catch (e) { /* localStorage 不可用（隐私模式等）时静默跳过，不影响打开功能 */ }
   open.value = false;
   emit('open', page);
 }
@@ -242,30 +288,9 @@ return (_ctx, _cache) => {
             })
           ]),
           _createElementVNode$l("div", _hoisted_3$g, [
-            (!kw.value)
-              ? (_openBlock$l(), _createElementBlock$i("button", {
-                  key: 0,
-                  type: "button",
-                  class: "mfhub__primary",
-                  onClick: _cache[3] || (_cache[3] = $event => (pick(CREATE_PAGE)))
-                }, [
-                  _createElementVNode$l("span", _hoisted_4$g, [
-                    _createVNode$k(_component_VIcon, {
-                      icon: "mdi-plus",
-                      size: "20"
-                    })
-                  ]),
-                  _cache[7] || (_cache[7] = _createElementVNode$l("span", { class: "mfhub__text" }, [
-                    _createElementVNode$l("strong", null, "新建任务"),
-                    _createElementVNode$l("em", null, "选站点、定模式（做种 / 刷流）、开跑")
-                  ], -1)),
-                  _createVNode$k(_component_VIcon, {
-                    icon: "mdi-chevron-right",
-                    size: "18",
-                    class: "mfhub__primary-chev"
-                  })
-                ]))
-              : _createCommentVNode$i("", true),
+            /* 19.13.4：去掉「新建任务」通栏大卡——首页 hero 与桌面页头都已有该入口，
+               功能中心这条重复且占一整行；新建任务能力不受影响（mfOpenPage('create') 仍在）。 */
+            _createCommentVNode$i("", true),
             (_openBlock$l(true), _createElementBlock$i(_Fragment$i, null, _renderList$g(filteredGroups.value, (g) => {
               return (_openBlock$l(), _createElementBlock$i("section", {
                 key: g.key,

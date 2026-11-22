@@ -1,6 +1,7 @@
 // MagicFlow 前端 · useCrossseed 域 composable
 // P3 拆分：自 views/magicflow/index.vue **纯搬家**（无行为变更）。
 // 依赖注入：api, notify（★ 真值源仍在后端；本域只放 UI 状态与动作）。
+import { startPolling, stopPolling } from '../../../polling'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { unwrapResponse } from '../../../utils'
 import { formatRemain } from '../format'
@@ -116,11 +117,11 @@ export function useCrossseed({ api, notify }) {
   onMounted(() => {
     // 跨站免费取种台账（在飞取种 · 低频刷角标）
     loadCrossseed()
-    crossseedTimer = window.setInterval(loadCrossseed, 120000)
+    crossseedTimer = startPolling(loadCrossseed, 120000)
   })
 
   onUnmounted(() => {
-    if (crossseedTimer) window.clearInterval(crossseedTimer)
+    if (crossseedTimer) stopPolling(crossseedTimer)
   })
 
 

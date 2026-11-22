@@ -333,9 +333,10 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
          "summary": "按选中的 cid 加种到音乐线（凭据不回传）"},
         {"path": "/agent/music/items", "method": "GET", "handler": "agent_music_items",
          "write": False,
-         "params": {"limit": "int 清单条数上限（默认 50，最大 200）"},
+         "params": {"limit": "int 每页条数（默认 50，最大 200）",
+                    "offset": "int 跳过条数（默认 0；配合 total 翻页）"},
          "returns": "MusicItems", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "音乐下过哪些、在库什么状态：清单 + totals"},
+         "summary": "音乐下过哪些、在库什么状态：分页清单 + totals + total（截断前真实条数）"},
         {"path": "/agent/music/act", "method": "POST", "handler": "agent_music_act",
          "write": True,
          "params": {"hash": "str（音乐种 infohash）", "action": "pause | resume | remove"},
@@ -1764,17 +1765,18 @@ class AgentApiMixin:
                                   ("写操作 → 服务端候选缓存按 cid 取回凭据 → _music_grab_one "
                                    "→ _crossseed_torrent_bytes + add_torrent；category=音乐，进账本/H&R/闸门"))
 
-    def agent_music_items(self, limit: int = 50) -> Dict[str, Any]:
-        """``GET /agent/music/items`` —— 音乐清单（单列表 + totals）。只读。"""
+    def agent_music_items(self, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
+        """``GET /agent/music/items`` —— 音乐清单（单列表 + totals + total/offset 分页）。只读。"""
         t0 = time.time()
         try:
-            data = self._music_items(limit=limit)
+            data = self._music_items(limit=limit, offset=offset)
         except Exception as e:  # noqa: BLE001
             return self._agent_err("internal", f"读取音乐清单失败:{e}", t0, trace_id=str(e))
         return self._agent_report(
             data, t0,
             ("音乐清单 = qB 音乐线快照(is_music_line) × journal(source=music) × 种子账本；"
-             "只归一字段（stage/percent/ISO 时间），不新造真值源"))
+             "只归一字段（stage/percent/ISO 时间），不新造真值源；"
+             "★ total=截断前真实条数，shown/offset/limit 描述当前页"))
 
     def agent_music_act(self, hash: str = "", action: str = "") -> Dict[str, Any]:
         """``POST /agent/music/act`` —— 音乐行内操作（pause / resume / remove）。

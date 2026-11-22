@@ -610,3 +610,34 @@ export function bonusShare(value, max) {
   if (!peak) return 0
   return Math.min(Math.round((Number(value || 0) * 100) / peak), 100)
 }
+
+/**
+ * 应用服务端差分补丁（19.12.63）。
+ *
+ * patch 的键是 **JSON 数组路径**（如 `["tasks",12,"state"]`），值是新叶子值。
+ * 用 JSON 而不是点号路径，是因为站点名 / 域名做 key 时会带点号，点号路径会歧义。
+ * 服务端已保证「结构完全一致」——叶子路径集合不增不减，所以这里只做赋值，
+ * 不创建中间节点；任何一步走不通就返回 false，调用方据此回退全量刷新。
+ *
+ * 之所以不直接 `Object.assign(root, patch)`：补丁是路径级增量，不是顶层字段。
+ * 之所以要返回成功与否：本地 status 可能来自更早的全量（例如另一个标签页
+ * 改了配置后本页还没刷新），此时硬套补丁会写进错误的对象里。
+ */
+export function applyPayloadPatch(root, patch) {
+  if (!root || typeof root !== 'object' || !patch || typeof patch !== 'object') return false
+  for (const key of Object.keys(patch)) {
+    let seg
+    try { seg = JSON.parse(key) } catch (_) { return false }
+    if (!Array.isArray(seg) || !seg.length) return false
+    let cur = root
+    for (let i = 0; i < seg.length - 1; i += 1) {
+      if (cur === null || typeof cur !== 'object') return false
+      const next = cur[seg[i]]
+      if (next === undefined || next === null) return false
+      cur = next
+    }
+    if (cur === null || typeof cur !== 'object') return false
+    cur[seg[seg.length - 1]] = patch[key]
+  }
+  return true
+}

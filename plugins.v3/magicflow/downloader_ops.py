@@ -11,6 +11,7 @@
 import base64
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -871,6 +872,47 @@ class DownloaderAdapter:
         except Exception as _e:  # noqa: BLE001
             logger.warning(f"[路径映射] 失败: {_e}")
         return path
+
+    # ★ 19.12.75：文件存在性三态 —— 认领前检查与空壳巡检共用同一口径。
+    FILE_STATE_OK = "ok"
+    FILE_STATE_MISSING = "missing"
+    FILE_STATE_UNKNOWN = "unknown"
+
+    def torrent_file_state(self, torrent: Any) -> str:
+        """判这颗种的**数据是否还在磁盘上**：``ok`` / ``missing`` / ``unknown``。
+
+        为什么不能只看 qB 状态：暂停中的种（静默池全是 paused）qB **不会主动复查文件**，
+        文件被外部删掉后状态照旧 ``pausedUP``、进度照旧 100%，``missingFiles`` 要等到
+        某次 recheck 才会出现（实测 11-11 一次全站 recheck 才一次性爆出 229 颗）。
+
+        两道安全阀（宁可不动，也不能误判成可删）：
+        ① 映射后的路径**连父目录都不存在** → ``unknown``：只可能是路径映射/存储挂载失效；
+        ② 取不到 ``content_path`` 也拼不出路径 → ``unknown``。
+        """
+        if torrent is None:
+            return self.FILE_STATE_UNKNOWN
+        if str(getattr(torrent, "state", "") or "") in ("missingFiles", "error"):
+            return self.FILE_STATE_MISSING
+        raw = str(getattr(torrent, "content_path", "") or "").strip().rstrip("/")
+        if not raw:
+            sp = str(getattr(torrent, "save_path", "") or "").strip().rstrip("/")
+            nm = str(getattr(torrent, "title", "") or "").strip()
+            raw = (sp + "/" + nm) if (sp and nm) else ""
+        if not raw:
+            return self.FILE_STATE_UNKNOWN
+        try:
+            path = self.normalize_path(raw)
+        except Exception:  # noqa: BLE001
+            path = raw
+        try:
+            if os.path.exists(path):
+                return self.FILE_STATE_OK
+            parent = os.path.dirname(path.rstrip("/"))
+            if parent and not os.path.isdir(parent):
+                return self.FILE_STATE_UNKNOWN
+            return self.FILE_STATE_MISSING
+        except Exception:  # noqa: BLE001
+            return self.FILE_STATE_UNKNOWN
 
     def get_torrents(
         self,
@@ -2205,7 +2247,25 @@ class DownloaderAdapter:
                 )
 
         if not hashes:
-            self._emit_delete_log([], delete_file, reason, source, None, _blocked)
+            # ★ 19.12.73：``blocked_by`` 终于有内容了。以前这里恒传空串 —— 台账只看得见
+            #   「被拦了」，看不见「被哪条硬保护拦的」（认领 / 手动保留 / 欠 H&R / 库内资产）。
+            #   闸门明细本身是第二遍推导（只对被拦的这几十个算，不影响主流程）。
+            _bby = ""
+            if _blocked:
+                try:
+                    _det = getattr(self, "_delete_gate_detail", None)
+                    _why = _det(list(_blocked)) if callable(_det) else {}
+                    _kinds: List[str] = []
+                    for _v in (_why or {}).values():
+                        _k = str(_v or "").split("（")[0].strip()
+                        if _k and _k not in _kinds:
+                            _kinds.append(_k)
+                    _bby = "/".join(_kinds)[:60]
+                except Exception:  # noqa: BLE001
+                    _bby = ""
+                _bby = _bby or "hard_protect"
+            self._emit_delete_log([], delete_file, reason, source, None, _blocked,
+                                  blocked_by=_bby)
             return 0, None
 
         # ★★ 11.12.0：删除前「账单直查断言」+「滚动窗口熔断」（独立于闸门推导链，fail-closed）。

@@ -1326,7 +1326,14 @@ class CrossSeedMixin:
             dom = str(it.get("domain") or "")
             if tail and (tail in dom.lower() or tail in nm.lower().replace(" ", "")):
                 return nm, dom
-        return (tail, "") if tail else ("", "")
+        # ★ 19.16.13：**猜不出已知站点时不再把标题后缀当站点**。
+        #   反例（实证）：``Being.Flynn...-DIY@Audies`` → tail="audies" → 账本 site=audies、
+        #   标签 ``魔流-audies-认领``，报表按站点域名匹配全部落空 ⇒ 这颗种在任何站点报表里
+        #   都消失（学校第 4 个认领就是这么丢的），且 ``_magicize_site`` 里
+        #   ``if site: return`` 会被这个假站点短路，永远走不到 tracker 域名兜底。
+        #   返回空让调用方继续走「老式前缀 / tracker 域名」两步 —— 拿得到真站点。
+        #   注意：``@HDFans`` 这类**发布组名恰好等于站点名**的仍在上面的循环里命中，不受影响。
+        return "", ""
     def _crossseed_start(
         self,
         task: MagicFlowTaskConfig,

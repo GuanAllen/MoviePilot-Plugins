@@ -5,7 +5,7 @@
 任何模块都可以安全 `from ..common import ...`，不会产生循环导入。
 """
 
-__version__ = "19.12.66"
+__version__ = "19.16.21"
 
 import bisect
 import hashlib
@@ -327,6 +327,7 @@ CLAIM_INTERVAL_SEC = 8.0                     # 两次认领之间的最小间隔
 CLAIM_FAIL_TTL = 24 * 3600.0                 # 失败/名额满/不达标 → 24h 内不重试
 CLAIM_SOFT_CAP = 200                         # 单站账本软上限（仅提示，不强制）
 CLAIM_HOST_INTERVAL_MINUTES = 15             # ★ 19.7.0：认领保挂 worker 周期（分钟）
+MISSING_SCAN_INTERVAL_MINUTES = 30           # ★ 19.12.75：空壳巡检常驻 worker 周期（分钟）
 CLAIM_SITE_TTL = 600                        # ★ 19.7.1：站点认领页缓存（秒）
 CLAIM_STATE_TTL = 180                        # ★ 19.7.22：/claim 结果缓存新鲜期（秒）
 CLAIM_STATE_STALE = 3600                     # ★ 19.7.22：陈旧窗口（秒，窗口内直接返回并后台刷新）

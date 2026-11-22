@@ -15,6 +15,7 @@ const {
   createVNode: _createVNode$v,
   mergeModels: _mergeModels$f,
   openBlock: _openBlock$w,
+  ref: _ref$F,
   renderList: _renderList$q,
   resolveComponent: _resolveComponent$w,
   toDisplayString: _toDisplayString$w,
@@ -24,9 +25,10 @@ const {
 } = __vue
 
 import { SITE_REPORT_BUCKETS, SITE_REPORT_ORIGINS, SITE_REPORT_SILENT_SUBS, SITE_REPORT_TRANSPORT } from '../../constants.js'
+import { formatBytes } from '../../../../utils.js'
 import { currencyOf } from '../../composables/useCurrency.js'
 import { levelNextText } from '../../format.js'
-import { siteReportBucketColor, siteReportItemSub, siteReportTransportCount, useSiteReport } from '../../composables/useSiteReport.js'
+import { siteReportBucketColor, siteReportItemParts, siteReportItemSub, siteReportTitleParts, siteReportTransportCount, useSiteReport } from '../../composables/useSiteReport.js'
 
 const _hoisted_1$u = { class: "magicflow-settings-dialog__head" };
 const _hoisted_2$s = { class: "magicflow-ops-dialog__sub magicflow-sitereport__bar" };
@@ -39,7 +41,7 @@ const _hoisted_6$q = {
 };
 const _hoisted_7$o = {
   key: 0,
-  class: "magicflow-sitereport__live-grid"
+  class: "magicflow-sitereport__live-body"
 };
 const _hoisted_8$m = { class: "magicflow-sitereport__live-cell" };
 const _hoisted_9$k = { class: "magicflow-sitereport__live-cell" };
@@ -49,10 +51,14 @@ const _hoisted_12$j = { class: "magicflow-sitereport__live-cell" };
 const _hoisted_13$h = ["title"];
 const _hoisted_14$g = ["title"];
 const _hoisted_15$g = ["title"];
+// ★ 19.16.8 升级条件清单：容器 / 顶部行 / 逐行（state 决定 ✓✕?）
 const _hoisted_16$g = {
   key: 1,
-  class: "magicflow-sitereport__live-gap"
+  class: "magicflow-sitereport__reqs"
 };
+const _hoisted_16b$g = { class: "magicflow-sitereport__reqs-top" };
+const _hoisted_16c$g = { class: "magicflow-sitereport__reqs-name" };
+const _hoisted_16d$g = { class: "magicflow-sitereport__reqs-count" };
 const _hoisted_17$g = {
   key: 2,
   class: "magicflow-sitereport__live-empty"
@@ -67,10 +73,16 @@ const _hoisted_20$d = {
   title: "该站点在本机下载器里的全部种（做种/下载/暂停/静默）"
 };
 const _hoisted_21$c = { class: "magicflow-sitereport__stat" };
-const _hoisted_22$b = { class: "magicflow-sitereport__stat is-danger" };
-const _hoisted_23$a = { class: "magicflow-sitereport__stat is-danger" };
-const _hoisted_24$a = { class: "magicflow-sitereport__chips" };
-const _hoisted_25$a = { class: "magicflow-sitereport__chips magicflow-sitereport__chips--l2" };
+// ★ 19.16.7：健康值 0 → 绿+✓（is-ok），>0 才 is-danger，class 改动态绑定
+const _hoisted_22$b = { class: "magicflow-sitereport__stat" };
+const _hoisted_23$a = { class: "magicflow-sitereport__stat" };
+// ★ 19.16.7 用途分组 label
+const _hoisted_24$a = { class: "magicflow-sitereport__fgroup" };
+const _hoisted_24b$a = { class: "magicflow-sitereport__chip-label" };
+const _hoisted_24c$a = { class: "magicflow-sitereport__chips" };
+const _hoisted_25$a = { class: "magicflow-sitereport__fgroup magicflow-sitereport__chips--l2" };
+// ★ 19.16.11 传输状态行必须自带 __chips 内层：只挂 chips--l2 时容器没有 flex/gap，chip 会紧贴
+const _hoisted_25b$a = { class: "magicflow-sitereport__chips" };
 const _hoisted_26$8 = {
   key: 0,
   class: "magicflow-sitereport__chips magicflow-sitereport__chips--l2"
@@ -79,7 +91,9 @@ const _hoisted_27$8 = {
   key: 1,
   class: "magicflow-sitereport__chips magicflow-sitereport__chips--l2"
 };
-const _hoisted_28$7 = { class: "magicflow-ops-dialog__sub" };
+// ★ 19.16.11 明细行不再复用 ops-dialog__sub：那个类自带 18px 左右内边距，
+//   叠在 body 已有的 14/18px 上会比上下行多缩进一格（手机上尤其明显）。
+const _hoisted_28$7 = { class: "magicflow-sitereport__detail" };
 const _hoisted_29$7 = {
   key: 2,
   class: "magicflow-sitereport__err"
@@ -187,6 +201,73 @@ function liveNum(v) {
   return Number.isFinite(n) ? (Math.round(n * 10) / 10).toLocaleString('en-US') : '—'
 }
 
+// ★ 19.16.8 升级条件清单：升级是 AND 多条件（入站时长+下载+分享率+做种积分…），
+//   单条进度条只画一项＝假精确。改成逐条列达标状态：✓达标 / ✕未达标(+差额) / ?未知。
+//   全用后端 level_next 真值：req=门槛全集，unmet=未达标差额，unknown=算不出的项。
+const LV_LABELS = {
+  interval: '入站时长', downloaded: '下载量', uploaded: '上传量',
+  trueDownloaded: '下载量', trueUploaded: '上传量', ratio: '分享率', trueRatio: '分享率',
+  seedingSize: '做种体积', totalTraffic: '总流量', seedingBonus: '做种积分',
+  bonus: '魔力', seeding: '做种数', snatches: '完成数', uploads: '发布数', posts: '发帖数',
+};
+const LV_ORDER = ['interval', 'downloaded', 'trueDownloaded', 'uploaded', 'trueUploaded', 'ratio', 'trueRatio', 'seedingSize', 'totalTraffic', 'seedingBonus', 'bonus', 'seeding', 'snatches', 'uploads', 'posts'];
+const LV_BYTES = new Set(['downloaded', 'trueDownloaded', 'uploaded', 'trueUploaded', 'seedingSize', 'totalTraffic']);
+function lvTargetText(k, v, cur) {
+  if (k === 'interval') {
+    const m = /P(\d+)W/.test(String(v)); const d = /P(\d+)D/.test(String(v));
+    if (m) return '满 ' + RegExp.$1 + ' 周';
+    if (d) return '满 ' + RegExp.$1 + ' 天';
+    return String(v || '');
+  }
+  if (k === 'ratio' || k === 'trueRatio') return '≥' + Number(v).toFixed(2);
+  if (LV_BYTES.has(k)) return '≥' + String(v || '');
+  const n = Number(v);
+  return Number.isFinite(n) ? '≥' + n.toLocaleString('en-US') : String(v ?? '');
+}
+function lvGapText(k, gap, cur) {
+  if (LV_BYTES.has(k)) return '还差 ' + formatBytes(gap);
+  if (k === 'ratio' || k === 'trueRatio') {
+    // unmet.ratio 存的是门槛值本身（不是差额），有当前值就显示「当前 x ≥ y」
+    const c = Number(cur);
+    return Number.isFinite(c) ? '当前 ' + c.toFixed(2) + ' · 需 ≥' + Number(gap).toFixed(2) : '需 ≥' + Number(gap).toFixed(2);
+  }
+  if (k === 'interval') {
+    const days = Math.ceil(Number(gap) / 86400);
+    return '还需 ' + (days > 0 ? days : 1) + ' 天';
+  }
+  const n = Number(gap);
+  return '还差 ' + (Number.isFinite(n) ? Math.round(n).toLocaleString('en-US') : String(gap));
+}
+const levelConditions = computed$F(() => {
+  const n = (props.liveStats || {}).level_next;
+  const s = props.liveStats || {};
+  if (!n || !n.req || !n.unmet) return null;
+  const req = n.req, un = n.unmet || {}, unk = new Set(n.unknown || []);
+  const rows = [];
+  for (const k of LV_ORDER) {
+    if (!(k in req)) continue;
+    if (unk.has(k)) { rows.push({ key: k, label: LV_LABELS[k] || k, state: 'unknown', detail: '未知' }); continue; }
+    if (un[k] != null) {
+      // ★ 19.16.9 修复：ratio 不是字节类，之前塞在 LV_BYTES 三元里永远拿不到 → Number(null)=0 → "当前 0.00"。
+      //   分享率当前值必须单独取 s.ratio（账号卡真值），否则显示自相矛盾的假 0。
+      const cur = (k === 'ratio' || k === 'trueRatio') ? s.ratio
+        : LV_BYTES.has(k) ? (k === 'uploaded' || k === 'trueUploaded' ? s.upload : s.download) : null;
+      rows.push({ key: k, label: LV_LABELS[k] || k, state: 'miss', detail: lvGapText(k, un[k], cur) });
+    } else {
+      rows.push({ key: k, label: LV_LABELS[k] || k, state: 'ok', detail: lvTargetText(k, req[k], null) });
+    }
+  }
+  if (!rows.length) return null;
+  const met = rows.filter(r => r.state === 'ok').length;
+  return { rows, met, total: rows.length, name: n.name || '' };
+});
+// ★ 19.16.7 健康值语义：0 是健康（绿+✓），只有 >0 才标红。
+const hrOwedDanger = computed$F(() => Number((props.summary || {}).hr_owed || 0) > 0)
+const hrMissingDanger = computed$F(() => Number((props.summary || {}).hr_missing || 0) > 0)
+// ★ 19.16.7 明细原名折叠：默认收起，点「原名」那行展开。用 hash 做 key，重渲染不丢状态。
+const origOpen = _ref$F({})
+function toggleOrig(h) { origOpen.value = { ...origOpen.value, [h]: !origOpen.value[h] } }
+
 return (_ctx, _cache) => {
   const _component_VChip = _resolveComponent$w("VChip");
   const _component_VBtn = _resolveComponent$w("VBtn");
@@ -248,24 +329,12 @@ return (_ctx, _cache) => {
               variant: "outlined",
               "hide-details": "",
               class: "magicflow-sitereport__site"
-            }, null, 8, ["modelValue", "items"]),
-            _createVNode$v(_component_VBtn, {
-              size: "small",
-              variant: "tonal",
-              "prepend-icon": __props.live ? 'mdi-radar' : 'mdi-cloud-download-outline',
-              loading: __props.loading,
-              onClick: _cache[4] || (_cache[4] = $event => (emit('live')))
-            }, {
-              default: _withCtx$t(() => [...(_cache[13] || (_cache[13] = [
-                _createTextVNode$v("H&R 现抓", -1)
-              ]))]),
-              _: 1
-            }, 8, ["prepend-icon", "loading"])
+            }, null, 8, ["modelValue", "items"])
           ]),
           _createElementVNode$w("div", _hoisted_3$r, [
             _createElementVNode$w("div", _hoisted_4$r, [
               _createElementVNode$w("div", _hoisted_5$r, [
-                _cache[15] || (_cache[15] = _createElementVNode$w("span", { class: "magicflow-sitereport__live-t" }, "站点流量", -1)),
+                _cache[15] || (_cache[15] = _createElementVNode$w("span", { class: "magicflow-sitereport__live-t" }, "账号概览", -1)),
                 (__props.liveLoading)
                   ? (_openBlock$w(), _createBlock$t(_component_VChip, {
                       key: 0,
@@ -298,106 +367,135 @@ return (_ctx, _cache) => {
               ]),
               (__props.liveStats && __props.liveStats.ok)
                 ? (_openBlock$w(), _createElementBlock$s("div", _hoisted_7$o, [
-                    _createElementVNode$w("div", _hoisted_8$m, [
-                      _createElementVNode$w("b", null, _toDisplayString$w(liveRatio.value), 1),
-                      _cache[16] || (_cache[16] = _createElementVNode$w("span", null, "分享率", -1))
+                    _createElementVNode$w("div", { class: "magicflow-sitereport__live-grid" }, [
+                      _createElementVNode$w("div", _hoisted_8$m, [
+                        _createElementVNode$w("b", null, _toDisplayString$w(liveRatio.value), 1),
+                        _cache[16] || (_cache[16] = _createElementVNode$w("span", null, "分享率", -1))
+                      ]),
+                      _createElementVNode$w("div", _hoisted_9$k, [
+                        _createElementVNode$w("b", null, _toDisplayString$w(liveGb(__props.liveStats.upload)), 1),
+                        _cache[17] || (_cache[17] = _createElementVNode$w("span", null, "上传", -1))
+                      ]),
+                      _createElementVNode$w("div", _hoisted_10$k, [
+                        _createElementVNode$w("b", null, _toDisplayString$w(liveGb(__props.liveStats.download)), 1),
+                        _cache[18] || (_cache[18] = _createElementVNode$w("span", null, "下载", -1))
+                      ]),
+                      _createElementVNode$w("div", _hoisted_11$j, [
+                        _createElementVNode$w("b", null, _toDisplayString$w(liveNum(__props.liveStats.bonus)), 1),
+                        _createElementVNode$w("span", null, "魔力值", 1)
+                      ])
                     ]),
-                    _createElementVNode$w("div", _hoisted_9$k, [
-                      _createElementVNode$w("b", null, _toDisplayString$w(liveGb(__props.liveStats.upload)), 1),
-                      _cache[17] || (_cache[17] = _createElementVNode$w("span", null, "上传", -1))
-                    ]),
-                    _createElementVNode$w("div", _hoisted_10$k, [
-                      _createElementVNode$w("b", null, _toDisplayString$w(liveGb(__props.liveStats.download)), 1),
-                      _cache[18] || (_cache[18] = _createElementVNode$w("span", null, "下载", -1))
-                    ]),
-                    _createElementVNode$w("div", _hoisted_11$j, [
-                      _createElementVNode$w("b", null, _toDisplayString$w(liveNum(__props.liveStats.bonus)), 1),
-                      _createElementVNode$w("span", null, "当前" + _toDisplayString$w(currencyName.value), 1)
-                    ]),
-                    _createElementVNode$w("div", _hoisted_12$j, [
-                      _createElementVNode$w("b", null, _toDisplayString$w(liveNum(__props.liveStats.seeding)), 1),
-                      _cache[19] || (_cache[19] = _createElementVNode$w("span", null, "做种", -1))
-                    ]),
-                    _createElementVNode$w("div", {
-                      class: "magicflow-sitereport__live-cell",
-                      title: bonusPerHourHint.value
-                    }, [
-                      _createElementVNode$w("b", null, _toDisplayString$w(liveNum(bonusPerHour.value)), 1),
-                      _createElementVNode$w("span", null, _toDisplayString$w(currencyName.value) + "/时", 1)
-                    ], 8, _hoisted_13$h),
-                    _createElementVNode$w("div", {
-                      class: "magicflow-sitereport__live-cell",
-                      title: __props.liveStats.level || '站点未报等级'
-                    }, [
-                      _createElementVNode$w("b", null, _toDisplayString$w(levelName.value), 1),
-                      _cache[20] || (_cache[20] = _createElementVNode$w("span", null, "等级", -1))
-                    ], 8, _hoisted_14$g),
-                    _createElementVNode$w("div", {
-                      class: "magicflow-sitereport__live-cell",
-                      title: levelGapText.value
-                    }, [
-                      _createElementVNode$w("b", null, _toDisplayString$w(levelNextName.value), 1),
-                      _cache[21] || (_cache[21] = _createElementVNode$w("span", null, "下一级", -1))
-                    ], 8, _hoisted_15$g)
+                    _createElementVNode$w("div", { class: "magicflow-sitereport__live-minor" }, [
+                      _createElementVNode$w("span", null, "做种 " + _toDisplayString$w(liveNum(__props.liveStats.seeding)), 1),
+                      _createElementVNode$w("span", {
+                        title: bonusPerHourHint.value
+                      }, currencyName.value + "/时 " + _toDisplayString$w(liveNum(bonusPerHour.value)), 1, _hoisted_13$h),
+                      _createElementVNode$w("span", {
+                        title: __props.liveStats.level || '站点未报等级'
+                      }, "等级 " + _toDisplayString$w(levelName.value), 1, _hoisted_14$g)
+                    ])
                   ]))
                 : _createCommentVNode$t("", true),
-              (levelGapText.value)
-                ? (_openBlock$w(), _createElementBlock$s("div", _hoisted_16$g, "距 " + _toDisplayString$w(levelNextName.value) + "：" + _toDisplayString$w(levelGapText.value), 1))
-                : (!__props.liveLoading && __props.liveStats && __props.liveStats.warming)
-                  ? (_openBlock$w(), _createElementBlock$s("div", _hoisted_17$g, "取数中…（实时数据正在后台补齐，稍候自动刷新）"))
-                  : (!__props.liveLoading)
-                    ? (_openBlock$w(), _createElementBlock$s("div", _hoisted_18$g, "暂无实时账号数据（站点未登录或取数失败）"))
-                    : _createCommentVNode$t("", true)
+              (levelConditions.value)
+                ? (_openBlock$w(), _createElementBlock$s("div", _hoisted_16$g, [
+                    _createElementVNode$w("div", _hoisted_16b$g, [
+                      _createElementVNode$w("span", _hoisted_16c$g, "升级 " + _toDisplayString$w(levelConditions.value.name || levelNextName.value), 1),
+                      _createElementVNode$w("span", _hoisted_16d$g, "满足 " + _toDisplayString$w(levelConditions.value.met) + " / " + _toDisplayString$w(levelConditions.value.total), 1)
+                    ]),
+                    (_openBlock$w(true), _createElementBlock$s(_Fragment$s, null, _renderList$q(levelConditions.value.rows, (row) => {
+                      return (_openBlock$w(), _createElementBlock$s("div", {
+                        key: row.key,
+                        class: "magicflow-sitereport__reqs-row is-" + row.state
+                      }, [
+                        _createElementVNode$w("span", { class: "magicflow-sitereport__reqs-mark" }, row.state === 'ok' ? "✓" : (row.state === 'miss' ? "✕" : "?"), 1),
+                        _createElementVNode$w("span", { class: "magicflow-sitereport__reqs-label" }, _toDisplayString$w(row.label), 1),
+                        _createElementVNode$w("span", { class: "magicflow-sitereport__reqs-detail" }, _toDisplayString$w(row.detail), 1)
+                      ]))
+                    }), 128))
+                  ]))
+                : (levelGapText.value)
+                  ? (_openBlock$w(), _createElementBlock$s("div", { key: 2, class: "magicflow-sitereport__live-gap" }, "距 " + _toDisplayString$w(levelNextName.value) + "：" + _toDisplayString$w(levelGapText.value), 1))
+                  : (!__props.liveLoading && __props.liveStats && __props.liveStats.warming)
+                    ? (_openBlock$w(), _createElementBlock$s("div", _hoisted_17$g, "取数中…（实时数据正在后台补齐，稍候自动刷新）"))
+                    : (!__props.liveLoading)
+                      ? (_openBlock$w(), _createElementBlock$s("div", _hoisted_18$g, "暂无实时账号数据（站点未登录或取数失败）"))
+                      : _createCommentVNode$t("", true)
             ]),
             _createElementVNode$w("div", _hoisted_19$f, [
               _createElementVNode$w("div", _hoisted_20$d, [
-                _createElementVNode$w("b", null, _toDisplayString$w(__props.summary.total || 0), 1),
-                _cache[22] || (_cache[22] = _createElementVNode$w("span", null, "本站种子", -1))
+                _createElementVNode$w("b", null, [
+                  _createTextVNode$v(_toDisplayString$w(__props.summary.total || 0), 1),
+                  _cache[22] || (_cache[22] = _createElementVNode$w("small", null, " 种", -1))
+                ]),
+                _cache[23] || (_cache[23] = _createElementVNode$w("span", null, "本站收录", -1))
               ]),
               _createElementVNode$w("div", _hoisted_21$c, [
-                _createElementVNode$w("b", null, _toDisplayString$w((__props.summary.size_gb || 0).toFixed(1)), 1),
-                _cache[23] || (_cache[23] = _createElementVNode$w("span", null, "GB", -1))
+                _createElementVNode$w("b", null, [
+                  _createTextVNode$v(_toDisplayString$w((__props.summary.size_gb || 0).toFixed(1)), 1),
+                  _cache[24] || (_cache[24] = _createElementVNode$w("small", null, " GB", -1))
+                ]),
+                _cache[25] || (_cache[25] = _createElementVNode$w("span", null, "种子总容量", -1))
               ]),
-              _createElementVNode$w("div", _hoisted_22$b, [
+              _createElementVNode$w("div", {
+                class: "magicflow-sitereport__stat " + (hrOwedDanger.value ? "is-danger" : "is-ok")
+              }, [
                 _createElementVNode$w("b", null, _toDisplayString$w(__props.summary.hr_owed || 0), 1),
-                _cache[24] || (_cache[24] = _createElementVNode$w("span", null, "欠 H&R", -1))
-              ]),
-              _createElementVNode$w("div", _hoisted_23$a, [
+                _createElementVNode$w("span", null, [
+                  hrOwedDanger.value
+                    ? (_openBlock$w(), _createElementBlock$s("span", { key: 0 }, "欠 H&R", -1))
+                    : (_openBlock$w(), _createElementBlock$s(_Fragment$s, { key: 1 }, [
+                        _createTextVNode$v("✓ 欠 H&R · 无欠款", -1)
+                      ], 64))
+                ])
+              ], 2),
+              _createElementVNode$w("div", {
+                class: "magicflow-sitereport__stat " + (hrMissingDanger.value ? "is-danger" : "is-ok")
+              }, [
                 _createElementVNode$w("b", null, _toDisplayString$w(__props.summary.hr_missing || 0), 1),
-                _cache[25] || (_cache[25] = _createElementVNode$w("span", null, "本机缺失", -1))
-              ])
+                _createElementVNode$w("span", null, [
+                  hrMissingDanger.value
+                    ? (_openBlock$w(), _createElementBlock$s("span", { key: 0 }, "本机缺失", -1))
+                    : (_openBlock$w(), _createElementBlock$s(_Fragment$s, { key: 1 }, [
+                        _createTextVNode$v("✓ 本机缺失 · 文件齐全", -1)
+                      ], 64))
+                ])
+              ], 2)
             ]),
             _createElementVNode$w("div", _hoisted_24$a, [
-              _createVNode$v(_component_VChip, {
-                size: "small",
-                color: filter.value ? 'grey' : 'primary',
-                variant: filter.value ? 'tonal' : 'flat',
-                style: {"cursor":"pointer"},
-                onClick: _cache[5] || (_cache[5] = $event => (filter.value = ''))
-              }, {
-                default: _withCtx$t(() => [
-                  _createTextVNode$v("全部 " + _toDisplayString$w(__props.summary.total || 0), 1)
-                ]),
-                _: 1
-              }, 8, ["color", "variant"]),
-              (_openBlock$w(true), _createElementBlock$s(_Fragment$s, null, _renderList$q(_unref$g(SITE_REPORT_BUCKETS), (b) => {
-                return (_openBlock$w(), _createBlock$t(_component_VChip, {
-                  key: b.key,
+              _cache[32] || (_cache[32] = _createElementVNode$w("span", _hoisted_24b$a, "用途", -1)),
+              _createElementVNode$w("div", _hoisted_24c$a, [
+                _createVNode$v(_component_VChip, {
                   size: "small",
-                  color: b.color,
-                  variant: filter.value === b.key ? 'flat' : 'tonal',
+                  color: filter.value ? 'grey' : 'primary',
+                  variant: filter.value ? 'tonal' : 'flat',
                   style: {"cursor":"pointer"},
-                  onClick: $event => (filter.value = filter.value === b.key ? '' : b.key)
+                  onClick: _cache[5] || (_cache[5] = $event => (filter.value = ''))
                 }, {
                   default: _withCtx$t(() => [
-                    _createTextVNode$v(_toDisplayString$w(b.key) + " " + _toDisplayString$w((__props.summary.by_bucket || {})[b.key] || 0), 1)
+                    _createTextVNode$v("全部 " + _toDisplayString$w(__props.summary.total || 0), 1)
                   ]),
-                  _: 2
-                }, 1032, ["color", "variant", "onClick"]))
-              }), 128))
+                  _: 1
+                }, 8, ["color", "variant"]),
+                (_openBlock$w(true), _createElementBlock$s(_Fragment$s, null, _renderList$q(_unref$g(SITE_REPORT_BUCKETS), (b) => {
+                  return (_openBlock$w(), _createBlock$t(_component_VChip, {
+                    key: b.key,
+                    size: "small",
+                    color: b.color,
+                    variant: filter.value === b.key ? 'flat' : 'tonal',
+                    style: {"cursor":"pointer"},
+                    onClick: $event => (filter.value = filter.value === b.key ? '' : b.key)
+                  }, {
+                    default: _withCtx$t(() => [
+                      _createTextVNode$v(_toDisplayString$w(b.key) + " " + _toDisplayString$w((__props.summary.by_bucket || {})[b.key] || 0), 1)
+                    ]),
+                    _: 2
+                  }, 1032, ["color", "variant", "onClick"]))
+                }), 128))
+              ])
             ]),
             _createElementVNode$w("div", _hoisted_25$a, [
-              _cache[27] || (_cache[27] = _createElementVNode$w("span", { class: "magicflow-sitereport__chip-label" }, "传输", -1)),
+              _cache[27] || (_cache[27] = _createElementVNode$w("span", { class: "magicflow-sitereport__chip-label" }, "传输状态", -1)),
+              _createElementVNode$w("div", _hoisted_25b$a, [
               _createVNode$v(_component_VChip, {
                 size: "small",
                 color: transport.value ? 'grey' : 'primary',
@@ -425,6 +523,7 @@ return (_ctx, _cache) => {
                   _: 2
                 }, 1032, ["color", "variant", "onClick"]))
               }), 128))
+              ])
             ]),
             (filter.value === '静默')
               ? (_openBlock$w(), _createElementBlock$s("div", _hoisted_26$8, [
@@ -516,9 +615,26 @@ return (_ctx, _cache) => {
                   _createElementVNode$w("div", _hoisted_32$7, [
                     _createElementVNode$w("div", {
                       class: "magicflow-sitereport__row-t",
-                      title: it.title
-                    }, _toDisplayString$w(it.title || it.hash), 9, _hoisted_33$6),
-                    _createElementVNode$w("div", _hoisted_34$6, _toDisplayString$w(_unref$g(siteReportItemSub)(it)), 1)
+                      title: _unref$g(siteReportTitleParts)(it.title || it.hash).main
+                    }, _toDisplayString$w(_unref$g(siteReportTitleParts)(it.title || it.hash).main || it.hash), 9, _hoisted_33$6),
+                    _createElementVNode$w("div", _hoisted_34$6, [
+                      (_openBlock$w(true), _createElementBlock$s(_Fragment$s, null, _renderList$q(_unref$g(siteReportItemParts)(it), (pt, pi) => {
+                        return _createElementVNode$w("span", {
+                          key: pi,
+                          class: pt.stall ? "magicflow-sitereport__stall" : null
+                        }, _toDisplayString$w((pi ? " · " : "") + pt.t), 1);
+                      }), 256))
+                    ]),
+                    (_unref$g(siteReportTitleParts)(it.title || it.hash).orig)
+                      ? (_openBlock$w(), _createElementBlock$s("div", {
+                          key: it.hash,
+                          class: "magicflow-sitereport__row-orig" + (origOpen.value[it.hash] ? " is-open" : ""),
+                          onClick: $event => (toggleOrig(it.hash))
+                        }, [
+                          _createTextVNode$v("原名 ", -1),
+                          _createElementVNode$w("span", null, _toDisplayString$w(_unref$g(siteReportTitleParts)(it.title || it.hash).orig), 1)
+                        ], 2))
+                      : _createCommentVNode$t("", true)
                   ]),
                   _createElementVNode$w("span", _hoisted_35$5, _toDisplayString$w((it.size_gb || 0).toFixed(2)) + "G", 1)
                 ]))

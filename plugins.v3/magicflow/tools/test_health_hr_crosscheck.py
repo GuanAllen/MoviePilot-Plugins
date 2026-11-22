@@ -12,7 +12,7 @@
 断言：
   1) 页头欠 1 条 + myhr ok 但 0 条 → error（对账通道失灵，欠账会漏保护）；
   2) 页头欠 2 条 + 规则表 hr=False → warning（规则与事实冲突）；
-  3) 规则标 hr=True（非逐种）+ 页头 0 + myhr 0 条 → info（口径一致，仅提示）；
+  3) 规则标 hr=True（非逐种）+ 页头 0 + myhr 0 条 → **静默**（★ 19.12.83：不欠不报）；
   4) 有 H&R 栏但数字没读懂 → warning（不冒充 0）；
   5) 缓存里没有 ``hr`` 键（升级前旧快照/该站没这栏）→ 静默，不刷屏；
   6) 页头有欠条但规则库无判据（hr=None）→ info（该补规则）；
@@ -81,6 +81,20 @@ for _modname, _attrs in (
     for _a in _attrs:
         setattr(_m, _a, object)
     sys.modules[PKG + "." + _modname] = _m
+
+_dutyreg = types.ModuleType(PKG + ".dutyreg")
+for _k, _v in (
+    ("ID_KEEP", "__keep__"), ("ID_CLAIM", "__claim__"), ("ID_HR_HOST", "__hr_host__"),
+    ("ID_MUSIC", "__music__"), ("ID_ONDEMAND", "__ondemand__"),
+    ("ID_CROSSSEED", "__crossseed__"), ("ID_SILENT_HOST", "__silent_host__"),
+):
+    setattr(_dutyreg, _k, _v)
+_dutyreg.duty_name = lambda tid: str(tid or "")
+sys.modules[PKG + ".dutyreg"] = _dutyreg
+
+_norm = types.ModuleType(PKG + ".norm")
+_norm.now_iso = lambda: "2026-11-19 00:00:00"
+sys.modules[PKG + ".norm"] = _norm
 
 _load(PKG + ".common", "common.py")
 
@@ -178,7 +192,7 @@ _i = _find(r, "H7:3")
 chk("②规则冲突→warning", bool(_i) and _i["level"] == "warning", r)
 chk("②冲突详情带来源", bool(_i) and "manual" in str(_i.get("detail")), _i)
 
-# 3) 规则 hr=True（非逐种）+ 页头 0 + myhr 0 → info
+# 3) 规则 hr=True（非逐种）+ 页头 0 + myhr 0 → **静默**（不欠不报）
 p = Fake(
     rules={"pt.btschool.club": {"hr": True, "hr_src": "welcome"}},
     sites=[{"id": 1, "domain": "pt.btschool.club", "name": "学校"}],
@@ -187,8 +201,7 @@ p = Fake(
     live={1: {"hr": {"raw": "H&R: 0/ 0", "assessing": 0, "unfinished": 0, "limit": None}}},
 )
 r = p._health_hr_crosscheck()
-_i = _find(r, "H7:1")
-chk("③口径一致→info", bool(_i) and _i["level"] == "info", r)
+chk("③不欠账→静默（19.12.83）", r == [], r)
 
 # 4) 有栏但没读懂数字 → warning（不冒充 0）
 p = Fake(
@@ -260,7 +273,7 @@ chk("⑩差 1 条→warning", bool(_i) and _i["level"] == "warning", r)
 chk("⑩优先于规则冲突", bool(_i) and "禁用线" in str(_i.get("title")), _i)
 chk("⑩考核中只作缓冲提示", bool(_i) and "考核中 2" in str(_i.get("detail")), _i)
 
-# 11a) 有欠条但离线还远（未完成 0/10）→ 不报禁用线（走别的规则或静默）
+# 11a) 只有「考核中」没有「未完成」（y=0）→ 静默（考核中是缓冲，不是欠）
 p = Fake(
     rules={"dstudio.me": {"hr": True}},
     sites=[{"id": 15, "domain": "dstudio.me", "name": "Depth Studio"}],
@@ -268,9 +281,9 @@ p = Fake(
     reports={"dstudio.me": {"ok": True, "records_total": 1}},
     live={15: {"hr": {"raw": "H&R: [1/0/10]", "assessing": 1, "unfinished": 0, "limit": 10}}},
 )
-chk("⑪a 离线还远→不报禁用线", "禁用线" not in str(p._health_hr_crosscheck()), p._health_hr_crosscheck())
+chk("⑪a 只有考核中→静默", p._health_hr_crosscheck() == [], p._health_hr_crosscheck())
 
-# 11b) 站点不给禁用线（学校形态：H&R 0/0，limit=None）→ 永不报禁用线
+# 11b) 站点不给禁用线（学校形态：H&R 0/0，limit=None）且不欠 → 静默
 p = Fake(
     rules={"pt.btschool.club": {"hr": True, "hr_src": "welcome"}},
     sites=[{"id": 1, "domain": "pt.btschool.club", "name": "学校"}],
@@ -278,7 +291,7 @@ p = Fake(
     reports={"pt.btschool.club": {"ok": True, "records_total": 0}},
     live={1: {"hr": {"raw": "H&R: 0/ 0", "assessing": 0, "unfinished": 0, "limit": None}}},
 )
-chk("⑪b 无禁用线→不报禁用线", "禁用线" not in str(p._health_hr_crosscheck()), p._health_hr_crosscheck())
+chk("⑪b 无禁用线且不欠→静默", p._health_hr_crosscheck() == [], p._health_hr_crosscheck())
 
 # 11c) 单数形态（只读到未完成 3，limit=None）→ 只走规则库补齐提示，不报禁用线
 p = Fake(
@@ -301,6 +314,45 @@ p = Fake(
 )
 r = p._health_hr_crosscheck()
 chk("⑪d 考核中不算封号数", "禁用线" not in str(r), r)
+
+# 12) ★ 19.12.83 真欠 3 条、未到禁用线 → info「欠 3 条」（这才是欠账告警）
+p = Fake(
+    rules={"pt.btschool.club": {"hr": True, "hr_src": "welcome"}},
+    sites=[{"id": 1, "domain": "pt.btschool.club", "name": "学校"}],
+    flags={"pt.btschool.club": True},
+    reports={"pt.btschool.club": {"ok": True, "records_total": 3}},
+    live={1: {"hr": {"raw": "H&R: 0/3/10", "assessing": 0, "unfinished": 3, "limit": 10}}},
+)
+r = p._health_hr_crosscheck()
+_i = _find(r, "H7:1")
+chk("⑫欠 3 条→info", bool(_i) and _i["level"] == "info", r)
+chk("⑫标题写明欠几条", bool(_i) and "欠 3 条" in str(_i.get("title")), _i)
+chk("⑫详情给剩余额度", bool(_i) and "差 7 条到禁用线" in str(_i.get("detail")), _i)
+
+# 13) 逐种站欠 2 条：hr=False 是合法配置，不该报「规则写无 H&R」，而要报欠账
+p = Fake(
+    rules={"www.yemapt.org": {"hr": False, "per_torrent_hr": True}},
+    sites=[{"id": 16, "domain": "www.yemapt.org", "name": "YemaPT"}],
+    flags={"www.yemapt.org": False},
+    per_torrent={"www.yemapt.org": True},
+    reports={"www.yemapt.org": {"ok": True, "records_total": 2}},
+    live={16: {"hr": {"raw": "H&R: [0/2/5]", "assessing": 0, "unfinished": 2, "limit": 5}}},
+)
+r = p._health_hr_crosscheck()
+_i = _find(r, "H7:16")
+chk("⑬逐种站欠账→info", bool(_i) and _i["level"] == "info", r)
+chk("⑬不误报「规则冲突」", bool(_i) and "规则写" not in str(_i.get("title")), _i)
+
+# 14) 逐种站不欠 → 静默（不能因为 hr=False 就报「规则冲突」）
+p = Fake(
+    rules={"www.yemapt.org": {"hr": False, "per_torrent_hr": True}},
+    sites=[{"id": 16, "domain": "www.yemapt.org", "name": "YemaPT"}],
+    flags={"www.yemapt.org": False},
+    per_torrent={"www.yemapt.org": True},
+    reports={"www.yemapt.org": {"ok": True, "records_total": 0}},
+    live={16: {"hr": {"raw": "H&R: [0/0/5]", "assessing": 0, "unfinished": 0, "limit": 5}}},
+)
+chk("⑭逐种站不欠→静默", p._health_hr_crosscheck() == [], p._health_hr_crosscheck())
 
 # 8) 站点清单为空 / 规则库为空 → 不炸
 p = Fake()

@@ -4,8 +4,11 @@
  */
 export function makeTasks(c) {
   return {
-    /** 全局状态（轮询用） */
-    status: () => c.get('status'),
+    /** 全局状态（轮询用）。带 ver 时服务端做内容比对；
+     *  `patch=1` 声明本页支持 19.12.63 的差分补丁（旧版服务端会忽略这个参数）。 */
+    status: (ver) => c.get(ver
+      ? `status?ver=${encodeURIComponent(ver)}&patch=1`
+      : 'status'),
     /** 魔力趋势（72h / 全站） */
     trend: () => c.get('trend?scope=all&hours=72'),
     /** 单个任务详情 */

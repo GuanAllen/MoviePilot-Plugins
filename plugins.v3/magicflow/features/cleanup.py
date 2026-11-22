@@ -4,6 +4,7 @@
 （由原 `__init__.py` 拆分为 mixin，逐字搬运，行为不变。）
 """
 
+import hashlib
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -922,9 +923,67 @@ class CleanupMixin:
     # ★ 7.6.0 空壳种清理（missingFiles）
     # ============================================================
     MISSING_GRACE_SEC = 1800.0   # 新加种 30 分钟内不动（避开辅种/跨站校验的瞬时状态）
+    # ★ 19.12.73：同一颗被拦/删失败后的重试冷却（秒）。空壳种大多是「已认领」这类
+    #   硬保护，永远删不掉 —— 冷却只是让台账别被同一个 hash 刷爆。
+    MISSING_RETRY_SEC = 6 * 3600.0
+    # ★ 19.12.81：stat 判不了时「定向让 qB recheck」的节流。全池 recheck 是 33TB 全读一遍
+    #   （几十小时 IO），所以只对个位数可疑种发、同一颗 24h 内只发一次。
+    MISSING_RECHECK_SEC = 24 * 3600.0
+    MISSING_RECHECK_MAX = 3
     MISSING_TAG_PREFIX = "魔流-"
 
-    def _missing_files_tick(self, apply: bool = True, limit: int = 0, snap: Any = None) -> Dict[str, Any]:
+    # ★ 19.12.75：磁盘 stat 兜底巡检的最小间隔（秒）。这一轮判定同时挂在 Brush/
+    #   Check 轮次上，stat 全池种子的成本没必要每轮都付。
+    MISSING_STAT_INTERVAL = 900.0
+
+    def _torrent_file_state(self, torrent: Any, dl: Any = None) -> str:
+        """插件级：判这颗种的数据是否还在磁盘上（``ok`` / ``missing`` / ``unknown``）。
+
+        委托给下载器适配器 ``torrent_file_state``（路径映射与两道安全阀都在那里）。
+        取不到适配器一律 ``unknown`` —— 不确定的事绝不当作「可删」。
+        """
+        try:
+            # ★ 19.12.78：适配器由调用方传进来 —— 每次 ``_get_downloader()`` 都会新建
+            #   一个 DownloaderAdapter（含 SDK 初始化 + 一行 INFO 日志），一轮 2200 颗
+            #   会实例化 2200 次、刷 2200 行日志。这里允许复用同一轮的那个。
+            if dl is None:
+                dl = self._get_downloader()
+            fn = getattr(dl, "torrent_file_state", None)
+            if callable(fn):
+                return str(fn(torrent) or "unknown")
+        except Exception:  # noqa: BLE001
+            pass
+        return "unknown"
+
+    def missing_scan_watch(self) -> Dict[str, Any]:
+        """★ 19.12.75 常驻 worker：空壳种巡检（文件已不在 → 只删种、不删文件）。
+
+        为什么独立成 worker：这条判定以前只挂在 Brush / Silent 的轮次里 —— 任务全停
+        （或都在 seeding 且没到 Check 节拍）时，文件被外部删掉的种就一直躺在 qB 里
+        白占槽位，还被算成「在种」。这里按插件级周期跑，与任务开关解耦。
+        """
+        rep: Dict[str, Any] = {"deleted": 0, "pending": 0, "apply": True}
+        try:
+            snap = self._tag_all_torrents() or {}
+            if not snap:
+                return rep
+            rep = self._missing_files_tick(apply=True, snap=snap) or rep
+        except Exception as err:  # noqa: BLE001
+            self._log(f"魔流:空壳巡检异常:{err}", "warning")
+            return rep
+        if rep.get("aborted"):
+            return rep
+        _del = int(rep.get("deleted") or 0)
+        _prot = int(rep.get("protected") or 0)
+        if _del:
+            self._log(f"魔流:空壳巡检:文件已不在 → 删种 {_del} 个"
+                      f"（释放标称 {rep.get('size_gb')}GB；只删种不删文件）")
+        if _prot:
+            self._dbg(f"魔流:空壳巡检:受保护未删 {_prot} 个 {rep.get('protected_reasons')}")
+        return rep
+
+    def _missing_files_tick(self, apply: bool = True, limit: int = 0, snap: Any = None,
+                            force_stat: bool = False) -> Dict[str, Any]:
         """认出「文件已不在」的托管种并清掉（Master 2026-10-01 17:43：「认出还得删了」）。
 
         判定：qB 状态 = ``missingFiles``（磁盘上数据已不存在）且进度 < 99.9%
@@ -936,9 +995,17 @@ class CleanupMixin:
           更不能因为「删除」把同目录里别人的数据误删
         - 排除「魔流-跨站」来源份（它有自己的校验/撤销流程）
         - 排除 30 分钟内新加的（避免和辅种/校验竞态）
+        - ★ 19.12.73：**受硬保护的种直接不发删除**（认领/手动保留/欠 H&R/库内资产）。
+          以前每轮照发、每轮被闸门拦下、每轮写一行台账 —— 4 颗被认领的空壳种各写了
+          8.5 万行（占 mf_deletions 全表 99%）。现在先问闸门明细，拦下的只计数；
+          拦下/失败的 hash 6 小时内不再重试（``_mf_retry``，纯内存）。
         """
         rep: Dict[str, Any] = {"apply": bool(apply), "pending": 0, "deleted": 0,
-                               "failed": 0, "size_gb": 0.0, "items": []}
+                               "failed": 0, "size_gb": 0.0, "items": [],
+                               "protected": 0, "protected_reasons": {},
+                               "protected_items": [],
+                               "cross_shell": 0, "cross_shell_items": [],
+                               "throttled": 0}
         if snap is None:
             snap = self._tag_all_torrents() or {}
             note_snapshot_pull(1)
@@ -951,30 +1018,220 @@ class CleanupMixin:
             store = None
             ledger = {}
         now = time.time()
+        # ★ 19.12.73：同一 hash 的重试冷却表（hash → 上次尝试时间）。纯内存：
+        #   进程重载后归零只会多算一次闸门，不会造成写入放大。
+        _retry = getattr(self, "_mf_retry", None)
+        if not isinstance(_retry, dict):
+            _retry = {}
+            self._mf_retry = _retry
+        _cool = float(getattr(self, "MISSING_RETRY_SEC", 6 * 3600.0))
         victims: List[Tuple[str, Any]] = []
+        # ★ 19.12.75：判定口径分两类 ——
+        #   ``qb_missing``：qB 自己报 missingFiles（某次 recheck 之后）；
+        #   ``stat_missing``：qB 说「已完成/在种」，但磁盘上路径确实不存在（暂停种常见）。
+        _qb_missing = 0
+        _stat_scanned = 0
+        _stat_missing = 0
+        _unverifiable = 0
+        # ★ 19.12.81：stat 判不了的种（路径映射失效 / 父目录都不存在 / 取不到路径）
+        _unknown: List[Tuple[str, Any]] = []
+        # ★ 19.12.75：手动触发（/tags?action=missing）强制扫一次 —— 用户点了就该给
+        #   即时结果，不能因为「上一轮 Brush 刚 stat 过」被 15 分钟间隔挡住。
+        _stat_due = (bool(force_stat)
+                     or (now - float(getattr(self, "_mf_stat_at", 0.0) or 0.0))
+                     >= float(getattr(self, "MISSING_STAT_INTERVAL", 900.0)))
+        _dl_scan = self._get_downloader() if _stat_due else None
+        # ★ 19.12.79：跨站空壳单独记账。以前 `if "魔流-跨站" in tags: continue` 把跨站种
+        #   直接从判定里摘掉 —— 它们的文件同样会丢（如 0ceb496a 重阳，文件早没了、进度 0、
+        #   一直躺在 qB 里），却在任何报表/巡检结果里都看不见。现在只报不删（跨站有自己的
+        #   校验/撤销流程），至少让它在「空壳」里现形。
+        _cross_shell: List[Tuple[str, Any]] = []
         for h, t in snap.items():
             tags = [str(x) for x in (getattr(t, "tags", None) or [])]
             if not any(x.startswith(self.MISSING_TAG_PREFIX) for x in tags):
                 continue
-            if "魔流-跨站" in tags:
-                continue
-            if str(getattr(t, "state", "") or "") != "missingFiles":
-                continue
+            _is_cross = "魔流-跨站" in tags
             try:
                 prog = float(getattr(t, "progress", 0) or 0)
             except (TypeError, ValueError):
                 prog = 0.0
-            if prog >= 0.999:
+            _st = str(getattr(t, "state", "") or "")
+            _qb_shell = (_st == "missingFiles" and prog < 0.999)
+            if _is_cross:
+                if _qb_shell or (_st == "error" and prog < 0.999):
+                    _cross_shell.append((h, t))
+                elif force_stat and _stat_due and prog >= 0.999:
+                    # 手动触发时才给跨站种补一次 stat（常驻轮不额外付这份开销）
+                    try:
+                        _added0 = float(getattr(t, "added_on", 0) or 0)
+                    except (TypeError, ValueError):
+                        _added0 = 0.0
+                    if not (_added0 > 0 and (now - _added0) < float(self.MISSING_GRACE_SEC)):
+                        if self._torrent_file_state(t, _dl_scan) == "missing":
+                            _cross_shell.append((h, t))
                 continue
+            if not _qb_shell:
+                # ★ 19.12.75：**暂停种永远不会自动复查**（静默池全是 paused），文件被外部
+                #   删掉后 qB 照旧报 pausedUP + 进度 100%，`missingFiles` 只在某次 recheck
+                #   时才出现（11-11 一次性爆出 229 颗就是这么来的）。所以对「已完成但不是
+                #   missingFiles」的托管种补一次磁盘 stat —— 这才是「常驻检查」能提前发现
+                #   空壳的关键。stat 轮有最小间隔（MISSING_STAT_INTERVAL）。
+                if prog < 0.999 or not _stat_due:
+                    continue
+                try:
+                    _added0 = float(getattr(t, "added_on", 0) or 0)
+                except (TypeError, ValueError):
+                    _added0 = 0.0
+                if _added0 > 0 and (now - _added0) < float(self.MISSING_GRACE_SEC):
+                    continue
+                _fs = self._torrent_file_state(t, _dl_scan)
+                _stat_scanned += 1
+                if _fs == "ok":
+                    continue
+                if _fs != "missing":
+                    _unverifiable += 1
+                    _unknown.append((h, t))
+                    continue
+                _stat_missing += 1
+            else:
+                _qb_missing += 1
             try:
                 added = float(getattr(t, "added_on", 0) or 0)
             except (TypeError, ValueError):
                 added = 0.0
             if added > 0 and (now - added) < float(self.MISSING_GRACE_SEC):
                 continue
+            try:
+                if now - float(_retry.get(h) or 0) < _cool:
+                    rep["throttled"] = int(rep["throttled"]) + 1
+                    continue
+            except (TypeError, ValueError):
+                pass
             victims.append((h, t))
+        # ★ 19.12.81：stat 判不了的种，交给 qB 自己 recheck —— 「文件到底在不在」它读一遍
+        #   数据才肯认账，这是 unknown 的唯一权威兜底（以前这里只 +1 然后放过，永远查不清）。
+        #   三道闸：① 只 apply 轮发（预演必须零副作用）；② 一轮最多 MAX 颗、同颗 24h 一次；
+        #   ③ 一片都判不了（存储没挂/映射坏了）时整批不发 —— 否则一次异常会把整池拉去读盘。
+        _rc_sent = 0
+        _rc_skip = 0
+        if _unknown and apply:
+            if len(_unknown) >= 20 and (len(_unknown) / float(max(1, _stat_scanned))) >= 0.2:
+                _rc_skip = len(_unknown)
+                # ★ 19.12.82：原因不能塞进 ``recheck_skipped`` —— 函数尾部还有一句
+                #   `rep["recheck_skipped"] = _rc_skip` 会把它覆盖成整数，回报里只剩
+                #   「跳过了 25 颗」而没有「为什么跳过」。单开一个字段。
+                rep["recheck_skip_reason"] = ("unknown_ratio %d/%d"
+                                              % (len(_unknown), _stat_scanned))
+                self._log(f"空壳种清理:stat 判不了 {len(_unknown)}/{_stat_scanned} 颗，"
+                          "疑似存储/路径映射异常 → 本轮不发 recheck", "warning")
+            else:
+                _rc_cool = float(getattr(self, "MISSING_RECHECK_SEC", 24 * 3600.0))
+                _rc_max = int(getattr(self, "MISSING_RECHECK_MAX", 3) or 3)
+                _rc_at = getattr(self, "_mf_recheck", None)
+                if not isinstance(_rc_at, dict):
+                    _rc_at = {}
+                    self._mf_recheck = _rc_at
+                _dl_rc = _dl_scan
+                for h, t in _unknown:
+                    if _rc_sent >= _rc_max:
+                        _rc_skip += 1
+                        continue
+                    try:
+                        if now - float(_rc_at.get(h) or 0) < _rc_cool:
+                            _rc_skip += 1
+                            continue
+                    except (TypeError, ValueError):
+                        pass
+                    if str(getattr(t, "state", "") or "").startswith("checking"):
+                        _rc_skip += 1
+                        continue
+                    if _dl_rc is None or not hasattr(_dl_rc, "recheck_torrents"):
+                        _rc_skip += 1
+                        continue
+                    try:
+                        _dl_rc.recheck_torrents([h])
+                        _rc_at[h] = now
+                        _rc_sent += 1
+                    except Exception as err:  # noqa: BLE001
+                        _rc_skip += 1
+                        self._log(f"空壳种清理:定向 recheck 失败 {h[:12]}:{err}", "debug")
+                if _rc_sent:
+                    self._log(f"空壳种清理:stat 判不了 → 定向 recheck {_rc_sent} 颗"
+                              f"（等 qB 读完盘再判；本轮跳过 {_rc_skip} 颗）")
+        rep["recheck_sent"] = _rc_sent
+        rep["recheck_skipped"] = _rc_skip
+        if _stat_scanned:
+            self._mf_stat_at = now
+        rep["qb_missing"] = _qb_missing
+        rep["stat_missing"] = _stat_missing
+        rep["stat_scanned"] = _stat_scanned
+        rep["unverifiable"] = _unverifiable
+        rep["stat_due"] = bool(_stat_due)
+        rep["stat_at"] = round(float(getattr(self, "_mf_stat_at", 0.0) or 0.0), 1)
+        # ★ 19.12.79：跨站空壳明细（只报不删）。放在安全阀/闸门之前 —— 即使本轮中止或
+        #   全部被保护，这两类信息也必须能上屏，否则「只计数不告警」的问题原地复发。
+        rep["cross_shell"] = len(_cross_shell)
+        rep["cross_shell_items"] = [
+            {"hash": h[:12], "title": str(getattr(t, "title", "") or "")[:60],
+             "size_gb": round(float(getattr(t, "size", 0) or 0) / 1073741824.0, 2),
+             "task_id": str((ledger.get(h) or {}).get("taken_by") or
+                            (ledger.get(h) or {}).get("source") or "")}
+            for h, t in _cross_shell[:50]
+        ]
+        # ★ 19.12.75 全局安全阀：一轮里「过半托管种都没文件」只可能是环境坏了
+        #   （存储没挂上 / 路径映射失效），绝不可能真有人一夜清空整池；真那样也不该由
+        #   插件批量删种。命中即整轮放弃，只报不删。
+        _evaluated = _qb_missing + _stat_scanned
+        _shell_n = _qb_missing + _stat_missing
+        if _evaluated >= 20 and (_shell_n / float(_evaluated)) >= 0.5:
+            rep["aborted"] = f"missing_ratio {_shell_n}/{_evaluated}"
+            rep["pending"] = len(victims)
+            self._log(f"空壳种清理:本轮中止（{rep['aborted']}）——"
+                      "疑似存储/路径映射异常，只报不删", "warning")
+            return rep
+        # ★ 19.12.73：**先问闸门**。闸门明细给的是 {hash: 拦截理由}；被拦的这颗
+        #   无论重试多少次都删不掉（认领 = 站点侧承诺），发请求只会把台账刷爆。
+        _protect: Dict[str, str] = {}
+        if victims:
+            try:
+                _det = getattr(self, "_delete_gate_detail", None)
+                if callable(_det):
+                    _why = _det([h for h, _t in victims]) or {}
+                    _protect = {str(k).strip().lower(): str(v)
+                                for k, v in _why.items() if str(k or "").strip()}
+            except Exception as err:  # noqa: BLE001
+                _protect = {}
+                self._log(f"空壳种清理:闸门明细不可用（照旧尝试）:{err}", "debug")
+        if _protect:
+            _rsum: Dict[str, int] = {}
+            _vmap = {_h: _t for _h, _t in victims}
+            for _h, _why in _protect.items():
+                _rsum[_why] = int(_rsum.get(_why) or 0) + 1
+                # ★ 19.12.74：**干跑不占冷却**。以前预演（/tags?action=missing）也写 _retry，
+                #   于是「先预演、再真删」会被自己挡 6 小时 —— 预演本该零副作用。
+                if apply:
+                    _retry[_h] = now
+                # ★ 19.12.79：受保护空壳以前「只计数」，用户在界面上只能看到一个数字
+                #   `protected: 4`，不知道是哪 4 颗、为什么拦 → 永远没人去处置。现在把
+                #   明细（标题/大小/归属任务/拦截原因）一并带出来 + 走通知告警。
+                _pt = _vmap.get(_h)
+                if _pt is not None:
+                    rep["protected_items"].append({
+                        "hash": _h[:12],
+                        "title": str(getattr(_pt, "title", "") or "")[:60],
+                        "size_gb": round(
+                            float(getattr(_pt, "size", 0) or 0) / 1073741824.0, 2),
+                        "task_id": str((ledger.get(_h) or {}).get("taken_by") or ""),
+                        "why": _why,
+                    })
+            rep["protected"] = len(_protect)
+            rep["protected_reasons"] = _rsum
+            rep["protected_items"].sort(key=lambda x: -float(x.get("size_gb") or 0))
+            victims = [(h, t) for h, t in victims if h not in _protect]
         rep["pending"] = len(victims)
         if not victims:
+            if apply:
+                self._missing_shell_alert(rep, _cross_shell)
             return rep
         cap = int(limit or 0)
         _by_task: Dict[str, List[Any]] = {}
@@ -995,11 +1252,19 @@ class CleanupMixin:
                 dl = self._get_downloader(_dl_name)
                 if dl is None:
                     rep["failed"] += 1
+                    _retry[h] = now
                     continue
-                cnt, err = dl.delete_torrents(hashes=[h], delete_file=False)
+                cnt, err = dl.delete_torrents(
+                    hashes=[h], delete_file=False, reason="空壳种(文件已不在)",
+                    source="missing")
                 if cnt:
                     rep["deleted"] += 1
                     rep["size_gb"] = round(float(rep["size_gb"]) + _sz, 2)
+                    # ★ 19.12.80：**删成功也要落冷却**。标签快照 TTL 20s，而空壳种清理
+                    #   会被每个任务轮次各调一次 —— 删掉之后的 20 秒里快照仍然含这个 hash，
+                    #   qB 对「删不存在的 hash」照样回成功，于是同一个 hash 被连删 5 次、
+                    #   台账写 5 行（11-19 08:38 实测 0ceb496a 一分钟 5 行 ok=true）。
+                    _retry[h] = now
                     if _tid:
                         _by_task.setdefault(_tid, []).append(OperationItem(
                             hash=h, title=_title,
@@ -1013,9 +1278,11 @@ class CleanupMixin:
                         pass
                 else:
                     rep["failed"] += 1
+                    _retry[h] = now  # 删不掉（多半又被闸门拦）→ 6h 内别再试
                     self._log(f"空壳种清理:删除失败 {h[:12]}:{err}", "warning")
             except Exception as err:  # noqa: BLE001
                 rep["failed"] += 1
+                _retry[h] = now
                 self._log(f"空壳种清理:删除异常 {h[:12]}:{err}", "warning")
         # ★ 落「操作记录」：按账本 taken_by 归到所属任务（与其它 deletion 记录同款）
         if apply and _by_task:
@@ -1023,4 +1290,66 @@ class CleanupMixin:
         if apply and rep["deleted"]:
             self._log(f"魔流:空壳种清理:文件已不在 → 删种 {rep['deleted']} 个"
                       f"（释放标称 {rep['size_gb']}GB；只删种不删文件，失败 {rep['failed']}）")
+        if apply:
+            self._missing_shell_alert(rep, _cross_shell)
         return rep
+
+    def _missing_shell_alert(self, rep: Dict[str, Any],
+                             cross: Optional[List[Tuple[str, Any]]] = None) -> None:
+        """把「受保护空壳 / 跨站空壳」推一条通知（★ 19.12.79）。
+
+        这两类**永远不会**被本流程自动删（前者被闸门拦下，后者走跨站自己的撤销流程），
+        所以必须主动告警 —— 否则它们白占槽位、不产上传、不产魔力，长期无人处置就是
+        qB 里的尸体（10-28 那 4 颗认领空壳就是这么躺了 3 周才被发现）。
+
+        去重：同一批 hash 24 小时内只推一次（``notify_event`` 自带 cache 去重 +
+        落通知历史，前端「事件通知」面板可回看）。通知失败一律不影响清理主流程。
+        """
+        _pad = list(rep.get("protected_items") or [])
+        _cross = list(rep.get("cross_shell_items") or [])
+        if not _pad and not _cross:
+            return
+        _fn = getattr(self, "notify_event", None)
+        if not callable(_fn):
+            self._log(f"空壳种清理:受保护 {len(_pad)} / 跨站 {len(_cross)} 颗空壳"
+                      "（通知模块不可用，仅记日志）", "warning")
+            return
+        _lines: List[str] = []
+        if _pad:
+            _lines.append(f"受保护空壳 {len(_pad)} 颗（认领/手动保留/欠 H&R/库内资产，"
+                          "闸门拦下、未删）：")
+            for _it in _pad[:8]:
+                _lines.append("· %s（%sGB · %s）" % (
+                    _it.get("title") or _it.get("hash"),
+                    _it.get("size_gb"), _it.get("why") or "受保护"))
+            if len(_pad) > 8:
+                _lines.append("… 其余 %d 颗见「空壳种」明细" % (len(_pad) - 8))
+        if _cross:
+            _lines.append(f"跨站空壳 {len(_cross)} 颗（辅种文件已不在，本流程不处理，"
+                          "需人工撤销）：")
+            for _it in _cross[:8]:
+                _lines.append("· %s（%sGB）" % (
+                    _it.get("title") or _it.get("hash"), _it.get("size_gb")))
+            if len(_cross) > 8:
+                _lines.append("… 其余 %d 颗见「空壳种」明细" % (len(_cross) - 8))
+        _lines.append("这些种子不产上传、不产魔力，建议在「空壳种」里逐个处置。")
+        _sig = "|".join(sorted([str(x.get("hash") or "") for x in (_pad + _cross)]))
+        _dedup = "p%d-c%d-%s" % (len(_pad), len(_cross),
+                                 hashlib.md5(_sig.encode("utf-8")).hexdigest()[:12])
+        try:
+            _sent = _fn("missing_shell",
+                        f"魔流·空壳告警（受保护 {len(_pad)} / 跨站 {len(_cross)}）",
+                        "\n".join(_lines), dedup=_dedup, level="warn", ttl=86400.0)
+        except TypeError:
+            # 兼容旧签名 notify_event（无 dedup/ttl 形参）
+            _sent = _fn("missing_shell",
+                        f"魔流·空壳告警（受保护 {len(_pad)} / 跨站 {len(_cross)}）",
+                        "\n".join(_lines))
+        # ★ 19.12.80：这轮会被每个任务轮次各调一次（同一分钟十几次），日志只在**真推出去**
+        #   的那一次写 warning，其余降 debug —— 否则一条告警会把插件日志刷满。
+        if _sent:
+            self._log(f"空壳种清理:告警 受保护 {len(_pad)} 颗 / 跨站 {len(_cross)} 颗",
+                      "warning")
+        else:
+            self._log(f"空壳种清理:告警未推送（24h 内已报过或通知关闭）"
+                      f"受保护 {len(_pad)} / 跨站 {len(_cross)}", "debug")

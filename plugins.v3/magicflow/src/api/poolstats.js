@@ -1,3 +1,6 @@
+/** 用户主动点的只读动作：失败要让他看见（只读请求默认静默，见 api/request.js）。 */
+const LOUD = { feedback: 'default' }
+
 /**
  * 池统计域接口（站点种子 / H&R 账单 / 静默池 / 站点通报 live）。
  * 全部返回**原始响应**。
@@ -27,7 +30,7 @@ export function makePoolstats(c) {
     /** 静默池全局视图 */
     silentPool: () => c.get('silent/pool'),
     /** 静默不变量收敛（confirm=1 才写） */
-    silentEnforce: (confirm = 0) => c.get(`silent/enforce?confirm=${confirm ? 1 : 0}`),
+    silentEnforce: (confirm = 0) => c.get(`silent/enforce?confirm=${confirm ? 1 : 0}`, LOUD),
     /** 站点实时通报 */
     live: (sid) => c.get(`live${sid ? `?site_id=${sid}` : ''}`),
   }

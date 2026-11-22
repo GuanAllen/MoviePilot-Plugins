@@ -87,6 +87,20 @@ export const MF_SETTINGS_TABS = [
   { key: 'notify', label: '通知', icon: 'mdi-bell-ring-outline' },
 ]
 
+// ★ 19.16.20 手机端设置「目录页」分组：4 组覆盖 MF_SETTINGS_TABS 全部 16 项（顺序即渲染顺序）。
+//   从 MF_SETTINGS_TABS 派生，避免标签/图标二次维护；isNew 标记只影响手机目录的「新」角标。
+//   桌面 VTabs 仍用 MF_SETTINGS_TABS 平铺，不受影响。
+const _mfTab = (key, isNew) => {
+  const t = MF_SETTINGS_TABS.find((x) => x.key === key) || {}
+  return isNew ? { ...t, isNew: true } : { ...t }
+}
+export const MF_SETTINGS_GROUPS = [
+  { title: '基础', items: [_mfTab('general'), _mfTab('downloader'), _mfTab('template'), _mfTab('notify')] },
+  { title: '找种与做种', items: [_mfTab('iyuu'), _mfTab('reseed', true), _mfTab('crossseed'), _mfTab('claim', true), _mfTab('recommend')] },
+  { title: '站点数据', items: [_mfTab('rules'), _mfTab('tags'), _mfTab('fallback'), _mfTab('live')] },
+  { title: '站点增值', items: [_mfTab('exam'), _mfTab('signin'), _mfTab('cloud')] },
+]
+
 export const SITE_REPORT_BUCKETS = [
   { key: '刷流', color: 'indigo' },
   { key: '魔力', color: 'purple' },
@@ -145,15 +159,33 @@ export const FLOW_STEPS_BRUSH = [
 ]
 
 // 工作台标签（预览图：分段式标签卡）
-// 工作台标签（预览图：分段式标签卡）
+// ★ 19.16.1：short = 手机端产品页签短词（对齐设计稿 mockup 的「概览/诊断/种子池/配置」）。
+//   长词是设计稿「完整交互地图」文档自身的视图导航，不是产品 UI；桌面端仍用 label。
 export const MF_TABS = [
-  { value: 'overview', label: '任务概览' },
-  { value: 'diagnostics', label: '运行诊断' },
-  { value: 'pool', label: '种子池' },
-  { value: 'config', label: '任务配置' },
+  { value: 'overview', label: '任务概览', short: '概览' },
+  { value: 'diagnostics', label: '运行诊断', short: '诊断' },
+  { value: 'pool', label: '种子池', short: '种子池' },
+  { value: 'config', label: '任务配置', short: '配置' },
 ]
 
-export const KIND_TEXT = { run: '执行', selection: '选种加入', deletion: '删种清理', protection: '手动保留', unprotection: '取消保留', reseed: '辅种', reuse: '存量复用(旧)', crossseed: '跨站取种(旧)', swap: '换种(旧)', pause: '暂停种子', resume: '恢复运行', recheck: '强制校验', goal: '达标停止', state: '运行状态', tag: '标签变更', fallback: '元数据兜底', cloud: '云盘归档' }
+// ★ 19.12.71：补齐后端实际会写进 journal 的全部 kind（来源：逐文件核对 journal.record）。
+//   缺一条的后果不是「少个名字」，而是 operationKindText 回退成英文原值 ——
+//   列表里直接显示 live / recommend / signin / claim / add，用户看不出这是哪类操作。
+//   已覆盖：actions/cleanup/assets(deletion·protection·unprotection)、brush/silent(run)、
+//   crossseed(reseed)、formula(goal)、live(live)、recommend(recommend)、signin(signin)、
+//   claim(claim)、core(state)、brush/deck/recommend(tag)、cloud/cloud_archive(cloud·fallback)、
+//   hrbills(add·hr_settle)。
+export const KIND_TEXT = {
+  run: '执行', selection: '选种加入', deletion: '删种清理',
+  protection: '手动保留', unprotection: '取消保留',
+  reseed: '辅种', reuse: '存量复用(旧)', crossseed: '跨站取种(旧)', swap: '换种(旧)',
+  pause: '暂停种子', resume: '恢复运行', recheck: '强制校验',
+  goal: '达标停止', state: '运行状态', tag: '标签变更',
+  fallback: '元数据兜底', cloud: '云盘归档',
+  // ↓ 19.12.71 补齐
+  live: '站点监控', recommend: '推荐甄别', signin: '站点签到',
+  claim: '认领保挂', add: '加种记账', hr_settle: 'H&R 结清',
+}
 
 export const STATE_TEXT = { submitting: '提交中', accepted: '已受理', completed: '已完成', failed: '失败' }
 
@@ -174,6 +206,13 @@ export const KIND_ICON = {
   tag: 'mdi-tag-outline',
   fallback: 'mdi-file-xml-box',
   cloud: 'mdi-cloud-upload-outline',
+  hr_settle: 'mdi-check-decagram-outline',
+  // ★ 19.12.71 补齐：漏配的 kind 会统一退化成 'mdi-circle-small'（一排小圆点，分不出谁是谁）
+  live: 'mdi-pulse',
+  recommend: 'mdi-star-check-outline',
+  signin: 'mdi-calendar-check-outline',
+  claim: 'mdi-hand-extended-outline',
+  add: 'mdi-plus-box-outline',
 }
 
 export const EVENT_LEVELS = [
@@ -183,23 +222,50 @@ export const EVENT_LEVELS = [
   { value: 'info', label: '仅普通' },
 ]
 
+// ★ 19.12.71：原来只有 8 项，而后端会写 17 种 kind —— live（站点监控，两天 474 条）
+//   压根筛不到，用户只能在「全部」里被 tag/live 淹没。这里按「发生频率 + 重要度」排全，
+//   顺序即为下拉展示顺序；后端新增 kind 时 opsKindItems 还会按实际数据兜底追加。
 export const OPS_KIND_FILTERS = [
   { value: '', label: '全部', icon: 'mdi-format-list-bulleted' },
   { value: 'deletion', label: '删种清理', icon: 'mdi-delete-outline' },
   { value: 'selection', label: '选种加入', icon: 'mdi-download-outline' },
   { value: 'reseed', label: '辅种', icon: 'mdi-content-duplicate' },
-  { value: 'protection', label: '手动保留', icon: 'mdi-shield-check-outline' },
-  { value: 'unprotection', label: '取消保留', icon: 'mdi-shield-off-outline' },
   { value: 'tag', label: '标签变更', icon: 'mdi-tag-outline' },
   { value: 'run', label: '执行', icon: 'mdi-play-circle-outline' },
+  { value: 'live', label: '站点监控', icon: 'mdi-pulse' },
+  { value: 'protection', label: '手动保留', icon: 'mdi-shield-check-outline' },
+  { value: 'unprotection', label: '取消保留', icon: 'mdi-shield-off-outline' },
+  { value: 'recommend', label: '推荐甄别', icon: 'mdi-star-check-outline' },
+  { value: 'claim', label: '认领保挂', icon: 'mdi-hand-extended-outline' },
+  { value: 'signin', label: '站点签到', icon: 'mdi-calendar-check-outline' },
+  { value: 'add', label: '加种记账', icon: 'mdi-plus-box-outline' },
+  { value: 'hr_settle', label: 'H&R 结清', icon: 'mdi-check-decagram-outline' },
+  { value: 'goal', label: '达标停止', icon: 'mdi-flag-checkered' },
+  { value: 'state', label: '运行状态', icon: 'mdi-power' },
+  { value: 'cloud', label: '云盘归档', icon: 'mdi-cloud-upload-outline' },
+  { value: 'fallback', label: '元数据兜底', icon: 'mdi-file-xml-box' },
 ]
 
+// ★ 19.12.71：明细行的来源徽标只在这个表里命中才显示（itemSourceText 未命中返回 ''）。
+//   之前静默托管的 11 个子步骤（purge / hr_keep / hr_guard / triage …）全都没配，
+//   结果「执行」那条记录的明细里，每个条目的来源标签整片空白。
 export const ITEM_SOURCE_TEXT = {
-  add: '新增', 'add-fail': '失败', reuse: '复用', 'reuse-fail': '辅种失败',
-  adopt: '纳管', watchdog: '看门狗', run: '汇总',
+  add: '新增', 'add-fail': '新增失败', reuse: '复用', 'reuse-fail': '辅种失败',
+  adopt: '纳管', watchdog: '看门狗', run: '汇总', check: '检查', brush: '刷流', deck: '牌组',
   // ★ 清理类（Master 要求「清理逻辑必须有操作记录 + 详情」）
-  missing: '空壳种', silent: '静默池', live: '站点监控', crossseed: '跨站',
+  missing: '空壳种', silent: '静默池', live: '站点监控', crossseed: '跨站', reseed: '全站辅种',
   selection: '选种', deletion: '删种', tag: '标签', protection: '保留', unprotection: '取消保留',
+  // ↓ 19.12.71 补齐：静默托管五步 + 各功能真实写入的 source
+  purge: '池清理', hr_keep: 'H&R保挂', hr_guard: 'H&R管理', triage: '分诊',
+  'silent.enter': '进静默池', silent_triage: '静默分诊', expire: '推荐过期',
+  downgrade: '降级', plain: '普通静默', verify: '校验', pause: '暂停',
+  tag_reconcile: '标签对账', hr_reconcile: 'H&R对账', assets: '库内资源', rescue: '救种',
+  recommend: '推荐', claim: '认领', 'claim-fail': '认领失败',
+  sign: '签到', login: '登录', cloud: '云盘', fallback: '兜底',
+  music: '音乐', ondemand: '点播', batch: '批量', manual: '手动',
+  builtin: '内置规则', framework: '框架', observed: '站点观测', none: '无',
+  sitedeleted: '站点已删', unavailable: '不可用',
+  'plan/apply': '计划执行', 'assets.assets_delete': '删除资源',
 }
 
 export const RESEED_KINDS = ['reseed', 'reuse', 'crossseed']

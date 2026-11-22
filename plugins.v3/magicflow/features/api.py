@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""魔流 · api —— 工作台 API 路由表（146 条，按域分组）。
+"""魔流 · api —— 工作台 API 路由表（按域分组）。
 
 （由原 `__init__.py` 拆分为 mixin；19.10.29 由 1008 行单段字面量改为分组表。）
 
@@ -8,7 +8,7 @@
 不用在 1000 行里找位置；``tools/check_api_routes.py`` 静态校验四条不变量
 （无重复 path+method、handler 都存在、通配不遮蔽字面量、条数与表一致）。
 
-``methods`` 用逗号分隔的字符串（``"GET"`` / ``"GET,POST"``）：146 条里只有 5 条
+``methods`` 用逗号分隔的字符串（``"GET"`` / ``"GET,POST"``）：绝大多数是单方法，
 是多方法，为它们给每条都补元组括号不值得。
 
 ``/agent*`` 路由不在这里 —— 由 ``AgentApiMixin.get_api`` 追加，登记表在
@@ -17,7 +17,7 @@
 
 from typing import Any, Dict, List
 
-#: 插件 API 一律走 MP 的 bear 鉴权（146 条全一样，故不再逐条写）。
+#: 插件 API 一律走 MP 的 bear 鉴权（全部一致，故不再逐条写）。
 _AUTH = "bear"
 
 
@@ -125,6 +125,8 @@ _ROUTES = (
     ("/ondemand/items", "ondemand_items", "GET", "点播清单（只读）：进行中（含下载进度/速度/ETA）+ 已完成历史（结果现况回查）"),
     ("/ondemand/act", "ondemand_act", "POST", "点播行内操作（进行中）：pause 暂停 / resume 继续 / remove 移除（走唯一删除闸门，欠 H&R 硬拦）"),
     ("/ondemand/repair", "ondemand_repair", "POST", "点播补整理：把「已转资源·未入库」的历史行重跑 MP 整理（force=1 忽略退避与次数上限）"),
+    ("/ondemand/retitle", "ondemand_retitle", "POST",
+     "点播清单中文化：只有英文发布名的历史行 → 切出片名后走识别链补上中文名（后台逐条做，立即返回；limit=本轮条数，默认 6）"),
     ("/douban_service", "get_douban_service", "GET", "豆瓣评分服务:库容量 + 后台慢爬进度（**只读**；写操作走 POST）"),
     ("/douban_service", "post_douban_service", "POST", "豆瓣评分服务:写操作(action=start|stop|reset|enrich_<子动作>)"),
     ("/fallback", "get_fallback_state", "GET", "元数据兜底:配置 + 最近一次结果"),
@@ -157,9 +159,10 @@ _ROUTES = (
     ("/notify", "notify_status", "GET", "事件通知:配置 + 最近事件 + 计数(H&R 临期/容量红线/产出骤降/任务失败)"),
     ("/notify/act", "notify_act", "POST", "通知动作:发测试 / 立即扫描 / 清历史"),
 
-    # ── 后台任务队列（2 条）
+    # ── 后台任务队列（3 条）
     ("/jobs", "jobs_list", "GET", "★后台任务队列（进度 + 结果；任务跑在插件进程里，关页面不中断）"),
     ("/jobs/clear", "jobs_clear", "POST", "清理已完成的后台任务记录（在跑的不动）"),
+    ("/jobs/retry", "jobs_retry", "POST", "★重试失败任务（job_id=单条 / kind=按种类批量；删除类不给重试）"),
 
     # ── 诊断（只读 / 干跑为主，写操作需 confirm）（35 条）
     ("/debug/sitecap", "debug_site_caps", "GET", "站点类型/能力识别结果(probe=true 时联网探测)"),

@@ -137,6 +137,7 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
              操作记录·新建任务·关闭）**全部收进「功能中心」**，页头不再逐个摆图标。 -->
         <VBadge
           v-if="notifyBadge > 0"
+          class="magicflow-notify-badge"
           :content="notifyBadge"
           color="error"
           location="top end"
@@ -523,6 +524,15 @@ function tileVisible(key) { return !props.hiddenTiles.includes(key) }
   /* 窄屏同样不再摆一排图标：全部入口都在「功能中心」里 */
   .magicflow-page__actions .magicflow-hdr-sep {
     display: none;
+  }
+
+  /* ★ 19.13.5：手机端去掉「铃铛 / 齿轮」——它们与功能中心平级、同源，
+     入口收口到功能中心（「事件通知」「插件设置」两格都在，角标由 hubBadges.notify 落到通知卡片）。
+     只隐藏这两个，功能中心按钮不动；桌面（>959px）零影响。 */
+  .magicflow-page .magicflow-notify-badge,
+  .magicflow-page .magicflow-notify-btn,
+  .magicflow-page .magicflow-settings-btn {
+    display: none !important;
   }
 
   .magicflow-page .magicflow-hub-btn {

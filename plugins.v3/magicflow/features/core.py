@@ -808,6 +808,16 @@ class CoreMixin:
         except Exception:
             pass
 
+        # ★ 19.12.97：后台任务自动复原（起一个延迟 90s 的一次性线程）。
+        #   排在 init_plugin **最后**是刻意的：此时 store / 下载器 / 账单都已绑好，
+        #   而且给上一个进程还在跑的旧线程留了收尾时间 —— 那些 running 被打断的
+        #   任务不会自动重放（见 jobs.py 的 jobs_resume_interrupted），避免两次整理
+        #   同时动同一颗资源。
+        try:
+            self._job_schedule_resume()
+        except Exception as _jr_err:  # noqa: BLE001
+            logger.warning(f"魔流:后台任务自动复原挂载失败:{_jr_err}")
+
     def _seed_identities(self) -> None:
         """幂等灌入身份表种子（12.0.0：migrate worker 退役后由这里兜底）。
 
@@ -1066,6 +1076,12 @@ class CoreMixin:
                 },
             }
         )
+        # ★ 19.13.0：加载后补跑一次（不阻塞加载）。理由同 ``_rules_bootstrap_async`` ——
+        #   调度器首轮 = 注册 + 整个周期，而每次热重载都会重新注册 → 周期反复归零。
+        #   实测 11-20 当天 25 次重载、最长空闲 55min，这个 60min 的 job 一次没跑到，
+        #   于是「补特征码」停摆 → 音乐种没有 fp → 永远「已下完，待转资源」。
+        #   ``tags_watch`` 自己按持久化时间戳判定「够不够一个周期」，重复调用幂等。
+        self._tags_bootstrap_async()
         # ★ 静默托管（**常驻 worker**，Master 2026-09-28 06:30）：静默池的负责人——
         #   清理未下完 / 保挂（恢复做种）/ H&R 统一管理 / 辅种校验 / 分拣 / 静默-新超时 / 资产刷新。
         #   常驻（reload 即注册，不随任务增减开关），低频（默认 60min，可用 silent_host_interval_minutes 调）。
@@ -1122,6 +1138,23 @@ class CoreMixin:
                 "kwargs": {
                     "minutes": _cl_min,
                     "jitter": self._jitter_seconds(_cl_min),
+                },
+            }
+        )
+        # ★ 19.12.75：空壳巡检常驻 worker —— 文件被外部删掉时 qB **不会**主动复查
+        #   （暂停种状态照旧 pausedUP），只靠 Brush/Silent 轮次的话，任务一停就没人跑。
+        #   独立成 worker（默认 30min）：磁盘 stat 兜底认壳 → 只删种、不删文件。
+        #   两道安全阀在 _missing_files_tick 内（路径映射失效 → unknown；整轮过半缺文件 → 中止）。
+        _ms_min = float(getattr(self, "_tags_cfg", {}).get("missing_scan_interval") or 30)
+        services.append(
+            {
+                "id": "MissingScan",
+                "name": "空壳巡检",
+                "trigger": "interval",
+                "func": self.missing_scan_watch,
+                "kwargs": {
+                    "minutes": _ms_min,
+                    "jitter": self._jitter_seconds(_ms_min),
                 },
             }
         )
@@ -1926,6 +1959,35 @@ class CoreMixin:
 
         try:
             threading.Thread(target=_run, name="mf-rules-boot", daemon=True).start()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _tags_bootstrap_async(self) -> None:
+        """★ 19.13.0：插件加载后补跑一次 ``tags_watch``（后台线程，不阻塞加载）。
+
+        为什么需要它（与 19.10.9 的 ``_rules_bootstrap_async`` 同一个坑）：调度器
+        ``interval`` 的首轮 = 注册时刻 + 一整个周期，而插件每次部署/热重载都会
+        「移除 + 重新注册」服务 → 周期被反复归零。实测 2026-11-20：当天重载 25 次、
+        最长空闲 55 分钟 → 这个 60 分钟的 job **一次都没跑到**（日志里零条
+        「标签维护」）。后果不止「补码慢一点」：音乐线加进来的种永远没有 fp →
+        没有资源组 → 清单永远停在「已下完，待转资源」。
+
+        这里在加载 ``TAGS_BOOT_DELAY_SEC`` 秒后主动调一次；``tags_watch`` 自己按**持久化**
+        的时间戳判定「够不够一个周期」，所以重载 100 次也只真跑 1 次（幂等）。
+        """
+        def _run() -> None:
+            try:
+                from .tags import TAGS_BOOT_DELAY_SEC  # noqa: PLC0415 惰性导入（避免 core↔tags 环）
+                time.sleep(float(TAGS_BOOT_DELAY_SEC))
+                self.tags_watch()
+            except Exception as err:  # noqa: BLE001
+                try:
+                    self._log(f"标签维护:启动补跑失败:{err}", "warning")
+                except Exception:  # noqa: BLE001
+                    pass
+
+        try:
+            threading.Thread(target=_run, name="mf-tags-boot", daemon=True).start()
         except Exception:  # noqa: BLE001
             pass
 

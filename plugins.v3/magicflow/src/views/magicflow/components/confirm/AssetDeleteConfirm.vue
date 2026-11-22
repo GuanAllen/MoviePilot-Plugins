@@ -9,14 +9,19 @@ const open = defineModel({ type: Boolean, default: false })
 const props = defineProps({
   items: { type: Array, default: () => [] },
   loading: { type: Boolean, default: false },
+  // ★ 19.12.92：窄屏走全屏（与父页 isNarrow 同断点）
+  narrow: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['confirm'])
 
-const deleteFiles = ref(true)
+// ★ 19.12.92：默认**不勾**「同时删除文件」。原来默认勾上，一按「确认删除」
+//   就连着几十上百 GB 做种文件一起没了 —— 而删种（保留文件）是可回退的那一步。
+//   要删文件必须自己勾，文案也写清「勾了才删」。
+const deleteFiles = ref(false)
 
 watch(open, (value) => {
-  if (value) deleteFiles.value = true
+  if (value) deleteFiles.value = false
 })
 
 const previewItems = computed(() => (props.items || []).slice(0, 10))
@@ -34,7 +39,7 @@ function sitesText(item) {
 </script>
 
 <template>
-  <VDialog v-model="open" max-width="34rem">
+  <VDialog v-model="open" max-width="34rem" :fullscreen="narrow" scrollable>
     <VCard class="magicflow-dialog">
       <VCardTitle class="text-wrap">删除库内资产</VCardTitle>
       <VCardText class="text-body-2">
@@ -62,7 +67,7 @@ function sitesText(item) {
           color="error"
           density="compact"
           hide-details
-          label="同时删除文件（不可恢复）"
+          label="同时删除做种文件（默认不删；勾了不可恢复）"
         />
       </VCardText>
       <VCardActions>

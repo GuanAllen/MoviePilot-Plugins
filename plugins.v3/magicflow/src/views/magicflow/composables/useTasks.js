@@ -2,6 +2,7 @@
 // P3 拆分：自 views/magicflow/index.vue **纯搬家**（无行为变更）。
 // 依赖注入：selectedTaskId, api, emit, hostToast, settingsDraft, selectTask, warmingTimer（★ 真值源仍在后端；本域只放 UI 状态与动作）。
 import { computed, ref } from 'vue'
+import { applyPayloadPatch } from '../../../utils'
 import { cloneTask } from '../../../utils'
 import { formatBonus } from '../../../utils'
 import { formatBytes } from '../../../utils'
@@ -111,10 +112,38 @@ export function useTasks({ selectedTaskId, api, emit, hostToast, settingsDraft, 
       error.value = message
     }
   }
-  async function loadStatus() {
+  // ★ 19.12.62：只读轮询的「内容指纹」。服务端发现数据没变时只回 {changed:false}，
+  //   不再把 67 KB 的 /status 整包重传 —— 手机流量和前端解析都省下来。
+  //   只有 30 s 定时器那条路径（opts.poll）带指纹；保存设置 / 任务操作后的刷新一律
+  //   拿全量，避免「刚改完却看到旧快照」。
+  // ★ 19.12.63：数据变了也不一定回整包 —— 服务端只回变化叶子（patch），
+  //   按 JSON 路径就地补进 status。补丁只允许落在 tasks / summary，
+  //   配置类字段变化仍回全量，所以 settingsDraft 无需重算。
+  let statusVer = ''
+  async function loadStatus(opts) {
+    const poll = !!(opts && opts.poll)
+    const forceFull = !!(opts && opts.forceFull)
     loading.value = true
     try {
-      status.value = unwrapResponse(await api.tasks.status()) || status.value
+      // warming 期间拿到的本来就是轻量壳（半成品），必须继续全量快刷，不能走指纹
+      const useVer = poll && !forceFull && !!status.value && !!statusVer && !status.value.warming
+      const data = unwrapResponse(await api.tasks.status(useVer ? statusVer : ''))
+      if (useVer && data && data.changed === false) {
+        statusVer = data.ver || statusVer
+        return
+      }
+      if (useVer && data && data.changed === true && data.patch) {
+        if (applyPayloadPatch(status.value, data.patch)) {
+          statusVer = data.ver || statusVer
+          if (data.ver) status.value.ver = data.ver
+          return
+        }
+        // 本地结构和基准对不上（多半是另一个标签页改了配置）→ 退回全量，别套补丁
+        statusVer = ''
+        return loadStatus({ forceFull: true })
+      }
+      if (data && data.ver) statusVer = data.ver
+      status.value = data || status.value
       settingsDraft.value = normalizeSettings({
         enabled: status.value.enabled,
         show_sidebar_nav: status.value.show_sidebar_nav,

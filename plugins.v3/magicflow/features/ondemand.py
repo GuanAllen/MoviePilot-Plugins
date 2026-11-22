@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -142,6 +143,8 @@ _OD_KEY = "ondemand_pending"
 # 17.1.0: ondemand history = persisted record slot (mf_run table).
 _OD_HIST_KEY = "ondemand_history"
 _OD_HIST_KEEP = 500
+# ★ 19.16.5：清单「补中文名」—— 识别过一次就先记下，失败的行隔一天再试（别每开一次弹窗都重认）
+_OD_RETITLE_RETRY = 86400
 
 # ★ 19.10.70：点播「整理入库」失败重试（治本）。
 #   入库是**一次性**动作：那次 MP 识别失败（典型：MP 无外网 → TMDB ConnectTimeout），
@@ -181,6 +184,79 @@ _OD_TECH_RE = re.compile(
     r"hdr\d*|dv|dovi|10bit|8bit|multi|complete)\b",
     re.I,
 )
+
+
+# ────────────────────── 发布名 → 可识别片名 / 清单中文化（★ 19.16.5）──────────────────────
+# 现场（2026-11-21，Master 截图）：点播清单里的历史行整条都是发布名
+#   `Zootopia 2016 CHN BluRay 1080p x265 10bit 4Audio MNHD-FRDS`
+# 中文站（馒头/聆音）自带 ``cn_title``，英文站（高清杜比）没有 → 清单一屏英文，看不懂下了什么。
+# 识别链其实认得（``recognize("Zootopia 2016")`` → 疯狂动物城），差的只是**先把发布名洗成片名**。
+# 这里只切词（不翻译、不猜片名），洗完仍交给 ``recognize`` 定身份。
+_OD_TOKEN_STOP = re.compile(
+    r"^(?:"
+    r"(?:19|20)\d{2}"                                     # 年份
+    r"|s\d{1,2}(?:e\d{1,3})?|e\d{1,3}|ep\d{1,3}"          # 季集
+    r"|\d{3,4}[pi]|4k|8k|uhd"                             # 分辨率
+    r"|web-?dl|webrip|bluray|blu-ray|bdrip|remux|hdtv|dvdrip|hdrip|hdtc"
+    r"|h\.?26[45]|x26[45]|hevc|avc|10bit|8bit"
+    r"|truehd|atmos|flac|opus|mp3|2audio|3audio|4audio|\d+audios?"
+    r"|hdr\d*|dovi|dv|sdr|multi|complete|repack|proper|extended"
+    r"|chn|chs|cht|chi|eng|jpn|kor|gb|big5"
+    r"\s*)$",
+    re.I,
+)
+# `DDP5.1` / `DTS-HD.MA5.1` 这类**音轨紧贴数字**的写法（token 里带数字，上面的表匹配不到）
+_OD_TOKEN_TECH = re.compile(
+    r"^(?:dd\+?p?|aac|ac3|eac3|dts(?:-?hd)?(?:\.?ma)?)(?:\d+(?:\.\d)?)?$", re.I)
+
+
+def _od_is_stop_token(tok: str) -> bool:
+    t = str(tok or "").strip(" -–—|()[]{}·:")
+    if not t:
+        return False
+    if _OD_TOKEN_STOP.match(t) or _OD_TOKEN_TECH.match(t):
+        return True
+    # `S01E25-S01E26` / `S01-09` 这类连写区段（单 token 里带连字符，上面的表匹配不到）
+    return bool(re.match(r"^s\d{1,2}(?:e\d{1,3})?(?:-s?\d{1,2}(?:e\d{1,3})?)?$", t, re.I))
+
+
+def _od_has_cjk(s: Any) -> bool:
+    return bool(re.search(r"[\u3400-\u9fff\uf900-\ufaff]", str(s or "")))
+
+
+def _od_release_name(title: Any) -> Tuple[str, str]:
+    """发布名 → （片名, 年份）。**只切不译**：切完必须再 ``recognize`` 才知道是哪部片。"""
+    t = str(title or "").strip()
+    if not t:
+        return "", ""
+    t = re.sub(r"\.(?:mkv|mp4|avi|ts|m2ts|iso|rmvb|flv)$", "", t, flags=re.I)
+    t = re.sub(r"\[[^\]]*\]|【[^】]*】|（[^）]*）|\([^)]*\)", " ", t)
+    t = re.sub(r"[._]+", " ", t)
+    t = re.sub(r"\s{2,}", " ", t)
+    t = re.sub(r"\s*-\s*[A-Za-z0-9@_.]+\s*$", "", t).strip() or t   # 尾部组名 -FRDS
+    kept: List[str] = []
+    year = ""
+    toks = [x for x in t.split(" ") if x]
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        # 首个 token 即使是年份也先当片名（《1917》2019 这种片名本身就是年份）
+        if kept and re.fullmatch(r"(?:19|20)\d{2}", tok):
+            year = tok
+            break
+        if kept and _od_is_stop_token(tok):
+            break
+        kept.append(tok)
+        i += 1
+    if not year:                            # 截断在季集/规格上时，年份还在后面 → 再捡一次
+        for tok in toks[i:]:
+            if re.fullmatch(r"(?:19|20)\d{2}", tok):
+                year = tok
+                break
+    name = " ".join(kept).strip(" -–—|:")
+    if len(name) < 2:                       # 全被切成技术词 → 原串兜底
+        name = re.sub(r"\s+", " ", t).strip()
+    return name, year
 
 
 def _od_norm_text(s: Any) -> str:
@@ -1079,9 +1155,17 @@ class OnDemandMixin:
             self._log(f"点播:挂伪任务失败 {h[:12]}: {_oae}", "warning")
         # ★ 16.0.1：同时写「点播 inflight」槽 → 静默闸 _silent_audit 跳过
         #   （只靠 _od_assign 写账本会撞「qB 还没登记新种」的竞态 → 在途种被判违规补暂停）
+        # ★ 19.16.5：中文名与发布名分两栏落库 —— 清单显示中文，季集仍要从发布名里抽
+        _od_cn = str(row.get("cn_title") or "").strip()
+        if not _od_cn and _od_has_cjk(title):
+            _od_cn = str(title or "").strip()
+        _od_en = str(row.get("title") or "").strip()
         try:
             self._ondemand_mark(h, {
                 "title": str(row.get("title") or ""),
+                "cn_title": _od_cn,
+                "en_title": _od_en,
+                "subtitle": str(row.get("subtitle") or ""),
                 "site": site_name,
                 "site_id": int(row.get("site") or 0),
                 "free": is_freeleech(row.get("downloadvolumefactor")),
@@ -1094,8 +1178,13 @@ class OnDemandMixin:
             _odf = is_freeleech(row.get("downloadvolumefactor"))
             _ods = site_name or str(int(row.get("site") or 0))
             self._ondemand_history_put(h, {
-                # ★ 19.11.0：中文名优先（站点原标题常常是拼音/英文，清单里看不懂是哪部片）
-                "title": str(title or row.get("cn_title") or row.get("title") or ""),
+                # ★ 19.11.0：清单要给人看中文名。
+                # ★ 19.16.5：`title` 存**发布名**（季集/版本差异都在里面），中文名单独一栏
+                #   （`cn_title`）。展示时由 `_ondemand_hist_row` 合成，别再让两栏互相顶替——
+                #   顶替后中文名不带季集，同剧 10 季在清单里长得一模一样。
+                "title": str(_od_en or _od_cn or ""),
+                "cn_title": _od_cn,
+                "en_title": _od_en,
                 "subtitle": str(row.get("subtitle") or ""),
                 "year": str(year or ""),
                 "site": site_name,
@@ -1892,6 +1981,10 @@ class OnDemandMixin:
             "module": "ondemand",
             "stage": "gone", "stage_text": "已不在下载器",
             "title": str(info.get("title") or info.get("media") or ""),
+            # ★ 19.16.5：与历史行同构（清单前端只认这一套字段）
+            "cn_title": str(info.get("cn_title") or ""),
+            "en_title": str(info.get("en_title") or info.get("title") or ""),
+            "subtitle": str(info.get("subtitle") or ""),
             "year": str(info.get("year") or ""),
             "site": str(info.get("site") or ""),
             "progress": 0.0, "percent": 0.0, "state": "",
@@ -1957,6 +2050,25 @@ class OnDemandMixin:
         a, b = m.group(1), m.group(2)
         return f"第{a}-{b}集" if (b and b != a) else f"第{a}集"
 
+    @staticmethod
+    def _od_se_tag(title: str) -> str:
+        """发布名里的季集 → 中文标签（``S08`` → 第 8 季；``S01E25-S01E26`` → 第 1 季 · 第 25-26 集）。
+
+        ★ 19.16.5：清单展示名换成中文名后，季集就没了（「小猪佩奇」× 10 条一模一样）——
+        中文名不带季集，只能从发布名抽回来。
+        """
+        t = str(title or "")
+        m = re.search(r"S(\d{1,2})(?:\s*E(\d{1,3}))?(?:\s*[-~]\s*S?\d{1,2}\s*E(\d{1,3}))?", t, re.I)
+        if not m:
+            return ""
+        parts: List[str] = []
+        if m.group(1):
+            parts.append("第 %d 季" % int(m.group(1)))
+        if m.group(2):
+            a = int(m.group(2))
+            parts.append(("第 %d-%d 集" % (a, int(m.group(3)))) if m.group(3) else ("第 %d 集" % a))
+        return " · ".join(parts)
+
     def _ondemand_hist_row(self, rec: Dict[str, Any]) -> Dict[str, Any]:
         """历史一行（干净清单 Item）：**只读落盘记录**。
 
@@ -1968,12 +2080,18 @@ class OnDemandMixin:
         size_gb = round(float(rec.get("size_gb") or 0.0), 3)
         # ★ 19.11.3：标题缺失的行不再冒充「正常成功」—— 空壳行（历史记录只剩 hash）
         #   要么是旧版补建留下的，要么是记录被覆盖；如实说明比显示一条空白强。
+        # ★ 19.16.5：中文名（``cn_title``，识别/站点给的）与发布名（``en_title``）分开存：
+        #   展示用中文名，季集从发布名抽 —— 否则同一部剧 10 个季全叫「小猪佩奇」。
         _title_raw = str(rec.get("title") or "").strip()
-        _title_lost = not _title_raw
-        _title = _title_raw or f"未知（{str(rec.get('hash') or '')[:8]}）"
+        _cn_title = str(rec.get("cn_title") or "").strip()
+        _en_title = str(rec.get("en_title") or "").strip() or _title_raw
+        _title_lost = not _title_raw and not _cn_title
+        _title = _cn_title or _title_raw or f"未知（{str(rec.get('hash') or '')[:8]}）"
         # ★ 19.11.3：把集号提到标题上（否则同剧连点时一屏标题全一样，分不清第几集）
-        _ep = self._od_episode_tag(_title_raw, str(rec.get("subtitle") or ""))
-        if _ep:
+        _ep = self._od_episode_tag(_cn_title or _en_title, str(rec.get("subtitle") or ""))
+        if not _ep and _cn_title:
+            _ep = self._od_se_tag(_en_title)     # 中文名不带季集 → 从发布名里抽
+        if _ep and _ep not in _title:
             _title = f"{_title} · {_ep}"
         _retry_n = int(rec.get("retry_n") or 0)
         _retry_stop = bool(rec.get("retry_stop"))
@@ -1997,6 +2115,8 @@ class OnDemandMixin:
             "stage": "resource" if stage == "resource" else "gone",
             "stage_text": stage_text,
             "title": _title,
+            "cn_title": _cn_title,
+            "en_title": _en_title,
             "subtitle": str(rec.get("subtitle") or ""),
             "year": str(rec.get("year") or ""),
             "site": str(rec.get("site") or ""),
@@ -2104,6 +2224,92 @@ class OnDemandMixin:
         except Exception as e:  # noqa: BLE001
             return Response(success=False, message=f"读取点播清单失败:{e}")
 
+    # ── 清单中文化（★ 19.16.5）──────────────────────────────────────────
+    def _od_retitle_todo(self) -> List[Dict[str, Any]]:
+        """还缺中文名、且没试过（或上次试失败已过 _OD_RETITLE_RETRY）的历史行。"""
+        out: List[Dict[str, Any]] = []
+        now = time.time()
+        for r in self._ondemand_history_read():
+            t = str(r.get("title") or "").strip()
+            if not t or _od_has_cjk(t) or str(r.get("cn_title") or "").strip():
+                continue
+            tried = float(r.get("cn_tried") or 0.0)
+            if tried and now - tried < _OD_RETITLE_RETRY:
+                continue
+            out.append(r)
+        return out
+
+    def _od_retitle_worker(self, limit: int) -> None:
+        """后台逐条补中文名：发布名切片名 → 识别链 → 写回 ``cn_title``。
+
+        单条识别 1~3s，36 条同步做必然把请求拖死 → 只能后台；补一条落一条，
+        前端下次刷新就能看到（不必等整轮跑完）。
+        """
+        try:
+            todo = self._od_retitle_todo()[:max(1, int(limit or 6))]
+            if not todo:
+                return
+            ok = 0
+            for rec in todo:
+                h = str(rec.get("hash") or "")
+                en = str(rec.get("title") or "")
+                name, year = _od_release_name(en)
+                media = None
+                for kw in ([name, f"{name} {year}"] if (name and year) else [name]):
+                    kw = str(kw or "").strip()
+                    if not kw or _od_has_cjk(kw):
+                        break          # 本来就是中文名 / 切不出东西 → 不认了
+                    try:
+                        media = self._ondemand_media({"keyword": kw})
+                    except Exception as e:  # noqa: BLE001
+                        self._log(f"点播:补中文名识别失败「{kw}」: {e}", "warning")
+                        media = None
+                    if media is not None:
+                        break
+                cn = str(getattr(media, "title", "") or "").strip() if media is not None else ""
+                if cn and _od_has_cjk(cn):
+                    self._ondemand_history_update(h, cn_title=cn)
+                    ok += 1
+                    self._log(f"点播:补中文名 {h[:8]} 「{name or en[:30]}」→《{cn}》")
+                else:
+                    # 记下「试过了」——否则每次开弹窗都把这批再识别一遍（白烧 TMDB 配额）
+                    self._ondemand_history_update(h, cn_tried=time.time())
+            self._log(f"点播:补中文名一轮结束，补上 {ok}/{len(todo)} 条")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"魔流点播补中文名失败（忽略）：{e}")
+        finally:
+            self._od_retitle_running = False
+
+    def ondemand_retitle(self, limit: int = 6) -> Response:
+        """``POST /ondemand/retitle`` —— 把清单里只有英文发布名的行补上中文名。
+
+        现场（2026-11-21）：英文站（高清杜比…）不给中文副标题，点播时池命中又跳过了识别，
+        清单 36 条里 20 多条是 `Zootopia 2016 CHN BluRay 1080p x265 10bit 4Audio MNHD-FRDS`
+        这种串 —— 用户「不知道下的是什么」。这里把发布名切出片名后交给识别链，中文名写回
+        ``cn_title``。**立即返回**，识别在后台线程里逐条做（同步做会超时）。
+        """
+        try:
+            n = max(1, min(int(limit or 6), 20))
+        except (TypeError, ValueError):
+            n = 6
+        pending = len(self._od_retitle_todo())
+        if not pending:
+            return Response(success=True, message="清单里的片名都已经是中文了",
+                            data={"pending": 0, "started": False})
+        if getattr(self, "_od_retitle_running", False):
+            return Response(success=True, message="正在补中文名…",
+                            data={"pending": pending, "started": False, "running": True})
+        self._od_retitle_running = True
+        try:
+            threading.Thread(target=self._od_retitle_worker, args=(n,),
+                             daemon=True, name="mf-od-retitle").start()
+        except Exception as e:  # noqa: BLE001
+            self._od_retitle_running = False
+            return Response(success=False, message=f"补中文名启动失败:{e}")
+        return Response(success=True,
+                        message=f"开始补中文名（待补 {pending} 条，本轮 {n} 条）",
+                        data={"pending": pending, "started": True, "batch": n})
+
     def ondemand_repair(self, force: str = "1") -> Response:
         """``POST /ondemand/repair`` —— 人工「全部重跑」：把「已转资源·未入库」的历史行重跑整理。
 
@@ -2153,7 +2359,11 @@ class OnDemandMixin:
             picked = self._od_pool_get(pick)
             if picked is not None:
                 rows = [picked]
-                title = str(picked.get("title") or "")
+                # ★ 19.16.5：**不能拿候选发布名当「识别名」**——池里存的是站点整串
+                #   （`Zootopia 2016 CHN BluRay 1080p …`），拿它顶替 title 会把这个英文串
+                #   当成本片的身份落进历史，清单里于是永远只有英文。
+                #   池命中本来就是「零请求」路径，识别名留给 cn_title（没有就不写）。
+                title = str(picked.get("cn_title") or "")
         if picked is None:
             if pick:
                 # 池未命中（旧池 / 池被淘汰）→ 退「最近一次搜索」单槽再试一次

@@ -621,14 +621,43 @@
   }
 }
 
-/* ≤959：统计行 2×2，表格让位给移动卡片 */
+/* ≤959：统计行 2×2，表格让位给移动卡片。
+   ★ 19.12.58 修：此前这里直接 `.mf-pool .mf-pool__card { display: none }`，
+   而 19.12.16 重排把「种子列表」头（状态筛选 / 全部·已保护）搬进了这张卡片，
+   于是 ≤959 的屏幕上筛选器被连坐藏掉 —— 手机上再也筛不了 暂停 / 下载中。
+   现在只藏表格三件套（列头 / 行 / 分页），卡片头部与批量条留在手机上。 */
 @media (max-width: 959px) {
   .mf-pool__stats[data-v-f0e284f2] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .mf-pool .mf-pool__card[data-v-f0e284f2] {
+  /* ★ 19.12.60：原来只藏 thead / rows / pager，但运行时组件根本没渲染
+     `.mf-pool__rows` 这层容器（`_hoisted_12$4` 声明了却没用，行是裸 Fragment 直接
+     铺出来的）→ `display:none` 匹配不到任何元素，于是 9 列定宽表格行在手机上照旧
+     渲染：1fr 的种子列被挤到十几 px（标题竖着掉字）、右侧数值列叠在标题上，
+     看起来就是「排版全乱、操作也没了」。这里直接把行本身也藏掉。 */
+  .mf-pool__thead[data-v-f0e284f2],
+  .mf-pool__row[data-v-f0e284f2],
+  .mf-pool__rows[data-v-f0e284f2],
+  .mf-pool__pager[data-v-f0e284f2] {
     display: none;
+  }
+
+  /* 卡片只剩「头 + 批量条」，收一点内边距当筛选条用 */
+  .mf-pool .mf-pool__card[data-v-f0e284f2] {
+    display: flex;
+    padding: 12px 14px;
+    gap: 6px;
+  }
+
+  .mf-pool__head[data-v-f0e284f2] {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .mf-pool__tools[data-v-f0e284f2] {
+    flex-wrap: wrap;
   }
 
   .magicflow-mobile-torrents[data-v-f0e284f2] {
@@ -651,6 +680,18 @@
     gap: 8px;
   }
 
+  /* ★ 19.12.60：标题用 flex:1 1 0 吃掉剩余宽度，别让「做种中」这类短状态
+     被长标题压成一字一行的竖排（旧值 flex:0 1 auto + min-inline-size:0，
+     长标题把状态挤到只剩 1 个字宽）。 */
+  .magicflow-mobile-torrent__title[data-v-f0e284f2] {
+    flex: 1 1 0;
+  }
+
+  .magicflow-mobile-torrent__state[data-v-f0e284f2] {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
   .magicflow-mobile-torrent__head strong[data-v-f0e284f2] {
     min-inline-size: 0;
     overflow-wrap: anywhere;
@@ -665,5 +706,11 @@
 
   .mf-pool__stat[data-v-f0e284f2] {
     padding: 8px 12px;
+  }
+
+  /* 手机上这张卡只剩「筛选条」：卡上方已经有「种子池 / 已托管共 N 个」，
+     再来一行「种子列表 + 提示」纯属重复，让位给筛选控件。 */
+  .mf-pool__titles[data-v-f0e284f2] {
+    display: none;
   }
 }

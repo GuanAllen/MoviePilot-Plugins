@@ -1,6 +1,7 @@
 // MagicFlow 前端 · useCloud 域 composable
 // P3 拆分：自 views/magicflow/index.vue **纯搬家**（无行为变更）。
 // 依赖注入：api, error, notify（★ 真值源仍在后端；本域只放 UI 状态与动作）。
+import { startPolling, stopPolling } from '../../../polling'
 import { computed, onUnmounted, ref } from 'vue'
 import { unwrapResponse } from '../../../utils'
 
@@ -81,12 +82,12 @@ export function useCloud({ api, error, notify }) {
   let cloudPollTimer = null
   function scheduleCloudPoll() {
     if (cloudPollTimer) return
-    cloudPollTimer = window.setInterval(async () => {
+    cloudPollTimer = startPolling(async () => {
       await loadCloud()
       const records = (cloudState.value || {}).records || []
       const uploading = records.some(r => r?.status === 'uploading')
       if (!uploading && !(cloudState.value || {}).running) {
-        window.clearInterval(cloudPollTimer)
+        stopPolling(cloudPollTimer)
         cloudPollTimer = null
       }
     }, 6000)
@@ -111,7 +112,7 @@ export function useCloud({ api, error, notify }) {
     loadCloud()
   }
   onUnmounted(() => {
-    if (cloudPollTimer) window.clearInterval(cloudPollTimer)
+    if (cloudPollTimer) stopPolling(cloudPollTimer)
   })
 
 

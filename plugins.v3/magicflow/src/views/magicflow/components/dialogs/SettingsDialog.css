@@ -736,18 +736,21 @@
 
 @media (max-width: 520px) {
 
-/* ★ 站点规则：5 列在 360~400px 上仍会挤，切成两行卡片式
-     —— 第一行「站点 + 探测」，第二行「H&R + 期限 + 完成度」。 */
+/* ★ 站点规则：5 列在 360~400px 上仍会挤，切成三行卡片式
+     —— 第一行「站点 + 探测」，第二行「H&R 状态 + 标有/标无」，
+     第三行「达标小时 + 完成度」各占一半宽（旧版两个输入框各只有 72px，
+     连 label 都放不下，只能靠 placeholder，用户看不出这是什么）。 */
 .magicflow-rules-row--head[data-v-e2f63a1f] {
     display: none;
 }
 
 .magicflow-rules-row[data-v-e2f63a1f] {
-    grid-template-columns: minmax(0, 1fr) 4.5rem 4.5rem auto;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
     grid-template-areas:
-      "name name  name  ops"
-      "hr   hours ratio ratio";
-    gap: 0.35rem 0.4rem;
+      "name  name  ops"
+      "hr    hr    hr"
+      "hours ratio ratio";
+    gap: 0.35rem 0.5rem;
     padding: 0.45rem 0.5rem;
     border: 1px solid rgba(var(--v-border-color), 0.14);
     border-radius: 8px;

@@ -4,7 +4,6 @@
 （由原 `__init__.py` 拆分为 mixin，逐字搬运，行为不变。）
 """
 
-import re
 import threading
 import time
 from datetime import datetime
@@ -829,30 +828,10 @@ class RecommendMixin:
         except Exception as err:  # noqa: BLE001
             self._log(f"推荐通知发送失败:{err}", "warning")
 
-    @staticmethod
-    def _transfer_already_done(msg: Any) -> bool:
-        """★ 识别「MP 整理返回的错误其实只是『已整理过』」。
-
-        MP 的 ``TransferChain.manual_transfer`` 对**已经整理过**的文件返回
-        ``ok=False`` + ``msg="<文件> 已整理过（成功记录 #N…）、…，等N个文件错误！"``，
-        但文件其实早在库里（硬链接都在）→ 应当视作**成功**。
-        规则：消息里出现「已整理过」，且拆开后**没有**其它实质错误（忽略「等N个文件错误！」这种汇总）。
-        """
-        s = str(msg or "").strip()
-        if not s or "已整理过" not in s:
-            return False
-        for _p in re.split(r"[、,，;；]", s):
-            _p = _p.strip()
-            if not _p or "已整理过" in _p:
-                continue
-            if re.fullmatch(r"等\s*\d+\s*个文件错误[!！]?", _p):
-                continue
-            return False
-        return True
-
     def _recommend_import(self, h: str, rec: Optional[Dict[str, Any]] = None,
                           media_hint: Optional[Dict[str, Any]] = None,
-                          transfer_type: str = "") -> Tuple[bool, str]:
+                          transfer_type: str = "",
+                          reorganize: bool = False) -> Tuple[bool, str]:
         """确认后自动整理入库:识别 → 用 TransferChain 手动整理该资源。
 
         ``media_hint``（★ 19.11.2）= ``{media_id, media_source, media_type}``，调用方
@@ -864,12 +843,16 @@ class RecommendMixin:
         （点播/推荐链路保持原行为）。**库内资产整理必须传 ``"link"``**：一份资源常是
         十余颗种共用同一个 content_path，一旦系统默认被改回 move，源文件会被搬走，
         整组一起坏种。显式传参才能把这个风险锁死，不依赖任何人的配置。
+
+        ``reorganize``（★ 19.12.93）= **清掉 MP 已有的成功整理记录再整**。库内资源的
+        「落点丢失」本质就是「历史记着成功、文件却不在了」——此时 MP 的默认判定会认
+        为已整理过直接跳过，外面还会被 ``_transfer_already_done`` 兜成假成功，
+        界面上看起来点成功、落点却没回来。要修这类历史，必须显式重整。
+
+        ★ 19.12.95：本函数现在**只负责身份与台账** —— 拼 MP 参数、调用、异常折叠、
+        「已整理过」兜底都在 ``TransferMixin._transfer_execute``（影视/音乐共用一个
+        执行体）。这里连续两次吃过「参数只有一边记得传」的亏，所以执行层收成一处。
         """
-        try:
-            from app.chain.transfer import TransferChain  # type: ignore  # noqa: WPS433
-            from app.schemas.file import FileItem  # type: ignore  # noqa: WPS433
-        except Exception as err:  # noqa: BLE001
-            return False, f"MoviePilot 整理接口不可用:{err}"
         title = str((rec or {}).get("title") or "")
         torrent = None
         try:
@@ -917,6 +900,10 @@ class RecommendMixin:
                 or ""
             )
         if not save_path:
+            # ★ 19.12.91：分清「种没了」和「读不到路径」—— 前者点多少次都没用。
+            #   以前一律回「缺少保存路径,无法自动整理」，用户只能反复点、反复看到同一句。
+            if torrent is None:
+                return False, "这颗临时种已经不在下载器里了,无法自动整理"
             return False, "缺少保存路径,无法自动整理"
         try:
             # 下载器给的是宿主机路径,需映射成 MoviePilot(容器)可访问的路径
@@ -924,32 +911,15 @@ class RecommendMixin:
         except Exception:  # noqa: BLE001
             pass
         try:
-            import os as _os
-            clean = save_path.rstrip("/")
-            _is_dir = _os.path.isdir(save_path)
-            fileitem = FileItem(
-                path=save_path, storage="local", type="dir" if _is_dir else "file",
-                name=_os.path.basename(clean) or _os.path.basename(save_path),
+            _id = {"media_id": _mid, "media_source": _ms, "media_type": _mt}
+            # ★ 19.12.95：执行体统一到 ``TransferMixin._transfer_execute``（与音乐线共用）。
+            #   本函数只负责「身份怎么来」和「成功之后写什么台账」，不再自己拼 MP 参数。
+            ok, msg, _already = self._transfer_execute(
+                h, path=save_path, identity=_id, kind="video",
+                target=str(transfer_type or ""),
+                mode="redo" if reorganize else "default",
             )
-            _xfer_kw: Dict[str, Any] = {}
-            if transfer_type:
-                # ★ 19.12.64：资产整理显式锁死 link，不吃 MP 系统默认（见本函数 docstring）
-                _xfer_kw["transfer_type"] = str(transfer_type)
-            ok, msg = TransferChain().manual_transfer(
-                fileitem=fileitem,
-                media_source=_ms,
-                media_id=_mid,
-                mtype=_mt,
-                downloader="qbittorrent",
-                download_hash=str(h).lower(),
-                **_xfer_kw,
-            )
-            _note = ""
-            if not ok and self._transfer_already_done(msg):
-                # ★ MP 把「已整理过（成功记录 #N）」的重复文件当**错误**返回（ok=False），
-                #   但文件早已在库 → 等价成功（Master 2026-09-28 08:19 报的「等39个文件错误」）
-                ok = True
-                _note = "文件已在库（已整理过）"
+            _note = "文件已在库（已整理过）" if _already else ""
             self._log(f"推荐整理「{title}」→ ok={ok} msg={msg}" + (f" [{_note}]" if _note else ""))
             if ok:
                 if _note:
@@ -1175,8 +1145,9 @@ class RecommendMixin:
         if bool(self._recommend_cfg.get("auto_import", True)):
             ok, imsg = self._recommend_import(hash, rec)
             msg = "已确认并提交整理入库" if ok else f"已确认;自动整理未成功:{imsg}"
-            if ok:
-                store.upsert(hash, import_result=str(imsg)[:200])
+            # ★ 19.12.91：失败也落库，界面才知道这条是「确认了但没进库」以及「还能不能重试」
+            store.upsert(hash, import_result=str(imsg)[:200], import_at=time.time(),
+                         import_dead=(False if ok else ("不在下载器" in str(imsg))))
         return Response(success=True, message=msg, data=store.get(hash))
 
     def dismiss_recommend(self, hash: str) -> Response:
@@ -1188,13 +1159,24 @@ class RecommendMixin:
         if not rec:
             return Response(success=False, message="未找到该推荐记录")
         ok, err = True, None
+        done_msg = "已忽略并删除"
         try:
             downloader = self._get_downloader("qbittorrent")
             if downloader and downloader.is_available:
                 n, err = downloader.delete_torrents(hashes=[hash], delete_file=True)
-                ok = bool(n)
+                if n:
+                    ok, done_msg = True, "已忽略并删除"
+                elif err:
+                    ok, done_msg = False, f"已忽略;删除失败:{err}"
+                else:
+                    # ★ 19.12.91：删不到且不报错 = 这颗种本来就不在（整理失败后早被清了）。
+                    #   目的已经达成，别把「本来就没有」报成失败 —— 用户会以为没生效又点一次。
+                    ok, done_msg = True, "已忽略（这颗临时种本来就不在下载器里）"
+            else:
+                done_msg = "已忽略"
         except Exception as e:  # noqa: BLE001
             ok, err = False, str(e)
+            done_msg = f"已忽略;删除失败:{err}"
         store.set_status(hash, "dismissed", note="手动忽略")
         if self._store:
             self._store.journal.record(
@@ -1202,29 +1184,66 @@ class RecommendMixin:
                 items=[OperationItem(hash=hash, title=str(rec.get("title") or ""),
                                      reason="忽略并删除", source="recommend")],
             )
-        return Response(success=bool(ok),
-                        message="已忽略并删除" if ok else f"已忽略;删除失败:{err}")
+        return Response(success=bool(ok), message=done_msg)
 
     def import_recommend(self, hash: str) -> Response:
-        """手动触发整理入库。"""
+        """手动触发整理入库。
+
+        ★ 19.12.91：失败也落库。以前只有成功才写 ``import_result``，
+        用户看到的是**上一次**失败的老文案（幼女战记那条写着「没有找到可整理的媒体文件」，
+        实际这次失败的原因是种已经不在下载器里），界面给的指引因此是错的。
+        另落 ``import_dead``：这颗种不在下载器里 = 不可重试，前端据此不再提供「重新整理」。
+        （落库这段在 :meth:`_recommend_import_job`，与后台任务、失败重试共用同一份。）
+        """
         store = getattr(self._store, "recommend", None) if self._store else None
         if store is None:
             return Response(success=False, message="推荐存储不可用")
         rec = store.get(hash)
         if not rec:
             return Response(success=False, message="未找到该推荐记录")
-        ok, msg = self._recommend_import(hash, rec)
-        if ok:
-            store.upsert(hash, status="confirmed", confirmed_at=time.time(),
-                         import_result=str(msg)[:200])
-        return Response(success=ok, message=msg)
+        ok, msg = self._recommend_import_job(hash)
+        return Response(success=ok, message=msg, data=store.get(hash))
 
-    def import_recommend_batch(self, hashes: str = "", all: str = "", status: str = "") -> Response:
+    def _recommend_import_job(self, h: str) -> Tuple[bool, str]:
+        """★ 19.12.96 后台任务执行体：整理一颗推荐种子，**成功失败都落库**。
+
+        抽出来给三处共用 —— 手动单条（:meth:`import_recommend`）、批量入队后的
+        每条任务、以及失败任务的 ``jobs_retry`` 重放。这段原先写死在
+        ``import_recommend`` 里、批量那条路又抄了一份，两边口径已经开始漂。
+        """
+        hash = str(h or "").strip().lower()
+        store = getattr(self._store, "recommend", None) if self._store else None
+        if store is None:
+            return False, "推荐存储不可用"
+        rec = store.get(hash)
+        if not rec:
+            return False, "未找到该推荐记录"
+        try:
+            ok, msg = self._recommend_import(hash, rec)
+        except Exception as err:  # noqa: BLE001
+            ok, msg = False, f"整理异常:{err}"
+        _upd: Dict[str, Any] = {
+            "import_result": str(msg)[:200],
+            "import_at": time.time(),
+        }
+        if not ok:
+            _upd["import_dead"] = "不在下载器" in str(msg)
+        if ok:
+            _upd.update({"status": "confirmed", "confirmed_at": time.time(),
+                         "import_dead": False})
+        store.upsert(hash, **_upd)
+        return bool(ok), str(msg)
+
+    def import_recommend_batch(self, hashes: str = "", all: str = "",
+                              status: str = "", background: int = 1) -> Response:
         """★ **批量整理入库**（Master 2026-09-28 07:00：「批量入库的功能加一下」）。
 
         - ``hashes``：逗号分隔的种子 hash（工作台勾选的）；
         - ``all=1``：把当前所有**待确认**（``recommended``）记录一起入库；``status=pending`` 可把「待核实」也带上；
-        - 逐个走 ``_recommend_import``（识别 → TransferChain 手动整理），单个失败不影响其余。
+        - ★ 19.12.96：**默认每条一个后台任务**（``background=0`` 可回退同步串行）。
+          以前是同步 for 循环：两百多条要在一次请求里跑完，页面一直转圈；
+          关掉页面看不到结果；插件一重载全部消失，连「跑到哪了」都没有记录。
+          现在提交即返回，结果去「后台任务」看，中断的还能 ``/jobs/retry`` 重放。
         Python 侧参数从 **query string** 取（MP 插件 API 的 POST 不吃 JSON body）。
         """
         store = getattr(self._store, "recommend", None) if self._store else None
@@ -1245,25 +1264,64 @@ class RecommendMixin:
         want = [h for h in want if not (h in _seen or _seen.add(h))]
         if not want:
             return Response(success=False, message="没有可入库的推荐（未勾选，或没有待确认项）")
+
+        # ★ 19.12.96：默认**入队**。每条一个 job，``dedup_key`` 按 hash ——
+        #   同一颗还在跑时再点批量会返回既有那条（dedup），不会叠出第二个整理。
+        if int(background or 0):
+            queued: List[Dict[str, Any]] = []
+            skipped: List[Dict[str, Any]] = []
+            # ★ 19.12.97：一次入库多条 → 共用一个批次号，面板聚成一行
+            _bid = self._job_new_batch() if len(want) > 1 else ""
+            for h in want:
+                rec = store.get(h)
+                if not rec:
+                    skipped.append({"hash": h, "why": "未找到推荐记录"})
+                    continue
+                _ttl = str(rec.get("title") or "")[:40] or h[:12]
+                try:
+                    job = self._job_submit(
+                        kind="recommend_import",
+                        title=f"整理入库「{_ttl}」",
+                        fn=(lambda _h=h: self._recommend_import_job(_h)),
+                        dedup_key=f"recommend_import:{h}",
+                        params={"hash": h},
+                        batch_id=_bid,
+                    )
+                except Exception as err:  # noqa: BLE001
+                    skipped.append({"hash": h, "why": f"入队失败：{err}"})
+                    continue
+                queued.append({"hash": h, "title": str(rec.get("title") or ""),
+                               "job_id": str(job.get("id") or ""),
+                               "dedup": bool(job.get("dedup"))})
+            self._log(f"批量入库：入队 {len(queued)} · 跳过 {len(skipped)}（共 {len(want)}）")
+            # 统计口径要能加回总数：queued + skipped == want
+            return Response(
+                success=bool(queued),
+                message=(f"批量入库：已加入后台队列 {len(queued)}/{len(want)} 条"
+                         + (f"，跳过 {len(skipped)} 条（{skipped[0]['why']}）" if skipped else "")
+                         + "（进度与结果到「后台任务」看）"),
+                data={"queued": len(queued), "total": len(want), "skipped": skipped,
+                      "batch_id": _bid,
+                      "details": [{"hash": q["hash"], "ok": True, "queued": True,
+                                   "job_id": q["job_id"], "title": q["title"],
+                                   "message": "已加入后台队列"} for q in queued]},
+            )
+
+        # ``background=0``：同步串行（应急，或就两三条时想看即时结果）
         ok_n, fail_n = 0, 0
         details: List[Dict[str, Any]] = []
         for h in want:
-            rec = store.get(h)
-            if not rec:
-                fail_n += 1
-                details.append({"hash": h, "ok": False, "message": "未找到推荐记录"})
-                continue
             try:
-                ok, msg = self._recommend_import(h, rec)
+                ok, msg = self._recommend_import_job(h)
             except Exception as err:  # noqa: BLE001
                 ok, msg = False, f"整理异常:{err}"
             if ok:
                 ok_n += 1
-                store.upsert(h, status="confirmed", confirmed_at=time.time(), import_result=str(msg)[:200])
             else:
                 fail_n += 1
-                store.upsert(h, import_result=str(msg)[:200])
-            details.append({"hash": h, "ok": bool(ok), "title": str(rec.get("title") or ""), "message": str(msg)[:200]})
+            rec = store.get(h) or {}
+            details.append({"hash": h, "ok": bool(ok), "title": str(rec.get("title") or ""),
+                            "message": str(msg)[:200]})
         # 操作记录（推荐类，task_id 空 = 全局）
         try:
             self._store.journal.record(

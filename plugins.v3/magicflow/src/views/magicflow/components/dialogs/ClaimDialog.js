@@ -1,155 +1,142 @@
-// ClaimDialog —— 由线上 dist 还原（dist 关闭了 minify，保留了完整编译产物）。
-// 形态是 Vue SFC 编译后的组件对象（不是 .vue 模板），行为与 19.11.23 线上一致。
+// ClaimDialog —— 19.16.17 认领页设计稿视觉对齐（由 ClaimDialog.vue 经 compiler-sfc 编译，scopeId 保持 data-v-2acf1ac2）。
+// setup 逻辑沿用线上 dist 还原版，功能零丢失；19.16.17 仅按设计稿对齐间距/字号/颜色/圆角，文案数值不动。
 import './ClaimDialog.css'
 
+import { useModel as _useModel, mergeModels as _mergeModels } from 'vue'
+import { createElementVNode as _createElementVNode, toDisplayString as _toDisplayString, createTextVNode as _createTextVNode, resolveComponent as _resolveComponent, withCtx as _withCtx, createVNode as _createVNode, createCommentVNode as _createCommentVNode, openBlock as _openBlock, createElementBlock as _createElementBlock, createBlock as _createBlock, normalizeClass as _normalizeClass, renderList as _renderList, Fragment as _Fragment, withKeys as _withKeys, withModifiers as _withModifiers } from "vue"
 
-import * as __vue from 'vue'
-
-const {
-  Fragment: _Fragment$v,
-  createBlock: _createBlock$w,
-  createCommentVNode: _createCommentVNode$w,
-  createElementBlock: _createElementBlock$v,
-  createElementVNode: _createElementVNode$z,
-  createTextVNode: _createTextVNode$y,
-  createVNode: _createVNode$y,
-  mergeModels: _mergeModels$i,
-  normalizeClass: _normalizeClass$i,
-  openBlock: _openBlock$z,
-  renderList: _renderList$t,
-  resolveComponent: _resolveComponent$z,
-  toDisplayString: _toDisplayString$z,
-  useModel: _useModel$i,
-  withCtx: _withCtx$w,
-  withKeys: _withKeys$2,
-  withModifiers: _withModifiers$3,
-} = __vue
-
-
-const _hoisted_1$x = { class: "magicflow-settings-dialog__head" };
-const _hoisted_2$v = { class: "magicflow-claim-title" };
-const _hoisted_3$t = { class: "magicflow-recommend-dialog__head-actions" };
-const _hoisted_4$t = { class: "magicflow-claim-bar" };
-const _hoisted_5$t = {
+const _hoisted_1 = { class: "magicflow-settings-dialog__head" }
+const _hoisted_2 = { class: "magicflow-claim-title" }
+const _hoisted_3 = { class: "magicflow-recommend-dialog__head-actions" }
+const _hoisted_4 = { class: "magicflow-claim-bar" }
+const _hoisted_5 = { class: "magicflow-claim-bar__tot" }
+const _hoisted_6 = {
   key: 0,
   class: "magicflow-claim-bar__hint"
-};
-const _hoisted_6$r = { class: "magicflow-claim-summary" };
-const _hoisted_7$p = { class: "magicflow-claim-summary__item" };
-const _hoisted_8$n = { class: "magicflow-claim-summary__item" };
-const _hoisted_9$l = { class: "magicflow-claim-summary__item is-accent" };
-const _hoisted_10$l = { class: "magicflow-claim-tabs" };
-const _hoisted_11$k = {
-  key: 0,
-  class: "magicflow-table-empty"
-};
-const _hoisted_12$k = {
-  key: 1,
-  class: "magicflow-claim-list"
-};
-const _hoisted_13$i = { class: "magicflow-claim-item__main" };
-const _hoisted_14$h = { class: "magicflow-claim-item__head" };
-const _hoisted_15$h = ["title"];
-const _hoisted_16$h = ["href"];
-const _hoisted_17$h = {
-  key: 0,
-  class: "magicflow-claim-item__spec"
-};
-const _hoisted_18$h = { class: "magicflow-claim-item__meta" };
-const _hoisted_19$g = {
-  key: 1,
-  class: "magicflow-claim-item__why"
-};
-const _hoisted_20$e = {
-  key: 2,
-  class: "magicflow-claim-more"
-};
-const _hoisted_21$d = {
-  key: 0,
-  class: "magicflow-table-empty"
-};
-const _hoisted_22$c = {
-  key: 0,
-  class: "magicflow-claim-empty__why"
-};
-const _hoisted_23$b = {
-  key: 1,
-  class: "magicflow-claim-list"
-};
-const _hoisted_24$b = { class: "magicflow-claim-item__main" };
-const _hoisted_25$b = { class: "magicflow-claim-item__head" };
-const _hoisted_26$9 = ["title"];
-const _hoisted_27$9 = ["href"];
-const _hoisted_28$8 = {
-  key: 0,
-  class: "magicflow-claim-item__spec"
-};
-const _hoisted_29$8 = { class: "magicflow-claim-item__meta" };
-const _hoisted_30$8 = {
-  key: 1,
-  class: "magicflow-claim-item__reward"
-};
-const _hoisted_31$8 = {
-  key: 2,
-  class: "magicflow-claim-more"
-};
-const _hoisted_32$8 = {
-  key: 3,
-  class: "magicflow-claim-soon"
-};
-const _hoisted_33$7 = { class: "magicflow-claim-soon__hint" };
-const _hoisted_34$7 = {
-  key: 0,
-  class: "magicflow-claim-list magicflow-claim-list--soon"
-};
-const _hoisted_35$6 = { class: "magicflow-claim-item__main" };
-const _hoisted_36$5 = { class: "magicflow-claim-item__head" };
-const _hoisted_37$4 = ["title"];
-const _hoisted_38$4 = ["href"];
-const _hoisted_39$4 = {
-  key: 0,
-  class: "magicflow-claim-item__spec"
-};
-const _hoisted_40$4 = { class: "magicflow-claim-item__meta" };
-const _hoisted_41$4 = {
-  key: 1,
-  class: "magicflow-claim-more"
-};
-const _hoisted_42$3 = {
-  key: 0,
-  class: "magicflow-claim-sites"
-};
-const _hoisted_43$2 = ["onClick", "onKeydown"];
-const _hoisted_44$2 = { class: "magicflow-claim-site__head" };
-const _hoisted_45$2 = { class: "magicflow-claim-site__name" };
-const _hoisted_46$2 = { class: "magicflow-claim-site__date" };
-const _hoisted_47$2 = { class: "magicflow-claim-site__stats" };
-const _hoisted_48$2 = { class: "magicflow-claim-site__stat" };
-const _hoisted_49$2 = { class: "magicflow-claim-site__stat" };
-const _hoisted_50$2 = { class: "magicflow-claim-site__stat is-accent" };
-const _hoisted_51$2 = {
+}
+const _hoisted_7 = {
+  class: "magicflow-claim-seg",
+  role: "tablist",
+  "aria-label": "认领视图"
+}
+const _hoisted_8 = ["aria-selected"]
+const _hoisted_9 = ["aria-selected"]
+const _hoisted_10 = { class: "magicflow-claim-sites" }
+const _hoisted_11 = ["onClick", "onKeydown"]
+const _hoisted_12 = { class: "magicflow-claim-site__head" }
+const _hoisted_13 = { class: "magicflow-claim-site__name" }
+const _hoisted_14 = { class: "magicflow-claim-site__date" }
+const _hoisted_15 = { class: "magicflow-claim-site__stats" }
+const _hoisted_16 = { class: "magicflow-claim-site__stat" }
+const _hoisted_17 = { class: "magicflow-claim-site__stat" }
+const _hoisted_18 = { class: "magicflow-claim-site__stat is-accent" }
+const _hoisted_19 = {
   key: 0,
   class: "magicflow-claim-site__sub"
-};
-const _hoisted_52$2 = {
+}
+const _hoisted_20 = {
   key: 0,
   class: "magicflow-table-empty"
-};
-const _hoisted_53$2 = {
+}
+const _hoisted_21 = {
   key: 1,
   class: "magicflow-claim-more"
-};
-const _hoisted_54$2 = { class: "magicflow-claim-note" };
-const _hoisted_55$2 = {
+}
+const _hoisted_22 = { class: "magicflow-claim-summary magicflow-claim-summary--two" }
+const _hoisted_23 = { class: "magicflow-claim-summary__item" }
+const _hoisted_24 = { class: "magicflow-claim-summary__item is-accent" }
+const _hoisted_25 = { class: "magicflow-claim-settle" }
+const _hoisted_26 = { class: "magicflow-claim-settle__d" }
+const _hoisted_27 = { class: "magicflow-claim-tabs" }
+const _hoisted_28 = { class: "magicflow-claim-notice" }
+const _hoisted_29 = {
+  key: 0,
+  class: "magicflow-table-empty"
+}
+const _hoisted_30 = {
+  key: 1,
+  class: "magicflow-claim-list"
+}
+const _hoisted_31 = { class: "magicflow-claim-item__main" }
+const _hoisted_32 = { class: "magicflow-claim-item__head" }
+const _hoisted_33 = ["title"]
+const _hoisted_34 = ["href"]
+const _hoisted_35 = {
+  key: 0,
+  class: "magicflow-claim-item__spec"
+}
+const _hoisted_36 = { class: "magicflow-claim-item__meta" }
+const _hoisted_37 = ["title"]
+const _hoisted_38 = {
+  class: "magicflow-claim-shield",
+  title: "已进入硬保护，不会被静默清理"
+}
+const _hoisted_39 = {
+  key: 2,
+  class: "magicflow-claim-more"
+}
+const _hoisted_40 = {
+  key: 0,
+  class: "magicflow-table-empty"
+}
+const _hoisted_41 = {
+  key: 0,
+  class: "magicflow-claim-empty__why"
+}
+const _hoisted_42 = {
+  key: 1,
+  class: "magicflow-claim-list"
+}
+const _hoisted_43 = { class: "magicflow-claim-item__main" }
+const _hoisted_44 = { class: "magicflow-claim-item__head" }
+const _hoisted_45 = ["title"]
+const _hoisted_46 = ["href"]
+const _hoisted_47 = {
+  key: 0,
+  class: "magicflow-claim-item__spec"
+}
+const _hoisted_48 = { class: "magicflow-claim-item__meta" }
+const _hoisted_49 = {
+  key: 1,
+  class: "magicflow-claim-item__reward"
+}
+const _hoisted_50 = {
+  key: 2,
+  class: "magicflow-claim-more"
+}
+const _hoisted_51 = {
+  key: 3,
+  class: "magicflow-claim-soon"
+}
+const _hoisted_52 = { class: "magicflow-claim-soon__hint" }
+const _hoisted_53 = {
+  key: 0,
+  class: "magicflow-claim-list magicflow-claim-list--soon"
+}
+const _hoisted_54 = { class: "magicflow-claim-item__main" }
+const _hoisted_55 = { class: "magicflow-claim-item__head" }
+const _hoisted_56 = ["title"]
+const _hoisted_57 = ["href"]
+const _hoisted_58 = {
+  key: 0,
+  class: "magicflow-claim-item__spec"
+}
+const _hoisted_59 = { class: "magicflow-claim-item__meta" }
+const _hoisted_60 = {
+  key: 1,
+  class: "magicflow-claim-more"
+}
+const _hoisted_61 = {
   key: 5,
-  class: "magicflow-claim-note"
-};
+  class: "magicflow-claim-foot"
+}
 
-const {computed: computed$I,ref: ref$z} = __vue;
+import { computed, ref } from 'vue'
 
-const _sfc_main$z = {
+
+const _sfc_main = {
   __name: 'ClaimDialog',
-  props: /*@__PURE__*/_mergeModels$i({
+  props: /*@__PURE__*/_mergeModels({
   isNarrow: { type: Boolean, default: false },
   claimData: { type: Object, default: () => ({}) },
   claimCfg: { type: Object, default: () => ({}) },
@@ -164,36 +151,49 @@ const _sfc_main$z = {
     "modelValue": { type: Boolean, default: false },
     "modelModifiers": {},
   }),
-  emits: /*@__PURE__*/_mergeModels$i(['refresh', 'scan', 'ask'], ["update:modelValue"]),
+  emits: /*@__PURE__*/_mergeModels(['refresh', 'scan', 'ask'], ["update:modelValue"]),
   setup(__props, { emit: __emit }) {
 
-// MagicFlow 前端 · 认领弹窗（P4）
-// P4 拆分：自 views/magicflow/index.vue **纯搬家**（template 块 + 配套 scoped 样式，无行为/样式变更）。
-// 数据向下（defineModel / props）、事件向上（emit）；子组件不直接改父状态、不调用父方法。
-const claimOpen = _useModel$i(__props, "modelValue");
+// MagicFlow 前端 · 认领弹窗。setup 逻辑 100% 来自线上 19.16.14 dist 还原的 ClaimDialog.js
+// （零功能丢失：digest/规格/详情直链/放弃安全/soon 折叠/空原因/qb 状态全部保留），
+// 本版只按设计稿重构视图层（全站汇总默认落地 + 分段控件 + 卡片瘦身），template 重写。
+const props = __props
+const emit = __emit
+const claimOpen = _useModel(__props, "modelValue")
+
 
 // 数据向下（只读）：claimData 为原始后端状态，其余为父页派生数组（单一真值源在父页）。
-const props = __props;
 
-const emit = __emit;
 
-// 站点筛选（下拉选站）：单站看该站认领详情，全部站点看各站详情汇总。
-// 纯组件内部 UI 状态（父页无引用）→ 随弹窗自 index.vue 迁入。
-const claimSiteFilter = ref$z('');
-const claimFilterItems = computed$I(() => [
-  { title: '全部站点', value: '' },
-  ...(props.claimSites || []).map((s) => ({
-    title: `${s.site_name || s.domain}${s.supported ? '' : '（未收录）'}`,
-    value: String(s.site_id),
-  })),
-]);
+// ★ 19.16.15：视图切换从「下拉首项」提升为独立分段控件——
+//   claimView='all' 全站汇总（默认落地，进来就看全站口径）；='site' 按站点看（单站明细）。
+//   下拉只做「过滤到具体站」一件事，不再偷偷换结构；选具体站 = 进入 site 视图。
+const claimView = ref('all');
+function claimSetView(v) {
+  claimView.value = v
+  if (v === 'all') claimSiteFilter.value = ''
+  else if (!claimSiteFilter.value) {
+    const first = (props.claimSites || []).find((s) => s.supported)
+    if (first) claimSiteFilter.value = String(first.site_id)
+  }
+}
+const claimSiteFilter = ref('');
+const claimFilterItems = computed(() => (props.claimSites || []).map((s) => ({
+  title: `${s.site_name || s.domain}${s.supported ? '' : '（未收录）'}`,
+  value: String(s.site_id),
+})));
 function claimFilterSite() {
   if (!claimSiteFilter.value) return null
   return (props.claimSites || []).find((s) => String(s.site_id) === claimSiteFilter.value) || null
 }
-// 站点列表：只列支持认领的站。全部站点时逐站汇总，不跨站求和。
-const claimSupportedList = computed$I(() => (props.claimSites || []).filter((s) => s.supported));
-const claimScopeSite = computed$I(() => claimFilterSite());
+// 站点列表：只列支持认领的站。全站视图逐站汇总，不跨站求和。
+const claimSupportedList = computed(() => (props.claimSites || []).filter((s) => s.supported));
+// 点逐站卡：进 site 视图并选中该站。
+function claimOpenSite(sid) { claimView.value = 'site'; claimSiteFilter.value = String(sid) }
+// 下拉选站：非空即进 site 视图。
+function claimPickSite(v) { claimSiteFilter.value = v; claimView.value = v ? 'site' : 'all' }
+// claimScopeSite 保持「只认当前选中的具体站」，全站视图下它为空（逐站卡走 claimSupportedList）。
+const claimScopeSite = computed(() => (claimView.value === 'site' ? claimFilterSite() : null));
 // 站点自己的结算口径（不再跨站取「最近日期」或最高倍率）。
 function claimSiteSettle(s) { return (s && s.settlement) || {} }
 // 结算日期文案：「11 月 1 日 · 剩 14.5 天 · 每月结算（自然月）」。
@@ -206,6 +206,25 @@ function claimSiteDateText(s) {
   return [dateText, left].filter(Boolean).join(' · ')
 }
 function claimSiteCycleText(s) { return claimSiteSettle(s).cycle_text || '结算周期待定' }
+// 19.16.17：结算条拆三段（结算｜日期｜剩 X 天靠右），复用同一份 settlement 真值，文案数值不动。
+function claimSettleDate(s) {
+  const st = claimSiteSettle(s);
+  if (!st.next_settle_at) return '结算日待定'
+  const d = new Date(st.next_settle_at * 1000);
+  return `${d.getMonth() + 1} 月 ${d.getDate()} 日`
+}
+function claimSettleDays(s) {
+  const st = claimSiteSettle(s);
+  if (st.days_left === null || st.days_left === undefined) return ''
+  return `剩 ${Number(st.days_left).toFixed(1)} 天`
+}
+const claimSettleSite = computed(() => {
+  if (claimScopeSite.value) return claimScopeSite.value
+  const rows = (props.claimSites || []).filter(s => s.supported && s.settlement && s.settlement.next_settle_at)
+  if (!rows.length) return null
+  const min = Math.min(...rows.map(s => Number(s.settlement.next_settle_at)))
+  return rows.find(x => Number(x.settlement.next_settle_at) === min) || null
+})
 function claimSiteById(id) { return (props.claimSites || []).find(s => String(s.site_id) === String(id)) || null }
 function claimSiteReward(s) {
   if (!s) return '—'
@@ -229,9 +248,9 @@ function claimRowsFor(rows, siteId) {
   if (!siteId) return list
   return list.filter((r) => String(r.site_id) === String(siteId))
 }
-const claimFilteredClaimable = computed$I(() => claimRowsFor(props.claimClaimable, claimSiteFilter.value));
-const claimFilteredClaimed = computed$I(() => claimRowsFor(props.claimClaimed, claimSiteFilter.value));
-const claimFilteredSoon = computed$I(() => claimRowsFor(props.claimSoon, claimSiteFilter.value));
+const claimFilteredClaimable = computed(() => claimRowsFor(props.claimClaimable, claimSiteFilter.value));
+const claimFilteredClaimed = computed(() => claimRowsFor(props.claimClaimed, claimSiteFilter.value));
+const claimFilteredSoon = computed(() => claimRowsFor(props.claimSoon, claimSiteFilter.value));
 // ── ★ 19.10.59「可认领为零」要能自证原因 ─────────────────────────────────────
 // 学校（pt.btschool.club）实测 2026-10-31：站点「当前活动」= 做种 4 颗，这 4 颗
 // （326608 / 326427 / 326419 / 326403）全在 viewclaims.php 里，4 个详情页也都
@@ -239,7 +258,7 @@ const claimFilteredSoon = computed$I(() => claimRowsFor(props.claimSoon, claimSi
 // 但界面只写「当前没有可认领种子」，用户没法区分「真没有」与「扫描坏了」。
 // 这里只用扫描结果里**已有**的站点统计（site_rows / site_claimed / site_open /
 // site_not_local / soon 条数）拼一句实话：零额外请求，也不在本地重算站点口径。
-const claimEmptyReason = computed$I(() => {
+const claimEmptyReason = computed(() => {
   const s = claimScopeSite.value;
   if (!s) return ''
   const rows = Number(s.site_rows || 0);
@@ -267,15 +286,15 @@ function claimSiteRowText(s) {
   return `做种 ${rows} 颗${claimed ? ` · 已领 ${claimed}` : ''}`
 }
 // 多站大量种子时列表只渲染前 50 条（总量与收益在报表里，列表只是操作入口）。
-const claimClaimedLimit = ref$z(20);
-const claimClaimableLimit = ref$z(20);
-const claimShownClaimed = computed$I(() => claimFilteredClaimed.value.slice(0, claimClaimedLimit.value));
-const claimShownClaimable = computed$I(() => claimFilteredClaimable.value.slice(0, claimClaimableLimit.value));
+const claimClaimedLimit = ref(20);
+const claimClaimableLimit = ref(20);
+const claimShownClaimed = computed(() => claimFilteredClaimed.value.slice(0, claimClaimedLimit.value));
+const claimShownClaimable = computed(() => claimFilteredClaimable.value.slice(0, claimClaimableLimit.value));
 function claimMoreClaimed() { claimClaimedLimit.value += 20; }
 function claimMoreClaimable() { claimClaimableLimit.value += 20; }
-const claimListTab = ref$z('claimed');
-const claimSummaryClaimed = computed$I(() => claimFilteredClaimed.value.length);
-const claimSummaryReward = computed$I(() => {
+const claimListTab = ref('claimed');
+const claimSummaryClaimed = computed(() => claimFilteredClaimed.value.length);
+const claimSummaryReward = computed(() => {
   let n = 0;
   for (const r of claimFilteredClaimed.value) {
     const v = Number(r.site_reward_num);
@@ -283,8 +302,8 @@ const claimSummaryReward = computed$I(() => {
   }
   return n
 });
-const claimSummaryRewardText = computed$I(() => claimSummaryReward.value > 0 ? claimNum(claimSummaryReward.value) : '—');
-const claimSummarySettle = computed$I(() => {
+const claimSummaryRewardText = computed(() => claimSummaryReward.value > 0 ? claimNum(claimSummaryReward.value) : '—');
+const claimSummarySettle = computed(() => {
   if (claimScopeSite.value) return claimSiteDateText(claimScopeSite.value)
   const rows = (props.claimSites || []).filter(s => s.supported && s.settlement && s.settlement.next_settle_at);
   if (!rows.length) return '—'
@@ -364,16 +383,16 @@ function claimWaitText(row) {
   const blk = (row && row.block) || [];
   return blk.length ? String(blk[0]) : '等待站点开放'
 }
-const claimSoonOpen = ref$z(false);
-const claimSoonLimit = ref$z(10);
-const claimSoonSorted = computed$I(() => {
+const claimSoonOpen = ref(false);
+const claimSoonLimit = ref(10);
+const claimSoonSorted = computed(() => {
   const list = (claimFilteredSoon.value || []).slice();
   list.sort((a, b) => (Number(a.wait_days ?? 1e9)) - (Number(b.wait_days ?? 1e9)));
   return list
 });
-const claimSoonShown = computed$I(() => claimSoonSorted.value.slice(0, claimSoonLimit.value));
+const claimSoonShown = computed(() => claimSoonSorted.value.slice(0, claimSoonLimit.value));
 function claimMoreSoon() { claimSoonLimit.value += 10; }
-const claimSoonTotalText = computed$I(() => {
+const claimSoonTotalText = computed(() => {
   const n = Number(props.claimData && props.claimData.soon_total) || claimSoonSorted.value.length;
   return claimNum(n)
 });
@@ -411,7 +430,7 @@ function claimAbandonBlockedText(row) {
 }
 function claimAbandonKey(row) { return 'abandon:' + String((row && row.hash) || 'batch') }
 // ★ 19.7.0：认领保挂实况（账本 × qB）
-const claimHost = computed$I(() => props.claimData.host || {});
+const claimHost = computed(() => props.claimData.host || {});
 function claimQbKind(row) {
   if (row && row.site_only) return 'site'
   if (!row || !row.in_qb) return 'missing'
@@ -421,27 +440,35 @@ function claimQbKind(row) {
 }
 function claimQbText(row) {
   const k = claimQbKind(row);
+  // 19.16.18：按设计稿，状态 chip 用 2 字短语（做种/暂停/丢失/站点侧），
+  // 避免 3 字「做种中」在窄屏被盾牌挤成「做种 0」的错觉。
   if (k === 'site') return '站点侧'
-  return k === 'seeding' ? '做种中' : (k === 'paused' ? '已暂停' : '不在 qB')
+  return k === 'seeding' ? '做种' : (k === 'paused' ? '暂停' : '丢失')
 }
-function claimQbColor(row) {
+function claimQbClass(row) {
   const k = claimQbKind(row);
-  if (k === 'site') return 'info'
-  return k === 'seeding' ? 'success' : (k === 'paused' ? 'warning' : 'error')
+  return 'magicflow-claim-qb is-' + k
+}
+function claimQbTitle(row) {
+  const k = claimQbKind(row);
+  if (k === 'site') return '仅站点侧认领，未纳入本机 qB'
+  if (k === 'seeding') return 'qB 中正在做种'
+  if (k === 'paused') return 'qB 中已暂停，需恢复做种'
+  return 'qB 中未找到该种子'
 }
 // ── ★ 19.5.0：干跑 / 真跑两个动作彻底分开（用户可见文案，短句）──
 //   顶栏常驻模式徽标；「扫描（只读）」永不写；「认领本轮」常驻但禁用时给出原因。
-const claimModeText = computed$I(() => (props.claimCfg.dry ? '干跑' : '真跑'));
-const claimSkipped = computed$I(() => props.claimData.sites_skipped || []);
-computed$I(() => Number(props.claimData.sites_total || 0));
-computed$I(() => Number(props.claimData.sites_supported_total || 0));
+const claimModeText = computed(() => (props.claimCfg.dry ? '干跑' : '真跑'));
+const claimSkipped = computed(() => props.claimData.sites_skipped || []);
+computed(() => Number(props.claimData.sites_total || 0));
+computed(() => Number(props.claimData.sites_supported_total || 0));
 // ★ 19.6.0「其他站点纳入」：规则未核对的站（preset 用同族插件默认值）——UI 必须如实标注。
-computed$I(() => {
+computed(() => {
   const n = Number(props.claimData.sites_unverified_total || 0);
   if (n > 0) return n
   return (props.claimSites || []).filter((s) => s.supported && claimProfile(s).rules_unverified).length
 });
-computed$I(() => props.claimData.sites_unverified || []);
+computed(() => props.claimData.sites_unverified || []);
 function claimBatchDisabled() {
   if (!props.claimCfg.enabled) return true
   if (props.claimCfg.dry) return true
@@ -455,43 +482,42 @@ function claimBatchHint() {
 }
 
 return (_ctx, _cache) => {
-  const _component_VChip = _resolveComponent$z("VChip");
-  const _component_VBtn = _resolveComponent$z("VBtn");
-  const _component_VDivider = _resolveComponent$z("VDivider");
-  const _component_VSelect = _resolveComponent$z("VSelect");
-  const _component_VSpacer = _resolveComponent$z("VSpacer");
-  const _component_VAlert = _resolveComponent$z("VAlert");
-  const _component_VIcon = _resolveComponent$z("VIcon");
-  const _component_VCardText = _resolveComponent$z("VCardText");
-  const _component_VCard = _resolveComponent$z("VCard");
-  const _component_VDialog = _resolveComponent$z("VDialog");
+  const _component_VChip = _resolveComponent("VChip")
+  const _component_VBtn = _resolveComponent("VBtn")
+  const _component_VDivider = _resolveComponent("VDivider")
+  const _component_VAlert = _resolveComponent("VAlert")
+  const _component_VIcon = _resolveComponent("VIcon")
+  const _component_VSelect = _resolveComponent("VSelect")
+  const _component_VCardText = _resolveComponent("VCardText")
+  const _component_VCard = _resolveComponent("VCard")
+  const _component_VDialog = _resolveComponent("VDialog")
 
-  return (_openBlock$z(), _createBlock$w(_component_VDialog, {
+  return (_openBlock(), _createBlock(_component_VDialog, {
     modelValue: claimOpen.value,
-    "onUpdate:modelValue": _cache[8] || (_cache[8] = $event => ((claimOpen).value = $event)),
+    "onUpdate:modelValue": _cache[10] || (_cache[10] = $event => ((claimOpen).value = $event)),
     "max-width": "52rem",
     scrollable: "",
     fullscreen: __props.isNarrow
   }, {
-    default: _withCtx$w(() => [
-      _createVNode$y(_component_VCard, { class: "magicflow-dialog magicflow-claim-dialog" }, {
-        default: _withCtx$w(() => [
-          _createElementVNode$z("header", _hoisted_1$x, [
-            _createElementVNode$z("div", _hoisted_2$v, [
-              _cache[9] || (_cache[9] = _createElementVNode$z("span", { class: "magicflow-settings-dialog__title" }, "认领", -1)),
-              _createVNode$y(_component_VChip, {
+    default: _withCtx(() => [
+      _createVNode(_component_VCard, { class: "magicflow-dialog magicflow-claim-dialog" }, {
+        default: _withCtx(() => [
+          _createElementVNode("header", _hoisted_1, [
+            _createElementVNode("div", _hoisted_2, [
+              _cache[11] || (_cache[11] = _createElementVNode("span", { class: "magicflow-settings-dialog__title" }, "认领", -1 /* CACHED */)),
+              _createVNode(_component_VChip, {
                 size: "x-small",
                 color: __props.claimCfg.dry ? 'warning' : 'success',
                 variant: "tonal"
               }, {
-                default: _withCtx$w(() => [
-                  _createTextVNode$y(_toDisplayString$z(claimModeText.value), 1)
+                default: _withCtx(() => [
+                  _createTextVNode(_toDisplayString(claimModeText.value), 1 /* TEXT */)
                 ]),
-                _: 1
-              }, 8, ["color"])
+                _: 1 /* STABLE */
+              }, 8 /* PROPS */, ["color"])
             ]),
-            _createElementVNode$z("div", _hoisted_3$t, [
-              _createVNode$y(_component_VBtn, {
+            _createElementVNode("div", _hoisted_3, [
+              _createVNode(_component_VBtn, {
                 variant: "text",
                 color: "primary",
                 size: "small",
@@ -499,12 +525,12 @@ return (_ctx, _cache) => {
                 loading: __props.claimLoading,
                 onClick: _cache[0] || (_cache[0] = $event => (emit('refresh')))
               }, {
-                default: _withCtx$w(() => [...(_cache[10] || (_cache[10] = [
-                  _createTextVNode$y("刷新", -1)
+                default: _withCtx(() => [...(_cache[12] || (_cache[12] = [
+                  _createTextVNode("刷新", -1 /* CACHED */)
                 ]))]),
-                _: 1
-              }, 8, ["loading"]),
-              _createVNode$y(_component_VBtn, {
+                _: 1 /* STABLE */
+              }, 8 /* PROPS */, ["loading"]),
+              _createVNode(_component_VBtn, {
                 icon: "mdi-close",
                 size: "small",
                 variant: "text",
@@ -513,159 +539,254 @@ return (_ctx, _cache) => {
               })
             ])
           ]),
-          _createVNode$y(_component_VDivider),
-          _createElementVNode$z("div", _hoisted_4$t, [
-            _createVNode$y(_component_VSelect, {
-              modelValue: claimSiteFilter.value,
-              "onUpdate:modelValue": _cache[2] || (_cache[2] = $event => ((claimSiteFilter).value = $event)),
-              items: claimFilterItems.value,
-              density: "compact",
-              variant: "outlined",
-              "hide-details": "",
-              class: "magicflow-claim-bar__site",
-              "aria-label": "站点筛选"
-            }, null, 8, ["modelValue", "items"]),
-            _createVNode$y(_component_VSpacer),
-            _createVNode$y(_component_VBtn, {
+          _createVNode(_component_VDivider),
+          _createElementVNode("div", _hoisted_4, [
+            _createCommentVNode(" 19.16.17：bar 只放两个按钮（设计稿），分段控件移到 body 顶部（按钮行下方） "),
+            _createVNode(_component_VBtn, {
               size: "small",
               variant: "tonal",
               color: "primary",
               "prepend-icon": "mdi-radar",
               loading: __props.claimActing === 'run',
-              onClick: _cache[3] || (_cache[3] = $event => (emit('scan')))
+              onClick: _cache[2] || (_cache[2] = $event => (emit('scan')))
             }, {
-              default: _withCtx$w(() => [...(_cache[11] || (_cache[11] = [
-                _createTextVNode$y("扫描（只读）", -1)
+              default: _withCtx(() => [...(_cache[13] || (_cache[13] = [
+                _createTextVNode("扫描（只读）", -1 /* CACHED */)
               ]))]),
-              _: 1
-            }, 8, ["loading"]),
-            _createVNode$y(_component_VBtn, {
+              _: 1 /* STABLE */
+            }, 8 /* PROPS */, ["loading"]),
+            _createVNode(_component_VBtn, {
               size: "small",
               variant: "flat",
               color: "primary",
               "prepend-icon": "mdi-seal",
               disabled: claimBatchDisabled(),
-              onClick: _cache[4] || (_cache[4] = $event => (emit('ask', 'batch', null)))
+              onClick: _cache[3] || (_cache[3] = $event => (emit('ask', 'batch', null)))
             }, {
-              default: _withCtx$w(() => [
-                _createTextVNode$y("认领本轮 " + _toDisplayString$z(claimRequestable()) + " 个", 1)
+              default: _withCtx(() => [
+                _cache[14] || (_cache[14] = _createTextVNode(" 认领本轮 ", -1 /* CACHED */)),
+                _createElementVNode("small", _hoisted_5, _toDisplayString(claimNum(claimRequestable())), 1 /* TEXT */),
+                _cache[15] || (_cache[15] = _createTextVNode(" 个 ", -1 /* CACHED */))
               ]),
-              _: 1
-            }, 8, ["disabled"])
+              _: 1 /* STABLE */
+            }, 8 /* PROPS */, ["disabled"])
           ]),
           (claimBatchHint())
-            ? (_openBlock$z(), _createElementBlock$v("div", _hoisted_5$t, _toDisplayString$z(claimBatchHint()), 1))
-            : _createCommentVNode$w("", true),
-          _createVNode$y(_component_VCardText, { class: "magicflow-claim-body" }, {
-            default: _withCtx$w(() => [
+            ? (_openBlock(), _createElementBlock("div", _hoisted_6, _toDisplayString(claimBatchHint()), 1 /* TEXT */))
+            : _createCommentVNode("v-if", true),
+          _createVNode(_component_VCardText, { class: "magicflow-claim-body" }, {
+            default: _withCtx(() => [
               (__props.claimLoading)
-                ? (_openBlock$z(), _createBlock$w(_component_VAlert, {
+                ? (_openBlock(), _createBlock(_component_VAlert, {
                     key: 0,
                     type: "info",
                     variant: "tonal",
                     density: "compact",
                     class: "mb-2"
                   }, {
-                    default: _withCtx$w(() => [...(_cache[12] || (_cache[12] = [
-                      _createTextVNode$y(" 正在加载认领状态… ", -1)
+                    default: _withCtx(() => [...(_cache[16] || (_cache[16] = [
+                      _createTextVNode("正在加载认领状态…", -1 /* CACHED */)
                     ]))]),
-                    _: 1
+                    _: 1 /* STABLE */
                   }))
                 : (!__props.claimCfg.enabled)
-                  ? (_openBlock$z(), _createBlock$w(_component_VAlert, {
+                  ? (_openBlock(), _createBlock(_component_VAlert, {
                       key: 1,
                       type: "info",
                       variant: "tonal",
                       density: "compact",
                       class: "mb-2"
                     }, {
-                      default: _withCtx$w(() => [...(_cache[13] || (_cache[13] = [
-                        _createTextVNode$y(" 认领未开启。开启：插件设置 → 认领。 ", -1)
+                      default: _withCtx(() => [...(_cache[17] || (_cache[17] = [
+                        _createTextVNode("认领未开启。开启：插件设置 → 认领。", -1 /* CACHED */)
                       ]))]),
-                      _: 1
+                      _: 1 /* STABLE */
                     }))
                   : (__props.claimCfg.dry)
-                    ? (_openBlock$z(), _createBlock$w(_component_VAlert, {
+                    ? (_openBlock(), _createBlock(_component_VAlert, {
                         key: 2,
                         type: "warning",
                         variant: "tonal",
                         density: "compact",
                         class: "mb-2"
                       }, {
-                        default: _withCtx$w(() => [...(_cache[14] || (_cache[14] = [
-                          _createTextVNode$y(" 干跑中：执行认领已禁用。 ", -1)
+                        default: _withCtx(() => [...(_cache[18] || (_cache[18] = [
+                          _createTextVNode("干跑中：执行认领已禁用。", -1 /* CACHED */)
                         ]))]),
-                        _: 1
+                        _: 1 /* STABLE */
                       }))
-                    : _createCommentVNode$w("", true),
-              _createElementVNode$z("div", _hoisted_6$r, [
-                _createElementVNode$z("div", _hoisted_7$p, [
-                  _createElementVNode$z("b", null, _toDisplayString$z(claimNum(claimSummaryClaimed.value)), 1),
-                  _cache[15] || (_cache[15] = _createElementVNode$z("span", null, "认领", -1))
-                ]),
-                _createElementVNode$z("div", _hoisted_8$n, [
-                  _createElementVNode$z("b", null, _toDisplayString$z(claimSummarySettle.value), 1),
-                  _cache[16] || (_cache[16] = _createElementVNode$z("span", null, "结算", -1))
-                ]),
-                _createElementVNode$z("div", _hoisted_9$l, [
-                  _createElementVNode$z("b", null, _toDisplayString$z(claimSummaryRewardText.value), 1),
-                  _cache[17] || (_cache[17] = _createElementVNode$z("span", null, "合计奖励", -1))
-                ])
+                    : _createCommentVNode("v-if", true),
+              _createCommentVNode(" 视图切换分段控件：设计稿里在按钮行下方、正文顶部 "),
+              _createElementVNode("div", _hoisted_7, [
+                _createElementVNode("button", {
+                  type: "button",
+                  role: "tab",
+                  "aria-selected": claimView.value === 'all',
+                  class: _normalizeClass(['magicflow-claim-seg__b' + (claimView.value === 'all' ? ' is-on' : '')]),
+                  onClick: _cache[4] || (_cache[4] = $event => (claimSetView('all')))
+                }, "全站汇总", 10 /* CLASS, PROPS */, _hoisted_8),
+                _createElementVNode("button", {
+                  type: "button",
+                  role: "tab",
+                  "aria-selected": claimView.value === 'site',
+                  class: _normalizeClass(['magicflow-claim-seg__b' + (claimView.value === 'site' ? ' is-on' : '')]),
+                  onClick: _cache[5] || (_cache[5] = $event => (claimSetView('site')))
+                }, "按站点看", 10 /* CLASS, PROPS */, _hoisted_9)
               ]),
-              (claimScopeSite.value)
-                ? (_openBlock$z(), _createElementBlock$v(_Fragment$v, { key: 3 }, [
-                    _createElementVNode$z("div", _hoisted_10$l, [
-                      _createVNode$y(_component_VBtn, {
+              _createCommentVNode(" ============ 全站汇总（默认落地）：各站并列，不显示易误导的聚合统计卡 ============ "),
+              (claimView.value === 'all')
+                ? (_openBlock(), _createElementBlock(_Fragment, { key: 3 }, [
+                    _createElementVNode("div", _hoisted_10, [
+                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(claimSupportedList.value, (s) => {
+                        return (_openBlock(), _createElementBlock("div", {
+                          key: s.site_id,
+                          class: "magicflow-claim-site",
+                          role: "button",
+                          tabindex: "0",
+                          onClick: $event => (claimOpenSite(s.site_id)),
+                          onKeydown: [
+                            _withKeys($event => (claimOpenSite(s.site_id)), ["enter"]),
+                            _withKeys(_withModifiers($event => (claimOpenSite(s.site_id)), ["prevent"]), ["space"])
+                          ]
+                        }, [
+                          _createElementVNode("div", _hoisted_12, [
+                            _createElementVNode("div", _hoisted_13, _toDisplayString(s.site_name), 1 /* TEXT */),
+                            _createVNode(_component_VChip, {
+                              size: "x-small",
+                              color: "primary",
+                              variant: "tonal"
+                            }, {
+                              default: _withCtx(() => [
+                                _createTextVNode(_toDisplayString(claimSiteCycleText(s)), 1 /* TEXT */)
+                              ]),
+                              _: 2 /* DYNAMIC */
+                            }, 1024 /* DYNAMIC_SLOTS */),
+                            _createElementVNode("span", _hoisted_14, _toDisplayString(claimSiteDateText(s)), 1 /* TEXT */),
+                            _createVNode(_component_VIcon, {
+                              icon: "mdi-chevron-right",
+                              size: "18"
+                            })
+                          ]),
+                          _createElementVNode("div", _hoisted_15, [
+                            _createElementVNode("div", _hoisted_16, [
+                              _createElementVNode("b", null, _toDisplayString(claimNum(s.claimed)), 1 /* TEXT */),
+                              _cache[19] || (_cache[19] = _createElementVNode("span", null, "已认领", -1 /* CACHED */))
+                            ]),
+                            _createElementVNode("div", _hoisted_17, [
+                              _createElementVNode("b", null, _toDisplayString(claimNum(s.claimable)), 1 /* TEXT */),
+                              _cache[20] || (_cache[20] = _createElementVNode("span", null, "可认领", -1 /* CACHED */))
+                            ]),
+                            _createElementVNode("div", _hoisted_18, [
+                              _createElementVNode("b", null, _toDisplayString(claimSiteReward(s)), 1 /* TEXT */),
+                              _cache[21] || (_cache[21] = _createElementVNode("span", null, "奖励", -1 /* CACHED */))
+                            ])
+                          ]),
+                          (claimSiteRowText(s))
+                            ? (_openBlock(), _createElementBlock("div", _hoisted_19, _toDisplayString(claimSiteRowText(s)), 1 /* TEXT */))
+                            : _createCommentVNode("v-if", true)
+                        ], 40 /* PROPS, NEED_HYDRATION */, _hoisted_11))
+                      }), 128 /* KEYED_FRAGMENT */)),
+                      (!__props.claimLoading && !claimSupportedList.value.length)
+                        ? (_openBlock(), _createElementBlock("div", _hoisted_20, "没有支持认领的站点（认领预设表未收录；见 docs/认领.md）。"))
+                        : _createCommentVNode("v-if", true),
+                      (claimSkipped.value.length)
+                        ? (_openBlock(), _createElementBlock("div", _hoisted_21, [
+                            _createTextVNode(" 未收录认领（跳过）：" + _toDisplayString(claimSkipped.value.slice(0, 8).join('、')), 1 /* TEXT */),
+                            (claimSkipped.value.length > 8)
+                              ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
+                                  _createTextVNode(" 等 " + _toDisplayString(claimSkipped.value.length) + " 站", 1 /* TEXT */)
+                                ], 64 /* STABLE_FRAGMENT */))
+                              : _createCommentVNode("v-if", true)
+                          ]))
+                        : _createCommentVNode("v-if", true)
+                    ]),
+                    _cache[22] || (_cache[22] = _createElementVNode("div", { class: "magicflow-claim-nosum" }, "⊘ 各站并列 · 奖励口径不同 · 无跨站合计", -1 /* CACHED */))
+                  ], 64 /* STABLE_FRAGMENT */))
+                : (_openBlock(), _createElementBlock(_Fragment, { key: 4 }, [
+                    _createCommentVNode(" ============ 按站点看：单站明细 ============ "),
+                    _createVNode(_component_VSelect, {
+                      modelValue: claimSiteFilter.value,
+                      "onUpdate:modelValue": [
+                        _cache[6] || (_cache[6] = $event => ((claimSiteFilter).value = $event)),
+                        claimPickSite
+                      ],
+                      items: claimFilterItems.value,
+                      density: "compact",
+                      variant: "outlined",
+                      "hide-details": "",
+                      class: "magicflow-claim-bar__site",
+                      "aria-label": "站点筛选"
+                    }, null, 8 /* PROPS */, ["modelValue", "items"]),
+                    _createElementVNode("div", _hoisted_22, [
+                      _createElementVNode("div", _hoisted_23, [
+                        _createElementVNode("b", null, _toDisplayString(claimNum(claimSummaryClaimed.value)), 1 /* TEXT */),
+                        _cache[23] || (_cache[23] = _createElementVNode("span", null, [
+                          _createElementVNode("i", { class: "magicflow-claim-summary__scope" }, "本站"),
+                          _createTextVNode(" 已认领")
+                        ], -1 /* CACHED */))
+                      ]),
+                      _createElementVNode("div", _hoisted_24, [
+                        _createElementVNode("b", null, _toDisplayString(claimSummaryRewardText.value), 1 /* TEXT */),
+                        _cache[24] || (_cache[24] = _createElementVNode("span", null, [
+                          _createElementVNode("i", { class: "magicflow-claim-summary__scope" }, "本站"),
+                          _createTextVNode(" 合计奖励")
+                        ], -1 /* CACHED */))
+                      ])
+                    ]),
+                    _createElementVNode("div", _hoisted_25, [
+                      _cache[25] || (_cache[25] = _createElementVNode("span", { class: "magicflow-claim-settle__k" }, "◷ 结算", -1 /* CACHED */)),
+                      _createElementVNode("span", null, _toDisplayString(claimSettleDate(claimSettleSite.value)), 1 /* TEXT */),
+                      _createElementVNode("span", _hoisted_26, _toDisplayString(claimSettleDays(claimSettleSite.value)), 1 /* TEXT */)
+                    ]),
+                    _createElementVNode("div", _hoisted_27, [
+                      _createVNode(_component_VBtn, {
                         size: "small",
                         variant: claimListTab.value === 'claimed' ? 'flat' : 'text',
                         color: "primary",
-                        onClick: _cache[5] || (_cache[5] = $event => (claimListTab.value = 'claimed'))
+                        onClick: _cache[7] || (_cache[7] = $event => (claimListTab.value = 'claimed'))
                       }, {
-                        default: _withCtx$w(() => [
-                          _createTextVNode$y(" 已认领（" + _toDisplayString$z(claimFilteredClaimed.value.length) + "） ", 1)
+                        default: _withCtx(() => [
+                          _createTextVNode(" 已认领（" + _toDisplayString(claimFilteredClaimed.value.length) + "） ", 1 /* TEXT */)
                         ]),
-                        _: 1
-                      }, 8, ["variant"]),
-                      _createVNode$y(_component_VBtn, {
+                        _: 1 /* STABLE */
+                      }, 8 /* PROPS */, ["variant"]),
+                      _createVNode(_component_VBtn, {
                         size: "small",
                         variant: claimListTab.value === 'claimable' ? 'flat' : 'text',
                         color: "primary",
-                        onClick: _cache[6] || (_cache[6] = $event => (claimListTab.value = 'claimable'))
+                        onClick: _cache[8] || (_cache[8] = $event => (claimListTab.value = 'claimable'))
                       }, {
-                        default: _withCtx$w(() => [
-                          _createTextVNode$y(" 可认领（" + _toDisplayString$z(claimFilteredClaimable.value.length) + "） ", 1)
+                        default: _withCtx(() => [
+                          _createTextVNode(" 可认领（" + _toDisplayString(claimFilteredClaimable.value.length) + "） ", 1 /* TEXT */)
                         ]),
-                        _: 1
-                      }, 8, ["variant"])
+                        _: 1 /* STABLE */
+                      }, 8 /* PROPS */, ["variant"])
+                    ]),
+                    _createElementVNode("div", _hoisted_28, [
+                      _createVNode(_component_VIcon, {
+                        icon: "mdi-alert-outline",
+                        size: "14"
+                      }),
+                      _cache[26] || (_cache[26] = _createElementVNode("span", null, "本站不支持站内放弃，如需放弃请到站点网页操作；认领后进硬保护，不达标可能扣魔力。", -1 /* CACHED */))
                     ]),
                     (claimListTab.value === 'claimed')
-                      ? (_openBlock$z(), _createElementBlock$v(_Fragment$v, { key: 0 }, [
+                      ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
                           (!claimFilteredClaimed.value.length)
-                            ? (_openBlock$z(), _createElementBlock$v("div", _hoisted_11$k, "还没有已认领种子"))
-                            : (_openBlock$z(), _createElementBlock$v("ul", _hoisted_12$k, [
-                                (_openBlock$z(true), _createElementBlock$v(_Fragment$v, null, _renderList$t(claimShownClaimed.value, (row) => {
-                                  return (_openBlock$z(), _createElementBlock$v("li", {
+                            ? (_openBlock(), _createElementBlock("div", _hoisted_29, "还没有已认领种子"))
+                            : (_openBlock(), _createElementBlock("ul", _hoisted_30, [
+                                (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(claimShownClaimed.value, (row) => {
+                                  return (_openBlock(), _createElementBlock("li", {
                                     key: row.hash || (row.site_id + ':' + row.torrent_id),
                                     class: "magicflow-claim-item is-claimed"
                                   }, [
-                                    _createElementVNode$z("div", _hoisted_13$i, [
-                                      _createElementVNode$z("div", _hoisted_14$h, [
-                                        _createVNode$y(_component_VChip, {
-                                          size: "x-small",
-                                          variant: "tonal",
-                                          class: "magicflow-claim-item__site"
-                                        }, {
-                                          default: _withCtx$w(() => [
-                                            _createTextVNode$y(_toDisplayString$z(row.site_name), 1)
-                                          ]),
-                                          _: 2
-                                        }, 1024),
-                                        _createElementVNode$z("span", {
-                                          class: "magicflow-claim-item__title",
+                                    _createElementVNode("div", _hoisted_31, [
+                                      _createElementVNode("div", _hoisted_32, [
+                                        _createElementVNode("span", {
+                                          class: "magicflow-claim-item__title magicflow-claim-item__title--2",
                                           title: row.title || row.hash
-                                        }, _toDisplayString$z(claimRowName(row)), 9, _hoisted_15$h),
+                                        }, _toDisplayString(claimRowName(row)), 9 /* TEXT, PROPS */, _hoisted_33),
                                         (claimRowDetailUrl(row))
-                                          ? (_openBlock$z(), _createElementBlock$v("a", {
+                                          ? (_openBlock(), _createElementBlock("a", {
                                               key: 0,
                                               href: claimRowDetailUrl(row),
                                               target: "_blank",
@@ -673,118 +794,95 @@ return (_ctx, _cache) => {
                                               class: "magicflow-claim-item__link",
                                               title: "在站点打开详情页（看原名与简介）"
                                             }, [
-                                              _createVNode$y(_component_VIcon, {
+                                              _createVNode(_component_VIcon, {
                                                 icon: "mdi-open-in-new",
                                                 size: "13"
                                               })
-                                            ], 8, _hoisted_16$h))
-                                          : _createCommentVNode$w("", true)
+                                            ], 8 /* PROPS */, _hoisted_34))
+                                          : _createCommentVNode("v-if", true)
                                       ]),
                                       (claimRowSpec(row))
-                                        ? (_openBlock$z(), _createElementBlock$v("span", _hoisted_17$h, _toDisplayString$z(claimRowSpec(row)), 1))
-                                        : _createCommentVNode$w("", true),
-                                      _createElementVNode$z("span", _hoisted_18$h, [
-                                        _createTextVNode$y(_toDisplayString$z(row.site_only ? '站点侧' : '账本') + " · 奖励 " + _toDisplayString$z(claimRowReward(row)), 1),
+                                        ? (_openBlock(), _createElementBlock("span", _hoisted_35, _toDisplayString(claimRowSpec(row)), 1 /* TEXT */))
+                                        : _createCommentVNode("v-if", true),
+                                      _createElementVNode("span", _hoisted_36, [
+                                        _createTextVNode(_toDisplayString(row.site_only ? '站点侧' : '账本') + " · 奖励 " + _toDisplayString(claimRowReward(row)), 1 /* TEXT */),
                                         (row.site_seed_time)
-                                          ? (_openBlock$z(), _createElementBlock$v(_Fragment$v, { key: 0 }, [
-                                              _createTextVNode$y(" · 做种 " + _toDisplayString$z(row.site_seed_time), 1)
-                                            ], 64))
-                                          : _createCommentVNode$w("", true),
-                                        _cache[18] || (_cache[18] = _createTextVNode$y(" · ", -1)),
-                                        _createElementVNode$z("span", {
-                                          class: _normalizeClass$i(claimCanAbandon(row) ? 'is-safe' : 'is-blocked')
-                                        }, _toDisplayString$z(claimAbandonTag(row)), 3)
-                                      ]),
-                                      (claimAbandonBlockedText(row))
-                                        ? (_openBlock$z(), _createElementBlock$v("span", _hoisted_19$g, _toDisplayString$z(claimAbandonBlockedText(row)), 1))
-                                        : _createCommentVNode$w("", true)
+                                          ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
+                                              _createTextVNode(" · 做种 " + _toDisplayString(row.site_seed_time), 1 /* TEXT */)
+                                            ], 64 /* STABLE_FRAGMENT */))
+                                          : _createCommentVNode("v-if", true)
+                                      ])
                                     ]),
-                                    _createVNode$y(_component_VChip, {
-                                      size: "x-small",
-                                      color: claimQbColor(row),
-                                      variant: "tonal"
-                                    }, {
-                                      default: _withCtx$w(() => [
-                                        _createTextVNode$y(_toDisplayString$z(claimQbText(row)), 1)
-                                      ]),
-                                      _: 2
-                                    }, 1032, ["color"]),
-                                    _createVNode$y(_component_VBtn, {
-                                      size: "x-small",
-                                      variant: "text",
-                                      color: "error",
-                                      "prepend-icon": "mdi-close-octagon-outline",
-                                      disabled: !claimCanAbandon(row),
-                                      title: row.abandon_reason || '',
-                                      loading: __props.claimActing === claimAbandonKey(row),
-                                      onClick: $event => (emit('ask', 'abandon', row))
-                                    }, {
-                                      default: _withCtx$w(() => [...(_cache[19] || (_cache[19] = [
-                                        _createTextVNode$y("放弃", -1)
-                                      ]))]),
-                                      _: 1
-                                    }, 8, ["disabled", "title", "loading", "onClick"]),
-                                    _createVNode$y(_component_VChip, {
-                                      size: "x-small",
-                                      color: "success",
-                                      variant: "tonal",
-                                      "prepend-icon": "mdi-shield-lock-outline"
-                                    }, {
-                                      default: _withCtx$w(() => [...(_cache[20] || (_cache[20] = [
-                                        _createTextVNode$y("硬保护", -1)
-                                      ]))]),
-                                      _: 1
-                                    })
+                                    _createCommentVNode(" 硬保护：由文字 chip 改为盾牌图标，info 由 tooltip 承载 "),
+                                    _createCommentVNode(" 19.16.18：状态按设计稿自绘 span（绿/黄/灰底+边框+7px圆角），2字短语，flex:0 0 auto 防被盾牌挤 "),
+                                    _createElementVNode("span", {
+                                      class: _normalizeClass(claimQbClass(row)),
+                                      title: claimQbTitle(row)
+                                    }, _toDisplayString(claimQbText(row)), 11 /* TEXT, CLASS, PROPS */, _hoisted_37),
+                                    _createElementVNode("span", _hoisted_38, [
+                                      _createVNode(_component_VIcon, {
+                                        icon: "mdi-shield-lock-outline",
+                                        size: "15"
+                                      })
+                                    ]),
+                                    _createCommentVNode(" 放弃：仅本站支持且安全时显示，不可用时隐藏（说明条已统一解释） "),
+                                    (claimCanAbandon(row))
+                                      ? (_openBlock(), _createBlock(_component_VBtn, {
+                                          key: 0,
+                                          size: "x-small",
+                                          variant: "text",
+                                          color: "error",
+                                          "prepend-icon": "mdi-close-octagon-outline",
+                                          title: row.abandon_reason || '',
+                                          loading: __props.claimActing === claimAbandonKey(row),
+                                          onClick: $event => (emit('ask', 'abandon', row))
+                                        }, {
+                                          default: _withCtx(() => [...(_cache[27] || (_cache[27] = [
+                                            _createTextVNode("放弃", -1 /* CACHED */)
+                                          ]))]),
+                                          _: 1 /* STABLE */
+                                        }, 8 /* PROPS */, ["title", "loading", "onClick"]))
+                                      : _createCommentVNode("v-if", true)
                                   ]))
-                                }), 128))
+                                }), 128 /* KEYED_FRAGMENT */))
                               ])),
                           (claimFilteredClaimed.value.length > claimShownClaimed.value.length)
-                            ? (_openBlock$z(), _createElementBlock$v("div", _hoisted_20$e, [
-                                _createVNode$y(_component_VBtn, {
+                            ? (_openBlock(), _createElementBlock("div", _hoisted_39, [
+                                _createVNode(_component_VBtn, {
                                   size: "x-small",
                                   variant: "text",
                                   onClick: claimMoreClaimed
                                 }, {
-                                  default: _withCtx$w(() => [
-                                    _createTextVNode$y("加载更多（" + _toDisplayString$z(claimShownClaimed.value.length) + " / " + _toDisplayString$z(claimFilteredClaimed.value.length) + "）", 1)
+                                  default: _withCtx(() => [
+                                    _createTextVNode("加载更多（" + _toDisplayString(claimShownClaimed.value.length) + " / " + _toDisplayString(claimFilteredClaimed.value.length) + "）", 1 /* TEXT */)
                                   ]),
-                                  _: 1
+                                  _: 1 /* STABLE */
                                 })
                               ]))
-                            : _createCommentVNode$w("", true)
-                        ], 64))
-                      : (_openBlock$z(), _createElementBlock$v(_Fragment$v, { key: 1 }, [
+                            : _createCommentVNode("v-if", true)
+                        ], 64 /* STABLE_FRAGMENT */))
+                      : (_openBlock(), _createElementBlock(_Fragment, { key: 1 }, [
                           (!claimFilteredClaimable.value.length)
-                            ? (_openBlock$z(), _createElementBlock$v("div", _hoisted_21$d, [
-                                _cache[21] || (_cache[21] = _createTextVNode$y(" 当前没有可认领种子 ", -1)),
+                            ? (_openBlock(), _createElementBlock("div", _hoisted_40, [
+                                _cache[28] || (_cache[28] = _createTextVNode(" 当前没有可认领种子 ", -1 /* CACHED */)),
                                 (claimEmptyReason.value)
-                                  ? (_openBlock$z(), _createElementBlock$v("div", _hoisted_22$c, _toDisplayString$z(claimEmptyReason.value), 1))
-                                  : _createCommentVNode$w("", true)
+                                  ? (_openBlock(), _createElementBlock("div", _hoisted_41, _toDisplayString(claimEmptyReason.value), 1 /* TEXT */))
+                                  : _createCommentVNode("v-if", true)
                               ]))
-                            : (_openBlock$z(), _createElementBlock$v("ul", _hoisted_23$b, [
-                                (_openBlock$z(true), _createElementBlock$v(_Fragment$v, null, _renderList$t(claimShownClaimable.value, (row) => {
-                                  return (_openBlock$z(), _createElementBlock$v("li", {
+                            : (_openBlock(), _createElementBlock("ul", _hoisted_42, [
+                                (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(claimShownClaimable.value, (row) => {
+                                  return (_openBlock(), _createElementBlock("li", {
                                     key: row.hash,
                                     class: "magicflow-claim-item"
                                   }, [
-                                    _createElementVNode$z("div", _hoisted_24$b, [
-                                      _createElementVNode$z("div", _hoisted_25$b, [
-                                        _createVNode$y(_component_VChip, {
-                                          size: "x-small",
-                                          variant: "tonal",
-                                          class: "magicflow-claim-item__site"
-                                        }, {
-                                          default: _withCtx$w(() => [
-                                            _createTextVNode$y(_toDisplayString$z(row.site_name), 1)
-                                          ]),
-                                          _: 2
-                                        }, 1024),
-                                        _createElementVNode$z("span", {
-                                          class: "magicflow-claim-item__title",
+                                    _createElementVNode("div", _hoisted_43, [
+                                      _createElementVNode("div", _hoisted_44, [
+                                        _createElementVNode("span", {
+                                          class: "magicflow-claim-item__title magicflow-claim-item__title--2",
                                           title: row.title || row.hash
-                                        }, _toDisplayString$z(claimRowName(row)), 9, _hoisted_26$9),
+                                        }, _toDisplayString(claimRowName(row)), 9 /* TEXT, PROPS */, _hoisted_45),
                                         (claimRowDetailUrl(row))
-                                          ? (_openBlock$z(), _createElementBlock$v("a", {
+                                          ? (_openBlock(), _createElementBlock("a", {
                                               key: 0,
                                               href: claimRowDetailUrl(row),
                                               target: "_blank",
@@ -792,28 +890,28 @@ return (_ctx, _cache) => {
                                               class: "magicflow-claim-item__link",
                                               title: "在站点打开详情页（看原名与简介）"
                                             }, [
-                                              _createVNode$y(_component_VIcon, {
+                                              _createVNode(_component_VIcon, {
                                                 icon: "mdi-open-in-new",
                                                 size: "13"
                                               })
-                                            ], 8, _hoisted_27$9))
-                                          : _createCommentVNode$w("", true)
+                                            ], 8 /* PROPS */, _hoisted_46))
+                                          : _createCommentVNode("v-if", true)
                                       ]),
                                       (claimRowSpec(row))
-                                        ? (_openBlock$z(), _createElementBlock$v("span", _hoisted_28$8, _toDisplayString$z(claimRowSpec(row)), 1))
-                                        : _createCommentVNode$w("", true),
-                                      _createElementVNode$z("span", _hoisted_29$8, _toDisplayString$z(claimRowMeta(row)), 1),
+                                        ? (_openBlock(), _createElementBlock("span", _hoisted_47, _toDisplayString(claimRowSpec(row)), 1 /* TEXT */))
+                                        : _createCommentVNode("v-if", true),
+                                      _createElementVNode("span", _hoisted_48, _toDisplayString(claimRowMeta(row)), 1 /* TEXT */),
                                       (row.reward_block)
-                                        ? (_openBlock$z(), _createElementBlock$v("span", _hoisted_30$8, [
-                                            _createVNode$y(_component_VIcon, {
+                                        ? (_openBlock(), _createElementBlock("span", _hoisted_49, [
+                                            _createVNode(_component_VIcon, {
                                               icon: "mdi-information-outline",
                                               size: "12"
                                             }),
-                                            _createTextVNode$y(_toDisplayString$z(row.reward_block), 1)
+                                            _createTextVNode(_toDisplayString(row.reward_block), 1 /* TEXT */)
                                           ]))
-                                        : _createCommentVNode$w("", true)
+                                        : _createCommentVNode("v-if", true)
                                     ]),
-                                    _createVNode$y(_component_VBtn, {
+                                    _createVNode(_component_VBtn, {
                                       size: "x-small",
                                       variant: "flat",
                                       color: "primary",
@@ -822,217 +920,130 @@ return (_ctx, _cache) => {
                                       loading: __props.claimActing === ('do:' + row.hash),
                                       onClick: $event => (emit('ask', 'do', row))
                                     }, {
-                                      default: _withCtx$w(() => [...(_cache[22] || (_cache[22] = [
-                                        _createTextVNode$y("认领", -1)
+                                      default: _withCtx(() => [...(_cache[29] || (_cache[29] = [
+                                        _createTextVNode("认领", -1 /* CACHED */)
                                       ]))]),
-                                      _: 1
-                                    }, 8, ["disabled", "loading", "onClick"])
+                                      _: 1 /* STABLE */
+                                    }, 8 /* PROPS */, ["disabled", "loading", "onClick"])
                                   ]))
-                                }), 128))
+                                }), 128 /* KEYED_FRAGMENT */))
                               ])),
                           (claimFilteredClaimable.value.length > claimShownClaimable.value.length)
-                            ? (_openBlock$z(), _createElementBlock$v("div", _hoisted_31$8, [
-                                _createVNode$y(_component_VBtn, {
+                            ? (_openBlock(), _createElementBlock("div", _hoisted_50, [
+                                _createVNode(_component_VBtn, {
                                   size: "x-small",
                                   variant: "text",
                                   onClick: claimMoreClaimable
                                 }, {
-                                  default: _withCtx$w(() => [
-                                    _createTextVNode$y("加载更多（" + _toDisplayString$z(claimShownClaimable.value.length) + " / " + _toDisplayString$z(claimFilteredClaimable.value.length) + "）", 1)
+                                  default: _withCtx(() => [
+                                    _createTextVNode("加载更多（" + _toDisplayString(claimShownClaimable.value.length) + " / " + _toDisplayString(claimFilteredClaimable.value.length) + "）", 1 /* TEXT */)
                                   ]),
-                                  _: 1
+                                  _: 1 /* STABLE */
                                 })
                               ]))
-                            : _createCommentVNode$w("", true),
+                            : _createCommentVNode("v-if", true),
                           (claimSoonSorted.value.length)
-                            ? (_openBlock$z(), _createElementBlock$v("div", _hoisted_32$8, [
-                                _createElementVNode$z("button", {
+                            ? (_openBlock(), _createElementBlock("div", _hoisted_51, [
+                                _createElementVNode("button", {
                                   type: "button",
                                   class: "magicflow-claim-soon__head",
-                                  onClick: _cache[7] || (_cache[7] = $event => (claimSoonOpen.value = !claimSoonOpen.value))
+                                  onClick: _cache[9] || (_cache[9] = $event => (claimSoonOpen.value = !claimSoonOpen.value))
                                 }, [
-                                  _createVNode$y(_component_VIcon, {
+                                  _createVNode(_component_VIcon, {
                                     icon: claimSoonOpen.value ? 'mdi-chevron-down' : 'mdi-chevron-right',
                                     size: "16"
-                                  }, null, 8, ["icon"]),
-                                  _createElementVNode$z("span", null, "还有 " + _toDisplayString$z(claimSoonTotalText.value) + " 颗要等资格日", 1),
-                                  _createElementVNode$z("span", _hoisted_33$7, "最近一颗 " + _toDisplayString$z(claimWaitText(claimSoonSorted.value[0])), 1)
+                                  }, null, 8 /* PROPS */, ["icon"]),
+                                  _createElementVNode("span", null, "还有 " + _toDisplayString(claimSoonTotalText.value) + " 颗要等资格日", 1 /* TEXT */),
+                                  _createElementVNode("span", _hoisted_52, "最近一颗 " + _toDisplayString(claimWaitText(claimSoonSorted.value[0])), 1 /* TEXT */)
                                 ]),
                                 (claimSoonOpen.value)
-                                  ? (_openBlock$z(), _createElementBlock$v("ul", _hoisted_34$7, [
-                                      (_openBlock$z(true), _createElementBlock$v(_Fragment$v, null, _renderList$t(claimSoonShown.value, (row) => {
-                                        return (_openBlock$z(), _createElementBlock$v("li", {
+                                  ? (_openBlock(), _createElementBlock("ul", _hoisted_53, [
+                                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(claimSoonShown.value, (row) => {
+                                        return (_openBlock(), _createElementBlock("li", {
                                           key: (row.site_id || '') + ':' + (row.hash || row.torrent_id),
                                           class: "magicflow-claim-item is-dim"
                                         }, [
-                                          _createElementVNode$z("div", _hoisted_35$6, [
-                                            _createElementVNode$z("div", _hoisted_36$5, [
-                                              _createVNode$y(_component_VChip, {
-                                                size: "x-small",
-                                                variant: "tonal",
-                                                class: "magicflow-claim-item__site"
-                                              }, {
-                                                default: _withCtx$w(() => [
-                                                  _createTextVNode$y(_toDisplayString$z(row.site_name), 1)
-                                                ]),
-                                                _: 2
-                                              }, 1024),
-                                              _createElementVNode$z("span", {
+                                          _createElementVNode("div", _hoisted_54, [
+                                            _createElementVNode("div", _hoisted_55, [
+                                              _createElementVNode("span", {
                                                 class: "magicflow-claim-item__title",
                                                 title: row.title
-                                              }, _toDisplayString$z(claimRowName(row)), 9, _hoisted_37$4),
+                                              }, _toDisplayString(claimRowName(row)), 9 /* TEXT, PROPS */, _hoisted_56),
                                               (claimRowDetailUrl(row))
-                                                ? (_openBlock$z(), _createElementBlock$v("a", {
+                                                ? (_openBlock(), _createElementBlock("a", {
                                                     key: 0,
                                                     href: claimRowDetailUrl(row),
                                                     target: "_blank",
                                                     rel: "noopener",
                                                     class: "magicflow-claim-item__link",
-                                                    title: "在站点打开详情页（看原名与简介）"
+                                                    title: "在站点打开详情页"
                                                   }, [
-                                                    _createVNode$y(_component_VIcon, {
+                                                    _createVNode(_component_VIcon, {
                                                       icon: "mdi-open-in-new",
                                                       size: "13"
                                                     })
-                                                  ], 8, _hoisted_38$4))
-                                                : _createCommentVNode$w("", true)
+                                                  ], 8 /* PROPS */, _hoisted_57))
+                                                : _createCommentVNode("v-if", true)
                                             ]),
                                             (claimRowSpec(row))
-                                              ? (_openBlock$z(), _createElementBlock$v("span", _hoisted_39$4, _toDisplayString$z(claimRowSpec(row)), 1))
-                                              : _createCommentVNode$w("", true),
-                                            _createElementVNode$z("span", _hoisted_40$4, _toDisplayString$z(row.size_gb) + "G · 发布 " + _toDisplayString$z(claimAgeText(row.age_days)), 1)
+                                              ? (_openBlock(), _createElementBlock("span", _hoisted_58, _toDisplayString(claimRowSpec(row)), 1 /* TEXT */))
+                                              : _createCommentVNode("v-if", true),
+                                            _createElementVNode("span", _hoisted_59, _toDisplayString(claimRowMeta(row)), 1 /* TEXT */)
                                           ]),
-                                          _createVNode$y(_component_VChip, {
+                                          _createVNode(_component_VChip, {
                                             size: "x-small",
                                             color: "warning",
                                             variant: "tonal"
                                           }, {
-                                            default: _withCtx$w(() => [
-                                              _createTextVNode$y(_toDisplayString$z(claimWaitText(row)), 1)
+                                            default: _withCtx(() => [
+                                              _createTextVNode(_toDisplayString(claimWaitText(row)), 1 /* TEXT */)
                                             ]),
-                                            _: 2
-                                          }, 1024)
+                                            _: 2 /* DYNAMIC */
+                                          }, 1024 /* DYNAMIC_SLOTS */)
                                         ]))
-                                      }), 128))
+                                      }), 128 /* KEYED_FRAGMENT */))
                                     ]))
-                                  : _createCommentVNode$w("", true),
+                                  : _createCommentVNode("v-if", true),
                                 (claimSoonOpen.value && claimSoonSorted.value.length > claimSoonShown.value.length)
-                                  ? (_openBlock$z(), _createElementBlock$v("div", _hoisted_41$4, [
-                                      _createVNode$y(_component_VBtn, {
+                                  ? (_openBlock(), _createElementBlock("div", _hoisted_60, [
+                                      _createVNode(_component_VBtn, {
                                         size: "x-small",
                                         variant: "text",
                                         onClick: claimMoreSoon
                                       }, {
-                                        default: _withCtx$w(() => [
-                                          _createTextVNode$y("加载更多（" + _toDisplayString$z(claimSoonShown.value.length) + " / " + _toDisplayString$z(claimSoonSorted.value.length) + "）", 1)
+                                        default: _withCtx(() => [
+                                          _createTextVNode("加载更多（" + _toDisplayString(claimSoonShown.value.length) + " / " + _toDisplayString(claimSoonSorted.value.length) + "）", 1 /* TEXT */)
                                         ]),
-                                        _: 1
+                                        _: 1 /* STABLE */
                                       })
                                     ]))
-                                  : _createCommentVNode$w("", true)
+                                  : _createCommentVNode("v-if", true)
                               ]))
-                            : _createCommentVNode$w("", true)
-                        ], 64))
-                  ], 64))
-                : (_openBlock$z(), _createElementBlock$v(_Fragment$v, { key: 4 }, [
-                    (!claimScopeSite.value)
-                      ? (_openBlock$z(), _createElementBlock$v("div", _hoisted_42$3, [
-                          (_openBlock$z(true), _createElementBlock$v(_Fragment$v, null, _renderList$t(claimSupportedList.value, (s) => {
-                            return (_openBlock$z(), _createElementBlock$v("div", {
-                              key: s.site_id,
-                              class: "magicflow-claim-site",
-                              role: "button",
-                              tabindex: "0",
-                              onClick: $event => (claimSiteFilter.value = String(s.site_id)),
-                              onKeydown: [
-                                _withKeys$2($event => (claimSiteFilter.value = String(s.site_id)), ["enter"]),
-                                _withKeys$2(_withModifiers$3($event => (claimSiteFilter.value = String(s.site_id)), ["prevent"]), ["space"])
-                              ]
-                            }, [
-                              _createElementVNode$z("div", _hoisted_44$2, [
-                                _createElementVNode$z("div", _hoisted_45$2, _toDisplayString$z(s.site_name), 1),
-                                _createVNode$y(_component_VChip, {
-                                  size: "x-small",
-                                  color: "primary",
-                                  variant: "tonal"
-                                }, {
-                                  default: _withCtx$w(() => [
-                                    _createTextVNode$y(_toDisplayString$z(claimSiteCycleText(s)), 1)
-                                  ]),
-                                  _: 2
-                                }, 1024),
-                                _createElementVNode$z("span", _hoisted_46$2, _toDisplayString$z(claimSiteDateText(s)), 1),
-                                _createVNode$y(_component_VIcon, {
-                                  icon: "mdi-chevron-right",
-                                  size: "18"
-                                })
-                              ]),
-                              _createElementVNode$z("div", _hoisted_47$2, [
-                                _createElementVNode$z("div", _hoisted_48$2, [
-                                  _createElementVNode$z("b", null, _toDisplayString$z(claimNum(s.claimed)), 1),
-                                  _cache[23] || (_cache[23] = _createElementVNode$z("span", null, "已认领", -1))
-                                ]),
-                                _createElementVNode$z("div", _hoisted_49$2, [
-                                  _createElementVNode$z("b", null, _toDisplayString$z(claimNum(s.claimable)), 1),
-                                  _cache[24] || (_cache[24] = _createElementVNode$z("span", null, "可认领", -1))
-                                ]),
-                                _createElementVNode$z("div", _hoisted_50$2, [
-                                  _createElementVNode$z("b", null, _toDisplayString$z(claimSiteReward(s)), 1),
-                                  _cache[25] || (_cache[25] = _createElementVNode$z("span", null, "奖励", -1))
-                                ])
-                              ]),
-                              (claimSiteRowText(s))
-                                ? (_openBlock$z(), _createElementBlock$v("div", _hoisted_51$2, _toDisplayString$z(claimSiteRowText(s)), 1))
-                                : _createCommentVNode$w("", true)
-                            ], 40, _hoisted_43$2))
-                          }), 128)),
-                          (!__props.claimLoading && !claimSupportedList.value.length)
-                            ? (_openBlock$z(), _createElementBlock$v("div", _hoisted_52$2, "没有支持认领的站点（认领预设表未收录；见 docs/认领.md）。"))
-                            : _createCommentVNode$w("", true),
-                          (claimSkipped.value.length)
-                            ? (_openBlock$z(), _createElementBlock$v("div", _hoisted_53$2, [
-                                _createTextVNode$y(" 未收录认领（跳过）：" + _toDisplayString$z(claimSkipped.value.slice(0, 8).join('、')), 1),
-                                (claimSkipped.value.length > 8)
-                                  ? (_openBlock$z(), _createElementBlock$v(_Fragment$v, { key: 0 }, [
-                                      _createTextVNode$y(" 等 " + _toDisplayString$z(claimSkipped.value.length) + " 站", 1)
-                                    ], 64))
-                                  : _createCommentVNode$w("", true)
-                              ]))
-                            : _createCommentVNode$w("", true)
-                        ]))
-                      : _createCommentVNode$w("", true)
-                  ], 64)),
-              _createElementVNode$z("div", _hoisted_54$2, [
-                _createVNode$y(_component_VIcon, {
-                  icon: "mdi-information-outline",
-                  size: "14"
-                }),
-                _cache[26] || (_cache[26] = _createElementVNode$z("span", null, "认领后进硬保护；不达标可能扣魔力。", -1))
-              ]),
+                            : _createCommentVNode("v-if", true)
+                        ], 64 /* STABLE_FRAGMENT */))
+                  ], 64 /* STABLE_FRAGMENT */)),
+              _createCommentVNode(" 脚注：全站保挂状态（一句带过，不占统计卡） "),
               (claimHost.value.total)
-                ? (_openBlock$z(), _createElementBlock$v("div", _hoisted_55$2, [
-                    _createVNode$y(_component_VIcon, {
+                ? (_openBlock(), _createElementBlock("div", _hoisted_61, [
+                    _createVNode(_component_VIcon, {
                       icon: "mdi-shield-check-outline",
                       size: "14"
                     }),
-                    _createElementVNode$z("span", null, "保挂：" + _toDisplayString$z(claimHost.value.total) + " 个已认领 · 做种 " + _toDisplayString$z(claimHost.value.seeding) + " · 暂停 " + _toDisplayString$z(claimHost.value.paused) + " · 丢失 " + _toDisplayString$z(claimHost.value.missing), 1)
+                    _createElementVNode("span", null, "全站 " + _toDisplayString(claimHost.value.total) + " 颗保挂中 · 做种 " + _toDisplayString(claimHost.value.seeding) + " · 暂停 " + _toDisplayString(claimHost.value.paused) + " · 丢失 " + _toDisplayString(claimHost.value.missing), 1 /* TEXT */)
                   ]))
-                : _createCommentVNode$w("", true)
+                : _createCommentVNode("v-if", true)
             ]),
-            _: 1
+            _: 1 /* STABLE */
           })
         ]),
-        _: 1
+        _: 1 /* STABLE */
       })
     ]),
-    _: 1
-  }, 8, ["modelValue", "fullscreen"]))
+    _: 1 /* STABLE */
+  }, 8 /* PROPS */, ["modelValue", "fullscreen"]))
 }
 }
 
-};
-// Vue 的 _export_sfc(sfc, [['__scopeId', ...]]) 等价于挂 __scopeId 属性；
-// 这里手写，避免依赖 rollup 私有辅助函数。
-const ClaimDialog = Object.assign(_sfc_main$z, { __scopeId: 'data-v-2acf1ac2' })
-
+}
+const ClaimDialog = Object.assign(_sfc_main, { __scopeId: 'data-v-2acf1ac2' })
 export default ClaimDialog

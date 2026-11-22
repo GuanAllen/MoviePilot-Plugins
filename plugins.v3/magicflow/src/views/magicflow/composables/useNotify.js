@@ -1,5 +1,6 @@
 // MagicFlow 前端 · 事件通知（★ 15.13.0）
 // Master 22:42「全部」→ 批次②：四类事件（H&R 临期 / 容量红线 / 产出骤降 / 任务失败）推到 MP 通知渠道。
+import { startPolling, stopPolling } from '../../../polling'
 import { onUnmounted, ref, watch } from 'vue'
 import { unwrapResponse } from '../../../utils'
 
@@ -39,17 +40,17 @@ export function useNotify({ api, notify }) {
 
   watch(notifyOpen, value => {
     if (timer) {
-      window.clearInterval(timer)
+      stopPolling(timer)
       timer = null
     }
     if (value) {
       loadNotify()
-      timer = window.setInterval(loadNotify, 10000)
+      timer = startPolling(loadNotify, 10000)
     }
   })
 
   onUnmounted(() => {
-    if (timer) window.clearInterval(timer)
+    if (timer) stopPolling(timer)
   })
 
   return { notifyOpen, notifyData, notifyLoading, loadNotify, notifyAct, openNotify }

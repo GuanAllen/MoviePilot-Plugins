@@ -1,3 +1,6 @@
+/** 用户主动点的只读动作：失败要让他看见（只读请求默认静默，见 api/request.js）。 */
+const LOUD = { feedback: 'default' }
+
 /**
  * 设置域接口（设置草稿 / 下载器 / 目录 / 默认模板 / IYUU / 标签 / 站点规则）。
  * 全部返回**原始响应**。
@@ -33,12 +36,12 @@ export function makeSettings(c) {
 
     // ── IYUU ──────────────────────────────────────────────
     iyuuSites: () => c.get('iyuu/sites'),
-    iyuuTest: () => c.get('iyuu/test'),
+    iyuuTest: () => c.get('iyuu/test', LOUD),
 
     // ── 站点规则（插件域 /rules）────────────────────────────
     rules: () => c.get('rules'),
-    refreshRules: () => c.get('rules?action=refresh'),
-    rulesProbe: (q = '') => c.get(`rules?action=probe${q}`),
+    refreshRules: () => c.get('rules?action=refresh', LOUD),
+    rulesProbe: (q = '') => c.get(`rules?action=probe${q}`, LOUD),
     setRuleHr: (domain, hr) => c.get(
       `rules?action=hr&site=${encodeURIComponent(domain)}&hr=${encodeURIComponent(hr)}`,
     ),
@@ -55,9 +58,9 @@ export function makeSettings(c) {
     //   hold_candidates   静默池候选（挑种用）
     //   hold / unhold     挂 / 解除（confirm=1 才真写；unhold 恒真写）
     /** 已挂的手动保种名单 */
-    keepList: () => c.get('tags?action=hold_list'),
+    keepList: () => c.get('tags?action=hold_list', LOUD),
     /** 静默池候选（从这里挑要保的种） */
-    holdCandidates: () => c.get('tags?action=hold_candidates'),
+    holdCandidates: () => c.get('tags?action=hold_candidates', LOUD),
     /**
      * 挂 / 解除手动保种。
      * @param {string|string[]} hashes 一个或多个 hash（后端按逗号批量）

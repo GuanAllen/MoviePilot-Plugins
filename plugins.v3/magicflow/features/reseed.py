@@ -45,6 +45,7 @@ from ..iyuu_cloud import (
 from ..tags import STATE_SILENT, SUB_NEW, SUB_PLAIN, SUB_RESOURCE, tag_for
 from ..sitestore import slot_callbacks
 from ..kvstore import cache_get, cache_set
+from ..persistence import OperationItem
 from .reuse import _reuse_local_complete
 
 
@@ -1933,6 +1934,28 @@ class ReSeedMixin:
             except Exception:  # noqa: BLE001
                 pass
         title = str(getattr(src, "title", "") or "")[:60]
+        # ★ 19.12.72：全站辅种此前**只写插件日志、不写操作记录** —— 本文件全文 0 处 journal
+        #   调用，「操作记录 → 辅种流水」因此永远是空的（不是筛不出，是压根没数据）。
+        #   这里按「一颗种一条」落 kind=reseed，与选种/删种同粒度；title 已在上面截到 60 字，
+        #   源种 hash 放进 reason 便于回查。写失败只吞异常，不影响挂种主流程。
+        try:
+            _st = getattr(self, "_store", None)
+            _jr = getattr(_st, "journal", None) if _st is not None else None
+            if _jr is not None:
+                _jr.record(
+                    task_id="__reseed__",
+                    kind="reseed",
+                    items=[OperationItem(
+                        hash=str(pair["ih"]),
+                        title=title,
+                        reason=f"全站辅种:{site_name} ← 源 {str(pair['src'])[:8]}",
+                        size_gb=float(pair.get("src_size") or 0) / 1024 ** 3,
+                        source="reseed",
+                        tags=str(tag or ""),
+                    )],
+                )
+        except Exception:  # noqa: BLE001
+            pass
         self._log(f"全站辅种:{site_name} 挂上「{title}」({pair['ih'][:8]}) ← 源 {pair['src'][:8]} "
                   f"@ {save_path}｜身份 {tag}")
         return "ok"

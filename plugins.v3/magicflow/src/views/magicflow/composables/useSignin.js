@@ -45,15 +45,21 @@ export function useSignin({ api, notify, status }) {
     return rows
   })
   const signinRunning = ref(false)
-  async function runSigninNow(kind = 'sign') {
+  // ★ 19.12.89：支持只跑指定的几个站（后端 run_signin 一直有 site_ids，前端以前没用）
+  async function runSigninNow(kind = 'sign', opts = {}) {
     if (signinRunning.value) return
     signinRunning.value = true
     try {
       // ★ 插件 API 的 POST 参数只从 query 绑定（body 不生效）→ 参数拼在 URL 上
-      const query = new URLSearchParams({ kind: String(kind) }).toString()
+      const params = { kind: String(kind) }
+      const ids = (opts.siteIds || []).map(String).filter(Boolean)
+      if (ids.length) params.site_ids = ids.join(',')
+      if (opts.force) params.force = 'true'
+      const query = new URLSearchParams(params).toString()
       const res = unwrapResponse(await api.features.signinRun(query)) || {}
       const s = res.summary || {}
-      notify(`${kind === 'sign' ? '签到' : '登录'}完成：成功 ${s.ok || 0} / 失败 ${s.fail || 0}`)
+      const who = ids.length ? `这 ${ids.length} 个站` : ''
+      notify(`${who}${kind === 'sign' ? '签到' : '登录'}完成：成功 ${s.ok || 0} / 失败 ${s.fail || 0}`)
       // 只刷新 status（不重载 settingsDraft，避免把正在编辑的设置冲掉）
       status.value = unwrapResponse(await api.tasks.status()) || status.value
       if (signinOpen.value) loadSigninReport()
@@ -141,34 +147,65 @@ export function useSignin({ api, notify, status }) {
   })
   const signinFilterItems = computed(() => {
     const c = signinTodayCounts.value
-    return [
-      { value: 'all', label: `全部 ${c.all}`, color: 'primary' },
-      { value: 'fail', label: `失败 ${c.fail}`, color: 'error' },
-      { value: 'pending', label: `待执行 ${c.pending}`, color: 'warning' },
-      { value: 'ok', label: `成功 ${c.ok}`, color: 'success' },
-    ]
+    // ★ 19.12.89：失败 / 待执行 / 跳过都只在「有」的时候出现 —— 常驻两个 0 的筛选项，
+    //   点了是空列表，白占一行。全部 / 成功常驻（保证至少有得点）。
+    const out = [{ value: 'all', label: `全部 ${c.all || 0}`, color: 'primary' }]
+    if (c.fail) out.push({ value: 'fail', label: `失败 ${c.fail}`, color: 'error' })
+    if (c.pending) out.push({ value: 'pending', label: `待执行 ${c.pending}`, color: 'warning' })
+    // ★ 跳过以前没有出口：16 站里 1 个跳过，chip 只剩 15，用户找不到那一个
+    if (c.skip) out.push({ value: 'skip', label: `插件管不了 ${c.skip}`, color: undefined })
+    out.push({ value: 'ok', label: `成功 ${c.ok || 0}`, color: 'success' })
+    return out
   })
+  // 全部行（带状态 / 文案，未过滤未排序）—— 弹窗「待处理」区要用它，避免受 tab 过滤影响
+  const signinRowsAll = computed(() =>
+    (signinReportTodayRows.value || []).map(r => {
+      const status = _signinStatus(r.signin, r.loginResult, true, r.sign, r.login)
+      const pairs = _signinWant(r)
+      const rt = (signinReport.value.retry || {})[String(r.site_id)]
+      const fails = pairs.filter(([, x]) => x && !x.ok && !x.skipped)
+      let msg
+      if (fails.length) {
+        msg = fails.map(([k, x]) => `${k} ✗ ${x.message || ''}`.trim()).join(' · ')
+      } else {
+        // 全成功 / 待执行：只给简短标记，几十个站也不刷屏（失败才展开原因）
+        msg = pairs.map(([k, x]) => (x ? `${k} ${x.ok ? '✓' : (x.na ? '不支持' : (x.skipped ? '跳过' : '✗'))}` : `${k} ⏳`)).join(' · ')
+      }
+      return {
+        ...r,
+        status,
+        msg: SIGNIN_FAIL_STATUS.includes(status) && rt ? `${msg} · ${rt.next_at} 重试` : msg,
+        // ★ 19.12.89：失败原因单独抛出，供弹窗展开显示（原来只能挤在一行 msg 里被省略号切掉）
+        reasons: fails.map(([k, x]) => ({ kind: k, message: String(x.message || ''), na: !!x.na })),
+        retry_at: rt ? String(rt.next_at || '') : '',
+        // 整站都「不支持」→ 属于「插件管不了」，不是失败
+        all_na: pairs.length > 0 && pairs.every(([, x]) => x && x.na),
+      }
+    })
+  )
   const signinTodayList = computed(() => {
     const ord = SIGNIN_ORDER
+    const rank = s => (ord[s] == null ? 9 : ord[s])
     const q = String(signinSearch.value || '').trim().toLowerCase()
-    return (signinReportTodayRows.value || [])
-      .map(r => {
-        const status = _signinStatus(r.signin, r.loginResult, true, r.sign, r.login)
-        const pairs = _signinWant(r)
-        const rt = (signinReport.value.retry || {})[String(r.site_id)]
-        const fails = pairs.filter(([, x]) => x && !x.ok && !x.skipped)
-        let msg
-        if (fails.length) {
-          msg = fails.map(([k, x]) => `${k} ✗ ${x.message || ''}`.trim()).join(' · ')
-        } else {
-          // 全成功 / 待执行：只给简短标记，几十个站也不刷屏（失败才展开原因）
-          msg = pairs.map(([k, x]) => (x ? `${k} ${x.ok ? '✓' : (x.na ? '不支持' : (x.skipped ? '跳过' : '✗'))}` : `${k} ⏳`)).join(' · ')
-        }
-        return { ...r, status, msg: SIGNIN_FAIL_STATUS.includes(status) && rt ? `${msg} · ${rt.next_at} 重试` : msg }
-      })
+    return signinRowsAll.value
       .filter(r => !q || String(r.site_name || '').toLowerCase().includes(q))
       .filter(r => signinFilter.value === 'all' || (signinFilter.value === 'fail' ? SIGNIN_FAIL_STATUS.includes(r.status) : r.status === signinFilter.value))
-      .sort((a, b) => (ord[a.status] - ord[b.status]) || String(a.site_name || '').localeCompare(String(b.site_name || '')))
+      .sort((a, b) => (rank(a.status) - rank(b.status)) || String(a.site_name || '').localeCompare(String(b.site_name || '')))
+  })
+  // 今天要人动手的：失败 / 待执行 / 插件管不了 —— 「今日已完成」以外的全部
+  const signinPendingRows = computed(() => {
+    const ord = SIGNIN_ORDER
+    const rank = s => (ord[s] == null ? 9 : ord[s])
+    return signinRowsAll.value
+      .filter(r => r.status !== 'ok')
+      .sort((a, b) => (rank(a.status) - rank(b.status)) || String(a.site_name || '').localeCompare(String(b.site_name || '')))
+  })
+  // 今天已完成的（不受 tab 过滤影响，弹窗默认只列这个）
+  const signinDoneRows = computed(() => signinRowsAll.value.filter(r => r.status === 'ok'))
+  // ★ 19.12.89 弹窗头摘要用：跳过的站数（现在四个 chip 里没有它的位置 → 16 显示成 15）
+  const signinSkipCount = computed(() => {
+    const c = signinTodayCounts.value || {}
+    return Number(c.skip || 0)
   })
   // 近 7 天矩阵：行=站点、列=日期（点阵）；异常在前，支持几十个站滚动查看
   const signinKeepalive = computed(() => ((signinReport.value.keepalive || {}).sites || []))
@@ -227,10 +264,34 @@ export function useSignin({ api, notify, status }) {
     })
     const rank = r => (r.todayStatus === 'fail' ? 0 : r.todayStatus === 'pending' ? 1 : r.failIdx >= 0 ? 2 : 3)
     rows.sort((a, b) => (rank(a) - rank(b)) || (a.failIdx - b.failIdx) || String(a.name).localeCompare(String(b.name)))
-    const stats = { ok: 0, fail: 0 }
-    rows.forEach(r => r.cells.forEach(c => { if (c.status === 'ok') stats.ok++; else if (c.status === 'fail') stats.fail++ }))
+    // ★ 19.12.89 口径修正：原来只认 'fail'（签到+登录都失败），signfail / loginfail
+    //   既不计成功也不计失败 → 从分子分母里凭空消失，成功率虚高。
+    //   实测 11-13 March 登录失败（HTTP 521）被吞，页面显示 100%，真实 104/105 = 99%。
+    const stats = { ok: 0, fail: 0, skip: 0, none: 0, total: 0 }
+    rows.forEach(r => r.cells.forEach(c => {
+      stats.total++
+      if (c.status === 'ok') stats.ok++
+      else if (SIGNIN_FAIL_STATUS.includes(c.status)) stats.fail++
+      else if (c.status === 'skip') stats.skip++
+      else stats.none++
+    }))
     return { dates, rows, stats }
   })
+  // 近 7 天成功率：分母只含「有结果的格」（成功 + 三种失败），跳过/无记录单独报
+  const signinRate = computed(() => {
+    const s = (signinMatrix.value.stats || {})
+    const ok = Number(s.ok || 0)
+    const fail = Number(s.fail || 0)
+    const denom = ok + fail
+    return {
+      ok,
+      fail,
+      skip: Number(s.skip || 0),
+      none: Number(s.none || 0),
+      total: Number(s.total || 0),
+      pct: denom ? Math.round((ok * 100) / denom) : null,
+    }
+  })
 
-  return { siteSelectItems, signinRunning, runSigninNow, signinOpen, signinReport, signinReportLoading, loadSigninReport, openSignin, signinFilter, signinSearch, signinStatusText, signinDateLabel, signinReportTodayRows, signinTodayCounts, signinFilterItems, signinTodayList, signinKeepalive, signinKeepaliveNote, signinMatrix }
+  return { siteSelectItems, signinRunning, runSigninNow, signinOpen, signinReport, signinReportLoading, loadSigninReport, openSignin, signinFilter, signinSearch, signinStatusText, signinDateLabel, signinReportTodayRows, signinTodayCounts, signinFilterItems, signinTodayList, signinRowsAll, signinPendingRows, signinDoneRows, signinSkipCount, signinRate, signinKeepalive, signinKeepaliveNote, signinMatrix }
 }

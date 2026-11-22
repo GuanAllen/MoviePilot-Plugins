@@ -5,6 +5,7 @@
 //       + 一键起考核任务；自带 300s 角标刷新定时器（随组件生命周期）。
 // 依赖注入：api、notify（提示）、loadStatus（起完任务后刷新任务列表）。
 // ★ 真值源仍在后端（/exam、/exam/act）；考核是增强信息，取数失败不打断界面。
+import { startPolling, stopPolling } from '../../../polling'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { unwrapResponse } from '../../../utils'
 import { EXAM_KIND_TEXT, EXAM_KIND_ICON, EXAM_ACTIONABLE } from '../constants'
@@ -182,10 +183,10 @@ export function useExam({ api, notify, loadStatus }) {
   // 考核角标是全局的（低频刷新；关闭时服务端立即返回，零开销）——随组件生命周期起停
   onMounted(() => {
     loadExam()
-    examTimer = window.setInterval(loadExam, 300000)
+    examTimer = startPolling(loadExam, 300000)
   })
   onUnmounted(() => {
-    if (examTimer) window.clearInterval(examTimer)
+    if (examTimer) stopPolling(examTimer)
   })
 
   return { examData, examOpen, examActing, examConfirm, examBadge, examUrgent, examShowPassed, examRows, examPendingSites, examNext, examUrgentWeek, examPendingItems, examDaysShort, examUrgencyColor, examPassedCount, examSitePct, examItemPct, examItemGap, examVisibleItems, examHiddenPassed, examTogglePassed, examActions, loadExam, openExam, examAct, examConfirmRun }

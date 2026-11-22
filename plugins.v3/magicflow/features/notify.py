@@ -41,6 +41,7 @@ NOTIFY_KIND_TEXT: Dict[str, str] = {
     "trend_drop": "产出骤降",
     "site_deleted": "站点已删除",
     "task_fail": "任务失败",
+    "missing_shell": "空壳告警",
     "daily": "每日日报",
     "test": "测试通知",
 }

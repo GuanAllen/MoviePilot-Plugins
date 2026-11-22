@@ -60,44 +60,6 @@
   min-height: 0;
 }
 
-.mfhub__primary[data-v-69d9b8c3] {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  inline-size: 100%;
-  padding: 13px 14px;
-  margin-block-end: 16px;
-  text-align: left;
-  border: 1px solid rgba(var(--v-theme-primary), .45);
-  border-radius: 12px;
-  background: linear-gradient(135deg, rgba(var(--v-theme-primary), .22), rgba(var(--v-theme-primary), .08));
-  color: inherit;
-  cursor: pointer;
-  transition: border-color .16s ease, transform .16s ease;
-}
-
-.mfhub__primary[data-v-69d9b8c3]:hover {
-  border-color: rgba(var(--v-theme-primary), .7);
-  transform: translateY(-1px);
-}
-
-.mfhub__primary-icon[data-v-69d9b8c3] {
-  display: grid;
-  place-items: center;
-  inline-size: 34px;
-  block-size: 34px;
-  flex: none;
-  border-radius: 10px;
-  background: rgb(var(--v-theme-primary));
-  color: rgb(var(--v-theme-on-primary));
-}
-
-.mfhub__primary .mfhub__text strong[data-v-69d9b8c3] { font-size: 14px;
-}
-
-.mfhub__primary-chev[data-v-69d9b8c3] { color: rgba(var(--v-theme-on-primary), .7); flex: none;
-}
-
 .mfhub__group + .mfhub__group[data-v-69d9b8c3] {
   margin-top: 18px;
 }
@@ -190,11 +152,48 @@
   color: rgba(var(--v-theme-on-surface), .5);
 }
 @media (max-width: 599px) {
-
+/* 手机端：单列长列表 → 紧凑双列宫格（图标上 / 名称下，隐藏说明行与箭头），
+   27 入口从约 3 屏压到一屏多；桌面端全部保持原样。 */
 .mfhub__grid[data-v-69d9b8c3] {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 9px;
 }
-
+.mfhub__card[data-v-69d9b8c3] {
+    position: relative;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    min-height: 78px;
+    padding: 13px 6px 11px;
+    text-align: center;
+}
+.mfhub__icon[data-v-69d9b8c3] {
+    font-size: 24px;
+}
+.mfhub__text[data-v-69d9b8c3] {
+    flex: none;
+    width: 100%;
+    align-items: center;
+    gap: 0;
+}
+.mfhub__text strong[data-v-69d9b8c3] {
+    font-size: 12px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.mfhub__text em[data-v-69d9b8c3],
+.mfhub__chev[data-v-69d9b8c3] {
+    display: none;
+}
+.mfhub__badge[data-v-69d9b8c3] {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    margin: 0;
+}
 .mfhub__search input[data-v-69d9b8c3] { inline-size: 88px;
 }
 }

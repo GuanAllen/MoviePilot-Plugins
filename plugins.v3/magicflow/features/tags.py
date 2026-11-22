@@ -78,6 +78,21 @@ from ..common import (
 from ..ledger import ResourceLedgerStore, SeedLedgerStore, get_backend
 
 
+# ---------------------------------------------------------------- 账本维护的节拍（★ 19.13.0）
+#
+# 为什么需要这几个常量：``tags_watch`` 挂在调度器的 ``interval`` 上，而**首轮 = 注册时刻 +
+# 一整个周期**。插件每次部署/热重载都会「移除 + 重新注册」服务 → 周期被反复归零。
+# 实测 2026-11-20：当天重载 25 次、最长空闲 55 分钟 → 这个 60 分钟的 job **一次都没跑到**
+# （插件日志里 `标签维护` 一行都没有）。后果不只是「补码慢一点」：
+#   · 补特征码 → 新加的音乐种永远没有 fp → 没有资源组 → 清单永远「已下完，待转资源」；
+#   · 账本对账 / 停止任务退静默 也一起停摆。
+# 与 19.10.9 的 ``rules_watch`` 是**同一个坑**，解法也照抄：加载后补跑一次 + 自己按
+# 持久化时间戳判定「够不够一个周期」，所以重复调用幂等，重载 100 次也只真跑 1 次。
+TAGS_WATCH_MINUTES = 60.0        # 真跑的最小间隔（分钟）
+TAGS_BOOT_DELAY_SEC = 90.0       # 插件加载后多久补跑（秒，避开加载高峰）
+TAGS_WATCH_STATE_KEY = "tags_watch_state"   # 持久化「上次真跑」的时刻（重载不丢）
+
+
 class TagReq(NamedTuple):
     """`get_tag_model` 的一次调用：动作名 + 全部入参 + 两个账本句柄。
 
@@ -1396,34 +1411,22 @@ class TagsMixin:
         if not host:
             _m = re.search(r"([a-z0-9.-]+\.[a-z]{2,})", trk.lower()) if trk else None
             host = _m.group(1) if _m else ""
-        # ★ 19.12.54：空 tracker 时看「全部 announce 域名」，任一命中已知站点即可。
-        #   首公告常是历史域名（财神 cspt.cc），只认第一个会把本站种判成外站。
-        hosts = [host] if host else []
-        if not hosts and hash_string:  # ③ 逐 hash 兜底（qB tracker 字段常为空）
+        if not host and hash_string:  # ③ 逐 hash 兜底（qB tracker 字段常为空）
             try:
-                _dl = self._get_downloader()
-                _all = getattr(_dl, "tracker_domains", None)
-                if callable(_all):
-                    hosts = [str(x or "").strip().lower()
-                             for x in (_all(hash_string) or []) if str(x or "").strip()]
-                else:
-                    _one = str(_dl.tracker_domain(hash_string) or "").strip().lower()
-                    hosts = [_one] if _one else []
+                host = str(self._get_downloader().tracker_domain(hash_string) or "")
             except Exception:  # noqa: BLE001
-                hosts = []
-        if hosts:
+                host = ""
+        if host:
             try:
                 for it in self._list_sites() or []:
                     d = str((it or {}).get("domain") or "").lower().strip()
                     nm = str((it or {}).get("name") or "")
-                    if d and nm and any(
-                            d.split(":")[0] in hd or hd in d for hd in hosts):
+                    if d and nm and (d.split(":")[0] in host or host in d):
                         return nm, d
             except Exception:  # noqa: BLE001
                 pass
-        # ④ 实在认不出来：用首个公告域名当站点名（比空好，且不丢信息）
-        _fallback = hosts[0] if hosts else ""
-        return (_fallback, _fallback) if _fallback else ("", "")
+        # ④ 实在认不出来：用 tracker 域名当站点名（比空好，且不丢信息）
+        return (host, host) if host else ("", "")
 
     def _magicize_scope(self, snap: Dict[str, Any], *, site_filter: str = "") -> Dict[str, List[str]]:
         """圈出「非魔流」种：一个**能认出来的**魔流标签都没有；按资源组归桶。
@@ -2653,7 +2656,12 @@ class TagsMixin:
         live = self._tag_all_torrents().get(h)
         if live is None:
             return Response(success=False, message="下载器里找不到该种子")
-        site = self._torrent_site_name(getattr(live, "tags", None)) or str(getattr(payload, "site", "") or "")
+        # ★ 19.16.13：**显式指定的站点优先**于标签推断。
+        #   反例（实证）：历史误标成发布组名 ``魔流-audies-认领``，手工纠偏时传 site=学校，
+        #   旧写法先取标签里的 audies，参数被无声丢掉 ⇒ 「改不动」。
+        #   语义上「手动设置」就是人给的值为准；没给（默认空）才沿用标签推断。
+        site = (str(getattr(payload, "site", "") or "").strip()
+                or self._torrent_site_name(getattr(live, "tags", None)))
         old_tags = [str(x).strip() for x in (getattr(live, "tags", None) or [])]
         # ★ 5.0.0：手动改状态只改**职务**，身份自动沿用（除非显式给了 sub）
         _i_site, _i_sub = identity_of(old_tags)
@@ -2681,7 +2689,43 @@ class TagsMixin:
         """标签账本维护（worker）：状态账本快照/对账 · 资源账本 · 特征码补录 · 停止任务退静默。
 
         注：**静默池本身的托管**（清理/保挂/分拣/H&R/校验）已迁到常驻 worker「静默托管」``silent_host``。
+
+        ★ 19.13.0：本体搬到 ``_tags_watch_body``，这里只剩**节拍判定**
+        （否则调度器 interval 在频繁热重载下永远轮不到它，见文件头常量那段）。
         """
+        if not self._tags_watch_due():
+            return
+        self._tags_watch_mark()
+        self._tags_watch_body()
+
+    def _tags_watch_due(self) -> bool:
+        """距上次真跑是否已满 ``TAGS_WATCH_MINUTES``（持久化时间戳，重载不丢）。
+
+        「宁可少跑，不要重复跑」：本 job 会跑全量 ``sync_resources`` + 账本对账，
+        而插件一天能重载几十次 —— 每次加载都跑一遍纯属浪费，还会和旧实例的线程打架。
+        """
+        try:
+            st = self.get_data(TAGS_WATCH_STATE_KEY) or {}
+            last = float((st or {}).get("at") or 0.0)
+        except Exception:  # noqa: BLE001
+            last = 0.0
+        if last <= 0:
+            return True                     # 从没跑过（首次部署）→ 立刻补一轮
+        return (float(time.time()) - last) >= float(TAGS_WATCH_MINUTES) * 60.0
+
+    def _tags_watch_mark(self) -> None:
+        """**开跑前**记时刻（不是跑完）。
+
+        为什么要抢在跑之前：本体里有五段独立的 ``try``，中途某段抛异常也不会中断，
+        但若「跑完才记」，一旦整体异常就会变成「每次重载都重跑」。宁可少跑一轮。
+        """
+        try:
+            self.save_data(key=TAGS_WATCH_STATE_KEY, value={"at": float(time.time())})
+        except Exception as err:  # noqa: BLE001
+            self._dbg(f"标签维护:时刻落盘失败:{err}")
+
+    def _tags_watch_body(self) -> None:
+        """维护本体（★ 19.13.0 从 ``tags_watch`` 拆出，逐字搬运，行为不变）。"""
         try:
             store = self._tag_state()
             try:

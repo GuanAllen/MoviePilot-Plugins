@@ -8,6 +8,15 @@ import { computed } from 'vue'
 // （单一真值源仍在前端域，taskBadge/mobileRowLine/mobileRowNum 不在两处各写一份）。
 // props.groups 形状：[{ key, label, count, sites:[{ key, site, attention, dotClass, statusText, multi, taskCount, num, tasks:[{ id, name, dotClass, num }] }] }]
 // props.open = 分组展开态（父 mhOpen）；props.openSites = 站点折叠态（父 mhSiteOpen）。
+//
+// ★ 19.13.2 设计落地（手机端首页重设计 v3）：
+//   1. 删「功能九宫格」——与顶部「功能中心」弹层同出自 MF_PAGES（九宫格只是过滤子集），重复入口收口。
+//      pages prop / open-page emit 保留定义（index.vue 本版不动），仅不再渲染九宫格。
+//   2. 分组头显示「N 站 · M 任务」——站点数用 sites.length（口径同 hero 的 liveCount），任务数仍是 g.count。
+//   3. 列表「一站一卡」改为单容器 + 细分割线；多任务子列表缩进。
+//   4. 站点状态色点改字母徽标（首字），保留 is-* 状态色语义。
+//   5. hero 右侧补「看详情」文字（chevron 保留）。
+//   宿主的顶栏 / 磁吸底栏不属插件渲染范围，本版不动（仅给内容末尾留底部安全区）。
 const props = defineProps({
   groups: { type: Array, default: () => [] },
   summary: { type: Object, default: () => ({}) },
@@ -31,6 +40,12 @@ const emit = defineEmits([
 const bonus = computed(() => (Number(props.summary.bonus_per_hour) || 0).toFixed(1))
 const ceilingPct = computed(() => Number(props.summary.ceiling_pct || 0))
 
+// 站点徽标首字：中文/英文/emoji 都取第一个字素，空值回退「·」
+function initial(name) {
+  const s = String(name || '').trim()
+  return s ? Array.from(s)[0].toUpperCase() : '·'
+}
+
 // 站点行点击：多任务 → 折叠/展开；单任务 → 直接进详情（口径同父 openSiteRow）
 function onSiteRow(s) {
   if (s.multi) emit('toggle-site', s.key)
@@ -44,11 +59,14 @@ function onSiteRow(s) {
       <div class="mh-hero__v">{{ bonus }}<small>/h</small></div>
       <div class="mh-hero__s">{{ liveCount }} 个魔力站在跑<template v-if="ceilingPct > 0"> · 上限占用 {{ ceilingPct }}%</template><template v-if="todayGain > 0"> · 今日 +{{ todayGain.toFixed(1) }}</template></div>
     </div>
+    <span class="mh-hero__go">看详情</span>
     <VIcon icon="mdi-chevron-right" size="22" class="mh-hero__chev" />
   </div>
   <div v-for="g in groups" :key="g.key" class="mh-group">
     <button type="button" class="mh-group__head" @click="emit('toggle-group', g.key)">
       <span>{{ g.label }}</span>
+      <span class="mh-group__hint">{{ g.key === 'need' ? '有问题或待决策' : (g.key === 'live' ? '正常运行中' : '已停用 / 内置托管') }}</span>
+      <span v-if="g.key === 'live'" class="mh-count mh-count--site">{{ g.sites.length }} 站</span>
       <span class="mh-count">{{ g.count }}</span>
       <VIcon :icon="open[g.key] ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="18" />
     </button>
@@ -59,7 +77,7 @@ function onSiteRow(s) {
           class="mh-row"
           @click="onSiteRow(s)"
         >
-          <span class="mh-dot" :class="s.dotClass" />
+          <span class="mh-badge" :class="s.dotClass">{{ initial(s.site) }}</span>
           <span class="mh-row__main">
             <span class="mh-row__nm">
               {{ s.site }}
@@ -90,19 +108,9 @@ function onSiteRow(s) {
       </template>
     </div>
   </div>
-  <div class="mh-sect">功能</div>
-  <div class="mh-tools">
-    <button
-      v-for="p in pages"
-      :key="p.key"
-      type="button"
-      class="mh-tool"
-      @click="emit('open-page', p)"
-    >
-      <VIcon :icon="p.icon" size="20" />
-      <span>{{ p.label }}<em v-if="p.scope === 'global'" class="mh-tool__scope">全局</em></span>
-    </button>
-  </div>
+  <!-- ★ 19.13.2：功能九宫格已移除——与「功能中心」弹层同出自 MF_PAGES（九宫格只是过滤子集），
+       同一批入口摆两遍是冗余；功能统一收口到 WorkbenchHeader 的「功能中心」按钮。
+       pages prop / open-page emit 保留（index.vue 本版不动），仅此处不再渲染。 -->
   <div class="mh-foot">
     <button type="button" class="mh-btn" @click="emit('create-task')">
       <VIcon icon="mdi-plus" size="18" />新建任务
@@ -126,6 +134,8 @@ function onSiteRow(s) {
 
 .magicflow-page .mh-hero__main { min-inline-size: 0; flex: 1 1 auto; }
 
+.magicflow-page .mh-hero__go { font-size: 12px; font-weight: 600; color: rgb(var(--v-theme-primary)); flex: 0 0 auto; }
+
 .magicflow-page .mh-hero__chev { color: rgba(var(--v-theme-on-surface), var(--mf-fg-dim)); flex: 0 0 auto; }
 
 .magicflow-page .mh-hero__v { font-size: 34px; font-weight: 800; letter-spacing: 0.5px; line-height: 1; }
@@ -142,29 +152,48 @@ function onSiteRow(s) {
   color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); font: inherit; font-size: 12.5px; cursor: pointer;
 }
 
+.magicflow-page .mh-group__hint { font-size: 11px; font-weight: 400; color: rgba(var(--v-theme-on-surface), var(--mf-fg-dim)); }
 .magicflow-page .mh-group__head .mh-count { color: rgba(var(--v-theme-on-surface), var(--mf-fg-dim)); }
-
+.magicflow-page .mh-group__head .mh-count--site { color: rgb(var(--v-theme-primary)); font-weight: 700; }
 .magicflow-page .mh-group__head .v-icon { margin-inline-start: auto; }
 
-.magicflow-page .mh-list { display: flex; flex-direction: column; gap: 8px; }
+/* 19.13.2：单容器 + 细分割线（原为一站一卡，gap 8px 的独立圆角卡） */
+.magicflow-page .mh-list {
+  display: flex; flex-direction: column;
+  background: rgba(var(--v-theme-surface), 0.9);
+  border: 1px solid var(--magicflow-panel-brd);
+  border-radius: 15px;
+  overflow: hidden;
+}
 
 .magicflow-page .mh-row {
   display: flex; align-items: center; gap: 12px; width: 100%; text-align: start;
-  padding: 14px; border-radius: 15px;
-  background: rgba(var(--v-theme-surface), 0.9); border: 1px solid var(--magicflow-panel-brd);
+  padding: 13px 14px; border-radius: 0;
+  background: transparent; border: 0; border-bottom: 1px solid var(--magicflow-panel-brd);
   color: inherit; font: inherit; cursor: pointer;
   transition: background-color 0.15s ease;
 }
-
+.magicflow-page .mh-list > .mh-row:last-child { border-bottom: 0; }
 .magicflow-page .mh-row:active { background: rgba(var(--v-theme-primary), 0.14); }
+
+/* 19.13.2：站点字母徽标（替代原 9px 状态点），保留 is-* 状态色语义 */
+.magicflow-page .mh-badge {
+  width: 36px; height: 36px; flex: 0 0 36px; border-radius: 11px;
+  display: grid; place-items: center;
+  font-size: 14px; font-weight: 800; letter-spacing: -0.02em;
+  background: rgba(var(--v-theme-on-surface), 0.12);
+  color: rgb(var(--v-theme-on-surface));
+}
+.magicflow-page .mh-badge.is-primary,
+.magicflow-page .mh-badge.is-success { background: rgb(var(--v-theme-primary)); color: rgb(var(--v-theme-on-primary)); }
+.magicflow-page .mh-badge.is-error { background: rgb(var(--v-theme-error)); color: #fff; }
+.magicflow-page .mh-badge.is-warning { background: rgb(var(--v-theme-warning)); color: #fff; }
 
 .magicflow-page .mh-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: rgba(var(--v-theme-on-surface), 0.45); }
 
 .magicflow-page .mh-dot.is-primary,
 .magicflow-page .mh-dot.is-success { background: rgb(var(--v-theme-primary)); box-shadow: 0 0 8px rgba(var(--v-theme-primary), 0.8); }
-
 .magicflow-page .mh-dot.is-error { background: rgb(var(--v-theme-error)); box-shadow: 0 0 8px rgba(var(--v-theme-error), 0.7); }
-
 .magicflow-page .mh-dot.is-warning { background: rgb(var(--v-theme-warning)); box-shadow: 0 0 8px rgba(var(--v-theme-warning), 0.7); }
 
 .magicflow-page .mh-row__main { min-inline-size: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 3px; }
@@ -176,49 +205,22 @@ function onSiteRow(s) {
   color: rgb(var(--v-theme-primary)); background: rgba(var(--v-theme-primary), 0.18); vertical-align: 1.5px;
 }
 
-.magicflow-page .mh-sublist { margin: 2px 0 6px 14px; border-inline-start: 1px solid rgba(var(--v-border-color), 0.18); padding-inline-start: 10px; }
+.magicflow-page .mh-sublist { margin: 2px 0 6px 50px; border-inline-start: 1px solid rgba(var(--v-border-color), 0.18); padding-inline-start: 10px; }
 
 .magicflow-page .mh-subrow {
   display: flex; align-items: center; gap: 9px; inline-size: 100%; text-align: start; padding: 9px 6px;
   background: none; border: 0; color: inherit; font: inherit; cursor: pointer; border-radius: 10px;
 }
-
 .magicflow-page .mh-subrow:active { background: rgba(var(--v-theme-primary), 0.12); }
-
 .magicflow-page .mh-subrow .mh-row__nm { font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.82); }
-
 .magicflow-page .mh-subrow .mh-row__num { font-size: 14px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.7); }
 
 .magicflow-page .mh-row__st { font-size: 11.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
-
+.magicflow-page .mh-row__st.is-att { color: rgb(var(--v-theme-error)); }
 .magicflow-page .mh-row__num { font-size: 16px; font-weight: 800; flex: 0 0 auto; }
-
 .magicflow-page .mh-row__chev { color: rgba(var(--v-theme-on-surface), var(--mf-fg-dim)); flex: 0 0 auto; }
 
-.magicflow-page .mh-sect { margin-block-start: 22px; font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-dim)); letter-spacing: 0.4px; padding: 0 6px 6px; }
-
-.magicflow-page .mh-tools { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
-
-.magicflow-page .mh-tool {
-  display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 6px;
-  border-radius: 15px; background: rgba(var(--v-theme-surface), 0.9); border: 1px solid var(--magicflow-panel-brd);
-  color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); font: inherit; font-size: 12px; cursor: pointer;
-}
-
-.magicflow-page .mh-tool:active { background: rgba(var(--v-theme-primary), 0.14); }
-
-.magicflow-page .mh-tool__scope {
-  margin-inline-start: 4px;
-  padding: 0 4px;
-  border-radius: 4px;
-  font-style: normal;
-  font-size: 10px;
-  line-height: 1.5;
-  /* 透明度不再叠加：文字色继承 .mh-tool（浅色主题已加深） */
-  border: 1px solid currentColor;
-}
-
-.magicflow-page .mh-foot { display: flex; gap: 10px; margin-block-start: 22px; }
+.magicflow-page .mh-foot { display: flex; gap: 10px; margin-block-start: 22px; margin-block-end: 24px; }
 
 .magicflow-page .mh-btn {
   flex: 1 1 0; display: flex; align-items: center; justify-content: center; gap: 6px;

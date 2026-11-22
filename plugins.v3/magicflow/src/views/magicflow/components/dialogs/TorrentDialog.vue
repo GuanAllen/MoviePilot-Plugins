@@ -232,29 +232,60 @@ function torrentResumeLabel(item) {
   padding: 14px 0 8px;
 }
 
-/* ── ★ 功能弹窗统一：卡片纵向 flex + 正文吃掉剩余高度（消除手机端全屏弹窗底部大片留白）── */
+/* ── ★ 功能弹窗统一：卡片纵向 flex + 正文吃掉剩余高度 ── */
 .magicflow-torrent-dialog {
   display: flex;
   flex-direction: column;
   min-block-size: 0;
   max-block-size: 92vh;
-  overflow: hidden;
+  /* ★ 19.12.59：原来是 overflow:hidden —— 标题一长或屏一矮，操作条会被直接裁掉，
+     而且滚不动（用户能看到的只有「没有操作按钮」）。改成纵向可滚、横向仍裁。 */
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
-/* 种子详情：内容在顶、操作按钮钉底，中间自然撑开（手机端全屏不再留白）*/
+/* 桌面/平板：内容在顶、操作按钮钉底，中间自然撑开 */
 .magicflow-torrent-dialog__actions { margin-block-start: auto; }
 
-@media (max-width: 699px) {
-  /* 种子详情弹窗：窄屏收紧留白与网格间距 */
+/* ★ 19.12.59 手机全屏（isNarrow = ≤959，VDialog 走 fullscreen）重新排布。
+   旧问题：父页 index.vue 给的安全区 `.magicflow-torrent-dialog{padding-bottom:92px}`
+   只有单类优先级（0,1,0），被本组件 ≤699 的 `padding:16px 14px 4px`（0,2,0）整条覆盖 →
+   手机上一律失效，按钮贴死在视口最底边，正好落进 MP 右下角 AI 悬浮球的地盘，
+   看起来就是「操作按钮没了」；中间还被 margin:auto 撑出一大块空白（排版乱）。
+   现在：按钮不再钉底，紧跟 infohash，一屏到底；卡片自身可滚、底部留安全区。 */
+@media (max-width: 959px) {
   .magicflow-torrent-dialog {
-    padding: 16px 14px 4px;
+    max-block-size: 100dvh;
+    padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px));
+    border-radius: 0;
   }
+
+  .magicflow-torrent-dialog__actions {
+    margin-block-start: 12px;
+    padding-block: 12px 0;
+    border-block-start: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  }
+
+  .magicflow-torrent-dialog__actions .v-btn {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+  }
+}
+
+@media (max-width: 699px) {
+  /* 种子详情弹窗：窄屏收紧留白与网格间距（★ 不再设 padding 简写，
+     否则会把上面 959 段的安全区 padding 整条覆盖掉） */
   .magicflow-torrent-dialog__grid {
     gap: 8px 10px;
     padding: 10px 12px;
   }
   .magicflow-torrent-dialog__actions {
     gap: 4px;
+  }
+  .magicflow-torrent-dialog__actions .v-btn {
+    padding-inline: 8px;
+    font-size: 12px;
   }
 }
 </style>

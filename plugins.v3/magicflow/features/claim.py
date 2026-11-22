@@ -573,6 +573,7 @@ class ClaimMixin:
             "at": time.time(), "apply": bool(resume), "total": len(claims),
             "seeding": 0, "paused": 0, "resumed": 0,
             "missing": 0, "missing_hashes": [],
+            "shell": 0, "shell_hashes": [],
             "adopted": 0, "holding": 0, "released": 0, "excluded": 0,
             "skipped": 0, "failed": 0,
             "blocked": 0, "blocked_hashes": [],
@@ -607,12 +608,24 @@ class ClaimMixin:
         #   名下收人 —— 「名单在我这，就该我管」；但手动保种(95) 不抢（人工点名更强，
         #   且它照样在做种，承诺与时长都不受影响，抢只会每轮互贴标签）。
         #   在岗判定 = 账本归本岗 **且** 标签在位（任一路径清过 ``taken_by`` 都会自愈）。
+        # ★ 19.12.73：**空壳种不算在种**。``missingFiles``（文件已不在）/ ``error`` 以前两边
+        #   都不占：``missing`` 只数「qB 里没有这个 hash」，``seeding`` 只排除
+        #   paused/stopped/queued → 它们被算成「在种」，卡片显示「做种 21 · 丢失 0」，
+        #   实际有 4 颗早废了（2026-11-19 实测）。现在单独归「空壳」：计进 missing、
+        #   不进 present（因此不会被 resume 白折腾，也不算在种）。
+        _dead_states = ("missingfiles", "error", "unknown")
         present: List[str] = []
+        shell: List[str] = []
         for hh in claims:
-            if (snap or {}).get(hh) is None:
+            _t = (snap or {}).get(hh)
+            if _t is None:
                 missing.append(hh)  # qB 里没了：不重下（认领不吞流量）
-            else:
-                present.append(hh)
+                continue
+            if str(getattr(_t, "state", "") or "").strip().lower() in _dead_states:
+                shell.append(hh)
+                missing.append(hh)  # 文件已不在 = 丢失（与「qB 里没有」同口径展示）
+                continue
+            present.append(hh)
         _adopt = assign(
             self, present, taker=CLAIM_TASK_ID, state=STATE_CLAIM,
             name=CLAIM_HOST_TASK_NAME, lease_until=_lease,
@@ -658,6 +671,8 @@ class ClaimMixin:
         rep["need_resume"] = len(to_resume)
         rep["missing"] = len(missing)
         rep["missing_hashes"] = missing[:20]
+        rep["shell"] = len(shell)
+        rep["shell_hashes"] = shell[:20]
         if resume and to_resume:
             try:
                 n, err = downloader.resume_torrents(to_resume)
@@ -667,16 +682,16 @@ class ClaimMixin:
             except Exception as err:  # noqa: BLE001
                 self._log(f"认领保挂:恢复异常 {err}", "warning")
         rep["seeding"] = sum(
-            1 for h in claims
-            if h in (snap or {})
-            and not str(getattr((snap or {}).get(h), "state", "") or "").lower().startswith(
+            1 for h in present
+            if not str(getattr((snap or {}).get(h), "state", "") or "").lower().startswith(
                 ("paused", "stopped", "queued"))
         )
         if resume and claims:
             self._log(
                 f"认领职务: 名单 {rep['total']} / 在岗 {rep['holding']} / 新纳管 {rep['adopted']} "
                 f"/ 退出 {rep['released']} / 在种 {rep['seeding']} / 恢复 {rep['resumed']} "
-                f"/ 丢失 {rep['missing']} / 让位 {rep['blocked']}"
+                f"/ 丢失 {rep['missing']}（空壳 {rep['shell']}）"
+                f" / 让位 {rep['blocked']}"
             )
         return rep
 
@@ -1116,6 +1131,36 @@ class ClaimMixin:
             self._log(f"认领：枚举任务失败 {err}", "warning")
         return out
 
+    def _claim_file_state(self, h: Any, snap: Any, cache: Dict[str, str]) -> str:
+        """认领前的「文件还在不在」研判（``ok`` / ``missing`` / ``unknown``，单次扫描缓存）。
+
+        ★ 19.12.75：认领只认 hash，从不看文件。qB 里暂停中的种**不会主动复查文件**，
+        文件被外部删掉后仍报 ``pausedUP`` + 进度 100%，于是空壳也能认领成功 —— 等于
+        替站点签了一份「我会保种」的承诺，到期必然不达标（实测 4 颗：文件 10-24 就没了，
+        10-28 照旧认领成功，11-11 才被发现）。判据见 ``DownloaderAdapter.torrent_file_state``：
+        路径映射失效一律 ``unknown``，不敢据此拦人。
+        """
+        key = str(h or "").strip().lower()
+        if not key:
+            return "unknown"
+        if key in cache:
+            return cache[key]
+        state = "unknown"
+        try:
+            t = (snap or {}).get(key)
+            if t is not None:
+                # ★ 19.12.78：同一次扫描共用一个下载器适配器（见 cleanup._torrent_file_state）
+                _dl = cache.get("__dl__")
+                if _dl is None:
+                    _dl = self._get_downloader()
+                    cache["__dl__"] = _dl or "none"
+                state = str(self._torrent_file_state(t, _dl) or "unknown")
+        except Exception as err:  # noqa: BLE001
+            state = "unknown"
+            self._log(f"认领:文件存在性检查失败 {key[:12]}:{err}", "debug")
+        cache[key] = state
+        return state
+
     def _claim_scan(self, site_id: Any = None, upcoming: int = 20, limit: int = 0, refresh_site: bool = False,
                     local_only: bool = True) -> Dict[str, Any]:
         """扫一遍「可认领 / 已认领 / 快到期」。
@@ -1150,11 +1195,15 @@ class ClaimMixin:
             snap = dict(self._tag_all_torrents() or {})
         except Exception:  # noqa: BLE001
             snap = {}
+        # ★ 19.12.75：文件存在性研判的单次扫描缓存（hash → ok/missing/unknown）
+        _fstate: Dict[str, str] = {}
         want = str(site_id).strip() if site_id not in (None, "", "0") else ""
         sites_filter = {str(x).strip().lower() for x in (cfg.get("sites") or [])}
         claimed: List[Dict[str, Any]] = []
         claimable: List[Dict[str, Any]] = []
         soon: List[Dict[str, Any]] = []
+        # ★ 19.12.75：站点说可领、但本地只有空壳（文件已不在）的 —— 不进可认领，单独报数
+        no_file: List[Dict[str, Any]] = []
         per_site: Dict[str, Dict[str, Any]] = {}
 
         # ① 站点全集先建行：**全部已配置站点**（含未收录认领能力的站）。
@@ -1323,6 +1372,7 @@ class ClaimMixin:
                     row["est_payout_now_total"] += payout_now
                     row["claimed_hours_total"] += hours
                     claimed.append({**base, "ts": float(rec.get("ts") or 0),
+                                    "file_state": self._claim_file_state(h, snap, _fstate),
                                     # ★ 19.10.55：账本存的是**站点标题**（认领时从那行拿的），
                                     #   而 base.title 是 qB 本地标题。站点回来说「这颗我记着
                                     #   已认领」时要靠它把两条认成同一颗（本地名与站点名
@@ -1504,6 +1554,7 @@ class ClaimMixin:
                         "qb_state": str(getattr(_t_c, "state", "") or ""),
                         "in_qb": bool(h_local and h_local in snap),
                         "progress": float(getattr(_t_c, "progress", 0) or 0),
+                        "file_state": self._claim_file_state(h_local, snap, _fstate),
                         "site_only": True,
                     })
                     row_s["claimed"] = int(row_s.get("claimed") or 0) + 1
@@ -1528,12 +1579,20 @@ class ClaimMixin:
                     if local_only and not in_local:
                         pass
                     else:
+                        # ★ 19.12.75：认证领前先验文件 —— 空壳种认领 = 替站点签保种承诺
+                        _fs_open = self._claim_file_state(h_local, snap, _fstate)
+                        if _fs_open == "missing":
+                            no_file.append({**basis, "file_state": "missing",
+                                            "note": "文件已不在磁盘（空壳种），已从可认领中剔除"})
+                            row_s["site_no_file"] = int(row_s.get("site_no_file") or 0) + 1
+                            continue
                         row_s["claimable"] = int(row_s.get("claimable") or 0) + 1
                         payout_pot = _est_settle_payout(hb, settle_s)
                         row_s["hourly_bonus_total"] += hb
                         row_s["est_month_bonus_total"] += float(basis["est_month_bonus"])
                         row_s["est_claimable_payout_total"] += payout_pot
                         claimable.append({**basis, "est_settle_payout": payout_pot,
+                                          "file_state": _fs_open,
                                           # ★ 19.10.60：站点说能领，但「这个月有没有魔力」是另一条门槛
                                           "reward_block": _reward_gate(row_s.get("profile") or {},
                                                                         age_days, basis.get("size_gb")),
@@ -1763,6 +1822,11 @@ class ClaimMixin:
             r["abandon_reason"] = verdict["reason"]
             r["abandon_penalty"] = verdict["penalty"]
             r["abandon_claim_id"] = verdict["claim_id"]
+        # ★ 19.12.75：已认领行有**四条**构造路径（账本两条 + 站点侧两条），
+        #   逐条补容易漏。这里统一兜底补一次 file_state，前端将来可直接显示「文件在不在」。
+        for _r in claimed:
+            if "file_state" not in _r:
+                _r["file_state"] = self._claim_file_state(_r.get("hash"), snap, _fstate)
         claimable.sort(key=lambda x: (-float(x.get("est_month_bonus") or 0.0),
                                       -float(x.get("age_days") or 0.0)))
         soon.sort(key=lambda x: float(x.get("age_days") or 0), reverse=True)
@@ -1796,6 +1860,9 @@ class ClaimMixin:
                 sum(float(r.get("est_month_bonus_total") or 0.0) for r in per_site.values()), 1),
             "claimed_total": len(claimed),
             "claimable_total": claimable_total,
+            # ★ 19.12.75：本地只有空壳（文件已不在）→ 已从可认领剔除，单独报数
+            "no_file_total": len(no_file),
+            "no_file": no_file[:200],
             # ★ 19.10.51：站点说能领、本地认不出资源的条数（不静默丢弃，UI 单独标注）。
             "not_local_total": sum(int(r.get("site_not_local") or 0) for r in per_site.values()),
             "local_only": bool(local_only),
@@ -1916,7 +1983,10 @@ class ClaimMixin:
 
         ``local_only``（默认 1）：可认领只列**我本地有资源**的；传 ``0`` 看站点全量。
         ★ 19.7.22：整份结果进 Redis 缓存（CLAIM_STATE_TTL 新鲜期，CLAIM_STATE_STALE
-        内陈旧也直接返回并后台刷新）。refresh=1 强制重算。
+        内陈旧也直接返回并后台刷新）。
+        ★ 19.16.19：refresh=1 改为**后台刷新**——命中缓存时立即返回缓存、起后台线程重抓
+        16 站（refresh_site=True，KeyLocks 单飞），不再同步干等 7~12 秒；返回
+        data.refreshing=True 供前端给「已在后台刷新」即时反馈。无缓存（冷启动）时仍同步 build 兜底。
         """
         try:
             sid = str(site_id).strip() if site_id not in (None, "", "0") else ""
@@ -1925,34 +1995,41 @@ class ClaimMixin:
             # 不传 = 1（只列本地有的）；显式 0/false/no 才切全量
             lo = True if local_only in (None, "") else bool(as_bool_arg(local_only))
             key = self._claim_state_key(sid, lim, lo)
-            if not force:
-                hit = cache_get(self, "claim", key, CLAIM_STATE_STALE)
-                if isinstance(hit, dict) and isinstance(hit.get("data"), dict):
-                    age = max(0.0, time.time() - float(hit.get("at") or 0))
-                    data = dict(hit["data"])
-                    data["cached"] = True
-                    data["cache_age"] = round(age, 1)
-                    # ★ 19.10.13：``host`` 是**可变状态**（在种/暂停/丢失），不能跟着整页缓存陈旧
-                    #   最多 1 小时 —— 运维看着旧读数会误判「又被暂停了」（实测：qB 里 19 个认领种
-                    #   全 ``stalledUP``，页面却显示 ``paused=19`` 达半小时，据此排查了一整轮）。
-                    #   站点侧数据（可认领/已认领/账本）照旧吃缓存：那才是打站点换来的重数据。
+            hit = cache_get(self, "claim", key, CLAIM_STATE_STALE)
+            if isinstance(hit, dict) and isinstance(hit.get("data"), dict):
+                age = max(0.0, time.time() - float(hit.get("at") or 0))
+                data = dict(hit["data"])
+                data["cached"] = True
+                data["cache_age"] = round(age, 1)
+                # ★ 19.10.13：``host`` 是**可变状态**（在种/暂停/丢失），不能跟着整页缓存陈旧
+                #   最多 1 小时 —— 运维看着旧读数会误判「又被暂停了」（实测：qB 里 19 个认领种
+                #   全 ``stalledUP``，页面却显示 ``paused=19`` 达半小时，据此排查了一整轮）。
+                #   站点侧数据（可认领/已认领/账本）照旧吃缓存：那才是打站点换来的重数据。
+                try:
+                    _host = self._claim_host_status(resume=False)
+                    _host["cache_age"] = 0.0
+                    data["host"] = _host
+                except Exception as err:  # noqa: BLE001
+                    logger.debug(f"认领宿主实时刷新失败（沿用缓存）：{err}")
+                # ★ 19.16.19：用户点刷新(force) 或 缓存过期(>TTL) → 后台单飞重算，立即返回缓存。
+                #   _claim_state_refresh 内部 _claim_state_build(refresh_site=True) 强制重抓站点，
+                #   且 KeyLocks 同 key 单飞，连点多次刷新也只跑一个后台任务，不会叠加打站。
+                refreshing = False
+                if force or age > CLAIM_STATE_TTL:
                     try:
-                        _host = self._claim_host_status(resume=False)
-                        _host["cache_age"] = 0.0
-                        data["host"] = _host
-                    except Exception as err:  # noqa: BLE001
-                        logger.debug(f"认领宿主实时刷新失败（沿用缓存）：{err}")
-                    if age > CLAIM_STATE_TTL:
-                        try:
-                            threading.Thread(
-                                target=self._claim_state_refresh, args=(sid, lim, lo), daemon=True
-                            ).start()
-                        except Exception:  # noqa: BLE001
-                            pass
-                    return Response(success=True, data=data)
+                        threading.Thread(
+                            target=self._claim_state_refresh, args=(sid, lim, lo), daemon=True
+                        ).start()
+                        refreshing = True
+                    except Exception:  # noqa: BLE001
+                        pass
+                data["refreshing"] = refreshing
+                return Response(success=True, data=data)
+            # 冷启动无缓存：同步 build 兜底（force 时强制重抓站点）
             data = self._claim_state_build(sid or None, lim, key, refresh_site=force, local_only=lo)
             data["cached"] = False
             data["cache_age"] = 0.0
+            data["refreshing"] = False
             return Response(success=True, data=data)
         except Exception as err:  # noqa: BLE001
             return Response(success=False, message=f"读取认领状态失败：{err}")
@@ -2132,6 +2209,17 @@ class ClaimMixin:
         row = next((r for r in rec["claimable"] if r["hash"] == hash_string), None)
         if row is None:
             return Response(success=False, message="该种当前不可认领（未满期 / 已在账本 / 被安全阀挡）")
+        # ★ 19.12.75：执行前再验一次文件（前端列表可能是几分钟前的快照，期间文件可能被删）
+        try:
+            _fs_do = str(self._torrent_file_state(
+                (self._tag_all_torrents() or {}).get(hash_string)) or "unknown")
+        except Exception:  # noqa: BLE001
+            _fs_do = "unknown"
+        if _fs_do == "missing":
+            return Response(
+                success=False,
+                message="文件已不在磁盘：这是空壳种，认领后必然不达标，已阻止"
+                        "（若已补回文件，请先在下载器里做一次校验再认领）")
         if not tid:
             tid = str(row.get("torrent_id") or "")
         site = self._get_site(sid)
@@ -2163,7 +2251,7 @@ class ClaimMixin:
                         data={"result": res})
 
     def claim_abandon(self, site_id: Any = None, hash: str = "", torrent_id: Any = None,
-                      confirm: Any = None) -> Response:
+                      confirm: Any = None, force: Any = None) -> Response:
         """放弃认领：**先判「能不能安全放弃」，再发一次站点写请求**。
 
         ★ 19.10.58（Master 定调）：认领是带罚则的承诺，「放弃」在**未达标**时会被站点扣魔力
@@ -2177,6 +2265,12 @@ class ClaimMixin:
 
           这里**不读整页扫描缓存**：放弃是秒级生效的破坏性动作，判定必须现抓站点认领页
           （一页 GET），拿到最新的 `是否达标 / 认领记录 id`，而不是 10 分钟前的快照。
+
+          ★ 19.12.73 ``force=1``：**只解「罚则」这一道闸**（``blocked`` = 未达标且已过
+            豁免期）。适用场景是「文件已丢、空壳种永远不达标，继续持有会被删种并扣更多」
+            —— 此时放弃费反而更便宜，用户明确要放弃就该执行。代价（放弃费）如实进台账
+            与返回体，不隐藏。``unsupported``（该站没放弃接口）/ ``unknown``（拿不到认领
+            记录 id）**不受 force 影响**：那是事实缺失，硬发只会白白浪费一次写请求。
         """
         try:
             sid = int(site_id or 0)
@@ -2188,10 +2282,14 @@ class ClaimMixin:
             return Response(success=False, message="缺少 site_id / hash（或 torrent_id）")
         if not bool(as_bool_arg(confirm)):
             return Response(success=False, message="放弃认领会丢权益并可能扣魔力，需 confirm=1")
+        _force = bool(as_bool_arg(force))
         cfg = self._claim_cfg()
-        if not cfg.get("enabled"):
+        # ★ 19.12.73：``force`` 是「单次手动动作」的显式放行 —— 认领总开关关着时
+        #   照样能放弃（放弃 = 减少承诺，不是扩大风险）；干跑是「自动流程别写」，
+        #   也不该挡住人工点名的一次退订。两条都必须配 ``confirm=1`` 才走到这里。
+        if not cfg.get("enabled") and not _force:
             return Response(success=False, message="认领功能未启用（插件设置 → 认领）")
-        if cfg.get("dry"):
+        if cfg.get("dry") and not _force:
             return Response(success=False, message="干跑中，未发写请求（先在设置里关闭「干跑」）")
         site = self._get_site(sid)
         if not site:
@@ -2225,7 +2323,7 @@ class ClaimMixin:
         # ② 安全判定（与 UI 同一套口径，后端是最后一道闸）
         verdict = self._claim_abandon_verdict(prof, row)
         state = verdict["state"]
-        if state in ("unsupported", "unknown", "blocked"):
+        if state in ("unsupported", "unknown") or (state == "blocked" and not _force):
             penalty = verdict.get("penalty") or 0
             head = "未达标放弃" if state == "blocked" else "无法安全放弃"
             tail = f"（该站放弃扣 {penalty} 魔力）" if state == "blocked" and penalty else ""
@@ -2261,7 +2359,20 @@ class ClaimMixin:
                 self._claim_site_rows_invalidate(sid)
             self._claim_site_claims_invalidate(sid)
             self._claim_state_bump()
-            why = "已达标，只失去 ×2 奖励" if state == "safe" else "豁免期内，不按未达标处罚"
+            if state == "safe":
+                why = "已达标，只失去 ×2 奖励"
+            elif state == "grace":
+                why = "豁免期内，不按未达标处罚"
+            else:  # blocked + force
+                _fee = int(verdict.get("penalty") or 0)
+                why = ("未达标强制放弃"
+                       + (f"，站点按规则收 {_fee} 魔力" if _fee else "，罚则为 0"))
+            try:
+                self._log(f"认领:强制放弃 {str(row.get('title') or '')[:40]} "
+                          f"({hash_string[:12]}) state={state} fee={verdict.get('penalty')}",
+                          "warning")
+            except Exception:  # noqa: BLE001
+                pass
             return Response(success=True, message=f"已放弃认领（{why}）：{msg}",
                             data={"abandon": verdict, "result": {"ok": True, "status": st,
                                                                  "message": str(msg)}})

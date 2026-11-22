@@ -1,3 +1,6 @@
+/** 用户主动点的只读动作：失败要让他看见（只读请求默认静默，见 api/request.js）。 */
+const LOUD = { feedback: 'default' }
+
 /**
  * 功能域接口（推荐 / 跨站取种 / 点播 / 音乐 / 补源 / 豆瓣 / 签到 / 考核 / 认领 / 云盘归档 / 跨盘兜底）。
  * 全部返回**原始响应**。
@@ -6,7 +9,9 @@ export function makeFeatures(c) {
   return {
     // ── 推荐 ──────────────────────────────────────────────
     recommend: () => c.get('recommend'),
-    recommendAct: (hash, action) => c.post(`recommend/${hash}/${action}`, {}),
+    // 推荐动作的提示统一由 useRecommend 弹（含后端 message 人话化），
+    // 宿主那条同文案的默认提示要压掉 —— 否则一次失败弹两个一模一样的红框。
+    recommendAct: (hash, action) => c.post(`recommend/${hash}/${action}`, {}, { feedback: 'silent' }),
     recommendBatchImport: (qs) => c.post(`recommend/batch_import?${qs}`, {}),
 
     // ── 跨站取种 ───────────────────────────────────────────
@@ -22,6 +27,8 @@ export function makeFeatures(c) {
     // ★ 批量：一次落多条候选（picks=enclosure，换行/逗号分隔；不重搜、逐条独立成败）
     ondemandBatch: (params) => c.post(`ondemand/batch?${params}`, {}),
     ondemandItems: () => c.get('ondemand/items?limit=50'),
+    // ★ 19.16.5：把只有英文发布名的历史行补上中文名（后台逐条识别，立即返回）
+    ondemandRetitle: (limit = 6) => c.post(`ondemand/retitle?limit=${encodeURIComponent(limit)}`, {}),
     ondemandAct: (hash, action) => c.post(
       `ondemand/act?hash=${encodeURIComponent(hash)}&action=${encodeURIComponent(action)}`, {}),
 
@@ -29,7 +36,9 @@ export function makeFeatures(c) {
     musicSearch: (params) => c.post(`agent/music/search?${params}`, {}),
     musicDownload: (cid) => c.post(
       `agent/music/download?cids=${encodeURIComponent(cid)}&confirm=1`, {}),
-    musicItems: () => c.get('agent/music/items?limit=50'),
+    // ★ 19.12.87：支持分页（后端 19.12.87 起回 total=截断前真实条数，旧版无 offset 会退化为首页）
+    musicItems: (limit = 50, offset = 0) => c.get(
+      `agent/music/items?limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}`),
     musicAct: (hash, action) => c.post(
       `agent/music/act?hash=${encodeURIComponent(hash)}&action=${encodeURIComponent(action)}`, {}),
     // ★ 19.12.0：单颗入库 —— 干跑（不带 confirm）回计划，confirm=1 入队后台跑（提交即返回）
@@ -38,7 +47,7 @@ export function makeFeatures(c) {
     musicSettlePlan: () => c.post('agent/music/settle?confirm=0', {}),
 
     // ── 补源 ──────────────────────────────────────────────
-    rescueScan: () => c.get('rescue?action=scan'),
+    rescueScan: () => c.get('rescue?action=scan', LOUD),
     rescueRun: (params) => c.post(`rescue?${params}`, {}),
 
     // ── 豆瓣评分 ───────────────────────────────────────────
@@ -61,7 +70,7 @@ export function makeFeatures(c) {
 
     // ── 云盘归档 ───────────────────────────────────────────
     cloud: () => c.get('cloud'),
-    cloudTest: () => c.get('cloud/test'),
+    cloudTest: () => c.get('cloud/test', LOUD),
     cloudPlan: (limit) => c.post(`cloud/plan?limit=${limit}`),
     cloudUpload: (path) => c.post(`cloud/upload?dry_run=false&path=${encodeURIComponent(path)}`),
     cloudRun: (dryRun, limit) => c.post(

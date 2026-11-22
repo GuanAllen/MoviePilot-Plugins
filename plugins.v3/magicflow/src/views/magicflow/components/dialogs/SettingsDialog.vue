@@ -2,7 +2,7 @@
 // MagicFlow · 设置弹窗（多标签）——P4 自 views/magicflow/index.vue **纯搬家**。
 // props 下 / emit 上：子组件不直接改父状态；开关与设置项走 defineModel / emit。
 // 复用 composable 纯函数 → module 级具名导出 import（单一真值源）。
-import { MF_SETTINGS_TABS, TILE_OPTIONS, ratingSourceItems, episodePolicyItems, agentToolScopeItems } from '../../constants'
+import { MF_SETTINGS_TABS, MF_SETTINGS_GROUPS, TILE_OPTIONS, ratingSourceItems, episodePolicyItems, agentToolScopeItems } from '../../constants'
 import { fmtTs } from '../../format'
 import { settingsTabLabel, ruleSourceText } from '../../composables/useSettings'
 import { sortRuleText, sortRuleNeedsMin, sortRuleTypeOptions } from '../../composables/useTagModel'
@@ -84,17 +84,23 @@ defineProps({
         </header>
 
         <div v-if="!isNarrow || settingsPane === 'dir'" class="magicflow-settings-nav" :ref="setNavEl">
-          <button
-            v-for="t in MF_SETTINGS_TABS"
-            :key="t.key"
-            type="button"
-            class="magicflow-settings-nav__item"
-            :class="{ 'is-active': settingsTab === t.key }"
-            @click="emit('open-tab', t.key)"
-          >
-            <VIcon :icon="t.icon" size="18" />
-            <span>{{ t.label }}</span>
-          </button>
+          <template v-for="g in MF_SETTINGS_GROUPS" :key="g.title">
+            <div class="magicflow-settings-nav__group">{{ g.title }}</div>
+            <div class="magicflow-settings-nav__grid">
+              <button
+                v-for="t in g.items"
+                :key="t.key"
+                type="button"
+                class="magicflow-settings-nav__item"
+                :class="{ 'is-active': settingsTab === t.key, 'is-new': !!t.isNew }"
+                @click="emit('open-tab', t.key)"
+              >
+                <span v-if="t.isNew" class="magicflow-settings-nav__new">新</span>
+                <VIcon :icon="t.icon" size="18" />
+                <span>{{ t.label }}</span>
+              </button>
+            </div>
+          </template>
         </div>
 
         <VTabs v-model="settingsTab" class="magicflow-settings-dialog__tabs" density="comfortable" show-arrows>
@@ -203,6 +209,7 @@ defineProps({
           </div>
 
           <div v-if="settingsTab === 'general'" class="magicflow-settings-form">
+            <div class="magicflow-settings-subhead">开关</div>
             <VSwitch v-model="settingsDraft.enabled" label="启用插件（总开关）" color="primary" hide-details inset />
             <VSwitch
               v-model="settingsDraft.show_sidebar_nav"
@@ -229,9 +236,16 @@ defineProps({
               variant="outlined"
               density="comfortable"
             />
-            <p v-if="settingsDraft.agent_mcp" class="magicflow-settings-hint">
-              注册后，MoviePilot 的 AI 助手 / MCP 客户端（Claude、Cherry Studio 等）可直接调用魔流：<strong>常用工具</strong> 52 个高频接口（任务 / 站点做种 / H&amp;R / 补源 / 点播 / 库内资源 / 推荐 / 队列…），<strong>全部端点</strong> 76 个（含冷门排障接口）。写操作也一并注册，请只接可信的 AI 客户端。
-            </p>
+            <div v-if="settingsDraft.agent_mcp" class="magicflow-settings-danger">
+              <div class="magicflow-settings-danger__h"><VIcon icon="mdi-alert-outline" size="18" /> 写操作也一并注册</div>
+              <p>请只接入可信的 AI 客户端。</p>
+            </div>
+            <details v-if="settingsDraft.agent_mcp" class="magicflow-settings-fold">
+              <summary><VIcon icon="mdi-information-outline" /> 注册范围怎么选 <VIcon icon="mdi-chevron-down" /></summary>
+              <div class="magicflow-settings-fold__bd">
+                注册后，MoviePilot 的 AI 助手 / MCP 客户端（Claude、Cherry Studio 等）可直接调用魔流：<strong>常用工具</strong> 52 个高频接口（任务 / 站点做种 / H&amp;R / 补源 / 点播 / 库内资源 / 推荐 / 队列…），<strong>全部端点</strong> 76 个（含冷门排障接口）。
+              </div>
+            </details>
             <VTextField
               v-model.number="settingsDraft.request_interval"
               type="number"
@@ -253,9 +267,13 @@ defineProps({
               variant="outlined"
               density="comfortable"
             />
-            <p class="magicflow-settings-hint">
-              任务流量：按「在跑的任务类型」自动设 qB <strong>全局上传限速</strong>（只限上传，不动下载）。有刷流任务时用刷流档，只有魔力任务时用魔力档；两者同时在跑取刷流档；一个启用的任务都没有则清除限速。
-            </p>
+            <div class="magicflow-settings-subhead">请求与记录</div>
+            <details class="magicflow-settings-fold">
+              <summary><VIcon icon="mdi-information-outline" /> 任务流量与 qB 限速 <VIcon icon="mdi-chevron-down" /></summary>
+              <div class="magicflow-settings-fold__bd">
+                按「在跑的任务类型」自动设 qB <strong>全局上传限速</strong>（只限上传，不动下载）。有刷流任务时用刷流档，只有魔力任务时用魔力档；两者同时在跑取刷流档；一个启用的任务都没有则清除限速。
+              </div>
+            </details>
             <div class="magicflow-settings-grid">
               <VTextField
                 v-model.number="settingsDraft.bonus_upload_limit_kbps"
@@ -562,7 +580,7 @@ defineProps({
                     @click="iyuuShowMore[row.domain || row.name] = !iyuuShowMore[row.domain || row.name]"
                   >{{ iyuuShowMore[row.domain || row.name] ? '收起' : '更多' }}</VBtn>
                 </div>
-                <div class="magicflow-iyuu-row__fields">
+                <div v-if="iyuuShowMore[row.domain || row.name]" class="magicflow-iyuu-row__fields">
                   <div class="text-caption text-medium-emphasis" style="grid-column: 1 / -1">
                     passkey 统一在「RSS / 凭据」里填写（这里不再重复）
                   </div>
@@ -676,14 +694,17 @@ defineProps({
           </div>
 
           <div v-else-if="settingsTab === 'claim'" class="magicflow-settings-form">
-            <p class="magicflow-settings-hint">
-              <strong>认领</strong>：把「我们正在做种」的种子在<strong>站点侧认领</strong>掉，换取站点给的权益
-              （CARPT：达标种子魔力奖励 = 正常值 <strong>×2</strong>）。它是「保种增值」动作，与刷流拿种解耦。
-            </p>
-            <p class="magicflow-settings-hint magicflow-settings-hint--warn">
-              ⚠️ 认领是<strong>不可逆的对外写操作</strong>：站点侧不达标会<strong>扣魔力</strong>，主动放弃扣得更多。
-              因此默认<strong>关闭</strong>且默认<strong>干跑</strong>；认领后的种子会进<strong>硬保护、永不自动删除</strong>。
-            </p>
+            <div class="magicflow-settings-danger">
+              <div class="magicflow-settings-danger__h"><VIcon icon="mdi-alert-outline" size="18" /> 不可逆的对外写操作</div>
+              <p>站点侧不达标会<strong>扣魔力</strong>，主动放弃扣得更多。默认<strong>关闭</strong>且默认<strong>干跑</strong>；认领后的种子会进<strong>硬保护、永不自动删除</strong>。</p>
+            </div>
+            <details class="magicflow-settings-fold">
+              <summary><VIcon icon="mdi-information-outline" /> 认领是什么 <VIcon icon="mdi-chevron-down" /></summary>
+              <div class="magicflow-settings-fold__bd">
+                把「我们正在做种」的种子在<strong>站点侧认领</strong>掉，换取站点给的权益（CARPT：达标种子魔力奖励 = 正常值 <strong>×2</strong>）。它是「保种增值」动作，与刷流拿种解耦。
+              </div>
+            </details>
+            <div class="magicflow-settings-subhead">开关</div>
 
             <div class="magicflow-settings-switches">
               <VSwitch v-model="settingsDraft.claim_enabled" label="启用认领" color="primary" hide-details inset />
@@ -1089,8 +1110,10 @@ defineProps({
 
           <div v-else-if="settingsTab === 'rules'" class="magicflow-settings-form">
             <p class="magicflow-settings-hint">
-              <strong>全站 H&amp;R 的唯一入口</strong>：H&amp;R 有无 / 最短保种时长 / 做种上限都在这一页
-              （跨站取种的「来源份」在兄弟站同样背 H&amp;R 义务，例：学校 BTSchool 要挂种 10 小时）。
+              <strong>全站 H&amp;R 的唯一入口</strong>。三列含义：
+              <strong>H&amp;R</strong> = 这站有没有 H&amp;R（标无之后时长一并清空）；
+              <strong>达标小时</strong> = 要求做满多少小时才算还清（判结清用的就是它）；
+              <strong>完成度</strong> = 进度到多少才算「下完」并开始计 H&amp;R。
               优先级：<strong>手填 &gt; 页面探测 &gt; 内置 &gt; 全局默认</strong>；
               探测遵循「宁保守勿乐观」—— 抓不到就保持原值，绝不假设「没有 H&amp;R」。
             </p>
@@ -1105,7 +1128,7 @@ defineProps({
             <p class="magicflow-settings-hint">
               <strong>H&amp;R 来源</strong>：只认<strong>收件箱「欢迎短讯」里给出的规则地址</strong>（🔗 已存下，可点开）；
               页面里顺带抓到的 H&amp;R 不算数。默认时长给<strong>表里未收录</strong>的站点兜底；
-              每站的时长直接改上表的「<strong>达标期限(h)</strong>」列（手填覆盖，优先级最高）。
+              每站的<strong>达标小时</strong>直接改上表对应列（手填覆盖，优先级最高）。
             </p>
             <div class="magicflow-settings-grid">
               <VTextField
@@ -1171,14 +1194,15 @@ defineProps({
             <p v-if="rulesProbing" class="magicflow-settings-hint">正在逐站抓取规则页（每站 1~2 个请求，随机歇 1.5~3.5 秒）…</p>
             <div class="magicflow-rules-table">
               <div class="magicflow-rules-row magicflow-rules-row--head">
-                <span>站点 · 来源</span><span>H&amp;R</span><span>期限(h)</span><span>完成度</span><span></span>
+                <span>站点 · 来源</span><span>H&amp;R</span><span>达标小时</span><span>完成度</span><span></span>
               </div>
               <div v-for="row in siteRules" :key="row.domain" class="magicflow-rules-row">
                 <span class="magicflow-rules-row__name" :title="row.domain">
                   <b>{{ row.site_name || row.domain }}</b>
                   <em v-if="!row.in_library">未入库</em>
                   <em v-if="row.exam_avg_hours" :title="row.exam_evidence || '站点考核的平均做种要求（不是 H&R）'">考核{{ row.exam_avg_hours }}h</em>
-                  <i :title="row.evidence || ''">{{ ruleSourceText(row) }}<template v-if="row.seed_cap"> · 上限{{ row.seed_cap }}</template><template v-if="row.seed_need_hours"> · 义务{{ row.seed_need_hours }}h</template><template v-if="row.seed_hours_seen != null"> · 见{{ row.seed_hours_seen }}h</template></i>
+                  <!-- ★ 任务 129：标了「无 H&R」的站不再显示期限（旧数据显示 hr=false 还挂着 360h，自相矛盾） -->
+                  <i :title="row.evidence || ''">{{ ruleSourceText(row) }}<template v-if="row.seed_cap"> · 上限{{ row.seed_cap }}</template><template v-if="row.seed_window_hours && row.hr !== false"> · 期限{{ row.seed_window_hours }}h</template><template v-if="row.seed_window_hours_seen != null && row.hr !== false"> · 见{{ row.seed_window_hours_seen }}h</template></i>
                 </span>
                 <span class="magicflow-rules-row__hr">
                   <VChip v-if="row.hr === true" size="x-small" color="error" variant="tonal">有</VChip>
@@ -1194,7 +1218,7 @@ defineProps({
                 </span>
                 <span class="magicflow-rules-row__hours">
                   <VTextField
-                    :model-value="row.effective_hours"
+                    :model-value="row.hr === false ? '' : (row.seed_need_hours ?? '')"
                     type="number"
                     min="0"
                     max="720"
@@ -1202,7 +1226,12 @@ defineProps({
                     density="compact"
                     variant="outlined"
                     hide-details
-                    :title="'达标期限(h)，来自' + ruleSourceText(row) + (row.hours_src === 'manual' ? '（手填覆盖）' : '')"
+                    label="达标小时"
+                    :disabled="row.hr === false"
+                    :placeholder="row.hr === false ? '无 H&R' : '未探明'"
+                    :title="row.hr === false
+                      ? '该站已标「无 H&R」，不设达标小时'
+                      : 'H&R 要求做满的做种小时（判结清用的就是它）。留空＝未探明，按 24h 保守兜底'"
                     @change="emit('set-rule-hours', row, $event.target.value)"
                   />
                 </span>
@@ -1216,6 +1245,7 @@ defineProps({
                     density="compact"
                     variant="outlined"
                     hide-details
+                    label="完成度"
                     placeholder="跟全局"
                     :title="row.complete_ratio == null ? '未覆盖，用全局「H&amp;R 完成度阈值」' : '站点级覆盖（进度达到该值才计 H&amp;R）'"
                     @change="emit('set-rule-ratio', row, $event.target.value)"
@@ -1239,9 +1269,18 @@ defineProps({
             <details class="magicflow-rules-help">
               <summary>怎么改 / 取值说明</summary>
               <p class="magicflow-settings-hint">
-                「期限(h)」直接改 = 写入手填覆盖（优先级：手填 &gt; 探测 &gt; 内置 &gt; 全局默认）。
-                「<strong>完成度</strong>」是该站的 H&amp;R 完成度阈值：<strong>留空 = 跟全局</strong>（默认 0.999，下满才算）；
-                某站若规定「下载中即计 H&amp;R」→ 在该站填 <code>0.2</code> 之类。
+                <strong>达标小时</strong>：H&amp;R 要求做满多少小时（例：学校「10 天内做种 20 小时」→ 20）。
+                判结清读的就是它；留空＝未探明，按 24h 保守兜底。直接改 = 手填覆盖
+                （优先级：手填 &gt; 探测 &gt; 内置 &gt; 全局默认）。该站标了「无 H&amp;R」→ 此列禁用并清空。
+              </p>
+              <p class="magicflow-settings-hint">
+                <strong>完成度</strong>：进度达到多少才算「下载完成」并开始计 H&amp;R。<strong>留空 = 跟全局</strong>
+                （默认 0.999，下满才算）；某站若规定「下载中即计 H&amp;R」→ 在该站填 <code>0.2</code> 之类。
+              </p>
+              <p class="magicflow-settings-hint">
+                每个站只有两个时长数字：<strong>达标小时</strong>（做满多少才算清，上面可改）与
+                <strong>期限</strong>（多久之内要做满，例：10 天，探测从规则原文写入，不在这里改）。
+                标「无 H&amp;R」时两者一并清空。
               </p>
             </details>
           </div>
@@ -1481,7 +1520,7 @@ defineProps({
                   @click="emit('test-cloud')"
                 >测试</VBtn>
               </div>
-              <p v-if="cloudTestMsg" class="magicflow-settings-hint" :class="cloudTestOk ? 'text-success' : 'text-error'">{{ cloudTestMsg }}</p>
+              <p v-if="cloudTestMsg" class="magicflow-settings-feedback" :class="cloudTestOk ? 'is-ok' : 'is-no'">{{ cloudTestMsg }}</p>
             </div>
 
             <div class="magicflow-settings-grid">
@@ -2364,18 +2403,20 @@ defineProps({
 }
 }
 @media (max-width: 520px) {
-/* ★ 站点规则：5 列在 360~400px 上仍会挤，切成两行卡片式
-     —— 第一行「站点 + 探测」，第二行「H&R + 期限 + 完成度」。 */
+/* ★ 站点规则：5 列在 360~400px 上仍会挤，切成三行卡片式
+     —— 第一行「站点 + 探测」，第二行「H&R 状态 + 标有/标无」，
+     第三行「达标小时 + 完成度」各占一半（旧版两个框各只有 72px，label 放不下）。 */
   .magicflow-rules-row--head {
     display: none;
   }
 
 .magicflow-rules-row {
-    grid-template-columns: minmax(0, 1fr) 4.5rem 4.5rem auto;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
     grid-template-areas:
-      "name name  name  ops"
-      "hr   hours ratio ratio";
-    gap: 0.35rem 0.4rem;
+      "name  name  ops"
+      "hr    hr    hr"
+      "hours ratio ratio";
+    gap: 0.35rem 0.5rem;
     padding: 0.45rem 0.5rem;
     border: 1px solid rgba(var(--v-border-color), 0.14);
     border-radius: 8px;

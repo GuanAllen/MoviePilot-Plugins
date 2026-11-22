@@ -69,6 +69,7 @@ from .hrbills import (
 from .sitereport import (
     BUCKET_BONUS,
     BUCKET_BRUSH,
+    BUCKET_CLAIM,
     BUCKET_EXTERNAL,
     BUCKET_HR,
     BUCKET_RESCUE,
@@ -318,6 +319,11 @@ def _bucket_from_ledger(lb_state: str, is_hr: bool, tags: List[str]) -> str:
         return BUCKET_BRUSH
     if lb_state == STATE_BONUS:
         return BUCKET_BONUS
+    # ★ 19.16.12：认领（__claim__）自成一桶 —— 这里原来漏了这条，账本职务=认领的种
+    #   会一路落到「静默」，于是学校 3 个在岗认领在报表里显示成静默、认领恒为 0。
+    #   ``_site_report_bucket``（标签路径）早就有这条，两处必须同口径。
+    if lb_state == STATE_CLAIM:
+        return BUCKET_CLAIM
     if EXTERNAL_TAG in tags:
         return BUCKET_EXTERNAL
     return BUCKET_SILENT
@@ -696,7 +702,17 @@ def view_site(ctx: Dict[str, Any], site: str = "", live: int = 0,
     hr = _hr_block(ctx, dom, live)
     rep = hr.pop("_rep", {})
     recs = list(rep.get("records") or [])
-    hr_owed = len(recs) if recs else int(rep.get("records_total") or 0)
+    # ★ 19.12.68：账本与站点侧取**并集**。原先「站点侧 records 优先」会把账本已开出的
+    #   H&R 直接覆盖成 0 —— BTSchool 这类站不提供独立 H&R 记录页（records_total=0），
+    #   而账本里 active 账单为 1，于是报表顶部「欠 H&R」恒显示 0，与同一响应里的
+    #   summary.hr=1 自相矛盾。判据仍以账本为准（账本＝欠账清单），站点侧只做补充。
+    _ledger_owed = {str(r.get("hash") or "").strip().lower()
+                    for r in rows
+                    if isinstance(r.get("hr"), dict) and r["hr"].get("owed")}
+    _site_owed = {str(x.get("hash") or "").strip().lower()
+                  for x in recs if isinstance(x, dict) and x.get("hash")}
+    _site_n = len(recs) if recs else int(rep.get("records_total") or 0)
+    hr_owed = len(_ledger_owed | _site_owed) if _site_owed else max(len(_ledger_owed), _site_n)
     # 账单侧（账本真值）：该站按 rule 分类的账单数
     bills_site: Dict[str, int] = {}
     for r in rows:

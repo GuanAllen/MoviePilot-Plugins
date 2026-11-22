@@ -26,5 +26,12 @@ export function makeAssets(c) {
      * 传 `resource_ids`（= getAssets 返回的 resource_id）。
      */
     actAssets: (payload) => c.post('assets/act', payload),
+    /**
+     * ★ 19.12.64 整理预演清单（**纯只读**）：
+     * 每份资源挑一颗代表种（link 入库）、同组其余成员只读核验，先看清单再决定要不要真跑。
+     * 不触发整理、不 recheck、不写账本、不改种子状态。
+     */
+    organizePreview: (onlyMissing = 1, limit = 0) =>
+      c.get(`assets/organize/preview?only_missing=${onlyMissing ? 1 : 0}&limit=${limit}`),
   }
 }

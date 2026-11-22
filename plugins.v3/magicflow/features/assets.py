@@ -9,6 +9,7 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 
@@ -692,6 +693,75 @@ class AssetsMixin:
                 "remaining": max(0, len([h for h in snap if str(h).lower() in ledger]) - len(
                     [h for h in ledger if str((ledger.get(h) or {}).get('fp') or "").strip()]) - got)}
 
+    def asset_ensure_fp(self, hash_string: Any, *, group: bool = True) -> str:
+        """**单颗**种子当场补特征码（可选：顺手单颗入组），返回 fp；补不到返回 ``""``。
+
+        ★ 19.13.0（为什么必须有它）：建资源组建组**只认完整特征码**（``_resource_gid``
+        在 10.0.0 定的规则：没有强身份就不配当资源），而全库补码只挂在 ``tags_watch``
+        （60 分钟一轮）。偏偏 ``tags_watch`` 的节拍会被「热重载 → 服务重新注册」反复归零
+        —— 11-20 当天重载 25 次、最长空闲 55 分钟，它一次都没跑到，于是音乐线加进来的种
+        **永远补不上码**：没有码 → 没有资源组 → ``queue_library`` 恒空 → ``sub`` 无处可写
+        → 清单永远停在「已下完，待转资源」（现场那条挂了 3 小时）。
+
+        本方法就是「别等 worker，当场补」：一次 qB ``get_files`` 调用（``DownloaderAdapter
+        .get_torrent_fingerprint`` 内部自己做文件清单 → sha1），补到就写账本；``group=True``
+        再按码单独入组（O(1)，不跑全量 ``sync_resources``，与点播 ``_ondemand_group_ensure``
+        同口径）。整条链路**幂等**：已有合法码直接复用，不再打 qB。
+
+        注意：``hash_string`` 可以是 qB 里任意托管种（不限音乐），调用方只需保证它有账本行。
+        """
+        hh = str(hash_string or "").strip().lower()
+        if not hh:
+            return ""
+        try:
+            store = self._tag_state()
+            rec = dict(store.get(hh) or {})
+        except Exception:  # noqa: BLE001
+            store, rec = None, {}
+        fp = str(rec.get("fp") or "").strip().lower()
+        if not _FP_OK.match(fp):
+            fp = ""
+            try:
+                dl = self._get_downloader()
+            except Exception:  # noqa: BLE001
+                dl = None
+            if dl is not None and getattr(dl, "is_available", False):
+                try:
+                    fp = str(dl.get_torrent_fingerprint(hh) or "").strip().lower()
+                except Exception as err:  # noqa: BLE001
+                    fp = ""
+                    self._dbg(f"特征码:取码异常 {hh[:12]}:{err}")
+            if not _FP_OK.match(fp):
+                return ""
+            if store is not None:
+                try:
+                    store.put(hh, {"fp": fp})
+                except Exception as err:  # noqa: BLE001
+                    self._log(f"特征码:落账本失败 {hh[:12]}:{err}", "warning")
+        if not group:
+            return fp
+        gid = self._resource_gid("", 0.0, fp)
+        if not gid:
+            return fp
+        try:
+            # 已经在某个资源组里（例如 13.0.0 的「同保存目录归户」）就不再另建一个 ——
+            # 一颗种同时挂在两组会让「资源数 / 成员数」两个口径都对不上。
+            if self._tag_groups().group_of(hh):
+                return fp
+            t = (self._tag_all_torrents() or {}).get(hh)
+            self._tag_groups().add_member(
+                gid, hh,
+                site=str(rec.get("site") or ""),
+                size_gb=float(getattr(t, "size_gb", 0) or rec.get("size_gb") or 0.0),
+                downloaded=True, progress=1.0, fp=fp,
+                dl_bytes=float(getattr(t, "downloaded", 0) or 0),
+                completed_at=float(getattr(t, "completion_on", 0) or 0),
+                added_at=float(getattr(t, "added_on", 0) or 0),
+            )
+        except Exception as err:  # noqa: BLE001
+            self._log(f"特征码:单颗入组失败 {hh[:12]}:{err}", "warning")
+        return fp
+
 
     # ------------------------------------------------------------------ ★ 15.8.15
     # Master：「希望增加魔流库内资产手动删除的入口」——
@@ -857,10 +927,8 @@ class AssetsMixin:
                 if _mdest:
                     break
             if _mdest:
-                try:
-                    _ml = "in_media" if Path(_mdest).exists() else "dest_missing"
-                except Exception:  # noqa: BLE001
-                    _ml = "dest_missing"
+                # ★ 19.12.93：音乐的判据不能只看那一个代表文件（见 ``_asset_dest_alive``）
+                _ml = "in_media" if self._asset_dest_alive(_mdest) else "dest_missing"
             elif not live:
                 _ml = "stale"
             else:
@@ -1042,16 +1110,124 @@ class AssetsMixin:
         live = self._asset_live_hashes(item)
         if not live:
             return False, "不在下载器（仅账本残留），无法整理"
+        # ★ 19.12.93：音乐走音乐线的整理器。影视 recognize() 认不出专辑名，
+        #   而音乐线本来就有独立整理（MP 按音频标签 + 自建硬链接兜底）。
+        if self._asset_is_music(item):
+            return self._asset_organize_music(item, live)
         best = ""
         if str(item.get("source_hash") or "").lower() in live:
             best = str(item.get("source_hash") or "").lower()
         else:
             best = live[0]
         ok, msg = self._recommend_import(
-            best, {"title": seed or str(item.get("name") or "")}, transfer_type="link")
+            best, {"title": seed or str(item.get("name") or "")},
+            transfer_type="link", reorganize=True)
         if not ok:
             return False, str(msg)
         return True, self._asset_organize_verify(item, best, str(msg))
+
+    @staticmethod
+    def _asset_is_music(item: Dict[str, Any]) -> bool:
+        """这份资源是不是音乐 —— 判据用**整理历史落点前缀** ``/music/``。
+
+        不用种子分类/标签：那里既有刷流、辅种、认领各种职务标签，也有用户手工改过
+        分类的情况；而落点目录是 MP 按「设置 → 目录」里 ``media_type == 音乐``
+        建出来的，是这份资源当时**真被当成音乐入库过**的证据。
+        """
+        return str(item.get("media_dest") or "").strip().startswith("/music/")
+
+    def _asset_music_lib_root(self) -> str:
+        """当前音乐库根（MP「设置 → 目录」里 ``media_type=音乐`` 的 ``library_path``）。
+
+        带 5 分钟进程内缓存：列表一次要判两三百行，逐行 ``DirectoryHelper().get_dirs()``
+        没必要；配置改了最多 5 分钟内跟上。
+        """
+        now = time.time()
+        try:
+            ts, val = getattr(self, "_asset_music_lib_root_cache", (0.0, ""))
+        except Exception:  # noqa: BLE001
+            ts, val = 0.0, ""
+        if isinstance(val, str) and val and now - float(ts or 0) < 300:
+            return val
+        try:
+            val = str(self._music_lib_dirs()[0] or "").rstrip("/")
+        except Exception:  # noqa: BLE001
+            val = ""
+        self._asset_music_lib_root_cache = (now, val)
+        return val
+
+    def _asset_dest_alive(self, dest: str) -> bool:
+        """这个落点还算「在库里」吗（``in_media`` / ``dest_missing`` 的唯一判据）。
+
+        影视：看那个落点文件在不在，够准。
+
+        音乐有两层坑：
+        1. **记录里的路径可能是旧库根**。整理历史一条 hash 只留最后一行落点，而音乐库
+           根被调整过（`/music/<歌手>/…` → `/music/library/<歌手>/…`）。这类资源文件
+           一直在库里，只是记录指向了已经不存在的旧路径 —— 不按当前库根换算一次就会
+           整批误判成「丢失」，人一看七条全红只会以为库出了问题。
+        2. **那个代表文件可能永远不回来**。一张专辑整理出 14~30 个文件，留下的那行常
+           是某首单曲甚至 ``.lrc`` 歌词；按落点重建只链音频。所以单文件不在时改看
+           **所在专辑目录里有没有音频**。
+
+        两条都只看**这一级目录**（专辑目录；空专辑时就是歌手目录），不往上找歌手目录
+        ——那里常有同歌手别的专辑，会把「这张没入库」判成已入库。
+        """
+        raw = str(dest or "").strip()
+        try:
+            if Path(raw).exists():
+                return True
+        except (OSError, ValueError):
+            pass
+        if not raw.startswith("/music/"):
+            return False
+        try:
+            from .musicgrab import MUSIC_AUDIO_EXTS  # noqa: WPS433（避免模块级循环导入）
+        except Exception:  # noqa: BLE001
+            MUSIC_AUDIO_EXTS = frozenset((".flac", ".mp3", ".m4a", ".aac", ".wav", ".ape"))
+        cands = [raw]
+        lib = self._asset_music_lib_root()
+        if lib and lib != "/music":
+            # 旧库根 → 当前库根换算一次（/music/王力宏/… → /music/library/王力宏/…）
+            cands.append(lib + raw[len("/music"):])
+        for cand in cands:
+            try:
+                base = Path(cand).parent
+            except (OSError, ValueError):
+                continue
+            try:
+                if not base.is_dir():
+                    continue
+                for f in base.iterdir():
+                    if f.suffix.lower() in MUSIC_AUDIO_EXTS and f.is_file():
+                        return True
+            except OSError:
+                continue
+        return False
+
+
+    def _asset_organize_music(self, item: Dict[str, Any], live: List[str]) -> Tuple[bool, str]:
+        """★ 19.12.93 音乐资源按落点重建：**复用音乐下载线的整理能力**。
+
+        与影视那支的区别：
+          * 不做影视 ``recognize()``（专辑名过不了它，这是原来 7 条里 5 条失败的根因）；
+          * 交给 ``_music_organize_hash`` —— ``mtype=MUSIC`` 让 MP 自己按音频标签识别，
+            标签不够整（合集/散曲/超 24 首）走自建硬链接，两条都不碰影视识别；
+          * 一定要 ``reorganize``：这几包正是「MP 记着整理成功、落点却被删」。
+
+        同组多颗种是同一份文件的多个站点副本，只要**一颗**整理成功落点就回来了，
+        其余成员照旧只读（不 recheck、不改状态）。
+        """
+        tried: List[str] = []
+        for h in live:
+            try:
+                ok, msg = self._music_organize_hash(h)
+            except Exception as err:  # noqa: BLE001
+                ok, msg = False, f"整理异常:{err}"
+            tried.append(f"{str(h)[:8]}… {msg}" if msg else str(h)[:8])
+            if ok:
+                return True, self._asset_organize_verify(item, h, str(msg or ""))
+        return False, "；".join(tried)[:300] or "音乐整理失败"
 
     def _asset_organize_verify(self, item: Dict[str, Any], seed_hash: str,
                                base_msg: str = "") -> str:
@@ -1071,7 +1247,8 @@ class AssetsMixin:
             _be._transfer_dests_cache = None
             dest = str((dict(_be._transfer_dests() or {})).get(str(seed_hash).lower()) or "").strip()
             if dest:
-                dest_ok = Path(dest).exists()
+                # ★ 19.12.93：与列表同一口径（音乐看专辑目录，不看那个代表文件）
+                dest_ok = self._asset_dest_alive(dest)
         except Exception:  # noqa: BLE001
             dest = ""
         # ② 同组其余成员：只读下载器快照（progress / online），绝不 recheck
@@ -1231,6 +1408,9 @@ class AssetsMixin:
         # ★ 15.10.0：默认**扔后台队列**跑（Master：「加个队列后台跑，让用户等体验不好」）——
         #   整理/订阅/刮削都是重活（网络 + 磁盘），同步等会把页面卡死、关页面还会断。
         background = bool(int(getattr(payload, "background", 1) or 0))
+        # ★ 19.12.97：一次点多条 → 共用一个批次号，面板据此聚成一行
+        #   （单条不编批次，免得汇总里全是只有一条的噪音行）。
+        _bid = self._job_new_batch() if (background and len(items) > 1) else ""
         results: List[Dict[str, Any]] = []
         for it in items:
             rid = str(it.get("resource_id") or "")
@@ -1246,7 +1426,13 @@ class AssetsMixin:
                     kind=f"asset_{action}", title=f"{_kt}「{name}」",
                     fn=(lambda _it=it, _a=action, _p=payload: self._asset_act_one(_a, _it, _p)),
                     dedup_key=f"asset:{action}:{rid}",
-                    params={"resource_id": rid},
+                    # ★ 19.12.96：params 是要**能重建任务**的，不是只拿来显示。
+                    #   订阅要季号、刮削要源，缺了就重试不了（旧版只存 resource_id，
+                    #   那两类任务重启后只能标「不可重试」）。
+                    params={"resource_id": rid,
+                            "season": int(getattr(payload, "season", 0) or 0),
+                            "scrape_source": str(getattr(payload, "scrape_source", "") or "")},
+                    batch_id=_bid,
                 )
                 results.append({"resource_id": rid, "name": name, "hashes": hs, "ok": True,
                                 "job_id": job.get("id"), "queued": True,
@@ -1260,7 +1446,8 @@ class AssetsMixin:
             success=_okn > 0,
             message=(f"{action}：已加入后台队列 {_okn} 条（可在「后台任务」看结果）" if background
                      else f"{action}：成功 {_okn}/{len(results)}"),
-            data={"action": action, "results": results, "background": background},
+            data={"action": action, "results": results, "background": background,
+                  "batch_id": _bid},
         )
 
     def _asset_act_one(self, action: str, it: Dict[str, Any],
@@ -1295,6 +1482,43 @@ class AssetsMixin:
         except Exception as e:  # noqa: BLE001
             return False, f"执行异常：{e}"
         return False, f"未执行（未知动作 {action} / {rid[:12]}）"
+
+    def _job_retry_asset(self, action: str, params: Dict[str, Any]) -> Tuple[bool, str]:
+        """★ 19.12.96 后台任务重试：按 ``resource_id`` 重取行，**先核现状再决定干不干**。
+
+        重试不是无脑重放，三处都要先看现在是什么样：
+
+        1. 资源已不在列表（被删掉，或重建后换了 id）→ 报「已不存在」，
+           不要静默成功让用户以为整理好了；
+        2. 整理类：落点已经回来了（上次其实成功，只是报了错或被打断）
+           → 直接报「已在库」，**不再 reorganize 一遍** —— 重建会多出一份副本，
+           而这正是重试最容易造成的不可逆副作用；
+        3. 资源已不在下载器（只剩账本残留）→ 明确说不可重试。
+
+        参数从 ``params`` 重建（季号 / 刮削源），不依赖当初那个 payload 对象 ——
+        那个对象早随请求一起没了。
+        """
+        rid = str(params.get("resource_id") or "").strip()
+        if not rid:
+            return False, "任务记录缺少 resource_id，无法重试"
+        try:
+            rows = {str(r.get("resource_id") or ""): r
+                    for r in self._asset_rows(include_stale=True)}
+        except Exception as err:  # noqa: BLE001
+            return False, f"重试时读取库内资源失败：{err}"
+        it = rows.get(rid)
+        if it is None:
+            return False, "资源已不存在（可能已被删除或条目重建），无法重试"
+        if action == "organize":
+            if str(it.get("media_library") or "") == "in_media":
+                return True, "已在库（上次整理其实成功了），无需重试"
+            if not self._asset_live_hashes(it):
+                return False, "不在下载器（仅账本残留），无法重试"
+        payload = SimpleNamespace(
+            season=int(params.get("season") or 0),
+            scrape_source=str(params.get("scrape_source") or ""),
+        )
+        return self._asset_act_one(action, it, payload)
 
     def assets_library(self, limit: int = 0, include_stale: int = 0) -> Response:
         """★ 15.8.15：「库内资产」列表（只读，独立入口的数据源）。

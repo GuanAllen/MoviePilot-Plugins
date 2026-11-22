@@ -64,7 +64,17 @@
 .magicflow-sitereport__live-uid[data-v-83d60f7e] { font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
 }
 
-.magicflow-sitereport__live-grid[data-v-83d60f7e] { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px;
+.magicflow-sitereport__live-grid[data-v-83d60f7e] { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px;
+}
+
+/* ★ 19.16.8 账号卡：4 大格 + 次要信息行（做种/时魔/等级/下一级降为小字，不再平铺成 8 格） */
+.magicflow-sitereport__live-body[data-v-83d60f7e] { display: block;
+}
+.magicflow-sitereport__live-minor[data-v-83d60f7e] { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-block-start: 9px;
+  padding-block-start: 8px; border-top: 1px solid rgba(255, 255, 255, .075);
+  font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+}
+.magicflow-sitereport__live-minor span[data-v-83d60f7e] { white-space: nowrap;
 }
 
 .magicflow-sitereport__live-gap[data-v-83d60f7e] { margin-block-start: 6px; font-size: 11.5px; line-height: 1.5; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
@@ -94,6 +104,54 @@
 .magicflow-sitereport__stat.is-danger b[data-v-83d60f7e] { color: rgb(var(--v-theme-error));
 }
 
+/* ★ 19.16.7 概览四格：单位小字 + 健康值语义 */
+.magicflow-sitereport__stat small[data-v-83d60f7e] { font-size: 11px; font-weight: 500; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+}
+.magicflow-sitereport__stat.is-ok span[data-v-83d60f7e] { color: rgb(var(--v-theme-success, 61, 220, 151));
+}
+
+/* ★ 19.16.8 升级条件清单（AND 多条件逐条达标，替代单条进度条） */
+.magicflow-sitereport__reqs[data-v-83d60f7e] { margin-block-start: 9px; background: rgba(240, 182, 76, .06); border: 1px solid rgba(240, 182, 76, .2); border-radius: 10px; padding: 9px 11px;
+}
+.magicflow-sitereport__reqs-top[data-v-83d60f7e] { display: flex; justify-content: space-between; align-items: center; font-size: 11.5px; margin-block-end: 5px;
+}
+.magicflow-sitereport__reqs-name[data-v-83d60f7e] { font-weight: 600; color: rgb(var(--v-theme-on-surface));
+}
+.magicflow-sitereport__reqs-count[data-v-83d60f7e] { color: rgb(240, 182, 76); font-weight: 600;
+}
+.magicflow-sitereport__reqs-row[data-v-83d60f7e] { display: flex; align-items: center; gap: 8px; font-size: 11.5px; padding: 5px 0; border-top: 1px solid rgba(255, 255, 255, .06);
+}
+.magicflow-sitereport__reqs-mark[data-v-83d60f7e] { flex: 0 0 14px; width: 14px; text-align: center; font-weight: 700;
+}
+.magicflow-sitereport__reqs-label[data-v-83d60f7e] { flex: 1 1 auto; color: rgba(var(--v-theme-on-surface), .8);
+}
+.magicflow-sitereport__reqs-detail[data-v-83d60f7e] { flex: 0 0 auto; font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+}
+.magicflow-sitereport__reqs-row.is-ok .magicflow-sitereport__reqs-mark[data-v-83d60f7e] { color: rgb(var(--v-theme-success, 61, 220, 151));
+}
+.magicflow-sitereport__reqs-row.is-miss .magicflow-sitereport__reqs-mark[data-v-83d60f7e] { color: rgb(var(--v-theme-error, 255, 107, 122));
+}
+.magicflow-sitereport__reqs-row.is-miss .magicflow-sitereport__reqs-detail[data-v-83d60f7e] { color: rgb(var(--v-theme-error, 255, 107, 122)); font-weight: 600;
+}
+.magicflow-sitereport__reqs-row.is-unknown .magicflow-sitereport__reqs-mark[data-v-83d60f7e] { color: rgba(var(--v-theme-on-surface), .45);
+}
+
+/* ★ 19.16.7 筛选分组标题 */
+.magicflow-sitereport__fgroup[data-v-83d60f7e] { margin-block-end: 10px;
+}
+.magicflow-sitereport__fgroup .magicflow-sitereport__chip-label[data-v-83d60f7e] { display: block; font-size: 10.5px; letter-spacing: .5px; margin: 0 0 6px 2px; color: rgba(var(--v-theme-on-surface), .42);
+}
+.magicflow-sitereport__fgroup.magicflow-sitereport__chips--l2[data-v-83d60f7e] { margin-block-end: 8px;
+}
+
+/* ★ 19.16.7 明细原名：默认折叠（单行省略），点一下展开（自动换行）；stalledUP→低速 由 JS 处理 */
+.magicflow-sitereport__row-orig[data-v-83d60f7e] { font-size: 10px; color: rgba(var(--v-theme-on-surface), .42); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; user-select: none; margin-block-start: 2px;
+}
+.magicflow-sitereport__row-orig:hover[data-v-83d60f7e] { color: rgba(var(--v-theme-on-surface), .62);
+}
+.magicflow-sitereport__row-orig.is-open[data-v-83d60f7e] { white-space: normal; overflow: visible; text-overflow: clip; color: rgba(var(--v-theme-on-surface), .58);
+}
+
 .magicflow-sitereport__chips[data-v-83d60f7e] { display: flex; flex-wrap: wrap; gap: 6px; margin-block-end: 10px;
 }
 
@@ -101,6 +159,12 @@
 }
 
 .magicflow-sitereport__chip-label[data-v-83d60f7e] { align-self: center; font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); margin-inline-end: 2px;
+}
+
+/* ★ 19.16.11 明细行：不再复用 ops-dialog__sub（那个类自带 18px 内边距，叠在 body 上会比上下行多缩进一格） */
+.magicflow-sitereport__detail[data-v-83d60f7e] { padding: 6px 0 4px;
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
 }
 
 .magicflow-sitereport__note[data-v-83d60f7e] { font-size: 12px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); margin-block-end: 8px;
@@ -112,7 +176,7 @@
 .magicflow-sitereport__list[data-v-83d60f7e] { display: flex; flex-direction: column; gap: 2px;
 }
 
-.magicflow-sitereport__row[data-v-83d60f7e] { display: flex; align-items: center; gap: 9px; padding: 7px 4px; border-radius: 8px;
+.magicflow-sitereport__row[data-v-83d60f7e] { display: flex; align-items: flex-start; gap: 9px; padding: 7px 4px; border-radius: 8px;
 }
 
 .magicflow-sitereport__row[data-v-83d60f7e]:hover { background: rgba(var(--v-theme-on-surface), 0.04);
@@ -151,4 +215,77 @@
 
 .magicflow-ops-dialog__body[data-v-83d60f7e] { padding: 4px 14px 18px;
 }
+}
+
+/* ★ 19.16.9 固定语义色：宿主 Vuetify 主题会把 text-purple/success 冲淡成灰块，
+   与设计稿（鲜紫 #8b7cf6 / 绿 #3ddc97）差很多。在弹窗根就近重定义主题 RGB 变量，
+   子级 VChip 的 flat/tonal 变体自动取到饱和色（筛选 chip + 种子前缀 bucket 一并修复）。 */
+.magicflow-sitereport-dialog[data-v-83d60f7e] {
+  --v-theme-primary: 139, 124, 246;
+  --v-theme-on-primary: 255, 255, 255;
+  --v-theme-success: 61, 220, 151;
+  --v-theme-purple: 139, 124, 246;
+  --v-theme-indigo: 124, 122, 246;
+  --v-theme-cyan: 38, 198, 218;
+  --v-theme-teal: 38, 166, 154;
+  --v-theme-deep-orange: 255, 138, 101;
+  --v-theme-blue-grey: 130, 150, 165;
+  --v-theme-grey: 150, 165, 180;
+  --v-theme-amber: 240, 182, 76;
+}
+
+/* ★ 19.16.9 flat 选中态：Vuetify 的 .bg-primary 读到的是 Vuetify 主题默认蓝(#2196f3)，
+   不受弹窗根变量覆盖。直接写死设计稿鲜紫实心 + 白字（tonal 各色已由上面变量覆盖生效）。
+   两组容器都要覆盖：用途在 __chips，传输状态在 __chips--l2。 */
+.magicflow-sitereport__chips .v-chip--variant-flat[data-v-83d60f7e],
+.magicflow-sitereport__chips--l2 .v-chip--variant-flat[data-v-83d60f7e] { background: #8b7cf6 !important; color: #fff !important;
+}
+.magicflow-sitereport__chips .v-chip--variant-flat .v-chip__content,
+.magicflow-sitereport__chips--l2 .v-chip--variant-flat .v-chip__content { color: #fff !important;
+}
+/* ★ 19.16.10 明细副行里的「低速」——设计稿 .rs .stall 琥珀色（原来整行一个灰） */
+.magicflow-sitereport__stall[data-v-83d60f7e] { color: #f0b64c;
+}
+/* ★ 19.16.10 小圆角标签与右侧大小按设计稿与标题行对齐（.align-items:flex-start + margin-top:1px） */
+.magicflow-sitereport__row-size[data-v-83d60f7e] { margin-block-start: 1px;
+}
+/* ★ 19.16.10 chip 全盘接管（不依赖 Vuetify 主题变量）
+   根因：VChip 根元素自带 .v-theme--dark 类，宿主主题的 --v-theme-purple/success 就定义在该元素
+   自身，弹窗根的变量覆盖永远失效 → text-purple 退化为继承色（白字），tonal 的 underlay 用
+   currentColor 铺出「实心灰块」。因此直接写死色值 + 提高选择器权重。
+   ⚠ 每条选择器都必须带 [data-v-83d60f7e]：构建管线会丢弃「含 v-chip 但无作用域属性」的规则。
+   形状统一 8px（设计稿 .chip），不再出现「有的圆角有的胶囊」。 */
+.magicflow-sitereport-dialog .v-chip[data-v-83d60f7e] { border-radius: 8px !important; height: auto !important; min-height: 0 !important; padding: 5px 10px !important; font-size: 11px !important; font-weight: 500 !important; letter-spacing: 0 !important;
+}
+/* 未选中（tonal）：通透淡底 + 描边 + 次级字色（设计稿 .chip），去掉实心灰块 */
+.magicflow-sitereport-dialog .v-chip.v-chip--variant-tonal[data-v-83d60f7e] { background: rgba(255, 255, 255, .045) !important; border: 1px solid rgba(255, 255, 255, .1) !important; color: rgba(232, 233, 240, .72) !important;
+}
+.magicflow-sitereport-dialog .v-chip[data-v-83d60f7e] .v-chip__underlay { opacity: 0 !important;
+}
+/* 语义绿：做种中（设计稿 .chip.green，未选中也要绿） */
+.magicflow-sitereport-dialog .v-chip.v-chip--variant-tonal.text-success[data-v-83d60f7e] { background: rgba(61, 220, 151, .12) !important; border-color: rgba(61, 220, 151, .3) !important; color: #3ddc97 !important; font-weight: 600 !important;
+}
+/* 选中（flat）：鲜紫实心 + 白字（设计稿 .chip.act）。传输行在 __chips--l2，这里用弹窗根兜底全部容器 */
+.magicflow-sitereport-dialog .v-chip.v-chip--variant-flat[data-v-83d60f7e] { background: #8b7cf6 !important; border: 1px solid #8b7cf6 !important; color: #fff !important; font-weight: 600 !important;
+}
+.magicflow-sitereport-dialog .v-chip.v-chip--variant-flat[data-v-83d60f7e] .v-chip__content { color: #fff !important;
+}
+/* 明细行前缀标签（设计稿 .bk：9.5px / 6px 圆角 / 彩色底）——它不在 chips 容器内，需单独覆盖 */
+.magicflow-sitereport-dialog .v-chip.magicflow-sitereport__row-b[data-v-83d60f7e] { border-radius: 6px !important; padding: 2px 7px !important; font-size: 9.5px !important; font-weight: 600 !important; margin-block-start: 1px;
+}
+.magicflow-sitereport-dialog .v-chip.magicflow-sitereport__row-b.text-purple[data-v-83d60f7e] { background: rgba(139, 124, 246, .16) !important; border-color: rgba(139, 124, 246, .28) !important; color: #8b7cf6 !important;
+}
+.magicflow-sitereport-dialog .v-chip.magicflow-sitereport__row-b.text-indigo[data-v-83d60f7e] { background: rgba(124, 122, 246, .16) !important; border-color: rgba(124, 122, 246, .28) !important; color: #7c7af6 !important;
+}
+.magicflow-sitereport-dialog .v-chip.magicflow-sitereport__row-b.text-cyan[data-v-83d60f7e] { background: rgba(53, 201, 221, .15) !important; border-color: rgba(53, 201, 221, .28) !important; color: #35c9dd !important;
+}
+.magicflow-sitereport-dialog .v-chip.magicflow-sitereport__row-b.text-teal[data-v-83d60f7e] { background: rgba(47, 191, 168, .15) !important; border-color: rgba(47, 191, 168, .28) !important; color: #2fbfa8 !important;
+}
+.magicflow-sitereport-dialog .v-chip.magicflow-sitereport__row-b.text-deep-orange[data-v-83d60f7e] { background: rgba(255, 138, 101, .15) !important; border-color: rgba(255, 138, 101, .28) !important; color: #ff8a65 !important;
+}
+.magicflow-sitereport-dialog .v-chip.magicflow-sitereport__row-b.text-success[data-v-83d60f7e] { background: rgba(61, 220, 151, .14) !important; border-color: rgba(61, 220, 151, .28) !important; color: #3ddc97 !important;
+}
+.magicflow-sitereport-dialog .v-chip.magicflow-sitereport__row-b.text-amber[data-v-83d60f7e] { background: rgba(240, 182, 76, .14) !important; border-color: rgba(240, 182, 76, .28) !important; color: #f0b64c !important;
+}
+.magicflow-sitereport-dialog .v-chip.magicflow-sitereport__row-b.text-blue-grey[data-v-83d60f7e] { background: rgba(154, 169, 186, .14) !important; border-color: rgba(154, 169, 186, .26) !important; color: #9aa9ba !important;
 }

@@ -1,4 +1,5 @@
 <script setup>
+import { startPolling, stopPolling } from '../polling'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { formatBonus, taskStateMeta, unwrapResponse } from '../utils'
 
@@ -99,11 +100,11 @@ watch(
 onMounted(() => {
   loadStatus()
   // 兜底：宿主未下发刷新信号时也保持数据新鲜（静默，无视觉副作用）
-  refreshTimer = window.setInterval(() => loadStatus({ silent: true }), 30000)
+  refreshTimer = startPolling(() => loadStatus({ silent: true }), 30000)
 })
 
 onUnmounted(() => {
-  if (refreshTimer) window.clearInterval(refreshTimer)
+  if (refreshTimer) stopPolling(refreshTimer)
 })
 </script>
 
