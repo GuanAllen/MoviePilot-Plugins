@@ -191,10 +191,34 @@ function canKind(k) {
 </template>
 
 <style scoped>
-.magicflow-be-dialog { background: linear-gradient(165deg, #191a24, #0e0f15); }
+/* ── 共享选择器（父页其它弹窗也在用）→ 两处各留一份（纯复制，零改动）。
+     ⚠️ VDialog 会 teleport 到 body，父页 scoped 规则不再命中 → 组件必须自带这些。── */
+.magicflow-dialog {
+  background: rgb(var(--v-theme-surface)) !important;
+  border: 1px solid var(--magicflow-panel-brd);
+  border-radius: 18px;
+  backdrop-filter: blur(16px) saturate(120%);
+  -webkit-backdrop-filter: blur(16px) saturate(120%);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  color: rgb(var(--v-theme-on-surface));
+}
+.magicflow-settings-dialog__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 12px;
+}
+.magicflow-settings-dialog__title {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+/* 本弹窗沿用 19.16.29 的深色渐变底：放在共享块之后 + !important 覆盖共享背景 */
+.magicflow-be-dialog { background: linear-gradient(165deg, #191a24, #0e0f15) !important; }
 
 /* 统计条（替代解释文案） */
-.magicflow-be__sum { display: flex; align-items: center; gap: 9px; padding: 11px 20px;
+.magicflow-be__sum { display: flex; align-items: center; gap: 9px; padding: 8px 18px;
   border-bottom: 1px solid rgba(255,255,255,.07); background: rgba(139,124,246,.045); }
 .magicflow-be__sum-big { font-size: 12.5px; font-weight: 650; white-space: nowrap; }
 .magicflow-be__sum-big em { font-style: normal; color: #b6a9ff; }
@@ -207,17 +231,17 @@ function canKind(k) {
   border: 1px solid rgba(255,255,255,.16); color: rgba(255,255,255,.5); font-size: 11px;
   display: grid; place-items: center; cursor: help; font-style: italic; }
 
-.magicflow-be__bar { display: flex; align-items: center; gap: 14px; padding: 12px 20px;
+.magicflow-be__bar { display: flex; align-items: center; gap: 10px; padding: 8px 18px;
   border-bottom: 1px solid rgba(255,255,255,.07); }
 .magicflow-be__search { max-width: 260px; }
 .magicflow-be__switch { flex: 0 0 auto; }
-.magicflow-be__body { padding: 14px 20px 24px; max-height: 62vh; overflow-y: auto; }
+.magicflow-be__body { padding: 6px 18px 20px; max-height: 62vh; overflow-y: auto; }
 .magicflow-be__empty { padding: 32px 0; text-align: center; color: rgba(255,255,255,.45); font-size: 13px; }
 
 .magicflow-be-card { background: rgba(255,255,255,.035); border: 1px solid rgba(255,255,255,.09);
   border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
 .magicflow-be-card__head { display: flex; align-items: center; justify-content: space-between;
-  gap: 10px; padding: 11px 14px; border-bottom: 1px solid rgba(255,255,255,.06); }
+  gap: 10px; padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,.06); }
 .magicflow-be-card__id { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex-wrap: wrap; }
 .magicflow-be-card__nm { font-size: 14px; font-weight: 650; }
 .magicflow-be-badge { font-size: 9.5px; font-weight: 650; color: #3ddc97; background: rgba(61,220,151,.12);
@@ -231,17 +255,17 @@ function canKind(k) {
 .magicflow-be-card__cur { font-size: 11px; color: rgba(255,255,255,.5); }
 .magicflow-be-card__err { font-size: 11px; color: #ff8a96; }
 .magicflow-be-card__empty { padding: 16px; text-align: center; font-size: 12px; color: rgba(255,255,255,.4); }
-.magicflow-be-card__items { padding: 2px 14px 8px; }
+.magicflow-be-card__items { padding: 2px 12px 8px; }
 
 /* 类别分组 */
 .magicflow-be-group { padding-top: 4px; }
 .magicflow-be-group + .magicflow-be-group { border-top: 1px solid rgba(255,255,255,.06); margin-top: 4px; }
-.magicflow-be-group__h { display: flex; align-items: baseline; gap: 8px; padding: 7px 0 4px; }
+.magicflow-be-group__h { display: flex; align-items: baseline; gap: 8px; padding: 6px 0 4px; }
 .magicflow-be-group__t { font-size: 11px; font-weight: 650; color: #b6a9ff; letter-spacing: .3px; }
 .magicflow-be-group__c { font-size: 10px; color: rgba(255,255,255,.4); }
 
 .magicflow-be-item { display: grid; grid-template-columns: 1fr auto auto; align-items: center;
-  gap: 10px; padding: 9px 0; border-bottom: 1px solid rgba(255,255,255,.05); }
+  gap: 10px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,.05); }
 .magicflow-be-item:last-child { border-bottom: 0; }
 .magicflow-be-item__nm { display: flex; align-items: baseline; gap: 5px; min-width: 0; }
 .magicflow-be-item__amt { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums;
@@ -256,11 +280,11 @@ function canKind(k) {
 .magicflow-be-item.is-disabled { opacity: .72; }
 
 @media (max-width: 600px) {
-  .magicflow-be__sum { flex-wrap: wrap; gap: 7px; padding: 10px 14px; }
+  .magicflow-be__sum { flex-wrap: wrap; gap: 7px; padding: 8px 14px; }
   .magicflow-be__sum-detail { flex: 1 1 100%; order: 3; }
-  .magicflow-be__bar { flex-wrap: nowrap; gap: 8px; padding: 10px 14px; }
+  .magicflow-be__bar { flex-wrap: nowrap; gap: 8px; padding: 8px 14px; }
   .magicflow-be__search { max-width: none; flex: 1 1 auto; min-width: 0; }
-  .magicflow-be__body { padding: 12px 12px 24px; }
+  .magicflow-be__body { padding: 4px 14px 18px; }
   .magicflow-be-card__id { gap: 6px; }
   .magicflow-be-card__dm { flex: 1 1 100%; }
   .magicflow-be-item { gap: 8px; }

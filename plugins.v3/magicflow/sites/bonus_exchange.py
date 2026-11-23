@@ -92,5 +92,5 @@ def exchange_upload(base: str, option: int, cookie: str, ua: str = "",
     if ok_hit and not bad_hit:
         return True, "ok", "兑换成功（站点回显确认）", flat
     if bad_hit:
-        return False, "fail", f"站点未确认成功（回显含「{bad_hit}」），请以站点页面为准", flat
-    return False, "fail", "站点未回显成功字样，请到站点核实是否到账", flat
+        return False, "fail", f"站点回显含「{bad_hit}」", flat
+    return False, "fail", "站点未回显成功字样", flat

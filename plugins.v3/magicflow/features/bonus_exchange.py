@@ -16,7 +16,7 @@
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.schemas import Response
 
@@ -205,8 +205,89 @@ class BonusExchangeMixin:
         ok, status, msg, evidence = exchange_upload(base, opt, cookie, ua=ua,
                                                     timeout=timeout, proxies=proxies,
                                                     submit=str(target.get("submit") or "交换"))
-        # ★ 写成功后前端带 refresh=1 重新拉看板（ttl=0 强制重抓）→ 余额/可换状态才更新。
+        # ★ 19.16.32：兑换后立刻回读同一页面核对结果（余额 / 上传量 前后对比），
+        #   结论直接返回给用户，不再让人自己去站点核对。
+        #   写成功后前端带 refresh=1 重新拉看板（ttl=0 强制重抓）→ 余额/可换状态才更新；
         #   这里不直接动 collect 缓存（门面无 invalidate；靠显式 force 重抓更可控）。
-        return Response(success=bool(ok), message=msg,
+        after: Dict[str, Any] = {}
+        try:
+            after = self._be_fetch(sid, site_d, force=True)
+        except Exception as err:  # noqa: BLE001
+            after = {"ok": False,
+                     "why": f"回读异常：{type(err).__name__}: {str(err)[:120]}"}
+        try:
+            good, msg, verdict = self._be_verdict(kind, kind_cn, cur, after, target, ok, msg)
+        except Exception as err:  # noqa: BLE001
+            good = bool(ok)
+            verdict = {"verified": False, "state": "unknown",
+                       "verify_error": f"{type(err).__name__}: {str(err)[:120]}"}
+        return Response(success=bool(good), message=msg,
                         data={"site_id": sid, "option": opt, "status": status,
-                              "evidence": evidence, "item": target, "refresh": bool(ok)})
+                              "evidence": evidence, "item": target,
+                              "refresh": True, **verdict})
+
+    def _be_verdict(self, kind: str, kind_cn: str, before: Dict[str, Any],
+                    after: Dict[str, Any], target: Dict[str, Any],
+                    ok: bool, raw_msg: str) -> Tuple[bool, str, Dict[str, Any]]:
+        """兑换回读裁决：用「兑换前」与「兑换后」两次回读的余额 / 上传量说话（★ 19.16.32）。
+
+        NexusPHP 兑换是同步生效的：POST 返回后立刻重抓同一页面，余额应恰好少掉票价、
+        上传量应增加对应 GB。据此给出可核实的结论，不把「去站点自己看」丢给用户。
+        """
+        def _f(v: Any) -> Optional[float]:
+            try:
+                return None if v is None else float(v)
+            except (TypeError, ValueError):
+                return None
+
+        def _m(v: float) -> str:
+            return f"{v:,.1f}"
+
+        cur_cn = str(before.get("currency") or after.get("currency") or "魔力")
+        b0, b1 = _f(before.get("balance")), _f(after.get("balance"))
+        up0, up1 = _f(before.get("uploaded_gb")), _f(after.get("uploaded_gb"))
+        price = _f(target.get("price"))
+        size_gb = _f(target.get("size_gb"))
+        spent = None if (b0 is None or b1 is None) else round(b0 - b1, 3)
+        gained = None if (up0 is None or up1 is None) else round(up1 - up0, 3)
+        data: Dict[str, Any] = {
+            "balance_before": b0, "balance_after": b1,
+            "uploaded_before": up0, "uploaded_after": up1,
+            "spent": spent, "gained": gained, "price": price,
+        }
+        # 上传类：把「到账了多少上传量」写进结论（回读有上传量就用实测差值）
+        up_note = ""
+        if kind == "upload":
+            if gained is not None and gained > 0:
+                up_note = f"，上传量 +{gained:.2f} GB（{up0:.2f} → {up1:.2f} GB）"
+            elif size_gb:
+                up_note = f"，换得 {size_gb:.2f} GB 上传量"
+
+        tol = max(0.5, (price or 0.0) * 0.02)
+        paid = spent is not None and price is not None and spent >= price - tol
+        # 明显没扣：扣得不足票价的一半（含 0 / 负数）
+        zero = spent is not None and price is not None and spent < price * 0.5
+        money = f"扣 {_m(spent)} {cur_cn}（余额 {_m(b0)} → {_m(b1)}）" if paid else ""
+        if paid:
+            data.update(verified=True, state="success")
+            if ok:
+                return True, f"兑换成功：已核实{money}{up_note}", data
+            return True, (f"兑换成功：已核实{money}{up_note}"
+                          f"（站点回显异常：{raw_msg}，但扣费已发生）"), data
+        if zero:
+            note = ("；" + raw_msg) if not ok else ""
+            data.update(verified=True, state="failed")
+            return False, (f"兑换未生效：已核对余额未扣减（{_m(b1)} {cur_cn}）{note}"), data
+        if spent is not None:
+            # 余额变动但和票价对不上（站点扣费口径不同 / 同时有别的扣费）
+            note = ("；" + raw_msg) if not ok else ""
+            data.update(verified=False, state="unknown")
+            return bool(ok), (f"兑换结果待定：余额变动 {-spent:+,.1f} {cur_cn}，"
+                              f"票价 {_m(price)}{up_note}{note}"), data
+        # 余额读不到：保留站点原话，明确说没取到，不把核实责任甩给用户
+        why = str(after.get("why") or "").strip()
+        data.update(verified=False, state="unknown")
+        if ok:
+            return True, f"{raw_msg}；回读页面未取到余额，无法核对扣费", data
+        return False, (f"{raw_msg}；回读站点页面失败（{why or '页面不可用'}），"
+                       f"无法核对是否扣费"), data

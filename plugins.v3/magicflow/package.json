@@ -1,7 +1,7 @@
 {
   "name": "moviepilot-magicflow-plugin",
   "private": true,
-  "version": "19.16.31",
+  "version": "19.16.32",
   "type": "module",
   "scripts": {
     "dev": "vite build --watch",
@@ -17,6 +17,7 @@
     "vite": "^5.4.11"
   },
   "history": {
+    "19.16.32": "魔力兑换两处体验修复：①兑换弹窗补齐与全站一致的共享弹窗样式（标题栏 16px/18px 内距、18px 圆角+描边+磨砂+投影，间距统一 18px，渐变底保留）；②兑换后立刻回读同一页面核对结果——比对兑换前后的魔力余额与上传量，把「已核实扣 X 魔力（余额 a→b）、上传量 +N GB」直接返回，回显成功但未扣费/回显异常但已扣费/余额读不到均有明确结论，不再提示用户去站点核实。实测学校站 500 魔力换 1GB：余额 39,343.8→38,843.8、上传量 823.93→824.93 GB，核对通过。纯后端 features/sites/collect_parse + 前端 1 src（dist 已重建）。",
     "19.16.31": "魔力兑换写动作修复（19.16.28 首发即坏）：① site_base 兼容 dict 入参——旧实现只按对象属性取 url/domain，兑换动线传 dict 恒取空 → base 空 → POST /mybonus.php 无 scheme，被 RequestUtils 吞成「站点无响应」，所有站点兑换写动作从未成功；② 成功回显判断改为去 HTML 标签后的可见文本匹配，修掉「uploaded」命中 NexusPHP 页头 CSS 类（color_uploaded）导致的假成功。真实兑换验证：学校站扣 4,200 魔力换 10GB 上传（余额 43,498→39,298、上传量 813.93→823.93GB）。写请求异常现直接回显 detail 并写插件日志。",
     "19.16.26": "手机端设置详情页精简：移除界面内解释文案（导语长句/折叠说明/字段灰字/危险卡说明段），说明改写 wiki。保留分区卡/字段名/场景tag/真值统计/全部控件，绑定零漂移。纯前端 3 src + dist。",
     "19.16.25": "桌面设置页目录改用昨天的 4 组分组方案（纯前端版，3 src + 重建 dist）：桌面原为 14 个平铺 tab 且漏了「全站辅种/认领」两项，分组定义 MF_SETTINGS_GROUPS 早已有 16 项（手机端在用）。宽屏把 VDialog 加宽到 62rem、隐藏 VTabs、显示左侧分组目录（4 组 16 项，漏项带绿色「新」角标），手机端两段式完全不动。同时在「全站辅种」页补上本地直连搜索入口（PT时间 / Depth Studio）——这两个字段 reseed_search_sites/reseed_search_kw 早就在 models/status/回填/默认值里，唯独设置页没有控件；候选直接读 /reseed 的 config.search_options，状态只展示真实字段不编数字。绑定零漂移：原有 107 字段/v-model 全在，新增 2 字段就是本地卡。",
