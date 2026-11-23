@@ -92,8 +92,10 @@ _ROUTES = (
     ("/creds/sync", "sync_creds_to_mp", "POST", "凭据中心:一键写入 MP 站点 rss/apikey(需 confirm=1)"),
     ("/rescue", "rescue", "GET,POST", "死种补源：停滞欠 H&R 的种从他站无 H&R 站补下同 Release(action=scan 只读预览 / apply 执行需 confirm=1)"),
 
-    # ── 站点诊断（能力 / 魔力公式）（1 条）
+    # ── 站点诊断（能力 / 魔力公式 / 魔力兑换）（3 条）
     ("/sites/{site_id}/bonus-formula", "probe_site_formula", "GET", "抓取站点魔力公式与参数(诊断)"),
+    ("/bonus/exchange", "get_bonus_exchange_state", "GET", "魔力兑换看板:逐站当前魔力 + 上传量兑换项(只读)"),
+    ("/bonus/exchange/act", "bonus_exchange_act", "POST", "魔力兑换:手动换一个上传量项(默认干跑;confirm=1 才真写)"),
 
     # ── PV 配额 / 实时 / 趋势 / 事件（7 条）
     ("/pv", "get_pv_ledger", "GET", "站点 PV 账本:每站每天耗了多少配额(可查历史)"),

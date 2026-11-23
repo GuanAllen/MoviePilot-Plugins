@@ -55,6 +55,7 @@ from .collect_parse import (  # noqa: E402
     is_pv_limited,
     next_day_ts,
     normalize_api_profile,
+    parse_bonus_exchange_page,
     parse_claim_page,
     parse_leeching_rows,
     parse_mail_body,
@@ -128,6 +129,8 @@ KIND_TTL: Dict[str, float] = {
     "welcome": 604800.0,  # 欢迎短讯正文（7d，基本不变）
     # ★ 11.8.0：站点 H&R 对账（``myhr.php``）——页面便宜、变化慢（对账周期 6h）
     "hr": 1800.0,         # H&R 记录页（30min）
+    # ★ 19.16.28：魔力兑换页（mybonus.php）—— 余额/价格会变，看板 10min；兑换前 force 重抓
+    "bonus_exchange": 600.0,
     # ★ 19.10.31：站点 RSS。**故意 0** —— ``features/rss.py`` 自己有一层 kvstore 缓存
     #   （``RSS_TTL=300``，键含 limit 与凭据摘要，还带 ``refresh`` 强制刷新语义）。
     #   这里再缓存一层会让「点刷新」时外层绕过、内层仍命中 → 用户看到旧列表。

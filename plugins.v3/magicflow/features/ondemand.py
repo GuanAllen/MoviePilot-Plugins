@@ -71,6 +71,11 @@ _OD_ADD_MAX_PAGES = 3
 #   计流量下载 + 一堆 H&R 义务。真要更多，搜准一点再点，别一次全勾。
 _OD_BATCH_MAX = 30
 
+# ★ 19.16.22：一次最多**显示**多少条候选（= 入池条数 = 前端可勾选的那批）。
+#   原来是裸字面量 ``[:20]`` 散在三处，横幅又报「回来 113 条」→ 用户问另外 93 条去哪了。
+#   收敛成一个常量，提示文案里同时报「返回 N 条 / 显示前 20 条」。
+_OD_CAND_SHOW = 20
+
 
 #: ★ 17.2.0 直连加种：促销状态 → 下载计费系数（真值源 = ``sites/formula_fetch.parse_torrent_promotion`` 的词表）。
 #  ``unknown``（页面拿不到/模板变了）**按全额计**：宁可把免费当收费记账，也不把收费当免费白嫖。
@@ -263,7 +268,9 @@ def _od_norm_text(s: Any) -> str:
     """比对用的归一：小写 + 清技术词 + 标点转空格。**只用于比对，不做任何改写。**"""
     t = str(s or "").lower()
     t = _OD_TECH_RE.sub(" ", t)
-    t = re.sub(r"[\.\-_\[\]()（）【】:,;，；/|+*'\"!?]", " ", t)
+    # ★ 19.16.22：补全「全角标点」——原来只洗了半角 ``:``，TMDB 的「剧场版：双帝之战」带
+    #   全角冒号，跟站点标题的「剧场版 双帝之战」就差这一个字符，导致同一部片判成不相干。
+    t = re.sub(r"[\.\-_\[\]()（）【】:,;，；、/|+*'\"!?：·—～…“”‘’]", " ", t)
     return re.sub(r"\s+", " ", t).strip()
 
 
@@ -347,27 +354,43 @@ def _od_profile(names: List[str]) -> Tuple[List[str], List[Set[str]]]:
     return cn, en
 
 
+#: 中文名子串命中的最短长度（「战狼」这种两字名区分度太低，容易误命中别的片）。
+_OD_CN_MIN_LEN = 4
+
+
 def _od_relevance(row: Dict[str, Any], cn: List[str], en: List[Set[str]]) -> int:
-    """候选相关性：``2`` 强相关（含中文全名 / 某个英文名整组命中）· ``1`` 沾边 · ``0`` 不相干。
+    """候选相关性：``2`` 片名对得上 · ``1`` 没法确认（可能是这部，名字是另一种语言）· ``0`` 不相干。
 
     只看 ``title`` + ``description``（站点原文），不猜、不翻译。
+
+    ★ 19.16.22 两处修正（改前实测搜《斗破苍穹双帝之战》：20/20 全判 0，横幅还说「都不沾边」）：
+      ① 中文名也要**归一化后**再比。原来拿 TMDB 的「剧场版：双帝之战」直接去子串比站点标题
+         「剧场版 双帝之战」，全角冒号差一个字符就不命中；英文分支本来就归一化了，两边口径不一致。
+      ② 只有中文名、而候选标题里**一个中文字都没有**时，系统其实**不知道**是不是同一部片
+         （站点常用英文发布名，TMDB 这部片没给英文别名）→ 记 ``1``「待确认」，
+         不能谎称「不相干」。自动选源只认 ``>=2``，所以这不会让机器瞎选。
     """
     if not cn and not en:
         return 0
     raw = "%s %s" % (str(row.get("title") or ""), str(row.get("description") or ""))
+    nraw = _od_norm_text(raw)
     for n in cn:
-        if n and n in raw:
+        nn = _od_norm_text(n)
+        if nn and len(nn) >= _OD_CN_MIN_LEN and nn in nraw:
             return 2
+    loose = 0
     if en:
-        hay = set(_od_norm_text(raw).split())
-        best = 0
+        hay = set(nraw.split())
         for group in en:
             hit = len(group & hay)
             if hit >= len(group):
                 return 2
             if hit:
-                best = 1
-        return best
+                loose = 1
+    if loose:
+        return 1
+    if cn and not re.search(r"[\u4e00-\u9fff]", raw):
+        return 1
     return 0
 
 
@@ -1011,15 +1034,34 @@ class OnDemandMixin:
     @staticmethod
     def _od_no_pick_reason(rows: List[Dict[str, Any]], media: Any,
                            title: str, sites: List[int]) -> str:
-        """没自动选源时**把原因说清楚** —— 「搜到一堆但都不沾边」和「压根没搜到」不是一回事。"""
+        """没自动选源时**把原因说清楚** —— 三种情况不能混为一谈：
+
+        · 压根没搜到；
+        · 搜到了、片名也对得上，但算不出该选哪条；
+        · 搜到了但**没法确认**是不是这部（站点用另一种语言命名）—— 这是「不知道」，不是「不相干」。
+
+        ★ 19.16.22：改前一律说「回来 113 条但都不沾边」，实测那时 20 条全是同一部片
+        （TMDB 只给了中文名、站点全是英文发布名），等于对着用户说假话。现在按 ``rel`` 分布分档，
+        并交代「返回 N 条 / 显示前 20 条」的口径（原来这两个数字对不上）。
+        """
         n = len(rows or [])
+        nsite = len(sites or [])
         if not n:
-            return "没搜到任何候选（%d 个站点都没有）" % len(sites or [])
+            return "没搜到任何候选（%d 个站点都没有）" % nsite
         if media is None:
-            return ("没认出片名（TMDB 查不到《%s》），不替你自动选源：下面是站点按关键词的粗筛结果"
-                    "（%d 条），可能完全不相关，确认是哪部再勾选" % (title, n))
-        return ("站点里没有与《%s》匹配的资源（已搜 %d 站，回来 %d 条但都不沾边）；"
-                "下面只是关键词粗筛结果，供人工确认" % (title, len(sites or []), n))
+            return ("没认出片名（TMDB 查不到《%s》），不替你自动选源：下面是站点按关键词返回的 %d 条，"
+                    "可能完全不相关，确认是哪部再勾选" % (title, n))
+        shown = min(n, _OD_CAND_SHOW)
+        tail = "" if n <= shown else "；下面按接近程度显示前 %d 条" % shown
+        rel2 = sum(1 for r in rows if int(r.get("rel") or 0) >= 2)
+        rel1 = sum(1 for r in rows if int(r.get("rel") or 0) == 1)
+        if rel2:
+            return ("有 %d 条片名对得上，但没有一条能自动选（缺价格或做种信息），请自己勾选" % rel2)
+        if rel1:
+            return ("没能确认片名：%d 个站点返回 %d 条，其中 %d 条的发布名和《%s》对不上"
+                    "（站点常用另一种语言命名），不替你猜%s" % (nsite, n, rel1, title, tail))
+        return ("站点里没有与《%s》匹配的资源（已搜 %d 站，返回 %d 条都对不上片名%s），供人工确认"
+                % (title, nsite, n, tail.replace("；", "，")))
 
     # ------------------------------------------------------------ 第 3 步：下载
 
@@ -1254,7 +1296,7 @@ class OnDemandMixin:
                 # ★ 19.11.2：识别结果盖到候选行上（随池一起存 / 随池一起取）
                 self._ondemand_stamp_media(rows, media)
                 self._ondemand_cache_put(q["query"], sites, rows)
-                self._od_pool_put(rows[:20], str(q.get("query") or ""))
+                self._od_pool_put(rows[:_OD_CAND_SHOW], str(q.get("query") or ""))
             row = next((r for r in rows if str(r.get("enclosure") or "") == pick), None)
         if row is None:
             return {"ok": False, "code": "cand_expired",
@@ -2391,7 +2433,7 @@ class OnDemandMixin:
                 # 覆盖入池：弹窗「勾选 → 批量」取的是池里的副本，不覆盖就拿不到身份。
                 # **只写前 20 条**（= 返回给用户能勾选的那批）——全量重写会翻倍写盘，
                 # 实测 806 条直接把请求拖到超时。注意 out 还没组装，别引用它。
-                self._od_pool_put(rows[:20], str(q["query"] or ""))
+                self._od_pool_put(rows[:_OD_CAND_SHOW], str(q["query"] or ""))
         # ★ 19.11.6：把「这片是谁」传给选源 —— ``None`` 表示调用方不给身份（旧行为），
         #   ``[]`` 表示**没认出来**（那就别替用户选，见 ``_ondemand_pick`` 的注释）。
         _names = _od_target_names(media)
@@ -2416,7 +2458,7 @@ class OnDemandMixin:
             "sites": sites,
             "save_path": (str(getattr(task, "save_path", "") or "") if task is not None else "")
                          or self._ondemand_default_save_path(),
-            "candidates": self._ondemand_rank(rows, _names)[:20],
+            "candidates": self._ondemand_rank(rows, _names)[:_OD_CAND_SHOW],
             "picked": picked,
             "auto_pick": (auto or {}).get("enclosure") or "",
             "manual": bool(pick),

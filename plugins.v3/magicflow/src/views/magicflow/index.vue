@@ -16,6 +16,7 @@ import ClaimConfirm from './components/confirm/ClaimConfirm.js'
 import EnforceConfirm from './components/confirm/EnforceConfirm.vue'
 import TagReconConfirm from './components/confirm/TagReconConfirm.vue'
 import ClaimDialog from './components/dialogs/ClaimDialog.js'
+import BonusExchangeDialog from './components/dialogs/BonusExchangeDialog.vue'
 import RssDialog from './components/dialogs/RssDialog.vue'
 import ExamConfirm from './components/confirm/ExamConfirm.vue'
 import SiteReportDialog from './components/dialogs/SiteReportDialog.js'
@@ -691,6 +692,7 @@ function mfOpenPage(page) {
     case 'douban': return openDoubanService()
     case 'crossseed': return showCrossseed()
     case 'claim': return openClaim()
+    case 'bonus': return openBonus()
     case 'rss': return openRss()
     case 'silent': return openSilent()
     case 'keep': return openKeep()
@@ -703,7 +705,9 @@ function mfOpenPage(page) {
 }
 // 功能中心（弹层）：MF_PAGES 全量入口。概览「快速功能 / 全部功能 / 功能中心」统一落地到这里。
 const hubOpen = ref(false)
-function openFunctionHub() { hubOpen.value = true }
+// 「这次是从功能中心点进来的」——子页关掉后要回到功能中心，而不是掉回主页（见 onHubPick 前的说明）
+const hubReturnPending = ref(false)
+function openFunctionHub() { hubReturnPending.value = false; hubOpen.value = true }
 
 // 已保存的隐藏集合（来自 /status）→ 顶栏/菜单/功能格据此显隐。保存后 loadStatus 刷新。
 // ── useHeaderTiles（P3 已抽）────────────────────────────────
@@ -1646,6 +1650,51 @@ async function loadClaim(force = false, silent = false) {
     if (!silent) claimLoading.value = false
   }
 }
+// ── 魔力兑换（bonus，19.16.28）：看板只读 + 手动换上传量（confirm 才写）────────
+const bonusOpen = ref(false)
+const beData = ref(null)
+const bonusLoading = ref(false)
+const bonusActing = ref(false)
+async function loadBeExchange(refresh = false) {
+  bonusLoading.value = true
+  try {
+    const payload = unwrapResponse(await api.features.bonusExchange(refresh ? '?refresh=1' : ''))
+    if (payload) beData.value = payload
+  } catch (err) {
+    notify(`读取魔力兑换看板失败：${err?.message || err}`, 'error')
+  } finally {
+    bonusLoading.value = false
+  }
+}
+function openBonus() {
+  bonusOpen.value = true
+  loadBeExchange()
+}
+async function bonusAct(payload) {
+  if (bonusActing.value || !payload) return
+  const item = payload.item || {}
+  const kind = payload.kind || item.kind || 'upload'
+  const title = item.title || (item.size_gb ? `${item.size_gb} GB 上传量` : '该项')
+  const price = Number(item.price || 0).toLocaleString()
+  let extra = '这会真实扣减魔力、不可撤销。'
+  if (kind === 'invite') {
+    extra = '这会真实扣减魔力；邀请名额换回不退，不可撤销。'
+  } else if (kind === 'temp_invite') {
+    extra = '这会真实扣减魔力；临时邀请有效期通常 7 天，换回不退，不可撤销。'
+  }
+  if (!window.confirm(`确认用 ${price} 魔力兑换「${title}」？\n\n${extra}`)) return
+  bonusActing.value = true
+  try {
+    const q = `site_id=${encodeURIComponent(payload.siteId)}&option=${encodeURIComponent(payload.option)}&confirm=1`
+    const res = unwrapResponse(await api.features.bonusExchangeAct(q))
+    notify(res?.message || '兑换请求已提交', res?.success ? 'success' : 'error')
+    if (res?.data?.refresh) await loadBeExchange(true)
+  } catch (err) {
+    notify(`兑换失败：${err?.message || err}`, 'error')
+  } finally {
+    bonusActing.value = false
+  }
+}
 function openRss() {
   rssOpen.value = true
 }
@@ -2063,6 +2112,63 @@ function setSettingsNavEl(el) { settingsNavEl.value = el }
 // 保存「下载目录」标签：qBittorrent 全局路径 + 任务保存目录（默认模板）。
 
 // 保存全局设置。
+
+// ── 功能中心 → 功能页 的「目录层」返回（19.16.23）───────────────
+// 背景：功能中心是个弹层，点任一功能格子时它先把自己关掉再开子页；于是子页一关就直接
+// 掉回主页概览，想进下一个功能必须重新点「功能中心」——用户反馈的正是这条。
+// 做法：从功能中心进子页时记一笔，等这些功能页弹窗**全部**关掉后再把功能中心打开，
+// 这样「关掉当前页 → 回到目录 → 选下一个」是连续的一层导航，和设计稿的层级一致。
+// ★ 新增功能页必须登记到 HUB_PAGE_REFS：key = MF_PAGES/mfOpenPage 的 key，值 = 该页的开关 ref。
+//   漏登记只会退化成旧行为（关完掉回主页），不会报错；但登记成非弹窗的 key 会误弹目录。
+const HUB_PAGE_REFS = {
+  recommend: recommendOpen,
+  exam: examOpen,
+  signin: signinOpen,
+  cloud: cloudOpen,
+  douban: doubanServiceOpen,
+  crossseed: crossseedOpen,
+  claim: claimOpen,
+  bonus: bonusOpen,
+  rss: rssOpen,
+  silent: silentOpen,
+  sitereport: siteReportOpen,
+  hrbills: hrBillsOpen,
+  ceiling: ceilingOpen,
+  ops: opsOpen,
+  settings: settingsDialog,
+  // —— 次级入口（原先只散在顶栏与「更多」菜单）——
+  ondemand: ondemandOpen,
+  health: healthOpen,
+  assets: assetsDialog,
+  music: musicOpen,
+  rescue: rescueOpen,
+  jobs: jobsOpen,
+  pushes: pushAuditOpen,
+  trend: trendOpen,
+  optimize: optimizerOpen,
+  plan: planOpen,
+  notify: notifyOpen,
+  keep: keepOpen,
+  create: editorOpen,
+}
+// 任一功能页弹窗是否还开着（★ computed 惰性求值 + 此处调用点已在所有 ref 解构之后，避 TDZ 白屏）
+const hubPageOpen = computed(() => {
+  for (const r of Object.values(HUB_PAGE_REFS)) {
+    if (r && r.value) return true
+  }
+  return false
+})
+watch(hubPageOpen, now => {
+  if (now || !hubReturnPending.value) return
+  hubReturnPending.value = false
+  hubOpen.value = true
+})
+// 功能中心的点击落点：只有「真的会开弹窗」的格子才记返回标记（closing / 纯跳转不算）
+function onHubPick(page) {
+  const key = typeof page === 'string' ? page : (page && page.key)
+  hubReturnPending.value = !!key && Object.prototype.hasOwnProperty.call(HUB_PAGE_REFS, key)
+  mfOpenPage(page)
+}
 
 watch(activeTab, tab => {
   // 进入「种子池」重新拉候选 / 托管，保证最新
@@ -2825,7 +2931,7 @@ onUnmounted(() => {
       :pages="MF_PAGES"
       :narrow="isNarrow"
       :badges="hubBadges"
-      @open="mfOpenPage"
+      @open="onHubPick"
     />
 
     <!-- ★ P4：H&R 账单弹窗（★ 任务 98：只查看账单 + 审计 + 历史事件，
@@ -3378,6 +3484,17 @@ onUnmounted(() => {
       @refresh="loadClaim(true)"
       @scan="claimScanRun"
       @ask="claimAsk"
+    />
+
+    <!-- 魔力兑换看板（19.16.28）：只读 + 手动换上传量（父页二次确认） -->
+    <BonusExchangeDialog
+      v-model="bonusOpen"
+      :data="beData"
+      :loading="bonusLoading"
+      :acting="bonusActing"
+      :narrow="isNarrow"
+      @refresh="loadBeExchange(true)"
+      @act="bonusAct"
     />
 
     <!-- ★ P4：静默池全局视图（自有组件；props 下 / emit 上） -->

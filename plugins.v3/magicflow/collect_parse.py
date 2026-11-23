@@ -1560,3 +1560,144 @@ def parse_np_search_rows(html_text: Any) -> List[Dict[str, Any]]:
     if not out:
         out = _np_rows(html, _NP_ROW_SPLIT_LEGACY)
     return out
+
+
+# ============================================================
+# 魔力兑换（mybonus.php）—— 纯解析（★ 19.16.28）
+# ============================================================
+# NexusPHP 的 mybonus.php 兑换区是一张表：每个兑换项一个 `<form action="?action=exchange"
+# method="post">`，内含 `name="option" value=N` 的隐藏域、`<h1>标题</h1>`、价格单元格、
+# `submit` 按钮。按钮带 `disabled` = 当前魔力不够 / 等级不够（站点自己算的，我们只读）。
+# 实测 13 站结构一致（option 有的从 0 起、有的从 1 起），不能假设固定编号。
+_BE_FORM_RE = re.compile(r"<form\b[^>]*\baction\s*=\s*[\"']?\?action=exchange[^\"'>]*[\"']?[^>]*>(.*?)</form>",
+                         re.S | re.I)
+_BE_OPTION_RE = re.compile(r"name\s*=\s*[\"']?option[\"']?\s+value\s*=\s*[\"']?(\d+)", re.I)
+_BE_TITLE_RE = re.compile(r"<h[1-4]\b[^>]*>(.*?)</h[1-4]>", re.S | re.I)
+_BE_TD_RE = re.compile(r"<td\b[^>]*>(.*?)</td>", re.S | re.I)
+_BE_TAG_RE = re.compile(r"<[^>]+>")
+_BE_DISABLED_RE = re.compile(r"\bdisabled\b", re.I)
+_BE_UPLOAD_RE = re.compile(r"(?:上传(?:量|流量)?|upload)", re.I)
+_BE_GB_RE = re.compile(r"([\d,\.]+)\s*(GB|TB|MB)", re.I)
+# ★ 19.16.29：邀请名额 / 临时邀请。两者与上传量共用同一个 exchange form，
+#   只看标题区分；「临时邀请」优先判（“1个临时邀请名额”同时含“邀请”）。
+_BE_TEMP_INVITE_RE = re.compile(r"临时邀请")
+_BE_INVITE_RE = re.compile(r"邀请")
+_BE_COUNT_RE = re.compile(r"(\d+)\s*个")
+# 可换项 submit 固定是站点自己的按钮文案（实测 13 站均「交换」）；写动作优先用它。
+_BE_SUBMIT_RE = re.compile(r"type\s*=\s*[\"']?submit[\"']?[^>]*\bvalue\s*=\s*[\"']([^\"']+)", re.I)
+
+
+def _be_text(frag: Any) -> str:
+    """去标签 + 实体解码 + 折叠空白。"""
+    t = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", str(frag or ""), flags=re.S | re.I)
+    t = _BE_TAG_RE.sub(" ", t)
+    t = html.unescape(t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _be_kind(title: str) -> str:
+    """兑换项类别：``temp_invite`` / ``invite`` / ``upload`` / ``""``（不接的类型）。
+
+    ★ 顺序要紧：``1个临时邀请名额`` 同时命中「邀请」，必须先判 ``临时邀请``。
+    """
+    t = str(title or "")
+    if _BE_TEMP_INVITE_RE.search(t):
+        return "temp_invite"
+    if _BE_INVITE_RE.search(t):
+        return "invite"
+    if _BE_UPLOAD_RE.search(t):
+        return "upload"
+    return ""
+
+
+
+def parse_bonus_exchange_page(text: Any) -> Dict[str, Any]:
+    """NexusPHP ``mybonus.php`` → 魔力余额 + **上传量兑换项**列表（★ 19.16.28）。
+
+    只回答「页面说了什么」：余额（站点自报）、每个兑换项的 option / 标题 / 价格 /
+    是否可换（站点 disabled）、数量（GB/TB 或 邀请名额个数）。**不判断**该不该换——那是裁决层。
+
+    收三类项（★ 19.16.29 扩到邀请）：``upload``（标题含「上传 / upload」）/
+    ``invite``（含「邀请」不含「临时」）/ ``temp_invite``（含「临时邀请」）。
+    头衔 / VIP / 赠送 / 捐赠 / 消 H&R 等其余类型一律不返回（不可逆或需额外参数）。
+
+    Returns(dict):
+        ``ok``：页面有效（有 exchange 表单）—— 登录失效 / 报错页应为 False；
+        ``balance``：站点自报的当前魔力（float，取不到为 None，**不伪造 0**）；
+        ``currency``：站点币名（魔力值 / 鲸币 / 金元宝…）；
+        ``items``：[{option, title, price, size_gb, kind, count, disabled, disabled_reason, submit}]；
+        ``kinds``：各类项数 {upload, invite, temp_invite}；
+        ``form_count``：全页 exchange 表单数（含不接的类型，便于审计页是否解析全）；
+        ``why``：ok=False 的原因。
+    """
+    raw = str(text or "")
+    out: Dict[str, Any] = {
+        "ok": False, "balance": None, "currency": "", "items": [],
+        "kinds": {"upload": 0, "invite": 0, "temp_invite": 0},
+        "form_count": 0, "why": "",
+    }
+    if not raw:
+        out["why"] = "页面为空"
+        return out
+    forms = _BE_FORM_RE.findall(raw)
+    out["form_count"] = len(forms)
+    if not forms:
+        out["why"] = "未找到兑换表单（可能登录失效 / 非 NexusPHP 站 / SPA）"
+        return out
+    # 余额 / 币名：文案形如「用你的鲸币（当前16,852.6）换东东！」——各站前缀不同，抓「当前N.N」
+    tb = html.unescape(_be_text(raw))
+    mb = re.search(r"当前\s*([\d,]+(?:\.\d+)?)\s*[）\)\]】]", tb)
+    if mb:
+        out["balance"] = _num(mb.group(1).replace(",", ""))
+    cm = re.search(r"用你的\s*([^\s（(，,]{1,10})\s*[（(]当前", tb)
+    if cm:
+        out["currency"] = cm.group(1).strip()
+    if out["balance"] is None:
+        # ★ 19.16.29 兜底：部分站文案是「魔力值：12,028.6」（★ 数字在关键词后，PT时间）
+        #   只在主规则取不到时生效，避免覆盖已正确的站（如高清杜比的「积分」不是余额）。
+        fb = re.search(r"(魔力值|鲸币|金元宝|电力值|蟹币值?|积分|bonus)\s*[：:]\s*([\d][\d,]*(?:\.\d+)?)", tb, re.I)
+        if fb:
+            out["balance"] = _num(fb.group(2).replace(",", ""))
+            if not out["currency"]:
+                out["currency"] = fb.group(1).strip()
+    for frag in forms:
+        om = _BE_OPTION_RE.search(frag)
+        tm = _BE_TITLE_RE.search(frag)
+        if not om or not tm:
+            continue
+        title = _be_text(tm.group(1))
+        kind = _be_kind(title)
+        if not kind:
+            continue  # 只接上传量 / 邀请名额 / 临时邀请；头衔/VIP/赠送/消H&R 不碰
+        # 价格：所有 td 里「纯数字（带千分位/小数）」的那个；排除 option 列的 <b>1</b>
+        price = None
+        for td in _BE_TD_RE.findall(frag):
+            txt = _be_text(td)
+            if re.fullmatch(r"[\d,]+(?:\.\d+)?", txt):
+                price = _num(txt.replace(",", ""))
+        # 数量：从标题「1.0 GB上传量 / 增加100.0 GB上传量（将提高分享率）」取
+        gm = _BE_GB_RE.search(title)
+        size_gb = None
+        if gm:
+            try:
+                v = float(gm.group(1).replace(",", ""))
+                size_gb = v * (1024 if gm.group(2).upper() == "TB" else (1 / 1024 if gm.group(2).upper() == "MB" else 1))
+            except (ValueError, OverflowError):
+                size_gb = None
+        dis = bool(_BE_DISABLED_RE.search(frag))
+        # submit 按钮文案：可换项＝「交换」；disabled 项＝站点给的原因（「需要更多鲸币」/「等级不足」…）
+        sm = _BE_SUBMIT_RE.search(frag)
+        submit = sm.group(1).strip() if sm else ""
+        why = submit if dis else ""
+        # 数量：邀请项＝「1个邀请名额 / 10个邀请名额」的个数；上传量项 quantity 无意义（用 size_gb）
+        cnt_m = _BE_COUNT_RE.search(title)
+        count = int(cnt_m.group(1)) if cnt_m else (1 if kind in ("invite", "temp_invite") else 0)
+        out["items"].append({
+            "option": int(om.group(1)), "title": title, "price": price,
+            "size_gb": round(size_gb, 4) if size_gb is not None else None,
+            "kind": kind, "count": count, "submit": submit,
+            "disabled": dis, "disabled_reason": why,
+        })
+        out["kinds"][kind] = out["kinds"].get(kind, 0) + 1
+    out["ok"] = True
+    return out

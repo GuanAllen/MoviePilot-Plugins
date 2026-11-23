@@ -79,6 +79,7 @@ const DESC = {
   douban: '库容量与评分源',
   crossseed: '已有资源去他站落户',
   claim: '发布站认领种子',
+  bonus: '各站魔力换上传量 / 邀请',
   rss: '订阅自动下载',
   silent: '静默池按站点托管',
   keep: '人工点名的种：一直做种、不被自动释放',
@@ -126,7 +127,7 @@ const CLOSE_PAGE = { key: 'close', label: '关闭插件页', icon: 'mdi-close', 
 //   不用 scope（global/view/settings 是技术分层），改按用户找功能的语义归类。
 const CAT_OF = {
   recommend:'pick', crossseed:'pick', claim:'pick', rss:'pick', ondemand:'pick', keep:'pick', rescue:'pick',
-  exam:'daily', signin:'daily', silent:'daily', hrbills:'daily', health:'daily', notify:'daily',
+  exam:'daily', signin:'daily', silent:'daily', hrbills:'daily', health:'daily', notify:'daily', bonus:'daily',
   cloud:'lib', assets:'lib', music:'lib', jobs:'lib', optimize:'lib',
   douban:'data', sitereport:'data', ceiling:'data', ops:'data', pushes:'data', trend:'data', plan:'data',
   settings:'cfg', close:'cfg',

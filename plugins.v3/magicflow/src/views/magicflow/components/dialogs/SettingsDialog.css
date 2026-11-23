@@ -211,6 +211,133 @@
   border-inline-start-color: rgba(var(--v-theme-warning), 0.7);
 }
 
+/* ★ 19.16.24 设置详情页统一：页头导语 + 分区卡片 + 空页跳转。
+     口径：每页第一屏必须看见「这页管什么」和至少一个可操作项，
+     长原理一律收进 .magicflow-settings-fold，不再用三段 hint 堆在顶部。 */
+.magicflow-settings-lede[data-v-e2f63a1f] {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  border-radius: 11px;
+  background: linear-gradient(100deg, rgba(var(--v-theme-primary), 0.13), rgba(var(--v-theme-primary), 0.035));
+  border: 1px solid rgba(var(--v-theme-primary), 0.22);
+}
+
+.magicflow-settings-lede > .v-icon[data-v-e2f63a1f] {
+  font-size: 20px;
+  color: rgb(var(--v-theme-primary));
+}
+
+.magicflow-settings-lede__bd[data-v-e2f63a1f] {
+  display: grid;
+  gap: 3px;
+  min-inline-size: 0;
+}
+
+.magicflow-settings-lede__t[data-v-e2f63a1f] {
+  font-size: 0.83rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.magicflow-settings-lede__s[data-v-e2f63a1f] {
+  font-size: 0.74rem;
+  line-height: 1.5;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  overflow-wrap: anywhere;
+}
+
+.magicflow-settings-lede__tag[data-v-e2f63a1f] {
+  align-self: center;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 0.64rem;
+  font-weight: 700;
+  white-space: nowrap;
+  color: rgb(var(--v-theme-primary));
+  background: rgba(var(--v-theme-primary), 0.16);
+  border: 1px solid rgba(var(--v-theme-primary), 0.34);
+}
+
+.magicflow-settings-lede__tag.is-danger[data-v-e2f63a1f] {
+  color: #ff6b7a;
+  background: rgba(255, 107, 122, 0.14);
+  border-color: rgba(255, 107, 122, 0.36);
+}
+
+.magicflow-settings-lede__tag.is-warn[data-v-e2f63a1f] {
+  color: #f0b64c;
+  background: rgba(240, 182, 76, 0.14);
+  border-color: rgba(240, 182, 76, 0.36);
+}
+
+/* 空页 / 说明页的「去相关页」按钮组（跨站取种这类纯说明页） */
+.magicflow-settings-goto[data-v-e2f63a1f] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ★ 19.16.21 手机设置表单页：对齐设计稿的视觉语言。全部带 scope，否则 federation 链路静默丢弃。 */
+/* 危险写操作红卡（不可逆 / 对外写）——比 warn 黄条更重，常显不折叠 */
+.magicflow-settings-danger[data-v-e2f63a1f] {
+  margin: 0; padding: 11px 12px; border-radius: 10px;
+  font-size: 0.8rem; line-height: 1.6;
+  color: rgb(var(--v-theme-on-surface));
+  background: rgba(var(--v-theme-error), 0.09);
+  border: 1px solid rgba(var(--v-theme-error), 0.34);
+}
+.magicflow-settings-danger__h[data-v-e2f63a1f] {
+  display: flex; align-items: center; gap: 7px;
+  font-weight: 700; color: rgb(var(--v-theme-error));
+}
+.magicflow-settings-danger__h .v-icon[data-v-e2f63a1f] { font-size: 18px; }
+.magicflow-settings-danger p[data-v-e2f63a1f] { margin: 5px 0 0; }
+
+/* 就地连接测试反馈：成功绿 / 失败红，带底色与边框，不再只是纯文本色 */
+.magicflow-settings-feedback[data-v-e2f63a1f] {
+  margin: 0; padding: 8px 10px; border-radius: 8px;
+  font-size: 0.78rem; line-height: 1.55;
+  display: flex; align-items: center; gap: 6px;
+}
+.magicflow-settings-feedback.is-ok[data-v-e2f63a1f] {
+  color: #3ddc97 !important;
+  background: rgba(61, 220, 151, 0.1);
+  border: 1px solid rgba(61, 220, 151, 0.28);
+}
+.magicflow-settings-feedback.is-no[data-v-e2f63a1f] {
+  color: #ff6b7a !important;
+  background: rgba(255, 107, 122, 0.1);
+  border: 1px solid rgba(255, 107, 122, 0.28);
+}
+
+/* ⓘ 折叠说明：默认收起，把长说明让位给真正的操作项 */
+.magicflow-settings-fold[data-v-e2f63a1f] {
+  border: 1px solid rgba(var(--v-border-color), 0.28);
+  border-radius: 9px; margin: 2px 0;
+  background: rgba(var(--v-theme-on-surface), 0.02);
+}
+.magicflow-settings-fold summary[data-v-e2f63a1f] {
+  display: flex; align-items: center; gap: 7px;
+  padding: 9px 11px; cursor: pointer; list-style: none;
+  font-size: 0.78rem; color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+.magicflow-settings-fold summary::-webkit-details-marker[data-v-e2f63a1f] { display: none; }
+.magicflow-settings-fold summary .v-icon[data-v-e2f63a1f] { font-size: 16px; color: rgb(var(--v-theme-primary)); }
+.magicflow-settings-fold[open] summary[data-v-e2f63a1f] { border-bottom: 1px solid rgba(var(--v-border-color), 0.2); }
+.magicflow-settings-fold__bd[data-v-e2f63a1f] {
+  padding: 9px 11px; font-size: 0.76rem; line-height: 1.65;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+/* 语义分组小标题（开关 / 请求与记录 / 安全阀…） */
+.magicflow-settings-subhead[data-v-e2f63a1f] {
+  margin: 4px 0 -2px; font-size: 0.72rem; font-weight: 700;
+  letter-spacing: 0.3px; color: rgb(var(--v-theme-primary));
+}
+
 .magicflow-settings-dialog[data-v-e2f63a1f] {
   display: flex;
   flex-direction: column;
@@ -382,18 +509,35 @@
 .magicflow-settings-block[data-v-e2f63a1f] {
   display: grid;
   gap: 10px;
-  padding: 12px 14px;
+  padding: 12px 14px 13px;
   border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
-  border-radius: 10px;
+  border-radius: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
 }
 
 .magicflow-settings-block__head[data-v-e2f63a1f] {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 0.78rem;
+  gap: 7px;
+  padding-block-end: 8px;
+  border-block-end: 1px solid rgba(var(--v-border-color), 0.24);
+  font-size: 0.79rem;
   font-weight: 700;
   letter-spacing: 0.01em;
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.magicflow-settings-block__head > .v-icon[data-v-e2f63a1f] {
+  font-size: 16px;
+  color: rgb(var(--v-theme-primary));
+}
+
+/* 分区卡标题右侧的补充说明（「写 qB 全局」「仅对魔流生效」） */
+.magicflow-settings-block__note[data-v-e2f63a1f] {
+  margin-inline-start: auto;
+  font-size: 0.7rem;
+  font-weight: 500;
+  white-space: nowrap;
   color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
 
@@ -700,6 +844,17 @@
 
 .magicflow-settings-nav__item.is-active[data-v-e2f63a1f] { color: rgb(var(--v-theme-primary)); border-color: rgba(var(--v-theme-primary), 0.5); background: rgba(var(--v-theme-primary), 0.16);
 }
+@media (max-width: 599px) {
+/* 详情页卡片：手机上把内边距收一点，内容区多出 8px 宽 */
+.magicflow-settings-block[data-v-e2f63a1f] {
+  padding: 11px 12px 12px;
+}
+.magicflow-settings-lede[data-v-e2f63a1f] {
+  padding: 10px 11px;
+  gap: 9px;
+}
+}
+
 @media (max-width: 959px) {
 
 .magicflow-settings-dialog__tabs[data-v-e2f63a1f] {
@@ -707,15 +862,43 @@
 }
 
 
-/* ★ 手机端设置：分类「目录页」（2 列网格，恢复 3.33.0 版式）。
-     点分类 = 跳转到该分类的「表单页」——目录不再和表单挤在同一屏，正文拿回整屏高度。 */
+/* ★ 19.16.20 手机端设置「目录页」：4 组分组 + 三列紧凑格。
+     点分类 = 跳转到该分类的「表单页」；16 项一屏看全，不再滚两屏。
+     分组标题带尾横线；reseed/claim 两个新项带「新」角标。 */
 .magicflow-settings-nav[data-v-e2f63a1f] {
-    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px; padding: 12px 16px 18px; overflow: visible;
+    display: block; padding: 10px 14px 18px; overflow: visible;
+}
+
+.magicflow-settings-nav__group[data-v-e2f63a1f] {
+    display: flex; align-items: center; gap: 8px;
+    margin: 11px 0 7px; color: rgb(var(--v-theme-primary));
+    font-size: 11px; font-weight: 700; letter-spacing: 0.3px;
+}
+.magicflow-settings-nav__group[data-v-e2f63a1f]:first-child { margin-top: 0; }
+.magicflow-settings-nav__group[data-v-e2f63a1f]::after {
+    content: ""; flex: 1; height: 1px; background: rgba(var(--v-border-color), 0.14);
+}
+
+.magicflow-settings-nav__grid[data-v-e2f63a1f] {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px;
 }
 
 .magicflow-settings-nav__item[data-v-e2f63a1f] {
-    padding: 18px 10px; font-size: 12.5px;
+    position: relative; display: flex; flex-direction: column; align-items: center;
+    gap: 3px; padding: 9px 3px 8px; border-radius: 9px;
+    font-size: 10.5px; line-height: 1.2;
+}
+.magicflow-settings-nav__item .v-icon[data-v-e2f63a1f] { font-size: 17px; }
+.magicflow-settings-nav__item.is-new[data-v-e2f63a1f] {
+    border-color: rgba(var(--v-theme-success), 0.42);
+    background: rgba(var(--v-theme-success), 0.05);
+}
+.magicflow-settings-nav__item.is-new .v-icon[data-v-e2f63a1f] { color: rgb(var(--v-theme-success)); }
+.magicflow-settings-nav__new[data-v-e2f63a1f] {
+    position: absolute; top: 3px; right: 3px;
+    font-size: 8px; line-height: 1.3; padding: 0 4px; border-radius: 20px;
+    color: rgb(var(--v-theme-success)); background: rgba(var(--v-theme-success), 0.12);
+    border: 1px solid rgba(var(--v-theme-success), 0.35);
 }
 
 .magicflow-settings-nav__item.is-active[data-v-e2f63a1f] {
@@ -731,6 +914,15 @@
 
 .magicflow-settings-dialog .magicflow-settings-switches[data-v-e2f63a1f] {
  grid-template-columns: minmax(0, 1fr);
+ gap: 8px;
+}
+
+/* ★ 19.16.21 开关卡片化：每个 VSwitch 一个圆角边框卡（对齐设计稿 swrow）。
+   VSwitch 根元素带父 scopeId data-v-e2f63a1f，故选择器带 scope 既生效又不被 federation 丢弃。 */
+.magicflow-settings-switches[data-v-e2f63a1f] > .v-switch[data-v-e2f63a1f] {
+ margin: 0; padding: 6px 10px; border-radius: 10px;
+ border: 1px solid rgba(var(--v-border-color), 0.26);
+ background: rgba(var(--v-theme-on-surface), 0.025);
 }
 }
 
@@ -763,4 +955,122 @@
 .magicflow-rules-row__hr[data-v-e2f63a1f] {
     align-self: center;
 }
+}
+/* ★ 19.16.24：静默分拣规则原为 5 列共 30rem，390px 上横向溢出（并被卡片裁掉）；
+   手机改「名称 1fr + 四个定宽」，隐藏表头。带 scope + 双类名提高特异性，
+   以免被上面 .magicflow-sort-rules__row[data-v-...] 的固定列宽反压。 */
+@media (max-width: 599px) {
+  .magicflow-settings-dialog .magicflow-sort-rules__row--head[data-v-e2f63a1f] {
+    display: none;
+  }
+  .magicflow-settings-dialog .magicflow-sort-rules__row[data-v-e2f63a1f] {
+    grid-template-columns: minmax(0, 1fr) 4.2rem 3.5rem 2.2rem 1.9rem;
+    gap: 0.25rem 0.28rem;
+    padding: 0.3rem 0.35rem;
+    font-size: 0.82rem;
+  }
+  .magicflow-settings-dialog .magicflow-sort-rules__add[data-v-e2f63a1f] {
+    flex-wrap: wrap;
+  }
+  .magicflow-settings-dialog .magicflow-sort-rules__row > span:last-child .v-btn[data-v-e2f63a1f] {
+    min-width: 0;
+    padding-inline: 2px;
+    font-size: 0.72rem;
+    white-space: nowrap;
+  }
+}
+
+/* ★ 19.16.24：390px 下站点规则行的「标有 / 标无 / 恢复」三个按钮被压成竖排（Vuetify 默认 min-width 64px）。
+   这里是详情页改版顺带修的：允许换行 + 放开 min-width，字号降到 0.72rem。 */
+@media (max-width: 520px) {
+  .magicflow-rules-row__hr[data-v-e2f63a1f] {
+    flex-wrap: wrap;
+    gap: 2px 4px;
+  }
+  .magicflow-rules-row__hr .v-btn[data-v-e2f63a1f],
+  .magicflow-rules-row__ops .v-btn[data-v-e2f63a1f] {
+    min-width: 0;
+    padding-inline: 4px;
+    font-size: 0.72rem;
+    white-space: nowrap;
+  }
+}
+
+/* ★ 19.16.25 桌面设置页目录：宽屏改左侧 4 组分组导航 + 右侧表单（沿用手机端 MF_SETTINGS_GROUPS）。
+   手机（<=959px）完全不动：仍走目录页/表单页两段式 + 三列紧凑格。
+   桌面把 VDialog 加宽到 62rem，nav 竖排左栏、body 右栏、footer 跨两列；VTabs 在宽屏隐藏。 */
+@media (min-width: 960px) {
+  .magicflow-settings-dialog[data-v-e2f63a1f] {
+    display: grid;
+    grid-template-columns: 13.25rem minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "hd hd"
+      "nv bd"
+      "ft ft";
+  }
+  .magicflow-settings-dialog__head[data-v-e2f63a1f] { grid-area: hd; }
+  .magicflow-settings-dialog__footer[data-v-e2f63a1f] { grid-area: ft; }
+  .magicflow-settings-dialog__tabs[data-v-e2f63a1f] { display: none; }
+  .magicflow-settings-dialog > .v-divider[data-v-e2f63a1f] { display: none; }
+
+  .magicflow-settings-nav[data-v-e2f63a1f] {
+    grid-area: nv;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    padding: 12px 8px 16px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border-inline-end: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+    background: rgba(var(--v-theme-surface), 0.55);
+  }
+  .magicflow-settings-nav__group[data-v-e2f63a1f] {
+    display: block;
+    margin: 14px 8px 6px;
+    color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+  }
+  .magicflow-settings-nav__group[data-v-e2f63a1f]:first-child { margin-top: 2px; }
+  .magicflow-settings-nav__group[data-v-e2f63a1f]::after { display: none; }
+  .magicflow-settings-nav__grid[data-v-e2f63a1f] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .magicflow-settings-nav__item[data-v-e2f63a1f] {
+    position: relative;
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 9px;
+    padding: 8px 9px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    font-size: 0.8rem;
+    line-height: 1.3;
+    text-align: start;
+  }
+  .magicflow-settings-nav__item .v-icon[data-v-e2f63a1f] { font-size: 17px; }
+  .magicflow-settings-nav__item:hover[data-v-e2f63a1f] { background: rgba(var(--v-theme-primary), 0.07); }
+  .magicflow-settings-nav__item.is-active[data-v-e2f63a1f] {
+    color: rgb(var(--v-theme-primary));
+    border-color: transparent;
+    background: rgba(var(--v-theme-primary), 0.14);
+    box-shadow: inset 2px 0 0 rgb(var(--v-theme-primary));
+  }
+  .magicflow-settings-nav__item.is-new[data-v-e2f63a1f] {
+    border-color: transparent;
+    background: transparent;
+  }
+  .magicflow-settings-nav__new[data-v-e2f63a1f] {
+    top: 50%;
+    right: 7px;
+    transform: translateY(-50%);
+  }
+  .magicflow-settings-dialog__body[data-v-e2f63a1f] {
+    grid-area: bd;
+  }
 }

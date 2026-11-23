@@ -63,6 +63,8 @@ FEATURES: tuple = (
     FeatureSpec("claim", "认领", SCOPE_GLOBAL, api="/claim",
                 enabled_probe="_claim_feature_enabled",
                 note="把在做的种在站点侧认领换权益（默认关；写动作需确认）"),
+    FeatureSpec("bonus", "魔力兑换", SCOPE_VIEW, api="/bonus/exchange",
+                note="各站当前魔力 + 上传量/邀请名额/临时邀请兑换项看板（只读）；手动兑换需 confirm=1，提交前重抓页面核对"),
     FeatureSpec("rss", "RSS", SCOPE_GLOBAL, api="/rss",
                 note="手动维护各站 RSS passkey（MP 站点配置无该字段，魔流自存）；"\
                      "RSS/API Key 在 MP 站点配置里填、自动复用；可一键同步回写 MP（confirm=1）"),

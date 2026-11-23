@@ -62,6 +62,10 @@ export function makeFeatures(c) {
     exam: () => c.get('exam'),
     examAct: (q) => c.post(`exam/act?${q}`, {}),
 
+    // ── 魔力兑换（看板只读 / 手动换上传量需 confirm）────────
+    bonusExchange: (q = '') => c.get(`bonus/exchange${q}`),
+    bonusExchangeAct: (q) => c.post(`bonus/exchange/act?${q}`, {}),
+
     // ── 认领 ──────────────────────────────────────────────
     claim: (q = '') => c.get(`claim${q}`),
     // ★ 19.5.0：扫描是**只读动作**，永远带 dry=1 → 后端只回可认领列表，零写请求。

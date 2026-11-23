@@ -63,6 +63,15 @@ function pickRow(row) { emit('pick', row) }
 function pickAllCandidates(on) { emit('pick-all', !!on) }
 function runBatch() { emit('batch-run') }
 
+// ★ 19.16.22：保存目录只显示最后一级目录名（完整绝对路径放进 title）。
+//   原来把 /vol6/1000/movie/下载 整串铺在摘要行里，手机上一行占满还没有「改」的入口。
+function odDirName(p) {
+  const t = String(p || '').trim()
+  if (!t) return '（未配置）'
+  const parts = t.split(/[\\/]+/).filter(Boolean)
+  return parts.length ? parts[parts.length - 1] : t
+}
+
 // ★ 17.x：拿到候选后把「推荐源」默认勾上 —— 去掉一键路之后，这两步就是最短路径。
 //   只在用户还没勾任何东西时补一次，取消勾选后不会被它再抢回来。
 function autoPickFirst() {
@@ -138,6 +147,7 @@ const allPicked = computed(() =>
               :aria-expanded="odAdvOpen ? 'true' : 'false'"
               @click="odAdvOpen = !odAdvOpen"
             >
+              <span class="magicflow-od-summary__cap">筛选</span>
               <span class="magicflow-od-summary__val">{{ siteText }}</span>
               <span class="magicflow-od-summary__sep">·</span>
               <span class="magicflow-od-summary__val">{{ taskText }}</span>
@@ -191,8 +201,10 @@ const allPicked = computed(() =>
           <div v-if="odSearchHint" class="magicflow-od-search__hint">
             搜出候选后<strong>勾选</strong> → 点底部<strong>「一并点播」</strong>；<strong>不勾就什么都不会下</strong>，
             魔流不会替你挑。默认勾好的那条是推荐源，不满意直接改勾。
-            片名认不出、或站点里没有同名资源时它<strong>不会乱选</strong>，只把站点结果列出来让你自己看
-            （标「名称未匹配」的是按关键词捞到的噪音）。下完<strong>自动整理进影视库</strong>。
+            片名认不出、或站点里没有同名资源时它<strong>不会乱选</strong>，只把站点结果列出来让你自己看。
+            每条行首就是片名判定：<strong>片名对得上</strong>＝确认同一部；
+            <strong>片名待确认</strong>＝站点用另一种语言命名、魔流不敢替你认；
+            <strong>名称未匹配</strong>＝关键词捞到的噪音。下完<strong>自动整理进影视库</strong>。
             候选第一行是<strong>中文名</strong>，灰色小字为站点原名。
           </div>
           <VAlert
@@ -221,7 +233,9 @@ const allPicked = computed(() =>
             @click="odView = 'inventory'"
           >点播清单 {{ odInflight.length + odHistory.length }}</VChip>
           <VSpacer />
+          <!-- ★ 19.16.22：这个按钮刷的是**点播清单**，在「候选」视图下出现会被当成「重新搜索」 -->
           <VBtn
+            v-if="odView === 'inventory'"
             icon="mdi-refresh"
             size="x-small"
             variant="text"
@@ -353,9 +367,9 @@ const allPicked = computed(() =>
               </VChip>
               <span>{{ ondemandResult.resource?.title }} {{ ondemandResult.resource?.year }}</span>
               <span class="magicflow-od-dot"></span>
-              <span>候选 {{ ondemandCandidates.length }}</span>
-              <span class="magicflow-od-dot"></span>
-              <span>存到 <code>{{ ondemandResult.save_path || '（未配置）' }}</code></span>
+              <!-- ★ 19.16.22：候选数只在下面页签里出现一次（原来这里和页签各报一次）；
+                   保存目录只显示目录名，完整路径放 title——绝对路径占满一行、对手机没有意义。 -->
+              <span class="magicflow-od-save">存到 <code :title="ondemandResult.save_path || '（未配置）'">{{ odDirName(ondemandResult.save_path) }}</code></span>
             </div>
             <div v-if="ondemandResult.added" class="magicflow-recommend-dialog__note">
               已下载：<code>{{ ondemandResult.added }}</code>（完成后直接转「资源」）
@@ -383,6 +397,12 @@ const allPicked = computed(() =>
                   </div>
                   <div v-if="odSubTitle(row)" class="magicflow-ondemand-item__sub">{{ odSubTitle(row) }}</div>
                   <div class="magicflow-ondemand-item__meta">
+                    <!-- ★ 19.16.22：相关性是「要不要勾」的唯一判据 → 放到行首并用语义色。
+                         原来它排在行尾还是中性色（"名称未匹配"），等于把最重要的风险藏起来了。 -->
+                    <VChip v-if="isOndemandAuto(row)" size="x-small" variant="flat" color="primary">推荐</VChip>
+                    <VChip v-else-if="row.rel >= 2" size="x-small" variant="tonal" color="success">片名对得上</VChip>
+                    <VChip v-else-if="row.rel === 1" size="x-small" variant="tonal" color="warning">片名待确认</VChip>
+                    <VChip v-else size="x-small" variant="tonal">名称未匹配</VChip>
                     <VChip size="x-small" variant="tonal" color="primary">{{ row.site_name || row.site }}</VChip>
                     <span>{{ fmtSizeGb(row.size) }}</span>
                     <span>做种 {{ row.seeders }}</span>
@@ -393,10 +413,7 @@ const allPicked = computed(() =>
                       variant="tonal"
                       :color="odTraffic(row.downloadvolumefactor).color || undefined"
                     >{{ odTraffic(row.downloadvolumefactor).text }}</VChip>
-                    <VChip v-if="row.hit_and_run" size="x-small" variant="tonal" color="warning">H&R</VChip>
-                    <VChip v-if="row.rel >= 2 && !isOndemandAuto(row)" size="x-small" variant="tonal" color="primary">片名对得上</VChip>
-                    <VChip v-else-if="row.rel === 0" size="x-small" variant="tonal">名称未匹配</VChip>
-                    <VChip v-if="isOndemandAuto(row)" size="x-small" variant="flat" color="primary">推荐</VChip>
+                    <VChip v-if="row.hit_and_run" size="x-small" variant="tonal" color="warning">H&amp;R</VChip>
                     <VChip
                       v-if="ondemandResult?.added && ondemandResult?.picked?.enclosure === row.enclosure"
                       size="x-small"
@@ -426,8 +443,15 @@ const allPicked = computed(() =>
             @update:model-value="pickAllCandidates"
           />
           <div class="magicflow-od-dock__cnt">
-            <b>已选 {{ odPicked.length }} 条</b>
-            <span>{{ pickedGb ? fmtSizeGb(pickedGb) : '还没选' }}</span>
+            <!-- ★ 19.16.22：「已选 0 条」+「还没选」原来是两行说同一件事 → 合并成一句行动提示 -->
+            <template v-if="odPicked.length">
+              <b>已选 {{ odPicked.length }} 条</b>
+              <span v-if="pickedGb">{{ fmtSizeGb(pickedGb) }}</span>
+            </template>
+            <template v-else>
+              <b>还没勾选</b>
+              <span>点候选行选择</span>
+            </template>
           </div>
           <VBtn
             class="magicflow-od-dock__go"
@@ -552,8 +576,27 @@ const allPicked = computed(() =>
   white-space: nowrap;
   color: rgb(var(--v-theme-on-surface));
 }
+.magicflow-od-summary__cap {
+  /* ★ 19.16.22：「全部站点 · 默认目录」原来像一句静态文字，看不出还能点 → 前面加个「筛选」小签 */
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: 20px;
+  font-size: 10.5px;
+  line-height: 16px;
+  color: rgb(var(--v-theme-primary));
+  background: rgba(var(--v-theme-primary), 0.16);
+  border: 1px solid rgba(var(--v-theme-primary), 0.3);
+}
 .magicflow-od-summary__sep { opacity: 0.4; }
 .magicflow-od-summary__chev { margin-inline-start: auto; opacity: 0.55; }
+/* 存到：只显示目录名，长路径不换行 */
+.magicflow-od-save { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.magicflow-od-save code {
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
 
 .magicflow-od-search__acts { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .magicflow-od-search__grid--stack .magicflow-od-search__acts { flex-wrap: nowrap; }

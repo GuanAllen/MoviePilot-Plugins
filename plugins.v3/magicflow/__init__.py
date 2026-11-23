@@ -67,6 +67,7 @@ from .features.ondemand import OnDemandMixin
 from .features.debug import DebugMixin
 from .features.registry import RegistryMixin
 from .features.claim import ClaimMixin
+from .features.bonus_exchange import BonusExchangeMixin
 from .features.rss import RssMixin
 from .features.creds import CredsMixin
 from .features.trend import TrendMixin
@@ -81,7 +82,7 @@ from .features.plan import PlanMixin
 from .dupgate import DupGateMixin
 
 
-class MagicFlow(DupGateMixin, CoreMixin, RuntimeMixin, AgentApiMixin, AgentLedgerMixin, PlanMixin, ApiMixin, RescueMixin, SettingsMixin, StatusMixin, TasksMixin, BrushMixin, FormulaMixin, ProtectionMixin, DeleteGateMixin, HrMixin, HrBillsMixin, HrReconcileMixin, YemaHrMixin, AssetsMixin, JobsMixin, NotifyMixin, ServicesMixin, ReuseMixin, ReSeedMixin, CleanupMixin, CrossSeedMixin, TagsMixin, SilentMixin, TransferMixin, RecommendMixin, LiveMixin, ExamMixin, PoolMixin, CloudMixin, SiteOpsMixin, EventsMixin, ActionsMixin, DeckMixin, OnDemandMixin, DebugMixin, RegistryMixin, ClaimMixin, RssMixin, CredsMixin, TrendMixin, HealthMixin, EventLogMixin, SiteReportMixin, ReconMixin, ReportViewMixin, MusicGrabMixin, _PluginBase):
+class MagicFlow(DupGateMixin, CoreMixin, RuntimeMixin, AgentApiMixin, AgentLedgerMixin, PlanMixin, ApiMixin, RescueMixin, SettingsMixin, StatusMixin, TasksMixin, BrushMixin, FormulaMixin, ProtectionMixin, DeleteGateMixin, HrMixin, HrBillsMixin, HrReconcileMixin, YemaHrMixin, AssetsMixin, JobsMixin, NotifyMixin, ServicesMixin, ReuseMixin, ReSeedMixin, CleanupMixin, CrossSeedMixin, TagsMixin, SilentMixin, TransferMixin, RecommendMixin, LiveMixin, ExamMixin, PoolMixin, CloudMixin, SiteOpsMixin, EventsMixin, ActionsMixin, DeckMixin, OnDemandMixin, DebugMixin, RegistryMixin, ClaimMixin, BonusExchangeMixin, RssMixin, CredsMixin, TrendMixin, HealthMixin, EventLogMixin, SiteReportMixin, ReconMixin, ReportViewMixin, MusicGrabMixin, _PluginBase):
     """魔流插件主类。"""
 
     plugin_name = "魔流"
