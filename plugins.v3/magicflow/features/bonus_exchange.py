@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.schemas import Response
@@ -37,6 +38,8 @@ BONUS_EXCHANGE_KIND = "bonus_exchange"
 BONUS_EXCHANGE_TTL = 600.0
 # SPA / 无 HTML 兑换表站（抓不到 form 会自然跳过，这里仍显式列出便于审计）
 _SKIP_DOMAINS = ("m-team.cc", "yemapt.org", "dstudio.me")
+# ★ 19.16.33：各站最近一次抓取快照（站点清单直接读它显示状态，**不发请求**）
+BONUS_EXCHANGE_SNAP = "bonus_exchange_snap"
 
 
 class BonusExchangeMixin:
@@ -46,7 +49,47 @@ class BonusExchangeMixin:
         domain = str(site.get("domain") or site.get("url") or "").lower()
         return any(d in domain for d in _SKIP_DOMAINS)
 
+    # ------------------------------------------------------------------ 快照
+    def _be_snap_get(self) -> Dict[str, Any]:
+        # ★ 走 MP 自带 kv（get_data/save_data）。别用 sitestore.slot_callbacks：
+        #   它的 SiteStore.get/save 是**固定槽白名单**，未知槽会被静默丢弃（实测写不进去）。
+        try:
+            raw = self.get_data(BONUS_EXCHANGE_SNAP)
+        except Exception:  # noqa: BLE001
+            return {}
+        return raw if isinstance(raw, dict) else {}
+
+    def _be_snap_put(self, site_id: int, r: Dict[str, Any]) -> None:
+        """把单站抓取结果写进快照（清单状态/余额用，读它不再抓页面）。"""
+        try:
+            snap = self._be_snap_get()
+            items = r.get("items") or []
+            snap[str(site_id)] = {
+                "ok": bool(r.get("ok")), "why": str(r.get("why") or "")[:120],
+                "balance": r.get("balance"), "currency": str(r.get("currency") or ""),
+                "items": len(items),
+                "exchangeable": sum(1 for it in items if not it.get("disabled")),
+                "ts": time.time(),
+            }
+            now = time.time()
+            for k in [k for k, v in snap.items()
+                      if not isinstance(v, dict) or now - float(v.get("ts") or 0) > 30 * 86400]:
+                snap.pop(k, None)
+            self.save_data(key=BONUS_EXCHANGE_SNAP, value=snap)
+        except Exception as err:  # noqa: BLE001
+            try:
+                from ..envops import log as _log
+                _log(f"币兑换快照写入失败：{err}", "warning")
+            except Exception:  # noqa: BLE001
+                pass
+
     def _be_fetch(self, site_id: int, site: Dict[str, Any], *, force: bool = False) -> Dict[str, Any]:
+        """抓单站 mybonus.php（带快照落库）；失败={ok:False}。"""
+        r = self._be_fetch_raw(site_id, site, force=force)
+        self._be_snap_put(int(site_id), r)
+        return r
+
+    def _be_fetch_raw(self, site_id: int, site: Dict[str, Any], *, force: bool = False) -> Dict[str, Any]:
         """抓单站 mybonus.php → 解析结果（走 collect 出口 + PV 闸门）。失败={ok:False}。"""
         out: Dict[str, Any] = {"ok": False, "items": [], "balance": None, "currency": "",
                                "kinds": {"upload": 0, "invite": 0, "temp_invite": 0},
@@ -87,62 +130,85 @@ class BonusExchangeMixin:
         return parse_bonus_exchange_page(getattr(res, "text", "") or "")
 
     def get_bonus_exchange_state(self, site_id: Any = None, refresh: Any = None) -> Response:
-        """魔力兑换看板：逐站（或单站）当前魔力 + 三类兑换项（上传量 / 邀请 / 临时邀请）。只读。"""
+        """魔力兑换看板：站点清单（状态取上次抓取快照，零请求）+ 选中站实时结果（只读）。
+
+        ★ 19.16.33：不再逐站拉 mybonus 页面 —— 打开弹窗只读快照清单（不发任何站点请求），
+        选中哪站才抓哪站（10 分钟内复用采集缓存），刷新只强刷当前站。
+        """
         force = bool(_as_bool_arg(refresh))
-        only = int(site_id) if str(site_id or "").isdigit() else None
-        sites: List[Dict[str, Any]] = []
+        only = int(site_id) if str(site_id or "").isdigit() else 0
         try:
             all_sites = self._list_sites() or []
         except Exception:  # noqa: BLE001
             all_sites = []
+        snap = self._be_snap_get()
+        site_list: List[Dict[str, Any]] = []
+        picked: Optional[Dict[str, Any]] = None
         for s in all_sites:
             if not isinstance(s, dict):
                 continue
             sid = int(s.get("id", 0) or 0)
-            if not sid or (only and sid != only) or self._be_skip(s):
+            if not sid or self._be_skip(s):
                 continue
-            sites.append(s)
-        rows: List[Dict[str, Any]] = []
-        for s in sites:
-            sid = int(s.get("id", 0))
-            r = self._be_fetch(sid, s, force=force)
-            rows.append({
+            st = snap.get(str(sid)) if isinstance(snap.get(str(sid)), dict) else {}
+            site_list.append({
                 "site_id": sid,
                 "site_name": str(s.get("name") or s.get("domain") or sid),
                 "domain": str(s.get("domain") or ""),
-                "ok": r.get("ok", False),
-                "balance": r.get("balance"),
-                "currency": r.get("currency") or "",
-                "items": r.get("items") or [],
-                "kinds": r.get("kinds") or {},
-                "form_count": int(r.get("form_count") or 0),
-                "why": r.get("why") or "",
+                "cached": bool(st),
+                "ok": st.get("ok"),
+                "exchangeable": int(st.get("exchangeable") or 0) if st else None,
+                "balance": st.get("balance"),
+                "currency": st.get("currency") or "",
+                "why": st.get("why") or "",
+                "ts": st.get("ts"),
             })
-        ok_cnt = sum(1 for r in rows if r["ok"])
+            if only and sid == only:
+                picked = s
+        note = "只抓选中站点（10 分钟内复用缓存）；清单状态来自上次抓取，不额外请求。"
+        if not only:
+            return Response(success=True, data={
+                "sites": [], "site_list": site_list,
+                "totals": {"sites": 0, "ok": 0, "failed": 0, "items": 0, "exchangeable": 0,
+                           "by_kind": {"upload": 0, "invite": 0, "temp_invite": 0},
+                           "exchangeable_by_kind": {"upload": 0, "invite": 0, "temp_invite": 0},
+                           "upload_items": 0, "invite_items": 0, "temp_invite_items": 0},
+                "note": note,
+            })
+        if not picked:
+            return Response(success=False, message="站点不存在，或不在可兑换站点列表里")
+        r = self._be_fetch(only, picked, force=force)
+        row = {
+            "site_id": only,
+            "site_name": str(picked.get("name") or picked.get("domain") or only),
+            "domain": str(picked.get("domain") or ""),
+            "ok": r.get("ok", False),
+            "balance": r.get("balance"),
+            "currency": r.get("currency") or "",
+            "items": r.get("items") or [],
+            "kinds": r.get("kinds") or {},
+            "form_count": int(r.get("form_count") or 0),
+            "why": r.get("why") or "",
+        }
         by_kind = {"upload": 0, "invite": 0, "temp_invite": 0}
         can_kind = {"upload": 0, "invite": 0, "temp_invite": 0}
-        for r in rows:
-            for it in r["items"]:
-                k = it.get("kind") or "upload"
-                if k in by_kind:
-                    by_kind[k] += 1
-                    if not it.get("disabled"):
-                        can_kind[k] += 1
-        items_all = sum(by_kind.values())
-        can_all = sum(can_kind.values())
-        # ★ 对账铁律：items_all == upload+invite+temp_invite，can_all == 各类可换之和；
-        #   前端统计条与各站角标相加都必须等于这两个数。
+        for it in row["items"]:
+            k = it.get("kind") or "upload"
+            if k in by_kind:
+                by_kind[k] += 1
+                if not it.get("disabled"):
+                    can_kind[k] += 1
         return Response(success=True, data={
-            "sites": rows,
+            "sites": [row],
+            "site_list": site_list,
             "totals": {
-                "sites": len(rows), "ok": ok_cnt, "failed": len(rows) - ok_cnt,
-                "items": items_all, "exchangeable": can_all,
+                "sites": 1, "ok": 1 if row["ok"] else 0, "failed": 0 if row["ok"] else 1,
+                "items": sum(by_kind.values()), "exchangeable": sum(can_kind.values()),
                 "by_kind": by_kind, "exchangeable_by_kind": can_kind,
                 "upload_items": by_kind["upload"], "invite_items": by_kind["invite"],
                 "temp_invite_items": by_kind["temp_invite"],
             },
-            "note": ("只读看板：可换上传量 / 邀请名额 / 临时邀请。灰色=站点判定不可换"
-                     "（分享率已很高 / 魔力不足 / 等级不足）。点兑换需二次确认，提交前会重抓页面核对。"),
+            "note": note,
         })
 
     def bonus_exchange_act(self, site_id: Any = None, option: Any = None,

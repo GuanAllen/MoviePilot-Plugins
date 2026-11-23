@@ -15,31 +15,30 @@ const emit = defineEmits(['refresh', 'act'])
 
 const rows = computed(() => (props.data && props.data.sites) || [])
 const totals = computed(() => (props.data && props.data.totals) || {})
-// ★ 站点筛选：可搜索下拉（不是纯文本输入）——点开即见全部站，选中即单站；
-//   仍保留输入能力（站名 / 域名都能匹配），站点变多也不怕。null = 全部。
-const pick = ref(null)
-const filtered = computed(() => {
-  if (pick.value === null || pick.value === undefined || pick.value === '') return rows.value
-  return rows.value.filter(r => r.site_id === pick.value)
-})
-const siteItems = computed(() => rows.value.map(r => {
-  const c = canOf(r)
-  const tail = !r.ok ? '抓取失败' : (c ? `可换 ${c}` : '全禁')
-  return { title: `${r.site_name || r.site_id} · ${tail}`, value: r.site_id }
+// ★ 19.16.33：只抓当前选中的一站 —— 打开只读清单快照（零站点请求），选中哪站才请求哪站。
+//   站点选择由父页持有（v-model:site），切换即触发一次 ?site_id=N。
+const site = defineModel('site', { type: [Number, String], default: null })
+const siteList = computed(() => (props.data && props.data.site_list) || [])
+const hasPick = computed(() => !(site.value === null || site.value === undefined || site.value === ''))
+const siteItems = computed(() => siteList.value.map(s => {
+  const tail = !s.cached ? '未抓取' : (s.ok ? (s.exchangeable ? `可换 ${s.exchangeable}` : '全禁') : '抓取失败')
+  return { title: `${s.site_name || s.site_id} · ${tail}`, value: s.site_id }
 }))
+const filtered = computed(() => {
+  if (!hasPick.value) return rows.value
+  return rows.value.filter(r => r.site_id === site.value)
+})
 const onlyOk = ref(false)
 const shown = computed(() => onlyOk.value
   ? filtered.value.filter(r => r.ok && (r.items || []).some(i => !i.disabled))
   : filtered.value)
-// 空态说实话：区分「没数据 / 选了失败站 / 该站全禁 / 没有站有可换项」
+// 空态说实话：区分「没选站 / 选了失败站 / 该站全禁 / 没有可换项」
 const emptyText = computed(() => {
+  if (!hasPick.value) return '选择站点查看可兑换项'
   if (!rows.value.length) return '暂无数据'
-  if (pick.value) {
-    const r = rows.value.find(x => x.site_id === pick.value)
-    if (r && !r.ok) return '该站抓取失败，原因见站点卡'
-    return onlyOk.value ? '该站当前没有可换项' : '该站没有兑换项'
-  }
-  return onlyOk.value ? '没有站点有可换项' : '暂无数据'
+  const r = rows.value.find(x => x.site_id === site.value)
+  if (r && !r.ok) return '该站抓取失败，原因见站点卡'
+  return onlyOk.value ? '该站当前没有可换项' : '该站没有兑换项'
 })
 
 const KIND_ORDER = ['upload', 'invite', 'temp_invite']
@@ -113,8 +112,15 @@ function canKind(k) {
         <VBtn icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="open = false" />
       </header>
 
-      <!-- 一行统计（替代原解释文案，规则细节见 title / wiki） -->
-      <div class="magicflow-be__sum">
+      <!-- 一行统计（未选站=清单概览；已选站=该站可换项） -->
+      <div v-if="!hasPick" class="magicflow-be__sum">
+        <span class="magicflow-be__sum-big"><em>{{ siteList.length }}</em> 站可选</span>
+        <span class="magicflow-be__sum-sep"></span>
+        <span class="magicflow-be__sum-sub">选中哪站才抓哪站（10 分钟内复用缓存）</span>
+        <span class="magicflow-be__sum-i"
+              title="不再打开就逐站拉取。清单里的站点状态来自上次抓取；点刷新只重抓当前选中站。">i</span>
+      </div>
+      <div v-else class="magicflow-be__sum">
         <span class="magicflow-be__sum-big"><em>{{ totals.ok ?? '—' }}</em> 站已取到</span>
         <span class="magicflow-be__sum-sep"></span>
         <span class="magicflow-be__sum-sub"><em>{{ totals.exchangeable ?? 0 }}</em> 项可换</span>
@@ -126,16 +132,16 @@ function canKind(k) {
       </div>
 
       <div class="magicflow-be__bar">
-        <VSelect v-model="pick" :items="siteItems" item-title="title" item-value="value"
+        <VSelect v-model="site" :items="siteItems" item-title="title" item-value="value"
                  density="compact" variant="outlined" hide-details clearable
-                 prepend-inner-icon="mdi-format-list-bulleted" placeholder="全部站点"
+                 prepend-inner-icon="mdi-format-list-bulleted" placeholder="选择站点"
                  class="magicflow-be__search" />
-        <VSwitch v-model="onlyOk" density="compact" hide-details inset color="primary"
+        <VSwitch v-if="hasPick" v-model="onlyOk" density="compact" hide-details inset color="primary"
                  label="只看可换" class="magicflow-be__switch" />
       </div>
 
       <div class="magicflow-be__body">
-        <div v-if="loading && !rows.length" class="magicflow-be__empty">正在拉取各站魔力余额…</div>
+        <div v-if="loading && !rows.length" class="magicflow-be__empty">正在抓取该站页面…</div>
         <div v-else-if="!shown.length" class="magicflow-be__empty">{{ emptyText }}</div>
 
         <div v-for="r in shown" :key="r.site_id" class="magicflow-be-card">

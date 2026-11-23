@@ -1655,20 +1655,28 @@ const bonusOpen = ref(false)
 const beData = ref(null)
 const bonusLoading = ref(false)
 const bonusActing = ref(false)
-async function loadBeExchange(refresh = false) {
+// ★ 19.16.33：按站按需抓取 —— 打开只读清单快照，选中哪站才请求哪站（切站即抓）。
+const beSite = ref(null)
+async function loadBeExchange(refresh = false, siteId = null) {
   bonusLoading.value = true
   try {
-    const payload = unwrapResponse(await api.features.bonusExchange(refresh ? '?refresh=1' : ''))
-    if (payload) beData.value = payload
+    const qs = []
+    if (refresh) qs.push('refresh=1')
+    if (siteId !== null && siteId !== undefined && siteId !== '') qs.push(`site_id=${encodeURIComponent(siteId)}`)
+    const payload = unwrapResponse(await api.features.bonusExchange(qs.length ? `?${qs.join('&')}` : ''))
+    if (payload) beData.value = { ...(beData.value || {}), ...payload }
   } catch (err) {
     notify(`读取魔力兑换看板失败：${err?.message || err}`, 'error')
   } finally {
     bonusLoading.value = false
   }
 }
+watch(beSite, v => {
+  if (bonusOpen.value) loadBeExchange(false, v)
+})
 function openBonus() {
   bonusOpen.value = true
-  loadBeExchange()
+  loadBeExchange(false, beSite.value)
 }
 async function bonusAct(payload) {
   if (bonusActing.value || !payload) return
@@ -1686,9 +1694,16 @@ async function bonusAct(payload) {
   bonusActing.value = true
   try {
     const q = `site_id=${encodeURIComponent(payload.siteId)}&option=${encodeURIComponent(payload.option)}&confirm=1`
-    const res = unwrapResponse(await api.features.bonusExchangeAct(q))
-    notify(res?.message || '兑换请求已提交', res?.success ? 'success' : 'error')
-    if (res?.data?.refresh) await loadBeExchange(true)
+    // ★ 19.16.33：不能 unwrapResponse 后再取 message —— 它返回的是 data（对账明细），
+    //   信封上的 message 会被丢掉，导致只弹「兑换请求已提交」且不再刷新。
+    const env = await api.features.bonusExchangeAct(q)
+    const data = env && typeof env === 'object' && 'success' in env ? (env.data ?? null) : env
+    const okFlag = !(env && env.success === false)
+    notify((env && env.message) || (data && data.message) || '兑换请求已提交', okFlag ? 'success' : 'error')
+    if (data && data.refresh) {
+      beSite.value = payload.siteId
+      await loadBeExchange(false, payload.siteId)
+    }
   } catch (err) {
     notify(`兑换失败：${err?.message || err}`, 'error')
   } finally {
@@ -3489,11 +3504,12 @@ onUnmounted(() => {
     <!-- 魔力兑换看板（19.16.28）：只读 + 手动换上传量（父页二次确认） -->
     <BonusExchangeDialog
       v-model="bonusOpen"
+      v-model:site="beSite"
       :data="beData"
       :loading="bonusLoading"
       :acting="bonusActing"
       :narrow="isNarrow"
-      @refresh="loadBeExchange(true)"
+      @refresh="loadBeExchange(true, beSite)"
       @act="bonusAct"
     />
 
