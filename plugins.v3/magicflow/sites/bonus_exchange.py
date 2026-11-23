@@ -24,7 +24,14 @@ from typing import Any, Dict, Tuple
 
 
 def site_base(site: Any) -> str:
-    base = str((getattr(site, "url", "") or getattr(site, "domain", "") or "")).strip()
+    """站点根地址。★ 兼容 dict 与 MP Site 对象：兑换动线的调用方传的是 dict，
+    旧实现只认属性（getattr），dict 上 getattr 恒为空 → base="" → POST 到
+    "/mybonus.php?action=exchange" 无 scheme，MissingSchema（红字「站点无响应」的根因）。"""
+    if isinstance(site, dict):
+        raw = str(site.get("url") or site.get("domain") or "")
+    else:
+        raw = str(getattr(site, "url", "") or getattr(site, "domain", "") or "")
+    base = raw.strip()
     if base and not base.startswith("http"):
         base = "https://" + base
     return base.rstrip("/")
@@ -53,24 +60,37 @@ def exchange_upload(base: str, option: int, cookie: str, ua: str = "",
     try:
         req = RequestUtils(cookies=(cookie or "").strip(), ua=(ua or "Mozilla/5.0").strip(),
                            proxies=proxies, timeout=timeout, referer=base + "/mybonus.php")
-        res = req.post_res(url=url, data=data)
+        # ★ 诊断补丁：RequestUtils 默认吞掉 RequestException 只回 None，用户只能看到
+        #   「站点无响应」。raise_exception=True 把真实异常（超时 / 连接复位 / SSL / DNS）
+        #   暴露出来，并写插件日志，便于定位是站点慢、链路断还是登录态问题。
+        res = req.post_res(url=url, data=data, raise_exception=True)
     except Exception as err:  # noqa: BLE001
-        return False, "fail", f"写请求异常：{err}", ""
+        detail = f"{type(err).__name__}: {str(err)[:180]}"
+        try:
+            from ..envops import log  # noqa: WPS433（惰性导入，避免加载期循环）
+            log(f"魔力兑换写请求失败 site={base} option={option} → {detail}", "error")
+        except Exception:  # noqa: BLE001
+            pass
+        return False, "fail", f"写请求失败：{detail}", ""
     if res is None:
         return False, "fail", "站点无响应（连通性 / 登录态？）", ""
     code = int(getattr(res, "status_code", 0) or 0)
     if code in (401, 403):
         return False, "auth", f"HTTP {code}：Cookie 失效或无权限", ""
     text = str(getattr(res, "text", "") or "")
-    flat = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text))
-    flat = flat[:400]
-    # 站点回显：成功常见「兑换成功 / 交换成功 / 已成功兑换 / 上传量已增加」；
+    # ★ 匹配一律用「去掉标签后的可见文本」：NexusPHP 页头恒有 <font class='color_uploaded'>
+    #   这类标签属性，旧实现拿原始 HTML 匹配，单词 "uploaded" 在页面骨架里必中 → 任何
+    #   无 bad_words 的响应都被误判成「兑换成功」（连 option=99999 都能「成功」）。
+    flat_text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text))
+    flat = flat_text[:400]
+    # 站点回显：成功常见「兑换成功 / 交换成功 / 已成功兑换 / 成功兑换 / 上传量已增加」；
     # 失败常见「魔力不足 / 分享率 / 等级不足 / 购买间隔」。宁可判「待核实」也不把失败说成成功。
-    ok_words = ("兑换成功", "交换成功", "已成功兑换", "成功换取", "exchange success", "uploaded")
+    ok_words = ("兑换成功", "交换成功", "已成功兑换", "成功兑换", "成功换取", "exchange success", "uploaded")
     bad_words = ("不足", "失败", "错误", "不能", "不可", "间隔", "等级", "请稍后", "invalid", "error")
-    if any(w in text for w in ok_words) and not any(w in text for w in bad_words):
+    ok_hit = next((w for w in ok_words if w in flat_text), "")
+    bad_hit = next((w for w in bad_words if w in flat_text), "")
+    if ok_hit and not bad_hit:
         return True, "ok", "兑换成功（站点回显确认）", flat
-    if any(w in text for w in bad_words):
-        hit = next((w for w in bad_words if w in text), "")
-        return False, "fail", f"站点未确认成功（回显含「{hit}」），请以站点页面为准", flat
+    if bad_hit:
+        return False, "fail", f"站点未确认成功（回显含「{bad_hit}」），请以站点页面为准", flat
     return False, "fail", "站点未回显成功字样，请到站点核实是否到账", flat
