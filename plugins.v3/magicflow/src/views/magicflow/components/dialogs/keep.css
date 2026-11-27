@@ -161,6 +161,24 @@
 }
 .magicflow-keep-row__meta[data-v-39c7e08d] { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-block-start: 3px;
 }
+/* ★ 19.16.40 浅色主题：Vuetify 默认 primary 文字（约 3:1）与禁用态
+   （--v-disabled-opacity 默认 0.38）在白底上几乎看不见。这里只覆盖浅色，
+   深色维持 Vuetify 原样；选择器都带 scopeId，避免被构建过滤/污染全局。 */
+html[data-glass-color-scheme="light"] .magicflow-keep-dialog[data-v-39c7e08d] {
+  --v-disabled-opacity: 0.78;
+}
+/* 宿主 CSS 把 .v-btn--disabled 写死成 opacity:.26，改变量不生效，必须显式覆盖 */
+html[data-glass-color-scheme="light"] .magicflow-keep-dialog[data-v-39c7e08d] .v-btn--disabled {
+  opacity: 0.72 !important;
+}
+html[data-glass-color-scheme="light"] .magicflow-keep-selectall[data-v-39c7e08d],
+html[data-glass-color-scheme="light"] .magicflow-keep-sitechip[data-v-39c7e08d] {
+  color: #4c37b8 !important;
+}
+html[data-glass-color-scheme="light"] .magicflow-keep-selectall[data-v-39c7e08d] {
+  opacity: 1 !important;
+}
+
 @media (max-width: 959px) {
   /* 窄屏走 fullscreen：高度交给弹窗自己撑满，别再被 86vh 卡住 */
 .magicflow-keep-dialog[data-v-39c7e08d] { block-size: 100%; max-block-size: 100%;

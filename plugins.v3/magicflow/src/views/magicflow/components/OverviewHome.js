@@ -686,7 +686,7 @@ return (_ctx, _cache) => {
                 (_openBlock$2(true), _createElementBlock$1(_Fragment$1, null, _renderList$1(chart.value.ticks, (tick) => {
                   return (_openBlock$2(), _createElementBlock$1("span", {
                     key: tick.y,
-                    style: _normalizeStyle({ bottom: `${(tick.y / CHART_H) * 100}%` })
+                    style: _normalizeStyle({ bottom: `${((CHART_H - tick.y) / CHART_H) * 100}%` })
                   }, _toDisplayString$2(tick.label), 5))
                 }), 128))
               ]),

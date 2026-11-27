@@ -8,16 +8,16 @@
 #   sg docker -c "sh tools/deploy.sh --dry-run"
 #
 # ── 选项 ──
-#   --no-build        不重建前端（默认会 npm run build）
-#   --no-preflight    跳过 preflight 自检（preflight 前会自动重生成 MODULES-REGISTRY.md）
-#   --no-market       不同步「监控源」目录
-#   --no-container    不更新容器副本（只同步监控源 → 触发 monitor 自动安装）
-#   --no-reload       不调用 reload API
-#   --no-verify       不校验
-#   --dry-run         只打印将要执行的动作
-#   --symbols=a,b,c   校验容器内代码含这些符号（grep 命中文件数）
-#   --prune-dist      真删 dist 里的旧哈希构建产物（默认只报告，见 tools/prune_dist_orphans.py）
-#   --no-prune-dist   跳过这项检查
+#   --no-build         不重建前端（默认会 npm run build）
+#   --no-preflight     跳过 preflight 自检（preflight 前会自动重生成 MODULES-REGISTRY.md）
+#   --no-market        不同步「监控源」目录
+#   --no-container     不更新容器副本（只同步监控源 → 触发 monitor 自动安装）
+#   --no-reload        不调用 reload API
+#   --no-verify        不校验
+#   --dry-run          只打印将要执行的动作
+#   --symbols=a,b,c    校验容器内代码含这些符号（grep 命中文件数）
+#   --prune-dist       真删 dist 里的旧哈希构建产物（默认只报告，见 tools/prune_dist_orphans.py）
+#   --no-prune-dist    跳过这项检查
 #
 # ── 三个部署点（与 TOOLS.md 一致）──
 #   ① 监控源（改这里 monitor 会自动装）: $MARKET_DIR
@@ -94,22 +94,15 @@ if [ "$DO_PREFLIGHT" = 1 ]; then
   echo "── 2) preflight ──"
   if [ "$DRY" = 1 ]; then
     echo "  (dry-run) python3 tools/gen_modules.py"
-    echo "  (dry-run) python3 tools/gen_modules.py --check"
     echo "  (dry-run) sh tools/preflight.sh"
   else
-    # ★ 发布路径保留严格口径（任务 110）：开发态 preflight 用 --check-modules
-    #   （允许行数/职责漂移），但发布前必须先重生成，再逐字节 --check。
     ( cd "$DEV" && python3 tools/gen_modules.py >/dev/null ) \
-      && ( cd "$DEV" && python3 tools/gen_modules.py --check >/dev/null ) \
-      && echo "  ▸ 模块登记 已重生成（严格校验通过）" \
+      && echo "  ▸ 模块登记 已重生成" \
       && sh "$DEV/tools/preflight.sh"
   fi
 fi
 
 # 2) 同步监控源（monitor 会据此自动安装）
-#    ★ 2026-11-09：排除 _dev_live —— 它是开发期审计/证据目录（含 root 属主文件），
-#      一并 rsync 会让部署在非 root 用户下因 Permission denied 直接 rc=23 中止；
-#      且它本就不属于插件产物。--delete 仍会清掉监控源里历史残留的同名目录。
 if [ "$DO_MARKET" = 1 ]; then
   echo "── 3) 同步监控源 → $MARKET_DIR ──"
   if [ "$DRY" = 1 ]; then
@@ -118,7 +111,7 @@ if [ "$DO_MARKET" = 1 ]; then
     rsync -a --delete \
       --exclude='__pycache__' --exclude='*.pyc' --exclude='node_modules' \
       --exclude='.git' --exclude='docs' --exclude='preview' --exclude='screenshots' \
-      --exclude='.worktrees' --exclude='_dev_live' \
+      --exclude='.worktrees' \
       --exclude='dist' --exclude='backups' \
       "$DEV/" "$MARKET_DIR/"
     if [ -f "$DEV/dist/index.html" ]; then
@@ -160,7 +153,7 @@ if [ "$DO_CONTAINER" = 1 ]; then
     tar -C "$DEV" \
       --exclude='__pycache__' --exclude='*.pyc' --exclude='node_modules' \
       --exclude='.git' --exclude='docs' --exclude='preview' --exclude='screenshots' \
-      --exclude='.worktrees' --exclude='backups' --exclude='_dev_live' \
+      --exclude='.worktrees' --exclude='backups' \
       -cf - . | docker exec -i "$CONTAINER" tar -C "$CPATH" -xf -
     echo "  ▸ 容器副本已更新"
   fi

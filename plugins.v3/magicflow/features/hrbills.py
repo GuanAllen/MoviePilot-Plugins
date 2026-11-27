@@ -1666,37 +1666,6 @@ class HrBillsMixin:
         except Exception:  # noqa: BLE001
             pass
 
-    def _journal_hr_settle(self, hash_string: str, row: Dict[str, Any],
-                           reason: str = "", actor: str = "",
-                           prev_state: str = "") -> None:
-        """人工结清落 journal（``kind=hr_settle``，供「操作记录」展示；写失败静默）。
-
-        ★ 19.12.70：``_emit_event`` 写的是 eventlog（``/events`` 事件流），
-        而「操作记录」读的是 ``store.journal``（``/operations``）—— **两套不同的数据**。
-        只在 eventlog 里留痕，用户在操作记录里就找不到这笔人工结清，等于没有留痕。
-        """
-        try:
-            _store = getattr(self, "_store", None)
-            _journal = getattr(_store, "journal", None) if _store is not None else None
-            if _journal is None:
-                return
-            from ..persistence import OperationItem  # noqa: WPS433
-            _h = str(hash_string or "").strip().lower()
-            _journal.record(
-                task_id="",
-                kind="hr_settle",
-                items=[OperationItem(
-                    hash=_h,
-                    title=self._hrbills_title(_h),
-                    reason="人工结清 · %s · 操作人：%s · 站点：%s · %s→settled" % (
-                        str(reason or "")[:120], str(actor or "")[:32],
-                        str(row.get("site") or "")[:64], str(prev_state or "") or "?"),
-                    source="manual",
-                )],
-            )
-        except Exception:  # noqa: BLE001
-            pass
-
     # ---------------------------------------------------------- 义务判定（两道门槛）
     def _hr_obligation_rule(self, domain: str,
                             torrent_hr: Any = None) -> Optional[str]:
@@ -3984,20 +3953,6 @@ class HrBillsMixin:
                     "settlement_reason": _reason[:200],
                 },
             )
-        except Exception:  # noqa: BLE001
-            pass
-        # ★ 19.12.70：结清要「看得见 + 立刻生效」，两件事分开做。
-        #   ① 留痕：`_emit_event` 只进事件流（/events），操作记录读的是 store.journal
-        #      （/operations）—— 两套数据。只发事件 = 操作记录里查不到这笔结清。
-        self._journal_hr_settle(hs, row, reason=_reason, actor=_by, prev_state=cur_state)
-        #   ② 生效：账本已 settled，但种子上还挂着 state=H&R / taken_by=__hr_host__，
-        #      任务卡「H&R保种」的 hr_count 仍算 1 —— 原本要等下一轮 hr_host（默认 15min）
-        #      才走 `_hr_host_release`。这里直接调同一个函数、同一语义，不新增释放逻辑；
-        #      释放会还原原职务（prev_state）或回静默，与 tick 的行为完全一致。
-        try:
-            _rel = getattr(self, "_hr_host_release", None)
-            if callable(_rel):
-                _rel([hs], reason="人工结清")
         except Exception:  # noqa: BLE001
             pass
         return {"settled": hs, "state": BILL_STATE_SETTLED, "settled_at": now,

@@ -2,12 +2,12 @@
 # -*- coding: utf-8 -*-
 """魔流 · 标签动作表（★ 19.10.28）离线回归 —— 真跑 features/tags.py，不需 MoviePilot。
 
-背景：`get_tag_model` 原先是 443 行、37 个平铺 `if act == ...` 的长链，99 个动作别名
+背景：`get_tag_model` 原先是 443 行、37 个平铺 `if act == ...` 的长链，97 个动作别名
 散落在条件里，没有任何地方能一次说清「/tags 支持哪些 action」。19.10.28 改成表驱动：
-别名集中在 `_ACT_ALIASES`，落到 38 个 `_tag_act_*` 处理函数，分发器只剩 4 行。
+别名集中在 `_ACT_ALIASES`，落到 42 个 `_tag_act_*` 处理函数，分发器只剩 4 行。
 
 这里钉住四件事（都不需要真账本/真下载器）：
-  1) 别名总数 85、无重复、每个都指向真实存在的 `_tag_act_*`；
+  1) 别名总数 95、无重复、每个都指向真实存在的 `_tag_act_*`；
   2) 反向不遗漏：类上每个 `_tag_act_*` 都被表引用（没有孤儿处理函数）；
   3) 同组别名（xxx / xxx_plan / xxx_apply）指向同一个处理函数；
   4) 分发器：`act` 先 lower/strip、未知动作落到 status、入参原样进 `TagReq`。
@@ -99,8 +99,9 @@ MIXIN = ftags.TagsMixin
 
 def main() -> int:
     print("== 1. 表结构 ==")
-    _ok(len(TABLE) == 99, f"别名 99 个（实际 {len(TABLE)}；19.12.38 起 keep/claim 职务别名并入）")
-    _ok(len(ALIASES) == 44, f"分组 44 组（实际 {len(ALIASES)}；19.12.38/19.12.x 新增 keep/claim 等）")
+    # ★ 19.12.44：新增 hrbills_settle_manual/hr_settle_manual → 97+2=99 别名 / 43+1=44 组
+    _ok(len(TABLE) == 99, f"别名 99 个（实际 {len(TABLE)}）")
+    _ok(len(ALIASES) == 44, f"分组 44 组（实际 {len(ALIASES)}）")
     _ok(len(TABLE) == sum(len(n) for _f, *n in ALIASES), "组内别名数之和 == 表条目数（无撞车）")
     handlers = [fn for fn, *_n in ALIASES]
     _ok(len(set(handlers)) == 44, "44 个处理函数互不重复")

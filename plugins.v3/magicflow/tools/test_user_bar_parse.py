@@ -9,11 +9,12 @@
   4. 干扰串不误命中：「[签到得金元宝] … 邀请: 0(0)」
   5. 旧模板回归：``分享率: 1.01 / 上传量: 307.28 GB``
 
-纯离线：不碰网络 / 不依赖插件上下文（剥掉 collect.py 的两行相对导入后 exec）。
+纯离线：不碰网络 / 不依赖插件上下文。**直接加载纯解析层** ``collect_parse.py``。
 运行：``PYTHONPYCACHEPREFIX=/tmp/pyc python3 tools/test_user_bar_parse.py``
 """
 from __future__ import annotations
 
+import importlib.util
 import pathlib
 import sys
 import types
@@ -23,18 +24,23 @@ FAILED: list = []
 
 
 def _load_collect():
-    src = (ROOT / "collect.py").read_text(encoding="utf-8")
-    src = src.replace("from .kvstore import cache_get, cache_set", "cache_get = cache_set = None")
-    src = src.replace("from .common import CACHE_TTL_COUNTER", "CACHE_TTL_COUNTER = 0")
-    src = src.replace("from . import cacheops", "cacheops = None")
-    # 作为「包内模块」执行：``from .collect_parse import ...`` 才能按包语义解析
-    _pkg = "collect_offline"
-    mod = types.ModuleType(_pkg)
-    mod.__path__ = [str(ROOT)]
-    mod.__package__ = _pkg
-    sys.modules[_pkg] = mod
-    exec(compile(src, "collect.py", "exec"), mod.__dict__)  # noqa: S102
-    return mod
+    """加载纯解析层（``norm`` + ``collect_parse``），不碰传输层 ``collect.py``。
+
+    ★ 2026-11-05：旧法是「读 ``collect.py`` 源码 + 字符串剥相对导入 + exec」，在 19.10.31
+    把解析拆成 ``collect_parse.py`` 之后就废了 —— ``from .collect_parse import ...`` 在没有
+    包上下文的 exec 里无法解析，本文件从此一直红着（不是断言失败，是加载就崩）。
+    现在按文件加载、用一个合成包名承载相对导入，零 app 依赖、零字符串替换。
+    """
+    pkg = types.ModuleType("mf_parse_offline")
+    pkg.__path__ = [str(ROOT)]
+    sys.modules["mf_parse_offline"] = pkg
+    for name in ("norm", "collect_parse"):
+        spec = importlib.util.spec_from_file_location("mf_parse_offline." + name,
+                                                      ROOT / (name + ".py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["mf_parse_offline." + name] = mod
+        spec.loader.exec_module(mod)
+    return sys.modules["mf_parse_offline.collect_parse"]
 
 
 C = _load_collect()
@@ -150,6 +156,30 @@ chk("现算·分享率", b["ratio"] == 2.0, b["ratio"])
 chk("现算·非无限", b["ratio_inf"] is False, b.get("ratio_inf"))
 
 chk("空载荷 → None", norm({}) is None, norm({}))
+
+# ★ 19.12.42 uhddolby 页头 H&R（真机原文，2026-11-05 取证）：
+#   `<a href="myhr.php"> <font class="color_bonus">H&amp;R: </font> 0`
+#   —— `&` 是实体转义、数字在标签外；旧正则只认字面 `H&R` → 整栏读成 None。
+_UHD_HTML = ('<a href="myhr.php"> <font class="color_bonus">H&amp;R: </font> 0</a>'
+             ' 分享率: 1.5 上传量: 1.00 GB 下载量: 0.50 GB')
+r = parse_user_bar(_UHD_HTML)
+chk("uhddolby·H&R 栏读到了", isinstance(r.get("hr"), dict), r.get("hr"))
+chk("uhddolby·形态 = single", (r.get("hr") or {}).get("form") == "single", r.get("hr"))
+chk("uhddolby·单数字进 unfinished=0", (r.get("hr") or {}).get("unfinished") == 0, r.get("hr"))
+chk("uhddolby·assessing 不伪造", (r.get("hr") or {}).get("assessing") is None, r.get("hr"))
+chk("uhddolby·limit 不伪造", (r.get("hr") or {}).get("limit") is None, r.get("hr"))
+
+# 两数形态同样可能被实体转义 + 被 <font> 切开（真机常见）
+_PAIR_HTML = ('<a href="myhr.php">[<font>H&amp;R</font>]:</a> 0/<font color=red>1</font>/15')
+r = parse_user_bar(_PAIR_HTML)
+chk("实体两数·form=pair", (r.get("hr") or {}).get("form") == "pair", r.get("hr"))
+chk("实体两数·assessing", (r.get("hr") or {}).get("assessing") == 0, r.get("hr"))
+chk("实体两数·unfinished", (r.get("hr") or {}).get("unfinished") == 1, r.get("hr"))
+chk("实体两数·limit", (r.get("hr") or {}).get("limit") == 15, r.get("hr"))
+
+# 没有这一栏 → None（**不等于 0**）
+r = parse_user_bar("分享率: 1.2 上传量: 1.00 GB 下载量: 0.50 GB")
+chk("无 H&R 栏 → hr=None", r.get("hr") is None, r.get("hr"))
 
 if FAILED:
     print(f"❌ 合计 {len(FAILED)} 项失败：{FAILED}")

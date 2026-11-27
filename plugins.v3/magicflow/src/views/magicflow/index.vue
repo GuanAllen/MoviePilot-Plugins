@@ -4550,12 +4550,12 @@ onUnmounted(() => {
     padding: 8px 10px;
     border-radius: 11px;
     border-color: rgba(139, 124, 246, 0.35);
-    background: rgba(255, 255, 255, 0.035);
+    background: rgba(var(--v-theme-on-surface), 0.035);
     box-shadow: none;
   }
   .magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch__k {
     font-size: 9px;
-    color: #7d8296;
+    color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
   }
   .magicflow-page .magicflow-mobile-toolbar .magicflow-task-switch__v {
     font-size: 12px;
@@ -4868,7 +4868,7 @@ onUnmounted(() => {
     margin-block-start: 0;
     border-radius: 0;
     border-inline: 0;
-    border-block: 1px solid rgba(255, 255, 255, 0.07);
+    border-block: 1px solid rgba(var(--v-theme-on-surface), 0.07);
     background: rgb(var(--v-theme-background));
     box-shadow: none;
     backdrop-filter: none;
@@ -4884,7 +4884,7 @@ onUnmounted(() => {
     font-weight: 600;
   }
   .magicflow-page .magicflow-tab.is-active {
-    color: #cfc6ff;
+    color: var(--mf-purple-ink);
     background: rgba(139, 124, 246, 0.14);
     box-shadow: none;
     font-weight: 600;
@@ -4968,18 +4968,22 @@ onUnmounted(() => {
   --mf-op-dim: 0.62;   /* 表头 / 角标（opacity 形态） */
   --mf-op-mid: 0.72;
   --mf-op-soft: 0.80;
+  --mf-purple-ink: #cfc6ff;
 }
 
 /* ★ 注意：这里不能写 .v-theme--light 当主题钩子——vite.config.js 的 postcss
-   「vuetify-filter」会删掉含 .v- 的选择器；而 MP 在 <html> 上放了 data-theme
-   （light / dark / glass / purple / transparent）。 */
-[data-theme="light"] {
+   「vuetify-filter」会删掉含 .v- 的选择器。★ 实测线上真值：MP 在 <html> 上
+   放的是 data-theme="glass|plain" 和 data-glass-color-scheme="light|dark"，
+   浅色钩子必须用 html[data-glass-color-scheme="light"]；写成旧的 light 钩子
+   一条都不会命中（19.16.38~41 四版因此全部无效）。 */
+html[data-glass-color-scheme="light"] {
   --mf-fg-dim: 0.74;
   --mf-fg-mid: 0.78;
   --mf-fg-soft: 0.82;
   --mf-op-dim: 0.82;
   --mf-op-mid: 0.88;
   --mf-op-soft: 0.94;
+  --mf-purple-ink: #5c46c9;
 }
 
 /* ── 工作台 / 各弹窗根元素 ───────────────────────────────── */
@@ -5017,12 +5021,12 @@ onUnmounted(() => {
   --v-theme-primary: 178,140,255;
 }
 
-[data-theme="light"] .magicflow-page,
-[data-theme="light"] .magicflow-dialog,
-[data-theme="light"] .magicflow-page .v-theme--light,
-[data-theme="light"] .magicflow-dialog .v-theme--light,
-[data-theme="light"] .magicflow-page [class*="v-theme--"],
-[data-theme="light"] .magicflow-dialog [class*="v-theme--"] {
+html[data-glass-color-scheme="light"] .magicflow-page,
+html[data-glass-color-scheme="light"] .magicflow-dialog,
+html[data-glass-color-scheme="light"] .magicflow-page .v-theme--light,
+html[data-glass-color-scheme="light"] .magicflow-dialog .v-theme--light,
+html[data-glass-color-scheme="light"] .magicflow-page [class*="v-theme--"],
+html[data-glass-color-scheme="light"] .magicflow-dialog [class*="v-theme--"] {
   --v-theme-on-surface-variant: 101,97,107;   /* ≈ on-surface @0.78 */
   --v-theme-primary: 124,64,232;              /* 4.49 → 5.59 */
   --v-theme-warning: 180,83,9;                /* 1.78 → 5.02 */

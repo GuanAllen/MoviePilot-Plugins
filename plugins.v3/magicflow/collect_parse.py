@@ -1625,7 +1625,6 @@ def parse_bonus_exchange_page(text: Any) -> Dict[str, Any]:
         ``ok``：页面有效（有 exchange 表单）—— 登录失效 / 报错页应为 False；
         ``balance``：站点自报的当前魔力（float，取不到为 None，**不伪造 0**）；
         ``currency``：站点币名（魔力值 / 鲸币 / 金元宝…）；
-        ``uploaded_gb``：页头用户条的上传量（GB，float，取不到为 None；★ 19.16.32 供兑换后核对）；
         ``items``：[{option, title, price, size_gb, kind, count, disabled, disabled_reason, submit}]；
         ``kinds``：各类项数 {upload, invite, temp_invite}；
         ``form_count``：全页 exchange 表单数（含不接的类型，便于审计页是否解析全）；
@@ -1633,7 +1632,7 @@ def parse_bonus_exchange_page(text: Any) -> Dict[str, Any]:
     """
     raw = str(text or "")
     out: Dict[str, Any] = {
-        "ok": False, "balance": None, "currency": "", "uploaded_gb": None, "items": [],
+        "ok": False, "balance": None, "currency": "", "items": [],
         "kinds": {"upload": 0, "invite": 0, "temp_invite": 0},
         "form_count": 0, "why": "",
     }
@@ -1653,18 +1652,6 @@ def parse_bonus_exchange_page(text: Any) -> Dict[str, Any]:
     cm = re.search(r"用你的\s*([^\s（(，,]{1,10})\s*[（(]当前", tb)
     if cm:
         out["currency"] = cm.group(1).strip()
-    # ★ 19.16.32：兑换后核对「上传量」是否真到账——NexusPHP 页头用户条恒有「上传量：823.93 GB」，
-    #   转成 GB 返回；取不到就 None（不伪造 0）。
-    um = re.search(r"上传量\s*[：:]\s*([\d.,]+)\s*(TB|GB|MB|KB|B)\b", tb, re.I)
-    if um:
-        try:
-            _uv = float(um.group(1).replace(",", ""))
-            _u = um.group(2).upper()
-            _scale = {"TB": 1024.0, "GB": 1.0, "MB": 1 / 1024.0,
-                      "KB": 1 / 1024.0 / 1024.0, "B": 1 / 1024.0 / 1024.0 / 1024.0}.get(_u, 1.0)
-            out["uploaded_gb"] = round(_uv * _scale, 4)
-        except (ValueError, OverflowError):
-            pass
     if out["balance"] is None:
         # ★ 19.16.29 兜底：部分站文案是「魔力值：12,028.6」（★ 数字在关键词后，PT时间）
         #   只在主规则取不到时生效，避免覆盖已正确的站（如高清杜比的「积分」不是余额）。

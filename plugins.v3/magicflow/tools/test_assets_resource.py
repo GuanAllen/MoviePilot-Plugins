@@ -98,14 +98,13 @@ class _Resp:
 
 class _Payload:
     def __init__(self, resource_ids=None, hashes=None, delete_files=0, confirm=0, reason="",
-                 background=0, action=""):
+                 background=1):
         self.resource_ids = list(resource_ids or [])
         self.hashes = list(hashes or [])
         self.delete_files = delete_files
         self.confirm = confirm
         self.reason = reason
-        self.background = background
-        self.action = action
+        self.background = background   # ★ 15.10.0：confirm=1 默认 1=入后台队列
 
 
 class _Item:
@@ -116,13 +115,23 @@ class _Item:
 
 
 _m = types.ModuleType(PKG + ".models")
+# ★ 19.12.43：assets.py 的导入面新增 ``MagicFlowAssetActPayload``（15.9.0 行内动作请求），
+#   桩没跟上 → 加载即 ImportError。本用例只测 delete 路径，动作模型给 ``object`` 占位
+#   （与 test_keep_list / test_adopt_orphans / test_site_duty_standoff 同一写法）。
+_m.MagicFlowAssetActPayload = object
 _m.MagicFlowAssetDeletePayload = _Payload
-_m.MagicFlowAssetActPayload = _Payload
 sys.modules[PKG + ".models"] = _m
 
 _m = types.ModuleType(PKG + ".persistence")
 _m.OperationItem = _Item
 sys.modules[PKG + ".persistence"] = _m
+
+# ★ 19.12.43：assets.py 现在 `from ..ledger import get_backend`（真实 ledger 需要
+#   sqlalchemy，离线环境没有）。本用例只测「资源行 / 资源删除」口径，媒体名与整理历史
+#   都走 try/except 兜底，这里给一个返回 None 的桩即可（与 test_keep_list 同写法）。
+_m = types.ModuleType(PKG + ".ledger")
+_m.get_backend = lambda *_a, **_k: None  # noqa: E731
+sys.modules[PKG + ".ledger"] = _m
 
 _load(PKG + ".common", "common.py")
 _load(PKG + ".tags", "tags.py")
@@ -185,16 +194,20 @@ class Host(assets.AssetsMixin):
         self._downloader = _FakeDownloader()
         self._store = _Store()
         self.deleted = []
+        self.jobs = []
+
+    def _job_submit(self, kind, title, fn, dedup_key="", params=None):
+        """后台队列替身（★ 15.10.0 起 ``confirm=1`` 默认入队）：同步执行后返回句柄。
+
+        **不放宽断言**：真正干活的是同步体 ``fn()``，删种调用仍然逐条记在
+        ``_FakeDownloader.calls`` 上；这里只补「入队」这一跳，让被断言的行为不变。
+        """
+        self.jobs.append({"kind": kind, "title": title, "dedup_key": dedup_key})
+        fn()
+        return {"id": f"job-{len(self.jobs)}"}
 
     def _log(self, *_a, **_k):
         return None
-
-    def _job_submit(self, kind, title, fn, dedup_key="", params=None):
-        """资源删除现在走后台队列（jobs.py）；本测试只验「入队 + 返回 job_id」。"""
-        self.jobs = getattr(self, "jobs", [])
-        job = {"id": f"job-{len(self.jobs)+1}", "kind": kind, "title": title}
-        self.jobs.append((job, fn, params or {}))
-        return job
 
     def _tag_groups(self):
         return self._groups
@@ -276,23 +289,34 @@ def main():
     print("E. 删除 = 整组一次性批量删（不是逐个）")
     h4 = Host(groups=_groups_two_members(), snap=_snap_two(),
               ledger={"hsrc": {"downloader": "qbittorrent"}, "hrep": {}})
-    resp = h4.assets_delete(_Payload(resource_ids=["res-1"], delete_files=1, confirm=1))
+    resp = h4.assets_delete(_Payload(resource_ids=["res-1"], delete_files=1, confirm=1,
+                                   background=0))
     ok(resp.success is True, "删除成功")
     ok(len(h4._downloader.calls) == 1, "只调下载器一次（整组批量）")
     ok(sorted(h4._downloader.calls[0][0]) == ["hrep", "hsrc"], "一次传全部成员 hash")
     ok(h4._downloader.calls[0][1] is True, "delete_file=True 透传")
     ok(resp.data["deleted"] == 1, "按资源计数 deleted=1")
 
+    print("E2. confirm=1 默认入后台队列（★ 15.10.0；同步体仍照跑）")
+    h8 = Host(groups=_groups_two_members(), snap=_snap_two(),
+              ledger={"hsrc": {"downloader": "qbittorrent"}, "hrep": {}})
+    resp8 = h8.assets_delete(_Payload(resource_ids=["res-1"], delete_files=0, confirm=1))
+    ok(resp8.data.get("queued") is True, "默认 background=1 → 回执 queued=True")
+    ok(len(h8.jobs) == 1 and h8.jobs[0]["kind"] == "asset_delete",
+        "已投递 asset_delete 后台任务")
+    ok(len(h8._downloader.calls) == 1, "入队后同步体照样执行（桩同步跑 fn）")
+
     print("F. 兼容：只给 hashes → 反查所属资源")
     h5 = Host(groups=_groups_two_members(), snap=_snap_two(),
               ledger={"hsrc": {"downloader": "qbittorrent"}, "hrep": {}})
-    resp5 = h5.assets_delete(_Payload(hashes=["hrep"], delete_files=0, confirm=1))
+    resp5 = h5.assets_delete(_Payload(hashes=["hrep"], delete_files=0, confirm=1,
+                                      background=0))
     ok(resp5.data["deleted"] == 1, "hash 反查资源并删除")
     ok(sorted(h5._downloader.calls[0][0]) == ["hrep", "hsrc"], "反查后仍是整组删")
 
     print("G. 非库内资产拒收 / 干跑零写入")
     h6 = Host(groups=_groups_two_members(), snap=_snap_two())
-    resp6 = h6.assets_delete(_Payload(resource_ids=["nope"], confirm=1))
+    resp6 = h6.assets_delete(_Payload(resource_ids=["nope"], confirm=1, background=0))
     ok(resp6.data["results"][0]["block"] == "不是库内资产", "未知 resource_id 拒收")
     ok(h6._downloader.calls == [], "拒收 → 不碰下载器")
 

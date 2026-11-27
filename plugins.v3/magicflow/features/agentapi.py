@@ -22,7 +22,6 @@
 
 import os
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..common import (
@@ -310,12 +309,6 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
                     "confirm": "1=真加种；否则只回干跑计划（干跑也取一次 .torrent 读元数据，不落种）"},
          "returns": "OnDemandAddDirect", "version": AGENT_ENDPOINT_VERSION,
          "summary": "有种子链接但搜不到时直接加：按链接取种落种（不 search、不选源）"},
-        {"path": "/agent/ondemand/repair", "method": "POST", "handler": "agent_ondemand_repair",
-         "write": True,
-         "params": {"confirm": "1=真跑补整理；缺省/非 1 = 干跑（只回报将要做什么，零写入）",
-                    "force": "1=忽略退避与次数上限并清零计数（默认）；0=按退避跳过"},
-         "returns": "OnDemandRepair", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "点播补整理：把「已转资源·未入库」的历史行重跑 MP 整理（修好识别能力后一次补回来；写，需 confirm=1）"},
         {"path": "/agent/music/search", "method": "POST", "handler": "agent_music_search",
          "write": False,
          "params": {"query": "str 关键词（首页必填；缺了报 bad_param；续页留空）",
@@ -333,10 +326,9 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
          "summary": "按选中的 cid 加种到音乐线（凭据不回传）"},
         {"path": "/agent/music/items", "method": "GET", "handler": "agent_music_items",
          "write": False,
-         "params": {"limit": "int 每页条数（默认 50，最大 200）",
-                    "offset": "int 跳过条数（默认 0；配合 total 翻页）"},
+         "params": {"limit": "int 清单条数上限（默认 50，最大 200）"},
          "returns": "MusicItems", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "音乐下过哪些、在库什么状态：分页清单 + totals + total（截断前真实条数）"},
+         "summary": "音乐下过哪些、在库什么状态：清单 + totals"},
         {"path": "/agent/music/act", "method": "POST", "handler": "agent_music_act",
          "write": True,
          "params": {"hash": "str（音乐种 infohash）", "action": "pause | resume | remove"},
@@ -366,18 +358,11 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
         {"path": "/agent/assets/delete", "method": "POST", "handler": "agent_assets_delete",
          "write": True,
          "params": {"resource_ids": "逗号/空格分隔的资源 id（只认库内资产；其余拒收）",
-                    "hashes": "兼容：成员 hash（逗号/空格分隔；与 resource_ids 二选一，给了资源 id 就忽略它）",
                     "delete_files": "1=连文件一起删（不可恢复）；缺省 0=只删种保文件",
                     "confirm": "1=真删；缺省/非 1 = 干跑（零写入）",
                     "reason": "删除原因（进统一删除台账 mf_deletions）"},
          "returns": "AssetDeleteReport", "version": AGENT_ENDPOINT_VERSION,
          "summary": "⚠不可恢复：真删整份库内资产（全组删完才连文件删，只破「永不删」一道闸）"},
-        {"path": "/agent/assets/organize/preview", "method": "GET",
-         "handler": "agent_assets_organize_preview", "write": False,
-         "params": {"limit": "int 最多列几条（默认 0=全部；counts 恒按全量算，不受 limit 影响）",
-                    "only_missing": "int 1=只看还没进媒体库的（默认）；0=连已入库的也列"},
-         "returns": "AssetOrganizePreview", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "整理前先看清单：哪些资源能 link 入库、哪些要人工核（纯只读，不触发整理/不 recheck/不写账本/不改种子状态）"},
         # ---- P1.5c：功能域只读（AI ⊇ 前端，收编 19 个只读豁免域）----
         {"path": "/agent/tasks/{id}/bonus", "method": "GET", "handler": "agent_task_bonus", "write": False,
          "params": {"id": "任务 id 路径参数"}, "returns": "TaskBonusReport",
@@ -389,10 +374,9 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
          "params": {"id": "任务 id 路径参数"}, "returns": "TaskHandoverReport",
          "version": AGENT_ENDPOINT_VERSION, "summary": "任务交棒预览"},
         {"path": "/agent/recommend", "method": "GET", "handler": "agent_recommend", "write": False,
-         "params": {"status": "按状态收窄：recommended（待定，最有用）/ pending / confirmed / downgraded / dismissed；逗号分隔可多选；空=全部",
-                    "limit": "int 最多返回几条（默认 50，0=全部；status_counts/total 恒按全量算）"},
-         "returns": "RecommendReport", "version": AGENT_ENDPOINT_VERSION,
-         "summary": "有什么值得订：推荐甄别结果（全量约 400KB / 479 条会被 30k 截断，务必用 status=recommended 或 limit 收窄）"},
+         "params": {}, "returns": "RecommendReport", "version": AGENT_ENDPOINT_VERSION,
+         "summary": "有什么值得订：推荐甄别结果"
+                    "（注意：无参数可缩，实测约 255KB —— 超 30k 会被截断，只能看到开头几条）"},
         {"path": "/agent/jobs", "method": "GET", "handler": "agent_jobs", "write": False,
          "params": {"limit": "int 最多返回多少条（默认 50）"},
          "returns": "JobList", "version": AGENT_ENDPOINT_VERSION,
@@ -507,20 +491,6 @@ def _agent_endpoints() -> List[Dict[str, Any]]:
          "version": AGENT_ENDPOINT_VERSION,
          "summary": "调试面自描述（/debug 端点、哪些会写、读文件白名单/黑名单）"},
     ]
-
-
-def _agent_hr_store_meta(data_dir: Path) -> Dict[str, Any]:
-    """只读当前 H&R 账单存储状态（任务 132：PG 单一权威）。
-
-    优先用 hrbills 的权威 meta；离线 harness 不加载重依赖时退回最小事实。
-    """
-    try:
-        from .hrbills import hr_bills_store_meta as _meta_fn  # noqa: WPS433
-        return dict(_meta_fn(Path(data_dir)) or {})
-    except Exception:  # noqa: BLE001
-        return {"backend": "unknown", "authority": "none", "mode": "unknown",
-                "available": False, "degraded_reason": "meta_unavailable",
-                "generation": 0, "checked_at": 0}
 
 
 class AgentApiMixin:
@@ -693,13 +663,11 @@ class AgentApiMixin:
             managed["protected_claim"] = len(self._agent_claim_hashes())
         except Exception:  # noqa: BLE001
             pass
-        # 账单（★ 任务 111：带三态；UNKNOWN 不能显示成正常空表）
+        # 账单（复用 bills store 自带 stats，只读）
         try:
-            bills = self._hrbills_stats()
+            bills = self._hrbills_store().stats()
         except Exception:  # noqa: BLE001
-            bills = {"total": 0, "by_state": {}, "by_rule": {}, "by_site": {},
-                     "opened_by": {}, "store_status": "unknown",
-                     "store_error": "stats_failed"}
+            bills = {"total": 0, "by_state": {}, "by_rule": {}, "by_site": {}, "opened_by": {}}
         # 池（每个下载目录一个池；watermark 与 pool.POOL_THRESHOLD 同源）
         pool: Dict[str, Any] = {"volumes": [], "watermark": round(POOL_THRESHOLD * 100.0, 1)}
         try:
@@ -817,44 +785,15 @@ class AgentApiMixin:
                     "at": now,
                 })
         # 账单（bills store 单条；欠债/已结清/作废都照实回，不自己判）
-        # ★ 任务 113（N-04）：三态读 —— UNKNOWN 不能当成「没有这张账单」，
-        #   否则删除解释会给出 delete_candidate（虽然执行层会被 F10 拦，但解释是错的）。
         bill = None
-        _gres = None
-        bill_store_status = "unknown"
-        bill_store_error = ""
         try:
-            _bstore = self._hrbills_store()
-            _gres = (_bstore.get_result(h)
-                     if hasattr(_bstore, "get_result") else None)
-            if _gres is not None:
-                bill_store_status = str(_gres.get("status") or "unknown")
-                bill_store_error = str(_gres.get("error") or "")[:160]
-                bill = dict(_gres.get("value") or {}) if bill_store_status == "found" else None
-            else:
-                bill = _bstore.get(h)
-                bill_store_status = "found" if isinstance(bill, dict) else "absent"
-        except Exception as err:  # noqa: BLE001
+            bill = self._hrbills_store().get(h)
+        except Exception:  # noqa: BLE001
             bill = None
-            bill_store_status = "unknown"
-            bill_store_error = repr(err)[:160]
-        entry["bill_store_status"] = bill_store_status
-        if bill_store_error:
-            entry["bill_store_error"] = bill_store_error
         if bill:
             entry["bills"].append(self._agent_bill_view(h, bill))
         if blocked:
             entry["verdict"] = "blocked"
-        elif bill_store_status == "unknown":
-            # ★ 任务 132（N-129-03）：存储读不到 → 结构化 degraded，绝不给删除候选。
-            entry["verdict"] = "degraded"
-            entry["reason_chain"].append({
-                "rule": "hr/bill_store",
-                "verdict": "degraded",
-                "inputs": {"status": bill_store_status, "error": bill_store_error},
-                "source_of_truth": "hr bills store (UNKNOWN)",
-                "at": now,
-            })
         elif t is not None or h in ledger:
             entry["verdict"] = "delete_candidate"
         return entry
@@ -1016,19 +955,10 @@ class AgentApiMixin:
         空 → 已到末页。
         """
         t0 = time.time()
-        # ★ 任务 111：三态读取；UNKNOWN 明确报错，不返回空列表冒充「没有账单」
-        res = None
         try:
-            st = self._hrbills_store()
-            res = st.all_result() if hasattr(st, "all_result") else None
+            all_bills = self._hrbills_store().all()
         except Exception as e:  # noqa: BLE001
-            return self._agent_err("store_unavailable", f"读账单失败:{e}", t0,
-                                   trace_id=str(e), degraded=True)
-        if res is not None and str(res.get("status") or "") not in ("found", "absent"):
-            return self._agent_err("store_unavailable",
-                                   f"账单存储不可用:{res.get('error') or ''}", t0,
-                                   degraded=True)
-        all_bills = (res.get("value") if res is not None else st.all()) or {}
+            return self._agent_err("internal", f"读账单失败:{e}", t0, trace_id=str(e))
         items = self._agent_filter_bills(all_bills, site, state, rule)
         # 游标：只取 hash 严格大于 cursor 的（字典序）
         cursor = str(cursor or "").strip().lower()
@@ -1056,19 +986,10 @@ class AgentApiMixin:
         if len(h) not in (40, 64) or any(c not in _HEX for c in h):
             return self._agent_err("bad_param", f"hash 非法（需要 40/64 位 hex）：{h[:16]}…",
                                    t0, field="hash")
-        # ★ 任务 111：not_found（确认不存在）与 store_unavailable（读不到）必须分开
-        res = None
         try:
-            st = self._hrbills_store()
-            res = st.get_result(h) if hasattr(st, "get_result") else None
+            bill = self._hrbills_store().get(h)
         except Exception as e:  # noqa: BLE001
-            return self._agent_err("store_unavailable", f"读账单失败:{e}", t0,
-                                   trace_id=str(e), degraded=True)
-        if res is not None and str(res.get("status") or "") not in ("found", "absent"):
-            return self._agent_err("store_unavailable",
-                                   f"账单存储不可用:{res.get('error') or ''}", t0,
-                                   degraded=True)
-        bill = (res.get("value") if res is not None else st.get(h))
+            return self._agent_err("internal", f"读账单失败:{e}", t0, trace_id=str(e))
         if not bill:
             return self._agent_err("not_found", "账单不存在", t0)
         return self._agent_ok(self._agent_bill_view(h, bill), t0)
@@ -1332,26 +1253,6 @@ class AgentApiMixin:
         except Exception as e:  # noqa: BLE001
             return self._agent_err("internal", f"H&R账单失败:{e}", t0, trace_id=str(e))
         payload = dict(data or {})
-        # ★ 任务 128（Q-127-07）：只读存储状态契约（字段真实来自当前 meta/状态文件，
-        #   不得为满足字段名而伪造默认值；异常一律如实表达）。
-        try:
-            # 懒加载：正常运行时用 hrbills 的权威 meta；离线/隔离 harness 不加载
-            # 重依赖链（check_agent_manifest 会以桩包加载本模块）。
-            from .hrbills import hr_bills_store_meta as _meta_fn
-            _m = _meta_fn(Path(self.get_data_path()))
-        except Exception:  # noqa: BLE001
-            _m = _agent_hr_store_meta(Path(self.get_data_path()))
-        _state = {
-            "authority": (_m or {}).get("authority") or "",
-            "mode": (_m or {}).get("mode") or (_m or {}).get("backend") or "unknown",
-            "available": bool((_m or {}).get("available", True)),
-            "degraded_reason": (_m or {}).get("degraded_reason") or "",
-            "generation": int((_m or {}).get("generation") or 0),
-            "checked_at": (_m or {}).get("checked_at") or 0,
-        }
-        payload["bill_store_status"] = _state
-        payload["store_state"] = _state
-        payload["store_meta"] = dict(_m or {})
         payload["write"] = {
             "void": "GET /tags?action=hrbills_void&hash=<h>&reason=..&confirm=1",
             # ★ 任务 96：人工结清动作 19.12.44 起已存在，补进自描述（任务 95 漏登记）
@@ -1765,18 +1666,17 @@ class AgentApiMixin:
                                   ("写操作 → 服务端候选缓存按 cid 取回凭据 → _music_grab_one "
                                    "→ _crossseed_torrent_bytes + add_torrent；category=音乐，进账本/H&R/闸门"))
 
-    def agent_music_items(self, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
-        """``GET /agent/music/items`` —— 音乐清单（单列表 + totals + total/offset 分页）。只读。"""
+    def agent_music_items(self, limit: int = 50) -> Dict[str, Any]:
+        """``GET /agent/music/items`` —— 音乐清单（单列表 + totals）。只读。"""
         t0 = time.time()
         try:
-            data = self._music_items(limit=limit, offset=offset)
+            data = self._music_items(limit=limit)
         except Exception as e:  # noqa: BLE001
             return self._agent_err("internal", f"读取音乐清单失败:{e}", t0, trace_id=str(e))
         return self._agent_report(
             data, t0,
             ("音乐清单 = qB 音乐线快照(is_music_line) × journal(source=music) × 种子账本；"
-             "只归一字段（stage/percent/ISO 时间），不新造真值源；"
-             "★ total=截断前真实条数，shown/offset/limit 描述当前页"))
+             "只归一字段（stage/percent/ISO 时间），不新造真值源"))
 
     def agent_music_act(self, hash: str = "", action: str = "") -> Dict[str, Any]:
         """``POST /agent/music/act`` —— 音乐行内操作（pause / resume / remove）。
@@ -2036,64 +1936,3 @@ class AgentApiMixin:
             "results": data.get("results") or [],
             "note": str(getattr(resp, "message", "") or ""),
         }, t0)
-
-    # ---------------------------------------------------------- 19.12.66 · MCP P0/P1
-    def agent_assets_organize_preview(self, limit: Any = 0,
-                                      only_missing: Any = 1) -> Dict[str, Any]:
-        """``GET /agent/assets/organize/preview`` —— 整理预演清单（**纯只读**）。
-
-        与前端 ``GET /assets/organize/preview`` 同一实现（``assets_organize_preview``）：
-        不调 TransferChain、不 recheck、不写账本、不改种子状态、不删任何东西。
-        AI 侧只做参数归一化 + 信封规整，不另写一套判定（AI ⊇ 前端同口径）。
-        """
-        t0 = time.time()
-        fn = getattr(self, "assets_organize_preview", None)
-        if not callable(fn):
-            return self._agent_err("unavailable", "当前版本没有整理预演入口", t0)
-        try:
-            _lim = max(0, int(limit or 0))
-        except (TypeError, ValueError):
-            return self._agent_err("bad_param", "limit 需要整数", t0, field="limit")
-        _miss = 0 if str(only_missing).strip().lower() in ("0", "false", "no", "off") else 1
-        try:
-            resp = fn(limit=_lim, only_missing=_miss)
-        except Exception as e:  # noqa: BLE001
-            return self._agent_err("internal", f"整理预演失败: {e}", t0)
-        if not getattr(resp, "success", False):
-            return self._agent_err(
-                "internal", str(getattr(resp, "message", "") or "整理预演失败"), t0)
-        data = dict(getattr(resp, "data", None) or {})
-        data.setdefault("message", str(getattr(resp, "message", "") or ""))
-        return self._agent_ok(data, t0)
-
-    def agent_ondemand_repair(self, confirm: Any = "", force: Any = 1) -> Dict[str, Any]:
-        """``POST /agent/ondemand/repair`` —— 点播补整理（写，confirm 门禁）。
-
-        与前端 ``POST /ondemand/repair`` 同一实现（``ondemand_repair``）：把
-        ``stage=resource && in_library=False`` 的历史行重跑 MP 整理。
-        AI 侧多一道 ``confirm``：缺省恒零写入（干跑只回报将要做什么），
-        避免一句话把带退避/次数上限的重试全烧掉。
-        """
-        t0 = time.time()
-        _ok = str(confirm).strip().lower() in ("1", "true", "yes", "y", "on")
-        _force = 0 if str(force).strip().lower() in ("0", "false", "no", "off", "") else 1
-        if not _ok:
-            return self._agent_ok({
-                "dry_run": True,
-                "would_run": ("ondemand_repair(force=%d)：把「已转资源·未入库」的"
-                              "历史行重跑 MP 整理" % _force),
-                "hint": "确认后带 confirm=1 再调；缺省零写入",
-            }, t0)
-        fn = getattr(self, "ondemand_repair", None)
-        if not callable(fn):
-            return self._agent_err("unavailable", "当前版本没有补整理入口", t0)
-        try:
-            resp = fn(force=str(_force))
-        except Exception as e:  # noqa: BLE001
-            return self._agent_err("internal", f"补整理失败: {e}", t0)
-        if not getattr(resp, "success", False):
-            return self._agent_err(
-                "internal", str(getattr(resp, "message", "") or "补整理失败"), t0)
-        data = dict(getattr(resp, "data", None) or {})
-        data.setdefault("message", str(getattr(resp, "message", "") or ""))
-        return self._agent_ok(data, t0)

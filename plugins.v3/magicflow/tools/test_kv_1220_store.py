@@ -165,6 +165,9 @@ def _load_modules():
     _cp.preset_for = lambda domain: None  # noqa: E731
     sys.modules[PKG + ".sites.claim_presets"] = _cp
     for modname, attrs in (
+        # ★ 19.12.43：``sites/formula_fetch.py`` 现在 ``from ..bonus import BonusParams``，
+        #   桩没跟上 → 加载即 ImportError（claim → formula_fetch → bonus）。
+        #   本用例只测 KV 存取的「1220 迁移」，公式参数类型给 ``object`` 占位即可。
         ("bonus", ("TorrentBonusInfo", "calc_bonus_per_hour", "BonusParams")),
         ("fetcher", ("SiteCandidateTorrent",)),
         ("recommend", ("recognize",)),
@@ -320,6 +323,8 @@ def test_store_roundtrip(sitestore) -> None:
     sitestore.mfdb = fake_db
     try:
         store = sitestore.SiteStore(_FakeBackend(db))
+        # ★ 19.12.53：本用例测「槽往返」，身份闸门另测 —— 给个恒能发号的桩
+        store._mp_id_for = lambda *, domain="", name="": 99
 
         # ---- reseed_ledger → mf_reseed ----
         store.save("reseed_ledger", {
@@ -488,23 +493,23 @@ def test_site_identity(sitestore) -> None:
         _ok(len(db["mf_site"]) == 1, "复用后站点行数不变（未造新行）")
         _ok(r.name == "CARPT", "复用行 name 未被覆写")
 
-        # ② iyuu_sid 解析出真名/域名且无同行 → 建有真名的行（不是 iyuu:131）
+        # ② ★ 19.12.53 契约变更：只有 IYUU 号、MP 里认不出这个域名 → **不建行**。
+        #    mf_site 现在是以 MP id 为主键的属性表，IYUU sid 是外部索引编号，不是身份。
         store._mp_site_info = lambda sid: {}  # noqa: E731  （MP 里没有这个 id）
         store._iyuu_site_info = lambda sid: {"name": "朋友", "domain": "pt.keepfrds.com"}  # noqa: E731
         r2 = store._site_row_by_iyuu_sid(sess, 131, 3.0)
-        _ok(r2.name == "朋友" and r2.domain == "pt.keepfrds.com"
-            and r2.iyuu_sid == 131 and r2.mp_site_id is None,
-            "id 无同行 → 建行带真名/域名（不是 iyuu:131），只填对应列")
+        _ok(r2 is None, "IYUU-only 且 MP 无此站 → 返回 None（不造无主行）")
+        _ok(len(db["mf_site"]) == 1, "站点行数仍为 1（未新增行）")
 
         # ③ iyuu_sid 命中已有行（跨列去重：那个 id 的行已存在）→ 复用，不另建行
         store._iyuu_site_info = lambda sid: {"name": "CARPT", "domain": "carpt.net"}  # noqa: E731
         r3 = store._site_row_by_iyuu_sid(sess, 13, 4.0)
         _ok(r3 is row0, "同 id 跨列命中 → 复用（不建第二行）")
 
-        # ④ 解析不到 → 兜底命名（不崩、不为空）
+        # ④ 解析不到 → 同样不建行（旧行为是兜底造 ``site:999`` 垃圾行）
         store._iyuu_site_info = lambda sid: {}  # noqa: E731
         r4 = store._site_row_by_iyuu_sid(sess, 999, 5.0)
-        _ok(r4.name == "site:999", "无解析信息 → 兜底名 site:999（不为空）")
+        _ok(r4 is None, "无解析信息 → 不建行（不再造 site:999 兜底行）")
 
         # ⑤ 注入提示表（脚本无 plugin.get_data 时的真名来源）
         store.bind_site_hints({"24": {"name": "春天", "domain": "springsunday.net"}})

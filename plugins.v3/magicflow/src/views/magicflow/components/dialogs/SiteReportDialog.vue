@@ -362,7 +362,7 @@ function toggleOrig(h) { origOpen.value = { ...origOpen.value, [h]: !origOpen.va
 .magicflow-sitereport__live-cell { text-align: center; min-width: 0; }
 .magicflow-sitereport__live-cell b { display: block; font-size: 14px; font-weight: 700; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .magicflow-sitereport__live-cell span { font-size: 10.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
-.magicflow-sitereport__live-minor { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-block-start: 9px; padding-block-start: 8px; border-top: 1px solid rgba(255, 255, 255, .075); font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
+.magicflow-sitereport__live-minor { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-block-start: 9px; padding-block-start: 8px; border-top: 1px solid rgba(var(--v-theme-on-surface), .075); font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
 .magicflow-sitereport__live-minor span { white-space: nowrap; }
 .magicflow-sitereport__live-empty { font-size: 12px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
 .magicflow-sitereport__stat { background: rgba(var(--v-theme-on-surface), 0.04); border-radius: 10px; padding: 8px 10px; text-align: center; }
@@ -377,7 +377,7 @@ function toggleOrig(h) { origOpen.value = { ...origOpen.value, [h]: !origOpen.va
 .magicflow-sitereport__reqs-top { display: flex; justify-content: space-between; align-items: center; font-size: 11.5px; margin-block-end: 5px; }
 .magicflow-sitereport__reqs-name { font-weight: 600; }
 .magicflow-sitereport__reqs-count { color: rgb(240, 182, 76); font-weight: 600; }
-.magicflow-sitereport__reqs-row { display: flex; align-items: center; gap: 8px; font-size: 11.5px; padding: 5px 0; border-top: 1px solid rgba(255, 255, 255, .06); }
+.magicflow-sitereport__reqs-row { display: flex; align-items: center; gap: 8px; font-size: 11.5px; padding: 5px 0; border-top: 1px solid rgba(var(--v-theme-on-surface), .06); }
 .magicflow-sitereport__reqs-mark { flex: 0 0 14px; width: 14px; text-align: center; font-weight: 700; }
 .magicflow-sitereport__reqs-label { flex: 1 1 auto; color: rgba(var(--v-theme-on-surface), .8); }
 .magicflow-sitereport__reqs-detail { flex: 0 0 auto; font-size: 11px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }

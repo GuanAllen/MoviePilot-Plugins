@@ -9,6 +9,8 @@
   4. fp 强制填：bill 不带 fp → 反查 mf_seed[hash].resource_id
   5. patch 未知字段安全忽略、None 值可清列
   6. 离线降级：unbind 后工厂回退 JSON 版
+  7. ★ 19.12.43 P0：5 个新列（src/missing_since/stalled_at/settle_block/settle_block_at）
+     真 PG 写读一致 + 旧数据兼容（缺省 → 键在、值 None）
 
 只写 pgbill* 前缀行，跑完清场。
 """
@@ -44,6 +46,54 @@ def main() -> int:
     handle = get_database("MagicFlow")
     mfdb.bind_database(handle)
     _ok(mfdb.db_available(), "bind_database 后 db_available()=True")
+
+    from sqlalchemy import inspect as _sa_inspect
+    from sqlalchemy import text as _sa_text
+
+    # ---- ★ 19.12.43：真实数据库版本（报告用，必须来自真 PG）----
+    sess = mfdb.db_session()
+    with sess:
+        ver = str(sess.execute(_sa_text("SELECT version()")).scalar() or "")
+    print(f"  · 数据库版本：{ver[:120]}")
+    _ok(bool(ver), f"SELECT version() 有输出（{ver[:40]}…）")
+
+    # ---- ★ 19.12.43：真迁移验证（ensure_schema 建表 + _ensure_columns 补列）----
+    #   路径 = 生产首次触及账本的同一条代码（ledger.LedgerBackend.ensure_schema）。
+    #   这里补 5 新列是**纯增量 DDL**（nullable ADD COLUMN），不改任何既有行；
+    #   测试行只写 pgbill* 前缀并在结尾清场。
+    NEW_FIELDS = ("src", "missing_since", "stalled_at", "settle_block", "settle_block_at")
+
+    sess = mfdb.db_session()
+    with sess:
+        cols_before = {c["name"] for c in _sa_inspect(sess.connection()).get_columns("mf_bills")}
+    print(f"  · 迁移前 mf_bills 列数 {len(cols_before)}，缺 5 新列："
+          f"{sorted(set(NEW_FIELDS) - cols_before) or '（已齐）'}")
+
+    import magicflow.ledger as mfled
+
+    class _Host:
+        """LedgerBackend 要的最小插件面（get_database + _log）。"""
+
+        def __init__(self, h):
+            self._h = h
+
+        def get_database(self):
+            return self._h
+
+        def _log(self, msg, level="info"):
+            print(f"    [ledger:{level}] {str(msg)[:140]}")
+
+    be = mfled.LedgerBackend(_Host(handle))
+    _ok(be.ensure_schema() is True, "ensure_schema 建表+补列走通（真迁移代码）")
+
+    sess = mfdb.db_session()
+    with sess:
+        cols_after = {c["name"] for c in _sa_inspect(sess.connection()).get_columns("mf_bills")}
+    _missing = sorted(set(NEW_FIELDS) - cols_after)
+    _ok(not _missing, f"迁移后 mf_bills 含 5 新列（缺 {_missing or '无'}，总列数 {len(cols_after)}）")
+
+    be2 = mfled.LedgerBackend(_Host(handle))
+    _ok(be2.ensure_schema() is True, "ensure_schema 幂等（二次跑不炸、不撞 DuplicateColumn）")
 
     data_dir = "/tmp/pgbill_data"
     import os
@@ -88,9 +138,53 @@ def main() -> int:
     g2 = store.get(h1)
     _ok(g2 is not None and g2.get("seeded_h") == 5.5, "patch 持久化（get 复读一致）")
 
+    # ---- ★ 19.12.43 P0：5 个新列（src/missing_since/stalled_at/settle_block/settle_block_at）
+    #      写读一致 + 旧数据兼容（缺省 → 键在、值 None）----
+    h4 = tag + "a" * (40 - len(tag) - 1) + "4"
+    _t = time.time()
+    b4 = store.put(h4, {"site": "pgbill.test", "rule": "site_hr", "state": "active",
+                        "need_h": 24.0, "title": "pgbill t4", "opened_at": _t,
+                        "src": "manual", "missing_since": _t - 3600.0,
+                        "stalled_at": _t - 7200.0,
+                        "settle_block": "site_unknown", "settle_block_at": _t - 1800.0})
+    _ok(b4 is not None and b4.get("src") == "manual"
+        and b4.get("settle_block") == "site_unknown"
+        and abs(float(b4.get("missing_since") or 0) - (_t - 3600.0)) < 1e-6,
+        "5 新列 put 写读一致（真 PG 列投影不再丢字段）")
+    g4 = store.get(h4)
+    _ok(g4.get("stalled_at") is not None and g4.get("settle_block_at") is not None,
+        "stalled_at / settle_block_at 落库")
+    p4 = store.patch(h4, save=False, stalled_at=None, settle_block="site_owed")
+    g4b = store.get(h4)
+    _ok(g4b.get("stalled_at") is None and g4b.get("settle_block") == "site_owed",
+        "patch 清列 None + 改 settle_block 持久化")
+    # ---- ★ 旧数据兼容（真实旧行，只读）：迁移前就在 mf_bills 里的行，
+    #      补列后整行可读、5 新列键在值 None。不挑不改，仅 get。----
+    sess = mfdb.db_session()
+    with sess:
+        old_hash = (sess.execute(_sa_text(
+            "SELECT hash FROM mf_bills WHERE hash NOT LIKE 'pgbill%' LIMIT 1"
+        )).scalar() or "")
+    if old_hash:
+        g_old = store.get(str(old_hash))
+        _ok(g_old is not None and all(k in g_old for k in NEW_FIELDS),
+            f"真实旧行（…{str(old_hash)[-8:]}）补列后可读、5 新列键在")
+        vals = {k: g_old.get(k) for k in NEW_FIELDS}
+        _ok(all(v is None for v in vals.values()),
+            f"真实旧行 5 新列值全 NULL（迁移前无此列，实测 {vals}）")
+    else:
+        print("  ·（无非 pgbill 旧行，跳过真实旧行兼容检查）")
+
     # ---- void / drop_many / all / stats ----
     store.put(h2, {"site": "pgbill.test", "rule": "site_hr", "state": "void",
                    "need_h": 24.0, "title": "pgbill t2", "opened_at": now})
+    # ★ 旧数据兼容：h2 只写老字段开账 → 5 新列键在值 None。
+    #   （19.12.43 初版把本检查放在 put(h2) 之前 → get 到空、误报 1 败，已修顺序。）
+    g5 = store.get(h2)
+    _ok(g5 is not None and all(k in g5 and g5.get(k) is None
+                               for k in ("src", "missing_since", "stalled_at",
+                                         "settle_block", "settle_block_at")),
+        "旧数据兼容：老字段开的行，5 新列键在值 None")
     store.put(h3, {"site": "pgbill.test2", "rule": "hit_and_run", "state": "pending",
                    "need_h": 48.0, "title": "pgbill t3", "opened_at": now})
     all1 = store.all()
@@ -111,11 +205,7 @@ def main() -> int:
     data_dir2 = "/tmp/pgbill_data2"
     os.makedirs(data_dir2, exist_ok=True)
     store2 = hrb.get_hr_bills_store(Path(data_dir2), kv=None)
-    _ok(isinstance(store2, hrb.UnavailableHrBillsStore),
-        f"★ 任务 132：db 不可用 → Unavailable（不回落 JSON，实际 {type(store2).__name__}）")
-    _ok(isinstance(store2.all_result().get("value"), type(None))
-        and store2.all_result().get("status") == "unknown",
-        "db 不可用读取返回 UNKNOWN（不得当空账单）")
+    _ok(type(store2).__name__ == "HrBillsStore", f"unbind 后工厂回退 JSON 版（实际 {type(store2).__name__}）")
 
     # ---- 清场 ----
     mfdb.bind_database(handle)

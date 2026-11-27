@@ -36,7 +36,18 @@
 ────────────────────────────────────────────────────────────────────────
 数字大 = 更强势：**低优先级不得抢高优先级的在岗种**。原来是硬编码的
 ``if taken_by == CLAIM_TASK_ID: continue``，现在统一成一次 ``duty_rank`` 比较。
-只有「人工」高于「认领」高于「义务派生」，其余按在途/在岗递减。
+
+★ 19.12.39（保种池同级）：**手动保种 / 认领 / H&R 三个岗位统一 95**，因为它们
+  本质是同一档 —— 都在回答「这颗种留在池里继续做种」，差别只是**为什么留**
+  （人工点名 / 站点承诺 / 欠债）和**什么时候能走**，不是「谁更强势」。
+  原来认领 90 > H&R 80，于是认领能单向吸走 H&R 的种：同一颗种既欠 H&R 又在
+  认领名单 → 被认领拿走，H&R 卡少一颗、账却还开着（「账目与实际做种脱节」）。
+  三个同档后，**同级一律不抢**，归属按「先到先得」保留现状。
+
+  同级不抢 = **保留当前归属**，不做「按固定规则重新选主」。这一点是刻意的：
+  任何「谁更该管」的二次裁决都会让两个 worker 每轮互相搬运（2026-10-28 拉锯
+  实测），而两条路的结果其实一样 —— 种都在做种、时长都在累积，只是账记在
+  谁名下不同。归属稳定 > 归属最优。
 
 ────────────────────────────────────────────────────────────────────────
 占位口径（poach）—— **默认只从「没人」的池子里招人**
@@ -47,8 +58,9 @@
     绩效/在途岗 —— 抢别人的只会两边每轮互贴标签（2026-10-28 实测拉锯）。
   特殊（``poach=True``）：**能**，且只能从**优先级更低**的岗位挑人。只有「不做就
     违约 / 人工点名」这三类：手动保种（人工点名）、认领（站点承诺）、H&R（欠债）。
-    例：认领名单里有、此刻挂在刷流名下 → 认领把它收过来（90 > 60）；
-        但挂在手动保种名下 → 不收（95 ≥ 90，人工点名更强，且它照样在种、时长照算）。
+    例：认领名单里有、此刻挂在刷流名下 → 认领把它收过来（95 > 60）；
+        但挂在手动保种 / H&R 名下 → 不收（95 ≥ 95 同级，先到先得；
+        种照样在种、H&R 时长照样累积，换岗只会让两张卡来回抖）。
 
 判据只有一处：``duty_take_check()``。**各岗位不要再自己写**
 ``if taken_by == XXX``，加岗位时也不要回头给别人补「跳过它」。
@@ -170,6 +182,9 @@ class DutySpec:
 DUTIES: Tuple[DutySpec, ...] = (
     # ---- 常驻岗位（host）：名单驱动，进出即上下班 ----
     # ★ 这三个 poach=True：名单/义务是硬承诺，允许从**优先级更低**的岗位挑人。
+    # ★ 19.12.39：三个**统一 95**（保种池同一档）。它们之间同级 → 一律不抢，
+    #   归属保留现状（见模块头「保种池同级」）。别再把认领调回 90 / H&R 调回 80：
+    #   那会让认领单向吸走 H&R 的种，账目与做种归属脱节。
     DutySpec(
         id=ID_KEEP, name="手动保种", state=STATE_KEEP, kind=KIND_HOST,
         priority=95, lease_days=0, poach=True, settable=False,
@@ -178,13 +193,13 @@ DUTIES: Tuple[DutySpec, ...] = (
     ),
     DutySpec(
         id=ID_CLAIM, name="认领保种", state=STATE_CLAIM, kind=KIND_HOST,
-        priority=90, lease_days=3650, poach=True, settable=True,
+        priority=95, lease_days=3650, poach=True, settable=True,
         aliases=("claim", "认领"),
         desc="站点认领名单驱动；名单在才在岗，退出走账本移除或人工改职务",
     ),
     DutySpec(
         id=ID_HR_HOST, name="H&R保种", state=STATE_HR, kind=KIND_HOST,
-        priority=80, lease_days=0, poach=True, settable=False,
+        priority=95, lease_days=0, poach=True, settable=False,
         aliases=("hr保种", "h&r保种", "h&r", "hr"),
         desc="由「欠 H&R」派生；结清/作废即释放，不可手动设职务",
     ),
@@ -336,8 +351,14 @@ def duty_take_check(taker: object, holder: object, *,
       ① 没人占（``holder`` 空）/ 本岗自己 / **本任务自己** → 能（重贴幂等）
       ② 现任岗位**不占岗**（静默托管 / 辅种身份） → 能（静默=没岗位）
       ③ 现任是**未登记的真任务**（动态 task_id）→ 租约过期或没有租约才算空缺
-      ④ 现任是登记岗位 → **只有 ``poach=True`` 且优先级更高**才能接手
+      ④ 现任是登记岗位 → **只有 ``poach=True`` 且优先级严格更高**才能接手
          （默认口径就是这里：绩效/在途岗一律只能招没岗位的）
+
+    ★ 19.12.39 **同级不抢 = 保留当前归属**：``duty_rank(现任) >= 本岗`` 即拒。
+      判据用的是 ``>=`` 而不是 ``>``，这是有意的 —— 同级（保种池三个岗位都是 95）
+      不产生任何「谁更该管」的裁决，先占的人留着，而且**重跑多少次结果都一样**
+      （幂等，不会两岗每轮互搬）。改判据前先想清楚：把 ``>=`` 改成 ``>`` 就会让
+      同级岗位互相抢，回到 2026-10-28 的拉锯。
 
     ★ 19.10.40 ``holder_state``：真任务岗（刷流/魔力）在 ``DUTIES`` 里 ``id=""``，
       账本 ``taken_by`` 落的却是**动态 task_id** → ``duty_spec(h_id)`` 恒 None，
@@ -379,7 +400,12 @@ def duty_take_check(taker: object, holder: object, *,
             return (True, "") if _expired else (False, f"{_name} 租约未到期")
         return False, f"{_name} 在岗（本岗非特殊岗位，不跨岗挑人）"
     if duty_rank(h_id) >= t_spec.priority:
-        return False, f"{_name}({duty_rank(h_id)}) 不低于本岗({t_spec.priority})"
+        # ★ 19.12.39：同级要说清楚是「按先到先得保留现状」，不是「被谁压了一头」。
+        #   日志里这句话是排障的第一手证据（认领/H&R 拉锯时就靠它认出不是 bug）。
+        _hr = duty_rank(h_id)
+        if _hr == t_spec.priority:
+            return False, f"{_name}({_hr}) 与本岗({t_spec.priority}) 同级 → 保留当前归属"
+        return False, f"{_name}({_hr}) 优先级不低于本岗({t_spec.priority})"
     return True, ""
 
 
@@ -421,12 +447,20 @@ if __name__ == "__main__":  # 离线自检：python -m magicflow.dutyreg
     assert len({d.id for d in DUTIES if d.id}) == len([d for d in DUTIES if d.id]), "岗位 id 必须唯一"
     assert duty_state("__claim__") == STATE_CLAIM
     assert duty_state("__hr_host__") == STATE_HR
-    assert duty_state("__keep__") == STATE_HR
+    # ★ 19.12.39 修正：这里原本写的是 ``== STATE_HR``（19.12.38 拆职务时漏改），
+    #   于是 ``python -m magicflow.dutyreg`` 当场 AssertionError —— 注册表的自检
+    #   保险丝断了半个月没人发现。拆职务/改数据表时，**自检本身也要跟着改**。
+    assert duty_state("__keep__") == STATE_KEEP
     assert duty_state("__nope__") == ""
     assert duty_id_of("认领保种") == "__claim__"
     assert duty_id_of("保种") == "__keep__"          # ★ 19.12.38 职务拆分：保种=keep
     assert duty_id_of("手动保种") == "__keep__"
-    assert duty_rank("__keep__") > duty_rank("__claim__") > duty_rank("__hr_host__")
+    # ★ 19.12.39：保种池三个岗位同级 95（原 95 / 90 / 80）。
+    assert duty_state("__keep__") == STATE_KEEP
+    assert duty_state("__hr_host__") == STATE_HR
+    assert (duty_rank("__keep__") == duty_rank("__claim__") == duty_rank("__hr_host__") == 95), \
+        "★ 保种池三岗同级：手动保种 / 认领 / H&R 都是 95"
+    assert duty_rank("__keep__") > duty_rank("__music__"), "保种池整体高于在途/绩效岗"
     assert set(duty_manual_states()) >= {STATE_CLAIM, STATE_SILENT, STATE_RECOMMEND}
     assert STATE_HR not in duty_manual_states(), "保种=义务派生，不能人工设"
 
@@ -454,13 +488,28 @@ if __name__ == "__main__":  # 离线自检：python -m magicflow.dutyreg
     assert duty_take_check(duty_task_spec(STATE_BONUS), "f9fbf57ab9ce",
                            lease_until=0.0, holder_state=STATE_SILENT)[0], \
         "职务=静默的残留占位不算在岗 → 可以接手"
-    assert duty_take_check(ID_CLAIM, ID_MUSIC)[0], "认领(90) 可从音乐(70)挑人"
+    assert duty_take_check(ID_CLAIM, ID_MUSIC)[0], "认领(95) 可从音乐(70)挑人"
     assert duty_take_check(duty_task_spec(STATE_BRUSH), ID_MUSIC)[0] is False, \
         "刷流(非特殊岗) 不从音乐挑人"
     assert duty_take_check(duty_task_spec(STATE_BONUS), ID_HR_HOST)[0] is False, \
         "魔力(非特殊岗) 不从 H&R 挑人"
-    assert not duty_take_check(ID_CLAIM, ID_KEEP)[0], "认领(90) 不抢手动保种(95)"
-    assert not duty_take_check(ID_HR_HOST, ID_CLAIM)[0], "H&R(80) 不抢认领(90)"
+    # ---- 保种池同级：三岗互不抢（19.12.39 回归，双向钉死）----
+    assert not duty_take_check(ID_CLAIM, ID_KEEP)[0], "认领(95) 不抢手动保种(95：同级)"
+    assert not duty_take_check(ID_KEEP, ID_CLAIM)[0], "手动保种(95) 也不抢认领(95：同级，先到先得)"
+    assert not duty_take_check(ID_CLAIM, ID_HR_HOST)[0], \
+        "★ 认领(95) 不抢 H&R(95) —— 修的就是这里（旧 90>80 会单向吸走欠债种）"
+    assert not duty_take_check(ID_HR_HOST, ID_CLAIM)[0], "★ H&R(95) 不抢认领(95)（反向）"
+    assert not duty_take_check(ID_HR_HOST, ID_KEEP)[0], "H&R 不抢手动保种"
+    assert not duty_take_check(ID_KEEP, ID_HR_HOST)[0], "手动保种不抢 H&R"
+    assert "同级" in duty_take_check(ID_CLAIM, ID_HR_HOST)[1], "同级拒绝原因要说「保留当前归属」"
+    # 同级不抢 = 保留现状：连跑两次结论一致（不是随机/按规则选主）
+    _a1 = duty_take_check(ID_CLAIM, ID_HR_HOST)[0]
+    _a2 = duty_take_check(ID_CLAIM, ID_HR_HOST)[0]
+    assert _a1 is _a2 is False, "同级判定必须幂等（同一输入连跑两次同结论）"
+    assert duty_take_check(ID_HR_HOST, ID_MUSIC)[0], "H&R(95) 仍可从音乐(70) 挑人（义务照旧接管）"
+    assert duty_take_check(ID_HR_HOST, "__brush_task_1", lease_until=0.0,
+                           holder_state=STATE_BRUSH)[0], \
+        "★ L0 红线：H&R 仍能从刷流名下接管（19.12.36「下完即判」不许被本次优先级改动影响）"
     assert not duty_take_check(ID_MUSIC, ID_ONDEMAND)[0], "同级在途岗互不抢（先到先得）"
     assert duty_take_check(ID_CLAIM, ID_CLAIM)[0], "本岗重贴幂等"
     assert not duty_spec(ID_SILENT_HOST).occupancy, "静默托管不算占岗（它就是「没岗位」）"

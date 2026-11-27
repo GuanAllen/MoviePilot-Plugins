@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional
 
 from app.schemas import Response
 
-from ..common import CACHE_TTL_HISTORY, payload_ver, site_guard
+from ..common import CACHE_TTL_HISTORY, payload_ver
 from ..kvstore import cache_get, cache_set
 
 TREND_KEY = "trend_v1"          # 热层里的逻辑键（★ 12.6.0 起不再落 kv）
@@ -141,11 +141,7 @@ class TrendMixin:
             vals = {k: v for k, v in vals.items() if v is not None}
             if vals:
                 self._trend_record(f"task:{task.id}", vals)
-                # ★ 19.12.84：没有 site_id 就不写站点序列。原来会落成 `site:?` ——
-                #   一条 10-07 之后没人再碰的死序列，既误导趋势图，又让 H3 多算一遍。
-                _sid = getattr(task, "site_id", None)
-                if _sid:
-                    self._trend_record(f"site:{_sid}", vals)
+                self._trend_record(f"site:{getattr(task, 'site_id', '') or '?'}", vals)
                 # ★ 15.12.0：任务口径日报（站点口径由站点监控采样，别互相覆盖）
                 record_day(self, "task", str(getattr(task, "id", "") or ""), vals)
         except Exception:  # noqa: BLE001
@@ -185,118 +181,14 @@ class TrendMixin:
         except Exception:  # noqa: BLE001
             return None
 
-    def _trend_prune(self, apply: bool = False) -> Response:
-        """★ 19.12.85：趋势序列清理 —— 只清「再也写不回来」的（**默认干跑**）。
-
-        判据不是「多久没新点」，而是「这个 key 还能不能续写」——这是主人 2026-11-19
-        10:12 的口径修正：**任务停掉、序列断在那儿是正常的**，恢复后会往同一个 key
-        接着写。上一版按「末点超 7 天」一刀切，等于把「停摆」当成「垃圾」，28 条清单
-        里 26 条都是正常停摆的序列。
-
-        现在只有三类会进删除清单：
-
-        * ``invalid_key``：``task:`` / ``site:`` 后面为空、``?`` 或非数字站点 id
-          （如 ``site:?``，10-07 起的历史脏行，``_trend_record`` 已不再产生）
-        * ``task_gone``：任务已不在 ``_task_configs``（删任务后留下的序列）
-        * ``site_gone``：站点已不在 MoviePilot 站点表（删站后留下的序列）
-
-        其余一律只在 ``idle`` 里报一眼、**永不删除**：对象还在，序列就能续写。
-        两处「判不出就不清」的兜底：``mp_ids()`` 返回 ``None``（查库失败）→ 站点口径
-        全部保留；``_task_configs`` 为空（插件没热起来）→ 任务口径全部保留。
-        趋势是可重取值缓存，但仍然不自动执行 —— ``&apply=1`` 才动。
-        """
-        try:
-            now = time.time()
-            data = self._trend_data()
-            try:
-                _tasks = set(str(k) for k in (getattr(self, "_task_configs", {}) or {}).keys())
-            except Exception:  # noqa: BLE001
-                _tasks = set()
-            try:
-                _mp = site_guard(self).mp_ids()
-            except Exception:  # noqa: BLE001
-                _mp = None
-            dead: List[Dict[str, Any]] = []
-            idle: List[Dict[str, Any]] = []
-            for k in list(data.keys()):
-                try:
-                    scope, _sep, ident = str(k).partition(":")
-                    if scope not in ("task", "site"):
-                        continue
-                    ident_s = str(ident).strip()
-                    gone = ""
-                    if (not ident_s) or ident_s.lower() in ("?", "none", "0"):
-                        gone = "invalid_key"
-                    elif scope == "task":
-                        # ★ 19.12.85：`__crossseed__` / `__silent_host__` 这类 host 伪任务
-                        #   不在 `_task_configs`（以 host 卡片呈现），但它们是真在跑的常驻
-                        #   worker，序列随时可能续写 → 一律保留。别把「不在任务表」当成「已删」。
-                        if ident_s.startswith("__"):
-                            pass
-                        # _tasks 为空 = 还没热起来，判不出就别清
-                        elif _tasks and ident_s not in _tasks:
-                            gone = "task_gone"
-                    elif _mp is not None:
-                        try:
-                            if int(ident_s) not in _mp:
-                                gone = "site_gone"
-                        except (TypeError, ValueError):
-                            gone = "invalid_key"
-                    series = data.get(k)
-                    if not isinstance(series, list) or not series:
-                        item = {"key": k, "why": gone or "empty", "last": 0.0,
-                                "age_h": None, "points": 0}
-                        (dead if gone else idle).append(item)
-                        continue
-                    lt = float((series[-1] or {}).get("t") or 0)
-                    age_h = round((now - lt) / 3600.0, 1)
-                    item = {"key": k, "last": lt, "age_h": age_h, "points": len(series),
-                            "why": gone or ("stale" if age_h > float(TREND_KEEP) else "live")}
-                    if gone:
-                        dead.append(item)
-                    elif item["why"] != "live":
-                        # 7 天没新点但对象还在 → 只报不删（停任务/停采样的正常形态）
-                        idle.append(item)
-                except Exception:  # noqa: BLE001
-                    continue
-            dead.sort(key=lambda x: -(x.get("age_h") or 0))
-            idle.sort(key=lambda x: -(x.get("age_h") or 0))
-            if apply and dead:
-                for it in dead:
-                    data.pop(it["key"], None)
-                self._trend_dirty = True
-                self._trend_flush()
-                try:
-                    self._log("魔流:趋势清理:删除已失效序列 %d 条" % len(dead))
-                except Exception:  # noqa: BLE001
-                    pass
-            kept = len([k for k, v in data.items() if isinstance(v, list)])
-            return Response(success=True, data={
-                "apply": bool(apply), "count": len(dead), "kept": kept,
-                "keep_hours": TREND_KEEP,
-                "keys": [x["key"] for x in dead],
-                "dead": dead, "stale": dead,          # stale = 旧字段名，兼容前端/脚本
-                "idle": idle, "idle_count": len(idle),
-                "mp_sites_ok": _mp is not None, "tasks_ok": bool(_tasks),
-            })
-        except Exception as err:  # noqa: BLE001
-            return Response(success=False, message=f"趋势清理失败：{err}")
-
     def get_trend(self, scope: Any = "all", id: Any = "", hours: Any = DEFAULT_HOURS,
-                  ver: str = "", action: Any = "", apply: Any = "") -> Response:
+                  ver: str = "") -> Response:
         """功能端点：趋势序列（默认任务+站点全量，最近 72 小时）。
-
-        ``action=prune`` 走序列清理（只清「再也写不回来」的；干跑，``&apply=1`` 才删），
-        详见 ``_trend_prune``。
 
         ★ 19.12.62：带 `ver` 时做内容比对。这个包 355 KB、前端 5 分钟拉一次，
         而序列每整点才落一个点 —— 绝大多数轮询其实什么都没变。
         """
         try:
-            _act = str(action or "").strip().lower()
-            if _act in ("prune", "clean", "prune_stale"):
-                _ap = str(apply or "").strip().lower() in ("1", "true", "yes", "on")
-                return self._trend_prune(apply=_ap)
             scope = str(scope or "all").strip().lower()
             ident = str(id or "").strip()
             hours = int(hours or DEFAULT_HOURS)

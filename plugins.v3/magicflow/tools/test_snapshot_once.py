@@ -94,12 +94,11 @@ HrBillsMixin = hrbills.HrBillsMixin
 
 
 def _torrent(hash_string="", progress=0.0, seed_time=0.0, hit_and_run=False,
-             title="test", tracker=""):
-    # ★ downloaded>0：否则 ``_hr_is_reuse`` 会把每个夹具都当「辅种副本」短路（19.12.x 收紧）
+             title="test", tracker="", downloaded=0.0):
     return types.SimpleNamespace(
         hash=str(hash_string).lower(), title=title, progress=progress,
         seed_time=seed_time, hit_and_run=hit_and_run, tags=[], tracker=tracker,
-        downloaded=1e9,
+        downloaded=downloaded,
     )
 
 
@@ -164,21 +163,6 @@ class Harness(HrMixin, HrBillsMixin):
     def _hr_obligation_by_seed(self, site, torrent):
         return (False, 0.0, 0.0, "")
 
-    def _hr_bill_owed_hashes(self):
-        return set()
-
-    def _hrbills_store(self):
-        """无账单后端的最小桩（absent = 确认无账单）：本场景只验证快照只拉一次。"""
-        class _S:
-            @staticmethod
-            def get_result(h):
-                return {"status": "absent", "value": None, "source": "stub"}
-
-            @staticmethod
-            def all_result():
-                return {"status": "found", "value": {}, "source": "stub"}
-        return _S()
-
     def _site_domain_by_name(self, name):
         return str(name or "").strip().lower()
 
@@ -215,8 +199,10 @@ def _ok(cond: bool, msg: str) -> None:
 def _build_harness() -> Harness:
     """构造一个「资源级欠债可触发」的场景：bbbb 的资源来源种是 aaaa。"""
     h = Harness(Path(tempfile.mkdtemp(prefix="snapshot_once_")))
-    src = _torrent(hash_string="aaaa", progress=1.0, seed_time=100.0 * 3600.0)
-    tgt = _torrent(hash_string="bbbb", progress=1.0, seed_time=5.0 * 3600.0)
+    src = _torrent(hash_string="aaaa", progress=1.0, seed_time=100.0 * 3600.0,
+                   downloaded=10.0 * 1024 ** 3)
+    tgt = _torrent(hash_string="bbbb", progress=1.0, seed_time=5.0 * 3600.0,
+                   downloaded=20.0 * 1024 ** 3)
     h.torrents["aaaa"] = src
     h.torrents["bbbb"] = tgt
     h.ledger["bbbb"] = {"site": "hdfans.org", "state": "保种", "sub": "resource", "taken_by": "__hr_host__"}

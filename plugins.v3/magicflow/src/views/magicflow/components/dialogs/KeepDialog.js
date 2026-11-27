@@ -383,7 +383,8 @@ return (_ctx, _cache) => {
                               _createVNode$D(_component_VChip, {
                                 size: "x-small",
                                 variant: "tonal",
-                                color: "primary"
+                                color: "primary",
+                                class: "magicflow-keep-sitechip"
                               }, {
                                 default: _withCtx$B(() => [
                                   _createTextVNode$D(_toDisplayString$E(it.site || '—'), 1)
@@ -541,6 +542,7 @@ return (_ctx, _cache) => {
                         _createVNode$D(_component_VBtn, {
                           size: "small",
                           variant: "text",
+                          class: "magicflow-keep-selectall",
                           disabled: __props.candLoading || !__props.candList.length,
                           onClick: _cache[12] || (_cache[12] = $event => (emit('cand-toggle-all')))
                         }, {
@@ -600,7 +602,8 @@ return (_ctx, _cache) => {
                               _createVNode$D(_component_VChip, {
                                 size: "x-small",
                                 variant: "tonal",
-                                color: "primary"
+                                color: "primary",
+                                class: "magicflow-keep-sitechip"
                               }, {
                                 default: _withCtx$B(() => [
                                   _createTextVNode$D(_toDisplayString$E(it.site_name || it.site || '—'), 1)

@@ -152,14 +152,16 @@ class _Host:
 def _host():
     snap = {
         "a": _T("a", ["魔流-馒头-静默-资源"]),      # 没岗位
-        "b": _T("b", ["魔流-馒头-认领"]),            # 认领在岗(90)
+        "b": _T("b", ["魔流-馒头-认领"]),            # 认领在岗(95)
         "c": _T("c", ["魔流-馒头-保种"]),            # 手动保种在岗(95)
         "d": _T("d", ["魔流-馒头-魔力"]),            # 真任务占位(动态 id)
+        "e": _T("e", ["魔流-馒头-H&R"]),             # H&R 在岗(95)
     }
     store = _Store({
         "b": {"taken_by": dutyreg.ID_CLAIM, "state": STATE_CLAIM, "lease_until": 9e12},
         "c": {"taken_by": dutyreg.ID_KEEP, "state": STATE_HR},
         "d": {"taken_by": "__brush_task_x", "state": STATE_BRUSH, "lease_until": 9e12},
+        "e": {"taken_by": dutyreg.ID_HR_HOST, "state": STATE_HR},
     })
     return _Host(snap, store)
 
@@ -173,23 +175,50 @@ ok("魔流-馒头-音乐" in h._snap["a"].tags, "职务轴已贴上")
 ok("魔流-馒头-静默-资源" in h._snap["a"].tags, "身份轴原样保留")
 ok(h._snap["c"].tags == ["魔流-馒头-保种"], "手动保种的标签没被动过")
 
-print("[2] 特殊岗位：认领可从刷流/魔力挑人，但不抢手动保种")
+print("[2] 特殊岗位：认领可从刷流/魔力挑人，但不抢保种池同级")
 r = dutyops.assign(h, ["d"], taker=dutyreg.ID_CLAIM, state=STATE_CLAIM,
                    lease_until=1e13, prev_from=(STATE_BRUSH, STATE_BONUS),
                    resume_when="new")
-ok(r["adopted"] == 1, "认领(90) 从刷流(60) 收人成功")
+ok(r["adopted"] == 1, "认领(95) 从刷流(60) 收人成功（绩效岗让位）")
 ok(h._store.get("d").get("prev_state") == STATE_BRUSH, "记下 prev_state=刷流（退出时还原）")
 ok("魔流-馒头-认领" in h._snap["d"].tags and "魔流-馒头-魔力" not in h._snap["d"].tags,
    "职务轴被替换，不是叠加")
 ok(r["resume"] == ["d"], "resume_when=new → 新纳管的进拉起名单")
 
 r = dutyops.assign(h, ["c"], taker=dutyreg.ID_CLAIM, state=STATE_CLAIM)
-ok((r["adopted"], r["blocked"]) == (0, 1), "认领(90) 不抢手动保种(95)")
+ok((r["adopted"], r["blocked"]) == (0, 1), "认领(95) 不抢手动保种(95：同级)")
+
+print("[2.5] ★ 保种池同级（19.12.39）：认领 ↔ H&R 双向都不抢，归属保留现状")
+# 病灶回归：旧口径 认领(90) > H&R(80) → 认领每轮把 e 收走，H&R 卡少一颗、账还开着。
+_before_tags = list(h._snap["e"].tags)
+r = dutyops.assign(h, ["e"], taker=dutyreg.ID_CLAIM, state=STATE_CLAIM, lease_until=1e13)
+ok((r["adopted"], r["blocked"]) == (0, 1), "★ 认领不再从 H&R 名下收人（旧 90>80 的病灶）")
+ok(h._store.get("e").get("taken_by") == dutyreg.ID_HR_HOST, "账本归属没变（仍记 H&R）")
+ok(h._snap["e"].tags == _before_tags, "标签没被动过（职务轴仍 H&R）")
+ok(not h._store.get("e").get("prev_state"), "没写 prev_state（压根没发生移交）")
+
+# 反向：H&R 也不能从认领名下收人
+_before_b = list(h._snap["b"].tags)
+r = dutyops.assign(h, ["b"], taker=dutyreg.ID_HR_HOST, state=STATE_HR,
+                   prev_from=(STATE_BRUSH, STATE_BONUS))
+ok((r["adopted"], r["blocked"]) == (0, 1), "★ H&R 不抢认领（反向同级）")
+ok(h._store.get("b").get("taken_by") == dutyreg.ID_CLAIM, "认领归属没变")
+ok(h._snap["b"].tags == _before_b, "认领标签没被动过")
+
+# 红线：H&R 仍要从「绩效岗」名下接管 —— 账目与做种不能脱节
+#   ★ 这里必须用**真任务占位**（动态 id，rank=0），不能用 d（此刻已归认领 95）。
+h._snap["f"] = _T("f", ["魔流-馒头-魔力"])
+h._store.data["f"] = {"taken_by": "__bonus_task_x", "state": STATE_BONUS, "lease_until": 9e12}
+r = dutyops.assign(h, ["f"], taker=dutyreg.ID_HR_HOST, state=STATE_HR,
+                   prev_from=(STATE_BRUSH, STATE_BONUS))
+ok(r["adopted"] == 1, "★ 红线：H&R 仍能从魔力/刷流等更低优先岗位接管")
+ok(h._store.get("f").get("prev_state") == STATE_BONUS, "移交记下 prev_state=魔力（结清后归位）")
 
 print("[3] 幂等：账本 + 标签都在位 → holding")
+_before = len(h._dl.calls)
 r = dutyops.assign(h, ["d"], taker=dutyreg.ID_CLAIM, state=STATE_CLAIM)
 ok((r["holding"], r["adopted"]) == (1, 0), "第二轮不再重写")
-ok(len(h._dl.calls) == 2, "标签只写过两次（a、d），幂等轮没有多余写入")
+ok(len(h._dl.calls) == _before, "幂等轮没有多余写入")
 
 # 账本职务漂移（标签对、state 错）→ 只补账本，不重贴标签
 h._store.data["d"]["state"] = STATE_MUSIC
@@ -199,10 +228,10 @@ ok(h._store.get("d").get("state") == STATE_CLAIM, "账本职务被纠正回认�
 ok(len(h._dl.calls) == _before, "没有多余的贴标签动作")
 
 print("[4] 干跑：零写入")
-h._snap["e"] = _T("e", ["魔流-馒头-静默-资源"])
-r = dutyops.assign(h, ["e"], taker=dutyreg.ID_CLAIM, state=STATE_CLAIM, apply=False)
-ok(r["would"] == ["e"] and r["adopted"] == 0, "apply=False 只出 would")
-ok("e" not in h._store.data and "魔流-馒头-认领" not in h._snap["e"].tags, "账本与标签都没动")
+h._snap["g"] = _T("g", ["魔流-馒头-静默-资源"])
+r = dutyops.assign(h, ["g"], taker=dutyreg.ID_CLAIM, state=STATE_CLAIM, apply=False)
+ok(r["would"] == ["g"] and r["adopted"] == 0, "apply=False 只出 would")
+ok("g" not in h._store.data and "魔流-馒头-认领" not in h._snap["g"].tags, "账本与标签都没动")
 
 print("[5] 退岗：prev_state 在 restore_prev 里才还原")
 r = dutyops.release(h, ["d"], taker=dutyreg.ID_CLAIM,

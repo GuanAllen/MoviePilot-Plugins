@@ -325,17 +325,17 @@
 
 /* 分段控件：设计稿 .seg / .seg span / .seg span.on */
 .magicflow-claim-seg[data-v-2acf1ac2] { display: flex; width: 100%; gap: 3px; padding: 3px; border-radius: 10px;
-  background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.13); margin-bottom: 11px; }
+  background: rgba(var(--v-theme-on-surface), .04); border: 1px solid rgba(var(--v-theme-on-surface), .13); margin-bottom: 11px; }
 .magicflow-claim-seg__b[data-v-2acf1ac2] { flex: 1; text-align: center; padding: 7px 0; border-radius: 7px;
-  font-size: 12px; font-weight: 600; color: rgba(232,233,240,.58); }
+  font-size: 12px; font-weight: 600; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); }
 .magicflow-claim-seg__b.is-on[data-v-2acf1ac2] { background: rgb(var(--v-theme-primary)); color: #fff; }
 
 /* 统计卡（按站点看）：设计稿 .cards-2 / .card / .card .n / .card .l / .card .l .scope */
 .magicflow-claim-summary[data-v-2acf1ac2] { gap: 9px; margin: 0 0 11px; }
 .magicflow-claim-summary__item[data-v-2acf1ac2] { padding: 10px 11px; border-radius: 12px; min-height: 72px;
-  background: rgba(255,255,255,.035); border: 1px solid rgba(255,255,255,.075); }
+  background: rgba(var(--v-theme-on-surface), .035); border: 1px solid rgba(var(--v-theme-on-surface), .075); }
 .magicflow-claim-summary__item b[data-v-2acf1ac2] { font-size: 21px; font-weight: 750; line-height: 1.15; letter-spacing: -.5px; }
-.magicflow-claim-summary__item span[data-v-2acf1ac2] { font-size: 10.5px; color: rgba(232,233,240,.58); margin-top: 5px; }
+.magicflow-claim-summary__item span[data-v-2acf1ac2] { font-size: 10.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); margin-top: 5px; }
 .magicflow-claim-summary__scope[data-v-2acf1ac2] { color: rgb(var(--v-theme-primary)); font-weight: 600; font-style: normal; }
 
 /* 结算条：设计稿 .settle / .k / .d（剩 X 天靠右） */
@@ -356,35 +356,35 @@
 /* 认领明细卡：设计稿 .item2 radius12/padding10px11px/border line2/gap7/mb9；标题 12.5px 两行；盾牌 20px */
 .magicflow-claim-list[data-v-2acf1ac2] { gap: 9px; }
 .magicflow-claim-item[data-v-2acf1ac2] { padding: 10px 11px; border-radius: 12px; gap: 7px;
-  background: rgba(255,255,255,.015); border: 1px solid rgba(255,255,255,.13); }
-.magicflow-claim-item.is-claimed[data-v-2acf1ac2] { border-color: rgba(255,255,255,.13); }
+  background: rgba(var(--v-theme-on-surface), .015); border: 1px solid rgba(var(--v-theme-on-surface), .13); }
+.magicflow-claim-item.is-claimed[data-v-2acf1ac2] { border-color: rgba(var(--v-theme-on-surface), .13); }
 .magicflow-claim-item__title--2[data-v-2acf1ac2] { font-size: 12.5px; font-weight: 600; line-height: 1.4; }
-.magicflow-claim-item__meta[data-v-2acf1ac2] { font-size: 10.5px; color: rgba(232,233,240,.58); opacity: 1; }
+.magicflow-claim-item__meta[data-v-2acf1ac2] { font-size: 10.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); opacity: 1; }
 .magicflow-claim-shield[data-v-2acf1ac2] { width: 20px; height: 20px; border-radius: 6px;
   background: rgba(61,220,151,.14); border: 1px solid rgba(61,220,151,.28); }
 
 /* 逐站汇总卡：设计稿 .sumcard + .h + .cyc + .date + .arw + .g（独立数字块）+ .sub（顶边框） */
 .magicflow-claim-sites[data-v-2acf1ac2] { gap: 9px; }
 .magicflow-claim-site[data-v-2acf1ac2] { padding: 11px 12px; border-radius: 12px;
-  background: rgba(255,255,255,.015); border: 1px solid rgba(255,255,255,.13); }
+  background: rgba(var(--v-theme-on-surface), .015); border: 1px solid rgba(var(--v-theme-on-surface), .13); }
 .magicflow-claim-site:hover[data-v-2acf1ac2], .magicflow-claim-site:focus-visible[data-v-2acf1ac2] { background: rgba(139,124,246,.08); }
 .magicflow-claim-site__head[data-v-2acf1ac2] { gap: 8px; margin-bottom: 9px; }
 .magicflow-claim-site__name[data-v-2acf1ac2] { font-size: 13px; font-weight: 650; }
 .magicflow-claim-site .v-chip[data-v-2acf1ac2] { font-size: 9.5px; color: rgb(var(--v-theme-primary));
   background: rgba(139,124,246,.15); border-radius: 20px; padding: 0 7px; height: 18px; }
-.magicflow-claim-site__date[data-v-2acf1ac2] { font-size: 9.5px; color: rgba(232,233,240,.4); }
-.magicflow-claim-site__head .v-icon[data-v-2acf1ac2] { font-size: 14px; color: rgba(232,233,240,.4); }
+.magicflow-claim-site__date[data-v-2acf1ac2] { font-size: 9.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-dim)); }
+.magicflow-claim-site__head .v-icon[data-v-2acf1ac2] { font-size: 14px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-dim)); }
 .magicflow-claim-site__stats[data-v-2acf1ac2] { display: flex; gap: 6px; margin-top: 0; }
-.magicflow-claim-site__stat[data-v-2acf1ac2] { flex: 1; background: rgba(255,255,255,.03); border-radius: 8px; padding: 7px 4px; text-align: center; }
+.magicflow-claim-site__stat[data-v-2acf1ac2] { flex: 1; background: rgba(var(--v-theme-on-surface), .03); border-radius: 8px; padding: 7px 4px; text-align: center; }
 .magicflow-claim-site__stat b[data-v-2acf1ac2] { font-size: 12.5px; font-weight: 700; line-height: 1.3; }
-.magicflow-claim-site__stat span[data-v-2acf1ac2] { font-size: 9.5px; color: rgba(232,233,240,.4); margin-top: 2px; }
+.magicflow-claim-site__stat span[data-v-2acf1ac2] { font-size: 9.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-dim)); margin-top: 2px; }
 .magicflow-claim-site__stat.is-accent b[data-v-2acf1ac2] { color: rgb(var(--v-theme-on-surface)); }
-.magicflow-claim-site__sub[data-v-2acf1ac2] { font-size: 9.5px; color: rgba(232,233,240,.4); margin-top: 8px; padding-top: 7px;
-  border-top: 1px solid rgba(255,255,255,.075); text-align: left; }
+.magicflow-claim-site__sub[data-v-2acf1ac2] { font-size: 9.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-dim)); margin-top: 8px; padding-top: 7px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), .075); text-align: left; }
 
 /* 无合计行：设计稿 .noSum */
 .magicflow-claim-nosum[data-v-2acf1ac2] { margin-top: 2px; padding: 8px; border-radius: 9px;
-  border: 1px dashed rgba(255,255,255,.13); font-size: 10.5px; color: rgba(232,233,240,.4); }
+  border: 1px dashed rgba(var(--v-theme-on-surface), .13); font-size: 10.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-dim)); }
 
 /* ===== 19.16.18 状态 chip：按设计稿 .op（自绘 span，取代 VChip）=====
    设计稿：.op{font-size:10px;border-radius:7px;padding:3px 8px;font-weight:600}
@@ -394,5 +394,14 @@
   border-radius: 7px; padding: 3px 8px; line-height: 1.5; }
 .magicflow-claim-qb.is-seeding[data-v-2acf1ac2] { color: #3ddc97; background: rgba(61,220,151,.14); border: 1px solid rgba(61,220,151,.28); }
 .magicflow-claim-qb.is-paused[data-v-2acf1ac2] { color: #f0b64c; background: rgba(240,182,76,.10); border: 1px solid rgba(240,182,76,.24); }
-.magicflow-claim-qb.is-missing[data-v-2acf1ac2] { color: rgba(232,233,240,.5); background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.12); }
+.magicflow-claim-qb.is-missing[data-v-2acf1ac2] { color: rgba(var(--v-theme-on-surface), var(--mf-fg-dim)); background: rgba(var(--v-theme-on-surface), .05); border: 1px solid rgba(var(--v-theme-on-surface), .12); }
 .magicflow-claim-qb.is-site[data-v-2acf1ac2] { color: #9c8cf7; background: rgba(139,124,246,.14); border: 1px solid rgba(139,124,246,.28); }
+
+
+/* ── 19.16.39 浅色主题：这几处是作用在文字上的低 opacity（深色主题正常），
+   MP 浅色钩子 html[data-glass-color-scheme=light] 下提到 0.78，与 --mf-fg-mid 同口径。深色不动。 */
+html[data-glass-color-scheme="light"] .magicflow-claim-sec__hint[data-v-2acf1ac2],
+html[data-glass-color-scheme="light"] .magicflow-claim-note .v-icon[data-v-2acf1ac2],
+html[data-glass-color-scheme="light"] .magicflow-claim-more[data-v-2acf1ac2],
+html[data-glass-color-scheme="light"] .magicflow-claim-soon__hint[data-v-2acf1ac2],
+html[data-glass-color-scheme="light"] .magicflow-claim-item__meta[data-v-2acf1ac2] { opacity: 0.78; }

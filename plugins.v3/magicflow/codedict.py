@@ -60,6 +60,14 @@ GLOSSARY: List[Dict[str, Any]] = [
         ["★ 19.12.4 **站端确认闸门**：结清前先看站端 myhr 最近一轮对账（`_hr_site_debt_index` / "
          "`_hr_site_verdict`）—— 站端还欠就**不结清**、已 settled 的会被**重开**；站端说欠的 hash "
          "一律进保护集合（`_hr_bill_owed_hashes`）。回退开关 `HR_SETTLE_SITE_GATE`。"],
+        ["★ 19.12.40 **fail-closed**：站端 `unknown`（抓取失败/记录缺失/覆盖不完整/证据过旧）"
+         "**不再结清**（旧口径是「判不明 → 按本地结清」，等于赌）。结清只认站端明确 `clear`；"
+         "被挡下的账单写 `settle_block=site_owed|site_unknown` 便于排查。"],
+        ["★ 19.12.40 **删账要证据**：连续无进度只记 `stalled_at`（不删）；种从 qB 消失只记 "
+         "`missing_since` + `alive=False`（不删），只有「站端明确 clear 且缺席超 "
+         "`HR_BILLS_MISSING_TTL_DAYS`（30d）」才销账；qB 快照为空整轮跳过。"],
+        ["★ 19.12.40 结清与职务**无关**：tick 只按 hash 读 qB `seeding_time`，挂在 H&R / 保种 / "
+         "认领 / 刷流名下都能结清；结清只改本账单，不改任何岗位归属。"],
     ]},
     {"title": "做种时长四类口径(★ 别再统称「保种」)", "head": ["口径", "字段", "真值源 / 位置"], "rows": [
         ["**义务工时**(站点要求做满多少小时)", "`seed_need_hours` → 账单 `need_h`",
@@ -137,7 +145,7 @@ GLOSSARY: List[Dict[str, Any]] = [
         ["纳管/退出 worker：`_claim_host_status(resume=True)`（`features/claim.py`，15 分钟一轮）。退出还原 `prev_state`（只认刷流/魔力），缺省回静默并当场 pause。"],
         ["手动退出：`set_tag_state` 把职务改成非「认领」→ 账本 `manual=True` → worker 不再拉回；改回「认领」即恢复。"],
         ["跨职务抢占（19.10.12）：**只认 `dutyreg.duty_take_check`** —— 认领是 `poach=True` 的特殊岗位，"
-         "可从刷流/魔力/点播/音乐/H&R 名下收人；但手动保种（95）比它高，不抢。"
+         "可从刷流/魔力/点播/音乐名下收人；但保种池同级（手动保种 / 认领 / H&R 都是 95）互不相抢。"
          "别再加「某处显式跳过 `__claim__`」那种补丁。"],
     ]},
     {"title": "岗位注册表 / 占位口径（19.10.12，`dutyreg.py`）", "head": None, "rows": [
@@ -147,8 +155,10 @@ GLOSSARY: List[Dict[str, Any]] = [
          "读账本那一侧包成 `dutyops.free_for(rec, taker, now=)`，调用方不必再手抠 `taken_by`/`lease_until`。"],
         ["**默认口径：只从「没岗位」的池子招人**（`poach=False`）—— 静默托管/辅种不算占岗（静默=没岗位）；"
          "未登记真任务（动态 task_id）看租约，过期即视为空缺。"],
-        ["特殊岗位（`poach=True`）只有三个：**手动保种 95 / 认领 90 / H&R 80** —— 「不做就违约」或「人工点名」。"
-         "它们也只能从**优先级更低**的岗位挑人（同级不抢，先到先得）。"],
+        ["特殊岗位（`poach=True`）只有三个：**手动保种 / 认领 / H&R 统一 95**（19.12.39 起；"
+         "原 95/90/80 会让认领单向吸走 H&R 的种）—— 「不做就违约」或「人工点名」，同一档保种池。"
+         "它们只能从**优先级更低**的岗位挑人；同级一律不抢，归属按**先到先得保留现状**"
+         "（不做「谁更该管」的二次裁决，否则两个 worker 每轮互相搬运）。"],
         ["加岗位别回头补「跳过它」：在 `DUTIES` 里写 `priority` / `poach` 就够；"
          "`tools/test_dutyreg.py` 钉住 8 岗位落库值与这套矩阵。"],
     ]},

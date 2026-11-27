@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""魔流 · H&R 规则闸「三口径归一」离线回归测试（2026-10-10 拍板）。
+"""魔流 · H&R 义务判定「两道门槛」离线回归测试。
+
+★ 19.12.33 起口径（用户拍板）：
+  门槛 1 · 查来源站点：站点明确没有 H&R（hr=False）→ **不记账**；
+  门槛 2 · 逐种判定：逐种站只看这颗种的 H&R 标记（没有 → 不记）；
+           非逐种站 + 站点明确有 → site_hr；
+           站点规则未知（None）→ 不记（取消旧的 unknown 影子账）。
 
 覆盖：
-  A. 开账 ``_hrbills_open``：
-     - 站点规则明确 **无 H&R**（hr=False）→ **不开账**；
-     - 明确有（hr=True）→ rule=site_hr；逐种 hit_and_run → rule=hit_and_run；
-     - 未探明（None）→ rule=unknown（影子，pending）。
-  A2. ★ 17.2.2 逐种站（``per_torrent_hr=True``，如 Depth Studio/YemaPT）：
-     - 站点级 True **不通用** → 无逐种标记**不开账**；有逐种标记 → rule=hit_and_run。
-  B. 回填 ``_hrbills_backfill``：明确无 H&R 的站**不回填开账**（防「凭空欠债」）。
-  C. tick 规则闸 + 自愈 ``_hrbills_tick``：
-     - 只有 rule∈{site_hr,hit_and_run} 才 **激活/算欠**；
-     - unknown 完成 → 仍 pending（不激活）；
-     - 存量 unknown-active → 自愈降回 pending；unknown-breach → 降回 pending。
+  A. 开账 ``_hrbills_open``：hr=True→site_hr；hr=False→不开；未知→不开；逐种标记→hit_and_run。
+  A2. 逐种站（``per_torrent_hr=True``，如 YemaPT/Depth Studio）：
+      站点级 True/False/None 都**不通用** → 无标记不开账；有标记 → hit_and_run。
+  B. 回填 ``_hrbills_backfill``：与开账同一闸（明确无 H&R / 未探明 → 不回填）。
+  C. tick 规则闸 + 自愈：只有 rule∈{site_hr,hit_and_run} 才激活/算欠；
+     存量 unknown（历史遗留）仍不激活、不违约 —— 防升级瞬间误罚。
   D. 删除断言 ``_delete_bill_assert``：unknown-active/breached → **不拦**；site_hr-active → 拦。
+  E. 存量清理 ``_hrbills_purge_unknown``：只摘 rule 未定性的账，site_hr/hit_and_run 不动。
 
 用法：``python3 tools/test_hr_rule_gate.py``（退出码 0=PASS / 1=FAIL）。
 """
@@ -89,6 +91,7 @@ DeleteGateMixin = deletegate.DeleteGateMixin
 BILL_STATE_ACTIVE = hrbills.BILL_STATE_ACTIVE
 BILL_STATE_PENDING = hrbills.BILL_STATE_PENDING
 BILL_STATE_BREACHED = hrbills.BILL_STATE_BREACHED
+BILL_STATE_VOID = hrbills.BILL_STATE_VOID
 RULE_SITE_HR = hrbills.RULE_SITE_HR
 RULE_HIT_AND_RUN = hrbills.RULE_HIT_AND_RUN
 RULE_UNKNOWN = hrbills.RULE_UNKNOWN
@@ -179,80 +182,13 @@ class Harness(HrBillsMixin, DeleteGateMixin):
         return self.name2dom.get(name, "")
 
 
-
-class _MemStore:
-    """任务 132 测试夹具：内存版三态存储（PG 单一权威后的离线替身）。"""
-
-    def __init__(self) -> None:
-        self._d = {}
-
-    def get(self, h):
-        return dict(self._d[h]) if h in self._d else None
-
-    def all(self):
-        return {k: dict(v) for k, v in self._d.items()}
-
-    def put(self, h, rec, **kw):
-        self._d[h] = dict(rec)
-        return dict(self._d[h])
-
-    def delete(self, h):
-        self._d.pop(h, None)
-
-    def flush(self):
-        return None
-
-    def get_result(self, h):
-        v = self.get(h)
-        return hrbills._hr_store_read(
-            hrbills.STORE_FOUND if v is not None else hrbills.STORE_ABSENT, v, "", "mem")
-
-    def all_result(self):
-        return hrbills._hr_store_read(hrbills.STORE_FOUND, self.all(), "", "mem")
-
-    def events_result(self, h):
-        return hrbills._hr_store_read(hrbills.STORE_FOUND, [], "", "mem")
-
-    def all_events_result(self):
-        return hrbills._hr_store_read(hrbills.STORE_FOUND, [], "", "mem")
-
-    def put_result(self, h, rec, **kw):
-        self.put(h, rec)
-        return hrbills._hr_store_write(True)
-
-
-    def patch_if(self, h, expect=None, save=True, events=None, **fields):
-        cur = self.get(h)
-        if cur is None:
-            return {"ok": False, "reason": "absent", "row": None}
-        exp = expect if isinstance(expect, dict) else {}
-        if exp:
-            for k, v in exp.items():
-                if cur.get(k) != v:
-                    return {"ok": False, "reason": "conflict", "row": None}
-        cur.update(fields or {})
-        self.put(h, cur)
-        return {"ok": True, "reason": "", "row": dict(cur)}
-
-    def patch_result(self, h, fields, **kw):
-        cur = self.get(h)
-        if cur is None:
-            return hrbills._hr_store_write(True, value=None)
-        exp = kw.get("expect_state")
-        if exp is not None and str(cur.get("state")) != str(exp):
-            return hrbills._hr_store_write(True, value=None)
-        cur.update(fields or {})
-        self.put(h, cur)
-        return hrbills._hr_store_write(True, value=dict(cur))
-
 def main() -> int:
     print("=" * 64)
     print("魔流 · H&R 规则闸（三口径归一）回归测试")
     print("=" * 64)
     tmp = tempfile.mkdtemp(prefix="hr_rule_gate_")
     h = Harness(Path(tmp))
-    store = _MemStore()
-    h._hrbills_store = lambda: store  # type: ignore[method-assign]
+    store = h._hrbills_store()
 
     # ---- A) 开账规则闸 ----
     print("\n[A] 开账规则闸")
@@ -321,6 +257,22 @@ def main() -> int:
     _ok(b is not None and b["rule"] == RULE_HIT_AND_RUN,
         f"★ 逐种站(hr=False) + 逐种标记 → rule=hit_and_run（{b and b['rule']}）")
 
+    # ---- A3) ★ 19.12.33 两道门槛：逐种站 + 站点规则未探明（None）----
+    print("\n[A3] 两道门槛：逐种站 + 站点规则未知（线上 YemaPT 形态）")
+    h.need_hours["yema.site"] = 24.0
+    h._per_torrent.add("yema.site")   # site_hr 不设 → None
+    t = _torrent("A9", progress=1.0, tracker="yema.site")
+    t.hash = "iiii"
+    h.torrents["iiii"] = t
+    b = h._hrbills_open("iiii", "yema.site", "魔流-ym-刷流", raw)
+    _ok(b is None, "★ 逐种站 + 无逐种标记 + 站点规则未知 → **不记账**（不再造 unknown 影子账）")
+    t = _torrent("A10", progress=1.0, tracker="yema.site", hit_and_run=True)
+    t.hash = "jjjj"
+    h.torrents["jjjj"] = t
+    b = h._hrbills_open("jjjj", "yema.site", "魔流-ym-刷流", raw, hit_and_run=True)
+    _ok(b is not None and b["rule"] == RULE_HIT_AND_RUN,
+        f"★ 逐种站 + 有逐种标记 → 照记 rule=hit_and_run（{b and b['rule']}）")
+
     # ---- B) 回填规则闸 ----
     print("\n[B] 回填规则闸")
     h.torrents["e1"] = _torrent("B1", progress=1.0, tracker="nohr.site")
@@ -367,6 +319,24 @@ def main() -> int:
     why = h._delete_bill_assert(["p2", "p4"])
     _ok("p2" not in why, "★ unknown-active → **不拦**")
     _ok("p4" in why, "site_hr-active → 拦")
+
+    # ---- E) 存量清理：只摘「规则未定性」账 ----
+    print("\n[E] 存量未定性账清理（_hrbills_purge_unknown）")
+    _put(store, "u1", rule=RULE_UNKNOWN, state=BILL_STATE_PENDING, site="yema.site")
+    _put(store, "u2", rule=RULE_SITE_HR, state=BILL_STATE_ACTIVE, site="hr.site")
+    _put(store, "u3", rule=RULE_HIT_AND_RUN, state=BILL_STATE_ACTIVE, site="hr.site")
+    dry = h._hrbills_purge_unknown(confirm=False)
+    _ok(dry["dry_run"] is True and {r["hash"] for r in dry["targets"]} >= {"u1"},
+        f"干跑：只列未定性账（{sorted(r['hash'] for r in dry['targets'])}）")
+    _ok(all(r["rule"] not in (RULE_SITE_HR, RULE_HIT_AND_RUN) for r in dry["targets"]),
+        "★ 干跑清单里不含 site_hr / hit_and_run 账")
+    h._hrbills_purge_unknown(confirm=True)
+    _ok((store.get("u1") or {}).get("state") == BILL_STATE_VOID,
+        "★ confirm=1 → 未定性账转 void 墓碑（19.12.43 起不再删行）")
+    _ok((store.get("u1") or {}).get("void_reason") == "legacy_rule_unknown",
+        "墓碑记 void_reason=legacy_rule_unknown")
+    _ok((store.get("u2") or {}).get("rule") == RULE_SITE_HR, "site_hr 账保留")
+    _ok((store.get("u3") or {}).get("rule") == RULE_HIT_AND_RUN, "hit_and_run 账保留")
 
     print(f"\n✅✅ 全部通过（{CHECKS} 项断言）")
     return 0

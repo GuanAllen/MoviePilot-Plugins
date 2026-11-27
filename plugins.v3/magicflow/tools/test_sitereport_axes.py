@@ -58,16 +58,17 @@ tags = _load(PKG + ".tags", "tags.py")
 _hrbills = types.ModuleType(PKG + ".features.hrbills")
 _hrbills.BILL_STATE_ACTIVE = "active"
 _hrbills.BILL_STATE_BREACHED = "breached"
+# ★ 19.12.43：``_site_seed_report`` 已委托给 ``reportview._rv_site_data``（报表唯一口径），
+#   该模块还从 hrbills 取 PENDING —— 桩补齐，否则真跑 reportview 会 ImportError。
+_hrbills.BILL_STATE_PENDING = "pending"
 _hrbills.RULE_SITE_HR = "site_hr"
 _hrbills.RULE_HIT_AND_RUN = "hit_and_run"
-_hrbills.BILL_STATE_PENDING = "pending"
+# ★ 19.12.46（任务 89）：reportview 顶部 import 新增该常量（人工结清判据），桩补齐。
+_hrbills.HR_MANUAL_SETTLE = "manual"
+# ★ 任务 102：reportview 顶部 import 新增这两个状态常量（已结清/已作废行的
+#   结清轨迹注入），桩补齐 —— 只补常量，不放宽任何断言。
 _hrbills.BILL_STATE_SETTLED = "settled"
 _hrbills.BILL_STATE_VOID = "void"
-_hrbills.HR_MANUAL_SETTLE = "manual"
-_hrbills.BILL_STATE_PENDING = "pending"
-_hrbills.BILL_STATE_SETTLED = "settled"
-_hrbills.BILL_STATE_VOID = "void"
-_hrbills.HR_MANUAL_SETTLE = "manual"
 sys.modules[PKG + ".features.hrbills"] = _hrbills
 
 # 桩 app.schemas
@@ -76,6 +77,9 @@ _app_schemas.Response = type("Response", (), {})
 sys.modules["app.schemas"] = _app_schemas
 
 sitereport = _load(PKG + ".features.sitereport", "features/sitereport.py")
+# ★ 19.12.43：站点报表的真实口径已收到 ``reportview._rv_site_data``；要真跑它，
+#   必须把同一条链上的 ``norm`` 与 ``reportview`` 也装上（纯 stdlib + 已桩模块）。
+_load(PKG + ".norm", "norm.py")
 reportview = _load(PKG + ".features.reportview", "features/reportview.py")
 
 SR = sitereport
@@ -120,6 +124,7 @@ class FakeBills(_WriteGuard):
     def __init__(self, bills=None):
         super().__init__()
         self._bills = dict(bills or {})
+        self.read_log = []
 
     def get(self, h):
         return self._bills.get(h)
@@ -127,10 +132,11 @@ class FakeBills(_WriteGuard):
     def all(self):
         return dict(self._bills)
 
-    def all_result(self):
-        return {"status": "found", "value": dict(self._bills), "error": ""}
-
-    def events_for(self, h=""):
+    def events_for(self, hash_string="", limit=0):
+        # ★ 任务 98：append-only 事件档案查询是**只读**（reportview._rv_hr_data
+        #   用它拼「结清 / 纠错历史」）。显式声明成读，别让 _WriteGuard 的兜底
+        #   __getattr__ 把它当成写；write_log 仍然盯着所有真正的写入口。
+        self.read_log.append("events_for")
         return []
 
 
@@ -148,7 +154,10 @@ class _EmptyCache:
         return {}
 
 
-class Plug(reportview.ReportViewMixin, sitereport.SiteReportMixin):
+class Plug(sitereport.SiteReportMixin, reportview.ReportViewMixin):
+    # ★ 19.12.43：``SiteReportMixin._site_seed_report`` 现在只做委托
+    #   （``return self._rv_site_data(site, live)``），两轴口径实体在 ReportViewMixin 里。
+    #   同时继承两个 mixin 才等于线上真实继承链，断言对象不变。
     def __init__(self, snap=None, bills=None, protected=None, site_map=None, sites=None):
         self._snap = dict(snap or {})
         self._bills = FakeBills(bills) if bills is not None else FakeBills()
@@ -314,8 +323,15 @@ def main() -> int:
 
     # item 字段
     items = {it["hash"]: it for it in data["items"]}
+    # ★ 19.12.43 契约对齐：item.sub / item.origin 是**身份/出身元数据**（17.3.0 统一台账
+    #   reportview.build_rows 的 identity_of 回退），任何桶都携带 —— 前端
+    #   siteReportItemSub() 按「传输/身份子桶/出身/…」渲染**每行**副标题即依赖这一点；
+    #   「不混身份子桶」不变量只约束 _site_report_sub 分桶器（上文已单独断言：非静默桶返回 ""），
+    #   且 sub/出身过滤 chips 只在 filter=静默 时渲染（SiteReportDialog.vue v-if）→ 不会混淆桶轴。
+    #   旧断言写于站点报表独立算行（sub/origin 仅静默桶）的年代，与合并台账契约漂移；
+    #   这里是**钉住合并契约的精确值**（不是放宽）：bucket/transport 仍严格断言。
     _ok(items["brush"]["bucket"] == BUCKET_BRUSH and items["brush"]["transport"] == TRANSPORT_SEEDING
-        and items["brush"]["sub"] == "普通", "item（刷流）bucket/transport/sub（sub 取自标签=普通）")
+        and items["brush"]["sub"] == "普通", "item（刷流）bucket=刷流/transport=做种中/sub=身份(普通)")
     _ok(items["silent-res"]["bucket"] == BUCKET_SILENT and items["silent-res"]["sub"] == "资源"
         and items["silent-res"]["protected"] is True, "item（静默-资源）sub=资源 + protected")
     _ok(items["silent-plain"]["transport"] == TRANSPORT_DOWNLOADING,
@@ -323,15 +339,17 @@ def main() -> int:
     _ok(items["hr-debt"]["bucket"] == BUCKET_HR and items["hr-debt"]["hr"] is not None
         and items["hr-debt"]["hr"]["owed"] is True,
         "item（欠 H&R）bucket=保种 + hr 列字段（债务不再当桶）")
-    # 任务 113 起 hr 列恒为三态字典（不再用 None 表示「无债务」，前端字段同构）
-    _ok((items["hr-dut"].get("hr") or {}).get("owed") is False,
-        "item（保种职务未违约）hr.owed=False")
+    # ★ 19.12.43 契约对齐：hr 列在合并台账里是**恒在结构列**（{owed, owed_hr, need_left}），
+    #   「未违约」用 owed=False 表达（不是 hr=None）；前端 siteReportItemSub 也按 dict 消费。
+    _ok(items["hr-dut"]["hr"] == {"owed": False, "owed_hr": False, "need_left": ""},
+        "item（保种职务未违约）hr 列恒在结构列：owed=False")
     _ok(items["silent-new"]["origin"] == SR.ORIGIN_POOL
         and items["silent-res"]["origin"] == SR.ORIGIN_RESEED
         and items["silent-plain"]["origin"] == SR.ORIGIN_NONE,
         "item.origin：静默桶逐条出身（池/辅种副本/无主）")
-    # 17.3.0：origin 字段全行同构；非静默行落 ORIGIN_NONE（不再用空串）
-    _ok(items["brush"]["origin"] in ("", SR.ORIGIN_NONE), "非静默桶 origin 为空/无主")
+    # ★ 19.12.43 同上：origin 是出身轴元数据（build_rows 不按桶裁剪），刷流种若无账本/辅种
+    #   出身即「无主」——与静默桶同口径（SR.ORIGIN_NONE），不再断言空串。
+    _ok(items["brush"]["origin"] == SR.ORIGIN_NONE, "非静默桶 origin 也按出身轴记（无主）")
 
     # 排序：保种（桶序 1）应排在刷流/魔力（桶序 2/3）之前
     ordered = [it["bucket"] for it in data["items"]]
@@ -341,6 +359,8 @@ def main() -> int:
     # 零写调用
     _ok(p._bills.write_log == [] and p._store.write_log == [],
         f"零写调用（bills={p._bills.write_log} store={p._store.write_log}）")
+    _ok("events_for" in p._bills.read_log,
+        "任务 98：报表只读事件档案（events_for 被真实调用，读分类不是空转）")
 
     print("=" * 60)
     print(f"✅ PASS —— 共 {CHECKS} 项全过")

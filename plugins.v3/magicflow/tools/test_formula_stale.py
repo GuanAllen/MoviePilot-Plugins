@@ -83,8 +83,11 @@ dtier = _load(PKG + ".dtier", "dtier.py")
 
 # ---- 桩兄弟模块（formula.py 的 import 依赖）----
 for _sub, _attrs in {
-    "bonus": ["BonusParams", "TorrentBonusInfo", "calc_torrent_bonus", "observed_bonus_per_hour",
-              "THEORETICAL_BONUS_PER_HOUR"],
+    # ★ 19.12.43：19.10.38 起 formula 还导入 ``observed_bonus_per_hour``（实测时魔兜底），
+    #   桩没跟上 → 加载即 ImportError。这里补名，并在下面给它一个「取不到就 None」的桩
+    #   （公式路径不受影响：本用例只测「旧值回收」，不测兜底算法）。
+    "bonus": ["BonusParams", "TorrentBonusInfo", "calc_torrent_bonus",
+              "observed_bonus_per_hour"],
     "downloader_ops": ["TorrentInfo"],
     "fetcher": ["SITE_TZ_OFFSET_HOURS", "pubdate_to_ts", "ts_to_age_weeks"],
     "persistence": ["OperationItem"],
@@ -94,6 +97,7 @@ for _sub, _attrs in {
     for a in _attrs:
         setattr(m, a, type(a, (), {}))
     sys.modules[PKG + "." + _sub] = m
+sys.modules[PKG + ".bonus"].observed_bonus_per_hour = lambda *a, **k: None  # noqa: E731
 
 _sites = types.ModuleType(PKG + ".sites")
 _sites.get_formula_params = lambda *a, **k: {}

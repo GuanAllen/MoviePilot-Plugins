@@ -151,19 +151,40 @@ const MODE_ICON = { running: 'mdi-play', seeding: 'mdi-check', stopped: 'mdi-pau
 
 <style scoped>
 .magicflow-page .mdetail {
-  --line: rgba(255, 255, 255, 0.07);
+  --line: rgba(var(--v-theme-on-surface), 0.07);
   --dim: #6f7488;
   --purple: #8b7cf6;
   --purple2: #6d5ce7;
+  /* 19.16.40：原来按深色底调的中间色，浅色白底上只有约 2:1。
+     先抽成语义变量让深色视觉零变化，浅色再用主题变量/加深色覆盖。 */
+  --ink-sub: #7d8296;
+  --ink-soft: #aeb3c6;
+  --ink-muted: #8b90a3;
+  --ink-purple: #c4bbff;
+  --ink-purple-on: #d3c9ff;
+  --ink-red: #ff9aa5;
+  --ink-alert: rgb(255, 107, 122);
+  --ink-green: rgb(61, 220, 151);
   display: flex;
   flex-direction: column;
+}
+html[data-glass-color-scheme="light"] .magicflow-page .mdetail {
+  --dim: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+  --ink-sub: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+  --ink-soft: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
+  --ink-muted: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+  --ink-purple: #5c46c9;
+  --ink-purple-on: #412b9d;
+  --ink-red: #b3263b;
+  --ink-alert: #b3263b;
+  --ink-green: #137a52;
 }
 .magicflow-page .mdetail > * + * { margin-top: 11px; }
 
 /* ── 身份卡 ── */
 .magicflow-page .md-ident {
   border: 1px solid var(--line);
-  background: linear-gradient(140deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.015));
+  background: linear-gradient(140deg, rgba(var(--v-theme-on-surface), 0.045), rgba(var(--v-theme-on-surface), 0.015));
   border-radius: 16px;
   padding: 14px;
 }
@@ -175,45 +196,45 @@ const MODE_ICON = { running: 'mdi-play', seeding: 'mdi-check', stopped: 'mdi-pau
 }
 .magicflow-page .md-ident__body { flex: 1 1 auto; min-inline-size: 0; }
 .magicflow-page .md-ident__body h2 { font-size: 15.5px; font-weight: 750; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.magicflow-page .md-ident__body p { font-size: 10.5px; color: #7d8296; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.magicflow-page .md-ident__body p { font-size: 10.5px; color: var(--ink-sub); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .magicflow-page .md-type {
   margin-left: auto; flex: none; font-size: 10.5px; font-weight: 600; padding: 4px 9px; border-radius: 20px;
-  color: #c4bbff; background: rgba(139,124,246, 0.18); border: 1px solid rgba(139,124,246, 0.35);
+  color: var(--ink-purple); background: rgba(139,124,246, 0.18); border: 1px solid rgba(139,124,246, 0.35);
   white-space: nowrap;
 }
 .magicflow-page .md-ident__ops { display: flex; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
 .magicflow-page .md-op {
   flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
   padding: 9px 4px; border-radius: 10px; cursor: pointer; font: inherit;
-  background: rgba(255, 255, 255, 0.045); border: 1px solid var(--line);
-  color: #aeb3c6; font-size: 11px; font-weight: 600;
+  background: rgba(var(--v-theme-on-surface), 0.045); border: 1px solid var(--line);
+  color: var(--ink-soft); font-size: 11px; font-weight: 600;
 }
-.magicflow-page .md-op--del { color: #ff9aa5; border-color: rgba(255,107,122, 0.3); }
+.magicflow-page .md-op--del { color: var(--ink-red); border-color: rgba(255,107,122, 0.3); }
 
 /* ── 三态连体胶囊 ── */
 .magicflow-page .md-runmode {
   padding: 12px 14px; border-radius: 14px;
-  border: 1px solid var(--line); background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--line); background: rgba(var(--v-theme-on-surface), 0.025);
 }
 .magicflow-page .md-runmode__k { display: flex; align-items: center; justify-content: space-between; font-size: 9.5px; color: var(--dim); margin-bottom: 7px; }
-.magicflow-page .md-runmode__k b { color: #b7acff; font-weight: 600; }
+.magicflow-page .md-runmode__k b { color: var(--ink-purple); font-weight: 600; }
 .magicflow-page .md-runseg {
   display: flex; gap: 4px; padding: 3px; border-radius: 10px;
-  background: rgba(255, 255, 255, 0.035); border: 1px solid var(--line);
+  background: rgba(var(--v-theme-on-surface), 0.035); border: 1px solid var(--line);
 }
 .magicflow-page .md-runseg__btn {
   flex: 1; min-inline-size: 0; display: flex; align-items: center; justify-content: center; gap: 4px;
-  border: 0; background: transparent; color: #8b90a3; cursor: pointer; font: inherit;
+  border: 0; background: transparent; color: var(--ink-muted); cursor: pointer; font: inherit;
   font-size: 10.5px; font-weight: 600; padding: 7px 3px; border-radius: 7px; white-space: nowrap;
   transition: background 0.15s ease, color 0.15s ease;
 }
 .magicflow-page .md-runseg__btn:disabled { opacity: 0.6; cursor: default; }
 .magicflow-page .md-runseg__btn.is-on {
-  background: rgba(139,124,246, 0.22); color: #d3c9ff;
+  background: rgba(139,124,246, 0.22); color: var(--ink-purple-on);
   box-shadow: inset 0 0 0 1px rgba(139,124,246, 0.5);
 }
 .magicflow-page .md-runseg__btn.is-stop.is-on {
-  background: rgba(255,107,122, 0.16); color: #ff9aa5;
+  background: rgba(255,107,122, 0.16); color: var(--ink-red);
   box-shadow: inset 0 0 0 1px rgba(255,107,122, 0.42);
 }
 
@@ -228,18 +249,18 @@ const MODE_ICON = { running: 'mdi-play', seeding: 'mdi-check', stopped: 'mdi-pau
   border-color: rgba(255,107,122, 0.34);
 }
 .magicflow-page .md-verdict.is-idle {
-  background: linear-gradient(140deg, rgba(232,233,240, 0.07), rgba(232,233,240, 0.02));
-  border-color: rgba(232,233,240, 0.16);
+  background: linear-gradient(140deg, rgba(var(--v-theme-on-surface), 0.07), rgba(var(--v-theme-on-surface), 0.02));
+  border-color: rgba(var(--v-theme-on-surface), 0.16);
 }
 .magicflow-page .md-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: rgb(139,124,246); box-shadow: 0 0 8px rgba(139,124,246, 0.8); }
 .magicflow-page .md-dot.is-error { background: rgb(255,107,122); box-shadow: 0 0 8px rgba(255,107,122, 0.7); }
 .magicflow-page .md-dot.is-warning { background: rgb(240,182,76); box-shadow: 0 0 8px rgba(240,182,76, 0.7); }
-.magicflow-page .md-dot.is-secondary { background: rgba(232,233,240, 0.45); box-shadow: none; }
+.magicflow-page .md-dot.is-secondary { background: rgba(var(--v-theme-on-surface), 0.45); box-shadow: none; }
 .magicflow-page .md-verdict__body { min-inline-size: 0; flex: 1; }
-.magicflow-page .md-v { font-size: 14px; font-weight: 750; color: rgb(61,220,151); }
-.magicflow-page .md-verdict.is-warn .md-v { color: rgb(255,107,122); }
-.magicflow-page .md-verdict.is-idle .md-v { color: rgba(232,233,240, 0.82); }
-.magicflow-page .md-s { font-size: 10.5px; color: rgba(232,233,240, 0.6); margin-block-start: 2px; }
+.magicflow-page .md-v { font-size: 14px; font-weight: 750; color: var(--ink-green); }
+.magicflow-page .md-verdict.is-warn .md-v { color: var(--ink-alert); }
+.magicflow-page .md-verdict.is-idle .md-v { color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); }
+.magicflow-page .md-s { font-size: 10.5px; color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); margin-block-start: 2px; }
 .magicflow-page .md-act {
   margin-inline-start: auto; flex: 0 0 auto; font: inherit; font-size: 12px; font-weight: 650;
   padding: 7px 13px; border-radius: 10px; cursor: pointer; color: rgb(255,255,255);
@@ -250,25 +271,25 @@ const MODE_ICON = { running: 'mdi-play', seeding: 'mdi-check', stopped: 'mdi-pau
 .magicflow-page .md-cards { display: flex; gap: 9px; }
 .magicflow-page .md-card {
   flex: 1 1 0; min-inline-size: 0; text-align: center;
-  background: rgba(255, 255, 255, 0.03); border: 1px solid var(--line); border-radius: 15px; padding: 14px 10px;
+  background: rgba(var(--v-theme-on-surface), 0.03); border: 1px solid var(--line); border-radius: 15px; padding: 14px 10px;
 }
 .magicflow-page .md-card.is-main {
   background: linear-gradient(140deg, rgba(139,124,246, 0.2), rgba(139,124,246, 0.05));
   border-color: rgba(139,124,246, 0.45); padding-top: 12px;
 }
 .magicflow-page .md-card b { font-size: 17px; font-weight: 800; display: block; letter-spacing: 0.2px; white-space: nowrap; }
-.magicflow-page .md-card.is-main b { font-size: clamp(17px, 5.4vw, 23px); color: #cfc6ff; }
-.magicflow-page .md-card span { font-size: 9.5px; color: #7d8296; margin-block-start: 5px; display: block; white-space: nowrap; }
+.magicflow-page .md-card.is-main b { font-size: clamp(17px, 5.4vw, 23px); color: var(--ink-purple-on); }
+.magicflow-page .md-card span { font-size: 9.5px; color: var(--ink-sub); margin-block-start: 5px; display: block; white-space: nowrap; }
 
 /* ── 策略 chips ── */
 .magicflow-page .md-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 3px; margin-bottom: 13px; }
 .magicflow-page .md-chip { font-size: 10px; font-weight: 600; padding: 4px 9px; border-radius: 7px; white-space: nowrap;
-  background: rgba(255, 255, 255, 0.045); border: 1px solid var(--line); color: #aeb3c6; }
-.magicflow-page .md-chip b { color: #cfc6ff; }
-.magicflow-page .md-chip.is-type { color: #c4bbff; background: rgba(139,124,246, 0.18); border-color: rgba(139,124,246, 0.35); }
-.magicflow-page .md-chip.is-on { color: rgb(61,220,151); background: rgba(61,220,151, 0.12); border-color: rgba(61,220,151, 0.26); }
-.magicflow-page .md-chip.is-off { color: rgba(232,233,240, 0.6); background: rgba(232,233,240, 0.06); border-color: rgba(232,233,240, 0.14); }
-.magicflow-page .md-chip.is-auto { color: #c4bbff; background: rgba(139,124,246, 0.14); border-color: rgba(139,124,246, 0.28); }
-.magicflow-page .md-chip.is-danger { color: rgb(255,107,122); background: rgba(255,107,122, 0.12); border-color: rgba(255,107,122, 0.28); }
-.magicflow-page .md-chip.is-plain { color: rgba(232,233,240, 0.82); background: rgba(232,233,240, 0.06); border-color: rgba(232,233,240, 0.14); }
+  background: rgba(var(--v-theme-on-surface), 0.045); border: 1px solid var(--line); color: var(--ink-soft); }
+.magicflow-page .md-chip b { color: var(--ink-purple-on); }
+.magicflow-page .md-chip.is-type { color: var(--ink-purple); background: rgba(139,124,246, 0.18); border-color: rgba(139,124,246, 0.35); }
+.magicflow-page .md-chip.is-on { color: var(--ink-green); background: rgba(61,220,151, 0.12); border-color: rgba(61,220,151, 0.26); }
+.magicflow-page .md-chip.is-off { color: rgba(var(--v-theme-on-surface), var(--mf-fg-mid)); background: rgba(var(--v-theme-on-surface), 0.06); border-color: rgba(var(--v-theme-on-surface), 0.14); }
+.magicflow-page .md-chip.is-auto { color: var(--ink-purple); background: rgba(139,124,246, 0.14); border-color: rgba(139,124,246, 0.28); }
+.magicflow-page .md-chip.is-danger { color: var(--ink-alert); background: rgba(255,107,122, 0.12); border-color: rgba(255,107,122, 0.28); }
+.magicflow-page .md-chip.is-plain { color: rgba(var(--v-theme-on-surface), var(--mf-fg-soft)); background: rgba(var(--v-theme-on-surface), 0.06); border-color: rgba(var(--v-theme-on-surface), 0.14); }
 </style>

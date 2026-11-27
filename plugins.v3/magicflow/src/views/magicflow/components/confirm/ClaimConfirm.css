@@ -21,7 +21,7 @@
   padding: 10px 12px;
   border: 1px solid var(--magicflow-panel-brd);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--v-theme-on-surface), 0.03);
 }
 
 .claim-confirm-penalty__head[data-v-31c56e5d] {
@@ -85,7 +85,7 @@
   padding: 10px 12px;
   border: 1px solid var(--magicflow-panel-brd);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--v-theme-on-surface), 0.03);
 }
 
 .claim-confirm-abandon__head[data-v-31c56e5d] {

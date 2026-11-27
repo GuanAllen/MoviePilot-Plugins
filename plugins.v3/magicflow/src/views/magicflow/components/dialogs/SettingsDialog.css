@@ -1009,6 +1009,21 @@
       "nv bd"
       "ft ft";
   }
+  /* ★ 19.16.35：MoviePilot 宿主 CSS 用 .v-dialog>.v-overlay__content>.v-card（0,3,0）
+     强制 display:flex;flex-direction:column，特异性高于本组件（0,2,0），会把上面的 grid 打回
+     竖向 flex —— 目录被拉满整宽、正文被挤成 0 高（用户报「右侧空白」）。这里按真实 DOM 结构
+     提特异性并锁死 display/overflow/圆角，手机端（<960px）不受影响。 */
+  .v-dialog > .v-overlay__content > .v-card.magicflow-dialog.magicflow-settings-dialog[data-v-e2f63a1f] {
+    display: grid !important;
+    grid-template-columns: 13.25rem minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "hd hd"
+      "nv bd"
+      "ft ft";
+    overflow: hidden !important;
+    border-radius: 18px !important;
+  }
   .magicflow-settings-dialog__head[data-v-e2f63a1f] { grid-area: hd; }
   .magicflow-settings-dialog__footer[data-v-e2f63a1f] { grid-area: ft; }
   .magicflow-settings-dialog__tabs[data-v-e2f63a1f] { display: none; }

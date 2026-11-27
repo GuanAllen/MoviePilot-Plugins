@@ -18,6 +18,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -36,26 +37,38 @@ def _ok(cond: bool, msg: str) -> None:
         print(f"  ❌ {msg}")
 
 
-_PKG = "mf_adopt_unprotect_pkg"
-if _PKG not in sys.modules:
-    _pkg = type(sys)(_PKG)
-    _pkg.__path__ = [str(ROOT)]
-    sys.modules[_PKG] = _pkg
+def _pkg(name: str, path: Path) -> types.ModuleType:
+    m = sys.modules.get(name)
+    if m is None:
+        m = types.ModuleType(name)
+        m.__path__ = [str(path)]      # 让子模块能按包内相对导入找同目录
+        sys.modules[name] = m
+    return m
 
 
-def _load(name: str, rel: str):
-    """按「包内模块」加载：模块里的 ``from . import shared`` 才能解析（19.10.x 起共享层为包）。"""
-    full = _PKG + "." + name
+def _load_in(pkg: str, name: str, rel: str):
+    """按**包内模块**加载：``persistence._shared()`` 会 ``from . import shared``，
+    顶层单文件加载（``__package__`` 为空）必崩 → 必须给它包上下文。"""
+    full = f"{pkg}.{name}"
     spec = importlib.util.spec_from_file_location(full, ROOT / rel)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[full] = mod
     spec.loader.exec_module(mod)
+    setattr(sys.modules[pkg], name, mod)   # ``from . import X`` 走 hasattr 分支
     return mod
+
+
+def _load_store(pkg: str):
+    """按包加载 ``shared`` + ``storekit`` + ``persistence``（顺序不能反）。"""
+    _pkg(pkg, ROOT)
+    _load_in(pkg, "shared", "shared.py")
+    _load_in(pkg, "storekit", "storekit.py")
+    return _load_in(pkg, "persistence", "persistence.py")
 
 
 def main() -> int:
     print("== 15.8.12 纳管 ≠ 手动保留 ==")
-    p = _load("mf_adopt_unprotect_test_persistence", "persistence.py")
+    p = _load_store("mf_adopt_unprotect_test")
     tmp = Path(tempfile.mkdtemp(prefix="mf_adopt_"))
     store = p.MagicFlowStore(tmp, kv=None)
 
@@ -101,7 +114,7 @@ def main() -> int:
 
     # --- 6) 热重载换代：旧类实例（注册表里跨重载留着）自动升到新类 ---
     store.marker_v2 = "kept"                       # 假装是换代前写进去的内存状态
-    p2 = _load("mf_adopt_unprotect_test_persistence_v2", "persistence.py")
+    p2 = _load_store("mf_adopt_unprotect_test_v2")
     store2 = p2.MagicFlowStore(tmp, kv=None)
     _ok(store2 is store, "热重载后仍是同一实例（单例按 data_dir，避免快照互覆）")
     _ok(type(store2) is p2.MagicFlowStore, "旧类实例已换代到新类（新方法可调用）")

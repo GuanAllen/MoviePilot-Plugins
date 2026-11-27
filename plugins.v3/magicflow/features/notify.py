@@ -32,7 +32,6 @@ from app.sdk.logging import logger
 from ..kvstore import cache_get, cache_set
 from ..models import MagicFlowNotifyActPayload
 from .trend import daily_load
-from .hrnotify_gate import _float_or_none, deadline_candidates, rank_candidates
 
 #: 事件类型 → 中文名
 NOTIFY_KIND_TEXT: Dict[str, str] = {
@@ -41,7 +40,6 @@ NOTIFY_KIND_TEXT: Dict[str, str] = {
     "trend_drop": "产出骤降",
     "site_deleted": "站点已删除",
     "task_fail": "任务失败",
-    "missing_shell": "空壳告警",
     "daily": "每日日报",
     "test": "测试通知",
 }
@@ -214,26 +212,31 @@ class NotifyMixin:
         return out
 
     def notify_check_hr(self, cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """H&R 临期（仅考核中且未达标的账单；``at_risk`` 或 ``hours_left`` ≤ 阈值）。
-
-        ★ 任务 105 / HR-04：筛选规则抽到 ``features/hrnotify_gate.py``（纯函数）——
-        只有 active/pending、且未达到 ``seeded_h >= need_h + margin`` 的账单才进通知；
-        settled/void/breached 一律不进「临期」（前两者的负 hours_left 是幽灵，
-        breached 的语义是已违约、走账单面板补种/申诉）。阈值判断保持原样。
-        """
+        """H&R 临期（``at_risk`` 或 ``hours_left`` ≤ 阈值）。"""
         out: List[Dict[str, Any]] = []
         try:
             resp = self.get_hr_bills(site="", live=0)
             data = getattr(resp, "data", None) or {}
             lim = float(cfg.get("hr_hours") or 24)
-            margin = _float_or_none(getattr(self, "_hr_seed_margin_hours", 2.0)) or 0.0
             for s in (data.get("sites") or []):
                 site_name = str(s.get("name") or s.get("domain") or "")
-                out.extend(deadline_candidates(s.get("items") or [], site_name,
-                                               limit_hours=lim, margin_hours=margin))
+                for it in (s.get("items") or []):
+                    hl = it.get("hours_left")
+                    risk = bool(it.get("at_risk"))
+                    if not risk and hl is None:
+                        continue
+                    if not risk and float(hl) > lim:
+                        continue
+                    out.append({
+                        "site": site_name, "title": str(it.get("title") or "")[:80],
+                        "hours_left": (round(float(hl), 1) if hl is not None else None),
+                        "need_h": it.get("need_h"), "seeded_h": it.get("seeded_h"),
+                        "state": str(it.get("state") or ""),
+                    })
         except Exception as err:  # noqa: BLE001
             logger.warning(f"魔流 H&R 通知检查失败（忽略）：{err}")
-        return rank_candidates(out)
+        out.sort(key=lambda x: (x.get("hours_left") if x.get("hours_left") is not None else -1e9))
+        return out[:20]
 
     def notify_check_drop(self, cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
         """产出骤降：最近一日站点时魔 vs 前 3 日均值（日报口径）。"""

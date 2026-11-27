@@ -91,6 +91,9 @@ def script_declared(scr: str) -> set:
                     if part:
                         names.add(part)
             elif body.startswith("{"):
+                # ★ 19.12.92：props 之间夹行间注释时，注释前的换行会挡住 [,\{] 的匹配，
+                #   导致注释后面那个 prop 名被判成「模板用了但没声明」（narrow 就是这样漏的）。
+                body = re.sub(r"//[^\n]*", "", body)
                 for part in re.finditer(r"(?:^|[,{])\s*([A-Za-z_$][\w$]*)\s*:", body):
                     names.add(part.group(1))
     return names
@@ -109,7 +112,7 @@ def template_local_bindings(tpl: str) -> set:
             part = part.strip()
             if part:
                 local.add(part)
-    for m in re.finditer(r"(?:v-slot(?::[A-Za-z0-9_-]+)?|#[A-Za-z0-9_-]*)\s*=\s*\"([^\"]*)\"", tpl):
+    for m in re.finditer(r"(?:v-slot(?::[A-Za-z0-9_.-]+)?|#[A-Za-z0-9_.-]*)\s*=\s*\"([^\"]*)\"", tpl):
         body = m.group(1).strip()
         if body.startswith("{"):
             for part in body.strip("{}").split(","):

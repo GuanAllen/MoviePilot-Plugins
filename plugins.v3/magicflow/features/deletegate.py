@@ -227,26 +227,12 @@ class DeleteGateMixin:
                 _ridx = self._resource_source_index()
             except Exception:  # noqa: BLE001
                 _ridx = {}
-            # ★ 性能（任务 111）：账单**一次读全量**再逐条内存查 —— 原来每个种各开一次
-            #   DB 会话（实测 1741 个种 = 14.0s，占 /agent/assets 全部耗时）。
-            #   all_result() 读不到（UNKNOWN/异常）→ None → 退回逐条路径，fail-safe 语义不变。
-            _bills_batch = None
-            try:
-                _bs = self._hrbills_store()
-                _br = _bs.all_result() if hasattr(_bs, "all_result") else None
-                if isinstance(_br, dict) and str(_br.get("status") or "") in ("found", "absent"):
-                    # key 归一化：DB 主键存小写，历史数据可能混大小写 → 统一 lower 再查。
-                    _bills_batch = {str(_k).strip().lower(): _v
-                                    for _k, _v in (_br.get("value") or {}).items()}
-            except Exception:  # noqa: BLE001
-                _bills_batch = None
             for h in _rest:
                 t = snap.get(h)
                 if t is None:
                     continue
                 try:
-                    owed, _need, _seeded, _src = self._hr_obligation(
-                        "", t, snap=snap, bills=_bills_batch)
+                    owed, _need, _seeded, _src = self._hr_obligation("", t, snap=snap)
                 except Exception:  # noqa: BLE001
                     owed, _need, _seeded, _src = False, 0.0, 0.0, ""
                 if owed:
@@ -368,33 +354,12 @@ class DeleteGateMixin:
         except Exception:  # noqa: BLE001
             store = None
         if store is None:
-            # ★ 任务 111（HR-03 / F10）：取不到账单存储（异常/未初始化）同样属于 UNKNOWN，
-            #   不得等价于「没有账单」放行删除 —— fail-closed 整批拦。
-            for h in hs:
-                why.setdefault(h, "账单存储不可用（保守拦截 H&R）")
             return why
         for h in hs:
-            # ★ 任务 111（HR-03 / F10）：账单存储必须读三态。UNKNOWN（DB 抖动/超时/
-            #   读取异常）**不能**当成「没有账单」放行删除 —— 这里 fail-closed 硬拦。
-            if hasattr(store, "get_result"):
-                try:
-                    res = store.get_result(h)
-                    from .hrbills import _hr_read_ok  # noqa: WPS433
-                except Exception:  # noqa: BLE001
-                    res = None
-                    _hr_read_ok = None
-                if _hr_read_ok is None or str((res or {}).get("status") or "") not in ("found", "absent"):
-                    why.setdefault(h, "账单存储不可用（保守拦截 H&R）")
-                    continue
-                b = res.get("value")
-            else:
-                # 兼容无三态 API 的旧存储（测试桩/第三方）：异常仍按 UNKNOWN 保守拦；
-                # 读成功但无行 = 旧口径的「无账单」，与三态 ABSENT 等价。
-                try:
-                    b = store.get(h)
-                except Exception:  # noqa: BLE001
-                    why.setdefault(h, "账单存储不可用（保守拦截 H&R）")
-                    continue
+            try:
+                b = store.get(h)
+            except Exception:  # noqa: BLE001
+                b = None
             if not (isinstance(b, dict) and str(b.get("state") or "") in ("active", "breached")):
                 continue
             # ★ 2026-10-10：对齐 ``_hr_obligation`` —— **只有明确 H&R 规则才算欠**；

@@ -93,7 +93,16 @@ const emit = defineEmits(['run', 'edit', 'delete'])
    设计稿口径：2 列 × 3 行参数格（9.5/12.5px 两级），站点事实表，三按钮同行等权。
    ══════════════════════════════════════════════════════════════════════════════ */
 .mob-cfg {
-  --line: rgba(255, 255, 255, 0.07);
+  /* 19.16.41 浅色主题：深色原值抽成语义变量，浅色整体覆盖 */
+  --ink-strong: #e8e9f0;
+  --ink-body: #b9bdcf;
+  --ink-sub: #7d8296;
+  --ink-purple: #cfc6ff;
+  --ink-red: #ff9aa5;
+  --ink-amber: #f5cd84;
+  --ink-green: #7ce7b6;
+  --ink-info: #8dd9f5;
+  --line: rgba(var(--v-theme-on-surface), 0.07);
   --dim: #6f7488;
   --sub: #8b90a3;
   --purple: #8b7cf6;
@@ -102,6 +111,19 @@ const emit = defineEmits(['run', 'edit', 'delete'])
   display: flex;
   flex-direction: column;
 }
+html[data-glass-color-scheme="light"] .mob-cfg {
+  --dim: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+  --sub: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+  --ink-strong: rgb(var(--v-theme-on-surface));
+  --ink-body: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
+  --ink-sub: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+  --ink-purple: #5c46c9;
+  --ink-red: #b3263b;
+  --ink-amber: #8a5a00;
+  --ink-green: #137a52;
+  --ink-info: #116a8a;
+}
+
 
 .mob-cfg__ttl { display: flex; align-items: baseline; justify-content: space-between; margin: 2px 0 10px; }
 .mob-cfg__ttl h3 { font-size: 13px; font-weight: 700; }
@@ -114,18 +136,18 @@ const emit = defineEmits(['run', 'edit', 'delete'])
   padding: 10px 11px;
   border-radius: 11px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--v-theme-on-surface), 0.03);
 }
 .cfg__k { display: block; font-size: 9.5px; color: var(--dim); }
-.cfg__v { display: block; margin-top: 4px; font-size: 12.5px; font-weight: 700; color: #e8e9f0; line-height: 1.35; word-break: break-word; }
-.cfg__v--ac { color: #cfc6ff; }
+.cfg__v { display: block; margin-top: 4px; font-size: 12.5px; font-weight: 700; color: var(--ink-strong); line-height: 1.35; word-break: break-word; }
+.cfg__v--ac { color: var(--ink-purple); }
 
 /* ── 事实表（设计稿 panelbox + row）── */
 .panelbox {
   padding: 13px;
   border-radius: 14px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--v-theme-on-surface), 0.03);
   margin-bottom: 12px;
 }
 .ph { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
@@ -133,15 +155,15 @@ const emit = defineEmits(['run', 'edit', 'delete'])
 .ph span { font-size: 9.5px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row {
   display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
-  font-size: 11px; padding: 7px 0; color: #b9bdcf;
+  font-size: 11px; padding: 7px 0; color: var(--ink-body);
   border-top: 1px solid var(--line);
 }
 .row:first-of-type { border-top: 0; }
-.row b { color: #e8e9f0; font-weight: 650; text-align: right; word-break: break-word; }
+.row b { color: var(--ink-strong); font-weight: 650; text-align: right; word-break: break-word; }
 .ok { color: var(--green); }
 .pill {
   display: inline-block; font-size: 9.5px; padding: 3px 8px; border-radius: 20px;
-  background: rgba(255, 107, 122, 0.14); color: #ff9aa5;
+  background: rgba(255, 107, 122, 0.14); color: var(--ink-red);
   border: 1px solid rgba(255, 107, 122, 0.28);
 }
 
@@ -155,12 +177,12 @@ const emit = defineEmits(['run', 'edit', 'delete'])
   font-size: 11px; font-weight: 600;
   border-radius: 10px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.05);
-  color: #c3c7d8;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: var(--ink-body);
   white-space: nowrap;
 }
 .cfg-act button:disabled { opacity: 0.55; }
-.cfg-act button.del { color: #ff9aa5; border-color: rgba(255, 107, 122, 0.3); }
+.cfg-act button.del { color: var(--ink-red); border-color: rgba(255, 107, 122, 0.3); }
 
 .cfg-note { margin-top: 10px; font-size: 9.5px; line-height: 1.6; color: var(--dim); }
 </style>

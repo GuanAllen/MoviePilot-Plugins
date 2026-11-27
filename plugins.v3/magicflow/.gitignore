@@ -20,13 +20,3 @@ vite.dev.config.js
 data/
 pyc/
 tmp/
-
-# 同步对齐临时存出来的旧文件快照（preflight 排除 _backup/*，勿提交）
-_backup/
-# 仓内历史垃圾：开发期误提交（_dev_live 来自 19.12.44 d9445f7，dist_old_1031* 来自 58cefcf），
-# 容器权威副本无此目录；物理文件保留于 _backup/ 或原地，仅移出跟踪。
-_dev_live/
-dist_old_1031/
-dist_old_1031b/
-dist_old_1031c/
-dist_old_1031d/

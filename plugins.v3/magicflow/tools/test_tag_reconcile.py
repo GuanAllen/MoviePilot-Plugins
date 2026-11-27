@@ -275,7 +275,7 @@ def t2_apply():
 
 
 def t3_identity_drift():
-    print("③ 身份与账本打架：账本=保种、标签=静默身份（缺职务）→ 补职务")
+    print("③ 身份与账本打架：账本=H&R、标签=静默身份（缺职务）→ 补职务")
     seed = {"h2": {"state": STATE_HR, "site": "学校", "sub": "资源"}}
     snap = {"h2": _torrent("h2", ["魔流-学校-静默-资源"])}
     h = Harness(seed=seed, snap=snap)
@@ -285,7 +285,7 @@ def t3_identity_drift():
     _ok(it["missing_duty"] is True and it["missing_identity"] is False,
         "判据：缺职务、不缺身份")
     _h, new = h.dl.calls[0]
-    _ok("魔流-学校-H&R" in new, f"补回 H&R 职务（19.12.38 起 STATE_HR=「H&R」，{new}）")
+    _ok("魔流-学校-H&R" in new, f"补回 H&R 职务（{new}）")
 
 
 def t4_skips():
@@ -346,14 +346,14 @@ def t7_sub_drift_only_reported():
 def t8_music_exempt():
     print("⑧ ★15.8.11 音乐线豁免：账本说「魔力」+ qB 分类=音乐 → 不把职务标签补回去")
     seed = {"m1": {"state": STATE_BONUS, "site": "CARPT", "sub": "新"},
-            "m2": {"state": STATE_HR, "site": "CARPT", "sub": "资源"}}   # 保种照旧补
+            "m2": {"state": STATE_HR, "site": "CARPT", "sub": "资源"}}   # H&R 照旧补
     snap = {"m1": _torrent("m1", ["魔流-CARPT-静默-新"], category="音乐"),
             "m2": _torrent("m2", ["魔流-CARPT-静默-资源"], category="音乐")}
     h = Harness(seed=seed, snap=snap)
     rep = h._tag_ledger_reconcile(apply=True)
     _ok(rep["skipped_music"] == 1, f"跳过 1 个音乐魔力/刷流种（实际 {rep['skipped_music']}）")
-    _ok([c[0] for c in h.dl.calls] == ["m2"], "只写音乐「保种」种，不写音乐「魔力」种")
-    _ok("魔流-CARPT-H&R" in h.dl.calls[0][1], "音乐也要走 H&R → H&R 职务照补（19.12.38 改名）")
+    _ok([c[0] for c in h.dl.calls] == ["m2"], "只写音乐「H&R」种，不写音乐「魔力」种")
+    _ok("魔流-CARPT-H&R" in h.dl.calls[0][1], "音乐也要走 H&R → H&R 职务照补")
 
 
 def t9_music_ledger_release():
@@ -363,13 +363,13 @@ def t9_music_ledger_release():
         "m1": {"state": STATE_BONUS, "site": "CARPT", "sub": "新",
                "task": "CARPT·自定义", "taken_by": "af8177e6dfa2"},
         "m2": {"state": STATE_HR, "site": "CARPT", "sub": "资源",
-               "taken_by": "__hr_host__"},                      # 保种：音乐也要走 H&R → 不动
+               "taken_by": "__hr_host__"},                      # H&R：音乐也要走 H&R → 不动
         "m3": {"state": STATE_BONUS, "site": "馒头", "sub": "资源",
                "taken_by": "6cb4fe6f3f13"},                      # 非音乐：不是音乐线的事
         "m4": {"state": STATE_SILENT, "site": "CARPT", "sub": "资源"},  # 已静默：真干净
     }
     snap = {"m1": _torrent("m1", ["魔流-CARPT-静默-新"], category="音乐"),
-            "m2": _torrent("m2", ["魔流-CARPT-保种"], category="音乐"),
+            "m2": _torrent("m2", ["魔流-CARPT-H&R"], category="音乐"),
             "m3": _torrent("m3", ["魔流-馒头-魔力"]),
             "m4": _torrent("m4", ["魔流-CARPT-静默-资源"], category="音乐")}
     h = Harness(seed=seed, snap=snap)
@@ -383,7 +383,7 @@ def t9_music_ledger_release():
     _ok(st.get("m1").get("state") == STATE_SILENT, "m1 账本回静默")
     _ok(not st.get("m1").get("task") and not st.get("m1").get("taken_by"),
         "m1 归属清空（★ task 名也要清，否则 task_id 会被写回）")
-    _ok(st.get("m2").get("state") == STATE_HR, "m2 保种：一分不动（音乐也走 H&R）")
+    _ok(st.get("m2").get("state") == STATE_HR, "m2 H&R：一分不动（音乐也走 H&R）")
     _ok(st.get("m3").get("state") == STATE_BONUS, "m3 非音乐：不动")
     _ok(h.forgotten == [("af8177e6dfa2", ["m1"])], "任务侧忘种 protected/adopted")
     again = h._music_ledger_release(apply=True)
@@ -460,7 +460,7 @@ def t11_music_assign():
                     "taken_by": "__hr_host__"}}
     snap2 = {"b1": _mt("b1", ["魔流-CARPT-静默-新"], 0.5),
              "b2": _mt("b2", ["魔流-CARPT-静默-资源"], 1.0),
-             "b3": _mt("b3", ["魔流-CARPT-保种"], 0.5)}
+             "b3": _mt("b3", ["魔流-CARPT-H&R"], 0.5)}
     h2 = Harness(seed=seed2, snap=snap2)
     dry = h2._music_assign_pending(apply=False)
     _ok(dry["candidates"] == 1, f"干跑：只认 1 个在途待挂（{dry['candidates']}）")
@@ -505,7 +505,7 @@ def t12_manual_hold():
     _ok(app["held"] == 1, f"执行：挂 1 个（{app['held']}）")
     _ok("魔流-聆音-保种" in snap["d1"].tags and "魔流-聆音-静默-资源" in snap["d1"].tags,
         f"qB = 身份轴保留 + 职务轴换保种（{snap['d1'].tags}）")
-    _ok(rec.get("state") == tags_root.STATE_KEEP, f"账本 state=保种（19.12.38 起 STATE_KEEP，实际 {rec.get('state')}）")
+    _ok(rec.get("state") == tags_root.STATE_KEEP, f"账本 state=保种（{rec.get('state')}）")
     _ok(rec.get("taken_by") == common.KEEP_TASK_ID and rec.get("task") == common.KEEP_TASK_NAME,
         f"归属 __keep__（{rec.get('taken_by')} / {rec.get('task')}）")
     _ok(rec.get("sub") == "资源", "身份轴没被改")

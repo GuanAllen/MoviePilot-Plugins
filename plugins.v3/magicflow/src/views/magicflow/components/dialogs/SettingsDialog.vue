@@ -2630,6 +2630,19 @@ defineProps({
       "nv bd"
       "ft ft";
   }
+  /* ★ 19.16.35：宿主 .v-dialog>.v-overlay__content>.v-card 会强制 flex（0,3,0），
+     按真实 DOM 提特异性锁住桌面主从布局；手机端不受影响。 */
+  .v-dialog > .v-overlay__content > .v-card.magicflow-dialog.magicflow-settings-dialog {
+    display: grid !important;
+    grid-template-columns: 13.25rem minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "hd hd"
+      "nv bd"
+      "ft ft";
+    overflow: hidden !important;
+    border-radius: 18px !important;
+  }
   .magicflow-settings-dialog__head { grid-area: hd; }
   .magicflow-settings-dialog__footer { grid-area: ft; }
   .magicflow-settings-dialog__tabs { display: none; }

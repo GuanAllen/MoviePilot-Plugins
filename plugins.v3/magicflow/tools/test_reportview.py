@@ -22,9 +22,6 @@ import importlib.util
 import sys
 import time
 import types
-
-import _app_stub  # noqa: E402
-_app_stub.install()
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -88,9 +85,10 @@ _tags = types.ModuleType(PKG + ".tags")
 _tags.EXTERNAL_TAG = "魔流-外部"
 _tags.RESCUE_TAG = "魔流-补源"
 _tags.STATE_BRUSH, _tags.STATE_BONUS = "刷流", "魔力"
-_tags.STATE_HR, _tags.STATE_KEEP = "H&R", "保种"
-_tags.STATE_SILENT = "静默"
-_tags.STATE_CLAIM = "认领"
+_tags.STATE_HR, _tags.STATE_KEEP, _tags.STATE_SILENT = "H&R", "保种", "静默"
+_tags.STATE_CLAIM = "认领"   # ★ 19.12.38：stub 补齐（reportview 顶部 import 已用到）
+_tags.STATES = (_tags.STATE_BRUSH, _tags.STATE_BONUS, _tags.STATE_SILENT,
+                 _tags.STATE_HR, _tags.STATE_KEEP, _tags.STATE_CLAIM)
 _tags.SUB_NEW, _tags.SUB_RESOURCE, _tags.SUB_PLAIN = "新", "资源", "普通"
 _tags.identity_of = lambda tags: ("资源" if "资源" in [str(t) for t in (tags or [])] else "")
 _tags.is_reuse_copy = lambda tags: "魔流-辅种" in [str(t) for t in (tags or [])]
@@ -99,22 +97,17 @@ _tags.duty_of = lambda tags: next((s for s in (_tags.STATE_BRUSH, _tags.STATE_BO
                                    if s in [str(t) for t in (tags or [])]), "")
 _tags.parse_tag = lambda tag: tuple(str(tag).split("-", 1))
 sys.modules[PKG + ".tags"] = _tags
-_app_stub.fill_tags(_tags, ROOT)
 
 _hrbills = types.ModuleType(PKG + ".features.hrbills")
-_hrbills.BILL_STATE_PENDING, _hrbills.BILL_STATE_ACTIVE = "pending", "active"
-_hrbills.BILL_STATE_SETTLED, _hrbills.BILL_STATE_VOID = "settled", "void"
-_hrbills.BILL_STATE_BREACHED = "breached"
-_hrbills.PURGE_STATES = ("settled", "void")
+_hrbills.BILL_STATE_ACTIVE, _hrbills.BILL_STATE_BREACHED, _hrbills.BILL_STATE_PENDING = "active", "breached", "pending"
 _hrbills.RULE_SITE_HR, _hrbills.RULE_HIT_AND_RUN = "site_hr", "hit_and_run"
-_hrbills.RULE_UNKNOWN = "unknown"
-_hrbills.HR_MANUAL_SETTLE, _hrbills.HR_REOPEN_SETTLE = "manual", "reopened"
-_hrbills.HR_NEED_HOURS_DEFAULT = 24.0
-_hrbills.HR_BILLS_SETTLED_TTL_DAYS = 30.0
-_hrbills.EVT_MANUAL_SETTLED, _hrbills.EVT_AUTO_SETTLED = "manual_settled", "auto_settled"
-_hrbills.EVT_REOPENED, _hrbills.EVT_MANUAL_VOID = "reopened", "manual_void"
-_hrbills.EVT_AUTO_VOID, _hrbills.EVT_LEGACY_MANUAL = "auto_void", "legacy_manual_settled"
-_hrbills.HR_SITE_EVIDENCE_MAX_HOURS = 48.0
+# ★ 19.12.46（任务 89）：reportview 顶部 import 新增该常量（人工结清判据），stub 补齐。
+#   与 19.12.38 补 STATE_KEEP/STATE_CLAIM 同一类修复：桩要跟真值源对齐，不是放宽断言。
+_hrbills.HR_MANUAL_SETTLE = "manual"
+# ★ 任务 102：reportview 顶部 import 新增这两个状态常量（已结清/已作废行的结清轨迹
+#   注入），桩补齐 —— 只补常量，不放宽任何断言。
+_hrbills.BILL_STATE_SETTLED = "settled"
+_hrbills.BILL_STATE_VOID = "void"
 sys.modules[PKG + ".features.hrbills"] = _hrbills
 
 # 真跑 sitereport（常量真值源）与 reportview

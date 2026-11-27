@@ -33,10 +33,6 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-
-sys.path.insert(0, str(__import__('pathlib').Path(__file__).resolve().parent.parent / 'tools'))
-import _app_stub  # noqa: E402
-_app_stub.install()
 import time
 import types
 from pathlib import Path
@@ -114,6 +110,9 @@ _rules.SiteRules = _Stub("SiteRules")
 _rules.framework_note = lambda *a, **k: ""
 _rules.parse_hr_from_mail = lambda *a, **k: None
 _rules.parser_for_framework = lambda *a, **k: None
+# ★ 19.12.49：``seed_hours`` 退役，唯一读点下沉 ``sites.rules.span_hours()``。
+#   桩没跟上 → siteops 加载即 ImportError（既有失败，非本轮回退）。
+_rules.span_hours = lambda rec=None: 0
 sys.modules[PKG + ".sites.rules"] = _rules
 
 _ff = _Stub(PKG + ".sites.formula_fetch")
@@ -131,8 +130,13 @@ _tags.MARK_REUSE = "魔流-辅种"
 _tags.SUB_RESOURCE = "资源"
 _tags.is_asset_tags = lambda *a, **k: False
 _tags.is_library_asset = lambda *a, **k: False
+# ★ 19.12.43：``dutyreg`` 从 ``.tags`` 导入 9 个职务常量（真值源已下沉 ``tagspec``）；
+#   桩没跟上 → 加载即 ImportError。直接取真值源，不另抄字面量（防再次漂移）。
+_tagspec = _load(PKG + ".tagspec", "tagspec.py")
+for _st in ("STATE_BRUSH", "STATE_BONUS", "STATE_SILENT", "STATE_RECOMMEND", "STATE_HR",
+            "STATE_KEEP", "STATE_ONDEMAND", "STATE_CLAIM", "STATE_MUSIC"):
+    setattr(_tags, _st, getattr(_tagspec, _st))
 sys.modules[PKG + ".tags"] = _tags
-_app_stub.fill_tags(_tags, ROOT)
 
 sys.modules[PKG + ".fingerprint"] = _Stub(PKG + ".fingerprint")
 

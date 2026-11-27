@@ -339,6 +339,18 @@ def test_store_roundtrip(sitestore) -> None:
     sitestore.mfdb = fake_db
     try:
         store = sitestore.SiteStore(_FakeBackend(db))
+        # ★ 19.12.53：本用例测的是「槽往返」，不是身份闸门 —— 给个恒能发号的桩；
+        #   「MP 里没有就不建行」由 tools/test_site_identity_133.py 单独覆盖。
+        _ids: dict = {}
+
+        def _fake_mp_id(*, domain: str = "", name: str = ""):
+            k = (domain or name or "").strip().lower()
+            if not k:
+                return None
+            _ids.setdefault(k, 100 + len(_ids))
+            return _ids[k]
+
+        store._mp_id_for = _fake_mp_id
 
         # ---- site_rules 槽 ----
         store.save("site_rules", {
@@ -446,6 +458,8 @@ def test_www_domain_merge(sitestore) -> None:
                          mp_site_id=1, caps=None, created=0.0)
         )
         store2 = sitestore.SiteStore(_FakeBackend(db2))
+        store2._mp_id_for = lambda *, domain="", name="": (
+            12 if "novahd" in (domain or "") or "novahd" in (name or "") else 4)
         store2.save("site_caps", {"btschool.club": {"framework": "nexusphp"}})
         rows = db2.get("mf_site", [])
         _ok(len(rows) == 1, f"注册域写 caps 不新建空壳行（实际 {len(rows)} 行）")
@@ -461,6 +475,50 @@ def test_www_domain_merge(sitestore) -> None:
         sitestore.mfdb = sys.modules[PKG + ".db"]
 
 
+def test_site_identity_133(sitestore) -> None:
+    """★ 19.12.53：mf_site 只以 MP 站点 id 为身份，没有 MP id 一字不写。"""
+    print("\n[5] 站点身份收敛（19.12.53）")
+    db, FakeSiteRow, FakeCrossRow, fake_db = _build_fake_db(sitestore)
+    sitestore.mfdb = fake_db
+    try:
+        backend = _FakeBackend(db)
+        store = sitestore.SiteStore(backend)
+        store._mp_sites_index = lambda: {
+            1: {"name": "学校", "domain": "btschool.club"},
+            3: {"name": "咖啡", "domain": "ptcafe.club"},
+        }
+
+        _ok(store._mp_id_for(domain="pt.btschool.club") == 1,
+            "URL 主机名按后缀命中 MP 注册域 → MP id 1")
+        _ok(store._mp_id_for(name="咖啡") == 3, "按中文站名命中 → MP id 3")
+        _ok(store._mp_id_for(domain="cspt.cc") is None, "MP 无此站 → None（不得建行）")
+        _ok(store._mp_id_for() is None, "空输入 → None")
+
+        sess = backend._session()
+        row = store._new_site_row(sess, 3, domain="ptcafe.club", name="咖啡", now=1.0)
+        _ok(row is not None and row.site_id == 3 and row.mp_site_id == 3,
+            "唯一建行入口：site_id == mp_site_id == MP id")
+        _ok(store._new_site_row(sess, None, domain="x.cc", now=1.0) is None,
+            "无 MP id → 不建行")
+        _ok(store._new_site_row(sess, 0, domain="x.cc", now=1.0) is None,
+            "MP id=0 → 不建行")
+
+        # 未知域名写规则：绝不建幽灵行（20/21 号就是这么来的）
+        before = len(db["mf_site"])
+        store.save("site_rules", {"ghost.example": {"hr": True}})
+        _ok(len(db["mf_site"]) == before, "未知域名写 site_rules → 行数不变（无幽灵行）")
+
+        # 已知域名：正常建行，且主键就是 MP id
+        store.save("site_rules", {"ptcafe.club": {"hr": False}})
+        made = [r for r in db["mf_site"] if getattr(r, "domain", None) == "ptcafe.club"]
+        _ok(len(made) == 1, "已知域名 → 正常建行")
+        _ok(made and getattr(made[0], "site_id", None) == 3
+            and getattr(made[0], "mp_site_id", None) == 3,
+            "新行主键 = MP 站点 id（不再有内部编号）")
+    finally:
+        sitestore.mfdb = sys.modules[PKG + ".db"]
+
+
 def main() -> int:
     print("=" * 64)
     print("魔流 · SiteStore（三套站点 kv 账本 → 表）离线单测")
@@ -469,6 +527,7 @@ def main() -> int:
     test_pure_mapping(sitestore)
     test_store_roundtrip(sitestore)
     test_www_domain_merge(sitestore)
+    test_site_identity_133(sitestore)
     print("\n" + "=" * 64)
     if _FAIL == 0:
         print(f"✅ PASS —— 共 {_OK} 项全过")

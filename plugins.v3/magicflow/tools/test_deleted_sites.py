@@ -51,9 +51,6 @@ from __future__ import annotations
 import importlib.util
 import sys
 import types
-
-import _app_stub  # noqa: E402
-_app_stub.install()
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -147,6 +144,9 @@ _rules.SiteRules = _Stub("SiteRules")
 _rules.framework_note = lambda *a, **k: ""
 _rules.parse_hr_from_mail = lambda *a, **k: None
 _rules.parser_for_framework = lambda *a, **k: None
+# ★ 19.12.49：``seed_hours`` 退役，唯一读点下沉 ``sites.rules.span_hours()``。
+#   桩没跟上 → siteops 加载即 ImportError（既有失败，非本轮回退）。
+_rules.span_hours = lambda rec=None: 0
 sys.modules[PKG + ".sites.rules"] = _rules
 _ff = _Stub(PKG + ".sites.formula_fetch")
 _ff.fetch_site_formula = lambda *a, **k: _Stub("cap")
@@ -160,23 +160,40 @@ sys.modules[PKG + ".sitestore"] = _ss
 _tags = types.ModuleType(PKG + ".tags")
 _tags.MARK_REUSE = "魔流-辅种"
 _tags.SUB_RESOURCE = "资源"
-_tags.STATE_BONUS = "魔力"
-_tags.STATE_CLAIM = "认领"
-_tags.STATE_HR = "H&R"
-_tags.STATE_KEEP = "保种"
-_tags.STATE_BRUSH = "刷流"
-_tags.STATE_SILENT = "静默"
 # ★ 17.4.0：本体（库内资产）判据三腿必须与 tags.py 一致（真值源 tags.py:80/92/97）
 _tags.ASSET_TAGS = ("已整理", "辅种")
 _tags.is_asset_tags = lambda t: any(str(x) in _tags.ASSET_TAGS for x in (t or []))
 _tags.is_library_asset = lambda rec: (bool((rec or {}).get("in_library"))
                                       or str((rec or {}).get("sub") or "") == _tags.SUB_RESOURCE)
+# ★ 19.12.43：``dutyreg`` 从 ``.tags`` 导入 9 个职务常量（真值源已下沉 ``tagspec``）。
+#   桩没跟上 → 加载即 ImportError。这里**直接取真值源**，不另抄一份字面量（防再漂）。
+_tagspec = _load(PKG + ".tagspec", "tagspec.py")
+for _st in ("STATE_BRUSH", "STATE_BONUS", "STATE_SILENT", "STATE_RECOMMEND", "STATE_HR",
+            "STATE_KEEP", "STATE_ONDEMAND", "STATE_CLAIM", "STATE_MUSIC"):
+    setattr(_tags, _st, getattr(_tagspec, _st))
 sys.modules[PKG + ".tags"] = _tags
-_app_stub.fill_tags(_tags, ROOT)
 sys.modules[PKG + ".fingerprint"] = _Stub(PKG + ".fingerprint")
 
 common = _load(PKG + ".common", "common.py")
 siteops = _load(PKG + ".features.siteops", "features/siteops.py")
+
+# ★ 19.12.43：19.10.13 起「暂停」不再直调 ``dl.pause_torrents``，统一走
+#   ``dlops.pause``（归因 ``by`` + ``force`` + 防抖）。测试桩替身把它接到假下载器上，
+#   并把调用参数记下来 —— 断言因此**更严**（多了 by/force 两条），不是放宽。
+PAUSE_CALLS: list = []
+
+
+def _fake_dl_pause(host, hashes, *, by, reason="", force=False, dry=False, downloader="qbittorrent"):
+    hs = list(hashes or [])
+    PAUSE_CALLS.append({"hashes": sorted(hs), "by": by, "reason": reason,
+                        "force": bool(force), "dry": bool(dry)})
+    if dry:
+        return {"asked": len(hs), "done": 0, "error": "", "dry": True}
+    n, err = host._dl.pause_torrents(hs)
+    return {"asked": len(hs), "done": int(n or 0), "error": err or "", "dry": False}
+
+
+siteops.dl_pause = _fake_dl_pause
 
 GB = 1024 ** 3
 
@@ -254,8 +271,7 @@ class Host:
             return list(RESEED_ROWS)
         return []
 
-    def _get_downloader(self, kind="qbittorrent"):
-        # 19.10.13 起暂停/恢复统一走 dlops，会按名字取下载器
+    def _get_downloader(self):
         return self._dl
 
     def _delete_gate_detail(self, hashes, **kw):
@@ -335,8 +351,13 @@ ok(rep.get("planned") == 3, f"[5] pause 干跑 planned=3（实际 {rep.get('plan
 ok(h5._dl.calls == [], "[5] 干跑不动下载器")
 
 rep = siteops.deleted_site_act(h5, 2, "pause", dry_run=0)
-ok(rep["ok"] is True and rep["affected"] == 3, f"[5] pause 真做：affected=3（实际 {rep.get('affected')}；{ {k: rep.get(k) for k in ('ok','dry_run','skipped','error','gate')} }）")
-ok(h5._dl.calls and h5._dl.calls[0][0] == "pause" and len(h5._dl.calls[0][1]) == 3, "[5] 调 pause_torrents(3 个)")
+ok(rep["ok"] is True and rep["affected"] == 3, "[5] pause 真做：affected=3")
+ok(h5._dl.calls and h5._dl.calls[0][0] == "pause" and len(h5._dl.calls[0][1]) == 3,
+   "[5] 调 pause_torrents(3 个)")
+ok(PAUSE_CALLS and PAUSE_CALLS[-1]["force"] is True
+   and PAUSE_CALLS[-1]["by"] == "siteops:deleted_site",
+   f"[5] ★ 19.10.13 起走 dlops.pause（force=True / by=siteops:deleted_site，"
+   f"实际 {PAUSE_CALLS[-1] if PAUSE_CALLS else None}）")
 
 # remove（★ 17.4.0 三档）：复用副本 + 本体/资源 **只摘种** / 自有非本体 **连文件删**
 h5d = Host()

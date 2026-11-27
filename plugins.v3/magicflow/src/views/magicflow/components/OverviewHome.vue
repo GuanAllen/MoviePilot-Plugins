@@ -416,7 +416,7 @@ const quickPages = computed(() => (props.pages || []).slice(0, 3))
 
         <div v-if="chart" class="mfh-chart">
           <div class="mfh-chart__yaxis">
-            <span v-for="tick in chart.ticks" :key="tick.y" :style="{ bottom: `${(tick.y / CHART_H) * 100}%` }">
+            <span v-for="tick in chart.ticks" :key="tick.y" :style="{ bottom: `${((CHART_H - tick.y) / CHART_H) * 100}%` }">
               {{ tick.label }}
             </span>
           </div>
@@ -845,6 +845,8 @@ const quickPages = computed(() => (props.pages || []).slice(0, 3))
 }
 .mfh-chart__yaxis {
   position: relative;
+  height: calc(100% - 18px);
+  min-height: 0;
   font-size: 10.5px;
   color: rgba(var(--v-theme-on-surface), 0.4);
 }
@@ -857,6 +859,8 @@ const quickPages = computed(() => (props.pages || []).slice(0, 3))
 .mfh-chart__plot {
   position: relative;
   min-width: 0;
+  height: 100%;
+  min-height: 0;
 }
 .mfh-chart__svg {
   width: 100%;
@@ -900,6 +904,22 @@ const quickPages = computed(() => (props.pages || []).slice(0, 3))
   text-align: center;
   font-size: 12.5px;
   color: rgba(var(--v-theme-on-surface), 0.42);
+}
+
+/* 19.16.38 浅色主题：10px 辅助文字写死 0.4 在白底上对比度约 2.3:1，看不见。
+   MP 钩子是 <html data-glass-color-scheme="light">，口径与 index.vue 的 --mf-fg-dim=0.74 一致。 */
+html[data-glass-color-scheme="light"] .mfh-panel__sub,
+html[data-glass-color-scheme="light"] .mfh-legend,
+html[data-glass-color-scheme="light"] .mfh-chart__yaxis,
+html[data-glass-color-scheme="light"] .mfh-chart__xaxis,
+html[data-glass-color-scheme="light"] .mfh-chart__empty {
+  color: rgba(var(--v-theme-on-surface), 0.74);
+}
+html[data-glass-color-scheme="light"] .mfh-chart__grid {
+  stroke: rgba(var(--v-theme-on-surface), 0.18);
+}
+html[data-glass-color-scheme="light"] .mfh-chart__prev {
+  stroke: rgba(var(--v-theme-on-surface), 0.42);
 }
 
 /* ── 右栏：全局动态 ───────────────────────────────────── */

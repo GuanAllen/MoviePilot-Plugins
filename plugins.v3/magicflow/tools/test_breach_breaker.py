@@ -102,48 +102,7 @@ class Harness(HrBillsMixin, DeleteGateMixin):
         self._hot = None
         self.reports = {}
         self.applied = []
-
-    def _hrbills_store(self):
-        """内存账单后端（19.12.x 生产只有 PG；离线用同三态接口的字典桩）。"""
-        if getattr(self, "_mem", None) is None:
-            _d = {}
-            class _S:
-                @staticmethod
-                def get(h):
-                    return _d.get(str(h).strip().lower())
-
-                @staticmethod
-                def put(h, b, events=None):
-                    k = str(h).strip().lower(); _d[k] = dict(b or {}); return dict(_d[k])
-
-                @staticmethod
-                def all():
-                    return dict(_d)
-
-                @staticmethod
-                def get_result(h):
-                    v = _d.get(str(h).strip().lower())
-                    return {"status": "found" if v is not None else "absent", "value": v}
-
-                @staticmethod
-                def all_result():
-                    return {"status": "found", "value": dict(_d)}
-
-                @staticmethod
-                def patch(h, **kw):
-                    k = str(h).strip().lower()
-                    if k not in _d: return None
-                    _d[k].update(kw); return dict(_d[k])
-
-                @staticmethod
-                def patch_if(h, guard, events=None, **kw):
-                    k = str(h).strip().lower(); cur = _d.get(k)
-                    if cur is None: return {"ok": False, "reason": "absent"}
-                    for gk, gv in dict(guard or {}).items():
-                        if cur.get(gk) != gv: return {"ok": False, "reason": "guard_mismatch"}
-                    cur.update(kw); return {"ok": True, "row": dict(cur)}
-            self._mem = _S()
-        return self._mem
+        self.events = []
 
     def get_data_path(self):
         return self._data_dir
@@ -154,6 +113,33 @@ class Harness(HrBillsMixin, DeleteGateMixin):
     def _hr_reconcile_apply(self, site, tids=None, confirm=None, save_path=""):
         self.applied.append({"site": site, "tids": list(tids or []), "confirm": bool(confirm)})
         return {"ok": True, "added": len(list(tids or []))}
+
+    # 审计出口（真实宿主由 features/eventlog.py 提供）
+    def _emit_event(self, kind, action="", level="info", task_id="", reason="",
+                    metrics=None, dedup_key=""):
+        self.events.append({"kind": kind, "action": action, "level": level,
+                            "reason": reason, "metrics": dict(metrics or {})})
+
+
+def _bar(now, total=0, limit=20, form="pair", ts=None):
+    """构造页头 H&R 计数快照（``form=single`` 模拟 ``H&R: 0`` 那种单数字形态）。"""
+    if form == "pair":
+        hr = {"raw": "[ %d/ 0 /%s ]" % (total, limit), "form": "pair",
+              "assessing": int(total), "unfinished": 0, "limit": limit}
+    else:
+        hr = {"raw": "H&R: %d" % total, "form": form,
+              "assessing": None, "unfinished": int(total), "limit": None}
+    return {"ok": True, "ts": float(now if ts is None else ts), "hr": hr}
+
+
+def _rep(now, site, records=None, bar=None, **kw):
+    """构造一份「页面有效 + 列表可判完整」的对账报告（bar 默认计数 0）。"""
+    out = {"site": site, "ok": True, "hash_coverage_complete": True, "at": float(now),
+           "page_ok": True, "list_complete": True,
+           "bar": _bar(now) if bar is None else bar,
+           "records": list(records or [])}
+    out.update(kw)
+    return out
 
 
 def _bill(h, site, state):
@@ -279,35 +265,40 @@ def main() -> int:
     _T.clear()
 
     # ---- C) 违约自动核对 ----
-    print("\n[C] 违约自动核对（站点不欠→清账 / 站点欠→补种）")
-    store.put("w1", _bill("w1", "carpt.net", BILL_STATE_BREACHED))   # 站点不欠 → 清账
-    store.put("w2", _bill("w2", "carpt.net", BILL_STATE_BREACHED))   # 站点仍欠 → 补种
-    h.reports["carpt.net"] = {
-        "site": "carpt.net", "ok": True, "hash_coverage_complete": True,
-        # ★ 19.12.42：与结清闸门共用折叠 → 必须带页首完整性证据，否则 verdict=unknown
-        "page_ok": True, "list_complete": True, "at": __import__("time").time(),
-        # 页头「两数形态」证书：assessing=0 / unfinished=0 + 新鲜 ts，clear 闸门才敢放行
-        "bar": {"ok": True, "logged_in": True, "ts": __import__("time").time(),
-                "hr": {"raw": "0 0", "form": "pair", "assessing": 0, "unfinished": 0}},
-        "records": [{"tid": "209930", "infohash": "w2", "resolved": True, "in_qb": False,
-                     "need_left": "01:00:00", "hr_status": "Running"}],
-    }
+    print("\n[C] 违约自动核对（站端有证据才清账）")
+    now = time.time()
+    store.put("w1", _bill("w1", "carpt.net", BILL_STATE_BREACHED))   # 未在明细 + 计数 0 → 清账
+    store.put("w2", _bill("w2", "carpt.net", BILL_STATE_BREACHED))   # 明细里仍欠 12h → 补种
+    h.reports["carpt.net"] = _rep(now, "carpt.net", records=[
+        {"tid": "209930", "infohash": "w2", "resolved": True, "in_qb": False,
+         "need_left": "12:00:00"}])
     dry = h._hrbills_breach_reconcile(site="carpt.net")
     _ok(dry["dry_run"] is True, "默认干跑")
     _ok(dry["totals"]["breached"] == 2, f"识别 2 张 breached（实际 {dry['totals']['breached']}）")
     s0 = dry["sites"][0]
     _ok(set(s0["will_void"]) == {"w1"} and set(s0["will_reseed"]) == {"w2"},
-        f"站点不欠 w1 → 清账；站点仍欠 w2 → 补种（实际 {s0}）")
+        "计数 0 + 未列明细 → 清账；明细仍欠 → 补种")
+    _ok(s0["gate"]["why"] == "ok", f"门槛快照 ok（实际 {s0['gate']['why']}）")
     _ok(store.get("w1")["state"] == BILL_STATE_BREACHED, "干跑不落库（w1 仍 breached）")
+    _ok(h.events == [], "干跑不写审计事件")
 
     res = h._hrbills_breach_reconcile(site="carpt.net", confirm=True)
     _ok(res["totals"]["voided"] == 1, f"confirm 清账 1 张（实际 {res['totals']['voided']}）")
-    _w1 = store.get("w1") or {}
-    # ★ 任务 136：清账 = 落 void 墓碑（保留 30 天审计），不再物理删除
-    _ok(_w1.get("state") == BILL_STATE_VOID and bool(_w1.get("void_reason")),
-        f"w1 清账 → void 墓碑 + reason（实际 {_w1.get('state')}/{_w1.get('void_reason')}）")
+    _ok((store.get("w1") or {}).get("state") == BILL_STATE_VOID,
+        "w1 清账 → 转 void 墓碑（★ 19.12.43 起不再删行）")
+    _ok((store.get("w1") or {}).get("void_reason") == "site_no_longer_owed",
+        "墓碑记 void_reason=site_no_longer_owed")
     _ok(any(a["site"] == "carpt.net" and a["tids"] == ["209930"] and a["confirm"]
             for a in h.applied), "站点仍欠 w2 → 调 _hr_reconcile_apply(tids=[209930], confirm=True)")
+    _ok(len(h.events) == 1 and h.events[0]["metrics"].get("hash") == "w1",
+        "作废写审计事件（hash=w1）")
+    _ev0 = h.events[0]["metrics"]
+    _ok(_ev0.get("site") == "carpt.net" and _ev0.get("reason") == "site_no_longer_owed",
+        "审计含站点与理由")
+    _ok(not ({"cookie", "body", "text", "html", "ua"} & set(_ev0)),
+        "审计不含 cookie/正文/UA")
+    _ok(str((_ev0.get("evidence") or {}).get("gate", {}).get("why")) == "ok",
+        "审计带着门槛快照（why=ok）")
 
     # fail-closed：站点对账失败/覆盖不完整 → 不动
     print("\n[C2] fail-closed（站点数据不可信 → 不动）")
@@ -322,6 +313,63 @@ def main() -> int:
     r3 = h._hrbills_breach_reconcile(site="hdtime.org", confirm=True)
     _ok(r3["sites"][0]["verified"] is False, "覆盖不完整 → verified=False（不误判「站点不欠」）")
     _ok(store.get("w3")["state"] == BILL_STATE_BREACHED, "覆盖不完整 → 绝不动账")
+
+    # ★ 19.12.42：站点级计数 >0 → **不开站点级放行**（哪怕计数与明细条数一致）
+    print("\n[C3] 页头 total>0（与明细一致）→ 站点级放行关闭")
+    store.put("w4", _bill("w4", "carpt.net", BILL_STATE_BREACHED))   # 未在明细、无正向证据
+    h.reports["carpt.net"] = _rep(now, "carpt.net", bar=_bar(now, total=1), records=[
+        {"tid": "209930", "infohash": "w2", "resolved": True, "in_qb": False,
+         "need_left": "12:00:00"}])
+    r4 = h._hrbills_breach_reconcile(site="carpt.net", confirm=True)
+    _ok(r4["sites"][0]["will_void"] == [], "total>0 → 不批量清账（will_void 为空）")
+    _ok(r4["sites"][0]["gate"]["why"] == "bar_total=1",
+        f"门槛原因标 bar_total=1（实际 {r4['sites'][0]['gate']['why']}）")
+    _ok(store.get("w4")["state"] == BILL_STATE_BREACHED, "未列明细的 w4 一律保留")
+
+    # ★ 单颗正向证据：站端**自己列了这颗**且剩余 0 → 只清这一张，不扩成整站
+    print("\n[C4] 单颗正向证据 → 只清该账单，不扩成整站")
+    store.put("w6", _bill("w6", "carpt.net", BILL_STATE_BREACHED))
+    h.reports["carpt.net"] = _rep(now, "carpt.net", bar=_bar(now, total=2), records=[
+        {"tid": "209930", "infohash": "w2", "resolved": True, "in_qb": False,
+         "need_left": "12:00:00"},
+        {"tid": "209931", "infohash": "w6", "resolved": True, "in_qb": True,
+         "need_left": "00:00:00"}])
+    r5 = h._hrbills_breach_reconcile(site="carpt.net", confirm=True)
+    _ok(r5["sites"][0]["will_void"] == ["w6"], "只清有正向证据的 w6")
+    _ok((store.get("w6") or {}).get("state") == BILL_STATE_VOID,
+        "w6 已作废 → void 墓碑（19.12.43 起留行，回填不重开）")
+    _ok(store.get("w4") is not None and store.get("w2") is not None,
+        "同站 w4（无证据）/ w2（仍欠）都不动 —— 正向证据不外扩")
+    _ok(store.get("w2")["state"] == BILL_STATE_BREACHED, "w2 仍 breached")
+
+    # ★ 页头形态不可用 → unknown（单数字 / 陈旧 / 旧报告缺字段）
+    print("\n[C5] 页头单数字（H&R: 0）→ 不作放行证据")
+    store.put("w7", _bill("w7", "soulvoice.club", BILL_STATE_BREACHED))
+    h.reports["soulvoice.club"] = _rep(now, "soulvoice.club", records=[],
+                                      bar=_bar(now, total=0, form="single"))
+    r6 = h._hrbills_breach_reconcile(site="soulvoice.club", confirm=True)
+    _ok(r6["sites"][0]["will_void"] == [], "单数字形态 → 不清账")
+    _ok(r6["sites"][0]["gate"]["why"] == "bar_unknown",
+        f"原因标 bar_unknown（实际 {r6['sites'][0]['gate']['why']}）")
+    _ok(store.get("w7") is not None, "w7 保留（等语义验证）")
+
+    print("\n[C6] 页头陈旧（73h 前）→ 不清账")
+    h.reports["soulvoice.club"] = _rep(now, "soulvoice.club", records=[],
+                                      bar=_bar(now, total=0, ts=now - 73 * 3600))
+    r7 = h._hrbills_breach_reconcile(site="soulvoice.club", confirm=True)
+    _ok(r7["sites"][0]["will_void"] == [], "计数过期 → 不清账")
+    _ok(r7["sites"][0]["gate"]["why"] == "bar_stale",
+        f"原因标 bar_stale（实际 {r7['sites'][0]['gate']['why']}）")
+
+    print("\n[C7] 旧报告缺 page_ok/list_complete/bar → 按不可信处理")
+    h.reports["hdtime.org"] = {"site": "hdtime.org", "ok": True,
+                               "hash_coverage_complete": True,
+                               "at": float(now), "records": []}
+    r8 = h._hrbills_breach_reconcile(site="hdtime.org", confirm=True)
+    _ok(r8["sites"][0]["will_void"] == [], "旧报告 → 不清账")
+    _ok(r8["sites"][0]["gate"]["why"] == "page_not_evidence",
+        f"原因标 page_not_evidence（实际 {r8['sites'][0]['gate']['why']}）")
+    _ok(store.get("w3")["state"] == BILL_STATE_BREACHED, "w3 仍 breached")
 
     print("\n" + "=" * 64)
     print(f"PASS：{CHECKS} 项断言全部通过 ✅")

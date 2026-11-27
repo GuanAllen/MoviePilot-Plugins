@@ -24,9 +24,6 @@ import types
 import time
 from pathlib import Path
 
-import _app_stub  # noqa: E402
-_app_stub.install()
-
 ROOT = Path(__file__).resolve().parent.parent
 
 # ---------------------------------------------------------------------------
@@ -56,6 +53,39 @@ def _load(name: str, rel: str):
 _pkg(PKG, ROOT)
 _pkg(PKG + ".features", ROOT / "features")
 
+
+def _stub_app() -> None:
+    """给 ``common.py`` 的 MP 依赖打桩（19.12.4 补：本文件此前直接跑会撞
+    ``ModuleNotFoundError: No module named 'app'`` —— 与 test_hr_margin_deadline.py 同一套桩）。"""
+    for name, attr_map in (
+        ("app", {}),
+        ("app.plugins", {"_PluginBase": type("_PluginBase", (), {})}),
+        ("app.schemas", {"Response": type("Response", (), {})}),
+        ("app.schemas.types", {"EventType": type("EventType", (), {})}),
+        ("app.sdk", {}),
+        ("app.sdk.events", {"eventmanager": types.SimpleNamespace()}),
+        ("app.sdk.logging", {"logger": types.SimpleNamespace(**{k: (lambda *a, **kw: None) for k in
+            ("info", "warning", "error", "debug", "exception")})}),
+    ):
+        m = sys.modules.get(name)
+        if m is None:
+            m = types.ModuleType(name)
+            sys.modules[name] = m
+        m.__path__ = []
+        for k, v in attr_map.items():
+            setattr(m, k, v)
+    for modname, attrs in (
+        ("bonus", ("TorrentBonusInfo", "calc_bonus_per_hour")),
+        ("fetcher", ("SiteCandidateTorrent",)),
+    ):
+        m = types.ModuleType(PKG + "." + modname)
+        for a in attrs:
+            setattr(m, a, object)
+        sys.modules[PKG + "." + modname] = m
+
+
+_stub_app()
+
 fingerprint = _load(PKG + ".fingerprint", "fingerprint.py")
 crossseed = _load(PKG + ".crossseed", "crossseed.py")
 persistence = _load(PKG + ".persistence", "persistence.py")
@@ -63,6 +93,7 @@ downloader_ops = _load(PKG + ".downloader_ops", "downloader_ops.py")
 hrbills = _load(PKG + ".features.hrbills", "features/hrbills.py")
 
 HrBillsMixin = hrbills.HrBillsMixin
+HrBillsStore = hrbills.HrBillsStore
 get_hr_bills_store = hrbills.get_hr_bills_store
 CROSSSEED_TAG = crossseed.CROSSSEED_TAG
 
@@ -93,19 +124,34 @@ class Harness(HrBillsMixin):
         #   安全垫 / 到期预警单独在 [7b] 里开 2.0 验证。
         self._hr_seed_margin_hours = 0.0
         self._hr_deadline_warn_hours = 48.0
-        # 站端裁决：默认 clear（等价于「站端明确说不用再挂」）；需要 unknown/owed 的场景显式覆盖
-        self.verdicts: dict = {}
+        # ★ 19.12.40：站端证据桩。默认**没有报告** → 判 unknown（fail-closed，
+        #   账单不结清）；要测结清就把站点塞进 ``site_clear``。
+        self.site_clear: set = set()
+        self.site_owed: dict = {}     # dom -> 剩余秒（明确还欠）
+
+    def _hr_site_debt_index(self, now=None):
+        import time as _t
+        _now = float(now or 0) or _t.time()
+        idx = {"at": _now, "sites": {}, "need": {}, "seen": set()}
+        for dom in (self.site_clear or ()):
+            idx["sites"][dom] = {"at": _now, "complete": True}
+        for dom, left in (self.site_owed or {}).items():
+            idx["sites"].setdefault(dom, {"at": _now, "complete": True})
+        return idx
 
     def _hr_site_verdict(self, hash_string, dom, now=None, idx=None):
-        return self.verdicts.get(hash_string) or self.verdicts.get("*", ("clear", 0.0))
+        """覆盖真实实现：按桩给 owed/clear/unknown（不读 hr_reconcile.json）。"""
+        d = str(dom or "").strip().lower()
+        if not getattr(hrbills, "HR_SETTLE_SITE_GATE", True):
+            return ("unknown", 0.0)
+        if d in (self.site_owed or {}):
+            return ("owed", float(self.site_owed[d]))
+        if d in (self.site_clear or ()):
+            return ("clear", 0.0)
+        return ("unknown", 0.0)
 
     def _crossseed_seed_window_hours(self, dom):
         return 0.0
-
-    def _hrbills_store(self):
-        if getattr(self, "_mem_store", None) is None:
-            self._mem_store = MemHrBillsStore()
-        return self._mem_store
 
     def get_data_path(self):
         return self._data_dir
@@ -149,26 +195,15 @@ class Harness(HrBillsMixin):
             return name.lower()
         return self.name2dom.get(name, "")
 
-from _hr_mem_store import MemHrBillsStore  # noqa: E402
-
 
 CHECKS = 0
-FAILS: list[str] = []
 
 
 def _ok(cond: bool, msg: str) -> None:
-    """★ 任务 134：断言失败不再中断脚本——收集后继续跑，保证后续断言仍被执行。
-
-    失败仍然计入 ``FAILS`` 并让退出码非 0（不降低强度，只是不早停）。
-    """
     global CHECKS
+    assert cond, f"❌ {msg}"
     CHECKS += 1
-    if cond:
-        print(f"  ✅ {msg}")
-    else:
-        print(f"  ❌ {msg}")
-        FAILS.append(msg)
-
+    print(f"  ✅ {msg}")
 
 
 def _torrent_bytes(name="test") -> bytes:
@@ -203,10 +238,7 @@ def main() -> int:
     b1 = h._hrbills_open("AAAA", "hdfans.org", "魔流-hdfans-刷流", raw)
     _ok(b1 is not None, "首次开账成功")
     b2 = h._hrbills_open("aaaa", "hdfans.org", "魔流-hdfans-刷流", raw)
-    # ★ 任务 134：PG 后端返回行投影（新 dict），用内容相等证明「同一张账单」，不再比对象身份。
-    _ok(b2 is not None and b2.get("hash") == b1.get("hash")
-        and b2.get("opened_at") == b1.get("opened_at"),
-        "同 hash 二次开账返回已有账单（不重复开）")
+    _ok(b2 is b1, "同 hash 二次开账返回已有账单（不重复开）")
     store = h._hrbills_store()
     _ok(len(store.all()) == 1, f"store 里只有 1 张账单（实际 {len(store.all())}）")
     _ok(b1["site"] == "hdfans.org", f"账单 site=domain（{b1['site']}）")
@@ -226,19 +258,28 @@ def main() -> int:
     _ok(b3 is None, "未知站不开账（无明确 H&R 规则）")
     _ok("bbbb" not in store.all(), "未知站账单不进 store")
 
-    # ---- 3) crossseed tag → 正常开账（19.10.11 起跨站来源份不再跳过） ----
-    print("\n[3] crossseed tag → 正常开账")
+    # ---- 3) crossseed tag → **不再跳过**（19.10.11 起）----
+    #   19.12.4 修陈旧断言：本条原写「crossseed tag 开账被跳过」，但 19.10.11 已把
+    #   CROSSSEED_TAG 从 ``_SKIP_BILL_TAGS`` 移除 —— 跨站来源份是**真实下载**
+    #   （只是下在他站的免费种上），欠的就是来源站 H&R。跳过名单现在只剩
+    #   ``MARK_REUSE``（辅种副本）/ ``RESCUE_TAG``（补源副本）。
+    print("\n[3] crossseed tag → 不跳过（19.10.11 起是真下载，欠来源站 H&R）")
     n_before = len(store.all())
     t3 = _torrent(progress=0.0, title="跨站种")
     t3.hash = "cccc"
     h.torrents["cccc"] = t3
     b4 = h._hrbills_open("cccc", "hdfans.org", CROSSSEED_TAG, _torrent_bytes("c"))
-    _ok(b4 is not None and b4.get("state") == "pending",
-        "crossseed tag 正常开账（pending，19.10.11 起不再跳过）")
-    _ok(len(store.all()) == n_before + 1, "账单数 +1（跨站来源份也欠来源站 H&R）")
+    _ok(b4 is not None, "crossseed tag 正常开账")
+    _ok(len(store.all()) == n_before + 1, "账单数 +1")
+    # 辅种副本仍然跳过（这条才是现在的跳过名单）
+    t3b = _torrent(progress=0.0, title="辅种副本")
+    t3b.hash = "cccc2"
+    h.torrents["cccc2"] = t3b
+    _ok(h._hrbills_open("cccc2", "hdfans.org", hrbills.MARK_REUSE, _torrent_bytes("c2")) is None,
+        "辅种副本（MARK_REUSE）仍然跳过")
 
-    # ---- 4) 7 天无进度 → void ----
-    print("\n[4] 7 天无进度 → void")
+    # ---- 4) 7 天无进度 → **保留**（19.12.40：不再作废删账）----
+    print("\n[4] 7 天无进度 → 保留账单（只标记 stalled_at）")
     t4 = _torrent(progress=0.0, title="卡住种")
     t4.hash = "dddd"
     h.torrents["dddd"] = t4
@@ -249,24 +290,22 @@ def main() -> int:
     # 模拟 8 天前就停在 0.3
     store.patch("dddd", last_progress_at=time.time() - 8 * 86400.0)
     h._hrbills_tick()
-    _b_stall = store.get("dddd")
-    # 19.12.40 起：种还在 qB 却没进度 = 暂停/无 peer，正是最该挂住的状态 → 只记 stalled_at，绝不销账
-    _ok(_b_stall is not None and bool(_b_stall.get("stalled_at"))
-        and _b_stall.get("state") != "void",
-        f"7 天无进度 → 保留并记 stalled_at（state={_b_stall.get('state') if _b_stall else None}）")
+    _b4 = store.get("dddd")
+    _ok(_b4 is not None, "★ 连续无进度 → 账单**保留**（种还在就还有义务）")
+    _ok(bool((_b4 or {}).get("stalled_at")), "★ 记下 stalled_at 便于排查（不销账）")
 
-    # ---- 5) 消失且未完成 → 立即 void ----
-    print("\n[5] 消失且未完成 → 立即 void")
+    # ---- 5) 消失且未完成 → **保留**（19.12.40：不得直接删除）----
+    print("\n[5] 消失且未完成 → 保留账单（等复查，不销账）")
     t5 = _torrent(progress=0.5, title="半截种")
     t5.hash = "eeee"
     h.torrents["eeee"] = t5
     h._hrbills_open("eeee", "hdfans.org", "魔流-hdfans-刷流", _torrent_bytes("e"))
     h.torrents.pop("eeee")  # 从下载器消失
     h._hrbills_tick()
-    _b_miss = store.get("eeee") or {}
-    # 19.12.40 起：非 active 的缺席只记 missing_since（qB 抖动/recheck 不能当义务消失）
-    _ok(bool(_b_miss.get("missing_since")) and _b_miss.get("state") != "void",
-        f"消失且未完成 → 保留并记 missing_since（state={_b_miss.get('state')}）")
+    _b5 = store.get("eeee")
+    _ok(_b5 is not None, "★ 消失 → 账单**保留**（qB 抖动/recheck 不能当义务消失）")
+    _ok(_b5.get("alive") is False, "★ 标记 alive=False")
+    _ok(bool(_b5.get("missing_since")), "★ 记下 missing_since（缺席起点）")
 
     # ---- 6) progress ≥ 0.999 → active（★ 2026-10-10：仅限明确 H&R 站；unknown 不激活）----
     print("\n[6] progress ≥ 0.999 → active（已知 H&R 站）")
@@ -279,8 +318,9 @@ def main() -> int:
     h._hrbills_tick()
     _ok(store.get("ffff")["state"] == "active", f"下载完成 → active（{store.get('ffff')['state']}）")
 
-    # ---- 7) seeded_h ≥ need_h → settled ----
-    print("\n[7] seeded_h ≥ need_h → settled")
+    # ---- 7) seeded_h ≥ need_h → settled（★ 19.12.40：站端必须明确 clear）----
+    print("\n[7] seeded_h ≥ need_h + 站端明确 clear → settled")
+    h.site_clear.add("hdfans.org")   # 站端：本站报告完整、这颗不在欠列表
     t7 = _torrent(progress=1.0, title="挂够种", tracker="hdfans.org")
     t7.hash = "abab"
     h.torrents["abab"] = t7
@@ -414,25 +454,32 @@ def main() -> int:
     _ok("b111" not in {i["hash"] for i in h._hr_blindspot_scan()["items"]},
         "纳管（开账）后不再报 b111")
 
-    # ---- 11) 做种时长保守口径 seed_hours_for_hr（11.6.1）----
-    print("\n[11] 做种时长保守口径（11.6.1）")
+    # ---- 11) 做种时长口径 seed_hours_for_hr（★ 19.12.3 改回站端口径）----
+    #   19.12.4 修陈旧断言：本条原写「取 min(qB, 距完成)」/「长期做种用 qB」，那是
+    #   19.12.3 之前的墙钟口径。现在主口径是 **qB 活跃做种时长 seeding_time**
+    #   （站端 myhr 认的就是它：学校那颗「还需 14:02:34」对 qB 6.2h，差 14 分钟＝同步粒度），
+    #   墙钟 ``now - completion_on`` 只在 seeding_time 取不到时兜底。
+    print("\n[11] 做种时长口径（19.12.3：seeding_time 为主，墙钟兜底）")
     f = downloader_ops.seed_hours_for_hr
     _now = time.time()
     # 未下完 → 0（不管 qB 报多少）
     _t = _torrent(progress=0.42, seed_time=16 * 3600, completion_on=0.0)
     _ok(f(_t, now=_now) == 0.0, "未下完（42%）→ 做种小时 = 0")
-    # ★ 19.12.4x：seeding_time>0 直接采信（站端口径：暂停不累计）；墙上时间只作缺失回退，
-    #   不再与 qB 取 min —— 取 min 会把「qB 报 16h、完成才 0.1h」的辅种误判成 0.1h。
+    # 主口径：qB 说做了 16h 就是 16h，不再被 completion_on 拉低
     _t2 = _torrent(progress=1.0, seed_time=16 * 3600, completion_on=_now - 360.0)
     _ok(abs(f(_t2, now=_now) - 16.0) < 1e-6,
-        f"qB 报 16h → 直接用 16h（实得 {f(_t2, now=_now):.2f}h）")
-    # 长期做种：qB 小于距完成 → 用 qB
+        f"qB seeding_time=16h → 16h（主口径，实得 {f(_t2, now=_now):.2f}h）")
+    # 长期做种：qB 值 5h 就是 5h（暂停后冻结，不再假装涨）
     _t3 = _torrent(progress=1.0, seed_time=5 * 3600, completion_on=_now - 100 * 3600)
-    _ok(abs(f(_t3, now=_now) - 5.0) < 1e-6, "长期做种 → 用 qB 值（5h）")
-    # 无 completion_on（老数据/未完成）→ 退回 qB 值（但不小于 0）
+    _ok(abs(f(_t3, now=_now) - 5.0) < 1e-6, "长期做种 → 用 qB 值（5h，不是墙钟 100h）")
+    # 无 completion_on（老数据/未完成）→ 仍用 qB 值（但不小于 0）
     _t4 = _torrent(progress=1.0, seed_time=3 * 3600, completion_on=0.0)
-    _ok(abs(f(_t4, now=_now) - 3.0) < 1e-6, "无完成时间 → 退回 qB 值（3h）")
-    # 账单巡检用同口径：刚完成 0.1h 的种不会因 qB 报 16h 被误结清
+    _ok(abs(f(_t4, now=_now) - 3.0) < 1e-6, "无完成时间 → 用 qB 值（3h）")
+    # ★ 兜底：seeding_time 取不到（=0）→ 退回墙钟
+    _t4b = _torrent(progress=1.0, seed_time=0.0, completion_on=_now - 67 * 3600)
+    _ok(abs(f(_t4b, now=_now) - 67.0) < 1e-6,
+        f"seeding_time=0 → 退回墙钟 67h（实得 {f(_t4b, now=_now):.2f}h）")
+    # 账单巡检写同口径：16h < need 20h → 仍 active，seeded_h=16
     _t5 = _torrent(progress=1.0, seed_time=16 * 3600, completion_on=_now - 360.0, tracker="hdfans.org")
     _t5.hash = "e555"
     h.torrents["e555"] = _t5
@@ -440,8 +487,8 @@ def main() -> int:
     h._hrbills_tick()
     _b5 = store.get("e555")
     _ok(_b5 and abs(float(_b5.get("seeded_h") or 0) - 16.0) < 0.02,
-        f"巡检写入 seeded_h 走站端口径（实得 {(_b5 or {}).get('seeded_h')}）")
-    _ok(_b5 and _b5.get("state") == "active", "刚完成的账单保持 active（不提前结清）")
+        f"巡检写入的 seeded_h 走 qB 口径（实得 {(_b5 or {}).get('seeded_h')}）")
+    _ok(_b5 and _b5.get("state") == "active", "16h < need 20h → 账单保持 active（不提前结清）")
 
     print("\n[12] 逐种 H&R 标记落账 + 审计 + 人工作废（11.7.0）")
     # 12.1 下载瞬间带 hit_and_run=True 的候选 → 账单 rule=hit_and_run（欠 H&R，保护）
@@ -459,15 +506,14 @@ def main() -> int:
     h._hrbills_tick()
     _b12 = store.get("e1200")
     _ok(_b12 and _b12.get("state") == "active", "完成（tick 后）→ active（受保护）")
-    # 12.2 无标记（默认）→ 逐种站无站点级 H&R → unknown（不保护不罚）
+    # 12.2 无标记（默认）→ 逐种站无站点级 H&R → **不记账**（19.12.33 两道门槛）
     _t12b = _torrent(progress=1.0, seed_time=2 * 3600, tracker="www.yemapt.org")
     _t12b.hash = "e1201"
     h.torrents["e1201"] = _t12b
     h._hrbills_open("e1201", "www.yemapt.org", "魔流-野马-刷流", _torrent_bytes("e120b"))
-    _b12b = store.get("e1201")
-    # ★ 19.12.3x：逐种站无标记 = 不欠 H&R → 不开账（旧行为会开一张 unknown/pending 空账）
-    _ok(_b12b is None, f"逐种站无标记 → 不开账（实得 {_b12b}）")
-    # 12.3 回退开关：HR_PER_TORRENT=False → 标记不影响（退回 11.6.1 行为）
+    _ok(store.get("e1201") is None,
+        "★ 逐种站 + 无逐种标记 + 站点规则未知 → 不记账（不再造 unknown 影子账）")
+    # 12.3 回退开关：HR_PER_TORRENT=False → 标记不影响；逐种站仍按站点级（未知）→ 不记账
     _prev = hrbills.HR_PER_TORRENT
     hrbills.HR_PER_TORRENT = False
     _t12c = _torrent(progress=1.0, seed_time=2 * 3600, tracker="www.yemapt.org")
@@ -475,36 +521,99 @@ def main() -> int:
     h.torrents["e1202"] = _t12c
     h._hrbills_open("e1202", "www.yemapt.org", "魔流-野马-刷流", _torrent_bytes("e12c"),
                     hit_and_run=True)
-    _b12c = store.get("e1202")
-    _ok(_b12c is None, f"HR_PER_TORRENT=False → 不开账（实得 {_b12c}）")
+    _ok(store.get("e1202") is None,
+        "HR_PER_TORRENT=False → 标记不落账，逐种站又无站点级规则 → 不记账")
     hrbills.HR_PER_TORRENT = _prev
-    # 12.4 审计：逐种站按 rule 摊开，unknown 单列
+    # 12.4 审计：逐种站按 rule 摊开，未定性账已为零（新口径不再产生）
     _aud = h._hr_per_torrent_audit()
     _yt = next((s for s in _aud["sites"] if s["domain"] == "www.yemapt.org"), None)
     _ok(_yt is not None and _yt["by_rule"].get("hit_and_run") == 1
-        and not _yt["by_rule"].get("unknown"),
+        and _yt["by_rule"].get("unknown") == 0,
         f"审计：逐种站 hit_and_run=1 / unknown=0（实得 {(_yt or {}).get('by_rule')}）")
-    _ok(len((_yt or {}).get("unknown_bills") or []) == 0, "审计：无 unknown 账单（不猜不欠不开账）")
+    _ok(len((_yt or {}).get("unknown_bills") or []) == 0, "审计：未定性账为零（新口径）")
     _ok(_aud["totals"]["sites"] == 1 and _aud["totals"]["hit_and_run"] == 1,
         f"审计汇总正确（sites={_aud['totals']['sites']} hit_and_run={_aud['totals']['hit_and_run']}）")
     # 非逐种站不进审计
     _ok(all(s["domain"] != "hdfans.org" for s in _aud["sites"]), "非逐种站不进逐种审计")
-    # 12.5 人工作废：落 void 墓碑 + void_reason，幂等；回填不会重开（19.12.33 起保留行）
+    # 12.5 人工作废：留 void 墓碑 + reason，幂等（★ 19.12.43 起不再「作废即删」）
     _v = h._hrbills_void("e1200", "resolved_no_hr")
-    _ok(isinstance(_v, dict) and str(_v.get("state")) == "void"
-        and _v.get("reason") == "resolved_no_hr",
-        f"人工作废 → void 墓碑 + reason（实得 {_v}）")
-    _v2 = h._hrbills_void("e1200", "again")
-    _ok(_v2 is None or (isinstance(_v2, dict) and str(_v2.get("state")) == "void"),
-        f"作废幂等（重复调用不报错，实得 {_v2}）")
+    _ok(_v and _v.get("voided") == "e1200" and _v.get("reason") == "resolved_no_hr"
+        and _v.get("state") == "void", "人工作废 → 转 void 墓碑 + reason")
+    _row = h._hrbills_store().get("e1200") or {}
+    _ok(_row.get("state") == "void" and _row.get("void_reason") == "resolved_no_hr"
+        and float(_row.get("voided_at") or 0) > 0, "墓碑落库：state/void_reason/voided_at")
+    _ok(h._hrbills_void("e1200", "again") is None,
+        "作废幂等（已 void → None，不重复写）")
+    _ok((h._hrbills_store().get("e1200") or {}).get("void_reason") == "resolved_no_hr",
+        "二次作废不覆盖首次 reason")
     _ok(h._hrbills_void("nope", "x") is None, "作废不存在的账单 → None")
 
+    # ---- 13) ★ 19.12.40 结清闸门（qB 工时 × 站端 MyHR，fail-closed）----
+    print("\n[13] 结清闸门：qB 够 + 站端明确 clear 才结清")
+    h13 = Harness(Path(tempfile.mkdtemp(prefix="hr_gate_")))
+    h13.site_hr["hdfans.org"] = True
+    h13.need_hours["hdfans.org"] = 20.0
+    st13 = h13._hrbills_store()
+
+    def _mk13(_h, _tb, _state, _seed_h):
+        _t = _torrent(progress=1.0, title=_h, tracker="hdfans.org")
+        _t.hash = _h
+        _t.seed_time = _seed_h * 3600.0
+        h13.torrents[_h] = _t
+        h13.ledger[_h] = {"site": "hdfans.org", "state": _state, "taken_by": _tb}
+        h13._hrbills_open(_h, "hdfans.org", "魔流-hdfans-刷流", _torrent_bytes(_h[:1]))
+        st13.patch(_h, state="active", progress=1.0)
+        return _t
+
+    # 13.1 站端明确 owed → 不结清
+    h13.site_owed["hdfans.org"] = 3 * 3600.0
+    _mk13("d100", "__hr_host__", "H&R", 30.0)
+    h13._hrbills_tick()
+    _b = st13.get("d100")
+    _ok(_b["state"] == "active", f"★ 站端明确还欠 → 不结清（{_b['state']}）")
+    _ok(_b.get("settle_block") == "site_owed", f"记下原因 site_owed（{_b.get('settle_block')}）")
+
+    # 13.2 站端判不明（unknown）→ 不结清（旧口径会结清）
+    h13.site_owed.clear()
+    h13.site_clear.discard("hdfans.org")
+    h13.torrents["d101"] = None
+    h13.torrents.pop("d101", None)
+    _mk13("d101", "__hr_host__", "H&R", 30.0)
+    h13._hrbills_tick()
+    _b = st13.get("d101")
+    _ok(_b["state"] == "active", f"★ 站端判不明 → 不结清（{_b['state']}）")
+    _ok(_b.get("settle_block") == "site_unknown", f"记下原因 site_unknown（{_b.get('settle_block')}）")
+    _ok(st13.get("d101")["state"] != "settled", "★ 没查到 MyHR 记录 ≠ 已结清")
+
+    # 13.3 站端明确 clear → 结清（且不看当前职务：claim / keep 名下一样能结）
+    h13.site_clear.add("hdfans.org")
+    _mk13("d102", "__claim__", "认领", 30.0)
+    st13.patch("d102", state="active", progress=1.0)
+    _mk13("d103", "__keep__", "保种", 30.0)
+    st13.patch("d103", state="active", progress=1.0)
+    h13._hrbills_tick()
+    _ok(st13.get("d102")["state"] == "settled", f"★ 认领名下也能结清 H&R（{st13.get('d102')['state']}）")
+    _ok(st13.get("d103")["state"] == "settled", f"★ 保种名下也能结清 H&R（{st13.get('d103')['state']}）")
+    _ok(h13.ledger["d102"]["taken_by"] == "__claim__", "结清不改认领归属")
+    _ok(h13.ledger["d103"]["taken_by"] == "__keep__", "结清不改保种归属")
+
+    # 13.4 qB 快照为空（下载器不可用）→ 一轮都不动账
+    _snap_bak = dict(h13.torrents)
+    h13.torrents.clear()
+    _before = {k: v.get("state") for k, v in st13.all().items()}
+    _r13 = h13._hrbills_tick()
+    _ok(_r13.get("skipped_empty_snap") == 1, "★ qB 不可用 → 整轮跳过（skipped_empty_snap）")
+    _ok({k: v.get("state") for k, v in st13.all().items()} == _before, "★ 账单一张没少、状态没变")
+    h13.torrents.update(_snap_bak)
+
+    # 13.5 幂等：连跑两轮不重复开账、不重复结清
+    _n1 = len(st13.all())
+    h13._hrbills_tick()
+    h13._hrbills_tick()
+    _ok(len(st13.all()) == _n1, f"★ 重复执行不新增账单（{_n1} → {len(st13.all())}）")
+    _ok(st13.get("d102")["state"] == "settled", "★ 结清幂等（不会被反复改写）")
+
     print("\n" + "=" * 64)
-    if FAILS:
-        print(f"\nFAIL：{len(FAILS)} / {CHECKS} 项断言失败（历史口径漂移，逐条见上）")
-        for m in FAILS:
-            print("  - " + m)
-        return 1
     print(f"PASS：{CHECKS} 项断言全部通过 ✅")
     print("=" * 64)
     return 0

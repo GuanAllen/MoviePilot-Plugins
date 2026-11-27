@@ -249,7 +249,16 @@ const trendSpark = computed(() => {
    柱状 spark（34px 高）、无底部跳转。
    ══════════════════════════════════════════════════════════════════════════════ */
 .mob-overview {
-  --line: rgba(255, 255, 255, 0.07);
+  /* 19.16.41 浅色主题：深色原值抽成语义变量，浅色整体覆盖 */
+  --ink-strong: #e8e9f0;
+  --ink-body: #b9bdcf;
+  --ink-sub: #7d8296;
+  --ink-purple: #cfc6ff;
+  --ink-red: #ff9aa5;
+  --ink-amber: #f5cd84;
+  --ink-green: #7ce7b6;
+  --ink-info: #8dd9f5;
+  --line: rgba(var(--v-theme-on-surface), 0.07);
   --dim: #6f7488;
   --purple: #8b7cf6;
   --green: #3ddc97;
@@ -257,6 +266,19 @@ const trendSpark = computed(() => {
   display: flex;
   flex-direction: column;
 }
+html[data-glass-color-scheme="light"] .mob-overview {
+  --dim: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+  --sub: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+  --ink-strong: rgb(var(--v-theme-on-surface));
+  --ink-body: rgba(var(--v-theme-on-surface), var(--mf-fg-soft));
+  --ink-sub: rgba(var(--v-theme-on-surface), var(--mf-fg-mid));
+  --ink-purple: #5c46c9;
+  --ink-red: #b3263b;
+  --ink-amber: #8a5a00;
+  --ink-green: #137a52;
+  --ink-info: #116a8a;
+}
+
 
 .secttl { display: flex; align-items: baseline; justify-content: space-between; margin: 2px 0 10px; }
 .secttl h3 { font-size: 13px; font-weight: 700; }
@@ -269,16 +291,16 @@ const trendSpark = computed(() => {
   padding: 11px 12px;
   border-radius: 12px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--v-theme-on-surface), 0.03);
 }
-.stat .k { display: block; font-size: 10px; color: #7d8296; }
-.stat .v { display: block; margin: 3px 0 4px; font-size: 18px; font-weight: 800; color: #e8e9f0; letter-spacing: 0.2px; }
+.stat .k { display: block; font-size: 10px; color: var(--ink-sub); }
+.stat .v { display: block; margin: 3px 0 4px; font-size: 18px; font-weight: 800; color: var(--ink-strong); letter-spacing: 0.2px; }
 .stat .f { display: block; font-size: 9.5px; line-height: 1.5; color: var(--dim); }
 .stat.accent {
   background: linear-gradient(140deg, rgba(139, 124, 246, 0.18), rgba(139, 124, 246, 0.04));
   border-color: rgba(139, 124, 246, 0.4);
 }
-.stat.accent .v { color: #cfc6ff; }
+.stat.accent .v { color: var(--ink-purple); }
 
 /* ── 面板 + 事实表 ── */
 .panelbox {
@@ -286,24 +308,24 @@ const trendSpark = computed(() => {
   margin-bottom: 12px;
   border-radius: 14px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--v-theme-on-surface), 0.03);
 }
 .ph { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
 .ph b { font-size: 12.5px; font-weight: 700; flex: none; }
 .ph span { font-size: 9.5px; color: var(--dim); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row {
   display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
-  font-size: 11px; padding: 7px 0; color: #b9bdcf;
+  font-size: 11px; padding: 7px 0; color: var(--ink-body);
   border-top: 1px solid var(--line);
 }
 .row:first-of-type { border-top: 0; }
-.row b { color: #e8e9f0; font-weight: 650; text-align: right; }
-.row b.ac { color: #cfc6ff; }
-.row b.bad { color: #ff9aa5; }
+.row b { color: var(--ink-strong); font-weight: 650; text-align: right; }
+.row b.ac { color: var(--ink-purple); }
+.row b.bad { color: var(--ink-red); }
 .rows-chips { display: inline-flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; }
 .pill {
   display: inline-block; font-size: 9.5px; padding: 3px 8px; border-radius: 20px;
-  background: rgba(255, 107, 122, 0.14); color: #ff9aa5; border: 1px solid rgba(255, 107, 122, 0.28);
+  background: rgba(255, 107, 122, 0.14); color: var(--ink-red); border: 1px solid rgba(255, 107, 122, 0.28);
   font-weight: 600;
 }
 
@@ -312,7 +334,7 @@ const trendSpark = computed(() => {
   display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
   margin-top: 11px; font-size: 9.5px; color: var(--dim);
 }
-.sparkmeta span { color: #a9aec2; font-weight: 600; flex: none; }
+.sparkmeta span { color: var(--ink-body); font-weight: 600; flex: none; }
 .sparkmeta em { font-style: normal; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .spark { display: flex; align-items: flex-end; gap: 2px; height: 34px; margin-top: 7px; }
 .spark i {
@@ -326,22 +348,22 @@ const trendSpark = computed(() => {
   background: linear-gradient(90deg, rgba(139, 124, 246, 0.12), rgba(139, 124, 246, 0.5), rgba(139, 124, 246, 0.12));
 }
 /* 趋势图对应的那一行：标签点亮，避免「不知道图在画哪一项」 */
-.row.is-graphed > span { color: #cfc6ff; }
+.row.is-graphed > span { color: var(--ink-purple); }
 .row em { font-style: normal; font-size: 9.5px; margin-left: 4px; }
 .row em.up { color: var(--green); }
-.row em.down { color: #ff9aa5; }
+.row em.down { color: var(--ink-red); }
 
 .alert {
   margin-top: 8px; padding: 7px 9px; border-radius: 8px; font-size: 9.5px; line-height: 1.55;
-  background: rgba(139, 124, 246, 0.06); border-left: 2px solid rgba(139, 124, 246, 0.45); color: #b9bdcf;
+  background: rgba(139, 124, 246, 0.06); border-left: 2px solid rgba(139, 124, 246, 0.45); color: var(--ink-body);
 }
-.alert--warn { background: rgba(240, 182, 76, 0.08); border-left-color: rgba(240, 182, 76, 0.6); color: #f5cd84; }
-.alert--error { background: rgba(255, 107, 122, 0.08); border-left-color: rgba(255, 107, 122, 0.6); color: #ff9aa5; }
+.alert--warn { background: rgba(240, 182, 76, 0.08); border-left-color: rgba(240, 182, 76, 0.6); color: var(--ink-amber); }
+.alert--error { background: rgba(255, 107, 122, 0.08); border-left-color: rgba(255, 107, 122, 0.6); color: var(--ink-red); }
 
 .hint {
   margin-top: 9px; padding: 7px 9px; border-radius: 8px; font-size: 9.5px; line-height: 1.55;
-  color: #b9bdcf; background: rgba(139, 124, 246, 0.06);
+  color: var(--ink-body); background: rgba(139, 124, 246, 0.06);
   border-left: 2px solid rgba(139, 124, 246, 0.45);
 }
-.hint--bad { background: rgba(255, 107, 122, 0.08); border-left-color: rgba(255, 107, 122, 0.6); color: #ff9aa5; }
+.hint--bad { background: rgba(255, 107, 122, 0.08); border-left-color: rgba(255, 107, 122, 0.6); color: var(--ink-red); }
 </style>

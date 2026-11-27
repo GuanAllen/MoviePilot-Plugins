@@ -201,7 +201,9 @@ def main() -> int:
                if isinstance(n, ast.FunctionDef) and n.name == "_crossseed_seed_window_hours")
     _builtin = {"zzz-builtin.net": {"seed_window_hours": 336.0},
                 "zzz-builtin2.net": {"seed_hours": 72.0}}
-    _ns: dict = {"re": _re, "BUILTIN_RULES": _builtin}
+    # 期限唯一读点 = sites.rules.span_hours（本测试单函数抽取执行，需注入该符号）
+    _rules_mod = _load(PKG + ".sites_rules", "sites/rules.py")
+    _ns: dict = {"re": _re, "BUILTIN_RULES": _builtin, "span_hours": _rules_mod.span_hours}
     exec(compile(ast.Module(body=[_fn], type_ignores=[]), "<x>", "exec"), _ns)
     _win_of = _ns["_crossseed_seed_window_hours"]
 
