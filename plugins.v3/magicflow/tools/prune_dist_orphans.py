@@ -35,7 +35,8 @@ import time
 
 DEFAULT_HOST = "192.168.0.61"
 DEFAULT_USER = "guan"
-DEFAULT_PASS = "***REDACTED***"
+# 绝不把口令写进仓库：从环境变量取，或用 --password 显式传入
+DEFAULT_PASS = os.environ.get("MF_SSH_PASS", "")
 DEFAULT_DEST = "/vol1/1000/moviepilot/plugins-local/magicflow/dist"
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_LOCAL_SRC = os.path.join(os.path.dirname(HERE), "dist")
@@ -165,6 +166,8 @@ def main() -> int:
 
     if not os.path.isdir(args.local_src):
         sys.exit(f"✖ 本地 dist 不存在：{args.local_src}")
+    if not args.local and not args.password:
+        sys.exit("✖ 缺少 SSH 口令：设环境变量 MF_SSH_PASS 或传 --password（不要写回代码）")
 
     fs = (LocalFS(args.dest) if args.local
           else SftpFS(args.host, args.user, args.password, args.dest))
