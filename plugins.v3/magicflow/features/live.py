@@ -405,7 +405,18 @@ class LiveMixin:
                     src["leeching"] = "mp"
             except Exception:  # noqa: BLE001
                 pass
-        for key in ("uid", "upload", "download", "ratio", "bonus", "hr"):
+        # ③ 站点账号用户名：实时页不印用户名，取 MP 站点用户数据（按 domain 精确匹配）。
+        #    19.16.46：PT 履历要显示「站点账号」，/live 原本只有 uid，这里补真值。
+        if not live.get("username"):
+            try:
+                urow = self._userdata_row(int(site_id))
+                nm = str(self._ud_get(urow, "username", "") or "").strip()
+                if nm:
+                    live["username"] = nm
+                    src["username"] = "mp-userdata"
+            except Exception:  # noqa: BLE001
+                pass
+        for key in ("uid", "username", "upload", "download", "ratio", "bonus", "hr"):
             if live.get(key) is not None:
                 src.setdefault(key, "live")
         return live
