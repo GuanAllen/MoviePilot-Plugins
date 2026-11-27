@@ -58,13 +58,48 @@ class SettingsMixin:
 
     def update_settings(self, payload: MagicFlowSettingsPayload) -> Response:
         """更新插件全局设置。"""
-        self._enabled = bool(payload.enabled)
-        self._show_sidebar_nav = bool(payload.show_sidebar_nav)
+        # ★ 任务 105 / API-01：总开关按 model_fields_set 才写。
+        #   MagicFlowSettingsPayload.enabled 缺省 True，旧代码无条件
+        #   ``self._enabled = bool(payload.enabled)``；任何「只改一个子配置」的局部
+        #   保存（payload 不含 enabled）都会把插件静默启用/停用。
+        #   拿不到 model_fields_set（旧 pydantic / 包装对象）时按 15.8.22 口径：
+        #   视为「全量 payload」，保持旧行为，不误伤宿主配置页。
+        # ★ 任务 107 / R-01：显式空 model_fields_set（pydantic v2 的 `Payload()`）
+        #   必须是无副作用操作：一个字段都不写、不落盘、不重建默认值，直接原样返回。
+        _fs_raw = getattr(payload, "model_fields_set", None)
+        if _fs_raw is None:
+            _fs_raw = getattr(payload, "__fields_set__", None)
+        _fs_explicit = _fs_raw is not None
+        _fs_top = set(_fs_raw) if _fs_explicit else set()
+
+        def _snapshot_response(_message: str) -> Response:
+            """构造「当前配置快照」响应（统一脱敏）。
+
+            任务 109：空 payload 与正常保存共用同一处 ``_current_config()`` 调用，
+            避免为了提前返回而新增一处跨 mixin 自调用（preflight 第 7 步棘轮）。
+            """
+            return Response(success=True, message=_message,
+                            data=redact_secrets(self._current_config()))
+
+        if _fs_explicit and not _fs_top:
+            return _snapshot_response("无变更")
+
+        def _has(_key: str) -> bool:
+            """该字段本次是否允许写入。
+
+            新版前端/宿主（pydantic v2）总会带 model_fields_set：只写用户实际提交的键；
+            旧式 payload（无 fields_set，e.g. 老宿主或包装对象）按全量处理，保持兼容。
+            """
+            return (not _fs_explicit) or (_key in _fs_top)
+
+        if _has("enabled"):
+            self._enabled = bool(payload.enabled)
+        if _has("show_sidebar_nav"):
+            self._show_sidebar_nav = bool(payload.show_sidebar_nav)
         # ★ 15.11.0：MCP/Agent 工具注册（按 model_fields_set 才写，避免局部保存抹掉）
-        _fs_mcp = set(getattr(payload, "model_fields_set", None) or set())
-        if "agent_mcp" in _fs_mcp or not _fs_mcp:
+        if _has("agent_mcp"):
             self._agent_mcp = bool(getattr(payload, "agent_mcp", True))
-        if "agent_mcp_scope" in _fs_mcp or not _fs_mcp:
+        if _has("agent_mcp_scope"):
             _sc = str(getattr(payload, "agent_mcp_scope", "core") or "core").strip().lower()
             self._agent_mcp_scope = _sc if _sc in ("core", "all") else "core"
         # ★ 15.13.0：事件通知配置（同样按 model_fields_set 才写）
@@ -72,7 +107,7 @@ class SettingsMixin:
                         "notify_drop_pct", "notify_task_fail", "notify_daily",
                         "notify_daily_hour", "notify_quiet")
         for _k in _notify_keys:
-            if _fs_mcp and _k not in _fs_mcp:
+            if not _has(_k):
                 continue
             _v = getattr(payload, _k, None)
             if _k == "notify_enabled":
@@ -94,32 +129,41 @@ class SettingsMixin:
                 except (TypeError, ValueError):
                     _num = 0.0
                 setattr(self, "_" + _k, _num)
-        self._debug_log = bool(payload.debug_log)
-        self._compact_mode = bool(payload.compact_mode)
-        try:
-            self._journal_keep = max(0, int(payload.journal_keep or 0))
-        except (TypeError, ValueError):
-            self._journal_keep = 200
-        try:
-            self._request_interval = max(0.0, float(payload.request_interval or 0))
-        except (TypeError, ValueError):
-            self._request_interval = 0.0
-        try:
-            self._bonus_upload_limit_kbps = max(0.0, float(payload.bonus_upload_limit_kbps or 0))
-        except (TypeError, ValueError):
-            self._bonus_upload_limit_kbps = 200.0
-        try:
-            self._brush_upload_limit_kbps = max(0.0, float(payload.brush_upload_limit_kbps or 0))
-        except (TypeError, ValueError):
-            self._brush_upload_limit_kbps = 10240.0
-        try:
-            self._seed_up_limit_kbps = max(0.0, float(payload.seed_up_limit_kbps or 0))
-        except (TypeError, ValueError):
-            self._seed_up_limit_kbps = SEED_UP_LIMIT_KBPS_DEFAULT
-        try:
-            self._brush_seed_up_limit_kbps = max(0.0, float(payload.brush_seed_up_limit_kbps or 0))
-        except (TypeError, ValueError):
-            self._brush_seed_up_limit_kbps = BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT
+        # ★ 任务 107 / R-02：标量设置也走字段守卫；局部 payload 不重写未提交字段。
+        if _has("debug_log"):
+            self._debug_log = bool(payload.debug_log)
+        if _has("compact_mode"):
+            self._compact_mode = bool(payload.compact_mode)
+        if _has("journal_keep"):
+            try:
+                self._journal_keep = max(0, int(payload.journal_keep or 0))
+            except (TypeError, ValueError):
+                self._journal_keep = 200
+        if _has("request_interval"):
+            try:
+                self._request_interval = max(0.0, float(payload.request_interval or 0))
+            except (TypeError, ValueError):
+                self._request_interval = 0.0
+        if _has("bonus_upload_limit_kbps"):
+            try:
+                self._bonus_upload_limit_kbps = max(0.0, float(payload.bonus_upload_limit_kbps or 0))
+            except (TypeError, ValueError):
+                self._bonus_upload_limit_kbps = 200.0
+        if _has("brush_upload_limit_kbps"):
+            try:
+                self._brush_upload_limit_kbps = max(0.0, float(payload.brush_upload_limit_kbps or 0))
+            except (TypeError, ValueError):
+                self._brush_upload_limit_kbps = 10240.0
+        if _has("seed_up_limit_kbps"):
+            try:
+                self._seed_up_limit_kbps = max(0.0, float(payload.seed_up_limit_kbps or 0))
+            except (TypeError, ValueError):
+                self._seed_up_limit_kbps = SEED_UP_LIMIT_KBPS_DEFAULT
+        if _has("brush_seed_up_limit_kbps"):
+            try:
+                self._brush_seed_up_limit_kbps = max(0.0, float(payload.brush_seed_up_limit_kbps or 0))
+            except (TypeError, ValueError):
+                self._brush_seed_up_limit_kbps = BRUSH_SEED_UP_LIMIT_KBPS_DEFAULT
         # IYUU 云端辅种配置
         # ★ Token 空 = 保持原值（+ 落 save_data 备份、init 时回落）：
         #   旧前端 chunk / 别的标签页保存设置时 payload 可能不带 iyuu_token，
@@ -267,12 +311,19 @@ class SettingsMixin:
         except Exception:  # noqa: BLE001
             pass
         # ★ 11.13.0 H&R 安全垫 + 临近到期预警（设置面为权威）
+        # ★ 任务 107 / R-02：H&R 参数按字段守卫。旧代码无条件用 payload 缺省值
+        #   （2.0 / 48.0 / 0.999）覆盖，任何不相关的局部保存都会把用户调过的
+        #   余量/预警窗口打回默认（任务 104 R-02：9→2、36→48）。
+        #   显式提交这些字段时仍正常写入（不禁止 HR 设置修改）。
         try:
-            self._hr_seed_margin_hours = _rf(getattr(payload, "hr_seed_margin_hours", 2.0), 2.0)
-            self._hr_deadline_warn_hours = _rf(getattr(payload, "hr_deadline_warn_hours", 48.0), 48.0)
+            if _has("hr_seed_margin_hours"):
+                self._hr_seed_margin_hours = _rf(getattr(payload, "hr_seed_margin_hours", 2.0), 2.0)
+            if _has("hr_deadline_warn_hours"):
+                self._hr_deadline_warn_hours = _rf(getattr(payload, "hr_deadline_warn_hours", 48.0), 48.0)
             # ★ 15.5.1 完成度阈值（clamp 0~1；非法→0.999）
-            _hcr = _rf(getattr(payload, "hr_complete_ratio", 0.999), 0.999)
-            self._hr_complete_ratio_v = min(1.0, max(0.0, _hcr))
+            if _has("hr_complete_ratio"):
+                _hcr = _rf(getattr(payload, "hr_complete_ratio", 0.999), 0.999)
+                self._hr_complete_ratio_v = min(1.0, max(0.0, _hcr))
         except Exception:  # noqa: BLE001
             pass
         # ★ 认领（claim，7.14.0）：设置面为权威，同样清掉 plugin-data 覆盖
@@ -300,19 +351,40 @@ class SettingsMixin:
             "rules": [dict(r) for r in _sr if isinstance(r, dict)] if isinstance(_sr, list) and _sr else [dict(r) for r in DEFAULT_SORT_RULES],
         }
         # 元数据兜底(多源识别 + 补 NFO)
-        _fsrc = getattr(payload, "fallback_sources", None)
-        _fpaths = getattr(payload, "fallback_paths", None)
-        self._fallback_cfg = {
-            "enabled": bool(getattr(payload, "fallback_enabled", True)),
-            "sources": [str(s).strip().lower() for s in (_fsrc or FALLBACK_SOURCES) if str(s or "").strip()]
-            or list(FALLBACK_SOURCES),
-            "paths": [str(p).strip() for p in (_fpaths or []) if str(p or "").strip()],
-            "interval": max(5.0, _rf(getattr(payload, "fallback_interval_minutes", 30.0), 30.0)),
-            "scan_max": max(1, int(_rf(getattr(payload, "fallback_scan_max", FALLBACK_SCAN_MAX), FALLBACK_SCAN_MAX))),
-            "sp_to_s00": bool(getattr(payload, "fallback_sp_to_s00", False)),
-            "after_import": bool(getattr(payload, "fallback_after_import", True)),
-            "dry_run": bool(getattr(payload, "fallback_dry_run", False)),
-        }
+        # ★ 任务 105 / API-01：按 model_fields_set 合并 —— 旧代码每次整份重建，
+        #   局部保存（只带少数键）会把用户调过的 fallback_* 全部打回默认值；
+        #   前端 useTasks 也曾把 fallback.enabled（兜底开关）错当成插件总开关。
+        _fb = dict(getattr(self, "_fallback_cfg", {}) or {})
+        def _fb_take(_key: str) -> bool:
+            return _has(_key)
+        if _fb_take("fallback_enabled"):
+            _fb["enabled"] = bool(getattr(payload, "fallback_enabled", _fb.get("enabled", True)))
+        if _fb_take("fallback_sources"):
+            _fsrc = getattr(payload, "fallback_sources", None)
+            _fb["sources"] = ([str(s).strip().lower() for s in (_fsrc or []) if str(s or "").strip()]
+                              or list(_fb.get("sources") or FALLBACK_SOURCES))
+        if _fb_take("fallback_paths"):
+            _fpaths = getattr(payload, "fallback_paths", None)
+            _fb["paths"] = [str(p).strip() for p in (_fpaths or []) if str(p or "").strip()]
+        if _fb_take("fallback_interval_minutes"):
+            _fb["interval"] = max(5.0, _rf(getattr(payload, "fallback_interval_minutes", _fb.get("interval", 30.0)), 30.0))
+        if _fb_take("fallback_scan_max"):
+            _fb["scan_max"] = max(1, int(_rf(getattr(payload, "fallback_scan_max", _fb.get("scan_max", FALLBACK_SCAN_MAX)), FALLBACK_SCAN_MAX)))
+        if _fb_take("fallback_sp_to_s00"):
+            _fb["sp_to_s00"] = bool(getattr(payload, "fallback_sp_to_s00", _fb.get("sp_to_s00", False)))
+        if _fb_take("fallback_after_import"):
+            _fb["after_import"] = bool(getattr(payload, "fallback_after_import", _fb.get("after_import", True)))
+        if _fb_take("fallback_dry_run"):
+            _fb["dry_run"] = bool(getattr(payload, "fallback_dry_run", _fb.get("dry_run", False)))
+        _fb.setdefault("enabled", True)
+        _fb.setdefault("sources", list(FALLBACK_SOURCES))
+        _fb.setdefault("paths", [])
+        _fb.setdefault("interval", 30.0)
+        _fb.setdefault("scan_max", FALLBACK_SCAN_MAX)
+        _fb.setdefault("sp_to_s00", False)
+        _fb.setdefault("after_import", True)
+        _fb.setdefault("dry_run", False)
+        self._fallback_cfg = _fb
         if getattr(self, "_fallback_engine", None) is not None:
             self._fallback_engine.set_cfg(dict(self._fallback_cfg))
         # 站点实时数据 + 流量监控
@@ -398,8 +470,7 @@ class SettingsMixin:
         )
         # ★ 保存响应也过脱敏闸：`_current_config()` 里带 iyuu_token / cloud_openlist_token，
         #   直接回显 = 前端每次保存都把明文再吃一遍（既有泄露面之一）。
-        return Response(success=True, message="设置已保存",
-                        data=redact_secrets(self._current_config()))
+        return _snapshot_response("设置已保存")
 
     def get_downloader_prefs(self) -> Response:
         """读取下载器(qBittorrent)全局参数 + 推荐值。"""

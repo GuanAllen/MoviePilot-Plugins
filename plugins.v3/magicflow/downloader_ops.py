@@ -11,6 +11,7 @@
 import base64
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -68,6 +69,38 @@ def _tracker_domain_store(cache: Dict[str, Tuple[float, str]], h: str, ts: float
             for k in sorted(cache, key=lambda k: cache[k][0])[: len(cache) // 2]:
                 cache.pop(k, None)
         cache[h] = (ts, host)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# ★ 19.12.54：hash -> (ts, 全部 announce 域名)。与上面「首域名」缓存分开，
+#   互不污染 ``tracker_domain()`` 的契约与 tools/test_tracker_cache.py 断言。
+_TRACKER_DOMAINS_KEY = "tracker_domains_cache"
+_TRACKER_DOMAINS_CACHE: Dict[str, Tuple[float, Tuple[str, ...]]] = {}
+
+
+def _tracker_domains_cache() -> Dict[str, Tuple[float, Tuple[str, ...]]]:
+    """取/建「hash → (ts, 全部公告域名)」缓存（跨热重载共享的进程级单例）。"""
+    try:
+        from .persistence import _shared  # noqa: PLC0415
+        sh = _shared()
+        with sh.lock:
+            cache = sh.singletons.get(_TRACKER_DOMAINS_KEY)
+            if not isinstance(cache, dict):
+                cache = {}
+                sh.singletons[_TRACKER_DOMAINS_KEY] = cache
+        return cache
+    except Exception:  # noqa: BLE001
+        return _TRACKER_DOMAINS_CACHE
+
+
+def _tracker_domains_store(cache, h: str, ts: float, hosts) -> None:
+    """写「全部域名」缓存 + 同样的软上限淘汰。"""
+    try:
+        if len(cache) >= _TRACKER_DOMAIN_MAX and h not in cache:
+            for k in sorted(cache, key=lambda k: cache[k][0])[: len(cache) // 2]:
+                cache.pop(k, None)
+        cache[h] = (ts, tuple(hosts or ()))
     except Exception:  # noqa: BLE001
         pass
 
@@ -840,6 +873,47 @@ class DownloaderAdapter:
             logger.warning(f"[路径映射] 失败: {_e}")
         return path
 
+    # ★ 19.12.75：文件存在性三态 —— 认领前检查与空壳巡检共用同一口径。
+    FILE_STATE_OK = "ok"
+    FILE_STATE_MISSING = "missing"
+    FILE_STATE_UNKNOWN = "unknown"
+
+    def torrent_file_state(self, torrent: Any) -> str:
+        """判这颗种的**数据是否还在磁盘上**：``ok`` / ``missing`` / ``unknown``。
+
+        为什么不能只看 qB 状态：暂停中的种（静默池全是 paused）qB **不会主动复查文件**，
+        文件被外部删掉后状态照旧 ``pausedUP``、进度照旧 100%，``missingFiles`` 要等到
+        某次 recheck 才会出现（实测 11-11 一次全站 recheck 才一次性爆出 229 颗）。
+
+        两道安全阀（宁可不动，也不能误判成可删）：
+        ① 映射后的路径**连父目录都不存在** → ``unknown``：只可能是路径映射/存储挂载失效；
+        ② 取不到 ``content_path`` 也拼不出路径 → ``unknown``。
+        """
+        if torrent is None:
+            return self.FILE_STATE_UNKNOWN
+        if str(getattr(torrent, "state", "") or "") in ("missingFiles", "error"):
+            return self.FILE_STATE_MISSING
+        raw = str(getattr(torrent, "content_path", "") or "").strip().rstrip("/")
+        if not raw:
+            sp = str(getattr(torrent, "save_path", "") or "").strip().rstrip("/")
+            nm = str(getattr(torrent, "title", "") or "").strip()
+            raw = (sp + "/" + nm) if (sp and nm) else ""
+        if not raw:
+            return self.FILE_STATE_UNKNOWN
+        try:
+            path = self.normalize_path(raw)
+        except Exception:  # noqa: BLE001
+            path = raw
+        try:
+            if os.path.exists(path):
+                return self.FILE_STATE_OK
+            parent = os.path.dirname(path.rstrip("/"))
+            if parent and not os.path.isdir(parent):
+                return self.FILE_STATE_UNKNOWN
+            return self.FILE_STATE_MISSING
+        except Exception:  # noqa: BLE001
+            return self.FILE_STATE_UNKNOWN
+
     def get_torrents(
         self,
         tags: Optional[List[str]] = None,
@@ -1053,6 +1127,43 @@ class DownloaderAdapter:
                 return host
         _tracker_domain_store(_cache, h, _now, "")
         return ""
+
+    def tracker_domains(self, hash_string: str) -> List[str]:
+        """★ 19.12.54：返回该种子的**全部**有效 announce 域名（保序去重、去前缀）。
+
+        qB 对暂停种的 ``tracker`` 字段常为空，而 ``torrents_trackers`` 的首公告
+        可能是站点**历史域名**：财神实测首 ``tracker.cspt.cc``、次 ``tracker.cspt.top``。
+        旧 ``tracker_domain()`` 只取第一个就 return → 同站判定把它认成外站
+        （26 颗静默种连 ``_adopt_same_site`` 的 matched 都进不去）。
+        同站归属应看「**任一**公告属于本站」，故新增本方法；
+        ``tracker_domain()`` 的语义与缓存结构一律不动，旧调用方零回归。
+        """
+        h = str(hash_string or "").strip().lower()
+        if not h:
+            return []
+        _cache = _tracker_domains_cache()
+        _now = time.time()
+        _hit = _cache.get(h)
+        if _hit and (_now - _hit[0]) < _TRACKER_DOMAIN_TTL:
+            return list(_hit[1])
+        hosts: List[str] = []
+        try:
+            rows = self._qb_call("torrents_trackers", torrent_hash=h) or []
+        except Exception:  # noqa: BLE001
+            rows = []
+        for x in rows:
+            url = str((x or {}).get("url") or "")
+            if not url or url.startswith("**"):
+                continue
+            m = re.search(r"https?://([^/]+)", url)
+            host = (m.group(1) if m else url).lower().split(":")[0]
+            for pre in ("tracker.", "www."):
+                if host.startswith(pre) and len(host) > len(pre) + 3:
+                    host = host[len(pre):]
+            if host and host not in hosts:
+                hosts.append(host)
+        _tracker_domains_store(_cache, h, _now, tuple(hosts))
+        return hosts
 
     def get_torrents_by_tag(self) -> Tuple[Dict[str, List[TorrentInfo]], Optional[str]]:
         """**一次**拉取全部种子，按标签分组返回：tag -> [TorrentInfo]。
@@ -2136,7 +2247,25 @@ class DownloaderAdapter:
                 )
 
         if not hashes:
-            self._emit_delete_log([], delete_file, reason, source, None, _blocked)
+            # ★ 19.12.73：``blocked_by`` 终于有内容了。以前这里恒传空串 —— 台账只看得见
+            #   「被拦了」，看不见「被哪条硬保护拦的」（认领 / 手动保留 / 欠 H&R / 库内资产）。
+            #   闸门明细本身是第二遍推导（只对被拦的这几十个算，不影响主流程）。
+            _bby = ""
+            if _blocked:
+                try:
+                    _det = getattr(self, "_delete_gate_detail", None)
+                    _why = _det(list(_blocked)) if callable(_det) else {}
+                    _kinds: List[str] = []
+                    for _v in (_why or {}).values():
+                        _k = str(_v or "").split("（")[0].strip()
+                        if _k and _k not in _kinds:
+                            _kinds.append(_k)
+                    _bby = "/".join(_kinds)[:60]
+                except Exception:  # noqa: BLE001
+                    _bby = ""
+                _bby = _bby or "hard_protect"
+            self._emit_delete_log([], delete_file, reason, source, None, _blocked,
+                                  blocked_by=_bby)
             return 0, None
 
         # ★★ 11.12.0：删除前「账单直查断言」+「滚动窗口熔断」（独立于闸门推导链，fail-closed）。

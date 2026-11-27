@@ -1009,10 +1009,60 @@ class AgentLedgerMixin:
         return self._agent_call_read(
             t0, "get_task_handover() → tag 账本(seed ledger) + 任务配置", self.get_task_handover, tid)
 
-    def agent_recommend(self) -> Dict[str, Any]:
+    def agent_recommend(self, status: Any = "", limit: Any = 50) -> Dict[str, Any]:
+        """``GET /agent/recommend`` —— 推荐甄别结果（★ 19.12.66 可按 status/limit 收窄）。
+
+        全量实测 ~400KB / 479 条，其中 ``recommended`` 只有 2 条；MCP 单次上限
+        ``RESULT_MAX_CHARS=30000`` 会把后面全裁掉。加了 ``status`` / ``limit`` 之后，
+        模型一次就能拿到真正要看的那几条。
+
+        计数口径（**别把过滤结果当成库里只有这么多**）：``total`` 与
+        ``status_counts`` 恒按过滤前全量算；``matched`` = 命中过滤的条数，
+        ``returned`` = 本次返回条数；``filter`` 回显本次用的条件。
+        """
         t0 = time.time()
-        return self._agent_call_read(t0, "get_recommend_list() → recommend store",
-                                     self.get_recommend_list)
+        raw = self._agent_call_read(t0, "get_recommend_list() → recommend store",
+                                    self.get_recommend_list)
+        if not raw.get("ok"):
+            return raw
+        data = dict(raw.get("data") or {})
+        items = [x for x in (data.get("items") or []) if isinstance(x, dict)]
+        full_total = len(items)
+        dist: Dict[str, int] = {}
+        for it in items:
+            k = str(it.get("status") or "unknown").lower()
+            dist[k] = dist.get(k, 0) + 1
+        wanted = {x.strip().lower() for x in
+                  str(status or "").replace(",", " ").split() if x.strip()}
+        if wanted:
+            items = [it for it in items
+                     if str(it.get("status") or "unknown").lower() in wanted]
+        try:
+            lim = max(0, int(limit if limit is not None else 50))
+        except (TypeError, ValueError):
+            lim = 50
+        matched = len(items)
+        if lim > 0:
+            items = items[:lim]
+        data["items"] = items
+        data["total"] = full_total
+        data["status_counts"] = dist
+        data["matched"] = matched
+        data["returned"] = len(items)
+        data["filter"] = {"status": sorted(wanted), "limit": lim}
+        out = self._agent_ok(data, t0)
+        chain = list((raw.get("meta") or {}).get("reason_chain") or [])
+        chain.append({
+            "rule": "agent/recommend/filter",
+            "verdict": "report",
+            "inputs": {"status": sorted(wanted), "limit": lim},
+            "source_of_truth": "get_recommend_list() → recommend store（全量计数 + 本地收窄）",
+            "at": self._agent_now(),
+        })
+        out["meta"] = dict(raw.get("meta") or {})
+        out["meta"]["reason_chain"] = chain
+        out["meta"]["took_ms"] = max(0, int(round((time.time() - t0) * 1000.0)))
+        return out
 
     def agent_crossseed(self) -> Dict[str, Any]:
         t0 = time.time()

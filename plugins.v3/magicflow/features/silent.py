@@ -1420,6 +1420,11 @@ class SilentMixin:
             except Exception:  # noqa: BLE001
                 prog = 1.0
             state_name = str(getattr(t, "state", "") or "")
+            # ★ 19.12.81：**正在校验**（checkingUP / checkingDL）不是「没下完」—— recheck 期间
+            #   qB 会把 progress 归 0，若不排除，一次定向 recheck 就能让这条清理自己把种删了
+            #   （而且这条 `delete_file=not shared` 是**连着文件删**）。
+            if state_name.startswith("checking"):
+                continue
             if not (prog < 0.999 or state_name.endswith("DL")):
                 continue
             rep["pending"] += 1
